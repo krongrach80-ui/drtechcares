@@ -1,0 +1,30 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans Thai", "Prompt", system-ui, -apple-system, sans-serif;
+  --font-display: "Prompt", "IBM Plex Sans Thai", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@layer base {
+  body {
+    font-family: var(--font-sans);
+  }
+}
+
+.clinical-mist-bg {
+  background: radial-gradient(circle at 20% 20%, #f4f9f9 0%, #ebf5f7 55%, #e6f2f6 100%);
+}
+
+.glass-card {
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 12px 32px -8px rgba(14, 116, 144, 0.08);
+}
+
+.tabular-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}

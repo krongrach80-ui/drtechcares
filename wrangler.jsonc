@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "drtechcares-platform",
+  "main": "dist-worker/worker.js",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    "APP_ENV": "production",
+    "BIOMETRIC_GATE_MODE": "strict-multi-subband",
+    "SUPABASE_URL": "https://vyjuwjhbdhknjdzyqctz.supabase.co",
+    "SUPABASE_ANON_KEY": "sb_publishable_xGqyzlELlwTp_z19_WiHZg_0YOBQWOA"
+  }
+}
+

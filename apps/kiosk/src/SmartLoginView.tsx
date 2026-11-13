@@ -1,0 +1,270 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
+import { useClinicalI18n } from '@drtechcares/clinical-i18n';
+import type { DrTechCaresApiClient, PatientRecord } from '@drtechcares/api-client';
+import {
+  alignFaceTo112,
+  evaluateLivenessAndPose,
+  extractFaceEmbeddingWithFallback,
+  selectClinicalCameraDeviceId,
+  SingleScanLoginController,
+} from '@drtechcares/face-client';
+import {
+  BURST_FRAME_COUNT,
+  evaluateFrameQuality,
+  purgeLegacyBiometricCache,
+} from '@drtechcares/smart-biometric-core';
+import { FacePresenceTracker } from '@drtechcares/kiosk-input';
+import { AlertCircle, Camera, PhoneCall, ShieldCheck, UserPlus } from 'lucide-react';
+
+interface SmartLoginViewProps {
+  apiClient: DrTechCaresApiClient;
+  onAuthenticated: (patient: PatientRecord) => void;
+  onNavigateEnroll: () => void;
+}
+
+export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }: SmartLoginViewProps) {
+  const { t } = useClinicalI18n();
+  const [status, setStatus] = useState<'idle' | 'countdown' | 'burst' | 'verifying' | 'not_found'>('idle');
+  const [countdown, setCountdown] = useState(3);
+  const [burstCount, setBurstCount] = useState(0);
+  const [qualityMsg, setQualityMsg] = useState<string>('Align face in oval guide');
+  const [staffCalled, setStaffCalled] = useState(false);
+
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const alignCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const loginCtrlRef = useRef(new SingleScanLoginController());
+  const presenceRef = useRef(new FacePresenceTracker());
+
+  useEffect(() => {
+    // Zero Ghost Cache: wipe any stale biometric entries on Kiosk mount
+    purgeLegacyBiometricCache();
+  }, []);
+
+  useEffect(() => {
+    if (status === 'not_found') return;
+
+    let active = true;
+    let stream: MediaStream | null = null;
+    let rafId = 0;
+    let landmarker: FaceLandmarker | null = null;
+    let prevLandmarks: { x: number; y: number; z?: number }[] | null = null;
+    let countdownStartedAt: number | null = null;
+
+    async function startCamera() {
+      try {
+        const deviceId = await selectClinicalCameraDeviceId();
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: deviceId ? { deviceId: { exact: deviceId }, width: 640, height: 480 } : { width: 640, height: 480 },
+          audio: false,
+        });
+        if (!active || !videoRef.current) return;
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+
+        const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
+        landmarker = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
+          runningMode: 'VIDEO',
+          numFaces: 2,
+        });
+
+        const tick = async () => {
+          if (!active || !videoRef.current || !landmarker) return;
+          if (videoRef.current.readyState >= 2) {
+            const now = performance.now();
+            const res = landmarker.detectForVideo(videoRef.current, now);
+            const faceCount = res.faceLandmarks?.length ?? 0;
+            const landmarks = res.faceLandmarks?.[0] ?? [];
+            const liveness = evaluateLivenessAndPose(landmarks, prevLandmarks, faceCount);
+            prevLandmarks = landmarks;
+
+            const faceBoxRatio =
+              landmarks.length > 400
+                ? Math.abs(landmarks[454].x - landmarks[234].x)
+                : 0;
+            const presence = presenceRef.current.update({
+              facePresent: faceCount === 1,
+              faceSizeRatio: faceBoxRatio,
+              timestampMs: now,
+            });
+
+            if (presence.awake && countdownStartedAt === null) {
+              countdownStartedAt = now;
+              setStatus('countdown');
+            }
+
+            if (countdownStartedAt !== null && status !== 'not_found') {
+              const elapsedSec = Math.floor((now - countdownStartedAt) / 1000);
+              const rem = Math.max(0, 3 - elapsedSec);
+              setCountdown(rem);
+
+              if (rem === 0 && liveness.isLive) {
+                if (!alignCanvasRef.current) alignCanvasRef.current = document.createElement('canvas');
+                const crop = alignFaceTo112(videoRef.current, landmarks, alignCanvasRef.current);
+                if (crop) {
+                  const q = evaluateFrameQuality(crop, {
+                    yawDeg: liveness.yawDeg,
+                    pitchDeg: liveness.pitchDeg,
+                    rollDeg: liveness.rollDeg,
+                  });
+                  if (q.acceptable) {
+                    setStatus('burst');
+                    loginCtrlRef.current.startCountdownComplete();
+                    const { vector } = await extractFaceEmbeddingWithFallback(crop, landmarks);
+                    const push = loginCtrlRef.current.pushFrame({
+                      vector,
+                      qualityScore: q.sharpness,
+                      capturedAfterCountdown: true,
+                      pose: 'front',
+                      sharpness: q.sharpness,
+                      yaw: liveness.yawDeg,
+                      pitch: liveness.pitchDeg,
+                    });
+                    setBurstCount(push.collected);
+
+                    if (push.readyToVerify) {
+                      setStatus('verifying');
+                      const probe = loginCtrlRef.current.buildProbeCentroid();
+                      const verifyRes = await apiClient.verifyFaceLogin(probe);
+                      if (verifyRes.matched && verifyRes.patientId) {
+                        const patients = await apiClient.listPatients();
+                        const found = patients.find((p) => p.id === verifyRes.patientId);
+                        if (found) {
+                          onAuthenticated(found);
+                          return;
+                        }
+                      }
+                      // NOT_FOUND_CONFIRM_ROUNDS = 1 -> pause camera & show modal immediately
+                      const miss = loginCtrlRef.current.recordUnmatchedRound();
+                      if (miss.shouldShowNotFoundModal) {
+                        setStatus('not_found');
+                        stream?.getTracks().forEach((tr) => tr.stop());
+                        return;
+                      }
+                    }
+                  } else {
+                    setQualityMsg(q.reasons.join(', '));
+                  }
+                }
+              }
+            }
+          }
+          rafId = requestAnimationFrame(tick);
+        };
+        rafId = requestAnimationFrame(tick);
+      } catch {
+        setQualityMsg('Camera standby — ready for touch or staff action');
+      }
+    }
+
+    startCamera();
+    return () => {
+      active = false;
+      cancelAnimationFrame(rafId);
+      landmarker?.close();
+      stream?.getTracks().forEach((tr) => tr.stop());
+    };
+  }, [status, apiClient, onAuthenticated]);
+
+  const handleCallStaff = async () => {
+    await apiClient.createStaffCall('KIOSK-OPD-01', 'Patient needs assistance on Face Login');
+    setStaffCalled(true);
+  };
+
+  return (
+    <div className="mx-auto max-w-4xl rounded-3xl bg-white p-6 shadow-xl border border-slate-200">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+            <ShieldCheck className="h-7 w-7 text-teal-600" />
+            {t('touchlessLoginTitle')}
+          </h1>
+          <p className="mt-1 text-sm text-slate-500">{t('touchlessLoginSubtitle')}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onNavigateEnroll}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700"
+          >
+            <UserPlus className="h-4 w-4" />
+            {t('staffRegisterBtn')}
+          </button>
+          <button
+            onClick={handleCallStaff}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-800 hover:bg-amber-100"
+          >
+            <PhoneCall className="h-4 w-4" />
+            {t('callStaffBtn')}
+          </button>
+        </div>
+      </div>
+
+      {staffCalled && (
+        <div className="mt-4 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm font-semibold text-amber-900">
+          {t('staffCalledConfirm')}
+        </div>
+      )}
+
+      <div className="mt-6 relative overflow-hidden rounded-3xl bg-slate-950 aspect-video flex items-center justify-center">
+        <video ref={videoRef} playsInline muted className="h-full w-full object-cover -scale-x-100" />
+
+        {/* Clean Oval Face Guide */}
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="h-64 w-48 rounded-[999px] border-4 border-dashed border-teal-400/80 shadow-[0_0_0_9999px_rgba(2,6,23,0.38)]" />
+        </div>
+
+        <div className="absolute bottom-4 inset-x-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-slate-900/85 px-4 py-3 text-white backdrop-blur">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Camera className="h-4 w-4 text-teal-400" />
+            <span>
+              {status === 'countdown' && `Hold steady: ${countdown}s`}
+              {status === 'burst' && `${t('scanningBurst')} (${burstCount}/${BURST_FRAME_COUNT})`}
+              {status === 'verifying' && 'Verifying Multi-Subband 512-D Gate...'}
+              {status === 'idle' && qualityMsg}
+            </span>
+          </div>
+        </div>
+
+        {/* Single-Scan Decisive Account Not Found Modal (NOT_FOUND_CONFIRM_ROUNDS = 1) */}
+        {status === 'not_found' && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/85 p-6 backdrop-blur-sm">
+            <div className="max-w-md rounded-3xl bg-white p-6 text-center shadow-2xl">
+              <AlertCircle className="mx-auto h-12 w-12 text-rose-500" />
+              <h2 className="mt-3 text-xl font-bold text-slate-900">{t('accountNotFoundTitle')}</h2>
+              <p className="mt-2 text-sm text-slate-600">{t('accountNotFoundDesc')}</p>
+              <div className="mt-6 flex flex-col gap-2.5">
+                <button
+                  onClick={onNavigateEnroll}
+                  className="w-full rounded-xl bg-teal-600 py-3 text-sm font-bold text-white hover:bg-teal-700"
+                >
+                  <UserPlus className="inline h-4 w-4 mr-1.5" />
+                  {t('staffRegisterBtn')}
+                </button>
+                <button
+                  onClick={handleCallStaff}
+                  className="w-full rounded-xl border border-amber-300 bg-amber-50 py-3 text-sm font-bold text-amber-800 hover:bg-amber-100"
+                >
+                  <PhoneCall className="inline h-4 w-4 mr-1.5" />
+                  {t('callStaffBtn')}
+                </button>
+                <button
+                  onClick={() => {
+                    loginCtrlRef.current.reset();
+                    presenceRef.current.reset();
+                    setBurstCount(0);
+                    setStatus('idle');
+                  }}
+                  className="w-full rounded-xl border border-slate-200 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  Retry Single Scan
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+

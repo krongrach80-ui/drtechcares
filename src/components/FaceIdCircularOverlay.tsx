@@ -1,0 +1,143 @@
+import React from 'react';
+import type {
+  BiometricVerificationJson,
+  FaceIdScreenPromptSpec,
+} from '@drtechcares/face-client';
+import { CheckCircle2, ShieldAlert, AlertTriangle } from 'lucide-react';
+
+interface FaceIdCircularOverlayProps {
+  /** 0 to 1 progress around the 64 circular Face ID ticks */
+  progressRatio: number;
+  inspection: BiometricVerificationJson | null;
+  screenPrompt: FaceIdScreenPromptSpec;
+  compact?: boolean;
+}
+
+const TOTAL_TICKS = 64;
+
+const CHECKPOINT_LABELS: {
+  key: keyof BiometricVerificationJson['checks'];
+  label: string;
+}[] = [
+  { key: 'framing_ok', label: '1. Framing' },
+  { key: 'lighting_ok', label: '2. Lighting' },
+  { key: 'no_obstruction', label: '3. Clear Face' },
+  { key: 'liveness_ok', label: '4. 3D Liveness' },
+];
+
+export function FaceIdCircularOverlay({
+  progressRatio,
+  inspection,
+  screenPrompt,
+  compact = false,
+}: FaceIdCircularOverlayProps) {
+  const clamped = Math.max(0, Math.min(1, progressRatio));
+  const filledTicks = Math.round(clamped * TOTAL_TICKS);
+  const isSpoof = inspection?.scan_status === 'SPOOF_DETECTED';
+  const isPass = inspection?.scan_status === 'PASS';
+
+  const ringSize = compact ? 220 : 256;
+  const cx = ringSize / 2;
+  const cy = ringSize / 2;
+  const innerR = compact ? 90 : 106;
+  const outerR = compact ? 104 : 122;
+
+  return (
+    <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-between p-3">
+      {/* Top Primary + Sub-Prompt Banner */}
+      <div className="w-full max-w-md rounded-2xl bg-slate-950/85 backdrop-blur-sm border border-slate-700/80 px-4 py-2.5 text-center shadow-lg">
+        <div className="flex items-center justify-center gap-2">
+          {isSpoof ? (
+            <ShieldAlert className="h-4 w-4 text-rose-400 shrink-0" />
+          ) : isPass ? (
+            <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+          ) : (
+            <AlertTriangle className="h-4 w-4 text-teal-400 shrink-0" />
+          )}
+          <span className="text-sm font-extrabold text-white tracking-tight">
+            {screenPrompt.primaryPrompt}
+          </span>
+        </div>
+        <p className="mt-0.5 text-[11px] text-slate-300">{screenPrompt.subPrompt}</p>
+      </div>
+
+      {/* Center Circular iPhone Face ID Tick Ring */}
+      <div className="relative flex items-center justify-center my-1">
+        <svg
+          width={ringSize}
+          height={ringSize}
+          viewBox={`0 0 ${ringSize} ${ringSize}`}
+          className="drop-shadow-[0_0_14px_rgba(20,184,166,0.35)]"
+        >
+          {Array.from({ length: TOTAL_TICKS }, (_, idx) => {
+            const angle = (idx / TOTAL_TICKS) * Math.PI * 2 - Math.PI / 2;
+            const active = idx < filledTicks;
+            const x1 = cx + Math.cos(angle) * innerR;
+            const y1 = cy + Math.sin(angle) * innerR;
+            const x2 = cx + Math.cos(angle) * (active ? outerR + 3 : outerR - 3);
+            const y2 = cy + Math.sin(angle) * (active ? outerR + 3 : outerR - 3);
+
+            const stroke = isSpoof
+              ? '#f43f5e'
+              : active
+                ? '#10b981'
+                : isPass
+                  ? '#2dd4bf'
+                  : 'rgba(148,163,184,0.38)';
+
+            return (
+              <line
+                key={idx}
+                x1={x1}
+                y1={y1}
+                x2={x2}
+                y2={y2}
+                stroke={stroke}
+                strokeWidth={active ? 3 : 2}
+                strokeLinecap="round"
+              />
+            );
+          })}
+        </svg>
+      </div>
+
+      {/* Bottom 4 Checkpoints + Short Instruction Badge */}
+      <div className="w-full max-w-lg space-y-1.5">
+        <div className="grid grid-cols-4 gap-1.5">
+          {CHECKPOINT_LABELS.map((cp) => {
+            const ok = inspection ? inspection.checks[cp.key] : false;
+            return (
+              <div
+                key={cp.key}
+                className={`rounded-lg px-2 py-1 text-center text-[10px] font-bold border ${
+                  !inspection
+                    ? 'bg-slate-900/75 border-slate-700 text-slate-400'
+                    : ok
+                      ? 'bg-emerald-950/85 border-emerald-500/50 text-emerald-300'
+                      : 'bg-rose-950/85 border-rose-500/50 text-rose-300'
+                }`}
+              >
+                {ok ? '✓ ' : '• '}
+                {cp.label}
+              </div>
+            );
+          })}
+        </div>
+        {inspection && (
+          <div
+            className={`rounded-xl px-3 py-1.5 text-center text-xs font-bold border ${
+              isSpoof
+                ? 'bg-rose-950/90 border-rose-500 text-rose-200'
+                : isPass
+                  ? 'bg-emerald-950/90 border-emerald-500 text-emerald-200'
+                  : 'bg-slate-950/85 border-amber-500/60 text-amber-200'
+            }`}
+          >
+            {inspection.user_instruction_th} ({inspection.detected_pose} • {inspection.error_code})
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+

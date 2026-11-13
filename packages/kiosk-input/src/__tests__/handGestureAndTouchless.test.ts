@@ -1,0 +1,77 @@
+import { describe, expect, it } from 'vitest';
+import {
+  FacePresenceTracker,
+  HandGestureVerifier,
+  HeadNodDetector,
+  VoiceFeedbackController,
+  type DetectedHandFrame,
+  type HandLandmarkPoint,
+} from '../index';
+
+function buildOpenRaisedHand(handedness: 'Left' | 'Right', centerX = 0.5): DetectedHandFrame {
+  const landmarks: HandLandmarkPoint[] = Array.from({ length: 21 }, () => ({ x: centerX, y: 0.6 }));
+  landmarks[0] = { x: centerX, y: 0.65 }; // wrist
+  landmarks[5] = { x: centerX - 0.03, y: 0.55 }; // index mcp
+  landmarks[8] = { x: centerX - 0.04, y: 0.36 }; // index tip
+  landmarks[9] = { x: centerX, y: 0.54 }; // middle mcp
+  landmarks[12] = { x: centerX, y: 0.33 }; // middle tip
+  landmarks[13] = { x: centerX + 0.03, y: 0.55 }; // ring mcp
+  landmarks[16] = { x: centerX + 0.04, y: 0.36 }; // ring tip
+  landmarks[17] = { x: centerX + 0.05, y: 0.56 }; // pinky mcp
+  landmarks[20] = { x: centerX + 0.07, y: 0.40 }; // pinky tip
+  return { landmarks, handedness, score: 0.95 };
+}
+
+describe('Touchless Kiosk Input & Cognitive Hand Verification', () => {
+  it('maps anatomical right hand to YES and left hand to NO after 600ms hold', () => {
+    const verifier = new HandGestureVerifier();
+    const rightHand = buildOpenRaisedHand('Right', 0.65);
+
+    const t0 = verifier.update([rightHand], 1000);
+    expect(t0.choice).toBe('yes');
+    expect(t0.confirmedAnswer).toBeNull();
+
+    const t600 = verifier.update([rightHand], 1650);
+    expect(t600.confirmedAnswer).toBe('yes');
+
+    verifier.reset();
+    const leftHand = buildOpenRaisedHand('Left', 0.35);
+    verifier.update([leftHand], 2000);
+    const leftConfirm = verifier.update([leftHand], 2650);
+    expect(leftConfirm.confirmedAnswer).toBe('no');
+  });
+
+  it('blocks answer and triggers warning when both hands are raised simultaneously', () => {
+    const verifier = new HandGestureVerifier();
+    const both = verifier.update(
+      [buildOpenRaisedHand('Left', 0.3), buildOpenRaisedHand('Right', 0.7)],
+      1000,
+    );
+    expect(both.bothHandsRaisedWarning).toBe(true);
+    expect(both.confirmedAnswer).toBeNull();
+  });
+
+  it('detects portrait crop boundary when hand is too close to edge', () => {
+    const verifier = new HandGestureVerifier();
+    const edgeHand = buildOpenRaisedHand('Right', 0.05);
+    const res = verifier.update([edgeHand], 1000, { isPortrait: true, cropRatio: 0.36 });
+    expect(res.outsidePortraitCropWarning).toBe(true);
+  });
+
+  it('handles presence wake-up, head nod confirmation, and TTS cooldown (>=3500ms)', () => {
+    const presence = new FacePresenceTracker();
+    expect(presence.update({ facePresent: true, faceSizeRatio: 0.2, timestampMs: 0 }).awake).toBe(false);
+    expect(presence.update({ facePresent: true, faceSizeRatio: 0.2, timestampMs: 1100 }).awake).toBe(true);
+
+    const nod = new HeadNodDetector();
+    expect(nod.update(15, 100).confirmed).toBe(false);
+    expect(nod.update(15, 450).confirmed).toBe(false);
+    expect(nod.update(2, 600).confirmed).toBe(true);
+
+    const tts = new VoiceFeedbackController(3500);
+    expect(tts.speak('สวัสดีค่ะ', 'th', false, 1000)).toBe(true);
+    expect(tts.speak('ยกแขนขึ้น', 'th', false, 2000)).toBe(false);
+    expect(tts.speak('ยกแขนขึ้น', 'th', false, 5000)).toBe(true);
+  });
+});
+

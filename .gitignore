@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-worker/
+.vite/
+.wrangler/
+.env
+.env.*
+!.env.example
+*.log
+data/*.tmp
+public/models/w600k_r50.onnx
+

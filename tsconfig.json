@@ -1,0 +1,43 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    "baseUrl": ".",
+    "paths": {
+      "@drtechcares/smart-biometric-core": ["./packages/smart-biometric-core/src/index.ts"],
+      "@drtechcares/face-client": ["./packages/face-client/src/index.ts"],
+      "@drtechcares/pose-engine": ["./packages/pose-engine/src/index.ts"],
+      "@drtechcares/kiosk-input": ["./packages/kiosk-input/src/index.ts"],
+      "@drtechcares/clinical-i18n": ["./packages/clinical-i18n/src/index.ts"],
+      "@drtechcares/api-client": ["./packages/api-client/src/index.ts"],
+      "@apps/kiosk": ["./apps/kiosk/src/index.ts"],
+      "@apps/pt": ["./apps/pt/src/index.ts"],
+      "@apps/admin": ["./apps/admin/src/index.ts"],
+      "@apps/api": ["./apps/api/src/index.ts"]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "packages/*/src/**/*.ts",
+    "packages/*/src/**/*.tsx",
+    "apps/*/src/**/*.ts",
+    "apps/*/src/**/*.tsx",
+    "scripts/**/*.mjs",
+    "scripts/**/*.js"
+  ]
+}
+

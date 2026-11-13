@@ -1,0 +1,824 @@
+{
+  "users": [
+    {
+      "id": "user-super-1",
+      "username": "admin",
+      "passwordHash": "61f698462aea388642087009a9d13337:1f8f8c980d7270b5050ffe9309c6e6a23a4adf460e4e70dea812e165529ad1d8438f6e50eabb0ad66086001b4e2e6dddf2ea60f978fb0011f1f8e6ce648a97e0",
+      "role": "super_admin",
+      "fullName": "นพ.สมชาย ผู้อำนวยการโรงพยาบาล (Super Admin)",
+      "phone": "02-000-0001",
+      "specialty": "Hospital Director",
+      "licenseNo": "MD-10001",
+      "active": true,
+      "forceLoggedOutAt": null,
+      "createdAt": "2026-11-13T13:52:08.700Z"
+    },
+    {
+      "id": "user-pt-1",
+      "username": "pt_somchai",
+      "passwordHash": "835c25ff703417d173d3626643914914:72ded72c58e570e23b252195e78de75972eabafc8cdc2c21754cdebdaaf7805b049d2f0fc981d18950596c7df3c06f9875c5b0ddfdf3a10f9a8f67e19b2392e2",
+      "role": "pt",
+      "fullName": "กภ.สมชาย ใจดี (PT)",
+      "phone": "081-111-2233",
+      "specialty": "Orthopedic & Shoulder Rehab",
+      "licenseNo": "PT-44012",
+      "active": true,
+      "forceLoggedOutAt": null,
+      "createdAt": "2026-11-13T13:52:08.700Z"
+    },
+    {
+      "id": "user-pt-2",
+      "username": "pt_waranya",
+      "passwordHash": "d10976313d56bb19eed2a279e719c08f:8ef5e4ef4bd40d34ebe093ab9d2a79dec394ff0a680512cdcf2859e490693b2118953441b7df937511cae2ce6591304404d5f94e2bc95379eb0e1805e13b7733",
+      "role": "pt",
+      "fullName": "กภ.วรัญญา สุขสันต์ (PT)",
+      "phone": "089-222-3344",
+      "specialty": "Neuro & Cognitive Rehab",
+      "licenseNo": "PT-44089",
+      "active": true,
+      "forceLoggedOutAt": null,
+      "createdAt": "2026-11-13T13:52:08.700Z"
+    }
+  ],
+  "patients": [],
+  "face_templates": [],
+  "medical_notes": [],
+  "patient_courses": [],
+  "rehab_sessions": [],
+  "treatment_reports": [],
+  "exercises": [
+    {
+      "id": "ex-01",
+      "code": "SH_FLEX_R",
+      "category": "upper_limb",
+      "name": {
+        "th": "ยกแขนตรงไปด้านหน้า (ขวา)",
+        "en": "Right Shoulder Flexion",
+        "cn": "右肩前屈抬举"
+      },
+      "instruction": {
+        "th": "เหยียดข้อศอกตรง ยกแขนขวาขึ้นด้านหน้าค้างไว้ 3 วินาที",
+        "en": "Keep elbow straight, raise right arm forward and hold 3s",
+        "cn": "保持手肘伸直，右臂向前抬起并保持3秒"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "shoulder",
+        "side": "right",
+        "targetMinDeg": 110,
+        "targetMaxDeg": 180,
+        "startRestMaxDeg": 35,
+        "holdSec": 3,
+        "defaultSets": 2,
+        "defaultReps": 5,
+        "requireStraightElbow": true,
+        "minElbowDeg": 135,
+        "expectedPlane": "flexion"
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-02",
+      "code": "SH_FLEX_L",
+      "category": "upper_limb",
+      "name": {
+        "th": "ยกแขนตรงไปด้านหน้า (ซ้าย)",
+        "en": "Left Shoulder Flexion",
+        "cn": "左肩前屈抬举"
+      },
+      "instruction": {
+        "th": "เหยียดข้อศอกตรง ยกแขนซ้ายขึ้นด้านหน้าค้างไว้ 3 วินาที",
+        "en": "Keep elbow straight, raise left arm forward and hold 3s",
+        "cn": "保持手肘伸直，左臂向前抬起并保持3秒"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "shoulder",
+        "side": "left",
+        "targetMinDeg": 110,
+        "targetMaxDeg": 180,
+        "startRestMaxDeg": 35,
+        "holdSec": 3,
+        "defaultSets": 2,
+        "defaultReps": 5,
+        "requireStraightElbow": true,
+        "minElbowDeg": 135,
+        "expectedPlane": "flexion"
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-03",
+      "code": "SH_ABD_R",
+      "category": "upper_limb",
+      "name": {
+        "th": "กางแขนตรงออกด้านข้าง (ขวา)",
+        "en": "Right Shoulder Abduction",
+        "cn": "右肩外展抬举"
+      },
+      "instruction": {
+        "th": "เหยียดข้อศอกตรง กางแขนขวาออกด้านข้างค้างไว้ 3 วินาที",
+        "en": "Keep elbow straight, abduct right arm to the side and hold 3s",
+        "cn": "保持手肘伸直，右臂向侧面外展并保持3秒"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "shoulder",
+        "side": "right",
+        "targetMinDeg": 95,
+        "targetMaxDeg": 175,
+        "startRestMaxDeg": 35,
+        "holdSec": 3,
+        "defaultSets": 2,
+        "defaultReps": 5,
+        "requireStraightElbow": true,
+        "minElbowDeg": 135,
+        "expectedPlane": "abduction"
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-04",
+      "code": "SH_ABD_L",
+      "category": "upper_limb",
+      "name": {
+        "th": "กางแขนตรงออกด้านข้าง (ซ้าย)",
+        "en": "Left Shoulder Abduction",
+        "cn": "左肩外展抬举"
+      },
+      "instruction": {
+        "th": "เหยียดข้อศอกตรง กางแขนซ้ายออกด้านข้างค้างไว้ 3 วินาที",
+        "en": "Keep elbow straight, abduct left arm to the side and hold 3s",
+        "cn": "保持手肘伸直，左臂向侧面外展并保持3秒"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "shoulder",
+        "side": "left",
+        "targetMinDeg": 95,
+        "targetMaxDeg": 175,
+        "startRestMaxDeg": 35,
+        "holdSec": 3,
+        "defaultSets": 2,
+        "defaultReps": 5,
+        "requireStraightElbow": true,
+        "minElbowDeg": 135,
+        "expectedPlane": "abduction"
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-05",
+      "code": "ELB_FLEX_R",
+      "category": "upper_limb",
+      "name": {
+        "th": "งอ-เหยียดข้อศอก (ขวา)",
+        "en": "Right Elbow Flexion",
+        "cn": "右肘屈伸训练"
+      },
+      "instruction": {
+        "th": "พับข้อศอกขวาเข้าหาไหล่และเหยียดลงช้าๆ",
+        "en": "Flex right elbow toward shoulder and slowly lower",
+        "cn": "弯曲右肘靠近肩膀后缓慢放下"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "elbow",
+        "side": "right",
+        "targetMinDeg": 35,
+        "targetMaxDeg": 75,
+        "startRestMaxDeg": 145,
+        "holdSec": 2,
+        "defaultSets": 2,
+        "defaultReps": 8,
+        "requireStraightElbow": false
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-06",
+      "code": "ELB_FLEX_L",
+      "category": "upper_limb",
+      "name": {
+        "th": "งอ-เหยียดข้อศอก (ซ้าย)",
+        "en": "Left Elbow Flexion",
+        "cn": "左肘屈伸训练"
+      },
+      "instruction": {
+        "th": "พับข้อศอกซ้ายเข้าหาไหล่และเหยียดลงช้าๆ",
+        "en": "Flex left elbow toward shoulder and slowly lower",
+        "cn": "弯曲左肘靠近肩膀后缓慢放下"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "elbow",
+        "side": "left",
+        "targetMinDeg": 35,
+        "targetMaxDeg": 75,
+        "startRestMaxDeg": 145,
+        "holdSec": 2,
+        "defaultSets": 2,
+        "defaultReps": 8,
+        "requireStraightElbow": false
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-07",
+      "code": "SH_PEND_R",
+      "category": "upper_limb",
+      "name": {
+        "th": "แกว่งแขนคอดแมน (ขวา)",
+        "en": "Codman Pendulum (Right)",
+        "cn": "右肩钟摆运动"
+      },
+      "instruction": {
+        "th": "โน้มตัวเล็กน้อย แกว่งแขนขวาเป็นวงกลมต่อเนื่อง 15 วินาที",
+        "en": "Lean forward slightly and swing right arm gently for 15s",
+        "cn": "身体微前倾，轻柔画圈摆动右臂15秒"
+      },
+      "detection": {
+        "mode": "timer",
+        "jointGroup": "shoulder",
+        "side": "right",
+        "targetMinDeg": 15,
+        "targetMaxDeg": 90,
+        "startRestMaxDeg": 15,
+        "holdSec": 15,
+        "defaultSets": 2,
+        "defaultReps": 1,
+        "requireStraightElbow": true
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-08",
+      "code": "SH_PEND_L",
+      "category": "upper_limb",
+      "name": {
+        "th": "แกว่งแขนคอดแมน (ซ้าย)",
+        "en": "Codman Pendulum (Left)",
+        "cn": "左肩钟摆运动"
+      },
+      "instruction": {
+        "th": "โน้มตัวเล็กน้อย แกว่งแขนซ้ายเป็นวงกลมต่อเนื่อง 15 วินาที",
+        "en": "Lean forward slightly and swing left arm gently for 15s",
+        "cn": "身体微前倾，轻柔画圈摆动左臂15秒"
+      },
+      "detection": {
+        "mode": "timer",
+        "jointGroup": "shoulder",
+        "side": "left",
+        "targetMinDeg": 15,
+        "targetMaxDeg": 90,
+        "startRestMaxDeg": 15,
+        "holdSec": 15,
+        "defaultSets": 2,
+        "defaultReps": 1,
+        "requireStraightElbow": true
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-09",
+      "code": "SH_SCAP_R",
+      "category": "upper_limb",
+      "name": {
+        "th": "ยกแขนมุมทแยง 45° (ขวา)",
+        "en": "Right Scaption Raise",
+        "cn": "右肩肩胛平面抬举"
+      },
+      "instruction": {
+        "th": "เหยียดศอกตรง ยกแขนขวาเฉียง 45 องศา",
+        "en": "Raise right arm at 45-degree scaption angle with straight elbow",
+        "cn": "保持肘部伸直，右臂呈45度斜前方抬起"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "shoulder",
+        "side": "right",
+        "targetMinDeg": 90,
+        "targetMaxDeg": 165,
+        "startRestMaxDeg": 35,
+        "holdSec": 3,
+        "defaultSets": 2,
+        "defaultReps": 6,
+        "requireStraightElbow": true
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-10",
+      "code": "SH_SCAP_L",
+      "category": "upper_limb",
+      "name": {
+        "th": "ยกแขนมุมทแยง 45° (ซ้าย)",
+        "en": "Left Scaption Raise",
+        "cn": "左肩肩胛平面抬举"
+      },
+      "instruction": {
+        "th": "เหยียดศอกตรง ยกแขนซ้ายเฉียง 45 องศา",
+        "en": "Raise left arm at 45-degree scaption angle with straight elbow",
+        "cn": "保持肘部伸直，左臂呈45度斜前方抬起"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "shoulder",
+        "side": "left",
+        "targetMinDeg": 90,
+        "targetMaxDeg": 165,
+        "startRestMaxDeg": 35,
+        "holdSec": 3,
+        "defaultSets": 2,
+        "defaultReps": 6,
+        "requireStraightElbow": true
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-11",
+      "code": "SH_OVH_R",
+      "category": "upper_limb",
+      "name": {
+        "th": "ชูแขนเหนือศีรษะ (ขวา)",
+        "en": "Right Overhead Reach",
+        "cn": "右臂过顶伸展"
+      },
+      "instruction": {
+        "th": "เหยียดแขนขวาตรงเหนือศีรษะค้างไว้ 3 วินาที",
+        "en": "Reach right arm overhead with straight elbow for 3s",
+        "cn": "伸直右臂高举过头顶保持3秒"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "shoulder",
+        "side": "right",
+        "targetMinDeg": 135,
+        "targetMaxDeg": 180,
+        "startRestMaxDeg": 40,
+        "holdSec": 3,
+        "defaultSets": 2,
+        "defaultReps": 5,
+        "requireStraightElbow": true
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-12",
+      "code": "SH_OVH_L",
+      "category": "upper_limb",
+      "name": {
+        "th": "ชูแขนเหนือศีรษะ (ซ้าย)",
+        "en": "Left Overhead Reach",
+        "cn": "左臂过顶伸展"
+      },
+      "instruction": {
+        "th": "เหยียดแขนซ้ายตรงเหนือศีรษะค้างไว้ 3 วินาที",
+        "en": "Reach left arm overhead with straight elbow for 3s",
+        "cn": "伸直左臂高举过头顶保持3秒"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "shoulder",
+        "side": "left",
+        "targetMinDeg": 135,
+        "targetMaxDeg": 180,
+        "startRestMaxDeg": 40,
+        "holdSec": 3,
+        "defaultSets": 2,
+        "defaultReps": 5,
+        "requireStraightElbow": true
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-13",
+      "code": "KNEE_EXT_R",
+      "category": "lower_limb",
+      "name": {
+        "th": "เหยียดเข่านั่งเก้าอี้ (ขวา)",
+        "en": "Right Seated Knee Extension",
+        "cn": "坐姿右膝伸展"
+      },
+      "instruction": {
+        "th": "นั่งตัวตรง เหยียดขาขวาให้เข่าตรงค้างไว้ 3 วินาที",
+        "en": "Sit upright, straighten right knee and hold 3s",
+        "cn": "坐直，伸直右膝并保持3秒"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "knee",
+        "side": "right",
+        "targetMinDeg": 155,
+        "targetMaxDeg": 180,
+        "startRestMaxDeg": 110,
+        "holdSec": 3,
+        "defaultSets": 2,
+        "defaultReps": 6
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-14",
+      "code": "KNEE_EXT_L",
+      "category": "lower_limb",
+      "name": {
+        "th": "เหยียดเข่านั่งเก้าอี้ (ซ้าย)",
+        "en": "Left Seated Knee Extension",
+        "cn": "坐姿左膝伸展"
+      },
+      "instruction": {
+        "th": "นั่งตัวตรง เหยียดขาซ้ายให้เข่าตรงค้างไว้ 3 วินาที",
+        "en": "Sit upright, straighten left knee and hold 3s",
+        "cn": "坐直，伸直左膝并保持3秒"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "knee",
+        "side": "left",
+        "targetMinDeg": 155,
+        "targetMaxDeg": 180,
+        "startRestMaxDeg": 110,
+        "holdSec": 3,
+        "defaultSets": 2,
+        "defaultReps": 6
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-15",
+      "code": "HIP_FLEX_R",
+      "category": "lower_limb",
+      "name": {
+        "th": "ยกเข่าสูงยืนทรงตัว (ขวา)",
+        "en": "Right Standing Knee March",
+        "cn": "站姿右腿高抬腿"
+      },
+      "instruction": {
+        "th": "ยกเข่าขวาขึ้นระดับสะโพกค้างไว้ 2 วินาที",
+        "en": "Lift right knee to hip height and hold 2s",
+        "cn": "抬起右膝至髋部高度保持2秒"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "hip",
+        "side": "right",
+        "targetMinDeg": 75,
+        "targetMaxDeg": 120,
+        "startRestMaxDeg": 155,
+        "holdSec": 2,
+        "defaultSets": 2,
+        "defaultReps": 6
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-16",
+      "code": "HIP_FLEX_L",
+      "category": "lower_limb",
+      "name": {
+        "th": "ยกเข่าสูงยืนทรงตัว (ซ้าย)",
+        "en": "Left Standing Knee March",
+        "cn": "站姿左腿高抬腿"
+      },
+      "instruction": {
+        "th": "ยกเข่าซ้ายขึ้นระดับสะโพกค้างไว้ 2 วินาที",
+        "en": "Lift left knee to hip height and hold 2s",
+        "cn": "抬起左膝至髋部高度保持2秒"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "hip",
+        "side": "left",
+        "targetMinDeg": 75,
+        "targetMaxDeg": 120,
+        "startRestMaxDeg": 155,
+        "holdSec": 2,
+        "defaultSets": 2,
+        "defaultReps": 6
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-17",
+      "code": "HEEL_RAISE_R",
+      "category": "lower_limb",
+      "name": {
+        "th": "เขย่งส้นเท้า (ขวา)",
+        "en": "Right Heel Raise",
+        "cn": "右脚提踵训练"
+      },
+      "instruction": {
+        "th": "เขย่งส้นเท้าขวาขึ้นช้าๆ ค้างไว้ 2 วินาที",
+        "en": "Raise right heel slowly and hold 2s",
+        "cn": "缓慢抬起右脚跟并保持2秒"
+      },
+      "detection": {
+        "mode": "heel_raise",
+        "jointGroup": "ankle",
+        "side": "right",
+        "targetMinDeg": 45,
+        "targetMaxDeg": 95,
+        "startRestMaxDeg": 25,
+        "holdSec": 2,
+        "defaultSets": 2,
+        "defaultReps": 8
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-18",
+      "code": "HEEL_RAISE_L",
+      "category": "lower_limb",
+      "name": {
+        "th": "เขย่งส้นเท้า (ซ้าย)",
+        "en": "Left Heel Raise",
+        "cn": "左脚提踵训练"
+      },
+      "instruction": {
+        "th": "เขย่งส้นเท้าซ้ายขึ้นช้าๆ ค้างไว้ 2 วินาที",
+        "en": "Raise left heel slowly and hold 2s",
+        "cn": "缓慢抬起左脚跟并保持2秒"
+      },
+      "detection": {
+        "mode": "heel_raise",
+        "jointGroup": "ankle",
+        "side": "left",
+        "targetMinDeg": 45,
+        "targetMaxDeg": 95,
+        "startRestMaxDeg": 25,
+        "holdSec": 2,
+        "defaultSets": 2,
+        "defaultReps": 8
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-19",
+      "code": "NECK_TILT_R",
+      "category": "neck_trunk",
+      "name": {
+        "th": "เอียงคอช้าๆ ด้านขวา",
+        "en": "Right Neck Lateral Tilt",
+        "cn": "颈部向右侧屈"
+      },
+      "instruction": {
+        "th": "เอียงศีรษะไปทางไหล่ขวาช้าๆ ค้างไว้ 3 วินาที",
+        "en": "Tilt head gently toward right shoulder and hold 3s",
+        "cn": "缓慢将头部向右侧倾斜并保持3秒"
+      },
+      "detection": {
+        "mode": "neck_tilt",
+        "jointGroup": "neck",
+        "side": "right",
+        "targetMinDeg": 18,
+        "targetMaxDeg": 45,
+        "startRestMaxDeg": 8,
+        "holdSec": 3,
+        "defaultSets": 2,
+        "defaultReps": 5
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-20",
+      "code": "NECK_TILT_L",
+      "category": "neck_trunk",
+      "name": {
+        "th": "เอียงคอช้าๆ ด้านซ้าย",
+        "en": "Left Neck Lateral Tilt",
+        "cn": "颈部向左侧屈"
+      },
+      "instruction": {
+        "th": "เอียงศีรษะไปทางไหล่ซ้ายช้าๆ ค้างไว้ 3 วินาที",
+        "en": "Tilt head gently toward left shoulder and hold 3s",
+        "cn": "缓慢将头部向左侧倾斜并保持3秒"
+      },
+      "detection": {
+        "mode": "neck_tilt",
+        "jointGroup": "neck",
+        "side": "left",
+        "targetMinDeg": 18,
+        "targetMaxDeg": 45,
+        "startRestMaxDeg": 8,
+        "holdSec": 3,
+        "defaultSets": 2,
+        "defaultReps": 5
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-21",
+      "code": "BAL_STAND_R",
+      "category": "balance",
+      "name": {
+        "th": "ยืนทรงตัวขาเดียว (ขวา)",
+        "en": "Single-Leg Balance (Right)",
+        "cn": "右腿单脚平衡站立"
+      },
+      "instruction": {
+        "th": "ยืนทรงตัวด้วยขาขวาอย่างมั่นคง 10 วินาที",
+        "en": "Balance steadily on your right leg for 10s",
+        "cn": "右腿单脚稳定站立保持10秒"
+      },
+      "detection": {
+        "mode": "hold_balance",
+        "jointGroup": "balance",
+        "side": "right",
+        "targetMinDeg": 0,
+        "targetMaxDeg": 18,
+        "startRestMaxDeg": 25,
+        "holdSec": 10,
+        "defaultSets": 2,
+        "defaultReps": 1
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-22",
+      "code": "BAL_STAND_L",
+      "category": "balance",
+      "name": {
+        "th": "ยืนทรงตัวขาเดียว (ซ้าย)",
+        "en": "Single-Leg Balance (Left)",
+        "cn": "左腿单脚平衡站立"
+      },
+      "instruction": {
+        "th": "ยืนทรงตัวด้วยขาซ้ายอย่างมั่นคง 10 วินาที",
+        "en": "Balance steadily on your left leg for 10s",
+        "cn": "左腿单脚稳定站立保持10秒"
+      },
+      "detection": {
+        "mode": "hold_balance",
+        "jointGroup": "balance",
+        "side": "left",
+        "targetMinDeg": 0,
+        "targetMaxDeg": 18,
+        "startRestMaxDeg": 25,
+        "holdSec": 10,
+        "defaultSets": 2,
+        "defaultReps": 1
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-23",
+      "code": "TRUNK_SIT_STRETCH",
+      "category": "neck_trunk",
+      "name": {
+        "th": "ยืดเหยียดลำตัวตรง (ท่านั่ง)",
+        "en": "Seated Posture Alignment Hold",
+        "cn": "坐姿躯干挺直保持"
+      },
+      "instruction": {
+        "th": "นั่งหลังตรงให้ศีรษะและไหล่ตั้งฉาก 10 วินาที",
+        "en": "Maintain upright trunk posture for 10s",
+        "cn": "保持躯干挺直端坐10秒"
+      },
+      "detection": {
+        "mode": "timer",
+        "jointGroup": "trunk",
+        "side": "both",
+        "targetMinDeg": 0,
+        "targetMaxDeg": 12,
+        "startRestMaxDeg": 20,
+        "holdSec": 10,
+        "defaultSets": 2,
+        "defaultReps": 1
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-24",
+      "code": "SH_WALL_SLIDE_R",
+      "category": "upper_limb",
+      "name": {
+        "th": "สไลด์แขนไต่ผนัง (ขวา)",
+        "en": "Right Wall Slide Elevation",
+        "cn": "右臂爬墙上举"
+      },
+      "instruction": {
+        "th": "เหยียดศอกตรง สไลด์แขนขวาขึ้นสูงเท่าที่ทำได้",
+        "en": "Slide right arm upward keeping elbow straight",
+        "cn": "伸直手肘，右臂向上滑举"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "shoulder",
+        "side": "right",
+        "targetMinDeg": 115,
+        "targetMaxDeg": 180,
+        "startRestMaxDeg": 40,
+        "holdSec": 3,
+        "defaultSets": 2,
+        "defaultReps": 5,
+        "requireStraightElbow": true
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-25",
+      "code": "SH_WALL_SLIDE_L",
+      "category": "upper_limb",
+      "name": {
+        "th": "สไลด์แขนไต่ผนัง (ซ้าย)",
+        "en": "Left Wall Slide Elevation",
+        "cn": "左臂爬墙上举"
+      },
+      "instruction": {
+        "th": "เหยียดศอกตรง สไลด์แขนซ้ายขึ้นสูงเท่าที่ทำได้",
+        "en": "Slide left arm upward keeping elbow straight",
+        "cn": "伸直手肘，左臂向上滑举"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "shoulder",
+        "side": "left",
+        "targetMinDeg": 115,
+        "targetMaxDeg": 180,
+        "startRestMaxDeg": 40,
+        "holdSec": 3,
+        "defaultSets": 2,
+        "defaultReps": 5,
+        "requireStraightElbow": true
+      },
+      "createdBy": "system"
+    },
+    {
+      "id": "ex-26",
+      "code": "SIT_TO_STAND",
+      "category": "lower_limb",
+      "name": {
+        "th": "ลุกยืนจากเก้าอี้ (Sit-to-Stand)",
+        "en": "Sit-to-Stand Transfer",
+        "cn": "坐站转移训练"
+      },
+      "instruction": {
+        "th": "ลุกยืนขึ้นให้เข่าตรงค้างไว้ 2 วินาทีแล้วนั่งลงช้าๆ",
+        "en": "Stand fully upright for 2s then sit down slowly",
+        "cn": "站直保持2秒后缓慢坐下"
+      },
+      "detection": {
+        "mode": "angle_rep_hold",
+        "jointGroup": "knee",
+        "side": "right",
+        "targetMinDeg": 160,
+        "targetMaxDeg": 180,
+        "startRestMaxDeg": 110,
+        "holdSec": 2,
+        "defaultSets": 2,
+        "defaultReps": 6
+      },
+      "createdBy": "system"
+    }
+  ],
+  "modpacks": [
+    {
+      "id": "modpack-core-99",
+      "name": "Clinical Cognitive Core (99 Cards)",
+      "categories": [
+        "food_fruit",
+        "objects",
+        "animals",
+        "counting",
+        "safety_routine",
+        "color_shape_time",
+        "position"
+      ],
+      "questionCount": 99,
+      "createdBy": "system",
+      "active": true
+    },
+    {
+      "id": "modpack-memory-safety",
+      "name": "Fall Prevention & Daily Safety Pack",
+      "categories": [
+        "safety_routine",
+        "counting",
+        "position"
+      ],
+      "questionCount": 42,
+      "createdBy": "system",
+      "active": true
+    }
+  ],
+  "staff_calls": [],
+  "audit_logs": [],
+  "banned_targets": [],
+  "active_sessions": [],
+  "system_settings": {
+    "aiFaceScanEnabled": true,
+    "aiFaceThreshold": 0.925,
+    "aiPoseDetectionEnabled": false,
+    "kioskAutoResetSec": 6
+  },
+  "kiosks": [
+    {
+      "kioskId": "KIOSK-OPD-01",
+      "location": "OPD Rehab Zone A",
+      "online": true,
+      "currentState": "STANDBY",
+      "lastHeartbeatAt": "2026-11-13T13:52:08.700Z"
+    }
+  ]
+}
