@@ -5,9 +5,14 @@ import { PtPortalApp } from '@apps/pt';
 import { DrTechCaresApiClient, type UserAccount } from '@drtechcares/api-client';
 import { PatientPersonalPortal } from './PatientPersonalPortal';
 import { StaffLoginModalOrPage } from './StaffLoginModalOrPage';
+import {
+  KioskBiometricLoginView,
+  type KioskLoginSuccessPayload,
+} from './components/KioskBiometricLoginView';
 import { SmartRehabKioskUI } from './components/SmartRehabKioskUI';
 
 type AppRoute = '/' | '/login' | '/admin' | '/pt' | '/patient';
+type KioskViewMode = 'login' | 'rehab' | 'classic';
 
 function resolveRoute(pathname: string): AppRoute {
   if (pathname.startsWith('/admin')) return '/admin';
@@ -21,7 +26,8 @@ export function App() {
   const [route, setRoute] = useState<AppRoute>(() =>
     typeof window !== 'undefined' ? resolveRoute(window.location.pathname) : '/',
   );
-  const [useClassicKiosk, setUseClassicKiosk] = useState(false);
+  const [kioskMode, setKioskMode] = useState<KioskViewMode>('login');
+  const [authenticatedPatient, setAuthenticatedPatient] = useState<KioskLoginSuccessPayload | null>(null);
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
@@ -58,28 +64,85 @@ export function App() {
     });
   }, [route, apiClient]);
 
-  // Locked Kiosk Mode (/) — Clinical Zen Bio-Tech UI by default, with optional classic kiosk toggle
+  // Locked Kiosk Mode (/) — Exact Kiosk Biometric Login UI by default, transitioning into Rehab / Classic Kiosk
   if (route === '/') {
-    if (useClassicKiosk) {
+    if (kioskMode === 'classic') {
       return (
         <div className="min-h-screen bg-slate-950 p-4">
-          <div className="mb-3 flex justify-end">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <button
               type="button"
-              onClick={() => setUseClassicKiosk(false)}
-              className="rounded-xl border border-teal-500/40 bg-teal-500/10 px-4 py-1.5 text-xs font-bold text-teal-300 hover:bg-teal-500/20"
+              onClick={() => {
+                setAuthenticatedPatient(null);
+                setKioskMode('login');
+              }}
+              className="rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-4 py-1.5 text-xs font-bold text-emerald-300 hover:bg-emerald-500/25 cursor-pointer"
             >
-              กลับหน้า Clinical Zen Smart Kiosk UI
+              ← กลับหน้าสแกนใบหน้า (Kiosk Login)
+            </button>
+            <button
+              type="button"
+              onClick={() => setKioskMode('rehab')}
+              className="rounded-xl border border-teal-500/40 bg-teal-500/10 px-4 py-1.5 text-xs font-bold text-teal-300 hover:bg-teal-500/20 cursor-pointer"
+            >
+              หน้าวิเคราะห์ชีวกลศาสตร์ (Smart Rehab UI)
             </button>
           </div>
           <KioskPortalApp apiClient={apiClient} />
         </div>
       );
     }
+
+    if (kioskMode === 'rehab') {
+      return (
+        <div className="relative min-h-screen">
+          <div className="bg-[#042924] px-4 py-2 text-white flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 font-bold">
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/25 text-emerald-300">AI Kiosk Session</span>
+              {authenticatedPatient ? (
+                <span>
+                  ผู้ป่วย: {authenticatedPatient.patient.fullName} (HN: {authenticatedPatient.patient.hn})
+                </span>
+              ) : (
+                <span>โหมดวิเคราะห์ชีวกลศาสตร์กายภาพบำบัด</span>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setAuthenticatedPatient(null);
+                setKioskMode('login');
+              }}
+              className="rounded-xl border border-emerald-400/50 bg-emerald-600/25 px-3 py-1 font-bold text-emerald-100 hover:bg-emerald-600/40 cursor-pointer"
+            >
+              ← กลับหน้าสแกนใบหน้า (Kiosk Login)
+            </button>
+          </div>
+          <SmartRehabKioskUI
+            onOpenStaffPortal={() => navigate('/login')}
+            onOpenLegacyKiosk={() => setKioskMode('classic')}
+          />
+        </div>
+      );
+    }
+
     return (
-      <SmartRehabKioskUI
-        onOpenStaffPortal={() => navigate('/login')}
-        onOpenLegacyKiosk={() => setUseClassicKiosk(true)}
+      <KioskBiometricLoginView
+        apiClient={apiClient}
+        kioskId="kiosk-01"
+        onPatientAuthenticated={(payload) => {
+          setAuthenticatedPatient(payload);
+          setKioskMode('rehab');
+        }}
+        onOpenStaffLogin={() => navigate('/login')}
+        onOpenStaffRegister={() => {
+          if (currentUser && (currentUser.role === 'pt' || currentUser.role === 'super_admin')) {
+            navigate('/pt');
+          } else {
+            navigate('/login');
+          }
+        }}
+        onOpenTelemetrySimulator={() => setKioskMode('rehab')}
       />
     );
   }
