@@ -292,14 +292,19 @@ export async function hydrateStateFromSupabase(
   }
 
   if (callsRes.status === 'fulfilled' && Array.isArray(callsRes.value.data)) {
-    state.staff_calls = callsRes.value.data.map((r: Record<string, unknown>) => ({
-      id: String(r.id),
-      kioskId: String(r.kiosk_id),
-      patientId: r.patient_id ? String(r.patient_id) : null,
-      reason: String(r.reason),
-      status: (r.status as 'open' | 'acknowledged' | 'resolved') ?? 'open',
-      createdAt: String(r.created_at),
-    }));
+    state.staff_calls = callsRes.value.data.map((r: Record<string, unknown>) => {
+      const rawReason = String(r.reason ?? '');
+      const rawStatus = String(r.status ?? 'open');
+      const isAcked = rawStatus === 'open' && rawReason.startsWith('[ACKNOWLEDGED]');
+      return {
+        id: String(r.id),
+        kioskId: String(r.kiosk_id),
+        patientId: r.patient_id ? String(r.patient_id) : null,
+        reason: isAcked ? rawReason.replace(/^\[ACKNOWLEDGED\]\s*/, '') : rawReason,
+        status: isAcked ? 'acknowledged' : ((rawStatus as 'open' | 'acknowledged' | 'resolved') ?? 'open'),
+        createdAt: String(r.created_at),
+      };
+    });
   }
 
   if (auditRes.status === 'fulfilled' && Array.isArray(auditRes.value.data)) {
@@ -360,14 +365,18 @@ export async function hydrateStateFromSupabase(
   }
 
   if (kiosksRes.status === 'fulfilled' && Array.isArray(kiosksRes.value.data) && kiosksRes.value.data.length > 0) {
-    state.kiosks = kiosksRes.value.data.map((r: Record<string, unknown>) => ({
-      kioskId: String(r.kiosk_id),
-      location: String(r.location ?? ''),
-      online: Boolean(r.online ?? true),
-      currentState: String(r.current_state ?? 'STANDBY'),
-      pairingToken: typeof r.pairing_token === 'string' ? r.pairing_token : undefined,
-      lastHeartbeatAt: String(r.last_heartbeat_at ?? new Date().toISOString()),
-    }));
+    state.kiosks = kiosksRes.value.data.map((r: Record<string, unknown>) => {
+      const rawState = String(r.current_state ?? 'STANDBY');
+      const [parsedState, parsedToken] = rawState.includes(':') ? rawState.split(':', 2) : [rawState, undefined];
+      return {
+        kioskId: String(r.kiosk_id),
+        location: String(r.location ?? ''),
+        online: Boolean(r.online ?? true),
+        currentState: parsedState || 'STANDBY',
+        pairingToken: typeof r.pairing_token === 'string' ? r.pairing_token : parsedToken,
+        lastHeartbeatAt: String(r.last_heartbeat_at ?? new Date().toISOString()),
+      };
+    });
   }
 }
 

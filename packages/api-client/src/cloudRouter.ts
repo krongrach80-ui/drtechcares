@@ -236,6 +236,39 @@ function isVector512(value: unknown): value is number[] {
   );
 }
 
+/** Uploads a base64 face snapshot into Supabase Storage and falls back cleanly on offline/errors. */
+async function uploadFaceImageIfNeeded(
+  supabase: SupabaseClient | null,
+  patientId: string,
+  rawUrl: string | undefined,
+): Promise<string | undefined> {
+  if (!supabase || !rawUrl || !rawUrl.startsWith('data:image/')) {
+    return rawUrl;
+  }
+  const match = rawUrl.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!match) return rawUrl;
+  const rawSubtype = match[1].toLowerCase();
+  const ext = rawSubtype === 'jpeg' ? 'jpg' : rawSubtype.replace(/[^a-z0-9]/g, '') || 'jpg';
+  const contentType = `image/${rawSubtype}`;
+  try {
+    const binary = globalThis.atob(match[2]);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    await supabase.storage.createBucket('patient-faces', { public: true }).catch(() => {});
+    const objectPath = `patients/${patientId}-${Date.now()}.${ext}`;
+    const { error } = await supabase.storage
+      .from('patient-faces')
+      .upload(objectPath, bytes, { contentType, upsert: true });
+    if (error) return rawUrl;
+    const { data } = supabase.storage.from('patient-faces').getPublicUrl(objectPath);
+    return data?.publicUrl || rawUrl;
+  } catch {
+    return rawUrl;
+  }
+}
+
 function publicUser(u: StoredUserAccount): UserAccount {
   const { passwordHash: _omit, ...rest } = u;
   return rest;
@@ -763,6 +796,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         ? 'PENDING'
         : body.faceBiometricStatus ?? 'VERIFIED';
       const gender = body.gender || 'ชาย';
+      const storedFaceImageUrl = await uploadFaceImageIfNeeded(supabase, patientId, body.faceImageUrl);
 
       const patient: PatientRecord = {
         id: patientId,
@@ -779,7 +813,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         registrationStatus: 'active',
         enrolledAt: new Date().toISOString(),
         faceBiometricStatus: faceStatus,
-        faceImageUrl: body.faceImageUrl,
+        faceImageUrl: storedFaceImageUrl,
         rehabSchedules: [],
         biometricHistory:
           !isPendingSkip && isVector512(body.frontalCentroid) && isVector512(body.overallCentroid)
@@ -798,18 +832,15 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           hn: patient.hn,
           full_name: patient.fullName,
           age: patient.age,
-          gender,
           phone: patient.phone,
           diagnosis: patient.diagnosis,
           assigned_pt_id: patient.assignedPtId,
           next_appointment_date: patient.nextAppointmentDate,
           registration_status: 'active',
-          face_biometric_status: faceStatus,
-          face_image_url: body.faceImageUrl ?? null,
           history: {
             gender,
             faceBiometricStatus: faceStatus,
-            faceImageUrl: body.faceImageUrl ?? null,
+            faceImageUrl: storedFaceImageUrl ?? null,
             rehabSchedules: [],
           },
         }),
@@ -1193,7 +1224,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }[];
 
       patient.faceBiometricStatus = 'VERIFIED';
-      if (body.faceImageUrl) patient.faceImageUrl = body.faceImageUrl;
+      if (body.faceImageUrl) {
+        patient.faceImageUrl = await uploadFaceImageIfNeeded(supabase, patient.id, body.faceImageUrl);
+      }
       patient.biometricHistory = {
         frontal_centroid: body.frontalCentroid,
         overall_centroid: body.overallCentroid,
@@ -1243,8 +1276,6 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         await db
           .from('patients')
           .update({
-            face_biometric_status: 'VERIFIED',
-            face_image_url: patient.faceImageUrl ?? null,
             history: {
               gender: patient.gender ?? 'ชาย',
               faceBiometricStatus: 'VERIFIED',
@@ -1388,7 +1419,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           patient.faceBiometricStatus = body.faceBiometricStatus;
         }
         if (body.faceImageUrl !== undefined) {
-          patient.faceImageUrl = body.faceImageUrl;
+          patient.faceImageUrl = await uploadFaceImageIfNeeded(supabase, patient.id, body.faceImageUrl);
         }
         if (Array.isArray(body.rehabSchedules)) {
           patient.rehabSchedules = body.rehabSchedules as RehabScheduleItem[];
@@ -1400,13 +1431,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           .update({
             full_name: patient.fullName,
             age: patient.age,
-            gender: patient.gender ?? 'ชาย',
             phone: patient.phone,
             diagnosis: patient.diagnosis,
             assigned_pt_id: patient.assignedPtId,
             next_appointment_date: patient.nextAppointmentDate,
-            face_biometric_status: patient.faceBiometricStatus ?? 'PENDING',
-            face_image_url: patient.faceImageUrl ?? null,
             history: {
               gender: patient.gender ?? 'ชาย',
               faceBiometricStatus: patient.faceBiometricStatus ?? 'PENDING',
@@ -1750,11 +1778,6 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           id: created.id,
           code: created.code,
           category: created.category,
-          name_th: created.name.th,
-          body_side: (created.detection.side || 'right').toUpperCase(),
-          instructions_th: created.instruction.th,
-          target_rom_deg: created.detection.targetMaxDeg ?? 135,
-          hold_sec: created.detection.holdSec ?? 2,
           name_i18n: created.name,
           instruction_i18n: created.instruction,
           detection_config: created.detection,
@@ -1828,10 +1851,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         db.from('modpacks').upsert({
           id: created.id,
           name: created.name,
-          category: created.categories[0] ?? 'general',
-          card_count: created.questionCount,
           categories: created.categories,
-          questions: [],
+          questions: Array.from({ length: created.questionCount }, (_, i) => ({ index: i + 1 })),
           active: true,
         }),
       );
@@ -1931,8 +1952,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const target = state.staff_calls.find((c) => c.id === staffCallAckMatch[1]);
       if (target) {
         target.status = 'acknowledged';
+        const ackReason = target.reason.startsWith('[ACKNOWLEDGED]')
+          ? target.reason
+          : `[ACKNOWLEDGED] ${target.reason}`;
         await persistToSupabase(supabase, (db) =>
-          db.from('staff_calls').update({ status: 'acknowledged' }).eq('id', target.id),
+          db.from('staff_calls').update({ status: 'open', reason: ackReason }).eq('id', target.id),
         );
         recordAudit({
           eventType: 'STAFF_CALL_ACKNOWLEDGED',
@@ -1955,8 +1979,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const target = state.staff_calls.find((c) => c.id === staffCallResolveMatch[1]);
       if (target) {
         target.status = 'resolved';
+        target.reason = target.reason.replace(/^\[ACKNOWLEDGED\]\s*/, '');
         await persistToSupabase(supabase, (db) =>
-          db.from('staff_calls').update({ status: 'resolved' }).eq('id', target.id),
+          db.from('staff_calls').update({ status: 'resolved', reason: target.reason }).eq('id', target.id),
         );
         recordAudit({
           eventType: 'STAFF_CALL_RESOLVED',
@@ -2064,8 +2089,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           kiosk_id: kiosk.kioskId,
           location: kiosk.location,
           online: true,
-          current_state: 'STANDBY',
-          pairing_token: pairingToken,
+          current_state: `STANDBY:${pairingToken}`,
           last_heartbeat_at: kiosk.lastHeartbeatAt,
         }),
       );
