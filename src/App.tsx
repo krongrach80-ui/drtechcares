@@ -4,7 +4,7 @@ import { KioskPortalApp } from '@apps/kiosk';
 import { PtPortalApp } from '@apps/pt';
 import { DrTechCaresApiClient, type UserAccount } from '@drtechcares/api-client';
 import { PatientPersonalPortal } from './PatientPersonalPortal';
-import { StaffLoginModalOrPage } from './StaffLoginModalOrPage';
+import { StaffLoginModalOrPage, type StaffAuthIntent } from './StaffLoginModalOrPage';
 import {
   KioskBiometricLoginView,
   type KioskLoginSuccessPayload,
@@ -27,6 +27,7 @@ export function App() {
     typeof window !== 'undefined' ? resolveRoute(window.location.pathname) : '/',
   );
   const [kioskMode, setKioskMode] = useState<KioskViewMode>('login');
+  const [staffModalIntent, setStaffModalIntent] = useState<StaffAuthIntent | null>(null);
   const [authenticatedPatient, setAuthenticatedPatient] = useState<KioskLoginSuccessPayload | null>(null);
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -127,23 +128,47 @@ export function App() {
     }
 
     return (
-      <KioskBiometricLoginView
-        apiClient={apiClient}
-        kioskId="kiosk-01"
-        onPatientAuthenticated={(payload) => {
-          setAuthenticatedPatient(payload);
-          setKioskMode('rehab');
-        }}
-        onOpenStaffLogin={() => navigate('/login')}
-        onOpenStaffRegister={() => {
-          if (currentUser && (currentUser.role === 'pt' || currentUser.role === 'super_admin')) {
-            navigate('/pt');
-          } else {
-            navigate('/login');
-          }
-        }}
-        onOpenTelemetrySimulator={() => setKioskMode('rehab')}
-      />
+      <>
+        <KioskBiometricLoginView
+          apiClient={apiClient}
+          kioskId="kiosk-01"
+          onPatientAuthenticated={(payload) => {
+            setAuthenticatedPatient(payload);
+            setKioskMode('rehab');
+          }}
+          onOpenStaffLogin={() => setStaffModalIntent('general')}
+          onOpenStaffRegister={() => {
+            if (currentUser && (currentUser.role === 'pt' || currentUser.role === 'super_admin')) {
+              navigate('/pt');
+            } else {
+              setStaffModalIntent('kiosk_patient_registration');
+            }
+          }}
+          onOpenTelemetrySimulator={() => setKioskMode('rehab')}
+        />
+        {staffModalIntent !== null && (
+          <StaffLoginModalOrPage
+            apiClient={apiClient}
+            asModal
+            authIntent={staffModalIntent}
+            onReturnToKiosk={() => setStaffModalIntent(null)}
+            onSuccess={(user) => {
+              const intent = staffModalIntent;
+              setStaffModalIntent(null);
+              setCurrentUser(user);
+              if (intent === 'kiosk_patient_registration' && (user.role === 'pt' || user.role === 'super_admin')) {
+                navigate('/pt');
+              } else if (user.role === 'super_admin') {
+                navigate('/admin');
+              } else if (user.role === 'pt') {
+                navigate('/pt');
+              } else {
+                navigate('/patient');
+              }
+            }}
+          />
+        )}
+      </>
     );
   }
 
@@ -160,6 +185,7 @@ export function App() {
     return (
       <StaffLoginModalOrPage
         apiClient={apiClient}
+        onReturnToKiosk={() => navigate('/')}
         onSuccess={(user) => {
           setCurrentUser(user);
           if (user.role === 'super_admin') navigate('/admin');

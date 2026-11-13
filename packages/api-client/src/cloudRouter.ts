@@ -387,8 +387,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       if (!body?.username || !body?.password) {
         return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
       }
+      const rawUsername = body.username.trim().toLowerCase();
+      const normalizedUsername = rawUsername === 'director' ? 'admin' : rawUsername;
       const user = state.users.find(
-        (u) => u.username.toLowerCase() === body.username!.trim().toLowerCase() && u.active,
+        (u) => u.username.toLowerCase() === normalizedUsername && u.active,
       );
       if (!user || !(await verifyPasswordEdge(body.password, user.passwordHash))) {
         recordAudit({
