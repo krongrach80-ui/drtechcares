@@ -27,6 +27,7 @@ import type {
   ModpackRecord,
   PatientCourseRecord,
   PatientRecord,
+  RehabScheduleItem,
   RehabSessionRecord,
   StaffCallRecord,
   SystemSettingsRecord,
@@ -274,10 +275,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
   const state = createInitialState(Boolean(supabase));
 
   let hydrationPromise: Promise<void> | null = null;
-  const ensureHydrated = async () => {
+  let lastHydratedAt = 0;
+  const ensureHydrated = async (force = false) => {
     if (!supabase) return;
-    if (!hydrationPromise) {
-      hydrationPromise = hydrateStateFromSupabase(supabase, state);
+    if (!hydrationPromise || (force && Date.now() - lastHydratedAt > 2500)) {
+      hydrationPromise = hydrateStateFromSupabase(supabase, state).then(() => {
+        lastHydratedAt = Date.now();
+      });
     }
     await hydrationPromise;
   };
@@ -339,11 +343,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       return jsonResponse({ ok: true }, 204);
     }
 
-    await ensureHydrated();
-
     const reqUrl = new URL(request.url);
     const pathname = reqUrl.pathname;
     const method = request.method.toUpperCase();
+
+    await ensureHydrated(method === 'GET' && pathname !== '/api/health');
 
     const clientIp =
       request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
@@ -371,10 +375,22 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
     // Health
     if (pathname === '/api/health' && method === 'GET') {
+      let supabaseConnected = false;
+      const t0 = Date.now();
+      if (supabase) {
+        try {
+          const { error } = await supabase.from('system_settings').select('id').limit(1);
+          supabaseConnected = !error;
+        } catch {
+          supabaseConnected = false;
+        }
+      }
       return jsonResponse({
         ok: true,
         service: 'drtechcares-cloud-router',
         persistentDb: Boolean(supabase),
+        supabaseConnected,
+        latencyMs: Date.now() - t0,
         zeroGhostCache: true,
       });
     }
@@ -685,16 +701,22 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         hn?: string;
         fullName?: string;
         age?: number;
+        gender?: string;
         phone?: string;
         diagnosis?: string;
         assignedPtId?: string;
         nextAppointmentDate?: string;
         username?: string;
         password?: string;
+        skipFaceScan?: boolean;
+        faceBiometricStatus?: 'PENDING' | 'VERIFIED';
+        faceImageUrl?: string;
         frontalCentroid?: unknown;
         overallCentroid?: unknown;
         rawFrames?: { pose?: string; vector?: unknown; qualityScore?: number }[];
       }>(request);
+
+      const isPendingSkip = Boolean(body?.skipFaceScan);
 
       if (
         !body ||
@@ -706,17 +728,18 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         !Number.isInteger(body.age) ||
         body.age < 1 ||
         body.age > 120 ||
-        !isVector512(body.frontalCentroid) ||
-        !isVector512(body.overallCentroid) ||
-        !Array.isArray(body.rawFrames) ||
-        body.rawFrames.length !== 10 ||
-        !body.rawFrames.every(
-          (f) =>
-            (f.pose === 'front' || f.pose === 'left' || f.pose === 'right' || f.pose === 'nod') &&
-            isVector512(f.vector) &&
-            typeof f.qualityScore === 'number' &&
-            f.qualityScore > 0,
-        )
+        (!isPendingSkip &&
+          (!isVector512(body.frontalCentroid) ||
+            !isVector512(body.overallCentroid) ||
+            !Array.isArray(body.rawFrames) ||
+            body.rawFrames.length !== 10 ||
+            !body.rawFrames.every(
+              (f) =>
+                (f.pose === 'front' || f.pose === 'left' || f.pose === 'right' || f.pose === 'nod') &&
+                isVector512(f.vector) &&
+                typeof f.qualityScore === 'number' &&
+                f.qualityScore > 0,
+            )))
       ) {
         return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
       }
@@ -730,17 +753,23 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         body.nextAppointmentDate ||
         new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-      const rawFrames = body.rawFrames as {
+      const rawFrames = (!isPendingSkip && Array.isArray(body.rawFrames) ? body.rawFrames : []) as {
         pose: 'front' | 'left' | 'right' | 'nod';
         vector: number[];
         qualityScore: number;
       }[];
+
+      const faceStatus: 'PENDING' | 'VERIFIED' = isPendingSkip
+        ? 'PENDING'
+        : body.faceBiometricStatus ?? 'VERIFIED';
+      const gender = body.gender || 'ชาย';
 
       const patient: PatientRecord = {
         id: patientId,
         hn: body.hn,
         fullName: body.fullName,
         age: body.age,
+        gender,
         phone: body.phone ?? '',
         diagnosis: body.diagnosis ?? 'General Rehabilitation',
         assignedPtId,
@@ -749,65 +778,84 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         nextAppointmentDate: nextAppt,
         registrationStatus: 'active',
         enrolledAt: new Date().toISOString(),
-        biometricHistory: {
-          frontal_centroid: body.frontalCentroid,
-          overall_centroid: body.overallCentroid,
-          raw_frames: rawFrames,
-        },
+        faceBiometricStatus: faceStatus,
+        faceImageUrl: body.faceImageUrl,
+        rehabSchedules: [],
+        biometricHistory:
+          !isPendingSkip && isVector512(body.frontalCentroid) && isVector512(body.overallCentroid)
+            ? {
+                frontal_centroid: body.frontalCentroid,
+                overall_centroid: body.overallCentroid,
+                raw_frames: rawFrames,
+              }
+            : undefined,
       };
 
       state.patients.push(patient);
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db.from('patients').insert({
           id: patient.id,
           hn: patient.hn,
           full_name: patient.fullName,
           age: patient.age,
+          gender,
           phone: patient.phone,
           diagnosis: patient.diagnosis,
           assigned_pt_id: patient.assignedPtId,
           next_appointment_date: patient.nextAppointmentDate,
           registration_status: 'active',
+          face_biometric_status: faceStatus,
+          face_image_url: body.faceImageUrl ?? null,
+          history: {
+            gender,
+            faceBiometricStatus: faceStatus,
+            faceImageUrl: body.faceImageUrl ?? null,
+            rehabSchedules: [],
+          },
         }),
       );
-      state.face_templates.push(
-        {
-          patientId,
-          patientName: body.fullName,
-          pose: 'frontal_centroid',
-          vector: body.frontalCentroid,
-        },
-        {
-          patientId,
-          patientName: body.fullName,
-          pose: 'overall_centroid',
-          vector: body.overallCentroid,
-        },
-        ...rawFrames.map((f) => ({
-          patientId,
-          patientName: body.fullName,
-          pose: f.pose as BiometricPose,
-          vector: f.vector,
-        })),
-      );
-      persistToSupabase(supabase, async (db) => {
-        await db.from('face_enrollments').insert({
-          patient_id: patientId,
-          shot_count: 10,
-          liveness_verified: true,
-          enrolled_by: authUser!.id,
-        });
-        await db.from('face_templates').insert([
-          { patient_id: patientId, pose: 'frontal_centroid', embedding: body.frontalCentroid, quality_score: 1.0 },
-          { patient_id: patientId, pose: 'overall_centroid', embedding: body.overallCentroid, quality_score: 1.0 },
+      if (!isPendingSkip && isVector512(body.frontalCentroid) && isVector512(body.overallCentroid)) {
+        const fc = body.frontalCentroid;
+        const oc = body.overallCentroid;
+        state.face_templates.push(
+          {
+            patientId,
+            patientName: body.fullName,
+            pose: 'frontal_centroid',
+            vector: fc,
+          },
+          {
+            patientId,
+            patientName: body.fullName,
+            pose: 'overall_centroid',
+            vector: oc,
+          },
           ...rawFrames.map((f) => ({
-            patient_id: patientId,
-            pose: f.pose,
-            embedding: f.vector,
-            quality_score: f.qualityScore,
+            patientId,
+            patientName: body.fullName,
+            pose: f.pose as BiometricPose,
+            vector: f.vector,
           })),
-        ]);
-      });
+        );
+        await persistToSupabase(supabase, async (db) => {
+          await db.from('face_enrollments').insert({
+            patient_id: patientId,
+            shot_count: 10,
+            liveness_verified: true,
+            enrolled_by: authUser!.id,
+          });
+          await db.from('face_templates').insert([
+            { patient_id: patientId, pose: 'frontal_centroid', embedding: fc, quality_score: 1.0 },
+            { patient_id: patientId, pose: 'overall_centroid', embedding: oc, quality_score: 1.0 },
+            ...rawFrames.map((f) => ({
+              patient_id: patientId,
+              pose: f.pose,
+              embedding: f.vector,
+              quality_score: f.qualityScore,
+            })),
+          ]);
+        });
+      }
 
       const defaultCourse: PatientCourseRecord = {
         id: newRecordId(Boolean(supabase), 'course'),
@@ -858,14 +906,16 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
 
       recordAudit({
-        eventType: 'PATIENT_ENROLLED_10SHOT',
+        eventType: isPendingSkip ? 'PATIENT_REGISTERED_PENDING_FACE' : 'PATIENT_ENROLLED_10SHOT',
         actorRole: authUser!.role,
         actorId: authUser!.id,
         actorName: authUser!.fullName,
         ipAddress: clientIp,
         deviceId: clientDeviceId,
         targetId: patientId,
-        detail: `Enrolled patient ${body.fullName} (${body.hn}) with 10-frame biometric scan`,
+        detail: isPendingSkip
+          ? `Registered patient ${body.fullName} (${body.hn}) — Face ID pending`
+          : `Enrolled patient ${body.fullName} (${body.hn}) with 10-frame biometric scan`,
       });
 
       return jsonResponse({ patient }, 201);
@@ -1114,6 +1164,195 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       return jsonResponse({ note }, 201);
     }
 
+    const enrollExistingMatch = pathname.match(/^\/api\/patients\/([^/]+)\/enroll-face$/);
+    if (enrollExistingMatch && method === 'POST') {
+      const err = requireAuth(authUser, ['super_admin', 'pt']);
+      if (err) return err;
+      const patient = state.patients.find((p) => p.id === enrollExistingMatch[1]);
+      if (!patient) return jsonResponse({ error: 'PATIENT_NOT_FOUND' }, 404);
+      const body = await readJsonBody<{
+        frontalCentroid?: unknown;
+        overallCentroid?: unknown;
+        rawFrames?: { pose?: string; vector?: unknown; qualityScore?: number }[];
+        faceImageUrl?: string;
+      }>(request);
+      if (
+        !body ||
+        !isVector512(body.frontalCentroid) ||
+        !isVector512(body.overallCentroid) ||
+        !Array.isArray(body.rawFrames) ||
+        body.rawFrames.length !== 10
+      ) {
+        return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
+      }
+
+      const rawFrames = body.rawFrames as {
+        pose: 'front' | 'left' | 'right' | 'nod';
+        vector: number[];
+        qualityScore: number;
+      }[];
+
+      patient.faceBiometricStatus = 'VERIFIED';
+      if (body.faceImageUrl) patient.faceImageUrl = body.faceImageUrl;
+      patient.biometricHistory = {
+        frontal_centroid: body.frontalCentroid,
+        overall_centroid: body.overallCentroid,
+        raw_frames: rawFrames,
+      };
+
+      state.face_templates = state.face_templates.filter((t) => t.patientId !== patient.id);
+      state.face_templates.push(
+        {
+          patientId: patient.id,
+          patientName: patient.fullName,
+          pose: 'frontal_centroid',
+          vector: body.frontalCentroid,
+        },
+        {
+          patientId: patient.id,
+          patientName: patient.fullName,
+          pose: 'overall_centroid',
+          vector: body.overallCentroid,
+        },
+        ...rawFrames.map((f) => ({
+          patientId: patient.id,
+          patientName: patient.fullName,
+          pose: f.pose as BiometricPose,
+          vector: f.vector,
+        })),
+      );
+
+      await persistToSupabase(supabase, async (db) => {
+        await db.from('face_templates').delete().eq('patient_id', patient.id);
+        await db.from('face_enrollments').insert({
+          patient_id: patient.id,
+          shot_count: 10,
+          liveness_verified: true,
+          enrolled_by: authUser!.id,
+        });
+        await db.from('face_templates').insert([
+          { patient_id: patient.id, pose: 'frontal_centroid', embedding: body.frontalCentroid, quality_score: 1.0 },
+          { patient_id: patient.id, pose: 'overall_centroid', embedding: body.overallCentroid, quality_score: 1.0 },
+          ...rawFrames.map((f) => ({
+            patient_id: patient.id,
+            pose: f.pose,
+            embedding: f.vector,
+            quality_score: f.qualityScore,
+          })),
+        ]);
+        await db
+          .from('patients')
+          .update({
+            face_biometric_status: 'VERIFIED',
+            face_image_url: patient.faceImageUrl ?? null,
+            history: {
+              gender: patient.gender ?? 'ชาย',
+              faceBiometricStatus: 'VERIFIED',
+              faceImageUrl: patient.faceImageUrl ?? null,
+              rehabSchedules: patient.rehabSchedules ?? [],
+            },
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', patient.id);
+      });
+
+      recordAudit({
+        eventType: 'PATIENT_FACE_ENROLLED',
+        actorRole: authUser!.role,
+        actorId: authUser!.id,
+        actorName: authUser!.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: patient.id,
+        detail: `Captured 10-frame Face ID for ${patient.fullName} (${patient.hn})`,
+      });
+      return jsonResponse({ patient });
+    }
+
+    const checkinMatch = pathname.match(/^\/api\/patients\/([^/]+)\/checkin$/);
+    if (checkinMatch && method === 'POST') {
+      const err = requireAuth(authUser, ['super_admin', 'pt']);
+      if (err) return err;
+      const patient = state.patients.find((p) => p.id === checkinMatch[1]);
+      if (!patient) return jsonResponse({ error: 'PATIENT_NOT_FOUND' }, 404);
+      const body = await readJsonBody<{ note?: string }>(request);
+      const todayIso = new Date().toISOString().slice(0, 10);
+      patient.nextAppointmentDate = todayIso;
+
+      const existingSchedules = [...(patient.rehabSchedules ?? [])];
+      const todayScheduleIdx = existingSchedules.findIndex((s) => s.scheduledDate === todayIso);
+      if (todayScheduleIdx >= 0) {
+        existingSchedules[todayScheduleIdx] = { ...existingSchedules[todayScheduleIdx], status: 'ACTIVE' };
+      } else {
+        existingSchedules.push({
+          id: `sched-${Date.now()}`,
+          patientId: patient.id,
+          ptId: patient.delegatedToPtId || patient.assignedPtId,
+          scheduledDate: todayIso,
+          sets: 2,
+          reps: 8,
+          status: 'ACTIVE',
+          notes: body?.note || 'Quick Check-in at clinic reception',
+        });
+      }
+      patient.rehabSchedules = existingSchedules;
+
+      const session: RehabSessionRecord = {
+        id: `sess-checkin-${Date.now()}`,
+        patientId: patient.id,
+        activityType: 'physio_exercise',
+        exerciseId: 'CLINIC_CHECKIN',
+        exerciseName: body?.note?.trim() || 'เช็คอินเข้าฝึกกายภาพบำบัด',
+        completedSets: 0,
+        completedReps: 0,
+        accuracyPercent: 100,
+        maxRomDeg: 0,
+        painStopTriggered: false,
+        aiFeedback: `Checked in by ${authUser!.fullName}`,
+        kinematicsReplay: [],
+        createdAt: new Date().toISOString(),
+      };
+      state.rehab_sessions.unshift(session);
+
+      await persistToSupabase(supabase, async (db) => {
+        await db
+          .from('patients')
+          .update({
+            next_appointment_date: todayIso,
+            history: {
+              gender: patient.gender ?? 'ชาย',
+              faceBiometricStatus: patient.faceBiometricStatus ?? 'PENDING',
+              faceImageUrl: patient.faceImageUrl ?? null,
+              rehabSchedules: existingSchedules,
+            },
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', patient.id);
+        await db.from('rehab_sessions').insert({
+          patient_id: session.patientId,
+          exercise_id: session.exerciseId,
+          completed_sets: 0,
+          completed_reps: 0,
+          accuracy_percent: 100,
+          max_rom_deg: 0,
+          pain_stop_triggered: false,
+          kinematics_replay: [],
+        });
+      });
+
+      recordAudit({
+        eventType: 'PATIENT_QUICK_CHECKIN',
+        actorRole: authUser!.role,
+        actorId: authUser!.id,
+        actorName: authUser!.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: patient.id,
+        detail: `Quick check-in for ${patient.fullName} (${patient.hn})`,
+      });
+      return jsonResponse({ patient, session });
+    }
+
     const patientMatch = pathname.match(/^\/api\/patients\/([^/]+)$/);
     if (patientMatch && method === 'PUT') {
       const err = requireAuth(authUser);
@@ -1121,7 +1360,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const patient = state.patients.find((p) => p.id === patientMatch[1]);
       if (!patient) return jsonResponse({ error: 'PATIENT_NOT_FOUND' }, 404);
       const actor = authUser!;
-      if (actor.role === 'pt' && patient.assignedPtId !== actor.id) {
+      if (actor.role === 'pt' && patient.assignedPtId !== actor.id && patient.delegatedToPtId !== actor.id) {
         return jsonResponse(
           { error: 'FORBIDDEN', message: 'PT can only edit own assigned patients' },
           403,
@@ -1136,6 +1375,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       } else {
         if (body.fullName !== undefined) patient.fullName = body.fullName;
         if (body.age !== undefined) patient.age = body.age;
+        if (body.gender !== undefined) patient.gender = body.gender;
         if (body.phone !== undefined) patient.phone = body.phone;
         if (body.diagnosis !== undefined) patient.diagnosis = body.diagnosis;
         if (body.nextAppointmentDate !== undefined) {
@@ -1144,17 +1384,35 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         if (body.assignedPtId !== undefined && actor.role === 'super_admin') {
           patient.assignedPtId = body.assignedPtId;
         }
+        if (body.faceBiometricStatus !== undefined) {
+          patient.faceBiometricStatus = body.faceBiometricStatus;
+        }
+        if (body.faceImageUrl !== undefined) {
+          patient.faceImageUrl = body.faceImageUrl;
+        }
+        if (Array.isArray(body.rehabSchedules)) {
+          patient.rehabSchedules = body.rehabSchedules as RehabScheduleItem[];
+        }
       }
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db
           .from('patients')
           .update({
             full_name: patient.fullName,
             age: patient.age,
+            gender: patient.gender ?? 'ชาย',
             phone: patient.phone,
             diagnosis: patient.diagnosis,
             assigned_pt_id: patient.assignedPtId,
             next_appointment_date: patient.nextAppointmentDate,
+            face_biometric_status: patient.faceBiometricStatus ?? 'PENDING',
+            face_image_url: patient.faceImageUrl ?? null,
+            history: {
+              gender: patient.gender ?? 'ชาย',
+              faceBiometricStatus: patient.faceBiometricStatus ?? 'PENDING',
+              faceImageUrl: patient.faceImageUrl ?? null,
+              rehabSchedules: patient.rehabSchedules ?? [],
+            },
             updated_at: new Date().toISOString(),
           })
           .eq('id', patient.id),
@@ -1252,7 +1510,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         existing.cognitiveModpackId = body.cognitiveModpackId;
         existing.weeklySchedule = body.weeklySchedule;
         existing.updatedAt = new Date().toISOString();
-        persistToSupabase(supabase, (db) =>
+        await persistToSupabase(supabase, (db) =>
           db
             .from('patient_courses')
             .update({
@@ -1263,6 +1521,16 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             })
             .eq('id', existing.id),
         );
+        recordAudit({
+          eventType: 'COURSE_SCHEDULE_UPDATED',
+          actorRole: authUser!.role,
+          actorId: authUser!.id,
+          actorName: authUser!.fullName,
+          ipAddress: clientIp,
+          deviceId: clientDeviceId,
+          targetId: pid,
+          detail: `Updated weekly course schedule "${existing.title}" for patient ${pid}`,
+        });
         return jsonResponse({ course: existing });
       }
       const created: PatientCourseRecord = {
@@ -1274,7 +1542,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         updatedAt: new Date().toISOString(),
       };
       state.patient_courses.push(created);
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db.from('patient_courses').insert({
           id: created.id,
           patient_id: created.patientId,
@@ -1283,6 +1551,16 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           cognitive_modpack_id: created.cognitiveModpackId,
         }),
       );
+      recordAudit({
+        eventType: 'COURSE_SCHEDULE_UPDATED',
+        actorRole: authUser!.role,
+        actorId: authUser!.id,
+        actorName: authUser!.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: pid,
+        detail: `Created weekly course schedule "${created.title}" for patient ${pid}`,
+      });
       return jsonResponse({ course: created });
     }
 
@@ -1467,6 +1745,32 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         createdBy: authUser!.role === 'super_admin' ? 'system' : authUser!.id,
       };
       state.exercises.push(created);
+      await persistToSupabase(supabase, (db) =>
+        db.from('exercises').upsert({
+          id: created.id,
+          code: created.code,
+          category: created.category,
+          name_th: created.name.th,
+          body_side: (created.detection.side || 'right').toUpperCase(),
+          instructions_th: created.instruction.th,
+          target_rom_deg: created.detection.targetMaxDeg ?? 135,
+          hold_sec: created.detection.holdSec ?? 2,
+          name_i18n: created.name,
+          instruction_i18n: created.instruction,
+          detection_config: created.detection,
+          active: true,
+        }),
+      );
+      recordAudit({
+        eventType: 'EXERCISE_CREATED',
+        actorRole: authUser!.role,
+        actorId: authUser!.id,
+        actorName: authUser!.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: created.id,
+        detail: `Added exercise ${created.code} (${created.name.th})`,
+      });
       return jsonResponse({ exercise: created }, 201);
     }
 
@@ -1486,6 +1790,17 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         );
       }
       state.exercises = state.exercises.filter((e) => e.id !== exerciseMatch[1]);
+      await persistToSupabase(supabase, (db) => db.from('exercises').delete().eq('id', exerciseMatch[1]));
+      recordAudit({
+        eventType: 'EXERCISE_DELETED',
+        actorRole: authUser!.role,
+        actorId: authUser!.id,
+        actorName: authUser!.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: exerciseMatch[1],
+        detail: `Deleted exercise ${target.code}`,
+      });
       return jsonResponse({ deleted: true });
     }
 
@@ -1509,6 +1824,27 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         active: true,
       };
       state.modpacks.push(created);
+      await persistToSupabase(supabase, (db) =>
+        db.from('modpacks').upsert({
+          id: created.id,
+          name: created.name,
+          category: created.categories[0] ?? 'general',
+          card_count: created.questionCount,
+          categories: created.categories,
+          questions: [],
+          active: true,
+        }),
+      );
+      recordAudit({
+        eventType: 'MODPACK_CREATED',
+        actorRole: authUser!.role,
+        actorId: authUser!.id,
+        actorName: authUser!.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: created.id,
+        detail: `Created modpack "${created.name}" (${created.questionCount} cards)`,
+      });
       return jsonResponse({ modpack: created }, 201);
     }
 
@@ -1528,6 +1864,17 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         );
       }
       state.modpacks = state.modpacks.filter((m) => m.id !== modpackMatch[1]);
+      await persistToSupabase(supabase, (db) => db.from('modpacks').delete().eq('id', modpackMatch[1]));
+      recordAudit({
+        eventType: 'MODPACK_DELETED',
+        actorRole: authUser!.role,
+        actorId: authUser!.id,
+        actorName: authUser!.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: modpackMatch[1],
+        detail: `Deleted modpack "${target.name}"`,
+      });
       return jsonResponse({ deleted: true });
     }
 
@@ -1577,6 +1924,30 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       return jsonResponse({ call }, 201);
     }
 
+    const staffCallAckMatch = pathname.match(/^\/api\/staff-calls\/([^/]+)\/acknowledge$/);
+    if (staffCallAckMatch && method === 'PATCH') {
+      const err = requireAuth(authUser, ['super_admin', 'pt']);
+      if (err) return err;
+      const target = state.staff_calls.find((c) => c.id === staffCallAckMatch[1]);
+      if (target) {
+        target.status = 'acknowledged';
+        await persistToSupabase(supabase, (db) =>
+          db.from('staff_calls').update({ status: 'acknowledged' }).eq('id', target.id),
+        );
+        recordAudit({
+          eventType: 'STAFF_CALL_ACKNOWLEDGED',
+          actorRole: authUser!.role,
+          actorId: authUser!.id,
+          actorName: authUser!.fullName,
+          ipAddress: clientIp,
+          deviceId: clientDeviceId,
+          targetId: target.id,
+          detail: `Acknowledged Kiosk call from ${target.kioskId}`,
+        });
+      }
+      return jsonResponse({ ok: true });
+    }
+
     const staffCallResolveMatch = pathname.match(/^\/api\/staff-calls\/([^/]+)\/resolve$/);
     if (staffCallResolveMatch && method === 'PATCH') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
@@ -1584,9 +1955,19 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const target = state.staff_calls.find((c) => c.id === staffCallResolveMatch[1]);
       if (target) {
         target.status = 'resolved';
-        persistToSupabase(supabase, (db) =>
+        await persistToSupabase(supabase, (db) =>
           db.from('staff_calls').update({ status: 'resolved' }).eq('id', target.id),
         );
+        recordAudit({
+          eventType: 'STAFF_CALL_RESOLVED',
+          actorRole: authUser!.role,
+          actorId: authUser!.id,
+          actorName: authUser!.fullName,
+          ipAddress: clientIp,
+          deviceId: clientDeviceId,
+          targetId: target.id,
+          detail: `Resolved Kiosk call from ${target.kioskId}`,
+        });
       }
       return jsonResponse({ ok: true });
     }
@@ -1645,10 +2026,80 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const err = requireAuth(authUser, ['super_admin']);
       if (err) return err;
       state.banned_targets = state.banned_targets.filter((b) => b.id !== banDeleteMatch[1]);
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db.from('banned_targets').delete().eq('id', banDeleteMatch[1]),
       );
+      recordAudit({
+        eventType: 'SECURITY_TARGET_UNBANNED',
+        actorRole: authUser!.role,
+        actorId: authUser!.id,
+        actorName: authUser!.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: banDeleteMatch[1],
+        detail: `Removed ban ${banDeleteMatch[1]}`,
+      });
       return jsonResponse({ ok: true });
+    }
+
+    if (pathname === '/api/kiosks' && method === 'POST') {
+      const err = requireAuth(authUser, ['super_admin']);
+      if (err) return err;
+      const body = await readJsonBody<{ kioskId?: string; location?: string }>(request);
+      if (!body?.kioskId?.trim()) return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
+      const cleanId = body.kioskId.trim().toUpperCase();
+      const pairingToken = `KPAIR-${randomHex(3).toUpperCase()}`;
+      const kiosk = {
+        kioskId: cleanId,
+        location: body.location?.trim() || 'OPD Rehab Zone',
+        online: true,
+        currentState: 'STANDBY',
+        pairingToken,
+        lastHeartbeatAt: new Date().toISOString(),
+      };
+      state.kiosks = state.kiosks.filter((k) => k.kioskId !== cleanId);
+      state.kiosks.push(kiosk);
+      await persistToSupabase(supabase, (db) =>
+        db.from('kiosks').upsert({
+          kiosk_id: kiosk.kioskId,
+          location: kiosk.location,
+          online: true,
+          current_state: 'STANDBY',
+          pairing_token: pairingToken,
+          last_heartbeat_at: kiosk.lastHeartbeatAt,
+        }),
+      );
+      recordAudit({
+        eventType: 'KIOSK_REGISTERED',
+        actorRole: authUser!.role,
+        actorId: authUser!.id,
+        actorName: authUser!.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: kiosk.kioskId,
+        detail: `Registered Kiosk ${kiosk.kioskId} (${kiosk.location})`,
+      });
+      return jsonResponse({ kiosk }, 201);
+    }
+
+    const kioskDeleteMatch = pathname.match(/^\/api\/kiosks\/([^/]+)$/);
+    if (kioskDeleteMatch && method === 'DELETE') {
+      const err = requireAuth(authUser, ['super_admin']);
+      if (err) return err;
+      const kid = decodeURIComponent(kioskDeleteMatch[1]);
+      state.kiosks = state.kiosks.filter((k) => k.kioskId !== kid);
+      await persistToSupabase(supabase, (db) => db.from('kiosks').delete().eq('kiosk_id', kid));
+      recordAudit({
+        eventType: 'KIOSK_REMOVED',
+        actorRole: authUser!.role,
+        actorId: authUser!.id,
+        actorName: authUser!.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: kid,
+        detail: `Removed Kiosk ${kid}`,
+      });
+      return jsonResponse({ deleted: true });
     }
 
     const forceLogoutMatch = pathname.match(/^\/api\/security\/force-logout\/([^/]+)$/);

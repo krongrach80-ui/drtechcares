@@ -19,6 +19,7 @@ function resolveRoute(pathname: string): AppRoute {
   if (pathname.startsWith('/pt')) return '/pt';
   if (pathname.startsWith('/patient')) return '/patient';
   if (pathname.startsWith('/login')) return '/login';
+  if (pathname.startsWith('/kiosk')) return '/';
   return '/';
 }
 

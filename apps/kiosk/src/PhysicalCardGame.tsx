@@ -174,12 +174,20 @@ export function PhysicalCardGame({ patientName, onComplete }: PhysicalCardGamePr
             </div>
           ) : (
             <div className="mt-6 grid grid-cols-2 gap-3 text-center">
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3">
+              <button
+                type="button"
+                onClick={() => submitAnswer('no')}
+                className="rounded-2xl border border-rose-200 bg-rose-50 p-3 hover:bg-rose-100 active:scale-95 transition cursor-pointer"
+              >
                 <p className="text-sm font-bold text-rose-700">{t('minigameLeftNo')}</p>
-              </div>
-              <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
+              </button>
+              <button
+                type="button"
+                onClick={() => submitAnswer('yes')}
+                className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 hover:bg-emerald-100 active:scale-95 transition cursor-pointer"
+              >
                 <p className="text-sm font-bold text-emerald-700">{t('minigameRightYes')}</p>
-              </div>
+              </button>
             </div>
           )}
         </div>

@@ -11,6 +11,7 @@ import type {
   ModpackRecord,
   PatientCourseRecord,
   PatientRecord,
+  RehabScheduleItem,
   RehabSessionRecord,
   StaffCallRecord,
   SystemSettingsRecord,
@@ -63,7 +64,10 @@ export async function hydrateStateFromSupabase(
     coursesRes,
     sessionsRes,
     reportsRes,
+    exercisesRes,
+    modpacksRes,
     callsRes,
+    auditRes,
     bansRes,
     activeSessionsRes,
     settingsRes,
@@ -71,12 +75,15 @@ export async function hydrateStateFromSupabase(
   ] = await Promise.allSettled([
     supabase.from('staff_users').select('*'),
     supabase.from('patients').select('*'),
-    supabase.from('face_templates').select('patient_id, pose, embedding'),
+    supabase.from('face_templates').select('patient_id, pose, embedding, quality_score'),
     supabase.from('medical_notes').select('*').order('created_at', { ascending: true }),
     supabase.from('patient_courses').select('*'),
     supabase.from('rehab_sessions').select('*').order('created_at', { ascending: false }),
     supabase.from('treatment_reports').select('*').order('created_at', { ascending: false }),
+    supabase.from('exercises').select('*').eq('active', true),
+    supabase.from('modpacks').select('*').eq('active', true),
     supabase.from('staff_calls').select('*').order('created_at', { ascending: false }),
+    supabase.from('audit_logs').select('*').order('created_at', { ascending: false }).limit(250),
     supabase.from('banned_targets').select('*').order('created_at', { ascending: false }),
     supabase.from('active_sessions').select('*').eq('revoked', false),
     supabase.from('system_settings').select('*').eq('id', 1).maybeSingle(),
@@ -100,33 +107,89 @@ export async function hydrateStateFromSupabase(
     }));
   }
 
-  if (patientsRes.status === 'fulfilled' && Array.isArray(patientsRes.value.data)) {
-    state.patients = patientsRes.value.data.map((r: Record<string, unknown>) => ({
-      id: String(r.id),
-      hn: String(r.hn),
-      fullName: String(r.full_name),
-      age: Number(r.age ?? 0),
-      phone: String(r.phone ?? ''),
-      diagnosis: String(r.diagnosis ?? ''),
-      assignedPtId: String(r.assigned_pt_id ?? ''),
-      delegatedToPtId: r.delegated_to_pt_id ? String(r.delegated_to_pt_id) : null,
-      delegationNote: r.delegation_note ? String(r.delegation_note) : null,
-      nextAppointmentDate: String(r.next_appointment_date ?? ''),
-      registrationStatus: (r.registration_status as 'active' | 'archived') ?? 'active',
-      enrolledAt: String(r.created_at ?? new Date().toISOString()),
-    }));
-  }
+  const parsedTemplatesByPatient = new Map<
+    string,
+    { frontal?: number[]; overall?: number[]; raw: { pose: 'front' | 'left' | 'right' | 'nod'; vector: number[]; qualityScore: number }[] }
+  >();
 
   if (templatesRes.status === 'fulfilled' && Array.isArray(templatesRes.value.data)) {
-    const patientNames = new Map(state.patients.map((p) => [p.id, p.fullName]));
-    state.face_templates = templatesRes.value.data
-      .filter((r: Record<string, unknown>) => Array.isArray(r.embedding))
-      .map((r: Record<string, unknown>) => ({
-        patientId: String(r.patient_id),
-        patientName: patientNames.get(String(r.patient_id)),
-        pose: (r.pose as BiometricPose) ?? 'frontal_centroid',
-        vector: r.embedding as number[],
-      }));
+    const rawPatientNameMap = new Map<string, string>();
+    if (patientsRes.status === 'fulfilled' && Array.isArray(patientsRes.value.data)) {
+      patientsRes.value.data.forEach((p: Record<string, unknown>) => {
+        rawPatientNameMap.set(String(p.id), String(p.full_name ?? ''));
+      });
+    }
+    state.face_templates = [];
+    for (const row of templatesRes.value.data as Record<string, unknown>[]) {
+      const vec = Array.isArray(row.embedding)
+        ? (row.embedding as number[])
+        : typeof row.embedding === 'string' && row.embedding.startsWith('[')
+          ? (JSON.parse(row.embedding) as number[])
+          : null;
+      if (!vec) continue;
+      const pid = String(row.patient_id);
+      const pose = (row.pose as BiometricPose) ?? 'frontal_centroid';
+      state.face_templates.push({
+        patientId: pid,
+        patientName: rawPatientNameMap.get(pid),
+        pose,
+        vector: vec,
+      });
+      const entry = parsedTemplatesByPatient.get(pid) ?? { raw: [] };
+      if (pose === 'frontal_centroid') entry.frontal = vec;
+      else if (pose === 'overall_centroid') entry.overall = vec;
+      else if (pose === 'front' || pose === 'left' || pose === 'right' || pose === 'nod') {
+        entry.raw.push({ pose, vector: vec, qualityScore: Number(row.quality_score ?? 1.0) });
+      }
+      parsedTemplatesByPatient.set(pid, entry);
+    }
+  }
+
+  if (patientsRes.status === 'fulfilled' && Array.isArray(patientsRes.value.data)) {
+    state.patients = patientsRes.value.data.map((r: Record<string, unknown>) => {
+      const pid = String(r.id);
+      const history = (r.history as Record<string, unknown>) ?? {};
+      const tpl = parsedTemplatesByPatient.get(pid);
+      const hasTemplates = Boolean(tpl && tpl.raw.length > 0);
+      const historyStatus = history.faceBiometricStatus;
+      const colStatus = r.face_biometric_status;
+      const resolvedFaceStatus: 'PENDING' | 'VERIFIED' =
+        colStatus === 'VERIFIED' || historyStatus === 'VERIFIED' || hasTemplates ? 'VERIFIED' : 'PENDING';
+
+      return {
+        id: pid,
+        hn: String(r.hn),
+        fullName: String(r.full_name),
+        age: Number(r.age ?? 0),
+        gender: typeof r.gender === 'string' ? r.gender : typeof history.gender === 'string' ? history.gender : 'ชาย',
+        phone: String(r.phone ?? ''),
+        diagnosis: String(r.diagnosis ?? ''),
+        assignedPtId: String(r.assigned_pt_id ?? ''),
+        delegatedToPtId: r.delegated_to_pt_id ? String(r.delegated_to_pt_id) : null,
+        delegationNote: r.delegation_note ? String(r.delegation_note) : null,
+        nextAppointmentDate: String(r.next_appointment_date ?? ''),
+        registrationStatus: (r.registration_status as 'active' | 'archived') ?? 'active',
+        enrolledAt: String(r.created_at ?? new Date().toISOString()),
+        faceBiometricStatus: resolvedFaceStatus,
+        faceImageUrl:
+          typeof r.face_image_url === 'string'
+            ? r.face_image_url
+            : typeof history.faceImageUrl === 'string'
+              ? history.faceImageUrl
+              : undefined,
+        rehabSchedules: Array.isArray(history.rehabSchedules)
+          ? (history.rehabSchedules as RehabScheduleItem[])
+          : [],
+        biometricHistory:
+          tpl && tpl.frontal && tpl.overall
+            ? {
+                frontal_centroid: tpl.frontal,
+                overall_centroid: tpl.overall,
+                raw_frames: tpl.raw,
+              }
+            : undefined,
+      };
+    });
   }
 
   if (notesRes.status === 'fulfilled' && Array.isArray(notesRes.value.data)) {
@@ -184,6 +247,50 @@ export async function hydrateStateFromSupabase(
     }));
   }
 
+  if (exercisesRes.status === 'fulfilled' && Array.isArray(exercisesRes.value.data) && exercisesRes.value.data.length > 0) {
+    const dbExIds = new Set(exercisesRes.value.data.map((r: Record<string, unknown>) => String(r.id)));
+    const dbExercises: ManagedExerciseRecord[] = exercisesRes.value.data.map((r: Record<string, unknown>) => ({
+      id: String(r.id),
+      code: String(r.code),
+      category: (r.category as ManagedExerciseRecord['category']) ?? 'upper_limb',
+      name: (r.name_i18n as ManagedExerciseRecord['name']) ?? {
+        th: String(r.name_th ?? r.code),
+        en: String(r.name_th ?? r.code),
+        cn: String(r.name_th ?? r.code),
+      },
+      instruction: (r.instruction_i18n as ManagedExerciseRecord['instruction']) ?? {
+        th: String(r.instructions_th ?? ''),
+        en: String(r.instructions_th ?? ''),
+        cn: String(r.instructions_th ?? ''),
+      },
+      detection: (r.detection_config as ManagedExerciseRecord['detection']) ?? {
+        mode: 'angle_rep_hold',
+        jointGroup: 'shoulder',
+        side: 'right',
+        targetMinDeg: 30,
+        targetMaxDeg: 135,
+        startRestMaxDeg: 25,
+        holdSec: 2,
+        defaultSets: 2,
+        defaultReps: 8,
+      },
+      createdBy: 'system',
+    }));
+    const defaultsOnly = state.exercises.filter((e) => !dbExIds.has(e.id));
+    state.exercises = [...defaultsOnly, ...dbExercises];
+  }
+
+  if (modpacksRes.status === 'fulfilled' && Array.isArray(modpacksRes.value.data) && modpacksRes.value.data.length > 0) {
+    state.modpacks = modpacksRes.value.data.map((r: Record<string, unknown>) => ({
+      id: String(r.id),
+      name: String(r.name),
+      categories: Array.isArray(r.categories) ? (r.categories as string[]) : [String(r.category ?? 'cognitive')],
+      questionCount: Number(r.card_count ?? (Array.isArray(r.questions) && r.questions.length > 0 ? r.questions.length : 10)),
+      createdBy: 'system',
+      active: Boolean(r.active ?? true),
+    }));
+  }
+
   if (callsRes.status === 'fulfilled' && Array.isArray(callsRes.value.data)) {
     state.staff_calls = callsRes.value.data.map((r: Record<string, unknown>) => ({
       id: String(r.id),
@@ -193,6 +300,30 @@ export async function hydrateStateFromSupabase(
       status: (r.status as 'open' | 'acknowledged' | 'resolved') ?? 'open',
       createdAt: String(r.created_at),
     }));
+  }
+
+  if (auditRes.status === 'fulfilled' && Array.isArray(auditRes.value.data)) {
+    state.audit_logs = auditRes.value.data.map((r: Record<string, unknown>) => {
+      const detailObj = (r.detail as Record<string, unknown> | null) ?? (r.details as Record<string, unknown> | null);
+      const detailMsg =
+        typeof detailObj?.message === 'string'
+          ? detailObj.message
+          : typeof r.action === 'string'
+            ? `${r.action} ${r.target ?? ''}`.trim()
+            : JSON.stringify(detailObj ?? {});
+      return {
+        id: String(r.id),
+        eventType: String(r.event_type ?? r.action ?? 'SYSTEM_EVENT'),
+        actorRole: String(r.actor_role ?? 'system'),
+        actorId: String(r.actor_id ?? ''),
+        actorName: String(r.actor_name ?? ''),
+        ipAddress: String(r.ip_address ?? 'unknown'),
+        deviceId: String(r.device_id ?? 'unknown'),
+        targetId: r.target_id ? String(r.target_id) : r.target ? String(r.target) : undefined,
+        detail: detailMsg,
+        createdAt: String(r.created_at ?? new Date().toISOString()),
+      };
+    });
   }
 
   if (bansRes.status === 'fulfilled' && Array.isArray(bansRes.value.data)) {
@@ -234,18 +365,20 @@ export async function hydrateStateFromSupabase(
       location: String(r.location ?? ''),
       online: Boolean(r.online ?? true),
       currentState: String(r.current_state ?? 'STANDBY'),
+      pairingToken: typeof r.pairing_token === 'string' ? r.pairing_token : undefined,
       lastHeartbeatAt: String(r.last_heartbeat_at ?? new Date().toISOString()),
     }));
   }
 }
 
-export function persistToSupabase(
+export async function persistToSupabase(
   supabase: SupabaseClient | null,
   task: (client: SupabaseClient) => PromiseLike<unknown>,
-): void {
+): Promise<void> {
   if (!supabase) return;
-  void Promise.resolve(task(supabase)).catch(() => {
-    // Non-blocking best-effort persistence for edge sync
-  });
+  try {
+    await task(supabase);
+  } catch {
+    // Non-fatal fallback for offline / missing column edge cases
+  }
 }
-

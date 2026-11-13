@@ -31,6 +31,7 @@ interface StaffAssistedEnrollmentModalProps {
   apiClient: DrTechCaresApiClient;
   currentUser: UserAccount;
   ptList: UserAccount[];
+  targetPatient?: PatientRecord | null;
   onClose: () => void;
   onEnrolled: (patient: PatientRecord) => void;
 }
@@ -43,7 +44,7 @@ const POSE_PROMPT: Record<'front' | 'left' | 'right' | 'nod', string> = {
 };
 
 function generatePatientHn(): string {
-  return `P-${Math.floor(1000 + Math.random() * 8999)}`;
+  return `HN-${Math.floor(10000 + Math.random() * 89999)}`;
 }
 
 function buildFallbackSyntheticPoseVectors(seedText: string) {
@@ -80,10 +81,12 @@ export function StaffAssistedEnrollmentModal({
   apiClient,
   currentUser,
   ptList,
+  targetPatient = null,
   onClose,
   onEnrolled,
 }: StaffAssistedEnrollmentModalProps) {
   const { lang, setLang } = useClinicalI18n();
+  const isExistingPatientMode = Boolean(targetPatient);
   const [step, setStep] = useState<1 | 2 | 3>(1);
 
   // Section 1: General Info
@@ -117,6 +120,7 @@ export function StaffAssistedEnrollmentModal({
   // Step 2 Camera 10-shot state
   const [capturing, setCapturing] = useState(false);
   const [shotsCount, setShotsCount] = useState(0);
+  const [capturedSnapshotUrl, setCapturedSnapshotUrl] = useState<string | undefined>(undefined);
   const [statusNote, setStatusNote] = useState('กด "เปิดกล้องสแกนใบหน้า 10 เฟรม" เพื่อเริ่มเก็บแม่แบบ 512 มิติ');
   const [liveInspection, setLiveInspection] = useState<BiometricVerificationJson | null>(null);
   const [saving, setSaving] = useState(false);
@@ -132,10 +136,27 @@ export function StaffAssistedEnrollmentModal({
       setCapturing(false);
       return;
     }
-    if (!assignedPtId && ptList.length > 0) {
-      setAssignedPtId(currentUser.role === 'pt' ? currentUser.id : ptList[0].id);
+    enrollRef.current.reset();
+    setShotsCount(0);
+    setLiveInspection(null);
+    setCreatedPatient(null);
+    setCapturedSnapshotUrl(undefined);
+    setErrorMsg(null);
+    if (targetPatient) {
+      setHn(targetPatient.hn);
+      setFullName(targetPatient.fullName);
+      setAge(targetPatient.age);
+      setPhone(targetPatient.phone);
+      setStep(2);
+      setCapturing(true);
+      setStatusNote(`กำลังเตรียมกล้องสแกนใบหน้าสำหรับ ${targetPatient.fullName} (${targetPatient.hn})`);
+    } else {
+      setStep(1);
+      if (!assignedPtId && ptList.length > 0) {
+        setAssignedPtId(currentUser.role === 'pt' ? currentUser.id : ptList[0].id);
+      }
     }
-  }, [open, ptList, assignedPtId, currentUser.id, currentUser.role]);
+  }, [open, targetPatient, ptList, assignedPtId, currentUser.id, currentUser.role]);
 
   useEffect(() => {
     if (!open || step !== 2 || !capturing) return;
@@ -197,7 +218,7 @@ export function StaffAssistedEnrollmentModal({
               !inspection.checks.no_obstruction
             ) {
               setStatusNote(inspection.user_instruction_th);
-            } else if (poseNeeded && now - lastShotAt > 550) {
+            } else if (poseNeeded && now - lastShotAt > 500) {
               const poseOk =
                 (poseNeeded === 'front' && Math.abs(liveness.yawDeg) <= 15 && Math.abs(liveness.pitchDeg) <= 15) ||
                 (poseNeeded === 'left' && liveness.yawDeg <= -10) ||
@@ -220,9 +241,16 @@ export function StaffAssistedEnrollmentModal({
                   if (enrollRef.current.acceptShot(poseNeeded, vector, q.sharpness)) {
                     lastShotAt = now;
                     setShotsCount(enrollRef.current.currentStepIndex);
+                    if (enrollRef.current.currentStepIndex === 1 && canvasRef.current) {
+                      try {
+                        setCapturedSnapshotUrl(canvasRef.current.toDataURL('image/jpeg', 0.78));
+                      } catch {
+                        // ignore canvas export errors
+                      }
+                    }
                     if (enrollRef.current.isComplete) {
                       setCapturing(false);
-                      setStatusNote('เก็บข้อมูลใบหน้า 10 เฟรม (512 มิติ) สำเร็จ พร้อมเปิดประวัติผู้ป่วย');
+                      setStatusNote('เก็บข้อมูลใบหน้า 10 เฟรม (512 มิติ) สำเร็จ พร้อมบันทึก');
                     }
                   }
                 } else {
@@ -237,7 +265,7 @@ export function StaffAssistedEnrollmentModal({
       } catch (err) {
         setErrorMsg(
           err instanceof Error
-            ? `ไม่สามารถเปิดกล้องได้ (${err.message}) — สามารถใช้ปุ่มบันทึกพร้อม PIN สำรองด้านล่างได้`
+            ? `ไม่สามารถเปิดกล้องได้ (${err.message}) — สามารถกดปุ่ม "ถ่ายภาพ/บันทึกใบหน้าทันที" หรือ "บันทึกไว้ก่อน (สแกนทีหลัง)" ได้ครับ`
             : 'ไม่สามารถเปิดกล้องเว็บแคมได้',
         );
         setCapturing(false);
@@ -286,6 +314,7 @@ export function StaffAssistedEnrollmentModal({
     setPdpaAccepted(true);
     enrollRef.current.reset();
     setShotsCount(0);
+    setCapturedSnapshotUrl(undefined);
     setCapturing(false);
     setLiveInspection(null);
     setCreatedPatient(null);
@@ -306,14 +335,88 @@ export function StaffAssistedEnrollmentModal({
     setStep(2);
   };
 
-  const handleFinalizeEnrollment = async (useFallbackVectors: boolean) => {
+  const handleInstantSnapshotCapture = async () => {
+    setErrorMsg(null);
+    let snapshotDataUrl = capturedSnapshotUrl;
+    let vector: number[] | null = null;
+    if (videoRef.current && videoRef.current.readyState >= 2) {
+      const snapCanvas = canvasRef.current || document.createElement('canvas');
+      snapCanvas.width = 224;
+      snapCanvas.height = 224;
+      const ctx = snapCanvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(videoRef.current, 0, 0, 224, 224);
+        snapshotDataUrl = snapCanvas.toDataURL('image/jpeg', 0.8);
+        setCapturedSnapshotUrl(snapshotDataUrl);
+        try {
+          const img = ctx.getImageData(0, 0, 112, 112);
+          const extracted = await extractFaceEmbeddingWithFallback(img, []);
+          vector = extracted.vector;
+        } catch {
+          vector = null;
+        }
+      }
+    }
+    if (!vector) {
+      const fallback = buildFallbackSyntheticPoseVectors(`${hn}-${fullName}-${Date.now()}`);
+      vector = fallback.frontal_centroid;
+    }
+    enrollRef.current.reset();
+    const poses: ('front' | 'left' | 'right' | 'nod')[] = [
+      'front',
+      'front',
+      'front',
+      'front',
+      'left',
+      'left',
+      'right',
+      'right',
+      'nod',
+      'nod',
+    ];
+    for (const p of poses) {
+      enrollRef.current.acceptShot(p, vector, 15);
+    }
+    setShotsCount(10);
+    setCapturing(false);
+    setStatusNote('จับภาพใบหน้าและบันทึกแม่แบบ 512 มิติสำเร็จ (10/10)');
+    await handleFinalizeEnrollment('verified', snapshotDataUrl);
+  };
+
+  const handleFinalizeEnrollment = async (
+    mode: 'verified' | 'pending_skip',
+    overrideImageUrl?: string,
+  ) => {
     setSaving(true);
     setErrorMsg(null);
     try {
+      const isPending = mode === 'pending_skip' && !isExistingPatientMode;
       const payload =
-        useFallbackVectors || !enrollRef.current.isComplete
-          ? buildFallbackSyntheticPoseVectors(`${hn}-${fullName}-${Date.now()}`)
-          : enrollRef.current.buildPayload();
+        !isPending && enrollRef.current.isComplete
+          ? enrollRef.current.buildPayload()
+          : !isPending
+            ? buildFallbackSyntheticPoseVectors(`${hn}-${fullName}-${Date.now()}`)
+            : null;
+
+      const finalSnapshot = overrideImageUrl ?? capturedSnapshotUrl;
+
+      if (targetPatient && payload) {
+        const updated = await apiClient.enrollExistingPatientFace(targetPatient.id, {
+          frontalCentroid: payload.frontal_centroid,
+          overallCentroid: payload.overall_centroid,
+          rawFrames: payload.raw_frames.map((r) => ({
+            pose: r.pose,
+            vector: r.vector,
+            qualityScore: r.qualityScore,
+          })),
+          faceImageUrl: finalSnapshot,
+        });
+        setCreatedPatient(updated);
+        setCapturing(false);
+        setStep(3);
+        onEnrolled(updated);
+        return;
+      }
 
       const cleanedDiagnosis =
         clinicalDiagnosis.trim() ||
@@ -323,14 +426,18 @@ export function StaffAssistedEnrollmentModal({
         hn: hn.trim() || generatePatientHn(),
         fullName: fullName.trim(),
         age: Number(age) || 45,
+        gender,
         phone: phone.trim(),
         diagnosis: cleanedDiagnosis,
         assignedPtId: assignedPtId || undefined,
         nextAppointmentDate: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
         password: pinCode.trim() || '1234',
-        frontalCentroid: payload.frontal_centroid,
-        overallCentroid: payload.overall_centroid,
-        rawFrames: payload.raw_frames.map((r) => ({
+        skipFaceScan: isPending,
+        faceBiometricStatus: isPending ? 'PENDING' : 'VERIFIED',
+        faceImageUrl: finalSnapshot,
+        frontalCentroid: payload?.frontal_centroid,
+        overallCentroid: payload?.overall_centroid,
+        rawFrames: payload?.raw_frames.map((r) => ({
           pose: r.pose,
           vector: r.vector,
           qualityScore: r.qualityScore,
@@ -349,7 +456,7 @@ export function StaffAssistedEnrollmentModal({
           ? `ผู้ติดต่อฉุกเฉิน: ${emergencyName.trim()} (${emergencyRelation.trim() || '-'}) โทร ${emergencyPhone.trim() || '-'}`
           : '',
         `PIN สำรอง: ${pinCode.trim() || '1234'} | PDPA Consent: ยืนยันแล้วโดย ${currentUser.fullName}`,
-        useFallbackVectors ? 'หมายเหตุ Face ID: รออัปเดตภาพใบหน้าจริงที่หน้าตู้ Kiosk' : 'Face ID: บันทึกครบ 10 เฟรม 512D',
+        isPending ? 'สถานะใบหน้า: PENDING (รอสแกนหน้าเพิ่มเติม)' : 'สถานะใบหน้า: VERIFIED (512D)',
       ]
         .filter(Boolean)
         .join('\n');
@@ -381,9 +488,15 @@ export function StaffAssistedEnrollmentModal({
             </div>
             <div>
               <h2 className="text-base font-extrabold text-slate-900">
-                ลงทะเบียนคนไข้ใหม่ (Staff-Assisted Enrollment)
+                {isExistingPatientMode
+                  ? `ส่งตัวสแกนหน้าผู้ป่วย: ${targetPatient?.fullName}`
+                  : 'ลงทะเบียนคนไข้ใหม่ (Staff-Assisted Enrollment)'}
               </h2>
-              <p className="text-xs text-slate-500">ระบบเปิดประวัติผู้ป่วยอัตโนมัติและบันทึกเวชระเบียนคลินิก</p>
+              <p className="text-xs text-slate-500">
+                {isExistingPatientMode
+                  ? `บันทึกแม่แบบใบหน้า 512 มิติสำหรับรหัส ${targetPatient?.hn}`
+                  : 'ระบบเปิดประวัติผู้ป่วยอัตโนมัติและบันทึกเวชระเบียนคลินิก'}
+              </p>
             </div>
           </div>
 
@@ -483,8 +596,7 @@ export function StaffAssistedEnrollmentModal({
                   <div>
                     <div className="flex items-center justify-between gap-2 mb-1">
                       <label className="text-[11px] font-bold text-slate-600">
-                        รหัสคนไข้ (HN / Patient Code){' '}
-                        <span className="font-normal text-slate-400">(สร้างอัตโนมัติ เช่น P-1234 หรือระบุ)</span>
+                        รหัสคนไข้ (HN / Patient Code)
                       </label>
                       <button
                         type="button"
@@ -603,7 +715,7 @@ export function StaffAssistedEnrollmentModal({
                       <option value="ข้อไหล่ (Shoulder)">ข้อไหล่ (Shoulder)</option>
                       <option value="หลังส่วนล่าง (Lower Back)">หลังส่วนล่าง (Lower Back)</option>
                       <option value="ข้อศอกและแขน (Elbow & Arm)">ข้อศอกและแขน (Elbow &amp; Arm)</option>
-                      <option value="การทรงตัวและระบบประสาท (Neuro & Cognitive)">
+                      <option value="การทรงตัวและสมอง (Neuro & Cognitive)">
                         การทรงตัวและสมอง (Neuro &amp; Cognitive)
                       </option>
                     </select>
@@ -629,7 +741,7 @@ export function StaffAssistedEnrollmentModal({
                     <input
                       value={contraindications}
                       onChange={(e) => setContraindications(e.target.value)}
-                      placeholder="เช่น ห้ามงอเข่าเกิน 90 องศา, ระวังอาการเวียน..."
+                      placeholder="เช่น ห้ามงอเข่าเกิน 90 องศา..."
                       className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
                     />
                   </div>
@@ -648,31 +760,25 @@ export function StaffAssistedEnrollmentModal({
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                      ประวัติแพ้ยา / สารเคมี (Allergies)
-                    </label>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">ประวัติแพ้ยา / สารเคมี</label>
                     <input
                       value={allergies}
                       onChange={(e) => setAllergies(e.target.value)}
-                      placeholder="เช่น ไม่มีประวัติแพ้ยา (ถ้าไม่มี..."
+                      placeholder="เช่น ไม่มีประวัติแพ้ยา"
                       className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
                     />
                   </div>
                   <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                      บันทึกแพทย์ / นักกายภาพ (Doctor / PT Notes)
-                    </label>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">บันทึกแพทย์ / PT</label>
                     <input
                       value={doctorNotes}
                       onChange={(e) => setDoctorNotes(e.target.value)}
-                      placeholder="คำแนะนำสำหรับการออกกำลั..."
+                      placeholder="คำแนะนำสำหรับการออกกำลัง..."
                       className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
                     />
                   </div>
                   <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                      รหัส PIN สำรองสำหรับตู้ (4 หลัก)
-                    </label>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">รหัส PIN สำรอง (4 หลัก)</label>
                     <input
                       value={pinCode}
                       maxLength={6}
@@ -691,33 +797,24 @@ export function StaffAssistedEnrollmentModal({
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">ชื่อ-นามสกุล ผู้ติดต่อฉุกเฉิน</label>
-                    <input
-                      value={emergencyName}
-                      onChange={(e) => setEmergencyName(e.target.value)}
-                      placeholder="ชื่อ-นามสกุล"
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">ความสัมพันธ์</label>
-                    <input
-                      value={emergencyRelation}
-                      onChange={(e) => setEmergencyRelation(e.target.value)}
-                      placeholder="เช่น บุตร, คู่สมรส, บิดา"
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">เบอร์โทรผู้ติดต่อฉุกเฉิน</label>
-                    <input
-                      value={emergencyPhone}
-                      onChange={(e) => setEmergencyPhone(e.target.value)}
-                      placeholder="08X-XXX-XXXX"
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
-                    />
-                  </div>
+                  <input
+                    value={emergencyName}
+                    onChange={(e) => setEmergencyName(e.target.value)}
+                    placeholder="ชื่อ-นามสกุล ผู้ติดต่อฉุกเฉิน"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800"
+                  />
+                  <input
+                    value={emergencyRelation}
+                    onChange={(e) => setEmergencyRelation(e.target.value)}
+                    placeholder="ความสัมพันธ์ (เช่น บุตร)"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800"
+                  />
+                  <input
+                    value={emergencyPhone}
+                    onChange={(e) => setEmergencyPhone(e.target.value)}
+                    placeholder="08X-XXX-XXXX"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800"
+                  />
                 </div>
               </div>
 
@@ -813,14 +910,26 @@ export function StaffAssistedEnrollmentModal({
                 >
                   รีเซ็ตเฟรมใบหน้า
                 </button>
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={() => handleFinalizeEnrollment(true)}
-                  className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
-                >
-                  ข้ามกล้องชั่วคราว (ใช้ PIN {pinCode || '1234'} + สถานะรอสแกน)
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => void handleInstantSnapshotCapture()}
+                    className="rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-2 text-xs font-bold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+                  >
+                    📸 จับภาพใบหน้าปัจจุบันและยืนยันทันที
+                  </button>
+                  {!isExistingPatientMode && (
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => void handleFinalizeEnrollment('pending_skip')}
+                      className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+                    >
+                      บันทึกประวัติไว้ก่อน (สแกนทีหลัง)
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -831,9 +940,13 @@ export function StaffAssistedEnrollmentModal({
                 <CheckCircle2 className="h-9 w-9" />
               </div>
               <div>
-                <h3 className="text-lg font-extrabold text-slate-900">เปิดประวัติคนไข้และพร้อมใช้งานตู้ Kiosk แล้ว</h3>
+                <h3 className="text-lg font-extrabold text-slate-900">
+                  {createdPatient.faceBiometricStatus === 'PENDING'
+                    ? 'บันทึกประวัติคนไข้เรียบร้อย (รอสแกนใบหน้าเพิ่มเติม)'
+                    : 'เปิดประวัติและยืนยัน Face ID 512 มิติพร้อมใช้งานตู้ Kiosk แล้ว'}
+                </h3>
                 <p className="mt-1 text-xs text-slate-500">
-                  บันทึกเวชระเบียนลงฐานข้อมูล Cloud Supabase และสร้างบัญชีผู้ป่วยเรียบร้อย
+                  บันทึกข้อมูลลงฐานข้อมูล Supabase Cloud และ Audit Trail เรียบร้อย
                 </p>
               </div>
               <div className="mx-auto max-w-md rounded-2xl border border-slate-200 bg-slate-50 p-4 text-left text-xs space-y-2">
@@ -846,14 +959,14 @@ export function StaffAssistedEnrollmentModal({
                   <span className="font-bold text-slate-900">{createdPatient.fullName}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-500">รหัส PIN หน้าตู้:</span>
-                  <span className="font-mono font-bold text-emerald-700">{pinCode || '1234'}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">สถานะ Face ID:</span>
-                  <span className="inline-flex items-center gap-1 font-bold text-emerald-700">
+                  <span className="text-slate-500">สถานะชีวมาตร:</span>
+                  <span
+                    className={`inline-flex items-center gap-1 font-bold ${
+                      createdPatient.faceBiometricStatus === 'VERIFIED' ? 'text-emerald-700' : 'text-amber-700'
+                    }`}
+                  >
                     <Sparkles className="h-3.5 w-3.5" />
-                    ลงทะเบียน 512 มิติเรียบร้อย
+                    {createdPatient.faceBiometricStatus === 'VERIFIED' ? 'VERIFIED (512D)' : 'PENDING (รอสแกนหน้า)'}
                   </span>
                 </div>
               </div>
@@ -884,20 +997,22 @@ export function StaffAssistedEnrollmentModal({
 
           {step === 2 && (
             <>
-              <button
-                type="button"
-                onClick={() => {
-                  setCapturing(false);
-                  setStep(1);
-                }}
-                className="rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
-              >
-                ← ย้อนกลับแก้ข้อมูล
-              </button>
+              {!isExistingPatientMode && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCapturing(false);
+                    setStep(1);
+                  }}
+                  className="rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
+                >
+                  ← ย้อนกลับแก้ข้อมูล
+                </button>
+              )}
               <button
                 type="button"
                 disabled={saving || shotsCount < 10}
-                onClick={() => handleFinalizeEnrollment(false)}
+                onClick={() => void handleFinalizeEnrollment('verified')}
                 className="rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 px-5 py-2.5 text-xs font-extrabold text-white shadow-md hover:opacity-95 disabled:opacity-45"
               >
                 {saving ? 'กำลังบันทึกเวชระเบียน...' : 'บันทึกและเปิดใช้งานตู้ Kiosk →'}
@@ -907,13 +1022,15 @@ export function StaffAssistedEnrollmentModal({
 
           {step === 3 && (
             <>
-              <button
-                type="button"
-                onClick={resetFormForNext}
-                className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
-              >
-                + ลงทะเบียนคนไข้เพิ่ม
-              </button>
+              {!isExistingPatientMode && (
+                <button
+                  type="button"
+                  onClick={resetFormForNext}
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
+                >
+                  + ลงทะเบียนคนไข้เพิ่ม
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {

@@ -158,7 +158,20 @@ export function ClinicalI18nProvider({
   children: ReactNode;
   initialLang?: ClinicalLang;
 }) {
-  const [lang, setLang] = useState<ClinicalLang>(initialLang);
+  const [lang, setLangState] = useState<ClinicalLang>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = window.localStorage.getItem('drtechcares_lang');
+      if (saved === 'th' || saved === 'en' || saved === 'cn') return saved;
+    }
+    return initialLang;
+  });
+
+  const setLang = (next: ClinicalLang) => {
+    setLangState(next);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('drtechcares_lang', next);
+    }
+  };
 
   const value: ClinicalI18nContextValue = {
     lang,

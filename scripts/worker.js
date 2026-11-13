@@ -37,8 +37,8 @@ export default {
         return assetRes;
       }
 
-      // SPA fallback for /, /login, /pt, /admin, /patient
-      const spaRoutes = ['/', '/login', '/pt', '/admin', '/patient'];
+      // SPA fallback for /, /kiosk, /login, /pt, /admin, /patient
+      const spaRoutes = ['/', '/kiosk', '/login', '/pt', '/admin', '/patient'];
       if (spaRoutes.some((prefix) => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`))) {
         const indexUrl = new URL('/index.html', url.origin);
         return env.ASSETS.fetch(new Request(indexUrl.toString(), request));

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ActiveSessionRecord,
   AuditLogRecord,
@@ -7,21 +7,20 @@ import type {
   DrTechCaresApiClient,
   KioskStatusRecord,
   ManagedExerciseRecord,
-  MedicalNoteRecord,
   ModpackRecord,
   PatientCourseRecord,
   PatientRecord,
+  RehabScheduleItem,
   RehabSessionRecord,
   StaffCallRecord,
   SystemSettingsRecord,
   UserAccount,
   UserRole,
 } from '@drtechcares/api-client';
-import { useClinicalI18n } from '@drtechcares/clinical-i18n';
+import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import type { BodySide, ExerciseConfig } from '@drtechcares/pose-engine';
 import {
   Activity,
-  AlertTriangle,
   Ban,
   Bell,
   Calendar,
@@ -39,18 +38,28 @@ import {
   PauseCircle,
   Plus,
   RefreshCw,
+  ScanFace,
   Search,
   Shield,
   ShieldAlert,
+  SlidersHorizontal,
   Trash2,
   UserCheck,
   UserPlus,
   Users,
+  Wifi,
+  WifiOff,
   X,
   Zap,
 } from 'lucide-react';
 import { PhysicalCardGame } from '../../apps/kiosk/src/PhysicalCardGame';
 import { StaffAssistedEnrollmentModal } from './StaffAssistedEnrollmentModal';
+import {
+  PatientProfileAndHistoryModal,
+  ResetPasswordModal,
+  ScheduleCreatorAndDayModal,
+  WelcomeFaceScanModal,
+} from './PortalSubModals';
 
 export interface ClinicalStaffPortalShellProps {
   apiClient: DrTechCaresApiClient;
@@ -61,6 +70,163 @@ export interface ClinicalStaffPortalShellProps {
 
 type PortalTab = 'staff' | 'patients' | 'pts' | 'exercises' | 'schedules' | 'security';
 type SecuritySubTab = 'calls' | 'audit' | 'sessions' | 'bans' | 'kiosks';
+
+const PORTAL_TEXT: Record<
+  ClinicalLang,
+  {
+    nav: Record<PortalTab, string>;
+    headers: Record<PortalTab, { title: string; subtitle: string }>;
+    actions: {
+      welcomeScan: string;
+      quickCheckin: string;
+      kioskBtn: string;
+      returnKiosk: string;
+      logout: string;
+      cardGame: string;
+      cloudConnected: string;
+      cloudOffline: string;
+    };
+  }
+> = {
+  th: {
+    nav: {
+      staff: '1. จัดการผู้ใช้ staff',
+      patients: '2. ข้อมูลคนไข้',
+      pts: '3. ข้อมูลนักกายภาพ',
+      exercises: '4. ท่ากายภาพและมินิเกม/modpack',
+      schedules: '5. ตารางนัด',
+      security: '6. ประวัติและความปลอดภัย',
+    },
+    headers: {
+      staff: {
+        title: 'จัดการผู้ใช้และบุคลากรโรงพยาบาล',
+        subtitle: 'HOSPITAL STAFF & USER MANAGEMENT PORTAL',
+      },
+      patients: {
+        title: 'ทะเบียนประวัติและเวชระเบียนคนไข้',
+        subtitle: 'PATIENT DIRECTORY & ELECTRONIC HEALTH RECORDS',
+      },
+      pts: {
+        title: 'ข้อมูลนักกายภาพบำบัดและการกำกับดูแล',
+        subtitle: 'PHYSIOTHERAPIST DIRECTORY & CLINICAL GOVERNANCE',
+      },
+      exercises: {
+        title: 'คลังท่ากายภาพบำบัดและมินิเกม Modpack',
+        subtitle: 'REHAB EXERCISE LIBRARY & COGNITIVE MODPACKS',
+      },
+      schedules: {
+        title: 'ตารางฝึกกายภาพและปฏิทินการฟื้นฟู',
+        subtitle: 'CLINICAL PHYSICAL THERAPY SCHEDULE PLANNER',
+      },
+      security: {
+        title: 'ประวัติการใช้งานและบันทึกความปลอดภัย',
+        subtitle: 'TAMPER-EVIDENT SYSTEM AUDIT TRAIL & SECURITY',
+      },
+    },
+    actions: {
+      welcomeScan: 'ต้อนรับ & สแกนหน้า',
+      quickCheckin: 'เช็คอินเร่งด่วน',
+      kioskBtn: 'หน้าตู้ Kiosk',
+      returnKiosk: '← หน้าตู้ Kiosk',
+      logout: 'ออกจากระบบ',
+      cardGame: 'การ์ดกายภาพ (10 ข้อ)',
+      cloudConnected: 'Supabase Cloud',
+      cloudOffline: 'Offline (คลิกเพื่อลองใหม่)',
+    },
+  },
+  en: {
+    nav: {
+      staff: '1. Staff Management',
+      patients: '2. Patients Directory',
+      pts: '3. PT Directory',
+      exercises: '4. Exercises & Modpacks',
+      schedules: '5. Rehab Schedules',
+      security: '6. Audit & Security',
+    },
+    headers: {
+      staff: {
+        title: 'Hospital Staff & User Management',
+        subtitle: 'HOSPITAL STAFF & USER MANAGEMENT PORTAL',
+      },
+      patients: {
+        title: 'Patients Directory & Medical Records',
+        subtitle: 'PATIENT DIRECTORY & ELECTRONIC HEALTH RECORDS',
+      },
+      pts: {
+        title: 'Physiotherapist Directory & Governance',
+        subtitle: 'PHYSIOTHERAPIST DIRECTORY & CLINICAL GOVERNANCE',
+      },
+      exercises: {
+        title: 'Rehab Exercises & Cognitive Modpacks',
+        subtitle: 'REHAB EXERCISE LIBRARY & COGNITIVE MODPACKS',
+      },
+      schedules: {
+        title: 'Clinical Physical Therapy Schedule Planner',
+        subtitle: 'CLINICAL PHYSICAL THERAPY SCHEDULE PLANNER',
+      },
+      security: {
+        title: 'System Audit Trail, Bans & Kiosk Security',
+        subtitle: 'TAMPER-EVIDENT SYSTEM AUDIT TRAIL & SECURITY',
+      },
+    },
+    actions: {
+      welcomeScan: 'Welcome & Face Scan',
+      quickCheckin: 'Quick Check-in',
+      kioskBtn: 'Kiosk View',
+      returnKiosk: '← Back to Kiosk',
+      logout: 'Sign Out',
+      cardGame: 'Rehab Cards (10 Qs)',
+      cloudConnected: 'Supabase Cloud',
+      cloudOffline: 'Offline (Retry)',
+    },
+  },
+  cn: {
+    nav: {
+      staff: '1. 医护人员管理',
+      patients: '2. 患者档案目录',
+      pts: '3. 康复师团队',
+      exercises: '4. 康复动作与题库',
+      schedules: '5. 康复日程安排',
+      security: '6. 审计与安全中心',
+    },
+    headers: {
+      staff: {
+        title: '医院员工与账户权限管理',
+        subtitle: 'HOSPITAL STAFF & USER MANAGEMENT PORTAL',
+      },
+      patients: {
+        title: '患者电子健康档案目录',
+        subtitle: 'PATIENT DIRECTORY & ELECTRONIC HEALTH RECORDS',
+      },
+      pts: {
+        title: '物理治疗师名录与临床督导',
+        subtitle: 'PHYSIOTHERAPIST DIRECTORY & CLINICAL GOVERNANCE',
+      },
+      exercises: {
+        title: '物理治疗动作库与认知训练包',
+        subtitle: 'REHAB EXERCISE LIBRARY & COGNITIVE MODPACKS',
+      },
+      schedules: {
+        title: '临床康复训练日程表',
+        subtitle: 'CLINICAL PHYSICAL THERAPY SCHEDULE PLANNER',
+      },
+      security: {
+        title: '系统安全审计日志与终端监控',
+        subtitle: 'TAMPER-EVIDENT SYSTEM AUDIT TRAIL & SECURITY',
+      },
+    },
+    actions: {
+      welcomeScan: '迎宾人脸识别',
+      quickCheckin: '快速签到',
+      kioskBtn: '终端界面',
+      returnKiosk: '← 返回终端画面',
+      logout: '退出登录',
+      cardGame: '康复认知卡 (10题)',
+      cloudConnected: 'Supabase 云端在线',
+      cloudOffline: '离线 (点击重试)',
+    },
+  },
+};
 
 const THAI_MONTHS = [
   'มกราคม',
@@ -95,33 +261,6 @@ const EN_MONTHS = [
 const WEEKDAY_NAMES_TH = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'];
 const CALENDAR_HEADERS_TH = ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'];
 
-const TAB_HEADER_META: Record<PortalTab, { title: string; subtitle: string }> = {
-  staff: {
-    title: 'จัดการผู้ใช้และบุคลากรโรงพยาบาล',
-    subtitle: 'HOSPITAL STAFF & USER MANAGEMENT PORTAL',
-  },
-  patients: {
-    title: 'ทะเบียนประวัติและเวชระเบียนคนไข้',
-    subtitle: 'PATIENT DIRECTORY & ELECTRONIC HEALTH RECORDS',
-  },
-  pts: {
-    title: 'ข้อมูลนักกายภาพบำบัดและการกำกับดูแล',
-    subtitle: 'PHYSIOTHERAPIST DIRECTORY & CLINICAL GOVERNANCE',
-  },
-  exercises: {
-    title: 'คลังท่ากายภาพบำบัดและมินิเกม Modpack',
-    subtitle: 'REHAB EXERCISE LIBRARY & COGNITIVE MODPACKS',
-  },
-  schedules: {
-    title: 'ตารางฝึกกายภาพและปฏิทินการฟื้นฟู',
-    subtitle: 'CLINICAL PHYSICAL THERAPY SCHEDULE PLANNER',
-  },
-  security: {
-    title: 'ประวัติการใช้งานและบันทึกความปลอดภัย',
-    subtitle: 'TAMPER-EVIDENT SYSTEM AUDIT TRAIL & SECURITY',
-  },
-};
-
 function formatThaiDateTime(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
@@ -135,38 +274,31 @@ function formatThaiDateTime(iso: string): string {
   return `${day} ${month} ${beYear} • ${hh}:${mm} น.`;
 }
 
-function buildDefaultSchedule(
-  modpackId: string,
-  exercises: ManagedExerciseRecord[],
-  allowPhysio: boolean,
-): DailyScheduleDay[] {
-  return Array.from({ length: 7 }, (_, dayIndex) => {
-    const isRest = dayIndex === 2 || dayIndex === 5 || dayIndex === 6;
-    const usePhysio = allowPhysio && dayIndex % 2 === 1 && exercises.length > 0;
-    return {
-      dayIndex,
-      dayType: isRest ? 'rest' : 'training',
-      activityType: usePhysio ? 'physio_exercise' : 'minigame',
-      difficulty: dayIndex >= 3 ? 'medium' : 'easy',
-      label: isRest ? 'วันพักฟื้นกล้ามเนื้อ' : usePhysio ? 'ฝึกกายภาพ AI' : 'มินิเกมกระตุ้นสมอง',
-      exercises:
-        !isRest && usePhysio && exercises[0]
-          ? [
-              {
-                exerciseId: exercises[0].id,
-                side: 'right',
-                sets: 2,
-                reps: 8,
-                holdSec: 2,
-                targetMinDeg: 30,
-                targetMaxDeg: 135,
-                allowedStarterSide: 'both',
-              },
-            ]
-          : [],
-      cognitiveModpackId: modpackId,
-    };
-  });
+function isPatientFaceVerified(p: PatientRecord): boolean {
+  if (p.faceBiometricStatus === 'PENDING') return false;
+  if (p.faceBiometricStatus === 'VERIFIED') return true;
+  return Boolean(p.biometricHistory?.raw_frames?.length);
+}
+
+function playEmergencyChime() {
+  try {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.setValueAtTime(660, ctx.currentTime + 0.14);
+    gain.gain.setValueAtTime(0.12, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.36);
+  } catch {
+    // ignore audio autoplay restrictions
+  }
 }
 
 export function ClinicalStaffPortalShell({
@@ -176,10 +308,16 @@ export function ClinicalStaffPortalShell({
   onReturnToKiosk,
 }: ClinicalStaffPortalShellProps) {
   const { lang, setLang } = useClinicalI18n();
+  const locale = PORTAL_TEXT[lang];
   const isAdmin = currentUser.role === 'super_admin';
 
   const [activeTab, setActiveTab] = useState<PortalTab>(isAdmin ? 'staff' : 'patients');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // Supabase connection health ping state
+  const [cloudHealth, setCloudHealth] = useState<{ online: boolean; latencyMs?: number }>({
+    online: true,
+  });
 
   // Core data state
   const [users, setUsers] = useState<UserAccount[]>([]);
@@ -199,16 +337,27 @@ export function ClinicalStaffPortalShell({
     kioskAutoResetSec: 30,
   });
   const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [bannerMessage, setBannerMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
 
   // Modals
   const [enrollModalOpen, setEnrollModalOpen] = useState(false);
+  const [enrollTargetPatient, setEnrollTargetPatient] = useState<PatientRecord | null>(null);
+  const [welcomeFaceModalOpen, setWelcomeFaceModalOpen] = useState(false);
   const [addStaffModalOpen, setAddStaffModalOpen] = useState(false);
+  const [resetPassUser, setResetPassUser] = useState<UserAccount | null>(null);
   const [quickCheckinModalOpen, setQuickCheckinModalOpen] = useState(false);
   const [cardGameModalOpen, setCardGameModalOpen] = useState(false);
-  const [selectedPatientModal, setSelectedPatientModal] = useState<PatientRecord | null>(null);
+  const [patientModalState, setPatientModalState] = useState<{
+    patient: PatientRecord | null;
+    tab: 'profile' | 'history';
+  }>({ patient: null, tab: 'profile' });
   const [selectedPtDetailModal, setSelectedPtDetailModal] = useState<UserAccount | null>(null);
-  const [scheduleEditorOpen, setScheduleEditorOpen] = useState(false);
+  const [assignPatientIdForPt, setAssignPatientIdForPt] = useState('');
+  const [scheduleModalMode, setScheduleModalMode] = useState<'create' | 'day_detail' | null>(null);
+  const [selectedCalendarDateIso, setSelectedCalendarDateIso] = useState<string | null>(null);
+  const [weeklyEditorOpen, setWeeklyEditorOpen] = useState(false);
+  const [registerKioskModalOpen, setRegisterKioskModalOpen] = useState(false);
 
   // Filters
   const [staffSearch, setStaffSearch] = useState('');
@@ -232,17 +381,12 @@ export function ClinicalStaffPortalShell({
 
   // Tab 6 Security sub-tab
   const [securitySubTab, setSecuritySubTab] = useState<SecuritySubTab>('calls');
+  const [auditSearch, setAuditSearch] = useState('');
   const [banType, setBanType] = useState<'ip' | 'device'>('ip');
   const [banValue, setBanValue] = useState('');
   const [banReason, setBanReason] = useState('');
-
-  // Patient detail modal state
-  const [patientNotes, setPatientNotes] = useState<MedicalNoteRecord[]>([]);
-  const [newMedicalNote, setNewMedicalNote] = useState('');
-  const [delegatePtId, setDelegatePtId] = useState('');
-  const [delegateNote, setDelegateNote] = useState('');
-  const [reportSummary, setReportSummary] = useState('');
-  const [reportAiRec, setReportAiRec] = useState('');
+  const [newKioskCode, setNewKioskCode] = useState('');
+  const [newKioskLocation, setNewKioskLocation] = useState('');
 
   // Add Staff form
   const [newStaffUsername, setNewStaffUsername] = useState('');
@@ -256,14 +400,15 @@ export function ClinicalStaffPortalShell({
   // Tab 4 Exercise & Modpack creation forms
   const [exCode, setExCode] = useState('');
   const [exNameTh, setExNameTh] = useState('');
-  const [exNameEn, setExNameEn] = useState('');
   const [exInstructionTh, setExInstructionTh] = useState('');
   const [exCategory, setExCategory] = useState<ExerciseConfig['category']>('upper_limb');
-  const [exDefaultSide, setExDefaultSide] = useState<BodySide>('right');
+  const [exDefaultSide, setExDefaultSide] = useState<BodySide | 'both'>('right');
 
   const [mpName, setMpName] = useState('');
   const [mpQuestionCount, setMpQuestionCount] = useState(10);
   const [mpCategory, setMpCategory] = useState('ผลไม้');
+
+  const prevOpenCallCountRef = useRef(0);
 
   const flashBanner = useCallback((kind: 'success' | 'error', text: string) => {
     setBannerMessage({ kind, text });
@@ -272,10 +417,15 @@ export function ClinicalStaffPortalShell({
     }, 4500);
   }, []);
 
+  const pingCloudHealth = useCallback(async () => {
+    const h = await apiClient.checkHealth();
+    setCloudHealth({ online: h.ok && h.supabaseConnected, latencyMs: h.latencyMs });
+  }, [apiClient]);
+
   const refreshAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [uRes, pRes, exRes, mpRes, sessRes, callsRes, settingsRes, secRes] = await Promise.all([
+      const [uRes, pRes, exRes, mpRes, sessRes, callsRes, settingsRes, secRes, healthRes] = await Promise.all([
         apiClient.listUsers().catch(() => []),
         apiClient.listPatients().catch(() => []),
         apiClient.listExercises().catch(() => []),
@@ -284,6 +434,7 @@ export function ClinicalStaffPortalShell({
         apiClient.listStaffCalls().catch(() => []),
         apiClient.getSystemSettings().catch(() => null),
         isAdmin ? apiClient.listSecurityAudit().catch(() => null) : Promise.resolve(null),
+        apiClient.checkHealth().catch(() => ({ ok: false, supabaseConnected: false, latencyMs: 0 })),
       ]);
 
       setUsers(uRes);
@@ -292,6 +443,13 @@ export function ClinicalStaffPortalShell({
       setModpacks(mpRes);
       setSessions(sessRes);
       setStaffCalls(callsRes);
+      setCloudHealth({ online: healthRes.ok && healthRes.supabaseConnected, latencyMs: healthRes.latencyMs });
+
+      const nextOpenCount = callsRes.filter((c) => c.status === 'open').length;
+      if (nextOpenCount > prevOpenCallCountRef.current) {
+        playEmergencyChime();
+      }
+      prevOpenCallCountRef.current = nextOpenCount;
 
       if (settingsRes) {
         setSystemSettings(settingsRes.settings);
@@ -316,14 +474,43 @@ export function ClinicalStaffPortalShell({
 
   useEffect(() => {
     refreshAll();
-    const timer = window.setInterval(() => {
+    const pollTimer = window.setInterval(() => {
+      void pingCloudHealth();
       apiClient
         .listStaffCalls()
-        .then((calls) => setStaffCalls(calls))
+        .then((calls) => {
+          const nextOpen = calls.filter((c) => c.status === 'open').length;
+          if (nextOpen > prevOpenCallCountRef.current) playEmergencyChime();
+          prevOpenCallCountRef.current = nextOpen;
+          setStaffCalls(calls);
+        })
         .catch(() => {});
-    }, 12000);
-    return () => window.clearInterval(timer);
-  }, [refreshAll, apiClient]);
+    }, 10000);
+
+    // Supabase Realtime subscription for emergency Kiosk staff calls
+    const sb = apiClient.getSupabaseClient();
+    const channel = sb
+      ? sb
+          .channel('drtechcares-staff-calls')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'staff_calls' }, () => {
+            apiClient
+              .listStaffCalls()
+              .then((calls) => {
+                playEmergencyChime();
+                setStaffCalls(calls);
+              })
+              .catch(() => {});
+          })
+          .subscribe()
+      : null;
+
+    return () => {
+      window.clearInterval(pollTimer);
+      if (sb && channel) {
+        void sb.removeChannel(channel);
+      }
+    };
+  }, [refreshAll, pingCloudHealth, apiClient]);
 
   useEffect(() => {
     if (!selectedSchedulePatientId) return;
@@ -331,36 +518,30 @@ export function ClinicalStaffPortalShell({
       .getPatientCourse(selectedSchedulePatientId)
       .then((course) => {
         setPatientCourse(course);
-        const fallbackModpackId = modpacks[0]?.id ?? 'modpack-default';
+        const fallbackModpackId = modpacks[0]?.id ?? 'modpack-core-99';
         if (course) {
           setCourseTitle(course.title);
           setCourseModpackId(course.cognitiveModpackId || fallbackModpackId);
           setWeeklySchedule(
             course.weeklySchedule.length === 7
               ? course.weeklySchedule
-              : buildDefaultSchedule(
-                  course.cognitiveModpackId || fallbackModpackId,
-                  exercises,
-                  isAdmin || systemSettings.aiPoseDetectionEnabled,
-                ),
-          );
-        } else {
-          setCourseTitle('แผนฟื้นฟูรายสัปดาห์เฉพาะบุคคล');
-          setCourseModpackId(fallbackModpackId);
-          setWeeklySchedule(
-            buildDefaultSchedule(
-              fallbackModpackId,
-              exercises,
-              isAdmin || systemSettings.aiPoseDetectionEnabled,
-            ),
+              : Array.from({ length: 7 }, (_, dayIndex) => ({
+                  dayIndex,
+                  dayType: dayIndex % 2 === 0 ? 'training' : 'rest',
+                  activityType: 'minigame',
+                  difficulty: 'medium',
+                  label: dayIndex % 2 === 0 ? 'มินิเกมกระตุ้นสมอง' : 'วันพักฟื้น',
+                  exercises: [],
+                  cognitiveModpackId: fallbackModpackId,
+                })),
           );
         }
       })
       .catch(() => {});
-  }, [selectedSchedulePatientId, apiClient, modpacks, exercises, isAdmin, systemSettings.aiPoseDetectionEnabled]);
+  }, [selectedSchedulePatientId, apiClient, modpacks]);
 
   const ptUsers = useMemo(() => users.filter((u) => u.role === 'pt'), [users]);
-  const openStaffCalls = useMemo(() => staffCalls.filter((c) => c.status === 'open'), [staffCalls]);
+  const openStaffCalls = useMemo(() => staffCalls.filter((c) => c.status !== 'resolved'), [staffCalls]);
 
   const ptNameMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -386,9 +567,9 @@ export function ClinicalStaffPortalShell({
   const filteredPatients = useMemo(() => {
     const q = patientSearch.trim().toLowerCase();
     return patients.filter((p) => {
-      const hasFace = Boolean(p.biometricHistory?.raw_frames?.length);
-      if (patientFaceFilter === 'enrolled' && !hasFace) return false;
-      if (patientFaceFilter === 'pending' && hasFace) return false;
+      const verified = isPatientFaceVerified(p);
+      if (patientFaceFilter === 'enrolled' && !verified) return false;
+      if (patientFaceFilter === 'pending' && verified) return false;
       if (!q) return true;
       return (
         p.fullName.toLowerCase().includes(q) ||
@@ -412,25 +593,30 @@ export function ClinicalStaffPortalShell({
     });
   }, [ptUsers, ptSearch]);
 
+  const filteredAuditLogs = useMemo(() => {
+    const q = auditSearch.trim().toLowerCase();
+    if (!q) return auditLogs;
+    return auditLogs.filter(
+      (l) =>
+        l.eventType.toLowerCase().includes(q) ||
+        l.actorName.toLowerCase().includes(q) ||
+        l.detail.toLowerCase().includes(q) ||
+        l.ipAddress.toLowerCase().includes(q),
+    );
+  }, [auditLogs, auditSearch]);
+
   const selectedSchedulePatient = useMemo(
     () => patients.find((p) => p.id === selectedSchedulePatientId) ?? patients[0] ?? null,
     [patients, selectedSchedulePatientId],
   );
 
-  // Open Patient Medical Record & Delegation Modal
-  const openPatientRecordModal = async (patient: PatientRecord) => {
-    setSelectedPatientModal(patient);
-    setDelegatePtId(patient.delegatedToPtId ?? patient.assignedPtId ?? '');
-    setDelegateNote(patient.delegationNote ?? '');
-    setNewMedicalNote('');
-    setReportSummary('');
-    setReportAiRec('');
-    const notes = await apiClient.listMedicalNotes(patient.id).catch(() => []);
-    setPatientNotes(notes);
-  };
-
   const handleCreateStaff = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (newStaffRole === 'pt' && !newStaffLicense.trim()) {
+      flashBanner('error', 'กรุณาระบุเลขที่ใบประกอบวิชาชีพสำหรับนักกายภาพบำบัด');
+      return;
+    }
+    setSubmitting(true);
     try {
       await apiClient.createUser({
         username: newStaffUsername.trim(),
@@ -447,58 +633,70 @@ export function ClinicalStaffPortalShell({
       setNewStaffName('');
       setNewStaffPhone('');
       setNewStaffLicense('');
-      flashBanner('success', 'เพิ่มบัญชีบุคลากรเรียบร้อยแล้ว');
+      flashBanner('success', 'เพิ่มบัญชีบุคลากรและบันทึก Audit Log เรียบร้อยแล้ว');
       await refreshAll();
     } catch (err) {
       flashBanner('error', err instanceof Error ? err.message : 'เพิ่มบุคลากรไม่สำเร็จ');
+    } finally {
+      setSubmitting(false);
     }
   };
 
   const handleSaveWeeklyCourse = async () => {
     if (!selectedSchedulePatient) return;
+    setSubmitting(true);
     try {
       const saved = await apiClient.upsertPatientCourse({
         patientId: selectedSchedulePatient.id,
         title: courseTitle.trim() || 'แผนฟื้นฟูรายสัปดาห์',
-        cognitiveModpackId: courseModpackId || modpacks[0]?.id || 'modpack-default',
+        cognitiveModpackId: courseModpackId || modpacks[0]?.id || 'modpack-core-99',
         weeklySchedule,
       });
       setPatientCourse(saved);
-      setScheduleEditorOpen(false);
-      flashBanner('success', `บันทึกตารางฝึกของ ${selectedSchedulePatient.fullName} เรียบร้อยแล้ว`);
+      setWeeklyEditorOpen(false);
+      flashBanner('success', `บันทึกตารางฝึก 7 วันของ ${selectedSchedulePatient.fullName} เรียบร้อย`);
       await refreshAll();
     } catch (err) {
       flashBanner('error', err instanceof Error ? err.message : 'บันทึกตารางฝึกไม่สำเร็จ');
+    } finally {
+      setSubmitting(false);
     }
   };
 
   const handleClearSchedule = async () => {
     if (!selectedSchedulePatient) return;
-    const emptyRest = Array.from({ length: 7 }, (_, dayIndex) => ({
-      dayIndex,
-      dayType: 'rest' as const,
-      activityType: 'minigame' as const,
-      difficulty: 'easy' as const,
-      label: 'พักฟื้น',
-      exercises: [],
-      cognitiveModpackId: modpacks[0]?.id || 'modpack-default',
-    }));
+    if (!window.confirm(`ยืนยันล้างตารางนัดทั้งหมดของ ${selectedSchedulePatient.fullName}?`)) return;
+    setSubmitting(true);
     try {
-      const saved = await apiClient.upsertPatientCourse({
+      const emptyRest = Array.from({ length: 7 }, (_, dayIndex) => ({
+        dayIndex,
+        dayType: 'rest' as const,
+        activityType: 'minigame' as const,
+        difficulty: 'easy' as const,
+        label: 'พักฟื้น',
+        exercises: [],
+        cognitiveModpackId: modpacks[0]?.id || 'modpack-core-99',
+      }));
+      await apiClient.upsertPatientCourse({
         patientId: selectedSchedulePatient.id,
         title: 'ล้างตารางนัดชั่วคราว',
-        cognitiveModpackId: modpacks[0]?.id || 'modpack-default',
+        cognitiveModpackId: modpacks[0]?.id || 'modpack-core-99',
         weeklySchedule: emptyRest,
       });
-      setPatientCourse(saved);
+      await apiClient.updatePatient(selectedSchedulePatient.id, {
+        nextAppointmentDate: '',
+        rehabSchedules: [],
+      });
       setWeeklySchedule(emptyRest);
-      flashBanner('success', `ล้างตารางนัดของ ${selectedSchedulePatient.fullName} แล้ว`);
+      flashBanner('success', `ล้างตารางนัดทั้งหมดของ ${selectedSchedulePatient.fullName} แล้ว`);
+      await refreshAll();
     } catch (err) {
       flashBanner('error', err instanceof Error ? err.message : 'ล้างตารางนัดไม่สำเร็จ');
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  // Calendar grid cells for current month
   const calendarDays = useMemo(() => {
     const year = calendarDate.getFullYear();
     const month = calendarDate.getMonth();
@@ -511,6 +709,17 @@ export function ClinicalStaffPortalShell({
   }, [calendarDate]);
 
   const scheduleStats = useMemo(() => {
+    const customList: RehabScheduleItem[] = selectedSchedulePatient?.rehabSchedules ?? [];
+    if (customList.length > 0) {
+      return {
+        total: customList.length,
+        active: customList.filter((s) => s.status === 'ACTIVE').length,
+        paused: customList.filter((s) => s.status === 'REST').length,
+        completed:
+          customList.filter((s) => s.status === 'COMPLETED').length +
+          sessions.filter((s) => s.patientId === selectedSchedulePatient?.id).length,
+      };
+    }
     const activeDays = weeklySchedule.filter((d) => d.dayType === 'training').length;
     const restDays = weeklySchedule.filter((d) => d.dayType === 'rest').length;
     const completed = selectedSchedulePatient
@@ -524,8 +733,10 @@ export function ClinicalStaffPortalShell({
     };
   }, [weeklySchedule, selectedSchedulePatient, sessions]);
 
-  const currentHeader = TAB_HEADER_META[activeTab];
-  const scheduledBadgeCount = patients.filter((p) => Boolean(p.nextAppointmentDate)).length || openStaffCalls.length;
+  const currentHeader = locale.headers[activeTab];
+  const scheduledBadgeCount = patients.filter(
+    (p) => Boolean(p.nextAppointmentDate) || Boolean(p.rehabSchedules?.length),
+  ).length;
 
   return (
     <div className="min-h-screen flex bg-[#f4f7fb] text-slate-900">
@@ -536,7 +747,6 @@ export function ClinicalStaffPortalShell({
         } shrink-0 bg-[#0b1f33] text-slate-100 flex flex-col justify-between border-r border-slate-800/80 transition-all duration-200 select-none`}
       >
         <div>
-          {/* Brand Block */}
           <div className="flex items-center justify-between gap-2 px-4 py-5 border-b border-white/10">
             <div className="flex items-center gap-3 min-w-0">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-400 to-cyan-500 text-slate-950 shadow-md">
@@ -555,23 +765,27 @@ export function ClinicalStaffPortalShell({
             <button
               type="button"
               onClick={() => setSidebarCollapsed((c) => !c)}
-              className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white"
+              className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white cursor-pointer"
               title="ย่อ/ขยายเมนู"
             >
               <Monitor className="h-4 w-4" />
             </button>
           </div>
 
-          {/* 6 Sidebar Tabs */}
           <nav className="p-3 space-y-1.5 text-xs font-semibold">
             {(
               [
-                { id: 'staff', label: '1. จัดการผู้ใช้ staff', icon: Users },
-                { id: 'patients', label: '2. ข้อมูลคนไข้', icon: Activity },
-                { id: 'pts', label: '3. ข้อมูลนักกายภาพ', icon: UserCheck },
-                { id: 'exercises', label: '4. ท่ากายภาพและมินิเกม/modpack', icon: Gamepad2 },
-                { id: 'schedules', label: '5. ตารางนัด', icon: Calendar, badge: scheduledBadgeCount },
-                { id: 'security', label: '6. ประวัติและความปลอดภัย', icon: Shield, badge: openStaffCalls.length || undefined },
+                { id: 'staff', label: locale.nav.staff, icon: Users },
+                { id: 'patients', label: locale.nav.patients, icon: Activity },
+                { id: 'pts', label: locale.nav.pts, icon: UserCheck },
+                { id: 'exercises', label: locale.nav.exercises, icon: Gamepad2 },
+                { id: 'schedules', label: locale.nav.schedules, icon: Calendar, badge: scheduledBadgeCount || undefined },
+                {
+                  id: 'security',
+                  label: locale.nav.security,
+                  icon: Shield,
+                  badge: openStaffCalls.length || undefined,
+                },
               ] as Array<{
                 id: PortalTab;
                 label: string;
@@ -586,7 +800,7 @@ export function ClinicalStaffPortalShell({
                   key={item.id}
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`w-full flex items-center justify-between gap-2.5 rounded-xl px-3.5 py-2.5 text-left transition ${
+                  className={`w-full flex items-center justify-between gap-2.5 rounded-xl px-3.5 py-2.5 text-left transition cursor-pointer ${
                     isActive
                       ? 'bg-gradient-to-r from-emerald-500 to-sky-500 text-white font-bold shadow-md shadow-emerald-950/30'
                       : 'text-slate-300 hover:bg-white/5 hover:text-white'
@@ -607,23 +821,26 @@ export function ClinicalStaffPortalShell({
           </nav>
         </div>
 
-        {/* Sidebar Bottom Controls */}
         <div className="p-3 space-y-2 border-t border-white/10 text-xs">
           <button
             type="button"
             onClick={() => setCardGameModalOpen(true)}
-            className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-blue-600 px-3 py-2.5 font-extrabold text-white shadow hover:opacity-95"
+            className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-blue-600 px-3 py-2.5 font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
           >
             <Gamepad2 className="h-4 w-4 shrink-0" />
-            {!sidebarCollapsed && <span>การ์ดกายภาพ (10 ข้อ)</span>}
+            {!sidebarCollapsed && <span>{locale.actions.cardGame}</span>}
           </button>
 
           {!sidebarCollapsed && (
             <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-900/60 px-3 py-2 text-[11px]">
               <span className="text-slate-400">ฐานข้อมูล: Cloud</span>
-              <span className="inline-flex items-center gap-1 font-bold text-emerald-400">
-                <span className="h-2 w-2 rounded-full bg-emerald-400" />
-                ปกติ
+              <span
+                className={`inline-flex items-center gap-1 font-bold ${
+                  cloudHealth.online ? 'text-emerald-400' : 'text-rose-400'
+                }`}
+              >
+                <span className={`h-2 w-2 rounded-full ${cloudHealth.online ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+                {cloudHealth.online ? 'ปกติ' : 'ออฟไลน์'}
               </span>
             </div>
           )}
@@ -632,20 +849,20 @@ export function ClinicalStaffPortalShell({
             <button
               type="button"
               onClick={onReturnToKiosk}
-              className="w-full flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 font-bold text-slate-200 hover:bg-white/10"
+              className="w-full flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 font-bold text-slate-200 hover:bg-white/10 cursor-pointer"
             >
               <Monitor className="h-4 w-4 shrink-0" />
-              {!sidebarCollapsed && <span>← หน้าตู้ Kiosk</span>}
+              {!sidebarCollapsed && <span>{locale.actions.returnKiosk}</span>}
             </button>
           )}
 
           <button
             type="button"
             onClick={() => void onLogout()}
-            className="w-full flex items-center justify-center gap-2 rounded-xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 font-bold text-rose-300 hover:bg-rose-500/20"
+            className="w-full flex items-center justify-center gap-2 rounded-xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 font-bold text-rose-300 hover:bg-rose-500/20 cursor-pointer"
           >
             <LogOut className="h-4 w-4 shrink-0" />
-            {!sidebarCollapsed && <span>ออกจากระบบ</span>}
+            {!sidebarCollapsed && <span>{locale.actions.logout}</span>}
           </button>
         </div>
       </aside>
@@ -669,7 +886,7 @@ export function ClinicalStaffPortalShell({
                   key={code}
                   type="button"
                   onClick={() => setLang(code)}
-                  className={`rounded-full px-2.5 py-1 text-[11px] transition ${
+                  className={`rounded-full px-2.5 py-1 text-[11px] transition cursor-pointer ${
                     lang === code ? 'bg-white text-emerald-700 shadow-sm border border-emerald-200' : 'text-slate-500'
                   }`}
                 >
@@ -678,37 +895,50 @@ export function ClinicalStaffPortalShell({
               ))}
             </div>
 
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 font-bold text-emerald-700">
-              <span className="h-2 w-2 rounded-full bg-emerald-500" />
-              Supabase Cloud
-            </span>
+            <button
+              type="button"
+              onClick={() => void pingCloudHealth()}
+              title={
+                cloudHealth.latencyMs !== undefined
+                  ? `Supabase Latency: ${cloudHealth.latencyMs}ms (คลิกเพื่อทดสอบการเชื่อมต่อ)`
+                  : 'คลิกเพื่อทดสอบ Supabase Cloud'
+              }
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 font-bold cursor-pointer transition ${
+                cloudHealth.online
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                  : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
+              }`}
+            >
+              {cloudHealth.online ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
+              {cloudHealth.online ? locale.actions.cloudConnected : locale.actions.cloudOffline}
+            </button>
 
             <button
               type="button"
-              onClick={() => setEnrollModalOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-full bg-emerald-600 px-3.5 py-1.5 font-bold text-white shadow-sm hover:bg-emerald-500"
+              onClick={() => setWelcomeFaceModalOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-full bg-emerald-600 px-3.5 py-1.5 font-bold text-white shadow-sm hover:bg-emerald-500 cursor-pointer"
             >
-              <UserPlus className="h-3.5 w-3.5" />
-              ต้อนรับ &amp; สแกนหน้า
+              <ScanFace className="h-3.5 w-3.5" />
+              {locale.actions.welcomeScan}
             </button>
 
             <button
               type="button"
               onClick={() => setQuickCheckinModalOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-3.5 py-1.5 font-bold text-amber-800 hover:bg-amber-100"
+              className="inline-flex items-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-3.5 py-1.5 font-bold text-amber-800 hover:bg-amber-100 cursor-pointer"
             >
               <Zap className="h-3.5 w-3.5 text-amber-500" />
-              เช็คอินเร่งด่วน
+              {locale.actions.quickCheckin}
             </button>
 
             {onReturnToKiosk && (
               <button
                 type="button"
                 onClick={onReturnToKiosk}
-                className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-white px-3.5 py-1.5 font-bold text-emerald-700 hover:bg-emerald-50"
+                className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-white px-3.5 py-1.5 font-bold text-emerald-700 hover:bg-emerald-50 cursor-pointer"
               >
                 <Monitor className="h-3.5 w-3.5" />
-                หน้าตู้ Kiosk
+                {locale.actions.kioskBtn}
               </button>
             )}
           </div>
@@ -718,7 +948,7 @@ export function ClinicalStaffPortalShell({
         <main className="flex-1 p-5 sm:p-6 overflow-y-auto space-y-5">
           {bannerMessage && (
             <div
-              className={`rounded-2xl border px-4 py-3 text-xs font-bold flex items-center justify-between ${
+              className={`rounded-2xl border px-4 py-3 text-xs font-bold flex items-center justify-between shadow-sm ${
                 bannerMessage.kind === 'success'
                   ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
                   : 'border-rose-200 bg-rose-50 text-rose-800'
@@ -750,7 +980,7 @@ export function ClinicalStaffPortalShell({
                   <button
                     type="button"
                     onClick={() => void refreshAll()}
-                    className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                    className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer"
                     title="รีเฟรช"
                   >
                     <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -759,7 +989,7 @@ export function ClinicalStaffPortalShell({
                     <button
                       type="button"
                       onClick={() => setAddStaffModalOpen(true)}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500"
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500 cursor-pointer"
                     >
                       <Plus className="h-4 w-4" />
                       เพิ่มเจ้าหน้าที่ใหม่
@@ -795,7 +1025,7 @@ export function ClinicalStaffPortalShell({
                 >
                   <option value="all">ทุกสถานะ (All Status)</option>
                   <option value="active">ปกติ (Active)</option>
-                  <option value="inactive">ระงับใช้งาน (Inactive)</option>
+                  <option value="inactive">ระงับใช้งาน (Suspended)</option>
                 </select>
               </div>
 
@@ -859,27 +1089,32 @@ export function ClinicalStaffPortalShell({
                         {isAdmin && (
                           <td className="px-5 py-3.5 text-right">
                             <div className="inline-flex items-center gap-1.5">
-                              {u.role !== 'super_admin' && (
+                              {u.id !== currentUser.id && (
                                 <button
                                   type="button"
+                                  disabled={submitting}
                                   onClick={async () => {
-                                    await apiClient.updateUser(u.id, { active: !u.active });
-                                    await refreshAll();
+                                    setSubmitting(true);
+                                    try {
+                                      await apiClient.updateUser(u.id, { active: !u.active });
+                                      flashBanner(
+                                        'success',
+                                        u.active ? `ระงับสิทธิ์ @${u.username} แล้ว` : `เปิดใช้งาน @${u.username} แล้ว`,
+                                      );
+                                      await refreshAll();
+                                    } finally {
+                                      setSubmitting(false);
+                                    }
                                   }}
-                                  className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-100"
+                                  className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-100 cursor-pointer"
                                 >
                                   {u.active ? 'ระงับสิทธิ์' : 'เปิดใช้งาน'}
                                 </button>
                               )}
                               <button
                                 type="button"
-                                onClick={async () => {
-                                  const nextPass = window.prompt(`ตั้งรหัสผ่านใหม่สำหรับ @${u.username}`, 'Staff@2026');
-                                  if (!nextPass) return;
-                                  await apiClient.resetUserPassword(u.id, nextPass);
-                                  flashBanner('success', `รีเซ็ตรหัสผ่านให้ @${u.username} แล้ว`);
-                                }}
-                                className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700 hover:bg-sky-100"
+                                onClick={() => setResetPassUser(u)}
+                                className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700 hover:bg-sky-100 cursor-pointer"
                                 title="รีเซ็ตรหัสผ่าน"
                               >
                                 <KeyRound className="h-3.5 w-3.5" />
@@ -890,9 +1125,10 @@ export function ClinicalStaffPortalShell({
                                   onClick={async () => {
                                     if (!window.confirm(`ยืนยันลบบัญชี ${u.fullName}?`)) return;
                                     await apiClient.deleteUser(u.id);
+                                    flashBanner('success', `ลบบัญชี @${u.username} เรียบร้อยแล้ว`);
                                     await refreshAll();
                                   }}
-                                  className="rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-rose-600 hover:bg-rose-100"
+                                  className="rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-rose-600 hover:bg-rose-100 cursor-pointer"
                                   title="ลบผู้ใช้"
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
@@ -925,7 +1161,7 @@ export function ClinicalStaffPortalShell({
                   <div>
                     <h2 className="text-lg font-extrabold text-slate-900">ทะเบียนคนไข้ (Patients Directory)</h2>
                     <p className="text-xs text-slate-500">
-                      ค้นหาคนไข้ กำหนด PT ผู้รับผิดชอบ ส่งตัวสแกนหน้า และดูเวชระเบียนแบบไม่สามารถแก้ไขย้อนหลังได้
+                      ค้นหาคนไข้ กำหนด PT ผู้รับผิดชอบ ส่งตัวสแกนหน้า และดูประวัติการฝึกย้อนหลัง
                     </p>
                   </div>
                 </div>
@@ -933,15 +1169,18 @@ export function ClinicalStaffPortalShell({
                   <button
                     type="button"
                     onClick={() => void refreshAll()}
-                    className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                    className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer"
                     title="รีเฟรช"
                   >
                     <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                   </button>
                   <button
                     type="button"
-                    onClick={() => setEnrollModalOpen(true)}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500"
+                    onClick={() => {
+                      setEnrollTargetPatient(null);
+                      setEnrollModalOpen(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500 cursor-pointer"
                   >
                     <UserPlus className="h-4 w-4" />+ ลงทะเบียนคนไข้ใหม่
                   </button>
@@ -960,7 +1199,7 @@ export function ClinicalStaffPortalShell({
                   <button
                     type="button"
                     onClick={() => void refreshAll()}
-                    className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-emerald-500"
+                    className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-emerald-500 cursor-pointer"
                   >
                     ค้นหา
                   </button>
@@ -971,26 +1210,27 @@ export function ClinicalStaffPortalShell({
                   className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700"
                 >
                   <option value="all">ทุกสถานะใบหน้า</option>
-                  <option value="enrolled">ลงทะเบียนหน้าแล้ว (10 เฟรม)</option>
-                  <option value="pending">รอสแกนหน้า 10 เฟรม</option>
+                  <option value="enrolled">ลงทะเบียนใบหน้าแล้ว (VERIFIED)</option>
+                  <option value="pending">ยังไม่สแกนใบหน้า (PENDING)</option>
                 </select>
               </div>
 
               <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-x-auto">
-                <table className="w-full min-w-[820px] text-left text-xs">
+                <table className="w-full min-w-[920px] text-left text-xs">
                   <thead className="border-b border-slate-100 bg-slate-50/70 text-[11px] font-bold text-slate-500">
                     <tr>
                       <th className="px-5 py-3.5">รหัส HN</th>
                       <th className="px-4 py-3.5">ชื่อ - นามสกุล</th>
                       <th className="px-4 py-3.5">อายุ / เพศ</th>
-                      <th className="px-4 py-3.5">เบอร์โทร</th>
+                      <th className="px-4 py-3.5">เบอร์โทร / PT ผู้ดูแล</th>
                       <th className="px-4 py-3.5">สถานะชีวมาตร</th>
                       <th className="px-5 py-3.5 text-right">การจัดการ</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {filteredPatients.map((p) => {
-                      const hasFace = Boolean(p.biometricHistory?.raw_frames?.length);
+                      const verified = isPatientFaceVerified(p);
+                      const ptLabel = ptNameMap.get(p.delegatedToPtId || p.assignedPtId) || 'กภ. ประจำคลินิก';
                       return (
                         <tr key={p.id} className="hover:bg-slate-50/80 transition">
                           <td className="px-5 py-3.5">
@@ -1000,12 +1240,17 @@ export function ClinicalStaffPortalShell({
                           </td>
                           <td className="px-4 py-3.5">
                             <div className="font-bold text-slate-900">{p.fullName}</div>
-                            <div className="text-[11px] text-slate-400 truncate max-w-[220px]">{p.diagnosis}</div>
+                            <div className="text-[11px] text-slate-400 truncate max-w-[210px]">{p.diagnosis}</div>
                           </td>
-                          <td className="px-4 py-3.5 font-medium text-slate-700">{p.age} ปี</td>
-                          <td className="px-4 py-3.5 font-mono text-slate-700">{p.phone || '-'}</td>
+                          <td className="px-4 py-3.5 font-medium text-slate-700">
+                            {p.age} ปี / {p.gender || 'ชาย'}
+                          </td>
                           <td className="px-4 py-3.5">
-                            {hasFace ? (
+                            <div className="font-mono text-slate-700">{p.phone || '-'}</div>
+                            <div className="text-[11px] font-semibold text-emerald-700">{ptLabel}</div>
+                          </td>
+                          <td className="px-4 py-3.5">
+                            {verified ? (
                               <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-bold text-emerald-700">
                                 <CheckCircle2 className="h-3.5 w-3.5" />
                                 ลงทะเบียนหน้าแล้ว
@@ -1013,7 +1258,7 @@ export function ClinicalStaffPortalShell({
                             ) : (
                               <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-bold text-amber-800">
                                 <Clock className="h-3.5 w-3.5" />
-                                รอสแกนหน้า 10 เฟรม
+                                ยังไม่สแกนใบหน้า
                               </span>
                             )}
                           </td>
@@ -1021,8 +1266,8 @@ export function ClinicalStaffPortalShell({
                             <div className="inline-flex items-center gap-1.5">
                               <button
                                 type="button"
-                                onClick={() => void openPatientRecordModal(p)}
-                                className="inline-flex items-center gap-1 rounded-xl bg-blue-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-blue-500"
+                                onClick={() => setPatientModalState({ patient: p, tab: 'profile' })}
+                                className="inline-flex items-center gap-1 rounded-xl bg-blue-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-blue-500 cursor-pointer"
                               >
                                 <FileText className="h-3.5 w-3.5" />
                                 เวชระเบียน
@@ -1030,12 +1275,19 @@ export function ClinicalStaffPortalShell({
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setSelectedSchedulePatientId(p.id);
-                                  setActiveTab('schedules');
+                                  setEnrollTargetPatient(p);
+                                  setEnrollModalOpen(true);
                                 }}
-                                className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100"
+                                className="rounded-xl border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer"
                               >
-                                ตารางฝึก
+                                ส่งตัวสแกนหน้า
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPatientModalState({ patient: p, tab: 'history' })}
+                                className="rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                              >
+                                ดูประวัติการฝึก
                               </button>
                               {isAdmin && (
                                 <button
@@ -1043,9 +1295,10 @@ export function ClinicalStaffPortalShell({
                                   onClick={async () => {
                                     if (!window.confirm(`ยืนยันลบข้อมูลคนไข้ ${p.fullName} (รวม Face ID)?`)) return;
                                     await apiClient.deletePatientCascading(p.id);
+                                    flashBanner('success', `ลบข้อมูลคนไข้ ${p.fullName} แล้ว`);
                                     await refreshAll();
                                   }}
-                                  className="rounded-xl border border-rose-200 bg-rose-50 p-1.5 text-rose-600 hover:bg-rose-100"
+                                  className="rounded-xl border border-rose-200 bg-rose-50 p-1.5 text-rose-600 hover:bg-rose-100 cursor-pointer"
                                   title="ลบประวัติ (เฉพาะ Admin)"
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
@@ -1085,7 +1338,7 @@ export function ClinicalStaffPortalShell({
                 <button
                   type="button"
                   onClick={() => void refreshAll()}
-                  className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer"
                 >
                   <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                 </button>
@@ -1132,9 +1385,10 @@ export function ClinicalStaffPortalShell({
                                 onClick={async () => {
                                   if (!window.confirm(`ยืนยันลบบัญชี PT ${pt.fullName}?`)) return;
                                   await apiClient.deleteUser(pt.id);
+                                  flashBanner('success', `ลบบัญชี PT ${pt.fullName} แล้ว`);
                                   await refreshAll();
                                 }}
-                                className="rounded-lg p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                                className="rounded-lg p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer"
                                 title="ลบบัญชี PT"
                               >
                                 <Trash2 className="h-4 w-4" />
@@ -1146,7 +1400,7 @@ export function ClinicalStaffPortalShell({
                         <div className="flex items-center justify-between rounded-xl border border-amber-200/80 bg-amber-50/70 px-3.5 py-2 text-xs">
                           <span className="font-semibold text-amber-900">🏅 ใบประกอบวิชาชีพ:</span>
                           <span className="rounded-lg bg-white border border-amber-200 px-2.5 py-0.5 font-mono text-[11px] font-bold text-slate-800">
-                            {pt.licenseNo || 'กภ.12345'}
+                            {pt.licenseNo || 'PT-44012'}
                           </span>
                         </div>
 
@@ -1168,8 +1422,12 @@ export function ClinicalStaffPortalShell({
 
                       <button
                         type="button"
-                        onClick={() => setSelectedPtDetailModal(pt)}
-                        className="flex w-full items-center justify-between border-t border-slate-100 pt-3 text-xs font-bold text-slate-700 hover:text-emerald-700"
+                        onClick={() => {
+                          setSelectedPtDetailModal(pt);
+                          const unassigned = patients.find((p) => p.assignedPtId !== pt.id) ?? patients[0];
+                          setAssignPatientIdForPt(unassigned?.id ?? '');
+                        }}
+                        className="flex w-full items-center justify-between border-t border-slate-100 pt-3 text-xs font-bold text-slate-700 hover:text-emerald-700 cursor-pointer"
                       >
                         <span>ดูรายละเอียดและคนไข้</span>
                         <ChevronRight className="h-4 w-4" />
@@ -1192,14 +1450,14 @@ export function ClinicalStaffPortalShell({
                       ท่ากายภาพบำบัดและมินิเกมกระตุ้นสมอง (Exercises &amp; Modpacks)
                     </h2>
                     <p className="text-xs text-slate-500">
-                      จัดการชุดคำถาม Physical Card Modpack และปลดล็อกโหมด AI Detection สำหรับตู้ Kiosk
+                      จัดการชุดคำถาม Physical Card Modpack และปลดล็อกโหมด AI Pose Detection สำหรับตู้ Kiosk
                     </p>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => setCardGameModalOpen(true)}
-                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 px-4 py-2 text-xs font-extrabold text-white shadow hover:opacity-95"
+                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 px-4 py-2 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
                 >
                   <Gamepad2 className="h-4 w-4" />
                   ทดลองเล่นการ์ดกายภาพ 10 ข้อ
@@ -1218,30 +1476,44 @@ export function ClinicalStaffPortalShell({
                   <div className="font-extrabold text-slate-900">
                     สถานะตรวจจับท่ากายภาพอัตโนมัติ (AI Pose Detection):{' '}
                     <span className={systemSettings.aiPoseDetectionEnabled ? 'text-emerald-700' : 'text-amber-700'}>
-                      {systemSettings.aiPoseDetectionEnabled ? 'เปิดใช้งานคลินิกจริง (Active)' : 'อยู่ระหว่างพัฒนา (PT ล็อกไว้เฉพาะมินิเกม)'}
+                      {systemSettings.aiPoseDetectionEnabled
+                        ? 'เปิดใช้งาน AI Pose Detection สำหรับตู้ Kiosk แล้ว'
+                        : 'อยู่ระหว่างพัฒนา (PT ล็อกไว้เฉพาะมินิเกม)'}
                     </span>
                   </div>
                   <p className="text-slate-600 mt-0.5">
-                    เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) สามารถเปิด/ปิดโหมดกายภาพ AI ให้กับนักกายภาพบำบัดได้
+                    เฉพาะผู้อำนวยการโรงพยาบาล (ADMIN) สามารถปลดล็อกเปิดใช้ท่ากายภาพ AI บนตู้ Kiosk ได้
                   </p>
                 </div>
-                {isAdmin && (
-                  <button
-                    type="button"
-                    onClick={async () => {
+                <button
+                  type="button"
+                  disabled={!isAdmin || submitting}
+                  title={!isAdmin ? 'เฉพาะ ADMIN เท่านั้นที่สามารถปลดล็อกได้' : undefined}
+                  onClick={async () => {
+                    setSubmitting(true);
+                    try {
                       const updated = await apiClient.updateSystemSettings({
                         aiPoseDetectionEnabled: !systemSettings.aiPoseDetectionEnabled,
                       });
                       setSystemSettings(updated);
-                      flashBanner('success', 'อัปเดตสถานะ AI Pose Detection เรียบร้อยแล้ว');
-                    }}
-                    className={`rounded-xl px-4 py-2 text-xs font-bold text-white shadow-sm ${
-                      systemSettings.aiPoseDetectionEnabled ? 'bg-amber-600 hover:bg-amber-500' : 'bg-emerald-600 hover:bg-emerald-500'
-                    }`}
-                  >
-                    {systemSettings.aiPoseDetectionEnabled ? 'ตั้งสถานะเป็น: อยู่ระหว่างพัฒนา' : 'ปลดล็อกเปิดใช้ท่ากายภาพ AI'}
-                  </button>
-                )}
+                      flashBanner(
+                        'success',
+                        updated.aiPoseDetectionEnabled
+                          ? 'เปิดใช้งาน AI Pose Detection สำหรับตู้ Kiosk แล้ว'
+                          : 'ตั้งสถานะท่ากายภาพ AI เป็นอยู่ระหว่างพัฒนาแล้ว',
+                      );
+                    } finally {
+                      setSubmitting(false);
+                    }
+                  }}
+                  className={`rounded-xl px-4 py-2 text-xs font-bold text-white shadow-sm disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer ${
+                    systemSettings.aiPoseDetectionEnabled
+                      ? 'bg-amber-600 hover:bg-amber-500'
+                      : 'bg-emerald-600 hover:bg-emerald-500'
+                  }`}
+                >
+                  {systemSettings.aiPoseDetectionEnabled ? 'ตั้งสถานะเป็น: อยู่ระหว่างพัฒนา' : 'ปลดล็อกเปิดใช้ท่ากายภาพ AI'}
+                </button>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -1260,18 +1532,20 @@ export function ClinicalStaffPortalShell({
                             หมวดหมู่: {m.categories.join(', ')} • {m.questionCount} ข้อ
                           </div>
                         </div>
-                        {isAdmin && (
+                        {(isAdmin || m.createdBy === currentUser.id) && (
                           <button
                             type="button"
                             onClick={async () => {
                               try {
                                 await apiClient.deleteModpack(m.id);
+                                flashBanner('success', `ลบ Modpack "${m.name}" แล้ว`);
                                 await refreshAll();
                               } catch (err) {
                                 flashBanner('error', err instanceof Error ? err.message : 'ไม่สามารถลบ Modpack กลางได้');
                               }
                             }}
-                            className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                            className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer"
+                            title="ลบ Modpack"
                           >
                             <Trash2 className="h-4 w-4" />
                           </button>
@@ -1284,14 +1558,21 @@ export function ClinicalStaffPortalShell({
                     onSubmit={async (e) => {
                       e.preventDefault();
                       if (!mpName.trim()) return;
-                      await apiClient.createModpack({
-                        name: mpName.trim(),
-                        categories: [mpCategory],
-                        questionCount: mpQuestionCount,
-                      });
-                      setMpName('');
-                      flashBanner('success', 'สร้าง Modpack ใหม่เรียบร้อย');
-                      await refreshAll();
+                      setSubmitting(true);
+                      try {
+                        await apiClient.createModpack({
+                          name: mpName.trim(),
+                          categories: [mpCategory],
+                          questionCount: mpQuestionCount,
+                        });
+                        setMpName('');
+                        flashBanner('success', 'บันทึกชุดมินิเกม Modpack ลง Supabase เรียบร้อย');
+                        await refreshAll();
+                      } catch (err) {
+                        flashBanner('error', err instanceof Error ? err.message : 'เพิ่ม Modpack ไม่สำเร็จ');
+                      } finally {
+                        setSubmitting(false);
+                      }
                     }}
                     className="border-t border-slate-100 pt-3 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs"
                   >
@@ -1315,14 +1596,15 @@ export function ClinicalStaffPortalShell({
                     <input
                       type="number"
                       min={5}
-                      max={30}
+                      max={99}
                       value={mpQuestionCount}
                       onChange={(e) => setMpQuestionCount(Number(e.target.value))}
                       className="rounded-xl border border-slate-200 px-3 py-2"
                     />
                     <button
                       type="submit"
-                      className="sm:col-span-2 rounded-xl bg-emerald-600 px-3 py-2 font-bold text-white hover:bg-emerald-500"
+                      disabled={submitting}
+                      className="sm:col-span-2 rounded-xl bg-emerald-600 px-3 py-2 font-bold text-white hover:bg-emerald-500 disabled:opacity-50 cursor-pointer"
                     >
                       + เพิ่ม Modpack มินิเกม
                     </button>
@@ -1344,17 +1626,26 @@ export function ClinicalStaffPortalShell({
                             <span className="ml-1 rounded bg-sky-100 px-1.5 py-0.5 font-mono text-[10px] text-sky-800">
                               {ex.code}
                             </span>
+                            <span className="ml-1 rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-700 uppercase">
+                              {ex.detection.side}
+                            </span>
                           </div>
                           <div className="text-[11px] text-slate-500">{ex.instruction.th}</div>
                         </div>
-                        {isAdmin && (
+                        {(isAdmin || ex.createdBy === currentUser.id) && (
                           <button
                             type="button"
                             onClick={async () => {
-                              await apiClient.deleteExercise(ex.id);
-                              await refreshAll();
+                              try {
+                                await apiClient.deleteExercise(ex.id);
+                                flashBanner('success', `ลบท่ากายภาพ "${ex.name.th}" แล้ว`);
+                                await refreshAll();
+                              } catch (err) {
+                                flashBanner('error', err instanceof Error ? err.message : 'ไม่สามารถลบท่ากายภาพกลางได้');
+                              }
                             }}
-                            className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                            className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer"
+                            title="ลบท่ากายภาพ"
                           >
                             <Trash2 className="h-4 w-4" />
                           </button>
@@ -1363,11 +1654,12 @@ export function ClinicalStaffPortalShell({
                     ))}
                   </div>
 
-                  {isAdmin && (
-                    <form
-                      onSubmit={async (e) => {
-                        e.preventDefault();
-                        if (!exNameTh.trim()) return;
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      if (!exNameTh.trim()) return;
+                      setSubmitting(true);
+                      try {
                         const cleanCode = (exCode.trim() || `CUSTOM_${Date.now()}`).toUpperCase();
                         await apiClient.createExercise({
                           id: cleanCode.toLowerCase(),
@@ -1375,7 +1667,7 @@ export function ClinicalStaffPortalShell({
                           category: exCategory,
                           name: {
                             th: exNameTh.trim(),
-                            en: exNameEn.trim() || exNameTh.trim(),
+                            en: exNameTh.trim(),
                             cn: exNameTh.trim(),
                           },
                           instruction: {
@@ -1397,58 +1689,63 @@ export function ClinicalStaffPortalShell({
                         });
                         setExCode('');
                         setExNameTh('');
-                        setExNameEn('');
                         setExInstructionTh('');
-                        flashBanner('success', 'เพิ่มท่ากายภาพใหม่เข้าระบบแล้ว');
+                        flashBanner('success', 'เพิ่มท่ากายภาพบำบัดลง Supabase เรียบร้อย');
                         await refreshAll();
-                      }}
-                      className="border-t border-slate-100 pt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs"
+                      } catch (err) {
+                        flashBanner('error', err instanceof Error ? err.message : 'เพิ่มท่ากายภาพไม่สำเร็จ');
+                      } finally {
+                        setSubmitting(false);
+                      }
+                    }}
+                    className="border-t border-slate-100 pt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs"
+                  >
+                    <input
+                      value={exCode}
+                      onChange={(e) => setExCode(e.target.value)}
+                      placeholder="รหัสท่า (เช่น SHOULDER_LIFT)"
+                      className="rounded-xl border border-slate-200 px-3 py-2"
+                    />
+                    <select
+                      value={exCategory}
+                      onChange={(e) => setExCategory(e.target.value as ExerciseConfig['category'])}
+                      className="rounded-xl border border-slate-200 px-2.5 py-2"
                     >
-                      <input
-                        value={exCode}
-                        onChange={(e) => setExCode(e.target.value)}
-                        placeholder="รหัสท่า (เช่น SHOULDER_LIFT)"
-                        className="rounded-xl border border-slate-200 px-3 py-2"
-                      />
-                      <select
-                        value={exCategory}
-                        onChange={(e) => setExCategory(e.target.value as ExerciseConfig['category'])}
-                        className="rounded-xl border border-slate-200 px-2.5 py-2"
-                      >
-                        <option value="upper_limb">แขนและหัวไหล่ (Upper Limb)</option>
-                        <option value="lower_limb">ขาและเข่า (Lower Limb)</option>
-                        <option value="neck_trunk">คอและลำตัว (Neck &amp; Trunk)</option>
-                        <option value="balance">การทรงตัว (Balance)</option>
-                      </select>
-                      <input
-                        required
-                        value={exNameTh}
-                        onChange={(e) => setExNameTh(e.target.value)}
-                        placeholder="ชื่อท่าภาษาไทย..."
-                        className="rounded-xl border border-slate-200 px-3 py-2"
-                      />
-                      <select
-                        value={exDefaultSide}
-                        onChange={(e) => setExDefaultSide(e.target.value as BodySide)}
-                        className="rounded-xl border border-slate-200 px-2.5 py-2"
-                      >
-                        <option value="right">ข้างขวา (Right)</option>
-                        <option value="left">ข้างซ้าย (Left)</option>
-                      </select>
-                      <input
-                        value={exInstructionTh}
-                        onChange={(e) => setExInstructionTh(e.target.value)}
-                        placeholder="คำแนะนำผู้ป่วยขณะทำท่า..."
-                        className="sm:col-span-2 rounded-xl border border-slate-200 px-3 py-2"
-                      />
-                      <button
-                        type="submit"
-                        className="sm:col-span-2 rounded-xl bg-slate-900 px-3 py-2 font-bold text-white hover:bg-slate-800"
-                      >
-                        + เพิ่มท่ากายภาพบำบัด
-                      </button>
-                    </form>
-                  )}
+                      <option value="upper_limb">แขนและหัวไหล่ (Upper Limb)</option>
+                      <option value="lower_limb">ขาและเข่า (Lower Limb)</option>
+                      <option value="neck_trunk">คอและลำตัว (Neck &amp; Trunk)</option>
+                      <option value="balance">การทรงตัว (Balance)</option>
+                    </select>
+                    <input
+                      required
+                      value={exNameTh}
+                      onChange={(e) => setExNameTh(e.target.value)}
+                      placeholder="ชื่อท่าภาษาไทย..."
+                      className="rounded-xl border border-slate-200 px-3 py-2"
+                    />
+                    <select
+                      value={exDefaultSide}
+                      onChange={(e) => setExDefaultSide(e.target.value as BodySide | 'both')}
+                      className="rounded-xl border border-slate-200 px-2.5 py-2"
+                    >
+                      <option value="right">ข้างขวา (Right)</option>
+                      <option value="left">ข้างซ้าย (Left)</option>
+                      <option value="both">ทั้งสองข้าง (Both)</option>
+                    </select>
+                    <input
+                      value={exInstructionTh}
+                      onChange={(e) => setExInstructionTh(e.target.value)}
+                      placeholder="คำแนะนำผู้ป่วยขณะทำท่า..."
+                      className="sm:col-span-2 rounded-xl border border-slate-200 px-3 py-2"
+                    />
+                    <button
+                      type="submit"
+                      disabled={submitting}
+                      className="sm:col-span-2 rounded-xl bg-slate-900 px-3 py-2 font-bold text-white hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
+                    >
+                      + เพิ่มท่ากายภาพบำบัด
+                    </button>
+                  </form>
                 </div>
               </div>
             </div>
@@ -1457,7 +1754,6 @@ export function ClinicalStaffPortalShell({
           {/* TAB 5: SCHEDULES & CALENDAR */}
           {activeTab === 'schedules' && (
             <div className="space-y-4">
-              {/* Patient Header Card */}
               <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-wrap items-center justify-between gap-4">
                 <div className="flex items-start gap-3.5">
                   <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-700">
@@ -1504,30 +1800,42 @@ export function ClinicalStaffPortalShell({
                     <button
                       type="button"
                       onClick={() => void handleClearSchedule()}
-                      className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-rose-50 hover:text-rose-700"
+                      className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-rose-50 hover:text-rose-700 cursor-pointer"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                       ล้างตารางนัดทั้งหมด
                     </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setScheduleEditorOpen((v) => !v)}
-                    className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 px-4 py-2 text-xs font-extrabold text-white shadow hover:opacity-95"
-                  >
-                    <Plus className="h-4 w-4" />
-                    + สร้างตารางฝึกใหม่
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setWeeklyEditorOpen((v) => !v)}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer"
+                    >
+                      <SlidersHorizontal className="h-3.5 w-3.5" />
+                      แผนรายสัปดาห์ 7 วัน
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedCalendarDateIso(new Date().toISOString().slice(0, 10));
+                        setScheduleModalMode('create');
+                      }}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 px-4 py-2 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
+                    >
+                      <Plus className="h-4 w-4" />
+                      + สร้างตารางฝึกใหม่
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              {/* Sub-tabs */}
               <div className="flex items-center justify-between">
                 <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1 text-xs font-bold">
                   <button
                     type="button"
                     onClick={() => setScheduleSubTab('individual')}
-                    className={`rounded-lg px-4 py-1.5 transition ${
+                    className={`rounded-lg px-4 py-1.5 transition cursor-pointer ${
                       scheduleSubTab === 'individual' ? 'bg-emerald-50 text-emerald-700' : 'text-slate-500'
                     }`}
                   >
@@ -1536,7 +1844,7 @@ export function ClinicalStaffPortalShell({
                   <button
                     type="button"
                     onClick={() => setScheduleSubTab('all')}
-                    className={`rounded-lg px-4 py-1.5 transition ${
+                    className={`rounded-lg px-4 py-1.5 transition cursor-pointer ${
                       scheduleSubTab === 'all' ? 'bg-emerald-50 text-emerald-700' : 'text-slate-500'
                     }`}
                   >
@@ -1547,59 +1855,45 @@ export function ClinicalStaffPortalShell({
                 <button
                   type="button"
                   onClick={() => void refreshAll()}
-                  className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer"
                 >
                   <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                 </button>
               </div>
 
-              {/* Course / Weekly Editor Drawer when toggled */}
-              {scheduleEditorOpen && selectedSchedulePatient && (
+              {weeklyEditorOpen && selectedSchedulePatient && (
                 <div className="rounded-2xl border-2 border-emerald-200 bg-white p-5 space-y-4 shadow-md">
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-extrabold text-slate-900">
-                      กำหนดตารางกายภาพรายสัปดาห์ — {selectedSchedulePatient.fullName}
+                      กำหนดแผนประจำสัปดาห์ — {selectedSchedulePatient.fullName}
                     </h3>
                     <button
                       type="button"
-                      onClick={() => setScheduleEditorOpen(false)}
+                      onClick={() => setWeeklyEditorOpen(false)}
                       className="text-slate-400 hover:text-slate-700"
                     >
                       <X className="h-4 w-4" />
                     </button>
                   </div>
-
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                    <div>
-                      <label className="block font-bold text-slate-600 mb-1">ชื่อแผนฟื้นฟู (Course Title)</label>
-                      <input
-                        value={courseTitle}
-                        onChange={(e) => setCourseTitle(e.target.value)}
-                        className="w-full rounded-xl border border-slate-200 px-3 py-2 font-semibold"
-                      />
-                    </div>
-                    <div>
-                      <label className="block font-bold text-slate-600 mb-1">ชุดมินิเกม Modpack ประจำคอร์ส</label>
-                      <select
-                        value={courseModpackId}
-                        onChange={(e) => setCourseModpackId(e.target.value)}
-                        className="w-full rounded-xl border border-slate-200 px-3 py-2 font-semibold"
-                      >
-                        {modpacks.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name} ({m.questionCount} ข้อ)
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                    <input
+                      value={courseTitle}
+                      onChange={(e) => setCourseTitle(e.target.value)}
+                      placeholder="ชื่อแผนฟื้นฟู"
+                      className="rounded-xl border border-slate-200 px-3 py-2 font-semibold"
+                    />
+                    <select
+                      value={courseModpackId}
+                      onChange={(e) => setCourseModpackId(e.target.value)}
+                      className="rounded-xl border border-slate-200 px-3 py-2 font-semibold"
+                    >
+                      {modpacks.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name} ({m.questionCount} ข้อ)
+                        </option>
+                      ))}
+                    </select>
                   </div>
-
-                  {!isAdmin && !systemSettings.aiPoseDetectionEnabled && (
-                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs font-semibold text-amber-800">
-                      หมายเหตุความปลอดภัย: ท่ากายภาพบำบัด AI อยู่ในสถานะ &ldquo;อยู่ระหว่างพัฒนา&rdquo; PT สามารถสั่งจ่ายได้เฉพาะ &ldquo;มินิเกม (Minigame)&rdquo; หรือวันพักฟื้น
-                    </div>
-                  )}
-
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
                     {weeklySchedule.map((day, idx) => (
                       <div key={idx} className="rounded-xl border border-slate-200 bg-slate-50/80 p-3 space-y-2 text-xs">
@@ -1618,41 +1912,22 @@ export function ClinicalStaffPortalShell({
                             }}
                             className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold"
                           >
-                            <option value="training">วันฝึก (Training)</option>
-                            <option value="rest">วันพัก (Rest)</option>
+                            <option value="training">วันฝึก</option>
+                            <option value="rest">วันพัก</option>
                           </select>
                         </div>
-
                         {day.dayType === 'training' && (
                           <select
                             value={day.activityType}
                             onChange={(e) => {
                               const val = e.target.value as 'minigame' | 'physio_exercise';
                               const next = [...weeklySchedule];
-                              next[idx] = {
-                                ...day,
-                                activityType: val,
-                                exercises:
-                                  val === 'physio_exercise' && exercises[0]
-                                    ? [
-                                        {
-                                          exerciseId: exercises[0].id,
-                                          side: 'right',
-                                          sets: 2,
-                                          reps: 8,
-                                          holdSec: 2,
-                                          targetMinDeg: 30,
-                                          targetMaxDeg: 135,
-                                          allowedStarterSide: 'both',
-                                        },
-                                      ]
-                                    : [],
-                              };
+                              next[idx] = { ...day, activityType: val };
                               setWeeklySchedule(next);
                             }}
                             className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold"
                           >
-                            <option value="minigame">🎮 มินิเกมการ์ด (แนะนำ)</option>
+                            <option value="minigame">🎮 มินิเกมการ์ด</option>
                             <option
                               value="physio_exercise"
                               disabled={!isAdmin && !systemSettings.aiPoseDetectionEnabled}
@@ -1664,19 +1939,19 @@ export function ClinicalStaffPortalShell({
                       </div>
                     ))}
                   </div>
-
                   <div className="flex justify-end gap-2">
                     <button
                       type="button"
-                      onClick={() => setScheduleEditorOpen(false)}
-                      className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-bold text-slate-600"
+                      onClick={() => setWeeklyEditorOpen(false)}
+                      className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-bold"
                     >
                       ยกเลิก
                     </button>
                     <button
                       type="button"
+                      disabled={submitting}
                       onClick={() => void handleSaveWeeklyCourse()}
-                      className="rounded-xl bg-emerald-600 px-5 py-2 text-xs font-extrabold text-white shadow hover:bg-emerald-500"
+                      className="rounded-xl bg-emerald-600 px-5 py-2 text-xs font-extrabold text-white hover:bg-emerald-500"
                     >
                       บันทึกตารางฝึก 7 วัน
                     </button>
@@ -1686,7 +1961,6 @@ export function ClinicalStaffPortalShell({
 
               {scheduleSubTab === 'individual' ? (
                 <>
-                  {/* 4 KPI Stat Cards */}
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                     <div className="rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between">
                       <div>
@@ -1726,7 +2000,6 @@ export function ClinicalStaffPortalShell({
                     </div>
                   </div>
 
-                  {/* Thai Buddhist Calendar Grid */}
                   <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex items-center gap-2">
@@ -1743,7 +2016,7 @@ export function ClinicalStaffPortalShell({
                             onClick={() =>
                               setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() - 1, 1))
                             }
-                            className="rounded-lg border border-slate-200 p-1 hover:bg-slate-50"
+                            className="rounded-lg border border-slate-200 p-1 hover:bg-slate-50 cursor-pointer"
                           >
                             <ChevronLeft className="h-3.5 w-3.5" />
                           </button>
@@ -1752,7 +2025,7 @@ export function ClinicalStaffPortalShell({
                             onClick={() =>
                               setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 1))
                             }
-                            className="rounded-lg border border-slate-200 p-1 hover:bg-slate-50"
+                            className="rounded-lg border border-slate-200 p-1 hover:bg-slate-50 cursor-pointer"
                           >
                             <ChevronRight className="h-3.5 w-3.5" />
                           </button>
@@ -1788,35 +2061,63 @@ export function ClinicalStaffPortalShell({
                         if (dayNum === null) {
                           return <div key={`empty-${idx}`} className="h-20 rounded-xl bg-slate-50/40" />;
                         }
-                        const weekday = new Date(calendarDate.getFullYear(), calendarDate.getMonth(), dayNum).getDay();
+                        const year = calendarDate.getFullYear();
+                        const month = calendarDate.getMonth();
+                        const dateIso = `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+                        const weekday = new Date(year, month, dayNum).getDay();
                         const today = new Date();
                         const isToday =
-                          dayNum === today.getDate() &&
-                          calendarDate.getMonth() === today.getMonth() &&
-                          calendarDate.getFullYear() === today.getFullYear();
+                          dayNum === today.getDate() && month === today.getMonth() && year === today.getFullYear();
+
+                        const customForDay = (selectedSchedulePatient?.rehabSchedules ?? []).filter(
+                          (s) => s.scheduledDate === dateIso,
+                        );
                         const planDay = weeklySchedule[weekday];
                         const isTraining = planDay?.dayType === 'training' && Boolean(patientCourse);
 
                         return (
-                          <div
-                            key={`day-${dayNum}`}
-                            className={`h-20 rounded-xl border p-2 flex flex-col justify-between text-xs transition ${
+                          <button
+                            key={dateIso}
+                            type="button"
+                            onClick={() => {
+                              setSelectedCalendarDateIso(dateIso);
+                              setScheduleModalMode('day_detail');
+                            }}
+                            className={`h-20 rounded-xl border p-2 flex flex-col justify-between text-left text-xs transition cursor-pointer ${
                               isToday
                                 ? 'border-emerald-500 bg-emerald-50/30 ring-1 ring-emerald-500/30'
-                                : 'border-slate-100 bg-white hover:border-slate-200'
+                                : 'border-slate-100 bg-white hover:border-emerald-300'
                             }`}
                           >
-                            <div className="flex items-center justify-between">
-                              <span
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold ${
-                                  isToday ? 'bg-emerald-600 text-white' : 'text-slate-700'
-                                }`}
-                              >
-                                {dayNum}
-                              </span>
-                            </div>
-                            <div className="truncate text-[10px]">
-                              {isTraining ? (
+                            <span
+                              className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold ${
+                                isToday ? 'bg-emerald-600 text-white' : 'text-slate-700'
+                              }`}
+                            >
+                              {dayNum}
+                            </span>
+                            <div className="w-full truncate text-[10px]">
+                              {customForDay.length > 0 ? (
+                                <span
+                                  className={`inline-block rounded px-1.5 py-0.5 font-bold ${
+                                    customForDay[0].status === 'COMPLETED'
+                                      ? 'bg-blue-100 text-blue-800'
+                                      : customForDay[0].status === 'REST'
+                                        ? 'bg-amber-100 text-amber-800'
+                                        : customForDay[0].status === 'MISSED'
+                                          ? 'bg-rose-100 text-rose-800'
+                                          : 'bg-emerald-100 text-emerald-800'
+                                  }`}
+                                >
+                                  {customForDay[0].status === 'COMPLETED'
+                                    ? 'สำเร็จครบ'
+                                    : customForDay[0].status === 'REST'
+                                      ? 'พักการฝึก'
+                                      : customForDay[0].status === 'MISSED'
+                                        ? 'ขาดการฝึก'
+                                        : 'กำลังรักษา'}
+                                </span>
+                              ) : isTraining ? (
                                 <span className="inline-block rounded bg-emerald-100 px-1.5 py-0.5 font-bold text-emerald-800">
                                   {planDay.activityType === 'physio_exercise' ? 'ฝึก AI' : 'มินิเกม'}
                                 </span>
@@ -1824,7 +2125,7 @@ export function ClinicalStaffPortalShell({
                                 <span className="text-slate-300">พักฟื้น</span>
                               )}
                             </div>
-                          </div>
+                          </button>
                         );
                       })}
                     </div>
@@ -1838,7 +2139,7 @@ export function ClinicalStaffPortalShell({
                         <th className="px-5 py-3">HN</th>
                         <th className="px-4 py-3">ชื่อคนไข้</th>
                         <th className="px-4 py-3">PT ผู้รับผิดชอบ</th>
-                        <th className="px-4 py-3">วันนัดถัดไป</th>
+                        <th className="px-4 py-3">วันนัดถัดไป / จำนวนวันฝึก</th>
                         <th className="px-5 py-3 text-right">จัดการ</th>
                       </tr>
                     </thead>
@@ -1850,7 +2151,9 @@ export function ClinicalStaffPortalShell({
                           <td className="px-4 py-3 text-slate-600">
                             {ptNameMap.get(p.delegatedToPtId || p.assignedPtId) || 'กภ. ประจำคลินิก'}
                           </td>
-                          <td className="px-4 py-3 font-semibold text-emerald-700">{p.nextAppointmentDate || '-'}</td>
+                          <td className="px-4 py-3 font-semibold text-emerald-700">
+                            {p.nextAppointmentDate || '-'} ({p.rehabSchedules?.length ?? 0} นัด)
+                          </td>
                           <td className="px-5 py-3 text-right">
                             <button
                               type="button"
@@ -1858,7 +2161,7 @@ export function ClinicalStaffPortalShell({
                                 setSelectedSchedulePatientId(p.id);
                                 setScheduleSubTab('individual');
                               }}
-                              className="rounded-lg bg-emerald-50 px-3 py-1 font-bold text-emerald-700 hover:bg-emerald-100"
+                              className="rounded-lg bg-emerald-50 px-3 py-1 font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer"
                             >
                               เปิดปฏิทิน
                             </button>
@@ -1883,19 +2186,29 @@ export function ClinicalStaffPortalShell({
                       ประวัติและความปลอดภัย (Audit, Bans &amp; Security)
                     </h2>
                     <p className="text-xs text-slate-500">
-                      คำเรียกเจ้าหน้าที่ฉุกเฉิน (SSE), บันทึก Audit Log, บังคับตัดเซสชัน, ระบบแบน และจัดการตู้ Kiosk
+                      คำเรียกเจ้าหน้าที่ฉุกเฉิน (Realtime), บันทึก Audit Log, บังคับตัดเซสชัน, ระบบแบน และจัดการตู้ Kiosk
                     </p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="inline-flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-700">
-                    <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
-                    Realtime Polling
-                  </span>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await apiClient.createStaffCall(
+                        kiosks[0]?.kioskId || 'KIOSK-OPD-01',
+                        'ทดสอบสัญญาณเรียกเจ้าหน้าที่จากหน้าตู้ Kiosk',
+                      );
+                      await refreshAll();
+                      flashBanner('success', 'ส่งสัญญาณทดสอบเรียกเจ้าหน้าที่เรียบร้อย');
+                    }}
+                    className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer"
+                  >
+                    🔔 ทดสอบแจ้งเตือนฉุกเฉิน
+                  </button>
                   <button
                     type="button"
                     onClick={() => void refreshAll()}
-                    className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-white hover:bg-slate-800"
+                    className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-white hover:bg-slate-800 cursor-pointer"
                   >
                     <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                   </button>
@@ -1913,21 +2226,20 @@ export function ClinicalStaffPortalShell({
                         มีคนไข้ต้องการความช่วยเหลือที่ตู้ Kiosk ({openStaffCalls.length} รายการ)!
                       </div>
                       <div className="text-[11px] text-blue-100">
-                        เกิดจากสแกนหน้าไม่ผ่านครบ 3 ครั้ง หรือคนไข้กดปุ่มเรียกเจ้าหน้าที่บนหน้าจอ
+                        เชื่อมต่อ Realtime Supabase + Polling อัตโนมัติเมื่อคนไข้กดเรียกเจ้าหน้าที่
                       </div>
                     </div>
                   </div>
                   <button
                     type="button"
                     onClick={() => setSecuritySubTab('calls')}
-                    className="rounded-xl bg-white px-4 py-2 text-xs font-extrabold text-blue-700 shadow hover:bg-blue-50"
+                    className="rounded-xl bg-white px-4 py-2 text-xs font-extrabold text-blue-700 shadow hover:bg-blue-50 cursor-pointer"
                   >
                     ดูรายการเรียกเจ้าหน้าที่ทันที
                   </button>
                 </div>
               )}
 
-              {/* Sub-tab Pills */}
               <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
                 {(
                   [
@@ -1942,7 +2254,7 @@ export function ClinicalStaffPortalShell({
                     key={sub.id}
                     type="button"
                     onClick={() => setSecuritySubTab(sub.id)}
-                    className={`rounded-xl px-4 py-2 transition ${
+                    className={`rounded-xl px-4 py-2 transition cursor-pointer ${
                       securitySubTab === sub.id
                         ? 'bg-blue-700 text-white shadow-sm'
                         : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
@@ -1953,12 +2265,11 @@ export function ClinicalStaffPortalShell({
                 ))}
               </div>
 
-              {/* Sub-tab 1: Kiosk Staff Calls */}
               {securitySubTab === 'calls' && (
                 <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
                   <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 text-xs">
                     <span className="font-extrabold text-slate-900">รายการคำขอความช่วยเหลือจากตู้ Kiosk</span>
-                    <span className="text-[11px] text-slate-400">อัปเดตอัตโนมัติทุก 12 วินาที</span>
+                    <span className="text-[11px] text-slate-400">Realtime + Polling 10 วินาที</span>
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full min-w-[700px] text-left text-xs">
@@ -1979,34 +2290,56 @@ export function ClinicalStaffPortalShell({
                             </td>
                             <td className="px-4 py-3">
                               <span className="rounded-lg bg-sky-50 border border-sky-200 px-2.5 py-1 font-bold text-sky-700">
-                                {call.kioskId} (จุดคัดกรองหลัก)
+                                {call.kioskId}
                               </span>
                             </td>
                             <td className="px-4 py-3 font-semibold text-rose-600">{call.reason}</td>
                             <td className="px-4 py-3">
                               <span
                                 className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold ${
-                                  call.status === 'open'
-                                    ? 'bg-sky-50 text-sky-700 border border-sky-200'
-                                    : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                  call.status === 'resolved'
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                    : call.status === 'acknowledged'
+                                      ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                      : 'bg-sky-50 text-sky-700 border border-sky-200'
                                 }`}
                               >
-                                {call.status === 'open' ? '🔔 รอเจ้าหน้าที่' : '✓ ดำเนินการแล้ว'}
+                                {call.status === 'resolved'
+                                  ? '✓ แก้ไขแล้ว'
+                                  : call.status === 'acknowledged'
+                                    ? '⏳ กำลังตรวจสอบ'
+                                    : '🔔 รอเจ้าหน้าที่'}
                               </span>
                             </td>
                             <td className="px-5 py-3 text-right">
-                              {call.status === 'open' && (
-                                <button
-                                  type="button"
-                                  onClick={async () => {
-                                    await apiClient.resolveStaffCall(call.id);
-                                    await refreshAll();
-                                  }}
-                                  className="rounded-lg bg-emerald-600 px-3 py-1 text-[11px] font-bold text-white hover:bg-emerald-500"
-                                >
-                                  รับเรื่องแล้ว
-                                </button>
-                              )}
+                              <div className="inline-flex items-center gap-1.5">
+                                {call.status === 'open' && (
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      await apiClient.acknowledgeStaffCall(call.id);
+                                      flashBanner('success', `รับเรื่องแจ้งเตือนจาก ${call.kioskId} แล้ว`);
+                                      await refreshAll();
+                                    }}
+                                    className="rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer"
+                                  >
+                                    รับเรื่อง
+                                  </button>
+                                )}
+                                {call.status !== 'resolved' && (
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      await apiClient.resolveStaffCall(call.id);
+                                      flashBanner('success', `ปิดเคสช่วยเหลือจาก ${call.kioskId} แล้ว`);
+                                      await refreshAll();
+                                    }}
+                                    className="rounded-lg bg-emerald-600 px-3 py-1 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
+                                  >
+                                    แก้ไขแล้ว
+                                  </button>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         ))}
@@ -2023,7 +2356,6 @@ export function ClinicalStaffPortalShell({
                 </div>
               )}
 
-              {/* Sub-tab 2: Audit Logs */}
               {securitySubTab === 'audit' && (
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
                   {!isAdmin ? (
@@ -2031,32 +2363,42 @@ export function ClinicalStaffPortalShell({
                       403 RBAC Policy: เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) เท่านั้นที่เข้าถึงบันทึก Audit Log ได้
                     </div>
                   ) : (
-                    <div className="space-y-2 max-h-[420px] overflow-y-auto">
-                      {auditLogs.map((log) => (
-                        <div
-                          key={log.id}
-                          className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-2.5 text-xs"
-                        >
-                          <div>
-                            <span className="font-mono font-extrabold text-indigo-700 mr-2">{log.eventType}</span>
-                            <span className="font-bold text-slate-900">{log.actorName}</span>{' '}
-                            <span className="text-slate-500">({log.actorRole})</span>
-                            <div className="text-[11px] text-slate-600 mt-0.5">{log.detail}</div>
-                          </div>
-                          <div className="text-right text-[11px] text-slate-400 font-mono">
+                    <>
+                      <div className="relative max-w-md">
+                        <Search className="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          value={auditSearch}
+                          onChange={(e) => setAuditSearch(e.target.value)}
+                          placeholder="กรอง Audit Log ตาม Action, ชื่อผู้ทำรายการ, IP..."
+                          className="w-full rounded-xl border border-slate-200 pl-9 pr-3 py-2 text-xs"
+                        />
+                      </div>
+                      <div className="space-y-2 max-h-[420px] overflow-y-auto">
+                        {filteredAuditLogs.map((log) => (
+                          <div
+                            key={log.id}
+                            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-2.5 text-xs"
+                          >
                             <div>
-                              IP: {log.ipAddress} • Dev: {log.deviceId}
+                              <span className="font-mono font-extrabold text-indigo-700 mr-2">{log.eventType}</span>
+                              <span className="font-bold text-slate-900">{log.actorName}</span>{' '}
+                              <span className="text-slate-500">({log.actorRole})</span>
+                              <div className="text-[11px] text-slate-600 mt-0.5">{log.detail}</div>
                             </div>
-                            <div>{formatThaiDateTime(log.createdAt)}</div>
+                            <div className="text-right text-[11px] text-slate-400 font-mono">
+                              <div>
+                                IP: {log.ipAddress} • Dev: {log.deviceId}
+                              </div>
+                              <div>{formatThaiDateTime(log.createdAt)}</div>
+                            </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
+                        ))}
+                      </div>
+                    </>
                   )}
                 </div>
               )}
 
-              {/* Sub-tab 3: Active Sessions & Force Logout */}
               {securitySubTab === 'sessions' && (
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
                   {!isAdmin ? (
@@ -2085,12 +2427,12 @@ export function ClinicalStaffPortalShell({
                             type="button"
                             onClick={async () => {
                               await apiClient.forceLogoutUser(s.userId);
-                              flashBanner('success', 'บังคับตัดเซสชันผู้ใช้เรียบร้อย');
+                              flashBanner('success', 'เตะเซสชันออกจากระบบเรียบร้อย');
                               await refreshAll();
                             }}
-                            className="rounded-xl bg-rose-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-rose-500"
+                            className="rounded-xl bg-rose-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-rose-500 cursor-pointer"
                           >
-                            Force Logout
+                            เตะออกจากระบบ (Force Kick)
                           </button>
                         </div>
                       ))}
@@ -2102,7 +2444,6 @@ export function ClinicalStaffPortalShell({
                 </div>
               )}
 
-              {/* Sub-tab 4: Bans Manager */}
               {securitySubTab === 'bans' && (
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
                   {!isAdmin ? (
@@ -2118,6 +2459,7 @@ export function ClinicalStaffPortalShell({
                           await apiClient.banTarget(banType, banValue.trim(), banReason.trim() || 'Security block');
                           setBanValue('');
                           setBanReason('');
+                          flashBanner('success', 'เพิ่มรายการแบนเรียบร้อยแล้ว');
                           await refreshAll();
                         }}
                         className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs"
@@ -2145,7 +2487,7 @@ export function ClinicalStaffPortalShell({
                         />
                         <button
                           type="submit"
-                          className="inline-flex items-center justify-center gap-1 rounded-xl bg-rose-600 px-3 py-2 font-bold text-white hover:bg-rose-500"
+                          className="inline-flex items-center justify-center gap-1 rounded-xl bg-rose-600 px-3 py-2 font-bold text-white hover:bg-rose-500 cursor-pointer"
                         >
                           <Ban className="h-3.5 w-3.5" /> แบนเป้าหมาย
                         </button>
@@ -2167,11 +2509,12 @@ export function ClinicalStaffPortalShell({
                               type="button"
                               onClick={async () => {
                                 await apiClient.unbanTarget(b.id);
+                                flashBanner('success', `ปลดแบน ${b.value} แล้ว`);
                                 await refreshAll();
                               }}
-                              className="rounded-lg border border-slate-200 bg-white px-3 py-1 font-bold text-slate-700 hover:bg-slate-100"
+                              className="rounded-lg border border-slate-200 bg-white px-3 py-1 font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
                             >
-                              ปลดแบน
+                              ปลดแบน (Unban)
                             </button>
                           </div>
                         ))}
@@ -2181,29 +2524,64 @@ export function ClinicalStaffPortalShell({
                 </div>
               )}
 
-              {/* Sub-tab 5: Kiosk Devices & System AI Threshold */}
               {securitySubTab === 'kiosks' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
-                    <h3 className="text-sm font-extrabold text-slate-900">อุปกรณ์ตู้ Kiosk ในระบบ</h3>
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-extrabold text-slate-900">อุปกรณ์ตู้ Kiosk ในระบบ</h3>
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewKioskCode(`KIOSK-OPD-0${kiosks.length + 1}`);
+                            setNewKioskLocation('OPD Rehab Zone B');
+                            setRegisterKioskModalOpen(true);
+                          }}
+                          className="rounded-xl bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
+                        >
+                          + ลงทะเบียนตู้ Kiosk ใหม่
+                        </button>
+                      )}
+                    </div>
                     {kiosks.map((k) => (
                       <div
                         key={k.kioskId}
                         className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-xs"
                       >
                         <div>
-                          <div className="font-bold text-slate-900">{k.kioskId}</div>
+                          <div className="font-bold text-slate-900">
+                            {k.kioskId}{' '}
+                            {k.pairingToken && (
+                              <span className="ml-1 rounded bg-indigo-50 px-2 py-0.5 font-mono text-[10px] text-indigo-700">
+                                Token: {k.pairingToken}
+                              </span>
+                            )}
+                          </div>
                           <div className="text-[11px] text-slate-500">
                             {k.location} • State: {k.currentState}
                           </div>
                         </div>
-                        <span
-                          className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
-                            k.online ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
-                          }`}
-                        >
-                          {k.online ? '● Online' : 'Offline'}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                              k.online ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
+                            }`}
+                          >
+                            {k.online ? '● Online' : 'Offline'}
+                          </span>
+                          {isAdmin && k.kioskId !== 'KIOSK-OPD-01' && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await apiClient.deleteKiosk(k.kioskId);
+                                await refreshAll();
+                              }}
+                              className="text-rose-500 hover:text-rose-700"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -2253,15 +2631,79 @@ export function ClinicalStaffPortalShell({
         </main>
       </div>
 
-      {/* Staff-Assisted Patient Enrollment Modal (3-Step Flow) */}
+      {/* Staff-Assisted Enrollment / Existing Patient Face Scan Modal */}
       <StaffAssistedEnrollmentModal
         open={enrollModalOpen}
         apiClient={apiClient}
         currentUser={currentUser}
         ptList={ptUsers}
-        onClose={() => setEnrollModalOpen(false)}
-        onEnrolled={() => {
+        targetPatient={enrollTargetPatient}
+        onClose={() => {
+          setEnrollModalOpen(false);
+          setEnrollTargetPatient(null);
+        }}
+        onEnrolled={(p) => {
+          flashBanner('success', `บันทึกข้อมูลและ Face ID ของ ${p.fullName} (${p.hn}) เรียบร้อยแล้ว`);
           void refreshAll();
+        }}
+      />
+
+      {/* Welcome & Face Verification Modal */}
+      <WelcomeFaceScanModal
+        open={welcomeFaceModalOpen}
+        apiClient={apiClient}
+        onClose={() => setWelcomeFaceModalOpen(false)}
+        onOpenNewEnrollment={() => {
+          setEnrollTargetPatient(null);
+          setEnrollModalOpen(true);
+        }}
+        onCheckInSuccess={(pid, pname) => {
+          setSelectedSchedulePatientId(pid);
+          setActiveTab('schedules');
+          flashBanner('success', `ยืนยันใบหน้าและเช็คอิน ${pname} เข้าฝึกเรียบร้อยแล้ว`);
+          void refreshAll();
+        }}
+      />
+
+      {/* Reset Password Modal */}
+      <ResetPasswordModal
+        user={resetPassUser}
+        apiClient={apiClient}
+        onClose={() => setResetPassUser(null)}
+        onSuccess={(msg) => flashBanner('success', msg)}
+      />
+
+      {/* Patient Profile, Medical Notes & Rehab History Modal */}
+      <PatientProfileAndHistoryModal
+        patient={patientModalState.patient}
+        initialTab={patientModalState.tab}
+        apiClient={apiClient}
+        currentUser={currentUser}
+        ptUsers={ptUsers}
+        sessions={sessions}
+        onClose={() => setPatientModalState({ patient: null, tab: 'profile' })}
+        onRefresh={refreshAll}
+        onOpenFaceScan={(p) => {
+          setEnrollTargetPatient(p);
+          setEnrollModalOpen(true);
+        }}
+        onFlash={flashBanner}
+      />
+
+      {/* Schedule Creator & Day Detail Modal */}
+      <ScheduleCreatorAndDayModal
+        mode={scheduleModalMode}
+        selectedDateIso={selectedCalendarDateIso}
+        patient={selectedSchedulePatient}
+        patients={patients}
+        ptUsers={ptUsers}
+        exercises={exercises}
+        modpacks={modpacks}
+        apiClient={apiClient}
+        onClose={() => setScheduleModalMode(null)}
+        onSaved={async (msg) => {
+          flashBanner('success', msg);
+          await refreshAll();
         }}
       />
 
@@ -2302,6 +2744,7 @@ export function ClinicalStaffPortalShell({
                   <input
                     required
                     type="password"
+                    minLength={6}
                     value={newStaffPassword}
                     onChange={(e) => setNewStaffPassword(e.target.value)}
                     placeholder="อย่างน้อย 6 ตัว"
@@ -2342,11 +2785,12 @@ export function ClinicalStaffPortalShell({
                     />
                   </div>
                   <div>
-                    <label className="block font-bold text-slate-600 mb-1">เลขที่ใบประกอบวิชาชีพ</label>
+                    <label className="block font-bold text-slate-600 mb-1">เลขที่ใบประกอบวิชาชีพ *</label>
                     <input
+                      required
                       value={newStaffLicense}
                       onChange={(e) => setNewStaffLicense(e.target.value)}
-                      placeholder="กภ.12345"
+                      placeholder="PT-44100"
                       className="w-full rounded-xl border border-slate-200 px-3 py-2"
                     />
                   </div>
@@ -2362,9 +2806,10 @@ export function ClinicalStaffPortalShell({
                 </button>
                 <button
                   type="submit"
-                  className="rounded-xl bg-emerald-600 px-4 py-2 font-extrabold text-white hover:bg-emerald-500"
+                  disabled={submitting}
+                  className="rounded-xl bg-emerald-600 px-4 py-2 font-extrabold text-white hover:bg-emerald-500 disabled:opacity-50"
                 >
-                  สร้างบัญชีเจ้าหน้าที่
+                  {submitting ? 'กำลังบันทึก...' : 'สร้างบัญชีเจ้าหน้าที่'}
                 </button>
               </div>
             </form>
@@ -2372,156 +2817,7 @@ export function ClinicalStaffPortalShell({
         </div>
       )}
 
-      {/* Patient Medical Record + Append-Only Notes + Delegation Modal */}
-      {selectedPatientModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-5 text-xs">
-            <div className="flex items-start justify-between border-b border-slate-100 pb-4">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="rounded-lg bg-sky-100 px-2.5 py-0.5 font-mono font-extrabold text-sky-700">
-                    {selectedPatientModal.hn}
-                  </span>
-                  <h3 className="text-base font-black text-slate-900">{selectedPatientModal.fullName}</h3>
-                </div>
-                <p className="text-slate-500 mt-1">
-                  อายุ {selectedPatientModal.age} ปี • การวินิจฉัย: {selectedPatientModal.diagnosis}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedPatientModal(null)}
-                className="rounded-xl p-1 text-slate-400 hover:bg-slate-100"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            {/* PT Assignment & Delegation */}
-            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 space-y-2.5">
-              <div className="font-extrabold text-slate-800">กำหนดและส่งต่อ PT ผู้รับผิดชอบ (Delegation)</div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                <select
-                  value={delegatePtId}
-                  onChange={(e) => setDelegatePtId(e.target.value)}
-                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold"
-                >
-                  <option value="">-- ไม่ส่งต่อ (ใช้ PT หลัก) --</option>
-                  {ptUsers.map((pt) => (
-                    <option key={pt.id} value={pt.id}>
-                      {pt.fullName}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  value={delegateNote}
-                  onChange={(e) => setDelegateNote(e.target.value)}
-                  placeholder="หมายเหตุการส่งต่อเคส..."
-                  className="rounded-xl border border-slate-200 bg-white px-3 py-2"
-                />
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const updated = await apiClient.delegatePatientCase(
-                      selectedPatientModal.id,
-                      delegatePtId || null,
-                      delegateNote || undefined,
-                    );
-                    setSelectedPatientModal(updated);
-                    flashBanner('success', 'บันทึกการส่งต่อ PT เรียบร้อยแล้ว');
-                    await refreshAll();
-                  }}
-                  className="rounded-xl bg-blue-600 px-3 py-2 font-bold text-white hover:bg-blue-500"
-                >
-                  อัปเดต PT ผู้รับผิดชอบ
-                </button>
-              </div>
-            </div>
-
-            {/* Append-Only Medical Notes */}
-            <div className="space-y-2.5">
-              <div className="font-extrabold text-slate-900">บันทึกเวชระเบียนถาวร (Append-Only Medical Notes)</div>
-              <div className="max-h-48 overflow-y-auto space-y-2 rounded-2xl border border-slate-200 p-3 bg-slate-50/40">
-                {patientNotes.map((n) => (
-                  <div key={n.id} className="rounded-xl border border-slate-200 bg-white p-3 space-y-1">
-                    <div className="flex justify-between text-[11px] text-slate-400">
-                      <span className="font-bold text-emerald-700">{n.authorName}</span>
-                      <span>{formatThaiDateTime(n.createdAt)}</span>
-                    </div>
-                    <p className="whitespace-pre-line text-slate-800 leading-relaxed">{n.content}</p>
-                  </div>
-                ))}
-                {patientNotes.length === 0 && (
-                  <p className="text-center text-slate-400 py-4">ยังไม่มีบันทึกเวชระเบียนเพิ่มเติม</p>
-                )}
-              </div>
-
-              <div className="flex gap-2">
-                <input
-                  value={newMedicalNote}
-                  onChange={(e) => setNewMedicalNote(e.target.value)}
-                  placeholder="พิมพ์บันทึกอาการเพิ่มเติม (บันทึกแล้วจะไม่สามารถแก้ไข/ลบย้อนหลังได้)..."
-                  className="flex-1 rounded-xl border border-slate-200 px-3 py-2"
-                />
-                <button
-                  type="button"
-                  onClick={async () => {
-                    if (!newMedicalNote.trim()) return;
-                    const created = await apiClient.appendMedicalNote(
-                      selectedPatientModal.id,
-                      newMedicalNote.trim(),
-                    );
-                    setPatientNotes((prev) => [created, ...prev]);
-                    setNewMedicalNote('');
-                  }}
-                  className="rounded-xl bg-emerald-600 px-4 py-2 font-bold text-white hover:bg-emerald-500"
-                >
-                  + บันทึก Note
-                </button>
-              </div>
-            </div>
-
-            {/* Quick Treatment Report */}
-            <div className="border-t border-slate-100 pt-4 space-y-2">
-              <div className="font-extrabold text-slate-900">ออกใบสรุปผลการรักษา (Treatment Report)</div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <input
-                  value={reportSummary}
-                  onChange={(e) => setReportSummary(e.target.value)}
-                  placeholder="สรุปผลการฟื้นฟู..."
-                  className="rounded-xl border border-slate-200 px-3 py-2"
-                />
-                <input
-                  value={reportAiRec}
-                  onChange={(e) => setReportAiRec(e.target.value)}
-                  placeholder="คำแนะนำต่อเนื่องจากคลินิก..."
-                  className="rounded-xl border border-slate-200 px-3 py-2"
-                />
-              </div>
-              <button
-                type="button"
-                onClick={async () => {
-                  if (!reportSummary.trim()) return;
-                  await apiClient.createTreatmentReport({
-                    patientId: selectedPatientModal.id,
-                    summary: reportSummary.trim(),
-                    aiRecommendation: reportAiRec.trim() || 'ฝึกต่อเนื่องสัปดาห์ละ 3-4 วัน',
-                    scoreSummary: `บันทึกโดย ${currentUser.fullName}`,
-                  });
-                  setReportSummary('');
-                  setReportAiRec('');
-                  flashBanner('success', 'ออกใบสรุปผลการรักษาให้ผู้ป่วยแล้ว');
-                }}
-                className="rounded-xl bg-slate-900 px-4 py-2 font-bold text-white hover:bg-slate-800"
-              >
-                บันทึกใบสรุปผลการรักษา
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* PT Detail & Assigned Patients Modal */}
+      {/* PT Detail & Assign Patient Modal */}
       {selectedPtDetailModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
           <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
@@ -2529,7 +2825,7 @@ export function ClinicalStaffPortalShell({
               <div>
                 <h3 className="text-base font-black text-slate-900">{selectedPtDetailModal.fullName}</h3>
                 <p className="text-slate-500">
-                  @{selectedPtDetailModal.username} • {selectedPtDetailModal.licenseNo || 'กภ.12345'} •{' '}
+                  @{selectedPtDetailModal.username} • {selectedPtDetailModal.licenseNo || 'PT-44012'} •{' '}
                   {selectedPtDetailModal.specialty || 'กายภาพบำบัด'}
                 </p>
               </div>
@@ -2537,10 +2833,51 @@ export function ClinicalStaffPortalShell({
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="space-y-2 max-h-64 overflow-y-auto">
+
+            {isAdmin && patients.length > 0 && (
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3.5 space-y-2">
+                <div className="font-bold text-emerald-900">มอบหมายคนไข้ให้ PT ท่านนี้ดูแล</div>
+                <div className="flex gap-2">
+                  <select
+                    value={assignPatientIdForPt}
+                    onChange={(e) => setAssignPatientIdForPt(e.target.value)}
+                    className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold"
+                  >
+                    {patients.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.fullName} ({p.hn})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!assignPatientIdForPt || submitting}
+                    onClick={async () => {
+                      setSubmitting(true);
+                      try {
+                        await apiClient.updatePatient(assignPatientIdForPt, {
+                          assignedPtId: selectedPtDetailModal.id,
+                        });
+                        flashBanner('success', `มอบหมายคนไข้ให้ ${selectedPtDetailModal.fullName} เรียบร้อย`);
+                        await refreshAll();
+                      } finally {
+                        setSubmitting(false);
+                      }
+                    }}
+                    className="rounded-xl bg-emerald-600 px-3.5 py-2 font-bold text-white hover:bg-emerald-500 cursor-pointer"
+                  >
+                    มอบหมาย
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-2 max-h-60 overflow-y-auto">
               <div className="font-bold text-slate-700">รายชื่อคนไข้ที่อยู่ภายใต้การดูแล</div>
               {patients
-                .filter((p) => p.assignedPtId === selectedPtDetailModal.id || p.delegatedToPtId === selectedPtDetailModal.id)
+                .filter(
+                  (p) => p.assignedPtId === selectedPtDetailModal.id || p.delegatedToPtId === selectedPtDetailModal.id,
+                )
                 .map((p) => (
                   <div key={p.id} className="flex items-center justify-between rounded-xl border border-slate-200 px-3.5 py-2.5">
                     <div>
@@ -2554,7 +2891,7 @@ export function ClinicalStaffPortalShell({
                         setSelectedSchedulePatientId(p.id);
                         setActiveTab('schedules');
                       }}
-                      className="rounded-lg bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700"
+                      className="rounded-lg bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700 cursor-pointer"
                     >
                       ดูตารางนัด
                     </button>
@@ -2581,7 +2918,7 @@ export function ClinicalStaffPortalShell({
             <input
               value={quickCheckinSearch}
               onChange={(e) => setQuickCheckinSearch(e.target.value)}
-              placeholder="พิมพ์ HN หรือชื่อคนไข้ที่มาถึงคลินิก..."
+              placeholder="พิมพ์ HN, ชื่อ-นามสกุล, หรือเบอร์โทรคนไข้..."
               className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm"
             />
             <div className="max-h-60 overflow-y-auto space-y-2">
@@ -2590,30 +2927,95 @@ export function ClinicalStaffPortalShell({
                   (p) =>
                     !quickCheckinSearch.trim() ||
                     p.hn.toLowerCase().includes(quickCheckinSearch.toLowerCase()) ||
-                    p.fullName.toLowerCase().includes(quickCheckinSearch.toLowerCase()),
+                    p.fullName.toLowerCase().includes(quickCheckinSearch.toLowerCase()) ||
+                    (p.phone || '').toLowerCase().includes(quickCheckinSearch.toLowerCase()),
                 )
                 .slice(0, 6)
                 .map((p) => (
                   <div key={p.id} className="flex items-center justify-between rounded-xl border border-slate-200 p-3">
                     <div>
                       <div className="font-bold text-slate-900">{p.fullName}</div>
-                      <div className="font-mono text-[11px] text-sky-700">{p.hn}</div>
+                      <div className="font-mono text-[11px] text-sky-700">
+                        {p.hn} • {p.phone || '-'}
+                      </div>
                     </div>
                     <button
                       type="button"
-                      onClick={() => {
-                        setQuickCheckinModalOpen(false);
-                        setSelectedSchedulePatientId(p.id);
-                        setActiveTab('schedules');
-                        flashBanner('success', `เช็คอินคนไข้ ${p.fullName} (${p.hn}) สำเร็จ`);
+                      disabled={submitting}
+                      onClick={async () => {
+                        setSubmitting(true);
+                        try {
+                          await apiClient.quickCheckInPatient(p.id, 'เช็คอินเร่งด่วนหน้าเคาน์เตอร์');
+                          setQuickCheckinModalOpen(false);
+                          setSelectedSchedulePatientId(p.id);
+                          setActiveTab('schedules');
+                          flashBanner('success', `เช็คอินคนไข้ ${p.fullName} (${p.hn}) และบันทึก Audit Log สำเร็จ`);
+                          await refreshAll();
+                        } finally {
+                          setSubmitting(false);
+                        }
                       }}
-                      className="rounded-xl bg-emerald-600 px-3 py-1.5 font-bold text-white hover:bg-emerald-500"
+                      className="rounded-xl bg-emerald-600 px-3 py-1.5 font-bold text-white hover:bg-emerald-500 cursor-pointer"
                     >
-                      เช็คอิน &amp; เปิดตาราง
+                      เช็คอินวันนี้
                     </button>
                   </div>
                 ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Register Kiosk Modal */}
+      {registerKioskModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-black text-slate-900">+ ลงทะเบียนตู้ Kiosk ใหม่</h3>
+              <button type="button" onClick={() => setRegisterKioskModalOpen(false)} className="text-slate-400">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const created = await apiClient.registerKiosk({
+                  kioskId: newKioskCode,
+                  location: newKioskLocation,
+                });
+                setRegisterKioskModalOpen(false);
+                flashBanner('success', `ลงทะเบียน ${created.kioskId} สำเร็จ (Token: ${created.pairingToken})`);
+                await refreshAll();
+              }}
+              className="space-y-3"
+            >
+              <input
+                required
+                value={newKioskCode}
+                onChange={(e) => setNewKioskCode(e.target.value)}
+                placeholder="รหัสตู้ (เช่น KIOSK-OPD-02)"
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 font-mono font-bold"
+              />
+              <input
+                required
+                value={newKioskLocation}
+                onChange={(e) => setNewKioskLocation(e.target.value)}
+                placeholder="ตำแหน่งติดตั้ง (เช่น ชั้น 2 แผนกฟื้นฟู)"
+                className="w-full rounded-xl border border-slate-200 px-3 py-2"
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRegisterKioskModalOpen(false)}
+                  className="rounded-xl border border-slate-200 px-4 py-2 font-bold"
+                >
+                  ยกเลิก
+                </button>
+                <button type="submit" className="rounded-xl bg-emerald-600 px-4 py-2 font-extrabold text-white">
+                  สร้าง Pairing Token
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
@@ -2625,7 +3027,7 @@ export function ClinicalStaffPortalShell({
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
                 <Gamepad2 className="h-5 w-5 text-emerald-600" />
-                <h3 className="text-base font-black text-slate-900">เกมการ์ดกายภาพบำบัด 10 ข้อ (ทดสอบระบบมือ/กล้อง)</h3>
+                <h3 className="text-base font-black text-slate-900">เกมการ์ดกายภาพบำบัด 10 ข้อ (ทดสอบระบบมือ/กล้อง หรือคลิกปุ่มตอบ)</h3>
               </div>
               <button
                 type="button"
@@ -2646,13 +3048,6 @@ export function ClinicalStaffPortalShell({
               }}
             />
           </div>
-        </div>
-      )}
-
-      {!isAdmin && activeTab === 'staff' && (
-        <div className="fixed bottom-4 right-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-[11px] font-bold text-amber-800 shadow">
-          <AlertTriangle className="inline h-3.5 w-3.5 mr-1" />
-          บัญชี PT สามารถดูรายชื่อบุคลากรได้ แต่เฉพาะ ผอ. (Admin) เท่านั้นที่เพิ่ม/แก้ไขสิทธิ์เจ้าหน้าที่
         </div>
       )}
     </div>

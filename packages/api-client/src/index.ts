@@ -25,11 +25,25 @@ export interface UserAccount {
   createdAt: string;
 }
 
+export interface RehabScheduleItem {
+  id: string;
+  patientId: string;
+  ptId?: string;
+  exerciseId?: string;
+  modpackId?: string;
+  scheduledDate: string; // YYYY-MM-DD
+  sets: number;
+  reps: number;
+  status: 'ACTIVE' | 'REST' | 'COMPLETED' | 'MISSED';
+  notes?: string;
+}
+
 export interface PatientRecord {
   id: string;
   hn: string;
   fullName: string;
   age: number;
+  gender?: string;
   phone: string;
   diagnosis: string;
   assignedPtId: string;
@@ -38,6 +52,9 @@ export interface PatientRecord {
   nextAppointmentDate: string;
   registrationStatus: 'active' | 'archived';
   enrolledAt: string;
+  faceBiometricStatus?: 'PENDING' | 'VERIFIED';
+  faceImageUrl?: string;
+  rehabSchedules?: RehabScheduleItem[];
   biometricHistory?: {
     frontal_centroid: number[];
     overall_centroid: number[];
@@ -180,6 +197,7 @@ export interface KioskStatusRecord {
   online: boolean;
   currentState: string;
   lastHeartbeatAt: string;
+  pairingToken?: string;
 }
 
 export interface KioskFaceVerifyResponse extends BiometricVerificationResult {
@@ -255,6 +273,39 @@ export class DrTechCaresApiClient {
 
   getAuthToken(): string | null {
     return this.authToken;
+  }
+
+  getSupabaseClient(): SupabaseClient | null {
+    return this.supabase;
+  }
+
+  async checkHealth(): Promise<{
+    ok: boolean;
+    persistentDb: boolean;
+    supabaseConnected: boolean;
+    latencyMs: number;
+  }> {
+    const start = Date.now();
+    try {
+      const res = await this.request<{
+        ok: boolean;
+        persistentDb?: boolean;
+        supabaseConnected?: boolean;
+      }>('/api/health');
+      return {
+        ok: Boolean(res.ok),
+        persistentDb: Boolean(res.persistentDb),
+        supabaseConnected: res.supabaseConnected ?? Boolean(res.persistentDb),
+        latencyMs: Date.now() - start,
+      };
+    } catch {
+      return {
+        ok: false,
+        persistentDb: false,
+        supabaseConnected: false,
+        latencyMs: Date.now() - start,
+      };
+    }
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -394,21 +445,54 @@ export class DrTechCaresApiClient {
     hn: string;
     fullName: string;
     age: number;
+    gender?: string;
     phone?: string;
     diagnosis: string;
     assignedPtId?: string;
     nextAppointmentDate?: string;
     username?: string;
     password?: string;
-    frontalCentroid: number[];
-    overallCentroid: number[];
-    rawFrames: { pose: 'front' | 'left' | 'right' | 'nod'; vector: number[]; qualityScore: number }[];
+    skipFaceScan?: boolean;
+    faceBiometricStatus?: 'PENDING' | 'VERIFIED';
+    faceImageUrl?: string;
+    frontalCentroid?: number[];
+    overallCentroid?: number[];
+    rawFrames?: { pose: 'front' | 'left' | 'right' | 'nod'; vector: number[]; qualityScore: number }[];
   }): Promise<PatientRecord> {
     const res = await this.request<{ patient: PatientRecord }>('/api/biometric/enroll', {
       method: 'POST',
       body: JSON.stringify(input),
     });
     return res.patient;
+  }
+
+  async enrollExistingPatientFace(
+    patientId: string,
+    input: {
+      frontalCentroid: number[];
+      overallCentroid: number[];
+      rawFrames: { pose: 'front' | 'left' | 'right' | 'nod'; vector: number[]; qualityScore: number }[];
+      faceImageUrl?: string;
+    },
+  ): Promise<PatientRecord> {
+    const res = await this.request<{ patient: PatientRecord }>(`/api/patients/${patientId}/enroll-face`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    return res.patient;
+  }
+
+  async quickCheckInPatient(
+    patientId: string,
+    note?: string,
+  ): Promise<{ patient: PatientRecord; session: RehabSessionRecord }> {
+    return this.request<{ patient: PatientRecord; session: RehabSessionRecord }>(
+      `/api/patients/${patientId}/checkin`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ note }),
+      },
+    );
   }
 
   // Patients, Delegation, Notes
@@ -558,8 +642,24 @@ export class DrTechCaresApiClient {
     return res.calls;
   }
 
+  async acknowledgeStaffCall(callId: string): Promise<void> {
+    await this.request(`/api/staff-calls/${callId}/acknowledge`, { method: 'PATCH' });
+  }
+
   async resolveStaffCall(callId: string): Promise<void> {
     await this.request(`/api/staff-calls/${callId}/resolve`, { method: 'PATCH' });
+  }
+
+  async registerKiosk(input: { kioskId: string; location: string }): Promise<KioskStatusRecord> {
+    const res = await this.request<{ kiosk: KioskStatusRecord }>('/api/kiosks', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    return res.kiosk;
+  }
+
+  async deleteKiosk(kioskId: string): Promise<void> {
+    await this.request(`/api/kiosks/${encodeURIComponent(kioskId)}`, { method: 'DELETE' });
   }
 
   async listSecurityAudit(): Promise<{
