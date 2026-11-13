@@ -219,9 +219,12 @@ export function App() {
       );
     }
     return (
-      <div className="min-h-screen bg-slate-100 p-4">
-        <AdminPortalApp apiClient={apiClient} currentUser={currentUser} onLogout={handleLogout} />
-      </div>
+      <AdminPortalApp
+        apiClient={apiClient}
+        currentUser={currentUser}
+        onLogout={handleLogout}
+        onReturnToKiosk={() => navigate('/')}
+      />
     );
   }
 
@@ -235,9 +238,12 @@ export function App() {
       );
     }
     return (
-      <div className="min-h-screen bg-slate-100 p-4">
-        <PtPortalApp apiClient={apiClient} currentUser={currentUser} onLogout={handleLogout} />
-      </div>
+      <PtPortalApp
+        apiClient={apiClient}
+        currentUser={currentUser}
+        onLogout={handleLogout}
+        onReturnToKiosk={() => navigate('/')}
+      />
     );
   }
 

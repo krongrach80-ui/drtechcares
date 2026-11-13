@@ -1070,3 +1070,4 @@ export function KioskBiometricLoginView({
     </div>
   );
 }
+
