@@ -3,15 +3,17 @@ import { FilesetResolver, HandLandmarker, PoseLandmarker, type NormalizedLandmar
 import { useClinicalI18n } from '@drtechcares/clinical-i18n';
 import {
   AudioChimeSynthesizer,
-  HandGestureVerifier,
   VoiceFeedbackController,
 } from '@drtechcares/kiosk-input';
 import { selectClinicalCameraDeviceId } from '@drtechcares/face-client';
 import { AlertTriangle, Award, CheckCircle2, Clock, Hand, RotateCcw, Sparkles, XCircle } from 'lucide-react';
 import { sampleTenCognitiveCards, type CognitiveCardQuestion } from './PhysicalCardGameData';
 
-const DWELL_CONFIRM_MS = 800;
-const DWELL_GRACE_MS = 180;
+const HOLD_DURATION_SEC = 0.8;
+const HAND_RELEASE_DECAY_RATE = 2.5;
+const HAND_SWITCH_DECAY_RATE = 4.0;
+const LANDMARK_LERP_FACTOR = 0.75;
+const OFF_CANVAS_WIDTH = 320;
 
 const HAND_CONNECTIONS: ReadonlyArray<[number, number]> = [
   [0, 1],
@@ -55,6 +57,8 @@ const POSE_HAND_CONNECTIONS_B: ReadonlyArray<[number, number]> = [
   [18, 20],
 ];
 
+type ActiveHandSide = 'LEFT' | 'RIGHT' | null;
+
 export interface PhysicalCardGameSummary {
   correct: number;
   total: number;
@@ -69,19 +73,99 @@ interface PhysicalCardGameProps {
   onSessionFinished?: (summary: PhysicalCardGameSummary) => Promise<void> | void;
 }
 
-function classifyMirroredSide(screenX: number): 'yes' | 'no' | null {
-  if (screenX < 0.48) return 'no';
-  if (screenX > 0.52) return 'yes';
-  return null;
+interface CoverTransform {
+  cw: number;
+  ch: number;
+  renderedW: number;
+  renderedH: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+function computeMirroredCoverTransform(cw: number, ch: number, vw: number, vh: number): CoverTransform {
+  const safeVw = vw > 0 ? vw : 640;
+  const safeVh = vh > 0 ? vh : 480;
+  const safeCw = cw > 0 ? cw : 640;
+  const safeCh = ch > 0 ? ch : 480;
+  const scale = Math.max(safeCw / safeVw, safeCh / safeVh);
+  const renderedW = safeVw * scale;
+  const renderedH = safeVh * scale;
+  return {
+    cw: safeCw,
+    ch: safeCh,
+    renderedW,
+    renderedH,
+    offsetX: (safeCw - renderedW) / 2,
+    offsetY: (safeCh - renderedH) / 2,
+  };
+}
+
+function mapMirroredLandmarkToScreen(
+  lm: { x: number; y: number },
+  tf: CoverTransform,
+): { px: number; py: number; screenX: number; screenY: number } {
+  const px = tf.offsetX + (1 - lm.x) * tf.renderedW;
+  const py = tf.offsetY + lm.y * tf.renderedH;
+  return {
+    px,
+    py,
+    screenX: px / tf.cw,
+    screenY: py / tf.ch,
+  };
+}
+
+function classifyMirroredHandZone(screenX: number, lockedHand: ActiveHandSide): 'LEFT' | 'RIGHT' {
+  const splitThreshold = lockedHand === 'LEFT' ? 0.52 : lockedHand === 'RIGHT' ? 0.48 : 0.5;
+  return screenX < splitThreshold ? 'LEFT' : 'RIGHT';
+}
+
+function lerpLandmarks(
+  prev: NormalizedLandmark[] | null,
+  target: NormalizedLandmark[],
+  factor: number,
+): NormalizedLandmark[] {
+  if (!prev || prev.length !== target.length) {
+    return target.map((lm) => ({ ...lm }));
+  }
+  const wristPrev = prev[0];
+  const wristNext = target[0];
+  if (wristPrev && wristNext) {
+    const jump = Math.hypot(wristNext.x - wristPrev.x, wristNext.y - wristPrev.y);
+    if (jump > 0.35) {
+      return target.map((lm) => ({ ...lm }));
+    }
+  }
+  return target.map((tLm, idx) => {
+    const pLm = prev[idx];
+    if (!pLm) return { ...tLm };
+    return {
+      x: pLm.x + (tLm.x - pLm.x) * factor,
+      y: pLm.y + (tLm.y - pLm.y) * factor,
+      z: pLm.z + (tLm.z - pLm.z) * factor,
+      visibility: tLm.visibility,
+    };
+  });
+}
+
+function drawCenterZoneDivider(ctx: CanvasRenderingContext2D, cw: number, ch: number) {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 6]);
+  ctx.beginPath();
+  ctx.moveTo(cw / 2, 14);
+  ctx.lineTo(cw / 2, ch - 14);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawHandSkeletonOnCanvas(
   ctx: CanvasRenderingContext2D,
   landmarks: NormalizedLandmark[],
-  width: number,
-  height: number,
+  tf: CoverTransform,
   color: string,
 ) {
+  const pts = landmarks.map((lm) => mapMirroredLandmarkToScreen(lm, tf));
   ctx.save();
   ctx.strokeStyle = color;
   ctx.lineWidth = 3;
@@ -89,29 +173,25 @@ function drawHandSkeletonOnCanvas(
   ctx.lineJoin = 'round';
 
   for (const [startIdx, endIdx] of HAND_CONNECTIONS) {
-    const start = landmarks[startIdx];
-    const end = landmarks[endIdx];
+    const start = pts[startIdx];
+    const end = pts[endIdx];
     if (!start || !end) continue;
     ctx.beginPath();
-    ctx.moveTo((1 - start.x) * width, start.y * height);
-    ctx.lineTo((1 - end.x) * width, end.y * height);
+    ctx.moveTo(start.px, start.py);
+    ctx.lineTo(end.px, end.py);
     ctx.stroke();
   }
 
-  for (let i = 0; i < landmarks.length; i += 1) {
-    const lm = landmarks[i];
-    if (!lm) continue;
-    const cx = (1 - lm.x) * width;
-    const cy = lm.y * height;
+  for (let i = 0; i < pts.length; i += 1) {
+    const pt = pts[i];
+    if (!pt) continue;
     ctx.fillStyle = i === 0 || i === 9 ? '#ffffff' : color;
     ctx.beginPath();
-    ctx.arc(cx, cy, i === 0 || i === 9 ? 5.5 : 3.8, 0, Math.PI * 2);
+    ctx.arc(pt.px, pt.py, i === 0 || i === 9 ? 5.5 : 3.6, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = '#0f172a';
-    ctx.lineWidth = 1.25;
+    ctx.lineWidth = 1.2;
     ctx.stroke();
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
   }
   ctx.restore();
 }
@@ -120,8 +200,7 @@ function drawPoseArmSkeletonOnCanvas(
   ctx: CanvasRenderingContext2D,
   landmarks: NormalizedLandmark[],
   connections: ReadonlyArray<[number, number]>,
-  width: number,
-  height: number,
+  tf: CoverTransform,
   color: string,
 ) {
   ctx.save();
@@ -135,9 +214,11 @@ function drawPoseArmSkeletonOnCanvas(
     const end = landmarks[b];
     if (!start || !end) continue;
     if ((start.visibility ?? 1) < 0.25 || (end.visibility ?? 1) < 0.25) continue;
+    const pA = mapMirroredLandmarkToScreen(start, tf);
+    const pB = mapMirroredLandmarkToScreen(end, tf);
     ctx.beginPath();
-    ctx.moveTo((1 - start.x) * width, start.y * height);
-    ctx.lineTo((1 - end.x) * width, end.y * height);
+    ctx.moveTo(pA.px, pA.py);
+    ctx.lineTo(pB.px, pB.py);
     ctx.stroke();
     drawnPoints.add(a);
     drawnPoints.add(b);
@@ -146,9 +227,10 @@ function drawPoseArmSkeletonOnCanvas(
   for (const idx of drawnPoints) {
     const lm = landmarks[idx];
     if (!lm) continue;
+    const pt = mapMirroredLandmarkToScreen(lm, tf);
     ctx.fillStyle = idx === 15 || idx === 16 ? '#ffffff' : color;
     ctx.beginPath();
-    ctx.arc((1 - lm.x) * width, lm.y * height, 5, 0, Math.PI * 2);
+    ctx.arc(pt.px, pt.py, 5, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();
@@ -156,28 +238,24 @@ function drawPoseArmSkeletonOnCanvas(
 
 function drawDwellHalo(
   ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  width: number,
-  height: number,
+  px: number,
+  py: number,
   progress: number,
   color: string,
 ) {
-  if (progress <= 0) return;
+  if (progress <= 0.01) return;
   ctx.save();
-  const cx = screenX * width;
-  const cy = screenY * height;
   ctx.beginPath();
   ctx.strokeStyle = 'rgba(255,255,255,0.28)';
   ctx.lineWidth = 4;
-  ctx.arc(cx, cy, 34, 0, Math.PI * 2);
+  ctx.arc(px, py, 34, 0, Math.PI * 2);
   ctx.stroke();
 
   ctx.beginPath();
   ctx.strokeStyle = color;
   ctx.lineWidth = 5;
   ctx.lineCap = 'round';
-  ctx.arc(cx, cy, 34, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, progress));
+  ctx.arc(px, py, 34, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, progress));
   ctx.stroke();
   ctx.restore();
 }
@@ -198,7 +276,6 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
   const [index, setIndex] = useState(0);
   const [score, setScore] = useState(0);
   const [feedback, setFeedback] = useState<{ correct: boolean; message: string } | null>(null);
-  const [holdProgress, setHoldProgress] = useState(0);
   const [pendingChoice, setPendingChoice] = useState<'yes' | 'no' | null>(null);
   const [bothHandsWarn, setBothHandsWarn] = useState(false);
   const [cropWarn, setCropWarn] = useState(false);
@@ -210,15 +287,28 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const verifierRef = useRef(new HandGestureVerifier());
+  const progressBarFillRef = useRef<HTMLDivElement | null>(null);
+  const progressPctRef = useRef<HTMLSpanElement | null>(null);
+  const badgePctRef = useRef<HTMLSpanElement | null>(null);
+
   const voiceRef = useRef(new VoiceFeedbackController());
   const chimeRef = useRef(new AudioChimeSynthesizer());
-  const dwellRef = useRef<{ choice: 'yes' | 'no' | null; startedAt: number; lastSeenAt: number }>({
-    choice: null,
-    startedAt: 0,
-    lastSeenAt: 0,
-  });
+
+  const activeHandRef = useRef<ActiveHandSide>(null);
+  const lockedHandRef = useRef<ActiveHandSide>(null);
+  const holdProgressRef = useRef(0);
+  const lastFrameTimeRef = useRef(0);
+  const lastVideoTimeRef = useRef(-1);
+  const targetLandmarksRef = useRef<NormalizedLandmark[] | null>(null);
+  const smoothedLandmarksRef = useRef<NormalizedLandmark[] | null>(null);
+  const poseLandmarksRef = useRef<NormalizedLandmark[] | null>(null);
+  const palmPxRef = useRef<{ px: number; py: number } | null>(null);
+  const pendingChoiceRef = useRef<'yes' | 'no' | null>(null);
+  const cropWarnRef = useRef(false);
+  const bothHandsWarnRef = useRef(false);
+
   const startedAtRef = useRef<number>(Date.now());
   const submittingRef = useRef(false);
   const timerRef = useRef<number | null>(null);
@@ -242,6 +332,22 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
     }
   }, []);
 
+  const resetTrackingRefs = useCallback(() => {
+    activeHandRef.current = null;
+    lockedHandRef.current = null;
+    holdProgressRef.current = 0;
+    targetLandmarksRef.current = null;
+    smoothedLandmarksRef.current = null;
+    poseLandmarksRef.current = null;
+    palmPxRef.current = null;
+    pendingChoiceRef.current = null;
+    bothHandsWarnRef.current = false;
+    cropWarnRef.current = false;
+    if (progressBarFillRef.current) progressBarFillRef.current.style.width = '0%';
+    if (progressPctRef.current) progressPctRef.current.textContent = '0%';
+    if (badgePctRef.current) badgePctRef.current.textContent = '0%';
+  }, []);
+
   const currentCard = cards[index];
 
   const questionFontStyle = useMemo(() => {
@@ -255,7 +361,10 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
       const card = cardsRef.current[indexRef.current];
       if (!card || feedbackRef.current || submittingRef.current) return;
       submittingRef.current = true;
-      dwellRef.current = { choice: null, startedAt: 0, lastSeenAt: 0 };
+      resetTrackingRefs();
+      setPendingChoice(null);
+      setBothHandsWarn(false);
+      setCropWarn(false);
 
       const isCorrect = choice === card.correctAnswer;
       chimeRef.current.playTone(isCorrect ? 'correct' : 'wrong');
@@ -267,9 +376,8 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
 
       if (timerRef.current) window.clearTimeout(timerRef.current);
       timerRef.current = window.setTimeout(async () => {
-        verifierRef.current.reset();
+        resetTrackingRefs();
         setFeedback(null);
-        setHoldProgress(0);
         setPendingChoice(null);
         submittingRef.current = false;
 
@@ -291,7 +399,7 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
             try {
               await onSessionFinished(summary);
             } catch {
-              // ignore logging failures so summary remains responsive
+              // ignore background sync failures so summary stays responsive
             } finally {
               setSavingResult(false);
             }
@@ -301,7 +409,7 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
         }
       }, 1350);
     },
-    [lang, onSessionFinished, pick, stopCameraTracks],
+    [lang, onSessionFinished, pick, resetTrackingRefs, stopCameraTracks],
   );
 
   const submitAnswerRef = useRef(submitAnswer);
@@ -316,6 +424,7 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
     let poseLandmarker: PoseLandmarker | null = null;
     setCameraError(null);
     setDetectorReady(false);
+    resetTrackingRefs();
 
     async function createHandOrPoseDetector() {
       const vision = await resolveVisionTasks();
@@ -324,35 +433,39 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
         'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
       ];
       for (const modelAssetPath of handUrls) {
-        try {
-          handLandmarker = await HandLandmarker.createFromOptions(vision, {
-            baseOptions: { modelAssetPath },
-            runningMode: 'VIDEO',
-            numHands: 2,
-            minHandDetectionConfidence: 0.45,
-            minHandPresenceConfidence: 0.45,
-            minTrackingConfidence: 0.45,
-          });
-          return 'hand' as const;
-        } catch {
-          // try next asset path or fall back to pose landmarker
+        for (const delegate of ['GPU', 'CPU'] as const) {
+          try {
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+              baseOptions: { modelAssetPath, delegate },
+              runningMode: 'VIDEO',
+              numHands: 1,
+              minHandDetectionConfidence: 0.4,
+              minHandPresenceConfidence: 0.4,
+              minTrackingConfidence: 0.4,
+            });
+            return 'hand' as const;
+          } catch {
+            // try CPU delegate or next model path
+          }
         }
       }
 
       const poseUrls = ['/models/pose_landmarker.task', '/models/pose_landmarker_full.task'];
       for (const modelAssetPath of poseUrls) {
-        try {
-          poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-            baseOptions: { modelAssetPath },
-            runningMode: 'VIDEO',
-            numPoses: 1,
-            minPoseDetectionConfidence: 0.45,
-            minPosePresenceConfidence: 0.45,
-            minTrackingConfidence: 0.45,
-          });
-          return 'pose' as const;
-        } catch {
-          // try next pose model path
+        for (const delegate of ['GPU', 'CPU'] as const) {
+          try {
+            poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+              baseOptions: { modelAssetPath, delegate },
+              runningMode: 'VIDEO',
+              numPoses: 1,
+              minPoseDetectionConfidence: 0.45,
+              minPosePresenceConfidence: 0.45,
+              minTrackingConfidence: 0.45,
+            });
+            return 'pose' as const;
+          } catch {
+            // try CPU delegate or next pose model path
+          }
         }
       }
 
@@ -365,8 +478,8 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
         const deviceId = await selectClinicalCameraDeviceId();
         stream = await navigator.mediaDevices.getUserMedia({
           video: deviceId
-            ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 480 } }
-            : { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+            ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } }
+            : { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
           audio: false,
         });
       } catch {
@@ -386,7 +499,7 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
       try {
         await videoRef.current.play();
       } catch {
-        // video element play might settle slightly later
+        // video play settles shortly after metadata loads
       }
 
       const mode = await createHandOrPoseDetector();
@@ -398,154 +511,239 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
       }
 
       setDetectorReady(true);
+      lastFrameTimeRef.current = performance.now();
+      lastVideoTimeRef.current = -1;
 
-      const loop = () => {
+      const loop = (now: number) => {
         if (!active || !videoRef.current) return;
         const video = videoRef.current;
         const canvas = canvasRef.current;
 
+        const dt = Math.min(0.1, Math.max(0, (now - (lastFrameTimeRef.current || now)) / 1000));
+        lastFrameTimeRef.current = now;
+
+        const vw = video.videoWidth || 640;
+        const vh = video.videoHeight || 480;
+        const cw = canvas?.clientWidth || vw;
+        const ch = canvas?.clientHeight || vh;
+        const dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2) : 1;
+
         if (canvas) {
-          const vw = video.videoWidth || 640;
-          const vh = video.videoHeight || 480;
-          if (canvas.width !== vw || canvas.height !== vh) {
-            canvas.width = vw;
-            canvas.height = vh;
+          const targetW = Math.max(1, Math.round(cw * dpr));
+          const targetH = Math.max(1, Math.round(ch * dpr));
+          if (canvas.width !== targetW || canvas.height !== targetH) {
+            canvas.width = targetW;
+            canvas.height = targetH;
           }
         }
 
+        const tf = computeMirroredCoverTransform(cw, ch, vw, vh);
         const ctx = canvas?.getContext('2d') ?? null;
-        if (ctx && canvas) {
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (ctx) {
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          ctx.clearRect(0, 0, cw, ch);
+          drawCenterZoneDivider(ctx, cw, ch);
         }
 
-        if (video.readyState >= 2 && !feedbackRef.current && !submittingRef.current) {
-          const now = performance.now();
-          let hasNo = false;
-          let hasYes = false;
-          let outOfBounds = false;
-          let activeAnchor: { screenX: number; screenY: number; side: 'yes' | 'no' } | null = null;
-          const isPortrait = typeof window !== 'undefined' && window.innerHeight > window.innerWidth;
+        const isTrackingPaused = Boolean(feedbackRef.current) || submittingRef.current;
+        if (!isTrackingPaused && video.readyState >= 2) {
+          const isNewVideoFrame = video.currentTime !== lastVideoTimeRef.current;
+          if (isNewVideoFrame) {
+            lastVideoTimeRef.current = video.currentTime;
 
-          if (mode === 'hand' && handLandmarker) {
-            const res = handLandmarker.detectForVideo(video, now);
-            const allHands = res.landmarks ?? [];
-            for (const handLms of allHands) {
-              const wrist = handLms[0];
-              const middleMcp = handLms[9];
-              if (!wrist || !middleMcp) continue;
-              const anchorX = (wrist.x + middleMcp.x) / 2;
-              const anchorY = (wrist.y + middleMcp.y) / 2;
-              const screenX = 1 - anchorX;
-              const side = classifyMirroredSide(screenX);
-              const isRaised = anchorY < 0.85;
-              const color = side === 'yes' ? '#10b981' : side === 'no' ? '#f43f5e' : '#38bdf8';
-
-              if (ctx && canvas) {
-                drawHandSkeletonOnCanvas(ctx, handLms, canvas.width, canvas.height, color);
-              }
-
-              if (isPortrait && (screenX < 0.08 || screenX > 0.92)) {
-                outOfBounds = true;
-              }
-
-              if (isRaised && side === 'no') {
-                hasNo = true;
-                activeAnchor = { screenX, screenY: anchorY, side: 'no' };
-              } else if (isRaised && side === 'yes') {
-                hasYes = true;
-                activeAnchor = { screenX, screenY: anchorY, side: 'yes' };
-              }
+            let offscreen = offscreenCanvasRef.current;
+            if (!offscreen) {
+              offscreen = document.createElement('canvas');
+              offscreenCanvasRef.current = offscreen;
             }
-          } else if (mode === 'pose' && poseLandmarker) {
-            const res = poseLandmarker.detectForVideo(video, now);
-            const pose = res.landmarks?.[0];
-            if (pose) {
-              const groups = [
-                {
-                  shoulder: pose[11],
-                  wrist: pose[15],
-                  index: pose[19],
-                  connections: POSE_HAND_CONNECTIONS_A,
-                },
-                {
-                  shoulder: pose[12],
-                  wrist: pose[16],
-                  index: pose[20],
-                  connections: POSE_HAND_CONNECTIONS_B,
-                },
-              ];
-              for (const g of groups) {
-                if (!g.wrist || (g.wrist.visibility ?? 1) < 0.35) continue;
-                const palmX = g.index && (g.index.visibility ?? 1) > 0.3 ? (g.wrist.x + g.index.x) / 2 : g.wrist.x;
-                const palmY = g.index && (g.index.visibility ?? 1) > 0.3 ? (g.wrist.y + g.index.y) / 2 : g.wrist.y;
-                const screenX = 1 - palmX;
-                const side = classifyMirroredSide(screenX);
-                const shoulderCeiling = g.shoulder ? Math.min(0.84, g.shoulder.y + 0.08) : 0.78;
-                const isRaised = palmY < shoulderCeiling;
-                const color = side === 'yes' ? '#10b981' : side === 'no' ? '#f43f5e' : '#38bdf8';
+            const offH = Math.max(180, Math.round(OFF_CANVAS_WIDTH * (vh / vw)));
+            if (offscreen.width !== OFF_CANVAS_WIDTH || offscreen.height !== offH) {
+              offscreen.width = OFF_CANVAS_WIDTH;
+              offscreen.height = offH;
+            }
+            const offCtx = offscreen.getContext('2d');
+            if (offCtx) {
+              offCtx.drawImage(video, 0, 0, offscreen.width, offscreen.height);
+            }
+            const inferenceSource = offCtx ? offscreen : video;
+            const isPortrait = typeof window !== 'undefined' && window.innerHeight > window.innerWidth;
 
-                if (ctx && canvas && isRaised) {
-                  drawPoseArmSkeletonOnCanvas(ctx, pose, g.connections, canvas.width, canvas.height, color);
+            if (mode === 'hand' && handLandmarker) {
+              const res = handLandmarker.detectForVideo(inferenceSource, now);
+              const handLms = res.landmarks?.[0];
+              if (handLms && handLms.length >= 21) {
+                targetLandmarksRef.current = handLms;
+                const wrist = handLms[0];
+                const indexMcp = handLms[5];
+                const middleMcp = handLms[9];
+                const pinkyMcp = handLms[17];
+                const middleTip = handLms[12];
+                const palmRaw = {
+                  x: (wrist.x + indexMcp.x + middleMcp.x + pinkyMcp.x + middleTip.x) / 5,
+                  y: (wrist.y + indexMcp.y + middleMcp.y + pinkyMcp.y + middleTip.y) / 5,
+                };
+                const mappedPalm = mapMirroredLandmarkToScreen(palmRaw, tf);
+                let minTipY = 1;
+                for (const tipIdx of [4, 8, 12, 16, 20]) {
+                  const tip = handLms[tipIdx];
+                  if (tip) {
+                    const mappedTip = mapMirroredLandmarkToScreen(tip, tf);
+                    if (mappedTip.screenY < minTipY) minTipY = mappedTip.screenY;
+                  }
                 }
+                const isRaised = mappedPalm.screenY < 0.78 || minTipY < 0.65;
+                palmPxRef.current = { px: mappedPalm.px, py: mappedPalm.py };
+                activeHandRef.current = isRaised
+                  ? classifyMirroredHandZone(mappedPalm.screenX, lockedHandRef.current)
+                  : null;
+                bothHandsWarnRef.current = false;
 
-                if (isPortrait && (screenX < 0.08 || screenX > 0.92)) {
-                  outOfBounds = true;
+                const nextCropWarn = isPortrait && (mappedPalm.screenX < 0.08 || mappedPalm.screenX > 0.92);
+                if (cropWarnRef.current !== nextCropWarn) {
+                  cropWarnRef.current = nextCropWarn;
+                  setCropWarn(nextCropWarn);
                 }
+              } else {
+                targetLandmarksRef.current = null;
+                smoothedLandmarksRef.current = null;
+                palmPxRef.current = null;
+                activeHandRef.current = null;
+                if (cropWarnRef.current) {
+                  cropWarnRef.current = false;
+                  setCropWarn(false);
+                }
+              }
+            } else if (mode === 'pose' && poseLandmarker) {
+              const res = poseLandmarker.detectForVideo(inferenceSource, now);
+              const pose = res.landmarks?.[0] ?? null;
+              poseLandmarksRef.current = pose;
+              let detectedLeft = false;
+              let detectedRight = false;
+              let detectedPalmPx: { px: number; py: number } | null = null;
+              let nextCropWarn = false;
 
-                if (isRaised && side === 'no') {
-                  hasNo = true;
-                  activeAnchor = { screenX, screenY: palmY, side: 'no' };
-                } else if (isRaised && side === 'yes') {
-                  hasYes = true;
-                  activeAnchor = { screenX, screenY: palmY, side: 'yes' };
+              if (pose) {
+                const groups = [
+                  { shoulder: pose[11], wrist: pose[15], index: pose[19] },
+                  { shoulder: pose[12], wrist: pose[16], index: pose[20] },
+                ];
+                for (const g of groups) {
+                  if (!g.wrist || (g.wrist.visibility ?? 1) < 0.35) continue;
+                  const palmRaw = {
+                    x: g.index && (g.index.visibility ?? 1) > 0.3 ? (g.wrist.x + g.index.x) / 2 : g.wrist.x,
+                    y: g.index && (g.index.visibility ?? 1) > 0.3 ? (g.wrist.y + g.index.y) / 2 : g.wrist.y,
+                  };
+                  const mappedPalm = mapMirroredLandmarkToScreen(palmRaw, tf);
+                  const shoulderY = g.shoulder ? mapMirroredLandmarkToScreen(g.shoulder, tf).screenY : 0.72;
+                  const isRaised = mappedPalm.screenY < Math.min(0.78, shoulderY + 0.08) || mappedPalm.screenY < 0.65;
+                  if (isPortrait && (mappedPalm.screenX < 0.08 || mappedPalm.screenX > 0.92)) {
+                    nextCropWarn = true;
+                  }
+                  if (isRaised) {
+                    const side = classifyMirroredHandZone(mappedPalm.screenX, lockedHandRef.current);
+                    if (side === 'LEFT') detectedLeft = true;
+                    if (side === 'RIGHT') detectedRight = true;
+                    detectedPalmPx = { px: mappedPalm.px, py: mappedPalm.py };
+                  }
                 }
+              }
+
+              const nextBothWarn = detectedLeft && detectedRight;
+              if (bothHandsWarnRef.current !== nextBothWarn) {
+                bothHandsWarnRef.current = nextBothWarn;
+                setBothHandsWarn(nextBothWarn);
+              }
+              if (cropWarnRef.current !== nextCropWarn) {
+                cropWarnRef.current = nextCropWarn;
+                setCropWarn(nextCropWarn);
+              }
+
+              if (nextBothWarn) {
+                activeHandRef.current = null;
+                palmPxRef.current = null;
+              } else {
+                activeHandRef.current = detectedLeft ? 'LEFT' : detectedRight ? 'RIGHT' : null;
+                palmPxRef.current = detectedPalmPx;
               }
             }
           }
 
-          setCropWarn(outOfBounds);
-
-          if (hasNo && hasYes) {
-            setBothHandsWarn(true);
-            dwellRef.current = { choice: null, startedAt: 0, lastSeenAt: 0 };
-            setPendingChoice(null);
-            setHoldProgress(0);
-          } else {
-            setBothHandsWarn(false);
-            const detectedChoice: 'yes' | 'no' | null = hasNo ? 'no' : hasYes ? 'yes' : null;
-            if (detectedChoice) {
-              if (dwellRef.current.choice !== detectedChoice) {
-                dwellRef.current = { choice: detectedChoice, startedAt: now, lastSeenAt: now };
-              } else {
-                dwellRef.current.lastSeenAt = now;
-              }
-              const elapsed = now - dwellRef.current.startedAt;
-              const progress = Math.min(1, elapsed / DWELL_CONFIRM_MS);
-              setPendingChoice(detectedChoice);
-              setHoldProgress(progress);
-
-              if (ctx && canvas && activeAnchor) {
-                drawDwellHalo(
-                  ctx,
-                  activeAnchor.screenX,
-                  activeAnchor.screenY,
-                  canvas.width,
-                  canvas.height,
-                  progress,
-                  detectedChoice === 'yes' ? '#10b981' : '#f43f5e',
-                );
-              }
-
-              if (elapsed >= DWELL_CONFIRM_MS) {
-                submitAnswerRef.current(detectedChoice);
-              }
-            } else if (dwellRef.current.choice && now - dwellRef.current.lastSeenAt <= DWELL_GRACE_MS) {
-              // preserve progress briefly during minor frame jitter
+          // Smooth 60fps delta-time hold progress (0.8s confirmation, smooth decay)
+          const activeHand = activeHandRef.current;
+          if (activeHand) {
+            if (!lockedHandRef.current || holdProgressRef.current <= 0.05) {
+              lockedHandRef.current = activeHand;
+              holdProgressRef.current = Math.min(1, holdProgressRef.current + dt / HOLD_DURATION_SEC);
+            } else if (lockedHandRef.current === activeHand) {
+              holdProgressRef.current = Math.min(1, holdProgressRef.current + dt / HOLD_DURATION_SEC);
             } else {
-              dwellRef.current = { choice: null, startedAt: 0, lastSeenAt: 0 };
-              setPendingChoice(null);
-              setHoldProgress(0);
+              holdProgressRef.current = Math.max(0, holdProgressRef.current - dt * HAND_SWITCH_DECAY_RATE);
+              if (holdProgressRef.current === 0) {
+                lockedHandRef.current = activeHand;
+              }
             }
+          } else {
+            holdProgressRef.current = Math.max(0, holdProgressRef.current - dt * HAND_RELEASE_DECAY_RATE);
+            if (holdProgressRef.current === 0) {
+              lockedHandRef.current = null;
+            }
+          }
+
+          const nextPendingChoice: 'yes' | 'no' | null =
+            lockedHandRef.current === 'RIGHT' ? 'yes' : lockedHandRef.current === 'LEFT' ? 'no' : null;
+          if (pendingChoiceRef.current !== nextPendingChoice) {
+            pendingChoiceRef.current = nextPendingChoice;
+            setPendingChoice(nextPendingChoice);
+          }
+
+          // Update progress width and percentage directly on DOM at 60fps without React re-renders
+          const pctFloat = Math.min(100, Math.max(0, holdProgressRef.current * 100));
+          const pctRounded = `${Math.round(pctFloat)}%`;
+          if (progressBarFillRef.current) {
+            progressBarFillRef.current.style.width = `${pctFloat.toFixed(1)}%`;
+          }
+          if (progressPctRef.current) {
+            progressPctRef.current.textContent = pctRounded;
+          }
+          if (badgePctRef.current) {
+            badgePctRef.current.textContent = pctRounded;
+          }
+
+          // Render interpolated 60fps hand or pose skeleton + progress halo directly on canvas
+          if (ctx) {
+            if (mode === 'hand' && targetLandmarksRef.current) {
+              smoothedLandmarksRef.current = lerpLandmarks(
+                smoothedLandmarksRef.current,
+                targetLandmarksRef.current,
+                LANDMARK_LERP_FACTOR,
+              );
+              const skelColor =
+                (activeHand ?? lockedHandRef.current) === 'RIGHT'
+                  ? '#10b981'
+                  : (activeHand ?? lockedHandRef.current) === 'LEFT'
+                    ? '#f43f5e'
+                    : '#38bdf8';
+              drawHandSkeletonOnCanvas(ctx, smoothedLandmarksRef.current, tf, skelColor);
+            } else if (mode === 'pose' && poseLandmarksRef.current && activeHand) {
+              const skelColor = activeHand === 'RIGHT' ? '#10b981' : '#f43f5e';
+              drawPoseArmSkeletonOnCanvas(ctx, poseLandmarksRef.current, POSE_HAND_CONNECTIONS_A, tf, skelColor);
+              drawPoseArmSkeletonOnCanvas(ctx, poseLandmarksRef.current, POSE_HAND_CONNECTIONS_B, tf, skelColor);
+            }
+
+            if (palmPxRef.current && holdProgressRef.current > 0.01 && lockedHandRef.current) {
+              drawDwellHalo(
+                ctx,
+                palmPxRef.current.px,
+                palmPxRef.current.py,
+                holdProgressRef.current,
+                lockedHandRef.current === 'RIGHT' ? '#10b981' : '#f43f5e',
+              );
+            }
+          }
+
+          if (holdProgressRef.current >= 1 && lockedHandRef.current) {
+            const confirmed: 'yes' | 'no' = lockedHandRef.current === 'RIGHT' ? 'yes' : 'no';
+            submitAnswerRef.current(confirmed);
           }
         }
 
@@ -563,7 +761,7 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
       stopCameraTracks();
       voiceRef.current.flush();
     };
-  }, [completedSummary, sessionKey, stopCameraTracks]);
+  }, [completedSummary, resetTrackingRefs, sessionKey, stopCameraTracks]);
 
   useEffect(() => {
     return () => {
@@ -574,15 +772,13 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
 
   const handleReplay = () => {
     if (timerRef.current) window.clearTimeout(timerRef.current);
-    verifierRef.current.reset();
-    dwellRef.current = { choice: null, startedAt: 0, lastSeenAt: 0 };
+    resetTrackingRefs();
     submittingRef.current = false;
     startedAtRef.current = Date.now();
     setCards(sampleTenCognitiveCards());
     setIndex(0);
     setScore(0);
     setFeedback(null);
-    setHoldProgress(0);
     setPendingChoice(null);
     setBothHandsWarn(false);
     setCropWarn(false);
@@ -717,19 +913,21 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
 
         <div className="relative overflow-hidden rounded-3xl bg-slate-900 aspect-[4/3]">
           <video ref={videoRef} playsInline muted className="h-full w-full object-cover -scale-x-100" />
-          <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full object-cover" />
+          <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
 
           {!cameraError && (
             <div className="pointer-events-none absolute top-3 right-3 z-10">
               {pendingChoice === 'yes' ? (
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-600/95 px-3 py-1.5 text-xs font-bold text-white shadow-lg backdrop-blur">
                   <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
-                  ตรวจพบมือขวา (ใช่)... {Math.round(holdProgress * 100)}%
+                  <span>ตรวจพบมือขวา (ใช่)... </span>
+                  <span ref={badgePctRef}>0%</span>
                 </span>
               ) : pendingChoice === 'no' ? (
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-600/95 px-3 py-1.5 text-xs font-bold text-white shadow-lg backdrop-blur">
                   <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
-                  ตรวจพบมือซ้าย (ไม่ใช่)... {Math.round(holdProgress * 100)}%
+                  <span>ตรวจพบมือซ้าย (ไม่ใช่)... </span>
+                  <span ref={badgePctRef}>0%</span>
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-950/80 px-3 py-1.5 text-xs font-semibold text-slate-100 shadow backdrop-blur border border-white/10">
@@ -776,14 +974,15 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
             <div className="absolute bottom-4 inset-x-4 z-10 rounded-2xl bg-slate-950/85 p-3 text-white backdrop-blur border border-white/10">
               <div className="flex items-center justify-between text-xs font-semibold mb-1.5">
                 <span>{pendingChoice === 'yes' ? t('minigameRightYes') : t('minigameLeftNo')}</span>
-                <span>{Math.round(holdProgress * 100)}%</span>
+                <span ref={progressPctRef}>0%</span>
               </div>
               <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-700">
                 <div
-                  className={`h-full transition-all duration-75 ${
+                  ref={progressBarFillRef}
+                  className={`h-full will-change-[width] ${
                     pendingChoice === 'yes' ? 'bg-emerald-400' : 'bg-rose-500'
                   }`}
-                  style={{ width: `${Math.round(holdProgress * 100)}%` }}
+                  style={{ width: '0%' }}
                 />
               </div>
             </div>
