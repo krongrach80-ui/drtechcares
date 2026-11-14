@@ -1289,6 +1289,9 @@ export function ClinicalStaffPortalShell({
         cognitiveModpackId: courseModpackId || modpacks[0]?.id || 'modpack-core-99',
         weeklySchedule,
       });
+      await apiClient.updatePatient(selectedSchedulePatient.id, {
+        rehabSchedules: [],
+      });
       setPatientCourse(saved);
       setWeeklyEditorOpen(false);
       flashBanner('success', `บันทึกตารางฝึก 7 วันของ ${selectedSchedulePatient.fullName} เรียบร้อย`);
@@ -1345,30 +1348,96 @@ export function ClinicalStaffPortalShell({
     return cells;
   }, [calendarDate]);
 
-  const scheduleStats = useMemo(() => {
+  const calendarDayStateByDate = useMemo(() => {
+    const year = calendarDate.getFullYear();
+    const month = calendarDate.getMonth();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
     const customList: RehabScheduleItem[] = selectedSchedulePatient?.rehabSchedules ?? [];
-    if (customList.length > 0) {
-      return {
-        total: customList.length,
-        active: customList.filter((s) => s.status === 'ACTIVE').length,
-        paused: customList.filter((s) => s.status === 'REST').length,
-        completed:
-          customList.filter((s) => s.status === 'COMPLETED').length +
-          sessions.filter((s) => s.patientId === selectedSchedulePatient?.id).length,
-      };
+    const hasCustomSchedules = customList.length > 0;
+    const completedSessionDates = new Set(
+      selectedSchedulePatient
+        ? sessions
+            .filter((s) => s.patientId === selectedSchedulePatient.id)
+            .map((s) => (s.createdAt || '').slice(0, 10))
+        : [],
+    );
+
+    const map = new Map<
+      string,
+      {
+        dateIso: string;
+        customForDay: RehabScheduleItem[];
+        firstCustomName: string | null;
+        planDay: DailyScheduleDay | undefined;
+        isTraining: boolean;
+        cellStatus: 'ACTIVE' | 'REST' | 'COMPLETED' | 'MISSED';
+      }
+    >();
+
+    for (let dayNum = 1; dayNum <= daysInMonth; dayNum += 1) {
+      const dateIso = `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+      const weekday = new Date(year, month, dayNum).getDay();
+      const customForDay = customList.filter((s) => s.scheduledDate === dateIso);
+      const firstCustomEx =
+        customForDay.length > 0 ? exercises.find((ex) => ex.id === customForDay[0].exerciseId) : undefined;
+      const firstCustomName = firstCustomEx ? firstCustomEx.name[lang] || firstCustomEx.name.th : null;
+      const planDay = weeklySchedule[weekday];
+      const isTraining = !hasCustomSchedules && planDay?.dayType === 'training' && Boolean(patientCourse);
+      const hasCompletedSession = completedSessionDates.has(dateIso);
+
+      let cellStatus: 'ACTIVE' | 'REST' | 'COMPLETED' | 'MISSED' = 'REST';
+      if (customForDay.length > 0) {
+        if (
+          customForDay.every((s) => s.status === 'COMPLETED') ||
+          customForDay[0].status === 'COMPLETED' ||
+          hasCompletedSession
+        ) {
+          cellStatus = 'COMPLETED';
+        } else if (customForDay[0].status === 'REST') {
+          cellStatus = 'REST';
+        } else if (customForDay[0].status === 'MISSED') {
+          cellStatus = 'MISSED';
+        } else {
+          cellStatus = 'ACTIVE';
+        }
+      } else if (isTraining) {
+        cellStatus = hasCompletedSession ? 'COMPLETED' : 'ACTIVE';
+      }
+
+      map.set(dateIso, {
+        dateIso,
+        customForDay,
+        firstCustomName,
+        planDay,
+        isTraining,
+        cellStatus,
+      });
     }
-    const activeDays = weeklySchedule.filter((d) => d.dayType === 'training').length;
-    const restDays = weeklySchedule.filter((d) => d.dayType === 'rest').length;
-    const completed = selectedSchedulePatient
-      ? sessions.filter((s) => s.patientId === selectedSchedulePatient.id).length
-      : 0;
+
+    return map;
+  }, [calendarDate, selectedSchedulePatient, sessions, exercises, lang, weeklySchedule, patientCourse]);
+
+  const scheduleStats = useMemo(() => {
+    let active = 0;
+    let paused = 0;
+    let completed = 0;
+    let missed = 0;
+
+    calendarDayStateByDate.forEach((day) => {
+      if (day.cellStatus === 'COMPLETED') completed += 1;
+      else if (day.cellStatus === 'ACTIVE') active += 1;
+      else if (day.cellStatus === 'MISSED') missed += 1;
+      else paused += 1;
+    });
+
     return {
-      total: activeDays,
-      active: activeDays,
-      paused: restDays,
+      total: active + completed + missed,
+      active,
+      paused,
       completed,
+      missed,
     };
-  }, [weeklySchedule, selectedSchedulePatient, sessions]);
+  }, [calendarDayStateByDate]);
 
   const currentHeader = locale.headers[activeTab];
   const scheduledBadgeCount = patients.filter(
@@ -2785,23 +2854,16 @@ export function ClinicalStaffPortalShell({
                         const year = calendarDate.getFullYear();
                         const month = calendarDate.getMonth();
                         const dateIso = `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
-                        const weekday = new Date(year, month, dayNum).getDay();
                         const today = new Date();
                         const isToday =
                           dayNum === today.getDate() && month === today.getMonth() && year === today.getFullYear();
 
-                        const customForDay = (selectedSchedulePatient?.rehabSchedules ?? []).filter(
-                          (s) => s.scheduledDate === dateIso,
-                        );
-                        const firstCustomEx =
-                          customForDay.length > 0
-                            ? exercises.find((ex) => ex.id === customForDay[0].exerciseId)
-                            : undefined;
-                        const firstCustomName = firstCustomEx
-                          ? firstCustomEx.name[lang] || firstCustomEx.name.th
-                          : null;
-                        const planDay = weeklySchedule[weekday];
-                        const isTraining = planDay?.dayType === 'training' && Boolean(patientCourse);
+                        const dayState = calendarDayStateByDate.get(dateIso);
+                        const customForDay = dayState?.customForDay ?? [];
+                        const firstCustomName = dayState?.firstCustomName ?? null;
+                        const planDay = dayState?.planDay;
+                        const isTraining = Boolean(dayState?.isTraining);
+                        const cellStatus = dayState?.cellStatus ?? 'REST';
 
                         return (
                           <button
@@ -2836,20 +2898,20 @@ export function ClinicalStaffPortalShell({
                                 <>
                                   <span
                                     className={`inline-block whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                                      customForDay[0].status === 'COMPLETED'
+                                      cellStatus === 'COMPLETED'
                                         ? 'bg-blue-100 text-blue-800'
-                                        : customForDay[0].status === 'REST'
+                                        : cellStatus === 'REST'
                                           ? 'bg-amber-100 text-amber-800'
-                                          : customForDay[0].status === 'MISSED'
+                                          : cellStatus === 'MISSED'
                                             ? 'bg-rose-100 text-rose-800'
                                             : 'bg-emerald-100 text-emerald-800'
                                     }`}
                                   >
-                                    {customForDay[0].status === 'COMPLETED'
+                                    {cellStatus === 'COMPLETED'
                                       ? locale.schedules.statusCompleted
-                                      : customForDay[0].status === 'REST'
+                                      : cellStatus === 'REST'
                                         ? locale.schedules.statusRest
-                                        : customForDay[0].status === 'MISSED'
+                                        : cellStatus === 'MISSED'
                                           ? locale.schedules.statusMissed
                                           : locale.schedules.statusActive}
                                   </span>
@@ -2859,19 +2921,27 @@ export function ClinicalStaffPortalShell({
                                     </div>
                                   )}
                                 </>
-                              ) : isTraining ? (
-                                <span className="inline-block whitespace-nowrap rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">
-                                  {lang === 'cn'
-                                    ? planDay.activityType === 'physio_exercise'
-                                      ? 'AI 训练'
-                                      : '认知游戏'
-                                    : lang === 'en'
+                              ) : isTraining && planDay ? (
+                                <span
+                                  className={`inline-block whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                                    cellStatus === 'COMPLETED'
+                                      ? 'bg-blue-100 text-blue-800'
+                                      : 'bg-emerald-100 text-emerald-800'
+                                  }`}
+                                >
+                                  {cellStatus === 'COMPLETED'
+                                    ? locale.schedules.statusCompleted
+                                    : lang === 'cn'
                                       ? planDay.activityType === 'physio_exercise'
-                                        ? 'AI Physio'
-                                        : 'Minigame'
-                                      : planDay.activityType === 'physio_exercise'
-                                        ? 'ฝึก AI'
-                                        : 'มินิเกม'}
+                                        ? 'AI 训练'
+                                        : '认知游戏'
+                                      : lang === 'en'
+                                        ? planDay.activityType === 'physio_exercise'
+                                          ? 'AI Physio'
+                                          : 'Minigame'
+                                        : planDay.activityType === 'physio_exercise'
+                                          ? 'ฝึก AI'
+                                          : 'มินิเกม'}
                                 </span>
                               ) : (
                                 <span className="text-[10px] text-slate-300">{locale.schedules.restDayLabel}</span>
@@ -2896,30 +2966,54 @@ export function ClinicalStaffPortalShell({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {patients.map((p) => (
-                        <tr key={p.id}>
-                          <td className="px-5 py-3 font-mono font-bold text-sky-700 whitespace-nowrap">{p.hn}</td>
-                          <td className="px-4 py-3 font-bold text-slate-900 truncate">{p.fullName}</td>
-                          <td className="px-4 py-3 text-slate-600 truncate">
-                            {ptNameMap.get(p.delegatedToPtId || p.assignedPtId) || 'กภ. ประจำคลินิก'}
-                          </td>
-                          <td className="px-4 py-3 font-semibold text-emerald-700 whitespace-nowrap">
-                            {p.nextAppointmentDate || '-'} ({p.rehabSchedules?.length ?? 0} {locale.schedules.unitAppt})
-                          </td>
-                          <td className="px-5 py-3 text-right">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSelectedSchedulePatientId(p.id);
-                                setScheduleSubTab('individual');
-                              }}
-                              className="whitespace-nowrap rounded-lg bg-emerald-50 px-3 py-1 font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer"
-                            >
-                              {locale.schedules.openCalendarBtn}
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                      {patients.map((p) => {
+                        const nowObj = new Date();
+                        const todayIsoStr = `${nowObj.getFullYear()}-${String(nowObj.getMonth() + 1).padStart(2, '0')}-${String(nowObj.getDate()).padStart(2, '0')}`;
+                        const scheduledDates = Array.from(
+                          new Set(
+                            (p.rehabSchedules ?? [])
+                              .filter((s) => s.status !== 'REST')
+                              .map((s) => s.scheduledDate),
+                          ),
+                        ).sort();
+                        const apptCount =
+                          scheduledDates.length > 0
+                            ? scheduledDates.length
+                            : p.id === selectedSchedulePatient?.id
+                              ? scheduleStats.total
+                              : p.nextAppointmentDate
+                                ? 1
+                                : 0;
+                        const nextAppt =
+                          scheduledDates.find((d) => d >= todayIsoStr) ||
+                          scheduledDates[0] ||
+                          p.nextAppointmentDate ||
+                          '-';
+                        return (
+                          <tr key={p.id}>
+                            <td className="px-5 py-3 font-mono font-bold text-sky-700 whitespace-nowrap">{p.hn}</td>
+                            <td className="px-4 py-3 font-bold text-slate-900 truncate">{p.fullName}</td>
+                            <td className="px-4 py-3 text-slate-600 truncate">
+                              {ptNameMap.get(p.delegatedToPtId || p.assignedPtId) || 'กภ. ประจำคลินิก'}
+                            </td>
+                            <td className="px-4 py-3 font-semibold text-emerald-700 whitespace-nowrap">
+                              {nextAppt} ({apptCount} {locale.schedules.unitAppt})
+                            </td>
+                            <td className="px-5 py-3 text-right">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedSchedulePatientId(p.id);
+                                  setScheduleSubTab('individual');
+                                }}
+                                className="whitespace-nowrap rounded-lg bg-emerald-50 px-3 py-1 font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer"
+                              >
+                                {locale.schedules.openCalendarBtn}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
