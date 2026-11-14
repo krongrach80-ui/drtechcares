@@ -392,6 +392,22 @@ export function translateVoiceCoachText(
   return clean;
 }
 
+export function buildTtsProxyUrl(text: string, lang: VoiceCoachLanguage): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  const maxLen = 190;
+  let clipped = collapsed;
+  if (collapsed.length > maxLen) {
+    const sliced = collapsed.slice(0, maxLen);
+    const lastSpace = sliced.lastIndexOf(' ');
+    clipped = lastSpace >= Math.floor(maxLen * 0.5) ? sliced.slice(0, lastSpace).trim() : sliced.trim();
+  }
+  const params = new URLSearchParams({
+    lang,
+    text: clipped,
+  });
+  return `/api/tts?${params.toString()}`;
+}
+
 export function pickSpeechVoice(
   voices: readonly SpeechSynthesisVoice[],
   bcp47: string,
@@ -463,7 +479,10 @@ export function VoiceCoachBanner({
   const lastSpokenKeyRef = useRef<string>('');
   const lastSpokenAtRef = useRef<number>(0);
   const pendingSpeakTimerRef = useRef<number | null>(null);
+  const webSpeechTimerRef = useRef<number | null>(null);
   const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const speakSeqRef = useRef<number>(0);
   const blockedByAutoplayRef = useRef<boolean>(false);
 
   const langOption = useMemo(
@@ -490,6 +509,36 @@ export function VoiceCoachBanner({
     }
   }, []);
 
+  const stopAllSpeech = useCallback(() => {
+    speakSeqRef.current += 1;
+    if (webSpeechTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(webSpeechTimerRef.current);
+      webSpeechTimerRef.current = null;
+    }
+    const audio = audioRef.current;
+    if (audio) {
+      try {
+        audio.onplay = null;
+        audio.onended = null;
+        audio.onerror = null;
+        audio.pause();
+        audio.currentTime = 0;
+      } catch {
+        // Ignore audio reset errors
+      }
+    }
+    activeUtteranceRef.current = null;
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // Ignore unavailable speechSynthesis cancel
+      }
+    }
+    isSpeakingRef.current = false;
+    setIsSpeaking(false);
+  }, []);
+
   // Load & subscribe to available OS/browser SpeechSynthesis voices
   useEffect(() => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
@@ -512,9 +561,15 @@ export function VoiceCoachBanner({
     return undefined;
   }, []);
 
-  const speakNow = useCallback(
-    (text: string, targetLang: VoiceCoachLanguage) => {
-      const clean = text.trim();
+  useEffect(() => {
+    return () => {
+      clearPendingSpeakTimer();
+      stopAllSpeech();
+    };
+  }, [clearPendingSpeakTimer, stopAllSpeech]);
+
+  const speakWithWebSpeech = useCallback(
+    (clean: string, targetLang: VoiceCoachLanguage, seq: number) => {
       if (
         muted ||
         !clean ||
@@ -530,55 +585,71 @@ export function VoiceCoachBanner({
 
       try {
         const synth = window.speechSynthesis;
-        if (synth.speaking || synth.pending) {
+        const wasBusy = synth.speaking || synth.pending;
+        if (wasBusy) {
           synth.cancel();
         }
-        if (synth.paused) {
-          synth.resume();
-        }
 
-        const currentVoices = voices.length > 0 ? voices : synth.getVoices();
-        const matchedVoice = pickSpeechVoice(currentVoices, targetOpt.bcp47);
+        const startUtterance = () => {
+          if (speakSeqRef.current !== seq) return;
+          if (synth.paused) {
+            synth.resume();
+          }
 
-        const utterance = new SpeechSynthesisUtterance(clean);
-        utterance.lang = matchedVoice?.lang || targetOpt.bcp47;
-        if (matchedVoice) {
-          utterance.voice = matchedVoice;
-        }
-        utterance.rate = targetLang === 'th' ? 0.96 : targetLang === 'zh' ? 0.98 : 1.0;
-        utterance.pitch = 1.0;
-        utterance.volume = 1.0;
+          const currentVoices = voices.length > 0 ? voices : synth.getVoices();
+          const matchedVoice = pickSpeechVoice(currentVoices, targetOpt.bcp47);
 
-        activeUtteranceRef.current = utterance;
+          const utterance = new SpeechSynthesisUtterance(clean);
+          utterance.lang = matchedVoice?.lang || targetOpt.bcp47;
+          if (matchedVoice) {
+            utterance.voice = matchedVoice;
+          }
+          utterance.rate = targetLang === 'th' ? 0.96 : targetLang === 'zh' ? 0.98 : 1.0;
+          utterance.pitch = 1.0;
+          utterance.volume = 1.0;
 
-        utterance.onstart = () => {
-          blockedByAutoplayRef.current = false;
+          activeUtteranceRef.current = utterance;
+
+          utterance.onstart = () => {
+            if (speakSeqRef.current !== seq) return;
+            blockedByAutoplayRef.current = false;
+            isSpeakingRef.current = true;
+            setIsSpeaking(true);
+          };
+          utterance.onend = () => {
+            if (activeUtteranceRef.current === utterance) {
+              activeUtteranceRef.current = null;
+            }
+            if (speakSeqRef.current !== seq) return;
+            isSpeakingRef.current = false;
+            setIsSpeaking(false);
+          };
+          utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
+            if (activeUtteranceRef.current === utterance) {
+              activeUtteranceRef.current = null;
+            }
+            if (speakSeqRef.current !== seq) return;
+            isSpeakingRef.current = false;
+            setIsSpeaking(false);
+            if (event?.error === 'not-allowed') {
+              blockedByAutoplayRef.current = true;
+            }
+          };
+
           isSpeakingRef.current = true;
           setIsSpeaking(true);
-        };
-        utterance.onend = () => {
-          if (activeUtteranceRef.current === utterance) {
-            activeUtteranceRef.current = null;
-          }
-          isSpeakingRef.current = false;
-          setIsSpeaking(false);
-        };
-        utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
-          if (activeUtteranceRef.current === utterance) {
-            activeUtteranceRef.current = null;
-          }
-          isSpeakingRef.current = false;
-          setIsSpeaking(false);
-          if (event?.error === 'not-allowed') {
-            blockedByAutoplayRef.current = true;
-          }
+          synth.speak(utterance);
         };
 
-        lastSpokenKeyRef.current = `${targetLang}:${clean}`;
-        lastSpokenAtRef.current = Date.now();
-        isSpeakingRef.current = true;
-        setIsSpeaking(true);
-        synth.speak(utterance);
+        // Delay slightly after synth.cancel() to avoid Chromium's cancel+speak drop race
+        if (wasBusy) {
+          webSpeechTimerRef.current = window.setTimeout(() => {
+            webSpeechTimerRef.current = null;
+            startUtterance();
+          }, 50);
+        } else {
+          startUtterance();
+        }
       } catch {
         isSpeakingRef.current = false;
         setIsSpeaking(false);
@@ -587,13 +658,95 @@ export function VoiceCoachBanner({
     [muted, voices],
   );
 
-  // Unlock / resume Web Speech API and replay blocked prompt on first user interaction
+  const speakNow = useCallback(
+    (text: string, targetLang: VoiceCoachLanguage) => {
+      const clean = text.trim();
+      if (muted || !clean || typeof window === 'undefined') {
+        return;
+      }
+
+      stopAllSpeech();
+      const seq = speakSeqRef.current;
+
+      lastSpokenKeyRef.current = `${targetLang}:${clean}`;
+      lastSpokenAtRef.current = Date.now();
+
+      // Primary path: play real neural MP3 audio via same-origin /api/tts proxy so Thai,
+      // English, and Chinese work even when OS/browser lacks local th-TH or zh-CN TTS voices.
+      if (typeof Audio !== 'undefined') {
+        try {
+          let audio = audioRef.current;
+          if (!audio) {
+            audio = new Audio();
+            audio.preload = 'auto';
+            audioRef.current = audio;
+          }
+          audio.playbackRate = targetLang === 'th' ? 1.0 : targetLang === 'zh' ? 0.98 : 1.0;
+
+          audio.onplay = () => {
+            if (speakSeqRef.current !== seq) return;
+            blockedByAutoplayRef.current = false;
+            isSpeakingRef.current = true;
+            setIsSpeaking(true);
+          };
+          audio.onended = () => {
+            if (speakSeqRef.current !== seq) return;
+            isSpeakingRef.current = false;
+            setIsSpeaking(false);
+          };
+          audio.onerror = () => {
+            if (speakSeqRef.current !== seq) return;
+            isSpeakingRef.current = false;
+            setIsSpeaking(false);
+            speakWithWebSpeech(clean, targetLang, seq);
+          };
+
+          audio.src = buildTtsProxyUrl(clean, targetLang);
+          const playPromise = audio.play();
+          isSpeakingRef.current = true;
+          setIsSpeaking(true);
+
+          if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch((err: unknown) => {
+              if (speakSeqRef.current !== seq) return;
+              isSpeakingRef.current = false;
+              setIsSpeaking(false);
+              const errName =
+                err && typeof err === 'object' && 'name' in err
+                  ? String((err as { name: string }).name)
+                  : '';
+              if (errName === 'NotAllowedError') {
+                blockedByAutoplayRef.current = true;
+                return;
+              }
+              if (errName === 'AbortError') {
+                return;
+              }
+              speakWithWebSpeech(clean, targetLang, seq);
+            });
+          }
+          return;
+        } catch {
+          // Fall through to Web Speech API
+        }
+      }
+
+      speakWithWebSpeech(clean, targetLang, seq);
+    },
+    [muted, stopAllSpeech, speakWithWebSpeech],
+  );
+
+  // Unlock / resume Web Speech + Audio autoplay on first user interaction
   useEffect(() => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-    const unlockSpeech = () => {
+    if (typeof window === 'undefined') return;
+    const unlockSpeech = (event: Event) => {
       try {
-        if (window.speechSynthesis.paused) {
+        if ('speechSynthesis' in window && window.speechSynthesis.paused) {
           window.speechSynthesis.resume();
+        }
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest('[data-voice-coach-control="true"]')) {
+          return;
         }
         if (blockedByAutoplayRef.current && !latestDisplayRef.current.muted) {
           blockedByAutoplayRef.current = false;
@@ -617,11 +770,12 @@ export function VoiceCoachBanner({
     const clean = displayedText.trim();
 
     if (!clean || muted) {
-      if (muted && typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
+      if (muted) {
+        stopAllSpeech();
+      } else {
+        isSpeakingRef.current = false;
+        setIsSpeaking(false);
       }
-      isSpeakingRef.current = false;
-      setIsSpeaking(false);
       return;
     }
 
@@ -658,7 +812,7 @@ export function VoiceCoachBanner({
 
     speakNow(clean, voiceLang);
     return clearPendingSpeakTimer;
-  }, [displayedText, voiceLang, kioskState, muted, speakNow, clearPendingSpeakTimer]);
+  }, [displayedText, voiceLang, kioskState, muted, speakNow, clearPendingSpeakTimer, stopAllSpeech]);
 
   // Repeat warning every 4s while paused by Multi-Person / Impostor guard
   useEffect(() => {
@@ -712,6 +866,7 @@ export function VoiceCoachBanner({
         {/* Animated 5-bar AI Voice Coach Soundwave + Replay Trigger */}
         <button
           type="button"
+          data-voice-coach-control="true"
           onClick={() => speakNow(displayedText, voiceLang)}
           title={langOption.replayTitle}
           className={`flex h-12 w-14 shrink-0 items-center justify-center gap-1 rounded-full shadow-md transition-transform active:scale-95 ${badgeTone}`}
@@ -758,7 +913,7 @@ export function VoiceCoachBanner({
       </div>
 
       {/* 3-Language Selector + Replay + Mute/Unmute Controls */}
-      <div className="flex flex-wrap items-center justify-end gap-2">
+      <div data-voice-coach-control="true" className="flex flex-wrap items-center justify-end gap-2">
         <div
           role="group"
           aria-label="เลือกภาษาเสียงพากย์ AI Coach"

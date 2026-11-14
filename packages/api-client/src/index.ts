@@ -1220,6 +1220,14 @@ export function resolveTodayPatientSchedule(input: {
 }
 
 import { createCloudRouter } from './cloudRouter';
+export {
+  buildUpstreamTtsUrls,
+  clampTtsText,
+  normalizeTtsLang,
+  synthesizeTtsAudio,
+  type SupportedTtsLang,
+  type SynthesizedTtsAudio,
+} from './ttsProxy';
 
 export { createCloudRouter };
 

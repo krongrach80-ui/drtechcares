@@ -5,7 +5,12 @@ import {
   l2Normalize,
 } from '@drtechcares/smart-biometric-core';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { createCloudDelegatedRouter } from '../index';
+import {
+  clampTtsText,
+  createCloudDelegatedRouter,
+  normalizeTtsLang,
+  synthesizeTtsAudio,
+} from '../index';
 import { hydrateStateFromSupabase, type CloudRouterState } from '../supabasePersistence';
 
 function makeHybridEmbedding(seed: number): number[] {
@@ -514,6 +519,39 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     };
     await hydrateStateFromSupabase(mockSupabase, state);
     expect(state.patients.find((p) => p.id === 'pat-delegated-1')?.delegatedToPtId).toBeNull();
+  });
+
+  it('validates /api/tts query parameters and synthesizes audio via fallback upstream fetch', async () => {
+    const badTts = await callRouter(router, '/api/tts?lang=th');
+    expect(badTts.status).toBe(400);
+
+    expect(normalizeTtsLang('th-TH')).toBe('th');
+    expect(normalizeTtsLang('en-US')).toBe('en');
+    expect(normalizeTtsLang('zh-CN')).toBe('zh-CN');
+    expect(normalizeTtsLang('cn')).toBe('zh-CN');
+    expect(clampTtsText('  ค่อยๆ   เคลื่อนไหว   ไปยังเป้าหมาย  ')).toBe('ค่อยๆ เคลื่อนไหว ไปยังเป้าหมาย');
+
+    const calls: string[] = [];
+    const mockFetch: typeof fetch = async (input) => {
+      const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      calls.push(urlStr);
+      if (urlStr.includes('client=tw-ob')) {
+        return new Response(null, { status: 429 });
+      }
+      const fakeMp3 = new Uint8Array(512).fill(0xff);
+      return new Response(fakeMp3, {
+        status: 200,
+        headers: { 'Content-Type': 'audio/mpeg' },
+      });
+    };
+
+    const result = await synthesizeTtsAudio('th', 'สวัสดีครับ', mockFetch);
+    expect(calls.length).toBe(2);
+    expect(calls[0]).toContain('tl=th');
+    expect(calls[1]).toContain('client=gtx');
+    expect(result?.provider).toBe('google-gtx');
+    expect(result?.contentType).toBe('audio/mpeg');
+    expect(result?.audio.byteLength).toBe(512);
   });
 });
 

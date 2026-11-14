@@ -16,6 +16,10 @@ import {
   type Detected3DPose,
 } from '../../../packages/face-client/src/biometricAssistant';
 import {
+  clampTtsText,
+  synthesizeTtsAudio,
+} from '../../../packages/api-client/src/ttsProxy';
+import {
   ClinicalDatabase,
   hashPassword,
   verifyPassword,
@@ -333,6 +337,27 @@ export function createDrTechCaresApiApp(
 
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ ok: true, service: 'drtechcares-production-api', persistentDb: true });
+  });
+
+  app.get('/api/tts', async (req: Request, res: Response) => {
+    const rawText = typeof req.query.text === 'string' ? req.query.text : typeof req.query.q === 'string' ? req.query.q : '';
+    const cleanText = clampTtsText(rawText);
+    if (!cleanText) {
+      res.status(400).json({ error: 'VALIDATION_ERROR', message: 'Missing text parameter' });
+      return;
+    }
+    const langParam = typeof req.query.lang === 'string' ? req.query.lang : 'th';
+    const synthesized = await synthesizeTtsAudio(langParam, cleanText);
+    if (!synthesized) {
+      res.status(502).json({ error: 'TTS_UPSTREAM_UNAVAILABLE', message: 'TTS synthesis unavailable' });
+      return;
+    }
+    res
+      .status(200)
+      .setHeader('Content-Type', synthesized.contentType)
+      .setHeader('Cache-Control', 'public, max-age=86400')
+      .setHeader('X-TTS-Provider', synthesized.provider)
+      .send(Buffer.from(synthesized.audio));
   });
 
   // ========================

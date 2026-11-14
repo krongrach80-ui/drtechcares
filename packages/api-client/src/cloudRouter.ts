@@ -52,6 +52,7 @@ import {
   type CloudRouterState,
   type StoredUserAccount,
 } from './supabasePersistence';
+import { clampTtsText, synthesizeTtsAudio } from './ttsProxy';
 
 function randomHex(byteLength: number): string {
   const bytes = new Uint8Array(byteLength);
@@ -610,6 +611,29 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     const reqUrl = new URL(request.url);
     const pathname = reqUrl.pathname;
     const method = request.method.toUpperCase();
+
+    // Fast-path TTS audio proxy (th / en / zh-CN) before Supabase hydration for zero DB latency
+    if (pathname === '/api/tts' && method === 'GET') {
+      const cleanText = clampTtsText(reqUrl.searchParams.get('text') || reqUrl.searchParams.get('q') || '');
+      if (!cleanText) {
+        return jsonResponse({ error: 'VALIDATION_ERROR', message: 'Missing text parameter' }, 400);
+      }
+      const langParam = reqUrl.searchParams.get('lang') || 'th';
+      const synthesized = await synthesizeTtsAudio(langParam, cleanText);
+      if (!synthesized) {
+        return jsonResponse({ error: 'TTS_UPSTREAM_UNAVAILABLE', message: 'TTS synthesis unavailable' }, 502);
+      }
+      return new Response(synthesized.audio, {
+        status: 200,
+        headers: {
+          'Content-Type': synthesized.contentType,
+          'Content-Length': String(synthesized.audio.byteLength),
+          'Cache-Control': 'public, max-age=86400',
+          'Access-Control-Allow-Origin': '*',
+          'X-TTS-Provider': synthesized.provider,
+        },
+      });
+    }
 
     const requiresFreshHydration =
       (pathname === '/api/biometrics/index' && method === 'GET') ||

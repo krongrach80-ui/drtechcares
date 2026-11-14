@@ -10,6 +10,7 @@ import {
 import { measureLiveJointAngleAndTilt } from '../components/SmartRehabKioskUI';
 import {
   VOICE_COACH_LANGUAGES,
+  buildTtsProxyUrl,
   pickSpeechVoice,
   translateVoiceCoachText,
 } from '../components/VoiceCoachBanner';
@@ -329,6 +330,18 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(pickSpeechVoice(fakeVoices, 'th-TH')?.lang).toBe('th-TH');
     expect(pickSpeechVoice(fakeVoices, 'en-US')?.lang).toBe('en-US');
     expect(pickSpeechVoice(fakeVoices, 'zh-CN')?.lang).toBe('zh-CN');
+
+    // 6. Proxy TTS URL builder encodes language & clamps long prompts
+    const thProxyUrl = buildTtsProxyUrl('  ค่อยๆ เคลื่อนไหวไปยังเป้าหมาย 145 องศาครับ  ', 'th');
+    expect(thProxyUrl.startsWith('/api/tts?')).toBe(true);
+    const thParams = new URLSearchParams(thProxyUrl.split('?')[1]);
+    expect(thParams.get('lang')).toBe('th');
+    expect(thParams.get('text')).toBe('ค่อยๆ เคลื่อนไหวไปยังเป้าหมาย 145 องศาครับ');
+
+    const longText = 'คำแนะนำ '.repeat(40);
+    const clampedParams = new URLSearchParams(buildTtsProxyUrl(longText, 'zh').split('?')[1]);
+    expect(clampedParams.get('lang')).toBe('zh');
+    expect((clampedParams.get('text') || '').length).toBeLessThanOrEqual(190);
   });
 });
 
