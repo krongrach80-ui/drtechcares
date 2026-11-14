@@ -1,5 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { FaceLandmarker, FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
+import {
+  FaceLandmarker,
+  FilesetResolver,
+  HandLandmarker,
+  PoseLandmarker,
+  type NormalizedLandmark,
+} from '@mediapipe/tasks-vision';
 import type {
   DailyScheduleDay,
   DrTechCaresApiClient,
@@ -25,7 +31,7 @@ import {
   type BiometricVerificationJson,
   type LivenessAndPoseReport,
 } from '@drtechcares/face-client';
-import { detectTwoRaisedHandLandmarks, FacePresenceTracker } from '@drtechcares/kiosk-input';
+import { extractRaisedHandSides, FacePresenceTracker } from '@drtechcares/kiosk-input';
 import {
   BURST_FRAME_COUNT,
   purgeLegacyBiometricCache,
@@ -232,6 +238,7 @@ export function KioskBiometricLoginView({
   const [twoHandProgress, setTwoHandProgress] = useState(0);
   const [twoHandDetected, setTwoHandDetected] = useState(false);
   const [twoHandCameraReady, setTwoHandCameraReady] = useState(false);
+  const [twoHandDetectorReady, setTwoHandDetectorReady] = useState(false);
 
   const [showPinModal, setShowPinModal] = useState(false);
   const [pinDigits, setPinDigits] = useState('');
@@ -255,6 +262,8 @@ export function KioskBiometricLoginView({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const confirmVideoRef = useRef<HTMLVideoElement | null>(null);
   const alignCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const verifiedModalPayloadRef = useRef<KioskLoginSuccessPayload | null>(null);
+  verifiedModalPayloadRef.current = verifiedModalPayload;
   const onPatientAuthenticatedRef = useRef(onPatientAuthenticated);
   onPatientAuthenticatedRef.current = onPatientAuthenticated;
   const presenceRef = useRef(new FacePresenceTracker());
@@ -300,7 +309,11 @@ export function KioskBiometricLoginView({
     setHudBox(null);
     setHudLandmarks([]);
     setLiveMatchHud(null);
+    verifiedModalPayloadRef.current = null;
     setVerifiedModalPayload(null);
+    setTwoHandProgress(0);
+    setTwoHandDetected(false);
+    setTwoHandCameraReady(false);
     setCameraError(null);
     setCameraPaused(false);
     setScanStage('scanning');
@@ -339,7 +352,10 @@ export function KioskBiometricLoginView({
   }, [staffModalOpen, handleRestartScan]);
 
   useEffect(() => {
-    if (cameraPaused || staffModalOpen || isNotFoundStage || verifiedModalPayload || showPinModal) {
+    if (cameraPaused || staffModalOpen || isNotFoundStage || showPinModal) {
+      setTwoHandProgress(0);
+      setTwoHandDetected(false);
+      setTwoHandCameraReady(false);
       return;
     }
 
@@ -347,13 +363,110 @@ export function KioskBiometricLoginView({
     let stream: MediaStream | null = null;
     let rafId = 0;
     let landmarker: FaceLandmarker | null = null;
+    let handLandmarker: HandLandmarker | null = null;
+    let poseLandmarker: PoseLandmarker | null = null;
+    let gestureOffscreenCanvas: HTMLCanvasElement | null = null;
     let prevLandmarks: { x: number; y: number; z?: number }[] | null = null;
     let wasEyeClosed = false;
     let burstStarted = false;
     let lastDetectTs = 0;
+    let lastGestureVideoTime = -1;
+    let lastGestureInferenceAt = 0;
+    let lastGestureFrameAt = 0;
+    let gestureHoldMs = 0;
+    let lastLeftRaisedAt = -Infinity;
+    let lastRightRaisedAt = -Infinity;
+    let latestBothHandsUp = false;
+    let lastReportedProgress = 0;
+    let lastReportedDetected = false;
+    let twoHandCameraReadySent = false;
+    let gestureTriggered = false;
+    const videoEl = videoRef.current;
+
+    const stopMediaAndDetectors = () => {
+      cancelAnimationFrame(rafId);
+      landmarker?.close();
+      landmarker = null;
+      handLandmarker?.close();
+      handLandmarker = null;
+      poseLandmarker?.close();
+      poseLandmarker = null;
+      stream?.getTracks().forEach((track) => track.stop());
+      stream = null;
+      if (videoEl) {
+        videoEl.srcObject = null;
+      }
+      if (confirmVideoRef.current) {
+        confirmVideoRef.current.srcObject = null;
+      }
+    };
+
+    async function warmupGestureDetectors(vision: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>) {
+      setTwoHandDetectorReady(false);
+      const tryCreateHand = async () => {
+        for (const modelAssetPath of [
+          '/models/hand_landmarker.task',
+          'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+        ]) {
+          for (const delegate of ['CPU', undefined] as const) {
+            try {
+              const created = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: delegate ? { modelAssetPath, delegate } : { modelAssetPath },
+                runningMode: 'VIDEO',
+                numHands: 2,
+                minHandDetectionConfidence: 0.35,
+                minHandPresenceConfidence: 0.35,
+                minTrackingConfidence: 0.35,
+              });
+              if (!active) {
+                created.close();
+                return;
+              }
+              handLandmarker = created;
+              setTwoHandDetectorReady(true);
+              return;
+            } catch {
+              // Try next delegate or URL
+            }
+          }
+        }
+      };
+
+      const tryCreatePose = async () => {
+        for (const modelAssetPath of ['/models/pose_landmarker.task', '/models/pose_landmarker_full.task']) {
+          for (const delegate of ['CPU', undefined] as const) {
+            try {
+              const created = await PoseLandmarker.createFromOptions(vision, {
+                baseOptions: delegate ? { modelAssetPath, delegate } : { modelAssetPath },
+                runningMode: 'VIDEO',
+                numPoses: 1,
+                minPoseDetectionConfidence: 0.35,
+                minPosePresenceConfidence: 0.35,
+                minTrackingConfidence: 0.35,
+              });
+              if (!active) {
+                created.close();
+                return;
+              }
+              poseLandmarker = created;
+              setTwoHandDetectorReady(true);
+              return;
+            } catch {
+              // Try next delegate or pose model
+            }
+          }
+        }
+      };
+
+      await Promise.all([tryCreateHand(), tryCreatePose()]);
+    }
 
     async function startFacePipeline() {
       try {
+        setTwoHandProgress(0);
+        setTwoHandDetected(false);
+        setTwoHandCameraReady(false);
+
         void apiClient
           .getBiometricIndex()
           .then((entries) => {
@@ -386,8 +499,24 @@ export function KioskBiometricLoginView({
         if (!active) return;
         setCameraError(null);
 
-        const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
-        if (!active) return;
+        let vision;
+        for (const wasmBase of [
+          '/mediapipe/wasm',
+          '/models/wasm',
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
+        ]) {
+          try {
+            vision = await FilesetResolver.forVisionTasks(wasmBase);
+            break;
+          } catch {
+            // Try next WASM base path
+          }
+        }
+        if (!vision || !active) return;
+
+        // Pre-warm HandLandmarker + PoseLandmarker in parallel while face scanning runs
+        void warmupGestureDetectors(vision);
+
         const createdLandmarker = await FaceLandmarker.createFromOptions(vision, {
           baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
           runningMode: 'VIDEO',
@@ -420,6 +549,105 @@ export function KioskBiometricLoginView({
           if (!active || !videoRef.current || !landmarker) return;
           let shouldContinueLoop = true;
           try {
+            const verifiedPayload = verifiedModalPayloadRef.current;
+            if (verifiedPayload) {
+              if (confirmVideoRef.current && stream) {
+                if (confirmVideoRef.current.srcObject !== stream) {
+                  confirmVideoRef.current.srcObject = stream;
+                  void confirmVideoRef.current.play().catch(() => {});
+                }
+                if (!twoHandCameraReadySent) {
+                  twoHandCameraReadySent = true;
+                  setTwoHandCameraReady(true);
+                }
+              }
+
+              const now = performance.now();
+              const dt = lastGestureFrameAt > 0 ? Math.min(100, Math.max(1, now - lastGestureFrameAt)) : 16;
+              lastGestureFrameAt = now;
+              const v = videoRef.current;
+
+              if (v.readyState >= 2 && v.videoWidth > 0 && (handLandmarker || poseLandmarker)) {
+                if (v.currentTime !== lastGestureVideoTime || now - lastGestureInferenceAt >= 33) {
+                  lastGestureVideoTime = v.currentTime;
+                  lastGestureInferenceAt = now;
+                  if (!gestureOffscreenCanvas) {
+                    gestureOffscreenCanvas = document.createElement('canvas');
+                  }
+                  const offW = 256;
+                  const offH = Math.max(144, Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))));
+                  if (gestureOffscreenCanvas.width !== offW || gestureOffscreenCanvas.height !== offH) {
+                    gestureOffscreenCanvas.width = offW;
+                    gestureOffscreenCanvas.height = offH;
+                  }
+                  const offCtx = gestureOffscreenCanvas.getContext('2d', { alpha: false });
+                  if (offCtx) {
+                    offCtx.drawImage(v, 0, 0, offW, offH);
+                  }
+                  const inferenceSource = offCtx ? gestureOffscreenCanvas : v;
+
+                  let detectedHands: NormalizedLandmark[][] = [];
+                  let detectedPose: NormalizedLandmark[] | null = null;
+                  if (handLandmarker) {
+                    try {
+                      const handTs = Math.max(lastDetectTs + 1, Math.round(now));
+                      lastDetectTs = handTs;
+                      const handRes = handLandmarker.detectForVideo(inferenceSource, handTs);
+                      detectedHands = handRes.landmarks ?? [];
+                    } catch {
+                      // Keep gesture loop running across transient MediaPipe frame errors
+                    }
+                  }
+                  if (poseLandmarker) {
+                    try {
+                      const poseTs = Math.max(lastDetectTs + 1, Math.round(now));
+                      lastDetectTs = poseTs;
+                      const poseRes = poseLandmarker.detectForVideo(inferenceSource, poseTs);
+                      detectedPose = poseRes.landmarks?.[0] ?? null;
+                    } catch {
+                      // Keep gesture loop running across transient MediaPipe frame errors
+                    }
+                  }
+
+                  const sides = extractRaisedHandSides(detectedHands, detectedPose);
+                  if (sides.leftRaised) lastLeftRaisedAt = now;
+                  if (sides.rightRaised) lastRightRaisedAt = now;
+                  latestBothHandsUp =
+                    sides.bothRaised ||
+                    (now - lastLeftRaisedAt <= 450 && now - lastRightRaisedAt <= 450);
+                }
+
+                const HOLD_MS = 320;
+                gestureHoldMs = latestBothHandsUp
+                  ? Math.min(HOLD_MS, gestureHoldMs + dt)
+                  : Math.max(0, gestureHoldMs - dt * 0.9);
+                const nextProgress = Math.min(1, gestureHoldMs / HOLD_MS);
+
+                if (latestBothHandsUp !== lastReportedDetected) {
+                  lastReportedDetected = latestBothHandsUp;
+                  setTwoHandDetected(latestBothHandsUp);
+                }
+                if (
+                  Math.abs(nextProgress - lastReportedProgress) >= 0.02 ||
+                  (nextProgress === 0 && lastReportedProgress !== 0) ||
+                  nextProgress >= 1
+                ) {
+                  lastReportedProgress = nextProgress;
+                  setTwoHandProgress(nextProgress);
+                }
+
+                if (nextProgress >= 1 && !gestureTriggered) {
+                  gestureTriggered = true;
+                  shouldContinueLoop = false;
+                  active = false;
+                  stopMediaAndDetectors();
+                  onPatientAuthenticatedRef.current(verifiedPayload);
+                  return;
+                }
+              }
+              return;
+            }
+
             if (videoRef.current.readyState >= 2 && !verifyingLockRef.current) {
               const now = performance.now();
               const detectTs = Math.max(lastDetectTs + 1, Math.round(now));
@@ -558,12 +786,13 @@ export function KioskBiometricLoginView({
                         setLastVerifyResult(verifyRes);
                         if (verifyRes.matched && verifyRes.patient) {
                           didAuthenticate = true;
-                          shouldContinueLoop = false;
-                          setVerifiedModalPayload({
+                          const nextPayload: KioskLoginSuccessPayload = {
                             patient: verifyRes.patient,
                             todayRoutine: verifyRes.todayRoutine ?? null,
                             confidencePercent: Math.max(verifyRes.confidencePercent, matchedConf),
-                          });
+                          };
+                          verifiedModalPayloadRef.current = nextPayload;
+                          setVerifiedModalPayload(nextPayload);
                           return;
                         }
                       } catch {
@@ -623,12 +852,13 @@ export function KioskBiometricLoginView({
                         setLastVerifyResult(verifyRes);
                         if (verifyRes.matched && verifyRes.patient) {
                           didFinishRound = true;
-                          shouldContinueLoop = false;
-                          setVerifiedModalPayload({
+                          const nextPayload: KioskLoginSuccessPayload = {
                             patient: verifyRes.patient,
                             todayRoutine: verifyRes.todayRoutine ?? null,
                             confidencePercent: verifyRes.confidencePercent,
-                          });
+                          };
+                          verifiedModalPayloadRef.current = nextPayload;
+                          setVerifiedModalPayload(nextPayload);
                           return;
                         }
                         // Secondary match check against active Supabase database index entries
@@ -640,8 +870,7 @@ export function KioskBiometricLoginView({
                         if (localFallback.matched && localFallback.bestCandidate) {
                           const fbCand = localFallback.bestCandidate;
                           didFinishRound = true;
-                          shouldContinueLoop = false;
-                          setVerifiedModalPayload({
+                          const nextPayload: KioskLoginSuccessPayload = {
                             patient: {
                               id: fbCand.patientId,
                               hn: fbCand.hn,
@@ -650,7 +879,9 @@ export function KioskBiometricLoginView({
                             },
                             todayRoutine: fbCand.todayRoutine ?? null,
                             confidencePercent: localFallback.confidencePercent,
-                          });
+                          };
+                          verifiedModalPayloadRef.current = nextPayload;
+                          setVerifiedModalPayload(nextPayload);
                           return;
                         }
                       } catch {
@@ -692,198 +923,13 @@ export function KioskBiometricLoginView({
       }
     }
 
-    const videoEl = videoRef.current;
     startFacePipeline();
 
     return () => {
       active = false;
-      cancelAnimationFrame(rafId);
-      landmarker?.close();
-      stream?.getTracks().forEach((track) => track.stop());
-      if (videoEl) {
-        videoEl.srcObject = null;
-      }
+      stopMediaAndDetectors();
     };
-  }, [apiClient, cameraPaused, isNotFoundStage, scanGeneration, showPinModal, staffModalOpen, verifiedModalPayload]);
-
-  // Two-Hand Gesture Auto-Proceed Detection while Verified Patient Modal is visible
-  useEffect(() => {
-    if (!verifiedModalPayload || staffModalOpen || cameraPaused) {
-      setTwoHandProgress(0);
-      setTwoHandDetected(false);
-      setTwoHandCameraReady(false);
-      return;
-    }
-
-    let active = true;
-    let stream: MediaStream | null = null;
-    let rafId = 0;
-    let handLandmarker: HandLandmarker | null = null;
-    let lastTs = 0;
-    let lastVideoTime = -1;
-    let lastFrameAt = 0;
-    let accumulatedMs = 0;
-    let lastReportedProgress = 0;
-    let lastReportedDetected = false;
-    let triggered = false;
-    const HOLD_MS = 550;
-    const payload = verifiedModalPayload;
-    const confirmVideoEl = confirmVideoRef.current;
-
-    const cleanupMedia = () => {
-      cancelAnimationFrame(rafId);
-      handLandmarker?.close();
-      handLandmarker = null;
-      stream?.getTracks().forEach((track) => track.stop());
-      stream = null;
-      if (confirmVideoEl) {
-        confirmVideoEl.srcObject = null;
-      }
-    };
-
-    async function acquireConfirmStream(): Promise<MediaStream | null> {
-      if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) return null;
-      const deviceId = await selectClinicalCameraDeviceId();
-      const constraints: MediaStreamConstraints = {
-        video: deviceId
-          ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 60 }, facingMode: 'user' }
-          : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 60 }, facingMode: 'user' },
-        audio: false,
-      };
-      try {
-        return await navigator.mediaDevices.getUserMedia(constraints);
-      } catch {
-        // Wait briefly for the face-scan camera tracks to finish releasing hardware lock
-        await new Promise((r) => window.setTimeout(r, 180));
-        if (!active) return null;
-        return await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 640 }, height: { ideal: 360 }, facingMode: 'user' },
-          audio: false,
-        });
-      }
-    }
-
-    async function startTwoHandDetector() {
-      try {
-        setTwoHandProgress(0);
-        setTwoHandDetected(false);
-        setTwoHandCameraReady(false);
-
-        stream = await acquireConfirmStream();
-        if (!active || !stream || !confirmVideoRef.current) {
-          stream?.getTracks().forEach((t) => t.stop());
-          stream = null;
-          return;
-        }
-        confirmVideoRef.current.srcObject = stream;
-        await confirmVideoRef.current.play();
-        if (!active) return;
-        setTwoHandCameraReady(true);
-
-        let vision;
-        for (const wasmBase of [
-          '/mediapipe/wasm',
-          '/models/wasm',
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
-        ]) {
-          try {
-            vision = await FilesetResolver.forVisionTasks(wasmBase);
-            break;
-          } catch {
-            // Try next WASM base path
-          }
-        }
-        if (!vision || !active) return;
-
-        for (const modelAssetPath of [
-          '/models/hand_landmarker.task',
-          'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-        ]) {
-          for (const delegate of ['GPU', 'CPU'] as const) {
-            try {
-              const created = await HandLandmarker.createFromOptions(vision, {
-                baseOptions: { modelAssetPath, delegate },
-                runningMode: 'VIDEO',
-                numHands: 2,
-                minHandDetectionConfidence: 0.35,
-                minHandPresenceConfidence: 0.35,
-                minTrackingConfidence: 0.35,
-              });
-              if (!active) {
-                created.close();
-                return;
-              }
-              handLandmarker = created;
-              break;
-            } catch {
-              // Fallback to CPU delegate or alternate URL
-            }
-          }
-          if (handLandmarker) break;
-        }
-
-        if (!handLandmarker || !active) return;
-
-        let latestBothHandsUp = false;
-        const loop = () => {
-          if (!active || triggered || !confirmVideoRef.current || !handLandmarker) return;
-          const v = confirmVideoRef.current;
-          const now = performance.now();
-          const dt = lastFrameAt > 0 ? Math.min(100, Math.max(1, now - lastFrameAt)) : 16;
-          lastFrameAt = now;
-
-          if (v.readyState >= 2 && v.videoWidth > 0 && v.currentTime !== lastVideoTime) {
-            lastVideoTime = v.currentTime;
-            const detectTs = Math.max(lastTs + 1, Math.round(now));
-            lastTs = detectTs;
-            const res = handLandmarker.detectForVideo(v, detectTs);
-            latestBothHandsUp = detectTwoRaisedHandLandmarks(res.landmarks ?? []);
-          }
-
-          if (latestBothHandsUp) {
-            accumulatedMs = Math.min(HOLD_MS, accumulatedMs + dt);
-          } else {
-            accumulatedMs = Math.max(0, accumulatedMs - dt * 1.5);
-          }
-
-          const progress = Math.min(1, accumulatedMs / HOLD_MS);
-          if (latestBothHandsUp !== lastReportedDetected) {
-            lastReportedDetected = latestBothHandsUp;
-            setTwoHandDetected(latestBothHandsUp);
-          }
-          if (
-            Math.abs(progress - lastReportedProgress) >= 0.02 ||
-            (progress === 0 && lastReportedProgress !== 0) ||
-            progress >= 1
-          ) {
-            lastReportedProgress = progress;
-            setTwoHandProgress(progress);
-          }
-
-          if (progress >= 1 && !triggered) {
-            triggered = true;
-            active = false;
-            cleanupMedia();
-            onPatientAuthenticatedRef.current(payload);
-            return;
-          }
-
-          rafId = requestAnimationFrame(loop);
-        };
-
-        rafId = requestAnimationFrame(loop);
-      } catch {
-        // Manual button click remains available if camera is blocked
-      }
-    }
-
-    startTwoHandDetector();
-
-    return () => {
-      active = false;
-      cleanupMedia();
-    };
-  }, [verifiedModalPayload, staffModalOpen, cameraPaused]);
+  }, [apiClient, cameraPaused, isNotFoundStage, scanGeneration, showPinModal, staffModalOpen]);
 
   const handleCallStaff = async () => {
     try {
@@ -910,9 +956,7 @@ export function KioskBiometricLoginView({
         );
       });
       if (matched) {
-        setShowPinModal(false);
-        setPinDigits('');
-        setVerifiedModalPayload({
+        const pinPayload: KioskLoginSuccessPayload = {
           patient: {
             id: matched.id,
             hn: matched.hn,
@@ -921,7 +965,12 @@ export function KioskBiometricLoginView({
           },
           todayRoutine: null,
           confidencePercent: 100,
-        });
+        };
+        setShowPinModal(false);
+        setCameraPaused(false);
+        setPinDigits('');
+        verifiedModalPayloadRef.current = pinPayload;
+        setVerifiedModalPayload(pinPayload);
         return;
       }
       setPinError(`ไม่พบข้อมูลผู้ป่วยสำหรับรหัส PIN "${normalized}" (หรือต้องให้เจ้าหน้าที่เข้าสู่ระบบก่อน)`);
@@ -1544,7 +1593,9 @@ export function KioskBiometricLoginView({
                 >
                   {twoHandDetected
                     ? `👐 ตรวจพบยก 2 มือแล้ว! ค้างไว้ ${Math.round(twoHandProgress * 100)}%`
-                    : '📷 ชู 2 มือขึ้นหน้ากล้องค้างไว้ 0.5 วินาที เพื่อเริ่มฝึกอัตโนมัติ'}
+                    : !twoHandDetectorReady
+                      ? '⏳ กำลังเตรียม AI ตรวจจับการยก 2 มือ...'
+                      : '📷 ชู 2 มือขึ้นหน้ากล้องค้างไว้เพื่อเริ่มฝึกอัตโนมัติ'}
                 </span>
               </div>
             </div>

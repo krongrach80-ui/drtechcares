@@ -3,6 +3,7 @@ import { POSE_INDEX, type PoseLandmark } from '@drtechcares/pose-engine';
 import {
   detectRaiseBothHands,
   detectTwoRaisedHandLandmarks,
+  extractRaisedHandSides,
   FacePresenceTracker,
   HandGestureVerifier,
   HeadNodDetector,
@@ -92,6 +93,36 @@ describe('Touchless Kiosk Input & Cognitive Hand Verification', () => {
     // Hips remain out-of-frame (visibility 0)
     const seatedRes = detectRaiseBothHands(poseLandmarks);
     expect(seatedRes.bothRaised).toBe(true);
+  });
+
+  it('supports elbow-level high raises and hybrid HandLandmarker + PoseLandmarker bilateral detection', () => {
+    const elbowOnlyPose: PoseLandmark[] = Array.from({ length: 33 }, () => ({ x: 0, y: 0, z: 0, visibility: 0 }));
+    elbowOnlyPose[POSE_INDEX.LEFT_SHOULDER] = { x: 0.65, y: 0.65, z: 0, visibility: 0.9 };
+    elbowOnlyPose[POSE_INDEX.RIGHT_SHOULDER] = { x: 0.35, y: 0.65, z: 0, visibility: 0.9 };
+    elbowOnlyPose[POSE_INDEX.LEFT_ELBOW] = { x: 0.72, y: 0.62, z: 0, visibility: 0.85 };
+    elbowOnlyPose[POSE_INDEX.RIGHT_ELBOW] = { x: 0.28, y: 0.60, z: 0, visibility: 0.85 };
+    expect(extractRaisedHandSides([], elbowOnlyPose).bothRaised).toBe(true);
+
+    // Hybrid: Pose sees anatomical right raised, HandLandmarker sees one hand on anatomical left shoulder side
+    const leftSideHand = buildOpenRaisedHand('Left', 0.68).landmarks;
+    const rightOnlyPose: PoseLandmark[] = Array.from({ length: 33 }, () => ({ x: 0, y: 0, z: 0, visibility: 0 }));
+    rightOnlyPose[POSE_INDEX.LEFT_SHOULDER] = { x: 0.65, y: 0.65, z: 0, visibility: 0.9 };
+    rightOnlyPose[POSE_INDEX.RIGHT_SHOULDER] = { x: 0.35, y: 0.65, z: 0, visibility: 0.9 };
+    rightOnlyPose[POSE_INDEX.RIGHT_WRIST] = { x: 0.3, y: 0.45, z: 0, visibility: 0.9 };
+    const hybrid = extractRaisedHandSides([leftSideHand], rightOnlyPose);
+    expect(hybrid.leftRaised).toBe(true);
+    expect(hybrid.rightRaised).toBe(true);
+    expect(hybrid.bothRaised).toBe(true);
+
+    // Resting pose below shoulders must NOT false-trigger
+    const restingPose: PoseLandmark[] = Array.from({ length: 33 }, () => ({ x: 0, y: 0, z: 0, visibility: 0 }));
+    restingPose[POSE_INDEX.LEFT_SHOULDER] = { x: 0.65, y: 0.35, z: 0, visibility: 0.95 };
+    restingPose[POSE_INDEX.RIGHT_SHOULDER] = { x: 0.35, y: 0.35, z: 0, visibility: 0.95 };
+    restingPose[POSE_INDEX.LEFT_ELBOW] = { x: 0.67, y: 0.56, z: 0, visibility: 0.95 };
+    restingPose[POSE_INDEX.RIGHT_ELBOW] = { x: 0.33, y: 0.56, z: 0, visibility: 0.95 };
+    restingPose[POSE_INDEX.LEFT_WRIST] = { x: 0.69, y: 0.72, z: 0, visibility: 0.95 };
+    restingPose[POSE_INDEX.RIGHT_WRIST] = { x: 0.31, y: 0.72, z: 0, visibility: 0.95 };
+    expect(extractRaisedHandSides([], restingPose).bothRaised).toBe(false);
   });
 });
 

@@ -428,7 +428,7 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
         'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
       ];
       for (const modelAssetPath of handUrls) {
-        for (const delegate of ['GPU', 'CPU'] as const) {
+        for (const delegate of ['CPU', 'GPU'] as const) {
           try {
             handLandmarker = await HandLandmarker.createFromOptions(vision, {
               baseOptions: { modelAssetPath, delegate },
@@ -440,14 +440,14 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
             });
             return 'hand' as const;
           } catch {
-            // try CPU delegate or next model path
+            // try GPU delegate or next model path
           }
         }
       }
 
       const poseUrls = ['/models/pose_landmarker.task', '/models/pose_landmarker_full.task'];
       for (const modelAssetPath of poseUrls) {
-        for (const delegate of ['GPU', 'CPU'] as const) {
+        for (const delegate of ['CPU', 'GPU'] as const) {
           try {
             poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
               baseOptions: { modelAssetPath, delegate },
@@ -459,7 +459,7 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
             });
             return 'pose' as const;
           } catch {
-            // try CPU delegate or next pose model path
+            // try GPU delegate or next pose model path
           }
         }
       }
@@ -471,12 +471,22 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
       let stream: MediaStream | null = null;
       try {
         const deviceId = await selectClinicalCameraDeviceId();
-        stream = await navigator.mediaDevices.getUserMedia({
+        const constraints: MediaStreamConstraints = {
           video: deviceId
             ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 120 } }
             : { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 120 } },
           audio: false,
-        });
+        };
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+        } catch {
+          await new Promise((r) => window.setTimeout(r, 200));
+          if (!active) return;
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+            audio: false,
+          });
+        }
       } catch {
         if (active) {
           setCameraError('ไม่สามารถเปิดกล้องได้ กรุณาอนุญาตการใช้กล้อง หรือคลิกปุ่มคำตอบด้านล่างได้เลย');

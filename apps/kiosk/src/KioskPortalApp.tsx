@@ -1,5 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { FaceLandmarker, FilesetResolver, HandLandmarker, PoseLandmarker } from '@mediapipe/tasks-vision';
+import {
+  FaceLandmarker,
+  FilesetResolver,
+  HandLandmarker,
+  PoseLandmarker,
+  type NormalizedLandmark,
+} from '@mediapipe/tasks-vision';
 import type {
   DailyScheduleDay,
   DrTechCaresApiClient,
@@ -16,7 +22,7 @@ import {
   type BiometricVerificationJson,
 } from '@drtechcares/face-client';
 import {
-  detectTwoRaisedHandLandmarks,
+  extractRaisedHandSides,
   FacePresenceTracker,
   RaiseBothHandsTracker,
 } from '@drtechcares/kiosk-input';
@@ -242,18 +248,31 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
     let rafId = 0;
     let poseLandmarker: PoseLandmarker | null = null;
     let handLandmarker: HandLandmarker | null = null;
+    let offscreenCanvas: HTMLCanvasElement | null = null;
     let lastTs = 0;
     let lastFrameAt = 0;
+    let lastVideoTime = -1;
+    let lastInferenceAt = 0;
     let handHoldMs = 0;
-    const HAND_HOLD_MS = 650;
+    let lastLeftRaisedAt = -Infinity;
+    let lastRightRaisedAt = -Infinity;
+    let latestBothHandsUp = false;
+    const HAND_HOLD_MS = 350;
 
     async function runRaiseBothHands() {
       try {
         const deviceId = await selectClinicalCameraDeviceId();
-        stream = await navigator.mediaDevices.getUserMedia({
+        const constraints: MediaStreamConstraints = {
           video: deviceId ? { deviceId: { exact: deviceId }, width: 640, height: 480 } : { width: 640, height: 480 },
           audio: false,
-        });
+        };
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+        } catch {
+          await new Promise((r) => window.setTimeout(r, 200));
+          if (!active) return;
+          stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+        }
         if (!active || !videoRef.current) return;
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
@@ -261,10 +280,12 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
         const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
         if (!active) return;
 
-        for (const delegate of ['GPU', 'CPU'] as const) {
+        for (const delegate of ['CPU', undefined] as const) {
           try {
             handLandmarker = await HandLandmarker.createFromOptions(vision, {
-              baseOptions: { modelAssetPath: '/models/hand_landmarker.task', delegate },
+              baseOptions: delegate
+                ? { modelAssetPath: '/models/hand_landmarker.task', delegate }
+                : { modelAssetPath: '/models/hand_landmarker.task' },
               runningMode: 'VIDEO',
               numHands: 2,
               minHandDetectionConfidence: 0.35,
@@ -273,61 +294,107 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
             });
             break;
           } catch {
-            // Try CPU delegate if GPU fails
+            // Try fallback delegate
           }
         }
 
-        try {
-          poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-            baseOptions: { modelAssetPath: '/models/pose_landmarker_full.task' },
-            runningMode: 'VIDEO',
-            numPoses: 1,
-          });
-        } catch {
-          // HandLandmarker alone can still drive GESTURE_CONTROL
+        for (const modelAssetPath of ['/models/pose_landmarker.task', '/models/pose_landmarker_full.task']) {
+          for (const delegate of ['CPU', undefined] as const) {
+            try {
+              poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+                baseOptions: delegate ? { modelAssetPath, delegate } : { modelAssetPath },
+                runningMode: 'VIDEO',
+                numPoses: 1,
+                minPoseDetectionConfidence: 0.35,
+                minPosePresenceConfidence: 0.35,
+                minTrackingConfidence: 0.35,
+              });
+              break;
+            } catch {
+              // Try fallback pose model
+            }
+          }
+          if (poseLandmarker) break;
         }
 
         const loop = () => {
           if (!active || !videoRef.current || (!poseLandmarker && !handLandmarker)) return;
-          const now = performance.now();
-          const dt = lastFrameAt > 0 ? Math.min(100, Math.max(1, now - lastFrameAt)) : 16;
-          lastFrameAt = now;
+          let shouldContinue = true;
+          try {
+            const v = videoRef.current;
+            const now = performance.now();
+            const dt = lastFrameAt > 0 ? Math.min(100, Math.max(1, now - lastFrameAt)) : 16;
+            lastFrameAt = now;
 
-          if (videoRef.current.readyState >= 2) {
-            const detectTs = Math.max(lastTs + 1, Math.round(now));
-            lastTs = detectTs;
+            if (v.readyState >= 2 && v.videoWidth > 0) {
+              if (v.currentTime !== lastVideoTime || now - lastInferenceAt >= 33) {
+                lastVideoTime = v.currentTime;
+                lastInferenceAt = now;
+                if (!offscreenCanvas) offscreenCanvas = document.createElement('canvas');
+                const offW = 256;
+                const offH = Math.max(144, Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))));
+                if (offscreenCanvas.width !== offW || offscreenCanvas.height !== offH) {
+                  offscreenCanvas.width = offW;
+                  offscreenCanvas.height = offH;
+                }
+                const offCtx = offscreenCanvas.getContext('2d', { alpha: false });
+                if (offCtx) offCtx.drawImage(v, 0, 0, offW, offH);
+                const inferenceSource = offCtx ? offscreenCanvas : v;
 
-            let bestProgress = 0;
-            let confirmed = false;
+                let detectedHands: NormalizedLandmark[][] = [];
+                let detectedPose: NormalizedLandmark[] | null = null;
+                if (handLandmarker) {
+                  try {
+                    const detectTs = Math.max(lastTs + 1, Math.round(now));
+                    lastTs = detectTs;
+                    const handRes = handLandmarker.detectForVideo(inferenceSource, detectTs);
+                    detectedHands = handRes.landmarks ?? [];
+                  } catch {
+                    // Continue across transient MediaPipe frame errors
+                  }
+                }
+                if (poseLandmarker) {
+                  try {
+                    const poseTs = Math.max(lastTs + 1, Math.round(now));
+                    lastTs = poseTs;
+                    const poseRes = poseLandmarker.detectForVideo(inferenceSource, poseTs);
+                    detectedPose = poseRes.landmarks?.[0] ?? null;
+                  } catch {
+                    // Continue across transient MediaPipe frame errors
+                  }
+                }
 
-            if (handLandmarker) {
-              const handRes = handLandmarker.detectForVideo(videoRef.current, detectTs);
-              const twoHandsDetected = detectTwoRaisedHandLandmarks(handRes.landmarks ?? []);
-              handHoldMs = twoHandsDetected
+                const sides = extractRaisedHandSides(detectedHands, detectedPose);
+                if (sides.leftRaised) lastLeftRaisedAt = now;
+                if (sides.rightRaised) lastRightRaisedAt = now;
+                latestBothHandsUp =
+                  sides.bothRaised ||
+                  (now - lastLeftRaisedAt <= 450 && now - lastRightRaisedAt <= 450);
+
+                if (detectedPose) {
+                  const status = raiseTrackerRef.current.update(detectedPose, now);
+                  if (status.confirmed) latestBothHandsUp = true;
+                }
+              }
+
+              handHoldMs = latestBothHandsUp
                 ? Math.min(HAND_HOLD_MS, handHoldMs + dt)
-                : Math.max(0, handHoldMs - dt * 1.5);
-              bestProgress = Math.min(1, handHoldMs / HAND_HOLD_MS);
-              if (bestProgress >= 1) confirmed = true;
-            }
-
-            if (poseLandmarker && !confirmed) {
-              const res = poseLandmarker.detectForVideo(videoRef.current, detectTs + 1);
-              lastTs = detectTs + 1;
-              const pose = res.landmarks?.[0];
-              if (pose) {
-                const status = raiseTrackerRef.current.update(pose, now);
-                bestProgress = Math.max(bestProgress, status.holdProgress);
-                if (status.confirmed) confirmed = true;
+                : Math.max(0, handHoldMs - dt * 0.9);
+              const bestProgress = Math.min(1, handHoldMs / HAND_HOLD_MS);
+              setRaiseProgress(bestProgress);
+              if (bestProgress >= 1) {
+                shouldContinue = false;
+                setFlowState('CONDITIONAL_EXECUTION');
+                return;
               }
             }
-
-            setRaiseProgress(bestProgress);
-            if (confirmed) {
-              setFlowState('CONDITIONAL_EXECUTION');
-              return;
+          } catch {
+            // Keep animation loop alive across transient frame errors
+          } finally {
+            if (active && shouldContinue) {
+              rafId = requestAnimationFrame(loop);
             }
           }
-          rafId = requestAnimationFrame(loop);
         };
         rafId = requestAnimationFrame(loop);
       } catch {
