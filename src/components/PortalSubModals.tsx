@@ -273,6 +273,7 @@ export function WelcomeFaceScanModal({
 
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [autoScanCount, setAutoScanCount] = useState(0);
   const [hudBox, setHudBox] = useState<{ xPct: number; yPct: number; wPct: number; hPct: number } | null>(null);
   const [liveMatchHud, setLiveMatchHud] = useState<{
     candidate: PatientBiometricIndexEntry;
@@ -302,6 +303,8 @@ export function WelcomeFaceScanModal({
     let rafId = 0;
     let prevLandmarks: Array<{ x: number; y: number; z?: number }> | null = null;
     let lastEmbedAt = 0;
+    let fallbackFrameCount = 0;
+    let lastServerVerifyAt = 0;
     const alignCanvas = document.createElement('canvas');
 
     confirmedLockRef.current = false;
@@ -310,6 +313,7 @@ export function WelcomeFaceScanModal({
     setCameraError(null);
     setHudBox(null);
     setLiveMatchHud(null);
+    setAutoScanCount(0);
 
     async function startLiveVerification() {
       try {
@@ -343,8 +347,10 @@ export function WelcomeFaceScanModal({
 
             if (faceCount !== 1 || lms.length < 300) {
               setHudBox(null);
+              fallbackFrameCount = 0;
               if (!confirmedLockRef.current) {
                 setLiveMatchHud(null);
+                setAutoScanCount(0);
                 temporalMatcherRef.current.reset();
               }
               prevLandmarks = null;
@@ -361,70 +367,100 @@ export function WelcomeFaceScanModal({
               const liveness = evaluateLivenessAndPose(lms, prevLandmarks, faceCount, false);
               prevLandmarks = lms;
 
-              if (
-                !confirmedLockRef.current &&
-                biometricIndexRef.current.length > 0 &&
-                liveness.isLive &&
-                now - lastEmbedAt >= 120
-              ) {
+              if (!confirmedLockRef.current && now - lastEmbedAt >= 120) {
                 lastEmbedAt = now;
                 const crop = alignFaceTo112(videoRef.current, lms, alignCanvas);
                 if (crop) {
                   const { vector } = await extractFaceEmbeddingWithFallback(crop, lms);
-                  const temporal = temporalMatcherRef.current.evaluateFrame(
-                    {
-                      probeVector: vector,
-                      yawDeg: liveness.yawDeg,
-                      pitchDeg: liveness.pitchDeg,
-                      depthScore: liveness.depthScore,
-                      microMotion: liveness.microMotion,
-                      blinkDetected: liveness.blinkDetected,
-                    },
-                    biometricIndexRef.current,
-                  );
+                  if (!active || confirmedLockRef.current) return;
 
-                  const isHudMatch = Boolean(temporal.candidate && temporal.streakCount > 0);
-                  setLiveMatchHud(
-                    isHudMatch && temporal.candidate
-                      ? {
-                          candidate: temporal.candidate,
-                          confidencePercent: temporal.confidencePercent,
-                          streak: temporal.streakCount,
-                          confirmed: temporal.confirmed,
-                        }
-                      : null,
-                  );
-
-                  if (temporal.confirmed && temporal.candidate && !confirmedLockRef.current) {
-                    confirmedLockRef.current = true;
-                    const matchedCand = temporal.candidate;
-                    const matchedConf = Math.round(temporal.confidencePercent);
-                    try {
-                      const verified = await apiClient.verifyFaceLogin(vector);
-                      if (!active) return;
-                      if (verified.matched && verified.patient) {
-                        setMatchResult({
-                          matched: true,
-                          confidencePercent: Math.max(verified.confidencePercent, matchedConf),
-                          patient: verified.patient,
-                        });
-                        return;
-                      }
-                    } catch {
-                      if (!active) return;
-                    }
-                    biometricIndexRef.current = biometricIndexRef.current.filter(
-                      (entry) => entry.patientId !== matchedCand.patientId,
+                  if (biometricIndexRef.current.length > 0) {
+                    const temporal = temporalMatcherRef.current.evaluateFrame(
+                      {
+                        probeVector: vector,
+                        yawDeg: liveness.yawDeg,
+                        pitchDeg: liveness.pitchDeg,
+                        depthScore: liveness.depthScore,
+                        microMotion: liveness.microMotion,
+                        blinkDetected: liveness.blinkDetected,
+                      },
+                      biometricIndexRef.current,
                     );
-                    temporalMatcherRef.current.reset();
-                    setLiveMatchHud(null);
-                    void apiClient
-                      .getBiometricIndex()
-                      .then((entries) => {
-                        if (active) biometricIndexRef.current = entries;
-                      })
-                      .catch(() => {});
-                    confirmedLockRef.current = false;
+
+                    const isHudMatch = Boolean(temporal.candidate && temporal.streakCount > 0);
+                    setLiveMatchHud(
+                      isHudMatch && temporal.candidate
+                        ? {
+                            candidate: temporal.candidate,
+                            confidencePercent: temporal.confidencePercent,
+                            streak: temporal.streakCount,
+                            confirmed: temporal.confirmed,
+                          }
+                        : null,
+                    );
+
+                    if (temporal.confirmed && temporal.candidate && !confirmedLockRef.current) {
+                      confirmedLockRef.current = true;
+                      const matchedCand = temporal.candidate;
+                      const matchedConf = Math.round(temporal.confidencePercent);
+                      try {
+                        const verified = await apiClient.verifyFaceLogin(vector);
+                        if (!active) return;
+                        if (verified.matched && verified.patient) {
+                          setMatchResult({
+                            matched: true,
+                            confidencePercent: Math.max(verified.confidencePercent, matchedConf),
+                            patient: verified.patient,
+                          });
+                          return;
+                        }
+                      } catch {
+                        if (!active) return;
+                      }
+                      biometricIndexRef.current = biometricIndexRef.current.filter(
+                        (entry) => entry.patientId !== matchedCand.patientId,
+                      );
+                      temporalMatcherRef.current.reset();
+                      setLiveMatchHud(null);
+                      void apiClient
+                        .getBiometricIndex()
+                        .then((entries) => {
+                          if (active) biometricIndexRef.current = entries;
+                        })
+                        .catch(() => {});
+                      confirmedLockRef.current = false;
+                    }
+                  }
+
+                  if (!confirmedLockRef.current && now - lastServerVerifyAt >= 2500) {
+                    fallbackFrameCount = Math.min(5, fallbackFrameCount + 1);
+                    setAutoScanCount(fallbackFrameCount);
+                    if (fallbackFrameCount >= 5) {
+                      confirmedLockRef.current = true;
+                      try {
+                        const verified = await apiClient.verifyFaceLogin(vector);
+                        if (!active) return;
+                        if (verified.matched && verified.patient) {
+                          setMatchResult({
+                            matched: true,
+                            confidencePercent: verified.confidencePercent,
+                            patient: verified.patient,
+                          });
+                          return;
+                        }
+                        setMatchResult({
+                          matched: false,
+                          confidencePercent: verified.confidencePercent,
+                          reason: verified.failureReasons?.[0],
+                        });
+                      } catch {
+                        if (!active) return;
+                      }
+                      fallbackFrameCount = 0;
+                      setAutoScanCount(0);
+                      lastServerVerifyAt = performance.now();
+                      confirmedLockRef.current = false;
+                    }
                   }
                 }
               }
@@ -534,7 +570,7 @@ export function WelcomeFaceScanModal({
         <div className="relative overflow-hidden rounded-2xl bg-slate-950 aspect-[4/3] border border-slate-800">
           <video ref={videoRef} playsInline muted className="h-full w-full object-cover -scale-x-100" />
 
-          {hudBox && liveMatchHud?.candidate && (
+          {hudBox && (
             <div
               className="pointer-events-none absolute z-20 transition-all duration-100"
               style={{
@@ -545,27 +581,40 @@ export function WelcomeFaceScanModal({
               }}
             >
               <div
-                className={`relative h-full w-full rounded-xl border-2 ${
-                  liveMatchHud.confirmed
-                    ? 'border-emerald-400 shadow-[0_0_24px_rgba(16,185,129,0.7)]'
-                    : 'border-emerald-400/75 shadow-[0_0_12px_rgba(16,185,129,0.4)]'
+                className={`relative h-full w-full overflow-hidden rounded-xl border-2 ${
+                  liveMatchHud?.candidate
+                    ? liveMatchHud.confirmed
+                      ? 'border-emerald-400 shadow-[0_0_24px_rgba(16,185,129,0.7)]'
+                      : 'border-emerald-400/75 shadow-[0_0_12px_rgba(16,185,129,0.4)]'
+                    : 'border-cyan-400/85 shadow-[0_0_18px_rgba(34,211,238,0.45)]'
                 }`}
               >
-                <span className="absolute -top-1 -left-1 h-3.5 w-3.5 border-t-[3px] border-l-[3px] border-emerald-300 rounded-tl" />
-                <span className="absolute -top-1 -right-1 h-3.5 w-3.5 border-t-[3px] border-r-[3px] border-emerald-300 rounded-tr" />
-                <span className="absolute -bottom-1 -left-1 h-3.5 w-3.5 border-b-[3px] border-l-[3px] border-emerald-300 rounded-bl" />
-                <span className="absolute -bottom-1 -right-1 h-3.5 w-3.5 border-b-[3px] border-r-[3px] border-emerald-300 rounded-br" />
+                <span className="absolute top-0 left-0 h-3.5 w-3.5 border-t-[3px] border-l-[3px] border-emerald-300 rounded-tl" />
+                <span className="absolute top-0 right-0 h-3.5 w-3.5 border-t-[3px] border-r-[3px] border-emerald-300 rounded-tr" />
+                <span className="absolute bottom-0 left-0 h-3.5 w-3.5 border-b-[3px] border-l-[3px] border-emerald-300 rounded-bl" />
+                <span className="absolute bottom-0 right-0 h-3.5 w-3.5 border-b-[3px] border-r-[3px] border-emerald-300 rounded-br" />
+                {!liveMatchHud?.candidate && (
+                  <div className="absolute inset-x-1.5 top-1/2 h-[2px] -translate-y-1/2 bg-gradient-to-r from-transparent via-cyan-300 to-transparent shadow-[0_0_10px_#22d3ee]" />
+                )}
               </div>
 
-              <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-emerald-400/45 bg-slate-950/90 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
-                <div className="text-[11px] font-black text-emerald-300">
-                  ✓ {sm.matchedOk}: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
+              {liveMatchHud?.candidate ? (
+                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-emerald-400/45 bg-slate-950/90 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
+                  <div className="text-[11px] font-black text-emerald-300">
+                    ✓ {sm.matchedOk}: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
+                  </div>
+                  <div className="text-[10px] font-bold text-white/90">
+                    {liveMatchHud.confidencePercent.toFixed(1)}% (3D Multi-Angle Match •{' '}
+                    {liveMatchHud.streak}/5)
+                  </div>
                 </div>
-                <div className="text-[10px] font-bold text-white/90">
-                  {liveMatchHud.confidencePercent.toFixed(1)}% (3D Multi-Angle Match •{' '}
-                  {liveMatchHud.streak}/5)
+              ) : (
+                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-cyan-400/45 bg-slate-950/88 px-3 py-1 text-center backdrop-blur-md shadow-xl">
+                  <div className="text-[10px] font-extrabold text-cyan-200">
+                    กำลังสแกนใบหน้าเทียบฐานข้อมูล... {autoScanCount}/5
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
 
