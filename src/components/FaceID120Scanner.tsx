@@ -13,8 +13,7 @@ import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import {
   alignFaceTo112,
   evaluateLivenessAndPose,
-  extractFaceEmbeddingWithFallback,
-  getArcFaceSession,
+  extractHybrid512Descriptor,
   selectClinicalCameraDeviceId,
   selectPrimaryFace,
 } from '@drtechcares/face-client';
@@ -94,13 +93,11 @@ const BUCKET_LABELS: Array<{ key: Bucket5Key; label: string }> = [
 ];
 
 interface CapturedSample {
-  crop: ImageData;
-  landmarks3D: Array<{ x: number; y: number; z?: number }>;
   yawDeg: number;
   pitchDeg: number;
   sharpness: number;
   bucket: Bucket5Key;
-  embedding?: number[];
+  embedding: number[];
 }
 
 function classifyDisplayBucket(yawDeg: number, pitchDeg: number): Bucket5Key {
@@ -241,8 +238,10 @@ export default function FaceID120Scanner({
   const bucketCountsRef = useRef<Record<Bucket5Key, number>>({ ...bucketCounts });
   const prevLandmarksRef = useRef<Array<{ x: number; y: number; z?: number }> | null>(null);
   const lastCaptureAtRef = useRef(0);
+  const lastVideoTimeRef = useRef(-1);
   const lastSpokenAtRef = useRef(0);
   const lastSpokenCueRef = useRef('');
+  const hasSnapshotFrameRef = useRef(false);
   const bestFrontalDataUrlRef = useRef<string>('');
   const bestFrontalScoreRef = useRef<number>(-1);
   const completedRef = useRef(false);
@@ -250,7 +249,6 @@ export default function FaceID120Scanner({
   const finalizedResultRef = useRef<FaceID120Result | null>(null);
   const readyNotifiedRef = useRef(false);
   const unmountedRef = useRef(false);
-  const embeddingWorkerActiveRef = useRef(false);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
   const onReadyStateChangeRef = useRef(onReadyStateChange);
@@ -315,27 +313,6 @@ export default function FaceID120Scanner({
     }
   }, []);
 
-  const drainEmbeddingsIncrementally = useCallback(async () => {
-    if (embeddingWorkerActiveRef.current) return;
-    embeddingWorkerActiveRef.current = true;
-    try {
-      while (!unmountedRef.current) {
-        const nextIdx = samplesRef.current.findIndex((s) => !s.embedding);
-        if (nextIdx === -1) break;
-        const item = samplesRef.current[nextIdx];
-        if (!item) break;
-        try {
-          const { vector } = await extractFaceEmbeddingWithFallback(item.crop, item.landmarks3D);
-          item.embedding = vector;
-        } catch {
-          break;
-        }
-      }
-    } finally {
-      embeddingWorkerActiveRef.current = false;
-    }
-  }, []);
-
   const finalizeScan = useCallback(async (): Promise<FaceID120Result | null> => {
     if (finalizedResultRef.current) return finalizedResultRef.current;
     if (finalizePromiseRef.current) return finalizePromiseRef.current;
@@ -348,26 +325,9 @@ export default function FaceID120Scanner({
 
     const run = async (): Promise<FaceID120Result | null> => {
       const samples = [...samplesRef.current];
-      const startMs = Date.now();
-      for (let i = 0; i < samples.length; i++) {
-        if (unmountedRef.current) return null;
-        if (!samples[i].embedding) {
-          if (Date.now() - startMs > 2800) {
-            const bucket = samples[i].bucket;
-            const computedInBucket = samples.filter((s) => s.bucket === bucket && s.embedding).length;
-            if (computedInBucket >= 6) continue;
-          }
-          const { vector } = await extractFaceEmbeddingWithFallback(
-            samples[i].crop,
-            samples[i].landmarks3D,
-          );
-          samples[i].embedding = vector;
-        }
-      }
+      if (unmountedRef.current) return null;
 
-      const withEmbeddings = samples.filter((s): s is CapturedSample & { embedding: number[] } =>
-        Boolean(s.embedding && s.embedding.length === 512),
-      );
+      const withEmbeddings = samples.filter((s) => s.embedding.length === 512);
       const allVectors = withEmbeddings.map((s) => s.embedding);
       const masterEmbedding = averageNormalizedEmbeddings(allVectors);
 
@@ -395,6 +355,14 @@ export default function FaceID120Scanner({
         Math.min(0.99, 0.72 + Math.min(0.18, meanSharpness / 350) + diversityCount * 0.02).toFixed(3),
       );
       setFinalQualityPct(Math.round(qualityScore * 100));
+
+      if (!bestFrontalDataUrlRef.current && hasSnapshotFrameRef.current && snapshotCanvasRef.current) {
+        try {
+          bestFrontalDataUrlRef.current = snapshotCanvasRef.current.toDataURL('image/jpeg', 0.88);
+        } catch {
+          bestFrontalDataUrlRef.current = '';
+        }
+      }
 
       const resultPayload: FaceID120Result = {
         masterEmbedding,
@@ -440,6 +408,8 @@ export default function FaceID120Scanner({
     setGuidanceText('วางใบหน้าให้อยู่ในกรอบวงกลม');
     setSubCueText('เตรียมพร้อม... มองตรงเข้าหากล้องเพื่อเริ่มต้น');
     setTargetBucketHint('center');
+    hasSnapshotFrameRef.current = false;
+    lastVideoTimeRef.current = -1;
     bestFrontalDataUrlRef.current = '';
     bestFrontalScoreRef.current = -1;
     completedRef.current = false;
@@ -488,10 +458,7 @@ export default function FaceID120Scanner({
         }
         landmarkerRef.current = landmarker;
 
-        setModelProgressMsg('กำลังเตรียม ArcFace 512-D Embedder...');
-        void getArcFaceSession().catch(() => {
-          // Hybrid 512-D fallback activates automatically if ArcFace ONNX is unavailable
-        });
+        setModelProgressMsg('พร้อมสแกนใบหน้า 3 มิติ (Hybrid 512-D Real-Time)');
         setModelStatus('ready');
 
         const preferredDeviceId = await selectClinicalCameraDeviceId();
@@ -537,9 +504,16 @@ export default function FaceID120Scanner({
             return;
           }
 
+          if (vid.currentTime === lastVideoTimeRef.current) {
+            rafRef.current = requestAnimationFrame(tickLoop);
+            return;
+          }
+          lastVideoTimeRef.current = vid.currentTime;
+
+          const now = performance.now();
           let result;
           try {
-            result = lm.detectForVideo(vid, performance.now());
+            result = lm.detectForVideo(vid, now);
           } catch {
             rafRef.current = requestAnimationFrame(tickLoop);
             return;
@@ -594,9 +568,9 @@ export default function FaceID120Scanner({
           const displayBucket = classifyDisplayBucket(yawDeg, pitchDeg);
           setActiveBucket(displayBucket);
 
-          // Save crispest frontal snapshot for profile avatar (with immediate fallback on first frame)
+          // Draw crispest frontal snapshot onto offscreen snapCanvas (encode JPEG only once inside finalizeScan)
           if (
-            !bestFrontalDataUrlRef.current ||
+            !hasSnapshotFrameRef.current ||
             (displayBucket === 'center' && quality.sharpness > bestFrontalScoreRef.current)
           ) {
             bestFrontalScoreRef.current = displayBucket === 'center' ? quality.sharpness : 0;
@@ -610,29 +584,23 @@ export default function FaceID120Scanner({
               sctx.scale(-1, 1);
               sctx.drawImage(vid, sx, sy, side, side, 0, 0, 480, 480);
               sctx.restore();
-              bestFrontalDataUrlRef.current = snapCanvas.toDataURL('image/jpeg', 0.88);
+              hasSnapshotFrameRef.current = true;
             }
           }
 
-          const now = performance.now();
           const captureBucket = chooseCaptureBucket(yawDeg, pitchDeg, bucketCountsRef.current);
           const totalSoFar = samplesRef.current.length;
 
           // Automatically capture detected face continuously (~35 fps / 28ms interval) until 120 frames
           if (captureBucket && totalSoFar < TOTAL_TICKS && now - lastCaptureAtRef.current >= 28) {
             lastCaptureAtRef.current = now;
-            const clonedCrop = new ImageData(
-              new Uint8ClampedArray(crop.data),
-              crop.width,
-              crop.height,
-            );
+            const embedding = extractHybrid512Descriptor(crop, landmarks3D);
             samplesRef.current.push({
-              crop: clonedCrop,
-              landmarks3D: landmarks3D.map((p) => ({ x: p.x, y: p.y, z: p.z })),
               yawDeg,
               pitchDeg,
               sharpness: quality.sharpness,
               bucket: captureBucket,
+              embedding,
             });
             bucketCountsRef.current = {
               ...bucketCountsRef.current,
@@ -642,7 +610,6 @@ export default function FaceID120Scanner({
             const nextTotal = samplesRef.current.length;
             setCapturedCount(nextTotal);
             setBucketCounts({ ...bucketCountsRef.current });
-            void drainEmbeddingsIncrementally();
 
             if (!readyNotifiedRef.current && nextTotal >= 10) {
               readyNotifiedRef.current = true;
@@ -703,7 +670,6 @@ export default function FaceID120Scanner({
     };
   }, [
     active,
-    drainEmbeddingsIncrementally,
     finalizeScan,
     resetScannerState,
     retryNonce,

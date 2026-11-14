@@ -25,8 +25,13 @@ export const ARCFACE_MODEL_URL: string =
     ? configuredUrl
     : '/models/w600k_r50.onnx';
 
+const heavyOnnxEnabled: boolean =
+  typeof import.meta !== 'undefined' &&
+  Boolean(import.meta.env) &&
+  import.meta.env.VITE_ENABLE_HEAVY_ARCFACE_ONNX === 'true';
+
 let arcfaceSessionPromise: Promise<ort.InferenceSession> | null = null;
-let arcfaceUnavailable = false;
+let arcfaceUnavailable = !heavyOnnxEnabled;
 
 export function getArcFaceSession(): Promise<ort.InferenceSession> {
   if (arcfaceUnavailable) {
