@@ -450,6 +450,15 @@ export function App() {
               prescribedExercises={prescribedOptions}
               onExerciseCompleted={handleExerciseCompleted}
               onAllExercisesCompleted={() => setTrainingStage('minigame')}
+              onEmergencyStop={({ reason }) => {
+                void apiClient
+                  .createStaffCall(
+                    'KIOSK-OPD-01',
+                    `${authenticatedPatient.patient.fullName} (${authenticatedPatient.patient.hn}) • ${reason}`,
+                    authenticatedPatient.patient.id,
+                  )
+                  .catch(() => {});
+              }}
               onOpenStaffPortal={() => navigate('/login')}
               onOpenLegacyKiosk={() => setKioskMode('classic')}
             />
@@ -527,6 +536,18 @@ export function App() {
             </button>
           </div>
           <SmartRehabKioskUI
+            onEmergencyStop={({ reason }) => {
+              const label = authenticatedPatient
+                ? `${authenticatedPatient.patient.fullName} (${authenticatedPatient.patient.hn})`
+                : 'โหมดฝึกกายภาพหน้าตู้ Kiosk';
+              void apiClient
+                .createStaffCall(
+                  'KIOSK-OPD-01',
+                  `${label} • ${reason}`,
+                  authenticatedPatient?.patient.id ?? null,
+                )
+                .catch(() => {});
+            }}
             onOpenStaffPortal={() => navigate('/login')}
             onOpenLegacyKiosk={() => setKioskMode('classic')}
           />

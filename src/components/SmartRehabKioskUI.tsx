@@ -41,6 +41,7 @@ interface SmartRehabKioskUIProps {
   prescribedExercises?: ExercisePrescriptionOption[];
   onExerciseCompleted?: (exercise: ExercisePrescriptionOption) => void;
   onAllExercisesCompleted?: () => void;
+  onEmergencyStop?: (info: { reason: string; patientId?: string; exerciseNameTh?: string }) => void;
   onOpenStaffPortal?: () => void;
   onOpenLegacyKiosk?: () => void;
 }
@@ -495,6 +496,7 @@ export function SmartRehabKioskUI({
   prescribedExercises,
   onExerciseCompleted,
   onAllExercisesCompleted,
+  onEmergencyStop,
   onOpenStaffPortal,
   onOpenLegacyKiosk,
 }: SmartRehabKioskUIProps) {
@@ -571,6 +573,15 @@ export function SmartRehabKioskUI({
   const isHoldPhase = kiosk_state === 'HOLD_PHASE';
   const isRepCelebration = kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED';
   const isEmergency = kiosk_state === 'EMERGENCY_HALT';
+
+  const handleEmergencyStopClick = () => {
+    triggerEmergencyStop();
+    onEmergencyStop?.({
+      reason: `กดปุ่มหยุดฉุกเฉินระหว่างฝึกท่า ${selectedExercise.name_th}`,
+      patientId: patient?.id ?? patientProp?.id ?? undefined,
+      exerciseNameTh: selectedExercise.name_th,
+    });
+  };
 
   const markCurrentExerciseCompleted = () => {
     completeCurrentExercise();
@@ -1163,7 +1174,7 @@ export function SmartRehabKioskUI({
 
             <button
               type="button"
-              onClick={triggerEmergencyStop}
+              onClick={handleEmergencyStopClick}
               className="inline-flex items-center gap-2 rounded-2xl bg-[#EF4444] px-4 py-2 text-xs font-extrabold text-white shadow-md transition-transform hover:bg-red-600 active:scale-95 sm:text-sm"
             >
               <AlertOctagon className="h-4 w-4" />

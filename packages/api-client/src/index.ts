@@ -278,6 +278,45 @@ export class ApiError extends Error {
 
 const DRTECH_SESSION_STORAGE_KEY = 'drtech_session';
 const DRTECH_TOKEN_STORAGE_KEY = 'drtechcares_auth_token';
+const DRTECH_STAFF_CALLS_STORAGE_KEY = 'drtechcares_staff_calls_v1';
+const DRTECH_DELETED_CALL_IDS_STORAGE_KEY = 'drtechcares_deleted_staff_calls_v1';
+
+const STAFF_CALL_STATUS_RANK: Record<StaffCallRecord['status'], number> = {
+  open: 0,
+  acknowledged: 1,
+  resolved: 2,
+};
+
+function mergeStaffCallLists(
+  primary: readonly StaffCallRecord[],
+  secondary: readonly StaffCallRecord[],
+  deletedIds: ReadonlySet<string>,
+): StaffCallRecord[] {
+  const merged = new Map<string, StaffCallRecord>();
+  const apply = (item: StaffCallRecord) => {
+    if (!item?.id || deletedIds.has(item.id)) return;
+    const prev = merged.get(item.id);
+    if (!prev) {
+      merged.set(item.id, item);
+      return;
+    }
+    const status =
+      STAFF_CALL_STATUS_RANK[item.status] >= STAFF_CALL_STATUS_RANK[prev.status]
+        ? item.status
+        : prev.status;
+    merged.set(item.id, {
+      ...prev,
+      ...item,
+      status,
+      reason: (item.reason || prev.reason).replace(/^\[ACKNOWLEDGED\]\s*/, ''),
+    });
+  };
+  secondary.forEach(apply);
+  primary.forEach(apply);
+  return Array.from(merged.values())
+    .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0))
+    .slice(0, 200);
+}
 
 export interface StaffRegisterInput {
   username: string;
@@ -796,26 +835,123 @@ export class DrTechCaresApiClient {
     await this.request(`/api/modpacks/${id}`, { method: 'DELETE' });
   }
 
+  private readLocalStaffCalls(): StaffCallRecord[] {
+    try {
+      if (typeof globalThis.localStorage === 'undefined') return [];
+      const raw = globalThis.localStorage.getItem(DRTECH_STAFF_CALLS_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as unknown;
+      return Array.isArray(parsed) ? (parsed as StaffCallRecord[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private writeLocalStaffCalls(calls: StaffCallRecord[]): void {
+    try {
+      if (typeof globalThis.localStorage === 'undefined') return;
+      globalThis.localStorage.setItem(DRTECH_STAFF_CALLS_STORAGE_KEY, JSON.stringify(calls.slice(0, 200)));
+    } catch {
+      // ignore storage quota errors
+    }
+  }
+
+  private readDeletedStaffCallIds(): Set<string> {
+    try {
+      if (typeof globalThis.localStorage === 'undefined') return new Set();
+      const raw = globalThis.localStorage.getItem(DRTECH_DELETED_CALL_IDS_STORAGE_KEY);
+      if (!raw) return new Set();
+      const parsed = JSON.parse(raw) as unknown;
+      return Array.isArray(parsed) ? new Set(parsed.map(String)) : new Set();
+    } catch {
+      return new Set();
+    }
+  }
+
+  private writeDeletedStaffCallId(callId: string, deleted: boolean): void {
+    try {
+      if (typeof globalThis.localStorage === 'undefined') return;
+      const current = this.readDeletedStaffCallIds();
+      if (deleted) current.add(callId);
+      else current.delete(callId);
+      globalThis.localStorage.setItem(
+        DRTECH_DELETED_CALL_IDS_STORAGE_KEY,
+        JSON.stringify(Array.from(current).slice(-300)),
+      );
+    } catch {
+      // ignore storage quota errors
+    }
+  }
+
   // Staff Calls & Security & Settings
   async createStaffCall(kioskId: string, reason: string, patientId?: string | null): Promise<StaffCallRecord> {
-    const res = await this.request<{ call: StaffCallRecord }>('/api/staff-calls', {
-      method: 'POST',
-      body: JSON.stringify({ kioskId, reason, patientId }),
-    });
-    return res.call;
+    let created: StaffCallRecord;
+    try {
+      const res = await this.request<{ call: StaffCallRecord }>('/api/staff-calls', {
+        method: 'POST',
+        body: JSON.stringify({ kioskId, reason, patientId }),
+      });
+      created = res.call;
+    } catch (err) {
+      if (err instanceof ApiError && err.status < 500) {
+        throw err;
+      }
+      created = {
+        id: `call-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        kioskId: kioskId || 'KIOSK-OPD-01',
+        patientId: patientId ?? null,
+        reason: reason.trim(),
+        status: 'open',
+        createdAt: new Date().toISOString(),
+      };
+    }
+    this.writeDeletedStaffCallId(created.id, false);
+    const merged = mergeStaffCallLists([created], this.readLocalStaffCalls(), this.readDeletedStaffCallIds());
+    this.writeLocalStaffCalls(merged);
+    return created;
   }
 
   async listStaffCalls(): Promise<StaffCallRecord[]> {
-    const res = await this.request<{ calls: StaffCallRecord[] }>('/api/staff-calls');
-    return res.calls;
+    const deleted = this.readDeletedStaffCallIds();
+    const localCalls = this.readLocalStaffCalls();
+    try {
+      const res = await this.request<{ calls: StaffCallRecord[] }>('/api/staff-calls');
+      const merged = mergeStaffCallLists(res.calls, localCalls, deleted);
+      this.writeLocalStaffCalls(merged);
+      return merged;
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        throw err;
+      }
+      return mergeStaffCallLists([], localCalls, deleted);
+    }
   }
 
   async acknowledgeStaffCall(callId: string): Promise<void> {
-    await this.request(`/api/staff-calls/${callId}/acknowledge`, { method: 'PATCH' });
+    const updatedLocal = this.readLocalStaffCalls().map((c) =>
+      c.id === callId && c.status === 'open' ? { ...c, status: 'acknowledged' as const } : c,
+    );
+    this.writeLocalStaffCalls(updatedLocal);
+    await this.request(`/api/staff-calls/${encodeURIComponent(callId)}/acknowledge`, { method: 'PATCH' });
   }
 
   async resolveStaffCall(callId: string): Promise<void> {
-    await this.request(`/api/staff-calls/${callId}/resolve`, { method: 'PATCH' });
+    const updatedLocal = this.readLocalStaffCalls().map((c) =>
+      c.id === callId ? { ...c, status: 'resolved' as const } : c,
+    );
+    this.writeLocalStaffCalls(updatedLocal);
+    await this.request(`/api/staff-calls/${encodeURIComponent(callId)}/resolve`, { method: 'PATCH' });
+  }
+
+  async deleteStaffCall(callId: string): Promise<void> {
+    this.writeDeletedStaffCallId(callId, true);
+    this.writeLocalStaffCalls(this.readLocalStaffCalls().filter((c) => c.id !== callId));
+    try {
+      await this.request(`/api/staff-calls/${encodeURIComponent(callId)}`, { method: 'DELETE' });
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return;
+      throw err;
+    }
   }
 
   async registerKiosk(input: { kioskId: string; location: string }): Promise<KioskStatusRecord> {

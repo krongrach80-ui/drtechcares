@@ -4,7 +4,9 @@ import {
   FACE_EMBEDDING_DIM,
   l2Normalize,
 } from '@drtechcares/smart-biometric-core';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { createCloudDelegatedRouter } from '../index';
+import { hydrateStateFromSupabase, type CloudRouterState } from '../supabasePersistence';
 
 function makeHybridEmbedding(seed: number): number[] {
   const raw = new Array<number>(FACE_EMBEDDING_DIM);
@@ -225,6 +227,59 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(bioEvalRes.status).toBe(200);
     expect(((await bioEvalRes.json()) as { kiosk_state: string }).kiosk_state).toBe('ACTIVE_REP');
 
+    // Staff Calls lifecycle: Create -> List -> Acknowledge -> Resolve -> Delete
+    const createCallRes = await callRouter(router, '/api/staff-calls', {
+      method: 'POST',
+      body: {
+        kioskId: 'KIOSK-OPD-01',
+        patientId: 'HN-9988',
+        reason: 'ทดสอบเรียกเจ้าหน้าที่ฉุกเฉินจากหน้าตู้ Kiosk',
+      },
+    });
+    expect(createCallRes.status).toBe(201);
+    const createdCall = ((await createCallRes.json()) as { call: { id: string; status: string; kioskId: string } }).call;
+    expect(createdCall.status).toBe('open');
+    expect(createdCall.kioskId).toBe('KIOSK-OPD-01');
+
+    const listCallsRes = await callRouter(router, '/api/staff-calls', { token: pt1Token });
+    expect(listCallsRes.status).toBe(200);
+    const listedCalls = ((await listCallsRes.json()) as { calls: { id: string; status: string }[] }).calls;
+    expect(listedCalls.some((c) => c.id === createdCall.id && c.status === 'open')).toBe(true);
+
+    const ackCallRes = await callRouter(router, `/api/staff-calls/${createdCall.id}/acknowledge`, {
+      method: 'PATCH',
+      token: pt1Token,
+    });
+    expect(ackCallRes.status).toBe(200);
+    const ackedJson = (await ackCallRes.json()) as { ok: boolean; call: { status: string } };
+    expect(ackedJson.ok).toBe(true);
+    expect(ackedJson.call.status).toBe('acknowledged');
+
+    const resolveCallRes = await callRouter(router, `/api/staff-calls/${createdCall.id}/resolve`, {
+      method: 'PATCH',
+      token: adminToken,
+    });
+    expect(resolveCallRes.status).toBe(200);
+    const resolvedJson = (await resolveCallRes.json()) as { ok: boolean; call: { status: string } };
+    expect(resolvedJson.ok).toBe(true);
+    expect(resolvedJson.call.status).toBe('resolved');
+
+    const deleteCallRes = await callRouter(router, `/api/staff-calls/${createdCall.id}`, {
+      method: 'DELETE',
+      token: adminToken,
+    });
+    expect(deleteCallRes.status).toBe(200);
+
+    const listCallsAfterDelete = await callRouter(router, '/api/staff-calls', { token: adminToken });
+    const afterDeleteJson = (await listCallsAfterDelete.json()) as { calls: { id: string }[] };
+    expect(afterDeleteJson.calls.some((c) => c.id === createdCall.id)).toBe(false);
+
+    const auditLogsRes = await callRouter(router, '/api/audit-logs', { token: adminToken });
+    expect(auditLogsRes.status).toBe(200);
+    const auditLogs = ((await auditLogsRes.json()) as { logs: { eventType: string }[] }).logs;
+    expect(auditLogs.some((l) => l.eventType === 'KIOSK_STAFF_CALL')).toBe(true);
+    expect(auditLogs.some((l) => l.eventType === 'STAFF_CALL_RESOLVED')).toBe(true);
+
     // Force logout + Device ban + Cascading patient purge
     const forceRes = await callRouter(router, '/api/security/force-logout/user-pt-2', {
       method: 'POST',
@@ -255,6 +310,112 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       body: { probeVector: ownerCentroid },
     });
     expect(verifyDeleted.status).toBe(401);
+  });
+
+  it('merges staff_calls, audit_logs, and banned_targets across Supabase hydration without wiping in-memory entries', async () => {
+    const emptyResult = { data: [] as unknown[], error: null };
+    const singleEmptyResult = { data: null, error: null };
+    const makeQuery = () => {
+      const q: Record<string, unknown> = {
+        then: (resolve: (val: unknown) => void) => resolve(emptyResult),
+      };
+      q.select = () => q;
+      q.order = () => q;
+      q.limit = () => q;
+      q.eq = () => q;
+      q.maybeSingle = () => Promise.resolve(singleEmptyResult);
+      return q;
+    };
+    const mockSupabase = {
+      from: (table: string) => {
+        const q = makeQuery();
+        if (table === 'staff_calls') {
+          q.then = (resolve: (val: unknown) => void) =>
+            resolve({
+              data: [
+                {
+                  id: 'call-shared',
+                  kiosk_id: 'KIOSK-OPD-01',
+                  patient_id: null,
+                  reason: 'Old open copy from DB',
+                  status: 'open',
+                  created_at: '2026-11-14T10:00:00.000Z',
+                },
+                {
+                  id: 'call-deleted',
+                  kiosk_id: 'KIOSK-OPD-01',
+                  patient_id: null,
+                  reason: 'Deleted call should not return',
+                  status: 'resolved',
+                  created_at: '2026-11-14T09:00:00.000Z',
+                },
+              ],
+              error: null,
+            });
+        }
+        return q;
+      },
+    } as unknown as SupabaseClient;
+
+    const state: CloudRouterState = {
+      users: [],
+      deleted_staff_call_ids: ['call-deleted'],
+      patients: [],
+      face_templates: [],
+      medical_notes: [],
+      patient_courses: [],
+      rehab_sessions: [],
+      treatment_reports: [],
+      exercises: [],
+      modpacks: [],
+      staff_calls: [
+        {
+          id: 'call-local-only',
+          kioskId: 'KIOSK-OPD-01',
+          patientId: null,
+          reason: 'คำเรียกเจ้าหน้าที่ในหน่วยความจำ',
+          status: 'open',
+          createdAt: '2026-11-14T12:00:00.000Z',
+        },
+        {
+          id: 'call-shared',
+          kioskId: 'KIOSK-OPD-01',
+          patientId: null,
+          reason: 'Resolved in memory',
+          status: 'resolved',
+          createdAt: '2026-11-14T10:00:00.000Z',
+        },
+      ],
+      audit_logs: [
+        {
+          id: 'audit-local',
+          eventType: 'KIOSK_STAFF_CALL',
+          actorRole: 'patient_kiosk',
+          actorId: 'KIOSK-OPD-01',
+          actorName: 'KIOSK-OPD-01',
+          ipAddress: '127.0.0.1',
+          deviceId: 'kiosk',
+          detail: 'Local audit entry',
+          createdAt: '2026-11-14T12:00:00.000Z',
+        },
+      ],
+      banned_targets: [],
+      active_sessions: [],
+      system_settings: {
+        aiFaceScanEnabled: true,
+        aiFaceThreshold: 0.925,
+        aiPoseDetectionEnabled: false,
+        kioskAutoResetSec: 6,
+      },
+      kiosks: [],
+    };
+
+    await hydrateStateFromSupabase(mockSupabase, state);
+
+    expect(state.staff_calls.some((c) => c.id === 'call-local-only')).toBe(true);
+    expect(state.staff_calls.find((c) => c.id === 'call-shared')?.status).toBe('resolved');
+    expect(state.staff_calls.some((c) => c.id === 'call-deleted')).toBe(false);
+    expect(state.audit_logs.some((l) => l.id === 'audit-local')).toBe(true);
   });
 });
 

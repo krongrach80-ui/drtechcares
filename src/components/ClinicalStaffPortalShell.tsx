@@ -1304,6 +1304,10 @@ export function ClinicalStaffPortalShell({
   const [banReason, setBanReason] = useState('');
   const [newKioskCode, setNewKioskCode] = useState('');
   const [newKioskLocation, setNewKioskLocation] = useState('');
+  const [callKioskId, setCallKioskId] = useState('KIOSK-OPD-01');
+  const [callPatientId, setCallPatientId] = useState('');
+  const [callReason, setCallReason] = useState('');
+  const [creatingCall, setCreatingCall] = useState(false);
 
   // Add Staff form
   const [newStaffUsername, setNewStaffUsername] = useState('');
@@ -1507,7 +1511,11 @@ export function ClinicalStaffPortalShell({
             apiClient
               .listStaffCalls()
               .then((calls) => {
-                playEmergencyChime();
+                const nextOpen = calls.filter((c) => c.status === 'open').length;
+                if (nextOpen > prevOpenCallCountRef.current) {
+                  playEmergencyChime();
+                }
+                prevOpenCallCountRef.current = nextOpen;
                 setStaffCalls(calls);
               })
               .catch(() => {});
@@ -1580,6 +1588,48 @@ export function ClinicalStaffPortalShell({
     users.forEach((u) => map.set(u.id, u.fullName));
     return map;
   }, [users]);
+
+  const patientNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    patients.forEach((p) => {
+      const label = `${p.fullName} (HN: ${p.hn})`;
+      map.set(p.id, label);
+      map.set(p.hn, label);
+    });
+    return map;
+  }, [patients]);
+
+  const submitStaffCall = useCallback(
+    async (kioskId: string, reason: string, patientId?: string | null) => {
+      setCreatingCall(true);
+      try {
+        const created = await apiClient.createStaffCall(
+          kioskId || kiosks[0]?.kioskId || 'KIOSK-OPD-01',
+          reason,
+          patientId || null,
+        );
+        setSecuritySubTab('calls');
+        playEmergencyChime();
+        setStaffCalls((prev) => {
+          const next = [created, ...prev.filter((c) => c.id !== created.id)];
+          prevOpenCallCountRef.current = next.filter((c) => c.status === 'open').length;
+          return next;
+        });
+        flashBanner('success', `ส่งคำเรียกเจ้าหน้าที่จาก ${created.kioskId} เรียบร้อยแล้ว`);
+        void refreshAll();
+        return true;
+      } catch (err) {
+        flashBanner(
+          'error',
+          err instanceof Error ? err.message : 'ไม่สามารถส่งคำเรียกเจ้าหน้าที่ได้',
+        );
+        return false;
+      } finally {
+        setCreatingCall(false);
+      }
+    },
+    [apiClient, kiosks, flashBanner, refreshAll],
+  );
 
   const filteredStaff = useMemo(() => {
     const q = staffSearch.trim().toLowerCase();
@@ -3662,15 +3712,14 @@ export function ClinicalStaffPortalShell({
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
-                    onClick={async () => {
-                      await apiClient.createStaffCall(
+                    disabled={creatingCall}
+                    onClick={() => {
+                      void submitStaffCall(
                         kiosks[0]?.kioskId || 'KIOSK-OPD-01',
                         'ทดสอบสัญญาณเรียกเจ้าหน้าที่จากหน้าตู้ Kiosk',
                       );
-                      await refreshAll();
-                      flashBanner('success', 'ส่งสัญญาณทดสอบเรียกเจ้าหน้าที่เรียบร้อย');
                     }}
-                    className="whitespace-nowrap h-9 px-3.5 inline-flex items-center justify-center rounded-xl border border-amber-200 bg-amber-50 text-[11px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer shrink-0"
+                    className="whitespace-nowrap h-9 px-3.5 inline-flex items-center justify-center rounded-xl border border-amber-200 bg-amber-50 text-[11px] font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50 cursor-pointer shrink-0"
                   >
                     {locale.security.testAlertBtn}
                   </button>
@@ -3736,94 +3785,314 @@ export function ClinicalStaffPortalShell({
               </div>
 
               {securitySubTab === 'calls' && (
-                <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-                  <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 text-xs">
-                    <span className="font-extrabold text-slate-900">{locale.security.callsTableTitle}</span>
-                    <span className="text-[11px] text-slate-400 whitespace-nowrap">{locale.security.callsPollNote}</span>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="table-fixed w-full min-w-[760px] text-left text-xs">
-                      <thead className="bg-slate-50 text-[11px] font-bold text-slate-500">
-                        <tr>
-                          <th className="w-[20%] px-5 py-3">{locale.security.colTime}</th>
-                          <th className="w-[16%] px-4 py-3">{locale.security.colKiosk}</th>
-                          <th className="w-[30%] px-4 py-3">{locale.security.colReason}</th>
-                          <th className="w-[16%] px-4 py-3">{locale.security.colStatus}</th>
-                          <th className="w-[18%] px-5 py-3 text-right">{locale.security.colActions}</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {staffCalls.map((call) => (
-                          <tr key={call.id}>
-                            <td className="px-5 py-3 text-slate-600 whitespace-nowrap truncate">
-                              {lang === 'th'
-                                ? formatThaiDateTime(call.createdAt)
-                                : new Date(call.createdAt).toLocaleString(lang === 'cn' ? 'zh-CN' : 'en-US')}
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className="inline-block whitespace-nowrap rounded-lg bg-sky-50 border border-sky-200 px-2.5 py-1 font-bold text-sky-700">
-                                {call.kioskId}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 font-semibold text-rose-600 truncate">{call.reason}</td>
-                            <td className="px-4 py-3">
-                              <span
-                                className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-bold ${
-                                  call.status === 'resolved'
-                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                    : call.status === 'acknowledged'
-                                      ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                                      : 'bg-sky-50 text-sky-700 border border-sky-200'
-                                }`}
-                              >
-                                {call.status === 'resolved'
-                                  ? locale.security.statusResolved
-                                  : call.status === 'acknowledged'
-                                    ? locale.security.statusAck
-                                    : locale.security.statusOpen}
-                              </span>
-                            </td>
-                            <td className="px-5 py-3 text-right">
-                              <div className="inline-flex items-center justify-end gap-1.5">
-                                {call.status === 'open' && (
-                                  <button
-                                    type="button"
-                                    onClick={async () => {
-                                      await apiClient.acknowledgeStaffCall(call.id);
-                                      flashBanner('success', `รับเรื่องแจ้งเตือนจาก ${call.kioskId} แล้ว`);
-                                      await refreshAll();
-                                    }}
-                                    className="whitespace-nowrap rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer"
-                                  >
-                                    {locale.security.ackBtn}
-                                  </button>
-                                )}
-                                {call.status !== 'resolved' && (
-                                  <button
-                                    type="button"
-                                    onClick={async () => {
-                                      await apiClient.resolveStaffCall(call.id);
-                                      flashBanner('success', `ปิดเคสช่วยเหลือจาก ${call.kioskId} แล้ว`);
-                                      await refreshAll();
-                                    }}
-                                    className="whitespace-nowrap rounded-lg bg-emerald-600 px-3 py-1 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
-                                  >
-                                    {locale.security.resolveBtn}
-                                  </button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
+                <div className="space-y-3">
+                  {/* Quick Manual Staff Call / Dispatch Form */}
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      const trimmed = callReason.trim();
+                      if (!trimmed) {
+                        flashBanner('error', 'กรุณาระบุสาเหตุหรือข้อความสำหรับเรียกเจ้าหน้าที่');
+                        return;
+                      }
+                      const ok = await submitStaffCall(
+                        callKioskId || kiosks[0]?.kioskId || 'KIOSK-OPD-01',
+                        trimmed,
+                        callPatientId || null,
+                      );
+                      if (ok) {
+                        setCallReason('');
+                      }
+                    }}
+                    className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="text-xs font-extrabold text-slate-900">
+                          {lang === 'cn'
+                            ? '发起 / 记录呼叫医护人员'
+                            : lang === 'en'
+                              ? 'Create / Log Staff Assistance Call'
+                              : 'สร้างคำเรียกเจ้าหน้าที่ / บันทึกเหตุขอความช่วยเหลือจากหน้าตู้'}
+                        </h3>
+                        <p className="text-[11px] text-slate-500">
+                          {lang === 'cn'
+                            ? '可选择设备与患者并立即向护士站及治疗师推送提醒'
+                            : lang === 'en'
+                              ? 'Select a kiosk and optional patient to dispatch an alert immediately'
+                              : 'เลือกตู้ Kiosk และคนไข้ (ถ้ามี) เพื่อส่งแจ้งเตือนเรียกเจ้าหน้าที่ทันที'}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {[
+                          'ผู้ป่วยปวดหรือเวียนศีรษะระหว่างฝึก',
+                          'ขอความช่วยเหลือปรับระดับกล้อง / ระยะยืน',
+                          'ขอความช่วยเหลือสแกนใบหน้าเข้าใช้งาน',
+                        ].map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => setCallReason(preset)}
+                            className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-800 hover:bg-sky-100 cursor-pointer"
+                          >
+                            + {preset}
+                          </button>
                         ))}
-                        {staffCalls.length === 0 && (
-                          <tr>
-                            <td colSpan={5} className="px-6 py-8 text-center text-slate-400">
-                              {locale.security.emptyCalls}
-                            </td>
-                          </tr>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5">
+                      <div className="md:col-span-3">
+                        <select
+                          value={callKioskId}
+                          onChange={(e) => setCallKioskId(e.target.value)}
+                          className="w-full h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
+                        >
+                          {kiosks.length > 0 ? (
+                            kiosks.map((k) => (
+                              <option key={k.kioskId} value={k.kioskId}>
+                                {k.kioskId} ({k.location})
+                              </option>
+                            ))
+                          ) : (
+                            <option value="KIOSK-OPD-01">KIOSK-OPD-01</option>
+                          )}
+                        </select>
+                      </div>
+                      <div className="md:col-span-3">
+                        <select
+                          value={callPatientId}
+                          onChange={(e) => setCallPatientId(e.target.value)}
+                          className="w-full h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
+                        >
+                          <option value="">
+                            {lang === 'cn'
+                              ? '— 未指定患者 —'
+                              : lang === 'en'
+                                ? '— Optional patient —'
+                                : '— ไม่ระบุชื่อคนไข้ —'}
+                          </option>
+                          {patients.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.fullName} ({p.hn})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="md:col-span-4">
+                        <input
+                          type="text"
+                          maxLength={240}
+                          value={callReason}
+                          onChange={(e) => setCallReason(e.target.value)}
+                          placeholder={
+                            lang === 'cn'
+                              ? '输入呼叫原因，例如：患者需要协助...'
+                              : lang === 'en'
+                                ? 'Enter call reason, e.g. Patient needs assistance...'
+                                : 'ระบุสาเหตุคำเรียกเจ้าหน้าที่ เช่น ผู้ป่วยขอความช่วยเหลือ...'
+                          }
+                          className="w-full h-10 rounded-xl border border-slate-200 px-3 text-xs"
+                        />
+                      </div>
+                      <div className="md:col-span-2">
+                        <button
+                          type="submit"
+                          disabled={creatingCall}
+                          className="w-full h-10 rounded-xl bg-rose-600 px-3 text-xs font-extrabold text-white shadow-sm hover:bg-rose-500 disabled:opacity-50 cursor-pointer"
+                        >
+                          {creatingCall
+                            ? '...'
+                            : lang === 'cn'
+                              ? '+ 呼叫医护'
+                              : lang === 'en'
+                                ? '+ Send Call'
+                                : '+ เรียกเจ้าหน้าที่'}
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+
+                  <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-5 py-3.5 text-xs">
+                      <span className="font-extrabold text-slate-900">{locale.security.callsTableTitle}</span>
+                      <div className="flex items-center gap-3">
+                        {staffCalls.some((c) => c.status === 'resolved') && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const resolvedIds = staffCalls
+                                .filter((c) => c.status === 'resolved')
+                                .map((c) => c.id);
+                              setStaffCalls((prev) => prev.filter((c) => c.status !== 'resolved'));
+                              try {
+                                await Promise.all(resolvedIds.map((id) => apiClient.deleteStaffCall(id)));
+                                flashBanner('success', `ล้างรายการที่แก้ไขแล้วจำนวน ${resolvedIds.length} รายการ`);
+                              } catch (err) {
+                                flashBanner(
+                                  'error',
+                                  err instanceof Error ? err.message : 'ไม่สามารถล้างรายการได้',
+                                );
+                                await refreshAll();
+                              }
+                            }}
+                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                          >
+                            <Trash2 className="h-3.5 w-3.5 text-slate-500" />
+                            <span>
+                              {lang === 'cn'
+                                ? '清除已处理'
+                                : lang === 'en'
+                                  ? 'Clear Resolved'
+                                  : 'ล้างรายการที่แก้ไขแล้ว'}
+                            </span>
+                          </button>
                         )}
-                      </tbody>
-                    </table>
+                        <span className="text-[11px] text-slate-400 whitespace-nowrap">{locale.security.callsPollNote}</span>
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="table-fixed w-full min-w-[760px] text-left text-xs">
+                        <thead className="bg-slate-50 text-[11px] font-bold text-slate-500">
+                          <tr>
+                            <th className="w-[18%] px-5 py-3">{locale.security.colTime}</th>
+                            <th className="w-[14%] px-4 py-3">{locale.security.colKiosk}</th>
+                            <th className="w-[34%] px-4 py-3">{locale.security.colReason}</th>
+                            <th className="w-[14%] px-4 py-3">{locale.security.colStatus}</th>
+                            <th className="w-[20%] px-5 py-3 text-right">{locale.security.colActions}</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {staffCalls.map((call) => {
+                            const patientLabel = call.patientId
+                              ? patientNameMap.get(call.patientId) ?? call.patientId
+                              : null;
+                            return (
+                              <tr key={call.id}>
+                                <td className="px-5 py-3 text-slate-600 whitespace-nowrap truncate">
+                                  {lang === 'th'
+                                    ? formatThaiDateTime(call.createdAt)
+                                    : new Date(call.createdAt).toLocaleString(lang === 'cn' ? 'zh-CN' : 'en-US')}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <span className="inline-block whitespace-nowrap rounded-lg bg-sky-50 border border-sky-200 px-2.5 py-1 font-bold text-sky-700">
+                                    {call.kioskId}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3">
+                                  <div className="font-semibold text-rose-600 break-words">{call.reason}</div>
+                                  {patientLabel && (
+                                    <div className="text-[11px] font-bold text-slate-500 mt-0.5">
+                                      👤 {patientLabel}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <span
+                                    className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-bold ${
+                                      call.status === 'resolved'
+                                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                        : call.status === 'acknowledged'
+                                          ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                          : 'bg-sky-50 text-sky-700 border border-sky-200'
+                                    }`}
+                                  >
+                                    {call.status === 'resolved'
+                                      ? locale.security.statusResolved
+                                      : call.status === 'acknowledged'
+                                        ? locale.security.statusAck
+                                        : locale.security.statusOpen}
+                                  </span>
+                                </td>
+                                <td className="px-5 py-3 text-right">
+                                  <div className="inline-flex items-center justify-end gap-1.5">
+                                    {call.status === 'open' && (
+                                      <button
+                                        type="button"
+                                        onClick={async () => {
+                                          setStaffCalls((prev) =>
+                                            prev.map((c) =>
+                                              c.id === call.id ? { ...c, status: 'acknowledged' } : c,
+                                            ),
+                                          );
+                                          try {
+                                            await apiClient.acknowledgeStaffCall(call.id);
+                                            flashBanner('success', `รับเรื่องแจ้งเตือนจาก ${call.kioskId} แล้ว`);
+                                            void refreshAll();
+                                          } catch (err) {
+                                            flashBanner(
+                                              'error',
+                                              err instanceof Error ? err.message : 'ไม่สามารถรับเรื่องคำเรียกได้',
+                                            );
+                                            await refreshAll();
+                                          }
+                                        }}
+                                        className="whitespace-nowrap rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer"
+                                      >
+                                        {locale.security.ackBtn}
+                                      </button>
+                                    )}
+                                    {call.status !== 'resolved' && (
+                                      <button
+                                        type="button"
+                                        onClick={async () => {
+                                          setStaffCalls((prev) =>
+                                            prev.map((c) =>
+                                              c.id === call.id ? { ...c, status: 'resolved' } : c,
+                                            ),
+                                          );
+                                          try {
+                                            await apiClient.resolveStaffCall(call.id);
+                                            flashBanner('success', `ปิดเคสช่วยเหลือจาก ${call.kioskId} แล้ว`);
+                                            void refreshAll();
+                                          } catch (err) {
+                                            flashBanner(
+                                              'error',
+                                              err instanceof Error ? err.message : 'ไม่สามารถปิดเคสคำเรียกได้',
+                                            );
+                                            await refreshAll();
+                                          }
+                                        }}
+                                        className="whitespace-nowrap rounded-lg bg-emerald-600 px-3 py-1 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
+                                      >
+                                        {locale.security.resolveBtn}
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      title="ลบรายการคำเรียกเจ้าหน้าที่"
+                                      onClick={async () => {
+                                        setStaffCalls((prev) => prev.filter((c) => c.id !== call.id));
+                                        try {
+                                          await apiClient.deleteStaffCall(call.id);
+                                          flashBanner('success', 'ลบรายการคำเรียกเจ้าหน้าที่เรียบร้อย');
+                                        } catch (err) {
+                                          flashBanner(
+                                            'error',
+                                            err instanceof Error ? err.message : 'ไม่สามารถลบรายการได้',
+                                          );
+                                          await refreshAll();
+                                        }
+                                      }}
+                                      className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 cursor-pointer"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          {staffCalls.length === 0 && (
+                            <tr>
+                              <td colSpan={5} className="px-6 py-8 text-center text-slate-400">
+                                {locale.security.emptyCalls}
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </div>
               )}

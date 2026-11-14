@@ -250,6 +250,8 @@ function createInitialState(useUuidIds = false): CloudRouterState {
     ],
     deleted_user_ids: [],
     deleted_patient_ids: [],
+    deleted_ban_ids: [],
+    deleted_staff_call_ids: [],
     patients: [],
     face_templates: [],
     medical_notes: [],
@@ -284,7 +286,19 @@ function createInitialState(useUuidIds = false): CloudRouterState {
       },
     ],
     staff_calls: [],
-    audit_logs: [],
+    audit_logs: [
+      {
+        id: newRecordId(useUuidIds, 'audit'),
+        eventType: 'SYSTEM_READY',
+        actorRole: 'system',
+        actorId: 'drtechcares-edge',
+        actorName: 'Dr.Tech.Care Clinical Engine',
+        ipAddress: '127.0.0.1',
+        deviceId: 'cloud-worker',
+        detail: 'Dr.Tech.Care Smart Rehab clinical security and audit trail initialized',
+        createdAt: now,
+      },
+    ],
     banned_targets: [],
     active_sessions: [],
     system_settings: {
@@ -445,7 +459,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
   const recordAudit = (entry: Omit<AuditLogRecord, 'id' | 'createdAt'>): AuditLogRecord => {
     const log: AuditLogRecord = {
-      id: `audit-${Date.now()}-${randomHex(3)}`,
+      id: newRecordId(Boolean(supabase), 'audit'),
       ...entry,
       createdAt: new Date().toISOString(),
     };
@@ -454,16 +468,19 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       state.audit_logs.length = 1000;
     }
     if (supabase) {
-      void supabase.from('audit_logs').insert({
-        event_type: log.eventType,
-        actor_role: log.actorRole,
-        actor_id: log.actorId,
-        actor_name: log.actorName,
-        ip_address: log.ipAddress,
-        device_id: log.deviceId,
-        target_id: log.targetId ?? null,
-        detail: { message: log.detail },
-      });
+      void persistToSupabase(supabase, (db) =>
+        db.from('audit_logs').insert({
+          id: log.id,
+          event_type: log.eventType,
+          actor_role: log.actorRole,
+          actor_id: log.actorId,
+          actor_name: log.actorName,
+          ip_address: log.ipAddress,
+          device_id: log.deviceId,
+          target_id: log.targetId ?? null,
+          detail: { message: log.detail },
+        }),
+      );
     }
     return log;
   };
@@ -593,6 +610,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       (pathname === '/api/biometrics/index' && method === 'GET') ||
       (pathname === '/api/biometric/verify' && method === 'POST') ||
       (pathname === '/api/patients' && method === 'GET') ||
+      (pathname === '/api/staff-calls' && method === 'GET') ||
+      (pathname === '/api/audit-logs' && method === 'GET') ||
       (pathname.startsWith('/api/courses/') && method === 'GET') ||
       (pathname.startsWith('/api/patients/') && method === 'DELETE') ||
       (/^\/api\/(?:users|staff)\/[^/]+$/.test(pathname) && method === 'DELETE');
@@ -2745,6 +2764,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     // ========================
     // 7. STAFF CALLS, SECURITY, AUDIT LOGS & SETTINGS
     // ========================
+    const isUuid = (val: string | null | undefined): val is string =>
+      Boolean(val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val));
+
     if (pathname === '/api/staff-calls' && method === 'GET') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
@@ -2755,35 +2777,46 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const body = await readJsonBody<{ kioskId?: string; patientId?: string | null; reason?: string }>(
         request,
       );
-      if (!body?.reason || body.reason.length > 240) {
+      const cleanReason = body?.reason?.trim();
+      if (!cleanReason || cleanReason.length > 240) {
         return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
       }
-      const kioskId = body.kioskId || 'KIOSK-OPD-01';
+      const kioskId = (body?.kioskId || 'KIOSK-OPD-01').trim() || 'KIOSK-OPD-01';
+      const rawPatientRef = body?.patientId?.trim() || null;
+      const matchedPatient = rawPatientRef
+        ? state.patients.find((p) => p.id === rawPatientRef || p.hn === rawPatientRef)
+        : undefined;
+      const resolvedPatientId = matchedPatient?.id ?? rawPatientRef;
+      const dbPatientId = isUuid(resolvedPatientId) ? resolvedPatientId : null;
+      const callId = newRecordId(Boolean(supabase), 'call');
       const call: StaffCallRecord = {
-        id: `call-${Date.now()}`,
+        id: callId,
         kioskId,
-        patientId: body.patientId ?? null,
-        reason: body.reason,
+        patientId: resolvedPatientId,
+        reason: cleanReason,
         status: 'open',
         createdAt: new Date().toISOString(),
       };
+      state.deleted_staff_call_ids = (state.deleted_staff_call_ids ?? []).filter((id) => id !== call.id);
       state.staff_calls.unshift(call);
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db.from('staff_calls').insert({
+          id: call.id,
           kiosk_id: call.kioskId,
-          patient_id: call.patientId ?? null,
+          patient_id: dbPatientId,
           reason: call.reason,
           status: call.status,
         }),
       );
       recordAudit({
         eventType: 'KIOSK_STAFF_CALL',
-        actorRole: 'patient_kiosk',
-        actorId: kioskId,
-        actorName: kioskId,
+        actorRole: authUser ? authUser.role : 'patient_kiosk',
+        actorId: authUser ? authUser.id : kioskId,
+        actorName: authUser ? authUser.fullName : kioskId,
         ipAddress: clientIp,
         deviceId: clientDeviceId,
-        detail: body.reason,
+        targetId: call.id,
+        detail: cleanReason,
       });
       return jsonResponse({ call }, 201);
     }
@@ -2792,51 +2825,93 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (staffCallAckMatch && method === 'PATCH') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
-      const target = state.staff_calls.find((c) => c.id === staffCallAckMatch[1]);
-      if (target) {
-        target.status = 'acknowledged';
-        const ackReason = target.reason.startsWith('[ACKNOWLEDGED]')
-          ? target.reason
-          : `[ACKNOWLEDGED] ${target.reason}`;
-        await persistToSupabase(supabase, (db) =>
-          db.from('staff_calls').update({ status: 'open', reason: ackReason }).eq('id', target.id),
-        );
-        recordAudit({
-          eventType: 'STAFF_CALL_ACKNOWLEDGED',
-          actorRole: authUser!.role,
-          actorId: authUser!.id,
-          actorName: authUser!.fullName,
-          ipAddress: clientIp,
-          deviceId: clientDeviceId,
-          targetId: target.id,
-          detail: `Acknowledged Kiosk call from ${target.kioskId}`,
-        });
+      const callId = decodeURIComponent(staffCallAckMatch[1]);
+      let target = state.staff_calls.find((c) => c.id === callId);
+      if (!target) {
+        target = {
+          id: callId,
+          kioskId: 'KIOSK-OPD-01',
+          patientId: null,
+          reason: 'คำขอความช่วยเหลือจากตู้ Kiosk',
+          status: 'acknowledged',
+          createdAt: new Date().toISOString(),
+        };
+        state.staff_calls.unshift(target);
       }
-      return jsonResponse({ ok: true });
+      target.status = 'acknowledged';
+      target.reason = target.reason.replace(/^\[ACKNOWLEDGED\]\s*/, '');
+      const ackReason = `[ACKNOWLEDGED] ${target.reason}`;
+      await persistToSupabase(supabase, (db) =>
+        db.from('staff_calls').update({ status: 'open', reason: ackReason }).eq('id', target!.id),
+      );
+      recordAudit({
+        eventType: 'STAFF_CALL_ACKNOWLEDGED',
+        actorRole: authUser!.role,
+        actorId: authUser!.id,
+        actorName: authUser!.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: target.id,
+        detail: `Acknowledged Kiosk call from ${target.kioskId}`,
+      });
+      return jsonResponse({ ok: true, call: target });
     }
 
     const staffCallResolveMatch = pathname.match(/^\/api\/staff-calls\/([^/]+)\/resolve$/);
     if (staffCallResolveMatch && method === 'PATCH') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
-      const target = state.staff_calls.find((c) => c.id === staffCallResolveMatch[1]);
-      if (target) {
-        target.status = 'resolved';
-        target.reason = target.reason.replace(/^\[ACKNOWLEDGED\]\s*/, '');
-        await persistToSupabase(supabase, (db) =>
-          db.from('staff_calls').update({ status: 'resolved', reason: target.reason }).eq('id', target.id),
-        );
-        recordAudit({
-          eventType: 'STAFF_CALL_RESOLVED',
-          actorRole: authUser!.role,
-          actorId: authUser!.id,
-          actorName: authUser!.fullName,
-          ipAddress: clientIp,
-          deviceId: clientDeviceId,
-          targetId: target.id,
-          detail: `Resolved Kiosk call from ${target.kioskId}`,
-        });
+      const callId = decodeURIComponent(staffCallResolveMatch[1]);
+      let target = state.staff_calls.find((c) => c.id === callId);
+      if (!target) {
+        target = {
+          id: callId,
+          kioskId: 'KIOSK-OPD-01',
+          patientId: null,
+          reason: 'คำขอความช่วยเหลือจากตู้ Kiosk',
+          status: 'resolved',
+          createdAt: new Date().toISOString(),
+        };
+        state.staff_calls.unshift(target);
       }
+      target.status = 'resolved';
+      target.reason = target.reason.replace(/^\[ACKNOWLEDGED\]\s*/, '');
+      await persistToSupabase(supabase, (db) =>
+        db.from('staff_calls').update({ status: 'resolved', reason: target!.reason }).eq('id', target!.id),
+      );
+      recordAudit({
+        eventType: 'STAFF_CALL_RESOLVED',
+        actorRole: authUser!.role,
+        actorId: authUser!.id,
+        actorName: authUser!.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: target.id,
+        detail: `Resolved Kiosk call from ${target.kioskId}`,
+      });
+      return jsonResponse({ ok: true, call: target });
+    }
+
+    const staffCallDeleteMatch = pathname.match(/^\/api\/staff-calls\/([^/]+)$/);
+    if (staffCallDeleteMatch && method === 'DELETE') {
+      const err = requireAuth(authUser, ['super_admin', 'pt']);
+      if (err) return err;
+      const callId = decodeURIComponent(staffCallDeleteMatch[1]);
+      state.staff_calls = state.staff_calls.filter((c) => c.id !== callId);
+      state.deleted_staff_call_ids = Array.from(new Set([...(state.deleted_staff_call_ids ?? []), callId]));
+      await persistToSupabase(supabase, (db) =>
+        db.from('staff_calls').delete().eq('id', callId),
+      );
+      recordAudit({
+        eventType: 'STAFF_CALL_DELETED',
+        actorRole: authUser!.role,
+        actorId: authUser!.id,
+        actorName: authUser!.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: callId,
+        detail: `Removed staff call record ${callId}`,
+      });
       return jsonResponse({ ok: true });
     }
 
@@ -2893,9 +2968,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (banDeleteMatch && method === 'DELETE') {
       const err = requireAuth(authUser, ['super_admin']);
       if (err) return err;
-      state.banned_targets = state.banned_targets.filter((b) => b.id !== banDeleteMatch[1]);
+      const banId = decodeURIComponent(banDeleteMatch[1]);
+      state.deleted_ban_ids = Array.from(new Set([...(state.deleted_ban_ids ?? []), banId]));
+      state.banned_targets = state.banned_targets.filter((b) => b.id !== banId);
       await persistToSupabase(supabase, (db) =>
-        db.from('banned_targets').delete().eq('id', banDeleteMatch[1]),
+        db.from('banned_targets').delete().eq('id', banId),
       );
       recordAudit({
         eventType: 'SECURITY_TARGET_UNBANNED',
@@ -2904,8 +2981,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         actorName: authUser!.fullName,
         ipAddress: clientIp,
         deviceId: clientDeviceId,
-        targetId: banDeleteMatch[1],
-        detail: `Removed ban ${banDeleteMatch[1]}`,
+        targetId: banId,
+        detail: `Removed ban ${banId}`,
       });
       return jsonResponse({ ok: true });
     }

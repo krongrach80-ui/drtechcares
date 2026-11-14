@@ -38,6 +38,8 @@ export interface CloudRouterState {
   users: StoredUserAccount[];
   deleted_user_ids?: string[];
   deleted_patient_ids?: string[];
+  deleted_ban_ids?: string[];
+  deleted_staff_call_ids?: string[];
   patients: PatientRecord[];
   face_templates: EnrolledTemplateCandidate[];
   medical_notes: MedicalNoteRecord[];
@@ -503,24 +505,59 @@ export async function hydrateStateFromSupabase(
     }));
   }
 
-  if (callsRes.status === 'fulfilled' && Array.isArray(callsRes.value.data)) {
-    state.staff_calls = callsRes.value.data.map((r: Record<string, unknown>) => {
+  const callStatusRank: Record<StaffCallRecord['status'], number> = {
+    open: 0,
+    acknowledged: 1,
+    resolved: 2,
+  };
+
+  if (callsRes.status === 'fulfilled' && !callsRes.value.error && Array.isArray(callsRes.value.data)) {
+    const deletedCallSet = new Set(state.deleted_staff_call_ids ?? []);
+    const mergedCalls = new Map<string, StaffCallRecord>();
+    for (const c of state.staff_calls) {
+      if (!deletedCallSet.has(c.id)) {
+        mergedCalls.set(c.id, c);
+      }
+    }
+    for (const r of callsRes.value.data as Record<string, unknown>[]) {
+      const id = String(r.id);
+      if (deletedCallSet.has(id)) continue;
       const rawReason = String(r.reason ?? '');
       const rawStatus = String(r.status ?? 'open');
       const isAcked = rawStatus === 'open' && rawReason.startsWith('[ACKNOWLEDGED]');
-      return {
-        id: String(r.id),
+      const dbStatus: StaffCallRecord['status'] = isAcked
+        ? 'acknowledged'
+        : rawStatus === 'resolved' || rawStatus === 'acknowledged' || rawStatus === 'open'
+          ? rawStatus
+          : 'open';
+      const cleanReason = isAcked ? rawReason.replace(/^\[ACKNOWLEDGED\]\s*/, '') : rawReason;
+      const prev = mergedCalls.get(id);
+      const effectiveStatus =
+        prev && callStatusRank[prev.status] > callStatusRank[dbStatus] ? prev.status : dbStatus;
+      mergedCalls.set(id, {
+        id,
         kioskId: String(r.kiosk_id),
-        patientId: r.patient_id ? String(r.patient_id) : null,
-        reason: isAcked ? rawReason.replace(/^\[ACKNOWLEDGED\]\s*/, '') : rawReason,
-        status: isAcked ? 'acknowledged' : ((rawStatus as 'open' | 'acknowledged' | 'resolved') ?? 'open'),
-        createdAt: String(r.created_at),
-      };
-    });
+        patientId: r.patient_id ? String(r.patient_id) : (prev?.patientId ?? null),
+        reason:
+          effectiveStatus === 'resolved'
+            ? (prev?.reason || cleanReason).replace(/^\[ACKNOWLEDGED\]\s*/, '')
+            : cleanReason || prev?.reason || '',
+        status: effectiveStatus,
+        createdAt: String(r.created_at ?? prev?.createdAt ?? new Date().toISOString()),
+      });
+    }
+    state.staff_calls = Array.from(mergedCalls.values()).sort(
+      (a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0),
+    );
   }
 
-  if (auditRes.status === 'fulfilled' && Array.isArray(auditRes.value.data)) {
-    state.audit_logs = auditRes.value.data.map((r: Record<string, unknown>) => {
+  if (auditRes.status === 'fulfilled' && !auditRes.value.error && Array.isArray(auditRes.value.data)) {
+    const mergedLogs = new Map<string, AuditLogRecord>();
+    for (const log of state.audit_logs) {
+      mergedLogs.set(log.id, log);
+    }
+    for (const r of auditRes.value.data as Record<string, unknown>[]) {
+      const id = String(r.id);
       const detailObj = (r.detail as Record<string, unknown> | null) ?? (r.details as Record<string, unknown> | null);
       const detailMsg =
         typeof detailObj?.message === 'string'
@@ -528,8 +565,8 @@ export async function hydrateStateFromSupabase(
           : typeof r.action === 'string'
             ? `${r.action} ${r.target ?? ''}`.trim()
             : JSON.stringify(detailObj ?? {});
-      return {
-        id: String(r.id),
+      mergedLogs.set(id, {
+        id,
         eventType: String(r.event_type ?? r.action ?? 'SYSTEM_EVENT'),
         actorRole: String(r.actor_role ?? 'system'),
         actorId: String(r.actor_id ?? ''),
@@ -539,19 +576,36 @@ export async function hydrateStateFromSupabase(
         targetId: r.target_id ? String(r.target_id) : r.target ? String(r.target) : undefined,
         detail: detailMsg,
         createdAt: String(r.created_at ?? new Date().toISOString()),
-      };
-    });
+      });
+    }
+    state.audit_logs = Array.from(mergedLogs.values())
+      .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0))
+      .slice(0, 1000);
   }
 
-  if (bansRes.status === 'fulfilled' && Array.isArray(bansRes.value.data)) {
-    state.banned_targets = bansRes.value.data.map((r: Record<string, unknown>) => ({
-      id: String(r.id),
-      targetType: (r.target_type as 'ip' | 'device') ?? 'device',
-      value: String(r.value),
-      reason: String(r.reason ?? ''),
-      bannedBy: String(r.banned_by ?? ''),
-      createdAt: String(r.created_at),
-    }));
+  if (bansRes.status === 'fulfilled' && !bansRes.value.error && Array.isArray(bansRes.value.data)) {
+    const deletedBanSet = new Set(state.deleted_ban_ids ?? []);
+    const mergedBans = new Map<string, BannedTargetRecord>();
+    for (const b of state.banned_targets) {
+      if (!deletedBanSet.has(b.id)) {
+        mergedBans.set(b.id, b);
+      }
+    }
+    for (const r of bansRes.value.data as Record<string, unknown>[]) {
+      const id = String(r.id);
+      if (deletedBanSet.has(id)) continue;
+      mergedBans.set(id, {
+        id,
+        targetType: (r.target_type as 'ip' | 'device') ?? 'device',
+        value: String(r.value),
+        reason: String(r.reason ?? ''),
+        bannedBy: String(r.banned_by ?? ''),
+        createdAt: String(r.created_at ?? new Date().toISOString()),
+      });
+    }
+    state.banned_targets = Array.from(mergedBans.values()).sort(
+      (a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0),
+    );
   }
 
   if (activeSessionsRes.status === 'fulfilled' && Array.isArray(activeSessionsRes.value.data)) {
