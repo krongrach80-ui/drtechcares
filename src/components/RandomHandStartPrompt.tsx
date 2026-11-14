@@ -8,7 +8,6 @@ import {
 import { selectClinicalCameraDeviceId } from '@drtechcares/face-client';
 import { extractRaisedHandSides } from '@drtechcares/kiosk-input';
 import type { PoseLandmark } from '@drtechcares/pose-engine';
-import { Shuffle } from 'lucide-react';
 
 export type HandChallengeSide = 'left' | 'right';
 
@@ -22,7 +21,7 @@ export interface RandomHandEvaluationResult {
 const HAND_HOLD_CONFIRM_MS = 420;
 const OFF_CANVAS_WIDTH = 256;
 
-function pickRandomHandSide(): HandChallengeSide {
+export function pickRandomHandSide(): HandChallengeSide {
   return Math.random() < 0.5 ? 'left' : 'right';
 }
 
@@ -73,15 +72,18 @@ export function evaluateRandomHandChallenge(
 interface RandomHandStartPromptProps {
   onConfirmStart: () => void;
   initialSide?: HandChallengeSide;
+  targetSide?: HandChallengeSide;
 }
 
 export function RandomHandStartPrompt({
   onConfirmStart,
   initialSide,
+  targetSide: controlledTargetSide,
 }: RandomHandStartPromptProps) {
-  const [targetSide, setTargetSide] = useState<HandChallengeSide>(
+  const [internalSide] = useState<HandChallengeSide>(
     () => initialSide ?? pickRandomHandSide(),
   );
+  const targetSide = controlledTargetSide ?? internalSide;
   const [cameraReady, setCameraReady] = useState(false);
   const [detectorReady, setDetectorReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -101,14 +103,15 @@ export function RandomHandStartPrompt({
   targetSideRef.current = targetSide;
   onConfirmStartRef.current = onConfirmStart;
 
-  const sideLabel = targetSide === 'left' ? 'มือซ้าย' : 'มือขวา';
-  const sideLabelEn = targetSide === 'left' ? 'Left Hand' : 'Right Hand';
-  const oppositeLabel = targetSide === 'left' ? 'มือขวา' : 'มือซ้าย';
-
-  const rerollSide = () => {
-    setTargetSide((prev) => (prev === 'left' ? 'right' : 'left'));
+  useEffect(() => {
     setHoldProgress(0);
-  };
+    setEvalState({
+      leftRaised: false,
+      rightRaised: false,
+      targetMatched: false,
+      wrongSideRaised: false,
+    });
+  }, [targetSide]);
 
   useEffect(() => {
     let active = true;
@@ -387,36 +390,22 @@ export function RandomHandStartPrompt({
     onConfirmStart();
   };
 
-  return (
-    <div className="mt-5 rounded-2xl border-2 border-emerald-300 bg-emerald-50/70 p-4 text-center space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span className="text-lg">{targetSide === 'left' ? '🫲' : '🫱'}</span>
-          <div className="text-left">
-            <p className="text-xs font-extrabold text-emerald-950">
-              {targetSide === 'left'
-                ? 'ระบบสุ่มให้ยก: มือซ้าย (Left Hand)'
-                : 'ระบบสุ่มให้ยก: มือขวา (Right Hand)'}
-            </p>
-            <p className="text-[11px] font-semibold text-emerald-700">
-              {targetSide === 'left'
-                ? '🫲 โจทย์สุ่ม: กรุณายกมือซ้ายค้างไว้เพื่อเริ่มการกายภาพ'
-                : '🫱 โจทย์สุ่ม: กรุณายกมือขวาค้างไว้เพื่อเริ่มการกายภาพ'}
-            </p>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={rerollSide}
-          className="inline-flex items-center gap-1 rounded-xl border border-emerald-300 bg-white px-2.5 py-1 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100 cursor-pointer"
-        >
-          <Shuffle className="h-3.5 w-3.5" />
-          สุ่มข้างใหม่
-        </button>
-      </div>
+  const isLeft = targetSide === 'left';
 
-      {/* Live Mirrored Camera Preview with Highlighted Left / Right Target Side */}
-      <div className="relative mx-auto w-full h-40 rounded-2xl overflow-hidden bg-slate-900 border-2 border-emerald-400/60 shadow-inner">
+  return (
+    <div
+      className={`mt-5 rounded-2xl border-2 p-4 text-center space-y-3 transition-colors ${
+        isLeft
+          ? 'border-orange-300 bg-orange-50/60'
+          : 'border-emerald-300 bg-emerald-50/70'
+      }`}
+    >
+      {/* Live Mirrored Camera Preview (Clean unobstructed frame; target side shown under main card heading) */}
+      <div
+        className={`relative mx-auto w-full h-72 sm:h-80 md:h-96 rounded-2xl overflow-hidden bg-slate-900 border-2 shadow-inner transition-colors ${
+          isLeft ? 'border-orange-400/80' : 'border-emerald-400/80'
+        }`}
+      >
         <video
           ref={videoRef}
           autoPlay
@@ -426,68 +415,38 @@ export function RandomHandStartPrompt({
           style={{ transform: 'scaleX(-1)' }}
         />
 
-        {/* Target Left/Right Side Highlight Overlay */}
-        <div className="pointer-events-none absolute inset-0 flex">
-          <div
-            className={`w-1/2 h-full border-r border-dashed border-white/40 flex items-start justify-start p-2 transition-colors ${
-              targetSide === 'left' ? 'bg-emerald-500/20 ring-2 ring-inset ring-emerald-400/80' : 'bg-slate-950/35'
-            }`}
-          >
-            <span
-              className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
-                targetSide === 'left'
-                  ? 'bg-emerald-500 text-white shadow'
-                  : 'bg-slate-900/70 text-slate-300'
-              }`}
-            >
-              ฝั่งซ้าย • มือซ้าย {targetSide === 'left' ? '(เป้าหมาย)' : ''}
-            </span>
-          </div>
-          <div
-            className={`w-1/2 h-full flex items-start justify-end p-2 transition-colors ${
-              targetSide === 'right' ? 'bg-emerald-500/20 ring-2 ring-inset ring-emerald-400/80' : 'bg-slate-950/35'
-            }`}
-          >
-            <span
-              className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
-                targetSide === 'right'
-                  ? 'bg-emerald-500 text-white shadow'
-                  : 'bg-slate-900/70 text-slate-300'
-              }`}
-            >
-              {targetSide === 'right' ? '(เป้าหมาย) ' : ''}ฝั่งขวา • มือขวา
-            </span>
-          </div>
-        </div>
-
         {!cameraReady && !cameraError && (
-          <div className="absolute inset-0 flex items-center justify-center bg-slate-900/85 text-xs font-bold text-slate-200 px-4">
-            กำลังเปิดกล้องตรวจจับการยก{sideLabel} ({sideLabelEn})...
+          <div className="absolute inset-0 flex items-center justify-center bg-slate-900/85 text-xs sm:text-sm font-bold text-slate-200 px-4">
+            กำลังเปิดกล้องตรวจจับการยกมือ...
           </div>
         )}
         {cameraError && (
-          <div className="absolute inset-0 flex items-center justify-center bg-slate-900/90 text-xs font-bold text-amber-200 px-4">
+          <div className="absolute inset-0 flex items-center justify-center bg-slate-900/90 text-xs sm:text-sm font-bold text-amber-200 px-4">
             {cameraError}
           </div>
         )}
 
-        <div className="absolute inset-x-2 bottom-2 flex items-center justify-center">
+        <div className="absolute inset-x-3 bottom-3 flex items-center justify-center">
           <span
-            className={`px-3 py-1 rounded-full text-[11px] font-extrabold backdrop-blur border shadow ${
+            className={`px-3.5 py-1.5 rounded-full text-xs font-extrabold backdrop-blur border shadow ${
               evalState.targetMatched
-                ? 'bg-emerald-500/95 text-white border-emerald-200 animate-pulse'
+                ? isLeft
+                  ? 'bg-orange-500/95 text-white border-orange-200 animate-pulse'
+                  : 'bg-emerald-500/95 text-white border-emerald-200 animate-pulse'
                 : evalState.wrongSideRaised
                   ? 'bg-amber-500/95 text-slate-950 border-amber-200'
-                  : 'bg-slate-950/80 text-emerald-200 border-emerald-500/40'
+                  : isLeft
+                    ? 'bg-slate-950/80 text-orange-200 border-orange-400/50'
+                    : 'bg-slate-950/80 text-emerald-200 border-emerald-500/40'
             }`}
           >
             {evalState.targetMatched
-              ? `✅ ตรวจพบการยก${sideLabel}แล้ว! ค้างไว้ ${Math.round(holdProgress * 100)}%`
+              ? `✅ ตรวจพบการยกมือถูกต้องแล้ว! ค้างไว้ ${Math.round(holdProgress * 100)}%`
               : evalState.wrongSideRaised
-                ? `⚠️ คุณกำลังยก${oppositeLabel} กรุณายก "${sideLabel}" ตามโจทย์`
+                ? '⚠️ กรุณายกมืออีกข้างตามที่ระบุไว้ด้านบน'
                 : !detectorReady
-                  ? `⏳ กำลังเตรียม AI ตรวจจับการยก${sideLabel}...`
-                  : `📷 ชู "${sideLabel}" ขึ้นในฝั่งที่ไฮไลต์ค้างไว้เพื่อเริ่มกายภาพอัตโนมัติ`}
+                  ? '⏳ กำลังเตรียมระบบตรวจจับการยกมือ...'
+                  : '📷 ชูมือค้างไว้หน้ากล้องตามคำสั่งด้านบนเพื่อเริ่มอัตโนมัติ'}
           </span>
         </div>
       </div>
@@ -495,19 +454,25 @@ export function RandomHandStartPrompt({
       <button
         type="button"
         onClick={handleManualConfirm}
-        className="relative overflow-hidden w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg cursor-pointer"
+        className={`relative overflow-hidden w-full py-3.5 px-5 rounded-2xl text-white font-extrabold text-sm shadow-lg cursor-pointer transition-colors ${
+          isLeft
+            ? 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-400 hover:to-amber-400'
+            : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500'
+        }`}
       >
         {holdProgress > 0 && (
           <span
-            className="pointer-events-none absolute inset-y-0 left-0 bg-emerald-300/35 transition-[width] duration-75"
+            className={`pointer-events-none absolute inset-y-0 left-0 transition-[width] duration-75 ${
+              isLeft ? 'bg-orange-200/40' : 'bg-emerald-300/35'
+            }`}
             style={{ width: `${Math.round(holdProgress * 100)}%` }}
           />
         )}
         <span className="relative z-10 flex items-center justify-center gap-2">
           <span>
             {holdProgress > 0
-              ? `🖐️ ยก${sideLabel}ค้างไว้... (${Math.round(holdProgress * 100)}%)`
-              : `🖐️ ยก${sideLabel}ขึ้น หรือ กดที่นี่เพื่อเริ่มการกายภาพบำบัด ➔`}
+              ? `🖐️ กำลังยืนยันท่าทาง... (${Math.round(holdProgress * 100)}%)`
+              : '🖐️ ยกมือตามคำสั่งด้านบน หรือ กดที่นี่เพื่อเริ่มการกายภาพบำบัด ➔'}
           </span>
         </span>
       </button>

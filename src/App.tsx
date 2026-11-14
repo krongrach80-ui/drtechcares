@@ -13,7 +13,12 @@ import {
   KioskBiometricLoginView,
   type KioskLoginSuccessPayload,
 } from './components/KioskBiometricLoginView';
-import { RandomHandStartPrompt } from './components/RandomHandStartPrompt';
+import { Shuffle } from 'lucide-react';
+import {
+  RandomHandStartPrompt,
+  pickRandomHandSide,
+  type HandChallengeSide,
+} from './components/RandomHandStartPrompt';
 import { SmartRehabKioskUI } from './components/SmartRehabKioskUI';
 
 type AppRoute = '/' | '/login' | '/admin' | '/pt' | '/patient';
@@ -38,10 +43,12 @@ export function App() {
   const [authenticatedPatient, setAuthenticatedPatient] = useState<KioskLoginSuccessPayload | null>(null);
   const [allowRestDayPractice, setAllowRestDayPractice] = useState(false);
   const [startedCardGame, setStartedCardGame] = useState(false);
+  const [randomHandSide, setRandomHandSide] = useState<HandChallengeSide>(() => pickRandomHandSide());
 
   useEffect(() => {
     setAllowRestDayPractice(false);
     setStartedCardGame(false);
+    setRandomHandSide(pickRandomHandSide());
   }, [authenticatedPatient]);
 
   const apiClient = useMemo(
@@ -247,7 +254,7 @@ export function App() {
               </button>
             </div>
             <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
-              <div className="w-full max-w-2xl rounded-3xl bg-white border-2 border-emerald-400 shadow-2xl p-6 sm:p-8 text-center">
+              <div className="w-full max-w-3xl rounded-3xl bg-white border-2 border-emerald-400 shadow-2xl p-6 sm:p-8 text-center">
                 <div className="mx-auto w-16 h-16 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-3xl mb-4">
                   📅
                 </div>
@@ -260,6 +267,51 @@ export function App() {
                 <p className="text-xs text-slate-500 mt-1.5 font-mono">
                   HN: {authenticatedPatient.patient.hn} • แผนฝึกกายภาพบำบัดประจำวันที่ {todaySchedule.todayIso}
                 </p>
+
+                <div
+                  className={`mt-4 rounded-2xl border-2 px-4 py-3.5 shadow-sm flex flex-wrap items-center justify-between gap-3 text-left transition-colors ${
+                    randomHandSide === 'left'
+                      ? 'border-orange-400 bg-orange-50 text-orange-950'
+                      : 'border-emerald-400 bg-emerald-50 text-emerald-950'
+                  }`}
+                >
+                  <div className="space-y-1.5">
+                    <span
+                      className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-1.5 text-sm sm:text-base font-extrabold text-white shadow ${
+                        randomHandSide === 'left' ? 'bg-orange-500' : 'bg-emerald-600'
+                      }`}
+                    >
+                      <span>{randomHandSide === 'left' ? '🫲' : '🫱'}</span>
+                      <span>
+                        {randomHandSide === 'left'
+                          ? 'เริ่มการกายภาพ: ให้ยก มือซ้าย (Left Hand)'
+                          : 'เริ่มการกายภาพ: ให้ยก มือขวา (Right Hand)'}
+                      </span>
+                    </span>
+                    <p
+                      className={`text-xs font-bold ${
+                        randomHandSide === 'left' ? 'text-orange-900' : 'text-emerald-900'
+                      }`}
+                    >
+                      {randomHandSide === 'left'
+                        ? 'กรุณาชู มือซ้าย ค้างไว้หน้ากล้องด้านล่างเพื่อเข้าสู่กายภาพอัตโนมัติ'
+                        : 'กรุณาชู มือขวา ค้างไว้หน้ากล้องด้านล่างเพื่อเข้าสู่กายภาพอัตโนมัติ'}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setRandomHandSide((prev) => (prev === 'left' ? 'right' : 'left'))}
+                    className={`inline-flex items-center gap-1.5 rounded-xl border bg-white px-3 py-1.5 text-xs font-bold shadow-sm cursor-pointer transition-colors ${
+                      randomHandSide === 'left'
+                        ? 'border-orange-300 text-orange-800 hover:bg-orange-100'
+                        : 'border-emerald-300 text-emerald-800 hover:bg-emerald-100'
+                    }`}
+                  >
+                    <Shuffle className="h-3.5 w-3.5" />
+                    สุ่มใหม่
+                  </button>
+                </div>
 
                 <div className="mt-5 space-y-2.5 text-left max-h-72 overflow-y-auto pr-1">
                   {todayExercises.map((item, idx) => (
@@ -296,7 +348,10 @@ export function App() {
                   ))}
                 </div>
 
-                <RandomHandStartPrompt onConfirmStart={() => setStartedCardGame(true)} />
+                <RandomHandStartPrompt
+                  targetSide={randomHandSide}
+                  onConfirmStart={() => setStartedCardGame(true)}
+                />
 
                 <div className="mt-4 flex flex-col gap-2">
                   <button
