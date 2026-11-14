@@ -311,8 +311,8 @@ export function KioskBiometricLoginView({
         const deviceId = await selectClinicalCameraDeviceId();
         stream = await navigator.mediaDevices.getUserMedia({
           video: deviceId
-            ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 480 } }
-            : { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+            ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }
+            : { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
           audio: false,
         });
         if (!active || !videoRef.current) return;
@@ -381,14 +381,29 @@ export function KioskBiometricLoginView({
             // Real-time 1:N 3D Multi-Angle Recognition & HUD Tracking (5 consecutive live frames)
             if (faceCount === 1 && landmarks.length >= 300 && crop) {
               const rawBox = computeBoundingBoxFromLandmarks(landmarks);
-              if (rawBox) {
-                const leftNorm = mirroredRef.current ? Math.max(0.02, 1 - rawBox.x - rawBox.width) : rawBox.x;
-                setHudBox({
-                  xPct: leftNorm * 100,
-                  yPct: rawBox.y * 100,
-                  wPct: rawBox.width * 100,
-                  hPct: rawBox.height * 100,
-                });
+              if (rawBox && videoRef.current) {
+                const vw = videoRef.current.videoWidth || 1280;
+                const vh = videoRef.current.videoHeight || 720;
+                const cw = videoRef.current.clientWidth || vw;
+                const ch = videoRef.current.clientHeight || vh;
+                const scale = Math.max(cw / vw, ch / vh);
+                const renderedW = vw * scale;
+                const renderedH = vh * scale;
+                const offsetX = (renderedW - cw) / 2;
+                const offsetY = (renderedH - ch) / 2;
+
+                const leftNorm = mirroredRef.current ? 1 - rawBox.x - rawBox.width : rawBox.x;
+                const pxLeft = leftNorm * renderedW - offsetX;
+                const pxTop = rawBox.y * renderedH - offsetY;
+                const pxW = rawBox.width * renderedW;
+                const pxH = rawBox.height * renderedH;
+
+                const xPct = Math.max(2, Math.min(92, (pxLeft / cw) * 100));
+                const yPct = Math.max(2, Math.min(92, (pxTop / ch) * 100));
+                const wPct = Math.max(8, Math.min(96 - xPct, (pxW / cw) * 100));
+                const hPct = Math.max(8, Math.min(96 - yPct, (pxH / ch) * 100));
+
+                setHudBox({ xPct, yPct, wPct, hPct });
               }
 
               if (
@@ -618,7 +633,13 @@ export function KioskBiometricLoginView({
         ? `${c.verifying} (${burstCount}/${BURST_FRAME_COUNT})`
         : countdownSec !== null
           ? `${c.countdownLabel} ${countdownSec}s...`
-          : inspectionInfo?.user_instruction_th || c.alignFace;
+          : lang === 'th'
+            ? inspectionInfo?.user_instruction_th || c.alignFace
+            : isSpoof
+              ? c.spoofBlocked
+              : isAlignedPass
+                ? c.liveVerified
+                : c.alignFace;
 
   return (
     <div className="min-h-screen flex flex-col bg-[#EAF8F5] text-[#063932] font-sans select-none overflow-x-hidden">
@@ -714,7 +735,7 @@ export function KioskBiometricLoginView({
       </header>
 
       {/* Main Content Stage */}
-      <main className="flex-1 flex flex-col items-center justify-center p-3 sm:p-5 relative">
+      <main className="flex-1 w-full max-w-4xl mx-auto my-3 px-2 sm:px-3 flex flex-col relative min-h-0">
         {/* Subtle outer cyan corner brackets */}
         <div className="pointer-events-none absolute top-2 left-2 w-5 h-5 border-t-2 border-l-2 border-cyan-400/45 rounded-tl-md" />
         <div className="pointer-events-none absolute top-2 right-2 w-5 h-5 border-t-2 border-r-2 border-cyan-400/45 rounded-tr-md" />
@@ -722,7 +743,7 @@ export function KioskBiometricLoginView({
         <div className="pointer-events-none absolute bottom-2 right-2 w-5 h-5 border-b-2 border-r-2 border-cyan-400/45 rounded-br-md" />
 
         {toastMsg && (
-          <div className="mb-3 w-full max-w-[900px] rounded-2xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs sm:text-sm font-bold text-amber-900 shadow-md flex items-center justify-between">
+          <div className="mb-3 w-full rounded-2xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs sm:text-sm font-bold text-amber-900 shadow-md flex items-center justify-between">
             <span>{toastMsg}</span>
             <button type="button" onClick={() => setToastMsg(null)} className="text-amber-700 hover:text-amber-950">
               <X className="w-4 h-4" />
@@ -731,9 +752,9 @@ export function KioskBiometricLoginView({
         )}
 
         {/* White Center Kiosk Card */}
-        <div className="w-full max-w-[900px] flex-1 flex flex-col justify-between bg-white rounded-[28px] border border-slate-200/90 shadow-2xl shadow-emerald-950/10 p-4 sm:p-5 relative z-10">
+        <div className="w-full flex-1 flex flex-col justify-between bg-white rounded-[28px] border border-slate-200/90 shadow-2xl shadow-emerald-950/10 p-2 sm:p-3 relative z-10 min-h-0">
           {/* Dark Camera Viewport */}
-          <div className="relative flex-1 min-h-[400px] sm:min-h-[520px] w-full rounded-2xl bg-black overflow-hidden flex items-center justify-center border border-slate-800">
+          <div className="relative flex-1 w-full h-full min-h-[420px] sm:min-h-[540px] rounded-2xl bg-slate-950 overflow-hidden border border-slate-800">
             {!cameraPaused ? (
               <>
                 <video
@@ -741,10 +762,16 @@ export function KioskBiometricLoginView({
                   autoPlay
                   playsInline
                   muted
-                  style={{
-                    transform: `rotate(${rotationDeg}deg) ${mirrored ? 'scaleX(-1)' : ''}`,
-                  }}
-                  className="h-full w-full object-cover transition-transform duration-300"
+                  style={
+                    rotationDeg
+                      ? {
+                          transform: `rotate(${rotationDeg}deg) ${mirrored ? 'scaleX(-1)' : ''}`,
+                        }
+                      : undefined
+                  }
+                  className={`absolute inset-0 w-full h-full object-cover ${
+                    mirrored ? 'scale-x-[-1]' : ''
+                  } transition-transform duration-300`}
                 />
 
                 {/* 4 Inner Cyan Corner Brackets */}
@@ -889,10 +916,10 @@ export function KioskBiometricLoginView({
                   </div>
                 )}
 
-                {/* Center Dashed Oval Face Guide */}
-                <div className="pointer-events-none absolute inset-0 flex items-center justify-center z-10">
+                {/* Center Symmetric Circular Face Guide Ring */}
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
                   <div
-                    className={`w-44 h-60 sm:w-52 sm:h-72 rounded-[999px] border-2 border-dashed flex items-center justify-center relative transition-all duration-300 ${
+                    className={`w-[280px] h-[280px] md:w-[340px] md:h-[340px] aspect-square rounded-full border-2 border-dashed flex items-center justify-center relative transition-all duration-300 ${
                       isSpoof
                         ? 'border-rose-400 shadow-[0_0_28px_rgba(244,63,94,0.5)]'
                         : isAlignedPass
@@ -923,7 +950,7 @@ export function KioskBiometricLoginView({
               </>
             ) : (
               /* Camera Paused / Fallback Overlay inside Viewport */
-              <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center text-white bg-slate-950">
+              <div className="absolute inset-0 w-full h-full flex flex-col items-center justify-center p-6 text-center text-white bg-slate-950">
                 <CameraOff className="w-12 h-12 text-amber-400 mb-3" />
                 <h3 className="text-lg font-extrabold text-white">{c.cameraPausedTitle}</h3>
                 <p className="text-xs text-slate-300 mt-1 max-w-sm">
@@ -961,14 +988,14 @@ export function KioskBiometricLoginView({
             id="kiosk-scan-face-btn"
             data-testid="kiosk-scan-face-btn"
             onClick={handleRestartScan}
-            className="mt-3.5 w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-[#059669] via-[#0D9488] to-[#2563EB] hover:brightness-105 text-white font-extrabold text-sm sm:text-base shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 cursor-pointer transition active:scale-[0.99]"
+            className="mt-2.5 w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-[#059669] via-[#0D9488] to-[#2563EB] hover:brightness-105 text-white font-extrabold text-sm sm:text-base shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 cursor-pointer transition active:scale-[0.99] shrink-0"
           >
             <RefreshCw className={`w-4 h-4 ${scanStage === 'verifying' ? 'animate-spin' : ''}`} />
             <span>{scanStage === 'verifying' ? c.verifying : c.rescanBtn}</span>
           </button>
 
           {/* Secondary Action Buttons */}
-          <div className="mt-2.5 grid grid-cols-2 gap-3">
+          <div className="mt-2 grid grid-cols-2 gap-2.5 shrink-0">
             <button
               type="button"
               id="kiosk-pin-login-btn"
@@ -996,7 +1023,7 @@ export function KioskBiometricLoginView({
           </div>
 
           {/* Card Footer */}
-          <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+          <div className="mt-2.5 pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 shrink-0">
             <div className="flex items-center gap-1.5 font-medium">
               <ShieldCheck className="w-3.5 h-3.5 text-rose-500" />
               <span>{c.footerBio}</span>
