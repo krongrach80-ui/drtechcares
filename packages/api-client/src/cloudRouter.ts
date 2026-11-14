@@ -249,6 +249,8 @@ function createInitialState(useUuidIds = false): CloudRouterState {
         createdAt: now,
       },
     ],
+    deleted_user_ids: [],
+    deleted_patient_ids: [],
     patients: [],
     face_templates: [],
     medical_notes: [],
@@ -588,7 +590,17 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     const pathname = reqUrl.pathname;
     const method = request.method.toUpperCase();
 
-    await ensureHydrated(method === 'GET' && pathname !== '/api/health');
+    const requiresFreshHydration =
+      (pathname === '/api/biometrics/index' && method === 'GET') ||
+      (pathname === '/api/biometric/verify' && method === 'POST') ||
+      (pathname === '/api/patients' && method === 'GET') ||
+      (pathname.startsWith('/api/patients/') && method === 'DELETE') ||
+      (/^\/api\/(?:users|staff)\/[^/]+$/.test(pathname) && method === 'DELETE');
+
+    await ensureHydrated(
+      requiresFreshHydration || (method === 'GET' && pathname !== '/api/health'),
+      requiresFreshHydration,
+    );
 
     const clientIp =
       request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
@@ -1044,10 +1056,40 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const removed = state.users.splice(idx, 1)[0];
       state.deleted_user_ids = Array.from(new Set([...(state.deleted_user_ids ?? []), removed.id]));
       state.active_sessions = state.active_sessions.filter((s) => s.userId !== removed.id);
+
+      const linkedPatient = state.patients.find(
+        (p) =>
+          (removed.patientId && p.id === removed.patientId) ||
+          p.hn.toLowerCase() === removed.username.toLowerCase() ||
+          (removed.role === 'patient' && p.fullName.toLowerCase() === removed.fullName.toLowerCase()),
+      );
+      const linkedPatientId = linkedPatient?.id ?? removed.patientId ?? null;
+      if (linkedPatientId) {
+        state.deleted_patient_ids = Array.from(new Set([...(state.deleted_patient_ids ?? []), linkedPatientId]));
+        state.patients = state.patients.filter((p) => p.id !== linkedPatientId);
+        state.face_templates = state.face_templates.filter((t) => t.patientId !== linkedPatientId);
+        state.patient_courses = state.patient_courses.filter((c) => c.patientId !== linkedPatientId);
+        state.rehab_sessions = state.rehab_sessions.filter((s) => s.patientId !== linkedPatientId);
+        state.medical_notes = state.medical_notes.filter((n) => n.patientId !== linkedPatientId);
+        state.treatment_reports = state.treatment_reports.filter((r) => r.patientId !== linkedPatientId);
+      }
+
       await persistToSupabase(supabase, async (db) => {
         await db.from('active_sessions').delete().eq('user_id', removed.id);
         await db.from('staff_users').delete().eq('id', removed.id);
         await db.from('staff_users').delete().eq('username', removed.username);
+        if (linkedPatientId) {
+          await db.from('face_templates').delete().eq('patient_id', linkedPatientId);
+          await db.from('patient_biometrics').delete().eq('patient_id', linkedPatientId);
+          await db.from('face_enrollments').delete().eq('patient_id', linkedPatientId);
+          await db.from('patient_courses').delete().eq('patient_id', linkedPatientId);
+          await db.from('rehab_schedules').delete().eq('patient_id', linkedPatientId);
+          await db.from('rehab_sessions').delete().eq('patient_id', linkedPatientId);
+          await db.from('medical_notes').delete().eq('patient_id', linkedPatientId);
+          await db.from('treatment_reports').delete().eq('patient_id', linkedPatientId);
+          await db.from('staff_users').delete().eq('patient_id', linkedPatientId);
+          await db.from('patients').delete().eq('id', linkedPatientId);
+        }
       });
       recordAudit({
         eventType: 'USER_DELETED',
@@ -1057,9 +1099,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         ipAddress: clientIp,
         deviceId: clientDeviceId,
         targetId: removed.id,
-        detail: `Deleted user @${removed.username}`,
+        detail: linkedPatientId
+          ? `Deleted user @${removed.username} and cascaded patient ${linkedPatientId}`
+          : `Deleted user @${removed.username}`,
       });
-      return jsonResponse({ deleted: true });
+      return jsonResponse({ deleted: true, cascadedPatientId: linkedPatientId });
     }
 
     // ========================
@@ -1364,9 +1408,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
     if (pathname === '/api/biometrics/index' && method === 'GET') {
       const todayIdx = new Date().getDay();
+      const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
       const index: PatientBiometricIndexEntry[] = [];
       for (const p of state.patients) {
-        if (p.registrationStatus !== 'active') continue;
+        if (p.registrationStatus !== 'active' || deletedPatientSet.has(p.id)) continue;
         const tplFront = state.face_templates.find((t) => t.patientId === p.id && t.pose === 'frontal_centroid')?.vector;
         const tplOverall = state.face_templates.find((t) => t.patientId === p.id && t.pose === 'overall_centroid')?.vector;
         const masterEmbedding = p.masterEmbedding ?? tplOverall ?? tplFront;
@@ -1441,17 +1486,29 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
       }
 
-      let candidates: EnrolledTemplateCandidate[] = [...state.face_templates];
-      let totalPatients = state.patients.filter((p) => p.registrationStatus === 'active').length;
+      const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
+      const activePatientIds = new Set(
+        state.patients
+          .filter((p) => p.registrationStatus === 'active' && !deletedPatientSet.has(p.id))
+          .map((p) => p.id),
+      );
 
-      if (supabase && candidates.length === 0) {
+      let candidates: EnrolledTemplateCandidate[] = state.face_templates.filter((t) =>
+        activePatientIds.has(t.patientId),
+      );
+      let totalPatients = activePatientIds.size;
+
+      if (supabase && candidates.length === 0 && activePatientIds.size > 0) {
         const { data, error } = await supabase.rpc('match_patient_face', {
           query_embedding: body.probeVector,
           match_count: 5,
         });
         if (!error && Array.isArray(data) && data.length > 0) {
           candidates = data
-            .filter((row: Record<string, unknown>) => Array.isArray(row.embedding))
+            .filter(
+              (row: Record<string, unknown>) =>
+                Array.isArray(row.embedding) && activePatientIds.has(String(row.patient_id)),
+            )
             .map((row: Record<string, unknown>) => ({
               patientId: String(row.patient_id),
               patientName: typeof row.full_name === 'string' ? row.full_name : undefined,
@@ -1469,8 +1526,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         },
       });
 
-      let matchedPatientId = result.matched ? result.patientId : null;
-      let matchedPatientName = result.matched ? result.patientName : null;
+      let matchedPatientId =
+        result.matched && result.patientId && activePatientIds.has(result.patientId)
+          ? result.patientId
+          : null;
+      let matchedPatientName = matchedPatientId ? result.patientName : null;
       let matchedConfidence = result.confidencePercent;
 
       // Multi-angle fallback check across 120-frame centroids (master + center/left/right/up/down)
@@ -1479,7 +1539,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         const probeWhite = whitenEmbedding(body.probeVector, CANONICAL_HUMAN_FACE_BASELINE_512, COMMON_MODE_ALPHA);
         const scoresByPatient: { patientId: string; fullName: string; raw: number; white: number }[] = [];
         for (const p of state.patients) {
-          if (p.registrationStatus !== 'active') continue;
+          if (p.registrationStatus !== 'active' || !activePatientIds.has(p.id)) continue;
           const vecs: readonly number[][] = [
             ...(p.masterEmbedding ? [p.masterEmbedding] : []),
             ...(p.angleEmbeddings
@@ -1518,10 +1578,24 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
 
       if (!matchedPatientId) {
-        return jsonResponse(result, 401);
+        return jsonResponse({ ...result, matched: false }, 401);
       }
 
-      const patient = state.patients.find((p) => p.id === matchedPatientId) ?? null;
+      const patient =
+        state.patients.find((p) => p.id === matchedPatientId && activePatientIds.has(p.id)) ?? null;
+      if (!patient) {
+        return jsonResponse(
+          {
+            ...result,
+            matched: false,
+            patientId: undefined,
+            patientName: undefined,
+            reason: 'PATIENT_NOT_FOUND_OR_DELETED',
+          },
+          401,
+        );
+      }
+
       const course = state.patient_courses.find((c) => c.patientId === matchedPatientId) ?? null;
       const todayIdx = new Date().getDay();
       const todayRoutine = course?.weeklySchedule.find((d) => d.dayIndex === todayIdx) ?? null;
@@ -1530,7 +1604,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         eventType: 'BIOMETRIC_FACE_VERIFIED',
         actorRole: 'patient_kiosk',
         actorId: matchedPatientId,
-        actorName: matchedPatientName ?? 'Patient',
+        actorName: matchedPatientName ?? patient.fullName,
         ipAddress: clientIp,
         deviceId: clientDeviceId,
         targetId: matchedPatientId,
@@ -1541,16 +1615,14 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         ...result,
         matched: true,
         patientId: matchedPatientId,
-        patientName: matchedPatientName,
+        patientName: matchedPatientName ?? patient.fullName,
         confidencePercent: matchedConfidence,
-        patient: patient
-          ? {
-              id: patient.id,
-              hn: patient.hn,
-              fullName: patient.fullName,
-              nextAppointmentDate: patient.nextAppointmentDate,
-            }
-          : null,
+        patient: {
+          id: patient.id,
+          hn: patient.hn,
+          fullName: patient.fullName,
+          nextAppointmentDate: patient.nextAppointmentDate,
+        },
         todayRoutine,
       });
     }
@@ -2025,7 +2097,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (patientMatch && method === 'DELETE') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
-      const patient = state.patients.find((p) => p.id === patientMatch[1]);
+      const pid = patientMatch[1];
+      let patient = state.patients.find((p) => p.id === pid);
+      if (!patient && supabase) {
+        await ensureHydrated(true, true);
+        patient = state.patients.find((p) => p.id === pid);
+      }
       if (!patient) return jsonResponse({ error: 'PATIENT_NOT_FOUND' }, 404);
       const actor = authUser!;
       if (actor.role === 'pt' && patient.assignedPtId !== actor.id) {
@@ -2034,15 +2111,46 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           403,
         );
       }
-      const pid = patient.id;
+
+      const linkedUsers = state.users.filter(
+        (u) => u.patientId === pid || u.username.toLowerCase() === patient.hn.toLowerCase(),
+      );
+      const linkedUserIds = linkedUsers.map((u) => u.id);
+      state.deleted_patient_ids = Array.from(new Set([...(state.deleted_patient_ids ?? []), pid]));
+      if (linkedUserIds.length > 0) {
+        state.deleted_user_ids = Array.from(new Set([...(state.deleted_user_ids ?? []), ...linkedUserIds]));
+      }
+
       state.patients = state.patients.filter((p) => p.id !== pid);
       state.face_templates = state.face_templates.filter((t) => t.patientId !== pid);
       state.patient_courses = state.patient_courses.filter((c) => c.patientId !== pid);
       state.rehab_sessions = state.rehab_sessions.filter((s) => s.patientId !== pid);
       state.medical_notes = state.medical_notes.filter((n) => n.patientId !== pid);
       state.treatment_reports = state.treatment_reports.filter((r) => r.patientId !== pid);
-      state.users = state.users.filter((u) => u.patientId !== pid);
-      persistToSupabase(supabase, (db) => db.from('patients').delete().eq('id', pid));
+      state.users = state.users.filter(
+        (u) => u.patientId !== pid && u.username.toLowerCase() !== patient.hn.toLowerCase(),
+      );
+      if (linkedUserIds.length > 0) {
+        const linkedIdSet = new Set(linkedUserIds);
+        state.active_sessions = state.active_sessions.filter((s) => !linkedIdSet.has(s.userId));
+      }
+
+      await persistToSupabase(supabase, async (db) => {
+        for (const uid of linkedUserIds) {
+          await db.from('active_sessions').delete().eq('user_id', uid);
+        }
+        await db.from('face_templates').delete().eq('patient_id', pid);
+        await db.from('patient_biometrics').delete().eq('patient_id', pid);
+        await db.from('face_enrollments').delete().eq('patient_id', pid);
+        await db.from('patient_courses').delete().eq('patient_id', pid);
+        await db.from('rehab_schedules').delete().eq('patient_id', pid);
+        await db.from('rehab_sessions').delete().eq('patient_id', pid);
+        await db.from('medical_notes').delete().eq('patient_id', pid);
+        await db.from('treatment_reports').delete().eq('patient_id', pid);
+        await db.from('staff_users').delete().eq('patient_id', pid);
+        await db.from('staff_users').delete().eq('username', patient.hn);
+        await db.from('patients').delete().eq('id', pid);
+      });
 
       recordAudit({
         eventType: 'PATIENT_CASCADING_PURGE',

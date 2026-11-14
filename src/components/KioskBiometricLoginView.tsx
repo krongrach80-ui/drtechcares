@@ -318,6 +318,12 @@ export function KioskBiometricLoginView({
 
     async function startFacePipeline() {
       try {
+        void apiClient
+          .getBiometricIndex()
+          .then((entries) => {
+            if (active) biometricIndexRef.current = entries;
+          })
+          .catch(() => {});
         if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
           setCameraError('Browser does not support camera access');
           setCameraPaused(true);
@@ -460,33 +466,36 @@ export function KioskBiometricLoginView({
                   const matchedConf = Math.round(temporal.confidencePercent);
                   try {
                     const verifyRes = await apiClient.verifyFaceLogin(vector);
+                    if (!active) return;
                     setLastVerifyResult(verifyRes);
-                    window.setTimeout(() => {
-                      if (!active) return;
-                      if (verifyRes.matched && verifyRes.patient) {
+                    if (verifyRes.matched && verifyRes.patient) {
+                      const verifiedPatient = verifyRes.patient;
+                      window.setTimeout(() => {
+                        if (!active) return;
                         setVerifiedModalPayload({
-                          patient: verifyRes.patient,
+                          patient: verifiedPatient,
                           todayRoutine: verifyRes.todayRoutine ?? null,
                           confidencePercent: Math.max(verifyRes.confidencePercent, matchedConf),
                         });
-                      } else {
-                        setVerifiedModalPayload({
-                          patient: {
-                            id: matchedCand.patientId,
-                            hn: matchedCand.hn,
-                            fullName: matchedCand.fullName,
-                            nextAppointmentDate:
-                              matchedCand.nextAppointmentDate ?? new Date().toISOString().slice(0, 10),
-                          },
-                          todayRoutine: null,
-                          confidencePercent: matchedConf,
-                        });
-                      }
-                    }, 550);
-                    return;
+                      }, 550);
+                      return;
+                    }
                   } catch {
-                    verifyingLockRef.current = false;
+                    if (!active) return;
                   }
+                  biometricIndexRef.current = biometricIndexRef.current.filter(
+                    (entry) => entry.patientId !== matchedCand.patientId,
+                  );
+                  temporalMatcherRef.current.reset();
+                  setLiveMatchHud(null);
+                  void apiClient
+                    .getBiometricIndex()
+                    .then((entries) => {
+                      if (active) biometricIndexRef.current = entries;
+                    })
+                    .catch(() => {});
+                  verifyingLockRef.current = false;
+                  setScanStage('scanning');
                 }
               }
             }

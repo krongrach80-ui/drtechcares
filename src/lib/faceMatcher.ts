@@ -341,9 +341,21 @@ export function computeBoundingBoxFromLandmarks(
   };
 }
 
+export const BIOMETRIC_INDEX_CHANGED_EVENT = 'drtechcares:biometric-index-changed';
+
+/**
+ * Broadcasts that patient biometric templates changed (enrolled/updated/deleted)
+ * so active scanner views immediately refresh their local index.
+ */
+export function notifyBiometricIndexChanged(): void {
+  if (typeof window !== 'undefined' && typeof CustomEvent !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(BIOMETRIC_INDEX_CHANGED_EVENT));
+  }
+}
+
 /**
  * Loads the full multi-angle biometric index from the cloud API and keeps it synchronized
- * via Supabase Realtime subscriptions on `patient_biometrics` and `patients`.
+ * via Supabase Realtime subscriptions, focus/delete events, and periodic polling.
  */
 export function subscribeBiometricIndex(
   apiClient: DrTechCaresApiClient,
@@ -362,17 +374,41 @@ export function subscribeBiometricIndex(
 
   refresh();
 
+  const onVisibilityChange = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      refresh();
+    }
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener(BIOMETRIC_INDEX_CHANGED_EVENT, refresh);
+    window.addEventListener('focus', refresh);
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+  const intervalId = globalThis.setInterval(refresh, 5000);
+
   const supabase = apiClient.getSupabaseClient();
   const channel = supabase
     ? supabase
         .channel(`biometrics-index-rt-${Date.now()}`)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'patient_biometrics' }, refresh)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'face_templates' }, refresh)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'patients' }, refresh)
         .subscribe()
     : null;
 
   return () => {
     active = false;
+    globalThis.clearInterval(intervalId);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener(BIOMETRIC_INDEX_CHANGED_EVENT, refresh);
+      window.removeEventListener('focus', refresh);
+    }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    }
     if (channel && supabase) {
       void supabase.removeChannel(channel);
     }

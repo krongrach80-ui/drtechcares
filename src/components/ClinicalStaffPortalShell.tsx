@@ -54,6 +54,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { PhysicalCardGame } from '../../apps/kiosk/src/PhysicalCardGame';
+import { notifyBiometricIndexChanged } from '../lib/faceMatcher';
 import { StaffAssistedEnrollmentModal } from './StaffAssistedEnrollmentModal';
 import {
   PatientProfileAndHistoryModal,
@@ -1758,6 +1759,7 @@ export function ClinicalStaffPortalShell({
                                     setSubmitting(true);
                                     try {
                                       await apiClient.deleteUser(u.id);
+                                      notifyBiometricIndexChanged();
                                       if (deletingSelf) {
                                         onLogout();
                                         return;
@@ -1941,6 +1943,7 @@ export function ClinicalStaffPortalShell({
                                   onClick={async () => {
                                     if (!window.confirm(`ยืนยันลบข้อมูลคนไข้ ${p.fullName} (รวม Face ID)?`)) return;
                                     await apiClient.deletePatientCascading(p.id);
+                                    notifyBiometricIndexChanged();
                                     flashBanner('success', `ลบข้อมูลคนไข้ ${p.fullName} แล้ว`);
                                     await refreshAll();
                                   }}
@@ -2032,6 +2035,7 @@ export function ClinicalStaffPortalShell({
                                 onClick={async () => {
                                   if (!window.confirm(`ยืนยันลบบัญชี PT ${pt.fullName}?`)) return;
                                   await apiClient.deleteUser(pt.id);
+                                  notifyBiometricIndexChanged();
                                   flashBanner('success', `ลบบัญชี PT ${pt.fullName} แล้ว`);
                                   await refreshAll();
                                 }}

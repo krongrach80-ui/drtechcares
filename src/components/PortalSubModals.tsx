@@ -408,33 +408,23 @@ export function WelcomeFaceScanModal({
                           confidencePercent: Math.max(verified.confidencePercent, matchedConf),
                           patient: verified.patient,
                         });
-                      } else {
-                        setMatchResult({
-                          matched: true,
-                          confidencePercent: matchedConf,
-                          patient: {
-                            id: matchedCand.patientId,
-                            hn: matchedCand.hn,
-                            fullName: matchedCand.fullName,
-                            nextAppointmentDate:
-                              matchedCand.nextAppointmentDate ?? new Date().toISOString().slice(0, 10),
-                          },
-                        });
+                        return;
                       }
                     } catch {
                       if (!active) return;
-                      setMatchResult({
-                        matched: true,
-                        confidencePercent: matchedConf,
-                        patient: {
-                          id: matchedCand.patientId,
-                          hn: matchedCand.hn,
-                          fullName: matchedCand.fullName,
-                          nextAppointmentDate:
-                            matchedCand.nextAppointmentDate ?? new Date().toISOString().slice(0, 10),
-                        },
-                      });
                     }
+                    biometricIndexRef.current = biometricIndexRef.current.filter(
+                      (entry) => entry.patientId !== matchedCand.patientId,
+                    );
+                    temporalMatcherRef.current.reset();
+                    setLiveMatchHud(null);
+                    void apiClient
+                      .getBiometricIndex()
+                      .then((entries) => {
+                        if (active) biometricIndexRef.current = entries;
+                      })
+                      .catch(() => {});
+                    confirmedLockRef.current = false;
                   }
                 }
               }

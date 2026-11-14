@@ -37,6 +37,7 @@ export const SEEDED_DEFAULT_USER_IDS = new Set([
 export interface CloudRouterState {
   users: StoredUserAccount[];
   deleted_user_ids?: string[];
+  deleted_patient_ids?: string[];
   patients: PatientRecord[];
   face_templates: EnrolledTemplateCandidate[];
   medical_notes: MedicalNoteRecord[];
@@ -147,19 +148,15 @@ export async function hydrateStateFromSupabase(
     state.users = [...dbUsers, ...localOnly];
   }
 
+  const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
+
   const parsedTemplatesByPatient = new Map<
     string,
     { frontal?: number[]; overall?: number[]; raw: { pose: 'front' | 'left' | 'right' | 'nod'; vector: number[]; qualityScore: number }[] }
   >();
+  const parsedTemplateCandidates: EnrolledTemplateCandidate[] = [];
 
-  if (templatesRes.status === 'fulfilled' && Array.isArray(templatesRes.value.data)) {
-    const rawPatientNameMap = new Map<string, string>();
-    if (patientsRes.status === 'fulfilled' && Array.isArray(patientsRes.value.data)) {
-      patientsRes.value.data.forEach((p: Record<string, unknown>) => {
-        rawPatientNameMap.set(String(p.id), String(p.full_name ?? ''));
-      });
-    }
-    state.face_templates = [];
+  if (templatesRes.status === 'fulfilled' && !templatesRes.value.error && Array.isArray(templatesRes.value.data)) {
     for (const row of templatesRes.value.data as Record<string, unknown>[]) {
       const vec = Array.isArray(row.embedding)
         ? (row.embedding as number[])
@@ -168,10 +165,10 @@ export async function hydrateStateFromSupabase(
           : null;
       if (!vec) continue;
       const pid = String(row.patient_id);
+      if (deletedPatientSet.has(pid)) continue;
       const pose = (row.pose as BiometricPose) ?? 'frontal_centroid';
-      state.face_templates.push({
+      parsedTemplateCandidates.push({
         patientId: pid,
-        patientName: rawPatientNameMap.get(pid),
         pose,
         vector: vec,
       });
@@ -194,9 +191,10 @@ export async function hydrateStateFromSupabase(
       avatarUrl?: string;
     }
   >();
-  if (biometrics120Res.status === 'fulfilled' && Array.isArray(biometrics120Res.value.data)) {
+  if (biometrics120Res.status === 'fulfilled' && !biometrics120Res.value.error && Array.isArray(biometrics120Res.value.data)) {
     for (const row of biometrics120Res.value.data as Record<string, unknown>[]) {
       const pid = String(row.patient_id);
+      if (deletedPatientSet.has(pid)) continue;
       biometrics120ByPatient.set(pid, {
         masterEmbedding: Array.isArray(row.master_embedding) ? (row.master_embedding as number[]) : undefined,
         angleEmbeddings:
@@ -209,8 +207,10 @@ export async function hydrateStateFromSupabase(
     }
   }
 
-  if (patientsRes.status === 'fulfilled' && Array.isArray(patientsRes.value.data)) {
-    state.patients = patientsRes.value.data.map((r: Record<string, unknown>) => {
+  if (patientsRes.status === 'fulfilled' && !patientsRes.value.error && Array.isArray(patientsRes.value.data)) {
+    state.patients = patientsRes.value.data
+      .filter((r: Record<string, unknown>) => !deletedPatientSet.has(String(r.id)))
+      .map((r: Record<string, unknown>) => {
       const pid = String(r.id);
       const history = (r.history as Record<string, unknown>) ?? {};
       const tpl = parsedTemplatesByPatient.get(pid);
@@ -296,6 +296,49 @@ export async function hydrateStateFromSupabase(
               : undefined,
       };
     });
+  } else {
+    state.patients = state.patients.filter((p) => !deletedPatientSet.has(p.id));
+  }
+
+  const activePatientMap = new Map<string, string>();
+  for (const p of state.patients) {
+    if (p.registrationStatus === 'active' && !deletedPatientSet.has(p.id)) {
+      activePatientMap.set(p.id, p.fullName);
+    }
+  }
+
+  if (templatesRes.status === 'fulfilled' && !templatesRes.value.error && Array.isArray(templatesRes.value.data)) {
+    state.face_templates = parsedTemplateCandidates
+      .filter((t) => activePatientMap.has(t.patientId))
+      .map((t) => ({
+        ...t,
+        patientName: activePatientMap.get(t.patientId),
+      }));
+  } else {
+    state.face_templates = state.face_templates.filter((t) => activePatientMap.has(t.patientId));
+  }
+
+  // Synthesize face_templates for active patients who only have patient_biometrics rows
+  if (state.face_templates.length === 0) {
+    for (const p of state.patients) {
+      if (!activePatientMap.has(p.id)) continue;
+      if (p.angleEmbeddings?.center) {
+        state.face_templates.push({
+          patientId: p.id,
+          patientName: p.fullName,
+          pose: 'frontal_centroid',
+          vector: p.angleEmbeddings.center,
+        });
+      }
+      if (p.masterEmbedding) {
+        state.face_templates.push({
+          patientId: p.id,
+          patientName: p.fullName,
+          pose: 'overall_centroid',
+          vector: p.masterEmbedding,
+        });
+      }
+    }
   }
 
   if (notesRes.status === 'fulfilled' && Array.isArray(notesRes.value.data)) {
