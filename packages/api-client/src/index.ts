@@ -19,6 +19,8 @@ export interface UserAccount {
   phone: string;
   specialty?: string;
   licenseNo?: string;
+  avatarUrl?: string;
+  bio?: string;
   patientId?: string;
   active: boolean;
   forceLoggedOutAt?: string | null;

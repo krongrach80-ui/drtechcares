@@ -1014,6 +1014,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       if (body.phone !== undefined) target.phone = body.phone;
       if (body.specialty !== undefined && actor.role !== 'patient') target.specialty = body.specialty;
       if (body.licenseNo !== undefined && actor.role !== 'patient') target.licenseNo = body.licenseNo;
+      if (body.avatarUrl !== undefined) target.avatarUrl = body.avatarUrl;
+      if (body.bio !== undefined) target.bio = body.bio;
       if (body.role !== undefined && actor.role === 'super_admin') target.role = normalizeStaffRole(body.role);
       if (body.active !== undefined && actor.role === 'super_admin') target.active = body.active;
 
@@ -1027,6 +1029,15 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             license_no: target!.licenseNo ?? null,
             role: target!.role,
             active: target!.active,
+          })
+          .eq('id', target!.id),
+      );
+      await persistToSupabase(supabase, (db) =>
+        db
+          .from('staff_users')
+          .update({
+            avatar_url: target!.avatarUrl ?? null,
+            bio: target!.bio ?? null,
           })
           .eq('id', target!.id),
       );

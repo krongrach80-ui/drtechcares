@@ -113,28 +113,37 @@ export async function hydrateStateFromSupabase(
 
   if (usersRes.status === 'fulfilled' && !usersRes.value.error && Array.isArray(usersRes.value.data)) {
     const deletedSet = new Set(state.deleted_user_ids ?? []);
+    const prevById = new Map(state.users.map((u) => [u.id, u]));
+    const prevByUsername = new Map(state.users.map((u) => [u.username.toLowerCase(), u]));
     const dbUsers: StoredUserAccount[] = usersRes.value.data
-      .map((r: Record<string, unknown>) => ({
-        id: String(r.id),
-        username: String(r.username),
-        passwordHash: String(r.password_hash ?? ''),
-        role: normalizeStaffRole(r.role),
-        fullName: String(r.full_name ?? ''),
-        phone: String(r.phone ?? ''),
-        specialty: r.specialty ? String(r.specialty) : undefined,
-        licenseNo: r.license_no
-          ? String(r.license_no)
-          : r.license_number
-            ? String(r.license_number)
-            : undefined,
-        patientId: r.patient_id ? String(r.patient_id) : undefined,
-        active:
-          r.active !== undefined && r.active !== null
-            ? Boolean(r.active)
-            : String(r.status ?? 'ACTIVE').toUpperCase() !== 'SUSPENDED',
-        forceLoggedOutAt: r.force_logged_out_at ? String(r.force_logged_out_at) : null,
-        createdAt: String(r.created_at ?? new Date().toISOString()),
-      }))
+      .map((r: Record<string, unknown>) => {
+        const id = String(r.id);
+        const username = String(r.username);
+        const prev = prevById.get(id) ?? prevByUsername.get(username.toLowerCase());
+        return {
+          id,
+          username,
+          passwordHash: String(r.password_hash ?? ''),
+          role: normalizeStaffRole(r.role),
+          fullName: String(r.full_name ?? ''),
+          phone: String(r.phone ?? ''),
+          specialty: r.specialty ? String(r.specialty) : undefined,
+          licenseNo: r.license_no
+            ? String(r.license_no)
+            : r.license_number
+              ? String(r.license_number)
+              : undefined,
+          avatarUrl: typeof r.avatar_url === 'string' && r.avatar_url ? r.avatar_url : prev?.avatarUrl,
+          bio: typeof r.bio === 'string' && r.bio ? r.bio : prev?.bio,
+          patientId: r.patient_id ? String(r.patient_id) : undefined,
+          active:
+            r.active !== undefined && r.active !== null
+              ? Boolean(r.active)
+              : String(r.status ?? 'ACTIVE').toUpperCase() !== 'SUSPENDED',
+          forceLoggedOutAt: r.force_logged_out_at ? String(r.force_logged_out_at) : null,
+          createdAt: String(r.created_at ?? new Date().toISOString()),
+        };
+      })
       .filter((u) => !deletedSet.has(u.id));
     const dbIds = new Set(dbUsers.map((u) => u.id));
     const dbUsernames = new Set(dbUsers.map((u) => u.username.toLowerCase()));

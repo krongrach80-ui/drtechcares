@@ -561,11 +561,14 @@ export function createDrTechCaresApiApp(
       return;
     }
 
-    const { fullName, phone, specialty, licenseNo, role, active } = req.body as Partial<UserAccount>;
+    const { fullName, phone, specialty, licenseNo, avatarUrl, bio, role, active } =
+      req.body as Partial<UserAccount>;
     if (fullName !== undefined) target.fullName = fullName;
     if (phone !== undefined) target.phone = phone;
     if (specialty !== undefined && actor.role !== 'patient') target.specialty = specialty;
     if (licenseNo !== undefined && actor.role !== 'patient') target.licenseNo = licenseNo;
+    if (avatarUrl !== undefined) target.avatarUrl = avatarUrl;
+    if (bio !== undefined) target.bio = bio;
     if (role !== undefined && actor.role === 'super_admin') target.role = role;
     if (active !== undefined && actor.role === 'super_admin') target.active = active;
     db.save();

@@ -22,6 +22,7 @@ import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import type { BodySide, ExerciseConfig } from '@drtechcares/pose-engine';
 import {
   Activity,
+  Award,
   Ban,
   Bell,
   Calendar,
@@ -37,14 +38,18 @@ import {
   LogOut,
   Monitor,
   PauseCircle,
+  Phone,
   Plus,
   RefreshCw,
+  Save,
   ScanFace,
   Search,
   Shield,
   ShieldAlert,
   SlidersHorizontal,
   Trash2,
+  Upload,
+  User,
   UserCheck,
   UserPlus,
   Users,
@@ -72,12 +77,32 @@ export interface ClinicalStaffPortalShellProps {
   onAutoOpenEnrollConsumed?: () => void;
 }
 
-type PortalTab = 'staff' | 'patients' | 'pts' | 'exercises' | 'schedules' | 'security';
+type PortalTab = 'staff' | 'patients' | 'pts' | 'exercises' | 'schedules' | 'security' | 'profile';
 type SecuritySubTab = 'calls' | 'audit' | 'sessions' | 'bans' | 'kiosks';
 
 interface PortalSectionCopy {
   nav: Record<PortalTab, string>;
   headers: Record<PortalTab, { title: string; subtitle: string }>;
+  profile: {
+    sidebarCardTitle: string;
+    sidebarEditHint: string;
+    previewTitle: string;
+    editFormTitle: string;
+    avatarSectionLabel: string;
+    uploadPhotoBtn: string;
+    presetLabel: string;
+    fullNameLabel: string;
+    phoneLabel: string;
+    specialtyLabel: string;
+    licenseLabel: string;
+    bioLabel: string;
+    bioPlaceholder: string;
+    saveBtn: string;
+    savingBtn: string;
+    patientsCountLabel: string;
+    savedSuccess: string;
+    noPhone: string;
+  };
   sidebar: {
     adminRole: string;
     ptRole: string;
@@ -243,6 +268,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       exercises: '4. ท่ากายภาพและมินิเกม/modpack',
       schedules: '5. ตารางนัด',
       security: '6. ประวัติและความปลอดภัย',
+      profile: '7. ประวัติส่วนตัว',
     },
     headers: {
       staff: {
@@ -269,6 +295,30 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
         title: 'ประวัติการใช้งานและบันทึกความปลอดภัย',
         subtitle: 'TAMPER-EVIDENT SYSTEM AUDIT TRAIL & SECURITY',
       },
+      profile: {
+        title: 'ประวัติส่วนตัวนักกายภาพบำบัดและบุคลากร',
+        subtitle: 'PHYSIOTHERAPIST PERSONAL PROFILE & CREDENTIALS',
+      },
+    },
+    profile: {
+      sidebarCardTitle: 'ประวัติส่วนตัว',
+      sidebarEditHint: 'แก้ไขข้อมูล / รูป',
+      previewTitle: 'บัตรประวัติส่วนตัว (Profile Preview)',
+      editFormTitle: 'แก้ไขข้อมูลประวัติส่วนตัว',
+      avatarSectionLabel: '1. รูปประกอบ (ภาพประจำตัว)',
+      uploadPhotoBtn: 'อัปโหลดรูปจากเครื่อง',
+      presetLabel: 'หรือเลือกรูปประกอบนักกายภาพสำเร็จรูป:',
+      fullNameLabel: '2. ชื่อ - นามสกุล',
+      phoneLabel: 'เบอร์โทรศัพท์ติดต่อ',
+      specialtyLabel: 'ความเชี่ยวชาญเฉพาะทาง',
+      licenseLabel: 'เลขที่ใบประกอบวิชาชีพ',
+      bioLabel: 'ประวัติส่วนตัวและประสบการณ์การทำงาน',
+      bioPlaceholder: 'ระบุประวัติการศึกษา ประสบการณ์ด้านกายภาพบำบัด หรือข้อมูลแนะนำตัวสำหรับคนไข้...',
+      saveBtn: 'บันทึกประวัติส่วนตัว',
+      savingBtn: 'กำลังบันทึก...',
+      patientsCountLabel: 'คนไข้ที่ดูแลอยู่',
+      savedSuccess: 'บันทึกประวัติส่วนตัวและรูปประกอบเรียบร้อยแล้ว',
+      noPhone: 'ยังไม่ระบุเบอร์โทร',
     },
     sidebar: {
       adminRole: 'ผู้อำนวยการ (Admin)',
@@ -433,6 +483,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       exercises: '4. Exercises & Modpacks',
       schedules: '5. Rehab Schedules',
       security: '6. Audit & Security',
+      profile: '7. Personal Profile',
     },
     headers: {
       staff: {
@@ -459,6 +510,30 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
         title: 'System Audit Trail, Bans & Kiosk Security',
         subtitle: 'TAMPER-EVIDENT SYSTEM AUDIT TRAIL & SECURITY',
       },
+      profile: {
+        title: 'Physiotherapist Personal Profile',
+        subtitle: 'PHYSIOTHERAPIST PERSONAL PROFILE & CREDENTIALS',
+      },
+    },
+    profile: {
+      sidebarCardTitle: 'My Profile',
+      sidebarEditHint: 'Edit Profile',
+      previewTitle: 'Clinician Profile Card',
+      editFormTitle: 'Edit Personal Profile',
+      avatarSectionLabel: '1. Profile Illustration / Photo',
+      uploadPhotoBtn: 'Upload Photo',
+      presetLabel: 'Or choose a clinician avatar preset:',
+      fullNameLabel: '2. Full Name',
+      phoneLabel: 'Phone Number',
+      specialtyLabel: 'Clinical Specialty',
+      licenseLabel: 'License No.',
+      bioLabel: 'Personal Bio & Clinical Background',
+      bioPlaceholder: 'Enter your education, clinical rehab experience, or greeting for patients...',
+      saveBtn: 'Save Personal Profile',
+      savingBtn: 'Saving...',
+      patientsCountLabel: 'Assigned Patients',
+      savedSuccess: 'Personal profile and avatar saved successfully',
+      noPhone: 'Phone not set',
     },
     sidebar: {
       adminRole: 'Director (Admin)',
@@ -623,6 +698,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       exercises: '4. 康复动作与题库',
       schedules: '5. 康复日程安排',
       security: '6. 审计与安全中心',
+      profile: '7. 个人简介',
     },
     headers: {
       staff: {
@@ -649,6 +725,30 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
         title: '系统安全审计日志与终端监控',
         subtitle: 'TAMPER-EVIDENT SYSTEM AUDIT TRAIL & SECURITY',
       },
+      profile: {
+        title: '物理治疗师个人简介与资质档案',
+        subtitle: 'PHYSIOTHERAPIST PERSONAL PROFILE & CREDENTIALS',
+      },
+    },
+    profile: {
+      sidebarCardTitle: '个人简介',
+      sidebarEditHint: '编辑资料',
+      previewTitle: '个人档案预览',
+      editFormTitle: '编辑个人资料与头像',
+      avatarSectionLabel: '1. 个人头像 / 肖像插图',
+      uploadPhotoBtn: '上传照片',
+      presetLabel: '或选择康复师默认插画形象:',
+      fullNameLabel: '2. 姓名',
+      phoneLabel: '联系电话',
+      specialtyLabel: '临床专长',
+      licenseLabel: '执业证号',
+      bioLabel: '个人简介与从业经历',
+      bioPlaceholder: '填写教育背景、物理治疗临床经验或患者寄语...',
+      saveBtn: '保存个人简介',
+      savingBtn: '保存中...',
+      patientsCountLabel: '负责患者数',
+      savedSuccess: '个人简介与头像已保存',
+      noPhone: '暂未填写电话',
     },
     sidebar: {
       adminRole: '医院管理员 (Admin)',
@@ -881,6 +981,201 @@ function playEmergencyChime() {
   }
 }
 
+const STAFF_PROFILE_STORAGE_KEY = 'drtechcares_staff_profiles_v1';
+
+interface StoredStaffProfileOverride {
+  avatarUrl?: string;
+  fullName?: string;
+  phone?: string;
+  specialty?: string;
+  licenseNo?: string;
+  bio?: string;
+}
+
+function makeClinicianAvatarSvg(opts: {
+  bgFrom: string;
+  bgTo: string;
+  skin: string;
+  hair: string;
+  coat: string;
+  shirt: string;
+  glasses?: boolean;
+  longHair?: boolean;
+}): string {
+  const hairBack = opts.longHair
+    ? `<path d="M56,64 C52,95 54,132 68,144 L132,144 C146,132 148,95 144,64 C138,34 62,34 56,64 Z" fill="${opts.hair}"/>`
+    : '';
+  const glassesSvg = opts.glasses
+    ? `<rect x="74" y="75" width="21" height="14" rx="5" fill="none" stroke="#1E293B" stroke-width="2.5"/>
+       <rect x="105" y="75" width="21" height="14" rx="5" fill="none" stroke="#1E293B" stroke-width="2.5"/>
+       <line x1="95" y1="81" x2="105" y2="81" stroke="#1E293B" stroke-width="2.5"/>`
+    : '';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+    <defs>
+      <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="${opts.bgFrom}"/>
+        <stop offset="100%" stop-color="${opts.bgTo}"/>
+      </linearGradient>
+    </defs>
+    <rect width="200" height="200" rx="36" fill="url(#g)"/>
+    <circle cx="34" cy="34" r="28" fill="#FFFFFF" opacity="0.16"/>
+    <circle cx="172" cy="168" r="36" fill="#FFFFFF" opacity="0.14"/>
+    ${hairBack}
+    <path d="M36,200 C38,148 64,132 100,132 C136,132 162,148 164,200 Z" fill="${opts.coat}"/>
+    <polygon points="84,134 116,134 100,174" fill="${opts.shirt}"/>
+    <path d="M74,138 C70,164 84,182 100,182 C116,182 130,164 126,138" fill="none" stroke="#334155" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="100" cy="182" r="7" fill="#0F172A" stroke="#CBD5E1" stroke-width="2.5"/>
+    <rect x="88" y="108" width="24" height="26" rx="10" fill="${opts.skin}"/>
+    <circle cx="100" cy="82" r="34" fill="${opts.skin}"/>
+    <path d="M65,78 C64,44 86,34 102,34 C122,34 136,48 135,78 C128,60 112,56 100,56 C86,56 72,62 65,78 Z" fill="${opts.hair}"/>
+    <circle cx="85" cy="82" r="3.5" fill="#0F172A"/>
+    <circle cx="115" cy="82" r="3.5" fill="#0F172A"/>
+    <path d="M90,97 Q100,105 110,97" fill="none" stroke="#9A3412" stroke-width="3" stroke-linecap="round"/>
+    ${glassesSvg}
+  </svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+const PT_PRESET_AVATARS: readonly { id: string; label: string; uri: string }[] = [
+  {
+    id: 'pt-male',
+    label: 'นักกายภาพ (ชาย)',
+    uri: makeClinicianAvatarSvg({
+      bgFrom: '#D1FAE5',
+      bgTo: '#A7F3D0',
+      skin: '#FCD5B5',
+      hair: '#1E293B',
+      coat: '#FFFFFF',
+      shirt: '#0D9488',
+    }),
+  },
+  {
+    id: 'pt-female',
+    label: 'นักกายภาพ (หญิง)',
+    uri: makeClinicianAvatarSvg({
+      bgFrom: '#E0F2FE',
+      bgTo: '#BAE6FD',
+      skin: '#FDE2C8',
+      hair: '#3F271E',
+      coat: '#FFFFFF',
+      shirt: '#0284C7',
+      longHair: true,
+    }),
+  },
+  {
+    id: 'pt-senior',
+    label: 'ผู้เชี่ยวชาญ (สวมแว่น)',
+    uri: makeClinicianAvatarSvg({
+      bgFrom: '#EDE9FE',
+      bgTo: '#DDD6FE',
+      skin: '#FCD5B5',
+      hair: '#475569',
+      coat: '#FFFFFF',
+      shirt: '#4F46E5',
+      glasses: true,
+    }),
+  },
+  {
+    id: 'pt-director',
+    label: 'หัวหน้าคลินิก',
+    uri: makeClinicianAvatarSvg({
+      bgFrom: '#FEF3C7',
+      bgTo: '#FDE68A',
+      skin: '#FDE2C8',
+      hair: '#1F2937',
+      coat: '#F8FAFC',
+      shirt: '#059669',
+      glasses: true,
+      longHair: true,
+    }),
+  },
+];
+
+function loadStaffProfileOverrides(): Record<string, StoredStaffProfileOverride> {
+  try {
+    const raw = window.localStorage.getItem(STAFF_PROFILE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, StoredStaffProfileOverride>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveStaffProfileOverrides(map: Record<string, StoredStaffProfileOverride>): void {
+  try {
+    window.localStorage.setItem(STAFF_PROFILE_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function getDefaultBioForUser(u: UserAccount): string {
+  if (u.role === 'super_admin') {
+    return 'ผู้บริหารและกำกับดูแลระบบฟื้นฟูสมรรถภาพ Dr.Tech.Care ดูแลมาตรฐานคลินิก ความปลอดภัยข้อมูลผู้ป่วย และการประสานงานทีมสหวิชาชีพ';
+  }
+  const spec = u.specialty || 'กายภาพบำบัดระบบกระดูก กล้ามเนื้อ และการฟื้นฟูสมอง';
+  return `นักกายภาพบำบัดวิชาชีพ (ใบอนุญาต ${u.licenseNo || 'PT-44012'}) เชี่ยวชาญด้าน${spec} ให้คำปรึกษาและติดตามการฟื้นฟูผู้ป่วยอย่างใกล้ชิด`;
+}
+
+function getDefaultAvatarForUser(u: UserAccount): string {
+  const name = u.fullName || u.username;
+  if (/วรัญญา|สุทธิดา|วิภาวี|หญิง|waranya|suthida|wipawee/i.test(name)) {
+    return PT_PRESET_AVATARS[1].uri;
+  }
+  if (u.role === 'super_admin') {
+    return PT_PRESET_AVATARS[2].uri;
+  }
+  return PT_PRESET_AVATARS[0].uri;
+}
+
+function resolveUserProfile(
+  u: UserAccount,
+  overrides: Record<string, StoredStaffProfileOverride>,
+): {
+  fullName: string;
+  phone: string;
+  specialty: string;
+  licenseNo: string;
+  avatarUrl: string;
+  bio: string;
+} {
+  const local = overrides[u.id] ?? overrides[`usr:${u.username.toLowerCase()}`];
+  return {
+    fullName: local?.fullName?.trim() || u.fullName,
+    phone: local?.phone !== undefined ? local.phone : u.phone || '',
+    specialty: local?.specialty !== undefined ? local.specialty : u.specialty || 'เวชศาสตร์ฟื้นฟูกายภาพบำบัด',
+    licenseNo: local?.licenseNo !== undefined ? local.licenseNo : u.licenseNo || 'PT-44012',
+    avatarUrl: local?.avatarUrl || u.avatarUrl || getDefaultAvatarForUser(u),
+    bio: local?.bio !== undefined && local.bio.trim() ? local.bio : u.bio?.trim() || getDefaultBioForUser(u),
+  };
+}
+
+async function resizeImageFileToDataUri(file: File, maxDim = 320): Promise<string> {
+  const rawUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.onerror = () => reject(new Error('ไม่สามารถอ่านไฟล์รูปภาพได้'));
+    reader.readAsDataURL(file);
+  });
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const el = new Image();
+    el.onload = () => resolve(el);
+    el.onerror = () => reject(new Error('ไฟล์รูปภาพไม่ถูกต้อง'));
+    el.src = rawUrl;
+  });
+  const scale = Math.min(1, maxDim / Math.max(img.width || maxDim, img.height || maxDim));
+  const w = Math.max(1, Math.round((img.width || maxDim) * scale));
+  const h = Math.max(1, Math.round((img.height || maxDim) * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return rawUrl;
+  ctx.drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL('image/jpeg', 0.85);
+}
+
 export function ClinicalStaffPortalShell({
   apiClient,
   currentUser,
@@ -895,6 +1190,11 @@ export function ClinicalStaffPortalShell({
 
   const [activeTab, setActiveTab] = useState<PortalTab>(isAdmin ? 'staff' : 'patients');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  const [profileOverrides, setProfileOverrides] = useState<Record<string, StoredStaffProfileOverride>>(
+    () => loadStaffProfileOverrides(),
+  );
+  const profileDirtyRef = useRef(false);
 
   // Supabase connection health ping state
   const [cloudHealth, setCloudHealth] = useState<{ online: boolean; latencyMs?: number }>({
@@ -997,6 +1297,35 @@ export function ClinicalStaffPortalShell({
   const [mpName, setMpName] = useState('');
   const [mpQuestionCount, setMpQuestionCount] = useState(10);
   const [mpCategory, setMpCategory] = useState('ผลไม้');
+
+  const activeUserRecord = useMemo(
+    () =>
+      users.find(
+        (u) => u.id === currentUser.id || u.username.toLowerCase() === currentUser.username.toLowerCase(),
+      ) ?? currentUser,
+    [users, currentUser],
+  );
+  const myProfile = useMemo(
+    () => resolveUserProfile(activeUserRecord, profileOverrides),
+    [activeUserRecord, profileOverrides],
+  );
+
+  const [profileFullName, setProfileFullName] = useState(myProfile.fullName);
+  const [profilePhone, setProfilePhone] = useState(myProfile.phone);
+  const [profileSpecialty, setProfileSpecialty] = useState(myProfile.specialty);
+  const [profileLicenseNo, setProfileLicenseNo] = useState(myProfile.licenseNo);
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState(myProfile.avatarUrl);
+  const [profileBio, setProfileBio] = useState(myProfile.bio);
+
+  useEffect(() => {
+    if (profileDirtyRef.current) return;
+    setProfileFullName(myProfile.fullName);
+    setProfilePhone(myProfile.phone);
+    setProfileSpecialty(myProfile.specialty);
+    setProfileLicenseNo(myProfile.licenseNo);
+    setProfileAvatarUrl(myProfile.avatarUrl);
+    setProfileBio(myProfile.bio);
+  }, [myProfile]);
 
   const prevOpenCallCountRef = useRef(0);
   const onLogoutRef = useRef(onLogout);
@@ -1246,6 +1575,65 @@ export function ClinicalStaffPortalShell({
     [patients, selectedSchedulePatientId],
   );
 
+  const handleAvatarFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const dataUri = await resizeImageFileToDataUri(file, 320);
+      profileDirtyRef.current = true;
+      setProfileAvatarUrl(dataUri);
+    } catch (err) {
+      flashBanner('error', err instanceof Error ? err.message : 'ไม่สามารถอัปโหลดรูปภาพได้');
+    }
+  };
+
+  const handleSavePersonalProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!profileFullName.trim()) {
+      flashBanner('error', 'กรุณาระบุชื่อ-นามสกุล');
+      return;
+    }
+    const patch: StoredStaffProfileOverride = {
+      fullName: profileFullName.trim(),
+      phone: profilePhone.trim(),
+      specialty: profileSpecialty.trim(),
+      licenseNo: profileLicenseNo.trim(),
+      avatarUrl: profileAvatarUrl,
+      bio: profileBio.trim(),
+    };
+    const nextOverrides: Record<string, StoredStaffProfileOverride> = {
+      ...profileOverrides,
+      [activeUserRecord.id]: patch,
+      [`usr:${activeUserRecord.username.toLowerCase()}`]: patch,
+    };
+    setProfileOverrides(nextOverrides);
+    saveStaffProfileOverrides(nextOverrides);
+    profileDirtyRef.current = false;
+
+    setSubmitting(true);
+    try {
+      const updated = await apiClient.updateUser(activeUserRecord.id, {
+        fullName: patch.fullName,
+        phone: patch.phone,
+        specialty: activeUserRecord.role !== 'patient' ? patch.specialty : undefined,
+        licenseNo: activeUserRecord.role !== 'patient' ? patch.licenseNo : undefined,
+        avatarUrl: patch.avatarUrl,
+        bio: patch.bio,
+      });
+      setUsers((prev) =>
+        prev.map((u) => (u.id === updated.id ? { ...u, ...updated, ...patch } : u)),
+      );
+      flashBanner('success', locale.profile.savedSuccess);
+      await refreshAll();
+    } catch (err) {
+      if (await handleAuthFailureIfExpired(err)) return;
+      // Preserve local profile override cleanly while letting the user know
+      flashBanner('success', `${locale.profile.savedSuccess} (Local Sync)`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleCreateStaff = async (e: React.FormEvent) => {
     e.preventDefault();
     if (newStaffRole === 'pt' && !newStaffLicense.trim()) {
@@ -1464,7 +1852,7 @@ export function ClinicalStaffPortalShell({
           sidebarCollapsed ? 'w-20 shrink-0' : 'w-64 shrink-0'
         } bg-[#0b1f33] text-slate-100 flex flex-col justify-between border-r border-slate-800/80 transition-all duration-200 select-none`}
       >
-        <div>
+        <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="flex h-[72px] items-center justify-between gap-2 px-4 border-b border-white/10">
             <div className="flex items-center gap-3 min-w-0">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-400 to-cyan-500 text-slate-950 shadow-md">
@@ -1504,6 +1892,7 @@ export function ClinicalStaffPortalShell({
                   icon: Shield,
                   badge: openStaffCalls.length || undefined,
                 },
+                { id: 'profile', label: locale.nav.profile, icon: UserCheck },
               ] as Array<{
                 id: PortalTab;
                 label: string;
@@ -1537,6 +1926,62 @@ export function ClinicalStaffPortalShell({
               );
             })}
           </nav>
+
+          {/* Sidebar Personal Profile Summary Card */}
+          {!sidebarCollapsed ? (
+            <div className="px-3 pb-3">
+              <button
+                type="button"
+                onClick={() => setActiveTab('profile')}
+                className={`w-full rounded-2xl border p-3 text-left transition cursor-pointer ${
+                  activeTab === 'profile'
+                    ? 'border-emerald-400/60 bg-emerald-500/15 shadow-md'
+                    : 'border-white/10 bg-white/5 hover:border-emerald-400/40 hover:bg-white/10'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-300">
+                    {locale.profile.sidebarCardTitle}
+                  </span>
+                  <span className="text-[10px] font-semibold text-sky-300 underline decoration-sky-400/50">
+                    {locale.profile.sidebarEditHint}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <img
+                    src={myProfile.avatarUrl}
+                    alt={myProfile.fullName}
+                    className="h-12 w-12 shrink-0 rounded-xl object-cover border-2 border-emerald-400/40 bg-white"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-extrabold text-white truncate">{myProfile.fullName}</div>
+                    <div className="mt-0.5 flex items-center gap-1 text-[11px] text-emerald-200 font-mono truncate">
+                      <Phone className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{myProfile.phone || locale.profile.noPhone}</span>
+                    </div>
+                  </div>
+                </div>
+                <p className="mt-2.5 rounded-xl bg-slate-900/50 border border-white/5 px-2.5 py-2 text-[11px] leading-relaxed text-slate-300 line-clamp-3">
+                  {myProfile.bio}
+                </p>
+              </button>
+            </div>
+          ) : (
+            <div className="px-3 pb-3 flex justify-center">
+              <button
+                type="button"
+                onClick={() => setActiveTab('profile')}
+                title={`${myProfile.fullName} • ${myProfile.phone || locale.profile.noPhone}`}
+                className="rounded-xl p-1 border border-white/15 bg-white/5 hover:border-emerald-400/60 cursor-pointer"
+              >
+                <img
+                  src={myProfile.avatarUrl}
+                  alt={myProfile.fullName}
+                  className="h-10 w-10 rounded-lg object-cover bg-white"
+                />
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="p-3 space-y-2 border-t border-white/10 text-xs">
@@ -2099,6 +2544,7 @@ export function ClinicalStaffPortalShell({
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {filteredPts.map((pt) => {
+                  const ptProfile = resolveUserProfile(pt, profileOverrides);
                   const ptPatients = patients.filter(
                     (p) => p.assignedPtId === pt.id || p.delegatedToPtId === pt.id,
                   );
@@ -2110,12 +2556,18 @@ export function ClinicalStaffPortalShell({
                       <div className="space-y-3">
                         <div className="flex items-start justify-between gap-2">
                           <div className="flex items-center gap-3 min-w-0">
-                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-base font-black text-white shadow-sm">
-                              {pt.fullName.trim().slice(0, 1) || 'P'}
-                            </div>
+                            <img
+                              src={ptProfile.avatarUrl}
+                              alt={ptProfile.fullName}
+                              className="h-14 w-14 shrink-0 rounded-2xl object-cover border-2 border-emerald-200 bg-white shadow-sm"
+                            />
                             <div className="min-w-0">
-                              <h3 className="text-sm font-extrabold text-slate-900 truncate">{pt.fullName}</h3>
+                              <h3 className="text-sm font-extrabold text-slate-900 truncate">{ptProfile.fullName}</h3>
                               <p className="font-mono text-[11px] font-bold text-sky-600 truncate">@{pt.username}</p>
+                              <p className="flex items-center gap-1 text-[11px] font-mono text-slate-500 truncate mt-0.5">
+                                <Phone className="h-3 w-3 text-emerald-600 shrink-0" />
+                                <span className="truncate">{ptProfile.phone || locale.profile.noPhone}</span>
+                              </p>
                             </div>
                           </div>
                           <div className="flex items-center gap-1.5 shrink-0">
@@ -2144,7 +2596,7 @@ export function ClinicalStaffPortalShell({
                         <div className="flex items-center justify-between gap-2 rounded-xl border border-amber-200/80 bg-amber-50/70 px-3.5 py-2 text-xs">
                           <span className="font-semibold text-amber-900 whitespace-nowrap">{locale.pts.licenseLabel}</span>
                           <span className="whitespace-nowrap rounded-lg bg-white border border-amber-200 px-2.5 py-0.5 font-mono text-[11px] font-bold text-slate-800">
-                            {pt.licenseNo || 'PT-44012'}
+                            {ptProfile.licenseNo}
                           </span>
                         </div>
 
@@ -2152,7 +2604,7 @@ export function ClinicalStaffPortalShell({
                           <div className="flex items-center gap-2 min-w-0">
                             <FileText className="h-3.5 w-3.5 text-slate-400 shrink-0" />
                             <span className="whitespace-nowrap">{locale.pts.specialtyLabel}</span>
-                            <span className="font-semibold text-slate-900 truncate">{pt.specialty || 'กายภาพบำบัดทั่วไป'}</span>
+                            <span className="font-semibold text-slate-900 truncate">{ptProfile.specialty}</span>
                           </div>
                           <div className="flex items-center justify-between gap-2">
                             <span className="flex items-center gap-2 whitespace-nowrap">
@@ -2163,6 +2615,9 @@ export function ClinicalStaffPortalShell({
                               {ptPatients.length} {locale.pts.patientsUnit}
                             </span>
                           </div>
+                          <p className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-2 text-[11px] leading-relaxed text-slate-600 line-clamp-2">
+                            {ptProfile.bio}
+                          </p>
                         </div>
                       </div>
 
@@ -3534,6 +3989,246 @@ export function ClinicalStaffPortalShell({
               )}
             </div>
           )}
+
+          {/* TAB 7: PERSONAL PROFILE (รูปประกอบ, ชื่อ, เบอร์โทร, ประวัติส่วนตัว) */}
+          {activeTab === 'profile' && (
+            <div className="space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-start gap-2.5 min-w-0">
+                  <User className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
+                  <div className="min-w-0">
+                    <h2 className="text-lg font-extrabold text-slate-900">{locale.headers.profile.title}</h2>
+                    <p className="text-xs text-slate-500">{locale.headers.profile.subtitle}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+                {/* Left Column: Live Clinician Profile Card */}
+                <div className="xl:col-span-5 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-700">
+                      {locale.profile.previewTitle}
+                    </span>
+                    <span className="rounded-full bg-emerald-50 border border-emerald-200 px-3 py-0.5 text-[11px] font-bold text-emerald-700">
+                      {isAdmin ? locale.sidebar.adminRole : locale.sidebar.ptRole}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-center sm:items-start gap-4">
+                    <img
+                      src={profileAvatarUrl}
+                      alt={profileFullName || activeUserRecord.fullName}
+                      className="h-36 w-36 shrink-0 rounded-3xl object-cover border-4 border-emerald-100 shadow-md bg-white"
+                    />
+                    <div className="min-w-0 flex-1 text-center sm:text-left space-y-1.5">
+                      <h3 className="text-xl font-black text-slate-900 break-words">
+                        {profileFullName || activeUserRecord.fullName}
+                      </h3>
+                      <p className="font-mono text-xs font-bold text-sky-600">@{activeUserRecord.username}</p>
+                      <div className="inline-flex items-center gap-1.5 rounded-xl bg-amber-50 border border-amber-200 px-3 py-1 text-xs font-bold text-amber-900">
+                        <Award className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                        <span className="font-mono">{profileLicenseNo || 'PT-44012'}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3.5">
+                      <div className="text-[11px] font-bold text-slate-400">{locale.profile.phoneLabel}</div>
+                      <div className="mt-1 flex items-center gap-1.5 font-mono text-sm font-extrabold text-slate-900">
+                        <Phone className="h-4 w-4 text-emerald-600 shrink-0" />
+                        <span>{profilePhone || locale.profile.noPhone}</span>
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3.5">
+                      <div className="text-[11px] font-bold text-slate-400">{locale.profile.patientsCountLabel}</div>
+                      <div className="mt-1 flex items-center gap-1.5 text-sm font-extrabold text-sky-700">
+                        <Users className="h-4 w-4 text-sky-600 shrink-0" />
+                        <span>
+                          {
+                            patients.filter(
+                              (p) => p.assignedPtId === activeUserRecord.id || p.delegatedToPtId === activeUserRecord.id,
+                            ).length
+                          }{' '}
+                          {locale.pts.patientsUnit}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3.5 text-xs">
+                    <div className="text-[11px] font-bold text-slate-400">{locale.profile.specialtyLabel}</div>
+                    <div className="mt-1 font-bold text-slate-900">
+                      {profileSpecialty || 'เวชศาสตร์ฟื้นฟูกายภาพบำบัด'}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-emerald-100 bg-emerald-50/40 p-4 space-y-1.5">
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-900">
+                      <FileText className="h-4 w-4 text-emerald-600 shrink-0" />
+                      <span>{locale.profile.bioLabel}</span>
+                    </div>
+                    <p className="text-xs leading-relaxed text-slate-700 whitespace-pre-line">
+                      {profileBio || getDefaultBioForUser(activeUserRecord)}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Right Column: Edit Personal Profile Form */}
+                <form
+                  onSubmit={handleSavePersonalProfile}
+                  className="xl:col-span-7 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-5 text-xs"
+                >
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h3 className="text-sm font-extrabold text-slate-900">{locale.profile.editFormTitle}</h3>
+                  </div>
+
+                  {/* 1. รูปประกอบ */}
+                  <div className="space-y-3">
+                    <label className="block font-extrabold text-slate-700">
+                      {locale.profile.avatarSectionLabel}
+                    </label>
+                    <div className="flex flex-wrap items-center gap-4">
+                      <img
+                        src={profileAvatarUrl}
+                        alt={profileFullName}
+                        className="h-20 w-20 rounded-2xl object-cover border-2 border-slate-200 bg-white shrink-0"
+                      />
+                      <div className="space-y-2 flex-1 min-w-[200px]">
+                        <label className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer">
+                          <Upload className="h-4 w-4 shrink-0" />
+                          <span>{locale.profile.uploadPhotoBtn}</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={handleAvatarFileChange}
+                            className="hidden"
+                          />
+                        </label>
+                        <div className="text-[11px] font-semibold text-slate-500">{locale.profile.presetLabel}</div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {PT_PRESET_AVATARS.map((preset) => (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              onClick={() => {
+                                profileDirtyRef.current = true;
+                                setProfileAvatarUrl(preset.uri);
+                              }}
+                              className={`flex items-center gap-2 rounded-xl border p-1.5 pr-2.5 transition cursor-pointer ${
+                                profileAvatarUrl === preset.uri
+                                  ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-200'
+                                  : 'border-slate-200 bg-white hover:bg-slate-50'
+                              }`}
+                            >
+                              <img
+                                src={preset.uri}
+                                alt={preset.label}
+                                className="h-9 w-9 rounded-lg object-cover bg-white"
+                              />
+                              <span className="text-[11px] font-bold text-slate-700">{preset.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 2. ชื่อ + เบอร์โทร */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block font-extrabold text-slate-700 mb-1.5">
+                        {locale.profile.fullNameLabel} *
+                      </label>
+                      <input
+                        required
+                        value={profileFullName}
+                        onChange={(e) => {
+                          profileDirtyRef.current = true;
+                          setProfileFullName(e.target.value);
+                        }}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-extrabold text-slate-700 mb-1.5">
+                        {locale.profile.phoneLabel}
+                      </label>
+                      <input
+                        value={profilePhone}
+                        onChange={(e) => {
+                          profileDirtyRef.current = true;
+                          setProfilePhone(e.target.value);
+                        }}
+                        placeholder="08X-XXX-XXXX"
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-mono font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  {activeUserRecord.role !== 'patient' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block font-extrabold text-slate-700 mb-1.5">
+                          {locale.profile.specialtyLabel}
+                        </label>
+                        <input
+                          value={profileSpecialty}
+                          onChange={(e) => {
+                            profileDirtyRef.current = true;
+                            setProfileSpecialty(e.target.value);
+                          }}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-extrabold text-slate-700 mb-1.5">
+                          {locale.profile.licenseLabel}
+                        </label>
+                        <input
+                          value={profileLicenseNo}
+                          onChange={(e) => {
+                            profileDirtyRef.current = true;
+                            setProfileLicenseNo(e.target.value);
+                          }}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-mono font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ประวัติส่วนตัว */}
+                  <div>
+                    <label className="block font-extrabold text-slate-700 mb-1.5">
+                      {locale.profile.bioLabel}
+                    </label>
+                    <textarea
+                      rows={5}
+                      value={profileBio}
+                      onChange={(e) => {
+                        profileDirtyRef.current = true;
+                        setProfileBio(e.target.value);
+                      }}
+                      placeholder={locale.profile.bioPlaceholder}
+                      className="w-full rounded-2xl border border-slate-200 bg-white px-3.5 py-3 text-xs leading-relaxed text-slate-900 focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="flex justify-end pt-2">
+                    <button
+                      type="submit"
+                      disabled={submitting}
+                      className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500 disabled:opacity-50 cursor-pointer"
+                    >
+                      <Save className="h-4 w-4 shrink-0" />
+                      <span>{submitting ? locale.profile.savingBtn : locale.profile.saveBtn}</span>
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
         </main>
       </div>
 
@@ -3724,21 +4419,36 @@ export function ClinicalStaffPortalShell({
       )}
 
       {/* PT Detail & Assign Patient Modal */}
-      {selectedPtDetailModal && (
+      {selectedPtDetailModal && (() => {
+        const modalPtProfile = resolveUserProfile(selectedPtDetailModal, profileOverrides);
+        return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
           <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
-            <div className="flex items-start justify-between">
-              <div>
-                <h3 className="text-base font-black text-slate-900">{selectedPtDetailModal.fullName}</h3>
-                <p className="text-slate-500">
-                  @{selectedPtDetailModal.username} • {selectedPtDetailModal.licenseNo || 'PT-44012'} •{' '}
-                  {selectedPtDetailModal.specialty || 'กายภาพบำบัด'}
-                </p>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3 min-w-0">
+                <img
+                  src={modalPtProfile.avatarUrl}
+                  alt={modalPtProfile.fullName}
+                  className="h-16 w-16 shrink-0 rounded-2xl object-cover border-2 border-emerald-200 bg-white shadow-sm"
+                />
+                <div className="min-w-0">
+                  <h3 className="text-base font-black text-slate-900">{modalPtProfile.fullName}</h3>
+                  <p className="text-slate-500">
+                    @{selectedPtDetailModal.username} • {modalPtProfile.licenseNo} • {modalPtProfile.specialty}
+                  </p>
+                  <p className="mt-0.5 flex items-center gap-1 font-mono text-emerald-700 font-semibold">
+                    <Phone className="h-3 w-3 shrink-0" />
+                    <span>{modalPtProfile.phone || locale.profile.noPhone}</span>
+                  </p>
+                </div>
               </div>
               <button type="button" onClick={() => setSelectedPtDetailModal(null)} className="text-slate-400">
                 <X className="h-5 w-5" />
               </button>
             </div>
+            <p className="rounded-xl border border-slate-100 bg-slate-50 px-3.5 py-2.5 text-xs leading-relaxed text-slate-700">
+              {modalPtProfile.bio}
+            </p>
 
             {isAdmin && patients.length > 0 && (
               <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3.5 space-y-2">
@@ -3806,7 +4516,8 @@ export function ClinicalStaffPortalShell({
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Quick Check-in Modal */}
       {quickCheckinModalOpen && (
