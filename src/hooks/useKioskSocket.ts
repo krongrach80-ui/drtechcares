@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CLINICAL_EXERCISES } from '@drtechcares/pose-engine';
+import type { TodayPrescribedExerciseItem } from '@drtechcares/api-client';
 
 export type KioskState =
   | 'AUTH_FRAMING'
@@ -65,12 +67,15 @@ export interface KioskDecisionPayload {
 
 export interface ExercisePrescriptionOption {
   exercise_id: string;
+  catalog_exercise_id?: string;
+  schedule_id?: string;
   name_th: string;
   name_en: string;
   target_joint: Exclude<HighlightJoint, 'none'>;
   target_rom_deg: number;
   hold_sec: number;
   target_reps: number;
+  target_sets?: number;
 }
 
 export type DemoPresetId =
@@ -119,6 +124,78 @@ export const DEMO_PATIENT: PatientSummary = {
   name: 'คุณสมชาย ใจดี',
 };
 
+function resolveTargetJointForTodayExercise(
+  item: TodayPrescribedExerciseItem,
+  catalogMatch?: (typeof CLINICAL_EXERCISES)[number],
+): Exclude<HighlightJoint, 'none'> {
+  if (catalogMatch) {
+    const group = catalogMatch.detection.jointGroup;
+    if (group === 'knee' || group === 'hip' || group === 'ankle') {
+      return catalogMatch.detection.side === 'left' ? 'left_knee' : 'right_knee';
+    }
+    if (group === 'trunk' || group === 'neck') {
+      return 'spine';
+    }
+    return catalogMatch.detection.side === 'left' ? 'left_shoulder' : 'right_shoulder';
+  }
+  const combined = `${item.nameTh} ${item.nameEn} ${item.targetJoint}`.toLowerCase();
+  if (
+    combined.includes('เข่า') ||
+    combined.includes('ขา') ||
+    combined.includes('knee') ||
+    combined.includes('squat')
+  ) {
+    return combined.includes('ซ้าย') || combined.includes('left') ? 'left_knee' : 'right_knee';
+  }
+  if (combined.includes('ซ้าย') || combined.includes('left')) {
+    return 'left_shoulder';
+  }
+  return 'right_shoulder';
+}
+
+export function mapTodayExercisesToPrescriptions(
+  items: readonly TodayPrescribedExerciseItem[],
+): ExercisePrescriptionOption[] {
+  const physioItems = items.filter(
+    (item) =>
+      item.activityType !== 'minigame' &&
+      !item.exerciseId.includes('card') &&
+      !item.exerciseId.includes('minigame'),
+  );
+  const sourceItems = physioItems.length > 0 ? physioItems : items;
+  if (sourceItems.length === 0) {
+    return EXERCISE_OPTIONS;
+  }
+
+  return sourceItems.map((item) => {
+    const found = CLINICAL_EXERCISES.find(
+      (c) => c.id === item.exerciseId || c.code === item.exerciseId,
+    );
+    const target_joint = resolveTargetJointForTodayExercise(item, found);
+    const target_rom_deg = found
+      ? Math.min(
+          160,
+          Math.max(90, Math.round((found.detection.targetMinDeg + found.detection.targetMaxDeg) / 2)),
+        )
+      : target_joint.includes('knee')
+        ? 100
+        : 150;
+
+    return {
+      exercise_id: item.id || item.exerciseId,
+      catalog_exercise_id: item.exerciseId,
+      schedule_id: item.id,
+      name_th: item.nameTh,
+      name_en: item.nameEn,
+      target_joint,
+      target_rom_deg,
+      hold_sec: item.holdSec || (found?.detection.holdSec ?? 3),
+      target_reps: item.reps || (found?.detection.defaultReps ?? 10),
+      target_sets: item.sets || 1,
+    };
+  });
+}
+
 export interface DemoSynthesisParams {
   preset: DemoPresetId;
   romDeg: number;
@@ -129,6 +206,7 @@ export interface DemoSynthesisParams {
   invalidReps: number;
   holdRemainingSec: number;
   faceMatched?: boolean;
+  patientOverride?: PatientSummary | null;
 }
 
 export function synthesizeDemoPayload({
@@ -141,7 +219,9 @@ export function synthesizeDemoPayload({
   invalidReps,
   holdRemainingSec,
   faceMatched = false,
+  patientOverride,
 }: DemoSynthesisParams): KioskDecisionPayload {
+  const activePatient = patientOverride ?? DEMO_PATIENT;
   const targetRom = exercise.target_rom_deg;
   const clampedRom = Math.max(0, Math.min(180, Number(romDeg.toFixed(1))));
   const romPct = Math.max(0, Math.min(120, Math.round((clampedRom / targetRom) * 100)));
@@ -149,7 +229,7 @@ export function synthesizeDemoPayload({
   if (preset === 'EMERGENCY_HALT') {
     return {
       kiosk_state: 'EMERGENCY_HALT',
-      patient: DEMO_PATIENT,
+      patient: activePatient,
       telemetry_analysis: {
         current_rom_deg: clampedRom,
         target_rom_deg: targetRom,
@@ -177,7 +257,7 @@ export function synthesizeDemoPayload({
     const distanceOk = distanceM >= 1.8 && distanceM <= 2.2;
     return {
       kiosk_state: 'AUTH_FRAMING',
-      patient: faceMatched ? DEMO_PATIENT : null,
+      patient: faceMatched ? activePatient : null,
       telemetry_analysis: {
         current_rom_deg: 12.0,
         target_rom_deg: targetRom,
@@ -208,9 +288,10 @@ export function synthesizeDemoPayload({
   }
 
   if (preset === 'SET_FINISHED') {
+    const patientName = activePatient.name || 'ผู้ป่วย';
     return {
       kiosk_state: 'SET_FINISHED',
-      patient: DEMO_PATIENT,
+      patient: activePatient,
       telemetry_analysis: {
         current_rom_deg: targetRom,
         target_rom_deg: targetRom,
@@ -229,7 +310,7 @@ export function synthesizeDemoPayload({
         highlight_color: 'GREEN',
         show_target_arc: false,
       },
-      tts_voice_th: `เยี่ยมมากครับ คุณสมชาย ฝึกครบ ${exercise.target_reps} ครั้ง จบเซ็ตแล้วครับ`,
+      tts_voice_th: `เยี่ยมมากครับ ${patientName} ฝึกครบ ${exercise.target_reps} ครั้ง จบเซ็ตแล้วครับ`,
       frame_base64: null,
     };
   }
@@ -237,7 +318,7 @@ export function synthesizeDemoPayload({
   if (preset === 'REP_COMPLETED') {
     return {
       kiosk_state: 'REP_COMPLETED',
-      patient: DEMO_PATIENT,
+      patient: activePatient,
       telemetry_analysis: {
         current_rom_deg: Math.max(clampedRom, targetRom * 0.96),
         target_rom_deg: targetRom,
@@ -267,7 +348,7 @@ export function synthesizeDemoPayload({
       clampedRom < targetRom * 0.95 ? ['TRUNK_LEAN', 'INCOMPLETE_ROM'] : ['TRUNK_LEAN'];
     return {
       kiosk_state: 'ACTIVE_REP',
-      patient: DEMO_PATIENT,
+      patient: activePatient,
       telemetry_analysis: {
         current_rom_deg: clampedRom,
         target_rom_deg: targetRom,
@@ -296,7 +377,7 @@ export function synthesizeDemoPayload({
     const rem = Math.max(0.1, Number(holdRemainingSec.toFixed(1)));
     return {
       kiosk_state: 'HOLD_PHASE',
-      patient: DEMO_PATIENT,
+      patient: activePatient,
       telemetry_analysis: {
         current_rom_deg: clampedRom,
         target_rom_deg: targetRom,
@@ -322,7 +403,7 @@ export function synthesizeDemoPayload({
 
   return {
     kiosk_state: 'ACTIVE_REP',
-    patient: DEMO_PATIENT,
+    patient: activePatient,
     telemetry_analysis: {
       current_rom_deg: clampedRom,
       target_rom_deg: targetRom,
@@ -346,20 +427,41 @@ export function synthesizeDemoPayload({
   };
 }
 
-export function useKioskSocket(wsUrl = 'ws://localhost:8000/ws/kiosk') {
-  const [selectedExercise, setSelectedExerciseState] = useState<ExercisePrescriptionOption>(EXERCISE_OPTIONS[0]);
+export function useKioskSocket(
+  wsUrl = 'ws://localhost:8000/ws/kiosk',
+  options?: {
+    prescribedExercises?: ExercisePrescriptionOption[];
+    patientOverride?: PatientSummary | null;
+  },
+) {
+  const exerciseOptions = useMemo(
+    () =>
+      options?.prescribedExercises && options.prescribedExercises.length > 0
+        ? options.prescribedExercises
+        : EXERCISE_OPTIONS,
+    [options?.prescribedExercises],
+  );
+  const hasExplicitContext = Boolean(
+    options?.prescribedExercises?.length || options?.patientOverride,
+  );
+
+  const [selectedExercise, setSelectedExerciseState] = useState<ExercisePrescriptionOption>(
+    () => exerciseOptions[0],
+  );
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [isDemoMode, setIsDemoMode] = useState<boolean>(false);
   const [livePayload, setLivePayload] = useState<KioskDecisionPayload | null>(null);
 
   // Interactive Demo Simulator state
   const [demoPreset, setDemoPresetState] = useState<DemoPresetId>('ACTIVE_REP');
-  const [demoRomDeg, setDemoRomDeg] = useState<number>(112);
+  const [demoRomDeg, setDemoRomDeg] = useState<number>(() => (hasExplicitContext ? 15 : 112));
   const [demoTrunkTiltDeg, setDemoTrunkTiltDeg] = useState<number>(2.4);
   const [demoDistanceM, setDemoDistanceM] = useState<number>(2.0);
-  const [demoValidReps, setDemoValidReps] = useState<number>(4);
+  const [demoValidReps, setDemoValidReps] = useState<number>(() => (hasExplicitContext ? 0 : 4));
   const [demoInvalidReps, setDemoInvalidReps] = useState<number>(0);
-  const [demoHoldRemainingSec, setDemoHoldRemainingSec] = useState<number>(2.2);
+  const [demoHoldRemainingSec, setDemoHoldRemainingSec] = useState<number>(
+    () => exerciseOptions[0].hold_sec,
+  );
   const [demoFaceMatched, setDemoFaceMatched] = useState<boolean>(false);
   const [demoStreakFrames, setDemoStreakFrames] = useState<number>(2);
   const [autoCycleDemo, setAutoCycleDemo] = useState<boolean>(false);
@@ -374,7 +476,7 @@ export function useKioskSocket(wsUrl = 'ws://localhost:8000/ws/kiosk') {
         JSON.stringify({
           include_frame: true,
           prescription: {
-            exercise_id: rx.exercise_id,
+            exercise_id: rx.catalog_exercise_id ?? rx.exercise_id,
             exercise_name: `${rx.name_en} (${rx.name_th})`,
             target_joint: rx.target_joint,
             target_rom_deg: rx.target_rom_deg,
@@ -386,9 +488,24 @@ export function useKioskSocket(wsUrl = 'ws://localhost:8000/ws/kiosk') {
     }
   }, []);
 
+  useEffect(() => {
+    if (!exerciseOptions.some((opt) => opt.exercise_id === selectedExercise.exercise_id)) {
+      const first = exerciseOptions[0];
+      setSelectedExerciseState(first);
+      setDemoValidReps(0);
+      setDemoInvalidReps(0);
+      setDemoHoldRemainingSec(first.hold_sec);
+      setDemoPresetState('ACTIVE_REP');
+      sendExercisePrescription(first);
+    }
+  }, [exerciseOptions, selectedExercise.exercise_id, sendExercisePrescription]);
+
   const setSelectedExercise = useCallback(
     (rx: ExercisePrescriptionOption) => {
       setSelectedExerciseState(rx);
+      setDemoValidReps(0);
+      setDemoInvalidReps(0);
+      setDemoPresetState('ACTIVE_REP');
       setDemoHoldRemainingSec(rx.hold_sec);
       sendExercisePrescription(rx);
     },
@@ -519,8 +636,16 @@ export function useKioskSocket(wsUrl = 'ws://localhost:8000/ws/kiosk') {
         setDemoPresetState('HOLD_PHASE');
         if (holdAccum >= selectedExercise.hold_sec) {
           holdAccum = 0;
-          setDemoValidReps((r) => (r >= selectedExercise.target_reps ? 1 : r + 1));
-          setDemoPresetState('REP_COMPLETED');
+          setDemoValidReps((r) => {
+            const next = Math.min(selectedExercise.target_reps, r + 1);
+            if (next >= selectedExercise.target_reps) {
+              setDemoPresetState('SET_FINISHED');
+              setAutoCycleDemo(false);
+            } else {
+              setDemoPresetState('REP_COMPLETED');
+            }
+            return next;
+          });
         }
       } else {
         holdAccum = 0;
@@ -595,6 +720,15 @@ export function useKioskSocket(wsUrl = 'ws://localhost:8000/ws/kiosk') {
     setDemoPresetState('ACTIVE_REP');
   }, [selectedExercise.target_rom_deg]);
 
+  const completeCurrentExercise = useCallback(() => {
+    setAutoCycleDemo(false);
+    setDemoTrunkTiltDeg(1.2);
+    setDemoRomDeg(selectedExercise.target_rom_deg);
+    setDemoValidReps(selectedExercise.target_reps);
+    setDemoHoldRemainingSec(0);
+    setDemoPresetState('SET_FINISHED');
+  }, [selectedExercise.target_rom_deg, selectedExercise.target_reps]);
+
   const demoPayload = synthesizeDemoPayload({
     preset: demoPreset,
     romDeg: demoRomDeg,
@@ -605,6 +739,7 @@ export function useKioskSocket(wsUrl = 'ws://localhost:8000/ws/kiosk') {
     invalidReps: demoInvalidReps,
     holdRemainingSec: demoHoldRemainingSec,
     faceMatched: demoFaceMatched,
+    patientOverride: options?.patientOverride,
   });
 
   const payload: KioskDecisionPayload = !isDemoMode && livePayload ? livePayload : demoPayload;
@@ -614,10 +749,12 @@ export function useKioskSocket(wsUrl = 'ws://localhost:8000/ws/kiosk') {
     connectionStatus,
     isDemoMode,
     toggleDemoMode,
+    exerciseOptions,
     selectedExercise,
     setSelectedExercise,
     demoPreset,
     setDemoPreset,
+    setDemoPresetState,
     demoRomDeg,
     setDemoRomDeg,
     demoTrunkTiltDeg,
@@ -625,14 +762,17 @@ export function useKioskSocket(wsUrl = 'ws://localhost:8000/ws/kiosk') {
     demoDistanceM,
     setDemoDistanceM,
     demoValidReps,
+    setDemoValidReps,
     demoInvalidReps,
     demoHoldRemainingSec,
+    setDemoHoldRemainingSec,
     demoFaceMatched,
     demoStreakFrames,
     autoCycleDemo,
     setAutoCycleDemo,
     triggerEmergencyStop,
     resetDemoSession,
+    completeCurrentExercise,
   };
 }
 

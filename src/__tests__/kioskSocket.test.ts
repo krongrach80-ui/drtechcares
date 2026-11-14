@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { EXERCISE_OPTIONS, synthesizeDemoPayload } from '../hooks/useKioskSocket';
+import {
+  EXERCISE_OPTIONS,
+  mapTodayExercisesToPrescriptions,
+  synthesizeDemoPayload,
+} from '../hooks/useKioskSocket';
 
 describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
   const rightShoulder = EXERCISE_OPTIONS[0];
@@ -107,6 +111,71 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(halt.kiosk_state).toBe('EMERGENCY_HALT');
     expect(halt.telemetry_analysis.pain_alert).toBe(true);
     expect(halt.ui_directives.highlight_color).toBe('RED');
+  });
+
+  it('maps today prescribed physio exercises and applies authenticated patient override', () => {
+    const mapped = mapTodayExercisesToPrescriptions([
+      {
+        id: 'sch-1',
+        exerciseId: 'ex-01',
+        nameTh: 'ยกแขนตรงไปด้านหน้า (ขวา)',
+        nameEn: 'Right Shoulder Flexion',
+        targetJoint: 'ข้อไหล่ (Shoulder)',
+        activityType: 'physio_exercise',
+        sets: 3,
+        reps: 10,
+        holdSec: 3,
+        status: 'ACTIVE',
+      },
+      {
+        id: 'sch-2',
+        exerciseId: 'ex-03',
+        nameTh: 'กางแขนตรงออกด้านข้าง (ขวา)',
+        nameEn: 'Right Shoulder Abduction',
+        targetJoint: 'ข้อไหล่ (Shoulder)',
+        activityType: 'physio_exercise',
+        sets: 3,
+        reps: 8,
+        holdSec: 3,
+        status: 'ACTIVE',
+      },
+      {
+        id: 'sch-mini',
+        exerciseId: 'cognitive-card-game',
+        nameTh: 'มินิเกมฝึกสมอง',
+        nameEn: 'Card Mini-Game',
+        targetJoint: 'Cognitive',
+        activityType: 'minigame',
+        sets: 1,
+        reps: 5,
+        holdSec: 3,
+        status: 'ACTIVE',
+      },
+    ]);
+
+    expect(mapped).toHaveLength(2);
+    expect(mapped[0].exercise_id).toBe('sch-1');
+    expect(mapped[0].catalog_exercise_id).toBe('ex-01');
+    expect(mapped[0].target_joint).toBe('right_shoulder');
+    expect(mapped[0].target_reps).toBe(10);
+    expect(mapped[0].target_sets).toBe(3);
+    expect(mapped[1].exercise_id).toBe('sch-2');
+    expect(mapped[1].target_joint).toBe('right_shoulder');
+    expect(mapped[1].target_reps).toBe(8);
+
+    const patientPayload = synthesizeDemoPayload({
+      preset: 'SET_FINISHED',
+      romDeg: 145,
+      trunkTiltDeg: 1.5,
+      distanceM: 2.0,
+      exercise: mapped[0],
+      validReps: 10,
+      invalidReps: 0,
+      holdRemainingSec: 0,
+      patientOverride: { id: 'HN-61716', name: 'Pdasdwa' },
+    });
+    expect(patientPayload.patient).toEqual({ id: 'HN-61716', name: 'Pdasdwa' });
+    expect(patientPayload.tts_voice_th).toContain('Pdasdwa');
   });
 });
 

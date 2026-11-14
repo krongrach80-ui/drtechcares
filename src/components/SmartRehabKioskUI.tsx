@@ -1,15 +1,21 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { FilesetResolver, PoseLandmarker, type NormalizedLandmark } from '@mediapipe/tasks-vision';
+import { selectClinicalCameraDeviceId } from '@drtechcares/face-client';
+import { POSE_INDEX, computeJointAngle3D } from '@drtechcares/pose-engine';
 import {
   Activity,
   AlertOctagon,
   AlertTriangle,
+  Camera,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Gamepad2,
   HeartPulse,
   Pause,
   Play,
+  PlusCircle,
   RotateCcw,
   SlidersHorizontal,
   Sparkles,
@@ -23,12 +29,17 @@ import { RomGauge } from './RomGauge';
 import { SkeletonCanvas } from './SkeletonCanvas';
 import { VoiceCoachBanner } from './VoiceCoachBanner';
 import {
-  EXERCISE_OPTIONS,
   useKioskSocket,
   type DemoPresetId,
+  type ExercisePrescriptionOption,
+  type PatientSummary,
 } from '../hooks/useKioskSocket';
 
 interface SmartRehabKioskUIProps {
+  patient?: PatientSummary | null;
+  prescribedExercises?: ExercisePrescriptionOption[];
+  onExerciseCompleted?: (exercise: ExercisePrescriptionOption) => void;
+  onAllExercisesCompleted?: () => void;
   onOpenStaffPortal?: () => void;
   onOpenLegacyKiosk?: () => void;
 }
@@ -42,35 +53,129 @@ const DEMO_PRESETS: { id: DemoPresetId; label: string; shortLabel: string }[] = 
   { id: 'SET_FINISHED', label: 'Set Finished', shortLabel: '6. Finished' },
 ];
 
+function measureLiveJointAngleAndTilt(
+  landmarks: readonly NormalizedLandmark[],
+  targetJoint: ExercisePrescriptionOption['target_joint'],
+): { romDeg: number | null; trunkTiltDeg: number } {
+  const lSh = landmarks[POSE_INDEX.LEFT_SHOULDER];
+  const rSh = landmarks[POSE_INDEX.RIGHT_SHOULDER];
+  const lHip = landmarks[POSE_INDEX.LEFT_HIP];
+  const rHip = landmarks[POSE_INDEX.RIGHT_HIP];
+
+  let trunkTiltDeg = 2.0;
+  if (lSh && rSh && lHip && rHip && (lHip.visibility ?? 0) >= 0.35 && (rHip.visibility ?? 0) >= 0.35) {
+    const midShX = (lSh.x + rSh.x) / 2;
+    const midShY = (lSh.y + rSh.y) / 2;
+    const midHipX = (lHip.x + rHip.x) / 2;
+    const midHipY = (lHip.y + rHip.y) / 2;
+    trunkTiltDeg = Math.abs(
+      (Math.atan2(midShX - midHipX, Math.max(0.05, midHipY - midShY)) * 180) / Math.PI,
+    );
+  } else if (lSh && rSh && (lSh.visibility ?? 0) >= 0.4 && (rSh.visibility ?? 0) >= 0.4) {
+    trunkTiltDeg = Math.abs(
+      (Math.atan2(rSh.y - lSh.y, Math.max(0.08, Math.abs(lSh.x - rSh.x))) * 180) / Math.PI,
+    );
+  }
+
+  let romDeg: number | null = null;
+  if (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder') {
+    const isLeft = targetJoint === 'left_shoulder';
+    const sh = landmarks[isLeft ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
+    const wrist = landmarks[isLeft ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
+    const elbow = landmarks[isLeft ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
+    const hip = landmarks[isLeft ? POSE_INDEX.LEFT_HIP : POSE_INDEX.RIGHT_HIP];
+    const distal = (wrist?.visibility ?? 0) >= 0.4 ? wrist : (elbow?.visibility ?? 0) >= 0.4 ? elbow : null;
+    if (sh && (sh.visibility ?? 0) >= 0.45 && distal) {
+      const refHip =
+        hip && (hip.visibility ?? 0) >= 0.45 && hip.y <= 0.98
+          ? hip
+          : { x: sh.x, y: sh.y + 0.35, z: sh.z ?? 0 };
+      romDeg = computeJointAngle3D(refHip, sh, distal);
+    }
+  } else if (targetJoint === 'left_knee' || targetJoint === 'right_knee') {
+    const isLeft = targetJoint === 'left_knee';
+    const hip = landmarks[isLeft ? POSE_INDEX.LEFT_HIP : POSE_INDEX.RIGHT_HIP];
+    const knee = landmarks[isLeft ? POSE_INDEX.LEFT_KNEE : POSE_INDEX.RIGHT_KNEE];
+    const ankle = landmarks[isLeft ? POSE_INDEX.LEFT_ANKLE : POSE_INDEX.RIGHT_ANKLE];
+    if (
+      hip &&
+      knee &&
+      ankle &&
+      (hip.visibility ?? 0) >= 0.4 &&
+      (knee.visibility ?? 0) >= 0.4 &&
+      (ankle.visibility ?? 0) >= 0.4
+    ) {
+      romDeg = computeJointAngle3D(hip, knee, ankle);
+    }
+  } else if (targetJoint === 'spine') {
+    romDeg = Number(Math.max(0, 15 - trunkTiltDeg).toFixed(1));
+  }
+
+  return { romDeg, trunkTiltDeg: Number(trunkTiltDeg.toFixed(1)) };
+}
+
 export function SmartRehabKioskUI({
+  patient: patientProp,
+  prescribedExercises,
+  onExerciseCompleted,
+  onAllExercisesCompleted,
   onOpenStaffPortal,
   onOpenLegacyKiosk,
 }: SmartRehabKioskUIProps) {
+  const socketOptions = useMemo(
+    () =>
+      prescribedExercises || patientProp !== undefined
+        ? { prescribedExercises, patientOverride: patientProp }
+        : undefined,
+    [prescribedExercises, patientProp],
+  );
+
   const {
     payload,
     connectionStatus,
     isDemoMode,
     toggleDemoMode,
+    exerciseOptions,
     selectedExercise,
     setSelectedExercise,
     demoPreset,
     setDemoPreset,
+    setDemoPresetState,
     demoRomDeg,
     setDemoRomDeg,
     demoTrunkTiltDeg,
     setDemoTrunkTiltDeg,
     demoDistanceM,
     setDemoDistanceM,
+    demoValidReps,
+    setDemoHoldRemainingSec,
+    setDemoValidReps,
     demoStreakFrames,
     demoFaceMatched,
     autoCycleDemo,
     setAutoCycleDemo,
     triggerEmergencyStop,
     resetDemoSession,
-  } = useKioskSocket('ws://localhost:8000/ws/kiosk');
+    completeCurrentExercise,
+  } = useKioskSocket('ws://localhost:8000/ws/kiosk', socketOptions);
 
   const [voiceMuted, setVoiceMuted] = useState(false);
-  const [drawerOpen, setDrawerOpen] = useState(true);
+  const [drawerOpen, setDrawerOpen] = useState(() => !patientProp);
+  const [completedIds, setCompletedIds] = useState<string[]>([]);
+  const [livePoseActive, setLivePoseActive] = useState<boolean>(() => Boolean(patientProp));
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  const onExerciseCompletedRef = useRef(onExerciseCompleted);
+  const onAllExercisesCompletedRef = useRef(onAllExercisesCompleted);
+  const selectedExerciseRef = useRef(selectedExercise);
+  const demoValidRepsRef = useRef(demoValidReps);
+
+  onExerciseCompletedRef.current = onExerciseCompleted;
+  onAllExercisesCompletedRef.current = onAllExercisesCompleted;
+  selectedExerciseRef.current = selectedExercise;
+  demoValidRepsRef.current = demoValidReps;
 
   const { kiosk_state, patient, telemetry_analysis, rep_counter, ui_directives, tts_voice_th } = payload;
   const compensations = telemetry_analysis.compensation_detected;
@@ -81,6 +186,315 @@ export function SmartRehabKioskUI({
   const isHoldPhase = kiosk_state === 'HOLD_PHASE';
   const isRepCelebration = kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED';
   const isEmergency = kiosk_state === 'EMERGENCY_HALT';
+
+  const markCurrentExerciseCompleted = () => {
+    completeCurrentExercise();
+    if (!completedIds.includes(selectedExercise.exercise_id)) {
+      setCompletedIds((prev) =>
+        prev.includes(selectedExercise.exercise_id)
+          ? prev
+          : [...prev, selectedExercise.exercise_id],
+      );
+      onExerciseCompletedRef.current?.(selectedExercise);
+    }
+  };
+
+  const exerciseListSignature = exerciseOptions.map((item) => item.exercise_id).join('|');
+  useEffect(() => {
+    setCompletedIds([]);
+  }, [exerciseListSignature]);
+
+  const currentExerciseIndex = Math.max(
+    0,
+    exerciseOptions.findIndex((opt) => opt.exercise_id === selectedExercise.exercise_id),
+  );
+  const allExercisesCompleted =
+    exerciseOptions.length > 0 && completedIds.length >= exerciseOptions.length;
+  const nextUncompletedExercise = useMemo(() => {
+    const afterCurrent = exerciseOptions.find(
+      (opt, idx) =>
+        idx > currentExerciseIndex &&
+        opt.exercise_id !== selectedExercise.exercise_id &&
+        !completedIds.includes(opt.exercise_id),
+    );
+    if (afterCurrent) return afterCurrent;
+    return exerciseOptions.find(
+      (opt) => opt.exercise_id !== selectedExercise.exercise_id && !completedIds.includes(opt.exercise_id),
+    );
+  }, [exerciseOptions, currentExerciseIndex, selectedExercise.exercise_id, completedIds]);
+
+  // Mark exercise completed once target reps are reached
+  useEffect(() => {
+    if (rep_counter.valid_reps < selectedExercise.target_reps) return;
+    if (completedIds.includes(selectedExercise.exercise_id)) return;
+    setCompletedIds((prev) =>
+      prev.includes(selectedExercise.exercise_id) ? prev : [...prev, selectedExercise.exercise_id],
+    );
+    onExerciseCompletedRef.current?.(selectedExercise);
+  }, [rep_counter.valid_reps, selectedExercise, completedIds]);
+
+  // Auto-advance to the next uncompleted exercise after completing one set
+  useEffect(() => {
+    if (!completedIds.includes(selectedExercise.exercise_id)) return;
+    if (allExercisesCompleted) {
+      if (!onAllExercisesCompletedRef.current) return;
+      const doneTimer = window.setTimeout(() => {
+        onAllExercisesCompletedRef.current?.();
+      }, 2200);
+      return () => window.clearTimeout(doneTimer);
+    }
+    if (!nextUncompletedExercise) return;
+    const nextTimer = window.setTimeout(() => {
+      setSelectedExercise(nextUncompletedExercise);
+    }, 1800);
+    return () => window.clearTimeout(nextTimer);
+  }, [
+    completedIds,
+    selectedExercise.exercise_id,
+    allExercisesCompleted,
+    nextUncompletedExercise,
+    setSelectedExercise,
+  ]);
+
+  // Live MediaPipe PoseLandmarker camera tracking (when enabled & not auto-cycling demo)
+  useEffect(() => {
+    if (!livePoseActive || autoCycleDemo || isEmergency) {
+      setCameraReady(false);
+      return;
+    }
+
+    let active = true;
+    let stream: MediaStream | null = null;
+    let rafId = 0;
+    let poseLandmarker: PoseLandmarker | null = null;
+    let offscreenCanvas: HTMLCanvasElement | null = null;
+    let lastVideoTime = -1;
+    let lastInferenceAt = 0;
+    let lastDetectTs = 0;
+    let lastFrameAt = 0;
+    let smoothedRom: number | null = null;
+    let holdAccumMs = 0;
+    let awaitingReturn = false;
+    let repCelebrateUntil = 0;
+    let trackedExId = selectedExerciseRef.current.exercise_id;
+
+    const cleanup = () => {
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+      if (stream) {
+        stream.getTracks().forEach((t) => t.stop());
+        stream = null;
+      }
+      if (poseLandmarker) {
+        try {
+          poseLandmarker.close();
+        } catch {
+          // ignore close errors
+        }
+        poseLandmarker = null;
+      }
+    };
+
+    async function initPoseCamera() {
+      try {
+        if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+          setCameraError('เบราว์เซอร์ไม่รองรับกล้อง (สามารถฝึกผ่านโหมดควบคุมได้)');
+          return;
+        }
+        setCameraError(null);
+        // Brief pause allows the previous step's camera stream to release cleanly on Windows
+        await new Promise((r) => setTimeout(r, 180));
+        if (!active) return;
+
+        const deviceId = await selectClinicalCameraDeviceId();
+        if (!active) return;
+
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: deviceId
+            ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
+            : { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+          audio: false,
+        });
+        if (!active || !videoRef.current) {
+          cleanup();
+          return;
+        }
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        if (!active) {
+          cleanup();
+          return;
+        }
+        setCameraReady(true);
+
+        let vision;
+        for (const wasmBase of [
+          '/mediapipe/wasm',
+          '/models/wasm',
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
+        ]) {
+          try {
+            vision = await FilesetResolver.forVisionTasks(wasmBase);
+            break;
+          } catch {
+            // Try next WASM base URL
+          }
+        }
+        if (!vision || !active) return;
+
+        for (const modelPath of ['/models/pose_landmarker_full.task', '/models/pose_landmarker.task']) {
+          for (const delegate of ['CPU', undefined] as const) {
+            try {
+              const created = await PoseLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                  modelAssetPath: modelPath,
+                  ...(delegate ? { delegate } : {}),
+                },
+                runningMode: 'VIDEO',
+                numPoses: 1,
+              });
+              if (!active) {
+                created.close();
+                return;
+              }
+              poseLandmarker = created;
+              break;
+            } catch {
+              // Try fallback
+            }
+          }
+          if (poseLandmarker) break;
+        }
+        if (!poseLandmarker || !active) return;
+
+        const loop = () => {
+          if (!active || !videoRef.current || !poseLandmarker) return;
+          const curEx = selectedExerciseRef.current;
+          if (trackedExId !== curEx.exercise_id) {
+            trackedExId = curEx.exercise_id;
+            smoothedRom = null;
+            holdAccumMs = 0;
+            awaitingReturn = false;
+            repCelebrateUntil = 0;
+          }
+
+          const v = videoRef.current;
+          const now = performance.now();
+          const dtMs = lastFrameAt > 0 ? Math.min(100, Math.max(1, now - lastFrameAt)) : 16;
+          lastFrameAt = now;
+
+          if (v.readyState >= 2 && v.videoWidth > 0 && (v.currentTime !== lastVideoTime || now - lastInferenceAt >= 33)) {
+            lastVideoTime = v.currentTime;
+            lastInferenceAt = now;
+
+            if (!offscreenCanvas) {
+              offscreenCanvas = document.createElement('canvas');
+            }
+            const offW = 256;
+            const offH = Math.max(144, Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))));
+            if (offscreenCanvas.width !== offW || offscreenCanvas.height !== offH) {
+              offscreenCanvas.width = offW;
+              offscreenCanvas.height = offH;
+            }
+            const offCtx = offscreenCanvas.getContext('2d', { alpha: false });
+            if (offCtx) {
+              offCtx.drawImage(v, 0, 0, offW, offH);
+            }
+            const source = offCtx ? offscreenCanvas : v;
+
+            try {
+              const ts = Math.max(lastDetectTs + 1, Math.round(now));
+              lastDetectTs = ts;
+              const poseRes = poseLandmarker.detectForVideo(source, ts);
+              const landmarks = poseRes.landmarks?.[0];
+              if (landmarks) {
+                const measured = measureLiveJointAngleAndTilt(landmarks, curEx.target_joint);
+                setDemoTrunkTiltDeg(measured.trunkTiltDeg);
+                if (measured.romDeg !== null) {
+                  smoothedRom =
+                    smoothedRom === null
+                      ? measured.romDeg
+                      : Number((smoothedRom + 0.35 * (measured.romDeg - smoothedRom)).toFixed(1));
+                  setDemoRomDeg(smoothedRom);
+
+                  const targetThreshold = curEx.target_joint.includes('knee')
+                    ? curEx.target_rom_deg + 10
+                    : curEx.target_rom_deg * 0.88;
+                  const atTarget = curEx.target_joint.includes('knee')
+                    ? smoothedRom <= targetThreshold
+                    : smoothedRom >= targetThreshold;
+                  const atRest = curEx.target_joint.includes('knee')
+                    ? smoothedRom >= 145
+                    : smoothedRom <= Math.min(55, curEx.target_rom_deg * 0.45);
+
+                  if (atRest) {
+                    awaitingReturn = false;
+                  }
+
+                  if (demoValidRepsRef.current < curEx.target_reps) {
+                    if (atTarget && !awaitingReturn && measured.trunkTiltDeg <= 14) {
+                      holdAccumMs += dtMs;
+                      const holdTargetMs = Math.max(1000, curEx.hold_sec * 1000);
+                      const remSec = Math.max(0, Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)));
+                      setDemoHoldRemainingSec(remSec);
+                      if (holdAccumMs >= holdTargetMs) {
+                        holdAccumMs = 0;
+                        awaitingReturn = true;
+                        repCelebrateUntil = now + 1200;
+                        setDemoHoldRemainingSec(0);
+                        setDemoValidReps((r) => {
+                          const next = Math.min(curEx.target_reps, r + 1);
+                          setDemoPresetState(next >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED');
+                          return next;
+                        });
+                      } else {
+                        setDemoPresetState('HOLD_PHASE');
+                      }
+                    } else {
+                      holdAccumMs = Math.max(0, holdAccumMs - dtMs * 0.6);
+                      if (now > repCelebrateUntil) {
+                        setDemoHoldRemainingSec(curEx.hold_sec);
+                        setDemoPresetState(measured.trunkTiltDeg > 10 ? 'TRUNK_LEAN' : 'ACTIVE_REP');
+                      }
+                    }
+                  }
+                }
+              }
+            } catch {
+              // Ignore transient inference errors
+            }
+          }
+
+          if (active) {
+            rafId = requestAnimationFrame(loop);
+          }
+        };
+
+        rafId = requestAnimationFrame(loop);
+      } catch {
+        if (active) {
+          setCameraError('ไม่พบกล้องหรือไม่สามารถเปิดกล้องได้');
+        }
+      }
+    }
+
+    void initPoseCamera();
+    return () => {
+      active = false;
+      cleanup();
+    };
+  }, [
+    livePoseActive,
+    autoCycleDemo,
+    isEmergency,
+    setDemoHoldRemainingSec,
+    setDemoPresetState,
+    setDemoRomDeg,
+    setDemoTrunkTiltDeg,
+    setDemoValidReps,
+  ]);
 
   const patientRevealed = Boolean(patient?.name && (kiosk_state !== 'AUTH_FRAMING' || demoFaceMatched));
 
@@ -202,8 +616,21 @@ export function SmartRehabKioskUI({
             )}
           </AnimatePresence>
 
-          {/* Right: Demo Mode Switch + Portal Switch + Emergency Stop */}
+          {/* Right: Live Camera Toggle + Demo Mode Switch + Portal Switch + Emergency Stop */}
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setLivePoseActive((v) => !v)}
+              className={`inline-flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-bold transition-all sm:text-sm ${
+                livePoseActive
+                  ? 'border-emerald-300 bg-emerald-50 text-[#0D9488]'
+                  : 'border-slate-200 bg-white/80 text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              <Camera className="h-4 w-4" />
+              <span>{livePoseActive ? 'กล้อง AI: ON' : 'กล้อง AI: OFF'}</span>
+            </button>
+
             <button
               type="button"
               onClick={() => toggleDemoMode()}
@@ -248,6 +675,33 @@ export function SmartRehabKioskUI({
           </div>
         </header>
 
+        {/* Completion Banner when all prescribed exercises are finished */}
+        {allExercisesCompleted && onAllExercisesCompleted && (
+          <div className="glass-card flex flex-wrap items-center justify-between gap-3 rounded-3xl border-2 border-emerald-400 bg-emerald-50/95 px-5 py-3.5 shadow-lg">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-500 text-white shadow">
+                <CheckCircle2 className="h-5 w-5" />
+              </div>
+              <div>
+                <p className="text-sm font-extrabold text-emerald-950">
+                  ทำท่ากายภาพบำบัดครบทั้งหมด {exerciseOptions.length} ท่าแล้ว!
+                </p>
+                <p className="text-xs font-semibold text-emerald-800">
+                  ระบบกำลังพาเข้าสู่ขั้นตอนสุดท้าย: มินิเกมฝึกสมองและการ์ดกายภาพ...
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onAllExercisesCompleted}
+              className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 px-5 py-2.5 text-xs font-extrabold text-white shadow-md hover:from-emerald-500 hover:to-teal-500 cursor-pointer sm:text-sm"
+            >
+              <Gamepad2 className="h-4 w-4" />
+              <span>เข้าสู่มินิเกม (ขั้นตอนสุดท้าย) ➔</span>
+            </button>
+          </div>
+        )}
+
         {/* 3. Main Clinical Workspace: 16:9 Landscape (~65% Left / ~35% Right), 9:16 Portrait Responsive */}
         <main className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-12">
           {/* Left Stage (~65% width) */}
@@ -259,6 +713,22 @@ export function SmartRehabKioskUI({
               distanceM={demoDistanceM}
               trunkTiltDeg={demoTrunkTiltDeg}
             >
+              {livePoseActive && !cameraError && (
+                <div className="pointer-events-none absolute bottom-3 left-3 z-20 w-36 sm:w-44 h-28 sm:h-32 overflow-hidden rounded-2xl border-2 border-emerald-400/80 bg-slate-900 shadow-lg">
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="h-full w-full object-cover"
+                    style={{ transform: 'scaleX(-1)' }}
+                  />
+                  <span className="absolute left-1.5 top-1.5 rounded-full bg-slate-950/80 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
+                    {cameraReady ? '📷 Live AI Pose' : '⏳ เปิดกล้อง...'}
+                  </span>
+                </div>
+              )}
+
               {kiosk_state === 'AUTH_FRAMING' && (
                 <FaceScanOverlay
                   verified={demoFaceMatched || Boolean(patient?.id)}
@@ -301,7 +771,8 @@ export function SmartRehabKioskUI({
                 <div>
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-100/90 px-3 py-1 text-[11px] font-bold text-[#0284C7]">
                     <Sparkles className="h-3.5 w-3.5" />
-                    ท่าฝึกกายภาพที่ได้รับมอบหมาย
+                    ท่าที่ {currentExerciseIndex + 1} จาก {exerciseOptions.length} • เซต{' '}
+                    {selectedExercise.target_sets ?? 1} × {selectedExercise.target_reps} ครั้ง
                   </span>
                   <h2 className="mt-2 text-xl font-extrabold text-[#0F4C81]">{selectedExercise.name_th}</h2>
                   <p className="text-xs font-semibold text-[#0284C7]">{selectedExercise.name_en}</p>
@@ -330,20 +801,24 @@ export function SmartRehabKioskUI({
               </div>
 
               <div className="mt-3 flex flex-wrap gap-1.5">
-                {EXERCISE_OPTIONS.map((opt) => {
+                {exerciseOptions.map((opt, idx) => {
                   const active = opt.exercise_id === selectedExercise.exercise_id;
+                  const done = completedIds.includes(opt.exercise_id);
                   return (
                     <button
                       key={opt.exercise_id}
                       type="button"
                       onClick={() => setSelectedExercise(opt)}
-                      className={`rounded-xl px-2.5 py-1.5 text-xs font-bold transition-colors ${
+                      className={`inline-flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-xs font-bold transition-colors ${
                         active
                           ? 'bg-[#0F4C81] text-white shadow-sm'
-                          : 'bg-sky-50 text-[#0F4C81] hover:bg-sky-100'
+                          : done
+                            ? 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                            : 'bg-sky-50 text-[#0F4C81] hover:bg-sky-100'
                       }`}
                     >
-                      {opt.name_th}
+                      <span>{done ? '✓' : `${idx + 1}.`}</span>
+                      <span>{opt.name_th}</span>
                     </button>
                   );
                 })}
@@ -430,6 +905,47 @@ export function SmartRehabKioskUI({
                     />
                   );
                 })}
+              </div>
+
+              {/* Action Controls: Count Rep / Complete Current Exercise -> Next or Final Minigame */}
+              <div className="mt-3.5 flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDemoPreset('REP_COMPLETED')}
+                  disabled={rep_counter.valid_reps >= selectedExercise.target_reps}
+                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-bold text-[#0F4C81] hover:bg-sky-100 disabled:opacity-50 cursor-pointer"
+                >
+                  <PlusCircle className="h-3.5 w-3.5" />
+                  <span>+1 ครั้ง (นับครั้งสำเร็จ)</span>
+                </button>
+
+                {nextUncompletedExercise ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      markCurrentExerciseCompleted();
+                      setSelectedExercise(nextUncompletedExercise);
+                    }}
+                    className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-[#0284C7] to-[#10B981] px-3 py-2.5 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    <span>ทำท่านี้ครบแล้ว • ไปท่าถัดไป ({nextUncompletedExercise.name_th}) ➔</span>
+                  </button>
+                ) : (
+                  onAllExercisesCompleted && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        markCurrentExerciseCompleted();
+                        onAllExercisesCompleted();
+                      }}
+                      className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-3 py-2.5 text-xs font-extrabold text-white shadow hover:from-emerald-500 hover:to-teal-500 cursor-pointer"
+                    >
+                      <Gamepad2 className="h-4 w-4" />
+                      <span>ทำกายภาพครบทุกท่าแล้ว • เข้าสู่มินิเกม (ขั้นตอนสุดท้าย) ➔</span>
+                    </button>
+                  )
+                )}
               </div>
             </div>
 
