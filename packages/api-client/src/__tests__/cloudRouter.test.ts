@@ -152,13 +152,19 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(physioRes.status).toBe(403);
     expect(((await physioRes.json()) as { error: string }).error).toBe('PHYSIO_LOCKED_UNDER_DEVELOPMENT');
 
-    // Delegation
+    // Delegation with date and note
     const delegateRes = await callRouter(router, `/api/patients/${patient.id}/delegate`, {
       method: 'POST',
       token: pt1Token,
-      body: { targetPtId: 'user-pt-2', note: 'ฝากเคส' },
+      body: { targetPtId: 'user-pt-2', note: 'ฝากเคส', delegationDate: '2026-11-15' },
     });
     expect(delegateRes.status).toBe(200);
+    const delegateJson = (await delegateRes.json()) as {
+      patient: { delegatedToPtId: string | null; delegationNote: string | null; delegationDate?: string | null };
+    };
+    expect(delegateJson.patient.delegatedToPtId).toBe('user-pt-2');
+    expect(delegateJson.patient.delegationNote).toBe('ฝากเคส');
+    expect(delegateJson.patient.delegationDate).toBe('2026-11-15');
 
     const pt2Patients = await callRouter(router, '/api/patients', { token: pt2Token });
     const pt2List = ((await pt2Patients.json()) as { patients: { id: string }[] }).patients;

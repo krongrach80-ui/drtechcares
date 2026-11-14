@@ -1110,6 +1110,33 @@ function saveStaffProfileOverrides(map: Record<string, StoredStaffProfileOverrid
   }
 }
 
+const CASE_DELEGATION_STORAGE_KEY = 'drtechcares_case_delegations_v1';
+
+interface StoredCaseDelegationOverride {
+  delegatedToPtId: string | null;
+  delegationDate: string | null;
+  delegationNote: string | null;
+}
+
+function loadCaseDelegationOverrides(): Record<string, StoredCaseDelegationOverride> {
+  try {
+    const raw = window.localStorage.getItem(CASE_DELEGATION_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, StoredCaseDelegationOverride>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveCaseDelegationOverrides(map: Record<string, StoredCaseDelegationOverride>): void {
+  try {
+    window.localStorage.setItem(CASE_DELEGATION_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
 function getDefaultBioForUser(u: UserAccount): string {
   if (u.role === 'super_admin') {
     return 'ผู้บริหารและกำกับดูแลระบบฟื้นฟูสมรรถภาพ Dr.Tech.Care ดูแลมาตรฐานคลินิก ความปลอดภัยข้อมูลผู้ป่วย และการประสานงานทีมสหวิชาชีพ';
@@ -1317,6 +1344,12 @@ export function ClinicalStaffPortalShell({
   const [profileAvatarUrl, setProfileAvatarUrl] = useState(myProfile.avatarUrl);
   const [profileBio, setProfileBio] = useState(myProfile.bio);
 
+  // Patient Case Delegation form state (Tab 7: ระบบการฝากเคสคนไข้)
+  const [delegationPatientId, setDelegationPatientId] = useState('');
+  const [delegationDate, setDelegationDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [delegationTargetPtId, setDelegationTargetPtId] = useState('');
+  const [delegationNote, setDelegationNote] = useState('');
+
   useEffect(() => {
     if (profileDirtyRef.current) return;
     setProfileFullName(myProfile.fullName);
@@ -1395,7 +1428,20 @@ export function ClinicalStaffPortalShell({
       } else {
         setUsers((prev) => (prev.length > 0 ? prev : [currentUser]));
       }
-      setPatients(pRes);
+      const localDelegations = loadCaseDelegationOverrides();
+      setPatients(
+        pRes.map((p) => {
+          const ov = localDelegations[p.id];
+          if (ov && p.delegatedToPtId && ov.delegatedToPtId === p.delegatedToPtId) {
+            return {
+              ...p,
+              delegationDate: p.delegationDate || ov.delegationDate,
+              delegationNote: p.delegationNote || ov.delegationNote,
+            };
+          }
+          return p;
+        }),
+      );
       setExercises(exRes);
       setModpacks(mpRes);
       setSessions(sessRes);
@@ -1506,6 +1552,27 @@ export function ClinicalStaffPortalShell({
   }, [selectedSchedulePatientId, apiClient, modpacks]);
 
   const ptUsers = useMemo(() => users.filter((u) => u.role === 'pt'), [users]);
+
+  useEffect(() => {
+    if (!delegationPatientId && patients.length > 0) {
+      setDelegationPatientId(patients[0].id);
+    }
+  }, [delegationPatientId, patients]);
+
+  useEffect(() => {
+    if (!delegationTargetPtId && ptUsers.length > 0) {
+      const candidate = ptUsers.find((pt) => pt.id !== activeUserRecord.id) ?? ptUsers[0];
+      setDelegationTargetPtId(candidate.id);
+    }
+  }, [delegationTargetPtId, ptUsers, activeUserRecord.id]);
+
+  const delegatedCases = useMemo(
+    () =>
+      patients
+        .filter((p) => Boolean(p.delegatedToPtId))
+        .sort((a, b) => (b.delegationDate || '').localeCompare(a.delegationDate || '')),
+    [patients],
+  );
   const openStaffCalls = useMemo(() => staffCalls.filter((c) => c.status !== 'resolved'), [staffCalls]);
 
   const ptNameMap = useMemo(() => {
@@ -1629,6 +1696,89 @@ export function ClinicalStaffPortalShell({
       if (await handleAuthFailureIfExpired(err)) return;
       // Preserve local profile override cleanly while letting the user know
       flashBanner('success', `${locale.profile.savedSuccess} (Local Sync)`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSubmitCaseDelegation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!delegationPatientId) {
+      flashBanner('error', 'กรุณาเลือกชื่อคนไข้ที่ต้องการฝากเคส');
+      return;
+    }
+    if (!delegationTargetPtId) {
+      flashBanner('error', 'กรุณาเลือกนักกายภาพบำบัดผู้รับฝากเคส');
+      return;
+    }
+    const cleanDate = delegationDate || new Date().toISOString().slice(0, 10);
+    const cleanNote = delegationNote.trim();
+    const targetPatient = patients.find((p) => p.id === delegationPatientId);
+    const targetPt = ptUsers.find((pt) => pt.id === delegationTargetPtId);
+
+    setSubmitting(true);
+    try {
+      const updated = await apiClient.delegatePatientCase(
+        delegationPatientId,
+        delegationTargetPtId,
+        cleanNote || undefined,
+        cleanDate,
+      );
+      const nextOverrides = {
+        ...loadCaseDelegationOverrides(),
+        [delegationPatientId]: {
+          delegatedToPtId: delegationTargetPtId,
+          delegationDate: cleanDate,
+          delegationNote: cleanNote || null,
+        },
+      };
+      saveCaseDelegationOverrides(nextOverrides);
+      setPatients((prev) =>
+        prev.map((p) =>
+          p.id === delegationPatientId
+            ? {
+                ...p,
+                ...updated,
+                delegatedToPtId: updated.delegatedToPtId ?? delegationTargetPtId,
+                delegationDate: updated.delegationDate ?? cleanDate,
+                delegationNote: updated.delegationNote ?? (cleanNote || null),
+              }
+            : p,
+        ),
+      );
+      setDelegationNote('');
+      flashBanner(
+        'success',
+        `บันทึกการฝากเคส ${targetPatient?.fullName ?? ''} ให้ ${targetPt?.fullName ?? 'นักกายภาพ'} (วันที่ ${cleanDate}) เรียบร้อยแล้ว`,
+      );
+      await refreshAll();
+    } catch (err) {
+      if (await handleAuthFailureIfExpired(err)) return;
+      flashBanner('error', err instanceof Error ? err.message : 'ไม่สามารถฝากเคสคนไข้ได้');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleCancelCaseDelegation = async (patient: PatientRecord) => {
+    setSubmitting(true);
+    try {
+      await apiClient.delegatePatientCase(patient.id, null);
+      const nextOverrides = { ...loadCaseDelegationOverrides() };
+      delete nextOverrides[patient.id];
+      saveCaseDelegationOverrides(nextOverrides);
+      setPatients((prev) =>
+        prev.map((p) =>
+          p.id === patient.id
+            ? { ...p, delegatedToPtId: null, delegationDate: null, delegationNote: null }
+            : p,
+        ),
+      );
+      flashBanner('success', `ยกเลิกการฝากเคสของ ${patient.fullName} เรียบร้อยแล้ว`);
+      await refreshAll();
+    } catch (err) {
+      if (await handleAuthFailureIfExpired(err)) return;
+      flashBanner('error', err instanceof Error ? err.message : 'ยกเลิกการฝากเคสไม่สำเร็จ');
     } finally {
       setSubmitting(false);
     }
@@ -2434,6 +2584,12 @@ export function ClinicalStaffPortalShell({
                           <td className="px-4 py-3.5">
                             <div className="font-mono text-slate-700 truncate">{p.phone || '-'}</div>
                             <div className="text-[11px] font-semibold text-emerald-700 truncate">{ptLabel}</div>
+                            {p.delegatedToPtId && (
+                              <div className="mt-1 inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800 max-w-full truncate">
+                                <span>ฝากเคส{p.delegationDate ? ` (${p.delegationDate})` : ''}</span>
+                                {p.delegationNote ? <span>• {p.delegationNote}</span> : null}
+                              </div>
+                            )}
                           </td>
                           <td className="px-4 py-3.5">
                             {verified ? (
@@ -4226,6 +4382,281 @@ export function ClinicalStaffPortalShell({
                     </button>
                   </div>
                 </form>
+              </div>
+
+              {/* ระบบการฝากเคสคนไข้ (Patient Case Delegation / Handover) */}
+              <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-5">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                  <div className="flex items-start gap-2.5">
+                    <HeartHandshake className="h-5 w-5 text-sky-600 mt-0.5 shrink-0" />
+                    <div>
+                      <h3 className="text-base font-extrabold text-slate-900">
+                        ระบบการฝากเคสคนไข้ (Patient Case Handover)
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        ระบุชื่อคนไข้ วันที่ฝากเคส นักกายภาพบำบัดผู้รับฝากดูแล และหมายเหตุการส่งต่อเคส
+                      </p>
+                    </div>
+                  </div>
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-bold text-sky-700">
+                    <Users className="h-3.5 w-3.5 shrink-0" />
+                    <span>เคสที่ฝากอยู่: {delegatedCases.length} เคส</span>
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+                  {/* Left: ฟอร์มฝากเคสคนไข้ */}
+                  <form
+                    onSubmit={handleSubmitCaseDelegation}
+                    className="xl:col-span-5 rounded-2xl border border-slate-200 bg-slate-50/70 p-5 space-y-4 text-xs"
+                  >
+                    <div className="font-extrabold text-sm text-slate-900">บันทึกการฝากเคสคนไข้ใหม่</div>
+
+                    {/* 1. ชื่อคนไข้ให้เลือก */}
+                    <div>
+                      <label className="block font-extrabold text-slate-700 mb-1.5">
+                        1. ชื่อคนไข้ที่ต้องการฝากเคส *
+                      </label>
+                      <select
+                        required
+                        value={delegationPatientId}
+                        onChange={(e) => setDelegationPatientId(e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-900 focus:border-sky-500 focus:outline-none"
+                      >
+                        {patients.length === 0 ? (
+                          <option value="">-- ยังไม่มีรายชื่อคนไข้ --</option>
+                        ) : (
+                          patients.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.fullName} ({p.hn}){p.delegatedToPtId ? ' • ฝากเคสอยู่' : ''}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                      {(() => {
+                        const selP = patients.find((p) => p.id === delegationPatientId);
+                        if (!selP) return null;
+                        const ownerName = ptNameMap.get(selP.assignedPtId) || 'กภ. ประจำคลินิก';
+                        return (
+                          <div className="mt-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600 flex flex-wrap items-center justify-between gap-2">
+                            <span className="truncate">อาการ/วินิจฉัย: <strong className="text-slate-800">{selP.diagnosis || 'กายภาพฟื้นฟู'}</strong></span>
+                            <span className="text-sky-700 font-semibold">เจ้าของเคสหลัก: {ownerName}</span>
+                          </div>
+                        );
+                      })()}
+                    </div>
+
+                    {/* 2. วันที่ฝากเคส */}
+                    <div>
+                      <label className="block font-extrabold text-slate-700 mb-1.5">
+                        2. วันที่ฝากเคส *
+                      </label>
+                      <div className="relative">
+                        <CalendarDays className="h-4 w-4 text-sky-600 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input
+                          required
+                          type="date"
+                          value={delegationDate}
+                          onChange={(e) => setDelegationDate(e.target.value)}
+                          className="w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3.5 py-2.5 text-sm font-mono font-semibold text-slate-900 focus:border-sky-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    {/* 3. ฝากเคสกับนักกายภาพคนไหน */}
+                    <div>
+                      <label className="block font-extrabold text-slate-700 mb-1.5">
+                        3. ฝากเคสกับนักกายภาพคนไหน *
+                      </label>
+                      <select
+                        required
+                        value={delegationTargetPtId}
+                        onChange={(e) => setDelegationTargetPtId(e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-900 focus:border-sky-500 focus:outline-none"
+                      >
+                        {ptUsers.length === 0 ? (
+                          <option value="">-- ไม่พบรายชื่อนักกายภาพบำบัด --</option>
+                        ) : (
+                          ptUsers.map((pt) => {
+                            const ptProf = resolveUserProfile(pt, profileOverrides);
+                            return (
+                              <option key={pt.id} value={pt.id}>
+                                {ptProf.fullName} ({ptProf.licenseNo})
+                              </option>
+                            );
+                          })
+                        )}
+                      </select>
+                      {(() => {
+                        const targetPtObj = ptUsers.find((pt) => pt.id === delegationTargetPtId);
+                        if (!targetPtObj) return null;
+                        const targetPtProf = resolveUserProfile(targetPtObj, profileOverrides);
+                        return (
+                          <div className="mt-2.5 flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50/70 p-2.5">
+                            <img
+                              src={targetPtProf.avatarUrl}
+                              alt={targetPtProf.fullName}
+                              className="h-11 w-11 shrink-0 rounded-xl object-cover border border-emerald-200 bg-white"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="font-bold text-slate-900 truncate">{targetPtProf.fullName}</div>
+                              <div className="text-[11px] text-emerald-800 font-mono truncate">
+                                {targetPtProf.phone || locale.profile.noPhone} • {targetPtProf.specialty}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+
+                    {/* 4. หมายเหตุ */}
+                    <div>
+                      <label className="block font-extrabold text-slate-700 mb-1.5">
+                        4. หมายเหตุการฝากเคส
+                      </label>
+                      <textarea
+                        rows={3}
+                        value={delegationNote}
+                        onChange={(e) => setDelegationNote(e.target.value)}
+                        placeholder="ระบุอาการที่ต้องติดตามเป็นพิเศษ ช่วงเวลาที่ฝาก หรือท่ากายภาพที่ต้องเฝ้าระวัง..."
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs leading-relaxed text-slate-900 focus:border-sky-500 focus:outline-none"
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={submitting || patients.length === 0 || ptUsers.length === 0}
+                      className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 py-2.5 text-xs font-extrabold text-white shadow-sm hover:bg-sky-500 disabled:opacity-50 cursor-pointer"
+                    >
+                      <CheckCircle2 className="h-4 w-4 shrink-0" />
+                      <span>{submitting ? 'กำลังบันทึก...' : 'ยืนยันการฝากเคสคนไข้'}</span>
+                    </button>
+                  </form>
+
+                  {/* Right: รายการฝากเคสคนไข้ปัจจุบัน */}
+                  <div className="xl:col-span-7 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-extrabold text-slate-900">
+                        รายการเคสคนไข้ที่ฝากดูแลอยู่ในขณะนี้
+                      </h4>
+                      <span className="text-[11px] font-semibold text-slate-500">
+                        แสดงข้อมูลคนไข้ วันที่ฝาก นักกายภาพผู้รับเคส และหมายเหตุ
+                      </span>
+                    </div>
+
+                    {delegatedCases.length === 0 ? (
+                      <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50/50 p-8 text-center space-y-2">
+                        <HeartHandshake className="h-8 w-8 text-slate-300 mx-auto" />
+                        <div className="text-sm font-bold text-slate-600">ยังไม่มีรายการฝากเคสคนไข้ในขณะนี้</div>
+                        <p className="text-xs text-slate-400">
+                          เลือกชื่อคนไข้ วันที่ฝากเคส นักกายภาพบำบัดผู้รับเคส และหมายเหตุจากฟอร์มด้านซ้ายเพื่อบันทึกการฝากเคส
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {delegatedCases.map((p) => {
+                          const targetPtUser = ptUsers.find((pt) => pt.id === p.delegatedToPtId);
+                          const targetPtProf = targetPtUser
+                            ? resolveUserProfile(targetPtUser, profileOverrides)
+                            : null;
+                          const targetPtDisplayName =
+                            targetPtProf?.fullName ||
+                            ptNameMap.get(p.delegatedToPtId || '') ||
+                            'กภ. ผู้รับฝากเคส';
+                          const primaryPtDisplayName =
+                            ptNameMap.get(p.assignedPtId) || 'กภ. ประจำคลินิก';
+                          return (
+                            <div
+                              key={p.id}
+                              className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm hover:border-sky-200 transition space-y-3"
+                            >
+                              <div className="flex flex-wrap items-start justify-between gap-2">
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <span className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 font-mono text-[11px] font-extrabold text-sky-700 shrink-0">
+                                    {p.hn}
+                                  </span>
+                                  <div className="min-w-0">
+                                    <div className="text-sm font-extrabold text-slate-900 truncate">
+                                      {p.fullName}
+                                    </div>
+                                    <div className="text-[11px] text-slate-500 truncate">
+                                      {p.diagnosis || 'กายภาพบำบัดฟื้นฟูสมรรถภาพ'} • เจ้าของเคสหลัก: {primaryPtDisplayName}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-extrabold text-amber-900 shrink-0">
+                                  <CalendarDays className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                                  <span>วันที่ฝากเคส: {p.delegationDate || 'ไม่ระบุวันที่'}</span>
+                                </span>
+                              </div>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div className="flex items-center gap-2.5 rounded-xl border border-emerald-100 bg-emerald-50/60 p-2.5">
+                                  {targetPtProf && (
+                                    <img
+                                      src={targetPtProf.avatarUrl}
+                                      alt={targetPtDisplayName}
+                                      className="h-10 w-10 shrink-0 rounded-xl object-cover border border-emerald-200 bg-white"
+                                    />
+                                  )}
+                                  <div className="min-w-0 flex-1 text-xs">
+                                    <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                                      ฝากเคสกับนักกายภาพ
+                                    </div>
+                                    <div className="font-extrabold text-slate-900 truncate">
+                                      {targetPtDisplayName}
+                                    </div>
+                                    {targetPtProf?.phone && (
+                                      <div className="flex items-center gap-1 font-mono text-[11px] text-slate-600 truncate">
+                                        <Phone className="h-3 w-3 text-emerald-600 shrink-0" />
+                                        <span>{targetPtProf.phone}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="rounded-xl border border-slate-100 bg-slate-50/80 p-2.5 text-xs">
+                                  <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                    <FileText className="h-3 w-3 text-slate-400 shrink-0" />
+                                    <span>หมายเหตุ</span>
+                                  </div>
+                                  <div className="mt-1 text-slate-800 leading-relaxed break-words">
+                                    {p.delegationNote || 'ไม่มีหมายเหตุเพิ่มเติม'}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap items-center justify-end gap-2 pt-1 border-t border-slate-100">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setDelegationPatientId(p.id);
+                                    setDelegationDate(p.delegationDate || new Date().toISOString().slice(0, 10));
+                                    setDelegationTargetPtId(p.delegatedToPtId || '');
+                                    setDelegationNote(p.delegationNote || '');
+                                  }}
+                                  className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-1.5 text-[11px] font-bold text-sky-700 hover:bg-sky-100 cursor-pointer"
+                                >
+                                  แก้ไขข้อมูลฝากเคส
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={submitting}
+                                  onClick={() => void handleCancelCaseDelegation(p)}
+                                  className="inline-flex items-center gap-1 rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5 text-[11px] font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50 cursor-pointer"
+                                >
+                                  <X className="h-3.5 w-3.5 shrink-0" />
+                                  <span>ยกเลิกฝากเคส / รับเคสคืน</span>
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           )}

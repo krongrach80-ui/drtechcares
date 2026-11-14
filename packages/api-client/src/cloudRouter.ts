@@ -1238,6 +1238,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         assignedPtId,
         delegatedToPtId: null,
         delegationNote: null,
+        delegationDate: null,
         nextAppointmentDate: nextAppt,
         registrationStatus: 'active',
         enrolledAt: new Date().toISOString(),
@@ -1802,18 +1803,27 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const patient = state.patients.find((p) => p.id === delegateMatch[1]);
       if (!patient) return jsonResponse({ error: 'PATIENT_NOT_FOUND' }, 404);
       const actor = authUser!;
-      if (actor.role === 'pt' && patient.assignedPtId !== actor.id) {
+      if (actor.role === 'pt' && patient.assignedPtId !== actor.id && patient.delegatedToPtId !== actor.id) {
         return jsonResponse({ error: 'FORBIDDEN', message: 'Only primary PT can delegate case' }, 403);
       }
-      const body = (await readJsonBody<{ targetPtId?: string | null; note?: string }>(request)) ?? {};
+      const body =
+        (await readJsonBody<{ targetPtId?: string | null; note?: string; delegationDate?: string }>(request)) ?? {};
       patient.delegatedToPtId = body.targetPtId || null;
-      patient.delegationNote = body.note || null;
+      patient.delegationNote = body.targetPtId ? (body.note || null) : null;
+      patient.delegationDate = body.targetPtId
+        ? (body.delegationDate || new Date().toISOString().slice(0, 10))
+        : null;
+      const serializedDelegationNote = patient.delegatedToPtId
+        ? patient.delegationDate
+          ? `[${patient.delegationDate}] ${patient.delegationNote ?? ''}`.trim()
+          : patient.delegationNote
+        : null;
       persistToSupabase(supabase, (db) =>
         db
           .from('patients')
           .update({
             delegated_to_pt_id: patient.delegatedToPtId,
-            delegation_note: patient.delegationNote,
+            delegation_note: serializedDelegationNote,
             updated_at: new Date().toISOString(),
           })
           .eq('id', patient.id),
@@ -1827,7 +1837,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         deviceId: clientDeviceId,
         targetId: patient.id,
         detail: body.targetPtId
-          ? `Delegated case ${patient.fullName} to PT ${body.targetPtId}`
+          ? `Delegated case ${patient.fullName} to PT ${body.targetPtId} on ${patient.delegationDate}`
           : `Reclaimed case ${patient.fullName}`,
       });
       return jsonResponse({ patient });

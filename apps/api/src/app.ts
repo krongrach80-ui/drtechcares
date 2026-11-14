@@ -922,13 +922,20 @@ export function createDrTechCaresApiApp(
       return;
     }
     const actor = req.authUser!;
-    if (actor.role === 'pt' && patient.assignedPtId !== actor.id) {
+    if (actor.role === 'pt' && patient.assignedPtId !== actor.id && patient.delegatedToPtId !== actor.id) {
       res.status(403).json({ error: 'FORBIDDEN', message: 'Only primary PT can delegate case' });
       return;
     }
-    const { targetPtId, note } = req.body as { targetPtId?: string | null; note?: string };
+    const { targetPtId, note, delegationDate } = req.body as {
+      targetPtId?: string | null;
+      note?: string;
+      delegationDate?: string;
+    };
     patient.delegatedToPtId = targetPtId || null;
-    patient.delegationNote = note || null;
+    patient.delegationNote = targetPtId ? (note || null) : null;
+    patient.delegationDate = targetPtId
+      ? (delegationDate || new Date().toISOString().slice(0, 10))
+      : null;
     db.save();
 
     db.recordAudit({
@@ -939,7 +946,9 @@ export function createDrTechCaresApiApp(
       ipAddress: req.clientIp ?? 'unknown',
       deviceId: req.clientDeviceId ?? 'unknown',
       targetId: patient.id,
-      detail: targetPtId ? `Delegated case ${patient.fullName} to PT ${targetPtId}` : `Reclaimed case ${patient.fullName}`,
+      detail: targetPtId
+        ? `Delegated case ${patient.fullName} to PT ${targetPtId} on ${patient.delegationDate}`
+        : `Reclaimed case ${patient.fullName}`,
     });
     res.json({ patient });
   });

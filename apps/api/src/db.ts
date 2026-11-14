@@ -43,6 +43,7 @@ export interface PatientRecord {
   assignedPtId: string;
   delegatedToPtId: string | null;
   delegationNote: string | null;
+  delegationDate?: string | null;
   nextAppointmentDate: string;
   registrationStatus: 'active' | 'archived';
   enrolledAt: string;

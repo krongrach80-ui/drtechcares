@@ -274,9 +274,15 @@ describe('DRTECHCARES Production API, Auth, RBAC & Biometric Lifecycle', () => {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${pt1Token}`,
       },
-      body: JSON.stringify({ targetPtId: 'user-pt-2', note: 'ลาพักร้อน 2 วัน' }),
+      body: JSON.stringify({ targetPtId: 'user-pt-2', note: 'ลาพักร้อน 2 วัน', delegationDate: '2026-11-15' }),
     });
     expect(delegateRes.status).toBe(200);
+    const delegatedBody = (await delegateRes.json()) as {
+      patient: { delegatedToPtId: string | null; delegationNote: string | null; delegationDate?: string | null };
+    };
+    expect(delegatedBody.patient.delegatedToPtId).toBe('user-pt-2');
+    expect(delegatedBody.patient.delegationNote).toBe('ลาพักร้อน 2 วัน');
+    expect(delegatedBody.patient.delegationDate).toBe('2026-11-15');
 
     const pt2ListAfter = await fetch(`${baseUrl}/api/patients`, {
       headers: { Authorization: `Bearer ${pt2Token}` },

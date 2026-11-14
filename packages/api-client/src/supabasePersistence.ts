@@ -282,6 +282,11 @@ export async function hydrateStateFromSupabase(
         (typeof history.faceFramesCount === 'number' ? history.faceFramesCount : undefined) ??
         (resolvedFaceStatus === 'VERIFIED' ? 120 : 0);
 
+      const rawDelegationNote = r.delegation_note ? String(r.delegation_note) : null;
+      const delegationMatch = rawDelegationNote?.match(/^\[(\d{4}-\d{2}-\d{2})\]\s*(.*)$/);
+      const parsedDelegationDate = delegationMatch ? delegationMatch[1] : null;
+      const parsedDelegationNote = delegationMatch ? (delegationMatch[2].trim() || null) : rawDelegationNote;
+
       return {
         id: pid,
         hn: String(r.hn),
@@ -292,7 +297,8 @@ export async function hydrateStateFromSupabase(
         diagnosis: String(r.diagnosis ?? ''),
         assignedPtId: String(r.assigned_pt_id ?? ''),
         delegatedToPtId: r.delegated_to_pt_id ? String(r.delegated_to_pt_id) : null,
-        delegationNote: r.delegation_note ? String(r.delegation_note) : null,
+        delegationNote: parsedDelegationNote,
+        delegationDate: parsedDelegationDate,
         nextAppointmentDate: String(r.next_appointment_date ?? ''),
         registrationStatus: (r.registration_status as 'active' | 'archived') ?? 'active',
         enrolledAt: String(r.created_at ?? new Date().toISOString()),

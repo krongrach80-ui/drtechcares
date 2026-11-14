@@ -91,6 +91,7 @@ export interface PatientRecord {
   assignedPtId: string;
   delegatedToPtId: string | null;
   delegationNote: string | null;
+  delegationDate?: string | null;
   nextAppointmentDate: string;
   registrationStatus: 'active' | 'archived';
   enrolledAt: string;
@@ -676,10 +677,15 @@ export class DrTechCaresApiClient {
     purgeLegacyBiometricCache();
   }
 
-  async delegatePatientCase(patientId: string, targetPtId: string | null, note?: string): Promise<PatientRecord> {
+  async delegatePatientCase(
+    patientId: string,
+    targetPtId: string | null,
+    note?: string,
+    delegationDate?: string,
+  ): Promise<PatientRecord> {
     const res = await this.request<{ patient: PatientRecord }>(`/api/patients/${patientId}/delegate`, {
       method: 'POST',
-      body: JSON.stringify({ targetPtId, note }),
+      body: JSON.stringify({ targetPtId, note, delegationDate }),
     });
     return res.patient;
   }

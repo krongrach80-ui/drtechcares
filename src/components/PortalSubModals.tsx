@@ -862,6 +862,7 @@ export function PatientProfileAndHistoryModal({
   const [diagnosis, setDiagnosis] = useState('');
   const [assignedPtId, setAssignedPtId] = useState('');
   const [delegatePtId, setDelegatePtId] = useState('');
+  const [delegateDate, setDelegateDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [delegateNote, setDelegateNote] = useState('');
   const [notes, setNotes] = useState<MedicalNoteRecord[]>([]);
   const [newNote, setNewNote] = useState('');
@@ -879,6 +880,7 @@ export function PatientProfileAndHistoryModal({
     setDiagnosis(patient.diagnosis || '');
     setAssignedPtId(patient.assignedPtId || '');
     setDelegatePtId(patient.delegatedToPtId || patient.assignedPtId || '');
+    setDelegateDate(patient.delegationDate || new Date().toISOString().slice(0, 10));
     setDelegateNote(patient.delegationNote || '');
     apiClient
       .listMedicalNotes(patient.id)
@@ -1050,7 +1052,7 @@ export function PatientProfileAndHistoryModal({
             {/* Delegation */}
             <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 space-y-2.5">
               <div className="font-extrabold text-slate-800">{sm.delegateHeading}</div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                 <select
                   value={delegatePtId}
                   onChange={(e) => setDelegatePtId(e.target.value)}
@@ -1064,19 +1066,30 @@ export function PatientProfileAndHistoryModal({
                   ))}
                 </select>
                 <input
+                  type="date"
+                  value={delegateDate}
+                  onChange={(e) => setDelegateDate(e.target.value)}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono font-semibold"
+                />
+                <input
                   value={delegateNote}
                   onChange={(e) => setDelegateNote(e.target.value)}
-                  placeholder="หมายเหตุการส่งต่อเคส..."
+                  placeholder="หมายเหตุการฝากเคส..."
                   className="rounded-xl border border-slate-200 bg-white px-3 py-2"
                 />
                 <button
                   type="button"
                   onClick={async () => {
-                    await apiClient.delegatePatientCase(patient.id, delegatePtId || null, delegateNote || undefined);
-                    onFlash('success', 'อัปเดตการส่งต่อ PT เรียบร้อยแล้ว');
+                    await apiClient.delegatePatientCase(
+                      patient.id,
+                      delegatePtId || null,
+                      delegateNote || undefined,
+                      delegatePtId ? delegateDate : undefined,
+                    );
+                    onFlash('success', 'อัปเดตการฝากเคส PT เรียบร้อยแล้ว');
                     await onRefresh();
                   }}
-                  className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-blue-600 font-bold text-white hover:bg-blue-500"
+                  className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-blue-600 font-bold text-white hover:bg-blue-500 cursor-pointer"
                 >
                   {sm.updatePtBtn}
                 </button>
