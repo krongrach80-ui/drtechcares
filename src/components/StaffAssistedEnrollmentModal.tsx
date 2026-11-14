@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { DrTechCaresApiClient, PatientRecord, UserAccount } from '@drtechcares/api-client';
 import { useClinicalI18n } from '@drtechcares/clinical-i18n';
 import {
@@ -71,11 +71,14 @@ export function StaffAssistedEnrollmentModal({
 
   // Step 2 Camera 120-frame 3D Face ID state
   const [capturing, setCapturing] = useState(false);
+  const [allFiveAnglesReady, setAllFiveAnglesReady] = useState(false);
   const [biometric120Result, setBiometric120Result] = useState<FaceID120Result | null>(null);
   const [capturedSnapshotUrl, setCapturedSnapshotUrl] = useState<string | undefined>(undefined);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [createdPatient, setCreatedPatient] = useState<PatientRecord | null>(null);
+  const triggerFinalizeRef = useRef<(() => Promise<FaceID120Result | null>) | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -83,9 +86,12 @@ export function StaffAssistedEnrollmentModal({
       return;
     }
     setBiometric120Result(null);
+    setAllFiveAnglesReady(false);
+    triggerFinalizeRef.current = null;
     setCreatedPatient(null);
     setCapturedSnapshotUrl(undefined);
     setErrorMsg(null);
+    setToastMsg(null);
     if (targetPatient) {
       setHn(targetPatient.hn);
       setFullName(targetPatient.fullName);
@@ -95,9 +101,13 @@ export function StaffAssistedEnrollmentModal({
       setCapturing(true);
     } else {
       setStep(1);
-      if (!assignedPtId && ptList.length > 0) {
-        setAssignedPtId(currentUser.role === 'pt' ? currentUser.id : ptList[0].id);
-      }
+    }
+  }, [open, targetPatient]);
+
+  useEffect(() => {
+    if (!open || targetPatient) return;
+    if (!assignedPtId && ptList.length > 0) {
+      setAssignedPtId(currentUser.role === 'pt' ? currentUser.id : ptList[0].id);
     }
   }, [open, targetPatient, ptList, assignedPtId, currentUser.id, currentUser.role]);
 
@@ -133,10 +143,13 @@ export function StaffAssistedEnrollmentModal({
     setEmergencyPhone('');
     setPdpaAccepted(true);
     setBiometric120Result(null);
+    setAllFiveAnglesReady(false);
+    triggerFinalizeRef.current = null;
     setCapturedSnapshotUrl(undefined);
     setCapturing(false);
     setCreatedPatient(null);
     setErrorMsg(null);
+    setToastMsg(null);
   };
 
   const handleGoStep2 = (e: React.FormEvent) => {
@@ -161,13 +174,21 @@ export function StaffAssistedEnrollmentModal({
   ) => {
     setSaving(true);
     setErrorMsg(null);
+    setToastMsg(null);
     try {
-      const bio = overrideBiometric120 ?? biometric120Result;
       const isPending = mode === 'pending_skip' && !isExistingPatientMode;
+      let bio = overrideBiometric120 ?? biometric120Result;
+      if (!isPending && !bio && triggerFinalizeRef.current) {
+        const finalized = await triggerFinalizeRef.current();
+        if (finalized) {
+          bio = finalized;
+          setBiometric120Result(finalized);
+        }
+      }
       const finalSnapshot = overrideImageUrl ?? bio?.avatarDataUrl ?? capturedSnapshotUrl;
 
       if (!isPending && !bio) {
-        setErrorMsg('กรุณาสแกนใบหน้าให้ครบ 120 เฟรมก่อนบันทึกข้อมูล');
+        setErrorMsg('กรุณาสแกนใบหน้าให้ครบ 5 มุมหรือครบ 120 เฟรมก่อนบันทึกข้อมูล');
         setSaving(false);
         return;
       }
@@ -189,6 +210,7 @@ export function StaffAssistedEnrollmentModal({
           qualityScore: bio.qualityScore,
           faceImageUrl: finalSnapshot,
         });
+        setToastMsg('ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ!');
         setCreatedPatient(updated);
         setCapturing(false);
         setStep(3);
@@ -242,6 +264,11 @@ export function StaffAssistedEnrollmentModal({
 
       await apiClient.appendMedicalNote(enrolled.id, structuredSummary).catch(() => {});
 
+      setToastMsg(
+        isPending
+          ? 'บันทึกประวัติคนไข้เรียบร้อย (รอสแกน Face ID เพิ่มเติม)'
+          : 'ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ!',
+      );
       setCreatedPatient(enrolled);
       setCapturing(false);
       setStep(3);
@@ -356,6 +383,12 @@ export function StaffAssistedEnrollmentModal({
           {errorMsg && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-700">
               {errorMsg}
+            </div>
+          )}
+          {toastMsg && (
+            <div className="rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-bold text-emerald-800 flex items-center gap-2 shadow-xs">
+              <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+              <span>{toastMsg}</span>
             </div>
           )}
 
@@ -646,7 +679,11 @@ export function StaffAssistedEnrollmentModal({
                   onComplete={(result) => {
                     setBiometric120Result(result);
                     setCapturedSnapshotUrl(result.avatarDataUrl);
-                    void handleFinalizeEnrollment('verified', result.avatarDataUrl, result);
+                    setAllFiveAnglesReady(true);
+                  }}
+                  onReadyStateChange={(ready, triggerFinalize) => {
+                    setAllFiveAnglesReady(ready);
+                    triggerFinalizeRef.current = triggerFinalize;
                   }}
                   onCancel={() => setCapturing(false)}
                 />
@@ -768,9 +805,13 @@ export function StaffAssistedEnrollmentModal({
               )}
               <button
                 type="button"
-                disabled={saving || !biometric120Result}
+                disabled={saving || (!biometric120Result && !allFiveAnglesReady)}
                 onClick={() => void handleFinalizeEnrollment('verified')}
-                className="rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 px-5 py-2.5 text-xs font-extrabold text-white shadow-md hover:opacity-95 disabled:opacity-45"
+                className={`rounded-xl px-5 py-2.5 text-xs font-extrabold transition ${
+                  biometric120Result || allFiveAnglesReady
+                    ? 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/30 cursor-pointer'
+                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                } disabled:opacity-60`}
               >
                 {saving ? 'กำลังบันทึกเวชระเบียน...' : 'บันทึกและเปิดใช้งานตู้ Kiosk →'}
               </button>

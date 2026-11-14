@@ -1210,6 +1210,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           assigned_pt_id: patient.assignedPtId,
           next_appointment_date: patient.nextAppointmentDate,
           registration_status: 'active',
+          face_biometric_status: faceStatus,
+          face_image_url: storedFaceImageUrl ?? null,
           history: {
             gender,
             faceBiometricStatus: faceStatus,
@@ -1274,16 +1276,19 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               quality_score: f.qualityScore,
             })),
           ]);
-          await db.from('patient_biometrics').upsert({
-            patient_id: patientId,
-            hn: patient.hn,
-            master_embedding: masterVec,
-            angle_embeddings: resolvedAngles,
-            frames_captured: framesCaptured,
-            quality_score: qualityScore,
-            avatar_url: storedFaceImageUrl ?? null,
-            updated_at: new Date().toISOString(),
-          });
+          await db.from('patient_biometrics').upsert(
+            {
+              patient_id: patientId,
+              hn: patient.hn,
+              master_embedding: masterVec,
+              angle_embeddings: resolvedAngles,
+              frames_captured: framesCaptured,
+              quality_score: qualityScore,
+              avatar_url: storedFaceImageUrl ?? null,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'patient_id' },
+          );
         });
       }
 
@@ -1802,19 +1807,24 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             quality_score: f.qualityScore,
           })),
         ]);
-        await db.from('patient_biometrics').upsert({
-          patient_id: patient.id,
-          hn: patient.hn,
-          master_embedding: masterVec,
-          angle_embeddings: resolvedAngles,
-          frames_captured: framesCaptured,
-          quality_score: qualityScore,
-          avatar_url: patient.faceImageUrl ?? null,
-          updated_at: new Date().toISOString(),
-        });
+        await db.from('patient_biometrics').upsert(
+          {
+            patient_id: patient.id,
+            hn: patient.hn,
+            master_embedding: masterVec,
+            angle_embeddings: resolvedAngles,
+            frames_captured: framesCaptured,
+            quality_score: qualityScore,
+            avatar_url: patient.faceImageUrl ?? null,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'patient_id' },
+        );
         await db
           .from('patients')
           .update({
+            face_biometric_status: 'VERIFIED',
+            face_image_url: patient.faceImageUrl ?? null,
             history: {
               gender: patient.gender ?? 'ชาย',
               faceBiometricStatus: 'VERIFIED',

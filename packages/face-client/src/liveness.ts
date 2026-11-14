@@ -37,6 +37,102 @@ function computeEyeAspectRatio(
   return (verticalA + verticalB) / (2 * horizontal);
 }
 
+export interface PrimaryFaceSelection {
+  primaryFace: readonly Landmark3D[] | null;
+  effectiveFaceCount: number;
+  primaryCenter?: { x: number; y: number };
+  primaryBox?: { width: number; height: number; area: number };
+}
+
+/**
+ * Normalizes a head-pose angle to degrees.
+ * Values within (-1.5, 1.5) excluding near-zero noise are treated as radians and converted.
+ */
+export function normalizeAngleToDegrees(angleOrRad: number): number {
+  if (!Number.isFinite(angleOrRad)) return 0;
+  const abs = Math.abs(angleOrRad);
+  if (abs > 0.02 && abs <= 1.5) {
+    return angleOrRad * (180 / Math.PI);
+  }
+  return angleOrRad;
+}
+
+/**
+ * Selects the dominant primary face near the viewfinder center while ignoring
+ * small background shadows/noise and duplicate overlapping detections.
+ */
+export function selectPrimaryFace(
+  faces: readonly (readonly Landmark3D[])[],
+): PrimaryFaceSelection {
+  interface Candidate {
+    face: readonly Landmark3D[];
+    cx: number;
+    cy: number;
+    width: number;
+    height: number;
+    area: number;
+    score: number;
+  }
+
+  const rawCandidates: Candidate[] = [];
+  for (const landmarks of faces) {
+    if (!landmarks || landmarks.length < 300) continue;
+    let minX = 1;
+    let maxX = 0;
+    let minY = 1;
+    let maxY = 0;
+    for (const pt of landmarks) {
+      if (pt.x < minX) minX = pt.x;
+      if (pt.x > maxX) maxX = pt.x;
+      if (pt.y < minY) minY = pt.y;
+      if (pt.y > maxY) maxY = pt.y;
+    }
+    const width = maxX - minX;
+    const height = maxY - minY;
+    const area = width * height;
+    if (width < 0.10 || height < 0.10 || area < 0.014) continue;
+
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const score = area * 2.5 - Math.hypot(cx - 0.5, cy - 0.5) * 0.4;
+    rawCandidates.push({ face: landmarks, cx, cy, width, height, area, score });
+  }
+
+  if (rawCandidates.length === 0) {
+    return { primaryFace: null, effectiveFaceCount: 0 };
+  }
+
+  // Deduplicate overlapping detections on the same face, keeping the larger box.
+  rawCandidates.sort((a, b) => b.area - a.area);
+  const distinct: Candidate[] = [];
+  for (const cand of rawCandidates) {
+    const overlapsExisting = distinct.some(
+      (kept) => Math.hypot(cand.cx - kept.cx, cand.cy - kept.cy) < 0.18,
+    );
+    if (!overlapsExisting) {
+      distinct.push(cand);
+    }
+  }
+
+  // Rank remaining distinct faces by combined area & centrality.
+  distinct.sort((a, b) => b.score - a.score);
+  const primary = distinct[0];
+
+  const secondCloseLargeFaces = distinct.slice(1).filter(
+    (other) =>
+      other.area >= primary.area * 0.65 &&
+      Math.hypot(other.cx - primary.cx, other.cy - primary.cy) >= 0.22 &&
+      Math.hypot(other.cx - 0.5, other.cy - 0.5) <= 0.35,
+  );
+
+  return {
+    primaryFace: primary.face,
+    effectiveFaceCount: secondCloseLargeFaces.length > 0 ? 1 + secondCloseLargeFaces.length : 1,
+    primaryCenter: { x: primary.cx, y: primary.cy },
+    primaryBox: { width: primary.width, height: primary.height, area: primary.area },
+  };
+}
+
 /**
  * Evaluates 3D depth protrusion, micro-motion, Eye Aspect Ratio (EAR) blink state,
  * and head pose angles (yaw, pitch, roll) from MediaPipe FaceLandmarker 3D landmarks.
@@ -77,11 +173,19 @@ export function evaluateLivenessAndPose(
   const noseProtrusion = Math.abs(cheekMeanZ - (noseTip.z ?? 0));
   const depthScore = Math.min(1, noseProtrusion / (faceWidth * 0.25));
 
-  // Head pose approximation (degrees)
+  // 3D Head pose in degrees combining 2D nose displacement + 3D depth differential
   const midX = (leftCheek.x + rightCheek.x) / 2;
-  const yawDeg = ((noseTip.x - midX) / faceWidth) * 90;
-  const midY = (forehead.y + chin.y) / 2;
-  const pitchDeg = ((noseTip.y - midY) / faceHeight) * 90;
+  const yawOffsetDeg = ((noseTip.x - midX) / faceWidth) * 90;
+  const yawDepthDeg =
+    (Math.atan2((rightCheek.z ?? 0) - (leftCheek.z ?? 0), faceWidth) * 180) / Math.PI;
+  const yawDeg = yawOffsetDeg * 0.6 + yawDepthDeg * 0.4;
+
+  const neutralNoseY = forehead.y + faceHeight * 0.55;
+  const pitchOffsetDeg = ((noseTip.y - neutralNoseY) / faceHeight) * 90;
+  const pitchDepthDeg =
+    (Math.atan2((chin.z ?? 0) - (forehead.z ?? 0), faceHeight) * 180) / Math.PI;
+  const pitchDeg = pitchOffsetDeg * 0.55 + pitchDepthDeg * 0.45;
+
   const rollDeg = (Math.atan2(rightCheek.y - leftCheek.y, rightCheek.x - leftCheek.x) * 180) / Math.PI;
 
   // Eye Aspect Ratio (MediaPipe standard eye contour indices)

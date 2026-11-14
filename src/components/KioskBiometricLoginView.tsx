@@ -19,6 +19,7 @@ import {
   extractFaceEmbeddingWithFallback,
   inspectBiometricFrame3D,
   selectClinicalCameraDeviceId,
+  selectPrimaryFace,
   SingleScanLoginController,
   type BiometricVerificationJson,
   type LivenessAndPoseReport,
@@ -340,8 +341,8 @@ export function KioskBiometricLoginView({
           baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
           runningMode: 'VIDEO',
           numFaces: 2,
-          minFaceDetectionConfidence: 0.85,
-          minFacePresenceConfidence: 0.85,
+          minFaceDetectionConfidence: 0.65,
+          minFacePresenceConfidence: 0.65,
         });
 
         let lastEmbedCheckAt = 0;
@@ -351,8 +352,9 @@ export function KioskBiometricLoginView({
           if (videoRef.current.readyState >= 2 && !verifyingLockRef.current) {
             const now = performance.now();
             const res = landmarker.detectForVideo(videoRef.current, now);
-            const faceCount = res.faceLandmarks?.length ?? 0;
-            const landmarks = res.faceLandmarks?.[0] ?? [];
+            const selection = selectPrimaryFace(res.faceLandmarks ?? []);
+            const faceCount = selection.effectiveFaceCount;
+            const landmarks = selection.primaryFace ? [...selection.primaryFace] : [];
 
             const liveness = evaluateLivenessAndPose(landmarks, prevLandmarks, faceCount, wasEyeClosed);
             const meanEar = (liveness.earLeft + liveness.earRight) / 2;

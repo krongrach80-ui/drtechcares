@@ -17,6 +17,7 @@ import {
   evaluateLivenessAndPose,
   extractFaceEmbeddingWithFallback,
   selectClinicalCameraDeviceId,
+  selectPrimaryFace,
 } from '@drtechcares/face-client';
 import {
   TemporalBiometricMatcher,
@@ -326,9 +327,9 @@ export function WelcomeFaceScanModal({
         landmarker = await FaceLandmarker.createFromOptions(vision, {
           baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
           runningMode: 'VIDEO',
-          numFaces: 1,
-          minFaceDetectionConfidence: 0.85,
-          minFacePresenceConfidence: 0.85,
+          numFaces: 2,
+          minFaceDetectionConfidence: 0.65,
+          minFacePresenceConfidence: 0.65,
         });
 
         const loop = async () => {
@@ -336,8 +337,9 @@ export function WelcomeFaceScanModal({
           if (videoRef.current.readyState >= 2) {
             const now = performance.now();
             const res = landmarker.detectForVideo(videoRef.current, now);
-            const faceCount = res.faceLandmarks?.length ?? 0;
-            const lms = res.faceLandmarks?.[0] ?? [];
+            const selection = selectPrimaryFace(res.faceLandmarks ?? []);
+            const faceCount = selection.effectiveFaceCount;
+            const lms = selection.primaryFace ? [...selection.primaryFace] : [];
 
             if (faceCount !== 1 || lms.length < 300) {
               setHudBox(null);
@@ -474,11 +476,12 @@ export function WelcomeFaceScanModal({
           const landmarker = await FaceLandmarker.createFromOptions(vision, {
             baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
             runningMode: 'IMAGE',
-            numFaces: 1,
-            minFaceDetectionConfidence: 0.85,
+            numFaces: 2,
+            minFaceDetectionConfidence: 0.65,
           });
           const res = landmarker.detect(videoRef.current);
-          const lms = res.faceLandmarks?.[0] ?? [];
+          const selection = selectPrimaryFace(res.faceLandmarks ?? []);
+          const lms = selection.primaryFace ? [...selection.primaryFace] : [];
           const crop = lms.length >= 300 ? alignFaceTo112(videoRef.current, lms, canvas) : null;
           if (crop) {
             const extracted = await extractFaceEmbeddingWithFallback(crop, lms);

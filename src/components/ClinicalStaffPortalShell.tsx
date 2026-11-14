@@ -3387,7 +3387,7 @@ export function ClinicalStaffPortalShell({
           setEnrollTargetPatient(null);
         }}
         onEnrolled={(p) => {
-          flashBanner('success', `บันทึกข้อมูลและ Face ID ของ ${p.fullName} (${p.hn}) เรียบร้อยแล้ว`);
+          flashBanner('success', `ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ! (${p.fullName} • ${p.hn})`);
           void refreshAll();
         }}
       />
