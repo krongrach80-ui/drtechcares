@@ -897,7 +897,7 @@ export function SmartRehabKioskUI({
                           if (holdAccumMs >= holdTargetMs) {
                             holdAccumMs = 0;
                             awaitingReturn = true;
-                            repCelebrateUntil = now + 1200;
+                            repCelebrateUntil = now + 4000;
                             setDemoHoldRemainingSec(0);
                             setDemoValidReps((r) => {
                               const next = Math.min(curEx.target_reps, r + 1);
@@ -909,7 +909,12 @@ export function SmartRehabKioskUI({
                           }
                         } else {
                           holdAccumMs = Math.max(0, holdAccumMs - dtMs * 0.6);
-                          if (now > repCelebrateUntil) {
+                          if (awaitingReturn || now <= repCelebrateUntil) {
+                            setDemoHoldRemainingSec(0);
+                            setDemoPresetState(
+                              demoValidRepsRef.current >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED',
+                            );
+                          } else {
                             setDemoHoldRemainingSec(curEx.hold_sec);
                             setDemoPresetState(measured.trunkTiltDeg > 10 ? 'TRUNK_LEAN' : 'ACTIVE_REP');
                           }

@@ -334,6 +334,9 @@ export function evaluateClinicalBiomechanicsPacket(
   const restThreshold = targetRom * 0.35;
   const attemptThreshold = targetRom * 0.5;
   const romGate = targetRom * 0.95;
+  const isLowerBody = primaryJoint.includes('knee') || primaryJoint.includes('hip');
+  const lowerLimbInstructionTh = isLowerBody ? 'ค่อยๆ เอาขาลงช้าๆ' : 'ค่อยๆ เอาแขนลงช้าๆ';
+  const holdDurationLabel = Number(exercise_prescription.hold_sec.toFixed(1).replace(/\.0$/, ''));
 
   if (
     compensations.length > 0 &&
@@ -372,7 +375,7 @@ export function evaluateClinicalBiomechanicsPacket(
             highlight_color: 'GREEN',
             show_target_arc: true,
           },
-          tts_voice_th: `ผ่อนลงช้าๆ ครบ ${state.valid_reps} ครั้งแล้วครับ`,
+          tts_voice_th: `ครบ ${holdDurationLabel} วินาทีแล้ว ${lowerLimbInstructionTh} ครบ ${state.valid_reps} ครั้งแล้วครับ`,
         },
         nextState: state,
       };
@@ -452,8 +455,8 @@ export function evaluateClinicalBiomechanicsPacket(
             show_target_arc: !finished,
           },
           tts_voice_th: finished
-            ? `เยี่ยมมากครับ ครบ ${state.valid_reps} ครั้ง จบเซ็ตแล้ว`
-            : `ดีมากครับ ค้างไว้ครบ ${state.valid_reps} ครั้งครับ`,
+            ? `ครบ ${holdDurationLabel} วินาทีแล้ว เยี่ยมมากครับ ครบ ${state.valid_reps} ครั้ง จบเซ็ตแล้ว ${lowerLimbInstructionTh} ครับ`
+            : `ครบ ${holdDurationLabel} วินาทีแล้ว ดีมากครับ ครบ ${state.valid_reps} ครั้ง ${lowerLimbInstructionTh} ครับ`,
         },
         nextState: state,
       };

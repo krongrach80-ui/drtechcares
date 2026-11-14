@@ -209,6 +209,23 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     });
     expect(patientPayload.patient).toEqual({ id: 'HN-61716', name: 'Pdasdwa' });
     expect(patientPayload.tts_voice_th).toContain('Pdasdwa');
+    expect(patientPayload.tts_voice_th).toContain('ครบ 3 วินาทีแล้ว');
+    expect(patientPayload.tts_voice_th).toContain('ค่อยๆ เอาแขนลงช้าๆ ครับ');
+
+    const repCompletedPayload = synthesizeDemoPayload({
+      preset: 'REP_COMPLETED',
+      romDeg: 145,
+      trunkTiltDeg: 1.2,
+      distanceM: 2.0,
+      exercise: mapped[0],
+      validReps: 4,
+      invalidReps: 0,
+      holdRemainingSec: 0,
+    });
+    expect(repCompletedPayload.kiosk_state).toBe('REP_COMPLETED');
+    expect(repCompletedPayload.tts_voice_th).toBe(
+      'ครบ 3 วินาทีแล้ว ดีมากครับ ครบ 4 ครั้ง ค่อยๆ เอาแขนลงช้าๆ ครับ',
+    );
   });
 
   it('enforces prescribed arm strictly: raising wrong arm does not measure high ROM and alerts user', () => {
@@ -275,17 +292,21 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(translateVoiceCoachText(holdTh, 'en')).toBe('Very good! Hold this position for 3 seconds.');
     expect(translateVoiceCoachText(holdTh, 'zh')).toBe('很好！请保持这个姿势 3 秒。');
 
-    // 3. Dynamic rep completion and set finished with patient name
-    const repTh = 'ดีมากครับ ครบ 5 ครั้ง ค่อยๆ ผ่อนแขนลงช้าๆ ครับ';
-    expect(translateVoiceCoachText(repTh, 'en')).toContain('5 reps completed');
-    expect(translateVoiceCoachText(repTh, 'zh')).toContain('5 次');
+    // 3. Dynamic rep completion and set finished with patient name & hold-done lower-limb guidance
+    const repTh = 'ครบ 3 วินาทีแล้ว ดีมากครับ ครบ 5 ครั้ง ค่อยๆ เอาแขนลงช้าๆ ครับ';
+    expect(translateVoiceCoachText(repTh, 'en')).toBe(
+      '3 seconds completed! Very good! 5 reps completed. Slowly lower your arm back down.',
+    );
+    expect(translateVoiceCoachText(repTh, 'zh')).toBe(
+      '已保持 3 秒！很好！已完成 5 次，请慢慢将手臂放下来。',
+    );
 
-    const setTh = 'เยี่ยมมากครับ คุณสมชาย ใจดี ฝึกครบ 10 ครั้ง จบเซ็ตแล้วครับ';
+    const setTh = 'ครบ 3 วินาทีแล้ว เยี่ยมมากครับ คุณสมชาย ใจดี ฝึกครบ 10 ครั้ง จบเซ็ตแล้ว ค่อยๆ เอาแขนลงช้าๆ ครับ';
     expect(translateVoiceCoachText(setTh, 'en')).toBe(
-      'Great job, คุณสมชาย ใจดี! You completed 10 reps and finished the set.',
+      '3 seconds completed! Great job, คุณสมชาย ใจดี! You completed 10 reps and finished the set. Slowly lower your arm back down.',
     );
     expect(translateVoiceCoachText(setTh, 'zh')).toBe(
-      '太棒了，คุณสมชาย ใจดี！已完成全部 10 次，本组训练结束。',
+      '已保持 3 秒！太棒了，คุณสมชาย ใจดี！已完成全部 10 次，本组训练结束。请慢慢把手臂放下来。',
     );
 
     // 4. Static alerts: wrong limb, trunk lean, multi-person, impostor, emergency halt

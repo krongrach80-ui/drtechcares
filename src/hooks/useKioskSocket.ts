@@ -441,6 +441,12 @@ export function synthesizeDemoPayload({
     };
   }
 
+  const isLowerBody =
+    exercise.target_joint.includes('knee') || exercise.target_joint.includes('hip');
+  const lowerLimbInstructionTh = isLowerBody
+    ? 'ค่อยๆ เอาขาลงช้าๆ ครับ'
+    : 'ค่อยๆ เอาแขนลงช้าๆ ครับ';
+
   if (preset === 'SET_FINISHED') {
     const patientName = activePatient.name || 'ผู้ป่วย';
     return {
@@ -464,7 +470,7 @@ export function synthesizeDemoPayload({
         highlight_color: 'GREEN',
         show_target_arc: false,
       },
-      tts_voice_th: `เยี่ยมมากครับ ${patientName} ฝึกครบ ${exercise.target_reps} ครั้ง จบเซ็ตแล้วครับ`,
+      tts_voice_th: `ครบ ${exercise.hold_sec} วินาทีแล้ว เยี่ยมมากครับ ${patientName} ฝึกครบ ${exercise.target_reps} ครั้ง จบเซ็ตแล้ว ${lowerLimbInstructionTh}`,
       frame_base64: null,
     };
   }
@@ -491,7 +497,7 @@ export function synthesizeDemoPayload({
         highlight_color: 'GREEN',
         show_target_arc: true,
       },
-      tts_voice_th: `ดีมากครับ ครบ ${validReps} ครั้ง ค่อยๆ ผ่อนแขนลงช้าๆ ครับ`,
+      tts_voice_th: `ครบ ${exercise.hold_sec} วินาทีแล้ว ดีมากครับ ครบ ${validReps} ครั้ง ${lowerLimbInstructionTh}`,
       frame_base64: null,
     };
   }
@@ -833,22 +839,34 @@ export function useKioskSocket(
   // Hold phase smooth countdown when manually inspecting HOLD_PHASE
   useEffect(() => {
     if (!isDemoMode || demoPreset !== 'HOLD_PHASE' || autoCycleDemo) return;
-    setDemoHoldRemainingSec(selectedExercise.hold_sec);
+    let remaining = selectedExercise.hold_sec;
+    setDemoHoldRemainingSec(remaining);
     const interval = window.setInterval(() => {
-      setDemoHoldRemainingSec((prev) => {
-        if (prev <= 0.2) return selectedExercise.hold_sec;
-        return Number((prev - 0.1).toFixed(1));
-      });
+      remaining = Number(Math.max(0, remaining - 0.1).toFixed(1));
+      setDemoHoldRemainingSec(remaining);
+      if (remaining <= 0) {
+        window.clearInterval(interval);
+        setDemoValidReps((r) => {
+          const next = Math.min(selectedExercise.target_reps, r + 1);
+          setDemoPresetState(next >= selectedExercise.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED');
+          return next;
+        });
+      }
     }, 100);
     return () => window.clearInterval(interval);
-  }, [isDemoMode, demoPreset, autoCycleDemo, selectedExercise.hold_sec]);
+  }, [isDemoMode, demoPreset, autoCycleDemo, selectedExercise.hold_sec, selectedExercise.target_reps]);
 
   // Smooth continuous auto-simulation loop when Auto-Cycle Demo is toggled ON
   useEffect(() => {
     if (!isDemoMode || !autoCycleDemo) return;
     let phaseT = 0;
     let holdAccum = 0;
+    let repCelebrateTicks = 0;
     const interval = window.setInterval(() => {
+      if (repCelebrateTicks > 0) {
+        repCelebrateTicks -= 1;
+        return;
+      }
       phaseT += 0.06;
       const target = selectedExercise.target_rom_deg;
       const sine = (Math.sin(phaseT - Math.PI / 2) + 1) / 2;
@@ -862,6 +880,8 @@ export function useKioskSocket(
         setDemoPresetState('HOLD_PHASE');
         if (holdAccum >= selectedExercise.hold_sec) {
           holdAccum = 0;
+          repCelebrateTicks = 75;
+          setDemoHoldRemainingSec(0);
           setDemoValidReps((r) => {
             const next = Math.min(selectedExercise.target_reps, r + 1);
             if (next >= selectedExercise.target_reps) {

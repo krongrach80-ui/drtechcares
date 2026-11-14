@@ -115,6 +115,8 @@ export function SkeletonCanvas({
   const isImpostor = kiosk_state === 'PAUSED_IMPOSTOR' || guard?.status === 'IMPOSTOR';
   const isEmergency = kiosk_state === 'EMERGENCY_HALT';
   const isHold = kiosk_state === 'HOLD_PHASE';
+  const isRepCompletedOrFinished = kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED';
+  const isLowerBody = exercise.target_joint.includes('knee') || exercise.target_joint.includes('hip');
 
   const distanceIdeal = distanceM >= 1.8 && distanceM <= 2.2;
   const accentColor =
@@ -297,11 +299,13 @@ export function SkeletonCanvas({
                     ? `⚠️ ยกแขนผิดข้าง • ${limbPrompt.bannerAlertTh}`
                     : hasTrunkLean
                       ? 'ตรวจพบการเอียงลำตัวชดเชย'
-                      : isHold
-                        ? 'คงท่าตามมุมเป้าหมาย'
-                        : telemetry_analysis.is_form_valid
-                          ? 'ท่าทางถูกต้อง • เคลื่อนไหวต่อเนื่อง'
-                          : 'กรุณาจัดตำแหน่งร่างกาย'}
+                      : isRepCompletedOrFinished
+                        ? `ครบ ${exercise.hold_sec} วินาทีแล้ว • ${isLowerBody ? 'ค่อยๆ เอาขาลงช้าๆ' : 'ค่อยๆ เอาแขนลงช้าๆ'}`
+                        : isHold
+                          ? 'คงท่าตามมุมเป้าหมาย'
+                          : telemetry_analysis.is_form_valid
+                            ? 'ท่าทางถูกต้อง • เคลื่อนไหวต่อเนื่อง'
+                            : 'กรุณาจัดตำแหน่งร่างกาย'}
           </span>
         </motion.div>
       </div>

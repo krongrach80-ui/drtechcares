@@ -268,59 +268,104 @@ export function translateVoiceCoachText(
 
   // Dynamic pattern 3: Set finished with patient name & target reps
   // e.g. "เยี่ยมมากครับ คุณสมชาย ใจดี ฝึกครบ 10 ครั้ง จบเซ็ตแล้วครับ"
+  // e.g. "ครบ 3 วินาทีแล้ว เยี่ยมมากครับ คุณสมชาย ใจดี ฝึกครบ 10 ครั้ง จบเซ็ตแล้ว ค่อยๆ เอาแขนลงช้าๆ ครับ"
   const setFinishedNamedMatch = clean.match(
-    /^เยี่ยมมากครับ\s+(.+?)\s+ฝึกครบ\s+(\d+)\s+ครั้ง\s+จบเซ็ตแล้ว(?:ครับ)?$/,
+    /^(?:ครบ\s+([\d.]+)\s+วินาทีแล้ว\s+)?เยี่ยมมากครับ\s+(.+?)\s+ฝึกครบ\s+(\d+)\s+ครั้ง\s+จบเซ็ตแล้ว(?:ครับ|\s+ค่อยๆ\s*(?:ผ่อน|เอา)(แขน|ขา)ลงช้าๆ\s*ครับ)?$/,
   );
   if (setFinishedNamedMatch) {
-    const [, patientName, reps] = setFinishedNamedMatch;
-    return lang === 'en'
-      ? `Great job, ${patientName}! You completed ${reps} reps and finished the set.`
-      : `太棒了，${patientName}！已完成全部 ${reps} 次，本组训练结束。`;
+    const [, holdSec, patientName, reps, limb] = setFinishedNamedMatch;
+    if (lang === 'en') {
+      const holdPrefix = holdSec ? `${holdSec} seconds completed! ` : '';
+      const limbSuffix = limb
+        ? ` Slowly lower your ${limb === 'ขา' ? 'leg' : 'arm'} back down.`
+        : '';
+      return `${holdPrefix}Great job, ${patientName}! You completed ${reps} reps and finished the set.${limbSuffix}`;
+    }
+    const holdPrefixZh = holdSec ? `已保持 ${holdSec} 秒！` : '';
+    const limbSuffixZh = limb
+      ? `请慢慢把${limb === 'ขา' ? '腿' : '手臂'}放下来。`
+      : '';
+    return `${holdPrefixZh}太棒了，${patientName}！已完成全部 ${reps} 次，本组训练结束。${limbSuffixZh}`;
   }
 
   // Dynamic pattern 4: Set finished without patient name
-  // e.g. "เยี่ยมมากครับ ครบ 10 ครั้ง จบเซ็ตแล้ว" | "เก่งมากครับ! ครบ 10 ครั้งแล้ว ค่อยๆ วางลงครับ"
+  // e.g. "เยี่ยมมากครับ ครบ 10 ครั้ง จบเซ็ตแล้ว" | "ครบ 3 วินาทีแล้ว เยี่ยมมากครับ ครบ 10 ครั้ง จบเซ็ตแล้ว ค่อยๆ เอาแขนลงช้าๆ ครับ"
   const setFinishedShortMatch = clean.match(
-    /^(?:เยี่ยมมากครับ|เก่งมากครับ)!?\s*(?:ฝึก)?ครบ\s+(\d+)\s+ครั้ง(?:แล้ว)?(?:\s+(?:จบเซ็ตแล้ว|ค่อยๆ\s*วางลง)(?:ครับ)?)?$/,
+    /^(?:ครบ\s+([\d.]+)\s+วินาทีแล้ว\s+)?(?:เยี่ยมมากครับ|เก่งมากครับ)!?\s*(?:ฝึก)?ครบ\s+(\d+)\s+ครั้ง(?:แล้ว)?(?:\s+(?:จบเซ็ตแล้ว|ค่อยๆ\s*วางลง)(?:ครับ)?)?(?:\s+ค่อยๆ\s*(?:ผ่อน|เอา)(แขน|ขา)ลงช้าๆ\s*ครับ)?$/,
   );
   if (setFinishedShortMatch) {
-    const reps = setFinishedShortMatch[1];
-    return lang === 'en'
-      ? `Great job! All ${reps} reps are complete. You finished the set.`
-      : `太棒了！已完成全部 ${reps} 次，本组训练结束。`;
+    const [, holdSec, reps, limb] = setFinishedShortMatch;
+    if (lang === 'en') {
+      const holdPrefix = holdSec ? `${holdSec} seconds completed! ` : '';
+      const limbSuffix = limb
+        ? ` Slowly lower your ${limb === 'ขา' ? 'leg' : 'arm'} back down.`
+        : '';
+      return `${holdPrefix}Great job! All ${reps} reps are complete. You finished the set.${limbSuffix}`;
+    }
+    const holdPrefixZh = holdSec ? `已保持 ${holdSec} 秒！` : '';
+    const limbSuffixZh = limb
+      ? `请慢慢把${limb === 'ขา' ? '腿' : '手臂'}放下来。`
+      : '';
+    return `${holdPrefixZh}太棒了！已完成全部 ${reps} 次，本组训练结束。${limbSuffixZh}`;
   }
 
   // Dynamic pattern 5: Rep completed
-  // e.g. "ดีมากครับ ครบ 4 ครั้ง ค่อยๆ ผ่อนแขนลงช้าๆ ครับ"
+  // e.g. "ครบ 3 วินาทีแล้ว ดีมากครับ ครบ 4 ครั้ง ค่อยๆ เอาแขนลงช้าๆ ครับ" | "ดีมากครับ ครบ 4 ครั้ง ค่อยๆ ผ่อนแขนลงช้าๆ ครับ"
   const repCompletedMatch = clean.match(
-    /^ดีมากครับ\s+ครบ\s+(\d+)\s+ครั้ง\s+ค่อยๆ\s*ผ่อนแขนลงช้าๆ\s*ครับ$/,
+    /^(?:ครบ\s+([\d.]+)\s+วินาทีแล้ว\s+)?ดีมากครับ\s+ครบ\s+(\d+)\s+ครั้ง\s+ค่อยๆ\s*(?:ผ่อน|เอา)(แขน|ขา)ลงช้าๆ\s*ครับ$/,
   );
   if (repCompletedMatch) {
-    const reps = repCompletedMatch[1];
-    return lang === 'en'
-      ? `Very good! ${reps} reps completed. Slowly lower your arm back down.`
-      : `很好！已完成 ${reps} 次，请慢慢将手臂放下来。`;
+    const [, holdSec, reps, limb] = repCompletedMatch;
+    const isLeg = limb === 'ขา';
+    if (lang === 'en') {
+      const holdPrefix = holdSec ? `${holdSec} seconds completed! ` : '';
+      return `${holdPrefix}Very good! ${reps} reps completed. Slowly lower your ${isLeg ? 'leg' : 'arm'} back down.`;
+    }
+    const holdPrefixZh = holdSec ? `已保持 ${holdSec} 秒！` : '';
+    return `${holdPrefixZh}很好！已完成 ${reps} 次，请慢慢将${isLeg ? '腿' : '手臂'}放下来。`;
   }
 
   // Dynamic pattern 6: Edge Vision fractional rep progress
-  // e.g. "เยี่ยมมากครับ ครบ 4/10 ครั้ง ค่อยๆ กลับสู่ท่าพัก"
+  // e.g. "ครบ 3 วินาทีแล้ว เยี่ยมมากครับ ครบ 4/10 ครั้ง ค่อยๆ เอาแขนลงช้าๆ ครับ"
   const repFractionMatch = clean.match(
-    /^เยี่ยมมากครับ\s+ครบ\s+(\d+)\s*\/\s*(\d+)\s+ครั้ง(?:\s+(.+))?$/,
+    /^(?:ครบ\s+([\d.]+)\s+วินาทีแล้ว\s+)?เยี่ยมมากครับ\s+ครบ\s+(\d+)\s*\/\s*(\d+)\s+ครั้ง(?:\s+(.+))?$/,
   );
   if (repFractionMatch) {
-    const [, done, total] = repFractionMatch;
-    return lang === 'en'
-      ? `Great! Completed ${done} of ${total} reps. Slowly return to resting position.`
-      : `太棒了！已完成第 ${done} 次，共 ${total} 次，请慢慢回到起始姿势。`;
+    const [, holdSec, done, total, trailing] = repFractionMatch;
+    const isArm = trailing?.includes('แขน');
+    const isLeg = trailing?.includes('ขา');
+    if (lang === 'en') {
+      const holdPrefix = holdSec ? `${holdSec} seconds completed! ` : '';
+      const lowerText = isLeg
+        ? 'Slowly lower your leg back down.'
+        : isArm
+          ? 'Slowly lower your arm back down.'
+          : 'Slowly return to resting position.';
+      return `${holdPrefix}Great! Completed ${done} of ${total} reps. ${lowerText}`;
+    }
+    const holdPrefixZh = holdSec ? `已保持 ${holdSec} 秒！` : '';
+    const lowerTextZh = isLeg
+      ? '请慢慢把腿放下来。'
+      : isArm
+        ? '请慢慢把手臂放下来。'
+        : '请慢慢回到起始姿势。';
+    return `${holdPrefixZh}太棒了！已完成第 ${done} 次，共 ${total} 次，${lowerTextZh}`;
   }
 
-  // Dynamic pattern 7: "ผ่อนลงช้าๆ ครบ 3 ครั้งแล้วครับ" / "ดีมากครับ ค้างไว้ครบ 3 ครั้งครับ"
-  const lowerSlowMatch = clean.match(/^ผ่อนลงช้าๆ\s+ครบ\s+(\d+)\s+ครั้งแล้วครับ$/);
+  // Dynamic pattern 7: "ครบ 3 วินาทีแล้ว ค่อยๆ เอาแขนลงช้าๆ ครบ 3 ครั้งแล้วครับ" / "ผ่อนลงช้าๆ ครบ 3 ครั้งแล้วครับ" / "ดีมากครับ ค้างไว้ครบ 3 ครั้งครับ"
+  const lowerSlowMatch = clean.match(
+    /^(?:ครบ\s+([\d.]+)\s+วินาทีแล้ว\s+)?(?:ค่อยๆ\s*เอา(แขน|ขา)ลงช้าๆ|ผ่อนลงช้าๆ)\s+ครบ\s+(\d+)\s+ครั้งแล้วครับ$/,
+  );
   if (lowerSlowMatch) {
-    const reps = lowerSlowMatch[1];
-    return lang === 'en'
-      ? `Lower slowly. You have completed ${reps} reps.`
-      : `请慢慢放下，您已完成 ${reps} 次。`;
+    const [, holdSec, limb, reps] = lowerSlowMatch;
+    const limbEn = limb === 'ขา' ? 'your leg ' : limb === 'แขน' ? 'your arm ' : '';
+    const limbZh = limb === 'ขา' ? '把腿' : limb === 'แขน' ? '把手臂' : '';
+    if (lang === 'en') {
+      const holdPrefix = holdSec ? `${holdSec} seconds completed! ` : '';
+      return `${holdPrefix}Lower ${limbEn}slowly. You have completed ${reps} reps.`;
+    }
+    const holdPrefixZh = holdSec ? `已保持 ${holdSec} 秒！` : '';
+    return `${holdPrefixZh}请慢慢${limbZh}放下，您已完成 ${reps} 次。`;
   }
 
   const holdCompletedMatch = clean.match(/^ดีมากครับ\s+ค้างไว้ครบ\s+(\d+)\s+ครั้งครับ$/);
@@ -478,6 +523,10 @@ export function VoiceCoachBanner({
   const isSpeakingRef = useRef<boolean>(false);
   const lastSpokenKeyRef = useRef<string>('');
   const lastSpokenAtRef = useRef<number>(0);
+  const lastSpokenStateRef = useRef<KioskState | null>(null);
+  const lastSpokenLangRef = useRef<VoiceCoachLanguage | null>(null);
+  const latestKioskStateRef = useRef<KioskState>(kioskState);
+  latestKioskStateRef.current = kioskState;
   const pendingSpeakTimerRef = useRef<number | null>(null);
   const webSpeechTimerRef = useRef<number | null>(null);
   const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
@@ -670,6 +719,8 @@ export function VoiceCoachBanner({
 
       lastSpokenKeyRef.current = `${targetLang}:${clean}`;
       lastSpokenAtRef.current = Date.now();
+      lastSpokenStateRef.current = latestKioskStateRef.current;
+      lastSpokenLangRef.current = targetLang;
 
       // Primary path: play real neural MP3 audio via same-origin /api/tts proxy so Thai,
       // English, and Chinese work even when OS/browser lacks local th-TH or zh-CN TTS voices.
@@ -782,27 +833,31 @@ export function VoiceCoachBanner({
     const now = Date.now();
     const messageKey = `${voiceLang}:${clean}`;
     const isEmergency = kioskState === 'EMERGENCY_HALT';
+    const isRepCompletion = kioskState === 'REP_COMPLETED' || kioskState === 'SET_FINISHED';
+    const isPriority = isEmergency || isRepCompletion;
     const isSame = messageKey === lastSpokenKeyRef.current;
 
     if (!isEmergency && isSame && now - lastSpokenAtRef.current < 3500) {
       return;
     }
 
-    // Avoid cutting off an active HOLD_PHASE sentence mid-word on 1s countdown updates
-    if (!isEmergency && kioskState === 'HOLD_PHASE' && isSpeakingRef.current && lastSpokenKeyRef.current.startsWith(`${voiceLang}:`)) {
-      const waitMs = Math.max(250, 1200 - (now - lastSpokenAtRef.current));
-      pendingSpeakTimerRef.current = window.setTimeout(() => {
-        pendingSpeakTimerRef.current = null;
-        if (!isSpeakingRef.current) {
-          speakNow(clean, voiceLang);
-        }
-      }, waitMs);
-      return clearPendingSpeakTimer;
+    // Avoid restarting HOLD_PHASE countdown speech on 1s ticks if HOLD_PHASE was already announced recently
+    if (!isPriority && kioskState === 'HOLD_PHASE') {
+      const holdSpokenRecently =
+        lastSpokenStateRef.current === 'HOLD_PHASE' &&
+        lastSpokenLangRef.current === voiceLang &&
+        now - lastSpokenAtRef.current < 2800;
+      if (
+        holdSpokenRecently ||
+        (isSpeakingRef.current && lastSpokenKeyRef.current.startsWith(`${voiceLang}:`))
+      ) {
+        return clearPendingSpeakTimer;
+      }
     }
 
     const elapsed = now - lastSpokenAtRef.current;
     const minCooldownMs = 650;
-    if (!isEmergency && elapsed < minCooldownMs) {
+    if (!isPriority && elapsed < minCooldownMs) {
       pendingSpeakTimerRef.current = window.setTimeout(() => {
         pendingSpeakTimerRef.current = null;
         speakNow(clean, voiceLang);

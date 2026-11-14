@@ -284,10 +284,16 @@ class ClinicalRehabFSM:
                     self.valid_reps += 1
                     self.fsm_state = "REP_DONE"
                     self._hold_start_ts = None
+                    hold_label = f"{self.hold_sec:g}"
+                    lower_phrase = (
+                        "ค่อยๆ เอาขาลงช้าๆ ครับ"
+                        if self.rule.metric_kind in ("knee_extension", "hip_flexion", "heel_raise")
+                        else "ค่อยๆ เอาแขนลงช้าๆ ครับ"
+                    )
                     if self.valid_reps >= self.target_reps:
-                        self._last_tts = f"เก่งมากครับ! ครบ {self.target_reps} ครั้งแล้ว ค่อยๆ วางลงครับ"
+                        self._last_tts = f"ครบ {hold_label} วินาทีแล้ว เก่งมากครับ! ครบ {self.target_reps} ครั้งแล้ว {lower_phrase}"
                     else:
-                        self._last_tts = f"เยี่ยมมากครับ ครบ {self.valid_reps}/{self.target_reps} ครั้ง ค่อยๆ กลับสู่ท่าพัก"
+                        self._last_tts = f"ครบ {hold_label} วินาทีแล้ว เยี่ยมมากครับ ครบ {self.valid_reps}/{self.target_reps} ครั้ง {lower_phrase}"
                 else:
                     self._last_tts = f"ค้างท่าไว้ {self.hold_remaining_sec:.1f} วินาที"
 
