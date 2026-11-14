@@ -3802,20 +3802,20 @@ export function ClinicalStaffPortalShell({
       {/* Physical Card Game Modal */}
       {cardGameModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-2 sm:p-4 backdrop-blur-sm">
-          <div className="w-[98vw] max-w-[1600px] max-h-[96vh] overflow-y-auto rounded-3xl bg-white p-4 sm:p-7 shadow-2xl border-2 border-slate-200 space-y-4">
-            <div className="flex items-center justify-between border-b-2 border-slate-100 pb-3">
-              <div className="flex items-center gap-3">
-                <Gamepad2 className="h-7 w-7 text-emerald-600 shrink-0" />
-                <h3 className="text-lg sm:text-2xl font-black text-slate-900">
+          <div className="w-[95vw] max-w-[940px] max-h-[96vh] overflow-y-auto overflow-x-hidden rounded-[2rem] bg-white p-4 sm:p-6 shadow-2xl border-2 border-slate-200 space-y-4">
+            <div className="flex items-center justify-between gap-3 border-b-2 border-slate-100 pb-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <Gamepad2 className="h-9 w-9 text-emerald-600 shrink-0" />
+                <h3 className="mg-modal-title font-black text-slate-900">
                   เกมการ์ดกายภาพบำบัด 10 ข้อ (ทดสอบระบบมือ/กล้อง หรือคลิกปุ่มตอบ)
                 </h3>
               </div>
               <button
                 type="button"
                 onClick={() => setCardGameModalOpen(false)}
-                className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100 cursor-pointer shrink-0"
+                className="flex h-12 w-12 items-center justify-center rounded-2xl text-slate-500 hover:bg-slate-100 cursor-pointer shrink-0"
               >
-                <X className="h-7 w-7" />
+                <X className="h-8 w-8" />
               </button>
             </div>
             <PhysicalCardGame
