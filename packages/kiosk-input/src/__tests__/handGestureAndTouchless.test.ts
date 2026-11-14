@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { POSE_INDEX, type PoseLandmark } from '@drtechcares/pose-engine';
 import {
+  detectRaiseBothHands,
+  detectTwoRaisedHandLandmarks,
   FacePresenceTracker,
   HandGestureVerifier,
   HeadNodDetector,
@@ -72,6 +75,23 @@ describe('Touchless Kiosk Input & Cognitive Hand Verification', () => {
     expect(tts.speak('สวัสดีค่ะ', 'th', false, 1000)).toBe(true);
     expect(tts.speak('ยกแขนขึ้น', 'th', false, 2000)).toBe(false);
     expect(tts.speak('ยกแขนขึ้น', 'th', false, 5000)).toBe(true);
+  });
+
+  it('detects two raised hands for seated kiosk users without visible hips and via HandLandmarker', () => {
+    const leftHand = buildOpenRaisedHand('Left', 0.3).landmarks;
+    const rightHand = buildOpenRaisedHand('Right', 0.7).landmarks;
+    expect(detectTwoRaisedHandLandmarks([leftHand, rightHand])).toBe(true);
+    expect(detectTwoRaisedHandLandmarks([leftHand])).toBe(false);
+    expect(detectTwoRaisedHandLandmarks([leftHand, leftHand])).toBe(false);
+
+    const poseLandmarks: PoseLandmark[] = Array.from({ length: 33 }, () => ({ x: 0, y: 0, z: 0, visibility: 0 }));
+    poseLandmarks[POSE_INDEX.LEFT_SHOULDER] = { x: 0.35, y: 0.55, z: 0, visibility: 0.9 };
+    poseLandmarks[POSE_INDEX.RIGHT_SHOULDER] = { x: 0.65, y: 0.55, z: 0, visibility: 0.9 };
+    poseLandmarks[POSE_INDEX.LEFT_WRIST] = { x: 0.3, y: 0.58, z: 0, visibility: 0.85 };
+    poseLandmarks[POSE_INDEX.RIGHT_WRIST] = { x: 0.7, y: 0.57, z: 0, visibility: 0.85 };
+    // Hips remain out-of-frame (visibility 0)
+    const seatedRes = detectRaiseBothHands(poseLandmarks);
+    expect(seatedRes.bothRaised).toBe(true);
   });
 });
 

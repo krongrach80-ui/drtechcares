@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
+import { FaceLandmarker, FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import type {
   DailyScheduleDay,
   DrTechCaresApiClient,
@@ -25,7 +25,7 @@ import {
   type BiometricVerificationJson,
   type LivenessAndPoseReport,
 } from '@drtechcares/face-client';
-import { FacePresenceTracker } from '@drtechcares/kiosk-input';
+import { detectTwoRaisedHandLandmarks, FacePresenceTracker } from '@drtechcares/kiosk-input';
 import {
   BURST_FRAME_COUNT,
   purgeLegacyBiometricCache,
@@ -229,6 +229,9 @@ export function KioskBiometricLoginView({
   const [inspectionInfo, setInspectionInfo] = useState<BiometricVerificationJson | null>(null);
   const [lastVerifyResult, setLastVerifyResult] = useState<KioskFaceVerifyResponse | null>(null);
   const [verifiedModalPayload, setVerifiedModalPayload] = useState<KioskLoginSuccessPayload | null>(null);
+  const [twoHandProgress, setTwoHandProgress] = useState(0);
+  const [twoHandDetected, setTwoHandDetected] = useState(false);
+  const [twoHandCameraReady, setTwoHandCameraReady] = useState(false);
 
   const [showPinModal, setShowPinModal] = useState(false);
   const [pinDigits, setPinDigits] = useState('');
@@ -250,7 +253,10 @@ export function KioskBiometricLoginView({
   } | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const confirmVideoRef = useRef<HTMLVideoElement | null>(null);
   const alignCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const onPatientAuthenticatedRef = useRef(onPatientAuthenticated);
+  onPatientAuthenticatedRef.current = onPatientAuthenticated;
   const presenceRef = useRef(new FacePresenceTracker());
   const loginCtrlRef = useRef(new SingleScanLoginController());
   const verifyingLockRef = useRef(false);
@@ -699,6 +705,185 @@ export function KioskBiometricLoginView({
       }
     };
   }, [apiClient, cameraPaused, isNotFoundStage, scanGeneration, showPinModal, staffModalOpen, verifiedModalPayload]);
+
+  // Two-Hand Gesture Auto-Proceed Detection while Verified Patient Modal is visible
+  useEffect(() => {
+    if (!verifiedModalPayload || staffModalOpen || cameraPaused) {
+      setTwoHandProgress(0);
+      setTwoHandDetected(false);
+      setTwoHandCameraReady(false);
+      return;
+    }
+
+    let active = true;
+    let stream: MediaStream | null = null;
+    let rafId = 0;
+    let handLandmarker: HandLandmarker | null = null;
+    let lastTs = 0;
+    let lastVideoTime = -1;
+    let lastFrameAt = 0;
+    let accumulatedMs = 0;
+    let lastReportedProgress = 0;
+    let lastReportedDetected = false;
+    let triggered = false;
+    const HOLD_MS = 550;
+    const payload = verifiedModalPayload;
+    const confirmVideoEl = confirmVideoRef.current;
+
+    const cleanupMedia = () => {
+      cancelAnimationFrame(rafId);
+      handLandmarker?.close();
+      handLandmarker = null;
+      stream?.getTracks().forEach((track) => track.stop());
+      stream = null;
+      if (confirmVideoEl) {
+        confirmVideoEl.srcObject = null;
+      }
+    };
+
+    async function acquireConfirmStream(): Promise<MediaStream | null> {
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) return null;
+      const deviceId = await selectClinicalCameraDeviceId();
+      const constraints: MediaStreamConstraints = {
+        video: deviceId
+          ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 60 }, facingMode: 'user' }
+          : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 60 }, facingMode: 'user' },
+        audio: false,
+      };
+      try {
+        return await navigator.mediaDevices.getUserMedia(constraints);
+      } catch {
+        // Wait briefly for the face-scan camera tracks to finish releasing hardware lock
+        await new Promise((r) => window.setTimeout(r, 180));
+        if (!active) return null;
+        return await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 360 }, facingMode: 'user' },
+          audio: false,
+        });
+      }
+    }
+
+    async function startTwoHandDetector() {
+      try {
+        setTwoHandProgress(0);
+        setTwoHandDetected(false);
+        setTwoHandCameraReady(false);
+
+        stream = await acquireConfirmStream();
+        if (!active || !stream || !confirmVideoRef.current) {
+          stream?.getTracks().forEach((t) => t.stop());
+          stream = null;
+          return;
+        }
+        confirmVideoRef.current.srcObject = stream;
+        await confirmVideoRef.current.play();
+        if (!active) return;
+        setTwoHandCameraReady(true);
+
+        let vision;
+        for (const wasmBase of [
+          '/mediapipe/wasm',
+          '/models/wasm',
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
+        ]) {
+          try {
+            vision = await FilesetResolver.forVisionTasks(wasmBase);
+            break;
+          } catch {
+            // Try next WASM base path
+          }
+        }
+        if (!vision || !active) return;
+
+        for (const modelAssetPath of [
+          '/models/hand_landmarker.task',
+          'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+        ]) {
+          for (const delegate of ['GPU', 'CPU'] as const) {
+            try {
+              const created = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath, delegate },
+                runningMode: 'VIDEO',
+                numHands: 2,
+                minHandDetectionConfidence: 0.35,
+                minHandPresenceConfidence: 0.35,
+                minTrackingConfidence: 0.35,
+              });
+              if (!active) {
+                created.close();
+                return;
+              }
+              handLandmarker = created;
+              break;
+            } catch {
+              // Fallback to CPU delegate or alternate URL
+            }
+          }
+          if (handLandmarker) break;
+        }
+
+        if (!handLandmarker || !active) return;
+
+        let latestBothHandsUp = false;
+        const loop = () => {
+          if (!active || triggered || !confirmVideoRef.current || !handLandmarker) return;
+          const v = confirmVideoRef.current;
+          const now = performance.now();
+          const dt = lastFrameAt > 0 ? Math.min(100, Math.max(1, now - lastFrameAt)) : 16;
+          lastFrameAt = now;
+
+          if (v.readyState >= 2 && v.videoWidth > 0 && v.currentTime !== lastVideoTime) {
+            lastVideoTime = v.currentTime;
+            const detectTs = Math.max(lastTs + 1, Math.round(now));
+            lastTs = detectTs;
+            const res = handLandmarker.detectForVideo(v, detectTs);
+            latestBothHandsUp = detectTwoRaisedHandLandmarks(res.landmarks ?? []);
+          }
+
+          if (latestBothHandsUp) {
+            accumulatedMs = Math.min(HOLD_MS, accumulatedMs + dt);
+          } else {
+            accumulatedMs = Math.max(0, accumulatedMs - dt * 1.5);
+          }
+
+          const progress = Math.min(1, accumulatedMs / HOLD_MS);
+          if (latestBothHandsUp !== lastReportedDetected) {
+            lastReportedDetected = latestBothHandsUp;
+            setTwoHandDetected(latestBothHandsUp);
+          }
+          if (
+            Math.abs(progress - lastReportedProgress) >= 0.02 ||
+            (progress === 0 && lastReportedProgress !== 0) ||
+            progress >= 1
+          ) {
+            lastReportedProgress = progress;
+            setTwoHandProgress(progress);
+          }
+
+          if (progress >= 1 && !triggered) {
+            triggered = true;
+            active = false;
+            cleanupMedia();
+            onPatientAuthenticatedRef.current(payload);
+            return;
+          }
+
+          rafId = requestAnimationFrame(loop);
+        };
+
+        rafId = requestAnimationFrame(loop);
+      } catch {
+        // Manual button click remains available if camera is blocked
+      }
+    }
+
+    startTwoHandDetector();
+
+    return () => {
+      active = false;
+      cleanupMedia();
+    };
+  }, [verifiedModalPayload, staffModalOpen, cameraPaused]);
 
   const handleCallStaff = async () => {
     try {
@@ -1333,13 +1518,56 @@ export function KioskBiometricLoginView({
             <p className="text-xs text-slate-500 mt-1 font-mono">
               HN: {verifiedModalPayload.patient.hn} • นัดถัดไป: {verifiedModalPayload.patient.nextAppointmentDate}
             </p>
-            <div className="mt-5 flex flex-col gap-2.5">
+
+            {/* Compact Live Camera Preview for 2-Hand Start Gesture */}
+            <div className="mt-4 relative mx-auto w-full h-36 rounded-2xl overflow-hidden bg-slate-900 border-2 border-emerald-400/50 shadow-inner">
+              <video
+                ref={confirmVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-full object-cover"
+                style={{ transform: 'scaleX(-1)' }}
+              />
+              {!twoHandCameraReady && (
+                <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80 text-xs font-bold text-slate-300">
+                  กำลังเปิดกล้องตรวจจับการยก 2 มือ...
+                </div>
+              )}
+              <div className="absolute inset-x-2 bottom-2 flex items-center justify-center">
+                <span
+                  className={`px-3 py-1 rounded-full text-[11px] font-extrabold backdrop-blur border shadow ${
+                    twoHandDetected
+                      ? 'bg-emerald-500/90 text-white border-emerald-200 animate-pulse'
+                      : 'bg-slate-950/75 text-emerald-200 border-emerald-500/40'
+                  }`}
+                >
+                  {twoHandDetected
+                    ? `👐 ตรวจพบยก 2 มือแล้ว! ค้างไว้ ${Math.round(twoHandProgress * 100)}%`
+                    : '📷 ชู 2 มือขึ้นหน้ากล้องค้างไว้ 0.5 วินาที เพื่อเริ่มฝึกอัตโนมัติ'}
+                </span>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-2.5">
               <button
                 type="button"
                 onClick={() => onPatientAuthenticated(verifiedModalPayload)}
-                className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg cursor-pointer"
+                className="relative overflow-hidden w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg cursor-pointer"
               >
-                👐 ยก 2 มือขึ้น หรือ กดที่นี่เพื่อเริ่มฝึก ➔
+                {twoHandProgress > 0 && (
+                  <span
+                    className="pointer-events-none absolute inset-y-0 left-0 bg-emerald-300/35 transition-[width] duration-75"
+                    style={{ width: `${Math.round(twoHandProgress * 100)}%` }}
+                  />
+                )}
+                <span className="relative z-10 flex items-center justify-center gap-2">
+                  <span>
+                    {twoHandProgress > 0
+                      ? `👐 ยก 2 มือค้างไว้... (${Math.round(twoHandProgress * 100)}%)`
+                      : '👐 ยก 2 มือขึ้น หรือ กดที่นี่เพื่อเริ่มฝึก ➔'}
+                  </span>
+                </span>
               </button>
               {onOpenTelemetrySimulator && (
                 <button

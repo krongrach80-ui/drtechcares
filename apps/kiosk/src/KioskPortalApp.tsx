@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { FaceLandmarker, FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
+import { FaceLandmarker, FilesetResolver, HandLandmarker, PoseLandmarker } from '@mediapipe/tasks-vision';
 import type {
   DailyScheduleDay,
   DrTechCaresApiClient,
@@ -16,6 +16,7 @@ import {
   type BiometricVerificationJson,
 } from '@drtechcares/face-client';
 import {
+  detectTwoRaisedHandLandmarks,
   FacePresenceTracker,
   RaiseBothHandsTracker,
 } from '@drtechcares/kiosk-input';
@@ -232,7 +233,7 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
     };
   }, [flowState, apiClient]);
 
-  // STATE 3 (GESTURE_CONTROL): "ยก 2 มือขึ้นเพื่อเริ่ม" via real PoseLandmarker
+  // STATE 3 (GESTURE_CONTROL): "ยก 2 มือขึ้นเพื่อเริ่ม" via PoseLandmarker + HandLandmarker (2 hands)
   useEffect(() => {
     if (flowState !== 'GESTURE_CONTROL') return;
 
@@ -240,6 +241,11 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
     let stream: MediaStream | null = null;
     let rafId = 0;
     let poseLandmarker: PoseLandmarker | null = null;
+    let handLandmarker: HandLandmarker | null = null;
+    let lastTs = 0;
+    let lastFrameAt = 0;
+    let handHoldMs = 0;
+    const HAND_HOLD_MS = 650;
 
     async function runRaiseBothHands() {
       try {
@@ -253,25 +259,72 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
         await videoRef.current.play();
 
         const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
-        poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-          baseOptions: { modelAssetPath: '/models/pose_landmarker_full.task' },
-          runningMode: 'VIDEO',
-          numPoses: 1,
-        });
+        if (!active) return;
+
+        for (const delegate of ['GPU', 'CPU'] as const) {
+          try {
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+              baseOptions: { modelAssetPath: '/models/hand_landmarker.task', delegate },
+              runningMode: 'VIDEO',
+              numHands: 2,
+              minHandDetectionConfidence: 0.35,
+              minHandPresenceConfidence: 0.35,
+              minTrackingConfidence: 0.35,
+            });
+            break;
+          } catch {
+            // Try CPU delegate if GPU fails
+          }
+        }
+
+        try {
+          poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+            baseOptions: { modelAssetPath: '/models/pose_landmarker_full.task' },
+            runningMode: 'VIDEO',
+            numPoses: 1,
+          });
+        } catch {
+          // HandLandmarker alone can still drive GESTURE_CONTROL
+        }
 
         const loop = () => {
-          if (!active || !videoRef.current || !poseLandmarker) return;
+          if (!active || !videoRef.current || (!poseLandmarker && !handLandmarker)) return;
+          const now = performance.now();
+          const dt = lastFrameAt > 0 ? Math.min(100, Math.max(1, now - lastFrameAt)) : 16;
+          lastFrameAt = now;
+
           if (videoRef.current.readyState >= 2) {
-            const now = performance.now();
-            const res = poseLandmarker.detectForVideo(videoRef.current, now);
-            const pose = res.landmarks?.[0];
-            if (pose) {
-              const status = raiseTrackerRef.current.update(pose, now);
-              setRaiseProgress(status.holdProgress);
-              if (status.confirmed) {
-                setFlowState('CONDITIONAL_EXECUTION');
-                return;
+            const detectTs = Math.max(lastTs + 1, Math.round(now));
+            lastTs = detectTs;
+
+            let bestProgress = 0;
+            let confirmed = false;
+
+            if (handLandmarker) {
+              const handRes = handLandmarker.detectForVideo(videoRef.current, detectTs);
+              const twoHandsDetected = detectTwoRaisedHandLandmarks(handRes.landmarks ?? []);
+              handHoldMs = twoHandsDetected
+                ? Math.min(HAND_HOLD_MS, handHoldMs + dt)
+                : Math.max(0, handHoldMs - dt * 1.5);
+              bestProgress = Math.min(1, handHoldMs / HAND_HOLD_MS);
+              if (bestProgress >= 1) confirmed = true;
+            }
+
+            if (poseLandmarker && !confirmed) {
+              const res = poseLandmarker.detectForVideo(videoRef.current, detectTs + 1);
+              lastTs = detectTs + 1;
+              const pose = res.landmarks?.[0];
+              if (pose) {
+                const status = raiseTrackerRef.current.update(pose, now);
+                bestProgress = Math.max(bestProgress, status.holdProgress);
+                if (status.confirmed) confirmed = true;
               }
+            }
+
+            setRaiseProgress(bestProgress);
+            if (confirmed) {
+              setFlowState('CONDITIONAL_EXECUTION');
+              return;
             }
           }
           rafId = requestAnimationFrame(loop);
@@ -287,6 +340,7 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
       active = false;
       cancelAnimationFrame(rafId);
       poseLandmarker?.close();
+      handLandmarker?.close();
       stream?.getTracks().forEach((tr) => tr.stop());
     };
   }, [flowState]);

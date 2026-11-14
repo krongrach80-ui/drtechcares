@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { AdminPortalApp } from '@apps/admin';
-import { KioskPortalApp } from '@apps/kiosk';
+import { KioskPortalApp, PhysicalCardGame, type PhysicalCardGameSummary } from '@apps/kiosk';
 import { PtPortalApp } from '@apps/pt';
 import { DrTechCaresApiClient, type UserAccount } from '@drtechcares/api-client';
 import { PatientPersonalPortal } from './PatientPersonalPortal';
@@ -12,7 +12,7 @@ import {
 import { SmartRehabKioskUI } from './components/SmartRehabKioskUI';
 
 type AppRoute = '/' | '/login' | '/admin' | '/pt' | '/patient';
-type KioskViewMode = 'login' | 'rehab' | 'classic';
+type KioskViewMode = 'login' | 'training' | 'rehab' | 'classic';
 
 function resolveRoute(pathname: string): AppRoute {
   if (pathname.startsWith('/admin')) return '/admin';
@@ -111,6 +111,74 @@ export function App() {
       );
     }
 
+    if (kioskMode === 'training' && authenticatedPatient) {
+      const saveTrainingSession = async (summary: PhysicalCardGameSummary) => {
+        const accuracy = Math.round((summary.correct / Math.max(1, summary.total)) * 100);
+        try {
+          await apiClient.recordRehabSession({
+            patientId: authenticatedPatient.patient.id,
+            activityType: 'minigame',
+            exerciseId: 'cognitive-card-game',
+            exerciseName: 'มินิเกมฝึกสมอง (การ์ดกายภาพ)',
+            completedSets: 1,
+            completedReps: summary.total,
+            accuracyPercent: accuracy,
+            maxRomDeg: 0,
+            painStopTriggered: false,
+            aiFeedback: `Cognitive Accuracy ${accuracy}% (${summary.correct}/${summary.total})`,
+            kinematicsReplay: [],
+            minigameScore: summary,
+          });
+        } catch {
+          // Allow patient summary screen to remain responsive even if offline
+        }
+      };
+
+      return (
+        <div className="min-h-screen w-full bg-slate-950 flex flex-col">
+          <div className="bg-[#042924] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs border-b border-emerald-500/20">
+            <div className="flex items-center gap-2 font-bold">
+              <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-300">
+                AI Kiosk Training
+              </span>
+              <span>
+                ผู้ป่วย: {authenticatedPatient.patient.fullName} (HN: {authenticatedPatient.patient.hn})
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setKioskMode('rehab')}
+                className="rounded-xl border border-sky-400/40 bg-sky-500/15 px-3 py-1.5 font-bold text-sky-200 hover:bg-sky-500/30 cursor-pointer"
+              >
+                Smart Rehab Telemetry
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthenticatedPatient(null);
+                  setKioskMode('login');
+                }}
+                className="rounded-xl border border-emerald-400/50 bg-emerald-600/25 px-3 py-1.5 font-bold text-emerald-100 hover:bg-emerald-600/40 cursor-pointer"
+              >
+                ← กลับหน้าสแกนใบหน้า (Kiosk Login)
+              </button>
+            </div>
+          </div>
+          <div className="flex-1 flex flex-col p-3 sm:p-5">
+            <PhysicalCardGame
+              patientName={`${authenticatedPatient.patient.fullName} (${authenticatedPatient.patient.hn})`}
+              onSessionFinished={saveTrainingSession}
+              onComplete={() => {
+                setAuthenticatedPatient(null);
+                setKioskMode('login');
+              }}
+            />
+          </div>
+        </div>
+      );
+    }
+
     if (kioskMode === 'rehab') {
       return (
         <div className="relative min-h-screen">
@@ -152,7 +220,7 @@ export function App() {
           staffModalOpen={staffModalIntent !== null}
           onPatientAuthenticated={(payload) => {
             setAuthenticatedPatient(payload);
-            setKioskMode('rehab');
+            setKioskMode('training');
           }}
           onOpenStaffLogin={() => setStaffModalIntent('general')}
           onOpenStaffRegister={() => {

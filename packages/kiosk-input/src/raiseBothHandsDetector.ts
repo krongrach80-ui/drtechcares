@@ -1,8 +1,8 @@
 import { POSE_INDEX, type PoseLandmark } from '@drtechcares/pose-engine';
 
-export const RAISE_HANDS_HOLD_MS = 1200;
+export const RAISE_HANDS_HOLD_MS = 650;
 export const RAISE_HANDS_MIN_RATIO = 0.12;
-export const RAISE_HANDS_MIN_VIS = 0.6;
+export const RAISE_HANDS_MIN_VIS = 0.35;
 export const RAISE_HANDS_MAX_ANCHOR_DRIFT = 0.22;
 export const ACCESSIBILITY_FALLBACK_SINGLE_ARM_MS = 3500;
 export const ACCESSIBILITY_FALLBACK_FULL_MS = 7000;
@@ -27,7 +27,7 @@ export function detectRaiseBothHands(
   const lHip = landmarks[POSE_INDEX.LEFT_HIP];
   const rHip = landmarks[POSE_INDEX.RIGHT_HIP];
 
-  if (!lShoulder || !rShoulder || !lWrist || !rWrist || !lHip || !rHip) {
+  if (!lShoulder || !rShoulder || !lWrist || !rWrist) {
     return { bothRaised: false, leftRaised: false, rightRaised: false, driftExceeded: false };
   }
 
@@ -35,17 +35,19 @@ export function detectRaiseBothHands(
   const driftExceeded =
     anchorCenterX !== undefined && Math.abs(midShoulderX - anchorCenterX) > RAISE_HANDS_MAX_ANCHOR_DRIFT;
 
-  const torsoHeight = Math.max(
-    0.1,
-    ((lHip.y + rHip.y) / 2) - ((lShoulder.y + rShoulder.y) / 2),
+  const hasValidHips = Boolean(
+    lHip && rHip && (lHip.visibility ?? 1) >= 0.2 && (rHip.visibility ?? 1) >= 0.2,
   );
-  const thresholdOffset = RAISE_HANDS_MIN_RATIO * torsoHeight;
+  const torsoHeight = hasValidHips
+    ? Math.max(0.1, (lHip!.y + rHip!.y) / 2 - (lShoulder.y + rShoulder.y) / 2)
+    : Math.max(0.18, Math.abs(rShoulder.x - lShoulder.x) * 1.2);
+  const chestMargin = Math.max(0.08, torsoHeight * RAISE_HANDS_MIN_RATIO);
 
   const lVisOk = (lWrist.visibility ?? 1) >= RAISE_HANDS_MIN_VIS;
   const rVisOk = (rWrist.visibility ?? 1) >= RAISE_HANDS_MIN_VIS;
 
-  const leftRaised = lVisOk && lWrist.y < lShoulder.y - thresholdOffset;
-  const rightRaised = rVisOk && rWrist.y < rShoulder.y - thresholdOffset;
+  const leftRaised = lVisOk && lWrist.y <= lShoulder.y + Math.min(0.08, chestMargin);
+  const rightRaised = rVisOk && rWrist.y <= rShoulder.y + Math.min(0.08, chestMargin);
 
   return {
     bothRaised: leftRaised && rightRaised && !driftExceeded,
@@ -53,6 +55,28 @@ export function detectRaiseBothHands(
     rightRaised,
     driftExceeded,
   };
+}
+
+/**
+ * Checks whether MediaPipe HandLandmarker detected two separate raised hands in frame.
+ */
+export function detectTwoRaisedHandLandmarks(
+  hands: ReadonlyArray<ReadonlyArray<{ x: number; y: number }>>,
+): boolean {
+  const raisedHands = hands.filter((hand) => {
+    if (hand.length < 21) return false;
+    const wrist = hand[0];
+    if (!wrist || wrist.y > 0.98) return false;
+    const tips = [hand[4], hand[8], hand[12], hand[16], hand[20]];
+    return tips.some((tip) => tip && tip.y <= wrist.y + 0.12);
+  });
+  return (
+    raisedHands.length >= 2 &&
+    Math.hypot(
+      raisedHands[0][0].x - raisedHands[1][0].x,
+      raisedHands[0][0].y - raisedHands[1][0].y,
+    ) >= 0.06
+  );
 }
 
 export class RaiseBothHandsTracker {
