@@ -28,7 +28,7 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
   const [status, setStatus] = useState<'idle' | 'countdown' | 'burst' | 'verifying' | 'not_found'>('idle');
   const [countdown, setCountdown] = useState(3);
   const [burstCount, setBurstCount] = useState(0);
-  const [qualityMsg, setQualityMsg] = useState<string>('Align face in oval guide');
+  const [qualityMsg, setQualityMsg] = useState<string>('');
   const [staffCalled, setStaffCalled] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -154,7 +154,7 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
         };
         rafId = requestAnimationFrame(tick);
       } catch {
-        setQualityMsg('Camera standby — ready for touch or staff action');
+        setQualityMsg('__CAMERA_STANDBY__');
       }
     }
 
@@ -175,26 +175,26 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
   return (
     <div className="mx-auto max-w-4xl rounded-3xl bg-white p-6 shadow-xl border border-slate-200">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4">
-        <div>
+        <div className="min-w-0">
           <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-            <ShieldCheck className="h-7 w-7 text-teal-600" />
+            <ShieldCheck className="h-7 w-7 text-teal-600 shrink-0" />
             {t('touchlessLoginTitle')}
           </h1>
           <p className="mt-1 text-sm text-slate-500">{t('touchlessLoginSubtitle')}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={onNavigateEnroll}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700"
+            className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-xl bg-teal-600 text-sm font-semibold text-white hover:bg-teal-700"
           >
-            <UserPlus className="h-4 w-4" />
+            <UserPlus className="h-4 w-4 shrink-0" />
             {t('staffRegisterBtn')}
           </button>
           <button
             onClick={handleCallStaff}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-800 hover:bg-amber-100"
+            className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 text-sm font-semibold text-amber-800 hover:bg-amber-100"
           >
-            <PhoneCall className="h-4 w-4" />
+            <PhoneCall className="h-4 w-4 shrink-0" />
             {t('callStaffBtn')}
           </button>
         </div>
@@ -216,12 +216,13 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
 
         <div className="absolute bottom-4 inset-x-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-slate-900/85 px-4 py-3 text-white backdrop-blur">
           <div className="flex items-center gap-2 text-sm font-medium">
-            <Camera className="h-4 w-4 text-teal-400" />
+            <Camera className="h-4 w-4 text-teal-400 shrink-0" />
             <span>
-              {status === 'countdown' && `Hold steady: ${countdown}s`}
+              {status === 'countdown' && `${t('holdSteadyCountdown')} ${countdown}s`}
               {status === 'burst' && `${t('scanningBurst')} (${burstCount}/${BURST_FRAME_COUNT})`}
-              {status === 'verifying' && 'Verifying Multi-Subband 512-D Gate...'}
-              {status === 'idle' && qualityMsg}
+              {status === 'verifying' && t('verifyingGate')}
+              {status === 'idle' &&
+                (qualityMsg === '__CAMERA_STANDBY__' ? t('cameraStandbyMsg') : qualityMsg || t('alignFaceOval'))}
             </span>
           </div>
         </div>
@@ -236,14 +237,14 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
               <div className="mt-6 flex flex-col gap-2.5">
                 <button
                   onClick={onNavigateEnroll}
-                  className="w-full rounded-xl bg-teal-600 py-3 text-sm font-bold text-white hover:bg-teal-700"
+                  className="w-full whitespace-nowrap h-11 rounded-xl bg-teal-600 px-4 text-sm font-bold text-white hover:bg-teal-700"
                 >
                   <UserPlus className="inline h-4 w-4 mr-1.5" />
                   {t('staffRegisterBtn')}
                 </button>
                 <button
                   onClick={handleCallStaff}
-                  className="w-full rounded-xl border border-amber-300 bg-amber-50 py-3 text-sm font-bold text-amber-800 hover:bg-amber-100"
+                  className="w-full whitespace-nowrap h-11 rounded-xl border border-amber-300 bg-amber-50 px-4 text-sm font-bold text-amber-800 hover:bg-amber-100"
                 >
                   <PhoneCall className="inline h-4 w-4 mr-1.5" />
                   {t('callStaffBtn')}
@@ -255,9 +256,9 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
                     setBurstCount(0);
                     setStatus('idle');
                   }}
-                  className="w-full rounded-xl border border-slate-200 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                  className="w-full whitespace-nowrap h-10 rounded-xl border border-slate-200 px-4 text-sm font-semibold text-slate-600 hover:bg-slate-50"
                 >
-                  Retry Single Scan
+                  {t('retrySingleScanBtn')}
                 </button>
               </div>
             </div>

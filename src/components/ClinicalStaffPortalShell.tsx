@@ -71,23 +71,166 @@ export interface ClinicalStaffPortalShellProps {
 type PortalTab = 'staff' | 'patients' | 'pts' | 'exercises' | 'schedules' | 'security';
 type SecuritySubTab = 'calls' | 'audit' | 'sessions' | 'bans' | 'kiosks';
 
-const PORTAL_TEXT: Record<
-  ClinicalLang,
-  {
-    nav: Record<PortalTab, string>;
-    headers: Record<PortalTab, { title: string; subtitle: string }>;
-    actions: {
-      welcomeScan: string;
-      quickCheckin: string;
-      kioskBtn: string;
-      returnKiosk: string;
-      logout: string;
-      cardGame: string;
-      cloudConnected: string;
-      cloudOffline: string;
-    };
-  }
-> = {
+interface PortalSectionCopy {
+  nav: Record<PortalTab, string>;
+  headers: Record<PortalTab, { title: string; subtitle: string }>;
+  sidebar: {
+    adminRole: string;
+    ptRole: string;
+    collapseTitle: string;
+    dbCloud: string;
+    dbNormal: string;
+    dbOffline: string;
+  };
+  actions: {
+    welcomeScan: string;
+    quickCheckin: string;
+    kioskBtn: string;
+    returnKiosk: string;
+    logout: string;
+    cardGame: string;
+    cloudConnected: string;
+    cloudOffline: string;
+  };
+  staff: {
+    title: string;
+    subtitle: string;
+    addBtn: string;
+    refreshTitle: string;
+    searchPlaceholder: string;
+    allRoles: string;
+    roleAdmin: string;
+    rolePt: string;
+    rolePatient: string;
+    allStatus: string;
+    statusActive: string;
+    statusSuspended: string;
+    colName: string;
+    colUsername: string;
+    colRole: string;
+    colStatus: string;
+    colActions: string;
+    statusBadgeActive: string;
+    statusBadgeSuspended: string;
+    suspendBtn: string;
+    activateBtn: string;
+    resetPwdTitle: string;
+    deleteTitle: string;
+    emptyStaff: string;
+  };
+  patients: {
+    title: string;
+    subtitle: string;
+    addBtn: string;
+    searchPlaceholder: string;
+    searchBtn: string;
+    allFace: string;
+    faceVerified: string;
+    facePending: string;
+    colHn: string;
+    colPatientName: string;
+    colAgeGender: string;
+    colPhonePt: string;
+    colBiometric: string;
+    colActions: string;
+    verifiedBadge: string;
+    pendingBadge: string;
+    emrBtn: string;
+    scanFaceBtn: string;
+    historyBtn: string;
+    deleteTitle: string;
+    emptyPatients: string;
+    ageUnit: string;
+  };
+  pts: {
+    title: string;
+    subtitle: string;
+    searchPlaceholder: string;
+    licenseLabel: string;
+    specialtyLabel: string;
+    patientsCountLabel: string;
+    patientsUnit: string;
+    viewDetailBtn: string;
+  };
+  exercises: {
+    title: string;
+    subtitle: string;
+    playCardBtn: string;
+    aiPoseTitle: string;
+    aiPoseEnabled: string;
+    aiPoseLocked: string;
+    aiPoseDesc: string;
+    aiPoseToggleLock: string;
+    aiPoseToggleUnlock: string;
+    modpackHeader: string;
+    addModpackBtn: string;
+    exerciseHeader: string;
+    addExerciseBtn: string;
+  };
+  schedules: {
+    activeBadge: string;
+    noPatient: string;
+    diagLabel: string;
+    ptLabel: string;
+    clearScheduleBtn: string;
+    weeklyPlanBtn: string;
+    createScheduleBtn: string;
+    subIndividual: string;
+    subAll: string;
+    statTotal: string;
+    statActive: string;
+    statRest: string;
+    statCompleted: string;
+    unitAppt: string;
+    legendActive: string;
+    legendRest: string;
+    legendCompleted: string;
+    legendMissed: string;
+    colHn: string;
+    colPatientName: string;
+    colPt: string;
+    colNextAppt: string;
+    colActions: string;
+    openCalendarBtn: string;
+    statusCompleted: string;
+    statusRest: string;
+    statusMissed: string;
+    statusActive: string;
+    restDayLabel: string;
+    calendarHeaders: string[];
+  };
+  security: {
+    title: string;
+    subtitle: string;
+    testAlertBtn: string;
+    emergencyBannerTitle: string;
+    emergencyBannerDesc: string;
+    viewCallsBtn: string;
+    tabCalls: string;
+    tabAudit: string;
+    tabSessions: string;
+    tabBans: string;
+    tabKiosks: string;
+    callsTableTitle: string;
+    callsPollNote: string;
+    colTime: string;
+    colKiosk: string;
+    colReason: string;
+    colStatus: string;
+    colActions: string;
+    ackBtn: string;
+    resolveBtn: string;
+    statusResolved: string;
+    statusAck: string;
+    statusOpen: string;
+    emptyCalls: string;
+    registerKioskBtn: string;
+    kioskPanelTitle: string;
+    securitySettingsTitle: string;
+  };
+}
+
+const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
   th: {
     nav: {
       staff: '1. จัดการผู้ใช้ staff',
@@ -123,6 +266,14 @@ const PORTAL_TEXT: Record<
         subtitle: 'TAMPER-EVIDENT SYSTEM AUDIT TRAIL & SECURITY',
       },
     },
+    sidebar: {
+      adminRole: 'ผู้อำนวยการ (Admin)',
+      ptRole: 'นักกายภาพบำบัด (PT)',
+      collapseTitle: 'ย่อ/ขยายเมนู',
+      dbCloud: 'ฐานข้อมูล: Cloud',
+      dbNormal: 'ปกติ',
+      dbOffline: 'ออฟไลน์',
+    },
     actions: {
       welcomeScan: 'ต้อนรับ & สแกนหน้า',
       quickCheckin: 'เช็คอินเร่งด่วน',
@@ -131,7 +282,143 @@ const PORTAL_TEXT: Record<
       logout: 'ออกจากระบบ',
       cardGame: 'การ์ดกายภาพ (10 ข้อ)',
       cloudConnected: 'Supabase Cloud',
-      cloudOffline: 'Offline (คลิกเพื่อลองใหม่)',
+      cloudOffline: 'Offline (ลองใหม่)',
+    },
+    staff: {
+      title: 'จัดการเจ้าหน้าที่โรงพยาบาล (Staff Management)',
+      subtitle: 'บัญชีผู้อำนวยการ (Admin) และนักกายภาพบำบัด (PT) ควบคุมสิทธิ์และเซสชันการเข้าถึง',
+      addBtn: '+ เพิ่มเจ้าหน้าที่ใหม่',
+      refreshTitle: 'รีเฟรช',
+      searchPlaceholder: 'ค้นหาชื่อ, username, เบอร์โทร...',
+      allRoles: 'ทุกบทบาท (All Roles)',
+      roleAdmin: 'ผู้อำนวยการ (Admin)',
+      rolePt: 'นักกายภาพบำบัด (PT)',
+      rolePatient: 'คนไข้ (Patient)',
+      allStatus: 'ทุกสถานะ (All Status)',
+      statusActive: 'ปกติ (Active)',
+      statusSuspended: 'ระงับใช้งาน (Suspended)',
+      colName: 'ชื่อ-นามสกุล',
+      colUsername: 'USERNAME / HN',
+      colRole: 'บทบาท',
+      colStatus: 'สถานะ',
+      colActions: 'การจัดการ',
+      statusBadgeActive: 'ปกติ',
+      statusBadgeSuspended: 'ระงับ',
+      suspendBtn: 'ระงับสิทธิ์',
+      activateBtn: 'เปิดใช้งาน',
+      resetPwdTitle: 'รีเซ็ตรหัสผ่าน',
+      deleteTitle: 'ลบผู้ใช้',
+      emptyStaff: 'ไม่พบบัญชีผู้ใช้ตามเงื่อนไขที่ค้นหา',
+    },
+    patients: {
+      title: 'ทะเบียนคนไข้ (Patients Directory)',
+      subtitle: 'ค้นหาคนไข้ กำหนด PT ผู้รับผิดชอบ ส่งตัวสแกนหน้า และดูประวัติการฝึกย้อนหลัง',
+      addBtn: '+ ลงทะเบียนคนไข้ใหม่',
+      searchPlaceholder: 'ค้นหาชื่อไทย, นามสกุล, HN, เบอร์โทร..',
+      searchBtn: 'ค้นหา',
+      allFace: 'ทุกสถานะใบหน้า',
+      faceVerified: 'ลงทะเบียนใบหน้าแล้ว (VERIFIED)',
+      facePending: 'ยังไม่สแกนใบหน้า (PENDING)',
+      colHn: 'รหัส HN',
+      colPatientName: 'ชื่อ - นามสกุล',
+      colAgeGender: 'อายุ / เพศ',
+      colPhonePt: 'เบอร์โทร / PT ผู้ดูแล',
+      colBiometric: 'สถานะชีวมาตร',
+      colActions: 'การจัดการ',
+      verifiedBadge: 'ลงทะเบียนหน้าแล้ว',
+      pendingBadge: 'ยังไม่สแกนใบหน้า',
+      emrBtn: 'เวชระเบียน',
+      scanFaceBtn: 'ส่งตัวสแกนหน้า',
+      historyBtn: 'ดูประวัติการฝึก',
+      deleteTitle: 'ลบประวัติ (เฉพาะ Admin)',
+      emptyPatients: 'ไม่พบข้อมูลคนไข้ กด "+ ลงทะเบียนคนไข้ใหม่" เพื่อเพิ่มผู้ป่วย',
+      ageUnit: 'ปี',
+    },
+    pts: {
+      title: 'ทำเนียบนักกายภาพบำบัด (PT Directory)',
+      subtitle: 'รายชื่อนักกายภาพบำบัดประจำโรงพยาบาล เลขที่ใบอนุญาตประกอบวิชาชีพ และคนไข้ที่ดูแล',
+      searchPlaceholder: 'ค้นหาชื่อ PT, เลขที่ใบอนุญาต, ความเชี่ยวชาญ...',
+      licenseLabel: '🏅 ใบประกอบวิชาชีพ:',
+      specialtyLabel: 'ความเชี่ยวชาญ:',
+      patientsCountLabel: 'คนไข้ที่ดูแล:',
+      patientsUnit: 'ท่าน',
+      viewDetailBtn: 'ดูรายละเอียดและคนไข้',
+    },
+    exercises: {
+      title: 'ท่ากายภาพบำบัดและมินิเกมกระตุ้นสมอง (Exercises & Modpacks)',
+      subtitle: 'จัดการชุดคำถาม Physical Card Modpack และปลดล็อกโหมด AI Pose Detection สำหรับตู้ Kiosk',
+      playCardBtn: 'ทดลองเล่นการ์ดกายภาพ 10 ข้อ',
+      aiPoseTitle: 'สถานะตรวจจับท่ากายภาพอัตโนมัติ (AI Pose Detection):',
+      aiPoseEnabled: 'เปิดใช้งาน AI Pose Detection สำหรับตู้ Kiosk แล้ว',
+      aiPoseLocked: 'อยู่ระหว่างพัฒนา (PT ล็อกไว้เฉพาะมินิเกม)',
+      aiPoseDesc: 'เฉพาะผู้อำนวยการโรงพยาบาล (ADMIN) สามารถปลดล็อกเปิดใช้ท่ากายภาพ AI บนตู้ Kiosk ได้',
+      aiPoseToggleLock: 'ตั้งสถานะเป็น: อยู่ระหว่างพัฒนา',
+      aiPoseToggleUnlock: 'ปลดล็อกเปิดใช้ท่ากายภาพ AI',
+      modpackHeader: 'ชุดมินิเกม Modpack',
+      addModpackBtn: '+ เพิ่ม Modpack มินิเกม',
+      exerciseHeader: 'คลังท่ากายภาพบำบัด',
+      addExerciseBtn: '+ เพิ่มท่ากายภาพบำบัด',
+    },
+    schedules: {
+      activeBadge: 'กำลังเข้ารับการฟื้นฟู (Active)',
+      noPatient: 'ยังไม่มีคนไข้ในระบบ',
+      diagLabel: 'การวินิจฉัย:',
+      ptLabel: 'PT ผู้รับผิดชอบ:',
+      clearScheduleBtn: 'ล้างตารางนัดทั้งหมด',
+      weeklyPlanBtn: 'แผนรายสัปดาห์ 7 วัน',
+      createScheduleBtn: '+ สร้างตารางฝึกใหม่',
+      subIndividual: 'ปฏิทินรายบุคคล',
+      subAll: 'ปฏิทินคนไข้รวม',
+      statTotal: 'ตารางนัดหมายทั้งหมด',
+      statActive: 'กำลังรักษา (Active)',
+      statRest: 'พักชั่วคราว (Rest)',
+      statCompleted: 'สำเร็จแล้ว (Completed)',
+      unitAppt: 'นัด',
+      legendActive: 'กำลังรักษา',
+      legendRest: 'พักการฝึก',
+      legendCompleted: 'สำเร็จครบโปรแกรม',
+      legendMissed: 'ขาดการฝึก',
+      colHn: 'HN',
+      colPatientName: 'ชื่อคนไข้',
+      colPt: 'PT ผู้รับผิดชอบ',
+      colNextAppt: 'วันนัดถัดไป / จำนวนวันฝึก',
+      colActions: 'จัดการ',
+      openCalendarBtn: 'เปิดปฏิทิน',
+      statusCompleted: 'สำเร็จครบ',
+      statusRest: 'พักการฝึก',
+      statusMissed: 'ขาดการฝึก',
+      statusActive: 'กำลังรักษา',
+      restDayLabel: 'พักฟื้น',
+      calendarHeaders: ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'],
+    },
+    security: {
+      title: 'ประวัติและความปลอดภัย (Audit, Bans & Security)',
+      subtitle: 'คำเรียกเจ้าหน้าที่ฉุกเฉิน (Realtime), บันทึก Audit Log, บังคับตัดเซสชัน, ระบบแบน และจัดการตู้ Kiosk',
+      testAlertBtn: '🔔 ทดสอบแจ้งเตือนฉุกเฉิน',
+      emergencyBannerTitle: 'มีคนไข้ต้องการความช่วยเหลือที่ตู้ Kiosk',
+      emergencyBannerDesc: 'เชื่อมต่อ Realtime Supabase + Polling อัตโนมัติเมื่อคนไข้กดเรียกเจ้าหน้าที่',
+      viewCallsBtn: 'ดูรายการเรียกเจ้าหน้าที่ทันที',
+      tabCalls: 'คำเรียกเจ้าหน้าที่',
+      tabAudit: 'บันทึก Audit Logs',
+      tabSessions: 'เซสชันและการเตะออก',
+      tabBans: 'การจัดการแบน',
+      tabKiosks: 'อุปกรณ์ตู้ Kiosk',
+      callsTableTitle: 'รายการคำขอความช่วยเหลือจากตู้ Kiosk',
+      callsPollNote: 'Realtime + Polling 10 วินาที',
+      colTime: 'เวลาแจ้ง',
+      colKiosk: 'ตู้ KIOSK',
+      colReason: 'สาเหตุ',
+      colStatus: 'สถานะ',
+      colActions: 'ดำเนินการ',
+      ackBtn: 'รับเรื่อง',
+      resolveBtn: 'แก้ไขแล้ว',
+      statusResolved: '✓ แก้ไขแล้ว',
+      statusAck: '⏳ กำลังตรวจสอบ',
+      statusOpen: '🔔 รอเจ้าหน้าที่',
+      emptyCalls: 'ยังไม่มีคำเรียกเจ้าหน้าที่ฉุกเฉิน',
+      registerKioskBtn: '+ ลงทะเบียนตู้ Kiosk ใหม่',
+      kioskPanelTitle: 'อุปกรณ์ตู้ Kiosk ในระบบ',
+      securitySettingsTitle: 'ตั้งค่าความปลอดภัย AI หน้าตู้ Kiosk',
     },
   },
   en: {
@@ -169,8 +456,16 @@ const PORTAL_TEXT: Record<
         subtitle: 'TAMPER-EVIDENT SYSTEM AUDIT TRAIL & SECURITY',
       },
     },
+    sidebar: {
+      adminRole: 'Director (Admin)',
+      ptRole: 'Physiotherapist (PT)',
+      collapseTitle: 'Toggle Sidebar',
+      dbCloud: 'Database: Cloud',
+      dbNormal: 'Online',
+      dbOffline: 'Offline',
+    },
     actions: {
-      welcomeScan: 'Welcome & Face Scan',
+      welcomeScan: 'Welcome & Scan',
       quickCheckin: 'Quick Check-in',
       kioskBtn: 'Kiosk View',
       returnKiosk: '← Back to Kiosk',
@@ -178,6 +473,142 @@ const PORTAL_TEXT: Record<
       cardGame: 'Rehab Cards (10 Qs)',
       cloudConnected: 'Supabase Cloud',
       cloudOffline: 'Offline (Retry)',
+    },
+    staff: {
+      title: 'Hospital Staff Management',
+      subtitle: 'Manage Admin directors and Physiotherapists (PT), access roles, and active sessions',
+      addBtn: '+ Add New Staff',
+      refreshTitle: 'Refresh',
+      searchPlaceholder: 'Search name, username, phone...',
+      allRoles: 'All Roles',
+      roleAdmin: 'Director (Admin)',
+      rolePt: 'Physiotherapist (PT)',
+      rolePatient: 'Patient',
+      allStatus: 'All Status',
+      statusActive: 'Active',
+      statusSuspended: 'Suspended',
+      colName: 'FULL NAME',
+      colUsername: 'USERNAME / HN',
+      colRole: 'ROLE',
+      colStatus: 'STATUS',
+      colActions: 'ACTIONS',
+      statusBadgeActive: 'Active',
+      statusBadgeSuspended: 'Suspended',
+      suspendBtn: 'Suspend',
+      activateBtn: 'Activate',
+      resetPwdTitle: 'Reset Password',
+      deleteTitle: 'Delete User',
+      emptyStaff: 'No matching staff accounts found',
+    },
+    patients: {
+      title: 'Patients Directory',
+      subtitle: 'Search patients, assign PTs, dispatch 120-frame Face ID scan, and inspect rehab history',
+      addBtn: '+ Enroll New Patient',
+      searchPlaceholder: 'Search name, HN, phone...',
+      searchBtn: 'Search',
+      allFace: 'All Face Status',
+      faceVerified: 'Face Enrolled (VERIFIED)',
+      facePending: 'Pending Scan (PENDING)',
+      colHn: 'HN CODE',
+      colPatientName: 'PATIENT NAME',
+      colAgeGender: 'AGE / GENDER',
+      colPhonePt: 'PHONE / ASSIGNED PT',
+      colBiometric: 'BIOMETRIC STATUS',
+      colActions: 'ACTIONS',
+      verifiedBadge: 'Face Verified',
+      pendingBadge: 'Scan Pending',
+      emrBtn: 'EMR',
+      scanFaceBtn: 'Face Scan',
+      historyBtn: 'History',
+      deleteTitle: 'Delete Record (Admin Only)',
+      emptyPatients: 'No patients found. Click "+ Enroll New Patient" to register.',
+      ageUnit: 'yrs',
+    },
+    pts: {
+      title: 'Physiotherapist Directory',
+      subtitle: 'Registered hospital physiotherapists, medical license numbers, and assigned patients',
+      searchPlaceholder: 'Search PT name, license no., specialty...',
+      licenseLabel: '🏅 License No:',
+      specialtyLabel: 'Specialty:',
+      patientsCountLabel: 'Patients:',
+      patientsUnit: 'patients',
+      viewDetailBtn: 'View Details & Patients',
+    },
+    exercises: {
+      title: 'Rehab Exercises & Cognitive Modpacks',
+      subtitle: 'Manage Physical Card Modpacks and unlock AI Pose Detection mode for Kiosks',
+      playCardBtn: 'Preview Rehab Cards (10 Qs)',
+      aiPoseTitle: 'AI Pose Detection Status:',
+      aiPoseEnabled: 'Enabled on Kiosk Terminals',
+      aiPoseLocked: 'In Development (Card Minigames Only)',
+      aiPoseDesc: 'Only Hospital Directors (ADMIN) can unlock AI Pose Detection for Kiosk terminals',
+      aiPoseToggleLock: 'Set Status: Locked',
+      aiPoseToggleUnlock: 'Unlock AI Pose Detection',
+      modpackHeader: 'Cognitive Modpacks',
+      addModpackBtn: '+ Add Modpack',
+      exerciseHeader: 'Rehab Exercises Library',
+      addExerciseBtn: '+ Add Rehab Exercise',
+    },
+    schedules: {
+      activeBadge: 'Active Rehabilitation',
+      noPatient: 'No Patients Enrolled',
+      diagLabel: 'Diagnosis:',
+      ptLabel: 'Assigned PT:',
+      clearScheduleBtn: 'Clear All Schedules',
+      weeklyPlanBtn: '7-Day Weekly Plan',
+      createScheduleBtn: '+ New Rehab Schedule',
+      subIndividual: 'Individual Calendar',
+      subAll: 'All Patients',
+      statTotal: 'Total Schedules',
+      statActive: 'Active',
+      statRest: 'Rest Days',
+      statCompleted: 'Completed',
+      unitAppt: 'slots',
+      legendActive: 'Active',
+      legendRest: 'Rest',
+      legendCompleted: 'Completed',
+      legendMissed: 'Missed',
+      colHn: 'HN',
+      colPatientName: 'PATIENT NAME',
+      colPt: 'ASSIGNED PT',
+      colNextAppt: 'NEXT APPT / SLOTS',
+      colActions: 'ACTION',
+      openCalendarBtn: 'Open Calendar',
+      statusCompleted: 'Completed',
+      statusRest: 'Rest',
+      statusMissed: 'Missed',
+      statusActive: 'Active',
+      restDayLabel: 'Rest Day',
+      calendarHeaders: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+    },
+    security: {
+      title: 'Audit, Bans & Kiosk Security',
+      subtitle: 'Realtime Kiosk emergency alerts, tamper-evident audit logs, session kick, bans & terminal status',
+      testAlertBtn: '🔔 Test Emergency Alert',
+      emergencyBannerTitle: 'Patient Assistance Requested at Kiosk',
+      emergencyBannerDesc: 'Synced via Realtime Supabase + 10s automatic polling',
+      viewCallsBtn: 'View Staff Calls Now',
+      tabCalls: 'Staff Calls',
+      tabAudit: 'Audit Logs',
+      tabSessions: 'Active Sessions',
+      tabBans: 'Bans Manager',
+      tabKiosks: 'Kiosk Terminals',
+      callsTableTitle: 'Kiosk Emergency Call Queue',
+      callsPollNote: 'Realtime + 10s Polling',
+      colTime: 'TIMESTAMP',
+      colKiosk: 'KIOSK ID',
+      colReason: 'REASON',
+      colStatus: 'STATUS',
+      colActions: 'ACTION',
+      ackBtn: 'Acknowledge',
+      resolveBtn: 'Resolve',
+      statusResolved: '✓ Resolved',
+      statusAck: '⏳ Checking',
+      statusOpen: '🔔 Waiting Staff',
+      emptyCalls: 'No emergency staff calls',
+      registerKioskBtn: '+ Register Kiosk',
+      kioskPanelTitle: 'Registered Kiosk Terminals',
+      securitySettingsTitle: 'Kiosk AI Security Settings',
     },
   },
   cn: {
@@ -215,15 +646,159 @@ const PORTAL_TEXT: Record<
         subtitle: 'TAMPER-EVIDENT SYSTEM AUDIT TRAIL & SECURITY',
       },
     },
+    sidebar: {
+      adminRole: '医院管理员 (Admin)',
+      ptRole: '物理治疗师 (PT)',
+      collapseTitle: '展开/收起菜单',
+      dbCloud: '数据库: 云端',
+      dbNormal: '正常',
+      dbOffline: '离线',
+    },
     actions: {
-      welcomeScan: '迎宾人脸识别',
+      welcomeScan: '迎宾与人脸扫描',
       quickCheckin: '快速签到',
-      kioskBtn: '终端界面',
+      kioskBtn: 'Kiosk 终端',
       returnKiosk: '← 返回终端画面',
       logout: '退出登录',
       cardGame: '康复认知卡 (10题)',
       cloudConnected: 'Supabase 云端在线',
       cloudOffline: '离线 (点击重试)',
+    },
+    staff: {
+      title: '医院工作人员与权限管理 (Staff Management)',
+      subtitle: '管理管理员 (Admin) 与物理治疗师 (PT) 账号、权限及在线会话控制',
+      addBtn: '+ 新增医护人员',
+      refreshTitle: '刷新',
+      searchPlaceholder: '搜索姓名、用户名、手机号...',
+      allRoles: '全部角色 (All Roles)',
+      roleAdmin: '管理员 (Admin)',
+      rolePt: '物理治疗师 (PT)',
+      rolePatient: '患者 (Patient)',
+      allStatus: '全部状态 (All Status)',
+      statusActive: '正常 (Active)',
+      statusSuspended: '已停用 (Suspended)',
+      colName: '姓名',
+      colUsername: '用户名 / HN',
+      colRole: '角色',
+      colStatus: '状态',
+      colActions: '操作管理',
+      statusBadgeActive: '正常',
+      statusBadgeSuspended: '已停用',
+      suspendBtn: '停用权限',
+      activateBtn: '启用账户',
+      resetPwdTitle: '重置密码',
+      deleteTitle: '删除账户',
+      emptyStaff: '未找到符合条件的账户',
+    },
+    patients: {
+      title: '患者电子档案目录 (Patients Directory)',
+      subtitle: '查询患者、指派责任康复师 (PT)、发起 120 帧人脸采集及查看康复记录',
+      addBtn: '+ 注册新患者',
+      searchPlaceholder: '搜索患者姓名、HN病历号、手机号...',
+      searchBtn: '搜索',
+      allFace: '全部人脸状态',
+      faceVerified: '已完成人脸注册 (VERIFIED)',
+      facePending: '待人脸采集 (PENDING)',
+      colHn: '病历号 HN',
+      colPatientName: '患者姓名',
+      colAgeGender: '年龄 / 性别',
+      colPhonePt: '联系电话 / 责任PT',
+      colBiometric: '生物识别状态',
+      colActions: '操作管理',
+      verifiedBadge: '人脸已验证',
+      pendingBadge: '待扫描人脸',
+      emrBtn: '电子病历',
+      scanFaceBtn: '人脸采集',
+      historyBtn: '训练记录',
+      deleteTitle: '删除病历 (仅管理员)',
+      emptyPatients: '暂无患者记录，请点击“+ 注册新患者”新增档案',
+      ageUnit: '岁',
+    },
+    pts: {
+      title: '物理治疗师团队名录 (PT Directory)',
+      subtitle: '在院注册物理治疗师名单、执业资格证号与负责患者数量统计',
+      searchPlaceholder: '搜索康复师姓名、执业证号、专业方向...',
+      licenseLabel: '🏅 执业证号:',
+      specialtyLabel: '临床专长:',
+      patientsCountLabel: '负责患者数:',
+      patientsUnit: '位',
+      viewDetailBtn: '查看详情与患者名单',
+    },
+    exercises: {
+      title: '康复训练动作库与认知训练包 (Exercises & Modpacks)',
+      subtitle: '管理康复认知卡片题库 Modpack 及开启自助终端 AI 姿态识别模式',
+      playCardBtn: '试玩康复认知卡 (10题)',
+      aiPoseTitle: 'AI 自动姿态检测状态 (AI Pose Detection):',
+      aiPoseEnabled: '自助终端已启用 AI 姿态识别',
+      aiPoseLocked: '开发中（暂限认知游戏模式）',
+      aiPoseDesc: '仅医院管理员 (ADMIN) 可为 Kiosk 自助终端解锁 AI 康复动作姿态检测',
+      aiPoseToggleLock: '设为锁定维护状态',
+      aiPoseToggleUnlock: '解锁开启 AI 姿态识别',
+      modpackHeader: '认知训练题库包',
+      addModpackBtn: '+ 新增题库 Modpack',
+      exerciseHeader: '康复动作标准库',
+      addExerciseBtn: '+ 新增康复动作',
+    },
+    schedules: {
+      activeBadge: '正在康复训练 (Active)',
+      noPatient: '系统暂无患者',
+      diagLabel: '临床诊断:',
+      ptLabel: '责任康复师:',
+      clearScheduleBtn: '清空全部日程',
+      weeklyPlanBtn: '每周 7 天计划',
+      createScheduleBtn: '+ 新建康复日程',
+      subIndividual: '个人康复日历',
+      subAll: '全部患者总览',
+      statTotal: '总预约课程',
+      statActive: '进行中 (Active)',
+      statRest: '休息恢复 (Rest)',
+      statCompleted: '已完成 (Completed)',
+      unitAppt: '次',
+      legendActive: '训练中',
+      legendRest: '休息日',
+      legendCompleted: '已完成',
+      legendMissed: '缺席',
+      colHn: 'HN 编号',
+      colPatientName: '患者姓名',
+      colPt: '责任康复师',
+      colNextAppt: '下次预约 / 总次数',
+      colActions: '操作',
+      openCalendarBtn: '打开日历',
+      statusCompleted: '已完成',
+      statusRest: '休息',
+      statusMissed: '缺席',
+      statusActive: '训练中',
+      restDayLabel: '休息日',
+      calendarHeaders: ['周日', '周一', '周二', '周三', '周四', '周五', '周六'],
+    },
+    security: {
+      title: '安全审计日志、封禁与终端管理 (Security)',
+      subtitle: '终端实时紧急呼叫、不可篡改审计日志 (Audit Log)、强制踢出会话、封禁及 Kiosk 管理',
+      testAlertBtn: '🔔 测试紧急呼叫警报',
+      emergencyBannerTitle: '有患者在 Kiosk 终端请求协助',
+      emergencyBannerDesc: '已通过 Supabase Realtime 与 10 秒轮询自动同步警报',
+      viewCallsBtn: '立即查看呼叫列表',
+      tabCalls: '呼叫请求',
+      tabAudit: '审计日志 Audit',
+      tabSessions: '在线会话管理',
+      tabBans: '封禁名单管理',
+      tabKiosks: 'Kiosk 终端设备',
+      callsTableTitle: 'Kiosk 自助终端求助队列',
+      callsPollNote: 'Realtime + 每10秒同步',
+      colTime: '告警时间',
+      colKiosk: '终端编号',
+      colReason: '呼叫原因',
+      colStatus: '当前状态',
+      colActions: '处理操作',
+      ackBtn: '受理',
+      resolveBtn: '已处理',
+      statusResolved: '✓ 已完成处理',
+      statusAck: '⏳ 核查处理中',
+      statusOpen: '🔔 待响应',
+      emptyCalls: '暂无终端紧急呼叫记录',
+      registerKioskBtn: '+ 注册新 Kiosk 终端',
+      kioskPanelTitle: '已注册 Kiosk 设备列表',
+      securitySettingsTitle: 'Kiosk AI 安全识别阈值配置',
     },
   },
 };
@@ -258,8 +833,9 @@ const EN_MONTHS = [
   'December',
 ];
 
+const CN_MONTHS = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
+
 const WEEKDAY_NAMES_TH = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'];
-const CALENDAR_HEADERS_TH = ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'];
 
 function formatThaiDateTime(iso: string): string {
   const date = new Date(iso);
@@ -743,11 +1319,11 @@ export function ClinicalStaffPortalShell({
       {/* Dark Navy Left Sidebar */}
       <aside
         className={`${
-          sidebarCollapsed ? 'w-20' : 'w-[260px]'
-        } shrink-0 bg-[#0b1f33] text-slate-100 flex flex-col justify-between border-r border-slate-800/80 transition-all duration-200 select-none`}
+          sidebarCollapsed ? 'w-20 shrink-0' : 'w-64 shrink-0'
+        } bg-[#0b1f33] text-slate-100 flex flex-col justify-between border-r border-slate-800/80 transition-all duration-200 select-none`}
       >
         <div>
-          <div className="flex items-center justify-between gap-2 px-4 py-5 border-b border-white/10">
+          <div className="flex h-[72px] items-center justify-between gap-2 px-4 border-b border-white/10">
             <div className="flex items-center gap-3 min-w-0">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-400 to-cyan-500 text-slate-950 shadow-md">
                 <HeartHandshake className="h-5 w-5" />
@@ -755,9 +1331,9 @@ export function ClinicalStaffPortalShell({
               {!sidebarCollapsed && (
                 <div className="min-w-0">
                   <div className="text-sm font-black tracking-tight text-white truncate">Dr.Tech.Care</div>
-                  <div className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 border border-emerald-400/30 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                    {isAdmin ? 'ผู้อำนวยการ (Admin)' : 'นักกายภาพบำบัด (PT)'}
+                  <div className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 border border-emerald-400/30 px-2 py-0.5 text-[10px] font-bold text-emerald-300 whitespace-nowrap">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0" />
+                    <span className="truncate">{isAdmin ? locale.sidebar.adminRole : locale.sidebar.ptRole}</span>
                   </div>
                 </div>
               )}
@@ -765,8 +1341,8 @@ export function ClinicalStaffPortalShell({
             <button
               type="button"
               onClick={() => setSidebarCollapsed((c) => !c)}
-              className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white cursor-pointer"
-              title="ย่อ/ขยายเมนู"
+              className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white cursor-pointer shrink-0"
+              title={locale.sidebar.collapseTitle}
             >
               <Monitor className="h-4 w-4" />
             </button>
@@ -800,18 +1376,18 @@ export function ClinicalStaffPortalShell({
                   key={item.id}
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`w-full flex items-center justify-between gap-2.5 rounded-xl px-3.5 py-2.5 text-left transition cursor-pointer ${
+                  className={`w-full h-11 flex items-center justify-between gap-3 rounded-xl px-3.5 text-left whitespace-nowrap overflow-hidden text-ellipsis transition cursor-pointer ${
                     isActive
                       ? 'bg-gradient-to-r from-emerald-500 to-sky-500 text-white font-bold shadow-md shadow-emerald-950/30'
                       : 'text-slate-300 hover:bg-white/5 hover:text-white'
                   }`}
                 >
-                  <span className="flex items-center gap-2.5 min-w-0">
+                  <span className="flex items-center gap-3 min-w-0 overflow-hidden">
                     <Icon className="h-4 w-4 shrink-0" />
                     {!sidebarCollapsed && <span className="truncate">{item.label}</span>}
                   </span>
                   {!sidebarCollapsed && item.badge ? (
-                    <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-amber-400 px-1.5 text-[10px] font-black text-slate-950">
+                    <span className="flex h-5 min-w-[20px] shrink-0 items-center justify-center rounded-full bg-amber-400 px-1.5 text-[10px] font-black text-slate-950">
                       {item.badge}
                     </span>
                   ) : null}
@@ -825,22 +1401,22 @@ export function ClinicalStaffPortalShell({
           <button
             type="button"
             onClick={() => setCardGameModalOpen(true)}
-            className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-blue-600 px-3 py-2.5 font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
+            className="w-full h-10 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-blue-600 px-3 font-extrabold text-white shadow hover:opacity-95 whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer"
           >
             <Gamepad2 className="h-4 w-4 shrink-0" />
-            {!sidebarCollapsed && <span>{locale.actions.cardGame}</span>}
+            {!sidebarCollapsed && <span className="truncate">{locale.actions.cardGame}</span>}
           </button>
 
           {!sidebarCollapsed && (
-            <div className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-900/60 px-3 py-2 text-[11px]">
-              <span className="text-slate-400">ฐานข้อมูล: Cloud</span>
+            <div className="flex h-9 items-center justify-between rounded-xl border border-white/10 bg-slate-900/60 px-3 text-[11px] whitespace-nowrap">
+              <span className="text-slate-400 truncate">{locale.sidebar.dbCloud}</span>
               <span
-                className={`inline-flex items-center gap-1 font-bold ${
+                className={`inline-flex items-center gap-1 font-bold shrink-0 ${
                   cloudHealth.online ? 'text-emerald-400' : 'text-rose-400'
                 }`}
               >
                 <span className={`h-2 w-2 rounded-full ${cloudHealth.online ? 'bg-emerald-400' : 'bg-rose-400'}`} />
-                {cloudHealth.online ? 'ปกติ' : 'ออฟไลน์'}
+                {cloudHealth.online ? locale.sidebar.dbNormal : locale.sidebar.dbOffline}
               </span>
             </div>
           )}
@@ -849,20 +1425,20 @@ export function ClinicalStaffPortalShell({
             <button
               type="button"
               onClick={onReturnToKiosk}
-              className="w-full flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 font-bold text-slate-200 hover:bg-white/10 cursor-pointer"
+              className="w-full h-10 flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 font-bold text-slate-200 hover:bg-white/10 whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer"
             >
               <Monitor className="h-4 w-4 shrink-0" />
-              {!sidebarCollapsed && <span>{locale.actions.returnKiosk}</span>}
+              {!sidebarCollapsed && <span className="truncate">{locale.actions.returnKiosk}</span>}
             </button>
           )}
 
           <button
             type="button"
             onClick={() => void onLogout()}
-            className="w-full flex items-center justify-center gap-2 rounded-xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 font-bold text-rose-300 hover:bg-rose-500/20 cursor-pointer"
+            className="w-full h-10 flex items-center justify-center gap-2 rounded-xl border border-rose-500/20 bg-rose-500/10 px-3 font-bold text-rose-300 hover:bg-rose-500/20 whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer"
           >
             <LogOut className="h-4 w-4 shrink-0" />
-            {!sidebarCollapsed && <span>{locale.actions.logout}</span>}
+            {!sidebarCollapsed && <span className="truncate">{locale.actions.logout}</span>}
           </button>
         </div>
       </aside>
@@ -870,23 +1446,25 @@ export function ClinicalStaffPortalShell({
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Top White Header */}
-        <header className="bg-white border-b border-slate-200 px-5 py-3.5 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="text-base sm:text-lg font-black text-slate-900 leading-tight">{currentHeader.title}</h1>
-            <p className="text-[10px] font-bold tracking-wider text-slate-400 uppercase mt-0.5">
+        <header className="h-[72px] shrink-0 bg-white border-b border-slate-200 px-5 flex items-center justify-between gap-3">
+          <div className="min-h-[56px] flex flex-col justify-center min-w-0">
+            <h1 className="text-base sm:text-lg font-black text-slate-900 leading-tight truncate">
+              {currentHeader.title}
+            </h1>
+            <p className="text-[10px] font-bold tracking-wider text-slate-400 uppercase mt-0.5 truncate">
               {currentHeader.subtitle}
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 text-xs">
+          <div className="flex items-center gap-2 text-xs shrink-0 overflow-x-auto">
             {/* Language Toggle */}
-            <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 font-bold">
+            <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 font-bold shrink-0">
               {(['cn', 'th', 'en'] as const).map((code) => (
                 <button
                   key={code}
                   type="button"
                   onClick={() => setLang(code)}
-                  className={`rounded-full px-2.5 py-1 text-[11px] transition cursor-pointer ${
+                  className={`w-[68px] h-8 inline-flex items-center justify-center whitespace-nowrap rounded-full text-[11px] transition cursor-pointer ${
                     lang === code ? 'bg-white text-emerald-700 shadow-sm border border-emerald-200' : 'text-slate-500'
                   }`}
                 >
@@ -900,45 +1478,45 @@ export function ClinicalStaffPortalShell({
               onClick={() => void pingCloudHealth()}
               title={
                 cloudHealth.latencyMs !== undefined
-                  ? `Supabase Latency: ${cloudHealth.latencyMs}ms (คลิกเพื่อทดสอบการเชื่อมต่อ)`
-                  : 'คลิกเพื่อทดสอบ Supabase Cloud'
+                  ? `Supabase Latency: ${cloudHealth.latencyMs}ms`
+                  : 'Test Supabase Cloud'
               }
-              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 font-bold cursor-pointer transition ${
+              className={`whitespace-nowrap h-9 min-w-[140px] inline-flex items-center justify-center gap-1.5 rounded-full border px-3.5 font-bold cursor-pointer transition shrink-0 ${
                 cloudHealth.online
                   ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
                   : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
               }`}
             >
-              {cloudHealth.online ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
-              {cloudHealth.online ? locale.actions.cloudConnected : locale.actions.cloudOffline}
+              {cloudHealth.online ? <Wifi className="h-3.5 w-3.5 shrink-0" /> : <WifiOff className="h-3.5 w-3.5 shrink-0" />}
+              <span>{cloudHealth.online ? locale.actions.cloudConnected : locale.actions.cloudOffline}</span>
             </button>
 
             <button
               type="button"
               onClick={() => setWelcomeFaceModalOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-full bg-emerald-600 px-3.5 py-1.5 font-bold text-white shadow-sm hover:bg-emerald-500 cursor-pointer"
+              className="whitespace-nowrap h-9 min-w-[135px] inline-flex items-center justify-center gap-1.5 rounded-full bg-emerald-600 px-3.5 font-bold text-white shadow-sm hover:bg-emerald-500 cursor-pointer shrink-0"
             >
-              <ScanFace className="h-3.5 w-3.5" />
-              {locale.actions.welcomeScan}
+              <ScanFace className="h-3.5 w-3.5 shrink-0" />
+              <span>{locale.actions.welcomeScan}</span>
             </button>
 
             <button
               type="button"
               onClick={() => setQuickCheckinModalOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-3.5 py-1.5 font-bold text-amber-800 hover:bg-amber-100 cursor-pointer"
+              className="whitespace-nowrap h-9 min-w-[135px] inline-flex items-center justify-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-3.5 font-bold text-amber-800 hover:bg-amber-100 cursor-pointer shrink-0"
             >
-              <Zap className="h-3.5 w-3.5 text-amber-500" />
-              {locale.actions.quickCheckin}
+              <Zap className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+              <span>{locale.actions.quickCheckin}</span>
             </button>
 
             {onReturnToKiosk && (
               <button
                 type="button"
                 onClick={onReturnToKiosk}
-                className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-white px-3.5 py-1.5 font-bold text-emerald-700 hover:bg-emerald-50 cursor-pointer"
+                className="whitespace-nowrap h-9 min-w-[135px] inline-flex items-center justify-center gap-1.5 rounded-full border border-emerald-200 bg-white px-3.5 font-bold text-emerald-700 hover:bg-emerald-50 cursor-pointer shrink-0"
               >
-                <Monitor className="h-3.5 w-3.5" />
-                {locale.actions.kioskBtn}
+                <Monitor className="h-3.5 w-3.5 shrink-0" />
+                <span>{locale.actions.kioskBtn}</span>
               </button>
             )}
           </div>
@@ -965,23 +1543,23 @@ export function ClinicalStaffPortalShell({
           {activeTab === 'staff' && (
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-start gap-2.5">
+                <div className="flex items-start gap-2.5 min-w-0">
                   <Users className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
-                  <div>
+                  <div className="min-w-0">
                     <h2 className="text-lg font-extrabold text-slate-900">
-                      จัดการเจ้าหน้าที่โรงพยาบาล (Staff Management)
+                      {locale.staff.title}
                     </h2>
                     <p className="text-xs text-slate-500">
-                      บัญชีผู้อำนวยการ (Admin) และนักกายภาพบำบัด (PT) ควบคุมสิทธิ์และเซสชันการเข้าถึง
+                      {locale.staff.subtitle}
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
                     onClick={() => void refreshAll()}
-                    className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer"
-                    title="รีเฟรช"
+                    className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer shrink-0"
+                    title={locale.staff.refreshTitle}
                   >
                     <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                   </button>
@@ -989,10 +1567,10 @@ export function ClinicalStaffPortalShell({
                     <button
                       type="button"
                       onClick={() => setAddStaffModalOpen(true)}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500 cursor-pointer"
+                      className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1.5 shrink-0 rounded-xl bg-emerald-600 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500 cursor-pointer"
                     >
-                      <Plus className="h-4 w-4" />
-                      เพิ่มเจ้าหน้าที่ใหม่
+                      <Plus className="h-4 w-4 shrink-0" />
+                      {locale.staff.addBtn.replace(/^\+\s*/, '')}
                     </button>
                   )}
                 </div>
@@ -1004,91 +1582,91 @@ export function ClinicalStaffPortalShell({
                   <input
                     value={staffSearch}
                     onChange={(e) => setStaffSearch(e.target.value)}
-                    placeholder="ค้นหาชื่อ, username, เบอร์โทร..."
-                    className="w-full rounded-xl border border-slate-200 bg-white pl-10 pr-4 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none"
+                    placeholder={locale.staff.searchPlaceholder}
+                    className="w-full h-10 rounded-xl border border-slate-200 bg-white pl-10 pr-4 text-xs text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none"
                   />
                 </div>
                 <select
                   value={staffRoleFilter}
                   onChange={(e) => setStaffRoleFilter(e.target.value as 'all' | UserRole)}
-                  className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700"
+                  className="h-10 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700"
                 >
-                  <option value="all">ทุกบทบาท (All Roles)</option>
-                  <option value="super_admin">ผู้อำนวยการ (Admin)</option>
-                  <option value="pt">นักกายภาพบำบัด (PT)</option>
-                  <option value="patient">คนไข้ (Patient)</option>
+                  <option value="all">{locale.staff.allRoles}</option>
+                  <option value="super_admin">{locale.staff.roleAdmin}</option>
+                  <option value="pt">{locale.staff.rolePt}</option>
+                  <option value="patient">{locale.staff.rolePatient}</option>
                 </select>
                 <select
                   value={staffStatusFilter}
                   onChange={(e) => setStaffStatusFilter(e.target.value as 'all' | 'active' | 'inactive')}
-                  className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700"
+                  className="h-10 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700"
                 >
-                  <option value="all">ทุกสถานะ (All Status)</option>
-                  <option value="active">ปกติ (Active)</option>
-                  <option value="inactive">ระงับใช้งาน (Suspended)</option>
+                  <option value="all">{locale.staff.allStatus}</option>
+                  <option value="active">{locale.staff.statusActive}</option>
+                  <option value="inactive">{locale.staff.statusSuspended}</option>
                 </select>
               </div>
 
               <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-x-auto">
-                <table className="w-full min-w-[760px] text-left text-xs">
+                <table className="table-fixed w-full min-w-[820px] text-left text-xs">
                   <thead className="border-b border-slate-100 bg-slate-50/70 text-[11px] font-bold text-slate-500 uppercase">
                     <tr>
-                      <th className="px-5 py-3.5">ชื่อ-นามสกุล</th>
-                      <th className="px-4 py-3.5">USERNAME / HN</th>
-                      <th className="px-4 py-3.5">บทบาท</th>
-                      <th className="px-4 py-3.5">สถานะ</th>
-                      {isAdmin && <th className="px-5 py-3.5 text-right">การจัดการ</th>}
+                      <th className="w-[28%] px-5 py-3.5">{locale.staff.colName}</th>
+                      <th className="w-[18%] px-4 py-3.5">{locale.staff.colUsername}</th>
+                      <th className="w-[22%] px-4 py-3.5">{locale.staff.colRole}</th>
+                      <th className="w-[14%] px-4 py-3.5">{locale.staff.colStatus}</th>
+                      {isAdmin && <th className="w-[18%] px-5 py-3.5 text-right">{locale.staff.colActions}</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {filteredStaff.map((u) => (
                       <tr key={u.id} className="hover:bg-slate-50/80 transition">
                         <td className="px-5 py-3.5">
-                          <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-3 min-w-0">
                             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-indigo-50 text-xs font-extrabold text-indigo-700">
                               {u.fullName.trim().slice(0, 1) || 'U'}
                             </div>
-                            <div>
-                              <div className="font-bold text-slate-900">{u.fullName}</div>
-                              <div className="text-[11px] text-slate-400">{u.phone || '08X-XXX-XXXX'}</div>
+                            <div className="min-w-0">
+                              <div className="font-bold text-slate-900 truncate">{u.fullName}</div>
+                              <div className="text-[11px] text-slate-400 truncate">{u.phone || '08X-XXX-XXXX'}</div>
                             </div>
                           </div>
                         </td>
-                        <td className="px-4 py-3.5 font-mono font-bold text-sky-600">@{u.username}</td>
+                        <td className="px-4 py-3.5 font-mono font-bold text-sky-600 truncate">@{u.username}</td>
                         <td className="px-4 py-3.5">
                           {u.role === 'super_admin' && (
-                            <span className="inline-flex items-center gap-1 rounded-full border border-purple-200 bg-purple-50 px-2.5 py-1 text-[11px] font-bold text-purple-700">
-                              <Shield className="h-3 w-3" /> ผู้อำนวยการ (Admin)
+                            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-purple-200 bg-purple-50 px-2.5 py-1 text-[11px] font-bold text-purple-700">
+                              <Shield className="h-3 w-3 shrink-0" /> {locale.staff.roleAdmin}
                             </span>
                           )}
                           {u.role === 'pt' && (
-                            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
-                              <UserCheck className="h-3 w-3" /> นักกายภาพบำบัด (PT)
+                            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
+                              <UserCheck className="h-3 w-3 shrink-0" /> {locale.staff.rolePt}
                             </span>
                           )}
                           {u.role === 'patient' && (
-                            <span className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700">
-                              <Users className="h-3 w-3" /> คนไข้ (Patient)
+                            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700">
+                              <Users className="h-3 w-3 shrink-0" /> {locale.staff.rolePatient}
                             </span>
                           )}
                         </td>
                         <td className="px-4 py-3.5">
                           <span
-                            className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-bold ${
+                            className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-bold ${
                               u.active
                                 ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
                                 : 'border-rose-200 bg-rose-50 text-rose-700'
                             }`}
                           >
                             <span
-                              className={`h-1.5 w-1.5 rounded-full ${u.active ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                              className={`h-1.5 w-1.5 rounded-full shrink-0 ${u.active ? 'bg-emerald-500' : 'bg-rose-500'}`}
                             />
-                            {u.active ? 'ปกติ' : 'ระงับ'}
+                            {u.active ? locale.staff.statusBadgeActive : locale.staff.statusBadgeSuspended}
                           </span>
                         </td>
                         {isAdmin && (
                           <td className="px-5 py-3.5 text-right">
-                            <div className="inline-flex items-center gap-1.5">
+                            <div className="inline-flex items-center justify-end gap-1.5">
                               {u.id !== currentUser.id && (
                                 <button
                                   type="button"
@@ -1106,16 +1684,16 @@ export function ClinicalStaffPortalShell({
                                       setSubmitting(false);
                                     }
                                   }}
-                                  className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                                  className="whitespace-nowrap rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-100 cursor-pointer"
                                 >
-                                  {u.active ? 'ระงับสิทธิ์' : 'เปิดใช้งาน'}
+                                  {u.active ? locale.staff.suspendBtn : locale.staff.activateBtn}
                                 </button>
                               )}
                               <button
                                 type="button"
                                 onClick={() => setResetPassUser(u)}
-                                className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700 hover:bg-sky-100 cursor-pointer"
-                                title="รีเซ็ตรหัสผ่าน"
+                                className="whitespace-nowrap rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700 hover:bg-sky-100 cursor-pointer"
+                                title={locale.staff.resetPwdTitle}
                               >
                                 <KeyRound className="h-3.5 w-3.5" />
                               </button>
@@ -1128,8 +1706,8 @@ export function ClinicalStaffPortalShell({
                                     flashBanner('success', `ลบบัญชี @${u.username} เรียบร้อยแล้ว`);
                                     await refreshAll();
                                   }}
-                                  className="rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-rose-600 hover:bg-rose-100 cursor-pointer"
-                                  title="ลบผู้ใช้"
+                                  className="whitespace-nowrap rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-rose-600 hover:bg-rose-100 cursor-pointer"
+                                  title={locale.staff.deleteTitle}
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
                                 </button>
@@ -1142,7 +1720,7 @@ export function ClinicalStaffPortalShell({
                     {filteredStaff.length === 0 && (
                       <tr>
                         <td colSpan={isAdmin ? 5 : 4} className="px-6 py-10 text-center text-slate-400">
-                          ไม่พบบัญชีผู้ใช้ตามเงื่อนไขที่ค้นหา
+                          {locale.staff.emptyStaff}
                         </td>
                       </tr>
                     )}
@@ -1156,21 +1734,21 @@ export function ClinicalStaffPortalShell({
           {activeTab === 'patients' && (
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-start gap-2.5">
+                <div className="flex items-start gap-2.5 min-w-0">
                   <Activity className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
-                  <div>
-                    <h2 className="text-lg font-extrabold text-slate-900">ทะเบียนคนไข้ (Patients Directory)</h2>
+                  <div className="min-w-0">
+                    <h2 className="text-lg font-extrabold text-slate-900">{locale.patients.title}</h2>
                     <p className="text-xs text-slate-500">
-                      ค้นหาคนไข้ กำหนด PT ผู้รับผิดชอบ ส่งตัวสแกนหน้า และดูประวัติการฝึกย้อนหลัง
+                      {locale.patients.subtitle}
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
                     onClick={() => void refreshAll()}
-                    className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer"
-                    title="รีเฟรช"
+                    className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer shrink-0"
+                    title={locale.staff.refreshTitle}
                   >
                     <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                   </button>
@@ -1180,51 +1758,52 @@ export function ClinicalStaffPortalShell({
                       setEnrollTargetPatient(null);
                       setEnrollModalOpen(true);
                     }}
-                    className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500 cursor-pointer"
+                    className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1.5 shrink-0 rounded-xl bg-emerald-600 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500 cursor-pointer"
                   >
-                    <UserPlus className="h-4 w-4" />+ ลงทะเบียนคนไข้ใหม่
+                    <UserPlus className="h-4 w-4 shrink-0" />
+                    {locale.patients.addBtn}
                   </button>
                 </div>
               </div>
 
               <div className="flex flex-wrap items-center gap-2.5">
-                <div className="flex flex-1 min-w-[260px] items-center rounded-xl border border-slate-200 bg-white p-1">
+                <div className="flex flex-1 min-w-[260px] h-10 items-center rounded-xl border border-slate-200 bg-white p-1">
                   <Search className="h-4 w-4 text-slate-400 ml-2.5 mr-2 shrink-0" />
                   <input
                     value={patientSearch}
                     onChange={(e) => setPatientSearch(e.target.value)}
-                    placeholder="ค้นหาชื่อไทย, นามสกุล, HN, เบอร์โทร.."
-                    className="w-full bg-transparent px-1 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none"
+                    placeholder={locale.patients.searchPlaceholder}
+                    className="w-full bg-transparent px-1 py-1 text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none"
                   />
                   <button
                     type="button"
                     onClick={() => void refreshAll()}
-                    className="rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-emerald-500 cursor-pointer"
+                    className="whitespace-nowrap h-8 px-3.5 inline-flex items-center justify-center shrink-0 rounded-lg bg-emerald-600 text-xs font-bold text-white hover:bg-emerald-500 cursor-pointer"
                   >
-                    ค้นหา
+                    {locale.patients.searchBtn}
                   </button>
                 </div>
                 <select
                   value={patientFaceFilter}
                   onChange={(e) => setPatientFaceFilter(e.target.value as 'all' | 'enrolled' | 'pending')}
-                  className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700"
+                  className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-700"
                 >
-                  <option value="all">ทุกสถานะใบหน้า</option>
-                  <option value="enrolled">ลงทะเบียนใบหน้าแล้ว (VERIFIED)</option>
-                  <option value="pending">ยังไม่สแกนใบหน้า (PENDING)</option>
+                  <option value="all">{locale.patients.allFace}</option>
+                  <option value="enrolled">{locale.patients.faceVerified}</option>
+                  <option value="pending">{locale.patients.facePending}</option>
                 </select>
               </div>
 
               <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-x-auto">
-                <table className="w-full min-w-[920px] text-left text-xs">
+                <table className="table-fixed w-full min-w-[940px] text-left text-xs">
                   <thead className="border-b border-slate-100 bg-slate-50/70 text-[11px] font-bold text-slate-500">
                     <tr>
-                      <th className="px-5 py-3.5">รหัส HN</th>
-                      <th className="px-4 py-3.5">ชื่อ - นามสกุล</th>
-                      <th className="px-4 py-3.5">อายุ / เพศ</th>
-                      <th className="px-4 py-3.5">เบอร์โทร / PT ผู้ดูแล</th>
-                      <th className="px-4 py-3.5">สถานะชีวมาตร</th>
-                      <th className="px-5 py-3.5 text-right">การจัดการ</th>
+                      <th className="w-[11%] px-5 py-3.5">{locale.patients.colHn}</th>
+                      <th className="w-[22%] px-4 py-3.5">{locale.patients.colPatientName}</th>
+                      <th className="w-[11%] px-4 py-3.5">{locale.patients.colAgeGender}</th>
+                      <th className="w-[18%] px-4 py-3.5">{locale.patients.colPhonePt}</th>
+                      <th className="w-[15%] px-4 py-3.5">{locale.patients.colBiometric}</th>
+                      <th className="w-[23%] px-5 py-3.5 text-right">{locale.patients.colActions}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -1234,43 +1813,43 @@ export function ClinicalStaffPortalShell({
                       return (
                         <tr key={p.id} className="hover:bg-slate-50/80 transition">
                           <td className="px-5 py-3.5">
-                            <span className="inline-block rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 font-mono text-[11px] font-extrabold text-sky-700">
+                            <span className="inline-block whitespace-nowrap rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 font-mono text-[11px] font-extrabold text-sky-700">
                               {p.hn}
                             </span>
                           </td>
                           <td className="px-4 py-3.5">
-                            <div className="font-bold text-slate-900">{p.fullName}</div>
-                            <div className="text-[11px] text-slate-400 truncate max-w-[210px]">{p.diagnosis}</div>
+                            <div className="font-bold text-slate-900 truncate">{p.fullName}</div>
+                            <div className="text-[11px] text-slate-400 truncate">{p.diagnosis}</div>
                           </td>
-                          <td className="px-4 py-3.5 font-medium text-slate-700">
-                            {p.age} ปี / {p.gender || 'ชาย'}
+                          <td className="px-4 py-3.5 font-medium text-slate-700 whitespace-nowrap">
+                            {p.age} {locale.patients.ageUnit} / {p.gender || 'ชาย'}
                           </td>
                           <td className="px-4 py-3.5">
-                            <div className="font-mono text-slate-700">{p.phone || '-'}</div>
-                            <div className="text-[11px] font-semibold text-emerald-700">{ptLabel}</div>
+                            <div className="font-mono text-slate-700 truncate">{p.phone || '-'}</div>
+                            <div className="text-[11px] font-semibold text-emerald-700 truncate">{ptLabel}</div>
                           </td>
                           <td className="px-4 py-3.5">
                             {verified ? (
-                              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-bold text-emerald-700">
-                                <CheckCircle2 className="h-3.5 w-3.5" />
-                                ลงทะเบียนหน้าแล้ว
+                              <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-bold text-emerald-700">
+                                <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                                {locale.patients.verifiedBadge}
                               </span>
                             ) : (
-                              <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-bold text-amber-800">
-                                <Clock className="h-3.5 w-3.5" />
-                                ยังไม่สแกนใบหน้า
+                              <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-bold text-amber-800">
+                                <Clock className="h-3.5 w-3.5 shrink-0" />
+                                {locale.patients.pendingBadge}
                               </span>
                             )}
                           </td>
                           <td className="px-5 py-3.5 text-right">
-                            <div className="inline-flex items-center gap-1.5">
+                            <div className="inline-flex items-center justify-end gap-1.5">
                               <button
                                 type="button"
                                 onClick={() => setPatientModalState({ patient: p, tab: 'profile' })}
-                                className="inline-flex items-center gap-1 rounded-xl bg-blue-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-blue-500 cursor-pointer"
+                                className="whitespace-nowrap inline-flex items-center gap-1 rounded-xl bg-blue-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-blue-500 cursor-pointer"
                               >
-                                <FileText className="h-3.5 w-3.5" />
-                                เวชระเบียน
+                                <FileText className="h-3.5 w-3.5 shrink-0" />
+                                {locale.patients.emrBtn}
                               </button>
                               <button
                                 type="button"
@@ -1278,16 +1857,16 @@ export function ClinicalStaffPortalShell({
                                   setEnrollTargetPatient(p);
                                   setEnrollModalOpen(true);
                                 }}
-                                className="rounded-xl border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer"
+                                className="whitespace-nowrap rounded-xl border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer"
                               >
-                                ส่งตัวสแกนหน้า
+                                {locale.patients.scanFaceBtn}
                               </button>
                               <button
                                 type="button"
                                 onClick={() => setPatientModalState({ patient: p, tab: 'history' })}
-                                className="rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                                className="whitespace-nowrap rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
                               >
-                                ดูประวัติการฝึก
+                                {locale.patients.historyBtn}
                               </button>
                               {isAdmin && (
                                 <button
@@ -1298,8 +1877,8 @@ export function ClinicalStaffPortalShell({
                                     flashBanner('success', `ลบข้อมูลคนไข้ ${p.fullName} แล้ว`);
                                     await refreshAll();
                                   }}
-                                  className="rounded-xl border border-rose-200 bg-rose-50 p-1.5 text-rose-600 hover:bg-rose-100 cursor-pointer"
-                                  title="ลบประวัติ (เฉพาะ Admin)"
+                                  className="whitespace-nowrap rounded-xl border border-rose-200 bg-rose-50 p-1.5 text-rose-600 hover:bg-rose-100 cursor-pointer"
+                                  title={locale.patients.deleteTitle}
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
                                 </button>
@@ -1312,7 +1891,7 @@ export function ClinicalStaffPortalShell({
                     {filteredPatients.length === 0 && (
                       <tr>
                         <td colSpan={6} className="px-6 py-10 text-center text-slate-400">
-                          ไม่พบข้อมูลคนไข้ กด &ldquo;+ ลงทะเบียนคนไข้ใหม่&rdquo; เพื่อเพิ่มผู้ป่วย
+                          {locale.patients.emptyPatients}
                         </td>
                       </tr>
                     )}
@@ -1326,19 +1905,20 @@ export function ClinicalStaffPortalShell({
           {activeTab === 'pts' && (
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-start gap-2.5">
+                <div className="flex items-start gap-2.5 min-w-0">
                   <UserCheck className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
-                  <div>
-                    <h2 className="text-lg font-extrabold text-slate-900">ทำเนียบนักกายภาพบำบัด (PT Directory)</h2>
+                  <div className="min-w-0">
+                    <h2 className="text-lg font-extrabold text-slate-900">{locale.pts.title}</h2>
                     <p className="text-xs text-slate-500">
-                      รายชื่อนักกายภาพบำบัดประจำโรงพยาบาล เลขที่ใบอนุญาตประกอบวิชาชีพ และคนไข้ที่ดูแล
+                      {locale.pts.subtitle}
                     </p>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => void refreshAll()}
-                  className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer"
+                  className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer shrink-0"
+                  title={locale.staff.refreshTitle}
                 >
                   <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                 </button>
@@ -1349,8 +1929,8 @@ export function ClinicalStaffPortalShell({
                 <input
                   value={ptSearch}
                   onChange={(e) => setPtSearch(e.target.value)}
-                  placeholder="ค้นหาชื่อ PT, เลขที่ใบอนุญาต, ความเชี่ยวชาญ..."
-                  className="w-full rounded-xl border border-slate-200 bg-white pl-10 pr-4 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none"
+                  placeholder={locale.pts.searchPlaceholder}
+                  className="w-full h-10 rounded-xl border border-slate-200 bg-white pl-10 pr-4 text-xs text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none"
                 />
               </div>
 
@@ -1366,17 +1946,17 @@ export function ClinicalStaffPortalShell({
                     >
                       <div className="space-y-3">
                         <div className="flex items-start justify-between gap-2">
-                          <div className="flex items-center gap-3">
-                            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-base font-black text-white shadow-sm">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-base font-black text-white shadow-sm">
                               {pt.fullName.trim().slice(0, 1) || 'P'}
                             </div>
-                            <div>
-                              <h3 className="text-sm font-extrabold text-slate-900">{pt.fullName}</h3>
-                              <p className="font-mono text-[11px] font-bold text-sky-600">@{pt.username}</p>
+                            <div className="min-w-0">
+                              <h3 className="text-sm font-extrabold text-slate-900 truncate">{pt.fullName}</h3>
+                              <p className="font-mono text-[11px] font-bold text-sky-600 truncate">@{pt.username}</p>
                             </div>
                           </div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className="whitespace-nowrap rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
                               PT
                             </span>
                             {isAdmin && (
@@ -1389,7 +1969,7 @@ export function ClinicalStaffPortalShell({
                                   await refreshAll();
                                 }}
                                 className="rounded-lg p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer"
-                                title="ลบบัญชี PT"
+                                title={locale.staff.deleteTitle}
                               >
                                 <Trash2 className="h-4 w-4" />
                               </button>
@@ -1397,25 +1977,27 @@ export function ClinicalStaffPortalShell({
                           </div>
                         </div>
 
-                        <div className="flex items-center justify-between rounded-xl border border-amber-200/80 bg-amber-50/70 px-3.5 py-2 text-xs">
-                          <span className="font-semibold text-amber-900">🏅 ใบประกอบวิชาชีพ:</span>
-                          <span className="rounded-lg bg-white border border-amber-200 px-2.5 py-0.5 font-mono text-[11px] font-bold text-slate-800">
+                        <div className="flex items-center justify-between gap-2 rounded-xl border border-amber-200/80 bg-amber-50/70 px-3.5 py-2 text-xs">
+                          <span className="font-semibold text-amber-900 whitespace-nowrap">{locale.pts.licenseLabel}</span>
+                          <span className="whitespace-nowrap rounded-lg bg-white border border-amber-200 px-2.5 py-0.5 font-mono text-[11px] font-bold text-slate-800">
                             {pt.licenseNo || 'PT-44012'}
                           </span>
                         </div>
 
                         <div className="space-y-1.5 text-xs text-slate-600">
-                          <div className="flex items-center gap-2">
-                            <FileText className="h-3.5 w-3.5 text-slate-400" />
-                            <span>ความเชี่ยวชาญ:</span>
-                            <span className="font-semibold text-slate-900">{pt.specialty || 'กายภาพบำบัดทั่วไป'}</span>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <FileText className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                            <span className="whitespace-nowrap">{locale.pts.specialtyLabel}</span>
+                            <span className="font-semibold text-slate-900 truncate">{pt.specialty || 'กายภาพบำบัดทั่วไป'}</span>
                           </div>
-                          <div className="flex items-center justify-between">
-                            <span className="flex items-center gap-2">
-                              <Users className="h-3.5 w-3.5 text-slate-400" />
-                              คนไข้ที่ดูแล:
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="flex items-center gap-2 whitespace-nowrap">
+                              <Users className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                              {locale.pts.patientsCountLabel}
                             </span>
-                            <span className="font-extrabold text-sky-600">{ptPatients.length} ท่าน</span>
+                            <span className="font-extrabold text-sky-600 whitespace-nowrap">
+                              {ptPatients.length} {locale.pts.patientsUnit}
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -1427,10 +2009,10 @@ export function ClinicalStaffPortalShell({
                           const unassigned = patients.find((p) => p.assignedPtId !== pt.id) ?? patients[0];
                           setAssignPatientIdForPt(unassigned?.id ?? '');
                         }}
-                        className="flex w-full items-center justify-between border-t border-slate-100 pt-3 text-xs font-bold text-slate-700 hover:text-emerald-700 cursor-pointer"
+                        className="flex w-full items-center justify-between border-t border-slate-100 pt-3 text-xs font-bold text-slate-700 hover:text-emerald-700 cursor-pointer whitespace-nowrap"
                       >
-                        <span>ดูรายละเอียดและคนไข้</span>
-                        <ChevronRight className="h-4 w-4" />
+                        <span>{locale.pts.viewDetailBtn}</span>
+                        <ChevronRight className="h-4 w-4 shrink-0" />
                       </button>
                     </div>
                   );
@@ -1443,24 +2025,24 @@ export function ClinicalStaffPortalShell({
           {activeTab === 'exercises' && (
             <div className="space-y-6">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-start gap-2.5">
+                <div className="flex items-start gap-2.5 min-w-0">
                   <Gamepad2 className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
-                  <div>
+                  <div className="min-w-0">
                     <h2 className="text-lg font-extrabold text-slate-900">
-                      ท่ากายภาพบำบัดและมินิเกมกระตุ้นสมอง (Exercises &amp; Modpacks)
+                      {locale.exercises.title}
                     </h2>
                     <p className="text-xs text-slate-500">
-                      จัดการชุดคำถาม Physical Card Modpack และปลดล็อกโหมด AI Pose Detection สำหรับตู้ Kiosk
+                      {locale.exercises.subtitle}
                     </p>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => setCardGameModalOpen(true)}
-                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 px-4 py-2 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
+                  className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-2 shrink-0 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
                 >
-                  <Gamepad2 className="h-4 w-4" />
-                  ทดลองเล่นการ์ดกายภาพ 10 ข้อ
+                  <Gamepad2 className="h-4 w-4 shrink-0" />
+                  {locale.exercises.playCardBtn}
                 </button>
               </div>
 
@@ -1472,23 +2054,23 @@ export function ClinicalStaffPortalShell({
                     : 'border-amber-200 bg-amber-50'
                 }`}
               >
-                <div className="text-xs">
+                <div className="text-xs min-w-0 flex-1">
                   <div className="font-extrabold text-slate-900">
-                    สถานะตรวจจับท่ากายภาพอัตโนมัติ (AI Pose Detection):{' '}
+                    {locale.exercises.aiPoseTitle}{' '}
                     <span className={systemSettings.aiPoseDetectionEnabled ? 'text-emerald-700' : 'text-amber-700'}>
                       {systemSettings.aiPoseDetectionEnabled
-                        ? 'เปิดใช้งาน AI Pose Detection สำหรับตู้ Kiosk แล้ว'
-                        : 'อยู่ระหว่างพัฒนา (PT ล็อกไว้เฉพาะมินิเกม)'}
+                        ? locale.exercises.aiPoseEnabled
+                        : locale.exercises.aiPoseLocked}
                     </span>
                   </div>
                   <p className="text-slate-600 mt-0.5">
-                    เฉพาะผู้อำนวยการโรงพยาบาล (ADMIN) สามารถปลดล็อกเปิดใช้ท่ากายภาพ AI บนตู้ Kiosk ได้
+                    {locale.exercises.aiPoseDesc}
                   </p>
                 </div>
                 <button
                   type="button"
                   disabled={!isAdmin || submitting}
-                  title={!isAdmin ? 'เฉพาะ ADMIN เท่านั้นที่สามารถปลดล็อกได้' : undefined}
+                  title={!isAdmin ? 'ADMIN ONLY' : undefined}
                   onClick={async () => {
                     setSubmitting(true);
                     try {
@@ -1499,37 +2081,41 @@ export function ClinicalStaffPortalShell({
                       flashBanner(
                         'success',
                         updated.aiPoseDetectionEnabled
-                          ? 'เปิดใช้งาน AI Pose Detection สำหรับตู้ Kiosk แล้ว'
-                          : 'ตั้งสถานะท่ากายภาพ AI เป็นอยู่ระหว่างพัฒนาแล้ว',
+                          ? locale.exercises.aiPoseEnabled
+                          : locale.exercises.aiPoseLocked,
                       );
                     } finally {
                       setSubmitting(false);
                     }
                   }}
-                  className={`rounded-xl px-4 py-2 text-xs font-bold text-white shadow-sm disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer ${
+                  className={`whitespace-nowrap h-10 px-4 inline-flex items-center justify-center shrink-0 rounded-xl text-xs font-bold text-white shadow-sm disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer ${
                     systemSettings.aiPoseDetectionEnabled
                       ? 'bg-amber-600 hover:bg-amber-500'
                       : 'bg-emerald-600 hover:bg-emerald-500'
                   }`}
                 >
-                  {systemSettings.aiPoseDetectionEnabled ? 'ตั้งสถานะเป็น: อยู่ระหว่างพัฒนา' : 'ปลดล็อกเปิดใช้ท่ากายภาพ AI'}
+                  {systemSettings.aiPoseDetectionEnabled
+                    ? locale.exercises.aiPoseToggleLock
+                    : locale.exercises.aiPoseToggleUnlock}
                 </button>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Cognitive Modpacks */}
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
-                  <h3 className="text-sm font-extrabold text-slate-900">ชุดมินิเกม Modpack ({modpacks.length})</h3>
+                  <h3 className="text-sm font-extrabold text-slate-900">
+                    {locale.exercises.modpackHeader} ({modpacks.length})
+                  </h3>
                   <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
                     {modpacks.map((m) => (
                       <div
                         key={m.id}
                         className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs"
                       >
-                        <div>
-                          <div className="font-bold text-slate-900">{m.name}</div>
-                          <div className="text-[11px] text-slate-500">
-                            หมวดหมู่: {m.categories.join(', ')} • {m.questionCount} ข้อ
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-900 truncate">{m.name}</div>
+                          <div className="text-[11px] text-slate-500 truncate">
+                            {m.categories.join(', ')} • {m.questionCount} Q
                           </div>
                         </div>
                         {(isAdmin || m.createdBy === currentUser.id) && (
@@ -1544,8 +2130,8 @@ export function ClinicalStaffPortalShell({
                                 flashBanner('error', err instanceof Error ? err.message : 'ไม่สามารถลบ Modpack กลางได้');
                               }
                             }}
-                            className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer"
-                            title="ลบ Modpack"
+                            className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer shrink-0"
+                            title={locale.staff.deleteTitle}
                           >
                             <Trash2 className="h-4 w-4" />
                           </button>
@@ -1580,7 +2166,13 @@ export function ClinicalStaffPortalShell({
                       required
                       value={mpName}
                       onChange={(e) => setMpName(e.target.value)}
-                      placeholder="ชื่อ Modpack ใหม่..."
+                      placeholder={
+                        lang === 'cn'
+                          ? '输入新游戏题目包名称...'
+                          : lang === 'en'
+                            ? 'New modpack name...'
+                            : 'ชื่อ Modpack ใหม่...'
+                      }
                       className="rounded-xl border border-slate-200 px-3 py-2 sm:col-span-2"
                     />
                     <select
@@ -1604,25 +2196,27 @@ export function ClinicalStaffPortalShell({
                     <button
                       type="submit"
                       disabled={submitting}
-                      className="sm:col-span-2 rounded-xl bg-emerald-600 px-3 py-2 font-bold text-white hover:bg-emerald-500 disabled:opacity-50 cursor-pointer"
+                      className="sm:col-span-2 whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-emerald-600 font-bold text-white hover:bg-emerald-500 disabled:opacity-50 cursor-pointer"
                     >
-                      + เพิ่ม Modpack มินิเกม
+                      {locale.exercises.addModpackBtn}
                     </button>
                   </form>
                 </div>
 
                 {/* Rehab Exercises Library */}
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
-                  <h3 className="text-sm font-extrabold text-slate-900">คลังท่ากายภาพบำบัด ({exercises.length})</h3>
+                  <h3 className="text-sm font-extrabold text-slate-900">
+                    {locale.exercises.exerciseHeader} ({exercises.length})
+                  </h3>
                   <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
                     {exercises.map((ex) => (
                       <div
                         key={ex.id}
                         className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs"
                       >
-                        <div>
-                          <div className="font-bold text-slate-900">
-                            {ex.name.th}{' '}
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-900 truncate">
+                            {ex.name[lang] || ex.name.th}{' '}
                             <span className="ml-1 rounded bg-sky-100 px-1.5 py-0.5 font-mono text-[10px] text-sky-800">
                               {ex.code}
                             </span>
@@ -1630,7 +2224,7 @@ export function ClinicalStaffPortalShell({
                               {ex.detection.side}
                             </span>
                           </div>
-                          <div className="text-[11px] text-slate-500">{ex.instruction.th}</div>
+                          <div className="text-[11px] text-slate-500 truncate">{ex.instruction[lang] || ex.instruction.th}</div>
                         </div>
                         {(isAdmin || ex.createdBy === currentUser.id) && (
                           <button
@@ -1644,8 +2238,8 @@ export function ClinicalStaffPortalShell({
                                 flashBanner('error', err instanceof Error ? err.message : 'ไม่สามารถลบท่ากายภาพกลางได้');
                               }
                             }}
-                            className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer"
-                            title="ลบท่ากายภาพ"
+                            className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer shrink-0"
+                            title={locale.staff.deleteTitle}
                           >
                             <Trash2 className="h-4 w-4" />
                           </button>
@@ -1703,7 +2297,13 @@ export function ClinicalStaffPortalShell({
                     <input
                       value={exCode}
                       onChange={(e) => setExCode(e.target.value)}
-                      placeholder="รหัสท่า (เช่น SHOULDER_LIFT)"
+                      placeholder={
+                        lang === 'cn'
+                          ? '动作代码 (如 SHOULDER_LIFT)'
+                          : lang === 'en'
+                            ? 'Code (e.g. SHOULDER_LIFT)'
+                            : 'รหัสท่า (เช่น SHOULDER_LIFT)'
+                      }
                       className="rounded-xl border border-slate-200 px-3 py-2"
                     />
                     <select
@@ -1711,16 +2311,22 @@ export function ClinicalStaffPortalShell({
                       onChange={(e) => setExCategory(e.target.value as ExerciseConfig['category'])}
                       className="rounded-xl border border-slate-200 px-2.5 py-2"
                     >
-                      <option value="upper_limb">แขนและหัวไหล่ (Upper Limb)</option>
-                      <option value="lower_limb">ขาและเข่า (Lower Limb)</option>
-                      <option value="neck_trunk">คอและลำตัว (Neck &amp; Trunk)</option>
-                      <option value="balance">การทรงตัว (Balance)</option>
+                      <option value="upper_limb">Upper Limb (แขน/ไหล่)</option>
+                      <option value="lower_limb">Lower Limb (ขา/เข่า)</option>
+                      <option value="neck_trunk">Neck &amp; Trunk (คอ/ลำตัว)</option>
+                      <option value="balance">Balance (การทรงตัว)</option>
                     </select>
                     <input
                       required
                       value={exNameTh}
                       onChange={(e) => setExNameTh(e.target.value)}
-                      placeholder="ชื่อท่าภาษาไทย..."
+                      placeholder={
+                        lang === 'cn'
+                          ? '康复动作名称...'
+                          : lang === 'en'
+                            ? 'Exercise name...'
+                            : 'ชื่อท่าภาษาไทย...'
+                      }
                       className="rounded-xl border border-slate-200 px-3 py-2"
                     />
                     <select
@@ -1728,22 +2334,28 @@ export function ClinicalStaffPortalShell({
                       onChange={(e) => setExDefaultSide(e.target.value as BodySide | 'both')}
                       className="rounded-xl border border-slate-200 px-2.5 py-2"
                     >
-                      <option value="right">ข้างขวา (Right)</option>
-                      <option value="left">ข้างซ้าย (Left)</option>
-                      <option value="both">ทั้งสองข้าง (Both)</option>
+                      <option value="right">Right</option>
+                      <option value="left">Left</option>
+                      <option value="both">Both</option>
                     </select>
                     <input
                       value={exInstructionTh}
                       onChange={(e) => setExInstructionTh(e.target.value)}
-                      placeholder="คำแนะนำผู้ป่วยขณะทำท่า..."
+                      placeholder={
+                        lang === 'cn'
+                          ? '动作指导说明...'
+                          : lang === 'en'
+                            ? 'Patient guidance instruction...'
+                            : 'คำแนะนำผู้ป่วยขณะทำท่า...'
+                      }
                       className="sm:col-span-2 rounded-xl border border-slate-200 px-3 py-2"
                     />
                     <button
                       type="submit"
                       disabled={submitting}
-                      className="sm:col-span-2 rounded-xl bg-slate-900 px-3 py-2 font-bold text-white hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
+                      className="sm:col-span-2 whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-slate-900 font-bold text-white hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
                     >
-                      + เพิ่มท่ากายภาพบำบัด
+                      {locale.exercises.addExerciseBtn}
                     </button>
                   </form>
                 </div>
@@ -1755,25 +2367,25 @@ export function ClinicalStaffPortalShell({
           {activeTab === 'schedules' && (
             <div className="space-y-4">
               <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-wrap items-center justify-between gap-4">
-                <div className="flex items-start gap-3.5">
+                <div className="flex items-start gap-3.5 min-w-0">
                   <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-700">
                     <Users className="h-6 w-6" />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="rounded-lg bg-sky-50 border border-sky-200 px-2.5 py-0.5 font-mono text-[11px] font-extrabold text-sky-700">
+                      <span className="whitespace-nowrap rounded-lg bg-sky-50 border border-sky-200 px-2.5 py-0.5 font-mono text-[11px] font-extrabold text-sky-700">
                         HN: {selectedSchedulePatient?.hn ?? '-'}
                       </span>
-                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
-                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                        กำลังเข้ารับการฟื้นฟู (Active)
+                      <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" />
+                        {locale.schedules.activeBadge}
                       </span>
                     </div>
-                    <h2 className="mt-1 text-lg font-black text-slate-900">
-                      {selectedSchedulePatient?.fullName ?? 'ยังไม่มีคนไข้ในระบบ'}
+                    <h2 className="mt-1 text-lg font-black text-slate-900 truncate">
+                      {selectedSchedulePatient?.fullName ?? locale.schedules.noPatient}
                     </h2>
-                    <p className="text-xs text-slate-500">
-                      การวินิจฉัย: {selectedSchedulePatient?.diagnosis ?? '-'} • PT ผู้รับผิดชอบ:{' '}
+                    <p className="text-xs text-slate-500 truncate">
+                      {locale.schedules.diagLabel} {selectedSchedulePatient?.diagnosis ?? '-'} • {locale.schedules.ptLabel}{' '}
                       <span className="font-semibold text-slate-700">
                         {selectedSchedulePatient
                           ? ptNameMap.get(selectedSchedulePatient.delegatedToPtId || selectedSchedulePatient.assignedPtId) ||
@@ -1784,12 +2396,12 @@ export function ClinicalStaffPortalShell({
                   </div>
                 </div>
 
-                <div className="flex flex-col items-stretch sm:items-end gap-2">
+                <div className="flex flex-col items-stretch sm:items-end gap-2 shrink-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <select
                       value={selectedSchedulePatient?.id ?? ''}
                       onChange={(e) => setSelectedSchedulePatientId(e.target.value)}
-                      className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-800"
+                      className="h-9 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
                     >
                       {patients.map((p) => (
                         <option key={p.id} value={p.id}>
@@ -1800,20 +2412,20 @@ export function ClinicalStaffPortalShell({
                     <button
                       type="button"
                       onClick={() => void handleClearSchedule()}
-                      className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-rose-50 hover:text-rose-700 cursor-pointer"
+                      className="whitespace-nowrap h-9 px-3 inline-flex items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-600 hover:bg-rose-50 hover:text-rose-700 cursor-pointer shrink-0"
                     >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      ล้างตารางนัดทั้งหมด
+                      <Trash2 className="h-3.5 w-3.5 shrink-0" />
+                      {locale.schedules.clearScheduleBtn}
                     </button>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       onClick={() => setWeeklyEditorOpen((v) => !v)}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer"
+                      className="whitespace-nowrap h-10 px-3.5 inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 text-xs font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer shrink-0"
                     >
-                      <SlidersHorizontal className="h-3.5 w-3.5" />
-                      แผนรายสัปดาห์ 7 วัน
+                      <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
+                      {locale.schedules.weeklyPlanBtn}
                     </button>
                     <button
                       type="button"
@@ -1821,41 +2433,42 @@ export function ClinicalStaffPortalShell({
                         setSelectedCalendarDateIso(new Date().toISOString().slice(0, 10));
                         setScheduleModalMode('create');
                       }}
-                      className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 px-4 py-2 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
+                      className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer shrink-0"
                     >
-                      <Plus className="h-4 w-4" />
-                      + สร้างตารางฝึกใหม่
+                      <Plus className="h-4 w-4 shrink-0" />
+                      {locale.schedules.createScheduleBtn.replace(/^\+\s*/, '')}
                     </button>
                   </div>
                 </div>
               </div>
 
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1 text-xs font-bold">
                   <button
                     type="button"
                     onClick={() => setScheduleSubTab('individual')}
-                    className={`rounded-lg px-4 py-1.5 transition cursor-pointer ${
+                    className={`whitespace-nowrap h-8 px-4 inline-flex items-center justify-center rounded-lg transition cursor-pointer ${
                       scheduleSubTab === 'individual' ? 'bg-emerald-50 text-emerald-700' : 'text-slate-500'
                     }`}
                   >
-                    ปฏิทินรายบุคคล
+                    {locale.schedules.subIndividual}
                   </button>
                   <button
                     type="button"
                     onClick={() => setScheduleSubTab('all')}
-                    className={`rounded-lg px-4 py-1.5 transition cursor-pointer ${
+                    className={`whitespace-nowrap h-8 px-4 inline-flex items-center justify-center rounded-lg transition cursor-pointer ${
                       scheduleSubTab === 'all' ? 'bg-emerald-50 text-emerald-700' : 'text-slate-500'
                     }`}
                   >
-                    ปฏิทินคนไข้รวม ({patients.length})
+                    {locale.schedules.subAll} ({patients.length})
                   </button>
                 </div>
 
                 <button
                   type="button"
                   onClick={() => void refreshAll()}
-                  className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer"
+                  className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer shrink-0"
+                  title={locale.staff.refreshTitle}
                 >
                   <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                 </button>
@@ -1865,7 +2478,7 @@ export function ClinicalStaffPortalShell({
                 <div className="rounded-2xl border-2 border-emerald-200 bg-white p-5 space-y-4 shadow-md">
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-extrabold text-slate-900">
-                      กำหนดแผนประจำสัปดาห์ — {selectedSchedulePatient.fullName}
+                      {locale.schedules.weeklyPlanBtn} — {selectedSchedulePatient.fullName}
                     </h3>
                     <button
                       type="button"
@@ -1879,7 +2492,9 @@ export function ClinicalStaffPortalShell({
                     <input
                       value={courseTitle}
                       onChange={(e) => setCourseTitle(e.target.value)}
-                      placeholder="ชื่อแผนฟื้นฟู"
+                      placeholder={
+                        lang === 'cn' ? '康复计划名称' : lang === 'en' ? 'Rehab plan title' : 'ชื่อแผนฟื้นฟู'
+                      }
                       className="rounded-xl border border-slate-200 px-3 py-2 font-semibold"
                     />
                     <select
@@ -1889,7 +2504,7 @@ export function ClinicalStaffPortalShell({
                     >
                       {modpacks.map((m) => (
                         <option key={m.id} value={m.id}>
-                          {m.name} ({m.questionCount} ข้อ)
+                          {m.name} ({m.questionCount} Q)
                         </option>
                       ))}
                     </select>
@@ -1898,7 +2513,9 @@ export function ClinicalStaffPortalShell({
                     {weeklySchedule.map((day, idx) => (
                       <div key={idx} className="rounded-xl border border-slate-200 bg-slate-50/80 p-3 space-y-2 text-xs">
                         <div className="flex items-center justify-between">
-                          <span className="font-extrabold text-slate-800">วัน{WEEKDAY_NAMES_TH[idx]}</span>
+                          <span className="font-extrabold text-slate-800">
+                            {lang === 'th' ? `วัน${WEEKDAY_NAMES_TH[idx]}` : locale.schedules.calendarHeaders[idx]}
+                          </span>
                           <select
                             value={day.dayType}
                             onChange={(e) => {
@@ -1912,8 +2529,12 @@ export function ClinicalStaffPortalShell({
                             }}
                             className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold"
                           >
-                            <option value="training">วันฝึก</option>
-                            <option value="rest">วันพัก</option>
+                            <option value="training">
+                              {lang === 'cn' ? '训练日' : lang === 'en' ? 'Training' : 'วันฝึก'}
+                            </option>
+                            <option value="rest">
+                              {lang === 'cn' ? '休息日' : lang === 'en' ? 'Rest' : 'วันพัก'}
+                            </option>
                           </select>
                         </div>
                         {day.dayType === 'training' && (
@@ -1927,12 +2548,15 @@ export function ClinicalStaffPortalShell({
                             }}
                             className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold"
                           >
-                            <option value="minigame">🎮 มินิเกมการ์ด</option>
+                            <option value="minigame">
+                              🎮 {lang === 'cn' ? '认知卡牌小游戏' : lang === 'en' ? 'Cognitive Minigame' : 'มินิเกมการ์ด'}
+                            </option>
                             <option
                               value="physio_exercise"
                               disabled={!isAdmin && !systemSettings.aiPoseDetectionEnabled}
                             >
-                              🏋️ ท่ากายภาพ AI {!isAdmin && !systemSettings.aiPoseDetectionEnabled ? '(ล็อก)' : ''}
+                              🏋️ {lang === 'cn' ? 'AI 康复训练' : lang === 'en' ? 'AI Rehab Exercise' : 'ท่ากายภาพ AI'}{' '}
+                              {!isAdmin && !systemSettings.aiPoseDetectionEnabled ? '(Locked)' : ''}
                             </option>
                           </select>
                         )}
@@ -1943,17 +2567,17 @@ export function ClinicalStaffPortalShell({
                     <button
                       type="button"
                       onClick={() => setWeeklyEditorOpen(false)}
-                      className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-bold"
+                      className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl border border-slate-200 text-xs font-bold"
                     >
-                      ยกเลิก
+                      {lang === 'cn' ? '取消' : lang === 'en' ? 'Cancel' : 'ยกเลิก'}
                     </button>
                     <button
                       type="button"
                       disabled={submitting}
                       onClick={() => void handleSaveWeeklyCourse()}
-                      className="rounded-xl bg-emerald-600 px-5 py-2 text-xs font-extrabold text-white hover:bg-emerald-500"
+                      className="whitespace-nowrap h-10 px-5 inline-flex items-center justify-center rounded-xl bg-emerald-600 text-xs font-extrabold text-white hover:bg-emerald-500"
                     >
-                      บันทึกตารางฝึก 7 วัน
+                      {lang === 'cn' ? '保存 7 天计划' : lang === 'en' ? 'Save 7-Day Plan' : 'บันทึกตารางฝึก 7 วัน'}
                     </button>
                   </div>
                 </div>
@@ -1962,39 +2586,47 @@ export function ClinicalStaffPortalShell({
               {scheduleSubTab === 'individual' ? (
                 <>
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                    <div className="rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between">
-                      <div>
-                        <div className="text-[11px] font-semibold text-slate-500">ตารางนัดหมายทั้งหมด</div>
-                        <div className="mt-1 text-xl font-black text-slate-900">{scheduleStats.total} นัด</div>
+                    <div className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statTotal}</div>
+                        <div className="mt-1 text-xl font-black text-slate-900 whitespace-nowrap">
+                          {scheduleStats.total} {locale.schedules.unitAppt}
+                        </div>
                       </div>
-                      <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
                         <CalendarDays className="h-5 w-5" />
                       </div>
                     </div>
-                    <div className="rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between">
-                      <div>
-                        <div className="text-[11px] font-semibold text-slate-500">กำลังรักษา (Active)</div>
-                        <div className="mt-1 text-xl font-black text-emerald-600">{scheduleStats.active} นัด</div>
+                    <div className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statActive}</div>
+                        <div className="mt-1 text-xl font-black text-emerald-600 whitespace-nowrap">
+                          {scheduleStats.active} {locale.schedules.unitAppt}
+                        </div>
                       </div>
-                      <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
                         <Activity className="h-5 w-5" />
                       </div>
                     </div>
-                    <div className="rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between">
-                      <div>
-                        <div className="text-[11px] font-semibold text-slate-500">พักชั่วคราว (Rest)</div>
-                        <div className="mt-1 text-xl font-black text-amber-600">{scheduleStats.paused} นัด</div>
+                    <div className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statRest}</div>
+                        <div className="mt-1 text-xl font-black text-amber-600 whitespace-nowrap">
+                          {scheduleStats.paused} {locale.schedules.unitAppt}
+                        </div>
                       </div>
-                      <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 text-amber-500">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-500">
                         <PauseCircle className="h-5 w-5" />
                       </div>
                     </div>
-                    <div className="rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between">
-                      <div>
-                        <div className="text-[11px] font-semibold text-slate-500">สำเร็จแล้ว (Completed)</div>
-                        <div className="mt-1 text-xl font-black text-blue-600">{scheduleStats.completed} นัด</div>
+                    <div className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statCompleted}</div>
+                        <div className="mt-1 text-xl font-black text-blue-600 whitespace-nowrap">
+                          {scheduleStats.completed} {locale.schedules.unitAppt}
+                        </div>
                       </div>
-                      <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 text-sky-600">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-50 text-sky-600">
                         <CheckCircle2 className="h-5 w-5" />
                       </div>
                     </div>
@@ -2003,12 +2635,18 @@ export function ClinicalStaffPortalShell({
                   <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex items-center gap-2">
-                        <Calendar className="h-4 w-4 text-emerald-600" />
-                        <h3 className="text-sm font-black text-slate-900">
-                          {THAI_MONTHS[calendarDate.getMonth()]} {calendarDate.getFullYear() + 543}{' '}
-                          <span className="font-normal text-slate-400">
-                            ({EN_MONTHS[calendarDate.getMonth()]} {calendarDate.getFullYear()})
-                          </span>
+                        <Calendar className="h-4 w-4 text-emerald-600 shrink-0" />
+                        <h3 className="text-sm font-black text-slate-900 whitespace-nowrap">
+                          {lang === 'cn'
+                            ? `${calendarDate.getFullYear()}年 ${CN_MONTHS[calendarDate.getMonth()]}`
+                            : lang === 'en'
+                              ? `${EN_MONTHS[calendarDate.getMonth()]} ${calendarDate.getFullYear()}`
+                              : `${THAI_MONTHS[calendarDate.getMonth()]} ${calendarDate.getFullYear() + 543}`}{' '}
+                          {lang === 'th' && (
+                            <span className="font-normal text-slate-400">
+                              ({EN_MONTHS[calendarDate.getMonth()]} {calendarDate.getFullYear()})
+                            </span>
+                          )}
                         </h3>
                         <div className="flex items-center gap-1 ml-2">
                           <button
@@ -2033,24 +2671,24 @@ export function ClinicalStaffPortalShell({
                       </div>
 
                       <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold text-slate-600">
-                        <span className="inline-flex items-center gap-1">
-                          <span className="h-2 w-2 rounded-full bg-emerald-500" /> กำลังรักษา
+                        <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                          <span className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" /> {locale.schedules.legendActive}
                         </span>
-                        <span className="inline-flex items-center gap-1">
-                          <span className="h-2 w-2 rounded-full bg-amber-400" /> พักการฝึก
+                        <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                          <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0" /> {locale.schedules.legendRest}
                         </span>
-                        <span className="inline-flex items-center gap-1">
-                          <span className="h-2 w-2 rounded-full bg-blue-500" /> สำเร็จครบโปรแกรม
+                        <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                          <span className="h-2 w-2 rounded-full bg-blue-500 shrink-0" /> {locale.schedules.legendCompleted}
                         </span>
-                        <span className="inline-flex items-center gap-1">
-                          <span className="h-2 w-2 rounded-full bg-rose-500" /> ขาดการฝึก
+                        <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                          <span className="h-2 w-2 rounded-full bg-rose-500 shrink-0" /> {locale.schedules.legendMissed}
                         </span>
                       </div>
                     </div>
 
                     <div className="grid grid-cols-7 gap-2 text-center text-[11px] font-bold text-slate-400">
-                      {CALENDAR_HEADERS_TH.map((h) => (
-                        <div key={h} className="py-1">
+                      {locale.schedules.calendarHeaders.map((h) => (
+                        <div key={h} className="py-1 whitespace-nowrap">
                           {h}
                         </div>
                       ))}
@@ -2099,7 +2737,7 @@ export function ClinicalStaffPortalShell({
                             <div className="w-full truncate text-[10px]">
                               {customForDay.length > 0 ? (
                                 <span
-                                  className={`inline-block rounded px-1.5 py-0.5 font-bold ${
+                                  className={`inline-block whitespace-nowrap rounded px-1.5 py-0.5 font-bold ${
                                     customForDay[0].status === 'COMPLETED'
                                       ? 'bg-blue-100 text-blue-800'
                                       : customForDay[0].status === 'REST'
@@ -2110,19 +2748,29 @@ export function ClinicalStaffPortalShell({
                                   }`}
                                 >
                                   {customForDay[0].status === 'COMPLETED'
-                                    ? 'สำเร็จครบ'
+                                    ? locale.schedules.statusCompleted
                                     : customForDay[0].status === 'REST'
-                                      ? 'พักการฝึก'
+                                      ? locale.schedules.statusRest
                                       : customForDay[0].status === 'MISSED'
-                                        ? 'ขาดการฝึก'
-                                        : 'กำลังรักษา'}
+                                        ? locale.schedules.statusMissed
+                                        : locale.schedules.statusActive}
                                 </span>
                               ) : isTraining ? (
-                                <span className="inline-block rounded bg-emerald-100 px-1.5 py-0.5 font-bold text-emerald-800">
-                                  {planDay.activityType === 'physio_exercise' ? 'ฝึก AI' : 'มินิเกม'}
+                                <span className="inline-block whitespace-nowrap rounded bg-emerald-100 px-1.5 py-0.5 font-bold text-emerald-800">
+                                  {lang === 'cn'
+                                    ? planDay.activityType === 'physio_exercise'
+                                      ? 'AI 训练'
+                                      : '认知游戏'
+                                    : lang === 'en'
+                                      ? planDay.activityType === 'physio_exercise'
+                                        ? 'AI Physio'
+                                        : 'Minigame'
+                                      : planDay.activityType === 'physio_exercise'
+                                        ? 'ฝึก AI'
+                                        : 'มินิเกม'}
                                 </span>
                               ) : (
-                                <span className="text-slate-300">พักฟื้น</span>
+                                <span className="text-slate-300">{locale.schedules.restDayLabel}</span>
                               )}
                             </div>
                           </button>
@@ -2133,26 +2781,26 @@ export function ClinicalStaffPortalShell({
                 </>
               ) : (
                 <div className="rounded-2xl border border-slate-200 bg-white overflow-x-auto shadow-sm">
-                  <table className="w-full text-left text-xs">
+                  <table className="table-fixed w-full min-w-[780px] text-left text-xs">
                     <thead className="border-b border-slate-100 bg-slate-50 text-[11px] font-bold text-slate-500">
                       <tr>
-                        <th className="px-5 py-3">HN</th>
-                        <th className="px-4 py-3">ชื่อคนไข้</th>
-                        <th className="px-4 py-3">PT ผู้รับผิดชอบ</th>
-                        <th className="px-4 py-3">วันนัดถัดไป / จำนวนวันฝึก</th>
-                        <th className="px-5 py-3 text-right">จัดการ</th>
+                        <th className="w-[14%] px-5 py-3">{locale.schedules.colHn}</th>
+                        <th className="w-[26%] px-4 py-3">{locale.schedules.colPatientName}</th>
+                        <th className="w-[24%] px-4 py-3">{locale.schedules.colPt}</th>
+                        <th className="w-[22%] px-4 py-3">{locale.schedules.colNextAppt}</th>
+                        <th className="w-[14%] px-5 py-3 text-right">{locale.schedules.colActions}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {patients.map((p) => (
                         <tr key={p.id}>
-                          <td className="px-5 py-3 font-mono font-bold text-sky-700">{p.hn}</td>
-                          <td className="px-4 py-3 font-bold text-slate-900">{p.fullName}</td>
-                          <td className="px-4 py-3 text-slate-600">
+                          <td className="px-5 py-3 font-mono font-bold text-sky-700 whitespace-nowrap">{p.hn}</td>
+                          <td className="px-4 py-3 font-bold text-slate-900 truncate">{p.fullName}</td>
+                          <td className="px-4 py-3 text-slate-600 truncate">
                             {ptNameMap.get(p.delegatedToPtId || p.assignedPtId) || 'กภ. ประจำคลินิก'}
                           </td>
-                          <td className="px-4 py-3 font-semibold text-emerald-700">
-                            {p.nextAppointmentDate || '-'} ({p.rehabSchedules?.length ?? 0} นัด)
+                          <td className="px-4 py-3 font-semibold text-emerald-700 whitespace-nowrap">
+                            {p.nextAppointmentDate || '-'} ({p.rehabSchedules?.length ?? 0} {locale.schedules.unitAppt})
                           </td>
                           <td className="px-5 py-3 text-right">
                             <button
@@ -2161,9 +2809,9 @@ export function ClinicalStaffPortalShell({
                                 setSelectedSchedulePatientId(p.id);
                                 setScheduleSubTab('individual');
                               }}
-                              className="rounded-lg bg-emerald-50 px-3 py-1 font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer"
+                              className="whitespace-nowrap rounded-lg bg-emerald-50 px-3 py-1 font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer"
                             >
-                              เปิดปฏิทิน
+                              {locale.schedules.openCalendarBtn}
                             </button>
                           </td>
                         </tr>
@@ -2179,18 +2827,18 @@ export function ClinicalStaffPortalShell({
           {activeTab === 'security' && (
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-start gap-2.5">
+                <div className="flex items-start gap-2.5 min-w-0">
                   <ShieldAlert className="h-5 w-5 text-rose-600 mt-0.5 shrink-0" />
-                  <div>
+                  <div className="min-w-0">
                     <h2 className="text-lg font-extrabold text-slate-900">
-                      ประวัติและความปลอดภัย (Audit, Bans &amp; Security)
+                      {locale.security.title}
                     </h2>
                     <p className="text-xs text-slate-500">
-                      คำเรียกเจ้าหน้าที่ฉุกเฉิน (Realtime), บันทึก Audit Log, บังคับตัดเซสชัน, ระบบแบน และจัดการตู้ Kiosk
+                      {locale.security.subtitle}
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
                     onClick={async () => {
@@ -2201,14 +2849,15 @@ export function ClinicalStaffPortalShell({
                       await refreshAll();
                       flashBanner('success', 'ส่งสัญญาณทดสอบเรียกเจ้าหน้าที่เรียบร้อย');
                     }}
-                    className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer"
+                    className="whitespace-nowrap h-9 px-3.5 inline-flex items-center justify-center rounded-xl border border-amber-200 bg-amber-50 text-[11px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer shrink-0"
                   >
-                    🔔 ทดสอบแจ้งเตือนฉุกเฉิน
+                    {locale.security.testAlertBtn}
                   </button>
                   <button
                     type="button"
                     onClick={() => void refreshAll()}
-                    className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-white hover:bg-slate-800 cursor-pointer"
+                    className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-white hover:bg-slate-800 cursor-pointer shrink-0"
+                    title={locale.staff.refreshTitle}
                   >
                     <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                   </button>
@@ -2217,25 +2866,25 @@ export function ClinicalStaffPortalShell({
 
               {openStaffCalls.length > 0 && (
                 <div className="rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 p-4 text-white shadow-md flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/15">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15">
                       <Bell className="h-5 w-5 animate-bounce" />
                     </div>
-                    <div>
+                    <div className="min-w-0">
                       <div className="text-sm font-black">
-                        มีคนไข้ต้องการความช่วยเหลือที่ตู้ Kiosk ({openStaffCalls.length} รายการ)!
+                        {locale.security.emergencyBannerTitle} ({openStaffCalls.length})!
                       </div>
                       <div className="text-[11px] text-blue-100">
-                        เชื่อมต่อ Realtime Supabase + Polling อัตโนมัติเมื่อคนไข้กดเรียกเจ้าหน้าที่
+                        {locale.security.emergencyBannerDesc}
                       </div>
                     </div>
                   </div>
                   <button
                     type="button"
                     onClick={() => setSecuritySubTab('calls')}
-                    className="rounded-xl bg-white px-4 py-2 text-xs font-extrabold text-blue-700 shadow hover:bg-blue-50 cursor-pointer"
+                    className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center shrink-0 rounded-xl bg-white text-xs font-extrabold text-blue-700 shadow hover:bg-blue-50 cursor-pointer"
                   >
-                    ดูรายการเรียกเจ้าหน้าที่ทันที
+                    {locale.security.viewCallsBtn}
                   </button>
                 </div>
               )}
@@ -2243,18 +2892,18 @@ export function ClinicalStaffPortalShell({
               <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
                 {(
                   [
-                    { id: 'calls', label: `🔔 คำเรียกเจ้าหน้าที่ (${staffCalls.length})` },
-                    { id: 'audit', label: `🕒 บันทึก Audit Logs (${auditLogs.length})` },
-                    { id: 'sessions', label: `👥 เซสชันและการเตะออก (${activeSessions.length})` },
-                    { id: 'bans', label: `⊘ การจัดการแบน (${bannedTargets.length})` },
-                    { id: 'kiosks', label: `🖥 อุปกรณ์ตู้ Kiosk (${kiosks.length})` },
+                    { id: 'calls', label: `🔔 ${locale.security.tabCalls} (${staffCalls.length})` },
+                    { id: 'audit', label: `🕒 ${locale.security.tabAudit} (${auditLogs.length})` },
+                    { id: 'sessions', label: `👥 ${locale.security.tabSessions} (${activeSessions.length})` },
+                    { id: 'bans', label: `⊘ ${locale.security.tabBans} (${bannedTargets.length})` },
+                    { id: 'kiosks', label: `🖥 ${locale.security.tabKiosks} (${kiosks.length})` },
                   ] as const
                 ).map((sub) => (
                   <button
                     key={sub.id}
                     type="button"
                     onClick={() => setSecuritySubTab(sub.id)}
-                    className={`rounded-xl px-4 py-2 transition cursor-pointer ${
+                    className={`whitespace-nowrap h-9 px-4 inline-flex items-center justify-center rounded-xl transition cursor-pointer ${
                       securitySubTab === sub.id
                         ? 'bg-blue-700 text-white shadow-sm'
                         : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
@@ -2268,35 +2917,37 @@ export function ClinicalStaffPortalShell({
               {securitySubTab === 'calls' && (
                 <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
                   <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 text-xs">
-                    <span className="font-extrabold text-slate-900">รายการคำขอความช่วยเหลือจากตู้ Kiosk</span>
-                    <span className="text-[11px] text-slate-400">Realtime + Polling 10 วินาที</span>
+                    <span className="font-extrabold text-slate-900">{locale.security.callsTableTitle}</span>
+                    <span className="text-[11px] text-slate-400 whitespace-nowrap">{locale.security.callsPollNote}</span>
                   </div>
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[700px] text-left text-xs">
+                    <table className="table-fixed w-full min-w-[760px] text-left text-xs">
                       <thead className="bg-slate-50 text-[11px] font-bold text-slate-500">
                         <tr>
-                          <th className="px-5 py-3">เวลาแจ้ง</th>
-                          <th className="px-4 py-3">ตู้ KIOSK</th>
-                          <th className="px-4 py-3">สาเหตุ</th>
-                          <th className="px-4 py-3">สถานะ</th>
-                          <th className="px-5 py-3 text-right">ดำเนินการ</th>
+                          <th className="w-[20%] px-5 py-3">{locale.security.colTime}</th>
+                          <th className="w-[16%] px-4 py-3">{locale.security.colKiosk}</th>
+                          <th className="w-[30%] px-4 py-3">{locale.security.colReason}</th>
+                          <th className="w-[16%] px-4 py-3">{locale.security.colStatus}</th>
+                          <th className="w-[18%] px-5 py-3 text-right">{locale.security.colActions}</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {staffCalls.map((call) => (
                           <tr key={call.id}>
-                            <td className="px-5 py-3 text-slate-600 whitespace-nowrap">
-                              {formatThaiDateTime(call.createdAt)}
+                            <td className="px-5 py-3 text-slate-600 whitespace-nowrap truncate">
+                              {lang === 'th'
+                                ? formatThaiDateTime(call.createdAt)
+                                : new Date(call.createdAt).toLocaleString(lang === 'cn' ? 'zh-CN' : 'en-US')}
                             </td>
                             <td className="px-4 py-3">
-                              <span className="rounded-lg bg-sky-50 border border-sky-200 px-2.5 py-1 font-bold text-sky-700">
+                              <span className="inline-block whitespace-nowrap rounded-lg bg-sky-50 border border-sky-200 px-2.5 py-1 font-bold text-sky-700">
                                 {call.kioskId}
                               </span>
                             </td>
-                            <td className="px-4 py-3 font-semibold text-rose-600">{call.reason}</td>
+                            <td className="px-4 py-3 font-semibold text-rose-600 truncate">{call.reason}</td>
                             <td className="px-4 py-3">
                               <span
-                                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold ${
+                                className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-bold ${
                                   call.status === 'resolved'
                                     ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                                     : call.status === 'acknowledged'
@@ -2305,14 +2956,14 @@ export function ClinicalStaffPortalShell({
                                 }`}
                               >
                                 {call.status === 'resolved'
-                                  ? '✓ แก้ไขแล้ว'
+                                  ? locale.security.statusResolved
                                   : call.status === 'acknowledged'
-                                    ? '⏳ กำลังตรวจสอบ'
-                                    : '🔔 รอเจ้าหน้าที่'}
+                                    ? locale.security.statusAck
+                                    : locale.security.statusOpen}
                               </span>
                             </td>
                             <td className="px-5 py-3 text-right">
-                              <div className="inline-flex items-center gap-1.5">
+                              <div className="inline-flex items-center justify-end gap-1.5">
                                 {call.status === 'open' && (
                                   <button
                                     type="button"
@@ -2321,9 +2972,9 @@ export function ClinicalStaffPortalShell({
                                       flashBanner('success', `รับเรื่องแจ้งเตือนจาก ${call.kioskId} แล้ว`);
                                       await refreshAll();
                                     }}
-                                    className="rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer"
+                                    className="whitespace-nowrap rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer"
                                   >
-                                    รับเรื่อง
+                                    {locale.security.ackBtn}
                                   </button>
                                 )}
                                 {call.status !== 'resolved' && (
@@ -2334,9 +2985,9 @@ export function ClinicalStaffPortalShell({
                                       flashBanner('success', `ปิดเคสช่วยเหลือจาก ${call.kioskId} แล้ว`);
                                       await refreshAll();
                                     }}
-                                    className="rounded-lg bg-emerald-600 px-3 py-1 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
+                                    className="whitespace-nowrap rounded-lg bg-emerald-600 px-3 py-1 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
                                   >
-                                    แก้ไขแล้ว
+                                    {locale.security.resolveBtn}
                                   </button>
                                 )}
                               </div>
@@ -2346,7 +2997,7 @@ export function ClinicalStaffPortalShell({
                         {staffCalls.length === 0 && (
                           <tr>
                             <td colSpan={5} className="px-6 py-8 text-center text-slate-400">
-                              ยังไม่มีคำเรียกเจ้าหน้าที่ฉุกเฉิน
+                              {locale.security.emptyCalls}
                             </td>
                           </tr>
                         )}
@@ -2360,7 +3011,12 @@ export function ClinicalStaffPortalShell({
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
                   {!isAdmin ? (
                     <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 text-xs font-bold text-amber-800">
-                      403 RBAC Policy: เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) เท่านั้นที่เข้าถึงบันทึก Audit Log ได้
+                      403 RBAC Policy:{' '}
+                      {lang === 'cn'
+                        ? '仅医院院长 (Super Admin) 可查看审计日志'
+                        : lang === 'en'
+                          ? 'Only Super Admin can access Audit Logs'
+                          : 'เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) เท่านั้นที่เข้าถึงบันทึก Audit Log ได้'}
                     </div>
                   ) : (
                     <>
@@ -2369,8 +3025,14 @@ export function ClinicalStaffPortalShell({
                         <input
                           value={auditSearch}
                           onChange={(e) => setAuditSearch(e.target.value)}
-                          placeholder="กรอง Audit Log ตาม Action, ชื่อผู้ทำรายการ, IP..."
-                          className="w-full rounded-xl border border-slate-200 pl-9 pr-3 py-2 text-xs"
+                          placeholder={
+                            lang === 'cn'
+                              ? '按操作、执行者或 IP 筛选审计日志...'
+                              : lang === 'en'
+                                ? 'Filter audit logs by action, actor, IP...'
+                                : 'กรอง Audit Log ตาม Action, ชื่อผู้ทำรายการ, IP...'
+                          }
+                          className="w-full h-10 rounded-xl border border-slate-200 pl-9 pr-3 text-xs"
                         />
                       </div>
                       <div className="space-y-2 max-h-[420px] overflow-y-auto">
@@ -2379,17 +3041,21 @@ export function ClinicalStaffPortalShell({
                             key={log.id}
                             className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-2.5 text-xs"
                           >
-                            <div>
+                            <div className="min-w-0">
                               <span className="font-mono font-extrabold text-indigo-700 mr-2">{log.eventType}</span>
                               <span className="font-bold text-slate-900">{log.actorName}</span>{' '}
                               <span className="text-slate-500">({log.actorRole})</span>
                               <div className="text-[11px] text-slate-600 mt-0.5">{log.detail}</div>
                             </div>
-                            <div className="text-right text-[11px] text-slate-400 font-mono">
+                            <div className="text-right text-[11px] text-slate-400 font-mono whitespace-nowrap">
                               <div>
                                 IP: {log.ipAddress} • Dev: {log.deviceId}
                               </div>
-                              <div>{formatThaiDateTime(log.createdAt)}</div>
+                              <div>
+                                {lang === 'th'
+                                  ? formatThaiDateTime(log.createdAt)
+                                  : new Date(log.createdAt).toLocaleString(lang === 'cn' ? 'zh-CN' : 'en-US')}
+                              </div>
                             </div>
                           </div>
                         ))}
@@ -2403,7 +3069,12 @@ export function ClinicalStaffPortalShell({
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
                   {!isAdmin ? (
                     <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 text-xs font-bold text-amber-800">
-                      403 RBAC Policy: เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) เท่านั้นที่สั่งตัดเซสชันผู้ใช้ได้
+                      403 RBAC Policy:{' '}
+                      {lang === 'cn'
+                        ? '仅医院院长 (Super Admin) 可强制注销会话'
+                        : lang === 'en'
+                          ? 'Only Super Admin can terminate active sessions'
+                          : 'เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) เท่านั้นที่สั่งตัดเซสชันผู้ใช้ได้'}
                     </div>
                   ) : (
                     <div className="space-y-2">
@@ -2412,7 +3083,7 @@ export function ClinicalStaffPortalShell({
                           key={s.token}
                           className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 px-4 py-3 text-xs"
                         >
-                          <div>
+                          <div className="min-w-0">
                             <div className="font-bold text-slate-900">
                               {ptNameMap.get(s.userId) ?? s.userId}{' '}
                               <span className="ml-1 rounded bg-slate-100 px-2 py-0.5 font-mono text-[10px] uppercase">
@@ -2420,7 +3091,10 @@ export function ClinicalStaffPortalShell({
                               </span>
                             </div>
                             <div className="font-mono text-[11px] text-slate-500">
-                              IP: {s.ipAddress} • Device: {s.deviceId} • Login: {formatThaiDateTime(s.createdAt)}
+                              IP: {s.ipAddress} • Device: {s.deviceId} • Login:{' '}
+                              {lang === 'th'
+                                ? formatThaiDateTime(s.createdAt)
+                                : new Date(s.createdAt).toLocaleString(lang === 'cn' ? 'zh-CN' : 'en-US')}
                             </div>
                           </div>
                           <button
@@ -2430,14 +3104,24 @@ export function ClinicalStaffPortalShell({
                               flashBanner('success', 'เตะเซสชันออกจากระบบเรียบร้อย');
                               await refreshAll();
                             }}
-                            className="rounded-xl bg-rose-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-rose-500 cursor-pointer"
+                            className="whitespace-nowrap h-9 px-3.5 inline-flex items-center justify-center rounded-xl bg-rose-600 text-[11px] font-bold text-white hover:bg-rose-500 cursor-pointer shrink-0"
                           >
-                            เตะออกจากระบบ (Force Kick)
+                            {lang === 'cn'
+                              ? '强制注销 (Force Kick)'
+                              : lang === 'en'
+                                ? 'Force Kick Session'
+                                : 'เตะออกจากระบบ (Force Kick)'}
                           </button>
                         </div>
                       ))}
                       {activeSessions.length === 0 && (
-                        <p className="text-center text-xs text-slate-400 py-6">ไม่มีเซสชันที่กำลังออนไลน์ในระบบ</p>
+                        <p className="text-center text-xs text-slate-400 py-6">
+                          {lang === 'cn'
+                            ? '当前暂无在线会话'
+                            : lang === 'en'
+                              ? 'No active online sessions'
+                              : 'ไม่มีเซสชันที่กำลังออนไลน์ในระบบ'}
+                        </p>
                       )}
                     </div>
                   )}
@@ -2448,7 +3132,12 @@ export function ClinicalStaffPortalShell({
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
                   {!isAdmin ? (
                     <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 text-xs font-bold text-amber-800">
-                      403 RBAC Policy: เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) เท่านั้นที่แบน IP/Device ได้
+                      403 RBAC Policy:{' '}
+                      {lang === 'cn'
+                        ? '仅医院院长 (Super Admin) 可封禁 IP/设备'
+                        : lang === 'en'
+                          ? 'Only Super Admin can ban IP/Devices'
+                          : 'เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) เท่านั้นที่แบน IP/Device ได้'}
                     </div>
                   ) : (
                     <>
@@ -2467,7 +3156,7 @@ export function ClinicalStaffPortalShell({
                         <select
                           value={banType}
                           onChange={(e) => setBanType(e.target.value as 'ip' | 'device')}
-                          className="rounded-xl border border-slate-200 px-3 py-2 font-bold"
+                          className="h-10 rounded-xl border border-slate-200 px-3 font-bold"
                         >
                           <option value="ip">Ban IP Address</option>
                           <option value="device">Ban Device ID</option>
@@ -2476,20 +3165,21 @@ export function ClinicalStaffPortalShell({
                           required
                           value={banValue}
                           onChange={(e) => setBanValue(e.target.value)}
-                          placeholder="เช่น 192.168.1.50"
-                          className="rounded-xl border border-slate-200 px-3 py-2 font-mono"
+                          placeholder={lang === 'cn' ? '如 192.168.1.50' : lang === 'en' ? 'e.g. 192.168.1.50' : 'เช่น 192.168.1.50'}
+                          className="h-10 rounded-xl border border-slate-200 px-3 font-mono"
                         />
                         <input
                           value={banReason}
                           onChange={(e) => setBanReason(e.target.value)}
-                          placeholder="สาเหตุการแบน..."
-                          className="rounded-xl border border-slate-200 px-3 py-2"
+                          placeholder={lang === 'cn' ? '封禁原因...' : lang === 'en' ? 'Ban reason...' : 'สาเหตุการแบน...'}
+                          className="h-10 rounded-xl border border-slate-200 px-3"
                         />
                         <button
                           type="submit"
-                          className="inline-flex items-center justify-center gap-1 rounded-xl bg-rose-600 px-3 py-2 font-bold text-white hover:bg-rose-500 cursor-pointer"
+                          className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1 rounded-xl bg-rose-600 font-bold text-white hover:bg-rose-500 cursor-pointer"
                         >
-                          <Ban className="h-3.5 w-3.5" /> แบนเป้าหมาย
+                          <Ban className="h-3.5 w-3.5 shrink-0" />{' '}
+                          {lang === 'cn' ? '封禁目标' : lang === 'en' ? 'Ban Target' : 'แบนเป้าหมาย'}
                         </button>
                       </form>
 
@@ -2497,9 +3187,9 @@ export function ClinicalStaffPortalShell({
                         {bannedTargets.map((b) => (
                           <div
                             key={b.id}
-                            className="flex items-center justify-between rounded-xl border border-rose-200 bg-rose-50/50 px-4 py-2.5 text-xs"
+                            className="flex items-center justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50/50 px-4 py-2.5 text-xs"
                           >
-                            <div>
+                            <div className="min-w-0 truncate">
                               <span className="font-mono font-bold text-rose-700 mr-2">
                                 [{b.targetType.toUpperCase()}] {b.value}
                               </span>
@@ -2512,9 +3202,9 @@ export function ClinicalStaffPortalShell({
                                 flashBanner('success', `ปลดแบน ${b.value} แล้ว`);
                                 await refreshAll();
                               }}
-                              className="rounded-lg border border-slate-200 bg-white px-3 py-1 font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                              className="whitespace-nowrap h-8 px-3 rounded-lg border border-slate-200 bg-white font-bold text-slate-700 hover:bg-slate-100 cursor-pointer shrink-0"
                             >
-                              ปลดแบน (Unban)
+                              {lang === 'cn' ? '解除封禁 (Unban)' : lang === 'en' ? 'Unban' : 'ปลดแบน (Unban)'}
                             </button>
                           </div>
                         ))}
@@ -2527,8 +3217,8 @@ export function ClinicalStaffPortalShell({
               {securitySubTab === 'kiosks' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-extrabold text-slate-900">อุปกรณ์ตู้ Kiosk ในระบบ</h3>
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-sm font-extrabold text-slate-900">{locale.security.kioskPanelTitle}</h3>
                       {isAdmin && (
                         <button
                           type="button"
@@ -2537,19 +3227,19 @@ export function ClinicalStaffPortalShell({
                             setNewKioskLocation('OPD Rehab Zone B');
                             setRegisterKioskModalOpen(true);
                           }}
-                          className="rounded-xl bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
+                          className="whitespace-nowrap h-9 px-3.5 inline-flex items-center justify-center shrink-0 rounded-xl bg-emerald-600 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
                         >
-                          + ลงทะเบียนตู้ Kiosk ใหม่
+                          {locale.security.registerKioskBtn}
                         </button>
                       )}
                     </div>
                     {kiosks.map((k) => (
                       <div
                         key={k.kioskId}
-                        className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-xs"
+                        className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-xs"
                       >
-                        <div>
-                          <div className="font-bold text-slate-900">
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-900 truncate">
                             {k.kioskId}{' '}
                             {k.pairingToken && (
                               <span className="ml-1 rounded bg-indigo-50 px-2 py-0.5 font-mono text-[10px] text-indigo-700">
@@ -2557,13 +3247,13 @@ export function ClinicalStaffPortalShell({
                               </span>
                             )}
                           </div>
-                          <div className="text-[11px] text-slate-500">
+                          <div className="text-[11px] text-slate-500 truncate">
                             {k.location} • State: {k.currentState}
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 shrink-0">
                           <span
-                            className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                            className={`whitespace-nowrap rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
                               k.online ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
                             }`}
                           >
@@ -2587,9 +3277,15 @@ export function ClinicalStaffPortalShell({
                   </div>
 
                   <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3 text-xs">
-                    <h3 className="text-sm font-extrabold text-slate-900">ตั้งค่าความปลอดภัย AI หน้าตู้ Kiosk</h3>
+                    <h3 className="text-sm font-extrabold text-slate-900">{locale.security.securitySettingsTitle}</h3>
                     <label className="flex items-center justify-between rounded-xl border border-slate-200 px-3.5 py-2.5">
-                      <span className="font-bold text-slate-700">เปิดใช้งาน AI Face Scan (512D)</span>
+                      <span className="font-bold text-slate-700">
+                        {lang === 'cn'
+                          ? '启用 AI 人脸识别 (512D)'
+                          : lang === 'en'
+                            ? 'Enable AI Face Scan (512D)'
+                            : 'เปิดใช้งาน AI Face Scan (512D)'}
+                      </span>
                       <input
                         type="checkbox"
                         disabled={!isAdmin}

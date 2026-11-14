@@ -104,6 +104,7 @@ const COPY: Record<
     notFoundDesc: string;
     staffAssistBtn: string;
     retryScanBtn: string;
+    countdownLabel: string;
   }
 > = {
   th: {
@@ -131,6 +132,7 @@ const COPY: Record<
       'ใบหน้านี้ยังไม่ถูกลงทะเบียนในฐานข้อมูล Supabase Cloud กรุณาให้เจ้าหน้าที่ช่วยลงทะเบียน หรือลองสแกนใหม่อีกครั้ง',
     staffAssistBtn: 'เจ้าหน้าที่ลงทะเบียนให้',
     retryScanBtn: 'ลองสแกนใหม่อีกครั้ง',
+    countdownLabel: 'กำลังนับถอยหลัง',
   },
   en: {
     subtitle: 'AI Smart Rehabilitation Platform',
@@ -157,6 +159,7 @@ const COPY: Record<
       'No matching biometric profile was found in Supabase Cloud. Please ask staff to enroll you or try scanning again.',
     staffAssistBtn: 'Staff Register Patient',
     retryScanBtn: 'Scan Face Again',
+    countdownLabel: 'Hold steady',
   },
   cn: {
     subtitle: '智能物理康复训练系统',
@@ -182,6 +185,7 @@ const COPY: Record<
     notFoundDesc: '云端数据库中未匹配到该人脸档案，请联系医护人员协助建档或重新扫描。',
     staffAssistBtn: '医护人员协助建档',
     retryScanBtn: '重新识别人脸',
+    countdownLabel: '倒计时准备中',
   },
 };
 
@@ -613,7 +617,7 @@ export function KioskBiometricLoginView({
       : scanStage === 'burst'
         ? `${c.verifying} (${burstCount}/${BURST_FRAME_COUNT})`
         : countdownSec !== null
-          ? `กำลังนับถอยหลัง ${countdownSec} วินาที...`
+          ? `${c.countdownLabel} ${countdownSec}s...`
           : inspectionInfo?.user_instruction_th || c.alignFace;
 
   return (
@@ -642,7 +646,7 @@ export function KioskBiometricLoginView({
         <div className="flex flex-wrap items-center gap-2">
           {/* Language Switcher */}
           <div
-            className="flex items-center gap-1 rounded-xl bg-[#021c18] border border-emerald-800/70 p-1"
+            className="flex items-center gap-1 rounded-xl bg-[#021c18] border border-emerald-800/70 p-1 shrink-0"
             data-testid="language-switcher"
           >
             {LANG_OPTIONS.map((opt) => {
@@ -652,7 +656,7 @@ export function KioskBiometricLoginView({
                   key={opt.code}
                   type="button"
                   onClick={() => setLang(opt.code)}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer flex items-center gap-1 ${
+                  className={`w-[68px] h-8 inline-flex items-center justify-center whitespace-nowrap rounded-lg text-[11px] font-bold transition cursor-pointer gap-1 ${
                     active
                       ? 'bg-[#2563EB] text-white shadow-sm'
                       : 'text-slate-300 hover:bg-emerald-900/50 hover:text-white'
@@ -666,9 +670,9 @@ export function KioskBiometricLoginView({
           </div>
 
           {/* Cloud Online Pill */}
-          <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#02201b] border border-emerald-500/35 text-[11px] font-bold text-emerald-300">
+          <div className="hidden sm:flex h-9 min-w-[130px] justify-center items-center gap-1.5 px-3 rounded-xl bg-[#02201b] border border-emerald-500/35 text-[11px] font-bold text-emerald-300 whitespace-nowrap shrink-0">
             <span>Cloud Online</span>
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
           </div>
 
           {/* Staff Register New Patient */}
@@ -677,9 +681,9 @@ export function KioskBiometricLoginView({
             id="header-open-new-patient-btn"
             data-testid="header-open-new-patient-btn"
             onClick={onOpenStaffRegister}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#10B981] hover:bg-emerald-400 text-white text-xs font-bold shadow-md transition active:scale-95 cursor-pointer"
+            className="whitespace-nowrap h-9 min-w-[135px] px-3.5 inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#10B981] hover:bg-emerald-400 text-white text-xs font-bold shadow-md transition active:scale-95 cursor-pointer shrink-0"
           >
-            <UserPlus className="w-3.5 h-3.5" />
+            <UserPlus className="w-3.5 h-3.5 shrink-0" />
             <span>{c.registerNewPatient}</span>
           </button>
 
@@ -689,9 +693,9 @@ export function KioskBiometricLoginView({
             id="header-call-staff-btn"
             data-testid="header-call-staff-btn"
             onClick={handleCallStaff}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/50 text-amber-300 text-xs font-bold transition active:scale-95 cursor-pointer"
+            className="whitespace-nowrap h-9 min-w-[135px] px-3.5 inline-flex items-center justify-center gap-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/50 text-amber-300 text-xs font-bold transition active:scale-95 cursor-pointer shrink-0"
           >
-            <Bell className="w-3.5 h-3.5" />
+            <Bell className="w-3.5 h-3.5 shrink-0" />
             <span>{c.callStaff}</span>
           </button>
 
@@ -701,9 +705,9 @@ export function KioskBiometricLoginView({
             id="header-open-staff-login-btn"
             data-testid="open-staff-login-btn"
             onClick={onOpenStaffLogin}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#063932] hover:bg-[#084c43] border border-emerald-500/45 text-emerald-100 text-xs font-bold shadow-md transition active:scale-95 cursor-pointer"
+            className="whitespace-nowrap h-9 min-w-[135px] px-3.5 inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#063932] hover:bg-[#084c43] border border-emerald-500/45 text-emerald-100 text-xs font-bold shadow-md transition active:scale-95 cursor-pointer shrink-0"
           >
-            <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+            <KeyRound className="w-3.5 h-3.5 text-amber-400 shrink-0" />
             <span>{c.staffLogin}</span>
           </button>
         </div>

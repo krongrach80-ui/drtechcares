@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
+import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import type {
   DrTechCaresApiClient,
   ManagedExerciseRecord,
@@ -36,6 +37,219 @@ import {
   X,
 } from 'lucide-react';
 
+const SUBMODAL_TEXT: Record<
+  ClinicalLang,
+  {
+    welcomeTitle: string;
+    welcomeSubtitle: string;
+    matchedOk: string;
+    checkInTodayBtn: string;
+    enrollNewPatientBtn: string;
+    scanningFaceBtn: string;
+    startFaceMatchBtn: string;
+    resetPwdTitle: string;
+    newPwdLabel: string;
+    cancelBtn: string;
+    savingBtn: string;
+    saveNewPwdBtn: string;
+    agePrefix: string;
+    ageUnit: string;
+    sendFaceScanBtn: string;
+    profileTab: string;
+    historyTab: string;
+    editProfileHeading: string;
+    saveProfileBtn: string;
+    delegateHeading: string;
+    updatePtBtn: string;
+    notesHeading: string;
+    emptyNotes: string;
+    addNoteBtn: string;
+    reportHeading: string;
+    saveReportBtn: string;
+    statSessions: string;
+    sessionUnit: string;
+    statAccuracy: string;
+    statMaxRom: string;
+    emptyHistory: string;
+    recordSessionBtn: string;
+    schedCreateTitle: string;
+    schedDayTitle: string;
+    patientLabel: string;
+    emptyDayMsg: string;
+    addTodayApptBtn: string;
+    selectPatientLabel: string;
+    selectPtLabel: string;
+    exerciseLabel: string;
+    modpackLabel: string;
+    startDateLabel: string;
+    daysLabel: string;
+    setsRepsLabel: string;
+    saveScheduleBtn: string;
+    statusActive: string;
+    statusRest: string;
+    statusCompleted: string;
+    statusMissed: string;
+    deleteBtn: string;
+  }
+> = {
+  th: {
+    welcomeTitle: 'ต้อนรับ & สแกนใบหน้าคนไข้ (Welcome Verification)',
+    welcomeSubtitle: 'ตรวจสอบอัตลักษณ์ 3D Multi-Angle 512 มิติ อัตโนมัติแบบเรียลไทม์',
+    matchedOk: 'ยืนยันตัวตนสำเร็จ',
+    checkInTodayBtn: 'เช็คอินเข้าฝึกวันนี้ & เปิดตารางฝึก',
+    enrollNewPatientBtn: 'ลงทะเบียนคนไข้ใหม่',
+    scanningFaceBtn: 'กำลังตรวจสอบ 512 มิติ...',
+    startFaceMatchBtn: 'เริ่มสแกนจับคู่ใบหน้า',
+    resetPwdTitle: 'รีเซ็ตรหัสผ่าน',
+    newPwdLabel: 'รหัสผ่านใหม่ (อย่างน้อย 6 ตัวอักษร)',
+    cancelBtn: 'ยกเลิก',
+    savingBtn: 'กำลังบันทึก...',
+    saveNewPwdBtn: 'บันทึกรหัสผ่านใหม่',
+    agePrefix: 'อายุ',
+    ageUnit: 'ปี',
+    sendFaceScanBtn: '📸 ส่งตัวสแกนหน้า',
+    profileTab: 'โปรไฟล์ & เวชระเบียน',
+    historyTab: 'ประวัติการฝึก & ROM',
+    editProfileHeading: 'แก้ไขข้อมูลพื้นฐานคนไข้',
+    saveProfileBtn: 'บันทึกโปรไฟล์คนไข้',
+    delegateHeading: 'ส่งต่อเคสให้ PT ผู้รับผิดชอบ (Delegation)',
+    updatePtBtn: 'อัปเดต PT ผู้รับผิดชอบ',
+    notesHeading: 'บันทึกเวชระเบียนถาวร (Append-Only Notes)',
+    emptyNotes: 'ยังไม่มีบันทึกเวชระเบียน',
+    addNoteBtn: '+ บันทึก Note',
+    reportHeading: 'ออกใบสรุปผลการรักษา (Treatment Report)',
+    saveReportBtn: 'บันทึกใบสรุปผลการรักษา',
+    statSessions: 'จำนวนครั้งที่ฝึก',
+    sessionUnit: 'ครั้ง',
+    statAccuracy: 'ความแม่นยำเฉลี่ย',
+    statMaxRom: 'ROM สูงสุด',
+    emptyHistory: 'ยังไม่มีประวัติการฝึกของคนไข้รายนี้',
+    recordSessionBtn: '+ บันทึกผลเซสชันการฝึกวันนี้',
+    schedCreateTitle: 'สร้างตารางฝึกใหม่ (Rehab Schedule)',
+    schedDayTitle: 'รายละเอียดตารางฝึกวันที่',
+    patientLabel: 'คนไข้:',
+    emptyDayMsg: 'ยังไม่มีรายการฝึกที่กำหนดเฉพาะสำหรับวันที่',
+    addTodayApptBtn: 'เพิ่มนัดหมายฝึกวันนี้',
+    selectPatientLabel: 'คนไข้ *',
+    selectPtLabel: 'นักกายภาพผู้รับผิดชอบ (PT)',
+    exerciseLabel: 'ท่ากายภาพบำบัด',
+    modpackLabel: 'ชุดมินิเกม Modpack',
+    startDateLabel: 'วันที่เริ่มฝึก',
+    daysLabel: 'จำนวนวัน',
+    setsRepsLabel: 'เซต×ครั้ง',
+    saveScheduleBtn: 'บันทึกตารางฝึก',
+    statusActive: 'กำลังรักษา',
+    statusRest: 'พักการฝึก',
+    statusCompleted: 'สำเร็จครบ',
+    statusMissed: 'ขาดการฝึก',
+    deleteBtn: 'ลบ',
+  },
+  en: {
+    welcomeTitle: 'Welcome & Patient Face Verification',
+    welcomeSubtitle: 'Realtime 3D Multi-Angle 512-D biometric verification',
+    matchedOk: 'Identity Verified',
+    checkInTodayBtn: "Check In Today's Session & Open Schedule",
+    enrollNewPatientBtn: 'Enroll New Patient',
+    scanningFaceBtn: 'Verifying 512-D Face...',
+    startFaceMatchBtn: 'Capture & Verify Face',
+    resetPwdTitle: 'Reset Password',
+    newPwdLabel: 'New Password (min 6 characters)',
+    cancelBtn: 'Cancel',
+    savingBtn: 'Saving...',
+    saveNewPwdBtn: 'Save New Password',
+    agePrefix: 'Age',
+    ageUnit: 'yrs',
+    sendFaceScanBtn: '📸 Send to Face Scan',
+    profileTab: 'Profile & Medical Records',
+    historyTab: 'Training History & ROM',
+    editProfileHeading: 'Edit Patient Demographics',
+    saveProfileBtn: 'Save Patient Profile',
+    delegateHeading: 'Delegate Case to Physiotherapist (PT)',
+    updatePtBtn: 'Update Responsible PT',
+    notesHeading: 'Append-Only Clinical Notes',
+    emptyNotes: 'No clinical notes recorded yet',
+    addNoteBtn: '+ Append Note',
+    reportHeading: 'Issue Treatment Report',
+    saveReportBtn: 'Save Treatment Report',
+    statSessions: 'Sessions Completed',
+    sessionUnit: 'sessions',
+    statAccuracy: 'Average Accuracy',
+    statMaxRom: 'Max ROM',
+    emptyHistory: 'No training history found for this patient',
+    recordSessionBtn: "+ Log Today's Training Session",
+    schedCreateTitle: 'Create Rehab Schedule',
+    schedDayTitle: 'Schedule Details for',
+    patientLabel: 'Patient:',
+    emptyDayMsg: 'No specific rehab items scheduled for',
+    addTodayApptBtn: 'Add Appointment for This Day',
+    selectPatientLabel: 'Patient *',
+    selectPtLabel: 'Responsible Physiotherapist (PT)',
+    exerciseLabel: 'Rehab Exercise',
+    modpackLabel: 'Cognitive Modpack',
+    startDateLabel: 'Start Date',
+    daysLabel: 'Days',
+    setsRepsLabel: 'Sets×Reps',
+    saveScheduleBtn: 'Save Rehab Schedule',
+    statusActive: 'Active',
+    statusRest: 'Rest',
+    statusCompleted: 'Completed',
+    statusMissed: 'Missed',
+    deleteBtn: 'Delete',
+  },
+  cn: {
+    welcomeTitle: '患者欢迎迎宾与人脸核验 (Welcome Verification)',
+    welcomeSubtitle: '实时 3D 多角度 512 维面部生物识别验证',
+    matchedOk: '身份核验成功',
+    checkInTodayBtn: '今日签到并打开康复日程',
+    enrollNewPatientBtn: '注册新患者',
+    scanningFaceBtn: '正在比对 512 维特征...',
+    startFaceMatchBtn: '开始人脸抓拍核验',
+    resetPwdTitle: '重置账号密码',
+    newPwdLabel: '新密码（至少 6 位字符）',
+    cancelBtn: '取消',
+    savingBtn: '保存中...',
+    saveNewPwdBtn: '保存新密码',
+    agePrefix: '年龄',
+    ageUnit: '岁',
+    sendFaceScanBtn: '📸 前往人脸建档',
+    profileTab: '档案与病历记录',
+    historyTab: '康复记录与 ROM 角度',
+    editProfileHeading: '编辑患者基本信息',
+    saveProfileBtn: '保存患者档案',
+    delegateHeading: '指派/转交责任康复师 (Delegation)',
+    updatePtBtn: '更新责任康复师',
+    notesHeading: '不可篡改临床病程记录 (Append-Only Notes)',
+    emptyNotes: '暂无临床病历记录',
+    addNoteBtn: '+ 添加记录',
+    reportHeading: '出具康复治疗总结报告',
+    saveReportBtn: '保存康复总结报告',
+    statSessions: '累计训练次数',
+    sessionUnit: '次',
+    statAccuracy: '平均动作准确度',
+    statMaxRom: '最大关节活动度',
+    emptyHistory: '该患者暂无康复训练记录',
+    recordSessionBtn: '+ 录入今日训练记录',
+    schedCreateTitle: '新建康复训练日程 (Rehab Schedule)',
+    schedDayTitle: '训练日程详情',
+    patientLabel: '患者：',
+    emptyDayMsg: '该日期暂无指定康复项目：',
+    addTodayApptBtn: '添加当日康复预约',
+    selectPatientLabel: '患者 *',
+    selectPtLabel: '责任物理治疗师 (PT)',
+    exerciseLabel: '康复动作',
+    modpackLabel: '认知训练题库包',
+    startDateLabel: '开始日期',
+    daysLabel: '训练天数',
+    setsRepsLabel: '组数×次数',
+    saveScheduleBtn: '保存康复日程',
+    statusActive: '训练中',
+    statusRest: '休息',
+    statusCompleted: '已完成',
+    statusMissed: '缺席',
+    deleteBtn: '删除',
+  },
+};
+
 export function WelcomeFaceScanModal({
   open,
   apiClient,
@@ -49,6 +263,8 @@ export function WelcomeFaceScanModal({
   onOpenNewEnrollment: () => void;
   onCheckInSuccess: (patientId: string, label: string) => void;
 }) {
+  const { lang } = useClinicalI18n();
+  const sm = SUBMODAL_TEXT[lang];
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const biometricIndexRef = useRef<PatientBiometricIndexEntry[]>([]);
   const temporalMatcherRef = useRef(new TemporalBiometricMatcher(5));
@@ -310,14 +526,14 @@ export function WelcomeFaceScanModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm">
       <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-          <div className="flex items-center gap-2">
-            <ScanFace className="h-5 w-5 text-emerald-600" />
-            <div>
-              <h3 className="text-base font-black text-slate-900">ต้อนรับ &amp; สแกนใบหน้าคนไข้ (Welcome Verification)</h3>
-              <p className="text-[11px] text-slate-500">ตรวจสอบอัตลักษณ์ 3D Multi-Angle 512 มิติ อัตโนมัติแบบเรียลไทม์</p>
+          <div className="flex items-center gap-2 min-w-0">
+            <ScanFace className="h-5 w-5 text-emerald-600 shrink-0" />
+            <div className="min-w-0">
+              <h3 className="text-base font-black text-slate-900 truncate">{sm.welcomeTitle}</h3>
+              <p className="text-[11px] text-slate-500 truncate">{sm.welcomeSubtitle}</p>
             </div>
           </div>
-          <button type="button" onClick={onClose} className="rounded-xl p-1 text-slate-400 hover:bg-slate-100">
+          <button type="button" onClick={onClose} className="rounded-xl p-1 text-slate-400 hover:bg-slate-100 shrink-0">
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -350,10 +566,10 @@ export function WelcomeFaceScanModal({
 
               <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-emerald-400/45 bg-slate-950/90 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
                 <div className="text-[11px] font-black text-emerald-300">
-                  ✓ ยืนยันตัวตนสำเร็จ: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
+                  ✓ {sm.matchedOk}: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
                 </div>
                 <div className="text-[10px] font-bold text-white/90">
-                  ความแม่นยำ: {liveMatchHud.confidencePercent.toFixed(1)}% (3D Multi-Angle Match •{' '}
+                  {liveMatchHud.confidencePercent.toFixed(1)}% (3D Multi-Angle Match •{' '}
                   {liveMatchHud.streak}/5)
                 </div>
               </div>
@@ -380,7 +596,7 @@ export function WelcomeFaceScanModal({
               <>
                 <div className="flex items-center justify-between font-extrabold">
                   <span className="inline-flex items-center gap-1.5 text-emerald-700">
-                    <CheckCircle2 className="h-4 w-4" /> ยืนยันตัวตนสำเร็จ ({matchResult.confidencePercent}%)
+                    <CheckCircle2 className="h-4 w-4 shrink-0" /> {sm.matchedOk} ({matchResult.confidencePercent}%)
                   </span>
                   <span className="font-mono text-sky-700">{matchResult.patient.hn}</span>
                 </div>
@@ -394,9 +610,9 @@ export function WelcomeFaceScanModal({
                     onCheckInSuccess(pid, pname);
                     onClose();
                   }}
-                  className="w-full rounded-xl bg-emerald-600 py-2 font-extrabold text-white hover:bg-emerald-500"
+                  className="w-full whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-emerald-600 font-extrabold text-white hover:bg-emerald-500"
                 >
-                  เช็คอินเข้าฝึกวันนี้ &amp; เปิดตารางฝึก
+                  {sm.checkInTodayBtn}
                 </button>
               </>
             ) : (
@@ -426,19 +642,19 @@ export function WelcomeFaceScanModal({
               onClose();
               onOpenNewEnrollment();
             }}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 px-4 py-2.5 font-bold text-slate-700 hover:bg-slate-50"
+            className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 font-bold text-slate-700 hover:bg-slate-50"
           >
-            <UserPlus className="h-4 w-4" />
-            ลงทะเบียนคนไข้ใหม่
+            <UserPlus className="h-4 w-4 shrink-0" />
+            {sm.enrollNewPatientBtn}
           </button>
           <button
             type="button"
             disabled={scanning}
             onClick={() => void handleScanFrame()}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 px-5 py-2.5 font-extrabold text-white shadow hover:opacity-95 disabled:opacity-50"
+            className="whitespace-nowrap h-10 px-5 inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 font-extrabold text-white shadow hover:opacity-95 disabled:opacity-50"
           >
-            <ScanFace className="h-4 w-4" />
-            {scanning ? 'กำลังตรวจสอบ 512 มิติ...' : 'เริ่มสแกนจับคู่ใบหน้า'}
+            <ScanFace className="h-4 w-4 shrink-0" />
+            {scanning ? sm.scanningFaceBtn : sm.startFaceMatchBtn}
           </button>
         </div>
       </div>
@@ -457,6 +673,8 @@ export function ResetPasswordModal({
   onClose: () => void;
   onSuccess: (msg: string) => void;
 }) {
+  const { lang } = useClinicalI18n();
+  const sm = SUBMODAL_TEXT[lang];
   const [newPassword, setNewPassword] = useState('Staff@2026');
   const [saving, setSaving] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
@@ -467,11 +685,13 @@ export function ResetPasswordModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
       <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <KeyRound className="h-4 w-4 text-sky-600" />
-            <h3 className="text-sm font-black text-slate-900">รีเซ็ตรหัสผ่าน @{user.username}</h3>
+          <div className="flex items-center gap-2 min-w-0">
+            <KeyRound className="h-4 w-4 text-sky-600 shrink-0" />
+            <h3 className="text-sm font-black text-slate-900 truncate">
+              {sm.resetPwdTitle} @{user.username}
+            </h3>
           </div>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700">
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700 shrink-0">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -498,7 +718,7 @@ export function ResetPasswordModal({
           className="space-y-3"
         >
           <div>
-            <label className="block font-bold text-slate-600 mb-1">รหัสผ่านใหม่ (อย่างน้อย 6 ตัวอักษร)</label>
+            <label className="block font-bold text-slate-600 mb-1">{sm.newPwdLabel}</label>
             <input
               required
               minLength={6}
@@ -508,15 +728,19 @@ export function ResetPasswordModal({
             />
           </div>
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={onClose} className="rounded-xl border border-slate-200 px-4 py-2 font-bold">
-              ยกเลิก
+            <button
+              type="button"
+              onClick={onClose}
+              className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl border border-slate-200 font-bold"
+            >
+              {sm.cancelBtn}
             </button>
             <button
               type="submit"
               disabled={saving}
-              className="rounded-xl bg-sky-600 px-4 py-2 font-extrabold text-white hover:bg-sky-500 disabled:opacity-50"
+              className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-sky-600 font-extrabold text-white hover:bg-sky-500 disabled:opacity-50"
             >
-              {saving ? 'กำลังบันทึก...' : 'บันทึกรหัสผ่านใหม่'}
+              {saving ? sm.savingBtn : sm.saveNewPwdBtn}
             </button>
           </div>
         </form>
@@ -548,6 +772,8 @@ export function PatientProfileAndHistoryModal({
   onOpenFaceScan: (patient: PatientRecord) => void;
   onFlash: (kind: 'success' | 'error', msg: string) => void;
 }) {
+  const { lang } = useClinicalI18n();
+  const sm = SUBMODAL_TEXT[lang];
   const [modalTab, setModalTab] = useState<'profile' | 'history'>(initialTab);
   const [fullName, setFullName] = useState('');
   const [age, setAge] = useState(45);
@@ -589,41 +815,41 @@ export function PatientProfileAndHistoryModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
       <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-5 text-xs">
         <div className="flex items-start justify-between border-b border-slate-100 pb-4">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             {patient.faceImageUrl ? (
               <img
                 src={patient.faceImageUrl}
                 alt={patient.fullName}
-                className="h-12 w-12 rounded-2xl object-cover border border-emerald-200"
+                className="h-12 w-12 rounded-2xl object-cover border border-emerald-200 shrink-0"
               />
             ) : (
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-700 font-black text-base">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-700 font-black text-base">
                 {patient.fullName.slice(0, 1)}
               </div>
             )}
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="rounded-lg bg-sky-100 px-2.5 py-0.5 font-mono font-extrabold text-sky-700">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="whitespace-nowrap rounded-lg bg-sky-100 px-2.5 py-0.5 font-mono font-extrabold text-sky-700 shrink-0">
                   {patient.hn}
                 </span>
-                <h3 className="text-base font-black text-slate-900">{patient.fullName}</h3>
+                <h3 className="text-base font-black text-slate-900 truncate">{patient.fullName}</h3>
               </div>
-              <p className="text-slate-500 mt-1">
-                อายุ {patient.age} ปี ({patient.gender || 'ชาย'}) • PT:{' '}
+              <p className="text-slate-500 mt-1 truncate">
+                {sm.agePrefix} {patient.age} {sm.ageUnit} ({patient.gender || 'ชาย'}) • PT:{' '}
                 {ptNameMap.get(patient.delegatedToPtId || patient.assignedPtId) || 'กภ. ประจำคลินิก'}
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={() => {
                 onClose();
                 onOpenFaceScan(patient);
               }}
-              className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 font-bold text-emerald-700 hover:bg-emerald-100"
+              className="whitespace-nowrap h-9 px-3 inline-flex items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50 font-bold text-emerald-700 hover:bg-emerald-100"
             >
-              📸 ส่งตัวสแกนหน้า
+              {sm.sendFaceScanBtn}
             </button>
             <button type="button" onClick={onClose} className="rounded-xl p-1 text-slate-400 hover:bg-slate-100">
               <X className="h-5 w-5" />
@@ -636,20 +862,20 @@ export function PatientProfileAndHistoryModal({
           <button
             type="button"
             onClick={() => setModalTab('profile')}
-            className={`rounded-lg px-4 py-1.5 ${
+            className={`whitespace-nowrap h-8 px-4 inline-flex items-center justify-center gap-1 rounded-lg ${
               modalTab === 'profile' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500'
             }`}
           >
-            <FileText className="inline h-3.5 w-3.5 mr-1" /> โปรไฟล์ &amp; เวชระเบียน
+            <FileText className="h-3.5 w-3.5 shrink-0" /> {sm.profileTab}
           </button>
           <button
             type="button"
             onClick={() => setModalTab('history')}
-            className={`rounded-lg px-4 py-1.5 ${
+            className={`whitespace-nowrap h-8 px-4 inline-flex items-center justify-center gap-1 rounded-lg ${
               modalTab === 'history' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500'
             }`}
           >
-            <Activity className="inline h-3.5 w-3.5 mr-1" /> ประวัติการฝึก &amp; ROM ({patientSessions.length})
+            <Activity className="h-3.5 w-3.5 shrink-0" /> {sm.historyTab} ({patientSessions.length})
           </button>
         </div>
 
@@ -678,7 +904,7 @@ export function PatientProfileAndHistoryModal({
               }}
               className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 space-y-3"
             >
-              <div className="font-extrabold text-slate-900">แก้ไขข้อมูลพื้นฐานคนไข้</div>
+              <div className="font-extrabold text-slate-900">{sm.editProfileHeading}</div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <input
                   required
@@ -726,7 +952,7 @@ export function PatientProfileAndHistoryModal({
                   >
                     {ptUsers.map((pt) => (
                       <option key={pt.id} value={pt.id}>
-                        PT หลัก: {pt.fullName}
+                        PT: {pt.fullName}
                       </option>
                     ))}
                   </select>
@@ -734,23 +960,23 @@ export function PatientProfileAndHistoryModal({
                 <button
                   type="submit"
                   disabled={saving}
-                  className="rounded-xl bg-emerald-600 px-4 py-2 font-bold text-white hover:bg-emerald-500 disabled:opacity-50"
+                  className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-emerald-600 font-bold text-white hover:bg-emerald-500 disabled:opacity-50"
                 >
-                  {saving ? 'กำลังบันทึก...' : 'บันทึกโปรไฟล์คนไข้'}
+                  {saving ? sm.savingBtn : sm.saveProfileBtn}
                 </button>
               </div>
             </form>
 
             {/* Delegation */}
             <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 space-y-2.5">
-              <div className="font-extrabold text-slate-800">ส่งต่อเคสให้ PT ผู้รับผิดชอบ (Delegation)</div>
+              <div className="font-extrabold text-slate-800">{sm.delegateHeading}</div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <select
                   value={delegatePtId}
                   onChange={(e) => setDelegatePtId(e.target.value)}
                   className="rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold"
                 >
-                  <option value="">-- ไม่ส่งต่อ (ใช้ PT หลัก) --</option>
+                  <option value="">-- Primary PT --</option>
                   {ptUsers.map((pt) => (
                     <option key={pt.id} value={pt.id}>
                       {pt.fullName}
@@ -770,34 +996,36 @@ export function PatientProfileAndHistoryModal({
                     onFlash('success', 'อัปเดตการส่งต่อ PT เรียบร้อยแล้ว');
                     await onRefresh();
                   }}
-                  className="rounded-xl bg-blue-600 px-3 py-2 font-bold text-white hover:bg-blue-500"
+                  className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-blue-600 font-bold text-white hover:bg-blue-500"
                 >
-                  อัปเดต PT ผู้รับผิดชอบ
+                  {sm.updatePtBtn}
                 </button>
               </div>
             </div>
 
             {/* Append-Only Medical Notes */}
             <div className="space-y-2.5">
-              <div className="font-extrabold text-slate-900">บันทึกเวชระเบียนถาวร (Append-Only Notes)</div>
+              <div className="font-extrabold text-slate-900">{sm.notesHeading}</div>
               <div className="max-h-40 overflow-y-auto space-y-2 rounded-2xl border border-slate-200 p-3 bg-slate-50/40">
                 {notes.map((n) => (
                   <div key={n.id} className="rounded-xl border border-slate-200 bg-white p-3 space-y-1">
                     <div className="flex justify-between text-[11px] text-slate-400">
                       <span className="font-bold text-emerald-700">{n.authorName}</span>
-                      <span>{new Date(n.createdAt).toLocaleString('th-TH')}</span>
+                      <span>
+                        {new Date(n.createdAt).toLocaleString(lang === 'cn' ? 'zh-CN' : lang === 'en' ? 'en-US' : 'th-TH')}
+                      </span>
                     </div>
                     <p className="whitespace-pre-line text-slate-800">{n.content}</p>
                   </div>
                 ))}
-                {notes.length === 0 && <p className="text-center text-slate-400 py-3">ยังไม่มีบันทึกเวชระเบียน</p>}
+                {notes.length === 0 && <p className="text-center text-slate-400 py-3">{sm.emptyNotes}</p>}
               </div>
 
               <div className="flex gap-2">
                 <input
                   value={newNote}
                   onChange={(e) => setNewNote(e.target.value)}
-                  placeholder="พิมพ์บันทึกอาการเพิ่มเติม..."
+                  placeholder={lang === 'cn' ? '输入临床症状记录...' : lang === 'en' ? 'Enter clinical note...' : 'พิมพ์บันทึกอาการเพิ่มเติม...'}
                   className="flex-1 rounded-xl border border-slate-200 px-3 py-2"
                 />
                 <button
@@ -808,27 +1036,27 @@ export function PatientProfileAndHistoryModal({
                     setNotes((prev) => [created, ...prev]);
                     setNewNote('');
                   }}
-                  className="rounded-xl bg-emerald-600 px-4 py-2 font-bold text-white"
+                  className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-emerald-600 font-bold text-white"
                 >
-                  + บันทึก Note
+                  {sm.addNoteBtn}
                 </button>
               </div>
             </div>
 
             {/* Treatment Report */}
             <div className="border-t border-slate-100 pt-3 space-y-2">
-              <div className="font-extrabold text-slate-900">ออกใบสรุปผลการรักษา (Treatment Report)</div>
+              <div className="font-extrabold text-slate-900">{sm.reportHeading}</div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <input
                   value={reportSummary}
                   onChange={(e) => setReportSummary(e.target.value)}
-                  placeholder="สรุปผลการฟื้นฟู..."
+                  placeholder={lang === 'cn' ? '康复总结...' : lang === 'en' ? 'Rehab summary...' : 'สรุปผลการฟื้นฟู...'}
                   className="rounded-xl border border-slate-200 px-3 py-2"
                 />
                 <input
                   value={reportRec}
                   onChange={(e) => setReportRec(e.target.value)}
-                  placeholder="คำแนะนำต่อเนื่อง..."
+                  placeholder={lang === 'cn' ? '后续建议...' : lang === 'en' ? 'Recommendations...' : 'คำแนะนำต่อเนื่อง...'}
                   className="rounded-xl border border-slate-200 px-3 py-2"
                 />
               </div>
@@ -846,9 +1074,9 @@ export function PatientProfileAndHistoryModal({
                   setReportRec('');
                   onFlash('success', 'ออกใบสรุปผลการรักษาเรียบร้อยแล้ว');
                 }}
-                className="rounded-xl bg-slate-900 px-4 py-2 font-bold text-white"
+                className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-slate-900 font-bold text-white"
               >
-                บันทึกใบสรุปผลการรักษา
+                {sm.saveReportBtn}
               </button>
             </div>
           </>
@@ -856,11 +1084,13 @@ export function PatientProfileAndHistoryModal({
           <div className="space-y-4">
             <div className="grid grid-cols-3 gap-3 text-center">
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                <div className="text-[11px] text-slate-500">จำนวนครั้งที่ฝึก</div>
-                <div className="text-lg font-black text-slate-900">{patientSessions.length} ครั้ง</div>
+                <div className="text-[11px] text-slate-500">{sm.statSessions}</div>
+                <div className="text-lg font-black text-slate-900">
+                  {patientSessions.length} {sm.sessionUnit}
+                </div>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-emerald-50/50 p-3">
-                <div className="text-[11px] text-slate-500">ความแม่นยำเฉลี่ย</div>
+                <div className="text-[11px] text-slate-500">{sm.statAccuracy}</div>
                 <div className="text-lg font-black text-emerald-700">
                   {patientSessions.length > 0
                     ? Math.round(
@@ -871,7 +1101,7 @@ export function PatientProfileAndHistoryModal({
                 </div>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-sky-50/50 p-3">
-                <div className="text-[11px] text-slate-500">ROM สูงสุด</div>
+                <div className="text-[11px] text-slate-500">{sm.statMaxRom}</div>
                 <div className="text-lg font-black text-sky-700">
                   {patientSessions.reduce((max, s) => Math.max(max, s.maxRomDeg), 0)}°
                 </div>
@@ -884,18 +1114,17 @@ export function PatientProfileAndHistoryModal({
                   <div>
                     <div className="font-bold text-slate-900">{s.exerciseName}</div>
                     <div className="text-[11px] text-slate-500">
-                      {s.completedSets} เซต × {s.completedReps} ครั้ง • ความแม่นยำ {s.accuracyPercent}% • Max ROM{' '}
-                      {s.maxRomDeg}°
+                      {s.completedSets} × {s.completedReps} • {s.accuracyPercent}% • Max ROM {s.maxRomDeg}°
                     </div>
                   </div>
-                  <span className="text-[11px] text-slate-400">
-                    {new Date(s.createdAt).toLocaleDateString('th-TH')}
+                  <span className="text-[11px] text-slate-400 whitespace-nowrap">
+                    {new Date(s.createdAt).toLocaleDateString(lang === 'cn' ? 'zh-CN' : lang === 'en' ? 'en-US' : 'th-TH')}
                   </span>
                 </div>
               ))}
               {patientSessions.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-slate-200 py-8 text-center text-slate-400">
-                  ยังไม่มีประวัติการฝึกของคนไข้รายนี้
+                  {sm.emptyHistory}
                 </div>
               )}
             </div>
@@ -919,9 +1148,9 @@ export function PatientProfileAndHistoryModal({
                 onFlash('success', 'บันทึกผลการฝึกกายภาพใหม่เรียบร้อย');
                 await onRefresh();
               }}
-              className="w-full rounded-xl bg-emerald-600 py-2.5 font-extrabold text-white hover:bg-emerald-500"
+              className="w-full whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-emerald-600 font-extrabold text-white hover:bg-emerald-500"
             >
-              + บันทึกผลเซสชันการฝึกวันนี้
+              {sm.recordSessionBtn}
             </button>
           </div>
         )}
@@ -953,6 +1182,8 @@ export function ScheduleCreatorAndDayModal({
   onClose: () => void;
   onSaved: (msg: string) => Promise<void>;
 }) {
+  const { lang } = useClinicalI18n();
+  const sm = SUBMODAL_TEXT[lang];
   const [targetPatientId, setTargetPatientId] = useState(patient?.id || patients[0]?.id || '');
   const [ptId, setPtId] = useState(patient?.assignedPtId || ptUsers[0]?.id || '');
   const [exerciseId, setExerciseId] = useState(exercises[0]?.id || '');
@@ -982,15 +1213,15 @@ export function ScheduleCreatorAndDayModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
       <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-          <div className="flex items-center gap-2">
-            <Calendar className="h-5 w-5 text-emerald-600" />
-            <h3 className="text-base font-black text-slate-900">
+          <div className="flex items-center gap-2 min-w-0">
+            <Calendar className="h-5 w-5 text-emerald-600 shrink-0" />
+            <h3 className="text-base font-black text-slate-900 truncate">
               {mode === 'create'
-                ? 'สร้างตารางฝึกใหม่ (Rehab Schedule)'
-                : `รายละเอียดตารางฝึกวันที่ ${selectedDateIso}`}
+                ? sm.schedCreateTitle
+                : `${sm.schedDayTitle} ${selectedDateIso}`}
             </h3>
           </div>
-          <button type="button" onClick={onClose} className="rounded-xl p-1 text-slate-400 hover:bg-slate-100">
+          <button type="button" onClick={onClose} className="rounded-xl p-1 text-slate-400 hover:bg-slate-100 shrink-0">
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -998,12 +1229,14 @@ export function ScheduleCreatorAndDayModal({
         {mode === 'day_detail' && activePatient && selectedDateIso && (
           <div className="space-y-3">
             <div className="rounded-xl bg-slate-50 px-3.5 py-2.5 font-bold text-slate-700">
-              คนไข้: {activePatient.fullName} ({activePatient.hn})
+              {sm.patientLabel} {activePatient.fullName} ({activePatient.hn})
             </div>
 
             {dayItems.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center text-slate-400 space-y-2">
-                <p>ยังไม่มีรายการฝึกที่กำหนดเฉพาะสำหรับวันที่ {selectedDateIso}</p>
+                <p>
+                  {sm.emptyDayMsg} {selectedDateIso}
+                </p>
                 <button
                   type="button"
                   onClick={async () => {
@@ -1029,9 +1262,9 @@ export function ScheduleCreatorAndDayModal({
                     await onSaved(`เพิ่มตารางฝึกวันที่ ${selectedDateIso} แล้ว`);
                     onClose();
                   }}
-                  className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-4 py-2 font-bold text-white"
+                  className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1 rounded-xl bg-emerald-600 font-bold text-white"
                 >
-                  <Plus className="h-3.5 w-3.5" /> เพิ่มนัดหมายฝึกวันนี้
+                  <Plus className="h-3.5 w-3.5 shrink-0" /> {sm.addTodayApptBtn}
                 </button>
               </div>
             ) : (
@@ -1044,23 +1277,23 @@ export function ScheduleCreatorAndDayModal({
                       <div className="flex items-center justify-between">
                         <div>
                           <div className="font-extrabold text-slate-900">
-                            {ex ? ex.name.th : 'ฝึกตามคอร์ส'} {mp ? `• ${mp.name}` : ''}
+                            {ex ? ex.name[lang] || ex.name.th : 'Rehab Course'} {mp ? `• ${mp.name}` : ''}
                           </div>
                           <div className="text-[11px] text-slate-500">
-                            {item.sets} เซต × {item.reps} ครั้ง {item.notes ? `• ${item.notes}` : ''}
+                            {item.sets} × {item.reps} {item.notes ? `• ${item.notes}` : ''}
                           </div>
                         </div>
-                        <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-black">
+                        <span className="whitespace-nowrap rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-black">
                           {item.status}
                         </span>
                       </div>
                       <div className="flex flex-wrap gap-1.5">
                         {(
                           [
-                            { status: 'ACTIVE', label: 'กำลังรักษา', cls: 'bg-emerald-600 text-white' },
-                            { status: 'REST', label: 'พักการฝึก', cls: 'bg-amber-500 text-white' },
-                            { status: 'COMPLETED', label: 'สำเร็จครบ', cls: 'bg-blue-600 text-white' },
-                            { status: 'MISSED', label: 'ขาดการฝึก', cls: 'bg-rose-600 text-white' },
+                            { status: 'ACTIVE', label: sm.statusActive, cls: 'bg-emerald-600 text-white' },
+                            { status: 'REST', label: sm.statusRest, cls: 'bg-amber-500 text-white' },
+                            { status: 'COMPLETED', label: sm.statusCompleted, cls: 'bg-blue-600 text-white' },
+                            { status: 'MISSED', label: sm.statusMissed, cls: 'bg-rose-600 text-white' },
                           ] as const
                         ).map((btn) => (
                           <button
@@ -1073,7 +1306,7 @@ export function ScheduleCreatorAndDayModal({
                               await apiClient.updatePatient(activePatient.id, { rehabSchedules: nextList });
                               await onSaved(`เปลี่ยนสถานะวันที่ ${selectedDateIso} เป็น ${btn.label}`);
                             }}
-                            className={`rounded-lg px-2.5 py-1 text-[11px] font-bold ${btn.cls}`}
+                            className={`whitespace-nowrap rounded-lg px-2.5 py-1 text-[11px] font-bold ${btn.cls}`}
                           >
                             {btn.label}
                           </button>
@@ -1085,9 +1318,9 @@ export function ScheduleCreatorAndDayModal({
                             await apiClient.updatePatient(activePatient.id, { rehabSchedules: nextList });
                             await onSaved(`ลบนัดหมายวันที่ ${selectedDateIso} แล้ว`);
                           }}
-                          className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-bold text-rose-700"
+                          className="whitespace-nowrap rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-bold text-rose-700"
                         >
-                          <Trash2 className="inline h-3 w-3 mr-0.5" /> ลบ
+                          <Trash2 className="inline h-3 w-3 mr-0.5" /> {sm.deleteBtn}
                         </button>
                       </div>
                     </div>
@@ -1137,7 +1370,7 @@ export function ScheduleCreatorAndDayModal({
           >
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <div>
-                <label className="block font-bold text-slate-600 mb-1">คนไข้ *</label>
+                <label className="block font-bold text-slate-600 mb-1">{sm.selectPatientLabel}</label>
                 <select
                   value={targetPatientId}
                   onChange={(e) => setTargetPatientId(e.target.value)}
@@ -1151,7 +1384,7 @@ export function ScheduleCreatorAndDayModal({
                 </select>
               </div>
               <div>
-                <label className="block font-bold text-slate-600 mb-1">นักกายภาพผู้รับผิดชอบ (PT)</label>
+                <label className="block font-bold text-slate-600 mb-1">{sm.selectPtLabel}</label>
                 <select
                   value={ptId}
                   onChange={(e) => setPtId(e.target.value)}
@@ -1168,7 +1401,7 @@ export function ScheduleCreatorAndDayModal({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <div>
-                <label className="block font-bold text-slate-600 mb-1">ท่ากายภาพบำบัด</label>
+                <label className="block font-bold text-slate-600 mb-1">{sm.exerciseLabel}</label>
                 <select
                   value={exerciseId}
                   onChange={(e) => setExerciseId(e.target.value)}
@@ -1176,13 +1409,13 @@ export function ScheduleCreatorAndDayModal({
                 >
                   {exercises.map((ex) => (
                     <option key={ex.id} value={ex.id}>
-                      {ex.name.th}
+                      {ex.name[lang] || ex.name.th}
                     </option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="block font-bold text-slate-600 mb-1">ชุดมินิเกม Modpack</label>
+                <label className="block font-bold text-slate-600 mb-1">{sm.modpackLabel}</label>
                 <select
                   value={modpackId}
                   onChange={(e) => setModpackId(e.target.value)}
@@ -1199,7 +1432,7 @@ export function ScheduleCreatorAndDayModal({
 
             <div className="grid grid-cols-4 gap-2">
               <div className="col-span-2">
-                <label className="block font-bold text-slate-600 mb-1">วันที่เริ่มฝึก</label>
+                <label className="block font-bold text-slate-600 mb-1">{sm.startDateLabel}</label>
                 <input
                   type="date"
                   value={startDate}
@@ -1208,7 +1441,7 @@ export function ScheduleCreatorAndDayModal({
                 />
               </div>
               <div>
-                <label className="block font-bold text-slate-600 mb-1">จำนวนวัน</label>
+                <label className="block font-bold text-slate-600 mb-1">{sm.daysLabel}</label>
                 <input
                   type="number"
                   min={1}
@@ -1219,7 +1452,7 @@ export function ScheduleCreatorAndDayModal({
                 />
               </div>
               <div>
-                <label className="block font-bold text-slate-600 mb-1">เซต×ครั้ง</label>
+                <label className="block font-bold text-slate-600 mb-1">{sm.setsRepsLabel}</label>
                 <div className="flex gap-1">
                   <input
                     type="number"
@@ -1244,20 +1477,24 @@ export function ScheduleCreatorAndDayModal({
             <input
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="หมายเหตุ..."
+              placeholder="..."
               className="w-full rounded-xl border border-slate-200 px-3 py-2"
             />
 
             <div className="flex justify-end gap-2 pt-2">
-              <button type="button" onClick={onClose} className="rounded-xl border border-slate-200 px-4 py-2 font-bold">
-                ยกเลิก
+              <button
+                type="button"
+                onClick={onClose}
+                className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl border border-slate-200 font-bold"
+              >
+                {sm.cancelBtn}
               </button>
               <button
                 type="submit"
                 disabled={saving}
-                className="rounded-xl bg-emerald-600 px-5 py-2 font-extrabold text-white hover:bg-emerald-500 disabled:opacity-50"
+                className="whitespace-nowrap h-10 px-5 inline-flex items-center justify-center rounded-xl bg-emerald-600 font-extrabold text-white hover:bg-emerald-500 disabled:opacity-50"
               >
-                {saving ? 'กำลังบันทึก...' : 'บันทึกตารางฝึก'}
+                {saving ? sm.savingBtn : sm.saveScheduleBtn}
               </button>
             </div>
           </form>

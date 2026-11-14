@@ -138,6 +138,31 @@ export const CLINICAL_TRANSLATIONS = {
     en: 'Sign Out',
     cn: '退出登录',
   },
+  alignFaceOval: {
+    th: 'จัดตำแหน่งใบหน้าให้อยู่ในกรอบวงรี',
+    en: 'Align face in oval guide',
+    cn: '请将面部对准椭圆形框内',
+  },
+  holdSteadyCountdown: {
+    th: 'กรุณานิ่งสักครู่:',
+    en: 'Hold steady:',
+    cn: '请保持静止：',
+  },
+  verifyingGate: {
+    th: 'กำลังตรวจสอบข้อมูลชีวมาตร 512-D...',
+    en: 'Verifying Multi-Subband 512-D Gate...',
+    cn: '正在验证多子带 512 维面部特征...',
+  },
+  cameraStandbyMsg: {
+    th: 'กล้องพร้อมสแตนด์บาย — แตะหน้าจอหรือเรียกเจ้าหน้าที่ได้',
+    en: 'Camera standby — ready for touch or staff action',
+    cn: '摄像头待机中 — 可触屏操作或呼叫工作人员',
+  },
+  retrySingleScanBtn: {
+    th: 'สแกนใบหน้าใหม่อีกครั้ง',
+    en: 'Retry Single Scan',
+    cn: '重新单次扫描',
+  },
 } as const satisfies Record<string, TrilingualEntry>;
 
 export type TranslationKey = keyof typeof CLINICAL_TRANSLATIONS;
