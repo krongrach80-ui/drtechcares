@@ -23,25 +23,26 @@ import {
 type BiomechanicsEvaluationPacket = Parameters<typeof evaluateClinicalBiomechanicsPacket>[0];
 type RepCounterState = NonNullable<Parameters<typeof evaluateClinicalBiomechanicsPacket>[1]>;
 type FrameInspectionInput = Parameters<typeof inspectBiometricFrame3D>[0];
-import type {
-  AngleEmbeddings5D,
-  AuditLogRecord,
-  BannedTargetRecord,
-  CloudClientConfig,
-  DailyScheduleDay,
-  ManagedExerciseRecord,
-  MedicalNoteRecord,
-  ModpackRecord,
-  PatientBiometricIndexEntry,
-  PatientCourseRecord,
-  PatientRecord,
-  RehabScheduleItem,
-  RehabSessionRecord,
-  StaffCallRecord,
-  SystemSettingsRecord,
-  TreatmentReportRecord,
-  UserAccount,
-  UserRole,
+import {
+  resolveTodayPatientSchedule,
+  type AngleEmbeddings5D,
+  type AuditLogRecord,
+  type BannedTargetRecord,
+  type CloudClientConfig,
+  type DailyScheduleDay,
+  type ManagedExerciseRecord,
+  type MedicalNoteRecord,
+  type ModpackRecord,
+  type PatientBiometricIndexEntry,
+  type PatientCourseRecord,
+  type PatientRecord,
+  type RehabScheduleItem,
+  type RehabSessionRecord,
+  type StaffCallRecord,
+  type SystemSettingsRecord,
+  type TreatmentReportRecord,
+  type UserAccount,
+  type UserRole,
 } from './index';
 import {
   hydrateStateFromSupabase,
@@ -1445,6 +1446,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             };
         const course = state.patient_courses.find((c) => c.patientId === p.id) ?? null;
         const todayRoutine = course?.weeklySchedule.find((d) => d.dayIndex === todayIdx) ?? null;
+        const todaySchedule = resolveTodayPatientSchedule({
+          rehabSchedules: p.rehabSchedules,
+          todayRoutine,
+          nextAppointmentDate: p.nextAppointmentDate,
+          exercisesCatalog: state.exercises,
+        });
         index.push({
           patientId: p.id,
           hn: p.hn,
@@ -1458,6 +1465,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           masterEmbedding: masterNorm,
           angleEmbeddings,
           todayRoutine,
+          rehabSchedules: p.rehabSchedules ?? [],
+          todayExercises: todaySchedule.todayExercises,
+          hasAppointmentToday: todaySchedule.hasAppointmentToday,
         });
       }
       return jsonResponse({ index });
@@ -1725,6 +1735,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const course = state.patient_courses.find((c) => c.patientId === matchedPatientId) ?? null;
       const todayIdx = new Date().getDay();
       const todayRoutine = course?.weeklySchedule.find((d) => d.dayIndex === todayIdx) ?? null;
+      const todaySchedule = resolveTodayPatientSchedule({
+        rehabSchedules: patient.rehabSchedules,
+        todayRoutine,
+        nextAppointmentDate: patient.nextAppointmentDate,
+        exercisesCatalog: state.exercises,
+      });
 
       recordAudit({
         eventType: 'BIOMETRIC_FACE_VERIFIED',
@@ -1750,6 +1766,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           nextAppointmentDate: patient.nextAppointmentDate,
         },
         todayRoutine,
+        rehabSchedules: patient.rehabSchedules ?? [],
+        todayExercises: todaySchedule.todayExercises,
+        hasAppointmentToday: todaySchedule.hasAppointmentToday,
       });
     }
 

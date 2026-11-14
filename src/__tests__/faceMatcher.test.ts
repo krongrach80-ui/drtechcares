@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { PatientBiometricIndexEntry } from '@drtechcares/api-client';
+import {
+  resolveTodayPatientSchedule,
+  type PatientBiometricIndexEntry,
+} from '@drtechcares/api-client';
 import {
   CANONICAL_HUMAN_FACE_BASELINE_512,
   FACE_EMBEDDING_DIM,
@@ -294,5 +297,78 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     expect(chooseCaptureBucket(9, 0, afterCenterFull)).toBe('right');
     expect(chooseCaptureBucket(0, -7, afterCenterFull)).toBe('up');
     expect(chooseCaptureBucket(0, 7, afterCenterFull)).toBe('down');
+  });
+
+  it('resolves today appointment status and exercise list accurately for rest vs scheduled days', () => {
+    const fixedNow = new Date(2026, 10, 14, 10, 0, 0); // 2026-11-14 local time (Saturday)
+
+    // 1. Newly enrolled patient with future nextAppointmentDate (2026-11-16) and empty rehabSchedules -> rest day
+    const futureOnly = resolveTodayPatientSchedule({
+      rehabSchedules: [],
+      todayRoutine: {
+        dayIndex: 6,
+        dayType: 'rest',
+        activityType: 'physio_exercise',
+        difficulty: 'medium',
+        label: 'Rest Day',
+        exercises: [],
+      },
+      nextAppointmentDate: '2026-11-16',
+      now: fixedNow,
+    });
+    expect(futureOnly.todayIso).toBe('2026-11-14');
+    expect(futureOnly.hasAppointmentToday).toBe(false);
+    expect(futureOnly.todayExercises).toEqual([]);
+
+    // 2. Patient with explicit rehabSchedules only on a future date -> rest day today
+    const nonMatchingRehab = resolveTodayPatientSchedule({
+      rehabSchedules: [
+        {
+          id: 'sched-future',
+          patientId: 'pat-a',
+          exerciseId: 'ex-01',
+          scheduledDate: '2026-11-16',
+          sets: 3,
+          reps: 10,
+          status: 'ACTIVE',
+        },
+      ],
+      nextAppointmentDate: '2026-11-16',
+      now: fixedNow,
+    });
+    expect(nonMatchingRehab.hasAppointmentToday).toBe(false);
+    expect(nonMatchingRehab.todayExercises).toEqual([]);
+
+    // 3. Patient with ACTIVE rehabSchedule for today (2026-11-14) -> active appointment with exercise list
+    const scheduledToday = resolveTodayPatientSchedule({
+      rehabSchedules: [
+        {
+          id: 'sched-today-1',
+          patientId: 'pat-a',
+          exerciseId: 'ex-01',
+          scheduledDate: '2026-11-14',
+          sets: 3,
+          reps: 10,
+          status: 'ACTIVE',
+        },
+        {
+          id: 'sched-rest-ignored',
+          patientId: 'pat-a',
+          exerciseId: 'ex-02',
+          scheduledDate: '2026-11-14',
+          sets: 2,
+          reps: 8,
+          status: 'REST',
+        },
+      ],
+      nextAppointmentDate: '2026-11-14',
+      now: fixedNow,
+    });
+    expect(scheduledToday.hasAppointmentToday).toBe(true);
+    expect(scheduledToday.todayExercises).toHaveLength(1);
+    expect(scheduledToday.todayExercises[0].exerciseId).toBe('ex-01');
+    expect(scheduledToday.todayExercises[0].nameTh).toContain('ยกแขนตรงไปด้านหน้า');
+    expect(scheduledToday.todayExercises[0].sets).toBe(3);
+    expect(scheduledToday.todayExercises[0].reps).toBe(10);
   });
 });

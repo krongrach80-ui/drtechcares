@@ -38,6 +38,20 @@ export interface RehabScheduleItem {
   notes?: string;
 }
 
+export interface TodayPrescribedExerciseItem {
+  id: string;
+  exerciseId: string;
+  nameTh: string;
+  nameEn: string;
+  targetJoint: string;
+  activityType: ActivityType;
+  sets: number;
+  reps: number;
+  holdSec: number;
+  status: 'ACTIVE' | 'COMPLETED';
+  notes?: string;
+}
+
 export interface AngleEmbeddings5D {
   center: number[];
   left: number[];
@@ -59,6 +73,9 @@ export interface PatientBiometricIndexEntry {
   masterEmbedding: number[];
   angleEmbeddings: AngleEmbeddings5D;
   todayRoutine?: DailyScheduleDay | null;
+  rehabSchedules?: RehabScheduleItem[];
+  todayExercises?: TodayPrescribedExerciseItem[];
+  hasAppointmentToday?: boolean;
 }
 
 export interface PatientRecord {
@@ -234,6 +251,9 @@ export interface KioskFaceVerifyResponse extends BiometricVerificationResult {
     nextAppointmentDate: string;
   } | null;
   todayRoutine?: DailyScheduleDay | null;
+  rehabSchedules?: RehabScheduleItem[];
+  todayExercises?: TodayPrescribedExerciseItem[];
+  hasAppointmentToday?: boolean;
 }
 
 export interface CloudClientConfig {
@@ -837,6 +857,163 @@ export class DrTechCaresApiClient {
     });
     return res.settings;
   }
+}
+
+const JOINT_GROUP_LABELS: Record<ExerciseConfig['detection']['jointGroup'], string> = {
+  shoulder: 'ข้อไหล่ (Shoulder)',
+  elbow: 'ข้อศอก (Elbow)',
+  knee: 'ข้อเข่า (Knee)',
+  hip: 'ข้อสะโพก (Hip)',
+  ankle: 'ข้อเท้า (Ankle)',
+  neck: 'ลำคอ (Neck)',
+  trunk: 'ลำตัว (Trunk)',
+  balance: 'การทรงตัว (Balance)',
+};
+
+/** Formats a Date object as YYYY-MM-DD in the local calendar timezone. */
+export function formatLocalIsoDate(date: Date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function buildExerciseSummary(
+  exerciseId: string,
+  catalog: readonly ExerciseConfig[],
+  fallbackById?: Map<string, TodayPrescribedExerciseItem>,
+  modpackId?: string,
+): { nameTh: string; nameEn: string; targetJoint: string; holdSec: number; activityType: ActivityType } {
+  const found = catalog.find((c) => c.id === exerciseId);
+  if (found) {
+    return {
+      nameTh: found.name.th,
+      nameEn: found.name.en,
+      targetJoint: JOINT_GROUP_LABELS[found.detection.jointGroup] ?? found.detection.jointGroup,
+      holdSec: found.detection.holdSec ?? 3,
+      activityType:
+        exerciseId.includes('card') || exerciseId.includes('minigame') ? 'minigame' : 'physio_exercise',
+    };
+  }
+  const existingMeta = fallbackById?.get(exerciseId);
+  if (existingMeta) {
+    return {
+      nameTh: existingMeta.nameTh,
+      nameEn: existingMeta.nameEn,
+      targetJoint: existingMeta.targetJoint,
+      holdSec: existingMeta.holdSec,
+      activityType: existingMeta.activityType,
+    };
+  }
+  const isMinigame =
+    !exerciseId ||
+    exerciseId.includes('card') ||
+    exerciseId.includes('minigame') ||
+    Boolean(modpackId && !exerciseId);
+  return {
+    nameTh: isMinigame ? 'มินิเกมฝึกสมอง (การ์ดกายภาพ)' : exerciseId || 'ท่ากายภาพบำบัดตามนัด',
+    nameEn: isMinigame ? 'Physical Therapy Card Mini-Game' : exerciseId || 'Prescribed Rehab Exercise',
+    targetJoint: isMinigame ? 'สมองและระบบประสาทสั่งการ (Cognitive & Hand)' : 'ร่างกายส่วนที่ฟื้นฟู (Targeted Rehab)',
+    holdSec: 3,
+    activityType: isMinigame ? 'minigame' : 'physio_exercise',
+  };
+}
+
+/**
+ * Resolves whether a patient has an appointment today (`todayIso`) and the list of
+ * prescribed exercises/poses to perform today. Explicit `rehabSchedules` entries take
+ * precedence over generic weekly course templates so rest days are never misreported.
+ */
+export function resolveTodayPatientSchedule(input: {
+  rehabSchedules?: readonly RehabScheduleItem[];
+  todayRoutine?: DailyScheduleDay | null;
+  nextAppointmentDate?: string;
+  exercisesCatalog?: readonly ExerciseConfig[];
+  serverTodayExercises?: readonly TodayPrescribedExerciseItem[];
+  now?: Date;
+}): {
+  todayIso: string;
+  hasAppointmentToday: boolean;
+  todayExercises: TodayPrescribedExerciseItem[];
+} {
+  const todayIso = formatLocalIsoDate(input.now ?? new Date());
+  const catalog =
+    input.exercisesCatalog && input.exercisesCatalog.length > 0 ? input.exercisesCatalog : CLINICAL_EXERCISES;
+  const fallbackById = new Map<string, TodayPrescribedExerciseItem>();
+  for (const item of input.serverTodayExercises ?? []) {
+    fallbackById.set(item.exerciseId, item);
+  }
+
+  const schedules = input.rehabSchedules ?? [];
+  if (schedules.length > 0) {
+    const scheduledToday = schedules.filter(
+      (item) => item.scheduledDate === todayIso && (item.status === 'ACTIVE' || item.status === 'COMPLETED'),
+    );
+    if (scheduledToday.length === 0) {
+      return { todayIso, hasAppointmentToday: false, todayExercises: [] };
+    }
+    const todayExercises: TodayPrescribedExerciseItem[] = scheduledToday.map((item) => {
+      const exId = item.exerciseId || item.modpackId || 'minigame';
+      const meta = buildExerciseSummary(exId, catalog, fallbackById, item.modpackId);
+      return {
+        id: item.id,
+        exerciseId: exId,
+        nameTh: meta.nameTh,
+        nameEn: meta.nameEn,
+        targetJoint: meta.targetJoint,
+        activityType: meta.activityType,
+        sets: item.sets,
+        reps: item.reps,
+        holdSec: meta.holdSec,
+        status: item.status === 'COMPLETED' ? 'COMPLETED' : 'ACTIVE',
+        notes: item.notes,
+      };
+    });
+    return { todayIso, hasAppointmentToday: true, todayExercises };
+  }
+
+  const routine = input.todayRoutine;
+  if (routine?.dayType === 'training' && (routine.exercises ?? []).length > 0) {
+    const todayExercises: TodayPrescribedExerciseItem[] = routine.exercises.map((item, idx) => {
+      const meta = buildExerciseSummary(item.exerciseId, catalog, fallbackById);
+      return {
+        id: `routine-${routine.dayIndex}-${item.exerciseId}-${idx}`,
+        exerciseId: item.exerciseId,
+        nameTh: meta.nameTh,
+        nameEn: meta.nameEn,
+        targetJoint: meta.targetJoint,
+        activityType: meta.activityType,
+        sets: item.sets,
+        reps: item.reps,
+        holdSec: item.holdSec ?? meta.holdSec,
+        status: 'ACTIVE',
+      };
+    });
+    return { todayIso, hasAppointmentToday: true, todayExercises };
+  }
+
+  if (routine?.dayType === 'training' && input.nextAppointmentDate === todayIso) {
+    return {
+      todayIso,
+      hasAppointmentToday: true,
+      todayExercises: [
+        {
+          id: 'routine-today-default',
+          exerciseId: 'ex-card-01',
+          nameTh: routine.label || 'มินิเกมฝึกสมอง (การ์ดกายภาพ)',
+          nameEn: 'Physical Therapy Card Mini-Game',
+          targetJoint: 'สมองและระบบประสาทสั่งการ (Cognitive & Hand)',
+          activityType: routine.activityType ?? 'minigame',
+          sets: 1,
+          reps: 10,
+          holdSec: 3,
+          status: 'ACTIVE',
+        },
+      ],
+    };
+  }
+
+  return { todayIso, hasAppointmentToday: false, todayExercises: [] };
 }
 
 import { createCloudRouter } from './cloudRouter';

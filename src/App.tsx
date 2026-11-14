@@ -2,7 +2,11 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { AdminPortalApp } from '@apps/admin';
 import { KioskPortalApp, PhysicalCardGame, type PhysicalCardGameSummary } from '@apps/kiosk';
 import { PtPortalApp } from '@apps/pt';
-import { DrTechCaresApiClient, type UserAccount } from '@drtechcares/api-client';
+import {
+  DrTechCaresApiClient,
+  resolveTodayPatientSchedule,
+  type UserAccount,
+} from '@drtechcares/api-client';
 import { PatientPersonalPortal } from './PatientPersonalPortal';
 import { StaffLoginModalOrPage, type StaffAuthIntent } from './StaffLoginModalOrPage';
 import {
@@ -31,6 +35,11 @@ export function App() {
   const [staffModalIntent, setStaffModalIntent] = useState<StaffAuthIntent | null>(null);
   const [pendingAutoOpenEnroll, setPendingAutoOpenEnroll] = useState(false);
   const [authenticatedPatient, setAuthenticatedPatient] = useState<KioskLoginSuccessPayload | null>(null);
+  const [allowRestDayPractice, setAllowRestDayPractice] = useState(false);
+
+  useEffect(() => {
+    setAllowRestDayPractice(false);
+  }, [authenticatedPatient]);
 
   const apiClient = useMemo(
     () =>
@@ -112,6 +121,25 @@ export function App() {
     }
 
     if (kioskMode === 'training' && authenticatedPatient) {
+      const todaySchedule = resolveTodayPatientSchedule({
+        rehabSchedules: authenticatedPatient.rehabSchedules,
+        todayRoutine: authenticatedPatient.todayRoutine,
+        nextAppointmentDate: authenticatedPatient.patient.nextAppointmentDate,
+        serverTodayExercises: authenticatedPatient.todayExercises,
+      });
+      const hasAppointmentToday =
+        authenticatedPatient.hasAppointmentToday ?? todaySchedule.hasAppointmentToday;
+      const todayExercises =
+        authenticatedPatient.todayExercises && authenticatedPatient.todayExercises.length > 0
+          ? authenticatedPatient.todayExercises
+          : todaySchedule.todayExercises;
+
+      const handleExitToLogin = () => {
+        setAllowRestDayPractice(false);
+        setAuthenticatedPatient(null);
+        setKioskMode('login');
+      };
+
       const saveTrainingSession = async (summary: PhysicalCardGameSummary) => {
         const accuracy = Math.round((summary.correct / Math.max(1, summary.total)) * 100);
         try {
@@ -134,6 +162,66 @@ export function App() {
         }
       };
 
+      if (!hasAppointmentToday && !allowRestDayPractice) {
+        return (
+          <div className="min-h-screen w-full bg-slate-950 flex flex-col">
+            <div className="bg-[#042924] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs border-b border-emerald-500/20">
+              <div className="flex items-center gap-2 font-bold">
+                <span className="px-2.5 py-0.5 rounded-full bg-amber-500/25 text-amber-200">
+                  Rest Day • วันพักผ่อน
+                </span>
+                <span>
+                  ผู้ป่วย: {authenticatedPatient.patient.fullName} (HN: {authenticatedPatient.patient.hn})
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleExitToLogin}
+                className="rounded-xl border border-emerald-400/50 bg-emerald-600/25 px-3 py-1.5 font-bold text-emerald-100 hover:bg-emerald-600/40 cursor-pointer"
+              >
+                ← กลับหน้าสแกนใบหน้า (Kiosk Login)
+              </button>
+            </div>
+            <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
+              <div className="w-full max-w-xl rounded-3xl bg-white border-2 border-amber-300 shadow-2xl p-6 sm:p-8 text-center">
+                <div className="mx-auto w-16 h-16 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center text-3xl mb-4">
+                  🌿
+                </div>
+                <span className="inline-block px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-xs font-extrabold mb-3">
+                  ตรวจสอบตารางนัดหมายวันนี้ ({todaySchedule.todayIso})
+                </span>
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900">
+                  วันนี้คือวันพักผ่อนของคุณ ( {authenticatedPatient.patient.fullName} )
+                </h1>
+                <p className="text-sm text-slate-600 mt-3 leading-relaxed">
+                  ระบบตรวจสอบตารางนัดหมายแล้ว วันนี้ ({todaySchedule.todayIso}) ไม่มีรายการนัดทำกายภาพบำบัดของคุณ
+                  <br />
+                  <span className="font-semibold text-emerald-700">
+                    นัดถัดไป: {authenticatedPatient.patient.nextAppointmentDate || '-'}
+                  </span>
+                </p>
+                <div className="mt-6 flex flex-col gap-3">
+                  <button
+                    type="button"
+                    onClick={handleExitToLogin}
+                    className="w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg cursor-pointer"
+                  >
+                    ← กลับหน้าสแกนใบหน้า (Kiosk Login)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAllowRestDayPractice(true)}
+                    className="w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 text-xs font-bold cursor-pointer"
+                  >
+                    ฝึกทบทวนเบาๆ ด้วยตัวเอง (ไม่บังคับ)
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
       return (
         <div className="min-h-screen w-full bg-slate-950 flex flex-col">
           <div className="bg-[#042924] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs border-b border-emerald-500/20">
@@ -155,24 +243,66 @@ export function App() {
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setAuthenticatedPatient(null);
-                  setKioskMode('login');
-                }}
+                onClick={handleExitToLogin}
                 className="rounded-xl border border-emerald-400/50 bg-emerald-600/25 px-3 py-1.5 font-bold text-emerald-100 hover:bg-emerald-600/40 cursor-pointer"
               >
                 ← กลับหน้าสแกนใบหน้า (Kiosk Login)
               </button>
             </div>
           </div>
-          <div className="flex-1 flex flex-col p-3 sm:p-5">
+          <div className="flex-1 flex flex-col gap-4 p-3 sm:p-5">
+            {todayExercises.length > 0 ? (
+              <div className="rounded-2xl border border-emerald-500/30 bg-slate-900/90 p-4 text-white shadow-lg">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">📅</span>
+                    <h2 className="text-sm sm:text-base font-extrabold text-emerald-300">
+                      รายการท่าทางที่ต้องทำของวันนี้ ({todaySchedule.todayIso}) — {todayExercises.length} รายการ
+                    </h2>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setKioskMode('rehab')}
+                    className="rounded-xl bg-sky-500 hover:bg-sky-400 px-3 py-1.5 text-xs font-extrabold text-slate-950 cursor-pointer"
+                  >
+                    เริ่มฝึกกายภาพผ่านกล้อง AI (Smart Rehab Telemetry) ➔
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                  {todayExercises.map((item) => (
+                    <div
+                      key={item.id}
+                      className="rounded-xl border border-emerald-500/25 bg-slate-950/70 p-3 flex items-center justify-between gap-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-xs sm:text-sm font-bold text-white truncate">{item.nameTh}</p>
+                        <p className="text-[11px] text-emerald-300/90 mt-0.5">{item.targetJoint}</p>
+                      </div>
+                      <span className="shrink-0 rounded-lg bg-emerald-500/20 border border-emerald-400/30 px-2.5 py-1 text-xs font-extrabold text-emerald-200">
+                        {item.sets} เซต × {item.reps} ครั้ง
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-amber-200 text-xs flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  🌿 วันนี้คือวันพักผ่อนของคุณ ( {authenticatedPatient.patient.fullName} ) — โหมดฝึกทบทวนด้วยตัวเอง (ไม่มีนัดบังคับวันนี้)
+                </span>
+                <button
+                  type="button"
+                  onClick={handleExitToLogin}
+                  className="underline font-bold text-amber-100 cursor-pointer"
+                >
+                  กลับหน้าสแกนใบหน้า
+                </button>
+              </div>
+            )}
             <PhysicalCardGame
               patientName={`${authenticatedPatient.patient.fullName} (${authenticatedPatient.patient.hn})`}
               onSessionFinished={saveTrainingSession}
-              onComplete={() => {
-                setAuthenticatedPatient(null);
-                setKioskMode('login');
-              }}
+              onComplete={handleExitToLogin}
             />
           </div>
         </div>

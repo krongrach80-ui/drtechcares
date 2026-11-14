@@ -6,12 +6,15 @@ import {
   PoseLandmarker,
   type NormalizedLandmark,
 } from '@mediapipe/tasks-vision';
-import type {
-  DailyScheduleDay,
-  DrTechCaresApiClient,
-  KioskFaceVerifyResponse,
-  PatientBiometricIndexEntry,
-  PatientRecord,
+import {
+  resolveTodayPatientSchedule,
+  type DailyScheduleDay,
+  type DrTechCaresApiClient,
+  type KioskFaceVerifyResponse,
+  type PatientBiometricIndexEntry,
+  type PatientRecord,
+  type RehabScheduleItem,
+  type TodayPrescribedExerciseItem,
 } from '@drtechcares/api-client';
 import {
   TemporalBiometricMatcher,
@@ -62,6 +65,42 @@ export interface KioskLoginSuccessPayload {
   };
   todayRoutine: DailyScheduleDay | null;
   confidencePercent: number;
+  rehabSchedules?: RehabScheduleItem[];
+  todayExercises?: TodayPrescribedExerciseItem[];
+  hasAppointmentToday?: boolean;
+}
+
+function buildKioskLoginSuccessPayload(params: {
+  patient: {
+    id: string;
+    hn: string;
+    fullName: string;
+    nextAppointmentDate: string;
+  };
+  confidencePercent: number;
+  todayRoutine?: DailyScheduleDay | null;
+  rehabSchedules?: RehabScheduleItem[];
+  serverTodayExercises?: TodayPrescribedExerciseItem[];
+  indexEntry?: PatientBiometricIndexEntry | null;
+}): KioskLoginSuccessPayload {
+  const resolvedSchedules = params.rehabSchedules ?? params.indexEntry?.rehabSchedules;
+  const resolvedRoutine = params.todayRoutine ?? params.indexEntry?.todayRoutine ?? null;
+  const serverExercises = params.serverTodayExercises ?? params.indexEntry?.todayExercises;
+  const todaySchedule = resolveTodayPatientSchedule({
+    rehabSchedules: resolvedSchedules,
+    todayRoutine: resolvedRoutine,
+    nextAppointmentDate: params.patient.nextAppointmentDate,
+    serverTodayExercises: serverExercises,
+    now: new Date(),
+  });
+  return {
+    patient: params.patient,
+    todayRoutine: resolvedRoutine,
+    confidencePercent: params.confidencePercent,
+    rehabSchedules: resolvedSchedules ?? [],
+    todayExercises: todaySchedule.todayExercises,
+    hasAppointmentToday: todaySchedule.hasAppointmentToday,
+  };
 }
 
 interface KioskBiometricLoginViewProps {
@@ -551,6 +590,9 @@ export function KioskBiometricLoginView({
           try {
             const verifiedPayload = verifiedModalPayloadRef.current;
             if (verifiedPayload) {
+              if (!verifiedPayload.hasAppointmentToday) {
+                return;
+              }
               if (confirmVideoRef.current && stream) {
                 if (confirmVideoRef.current.srcObject !== stream) {
                   confirmVideoRef.current.srcObject = stream;
@@ -786,11 +828,17 @@ export function KioskBiometricLoginView({
                         setLastVerifyResult(verifyRes);
                         if (verifyRes.matched && verifyRes.patient) {
                           didAuthenticate = true;
-                          const nextPayload: KioskLoginSuccessPayload = {
+                          const matchedEntry = biometricIndexRef.current.find(
+                            (e) => e.patientId === verifyRes.patient?.id,
+                          );
+                          const nextPayload = buildKioskLoginSuccessPayload({
                             patient: verifyRes.patient,
                             todayRoutine: verifyRes.todayRoutine ?? null,
                             confidencePercent: Math.max(verifyRes.confidencePercent, matchedConf),
-                          };
+                            rehabSchedules: verifyRes.rehabSchedules,
+                            serverTodayExercises: verifyRes.todayExercises,
+                            indexEntry: matchedEntry,
+                          });
                           verifiedModalPayloadRef.current = nextPayload;
                           setVerifiedModalPayload(nextPayload);
                           return;
@@ -852,11 +900,17 @@ export function KioskBiometricLoginView({
                         setLastVerifyResult(verifyRes);
                         if (verifyRes.matched && verifyRes.patient) {
                           didFinishRound = true;
-                          const nextPayload: KioskLoginSuccessPayload = {
+                          const matchedEntry = biometricIndexRef.current.find(
+                            (e) => e.patientId === verifyRes.patient?.id,
+                          );
+                          const nextPayload = buildKioskLoginSuccessPayload({
                             patient: verifyRes.patient,
                             todayRoutine: verifyRes.todayRoutine ?? null,
                             confidencePercent: verifyRes.confidencePercent,
-                          };
+                            rehabSchedules: verifyRes.rehabSchedules,
+                            serverTodayExercises: verifyRes.todayExercises,
+                            indexEntry: matchedEntry,
+                          });
                           verifiedModalPayloadRef.current = nextPayload;
                           setVerifiedModalPayload(nextPayload);
                           return;
@@ -870,7 +924,7 @@ export function KioskBiometricLoginView({
                         if (localFallback.matched && localFallback.bestCandidate) {
                           const fbCand = localFallback.bestCandidate;
                           didFinishRound = true;
-                          const nextPayload: KioskLoginSuccessPayload = {
+                          const nextPayload = buildKioskLoginSuccessPayload({
                             patient: {
                               id: fbCand.patientId,
                               hn: fbCand.hn,
@@ -879,7 +933,10 @@ export function KioskBiometricLoginView({
                             },
                             todayRoutine: fbCand.todayRoutine ?? null,
                             confidencePercent: localFallback.confidencePercent,
-                          };
+                            rehabSchedules: fbCand.rehabSchedules,
+                            serverTodayExercises: fbCand.todayExercises,
+                            indexEntry: fbCand,
+                          });
                           verifiedModalPayloadRef.current = nextPayload;
                           setVerifiedModalPayload(nextPayload);
                           return;
@@ -956,16 +1013,19 @@ export function KioskBiometricLoginView({
         );
       });
       if (matched) {
-        const pinPayload: KioskLoginSuccessPayload = {
+        const matchedEntry = biometricIndexRef.current.find((e) => e.patientId === matched.id);
+        const pinPayload = buildKioskLoginSuccessPayload({
           patient: {
             id: matched.id,
             hn: matched.hn,
             fullName: matched.fullName,
             nextAppointmentDate: matched.nextAppointmentDate,
           },
-          todayRoutine: null,
+          todayRoutine: matchedEntry?.todayRoutine ?? null,
           confidencePercent: 100,
-        };
+          rehabSchedules: matched.rehabSchedules,
+          indexEntry: matchedEntry,
+        });
         setShowPinModal(false);
         setCameraPaused(false);
         setPinDigits('');
@@ -1553,7 +1613,7 @@ export function KioskBiometricLoginView({
       {/* Verified Patient Confirmation Modal */}
       {verifiedModalPayload && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="w-full max-w-md rounded-3xl bg-white border-2 border-emerald-500/50 shadow-2xl p-6 text-center">
+          <div className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-3xl bg-white border-2 border-emerald-500/50 shadow-2xl p-6 text-center">
             <div className="w-20 h-20 rounded-full mx-auto bg-gradient-to-tr from-emerald-500 to-teal-400 text-white flex items-center justify-center text-3xl font-black shadow-lg mb-3">
               {verifiedModalPayload.patient.fullName?.[0] || 'P'}
             </div>
@@ -1565,78 +1625,151 @@ export function KioskBiometricLoginView({
               {verifiedModalPayload.patient.fullName}
             </h2>
             <p className="text-xs text-slate-500 mt-1 font-mono">
-              HN: {verifiedModalPayload.patient.hn} • นัดถัดไป: {verifiedModalPayload.patient.nextAppointmentDate}
+              HN: {verifiedModalPayload.patient.hn} • นัดถัดไป: {verifiedModalPayload.patient.nextAppointmentDate || '-'}
             </p>
 
-            {/* Compact Live Camera Preview for 2-Hand Start Gesture */}
-            <div className="mt-4 relative mx-auto w-full h-36 rounded-2xl overflow-hidden bg-slate-900 border-2 border-emerald-400/50 shadow-inner">
-              <video
-                ref={confirmVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className="w-full h-full object-cover"
-                style={{ transform: 'scaleX(-1)' }}
-              />
-              {!twoHandCameraReady && (
-                <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80 text-xs font-bold text-slate-300">
-                  กำลังเปิดกล้องตรวจจับการยก 2 มือ...
+            {verifiedModalPayload.hasAppointmentToday ? (
+              <>
+                {/* Today's Prescribed Exercise Schedule */}
+                <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3.5 text-left">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <p className="text-xs font-extrabold text-emerald-900">
+                      📅 รายการท่าทางที่ต้องทำของวันนี้ ({verifiedModalPayload.todayExercises?.length ?? 0} รายการ)
+                    </p>
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-600 text-white text-[10px] font-bold">
+                      มีนัดวันนี้
+                    </span>
+                  </div>
+                  <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                    {(verifiedModalPayload.todayExercises ?? []).map((item) => (
+                      <div
+                        key={item.id}
+                        className="rounded-xl bg-white border border-emerald-100 px-3 py-2 flex items-center justify-between gap-2 shadow-sm"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-slate-900 truncate">{item.nameTh}</p>
+                          <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                            <span className="inline-block px-2 py-0.5 rounded-md bg-teal-50 text-teal-800 border border-teal-200 text-[10px] font-semibold">
+                              {item.targetJoint}
+                            </span>
+                            {item.status === 'COMPLETED' && (
+                              <span className="inline-block px-2 py-0.5 rounded-md bg-sky-50 text-sky-700 border border-sky-200 text-[10px] font-bold">
+                                ทำครบแล้ว
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <span className="shrink-0 text-xs font-extrabold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
+                          {item.sets} เซต × {item.reps} ครั้ง
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              )}
-              <div className="absolute inset-x-2 bottom-2 flex items-center justify-center">
-                <span
-                  className={`px-3 py-1 rounded-full text-[11px] font-extrabold backdrop-blur border shadow ${
-                    twoHandDetected
-                      ? 'bg-emerald-500/90 text-white border-emerald-200 animate-pulse'
-                      : 'bg-slate-950/75 text-emerald-200 border-emerald-500/40'
-                  }`}
-                >
-                  {twoHandDetected
-                    ? `👐 ตรวจพบยก 2 มือแล้ว! ค้างไว้ ${Math.round(twoHandProgress * 100)}%`
-                    : !twoHandDetectorReady
-                      ? '⏳ กำลังเตรียม AI ตรวจจับการยก 2 มือ...'
-                      : '📷 ชู 2 มือขึ้นหน้ากล้องค้างไว้เพื่อเริ่มฝึกอัตโนมัติ'}
-                </span>
-              </div>
-            </div>
 
-            <div className="mt-4 flex flex-col gap-2.5">
-              <button
-                type="button"
-                onClick={() => onPatientAuthenticated(verifiedModalPayload)}
-                className="relative overflow-hidden w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg cursor-pointer"
-              >
-                {twoHandProgress > 0 && (
-                  <span
-                    className="pointer-events-none absolute inset-y-0 left-0 bg-emerald-300/35 transition-[width] duration-75"
-                    style={{ width: `${Math.round(twoHandProgress * 100)}%` }}
+                {/* Compact Live Camera Preview for 2-Hand Start Gesture */}
+                <div className="mt-4 relative mx-auto w-full h-36 rounded-2xl overflow-hidden bg-slate-900 border-2 border-emerald-400/50 shadow-inner">
+                  <video
+                    ref={confirmVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full h-full object-cover"
+                    style={{ transform: 'scaleX(-1)' }}
                   />
-                )}
-                <span className="relative z-10 flex items-center justify-center gap-2">
-                  <span>
-                    {twoHandProgress > 0
-                      ? `👐 ยก 2 มือค้างไว้... (${Math.round(twoHandProgress * 100)}%)`
-                      : '👐 ยก 2 มือขึ้น หรือ กดที่นี่เพื่อเริ่มฝึก ➔'}
-                  </span>
-                </span>
-              </button>
-              {onOpenTelemetrySimulator && (
-                <button
-                  type="button"
-                  onClick={onOpenTelemetrySimulator}
-                  className="w-full py-2.5 px-4 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-800 text-xs font-bold cursor-pointer"
-                >
-                  เปิดหน้าจอวิเคราะห์ชีวกลศาสตร์ (Smart Rehab Telemetry)
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={handleRestartScan}
-                className="text-xs text-slate-500 hover:text-slate-700 underline py-1 cursor-pointer"
-              >
-                ไม่ใช่ฉัน (สแกนใหม่)
-              </button>
-            </div>
+                  {!twoHandCameraReady && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80 text-xs font-bold text-slate-300">
+                      กำลังเปิดกล้องตรวจจับการยก 2 มือ...
+                    </div>
+                  )}
+                  <div className="absolute inset-x-2 bottom-2 flex items-center justify-center">
+                    <span
+                      className={`px-3 py-1 rounded-full text-[11px] font-extrabold backdrop-blur border shadow ${
+                        twoHandDetected
+                          ? 'bg-emerald-500/90 text-white border-emerald-200 animate-pulse'
+                          : 'bg-slate-950/75 text-emerald-200 border-emerald-500/40'
+                      }`}
+                    >
+                      {twoHandDetected
+                        ? `👐 ตรวจพบยก 2 มือแล้ว! ค้างไว้ ${Math.round(twoHandProgress * 100)}%`
+                        : !twoHandDetectorReady
+                          ? '⏳ กำลังเตรียม AI ตรวจจับการยก 2 มือ...'
+                          : '📷 ชู 2 มือขึ้นหน้ากล้องค้างไว้เพื่อเริ่มฝึกอัตโนมัติ'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex flex-col gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => onPatientAuthenticated(verifiedModalPayload)}
+                    className="relative overflow-hidden w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg cursor-pointer"
+                  >
+                    {twoHandProgress > 0 && (
+                      <span
+                        className="pointer-events-none absolute inset-y-0 left-0 bg-emerald-300/35 transition-[width] duration-75"
+                        style={{ width: `${Math.round(twoHandProgress * 100)}%` }}
+                      />
+                    )}
+                    <span className="relative z-10 flex items-center justify-center gap-2">
+                      <span>
+                        {twoHandProgress > 0
+                          ? `👐 ยก 2 มือค้างไว้... (${Math.round(twoHandProgress * 100)}%)`
+                          : '👐 ยก 2 มือขึ้น หรือ กดที่นี่เพื่อเริ่มฝึก ➔'}
+                      </span>
+                    </span>
+                  </button>
+                  {onOpenTelemetrySimulator && (
+                    <button
+                      type="button"
+                      onClick={onOpenTelemetrySimulator}
+                      className="w-full py-2.5 px-4 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-800 text-xs font-bold cursor-pointer"
+                    >
+                      เปิดหน้าจอวิเคราะห์ชีวกลศาสตร์ (Smart Rehab Telemetry)
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleRestartScan}
+                    className="text-xs text-slate-500 hover:text-slate-700 underline py-1 cursor-pointer"
+                  >
+                    ไม่ใช่ฉัน (สแกนใหม่)
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Rest Day Banner When Patient Has No Appointment Today */}
+                <div className="mt-4 rounded-2xl border-2 border-amber-300 bg-amber-50 p-4 text-center shadow-sm">
+                  <div className="inline-flex items-center justify-center w-11 h-11 rounded-full bg-amber-100 text-amber-700 text-xl mb-2">
+                    🌿
+                  </div>
+                  <p className="text-base font-extrabold text-amber-950">
+                    วันนี้คือวันพักผ่อนของคุณ ( {verifiedModalPayload.patient.fullName} )
+                  </p>
+                  <p className="text-xs text-amber-800 mt-1.5 leading-relaxed">
+                    ไม่มีตารางนัดกายภาพบำบัดในวันนี้ • นัดถัดไป: {verifiedModalPayload.patient.nextAppointmentDate || '-'}
+                  </p>
+                </div>
+
+                <div className="mt-4 flex flex-col gap-2.5">
+                  <button
+                    type="button"
+                    onClick={handleRestartScan}
+                    className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg cursor-pointer"
+                  >
+                    ตกลง / กลับหน้าสแกนใบหน้า
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onPatientAuthenticated(verifiedModalPayload)}
+                    className="w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 text-xs font-bold cursor-pointer"
+                  >
+                    เข้าดูหน้าต่างข้อมูล / ทบทวนท่าฝึก
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
