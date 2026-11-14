@@ -8,6 +8,11 @@ import {
   synthesizeDemoPayload,
 } from '../hooks/useKioskSocket';
 import { measureLiveJointAngleAndTilt } from '../components/SmartRehabKioskUI';
+import {
+  VOICE_COACH_LANGUAGES,
+  pickSpeechVoice,
+  translateVoiceCoachText,
+} from '../components/VoiceCoachBanner';
 
 function createNeutralLandmarks(
   overrides: Partial<Record<number, NormalizedLandmark>> = {},
@@ -250,6 +255,80 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(wrongLimbPayload.telemetry_analysis.compensation_detected).toContain('WRONG_LIMB');
     expect(wrongLimbPayload.rep_counter.valid_reps).toBe(3);
     expect(wrongLimbPayload.tts_voice_th).toContain(getPrescribedLimbPromptTh('right_shoulder').requiredLimbTh);
+  });
+
+  it('translates AI Voice Coach prompts across 3 languages (Thai, English, Chinese) and matches voices', () => {
+    expect(VOICE_COACH_LANGUAGES.map((l) => l.id)).toEqual(['th', 'en', 'zh']);
+    expect(VOICE_COACH_LANGUAGES.map((l) => l.bcp47)).toEqual(['th-TH', 'en-US', 'zh-CN']);
+
+    // 1. Dynamic target ROM angle
+    const romTh = 'ค่อยๆ เคลื่อนไหวไปยังเป้าหมาย 145 องศาครับ';
+    expect(translateVoiceCoachText(romTh, 'th')).toBe(romTh);
+    expect(translateVoiceCoachText(romTh, 'en')).toBe(
+      'Slowly move toward the target angle of 145 degrees.',
+    );
+    expect(translateVoiceCoachText(romTh, 'zh')).toBe('请慢慢移动至目标角度 145 度。');
+
+    // 2. Dynamic hold phase seconds
+    const holdTh = 'ดีมากครับ ค้างท่าไว้ 3 วินาที';
+    expect(translateVoiceCoachText(holdTh, 'en')).toBe('Very good! Hold this position for 3 seconds.');
+    expect(translateVoiceCoachText(holdTh, 'zh')).toBe('很好！请保持这个姿势 3 秒。');
+
+    // 3. Dynamic rep completion and set finished with patient name
+    const repTh = 'ดีมากครับ ครบ 5 ครั้ง ค่อยๆ ผ่อนแขนลงช้าๆ ครับ';
+    expect(translateVoiceCoachText(repTh, 'en')).toContain('5 reps completed');
+    expect(translateVoiceCoachText(repTh, 'zh')).toContain('5 次');
+
+    const setTh = 'เยี่ยมมากครับ คุณสมชาย ใจดี ฝึกครบ 10 ครั้ง จบเซ็ตแล้วครับ';
+    expect(translateVoiceCoachText(setTh, 'en')).toBe(
+      'Great job, คุณสมชาย ใจดี! You completed 10 reps and finished the set.',
+    );
+    expect(translateVoiceCoachText(setTh, 'zh')).toBe(
+      '太棒了，คุณสมชาย ใจดี！已完成全部 10 次，本组训练结束。',
+    );
+
+    // 4. Static alerts: wrong limb, trunk lean, multi-person, impostor, emergency halt
+    const wrongRightArm = getPrescribedLimbPromptTh('right_shoulder').voicePromptTh;
+    expect(translateVoiceCoachText(wrongRightArm, 'en')).toContain('right arm');
+    expect(translateVoiceCoachText(wrongRightArm, 'zh')).toContain('右臂');
+
+    expect(translateVoiceCoachText('ยืดตัวตรงครับ อย่าเอียงลำตัวช่วยยกนะครับ', 'en')).toContain(
+      'back straight',
+    );
+    expect(translateVoiceCoachText('ยืดตัวตรงครับ อย่าเอียงลำตัวช่วยยกนะครับ', 'zh')).toContain(
+      '挺直背部',
+    );
+
+    expect(
+      translateVoiceCoachText(
+        'ตรวจพบมีบุคคลอยู่หลายคนในเฟรม กรุณาให้คนไข้ยืนหน้ากล้องเพียงลำพัง ระบบจึงจะนับรอบการฝึกต่อครับ',
+        'zh',
+      ),
+    ).toContain('检测到多人');
+    expect(
+      translateVoiceCoachText(
+        'คุณไม่ใช่คนไข้ที่ลงทะเบียนไว้ ระบบจะไม่นับรอบการฝึก กรุณาให้คนไข้ตัวจริงเข้าฝึกครับ',
+        'en',
+      ),
+    ).toContain('Identity mismatch');
+    expect(translateVoiceCoachText('หยุดพักทันทีนะครับ ระบบกำลังเรียกเจ้าหน้าที่ดูแล', 'en')).toContain(
+      'stop and rest immediately',
+    );
+    expect(translateVoiceCoachText('หยุดพักทันทีนะครับ ระบบกำลังเรียกเจ้าหน้าที่ดูแล', 'zh')).toContain(
+      '停止并休息',
+    );
+
+    // 5. Voice selection prioritizes matching language tags
+    const fakeVoices = [
+      { lang: 'en-GB', name: 'English UK' },
+      { lang: 'en-US', name: 'Microsoft Aria Natural - English (United States)' },
+      { lang: 'th-TH', name: 'Microsoft Premwadee Natural - Thai (Thailand)' },
+      { lang: 'zh-CN', name: 'Microsoft Xiaoxiao Natural - Chinese (Simplified)' },
+    ] as unknown as SpeechSynthesisVoice[];
+
+    expect(pickSpeechVoice(fakeVoices, 'th-TH')?.lang).toBe('th-TH');
+    expect(pickSpeechVoice(fakeVoices, 'en-US')?.lang).toBe('en-US');
+    expect(pickSpeechVoice(fakeVoices, 'zh-CN')?.lang).toBe('zh-CN');
   });
 });
 

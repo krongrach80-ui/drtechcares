@@ -1,7 +1,444 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Volume2, VolumeX } from 'lucide-react';
+import { Languages, RotateCcw, Volume2, VolumeX } from 'lucide-react';
 import type { HighlightColor, KioskState } from '../hooks/useKioskSocket';
+
+export type VoiceCoachLanguage = 'th' | 'en' | 'zh';
+
+export interface VoiceCoachLanguageOption {
+  id: VoiceCoachLanguage;
+  numberLabel: string;
+  shortLabel: string;
+  badgeTitle: string;
+  bcp47: string;
+  statusReady: string;
+  statusSpeaking: string;
+  statusMuted: string;
+  replayTitle: string;
+  muteLabel: string;
+  unmuteLabel: string;
+  defaultPrompt: string;
+}
+
+export const VOICE_COACH_LANGUAGES: readonly VoiceCoachLanguageOption[] = [
+  {
+    id: 'th',
+    numberLabel: '1. ไทย',
+    shortLabel: 'TH ไทย',
+    badgeTitle: 'TH AI VOICE COACH',
+    bcp47: 'th-TH',
+    statusReady: 'พร้อมแนะนำ',
+    statusSpeaking: 'กำลังพูด',
+    statusMuted: 'ปิดเสียง',
+    replayTitle: 'พูดซ้ำข้อความนี้',
+    muteLabel: 'เสียงปกติ',
+    unmuteLabel: 'เปิดเสียง AI',
+    defaultPrompt: 'พร้อมเริ่มฝึกกายภาพบำบัดครับ',
+  },
+  {
+    id: 'en',
+    numberLabel: '2. อังกฤษ (EN)',
+    shortLabel: 'EN',
+    badgeTitle: 'EN AI VOICE COACH',
+    bcp47: 'en-US',
+    statusReady: 'READY',
+    statusSpeaking: 'SPEAKING',
+    statusMuted: 'MUTED',
+    replayTitle: 'Replay voice prompt',
+    muteLabel: 'Voice On',
+    unmuteLabel: 'Unmute AI',
+    defaultPrompt: 'Ready to begin your physical therapy session.',
+  },
+  {
+    id: 'zh',
+    numberLabel: '3. จีน (中文)',
+    shortLabel: '中文',
+    badgeTitle: 'CN AI VOICE COACH',
+    bcp47: 'zh-CN',
+    statusReady: '准备就绪',
+    statusSpeaking: '正在播报',
+    statusMuted: '已静音',
+    replayTitle: '重播语音提示',
+    muteLabel: '语音正常',
+    unmuteLabel: '开启语音',
+    defaultPrompt: '已准备好开始物理治疗训练。',
+  },
+];
+
+const VOICE_LANG_STORAGE_KEY = 'drtechcares_voice_coach_lang_v1';
+
+const EXACT_TRANSLATIONS: Record<string, { en: string; zh: string }> = {
+  'พร้อมเริ่มฝึกกายภาพบำบัดครับ': {
+    en: 'Ready to begin your physical therapy session.',
+    zh: '已准备好开始物理治疗训练。',
+  },
+  'ตรวจพบมีบุคคลอยู่หลายคนในเฟรม กรุณาให้คนไข้ยืนหน้ากล้องเพียงลำพัง ระบบจึงจะนับรอบการฝึกต่อครับ': {
+    en: 'Multiple people detected in frame. Please stand alone in front of the camera to continue counting reps.',
+    zh: '画面中检测到多人，请让患者单独站在镜头前，系统才会继续计数。',
+  },
+  'คุณไม่ใช่คนไข้ที่ลงทะเบียนไว้ ระบบจะไม่นับรอบการฝึก กรุณาให้คนไข้ตัวจริงเข้าฝึกครับ': {
+    en: 'Identity mismatch detected. Rep counting is paused. Please ask the registered patient to step in front of the camera.',
+    zh: '检测到非本人患者，系统已暂停计数，请由本人患者站在镜头前训练。',
+  },
+  'ยืนยันตัวตนคนไข้ถูกต้องแล้ว สามารถฝึกต่อได้ครับ': {
+    en: 'Patient identity verified. You may continue your exercise.',
+    zh: '患者身份验证成功，可以继续训练。',
+  },
+  'หยุดพักทันทีนะครับ ระบบกำลังเรียกเจ้าหน้าที่ดูแล': {
+    en: 'Please stop and rest immediately. The system is calling clinical staff to assist you.',
+    zh: '请立即停止并休息，系统正在呼叫医护人员前来协助。',
+  },
+  'หยุดพักก่อนนะครับ เจ้าหน้าที่กำลังเข้าไปดูแลครับ': {
+    en: 'Please pause and rest for a moment. Clinical staff are coming to assist you.',
+    zh: '请先停下来休息，医护人员正在赶来协助您。',
+  },
+  'หยุดพักทันทีนะครับ รู้สึกเจ็บตรงไหนไหมครับ': {
+    en: 'Please stop and rest immediately. Do you feel any pain or discomfort?',
+    zh: '请立即停止并休息，您感觉哪里疼痛或不舒服吗？',
+  },
+  'กรุณามองตรงเข้ากรอบวงกลม เพื่อยืนยันตัวตนอัตโนมัติครับ': {
+    en: 'Please look straight into the circle frame for automatic face verification.',
+    zh: '请直视圆框内摄像头，以进行自动人脸身份验证。',
+  },
+  'กรุณาสแกนใบหน้ายืนยันตัวตนก่อนเริ่มฝึกครับ': {
+    en: 'Please scan your face to verify your identity before starting your exercise.',
+    zh: '开始训练前，请先进行人脸扫描验证身份。',
+  },
+  'กรุณามองกล้องเพื่อยืนยันตัวตนด้วยใบหน้า': {
+    en: 'Please look at the camera for face verification.',
+    zh: '请看向摄像头进行人脸身份验证。',
+  },
+  'ยืนยันตัวตนสำเร็จ กรุณาถอยหลังเล็กน้อยให้อยู่ระยะ 2 เมตรครับ': {
+    en: 'Identity verified. Please step back slightly to stand at a 2-meter distance.',
+    zh: '身份验证成功，请稍微向后退一步，保持在两米距离。',
+  },
+  'ยืนยันตัวตนสำเร็จ กรุณาเดินเข้ามาอีกนิดให้อยู่ระยะ 2 เมตรครับ': {
+    en: 'Identity verified. Please step forward slightly to stand at a 2-meter distance.',
+    zh: '身份验证成功，请向前走近一点，保持在两米距离。',
+  },
+  'ยืนยันตัวตนสำเร็จ ระยะยืนเหมาะสม พร้อมเริ่มฝึกได้เลยครับ': {
+    en: 'Identity verified and distance is optimal. You are ready to start.',
+    zh: '身份验证成功，站立距离合适，现在可以开始训练。',
+  },
+  'ถอยหลังอีกนิด ให้อยู่ระยะ 2 เมตรครับ': {
+    en: 'Please step back slightly to stay at 2 meters.',
+    zh: '请向后退一点，保持在两米距离。',
+  },
+  'เดินเข้ามาอีกนิด ให้อยู่ระยะ 2 เมตรครับ': {
+    en: 'Please step forward slightly to stay at 2 meters.',
+    zh: '请向前走近一点，保持在两米距离。',
+  },
+  'ขยับให้เห็นทั้งตัวและเท้าในกรอบครับ': {
+    en: 'Please adjust your position so your full body and feet are visible in frame.',
+    zh: '请调整站位，让全身和双脚都清晰显示在画面框内。',
+  },
+  'เก่งมากครับ ฝึกครบเซ็ตเรียบร้อยแล้ว': {
+    en: 'Excellent work! You have completed the entire exercise set.',
+    zh: '非常棒！您已顺利完成整组训练。',
+  },
+  'กรุณายกแขนซ้ายนะครับ ท่านี้ต้องทำด้วยแขนซ้าย ระบบจะไม่นับรอบหากยกแขนขวาครับ': {
+    en: 'Please raise your left arm. This exercise must be performed with your left arm; raising your right arm will not be counted.',
+    zh: '请抬起左臂。此动作必须使用左臂，抬起右臂将不计入次数。',
+  },
+  'กรุณายกแขนขวานะครับ ท่านี้ต้องทำด้วยแขนขวา ระบบจะไม่นับรอบหากยกแขนซ้ายครับ': {
+    en: 'Please raise your right arm. This exercise must be performed with your right arm; raising your left arm will not be counted.',
+    zh: '请抬起右臂。此动作必须使用右臂，抬起左臂将不计入次数。',
+  },
+  'กรุณาทำท่าด้วยขาซ้ายตามที่กำหนดนะครับ': {
+    en: 'Please perform this exercise using your left leg as prescribed.',
+    zh: '请按照规定使用左腿完成此动作。',
+  },
+  'กรุณาทำท่าตามข้างที่กำหนดนะครับ': {
+    en: 'Please perform this exercise using the prescribed side.',
+    zh: '请按照处方规定的一侧肢体完成此动作。',
+  },
+  'ยืดตัวตรงครับ อย่าเอียงลำตัวช่วยยกนะครับ': {
+    en: 'Keep your back straight. Please do not lean your torso to assist the lift.',
+    zh: '请挺直背部，不要倾斜身体借力抬起。',
+  },
+  'ยืดตัวตรงครับ อย่าเอียงตัวช่วยยก': {
+    en: 'Keep your back straight and avoid leaning to the side.',
+    zh: '请挺直身体，不要向一侧倾斜借力。',
+  },
+  'ผ่อนไหล่ลงครับ อย่ายักไหล่ขึ้น': {
+    en: 'Relax your shoulders down and avoid shrugging.',
+    zh: '请放松肩膀向下沉，不要耸肩。',
+  },
+  'ระวังเข่าบิดเข้าด้านในครับ': {
+    en: 'Keep your knees aligned and avoid letting them cave inward.',
+    zh: '请注意膝盖保持对齐，不要向内扣。',
+  },
+  'ค่อยๆ เคลื่อนไหวช้าๆ อย่างควบคุมครับ': {
+    en: 'Please move slowly and keep the motion under control.',
+    zh: '请缓慢且平稳地控制动作。',
+  },
+  'กดส้นเท้าติดพื้นไว้ครับ': {
+    en: 'Keep your heels pressed flat on the floor.',
+    zh: '请将脚后跟稳稳踩在地面上。',
+  },
+  'รักษาระดับสะโพกให้ตรงครับ': {
+    en: 'Keep your hips level and steady.',
+    zh: '请保持髋部水平稳定。',
+  },
+  'ยกให้สุดมุมแล้วค้างไว้สักครู่นะครับ': {
+    en: 'Lift all the way to the target angle and hold briefly.',
+    zh: '请抬至目标角度并保持片刻。',
+  },
+  'แขน/ขาตกลงเล็กน้อย กรุณายกกลับเข้าสู่เป้าหมาย': {
+    en: 'Your limb lowered slightly. Please raise it back up to the target zone.',
+    zh: '手臂或腿部略微下降，请重新抬回目标位置。',
+  },
+  'ค่อยๆ ยกขึ้นจนถึงเส้นเป้าหมายครับ': {
+    en: 'Slowly lift up until you reach the target line.',
+    zh: '请慢慢抬起直至达到目标线。',
+  },
+  'ปรับท่าทางให้ถูกต้อง': {
+    en: 'Please adjust your posture into proper alignment.',
+    zh: '请将姿势调整回正确位置。',
+  },
+  'รักษาท่าทางให้ตรงระหว่างค้างท่า': {
+    en: 'Maintain straight posture while holding the position.',
+    zh: '在保持动作期间，请维持身体挺直。',
+  },
+};
+
+function translateExerciseNameIfKnown(
+  nameTh: string,
+  lang: Exclude<VoiceCoachLanguage, 'th'>,
+): string {
+  const map: Record<string, { en: string; zh: string }> = {
+    'กางแขนขวาด้านข้าง': { en: 'Right Shoulder Abduction', zh: '右肩外展动作' },
+    'กางแขนซ้ายด้านข้าง': { en: 'Left Shoulder Abduction', zh: '左肩外展动作' },
+    'ยกแขนตรงไปด้านหน้า (ขวา)': { en: 'Right Shoulder Flexion', zh: '右肩前屈上举动作' },
+    'ยกแขนตรงไปด้านหน้า (ซ้าย)': { en: 'Left Shoulder Flexion', zh: '左肩前屈上举动作' },
+    'ลุกนั่งฝึกกล้ามเนื้อขา': { en: 'Chair Squat Exercise', zh: '坐站腿部康复动作' },
+  };
+  const trimmed = nameTh.trim();
+  const hit = map[trimmed];
+  if (hit) return hit[lang];
+  return lang === 'en' ? 'the prescribed exercise' : '康复训练动作';
+}
+
+export function translateVoiceCoachText(
+  textTh: string,
+  lang: VoiceCoachLanguage,
+): string {
+  const clean = textTh.trim();
+  const langOption =
+    VOICE_COACH_LANGUAGES.find((item) => item.id === lang) ?? VOICE_COACH_LANGUAGES[0];
+
+  if (!clean) {
+    return langOption.defaultPrompt;
+  }
+  if (lang === 'th') {
+    return clean;
+  }
+
+  const exact = EXACT_TRANSLATIONS[clean];
+  if (exact) {
+    return exact[lang];
+  }
+
+  // Dynamic pattern 1: Target ROM instruction
+  // e.g. "ค่อยๆ เคลื่อนไหวไปยังเป้าหมาย 145 องศาครับ"
+  const romTargetMatch = clean.match(/^ค่อยๆ\s*เคลื่อนไหวไปยังเป้าหมาย\s+(\d+(?:\.\d+)?)\s+องศาครับ$/);
+  if (romTargetMatch) {
+    const deg = romTargetMatch[1];
+    return lang === 'en'
+      ? `Slowly move toward the target angle of ${deg} degrees.`
+      : `请慢慢移动至目标角度 ${deg} 度。`;
+  }
+
+  // Dynamic pattern 2: Hold phase countdown
+  // e.g. "ดีมากครับ ค้างท่าไว้ 3 วินาที" | "ดีมากครับ! ค้างท่าไว้ 3 วินาที" | "ค้างท่าไว้ 2.1 วินาที"
+  const holdMatch = clean.match(
+    /^(?:ดีมากครับ!?\s*)?ค้าง(?:ท่า)?ไว้\s+([\d.]+)\s+วินาที$/,
+  );
+  if (holdMatch) {
+    const sec = holdMatch[1];
+    const hasPraise = clean.startsWith('ดีมากครับ');
+    if (lang === 'en') {
+      const unit = Number(sec) === 1 ? 'second' : 'seconds';
+      return hasPraise
+        ? `Very good! Hold this position for ${sec} ${unit}.`
+        : `Hold this position for ${sec} ${unit}.`;
+    }
+    return hasPraise ? `很好！请保持这个姿势 ${sec} 秒。` : `请保持这个姿势 ${sec} 秒。`;
+  }
+
+  // Dynamic pattern 3: Set finished with patient name & target reps
+  // e.g. "เยี่ยมมากครับ คุณสมชาย ใจดี ฝึกครบ 10 ครั้ง จบเซ็ตแล้วครับ"
+  const setFinishedNamedMatch = clean.match(
+    /^เยี่ยมมากครับ\s+(.+?)\s+ฝึกครบ\s+(\d+)\s+ครั้ง\s+จบเซ็ตแล้ว(?:ครับ)?$/,
+  );
+  if (setFinishedNamedMatch) {
+    const [, patientName, reps] = setFinishedNamedMatch;
+    return lang === 'en'
+      ? `Great job, ${patientName}! You completed ${reps} reps and finished the set.`
+      : `太棒了，${patientName}！已完成全部 ${reps} 次，本组训练结束。`;
+  }
+
+  // Dynamic pattern 4: Set finished without patient name
+  // e.g. "เยี่ยมมากครับ ครบ 10 ครั้ง จบเซ็ตแล้ว" | "เก่งมากครับ! ครบ 10 ครั้งแล้ว ค่อยๆ วางลงครับ"
+  const setFinishedShortMatch = clean.match(
+    /^(?:เยี่ยมมากครับ|เก่งมากครับ)!?\s*(?:ฝึก)?ครบ\s+(\d+)\s+ครั้ง(?:แล้ว)?(?:\s+(?:จบเซ็ตแล้ว|ค่อยๆ\s*วางลง)(?:ครับ)?)?$/,
+  );
+  if (setFinishedShortMatch) {
+    const reps = setFinishedShortMatch[1];
+    return lang === 'en'
+      ? `Great job! All ${reps} reps are complete. You finished the set.`
+      : `太棒了！已完成全部 ${reps} 次，本组训练结束。`;
+  }
+
+  // Dynamic pattern 5: Rep completed
+  // e.g. "ดีมากครับ ครบ 4 ครั้ง ค่อยๆ ผ่อนแขนลงช้าๆ ครับ"
+  const repCompletedMatch = clean.match(
+    /^ดีมากครับ\s+ครบ\s+(\d+)\s+ครั้ง\s+ค่อยๆ\s*ผ่อนแขนลงช้าๆ\s*ครับ$/,
+  );
+  if (repCompletedMatch) {
+    const reps = repCompletedMatch[1];
+    return lang === 'en'
+      ? `Very good! ${reps} reps completed. Slowly lower your arm back down.`
+      : `很好！已完成 ${reps} 次，请慢慢将手臂放下来。`;
+  }
+
+  // Dynamic pattern 6: Edge Vision fractional rep progress
+  // e.g. "เยี่ยมมากครับ ครบ 4/10 ครั้ง ค่อยๆ กลับสู่ท่าพัก"
+  const repFractionMatch = clean.match(
+    /^เยี่ยมมากครับ\s+ครบ\s+(\d+)\s*\/\s*(\d+)\s+ครั้ง(?:\s+(.+))?$/,
+  );
+  if (repFractionMatch) {
+    const [, done, total] = repFractionMatch;
+    return lang === 'en'
+      ? `Great! Completed ${done} of ${total} reps. Slowly return to resting position.`
+      : `太棒了！已完成第 ${done} 次，共 ${total} 次，请慢慢回到起始姿势。`;
+  }
+
+  // Dynamic pattern 7: "ผ่อนลงช้าๆ ครบ 3 ครั้งแล้วครับ" / "ดีมากครับ ค้างไว้ครบ 3 ครั้งครับ"
+  const lowerSlowMatch = clean.match(/^ผ่อนลงช้าๆ\s+ครบ\s+(\d+)\s+ครั้งแล้วครับ$/);
+  if (lowerSlowMatch) {
+    const reps = lowerSlowMatch[1];
+    return lang === 'en'
+      ? `Lower slowly. You have completed ${reps} reps.`
+      : `请慢慢放下，您已完成 ${reps} 次。`;
+  }
+
+  const holdCompletedMatch = clean.match(/^ดีมากครับ\s+ค้างไว้ครบ\s+(\d+)\s+ครั้งครับ$/);
+  if (holdCompletedMatch) {
+    const reps = holdCompletedMatch[1];
+    return lang === 'en'
+      ? `Very good! Hold completed for ${reps} reps.`
+      : `很好！已完成保持动作共 ${reps} 次。`;
+  }
+
+  // Dynamic pattern 8: Edge Vision rep start / exercise start / ROM live readout
+  const nextRepMatch = clean.match(/^เริ่มครั้งที่\s+(\d+)\s+ได้เลยครับ$/);
+  if (nextRepMatch) {
+    const repNum = nextRepMatch[1];
+    return lang === 'en'
+      ? `You may begin repetition number ${repNum}.`
+      : `现在可以开始第 ${repNum} 次训练。`;
+  }
+
+  const startExerciseMatch = clean.match(/^เริ่มท่า\s+(.+?)\s+ช้าๆ\s*ให้ถึงเป้าหมายครับ$/);
+  if (startExerciseMatch) {
+    const exName = translateExerciseNameIfKnown(startExerciseMatch[1], lang);
+    return lang === 'en'
+      ? `Begin ${exName} slowly until you reach the target angle.`
+      : `请缓慢开始${exName}，直至达到目标角度。`;
+  }
+
+  const setFinishedNamedExerciseMatch = clean.match(
+    /^ยินดีด้วยครับ\s+ทำท่า\s+(.+?)\s+ครบทั้งเซตแล้ว$/,
+  );
+  if (setFinishedNamedExerciseMatch) {
+    const exName = translateExerciseNameIfKnown(setFinishedNamedExerciseMatch[1], lang);
+    return lang === 'en'
+      ? `Congratulations! You have completed the full set of ${exName}.`
+      : `恭喜您！已完成整组${exName}。`;
+  }
+
+  const angleProgressMatch = clean.match(/^(.+?)\s*\((\d+)°\s*\/\s*(\d+)°\)$/);
+  if (angleProgressMatch) {
+    const [, rawName, currentDeg, targetDeg] = angleProgressMatch;
+    const exName = translateExerciseNameIfKnown(rawName, lang);
+    return lang === 'en'
+      ? `${exName}: ${currentDeg} degrees out of ${targetDeg} degrees.`
+      : `${exName}：当前 ${currentDeg} 度，目标 ${targetDeg} 度。`;
+  }
+
+  // Fallback keyword checks for slight multi-person / wrong-limb / impostor variations
+  if (clean.includes('หลายคน') || clean.includes('เพียงลำพัง')) {
+    return EXACT_TRANSLATIONS[
+      'ตรวจพบมีบุคคลอยู่หลายคนในเฟรม กรุณาให้คนไข้ยืนหน้ากล้องเพียงลำพัง ระบบจึงจะนับรอบการฝึกต่อครับ'
+    ][lang];
+  }
+  if (clean.includes('ไม่ใช่คนไข้ที่ลงทะเบียน') || clean.includes('ตัวจริง')) {
+    return EXACT_TRANSLATIONS[
+      'คุณไม่ใช่คนไข้ที่ลงทะเบียนไว้ ระบบจะไม่นับรอบการฝึก กรุณาให้คนไข้ตัวจริงเข้าฝึกครับ'
+    ][lang];
+  }
+  if (clean.includes('แขนซ้าย') && clean.includes('ไม่นับรอบ')) {
+    return EXACT_TRANSLATIONS[
+      'กรุณายกแขนซ้ายนะครับ ท่านี้ต้องทำด้วยแขนซ้าย ระบบจะไม่นับรอบหากยกแขนขวาครับ'
+    ][lang];
+  }
+  if (clean.includes('แขนขวา') && clean.includes('ไม่นับรอบ')) {
+    return EXACT_TRANSLATIONS[
+      'กรุณายกแขนขวานะครับ ท่านี้ต้องทำด้วยแขนขวา ระบบจะไม่นับรอบหากยกแขนซ้ายครับ'
+    ][lang];
+  }
+
+  return clean;
+}
+
+export function pickSpeechVoice(
+  voices: readonly SpeechSynthesisVoice[],
+  bcp47: string,
+): SpeechSynthesisVoice | null {
+  if (!voices.length) return null;
+  const targetLower = bcp47.toLowerCase();
+  const langPrefix = targetLower.split('-')[0];
+
+  const exactMatches = voices.filter((v) => v.lang.toLowerCase() === targetLower);
+  const chineseExtraMatches =
+    langPrefix === 'zh'
+      ? voices.filter((v) => {
+          const l = v.lang.toLowerCase();
+          return l.startsWith('zh') || l.startsWith('cmn') || v.name.toLowerCase().includes('chinese');
+        })
+      : [];
+  const prefixMatches = voices.filter((v) => v.lang.toLowerCase().startsWith(langPrefix));
+
+  const candidates =
+    exactMatches.length > 0
+      ? exactMatches
+      : chineseExtraMatches.length > 0
+        ? chineseExtraMatches
+        : prefixMatches;
+
+  if (!candidates.length) return null;
+
+  // Prefer natural neural/cloud or Microsoft/Google voices when available
+  const preferred = candidates.find((v) => {
+    const name = v.name.toLowerCase();
+    return name.includes('natural') || name.includes('google') || name.includes('microsoft');
+  });
+  return preferred ?? candidates[0];
+}
+
+function readStoredVoiceLang(): VoiceCoachLanguage {
+  if (typeof window === 'undefined') return 'th';
+  try {
+    const raw = window.localStorage.getItem(VOICE_LANG_STORAGE_KEY);
+    if (raw === 'th' || raw === 'en' || raw === 'zh') {
+      return raw;
+    }
+  } catch {
+    // Ignore storage restriction
+  }
+  return 'th';
+}
 
 interface VoiceCoachBannerProps {
   textTh: string;
@@ -18,69 +455,237 @@ export function VoiceCoachBanner({
   muted,
   onToggleMute,
 }: VoiceCoachBannerProps) {
+  const [voiceLang, setVoiceLang] = useState<VoiceCoachLanguage>(() => readStoredVoiceLang());
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const lastSpokenTextRef = useRef<string>('');
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+
+  const isSpeakingRef = useRef<boolean>(false);
+  const lastSpokenKeyRef = useRef<string>('');
   const lastSpokenAtRef = useRef<number>(0);
+  const pendingSpeakTimerRef = useRef<number | null>(null);
+  const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const blockedByAutoplayRef = useRef<boolean>(false);
 
-  const speakNow = (text: string) => {
-    if (muted || !text.trim() || typeof window === 'undefined' || !('speechSynthesis' in window)) {
-      return;
-    }
-    try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'th-TH';
-      utterance.rate = 0.96;
-      utterance.pitch = 1.0;
-      utterance.onstart = () => setIsSpeaking(true);
-      utterance.onend = () => setIsSpeaking(false);
-      utterance.onerror = () => setIsSpeaking(false);
-      window.speechSynthesis.speak(utterance);
-    } catch {
-      setIsSpeaking(false);
-    }
-  };
+  const langOption = useMemo(
+    () => VOICE_COACH_LANGUAGES.find((item) => item.id === voiceLang) ?? VOICE_COACH_LANGUAGES[0],
+    [voiceLang],
+  );
 
+  const displayedText = useMemo(
+    () => translateVoiceCoachText(textTh, voiceLang),
+    [textTh, voiceLang],
+  );
+
+  const latestDisplayRef = useRef<{ text: string; lang: VoiceCoachLanguage; muted: boolean }>({
+    text: displayedText,
+    lang: voiceLang,
+    muted,
+  });
+  latestDisplayRef.current = { text: displayedText, lang: voiceLang, muted };
+
+  const clearPendingSpeakTimer = useCallback(() => {
+    if (pendingSpeakTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(pendingSpeakTimerRef.current);
+      pendingSpeakTimerRef.current = null;
+    }
+  }, []);
+
+  // Load & subscribe to available OS/browser SpeechSynthesis voices
   useEffect(() => {
-    const clean = textTh.trim();
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    const synth = window.speechSynthesis;
+    const syncVoices = () => {
+      try {
+        const list = synth.getVoices();
+        if (list.length > 0) {
+          setVoices(list);
+        }
+      } catch {
+        // Ignore unavailable voice list
+      }
+    };
+    syncVoices();
+    if ('addEventListener' in synth) {
+      synth.addEventListener('voiceschanged', syncVoices);
+      return () => synth.removeEventListener('voiceschanged', syncVoices);
+    }
+    return undefined;
+  }, []);
+
+  const speakNow = useCallback(
+    (text: string, targetLang: VoiceCoachLanguage) => {
+      const clean = text.trim();
+      if (
+        muted ||
+        !clean ||
+        typeof window === 'undefined' ||
+        !('speechSynthesis' in window) ||
+        typeof SpeechSynthesisUtterance === 'undefined'
+      ) {
+        return;
+      }
+
+      const targetOpt =
+        VOICE_COACH_LANGUAGES.find((item) => item.id === targetLang) ?? VOICE_COACH_LANGUAGES[0];
+
+      try {
+        const synth = window.speechSynthesis;
+        if (synth.speaking || synth.pending) {
+          synth.cancel();
+        }
+        if (synth.paused) {
+          synth.resume();
+        }
+
+        const currentVoices = voices.length > 0 ? voices : synth.getVoices();
+        const matchedVoice = pickSpeechVoice(currentVoices, targetOpt.bcp47);
+
+        const utterance = new SpeechSynthesisUtterance(clean);
+        utterance.lang = matchedVoice?.lang || targetOpt.bcp47;
+        if (matchedVoice) {
+          utterance.voice = matchedVoice;
+        }
+        utterance.rate = targetLang === 'th' ? 0.96 : targetLang === 'zh' ? 0.98 : 1.0;
+        utterance.pitch = 1.0;
+        utterance.volume = 1.0;
+
+        activeUtteranceRef.current = utterance;
+
+        utterance.onstart = () => {
+          blockedByAutoplayRef.current = false;
+          isSpeakingRef.current = true;
+          setIsSpeaking(true);
+        };
+        utterance.onend = () => {
+          if (activeUtteranceRef.current === utterance) {
+            activeUtteranceRef.current = null;
+          }
+          isSpeakingRef.current = false;
+          setIsSpeaking(false);
+        };
+        utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
+          if (activeUtteranceRef.current === utterance) {
+            activeUtteranceRef.current = null;
+          }
+          isSpeakingRef.current = false;
+          setIsSpeaking(false);
+          if (event?.error === 'not-allowed') {
+            blockedByAutoplayRef.current = true;
+          }
+        };
+
+        lastSpokenKeyRef.current = `${targetLang}:${clean}`;
+        lastSpokenAtRef.current = Date.now();
+        isSpeakingRef.current = true;
+        setIsSpeaking(true);
+        synth.speak(utterance);
+      } catch {
+        isSpeakingRef.current = false;
+        setIsSpeaking(false);
+      }
+    },
+    [muted, voices],
+  );
+
+  // Unlock / resume Web Speech API and replay blocked prompt on first user interaction
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    const unlockSpeech = () => {
+      try {
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+        if (blockedByAutoplayRef.current && !latestDisplayRef.current.muted) {
+          blockedByAutoplayRef.current = false;
+          speakNow(latestDisplayRef.current.text, latestDisplayRef.current.lang);
+        }
+      } catch {
+        // Ignore
+      }
+    };
+    window.addEventListener('pointerdown', unlockSpeech, { passive: true });
+    window.addEventListener('keydown', unlockSpeech, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlockSpeech);
+      window.removeEventListener('keydown', unlockSpeech);
+    };
+  }, [speakNow]);
+
+  // Speak automatically whenever the displayed coaching message or language changes
+  useEffect(() => {
+    clearPendingSpeakTimer();
+    const clean = displayedText.trim();
+
     if (!clean || muted) {
       if (muted && typeof window !== 'undefined' && 'speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
+      isSpeakingRef.current = false;
       setIsSpeaking(false);
       return;
     }
 
     const now = Date.now();
+    const messageKey = `${voiceLang}:${clean}`;
     const isEmergency = kioskState === 'EMERGENCY_HALT';
-    const isSame = clean === lastSpokenTextRef.current;
+    const isSame = messageKey === lastSpokenKeyRef.current;
 
     if (!isEmergency && isSame && now - lastSpokenAtRef.current < 3500) {
       return;
     }
-    if (!isEmergency && now - lastSpokenAtRef.current < 900) {
-      return;
+
+    // Avoid cutting off an active HOLD_PHASE sentence mid-word on 1s countdown updates
+    if (!isEmergency && kioskState === 'HOLD_PHASE' && isSpeakingRef.current && lastSpokenKeyRef.current.startsWith(`${voiceLang}:`)) {
+      const waitMs = Math.max(250, 1200 - (now - lastSpokenAtRef.current));
+      pendingSpeakTimerRef.current = window.setTimeout(() => {
+        pendingSpeakTimerRef.current = null;
+        if (!isSpeakingRef.current) {
+          speakNow(clean, voiceLang);
+        }
+      }, waitMs);
+      return clearPendingSpeakTimer;
     }
 
-    lastSpokenTextRef.current = clean;
-    lastSpokenAtRef.current = now;
-    speakNow(clean);
-  }, [textTh, kioskState, muted]);
+    const elapsed = now - lastSpokenAtRef.current;
+    const minCooldownMs = 650;
+    if (!isEmergency && elapsed < minCooldownMs) {
+      pendingSpeakTimerRef.current = window.setTimeout(() => {
+        pendingSpeakTimerRef.current = null;
+        speakNow(clean, voiceLang);
+      }, Math.max(50, minCooldownMs - elapsed));
+      return clearPendingSpeakTimer;
+    }
 
-  // Throttle 4-second voice reminders while paused by Multi-Person / Impostor guard
+    speakNow(clean, voiceLang);
+    return clearPendingSpeakTimer;
+  }, [displayedText, voiceLang, kioskState, muted, speakNow, clearPendingSpeakTimer]);
+
+  // Repeat warning every 4s while paused by Multi-Person / Impostor guard
   useEffect(() => {
     if (muted || (kioskState !== 'PAUSED_MULTI_PERSON' && kioskState !== 'PAUSED_IMPOSTOR')) {
       return;
     }
     const timer = window.setInterval(() => {
-      const clean = textTh.trim();
+      const clean = displayedText.trim();
       if (!clean) return;
-      lastSpokenTextRef.current = clean;
-      lastSpokenAtRef.current = Date.now();
-      speakNow(clean);
+      speakNow(clean, voiceLang);
     }, 4000);
     return () => window.clearInterval(timer);
-  }, [kioskState, textTh, muted]);
+  }, [kioskState, displayedText, voiceLang, muted, speakNow]);
+
+  const handleSelectLanguage = (nextLang: VoiceCoachLanguage) => {
+    setVoiceLang(nextLang);
+    try {
+      window.localStorage.setItem(VOICE_LANG_STORAGE_KEY, nextLang);
+    } catch {
+      // Ignore storage failure
+    }
+    clearPendingSpeakTimer();
+    const nextText = translateVoiceCoachText(textTh, nextLang);
+    if (!muted) {
+      speakNow(nextText, nextLang);
+    }
+  };
 
   const badgeTone =
     highlightColor === 'RED'
@@ -101,14 +706,14 @@ export function VoiceCoachBanner({
   return (
     <motion.div
       layout
-      className="glass-card mx-auto flex w-full items-center justify-between gap-4 rounded-full px-4 py-3 sm:px-6"
+      className="glass-card mx-auto flex w-full flex-col justify-between gap-3 rounded-3xl px-4 py-3 sm:flex-row sm:items-center sm:gap-4 sm:rounded-[32px] sm:px-6"
     >
-      <div className="flex min-w-0 items-center gap-4">
-        {/* Animated 5-bar AI Voice Coach Soundwave */}
+      <div className="flex min-w-0 flex-1 items-center gap-3.5 sm:gap-4">
+        {/* Animated 5-bar AI Voice Coach Soundwave + Replay Trigger */}
         <button
           type="button"
-          onClick={() => speakNow(textTh)}
-          title="ฟังเสียงแนะนำซ้ำ"
+          onClick={() => speakNow(displayedText, voiceLang)}
+          title={langOption.replayTitle}
           className={`flex h-12 w-14 shrink-0 items-center justify-center gap-1 rounded-full shadow-md transition-transform active:scale-95 ${badgeTone}`}
         >
           {bars.map((peak, idx) => (
@@ -130,32 +735,86 @@ export function VoiceCoachBanner({
           ))}
         </button>
 
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#0284C7]">
-            <span>Thai AI Voice Coach</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#0284C7]">
+            <span>{langOption.badgeTitle}</span>
             <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] text-[#0F4C81]">
-              {muted ? 'ปิดเสียง' : isSpeaking ? 'กำลังพูด' : 'พร้อมแนะนำ'}
+              {muted
+                ? langOption.statusMuted
+                : isSpeaking
+                  ? langOption.statusSpeaking
+                  : langOption.statusReady}
             </span>
           </div>
-          <p className={`truncate text-lg font-bold sm:text-2xl ${textTone}`}>
-            “{textTh || 'พร้อมเริ่มฝึกกายภาพบำบัดครับ'}”
+          <p className={`line-clamp-2 text-lg font-bold leading-snug sm:text-xl ${textTone}`}>
+            “{displayedText}”
           </p>
+          {voiceLang !== 'th' && textTh.trim() && (
+            <p className="truncate text-xs font-medium text-slate-500">
+              ไทย: {textTh.trim()}
+            </p>
+          )}
         </div>
       </div>
 
-      <button
-        type="button"
-        onClick={onToggleMute}
-        className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-4 py-2.5 text-sm font-bold transition-colors ${
-          muted
-            ? 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-200'
-            : 'border-sky-200 bg-sky-50 text-[#0F4C81] hover:bg-sky-100'
-        }`}
-      >
-        {muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5 text-[#0284C7]" />}
-        <span className="hidden sm:inline">{muted ? 'เปิดเสียง AI' : 'เสียงปกติ'}</span>
-      </button>
+      {/* 3-Language Selector + Replay + Mute/Unmute Controls */}
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <div
+          role="group"
+          aria-label="เลือกภาษาเสียงพากย์ AI Coach"
+          className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-white/90 p-1 shadow-sm"
+        >
+          <Languages className="ml-1.5 mr-0.5 hidden h-4 w-4 text-[#0284C7] md:block" />
+          {VOICE_COACH_LANGUAGES.map((opt) => {
+            const active = opt.id === voiceLang;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                aria-pressed={active}
+                onClick={() => handleSelectLanguage(opt.id)}
+                className={`rounded-full px-2.5 py-1.5 text-xs font-extrabold transition-all sm:px-3 ${
+                  active
+                    ? 'bg-[#0284C7] text-white shadow-sm'
+                    : 'text-[#0F4C81] hover:bg-sky-50'
+                }`}
+              >
+                {opt.numberLabel}
+              </button>
+            );
+          })}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => speakNow(displayedText, voiceLang)}
+          disabled={muted}
+          title={langOption.replayTitle}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-sky-200 bg-white px-3 py-2 text-xs font-bold text-[#0F4C81] transition-colors hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <RotateCcw className="h-4 w-4 text-[#0284C7]" />
+          <span className="hidden lg:inline">พูดซ้ำ</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={onToggleMute}
+          className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3.5 py-2 text-sm font-bold transition-colors sm:px-4 ${
+            muted
+              ? 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-200'
+              : 'border-sky-200 bg-sky-50 text-[#0F4C81] hover:bg-sky-100'
+          }`}
+        >
+          {muted ? (
+            <VolumeX className="h-5 w-5" />
+          ) : (
+            <Volume2 className="h-5 w-5 text-[#0284C7]" />
+          )}
+          <span className="hidden md:inline">
+            {muted ? langOption.unmuteLabel : langOption.muteLabel}
+          </span>
+        </button>
+      </div>
     </motion.div>
   );
 }
-
