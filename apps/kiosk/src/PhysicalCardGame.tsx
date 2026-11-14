@@ -946,15 +946,15 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
       {/* Main Full-Size Vertical Stack: Top = Question & Illustration, Middle = Camera, Bottom = Answer Buttons */}
       <div className="flex-1 flex flex-col justify-between gap-4 sm:gap-5 min-h-0">
         {/* Top Card: Question & Illustration */}
-        <div className="flex-[1] min-h-[240px] sm:min-h-[290px] rounded-3xl bg-gradient-to-br from-indigo-50 via-white to-sky-50 p-6 sm:p-8 border-2 border-indigo-200 text-center flex flex-col items-center justify-center shadow-sm">
+        <div className="flex-[1] min-h-[360px] sm:min-h-[450px] rounded-3xl bg-gradient-to-br from-indigo-50 via-white to-sky-50 p-6 sm:p-8 border-2 border-indigo-200 text-center flex flex-col items-center justify-center shadow-sm">
           <span className="mg-category-pill inline-block rounded-full bg-white px-7 py-2.5 font-black uppercase tracking-wider text-indigo-700 shadow-sm border-2 border-indigo-100">
             {currentCard.category.replace('_', ' ')}
           </span>
-          <div className="my-3 sm:my-4 flex items-center justify-center">
+          <div className="my-3 sm:my-5 flex items-center justify-center w-full">
             <img
               src={currentCard.imageUrl}
               alt={pick(currentCard.subject)}
-              className="h-36 w-56 sm:h-44 sm:w-72 rounded-2xl object-contain shadow-md border-2 border-indigo-100 bg-white p-1.5"
+              className="h-64 w-[26rem] sm:h-80 sm:w-[34rem] lg:h-[22rem] lg:w-[38rem] max-w-full rounded-3xl object-contain shadow-lg border-4 border-indigo-200 bg-white p-2"
               draggable={false}
             />
           </div>

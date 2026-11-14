@@ -1012,9 +1012,11 @@ export function buildCardIllustrationDataUri(spec: CardIllustrationSpec): string
     <rect width="400" height="260" rx="26" fill="url(#${gid})"/>
     <circle cx="48" cy="44" r="56" fill="${theme.pillBg}" opacity="0.35"/>
     <circle cx="356" cy="222" r="64" fill="${theme.pillBg}" opacity="0.35"/>
-    <rect x="330" y="14" width="54" height="24" rx="12" fill="${theme.pillBg}"/>
-    <text x="357" y="30" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="800" fill="${theme.accent}">${badge}</text>
-    ${art}
+    <rect x="318" y="12" width="68" height="28" rx="14" fill="${theme.pillBg}"/>
+    <text x="352" y="31" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="900" fill="${theme.accent}">${badge}</text>
+    <g transform="translate(200,142) scale(1.26) translate(-200,-142)">
+      ${art}
+    </g>
   </svg>`;
 
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
