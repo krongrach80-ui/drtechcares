@@ -29,6 +29,7 @@ export function App() {
   );
   const [kioskMode, setKioskMode] = useState<KioskViewMode>('login');
   const [staffModalIntent, setStaffModalIntent] = useState<StaffAuthIntent | null>(null);
+  const [pendingAutoOpenEnroll, setPendingAutoOpenEnroll] = useState(false);
   const [authenticatedPatient, setAuthenticatedPatient] = useState<KioskLoginSuccessPayload | null>(null);
 
   const apiClient = useMemo(
@@ -154,11 +155,7 @@ export function App() {
           }}
           onOpenStaffLogin={() => setStaffModalIntent('general')}
           onOpenStaffRegister={() => {
-            if (currentUser && (currentUser.role === 'pt' || currentUser.role === 'super_admin')) {
-              navigate('/pt');
-            } else {
-              setStaffModalIntent('kiosk_patient_registration');
-            }
+            setStaffModalIntent('kiosk_patient_registration');
           }}
           onOpenTelemetrySimulator={() => setKioskMode('rehab')}
         />
@@ -173,7 +170,8 @@ export function App() {
               setStaffModalIntent(null);
               setCurrentUser(user);
               if (intent === 'kiosk_patient_registration' && (user.role === 'pt' || user.role === 'super_admin')) {
-                navigate('/pt');
+                setPendingAutoOpenEnroll(true);
+                navigate(user.role === 'super_admin' ? '/admin' : '/pt');
               } else if (user.role === 'super_admin') {
                 navigate('/admin');
               } else if (user.role === 'pt') {
@@ -240,6 +238,8 @@ export function App() {
         currentUser={currentUser}
         onLogout={handleLogout}
         onReturnToKiosk={() => navigate('/')}
+        autoOpenEnroll={pendingAutoOpenEnroll}
+        onAutoOpenEnrollConsumed={() => setPendingAutoOpenEnroll(false)}
       />
     );
   }
@@ -259,6 +259,8 @@ export function App() {
         currentUser={currentUser}
         onLogout={handleLogout}
         onReturnToKiosk={() => navigate('/')}
+        autoOpenEnroll={pendingAutoOpenEnroll}
+        onAutoOpenEnrollConsumed={() => setPendingAutoOpenEnroll(false)}
       />
     );
   }

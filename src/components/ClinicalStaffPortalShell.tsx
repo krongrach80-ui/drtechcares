@@ -68,6 +68,8 @@ export interface ClinicalStaffPortalShellProps {
   currentUser: UserAccount;
   onLogout: () => Promise<void> | void;
   onReturnToKiosk?: () => void;
+  autoOpenEnroll?: boolean;
+  onAutoOpenEnrollConsumed?: () => void;
 }
 
 type PortalTab = 'staff' | 'patients' | 'pts' | 'exercises' | 'schedules' | 'security';
@@ -884,6 +886,8 @@ export function ClinicalStaffPortalShell({
   currentUser,
   onLogout,
   onReturnToKiosk,
+  autoOpenEnroll,
+  onAutoOpenEnrollConsumed,
 }: ClinicalStaffPortalShellProps) {
   const { lang, setLang } = useClinicalI18n();
   const locale = PORTAL_TEXT[lang];
@@ -936,6 +940,14 @@ export function ClinicalStaffPortalShell({
   const [selectedCalendarDateIso, setSelectedCalendarDateIso] = useState<string | null>(null);
   const [weeklyEditorOpen, setWeeklyEditorOpen] = useState(false);
   const [registerKioskModalOpen, setRegisterKioskModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (!autoOpenEnroll) return;
+    setActiveTab('patients');
+    setEnrollTargetPatient(null);
+    setEnrollModalOpen(true);
+    onAutoOpenEnrollConsumed?.();
+  }, [autoOpenEnroll, onAutoOpenEnrollConsumed]);
 
   // Filters
   const [staffSearch, setStaffSearch] = useState('');

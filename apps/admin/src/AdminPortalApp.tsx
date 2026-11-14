@@ -7,15 +7,26 @@ export interface AdminPortalAppProps {
   currentUser: UserAccount;
   onLogout: () => void;
   onReturnToKiosk?: () => void;
+  autoOpenEnroll?: boolean;
+  onAutoOpenEnrollConsumed?: () => void;
 }
 
-export function AdminPortalApp({ apiClient, currentUser, onLogout, onReturnToKiosk }: AdminPortalAppProps) {
+export function AdminPortalApp({
+  apiClient,
+  currentUser,
+  onLogout,
+  onReturnToKiosk,
+  autoOpenEnroll,
+  onAutoOpenEnrollConsumed,
+}: AdminPortalAppProps) {
   return (
     <ClinicalStaffPortalShell
       apiClient={apiClient}
       currentUser={currentUser}
       onLogout={onLogout}
       onReturnToKiosk={onReturnToKiosk}
+      autoOpenEnroll={autoOpenEnroll}
+      onAutoOpenEnrollConsumed={onAutoOpenEnrollConsumed}
     />
   );
 }
