@@ -36,9 +36,11 @@ export function App() {
   const [pendingAutoOpenEnroll, setPendingAutoOpenEnroll] = useState(false);
   const [authenticatedPatient, setAuthenticatedPatient] = useState<KioskLoginSuccessPayload | null>(null);
   const [allowRestDayPractice, setAllowRestDayPractice] = useState(false);
+  const [startedCardGame, setStartedCardGame] = useState(false);
 
   useEffect(() => {
     setAllowRestDayPractice(false);
+    setStartedCardGame(false);
   }, [authenticatedPatient]);
 
   const apiClient = useMemo(
@@ -136,6 +138,7 @@ export function App() {
 
       const handleExitToLogin = () => {
         setAllowRestDayPractice(false);
+        setStartedCardGame(false);
         setAuthenticatedPatient(null);
         setKioskMode('login');
       };
@@ -222,6 +225,105 @@ export function App() {
         );
       }
 
+      if (hasAppointmentToday && !startedCardGame) {
+        return (
+          <div className="min-h-screen w-full bg-slate-950 flex flex-col">
+            <div className="bg-[#042924] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs border-b border-emerald-500/20">
+              <div className="flex items-center gap-2 font-bold">
+                <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-300">
+                  Scheduled Today • มีนัดกายภาพวันนี้
+                </span>
+                <span>
+                  ผู้ป่วย: {authenticatedPatient.patient.fullName} (HN: {authenticatedPatient.patient.hn})
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleExitToLogin}
+                className="rounded-xl border border-emerald-400/50 bg-emerald-600/25 px-3 py-1.5 font-bold text-emerald-100 hover:bg-emerald-600/40 cursor-pointer"
+              >
+                ← กลับหน้าสแกนใบหน้า (Kiosk Login)
+              </button>
+            </div>
+            <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
+              <div className="w-full max-w-2xl rounded-3xl bg-white border-2 border-emerald-400 shadow-2xl p-6 sm:p-8 text-center">
+                <div className="mx-auto w-16 h-16 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-3xl mb-4">
+                  📅
+                </div>
+                <span className="inline-block px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-extrabold mb-3">
+                  ตรวจสอบตารางนัดหมายวันนี้ ({todaySchedule.todayIso}) • มีนัด {todayExercises.length} รายการ
+                </span>
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900">
+                  รายการกายภาพบำบัดวันนี้ของคุณ ( {authenticatedPatient.patient.fullName} )
+                </h1>
+                <p className="text-xs text-slate-500 mt-1.5 font-mono">
+                  HN: {authenticatedPatient.patient.hn} • แผนฝึกกายภาพบำบัดประจำวันที่ {todaySchedule.todayIso}
+                </p>
+
+                <div className="mt-5 space-y-2.5 text-left max-h-72 overflow-y-auto pr-1">
+                  {todayExercises.map((item, idx) => (
+                    <div
+                      key={item.id}
+                      className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 flex items-center justify-between gap-3"
+                    >
+                      <div className="flex items-start gap-3 min-w-0">
+                        <span className="shrink-0 w-7 h-7 rounded-full bg-emerald-600 text-white text-xs font-black flex items-center justify-center mt-0.5">
+                          {idx + 1}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="text-sm font-extrabold text-slate-900">{item.nameTh}</p>
+                          <p className="text-[11px] text-slate-500">{item.nameEn}</p>
+                          <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                            <span className="inline-block px-2 py-0.5 rounded-md bg-teal-50 text-teal-800 border border-teal-200 text-[11px] font-semibold">
+                              {item.targetJoint}
+                            </span>
+                            <span className="inline-block px-2 py-0.5 rounded-md bg-white text-slate-600 border border-slate-200 text-[11px] font-semibold">
+                              ค้าง {item.holdSec} วินาที
+                            </span>
+                            {item.status === 'COMPLETED' && (
+                              <span className="inline-block px-2 py-0.5 rounded-md bg-sky-50 text-sky-700 border border-sky-200 text-[11px] font-bold">
+                                ทำครบแล้ว
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <span className="shrink-0 rounded-xl bg-white border border-emerald-300 px-3 py-1.5 text-xs font-extrabold text-emerald-700 shadow-sm">
+                        {item.sets} เซต × {item.reps} ครั้ง
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-6 flex flex-col gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setKioskMode('rehab')}
+                    className="w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg cursor-pointer"
+                  >
+                    เริ่มฝึกท่ากายภาพบำบัดผ่านกล้อง AI (Smart Rehab Telemetry) ➔
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setStartedCardGame(true)}
+                    className="w-full py-3 px-4 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-900 text-xs font-extrabold cursor-pointer"
+                  >
+                    เข้าสู่มินิเกมการ์ดกายภาพบำบัด ➔
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExitToLogin}
+                    className="w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 text-xs font-bold cursor-pointer"
+                  >
+                    ← กลับหน้าสแกนใบหน้า (Kiosk Login)
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
       return (
         <div className="min-h-screen w-full bg-slate-950 flex flex-col">
           <div className="bg-[#042924] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs border-b border-emerald-500/20">
@@ -234,6 +336,15 @@ export function App() {
               </span>
             </div>
             <div className="flex items-center gap-2">
+              {hasAppointmentToday && (
+                <button
+                  type="button"
+                  onClick={() => setStartedCardGame(false)}
+                  className="rounded-xl border border-teal-400/40 bg-teal-500/15 px-3 py-1.5 font-bold text-teal-200 hover:bg-teal-500/30 cursor-pointer"
+                >
+                  ← กลับหน้ารายการกายภาพวันนี้
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setKioskMode('rehab')}
