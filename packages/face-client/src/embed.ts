@@ -26,8 +26,12 @@ export const ARCFACE_MODEL_URL: string =
     : '/models/w600k_r50.onnx';
 
 let arcfaceSessionPromise: Promise<ort.InferenceSession> | null = null;
+let arcfaceUnavailable = false;
 
 export function getArcFaceSession(): Promise<ort.InferenceSession> {
+  if (arcfaceUnavailable) {
+    return Promise.reject(new Error(`ArcFace model unavailable at ${ARCFACE_MODEL_URL}`));
+  }
   if (!arcfaceSessionPromise) {
     arcfaceSessionPromise = (async () => {
       if (typeof window !== 'undefined' && typeof fetch === 'function') {
@@ -35,6 +39,7 @@ export function getArcFaceSession(): Promise<ort.InferenceSession> {
           const headRes = await fetch(ARCFACE_MODEL_URL, { method: 'HEAD' });
           const contentType = headRes.headers.get('content-type') ?? '';
           if (headRes.status !== 405 && (!headRes.ok || contentType.includes('text/html'))) {
+            arcfaceUnavailable = true;
             throw new Error(
               `ArcFace model unavailable at ${ARCFACE_MODEL_URL} (status=${headRes.status}, content-type=${contentType || 'unknown'})`,
             );
@@ -49,6 +54,7 @@ export function getArcFaceSession(): Promise<ort.InferenceSession> {
         executionProviders: ['wasm'],
       });
     })().catch((err: unknown) => {
+      arcfaceUnavailable = true;
       arcfaceSessionPromise = null;
       throw err;
     });
@@ -222,10 +228,14 @@ export async function extractFaceEmbeddingWithFallback(
   image: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
   landmarks3D: readonly Landmark3D[],
 ): Promise<{ vector: number[]; engine: 'arcface-onnx' | 'hybrid-512d' }> {
+  if (arcfaceUnavailable) {
+    return { vector: extractHybrid512Descriptor(image, landmarks3D), engine: 'hybrid-512d' };
+  }
   try {
     const vector = await extractArcFaceOnnxEmbedding(image);
     return { vector, engine: 'arcface-onnx' };
   } catch {
+    arcfaceUnavailable = true;
     const vector = extractHybrid512Descriptor(image, landmarks3D);
     return { vector, engine: 'hybrid-512d' };
   }

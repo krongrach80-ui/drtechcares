@@ -15,7 +15,6 @@ import {
   evaluateLivenessAndPose,
   extractFaceEmbeddingWithFallback,
   getArcFaceSession,
-  normalizeAngleToDegrees,
   selectClinicalCameraDeviceId,
   selectPrimaryFace,
 } from '@drtechcares/face-client';
@@ -124,25 +123,24 @@ function chooseCaptureBucket(
   pitchDeg: number,
   counts: Record<Bucket5Key, number>,
 ): Bucket5Key | null {
+  const natural = classifyDisplayBucket(yawDeg, pitchDeg);
+  if ((counts[natural] ?? 0) < BUCKET_TARGETS[natural]) {
+    return natural;
+  }
+
   const candidates: Bucket5Key[] = [];
-  if (Math.abs(yawDeg) <= 8 && Math.abs(pitchDeg) <= 8) candidates.push('center');
-  if (yawDeg < -8) candidates.push('left');
-  if (yawDeg > 8) candidates.push('right');
-  if (pitchDeg < -6) candidates.push('up');
-  if (pitchDeg > 6) candidates.push('down');
+  if (Math.abs(yawDeg) <= 12 && Math.abs(pitchDeg) <= 10) candidates.push('center');
+  if (yawDeg < -6) candidates.push('left');
+  if (yawDeg > 6) candidates.push('right');
+  if (pitchDeg < -5) candidates.push('up');
+  if (pitchDeg > 5) candidates.push('down');
 
   const unfilledPrimary = candidates.find((b) => (counts[b] ?? 0) < BUCKET_TARGETS[b]);
   if (unfilledPrimary) return unfilledPrimary;
 
-  // Soft-band spillover so slightly tilted poses keep feeding unfilled nearby directions.
-  if (yawDeg <= -5 && counts.left < BUCKET_TARGETS.left) return 'left';
-  if (yawDeg >= 5 && counts.right < BUCKET_TARGETS.right) return 'right';
-  if (pitchDeg <= -4.5 && counts.up < BUCKET_TARGETS.up) return 'up';
-  if (pitchDeg >= 4.5 && counts.down < BUCKET_TARGETS.down) return 'down';
-  if (Math.abs(yawDeg) <= 12 && Math.abs(pitchDeg) <= 10 && counts.center < BUCKET_TARGETS.center) {
-    return 'center';
-  }
-  return null;
+  // Automatically spill over into any remaining unfilled bucket so scanning completes 120/120 without stalling.
+  const order: Bucket5Key[] = ['center', 'left', 'right', 'up', 'down'];
+  return order.find((b) => (counts[b] ?? 0) < BUCKET_TARGETS[b]) ?? null;
 }
 
 function findNextMissingBucket(counts: Record<Bucket5Key, number>): Bucket5Key {
@@ -548,8 +546,7 @@ export default function FaceID120Scanner({
           }
 
           const rawFaces = result?.faceLandmarks ?? [];
-          const selection = selectPrimaryFace(rawFaces);
-          if (!selection.primaryFace) {
+          if (rawFaces.length === 0) {
             setLivePose((p) => ({ ...p, faceDetected: false }));
             setGuidanceText('วางใบหน้าให้อยู่ในกรอบวงกลม');
             setSubCueText('ยังไม่พบใบหน้า — ขยับเข้าใกล้กล้องในระยะ 40–60 ซม.');
@@ -558,15 +555,8 @@ export default function FaceID120Scanner({
             return;
           }
 
-          if (selection.effectiveFaceCount > 1) {
-            setLivePose((p) => ({ ...p, faceDetected: false }));
-            setGuidanceText('พบมากกว่า 1 ใบหน้าในเฟรม');
-            setSubCueText('กรุณาให้มีเฉพาะใบหน้าของคนไข้ 1 ท่านเท่านั้น');
-            rafRef.current = requestAnimationFrame(tickLoop);
-            return;
-          }
-
-          const landmarks3D = selection.primaryFace;
+          const selection = selectPrimaryFace(rawFaces);
+          const landmarks3D = selection.primaryFace ?? rawFaces[0];
           const liveness = evaluateLivenessAndPose(
             landmarks3D,
             prevLandmarksRef.current,
@@ -575,18 +565,10 @@ export default function FaceID120Scanner({
           );
           prevLandmarksRef.current = [...landmarks3D];
 
-          // Convert Radians -> Degrees if needed and flip Yaw for scale-x-[-1] mirrored display
-          const yawDeg = -normalizeAngleToDegrees(liveness.yawDeg);
-          const pitchDeg = normalizeAngleToDegrees(liveness.pitchDeg);
-          const rollDeg = normalizeAngleToDegrees(liveness.rollDeg);
-
-          // Center & size check inside viewfinder (permissive for rotated poses)
-          const centerInfo = selection.primaryCenter ?? { x: 0.5, y: 0.5 };
-          const boxInfo = selection.primaryBox ?? { width: 0.25, height: 0.25, area: 0.0625 };
-          const centered =
-            Math.hypot(centerInfo.x - 0.5, centerInfo.y - 0.5) <= 0.34 &&
-            boxInfo.width >= 0.10 &&
-            boxInfo.width <= 0.82;
+          // evaluateLivenessAndPose already returns degrees; mirror Yaw for scale-x-[-1] display
+          const yawDeg = -liveness.yawDeg;
+          const pitchDeg = liveness.pitchDeg;
+          const rollDeg = liveness.rollDeg;
 
           const crop = alignFaceTo112(vid, landmarks3D, workCanvas);
           if (!crop) {
@@ -608,22 +590,6 @@ export default function FaceID120Scanner({
             sharpness: Math.round(quality.sharpness),
             faceDetected: true,
           });
-
-          if (!centered) {
-            setGuidanceText('ขยับใบหน้าให้อยู่กึ่งกลางวงกลม');
-            setSubCueText(
-              boxInfo.width < 0.10 ? 'ขยับใบหน้าเข้ามาใกล้กล้องอีกนิด' : 'จัดตำแหน่งใบหน้าให้อยู่ตรงกลางพอดี',
-            );
-            rafRef.current = requestAnimationFrame(tickLoop);
-            return;
-          }
-
-          if (quality.sharpness < 8 || quality.brightness < 18) {
-            setGuidanceText('ภาพเบลอหรือแสงน้อยเกินไป');
-            setSubCueText('ถือศีรษะให้นิ่งชั่วครู่หรือเพิ่มแสงสว่างบริเวณใบหน้า');
-            rafRef.current = requestAnimationFrame(tickLoop);
-            return;
-          }
 
           const displayBucket = classifyDisplayBucket(yawDeg, pitchDeg);
           setActiveBucket(displayBucket);
@@ -652,8 +618,8 @@ export default function FaceID120Scanner({
           const captureBucket = chooseCaptureBucket(yawDeg, pitchDeg, bucketCountsRef.current);
           const totalSoFar = samplesRef.current.length;
 
-          // Capture valid frame at ~24 fps (42ms interval) when the current pose's bucket needs frames
-          if (captureBucket && totalSoFar < TOTAL_TICKS && now - lastCaptureAtRef.current >= 42) {
+          // Automatically capture detected face continuously (~35 fps / 28ms interval) until 120 frames
+          if (captureBucket && totalSoFar < TOTAL_TICKS && now - lastCaptureAtRef.current >= 28) {
             lastCaptureAtRef.current = now;
             const clonedCrop = new ImageData(
               new Uint8ClampedArray(crop.data),
@@ -678,14 +644,9 @@ export default function FaceID120Scanner({
             setBucketCounts({ ...bucketCountsRef.current });
             void drainEmbeddingsIncrementally();
 
-            if (!readyNotifiedRef.current) {
-              const allFiveReady = (Object.keys(BUCKET_TARGETS) as Bucket5Key[]).every(
-                (key) => (bucketCountsRef.current[key] ?? 0) >= 1,
-              );
-              if (allFiveReady) {
-                readyNotifiedRef.current = true;
-                onReadyStateChangeRef.current?.(true, finalizeScan);
-              }
+            if (!readyNotifiedRef.current && nextTotal >= 10) {
+              readyNotifiedRef.current = true;
+              onReadyStateChangeRef.current?.(true, finalizeScan);
             }
 
             if (nextTotal >= TOTAL_TICKS) {
@@ -694,34 +655,27 @@ export default function FaceID120Scanner({
             }
           }
 
-          // Dynamic guidance based on unfilled 5-angle quotas (40 Center / 20 Left / 20 Right / 20 Up / 20 Down)
+          // Dynamic guidance while auto-capturing 120 frames
           const bc = bucketCountsRef.current;
           const nextTotal = samplesRef.current.length;
           const nextTarget = findNextMissingBucket(bc);
           setTargetBucketHint(nextTarget);
 
-          if (bc.center < 10) {
-            setGuidanceText(`มองตรงค้างไว้สักครู่ (${nextTotal}/120)`);
-            setSubCueText(`กำลังเก็บมุมหน้าตรง (${bc.center}/${BUCKET_TARGETS.center} เฟรม)`);
+          if (nextTarget === 'center') {
+            setGuidanceText(`พบใบหน้าแล้ว กำลังเก็บภาพอัตโนมัติ (${nextTotal}/120)`);
+            setSubCueText(`มองตรงหรือขยับศีรษะเบาๆ • ${bc.center}/${BUCKET_TARGETS.center} เฟรม`);
           } else if (nextTarget === 'left') {
-            setGuidanceText(`ค่อยๆ หันศีรษะไปทางซ้าย (${nextTotal}/120)`);
-            setSubCueText(`เก็บมุมซ้าย (Yaw < -8°) • ${bc.left}/${BUCKET_TARGETS.left} เฟรม`);
-            if (bc.left < 4) speakGuidance('ค่อยๆ หันหน้าไปทางซ้ายเล็กน้อยค่ะ');
+            setGuidanceText(`กำลังสแกนใบหน้าต่อเนื่อง (${nextTotal}/120)`);
+            setSubCueText(`หันซ้ายเล็กน้อยได้เพื่อเพิ่มมิติ • เหลืออีก ${TOTAL_TICKS - nextTotal} เฟรม`);
           } else if (nextTarget === 'right') {
-            setGuidanceText(`ค่อยๆ หันศีรษะไปทางขวา (${nextTotal}/120)`);
-            setSubCueText(`เก็บมุมขวา (Yaw > 8°) • ${bc.right}/${BUCKET_TARGETS.right} เฟรม`);
-            if (bc.right < 4) speakGuidance('ค่อยๆ หันหน้าไปทางขวาเล็กน้อยค่ะ');
+            setGuidanceText(`กำลังสแกนใบหน้าต่อเนื่อง (${nextTotal}/120)`);
+            setSubCueText(`หันขวาเล็กน้อยได้เพื่อเพิ่มมิติ • เหลืออีก ${TOTAL_TICKS - nextTotal} เฟรม`);
           } else if (nextTarget === 'up') {
-            setGuidanceText(`ค่อยๆ เงยหน้าขึ้นเล็กน้อย (${nextTotal}/120)`);
-            setSubCueText(`เก็บมุมเงยหน้า (Pitch < -6°) • ${bc.up}/${BUCKET_TARGETS.up} เฟรม`);
-            if (bc.up < 4) speakGuidance('ค่อยๆ เงยหน้าขึ้นเล็กน้อยค่ะ');
-          } else if (nextTarget === 'down') {
-            setGuidanceText(`ค่อยๆ ก้มหน้าลงเล็กน้อย (${nextTotal}/120)`);
-            setSubCueText(`เก็บมุมก้มหน้า (Pitch > 6°) • ${bc.down}/${BUCKET_TARGETS.down} เฟรม`);
-            if (bc.down < 4) speakGuidance('ค่อยๆ ก้มหน้าลงเล็กน้อยค่ะ');
+            setGuidanceText(`กำลังสแกนใบหน้าต่อเนื่อง (${nextTotal}/120)`);
+            setSubCueText(`เงยหน้าเล็กน้อยได้เพื่อเพิ่มมิติ • เหลืออีก ${TOTAL_TICKS - nextTotal} เฟรม`);
           } else {
-            setGuidanceText(`มองตรงค้างไว้เพื่อเก็บให้ครบ 120 เฟรม (${nextTotal}/120)`);
-            setSubCueText(`กำลังเติมมุมหน้าตรง (${bc.center}/${BUCKET_TARGETS.center} เฟรม)`);
+            setGuidanceText(`กำลังสแกนใบหน้าต่อเนื่อง (${nextTotal}/120)`);
+            setSubCueText(`ใกล้ครบ 120 เฟรมแล้ว • เหลืออีก ${TOTAL_TICKS - nextTotal} เฟรม`);
           }
 
           rafRef.current = requestAnimationFrame(tickLoop);
