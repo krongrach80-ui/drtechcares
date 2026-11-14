@@ -243,8 +243,13 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
 
     const listCallsRes = await callRouter(router, '/api/staff-calls', { token: pt1Token });
     expect(listCallsRes.status).toBe(200);
-    const listedCalls = ((await listCallsRes.json()) as { calls: { id: string; status: string }[] }).calls;
+    const listedCalls = ((await listCallsRes.json()) as { calls: { id: string; status: string; createdAt: string }[] }).calls;
     expect(listedCalls.some((c) => c.id === createdCall.id && c.status === 'open')).toBe(true);
+    for (let i = 1; i < listedCalls.length; i += 1) {
+      expect(Date.parse(listedCalls[i - 1].createdAt)).toBeGreaterThanOrEqual(
+        Date.parse(listedCalls[i].createdAt),
+      );
+    }
 
     const ackCallRes = await callRouter(router, `/api/staff-calls/${createdCall.id}/acknowledge`, {
       method: 'PATCH',
@@ -276,9 +281,23 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
 
     const auditLogsRes = await callRouter(router, '/api/audit-logs', { token: adminToken });
     expect(auditLogsRes.status).toBe(200);
-    const auditLogs = ((await auditLogsRes.json()) as { logs: { eventType: string }[] }).logs;
+    const auditPayload = (await auditLogsRes.json()) as {
+      logs: { eventType: string; createdAt: string }[];
+      activeSessions: { token: string; createdAt: string }[];
+    };
+    const auditLogs = auditPayload.logs;
     expect(auditLogs.some((l) => l.eventType === 'KIOSK_STAFF_CALL')).toBe(true);
     expect(auditLogs.some((l) => l.eventType === 'STAFF_CALL_RESOLVED')).toBe(true);
+    for (let i = 1; i < auditLogs.length; i += 1) {
+      expect(Date.parse(auditLogs[i - 1].createdAt)).toBeGreaterThanOrEqual(
+        Date.parse(auditLogs[i].createdAt),
+      );
+    }
+    for (let i = 1; i < auditPayload.activeSessions.length; i += 1) {
+      expect(Date.parse(auditPayload.activeSessions[i - 1].createdAt)).toBeGreaterThanOrEqual(
+        Date.parse(auditPayload.activeSessions[i].createdAt),
+      );
+    }
 
     // Force logout + Device ban + Cascading patient purge
     const forceRes = await callRouter(router, '/api/security/force-logout/user-pt-2', {
@@ -400,7 +419,26 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         },
       ],
       banned_targets: [],
-      active_sessions: [],
+      active_sessions: [
+        {
+          token: 'tok-older',
+          userId: 'user-super-1',
+          role: 'super_admin',
+          ipAddress: '127.0.0.1',
+          deviceId: 'DEV-1',
+          createdAt: '2026-11-14T10:00:00.000Z',
+          revoked: false,
+        },
+        {
+          token: 'tok-newer',
+          userId: 'user-super-1',
+          role: 'super_admin',
+          ipAddress: '127.0.0.1',
+          deviceId: 'DEV-2',
+          createdAt: '2026-11-14T14:26:00.000Z',
+          revoked: false,
+        },
+      ],
       system_settings: {
         aiFaceScanEnabled: true,
         aiFaceThreshold: 0.925,
@@ -416,6 +454,8 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(state.staff_calls.find((c) => c.id === 'call-shared')?.status).toBe('resolved');
     expect(state.staff_calls.some((c) => c.id === 'call-deleted')).toBe(false);
     expect(state.audit_logs.some((l) => l.id === 'audit-local')).toBe(true);
+    expect(state.active_sessions[0].token).toBe('tok-newer');
+    expect(state.active_sessions[1].token).toBe('tok-older');
   });
 });
 

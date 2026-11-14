@@ -98,7 +98,7 @@ export async function hydrateStateFromSupabase(
     supabase.from('staff_users').select('*'),
     supabase.from('patients').select('*'),
     supabase.from('face_templates').select('patient_id, pose, embedding, quality_score'),
-    supabase.from('medical_notes').select('*').order('created_at', { ascending: true }),
+    supabase.from('medical_notes').select('*').order('created_at', { ascending: false }),
     supabase.from('patient_courses').select('*'),
     supabase.from('rehab_sessions').select('*').order('created_at', { ascending: false }),
     supabase.from('treatment_reports').select('*').order('created_at', { ascending: false }),
@@ -107,7 +107,7 @@ export async function hydrateStateFromSupabase(
     supabase.from('staff_calls').select('*').order('created_at', { ascending: false }),
     supabase.from('audit_logs').select('*').order('created_at', { ascending: false }).limit(250),
     supabase.from('banned_targets').select('*').order('created_at', { ascending: false }),
-    supabase.from('active_sessions').select('*').eq('revoked', false),
+    supabase.from('active_sessions').select('*').eq('revoked', false).order('created_at', { ascending: false }),
     supabase.from('system_settings').select('*').eq('id', 1).maybeSingle(),
     supabase.from('kiosks').select('*'),
     supabase.from('patient_biometrics').select('*'),
@@ -626,7 +626,9 @@ export async function hydrateStateFromSupabase(
         revoked: Boolean(prev?.revoked) || Boolean(r.revoked),
       });
     }
-    state.active_sessions = Array.from(merged.values());
+    state.active_sessions = Array.from(merged.values()).sort(
+      (a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0),
+    );
   }
 
   if (settingsRes.status === 'fulfilled' && settingsRes.value.data) {

@@ -1203,6 +1203,10 @@ async function resizeImageFileToDataUri(file: File, maxDim = 320): Promise<strin
   return canvas.toDataURL('image/jpeg', 0.85);
 }
 
+function sortNewestFirst<T extends { createdAt: string }>(items: readonly T[]): T[] {
+  return [...items].sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
+}
+
 export function ClinicalStaffPortalShell({
   apiClient,
   currentUser,
@@ -1448,8 +1452,8 @@ export function ClinicalStaffPortalShell({
       );
       setExercises(exRes);
       setModpacks(mpRes);
-      setSessions(sessRes);
-      setStaffCalls(callsRes);
+      setSessions(sortNewestFirst(sessRes));
+      setStaffCalls(sortNewestFirst(callsRes));
       setCloudHealth({ online: healthRes.ok && healthRes.supabaseConnected, latencyMs: healthRes.latencyMs });
 
       const nextOpenCount = callsRes.filter((c) => c.status === 'open').length;
@@ -1463,9 +1467,9 @@ export function ClinicalStaffPortalShell({
         setKiosks(settingsRes.kiosks);
       }
       if (secRes) {
-        setAuditLogs(secRes.logs);
-        setBannedTargets(secRes.bannedTargets);
-        setActiveSessions(secRes.activeSessions);
+        setAuditLogs(sortNewestFirst(secRes.logs));
+        setBannedTargets(sortNewestFirst(secRes.bannedTargets));
+        setActiveSessions(sortNewestFirst(secRes.activeSessions));
       }
 
       if (!selectedSchedulePatientId && pRes.length > 0) {
@@ -1497,7 +1501,7 @@ export function ClinicalStaffPortalShell({
           const nextOpen = calls.filter((c) => c.status === 'open').length;
           if (nextOpen > prevOpenCallCountRef.current) playEmergencyChime();
           prevOpenCallCountRef.current = nextOpen;
-          setStaffCalls(calls);
+          setStaffCalls(sortNewestFirst(calls));
         })
         .catch(() => {});
     }, 10000);
@@ -1516,7 +1520,7 @@ export function ClinicalStaffPortalShell({
                   playEmergencyChime();
                 }
                 prevOpenCallCountRef.current = nextOpen;
-                setStaffCalls(calls);
+                setStaffCalls(sortNewestFirst(calls));
               })
               .catch(() => {});
           })
@@ -1677,8 +1681,9 @@ export function ClinicalStaffPortalShell({
 
   const filteredAuditLogs = useMemo(() => {
     const q = auditSearch.trim().toLowerCase();
-    if (!q) return auditLogs;
-    return auditLogs.filter(
+    const ordered = sortNewestFirst(auditLogs);
+    if (!q) return ordered;
+    return ordered.filter(
       (l) =>
         l.eventType.toLowerCase().includes(q) ||
         l.actorName.toLowerCase().includes(q) ||

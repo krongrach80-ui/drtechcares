@@ -406,6 +406,10 @@ async function uploadFaceImageIfNeeded(
   }
 }
 
+function sortNewestFirst<T extends { createdAt: string }>(items: readonly T[]): T[] {
+  return [...items].sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
+}
+
 function publicUser(u: StoredUserAccount): UserAccount {
   const { passwordHash: _omit, ...rest } = u;
   return rest;
@@ -538,7 +542,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const forcedBefore =
         user.forceLoggedOutAt && signed.iat <= new Date(user.forceLoggedOutAt).getTime();
       if (forcedBefore) return {};
-      state.active_sessions.push({
+      state.active_sessions.unshift({
         token,
         userId: user.id,
         role: user.role,
@@ -712,7 +716,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         createdAt: new Date().toISOString(),
         revoked: false,
       };
-      state.active_sessions.push(sessionRow);
+      state.active_sessions.unshift(sessionRow);
       await persistToSupabase(supabase, (db) =>
         db.from('active_sessions').insert({
           token: sessionRow.token,
@@ -813,7 +817,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         createdAt: new Date().toISOString(),
         revoked: false,
       };
-      state.active_sessions.push(sessionRow);
+      state.active_sessions.unshift(sessionRow);
       await persistToSupabase(supabase, (db) =>
         db.from('active_sessions').insert({
           token: sessionRow.token,
@@ -2770,7 +2774,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (pathname === '/api/staff-calls' && method === 'GET') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
-      return jsonResponse({ calls: state.staff_calls });
+      return jsonResponse({ calls: sortNewestFirst(state.staff_calls) });
     }
 
     if (pathname === '/api/staff-calls' && method === 'POST') {
@@ -2919,9 +2923,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const err = requireAuth(authUser, ['super_admin']);
       if (err) return err;
       return jsonResponse({
-        logs: state.audit_logs,
-        bannedTargets: state.banned_targets,
-        activeSessions: state.active_sessions.filter((s) => !s.revoked),
+        logs: sortNewestFirst(state.audit_logs),
+        bannedTargets: sortNewestFirst(state.banned_targets),
+        activeSessions: sortNewestFirst(state.active_sessions.filter((s) => !s.revoked)),
       });
     }
 
