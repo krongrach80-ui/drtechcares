@@ -1,5 +1,4 @@
 import React from 'react';
-import { motion } from 'framer-motion';
 import type { HighlightColor, KioskState } from '../hooks/useKioskSocket';
 
 interface RomGaugeProps {
@@ -25,13 +24,16 @@ export function RomGauge({
   const semiCircumference = Math.PI * radius;
   const clampedRatio = Math.max(0, Math.min(1, currentRomDeg / Math.max(10, targetRomDeg)));
   const dashOffset = semiCircumference * (1 - clampedRatio);
+  const exactPct = Math.max(completionPct, Math.round(clampedRatio * 100));
 
   const outerRadius = 122;
   const outerSemi = Math.PI * outerRadius;
   const holdRatio =
     kioskState === 'HOLD_PHASE' && holdTargetSec > 0
       ? Math.max(0, Math.min(1, (holdTargetSec - holdRemainingSec) / holdTargetSec))
-      : 0;
+      : holdTargetSec > 0 && holdRemainingSec > 0 && holdRemainingSec < holdTargetSec
+        ? Math.max(0, Math.min(1, (holdTargetSec - holdRemainingSec) / holdTargetSec))
+        : 0;
 
   const barColorClass =
     highlightColor === 'RED'
@@ -56,22 +58,31 @@ export function RomGauge({
                 : 'bg-emerald-50 text-[#0D9488]'
           }`}
         >
-          {completionPct}% TARGET
+          {Math.min(100, exactPct)}% TARGET
         </span>
       </div>
 
-      {/* Semi-Circular Radial Gauge */}
+      {/* Semi-Circular Radial Gauge (120Hz Direct GPU Render) */}
       <div className="relative mt-2 flex flex-col items-center">
         <svg viewBox="0 0 280 165" className="w-full max-w-[270px] overflow-visible">
           <defs>
             <linearGradient id="romGaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
               <stop offset="0%" stopColor={highlightColor === 'AMBER' ? '#F59E0B' : '#0284C7'} />
-              <stop offset="100%" stopColor={highlightColor === 'RED' ? '#EF4444' : highlightColor === 'AMBER' ? '#FBBF24' : '#10B981'} />
+              <stop
+                offset="100%"
+                stopColor={
+                  highlightColor === 'RED'
+                    ? '#EF4444'
+                    : highlightColor === 'AMBER'
+                      ? '#FBBF24'
+                      : '#10B981'
+                }
+              />
             </linearGradient>
           </defs>
 
           {/* Outer Hold-Phase Countdown Ring */}
-          {kioskState === 'HOLD_PHASE' && (
+          {(kioskState === 'HOLD_PHASE' || holdRatio > 0) && (
             <>
               <path
                 d="M 18 144 A 122 122 0 0 1 262 144"
@@ -80,15 +91,17 @@ export function RomGauge({
                 strokeWidth="7"
                 strokeLinecap="round"
               />
-              <motion.path
+              <path
                 d="M 18 144 A 122 122 0 0 1 262 144"
                 fill="none"
                 stroke="#10B981"
                 strokeWidth="7"
                 strokeLinecap="round"
                 strokeDasharray={outerSemi}
-                animate={{ strokeDashoffset: outerSemi * (1 - holdRatio) }}
-                transition={{ duration: 0.12 }}
+                style={{
+                  strokeDashoffset: outerSemi * (1 - holdRatio),
+                  willChange: 'stroke-dashoffset',
+                }}
               />
             </>
           )}
@@ -103,15 +116,17 @@ export function RomGauge({
           />
 
           {/* Progress Arc */}
-          <motion.path
+          <path
             d="M 36 144 A 104 104 0 0 1 244 144"
             fill="none"
             stroke="url(#romGaugeGrad)"
             strokeWidth="18"
             strokeLinecap="round"
             strokeDasharray={semiCircumference}
-            animate={{ strokeDashoffset: dashOffset }}
-            transition={{ type: 'spring', stiffness: 150, damping: 24 }}
+            style={{
+              strokeDashoffset: dashOffset,
+              willChange: 'stroke-dashoffset',
+            }}
           />
         </svg>
 
@@ -126,13 +141,15 @@ export function RomGauge({
         </div>
       </div>
 
-      {/* Completion Bar */}
+      {/* Completion Bar (GPU scaleX transform for zero-lag 120 FPS response) */}
       <div className="mt-4">
         <div className="h-2.5 w-full overflow-hidden rounded-full bg-sky-100">
-          <motion.div
-            className={`h-full rounded-full bg-gradient-to-r ${barColorClass}`}
-            animate={{ width: `${Math.min(100, completionPct)}%` }}
-            transition={{ type: 'spring', stiffness: 160, damping: 26 }}
+          <div
+            className={`h-full w-full origin-left rounded-full bg-gradient-to-r ${barColorClass}`}
+            style={{
+              transform: `scaleX(${clampedRatio})`,
+              willChange: 'transform',
+            }}
           />
         </div>
       </div>

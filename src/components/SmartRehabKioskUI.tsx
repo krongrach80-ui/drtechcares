@@ -674,6 +674,16 @@ export function SmartRehabKioskUI({
     let repCelebrateUntil = 0;
     let singlePersonRecoveryFrames = 0;
     let trackedExId = selectedExerciseRef.current.exercise_id;
+    let targetRomDeg: number | null = null;
+    let latestLandmarks: NormalizedLandmark[] | null = null;
+    let latestAllLandmarks: NormalizedLandmark[][] = [];
+    let latestPoseCount = 0;
+    let latestTrunkTiltDeg = 0;
+    let latestWrongSideRaised = false;
+    let latestWrongSideBannerTh: string | null = null;
+    let lastEmittedRom = -999;
+    let lastEmittedTilt = -999;
+    let lastEmittedHold = -999;
 
     const cleanup = () => {
       if (rafId) {
@@ -714,8 +724,19 @@ export function SmartRehabKioskUI({
 
         stream = await navigator.mediaDevices.getUserMedia({
           video: deviceId
-            ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
-            : { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+            ? {
+                deviceId: { exact: deviceId },
+                width: { ideal: 640 },
+                height: { ideal: 480 },
+                frameRate: { ideal: 60, max: 120 },
+                facingMode: 'user',
+              }
+            : {
+                width: { ideal: 640 },
+                height: { ideal: 480 },
+                frameRate: { ideal: 60, max: 120 },
+                facingMode: 'user',
+              },
           audio: false,
         });
         if (!active || !videoRef.current) {
@@ -745,8 +766,8 @@ export function SmartRehabKioskUI({
         }
         if (!vision || !active) return;
 
-        for (const modelPath of ['/models/pose_landmarker_full.task', '/models/pose_landmarker.task']) {
-          for (const delegate of ['CPU', undefined] as const) {
+        for (const modelPath of ['/models/pose_landmarker.task', '/models/pose_landmarker_full.task']) {
+          for (const delegate of ['GPU', 'CPU', undefined] as const) {
             try {
               const created = await PoseLandmarker.createFromOptions(vision, {
                 baseOptions: {
@@ -776,6 +797,16 @@ export function SmartRehabKioskUI({
           if (trackedExId !== curEx.exercise_id) {
             trackedExId = curEx.exercise_id;
             smoothedRom = null;
+            targetRomDeg = null;
+            latestLandmarks = null;
+            latestAllLandmarks = [];
+            latestPoseCount = 0;
+            latestTrunkTiltDeg = 0;
+            latestWrongSideRaised = false;
+            latestWrongSideBannerTh = null;
+            lastEmittedRom = -999;
+            lastEmittedTilt = -999;
+            lastEmittedHold = -999;
             holdAccumMs = 0;
             awaitingReturn = false;
             repCelebrateUntil = 0;
@@ -783,18 +814,23 @@ export function SmartRehabKioskUI({
 
           const v = videoRef.current;
           const now = performance.now();
-          const dtMs = lastFrameAt > 0 ? Math.min(100, Math.max(1, now - lastFrameAt)) : 16;
+          const dtMs = lastFrameAt > 0 ? Math.min(100, Math.max(1, now - lastFrameAt)) : 8.3;
           lastFrameAt = now;
 
-          if (v.readyState >= 2 && v.videoWidth > 0 && (v.currentTime !== lastVideoTime || now - lastInferenceAt >= 33)) {
+          // Step A: Run AI pose inference whenever a fresh video frame arrives
+          if (
+            v.readyState >= 2 &&
+            v.videoWidth > 0 &&
+            (v.currentTime !== lastVideoTime || now - lastInferenceAt >= 24)
+          ) {
             lastVideoTime = v.currentTime;
             lastInferenceAt = now;
 
             if (!offscreenCanvas) {
               offscreenCanvas = document.createElement('canvas');
             }
-            const offW = 256;
-            const offH = Math.max(144, Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))));
+            const offW = 224;
+            const offH = Math.max(126, Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))));
             if (offscreenCanvas.width !== offW || offscreenCanvas.height !== offH) {
               offscreenCanvas.width = offW;
               offscreenCanvas.height = offH;
@@ -810,146 +846,189 @@ export function SmartRehabKioskUI({
               lastDetectTs = ts;
               const poseRes = poseLandmarker.detectForVideo(source, ts);
               const allLandmarks = poseRes.landmarks ?? [];
-              const poseCount = allLandmarks.length;
+              latestAllLandmarks = allLandmarks;
+              latestPoseCount = allLandmarks.length;
 
-              // Rule 1 Fallback: freeze rep counting when 2+ people enter webcam view
-              if (poseCount > 1) {
+              if (latestPoseCount > 1) {
                 singlePersonRecoveryFrames = 0;
-                holdAccumMs = 0;
-                setDemoHoldRemainingSec(curEx.hold_sec);
-                setDemoPresetState('MULTI_PERSON');
-                drawLivePoseOverlayOnCanvas(poseCanvasRef.current, allLandmarks, {
-                  targetJoint: curEx.target_joint,
-                  romDeg: smoothedRom,
-                  targetRomDeg: curEx.target_rom_deg,
-                  holdRatio: 0,
-                  trunkTiltDeg: 0,
-                  isMultiPerson: true,
-                  isImpostorOrEmergency: false,
-                  videoWidth: v.videoWidth,
-                  videoHeight: v.videoHeight,
-                });
-              } else if (demoPresetRef.current === 'IMPOSTOR') {
-                // Keep manual IMPOSTOR guard paused until reset
-                holdAccumMs = 0;
-                drawLivePoseOverlayOnCanvas(poseCanvasRef.current, allLandmarks, {
-                  targetJoint: curEx.target_joint,
-                  romDeg: smoothedRom,
-                  targetRomDeg: curEx.target_rom_deg,
-                  holdRatio: 0,
-                  trunkTiltDeg: 0,
-                  isMultiPerson: false,
-                  isImpostorOrEmergency: true,
-                  videoWidth: v.videoWidth,
-                  videoHeight: v.videoHeight,
-                });
-              } else {
-                const landmarks = allLandmarks[0];
+                latestLandmarks = null;
+              } else if (demoPresetRef.current !== 'IMPOSTOR') {
+                const landmarks = allLandmarks[0] ?? null;
+                latestLandmarks = landmarks;
                 if (landmarks) {
                   if (demoPresetRef.current === 'MULTI_PERSON') {
                     singlePersonRecoveryFrames += 1;
                     if (singlePersonRecoveryFrames < 3) {
                       holdAccumMs = 0;
-                      setDemoHoldRemainingSec(curEx.hold_sec);
+                      if (lastEmittedHold !== curEx.hold_sec) {
+                        lastEmittedHold = curEx.hold_sec;
+                        setDemoHoldRemainingSec(curEx.hold_sec);
+                      }
                     } else {
                       singlePersonRecoveryFrames = 0;
                       setDemoPresetState('ACTIVE_REP');
                     }
                   }
                   const measured = measureLiveJointAngleAndTilt(landmarks, curEx.target_joint);
-                  setDemoTrunkTiltDeg(measured.trunkTiltDeg);
-                  const holdTargetMs = Math.max(1000, curEx.hold_sec * 1000);
-                  if (measured.romDeg !== null) {
-                    smoothedRom =
-                      smoothedRom === null
-                        ? measured.romDeg
-                        : Number((smoothedRom + 0.35 * (measured.romDeg - smoothedRom)).toFixed(1));
-                    setDemoRomDeg(smoothedRom);
-
-                    const targetThreshold = curEx.target_joint.includes('knee')
-                      ? curEx.target_rom_deg + 10
-                      : curEx.target_rom_deg * 0.88;
-                    const atTarget = curEx.target_joint.includes('knee')
-                      ? smoothedRom <= targetThreshold
-                      : smoothedRom >= targetThreshold;
-                    const atRest = curEx.target_joint.includes('knee')
-                      ? smoothedRom >= 145
-                      : smoothedRom <= Math.min(55, curEx.target_rom_deg * 0.45);
-
-                    if (atRest) {
-                      awaitingReturn = false;
-                    }
-
-                    const blockCounting =
-                      demoPresetRef.current === 'MULTI_PERSON' ||
-                      countingLockedRef.current;
-
-                    if (demoValidRepsRef.current < curEx.target_reps) {
-                      if (measured.wrongSideRaised) {
-                        holdAccumMs = 0;
-                        setDemoHoldRemainingSec(curEx.hold_sec);
-                        setDemoPresetState('WRONG_LIMB');
-                      } else if (!blockCounting) {
-                        if (atTarget && !awaitingReturn && measured.trunkTiltDeg <= 14) {
-                          holdAccumMs += dtMs;
-                          const remSec = Math.max(0, Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)));
-                          setDemoHoldRemainingSec(remSec);
-                          if (holdAccumMs >= holdTargetMs) {
-                            holdAccumMs = 0;
-                            awaitingReturn = true;
-                            repCelebrateUntil = now + 4000;
-                            setDemoHoldRemainingSec(0);
-                            setDemoValidReps((r) => {
-                              const next = Math.min(curEx.target_reps, r + 1);
-                              setDemoPresetState(next >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED');
-                              return next;
-                            });
-                          } else {
-                            setDemoPresetState('HOLD_PHASE');
-                          }
-                        } else {
-                          holdAccumMs = Math.max(0, holdAccumMs - dtMs * 0.6);
-                          if (awaitingReturn || now <= repCelebrateUntil) {
-                            setDemoHoldRemainingSec(0);
-                            setDemoPresetState(
-                              demoValidRepsRef.current >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED',
-                            );
-                          } else {
-                            setDemoHoldRemainingSec(curEx.hold_sec);
-                            setDemoPresetState(measured.trunkTiltDeg > 10 ? 'TRUNK_LEAN' : 'ACTIVE_REP');
-                          }
-                        }
-                      }
-                    }
+                  latestTrunkTiltDeg = measured.trunkTiltDeg;
+                  latestWrongSideRaised = measured.wrongSideRaised;
+                  latestWrongSideBannerTh = measured.wrongSideBannerTh;
+                  if (Math.abs(measured.trunkTiltDeg - lastEmittedTilt) >= 0.1) {
+                    lastEmittedTilt = measured.trunkTiltDeg;
+                    setDemoTrunkTiltDeg(measured.trunkTiltDeg);
                   }
-                  drawLivePoseOverlayOnCanvas(poseCanvasRef.current, allLandmarks, {
-                    targetJoint: curEx.target_joint,
-                    romDeg: smoothedRom,
-                    targetRomDeg: curEx.target_rom_deg,
-                    holdRatio: holdAccumMs > 0 ? Math.min(1, holdAccumMs / holdTargetMs) : 0,
-                    trunkTiltDeg: measured.trunkTiltDeg,
-                    isMultiPerson: demoPresetRef.current === 'MULTI_PERSON',
-                    isImpostorOrEmergency: countingLockedRef.current,
-                    wrongSideRaised: measured.wrongSideRaised,
-                    wrongSideBannerTh: measured.wrongSideBannerTh,
-                    videoWidth: v.videoWidth,
-                    videoHeight: v.videoHeight,
-                  });
-                } else {
-                  drawLivePoseOverlayOnCanvas(poseCanvasRef.current, [], {
-                    targetJoint: curEx.target_joint,
-                    romDeg: null,
-                    targetRomDeg: curEx.target_rom_deg,
-                    holdRatio: 0,
-                    trunkTiltDeg: 0,
-                    isMultiPerson: false,
-                    isImpostorOrEmergency: false,
-                  });
+                  if (measured.romDeg !== null) {
+                    targetRomDeg = measured.romDeg;
+                  }
                 }
               }
             } catch {
               // Ignore transient inference errors
             }
+          }
+
+          // Step B: 120Hz smooth kinematic interpolation, real-time wall-clock hold timer & canvas redraw
+          const holdTargetMs = Math.max(1000, curEx.hold_sec * 1000);
+          if (latestPoseCount > 1) {
+            holdAccumMs = 0;
+            if (lastEmittedHold !== curEx.hold_sec) {
+              lastEmittedHold = curEx.hold_sec;
+              setDemoHoldRemainingSec(curEx.hold_sec);
+            }
+            setDemoPresetState('MULTI_PERSON');
+            drawLivePoseOverlayOnCanvas(poseCanvasRef.current, latestAllLandmarks, {
+              targetJoint: curEx.target_joint,
+              romDeg: smoothedRom,
+              targetRomDeg: curEx.target_rom_deg,
+              holdRatio: 0,
+              trunkTiltDeg: 0,
+              isMultiPerson: true,
+              isImpostorOrEmergency: false,
+              videoWidth: v.videoWidth,
+              videoHeight: v.videoHeight,
+            });
+          } else if (demoPresetRef.current === 'IMPOSTOR') {
+            holdAccumMs = 0;
+            drawLivePoseOverlayOnCanvas(poseCanvasRef.current, latestAllLandmarks, {
+              targetJoint: curEx.target_joint,
+              romDeg: smoothedRom,
+              targetRomDeg: curEx.target_rom_deg,
+              holdRatio: 0,
+              trunkTiltDeg: 0,
+              isMultiPerson: false,
+              isImpostorOrEmergency: true,
+              videoWidth: v.videoWidth,
+              videoHeight: v.videoHeight,
+            });
+          } else if (latestLandmarks) {
+            if (targetRomDeg !== null) {
+              const alpha = 1 - Math.exp(-dtMs / 26);
+              smoothedRom =
+                smoothedRom === null
+                  ? targetRomDeg
+                  : Number((smoothedRom + alpha * (targetRomDeg - smoothedRom)).toFixed(1));
+              if (Math.abs(smoothedRom - lastEmittedRom) >= 0.05) {
+                lastEmittedRom = smoothedRom;
+                setDemoRomDeg(smoothedRom);
+              }
+
+              const targetThreshold = curEx.target_joint.includes('knee')
+                ? curEx.target_rom_deg + 10
+                : curEx.target_rom_deg * 0.88;
+              const atTarget = curEx.target_joint.includes('knee')
+                ? smoothedRom <= targetThreshold
+                : smoothedRom >= targetThreshold;
+              const atRest = curEx.target_joint.includes('knee')
+                ? smoothedRom >= 145
+                : smoothedRom <= Math.min(55, curEx.target_rom_deg * 0.45);
+
+              if (atRest) {
+                awaitingReturn = false;
+              }
+
+              const blockCounting =
+                demoPresetRef.current === 'MULTI_PERSON' ||
+                countingLockedRef.current;
+
+              if (demoValidRepsRef.current < curEx.target_reps) {
+                if (latestWrongSideRaised) {
+                  holdAccumMs = 0;
+                  if (lastEmittedHold !== curEx.hold_sec) {
+                    lastEmittedHold = curEx.hold_sec;
+                    setDemoHoldRemainingSec(curEx.hold_sec);
+                  }
+                  setDemoPresetState('WRONG_LIMB');
+                } else if (!blockCounting) {
+                  if (atTarget && !awaitingReturn && latestTrunkTiltDeg <= 14) {
+                    holdAccumMs += dtMs;
+                    const remSec = Math.max(0, Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)));
+                    if (remSec !== lastEmittedHold) {
+                      lastEmittedHold = remSec;
+                      setDemoHoldRemainingSec(remSec);
+                    }
+                    if (holdAccumMs >= holdTargetMs) {
+                      holdAccumMs = 0;
+                      awaitingReturn = true;
+                      repCelebrateUntil = now + 4000;
+                      lastEmittedHold = 0;
+                      setDemoHoldRemainingSec(0);
+                      setDemoValidReps((r) => {
+                        const next = Math.min(curEx.target_reps, r + 1);
+                        setDemoPresetState(next >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED');
+                        return next;
+                      });
+                    } else {
+                      setDemoPresetState('HOLD_PHASE');
+                    }
+                  } else {
+                    holdAccumMs = Math.max(0, holdAccumMs - dtMs * 0.6);
+                    if (awaitingReturn || now <= repCelebrateUntil) {
+                      if (lastEmittedHold !== 0) {
+                        lastEmittedHold = 0;
+                        setDemoHoldRemainingSec(0);
+                      }
+                      setDemoPresetState(
+                        demoValidRepsRef.current >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED',
+                      );
+                    } else {
+                      const remSec = Math.max(
+                        0,
+                        Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)),
+                      );
+                      if (remSec !== lastEmittedHold) {
+                        lastEmittedHold = remSec;
+                        setDemoHoldRemainingSec(remSec);
+                      }
+                      setDemoPresetState(latestTrunkTiltDeg > 10 ? 'TRUNK_LEAN' : 'ACTIVE_REP');
+                    }
+                  }
+                }
+              }
+            }
+
+            drawLivePoseOverlayOnCanvas(poseCanvasRef.current, latestAllLandmarks, {
+              targetJoint: curEx.target_joint,
+              romDeg: smoothedRom,
+              targetRomDeg: curEx.target_rom_deg,
+              holdRatio: holdAccumMs > 0 ? Math.min(1, holdAccumMs / holdTargetMs) : 0,
+              trunkTiltDeg: latestTrunkTiltDeg,
+              isMultiPerson: demoPresetRef.current === 'MULTI_PERSON',
+              isImpostorOrEmergency: countingLockedRef.current,
+              wrongSideRaised: latestWrongSideRaised,
+              wrongSideBannerTh: latestWrongSideBannerTh,
+              videoWidth: v.videoWidth,
+              videoHeight: v.videoHeight,
+            });
+          } else {
+            drawLivePoseOverlayOnCanvas(poseCanvasRef.current, [], {
+              targetJoint: curEx.target_joint,
+              romDeg: null,
+              targetRomDeg: curEx.target_rom_deg,
+              holdRatio: 0,
+              trunkTiltDeg: 0,
+              isMultiPerson: false,
+              isImpostorOrEmergency: false,
+            });
           }
 
           if (active) {
@@ -1427,6 +1506,35 @@ export function SmartRehabKioskUI({
                   <div className="tabular-mono mt-1 text-3xl font-extrabold">
                     {rep_counter.hold_remaining_sec.toFixed(1)}s
                   </div>
+                  {(() => {
+                    const holdTargetSec = Math.max(0.5, selectedExercise.hold_sec);
+                    const holdRatio =
+                      kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED'
+                        ? 1
+                        : isHoldPhase || rep_counter.hold_remaining_sec < holdTargetSec
+                          ? Math.max(
+                              0,
+                              Math.min(1, (holdTargetSec - rep_counter.hold_remaining_sec) / holdTargetSec),
+                            )
+                          : 0;
+                    return (
+                      <div
+                        className={`mt-2 h-1.5 w-full overflow-hidden rounded-full ${
+                          isHoldPhase ? 'bg-white/30' : 'bg-sky-100'
+                        }`}
+                      >
+                        <div
+                          className={`h-full w-full origin-left rounded-full ${
+                            isHoldPhase ? 'bg-white' : 'bg-gradient-to-r from-[#0284C7] to-[#10B981]'
+                          }`}
+                          style={{
+                            transform: `scaleX(${holdRatio})`,
+                            willChange: 'transform',
+                          }}
+                        />
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
 
