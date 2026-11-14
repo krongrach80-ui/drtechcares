@@ -1,9 +1,36 @@
 import { describe, expect, it } from 'vitest';
+import { POSE_INDEX } from '@drtechcares/pose-engine';
+import type { NormalizedLandmark } from '@mediapipe/tasks-vision';
 import {
   EXERCISE_OPTIONS,
+  getPrescribedLimbPromptTh,
   mapTodayExercisesToPrescriptions,
   synthesizeDemoPayload,
 } from '../hooks/useKioskSocket';
+import { measureLiveJointAngleAndTilt } from '../components/SmartRehabKioskUI';
+
+function createNeutralLandmarks(
+  overrides: Partial<Record<number, NormalizedLandmark>> = {},
+): NormalizedLandmark[] {
+  const pts: NormalizedLandmark[] = Array.from({ length: 33 }, () => ({
+    x: 0.5,
+    y: 0.5,
+    z: 0,
+    visibility: 0.99,
+  }));
+  pts[POSE_INDEX.LEFT_SHOULDER] = { x: 0.58, y: 0.35, z: 0, visibility: 0.99 };
+  pts[POSE_INDEX.RIGHT_SHOULDER] = { x: 0.42, y: 0.35, z: 0, visibility: 0.99 };
+  pts[POSE_INDEX.LEFT_ELBOW] = { x: 0.60, y: 0.52, z: 0, visibility: 0.99 };
+  pts[POSE_INDEX.RIGHT_ELBOW] = { x: 0.40, y: 0.52, z: 0, visibility: 0.99 };
+  pts[POSE_INDEX.LEFT_WRIST] = { x: 0.61, y: 0.68, z: 0, visibility: 0.99 };
+  pts[POSE_INDEX.RIGHT_WRIST] = { x: 0.39, y: 0.68, z: 0, visibility: 0.99 };
+  pts[POSE_INDEX.LEFT_HIP] = { x: 0.56, y: 0.65, z: 0, visibility: 0.99 };
+  pts[POSE_INDEX.RIGHT_HIP] = { x: 0.44, y: 0.65, z: 0, visibility: 0.99 };
+  for (const [idxStr, lm] of Object.entries(overrides)) {
+    if (lm) pts[Number(idxStr)] = lm;
+  }
+  return pts;
+}
 
 describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
   const rightShoulder = EXERCISE_OPTIONS[0];
@@ -176,6 +203,53 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     });
     expect(patientPayload.patient).toEqual({ id: 'HN-61716', name: 'Pdasdwa' });
     expect(patientPayload.tts_voice_th).toContain('Pdasdwa');
+  });
+
+  it('enforces prescribed arm strictly: raising wrong arm does not measure high ROM and alerts user', () => {
+    // User raises LEFT arm high (~170 deg) while RIGHT arm hangs down (~6 deg) during RIGHT_SHOULDER exercise
+    const leftRaisedOnly = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_ELBOW]: { x: 0.60, y: 0.20, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_WRIST]: { x: 0.61, y: 0.05, z: 0, visibility: 0.99 },
+    });
+
+    const rightCheck = measureLiveJointAngleAndTilt(leftRaisedOnly, 'right_shoulder');
+    expect(rightCheck.wrongSideRaised).toBe(true);
+    expect(rightCheck.romDeg).not.toBeNull();
+    expect(rightCheck.romDeg!).toBeLessThan(30);
+    expect(rightCheck.oppositeRomDeg!).toBeGreaterThan(150);
+    expect(rightCheck.wrongSideBannerTh).toBe('กรุณายกแขนขวา (ท่านี้ต้องทำด้วยแขนขวา)');
+
+    // When the same landmarks are used for LEFT_SHOULDER exercise, LEFT arm IS valid
+    const leftCheck = measureLiveJointAngleAndTilt(leftRaisedOnly, 'left_shoulder');
+    expect(leftCheck.wrongSideRaised).toBe(false);
+    expect(leftCheck.romDeg!).toBeGreaterThan(150);
+    expect(leftCheck.wrongSideBannerTh).toBeNull();
+
+    // User raises RIGHT arm high during LEFT_SHOULDER exercise -> blocked with left-arm warning
+    const rightRaisedOnly = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.40, y: 0.20, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.39, y: 0.05, z: 0, visibility: 0.99 },
+    });
+    const wrongForLeft = measureLiveJointAngleAndTilt(rightRaisedOnly, 'left_shoulder');
+    expect(wrongForLeft.wrongSideRaised).toBe(true);
+    expect(wrongForLeft.romDeg!).toBeLessThan(30);
+    expect(wrongForLeft.wrongSideBannerTh).toBe('กรุณายกแขนซ้าย (ท่านี้ต้องทำด้วยแขนซ้าย)');
+
+    // synthesizeDemoPayload WRONG_LIMB outputs WRONG_LIMB compensation and Thai voice warning
+    const wrongLimbPayload = synthesizeDemoPayload({
+      preset: 'WRONG_LIMB',
+      romDeg: 15,
+      trunkTiltDeg: 2,
+      distanceM: 2.0,
+      exercise: rightShoulder,
+      validReps: 3,
+      invalidReps: 0,
+      holdRemainingSec: 3,
+    });
+    expect(wrongLimbPayload.telemetry_analysis.is_form_valid).toBe(false);
+    expect(wrongLimbPayload.telemetry_analysis.compensation_detected).toContain('WRONG_LIMB');
+    expect(wrongLimbPayload.rep_counter.valid_reps).toBe(3);
+    expect(wrongLimbPayload.tts_voice_th).toContain(getPrescribedLimbPromptTh('right_shoulder').requiredLimbTh);
   });
 });
 

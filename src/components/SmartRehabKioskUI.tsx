@@ -29,6 +29,7 @@ import { RomGauge } from './RomGauge';
 import { SkeletonCanvas } from './SkeletonCanvas';
 import { VoiceCoachBanner } from './VoiceCoachBanner';
 import {
+  getPrescribedLimbPromptTh,
   useKioskSocket,
   type DemoPresetId,
   type ExercisePrescriptionOption,
@@ -48,6 +49,7 @@ const DEMO_PRESETS: { id: DemoPresetId; label: string; shortLabel: string }[] = 
   { id: 'FACE_SCAN', label: 'Face Scan Login', shortLabel: '1. Face Scan' },
   { id: 'ACTIVE_REP', label: 'Active Exercise', shortLabel: '2. Active' },
   { id: 'TRUNK_LEAN', label: 'Cheating / Trunk Lean', shortLabel: '3. Trunk Lean' },
+  { id: 'WRONG_LIMB', label: 'Wrong Arm (ยกผิดข้าง)', shortLabel: '3b. Wrong Arm' },
   { id: 'HOLD_PHASE', label: 'Hold Phase', shortLabel: '4. Hold' },
   { id: 'REP_COMPLETED', label: 'Rep Completed', shortLabel: '5. Rep +' },
   { id: 'SET_FINISHED', label: 'Set Finished', shortLabel: '6. Finished' },
@@ -55,10 +57,18 @@ const DEMO_PRESETS: { id: DemoPresetId; label: string; shortLabel: string }[] = 
   { id: 'IMPOSTOR', label: 'Impostor Blocked (ผิดคน)', shortLabel: '8. Impostor' },
 ];
 
-function measureLiveJointAngleAndTilt(
+export interface LiveJointMeasurement {
+  romDeg: number | null;
+  trunkTiltDeg: number;
+  wrongSideRaised: boolean;
+  oppositeRomDeg: number | null;
+  wrongSideBannerTh: string | null;
+}
+
+export function measureLiveJointAngleAndTilt(
   landmarks: readonly NormalizedLandmark[],
   targetJoint: ExercisePrescriptionOption['target_joint'],
-): { romDeg: number | null; trunkTiltDeg: number } {
+): LiveJointMeasurement {
   const MIN_VIS = 0.25;
   const lSh = landmarks[POSE_INDEX.LEFT_SHOULDER];
   const rSh = landmarks[POSE_INDEX.RIGHT_SHOULDER];
@@ -118,15 +128,23 @@ function measureLiveJointAngleAndTilt(
   };
 
   let romDeg: number | null = null;
+  let oppositeRomDeg: number | null = null;
+  let wrongSideRaised = false;
+  let wrongSideBannerTh: string | null = null;
   if (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder') {
     const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
     const oppositeSide: 'left' | 'right' = primarySide === 'left' ? 'right' : 'left';
     const primaryDeg = computeArmElevationDeg(primarySide);
     const oppositeDeg = computeArmElevationDeg(oppositeSide);
-    if (primaryDeg !== null && oppositeDeg !== null) {
-      romDeg = oppositeDeg > primaryDeg + 20 ? Math.max(primaryDeg, oppositeDeg) : primaryDeg;
-    } else {
-      romDeg = primaryDeg ?? oppositeDeg;
+    // Strict side enforcement: measure ONLY the prescribed arm; never substitute the opposite arm
+    romDeg = primaryDeg !== null ? primaryDeg : 0;
+    oppositeRomDeg = oppositeDeg;
+    wrongSideRaised =
+      oppositeDeg !== null &&
+      oppositeDeg >= 45 &&
+      (primaryDeg === null || (primaryDeg < 65 && oppositeDeg > primaryDeg + 18));
+    if (wrongSideRaised) {
+      wrongSideBannerTh = getPrescribedLimbPromptTh(targetJoint).bannerAlertTh;
     }
   } else if (targetJoint === 'left_knee' || targetJoint === 'right_knee') {
     const isLeft = targetJoint === 'left_knee';
@@ -160,7 +178,13 @@ function measureLiveJointAngleAndTilt(
     romDeg = Number(Math.max(0, 15 - trunkTiltDeg).toFixed(1));
   }
 
-  return { romDeg, trunkTiltDeg: Number(trunkTiltDeg.toFixed(1)) };
+  return {
+    romDeg,
+    trunkTiltDeg: Number(trunkTiltDeg.toFixed(1)),
+    wrongSideRaised,
+    oppositeRomDeg,
+    wrongSideBannerTh,
+  };
 }
 
 const LIVE_BODY_BONELINE_PAIRS: readonly [number, number][] = [
@@ -205,6 +229,8 @@ function drawLivePoseOverlayOnCanvas(
     trunkTiltDeg: number;
     isMultiPerson: boolean;
     isImpostorOrEmergency: boolean;
+    wrongSideRaised?: boolean;
+    wrongSideBannerTh?: string | null;
     videoWidth?: number;
     videoHeight?: number;
   },
@@ -273,6 +299,22 @@ function drawLivePoseOverlayOnCanvas(
     );
   };
 
+  const isOppositeArmEdge = (a: number, b: number) => {
+    if (opts.targetJoint === 'left_shoulder') {
+      return (
+        (a === POSE_INDEX.RIGHT_SHOULDER && b === POSE_INDEX.RIGHT_ELBOW) ||
+        (a === POSE_INDEX.RIGHT_ELBOW && b === POSE_INDEX.RIGHT_WRIST)
+      );
+    }
+    if (opts.targetJoint === 'right_shoulder') {
+      return (
+        (a === POSE_INDEX.LEFT_SHOULDER && b === POSE_INDEX.LEFT_ELBOW) ||
+        (a === POSE_INDEX.LEFT_ELBOW && b === POSE_INDEX.LEFT_WRIST)
+      );
+    }
+    return false;
+  };
+
   // Primary patient live skeleton overlay
   const primary = landmarksList[0];
   ctx.save();
@@ -286,14 +328,19 @@ function drawLivePoseOverlayOnCanvas(
     const bx = toCanvasX(b.x);
     const by = toCanvasY(b.y);
     const emphasized = isHighlightedEdge(aIdx, bIdx);
+    const isWrongRaisedEdge = Boolean(opts.wrongSideRaised && isOppositeArmEdge(aIdx, bIdx));
 
     ctx.beginPath();
     ctx.moveTo(ax, ay);
     ctx.lineTo(bx, by);
-    ctx.lineWidth = emphasized ? 6 : 3.2;
-    ctx.strokeStyle = emphasized ? activeColor : 'rgba(56, 189, 248, 0.85)';
-    if (emphasized) {
-      ctx.shadowColor = activeColor;
+    ctx.lineWidth = isWrongRaisedEdge ? 6 : emphasized ? 6 : 3.2;
+    ctx.strokeStyle = isWrongRaisedEdge
+      ? '#EF4444'
+      : emphasized
+        ? activeColor
+        : 'rgba(56, 189, 248, 0.85)';
+    if (isWrongRaisedEdge || emphasized) {
+      ctx.shadowColor = isWrongRaisedEdge ? '#EF4444' : activeColor;
       ctx.shadowBlur = 12;
     } else {
       ctx.shadowBlur = 0;
@@ -362,6 +409,38 @@ function drawLivePoseOverlayOnCanvas(
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(badgeText, jx, jy);
+  }
+
+  // On-body alert badge when patient raises the wrong arm
+  if (opts.wrongSideRaised) {
+    const wrongElbowIdx =
+      opts.targetJoint === 'right_shoulder' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW;
+    const wrongShIdx =
+      opts.targetJoint === 'right_shoulder' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER;
+    const wrongLm = primary[wrongElbowIdx] ?? primary[wrongShIdx] ?? primary[POSE_INDEX.NOSE];
+    const limbInfo = getPrescribedLimbPromptTh(opts.targetJoint);
+    const warnText = `✗ ยก${limbInfo.wrongLimbTh} • กรุณายก${limbInfo.requiredLimbTh}`;
+    ctx.font = '800 13px "Sarabun", sans-serif';
+    const wtw = ctx.measureText(warnText).width;
+    const wbw = Math.min(w - 24, wtw + 24);
+    const wbh = 32;
+    const wx = wrongLm
+      ? Math.max(wbw / 2 + 12, Math.min(w - wbw / 2 - 12, toCanvasX(wrongLm.x)))
+      : w / 2;
+    const wy = wrongLm ? Math.max(88, Math.min(h - 36, toCanvasY(wrongLm.y) - 34)) : 96;
+
+    ctx.fillStyle = 'rgba(220, 38, 38, 0.92)';
+    ctx.strokeStyle = '#FCA5A5';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(wx - wbw / 2, wy - wbh / 2, wbw, wbh, 16);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#FFFFFF';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(warnText, wx, wy);
   }
 
   // Multi-person camera bounding boxes when 2+ people enter view
@@ -488,6 +567,7 @@ export function SmartRehabKioskUI({
   const shoulderHikeAlert = compensations.includes('SHOULDER_HIKE');
   const kneeValgusAlert = compensations.includes('KNEE_VALGUS');
   const tooFastAlert = compensations.includes('TOO_FAST');
+  const wrongLimbAlert = compensations.includes('WRONG_LIMB');
   const isHoldPhase = kiosk_state === 'HOLD_PHASE';
   const isRepCelebration = kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED';
   const isEmergency = kiosk_state === 'EMERGENCY_HALT';
@@ -793,29 +873,35 @@ export function SmartRehabKioskUI({
                       demoPresetRef.current === 'MULTI_PERSON' ||
                       countingLockedRef.current;
 
-                    if (!blockCounting && demoValidRepsRef.current < curEx.target_reps) {
-                      if (atTarget && !awaitingReturn && measured.trunkTiltDeg <= 14) {
-                        holdAccumMs += dtMs;
-                        const remSec = Math.max(0, Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)));
-                        setDemoHoldRemainingSec(remSec);
-                        if (holdAccumMs >= holdTargetMs) {
-                          holdAccumMs = 0;
-                          awaitingReturn = true;
-                          repCelebrateUntil = now + 1200;
-                          setDemoHoldRemainingSec(0);
-                          setDemoValidReps((r) => {
-                            const next = Math.min(curEx.target_reps, r + 1);
-                            setDemoPresetState(next >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED');
-                            return next;
-                          });
+                    if (demoValidRepsRef.current < curEx.target_reps) {
+                      if (measured.wrongSideRaised) {
+                        holdAccumMs = 0;
+                        setDemoHoldRemainingSec(curEx.hold_sec);
+                        setDemoPresetState('WRONG_LIMB');
+                      } else if (!blockCounting) {
+                        if (atTarget && !awaitingReturn && measured.trunkTiltDeg <= 14) {
+                          holdAccumMs += dtMs;
+                          const remSec = Math.max(0, Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)));
+                          setDemoHoldRemainingSec(remSec);
+                          if (holdAccumMs >= holdTargetMs) {
+                            holdAccumMs = 0;
+                            awaitingReturn = true;
+                            repCelebrateUntil = now + 1200;
+                            setDemoHoldRemainingSec(0);
+                            setDemoValidReps((r) => {
+                              const next = Math.min(curEx.target_reps, r + 1);
+                              setDemoPresetState(next >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED');
+                              return next;
+                            });
+                          } else {
+                            setDemoPresetState('HOLD_PHASE');
+                          }
                         } else {
-                          setDemoPresetState('HOLD_PHASE');
-                        }
-                      } else {
-                        holdAccumMs = Math.max(0, holdAccumMs - dtMs * 0.6);
-                        if (now > repCelebrateUntil) {
-                          setDemoHoldRemainingSec(curEx.hold_sec);
-                          setDemoPresetState(measured.trunkTiltDeg > 10 ? 'TRUNK_LEAN' : 'ACTIVE_REP');
+                          holdAccumMs = Math.max(0, holdAccumMs - dtMs * 0.6);
+                          if (now > repCelebrateUntil) {
+                            setDemoHoldRemainingSec(curEx.hold_sec);
+                            setDemoPresetState(measured.trunkTiltDeg > 10 ? 'TRUNK_LEAN' : 'ACTIVE_REP');
+                          }
                         }
                       }
                     }
@@ -828,6 +914,8 @@ export function SmartRehabKioskUI({
                     trunkTiltDeg: measured.trunkTiltDeg,
                     isMultiPerson: demoPresetRef.current === 'MULTI_PERSON',
                     isImpostorOrEmergency: countingLockedRef.current,
+                    wrongSideRaised: measured.wrongSideRaised,
+                    wrongSideBannerTh: measured.wrongSideBannerTh,
                     videoWidth: v.videoWidth,
                     videoHeight: v.videoHeight,
                   });
@@ -880,6 +968,22 @@ export function SmartRehabKioskUI({
   const patientRevealed = Boolean(patient?.name && (kiosk_state !== 'AUTH_FRAMING' || demoFaceMatched));
 
   const checklistItems = [
+    ...(selectedExercise.target_joint === 'left_shoulder' ||
+    selectedExercise.target_joint === 'right_shoulder'
+      ? [
+          {
+            label:
+              selectedExercise.target_joint === 'left_shoulder'
+                ? 'ยกเฉพาะแขนซ้ายตามท่าที่กำหนด'
+                : 'ยกเฉพาะแขนขวาตามท่าที่กำหนด',
+            ok: !wrongLimbAlert && !isEmergency,
+            warnText:
+              selectedExercise.target_joint === 'left_shoulder'
+                ? 'กรุณายกแขนซ้าย'
+                : 'กรุณายกแขนขวา',
+          },
+        ]
+      : []),
     {
       label: 'ลำตัวตั้งตรง ไม่เอียงชดเชย',
       ok: !trunkLeanAlert && !isEmergency,
@@ -1179,6 +1283,23 @@ export function SmartRehabKioskUI({
                   </span>
                   <h2 className="mt-2 text-xl font-extrabold text-[#0F4C81]">{selectedExercise.name_th}</h2>
                   <p className="text-xs font-semibold text-[#0284C7]">{selectedExercise.name_en}</p>
+                  {(selectedExercise.target_joint === 'left_shoulder' ||
+                    selectedExercise.target_joint === 'right_shoulder') && (
+                    <div
+                      className={`mt-2 inline-flex items-center gap-1.5 rounded-xl border px-3 py-1 text-xs font-extrabold ${
+                        selectedExercise.target_joint === 'left_shoulder'
+                          ? 'border-orange-300 bg-orange-50 text-orange-800'
+                          : 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                      }`}
+                    >
+                      <span>✋ ท่านี้ต้องยกเฉพาะ:</span>
+                      <span>
+                        {selectedExercise.target_joint === 'left_shoulder'
+                          ? 'แขนซ้าย (Left Arm Only)'
+                          : 'แขนขวา (Right Arm Only)'}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Animated Miniature Guide Illustration */}
@@ -1459,7 +1580,7 @@ export function SmartRehabKioskUI({
                             active
                               ? p.id === 'IMPOSTOR'
                                 ? 'bg-[#EF4444] text-white shadow-sm'
-                                : p.id === 'TRUNK_LEAN' || p.id === 'MULTI_PERSON'
+                                : p.id === 'TRUNK_LEAN' || p.id === 'MULTI_PERSON' || p.id === 'WRONG_LIMB'
                                   ? 'bg-[#F59E0B] text-white shadow-sm'
                                   : 'bg-[#0284C7] text-white shadow-sm'
                               : 'bg-white/80 text-[#0F4C81] hover:bg-sky-50'

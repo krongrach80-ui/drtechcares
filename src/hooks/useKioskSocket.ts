@@ -26,7 +26,8 @@ export type CompensationCode =
   | 'KNEE_VALGUS'
   | 'HEEL_LIFT'
   | 'TOO_FAST'
-  | 'INCOMPLETE_ROM';
+  | 'INCOMPLETE_ROM'
+  | 'WRONG_LIMB';
 
 export type HighlightJoint =
   | 'none'
@@ -108,12 +109,53 @@ export type DemoPresetId =
   | 'FACE_SCAN'
   | 'ACTIVE_REP'
   | 'TRUNK_LEAN'
+  | 'WRONG_LIMB'
   | 'HOLD_PHASE'
   | 'REP_COMPLETED'
   | 'SET_FINISHED'
   | 'MULTI_PERSON'
   | 'IMPOSTOR'
   | 'EMERGENCY_HALT';
+
+export function getPrescribedLimbPromptTh(
+  targetJoint: ExercisePrescriptionOption['target_joint'],
+): {
+  requiredLimbTh: string;
+  wrongLimbTh: string;
+  bannerAlertTh: string;
+  voicePromptTh: string;
+} {
+  if (targetJoint === 'left_shoulder') {
+    return {
+      requiredLimbTh: 'แขนซ้าย',
+      wrongLimbTh: 'แขนขวา',
+      bannerAlertTh: 'กรุณายกแขนซ้าย (ท่านี้ต้องทำด้วยแขนซ้าย)',
+      voicePromptTh: 'กรุณายกแขนซ้ายนะครับ ท่านี้ต้องทำด้วยแขนซ้าย ระบบจะไม่นับรอบหากยกแขนขวาครับ',
+    };
+  }
+  if (targetJoint === 'right_shoulder') {
+    return {
+      requiredLimbTh: 'แขนขวา',
+      wrongLimbTh: 'แขนซ้าย',
+      bannerAlertTh: 'กรุณายกแขนขวา (ท่านี้ต้องทำด้วยแขนขวา)',
+      voicePromptTh: 'กรุณายกแขนขวานะครับ ท่านี้ต้องทำด้วยแขนขวา ระบบจะไม่นับรอบหากยกแขนซ้ายครับ',
+    };
+  }
+  if (targetJoint === 'left_knee') {
+    return {
+      requiredLimbTh: 'ขาซ้าย',
+      wrongLimbTh: 'ขาขวา',
+      bannerAlertTh: 'กรุณาใช้ขาซ้าย (ท่านี้ต้องทำด้วยขาซ้าย)',
+      voicePromptTh: 'กรุณาทำท่าด้วยขาซ้ายตามที่กำหนดนะครับ',
+    };
+  }
+  return {
+    requiredLimbTh: 'ขาขวา',
+    wrongLimbTh: 'ขาซ้าย',
+    bannerAlertTh: 'กรุณาใช้ขาขวาตามท่าที่กำหนด',
+    voicePromptTh: 'กรุณาทำท่าตามข้างที่กำหนดนะครับ',
+  };
+}
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'offline';
 
@@ -450,6 +492,34 @@ export function synthesizeDemoPayload({
         show_target_arc: true,
       },
       tts_voice_th: `ดีมากครับ ครบ ${validReps} ครั้ง ค่อยๆ ผ่อนแขนลงช้าๆ ครับ`,
+      frame_base64: null,
+    };
+  }
+
+  if (preset === 'WRONG_LIMB') {
+    const limbInfo = getPrescribedLimbPromptTh(exercise.target_joint);
+    return {
+      kiosk_state: 'ACTIVE_REP',
+      patient: activePatient,
+      telemetry_analysis: {
+        current_rom_deg: clampedRom,
+        target_rom_deg: targetRom,
+        rom_completion_pct: romPct,
+        is_form_valid: false,
+        compensation_detected: ['WRONG_LIMB'],
+        pain_alert: false,
+      },
+      rep_counter: {
+        valid_reps: validReps,
+        invalid_reps: Math.max(1, invalidReps),
+        hold_remaining_sec: exercise.hold_sec,
+      },
+      ui_directives: {
+        skeleton_highlight_joint: exercise.target_joint,
+        highlight_color: 'AMBER',
+        show_target_arc: true,
+      },
+      tts_voice_th: limbInfo.voicePromptTh,
       frame_base64: null,
     };
   }
@@ -828,6 +898,11 @@ export function useKioskSocket(
         case 'TRUNK_LEAN':
           setDemoTrunkTiltDeg(16.4);
           setDemoRomDeg(Math.round(selectedExercise.target_rom_deg * 0.88));
+          setDemoInvalidReps((r) => Math.max(1, r));
+          break;
+        case 'WRONG_LIMB':
+          setDemoTrunkTiltDeg(2.0);
+          setDemoRomDeg(12);
           setDemoInvalidReps((r) => Math.max(1, r));
           break;
         case 'HOLD_PHASE':
