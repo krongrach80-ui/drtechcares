@@ -11,6 +11,7 @@ import {
   cosineSimilarity,
   matchMultiAngleEmbedding,
 } from '../lib/faceMatcher';
+import { chooseCaptureBucket, classifyDisplayBucket } from '../components/FaceID120Scanner';
 
 function makeRealisticFaceVector(seed: number, angleBias = 0): number[] {
   const raw = new Array<number>(FACE_EMBEDDING_DIM);
@@ -273,5 +274,25 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     const strangerSameShirt = buildHybridLikePerson(999999, 1.4, 1.0);
     const strangerRes = matchMultiAngleEmbedding(strangerSameShirt, [enrolledPerson, otherEnrolled]);
     expect(strangerRes.matched).toBe(false);
+  });
+
+  it('enforces strict 5-angle pose capture in FaceID120Scanner and blocks frontal-only spillover', () => {
+    expect(classifyDisplayBucket(3, 0)).toBe('center');
+    expect(classifyDisplayBucket(-10, 0)).toBe('left');
+    expect(classifyDisplayBucket(11, 0)).toBe('right');
+    expect(classifyDisplayBucket(0, -8)).toBe('up');
+    expect(classifyDisplayBucket(0, 8)).toBe('down');
+
+    const afterCenterFull = { center: 40, left: 0, right: 0, up: 0, down: 0 };
+    // Staring straight ahead (Yaw 3, Pitch 0) MUST NOT spill into left/right/up/down
+    expect(chooseCaptureBucket(0, 0, { center: 10, left: 0, right: 0, up: 0, down: 0 })).toBe('center');
+    expect(chooseCaptureBucket(3, 0, afterCenterFull)).toBeNull();
+    expect(chooseCaptureBucket(-5, 3, afterCenterFull)).toBeNull();
+
+    // Directional poses only fill their corresponding angle buckets
+    expect(chooseCaptureBucket(-9, 0, afterCenterFull)).toBe('left');
+    expect(chooseCaptureBucket(9, 0, afterCenterFull)).toBe('right');
+    expect(chooseCaptureBucket(0, -7, afterCenterFull)).toBe('up');
+    expect(chooseCaptureBucket(0, 7, afterCenterFull)).toBe('down');
   });
 });

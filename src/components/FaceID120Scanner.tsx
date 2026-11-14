@@ -100,22 +100,19 @@ interface CapturedSample {
   embedding: number[];
 }
 
-function classifyDisplayBucket(yawDeg: number, pitchDeg: number): Bucket5Key {
-  if (Math.abs(yawDeg) <= 8 && Math.abs(pitchDeg) <= 8) return 'center';
-  const absYaw = Math.abs(yawDeg);
-  const absPitch = Math.abs(pitchDeg);
-  if (absYaw >= absPitch) {
-    if (yawDeg < -8) return 'left';
-    if (yawDeg > 8) return 'right';
+export function classifyDisplayBucket(yawDeg: number, pitchDeg: number): Bucket5Key {
+  if (Math.abs(yawDeg) >= Math.abs(pitchDeg) * 1.15) {
+    if (yawDeg <= -8) return 'left';
+    if (yawDeg >= 8) return 'right';
   }
-  if (pitchDeg < -6) return 'up';
-  if (pitchDeg > 6) return 'down';
-  if (yawDeg < -8) return 'left';
-  if (yawDeg > 8) return 'right';
+  if (pitchDeg <= -6) return 'up';
+  if (pitchDeg >= 6) return 'down';
+  if (yawDeg <= -8) return 'left';
+  if (yawDeg >= 8) return 'right';
   return 'center';
 }
 
-function chooseCaptureBucket(
+export function chooseCaptureBucket(
   yawDeg: number,
   pitchDeg: number,
   counts: Record<Bucket5Key, number>,
@@ -125,34 +122,57 @@ function chooseCaptureBucket(
     return natural;
   }
 
+  // Only allow diagonal overflow into angles whose threshold is genuinely satisfied by current pose.
+  // Never spill frontal frames into left/right/up/down or vice versa.
   const candidates: Bucket5Key[] = [];
-  if (Math.abs(yawDeg) <= 12 && Math.abs(pitchDeg) <= 10) candidates.push('center');
-  if (yawDeg < -6) candidates.push('left');
-  if (yawDeg > 6) candidates.push('right');
-  if (pitchDeg < -5) candidates.push('up');
-  if (pitchDeg > 5) candidates.push('down');
+  if (yawDeg <= -8) candidates.push('left');
+  if (yawDeg >= 8) candidates.push('right');
+  if (pitchDeg <= -6) candidates.push('up');
+  if (pitchDeg >= 6) candidates.push('down');
+  if (Math.abs(yawDeg) < 8 && Math.abs(pitchDeg) < 6) candidates.push('center');
 
-  const unfilledPrimary = candidates.find((b) => (counts[b] ?? 0) < BUCKET_TARGETS[b]);
-  if (unfilledPrimary) return unfilledPrimary;
-
-  // Automatically spill over into any remaining unfilled bucket so scanning completes 120/120 without stalling.
-  const order: Bucket5Key[] = ['center', 'left', 'right', 'up', 'down'];
-  return order.find((b) => (counts[b] ?? 0) < BUCKET_TARGETS[b]) ?? null;
+  return candidates.find((b) => (counts[b] ?? 0) < BUCKET_TARGETS[b]) ?? null;
 }
 
+const TARGET_GUIDANCE: Record<
+  Bucket5Key,
+  { stepTitle: string; turnCue: string; holdCue: string; voice: string }
+> = {
+  center: {
+    stepTitle: 'ขั้นตอนที่ 1/5: มองตรงเข้าหากล้อง',
+    turnCue: 'กรุณามองตรงเข้าหากล้องให้อยู่ในกรอบ',
+    holdCue: 'ค้างหน้าตรงไว้สักครู่',
+    voice: 'ขั้นตอนที่หนึ่ง กรุณามองตรงเข้าหากล้องค่ะ',
+  },
+  left: {
+    stepTitle: 'ขั้นตอนที่ 2/5: หันหน้าไปทางซ้าย (<-8°)',
+    turnCue: 'หน้าตรงครบแล้ว — กรุณาหันหน้าไปทางซ้ายเล็กน้อย',
+    holdCue: 'กำลังเก็บมิติใบหน้าด้านซ้าย',
+    voice: 'ขั้นตอนที่สอง กรุณาหันหน้าไปทางซ้ายเล็กน้อยค่ะ',
+  },
+  right: {
+    stepTitle: 'ขั้นตอนที่ 3/5: หันหน้าไปทางขวา (>8°)',
+    turnCue: 'ด้านซ้ายครบแล้ว — กรุณาหันหน้าไปทางขวาเล็กน้อย',
+    holdCue: 'กำลังเก็บมิติใบหน้าด้านขวา',
+    voice: 'ขั้นตอนที่สาม กรุณาหันหน้าไปทางขวาเล็กน้อยค่ะ',
+  },
+  up: {
+    stepTitle: 'ขั้นตอนที่ 4/5: เงยหน้าขึ้นเล็กน้อย (<-6°)',
+    turnCue: 'ด้านขวาครบแล้ว — กรุณาเงยหน้าขึ้นเล็กน้อย',
+    holdCue: 'กำลังเก็บมิติมุมเงยและแนวคาง',
+    voice: 'ขั้นตอนที่สี่ กรุณาเงยหน้าขึ้นเล็กน้อยค่ะ',
+  },
+  down: {
+    stepTitle: 'ขั้นตอนที่ 5/5: ก้มหน้าลงเล็กน้อย (>6°)',
+    turnCue: 'มุมเงยครบแล้ว — กรุณาก้มหน้าลงเล็กน้อย',
+    holdCue: 'กำลังเก็บมิติมุมก้มและหน้าผาก',
+    voice: 'ขั้นตอนสุดท้าย กรุณาก้มหน้าลงเล็กน้อยค่ะ',
+  },
+};
+
 function findNextMissingBucket(counts: Record<Bucket5Key, number>): Bucket5Key {
-  if (counts.center < 10) return 'center';
-  const order: Bucket5Key[] = ['left', 'right', 'up', 'down', 'center'];
-  let bestKey: Bucket5Key = 'center';
-  let maxMissing = -1;
-  for (const key of order) {
-    const missing = BUCKET_TARGETS[key] - (counts[key] ?? 0);
-    if (missing > maxMissing) {
-      maxMissing = missing;
-      bestKey = key;
-    }
-  }
-  return bestKey;
+  const order: Bucket5Key[] = ['center', 'left', 'right', 'up', 'down'];
+  return order.find((key) => (counts[key] ?? 0) < BUCKET_TARGETS[key]) ?? 'down';
 }
 
 function averageNormalizedEmbeddings(vectors: number[][]): number[] {
@@ -241,6 +261,7 @@ export default function FaceID120Scanner({
   const lastVideoTimeRef = useRef(-1);
   const lastSpokenAtRef = useRef(0);
   const lastSpokenCueRef = useRef('');
+  const lastGuidedTargetRef = useRef<Bucket5Key | null>(null);
   const hasSnapshotFrameRef = useRef(false);
   const bestFrontalDataUrlRef = useRef<string>('');
   const bestFrontalScoreRef = useRef<number>(-1);
@@ -416,6 +437,7 @@ export default function FaceID120Scanner({
     finalizePromiseRef.current = null;
     finalizedResultRef.current = null;
     readyNotifiedRef.current = false;
+    lastGuidedTargetRef.current = null;
     prevLandmarksRef.current = null;
     onReadyStateChangeRef.current?.(false, finalizeScan);
   }, [finalizeScan]);
@@ -591,7 +613,7 @@ export default function FaceID120Scanner({
           const captureBucket = chooseCaptureBucket(yawDeg, pitchDeg, bucketCountsRef.current);
           const totalSoFar = samplesRef.current.length;
 
-          // Automatically capture detected face continuously (~35 fps / 28ms interval) until 120 frames
+          // Capture frames only when the live head pose matches an unfilled target angle
           if (captureBucket && totalSoFar < TOTAL_TICKS && now - lastCaptureAtRef.current >= 28) {
             lastCaptureAtRef.current = now;
             const embedding = extractHybrid512Descriptor(crop, landmarks3D);
@@ -611,38 +633,39 @@ export default function FaceID120Scanner({
             setCapturedCount(nextTotal);
             setBucketCounts({ ...bucketCountsRef.current });
 
-            if (!readyNotifiedRef.current && nextTotal >= 10) {
+            const allBucketsFilled = (Object.keys(BUCKET_TARGETS) as Bucket5Key[]).every(
+              (k) => bucketCountsRef.current[k] >= BUCKET_TARGETS[k],
+            );
+            if (allBucketsFilled || nextTotal >= TOTAL_TICKS) {
               readyNotifiedRef.current = true;
-              onReadyStateChangeRef.current?.(true, finalizeScan);
-            }
-
-            if (nextTotal >= TOTAL_TICKS) {
               void finalizeScan();
               return;
             }
           }
 
-          // Dynamic guidance while auto-capturing 120 frames
+          // Dynamic strict 5-angle visual & voice guidance
           const bc = bucketCountsRef.current;
           const nextTotal = samplesRef.current.length;
           const nextTarget = findNextMissingBucket(bc);
           setTargetBucketHint(nextTarget);
+          const cue = TARGET_GUIDANCE[nextTarget];
 
-          if (nextTarget === 'center') {
-            setGuidanceText(`พบใบหน้าแล้ว กำลังเก็บภาพอัตโนมัติ (${nextTotal}/120)`);
-            setSubCueText(`มองตรงหรือขยับศีรษะเบาๆ • ${bc.center}/${BUCKET_TARGETS.center} เฟรม`);
-          } else if (nextTarget === 'left') {
-            setGuidanceText(`กำลังสแกนใบหน้าต่อเนื่อง (${nextTotal}/120)`);
-            setSubCueText(`หันซ้ายเล็กน้อยได้เพื่อเพิ่มมิติ • เหลืออีก ${TOTAL_TICKS - nextTotal} เฟรม`);
-          } else if (nextTarget === 'right') {
-            setGuidanceText(`กำลังสแกนใบหน้าต่อเนื่อง (${nextTotal}/120)`);
-            setSubCueText(`หันขวาเล็กน้อยได้เพื่อเพิ่มมิติ • เหลืออีก ${TOTAL_TICKS - nextTotal} เฟรม`);
-          } else if (nextTarget === 'up') {
-            setGuidanceText(`กำลังสแกนใบหน้าต่อเนื่อง (${nextTotal}/120)`);
-            setSubCueText(`เงยหน้าเล็กน้อยได้เพื่อเพิ่มมิติ • เหลืออีก ${TOTAL_TICKS - nextTotal} เฟรม`);
+          if (lastGuidedTargetRef.current !== nextTarget) {
+            lastGuidedTargetRef.current = nextTarget;
+            speakGuidance(cue.voice, true);
+          } else if (!captureBucket) {
+            speakGuidance(cue.voice, false);
+          }
+
+          if (captureBucket) {
+            const capCue = TARGET_GUIDANCE[captureBucket];
+            setGuidanceText(`${capCue.stepTitle} (${nextTotal}/120)`);
+            setSubCueText(
+              `${capCue.holdCue} • มุมนี้ ${bc[captureBucket]}/${BUCKET_TARGETS[captureBucket]} เฟรม`,
+            );
           } else {
-            setGuidanceText(`กำลังสแกนใบหน้าต่อเนื่อง (${nextTotal}/120)`);
-            setSubCueText(`ใกล้ครบ 120 เฟรมแล้ว • เหลืออีก ${TOTAL_TICKS - nextTotal} เฟรม`);
+            setGuidanceText(`${cue.stepTitle} (${nextTotal}/120)`);
+            setSubCueText(`${cue.turnCue} (${bc[nextTarget]}/${BUCKET_TARGETS[nextTarget]} เฟรม)`);
           }
 
           rafRef.current = requestAnimationFrame(tickLoop);
@@ -862,6 +885,8 @@ export default function FaceID120Scanner({
           const count = bucketCounts[item.key] ?? 0;
           const target = BUCKET_TARGETS[item.key];
           const ok = count >= target;
+          const isTarget = phase === 'scanning' && !ok && targetBucketHint === item.key;
+          const isActivelyCapturing = isTarget && activeBucket === item.key;
           const started = count > 0;
           return (
             <div
@@ -869,14 +894,18 @@ export default function FaceID120Scanner({
               className={`rounded-xl border px-1.5 py-2 font-bold transition-colors ${
                 ok
                   ? 'border-emerald-500/70 bg-emerald-500/20 text-emerald-300'
-                  : started
-                    ? 'border-sky-500/50 bg-sky-500/10 text-sky-200'
-                    : 'border-slate-700 bg-slate-800/70 text-slate-400'
+                  : isActivelyCapturing
+                    ? 'border-sky-400 bg-sky-500/20 text-sky-200 ring-2 ring-sky-400/70'
+                    : isTarget
+                      ? 'border-amber-400 bg-amber-500/20 text-amber-200 ring-2 ring-amber-400/70 animate-pulse'
+                      : started
+                        ? 'border-sky-500/50 bg-sky-500/10 text-sky-200'
+                        : 'border-slate-700 bg-slate-800/70 text-slate-400'
               }`}
             >
               <div className="truncate">{item.label}</div>
               <div className="mt-0.5 font-mono text-xs font-black">
-                {count}/{target} {ok ? '✓' : ''}
+                {count}/{target} {ok ? '✓' : isTarget ? '•' : ''}
               </div>
             </div>
           );
