@@ -12,8 +12,8 @@ import { sampleTenCognitiveCards, type CognitiveCardQuestion } from './PhysicalC
 const HOLD_DURATION_SEC = 0.8;
 const HAND_RELEASE_DECAY_RATE = 2.5;
 const HAND_SWITCH_DECAY_RATE = 4.0;
-const LANDMARK_LERP_FACTOR = 0.75;
-const OFF_CANVAS_WIDTH = 320;
+const LANDMARK_SMOOTH_SPEED = 38;
+const OFF_CANVAS_WIDTH = 256;
 
 const HAND_CONNECTIONS: ReadonlyArray<[number, number]> = [
   [0, 1],
@@ -149,12 +149,12 @@ function lerpLandmarks(
 
 function drawCenterZoneDivider(ctx: CanvasRenderingContext2D, cw: number, ch: number) {
   ctx.save();
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
-  ctx.lineWidth = 1.5;
-  ctx.setLineDash([6, 6]);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([10, 10]);
   ctx.beginPath();
-  ctx.moveTo(cw / 2, 14);
-  ctx.lineTo(cw / 2, ch - 14);
+  ctx.moveTo(cw / 2, 16);
+  ctx.lineTo(cw / 2, ch - 16);
   ctx.stroke();
   ctx.restore();
 }
@@ -168,7 +168,7 @@ function drawHandSkeletonOnCanvas(
   const pts = landmarks.map((lm) => mapMirroredLandmarkToScreen(lm, tf));
   ctx.save();
   ctx.strokeStyle = color;
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 6;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
@@ -187,10 +187,10 @@ function drawHandSkeletonOnCanvas(
     if (!pt) continue;
     ctx.fillStyle = i === 0 || i === 9 ? '#ffffff' : color;
     ctx.beginPath();
-    ctx.arc(pt.px, pt.py, i === 0 || i === 9 ? 5.5 : 3.6, 0, Math.PI * 2);
+    ctx.arc(pt.px, pt.py, i === 0 || i === 9 ? 8.5 : 5.5, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = '#0f172a';
-    ctx.lineWidth = 1.2;
+    ctx.lineWidth = 2;
     ctx.stroke();
   }
   ctx.restore();
@@ -205,7 +205,7 @@ function drawPoseArmSkeletonOnCanvas(
 ) {
   ctx.save();
   ctx.strokeStyle = color;
-  ctx.lineWidth = 3.5;
+  ctx.lineWidth = 6;
   ctx.lineCap = 'round';
   const drawnPoints = new Set<number>();
 
@@ -230,7 +230,7 @@ function drawPoseArmSkeletonOnCanvas(
     const pt = mapMirroredLandmarkToScreen(lm, tf);
     ctx.fillStyle = idx === 15 || idx === 16 ? '#ffffff' : color;
     ctx.beginPath();
-    ctx.arc(pt.px, pt.py, 5, 0, Math.PI * 2);
+    ctx.arc(pt.px, pt.py, 8, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();
@@ -246,16 +246,16 @@ function drawDwellHalo(
   if (progress <= 0.01) return;
   ctx.save();
   ctx.beginPath();
-  ctx.strokeStyle = 'rgba(255,255,255,0.28)';
-  ctx.lineWidth = 4;
-  ctx.arc(px, py, 34, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255,255,255,0.32)';
+  ctx.lineWidth = 7;
+  ctx.arc(px, py, 54, 0, Math.PI * 2);
   ctx.stroke();
 
   ctx.beginPath();
   ctx.strokeStyle = color;
-  ctx.lineWidth = 5;
+  ctx.lineWidth = 9;
   ctx.lineCap = 'round';
-  ctx.arc(px, py, 34, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, progress));
+  ctx.arc(px, py, 54, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, progress));
   ctx.stroke();
   ctx.restore();
 }
@@ -301,6 +301,7 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
   const holdProgressRef = useRef(0);
   const lastFrameTimeRef = useRef(0);
   const lastVideoTimeRef = useRef(-1);
+  const lastInferenceTsRef = useRef(0);
   const targetLandmarksRef = useRef<NormalizedLandmark[] | null>(null);
   const smoothedLandmarksRef = useRef<NormalizedLandmark[] | null>(null);
   const poseLandmarksRef = useRef<NormalizedLandmark[] | null>(null);
@@ -352,7 +353,7 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
 
   const questionFontStyle = useMemo(() => {
     const text = currentCard ? pick(currentCard.question) : '';
-    const size = text.length > 44 ? 'clamp(1.1rem, 2.3vw, 1.55rem)' : 'clamp(1.3rem, 2.8vw, 1.9rem)';
+    const size = text.length > 44 ? 'clamp(1.85rem, 3.3vw, 2.7rem)' : 'clamp(2.15rem, 3.9vw, 3.2rem)';
     return { fontSize: size };
   }, [currentCard, pick]);
 
@@ -478,8 +479,8 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
         const deviceId = await selectClinicalCameraDeviceId();
         stream = await navigator.mediaDevices.getUserMedia({
           video: deviceId
-            ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } }
-            : { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
+            ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 120 } }
+            : { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 120 } },
           audio: false,
         });
       } catch {
@@ -513,13 +514,14 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
       setDetectorReady(true);
       lastFrameTimeRef.current = performance.now();
       lastVideoTimeRef.current = -1;
+      lastInferenceTsRef.current = 0;
 
       const loop = (now: number) => {
         if (!active || !videoRef.current) return;
         const video = videoRef.current;
         const canvas = canvasRef.current;
 
-        const dt = Math.min(0.1, Math.max(0, (now - (lastFrameTimeRef.current || now)) / 1000));
+        const dt = Math.min(0.1, Math.max(0.001, (now - (lastFrameTimeRef.current || now)) / 1000));
         lastFrameTimeRef.current = now;
 
         const vw = video.videoWidth || 640;
@@ -538,7 +540,7 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
         }
 
         const tf = computeMirroredCoverTransform(cw, ch, vw, vh);
-        const ctx = canvas?.getContext('2d') ?? null;
+        const ctx = canvas?.getContext('2d', { desynchronized: true }) ?? null;
         if (ctx) {
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
           ctx.clearRect(0, 0, cw, ch);
@@ -556,20 +558,22 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
               offscreen = document.createElement('canvas');
               offscreenCanvasRef.current = offscreen;
             }
-            const offH = Math.max(180, Math.round(OFF_CANVAS_WIDTH * (vh / vw)));
+            const offH = Math.max(144, Math.round(OFF_CANVAS_WIDTH * (vh / vw)));
             if (offscreen.width !== OFF_CANVAS_WIDTH || offscreen.height !== offH) {
               offscreen.width = OFF_CANVAS_WIDTH;
               offscreen.height = offH;
             }
-            const offCtx = offscreen.getContext('2d');
+            const offCtx = offscreen.getContext('2d', { alpha: false });
             if (offCtx) {
               offCtx.drawImage(video, 0, 0, offscreen.width, offscreen.height);
             }
             const inferenceSource = offCtx ? offscreen : video;
+            const inferenceTs = Math.max(lastInferenceTsRef.current + 1, Math.round(now));
+            lastInferenceTsRef.current = inferenceTs;
             const isPortrait = typeof window !== 'undefined' && window.innerHeight > window.innerWidth;
 
             if (mode === 'hand' && handLandmarker) {
-              const res = handLandmarker.detectForVideo(inferenceSource, now);
+              const res = handLandmarker.detectForVideo(inferenceSource, inferenceTs);
               const handLms = res.landmarks?.[0];
               if (handLms && handLms.length >= 21) {
                 targetLandmarksRef.current = handLms;
@@ -614,7 +618,7 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
                 }
               }
             } else if (mode === 'pose' && poseLandmarker) {
-              const res = poseLandmarker.detectForVideo(inferenceSource, now);
+              const res = poseLandmarker.detectForVideo(inferenceSource, inferenceTs);
               const pose = res.landmarks?.[0] ?? null;
               poseLandmarksRef.current = pose;
               let detectedLeft = false;
@@ -709,13 +713,14 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
             badgePctRef.current.textContent = pctRounded;
           }
 
-          // Render interpolated 60fps hand or pose skeleton + progress halo directly on canvas
+          // Render interpolated 120fps hand or pose skeleton + progress halo directly on canvas
           if (ctx) {
+            const smoothAlpha = 1 - Math.exp(-LANDMARK_SMOOTH_SPEED * dt);
             if (mode === 'hand' && targetLandmarksRef.current) {
               smoothedLandmarksRef.current = lerpLandmarks(
                 smoothedLandmarksRef.current,
                 targetLandmarksRef.current,
-                LANDMARK_LERP_FACTOR,
+                smoothAlpha,
               );
               const skelColor =
                 (activeHand ?? lockedHandRef.current) === 'RIGHT'
@@ -788,46 +793,46 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
 
   if (completedSummary) {
     return (
-      <div className="mx-auto max-w-2xl rounded-3xl bg-white p-8 shadow-2xl border border-slate-200 text-center space-y-6">
-        <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 shadow-inner">
-          <Award className="h-11 w-11" />
+      <div className="mx-auto w-full max-w-4xl rounded-3xl bg-white p-6 sm:p-10 shadow-2xl border-2 border-slate-200 text-center space-y-8">
+        <div className="mx-auto flex h-28 w-28 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 shadow-inner">
+          <Award className="h-16 w-16" />
         </div>
         <div>
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
-            <Sparkles className="h-3.5 w-3.5" /> {patientName}
+          <span className="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-5 py-2 text-base sm:text-xl font-black text-indigo-700">
+            <Sparkles className="h-5 w-5" /> {patientName}
           </span>
-          <h3 className="mt-3 text-2xl font-black text-slate-900">สรุปผลการเล่นเกมการ์ดกายภาพบำบัด</h3>
-          <p className="mt-1 text-sm text-slate-500">
+          <h3 className="mt-4 text-3xl sm:text-4xl font-black text-slate-900">สรุปผลการเล่นเกมการ์ดกายภาพบำบัด</h3>
+          <p className="mt-2 text-base sm:text-xl font-semibold text-slate-500">
             {savingResult ? 'กำลังบันทึกคะแนนลงฐานข้อมูล Supabase...' : 'บันทึกผลการฝึกครบทั้ง 10 ข้อเรียบร้อยแล้ว'}
           </p>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
-            <p className="text-xs font-semibold text-emerald-700">คะแนนที่ได้</p>
-            <p className="mt-1 text-3xl font-black text-emerald-900">
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">
+          <div className="rounded-3xl border-2 border-emerald-200 bg-emerald-50 p-6">
+            <p className="text-base sm:text-lg font-extrabold text-emerald-700">คะแนนที่ได้</p>
+            <p className="mt-2 text-4xl sm:text-5xl font-black text-emerald-900">
               {completedSummary.correct} / {completedSummary.total}
             </p>
           </div>
-          <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-4">
-            <p className="text-xs font-semibold text-indigo-700">ความแม่นยำ</p>
-            <p className="mt-1 text-3xl font-black text-indigo-900">{completedSummary.accuracyPct}%</p>
+          <div className="rounded-3xl border-2 border-indigo-200 bg-indigo-50 p-6">
+            <p className="text-base sm:text-lg font-extrabold text-indigo-700">ความแม่นยำ</p>
+            <p className="mt-2 text-4xl sm:text-5xl font-black text-indigo-900">{completedSummary.accuracyPct}%</p>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <p className="text-xs font-semibold text-slate-600 inline-flex items-center gap-1">
-              <Clock className="h-3.5 w-3.5" /> เวลาที่ใช้
+          <div className="rounded-3xl border-2 border-slate-200 bg-slate-50 p-6">
+            <p className="text-base sm:text-lg font-extrabold text-slate-600 inline-flex items-center gap-1.5">
+              <Clock className="h-5 w-5" /> เวลาที่ใช้
             </p>
-            <p className="mt-1 text-3xl font-black text-slate-900">{completedSummary.durationSec} วินาที</p>
+            <p className="mt-2 text-4xl sm:text-5xl font-black text-slate-900">{completedSummary.durationSec} วินาที</p>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+        <div className="flex flex-wrap items-center justify-center gap-4 pt-2">
           <button
             type="button"
             onClick={handleReplay}
-            className="inline-flex items-center gap-2 rounded-2xl border border-indigo-200 bg-indigo-50 px-6 py-3 text-sm font-bold text-indigo-700 hover:bg-indigo-100 active:scale-95 transition cursor-pointer"
+            className="inline-flex items-center gap-3 rounded-2xl border-2 border-indigo-200 bg-indigo-50 px-8 py-4 text-lg sm:text-xl font-black text-indigo-700 hover:bg-indigo-100 active:scale-95 transition cursor-pointer"
           >
-            <RotateCcw className="h-4 w-4" /> เล่นใหม่อีกครั้ง
+            <RotateCcw className="h-6 w-6" /> เล่นใหม่อีกครั้ง
           </button>
           <button
             type="button"
@@ -835,9 +840,9 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
               stopCameraTracks();
               onComplete(completedSummary);
             }}
-            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-600 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-600/20 hover:bg-emerald-700 active:scale-95 transition cursor-pointer"
+            className="inline-flex items-center gap-3 rounded-2xl bg-emerald-600 px-8 py-4 text-lg sm:text-xl font-black text-white shadow-lg shadow-emerald-600/20 hover:bg-emerald-700 active:scale-95 transition cursor-pointer"
           >
-            <CheckCircle2 className="h-4 w-4" /> ปิดหน้าต่าง
+            <CheckCircle2 className="h-6 w-6" /> ปิดหน้าต่าง
           </button>
         </div>
       </div>
@@ -847,136 +852,148 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
   if (!currentCard) return null;
 
   return (
-    <div className="mx-auto max-w-5xl rounded-3xl bg-white p-6 shadow-2xl border border-slate-200">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
-        <div>
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
-            <Sparkles className="h-3.5 w-3.5" /> {t('startCognitiveGameBtn')} • {patientName}
+    <div className="mx-auto w-full max-w-[1560px] rounded-3xl bg-white p-4 sm:p-7 shadow-2xl border-2 border-slate-200">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b-2 border-slate-100 pb-4">
+        <div className="min-w-0">
+          <span className="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-4 py-1.5 text-sm sm:text-lg font-extrabold text-indigo-700">
+            <Sparkles className="h-4 w-4 sm:h-5 sm:w-5 shrink-0" /> {t('startCognitiveGameBtn')} • {patientName}
           </span>
-          <p className="mt-1 text-xs text-slate-500">
+          <p className="mt-2 text-sm sm:text-lg font-bold text-slate-600">
             ยกมือค้าง 0.8 วินาทีเพื่อตอบ (ซ้าย = ไม่ใช่ / ขวา = ใช่) หรือคลิกปุ่มคำตอบได้ทันที
           </p>
         </div>
-        <span className="rounded-xl bg-slate-100 px-3 py-1.5 text-sm font-bold text-slate-700">
+        <span className="rounded-2xl bg-slate-900 px-5 py-2.5 text-xl sm:text-3xl font-black text-white shadow-md whitespace-nowrap">
           ข้อที่ {index + 1} / {cards.length} • คะแนน {score}
         </span>
       </div>
 
-      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <div className="flex flex-col justify-between rounded-3xl bg-gradient-to-br from-indigo-50 via-white to-sky-50 p-6 border border-indigo-100">
+      <div className="mt-5 grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-stretch">
+        <div className="flex flex-col justify-between rounded-3xl bg-gradient-to-br from-indigo-50 via-white to-sky-50 p-6 sm:p-8 border-2 border-indigo-200 min-h-[380px] sm:min-h-[460px]">
           <div className="text-center">
-            <span className="inline-block rounded-full bg-white px-3 py-1 text-xs font-semibold uppercase tracking-wider text-indigo-600 shadow-sm">
+            <span className="inline-block rounded-full bg-white px-5 py-1.5 text-sm sm:text-base font-black uppercase tracking-wider text-indigo-600 shadow-sm border border-indigo-100">
               {currentCard.category.replace('_', ' ')}
             </span>
-            <div className="my-6 text-7xl select-none">{currentCard.icon}</div>
-            <h2 className="font-bold text-slate-900 leading-snug" style={questionFontStyle}>
+            <div className="my-5 sm:my-7 text-[6.5rem] sm:text-[8.5rem] lg:text-[9.5rem] leading-none select-none">
+              {currentCard.icon}
+            </div>
+            <h2 className="font-black text-slate-950 leading-tight" style={questionFontStyle}>
               {pick(currentCard.question)}
             </h2>
           </div>
 
           {feedback ? (
             <div
-              className={`mt-6 flex items-center gap-3 rounded-2xl p-4 text-sm font-semibold ${
-                feedback.correct ? 'bg-emerald-100 text-emerald-900' : 'bg-rose-100 text-rose-900'
+              className={`mt-6 flex items-center gap-4 rounded-2xl border-2 p-5 sm:p-6 text-lg sm:text-2xl font-black ${
+                feedback.correct
+                  ? 'border-emerald-300 bg-emerald-100 text-emerald-950'
+                  : 'border-rose-300 bg-rose-100 text-rose-950'
               }`}
             >
-              {feedback.correct ? <CheckCircle2 className="h-6 w-6 shrink-0" /> : <XCircle className="h-6 w-6 shrink-0" />}
+              {feedback.correct ? (
+                <CheckCircle2 className="h-9 w-9 shrink-0 text-emerald-700" />
+              ) : (
+                <XCircle className="h-9 w-9 shrink-0 text-rose-700" />
+              )}
               <span>{feedback.message}</span>
             </div>
           ) : (
-            <div className="mt-6 grid grid-cols-2 gap-3 text-center">
+            <div className="mt-6 grid grid-cols-2 gap-4 text-center">
               <button
                 type="button"
                 onClick={() => submitAnswer('no')}
-                className={`rounded-2xl border p-3.5 active:scale-95 transition cursor-pointer ${
+                className={`min-h-[92px] sm:min-h-[116px] rounded-3xl border-4 p-4 sm:p-6 flex items-center justify-center active:scale-95 transition cursor-pointer ${
                   pendingChoice === 'no'
-                    ? 'border-rose-500 bg-rose-100 ring-2 ring-rose-400 shadow-md'
-                    : 'border-rose-200 bg-rose-50 hover:bg-rose-100'
+                    ? 'border-rose-500 bg-rose-100 ring-4 ring-rose-300 shadow-lg'
+                    : 'border-rose-300 bg-rose-50 hover:bg-rose-100'
                 }`}
               >
-                <p className="text-sm font-bold text-rose-700">{t('minigameLeftNo')}</p>
+                <p className="text-xl sm:text-2xl lg:text-3xl font-black text-rose-700 leading-snug">
+                  {t('minigameLeftNo')}
+                </p>
               </button>
               <button
                 type="button"
                 onClick={() => submitAnswer('yes')}
-                className={`rounded-2xl border p-3.5 active:scale-95 transition cursor-pointer ${
+                className={`min-h-[92px] sm:min-h-[116px] rounded-3xl border-4 p-4 sm:p-6 flex items-center justify-center active:scale-95 transition cursor-pointer ${
                   pendingChoice === 'yes'
-                    ? 'border-emerald-500 bg-emerald-100 ring-2 ring-emerald-400 shadow-md'
-                    : 'border-emerald-200 bg-emerald-50 hover:bg-emerald-100'
+                    ? 'border-emerald-500 bg-emerald-100 ring-4 ring-emerald-300 shadow-lg'
+                    : 'border-emerald-300 bg-emerald-50 hover:bg-emerald-100'
                 }`}
               >
-                <p className="text-sm font-bold text-emerald-700">{t('minigameRightYes')}</p>
+                <p className="text-xl sm:text-2xl lg:text-3xl font-black text-emerald-700 leading-snug">
+                  {t('minigameRightYes')}
+                </p>
               </button>
             </div>
           )}
         </div>
 
-        <div className="relative overflow-hidden rounded-3xl bg-slate-900 aspect-[4/3]">
+        <div className="relative overflow-hidden rounded-3xl bg-slate-900 aspect-[4/3] min-h-[340px] sm:min-h-[460px] border-2 border-slate-800">
           <video ref={videoRef} playsInline muted className="h-full w-full object-cover -scale-x-100" />
           <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
 
           {!cameraError && (
-            <div className="pointer-events-none absolute top-3 right-3 z-10">
+            <div className="pointer-events-none absolute top-4 right-4 z-10">
               {pendingChoice === 'yes' ? (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-600/95 px-3 py-1.5 text-xs font-bold text-white shadow-lg backdrop-blur">
-                  <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
+                <span className="inline-flex items-center gap-2 rounded-full bg-emerald-600/95 px-5 py-2 text-base sm:text-xl font-black text-white shadow-xl backdrop-blur">
+                  <span className="h-3 w-3 rounded-full bg-white animate-pulse" />
                   <span>ตรวจพบมือขวา (ใช่)... </span>
                   <span ref={badgePctRef}>0%</span>
                 </span>
               ) : pendingChoice === 'no' ? (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-600/95 px-3 py-1.5 text-xs font-bold text-white shadow-lg backdrop-blur">
-                  <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
+                <span className="inline-flex items-center gap-2 rounded-full bg-rose-600/95 px-5 py-2 text-base sm:text-xl font-black text-white shadow-xl backdrop-blur">
+                  <span className="h-3 w-3 rounded-full bg-white animate-pulse" />
                   <span>ตรวจพบมือซ้าย (ไม่ใช่)... </span>
                   <span ref={badgePctRef}>0%</span>
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-950/80 px-3 py-1.5 text-xs font-semibold text-slate-100 shadow backdrop-blur border border-white/10">
-                  <span className={`h-2 w-2 rounded-full ${detectorReady ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`} />
-                  {detectorReady ? 'พร้อมตรวจจับมือ' : 'กำลังเตรียมระบบตรวจจับมือ...'}
+                <span className="inline-flex items-center gap-2 rounded-full bg-slate-950/85 px-5 py-2 text-base sm:text-xl font-black text-slate-100 shadow-xl backdrop-blur border-2 border-white/15">
+                  <span className={`h-3 w-3 rounded-full ${detectorReady ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`} />
+                  {detectorReady ? 'พร้อมตรวจจับมือ 120Hz' : 'กำลังเตรียมระบบตรวจจับมือ...'}
                 </span>
               )}
             </div>
           )}
 
           {cameraError && (
-            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-slate-950/90 p-6 text-center text-amber-200 text-sm">
-              <Hand className="h-10 w-10 mb-3 text-amber-400" />
-              <p className="max-w-xs font-semibold leading-relaxed">{cameraError}</p>
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-slate-950/90 p-8 text-center text-amber-200 text-lg sm:text-2xl">
+              <Hand className="h-16 w-16 mb-4 text-amber-400" />
+              <p className="max-w-md font-bold leading-relaxed">{cameraError}</p>
             </div>
           )}
 
           {bothHandsWarn && (
-            <div className="absolute top-12 inset-x-3 z-10 flex items-center gap-2 rounded-xl bg-amber-500/95 px-4 py-2 text-xs font-bold text-slate-950 shadow-lg">
-              <AlertTriangle className="h-4 w-4 shrink-0" />
+            <div className="absolute top-16 inset-x-4 z-10 flex items-center gap-3 rounded-2xl bg-amber-500/95 px-5 py-3 text-base sm:text-xl font-black text-slate-950 shadow-xl">
+              <AlertTriangle className="h-6 w-6 shrink-0" />
               <span>{t('bothHandsWarning')}</span>
             </div>
           )}
 
           {cropWarn && !bothHandsWarn && (
-            <div className="absolute top-12 inset-x-3 z-10 flex items-center gap-2 rounded-xl bg-sky-500/95 px-4 py-2 text-xs font-bold text-white shadow-lg">
-              <AlertTriangle className="h-4 w-4 shrink-0" />
+            <div className="absolute top-16 inset-x-4 z-10 flex items-center gap-3 rounded-2xl bg-sky-500/95 px-5 py-3 text-base sm:text-xl font-black text-white shadow-xl">
+              <AlertTriangle className="h-6 w-6 shrink-0" />
               <span>{t('portraitCropWarning')}</span>
             </div>
           )}
 
           {!cameraError && !pendingChoice && (
-            <div className="pointer-events-none absolute bottom-3 inset-x-3 flex items-center justify-between text-[11px] font-bold">
-              <span className="rounded-lg bg-rose-950/75 px-2.5 py-1 text-rose-200 border border-rose-400/30">
+            <div className="pointer-events-none absolute bottom-4 inset-x-4 flex items-center justify-between gap-2 text-base sm:text-xl font-black">
+              <span className="rounded-xl bg-rose-950/85 px-4 py-2 text-rose-100 border-2 border-rose-400/50 shadow-lg">
                 ← ซ้าย: ไม่ใช่ (NO)
               </span>
-              <span className="rounded-lg bg-emerald-950/75 px-2.5 py-1 text-emerald-200 border border-emerald-400/30">
+              <span className="rounded-xl bg-emerald-950/85 px-4 py-2 text-emerald-100 border-2 border-emerald-400/50 shadow-lg">
                 ขวา: ใช่ (YES) →
               </span>
             </div>
           )}
 
           {pendingChoice && (
-            <div className="absolute bottom-4 inset-x-4 z-10 rounded-2xl bg-slate-950/85 p-3 text-white backdrop-blur border border-white/10">
-              <div className="flex items-center justify-between text-xs font-semibold mb-1.5">
+            <div className="absolute bottom-4 inset-x-4 z-10 rounded-2xl bg-slate-950/90 p-4 sm:p-5 text-white backdrop-blur border-2 border-white/20 shadow-2xl">
+              <div className="flex items-center justify-between text-lg sm:text-2xl font-black mb-2">
                 <span>{pendingChoice === 'yes' ? t('minigameRightYes') : t('minigameLeftNo')}</span>
                 <span ref={progressPctRef}>0%</span>
               </div>
-              <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-700">
+              <div className="h-5 sm:h-6 w-full overflow-hidden rounded-full bg-slate-700">
                 <div
                   ref={progressBarFillRef}
                   className={`h-full will-change-[width] ${
