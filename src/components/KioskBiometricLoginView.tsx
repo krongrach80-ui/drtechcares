@@ -10,6 +10,7 @@ import type {
 import {
   TemporalBiometricMatcher,
   computeBoundingBoxFromLandmarks,
+  matchMultiAngleEmbedding,
   subscribeBiometricIndex,
 } from '../lib/faceMatcher';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
@@ -236,6 +237,8 @@ export function KioskBiometricLoginView({
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [scanGeneration, setScanGeneration] = useState(0);
   const [hudBox, setHudBox] = useState<{ xPct: number; yPct: number; wPct: number; hPct: number } | null>(null);
+  const [hudLandmarks, setHudLandmarks] = useState<{ xPct: number; yPct: number }[]>([]);
+  const [dbAccountCount, setDbAccountCount] = useState(0);
   const [liveMatchHud, setLiveMatchHud] = useState<{
     candidate: PatientBiometricIndexEntry;
     confidencePercent: number;
@@ -250,7 +253,7 @@ export function KioskBiometricLoginView({
   const loginCtrlRef = useRef(new SingleScanLoginController());
   const verifyingLockRef = useRef(false);
   const biometricIndexRef = useRef<PatientBiometricIndexEntry[]>([]);
-  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(5));
+  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(4));
   const mirroredRef = useRef(mirrored);
   mirroredRef.current = mirrored;
 
@@ -274,6 +277,7 @@ export function KioskBiometricLoginView({
   useEffect(() => {
     return subscribeBiometricIndex(apiClient, (entries) => {
       biometricIndexRef.current = entries;
+      setDbAccountCount(entries.length);
     });
   }, [apiClient]);
 
@@ -286,13 +290,21 @@ export function KioskBiometricLoginView({
     setInspectionInfo(null);
     setLivenessInfo(null);
     setHudBox(null);
+    setHudLandmarks([]);
     setLiveMatchHud(null);
     setVerifiedModalPayload(null);
     setCameraError(null);
     setCameraPaused(false);
     setScanStage('scanning');
     setScanGeneration((g) => g + 1);
-  }, []);
+    void apiClient
+      .getBiometricIndex()
+      .then((entries) => {
+        biometricIndexRef.current = entries;
+        setDbAccountCount(entries.length);
+      })
+      .catch(() => {});
+  }, [apiClient]);
 
   useEffect(() => {
     purgeLegacyBiometricCache();
@@ -312,13 +324,17 @@ export function KioskBiometricLoginView({
     let prevLandmarks: { x: number; y: number; z?: number }[] | null = null;
     let wasEyeClosed = false;
     let burstStarted = false;
+    let lastDetectTs = 0;
 
     async function startFacePipeline() {
       try {
         void apiClient
           .getBiometricIndex()
           .then((entries) => {
-            if (active) biometricIndexRef.current = entries;
+            if (active) {
+              biometricIndexRef.current = entries;
+              setDbAccountCount(entries.length);
+            }
           })
           .catch(() => {});
         if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
@@ -344,205 +360,291 @@ export function KioskBiometricLoginView({
           baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
           runningMode: 'VIDEO',
           numFaces: 2,
-          minFaceDetectionConfidence: 0.65,
-          minFacePresenceConfidence: 0.65,
+          minFaceDetectionConfidence: 0.55,
+          minFacePresenceConfidence: 0.55,
+          minTrackingConfidence: 0.55,
         });
 
         let lastEmbedCheckAt = 0;
+        const KEY_MESH_LANDMARK_INDICES = [
+          // Left & right eyes + iris
+          33, 133, 159, 145, 362, 263, 386, 374,
+          // Eyebrows
+          70, 105, 107, 336, 334, 300,
+          // Nose bridge, tip & nostrils
+          168, 6, 197, 195, 5, 4, 1, 98, 327,
+          // Mouth & lips
+          61, 291, 0, 17, 78, 308, 13, 14,
+          // Cheekbones & jawline
+          234, 454, 172, 397, 152,
+        ];
 
         const loop = async () => {
           if (!active || !videoRef.current || !landmarker) return;
-          if (videoRef.current.readyState >= 2 && !verifyingLockRef.current) {
-            const now = performance.now();
-            const res = landmarker.detectForVideo(videoRef.current, now);
-            const selection = selectPrimaryFace(res.faceLandmarks ?? []);
-            const faceCount = selection.effectiveFaceCount;
-            const landmarks = selection.primaryFace ? [...selection.primaryFace] : [];
+          let shouldContinueLoop = true;
+          try {
+            if (videoRef.current.readyState >= 2 && !verifyingLockRef.current) {
+              const now = performance.now();
+              const detectTs = Math.max(lastDetectTs + 1, Math.round(now));
+              lastDetectTs = detectTs;
+              const res = landmarker.detectForVideo(videoRef.current, detectTs);
+              const selection = selectPrimaryFace(res.faceLandmarks ?? []);
+              const faceCount = selection.effectiveFaceCount;
+              const landmarks = selection.primaryFace ? [...selection.primaryFace] : [];
 
-            const liveness = evaluateLivenessAndPose(landmarks, prevLandmarks, faceCount, wasEyeClosed);
-            const meanEar = (liveness.earLeft + liveness.earRight) / 2;
-            wasEyeClosed = meanEar < 0.21;
-            setLivenessInfo(liveness);
+              const liveness = evaluateLivenessAndPose(landmarks, prevLandmarks, faceCount, wasEyeClosed);
+              const meanEar = (liveness.earLeft + liveness.earRight) / 2;
+              wasEyeClosed = meanEar < 0.21;
+              setLivenessInfo(liveness);
 
-            const faceRatio =
-              landmarks.length > 400 ? Math.abs(landmarks[454].x - landmarks[234].x) : 0;
-            presenceRef.current.update({
-              facePresent: faceCount === 1,
-              faceSizeRatio: faceRatio,
-              timestampMs: now,
-            });
+              const faceRatio =
+                landmarks.length > 400 ? Math.abs(landmarks[454].x - landmarks[234].x) : 0;
+              presenceRef.current.update({
+                facePresent: faceCount === 1,
+                faceSizeRatio: faceRatio,
+                timestampMs: now,
+              });
 
-            if (faceCount !== 1 || landmarks.length < 300) {
-              setHudBox(null);
-              setLiveMatchHud(null);
-              temporalMatcherRef.current.reset();
-              loginCtrlRef.current.reset();
-              burstStarted = false;
-              setBurstCount(0);
-              setScanStage('scanning');
-            }
-
-            if (!alignCanvasRef.current) {
-              alignCanvasRef.current = document.createElement('canvas');
-            }
-            const crop =
-              landmarks.length >= 300
-                ? alignFaceTo112(videoRef.current, landmarks, alignCanvasRef.current)
-                : null;
-
-            const inspection = inspectBiometricFrame3D({
-              landmarks3D: landmarks,
-              prevLandmarks3D: prevLandmarks,
-              faceCount,
-              wasEyeClosed,
-              image: crop,
-              requestedPose: 'CENTER',
-            });
-            prevLandmarks = landmarks;
-            setInspectionInfo(inspection);
-
-            // Real-time 1:N 3D Multi-Angle Recognition & HUD Tracking (5 consecutive live frames)
-            if (faceCount === 1 && landmarks.length >= 300 && crop) {
-              const rawBox = computeBoundingBoxFromLandmarks(landmarks);
-              if (rawBox && videoRef.current) {
-                const vw = videoRef.current.videoWidth || 1280;
-                const vh = videoRef.current.videoHeight || 720;
-                const cw = videoRef.current.clientWidth || vw;
-                const ch = videoRef.current.clientHeight || vh;
-                const scale = Math.max(cw / vw, ch / vh);
-                const renderedW = vw * scale;
-                const renderedH = vh * scale;
-                const offsetX = (renderedW - cw) / 2;
-                const offsetY = (renderedH - ch) / 2;
-
-                const leftNorm = mirroredRef.current ? 1 - rawBox.x - rawBox.width : rawBox.x;
-                const pxLeft = leftNorm * renderedW - offsetX;
-                const pxTop = rawBox.y * renderedH - offsetY;
-                const pxW = rawBox.width * renderedW;
-                const pxH = rawBox.height * renderedH;
-
-                const xPct = Math.max(2, Math.min(92, (pxLeft / cw) * 100));
-                const yPct = Math.max(2, Math.min(92, (pxTop / ch) * 100));
-                const wPct = Math.max(8, Math.min(96 - xPct, (pxW / cw) * 100));
-                const hPct = Math.max(8, Math.min(96 - yPct, (pxH / ch) * 100));
-
-                setHudBox({ xPct, yPct, wPct, hPct });
+              if (faceCount !== 1 || landmarks.length < 300) {
+                setHudBox(null);
+                setHudLandmarks([]);
+                setLiveMatchHud(null);
+                temporalMatcherRef.current.reset();
+                loginCtrlRef.current.reset();
+                burstStarted = false;
+                setBurstCount(0);
+                setScanStage('scanning');
               }
 
-              if (now - lastEmbedCheckAt >= 120 && !verifyingLockRef.current) {
-                lastEmbedCheckAt = now;
-                const { vector } = await extractFaceEmbeddingWithFallback(crop, landmarks);
-                if (!active || verifyingLockRef.current) return;
+              if (!alignCanvasRef.current) {
+                alignCanvasRef.current = document.createElement('canvas');
+              }
+              const crop =
+                landmarks.length >= 300
+                  ? alignFaceTo112(videoRef.current, landmarks, alignCanvasRef.current)
+                  : null;
 
-                if (biometricIndexRef.current.length > 0) {
-                  const temporal = temporalMatcherRef.current.evaluateFrame(
-                    {
-                      probeVector: vector,
-                      yawDeg: liveness.yawDeg,
-                      pitchDeg: liveness.pitchDeg,
-                      depthScore: liveness.depthScore,
-                      microMotion: liveness.microMotion,
-                      blinkDetected: liveness.blinkDetected,
-                    },
-                    biometricIndexRef.current,
-                  );
-                  const isHudMatch = Boolean(temporal.candidate && temporal.streakCount > 0);
-                  setLiveMatchHud(
-                    isHudMatch && temporal.candidate
-                      ? {
-                          candidate: temporal.candidate,
-                          confidencePercent: temporal.confidencePercent,
-                          bestAngle: temporal.bestAngle,
-                          streak: temporal.streakCount,
-                          confirmed: temporal.confirmed,
+              const inspection = inspectBiometricFrame3D({
+                landmarks3D: landmarks,
+                prevLandmarks3D: prevLandmarks,
+                faceCount,
+                wasEyeClosed,
+                image: crop,
+                requestedPose: 'CENTER',
+              });
+              prevLandmarks = landmarks;
+              setInspectionInfo(inspection);
+
+              // Real-time 1:N 3D Multi-Angle Recognition & Fine Landmark HUD Tracking
+              if (faceCount === 1 && landmarks.length >= 300 && crop) {
+                const rawBox = computeBoundingBoxFromLandmarks(landmarks);
+                if (rawBox && videoRef.current) {
+                  const vw = videoRef.current.videoWidth || 1280;
+                  const vh = videoRef.current.videoHeight || 720;
+                  const cw = videoRef.current.clientWidth || vw;
+                  const ch = videoRef.current.clientHeight || vh;
+                  const scale = Math.max(cw / vw, ch / vh);
+                  const renderedW = vw * scale;
+                  const renderedH = vh * scale;
+                  const offsetX = (renderedW - cw) / 2;
+                  const offsetY = (renderedH - ch) / 2;
+
+                  const leftNorm = mirroredRef.current ? 1 - rawBox.x - rawBox.width : rawBox.x;
+                  const pxLeft = leftNorm * renderedW - offsetX;
+                  const pxTop = rawBox.y * renderedH - offsetY;
+                  const pxW = rawBox.width * renderedW;
+                  const pxH = rawBox.height * renderedH;
+
+                  const xPct = Math.max(2, Math.min(92, (pxLeft / cw) * 100));
+                  const yPct = Math.max(2, Math.min(92, (pxTop / ch) * 100));
+                  const wPct = Math.max(8, Math.min(96 - xPct, (pxW / cw) * 100));
+                  const hPct = Math.max(8, Math.min(96 - yPct, (pxH / ch) * 100));
+
+                  setHudBox({ xPct, yPct, wPct, hPct });
+
+                  const mappedPoints = KEY_MESH_LANDMARK_INDICES.flatMap((idx) => {
+                    const pt = landmarks[idx];
+                    if (!pt) return [];
+                    const nx = mirroredRef.current ? 1 - pt.x : pt.x;
+                    const lx = ((nx * renderedW - offsetX) / cw) * 100;
+                    const ly = ((pt.y * renderedH - offsetY) / ch) * 100;
+                    if (lx < 0 || lx > 100 || ly < 0 || ly > 100) return [];
+                    return [{ xPct: lx, yPct: ly }];
+                  });
+                  setHudLandmarks(mappedPoints);
+                }
+
+                if (now - lastEmbedCheckAt >= 120 && !verifyingLockRef.current) {
+                  lastEmbedCheckAt = now;
+                  const { vector } = await extractFaceEmbeddingWithFallback(crop, landmarks);
+                  if (!active) {
+                    shouldContinueLoop = false;
+                    return;
+                  }
+
+                  if (!verifyingLockRef.current && biometricIndexRef.current.length > 0) {
+                    const temporal = temporalMatcherRef.current.evaluateFrame(
+                      {
+                        probeVector: vector,
+                        yawDeg: liveness.yawDeg,
+                        pitchDeg: liveness.pitchDeg,
+                        depthScore: liveness.depthScore,
+                        microMotion: liveness.microMotion,
+                        blinkDetected: liveness.blinkDetected,
+                      },
+                      biometricIndexRef.current,
+                    );
+                    const isHudMatch = Boolean(temporal.candidate && temporal.streakCount > 0);
+                    setLiveMatchHud(
+                      isHudMatch && temporal.candidate
+                        ? {
+                            candidate: temporal.candidate,
+                            confidencePercent: temporal.confidencePercent,
+                            bestAngle: temporal.bestAngle,
+                            streak: temporal.streakCount,
+                            confirmed: temporal.confirmed,
+                          }
+                        : null,
+                    );
+
+                    if (temporal.confirmed && temporal.candidate && !verifyingLockRef.current) {
+                      verifyingLockRef.current = true;
+                      setScanStage('verifying');
+                      const matchedConf = Math.round(temporal.confidencePercent);
+                      let didAuthenticate = false;
+                      try {
+                        const verifyRes = await apiClient.verifyFaceLogin(vector);
+                        if (!active) {
+                          shouldContinueLoop = false;
+                          return;
                         }
-                      : null,
-                  );
-
-                  if (temporal.confirmed && temporal.candidate && !verifyingLockRef.current) {
-                    verifyingLockRef.current = true;
-                    setScanStage('verifying');
-                    const matchedCand = temporal.candidate;
-                    const matchedConf = Math.round(temporal.confidencePercent);
-                    try {
-                      const verifyRes = await apiClient.verifyFaceLogin(vector);
-                      if (!active) return;
-                      setLastVerifyResult(verifyRes);
-                      if (verifyRes.matched && verifyRes.patient) {
-                        const verifiedPatient = verifyRes.patient;
-                        window.setTimeout(() => {
-                          if (!active) return;
+                        setLastVerifyResult(verifyRes);
+                        if (verifyRes.matched && verifyRes.patient) {
+                          didAuthenticate = true;
+                          shouldContinueLoop = false;
                           setVerifiedModalPayload({
-                            patient: verifiedPatient,
+                            patient: verifyRes.patient,
                             todayRoutine: verifyRes.todayRoutine ?? null,
                             confidencePercent: Math.max(verifyRes.confidencePercent, matchedConf),
                           });
-                        }, 350);
-                        return;
+                          return;
+                        }
+                      } catch {
+                        if (!active) {
+                          shouldContinueLoop = false;
+                          return;
+                        }
+                      } finally {
+                        if (!didAuthenticate) {
+                          verifyingLockRef.current = false;
+                        }
                       }
-                    } catch {
-                      if (!active) return;
+                      // Transient frame mismatch against server: keep database account intact,
+                      // reset streak, and let the 6-frame centroid burst continue without freezing!
+                      temporalMatcherRef.current.reset();
+                      setLiveMatchHud(null);
+                      void apiClient
+                        .getBiometricIndex()
+                        .then((entries) => {
+                          if (active) {
+                            biometricIndexRef.current = entries;
+                            setDbAccountCount(entries.length);
+                          }
+                        })
+                        .catch(() => {});
                     }
-                    biometricIndexRef.current = biometricIndexRef.current.filter(
-                      (entry) => entry.patientId !== matchedCand.patientId,
-                    );
-                    temporalMatcherRef.current.reset();
-                    setLiveMatchHud(null);
-                    void apiClient
-                      .getBiometricIndex()
-                      .then((entries) => {
-                        if (active) biometricIndexRef.current = entries;
-                      })
-                      .catch(() => {});
                   }
-                }
 
-                if (!burstStarted) {
-                  loginCtrlRef.current.startCountdownComplete();
-                  burstStarted = true;
-                }
-                setScanStage('burst');
-                const push = loginCtrlRef.current.pushFrame({
-                  vector,
-                  qualityScore: 0.95,
-                  capturedAfterCountdown: true,
-                  pose: 'front',
-                  sharpness: 85,
-                  yaw: liveness.yawDeg,
-                  pitch: liveness.pitchDeg,
-                });
-                setBurstCount(push.collected);
+                  if (!verifyingLockRef.current) {
+                    if (!burstStarted) {
+                      loginCtrlRef.current.startCountdownComplete();
+                      burstStarted = true;
+                    }
+                    setScanStage('burst');
+                    const push = loginCtrlRef.current.pushFrame({
+                      vector,
+                      qualityScore: 0.95,
+                      capturedAfterCountdown: true,
+                      pose: 'front',
+                      sharpness: 85,
+                      yaw: liveness.yawDeg,
+                      pitch: liveness.pitchDeg,
+                    });
+                    setBurstCount(push.collected);
 
-                if (push.readyToVerify) {
-                  verifyingLockRef.current = true;
-                  setScanStage('verifying');
-                  const probe = loginCtrlRef.current.buildProbeCentroid();
-                  try {
-                    const verifyRes = await apiClient.verifyFaceLogin(probe);
-                    if (!active) return;
-                    setLastVerifyResult(verifyRes);
-                    if (verifyRes.matched && verifyRes.patient) {
-                      setVerifiedModalPayload({
-                        patient: verifyRes.patient,
-                        todayRoutine: verifyRes.todayRoutine ?? null,
-                        confidencePercent: verifyRes.confidencePercent,
-                      });
+                    if (push.readyToVerify) {
+                      verifyingLockRef.current = true;
+                      setScanStage('verifying');
+                      const probe = loginCtrlRef.current.buildProbeCentroid();
+                      let didFinishRound = false;
+                      try {
+                        const verifyRes = await apiClient.verifyFaceLogin(probe);
+                        if (!active) {
+                          shouldContinueLoop = false;
+                          return;
+                        }
+                        setLastVerifyResult(verifyRes);
+                        if (verifyRes.matched && verifyRes.patient) {
+                          didFinishRound = true;
+                          shouldContinueLoop = false;
+                          setVerifiedModalPayload({
+                            patient: verifyRes.patient,
+                            todayRoutine: verifyRes.todayRoutine ?? null,
+                            confidencePercent: verifyRes.confidencePercent,
+                          });
+                          return;
+                        }
+                        // Secondary match check against active Supabase database index entries
+                        const localFallback = matchMultiAngleEmbedding(probe, biometricIndexRef.current, {
+                          similarityThreshold: 0.76,
+                          whitenedThreshold: 0.58,
+                          marginThreshold: 0.05,
+                        });
+                        if (localFallback.matched && localFallback.bestCandidate) {
+                          const fbCand = localFallback.bestCandidate;
+                          didFinishRound = true;
+                          shouldContinueLoop = false;
+                          setVerifiedModalPayload({
+                            patient: {
+                              id: fbCand.patientId,
+                              hn: fbCand.hn,
+                              fullName: fbCand.fullName,
+                              nextAppointmentDate: fbCand.nextAppointmentDate,
+                            },
+                            todayRoutine: fbCand.todayRoutine ?? null,
+                            confidencePercent: localFallback.confidencePercent,
+                          });
+                          return;
+                        }
+                      } catch {
+                        if (!active) {
+                          shouldContinueLoop = false;
+                          return;
+                        }
+                      } finally {
+                        if (!didFinishRound) {
+                          verifyingLockRef.current = false;
+                        }
+                      }
+                      loginCtrlRef.current.recordUnmatchedRound();
+                      burstStarted = false;
+                      setBurstCount(0);
+                      shouldContinueLoop = false;
+                      setScanStage('not_found');
                       return;
                     }
-                  } catch {
-                    if (!active) return;
                   }
-                  loginCtrlRef.current.recordUnmatchedRound();
-                  verifyingLockRef.current = false;
-                  burstStarted = false;
-                  setBurstCount(0);
-                  setScanStage('not_found');
-                  return;
                 }
               }
             }
+          } catch {
+            // Swallow transient MediaPipe / async frame errors and keep scanning
+            verifyingLockRef.current = false;
+          } finally {
+            if (active && shouldContinueLoop) {
+              rafId = requestAnimationFrame(loop);
+            }
           }
-          rafId = requestAnimationFrame(loop);
         };
 
         rafId = requestAnimationFrame(loop);
@@ -890,6 +992,23 @@ export function KioskBiometricLoginView({
                   </div>
                 )}
 
+                {/* Fine-Grained Facial Landmark Mesh Keypoints (478-point contour subset) */}
+                {hudLandmarks.length > 0 && (
+                  <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden">
+                    {hudLandmarks.map((pt, idx) => (
+                      <span
+                        key={idx}
+                        style={{ left: `${pt.xPct}%`, top: `${pt.yPct}%` }}
+                        className={`absolute h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full ${
+                          liveMatchHud?.candidate
+                            ? 'bg-emerald-300 shadow-[0_0_6px_#34d399]'
+                            : 'bg-cyan-300/90 shadow-[0_0_6px_#22d3ee]'
+                        }`}
+                      />
+                    ))}
+                  </div>
+                )}
+
                 {/* Full-Frame Dynamic Face Tracking Bounding Box & Live Verification Badge */}
                 {hudBox && (
                   <div
@@ -920,19 +1039,22 @@ export function KioskBiometricLoginView({
                     </div>
 
                     {liveMatchHud?.candidate ? (
-                      <div className="absolute left-1/2 top-full mt-2 w-max max-w-[290px] -translate-x-1/2 rounded-xl border border-emerald-400/50 bg-slate-950/88 px-3.5 py-2 text-center backdrop-blur-md shadow-2xl">
+                      <div className="absolute left-1/2 top-full mt-2 w-max max-w-[310px] -translate-x-1/2 rounded-xl border border-emerald-400/50 bg-slate-950/88 px-3.5 py-2 text-center backdrop-blur-md shadow-2xl">
                         <div className="text-xs font-black text-emerald-300">
                           ✓ ยืนยันตัวตนสำเร็จ: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
                         </div>
                         <div className="mt-0.5 text-[11px] font-bold text-white/90">
                           ความแม่นยำ: {liveMatchHud.confidencePercent.toFixed(1)}% (3D Multi-Angle Match •{' '}
-                          {liveMatchHud.streak}/5 เฟรม)
+                          {liveMatchHud.streak}/4 เฟรม)
                         </div>
                       </div>
                     ) : (
-                      <div className="absolute left-1/2 top-full mt-2 w-max max-w-[290px] -translate-x-1/2 rounded-xl border border-cyan-400/50 bg-slate-950/85 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
+                      <div className="absolute left-1/2 top-full mt-2 w-max max-w-[320px] -translate-x-1/2 rounded-xl border border-cyan-400/50 bg-slate-950/85 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
                         <div className="text-[11px] font-extrabold text-cyan-200">
                           กำลังสแกนใบหน้าเทียบฐานข้อมูล... {burstCount}/{BURST_FRAME_COUNT}
+                        </div>
+                        <div className="mt-0.5 text-[10px] font-semibold text-cyan-300/80">
+                          เทียบฐานข้อมูล {dbAccountCount} บัญชี • ตรวจจับละเอียด 478 จุดใบหน้า
                         </div>
                       </div>
                     )}

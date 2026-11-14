@@ -95,9 +95,9 @@ export function matchMultiAngleEmbedding(
   candidates: readonly PatientBiometricIndexEntry[],
   options: MultiAngleMatchOptions = {},
 ): MultiAngleMatchResult {
-  const similarityThreshold = options.similarityThreshold ?? 0.78;
-  const whitenedThreshold = options.whitenedThreshold ?? 0.62;
-  const marginThreshold = options.marginThreshold ?? 0.06;
+  const similarityThreshold = options.similarityThreshold ?? 0.74;
+  const whitenedThreshold = options.whitenedThreshold ?? 0.56;
+  const marginThreshold = options.marginThreshold ?? 0.04;
 
   if (probeVector.length === 0 || candidates.length === 0) {
     return {
@@ -117,6 +117,7 @@ export function matchMultiAngleEmbedding(
     candidate: PatientBiometricIndexEntry;
     angle: 'master' | 'center' | 'left' | 'right' | 'up' | 'down';
     rawSim: number;
+    combinedSim: number;
     whitenedSim: number;
   }[] = [];
 
@@ -136,11 +137,16 @@ export function matchMultiAngleEmbedding(
     let bestAngle: 'master' | 'center' | 'left' | 'right' | 'up' | 'down' = 'master';
     let bestRaw = -1;
     let bestWhite = -1;
+    let masterRaw = -1;
 
     for (const item of vectorsToCompare) {
       if (!Array.isArray(item.vec) || item.vec.length !== normalizedProbe.length) continue;
-      const rawSim = cosineSimilarity(normalizedProbe, item.vec);
-      const whitenedSim = computeWhitenedSimilarity(normalizedProbe, item.vec);
+      const normalizedItem = l2Normalize(item.vec);
+      const rawSim = cosineSimilarity(normalizedProbe, normalizedItem);
+      const whitenedSim = computeWhitenedSimilarity(normalizedProbe, normalizedItem);
+      if (item.angle === 'master') {
+        masterRaw = rawSim;
+      }
       if (rawSim > bestRaw) {
         bestRaw = rawSim;
         bestWhite = whitenedSim;
@@ -149,10 +155,13 @@ export function matchMultiAngleEmbedding(
     }
 
     if (bestRaw >= 0) {
+      const effectiveMaster = masterRaw >= 0 ? masterRaw : bestRaw;
+      const combinedSim = Math.max(bestRaw * 0.75 + effectiveMaster * 0.25, effectiveMaster);
       scored.push({
         candidate: cand,
         angle: bestAngle,
         rawSim: bestRaw,
+        combinedSim,
         whitenedSim: bestWhite,
       });
     }
@@ -170,11 +179,11 @@ export function matchMultiAngleEmbedding(
     };
   }
 
-  scored.sort((a, b) => b.rawSim - a.rawSim);
+  scored.sort((a, b) => b.combinedSim - a.combinedSim);
   const top = scored[0];
   const runnerUp = scored[1];
   const runnerUpSim = runnerUp ? runnerUp.rawSim : 0;
-  const margin = runnerUp ? top.rawSim - runnerUp.rawSim : 1;
+  const margin = runnerUp ? Math.max(top.rawSim - runnerUp.rawSim, top.combinedSim - runnerUp.combinedSim) : 1;
 
   const passesMargin = scored.length < 2 || margin >= marginThreshold;
   const matched =
@@ -199,7 +208,7 @@ export function matchMultiAngleEmbedding(
 
 /**
  * Temporal consensus & anti-spoof liveness verifier.
- * Requires 5 consecutive matching frames for the same patientId plus natural 3D depth
+ * Requires consecutive matching frames (default 4) for the same patientId plus natural 3D depth
  * and facial micro-movement / pose variance across frames (rejects printed photos).
  */
 export class TemporalBiometricMatcher {
@@ -214,8 +223,12 @@ export class TemporalBiometricMatcher {
     blinkDetected: boolean;
   }[] = [];
 
-  constructor(requiredConsecutiveFrames = 5) {
+  constructor(requiredConsecutiveFrames = 4) {
     this.requiredConsecutiveFrames = requiredConsecutiveFrames;
+  }
+
+  get currentStreak(): number {
+    return this.streakFrames.length;
   }
 
   reset(): void {

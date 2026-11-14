@@ -536,34 +536,36 @@ export class DrTechCaresApiClient {
 
   // Biometric Kiosk Login & 10-Shot Enrollment
   async verifyFaceLogin(probeVector: readonly number[]): Promise<KioskFaceVerifyResponse> {
-    if (this.supabase) {
-      const { data, error } = await this.supabase.rpc('match_patient_face', {
-        query_embedding: Array.from(probeVector),
-        match_count: 5,
+    try {
+      const res = await fetch(`${this.baseUrl}/api/biometric/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-device-id': this.deviceId },
+        body: JSON.stringify({ probeVector }),
       });
-      if (!error && Array.isArray(data) && data.length > 0) {
-        const candidates: EnrolledTemplateCandidate[] = data
-          .filter((row: Record<string, unknown>) => Array.isArray(row.embedding))
-          .map((row: Record<string, unknown>) => ({
-            patientId: String(row.patient_id),
-            patientName: typeof row.full_name === 'string' ? row.full_name : undefined,
-            pose: (row.pose as BiometricPose) || 'frontal_centroid',
-            vector: row.embedding as number[],
-          }));
-        const verified = verifyHybridBiometricIdentity(probeVector, candidates, {
-          totalEnrolledPatients: new Set(candidates.map((c) => c.patientId)).size || 1,
+      const body = (await res.json()) as KioskFaceVerifyResponse;
+      return body;
+    } catch (err) {
+      if (this.supabase) {
+        const { data, error } = await this.supabase.rpc('match_patient_face', {
+          query_embedding: Array.from(probeVector),
+          match_count: 5,
         });
-        if (!verified.matched) return verified;
+        if (!error && Array.isArray(data) && data.length > 0) {
+          const candidates: EnrolledTemplateCandidate[] = data
+            .filter((row: Record<string, unknown>) => Array.isArray(row.embedding))
+            .map((row: Record<string, unknown>) => ({
+              patientId: String(row.patient_id),
+              patientName: typeof row.full_name === 'string' ? row.full_name : undefined,
+              pose: (row.pose as BiometricPose) || 'frontal_centroid',
+              vector: row.embedding as number[],
+            }));
+          return verifyHybridBiometricIdentity(probeVector, candidates, {
+            totalEnrolledPatients: new Set(candidates.map((c) => c.patientId)).size || 1,
+          });
+        }
       }
+      throw err;
     }
-
-    const res = await fetch(`${this.baseUrl}/api/biometric/verify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-device-id': this.deviceId },
-      body: JSON.stringify({ probeVector }),
-    });
-    const body = (await res.json()) as KioskFaceVerifyResponse;
-    return body;
   }
 
   async getBiometricIndex(): Promise<PatientBiometricIndexEntry[]> {

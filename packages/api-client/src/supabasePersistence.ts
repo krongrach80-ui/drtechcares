@@ -191,16 +191,37 @@ export async function hydrateStateFromSupabase(
       avatarUrl?: string;
     }
   >();
+  const parseVec = (raw: unknown): number[] | undefined => {
+    if (Array.isArray(raw) && raw.length > 0) return raw.map((n) => Number(n));
+    if (typeof raw === 'string' && raw.trim().startsWith('[')) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed.map((n) => Number(n));
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  };
+
   if (biometrics120Res.status === 'fulfilled' && !biometrics120Res.value.error && Array.isArray(biometrics120Res.value.data)) {
     for (const row of biometrics120Res.value.data as Record<string, unknown>[]) {
       const pid = String(row.patient_id);
       if (deletedPatientSet.has(pid)) continue;
+      let parsedAngles =
+        row.angle_embeddings && typeof row.angle_embeddings === 'object'
+          ? (row.angle_embeddings as AngleEmbeddings5D)
+          : undefined;
+      if (!parsedAngles && typeof row.angle_embeddings === 'string' && row.angle_embeddings.trim().startsWith('{')) {
+        try {
+          parsedAngles = JSON.parse(row.angle_embeddings) as AngleEmbeddings5D;
+        } catch {
+          parsedAngles = undefined;
+        }
+      }
       biometrics120ByPatient.set(pid, {
-        masterEmbedding: Array.isArray(row.master_embedding) ? (row.master_embedding as number[]) : undefined,
-        angleEmbeddings:
-          row.angle_embeddings && typeof row.angle_embeddings === 'object'
-            ? (row.angle_embeddings as AngleEmbeddings5D)
-            : undefined,
+        masterEmbedding: parseVec(row.master_embedding),
+        angleEmbeddings: parsedAngles,
         framesCaptured: Number(row.frames_captured ?? 120),
         avatarUrl: typeof row.avatar_url === 'string' ? row.avatar_url : undefined,
       });
@@ -318,26 +339,25 @@ export async function hydrateStateFromSupabase(
     state.face_templates = state.face_templates.filter((t) => activePatientMap.has(t.patientId));
   }
 
-  // Synthesize face_templates for active patients who only have patient_biometrics rows
-  if (state.face_templates.length === 0) {
-    for (const p of state.patients) {
-      if (!activePatientMap.has(p.id)) continue;
-      if (p.angleEmbeddings?.center) {
-        state.face_templates.push({
-          patientId: p.id,
-          patientName: p.fullName,
-          pose: 'frontal_centroid',
-          vector: p.angleEmbeddings.center,
-        });
-      }
-      if (p.masterEmbedding) {
-        state.face_templates.push({
-          patientId: p.id,
-          patientName: p.fullName,
-          pose: 'overall_centroid',
-          vector: p.masterEmbedding,
-        });
-      }
+  // Synthesize face_templates for any active patient who lacks rows in face_templates
+  const templatedPatientIds = new Set(state.face_templates.map((t) => t.patientId));
+  for (const p of state.patients) {
+    if (!activePatientMap.has(p.id) || templatedPatientIds.has(p.id)) continue;
+    if (p.angleEmbeddings?.center) {
+      state.face_templates.push({
+        patientId: p.id,
+        patientName: p.fullName,
+        pose: 'frontal_centroid',
+        vector: p.angleEmbeddings.center,
+      });
+    }
+    if (p.masterEmbedding) {
+      state.face_templates.push({
+        patientId: p.id,
+        patientName: p.fullName,
+        pose: 'overall_centroid',
+        vector: p.masterEmbedding,
+      });
     }
   }
 

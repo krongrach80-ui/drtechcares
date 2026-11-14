@@ -1409,20 +1409,39 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (pathname === '/api/biometrics/index' && method === 'GET') {
       const todayIdx = new Date().getDay();
       const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
+      const inactiveUserPatientIds = new Set(
+        state.users.filter((u) => !u.active && u.patientId).map((u) => u.patientId as string),
+      );
       const index: PatientBiometricIndexEntry[] = [];
       for (const p of state.patients) {
-        if (p.registrationStatus !== 'active' || deletedPatientSet.has(p.id)) continue;
+        if ((p.registrationStatus ?? 'active') !== 'active' || deletedPatientSet.has(p.id) || inactiveUserPatientIds.has(p.id)) {
+          continue;
+        }
         const tplFront = state.face_templates.find((t) => t.patientId === p.id && t.pose === 'frontal_centroid')?.vector;
         const tplOverall = state.face_templates.find((t) => t.patientId === p.id && t.pose === 'overall_centroid')?.vector;
-        const masterEmbedding = p.masterEmbedding ?? tplOverall ?? tplFront;
-        if (!masterEmbedding || masterEmbedding.length === 0) continue;
-        const angleEmbeddings = p.angleEmbeddings ?? {
-          center: Array.from(tplFront ?? masterEmbedding),
-          left: Array.from(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'left')?.vector ?? masterEmbedding),
-          right: Array.from(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'right')?.vector ?? masterEmbedding),
-          up: Array.from(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'nod')?.vector ?? masterEmbedding),
-          down: Array.from(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'nod')?.vector ?? masterEmbedding),
-        };
+        const rawMaster =
+          p.masterEmbedding ??
+          tplOverall ??
+          tplFront ??
+          p.biometricHistory?.overall_centroid ??
+          p.biometricHistory?.frontal_centroid;
+        if (!rawMaster || rawMaster.length === 0) continue;
+        const masterNorm = l2Normalize(rawMaster);
+        const angleEmbeddings = p.angleEmbeddings
+          ? {
+              center: l2Normalize(p.angleEmbeddings.center),
+              left: l2Normalize(p.angleEmbeddings.left),
+              right: l2Normalize(p.angleEmbeddings.right),
+              up: l2Normalize(p.angleEmbeddings.up),
+              down: l2Normalize(p.angleEmbeddings.down),
+            }
+          : {
+              center: l2Normalize(tplFront ?? p.biometricHistory?.frontal_centroid ?? masterNorm),
+              left: l2Normalize(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'left')?.vector ?? masterNorm),
+              right: l2Normalize(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'right')?.vector ?? masterNorm),
+              up: l2Normalize(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'nod')?.vector ?? masterNorm),
+              down: l2Normalize(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'nod')?.vector ?? masterNorm),
+            };
         const course = state.patient_courses.find((c) => c.patientId === p.id) ?? null;
         const todayRoutine = course?.weeklySchedule.find((d) => d.dayIndex === todayIdx) ?? null;
         index.push({
@@ -1435,7 +1454,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           avatarUrl: p.faceImageUrl,
           framesCaptured: p.faceFramesCount ?? 120,
           qualityScore: 0.96,
-          masterEmbedding: Array.from(masterEmbedding),
+          masterEmbedding: masterNorm,
           angleEmbeddings,
           todayRoutine,
         });
@@ -1487,20 +1506,52 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
 
       const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
+      const inactiveUserPatientIds = new Set(
+        state.users.filter((u) => !u.active && u.patientId).map((u) => u.patientId as string),
+      );
       const activePatientIds = new Set(
         state.patients
-          .filter((p) => p.registrationStatus === 'active' && !deletedPatientSet.has(p.id))
+          .filter(
+            (p) =>
+              (p.registrationStatus ?? 'active') === 'active' &&
+              !deletedPatientSet.has(p.id) &&
+              !inactiveUserPatientIds.has(p.id),
+          )
           .map((p) => p.id),
       );
 
-      let candidates: EnrolledTemplateCandidate[] = state.face_templates.filter((t) =>
-        activePatientIds.has(t.patientId),
-      );
+      const probeNorm = l2Normalize(body.probeVector);
+
+      let candidates: EnrolledTemplateCandidate[] = state.face_templates
+        .filter((t) => activePatientIds.has(t.patientId))
+        .map((t) => ({ ...t, vector: l2Normalize(t.vector) }));
+
+      // Ensure active patients with master/angle embeddings but no face_templates row are still in candidates
+      const candidatePatientIds = new Set(candidates.map((c) => c.patientId));
+      for (const p of state.patients) {
+        if (!activePatientIds.has(p.id) || candidatePatientIds.has(p.id)) continue;
+        if (p.angleEmbeddings?.center) {
+          candidates.push({
+            patientId: p.id,
+            patientName: p.fullName,
+            pose: 'frontal_centroid',
+            vector: l2Normalize(p.angleEmbeddings.center),
+          });
+        }
+        if (p.masterEmbedding) {
+          candidates.push({
+            patientId: p.id,
+            patientName: p.fullName,
+            pose: 'overall_centroid',
+            vector: l2Normalize(p.masterEmbedding),
+          });
+        }
+      }
       let totalPatients = activePatientIds.size;
 
       if (supabase && candidates.length === 0 && activePatientIds.size > 0) {
         const { data, error } = await supabase.rpc('match_patient_face', {
-          query_embedding: body.probeVector,
+          query_embedding: probeNorm,
           match_count: 5,
         });
         if (!error && Array.isArray(data) && data.length > 0) {
@@ -1513,13 +1564,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               patientId: String(row.patient_id),
               patientName: typeof row.full_name === 'string' ? row.full_name : undefined,
               pose: (row.pose as BiometricPose) || 'frontal_centroid',
-              vector: row.embedding as number[],
+              vector: l2Normalize(row.embedding as number[]),
             }));
           totalPatients = Math.max(1, new Set(candidates.map((c) => c.patientId)).size);
         }
       }
 
-      const result = verifyHybridBiometricIdentity(body.probeVector, candidates, {
+      const result = verifyHybridBiometricIdentity(probeNorm, candidates, {
         totalEnrolledPatients: totalPatients,
         thresholds: {
           minRawCosMulti: state.system_settings.aiFaceThreshold,
@@ -1533,44 +1584,82 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       let matchedPatientName = matchedPatientId ? result.patientName : null;
       let matchedConfidence = result.confidencePercent;
 
-      // Multi-angle fallback check across 120-frame centroids (master + center/left/right/up/down)
-      // Uses both raw cosine (>= 0.78) and whitened cosine (>= 0.68) + margin >= 0.06 to reject strangers cleanly
+      // Multi-angle check across all active database patient/user accounts (master + 5 angles + face_templates + history)
+      // Aligned with client matcher: raw >= 0.74, whitened >= 0.56, margin >= 0.04 when multiple accounts exist
       if (!matchedPatientId) {
-        const probeWhite = whitenEmbedding(body.probeVector, CANONICAL_HUMAN_FACE_BASELINE_512, COMMON_MODE_ALPHA);
-        const scoresByPatient: { patientId: string; fullName: string; raw: number; white: number }[] = [];
+        const probeWhite = whitenEmbedding(probeNorm, CANONICAL_HUMAN_FACE_BASELINE_512, COMMON_MODE_ALPHA);
+        const scoresByPatient: {
+          patientId: string;
+          fullName: string;
+          raw: number;
+          effectiveRaw: number;
+          white: number;
+          rankScore: number;
+        }[] = [];
         for (const p of state.patients) {
-          if (p.registrationStatus !== 'active' || !activePatientIds.has(p.id)) continue;
-          const vecs: readonly number[][] = [
-            ...(p.masterEmbedding ? [p.masterEmbedding] : []),
-            ...(p.angleEmbeddings
-              ? [
-                  p.angleEmbeddings.center,
-                  p.angleEmbeddings.left,
-                  p.angleEmbeddings.right,
-                  p.angleEmbeddings.up,
-                  p.angleEmbeddings.down,
-                ]
-              : []),
-          ];
-          if (vecs.length === 0) continue;
+          if (!activePatientIds.has(p.id)) continue;
+          const rawVecs: (readonly number[])[] = [];
+          if (p.masterEmbedding?.length) rawVecs.push(p.masterEmbedding);
+          if (p.angleEmbeddings) {
+            for (const angleVec of [
+              p.angleEmbeddings.center,
+              p.angleEmbeddings.left,
+              p.angleEmbeddings.right,
+              p.angleEmbeddings.up,
+              p.angleEmbeddings.down,
+            ]) {
+              if (angleVec?.length) rawVecs.push(angleVec);
+            }
+          }
+          if (p.biometricHistory) {
+            if (p.biometricHistory.frontal_centroid?.length) rawVecs.push(p.biometricHistory.frontal_centroid);
+            if (p.biometricHistory.overall_centroid?.length) rawVecs.push(p.biometricHistory.overall_centroid);
+            for (const rf of p.biometricHistory.raw_frames ?? []) {
+              if (rf.vector?.length) rawVecs.push(rf.vector);
+            }
+          }
+          for (const tpl of state.face_templates) {
+            if (tpl.patientId === p.id && tpl.vector.length) {
+              rawVecs.push(tpl.vector);
+            }
+          }
+          if (rawVecs.length === 0) continue;
+
+          const masterNorm = l2Normalize(p.masterEmbedding ?? p.biometricHistory?.overall_centroid ?? rawVecs[0]);
+          const masterRaw = cosineSimilarity(probeNorm, masterNorm);
+
           let bestRaw = -1;
           let bestWhite = -1;
-          for (const v of vecs) {
-            const raw = cosineSimilarity(body.probeVector, v);
-            const vWhite = whitenEmbedding(v, CANONICAL_HUMAN_FACE_BASELINE_512, COMMON_MODE_ALPHA);
+          for (const v of rawVecs) {
+            if (v.length !== FACE_EMBEDDING_DIM) continue;
+            const vNorm = l2Normalize(v);
+            const raw = cosineSimilarity(probeNorm, vNorm);
+            const vWhite = whitenEmbedding(vNorm, CANONICAL_HUMAN_FACE_BASELINE_512, COMMON_MODE_ALPHA);
             const wCos = cosineSimilarity(probeWhite, vWhite);
             if (raw > bestRaw) {
               bestRaw = raw;
+            }
+            if (wCos > bestWhite) {
               bestWhite = wCos;
             }
           }
-          scoresByPatient.push({ patientId: p.id, fullName: p.fullName, raw: bestRaw, white: bestWhite });
+          const effectiveRaw = Math.max(bestRaw * 0.75 + masterRaw * 0.25, masterRaw);
+          scoresByPatient.push({
+            patientId: p.id,
+            fullName: p.fullName,
+            raw: bestRaw,
+            effectiveRaw,
+            white: bestWhite,
+            rankScore: effectiveRaw * 0.65 + bestWhite * 0.35,
+          });
         }
-        scoresByPatient.sort((a, b) => b.raw - a.raw);
+        scoresByPatient.sort((a, b) => b.rankScore - a.rankScore);
         const top = scoresByPatient[0];
         const runner = scoresByPatient[1];
-        const margin = runner ? top.raw - runner.raw : 1;
-        if (top && top.raw >= 0.78 && top.white >= 0.68 && margin >= 0.06) {
+        const effectiveMargin = runner ? top.effectiveRaw - runner.effectiveRaw : 1;
+        const rawMargin = runner ? top.raw - runner.raw : 1;
+        const margin = Math.max(effectiveMargin, rawMargin);
+        if (top && top.raw >= 0.74 && top.white >= 0.56 && (scoresByPatient.length === 1 || margin >= 0.04)) {
           matchedPatientId = top.patientId;
           matchedPatientName = top.fullName;
           matchedConfidence = Number(Math.min(99.9, top.raw * 100).toFixed(1));

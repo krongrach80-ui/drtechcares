@@ -133,18 +133,24 @@ export function extractHybrid512Descriptor(
   const { width, height, data } = image;
   const vec = new Array<number>(FACE_EMBEDDING_DIM).fill(0);
 
-  // Downsample grayscale to 16x16 grid for fast DCT (0..127)
+  // Downsample grayscale to 16x16 grid with 2x2 cell averaging for noise-resistant DCT (0..127)
   const grid = 16;
   const gray16 = new Float32Array(grid * grid);
   const cellW = Math.max(1, width / grid);
   const cellH = Math.max(1, height / grid);
+  const sampleLum = (px: number, py: number): number => {
+    const idx = (py * width + px) * 4;
+    return 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+  };
 
   for (let gy = 0; gy < grid; gy += 1) {
     for (let gx = 0; gx < grid; gx += 1) {
-      const px = Math.min(width - 1, Math.floor((gx + 0.5) * cellW));
-      const py = Math.min(height - 1, Math.floor((gy + 0.5) * cellH));
-      const idx = (py * width + px) * 4;
-      gray16[gy * grid + gx] = (0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2]) / 255.0;
+      const x0 = Math.min(width - 1, Math.floor((gx + 0.25) * cellW));
+      const x1 = Math.min(width - 1, Math.floor((gx + 0.75) * cellW));
+      const y0 = Math.min(height - 1, Math.floor((gy + 0.25) * cellH));
+      const y1 = Math.min(height - 1, Math.floor((gy + 0.75) * cellH));
+      gray16[gy * grid + gx] =
+        (sampleLum(x0, y0) + sampleLum(x1, y0) + sampleLum(x0, y1) + sampleLum(x1, y1)) / (4 * 255.0);
     }
   }
 
@@ -195,7 +201,7 @@ export function extractHybrid512Descriptor(
     }
   }
 
-  // 256..511: 3D Craniofacial geometric ratios anchored by inter-ocular distance
+  // 256..511: High-detail 3D Craniofacial geometric ratios anchored by inter-ocular distance & key anatomical landmarks
   if (landmarks3D.length >= 10) {
     const pLeft = landmarks3D[33] ?? landmarks3D[0];
     const pRight = landmarks3D[263] ?? landmarks3D[1];
@@ -204,17 +210,34 @@ export function extractHybrid512Descriptor(
       1e-4,
       Math.hypot(pRight.x - pLeft.x, pRight.y - pLeft.y, (pRight.z ?? 0) - (pLeft.z ?? 0)),
     );
+    const keyAnchors = [
+      landmarks3D[33] ?? nose,
+      landmarks3D[133] ?? nose,
+      landmarks3D[362] ?? nose,
+      landmarks3D[263] ?? nose,
+      landmarks3D[4] ?? nose,
+      landmarks3D[168] ?? nose,
+      landmarks3D[61] ?? nose,
+      landmarks3D[291] ?? nose,
+      landmarks3D[152] ?? nose,
+      landmarks3D[234] ?? nose,
+      landmarks3D[454] ?? nose,
+    ];
 
     const anchorPairs = 256;
     for (let k = 0; k < anchorPairs; k += 1) {
       const lmIdx = (k * 7) % landmarks3D.length;
       const lm = landmarks3D[lmIdx];
+      const ref = keyAnchors[k % keyAnchors.length];
       const dx = (lm.x - nose.x) / iod;
       const dy = (lm.y - nose.y) / iod;
       const dz = ((lm.z ?? 0) - (nose.z ?? 0)) / iod;
       const dist = Math.hypot(dx, dy, dz);
+      const refDist = Math.hypot(lm.x - ref.x, lm.y - ref.y, (lm.z ?? 0) - (ref.z ?? 0)) / iod;
       // Combine with common-mode canonical baseline structure so whitening highlights true deviation
-      vec[256 + k] = 0.65 * CANONICAL_HUMAN_FACE_BASELINE_512[256 + k] + 0.35 * (dist * 0.05 + (dx - dy) * 0.02);
+      vec[256 + k] =
+        0.65 * CANONICAL_HUMAN_FACE_BASELINE_512[256 + k] +
+        0.35 * (dist * 0.04 + refDist * 0.03 + (dx - dy) * 0.02);
     }
   } else {
     for (let k = 256; k < FACE_EMBEDDING_DIM; k += 1) {
