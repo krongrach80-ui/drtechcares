@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import type {
@@ -26,12 +26,15 @@ import {
 } from '../lib/faceMatcher';
 import {
   Activity,
-  Calendar,
+  CalendarDays,
   Camera,
+  Check,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Dumbbell,
   FileText,
   KeyRound,
-  Plus,
   ScanFace,
   Trash2,
   UserPlus,
@@ -1201,6 +1204,134 @@ export function PatientProfileAndHistoryModal({
   );
 }
 
+const MONTH_LABELS: Record<ClinicalLang, readonly string[]> = {
+  th: [
+    'มกราคม',
+    'กุมภาพันธ์',
+    'มีนาคม',
+    'เมษายน',
+    'พฤษภาคม',
+    'มิถุนายน',
+    'กรกฎาคม',
+    'สิงหาคม',
+    'กันยายน',
+    'ตุลาคม',
+    'พฤศจิกายน',
+    'ธันวาคม',
+  ],
+  en: [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ],
+  cn: ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月'],
+};
+
+const CALENDAR_DOW_HEADERS: Record<ClinicalLang, readonly string[]> = {
+  th: ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'],
+  en: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+  cn: ['日', '一', '二', '三', '四', '五', '六'],
+};
+
+const WEEKDAY_TOGGLE_OPTIONS: ReadonlyArray<{
+  dayIndex: number;
+  label: Record<ClinicalLang, string>;
+  short: Record<ClinicalLang, string>;
+}> = [
+  { dayIndex: 1, label: { th: 'จันทร์', en: 'Monday', cn: '周一' }, short: { th: 'จ.', en: 'Mon', cn: '一' } },
+  { dayIndex: 2, label: { th: 'อังคาร', en: 'Tuesday', cn: '周二' }, short: { th: 'อ.', en: 'Tue', cn: '二' } },
+  { dayIndex: 3, label: { th: 'พุธ', en: 'Wednesday', cn: '周三' }, short: { th: 'พ.', en: 'Wed', cn: '三' } },
+  { dayIndex: 4, label: { th: 'พฤหัสบดี', en: 'Thursday', cn: '周四' }, short: { th: 'พฤ.', en: 'Thu', cn: '四' } },
+  { dayIndex: 5, label: { th: 'ศุกร์', en: 'Friday', cn: '周五' }, short: { th: 'ศ.', en: 'Fri', cn: '五' } },
+  { dayIndex: 6, label: { th: 'เสาร์', en: 'Saturday', cn: '周六' }, short: { th: 'ส.', en: 'Sat', cn: '六' } },
+  { dayIndex: 0, label: { th: 'อาทิตย์', en: 'Sunday', cn: '周日' }, short: { th: 'อา.', en: 'Sun', cn: '日' } },
+];
+
+const WEEKDAY_PRESETS: ReadonlyArray<{
+  id: string;
+  label: Record<ClinicalLang, string>;
+  days: number[];
+}> = [
+  { id: 'mwf', label: { th: 'จ. / พ. / ศ.', en: 'Mon / Wed / Fri', cn: '一 / 三 / 五' }, days: [1, 3, 5] },
+  { id: 'tts', label: { th: 'อ. / พฤ. / ส.', en: 'Tue / Thu / Sat', cn: '二 / 四 / 六' }, days: [2, 4, 6] },
+  { id: 'weekdays', label: { th: 'จันทร์–ศุกร์', en: 'Mon–Fri', cn: '工作日' }, days: [1, 2, 3, 4, 5] },
+  { id: 'weekend', label: { th: 'เสาร์–อาทิตย์', en: 'Sat–Sun', cn: '周末' }, days: [6, 0] },
+  { id: 'daily', label: { th: 'ทุกวัน (7 วัน)', en: 'Every Day', cn: '每天' }, days: [1, 2, 3, 4, 5, 6, 0] },
+];
+
+const EXERCISE_FILTER_TABS: ReadonlyArray<{
+  id: 'all' | 'upper_limb' | 'lower_limb' | 'neck_trunk' | 'balance';
+  label: Record<ClinicalLang, string>;
+}> = [
+  { id: 'all', label: { th: 'ทั้งหมด', en: 'All Postures', cn: '全部动作' } },
+  { id: 'upper_limb', label: { th: 'แขนและไหล่', en: 'Upper Limb', cn: '上肢/肩肘' } },
+  { id: 'lower_limb', label: { th: 'ขาและเข่า', en: 'Lower Limb', cn: '下肢/膝踝' } },
+  { id: 'neck_trunk', label: { th: 'คอและลำตัว', en: 'Neck & Trunk', cn: '颈部/躯干' } },
+  { id: 'balance', label: { th: 'ฝึกทรงตัว', en: 'Balance', cn: '平衡训练' } },
+];
+
+/** Parses YYYY-MM-DD cleanly in local calendar coordinates without UTC drift. */
+function parseIsoYmd(iso: string | null | undefined): { year: number; month: number; day: number } {
+  if (iso && /^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+    const [y, m, d] = iso.split('-').map(Number);
+    return { year: y, month: m - 1, day: d };
+  }
+  const now = new Date();
+  return { year: now.getFullYear(), month: now.getMonth(), day: now.getDate() };
+}
+
+/** Formats local year, 0-based month, and day as YYYY-MM-DD. */
+function formatIsoYmd(year: number, month: number, day: number): string {
+  const dt = new Date(year, month, day);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+}
+
+/** Builds Sunday-aligned calendar cells for a single month (null for leading padding). */
+function getMonthCalendarCells(year: number, month: number): (number | null)[] {
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells: (number | null)[] = [];
+  for (let i = 0; i < firstDay; i += 1) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d += 1) cells.push(d);
+  return cells;
+}
+
+/** Computes sorted unique YYYY-MM-DD dates matching the chosen weekdays across N months. */
+function computeWeeklyDatesForMonths(opts: {
+  startYear: number;
+  startMonth: number;
+  monthSpan: number;
+  weekdays: number[];
+  minDateIso?: string | null;
+}): string[] {
+  const weekdaySet = new Set(opts.weekdays);
+  if (weekdaySet.size === 0) return [];
+  const results: string[] = [];
+  for (let mOffset = 0; mOffset < Math.max(1, opts.monthSpan); mOffset += 1) {
+    const target = new Date(opts.startYear, opts.startMonth + mOffset, 1);
+    const y = target.getFullYear();
+    const m = target.getMonth();
+    const daysInMonth = new Date(y, m + 1, 0).getDate();
+    for (let d = 1; d <= daysInMonth; d += 1) {
+      const dow = new Date(y, m, d).getDay();
+      if (!weekdaySet.has(dow)) continue;
+      const iso = formatIsoYmd(y, m, d);
+      if (opts.minDateIso && iso < opts.minDateIso) continue;
+      results.push(iso);
+    }
+  }
+  return results;
+}
+
 export function ScheduleCreatorAndDayModal({
   mode,
   selectedDateIso,
@@ -1226,106 +1357,269 @@ export function ScheduleCreatorAndDayModal({
 }) {
   const { lang } = useClinicalI18n();
   const sm = SUBMODAL_TEXT[lang];
+  const todayIso = useMemo(() => {
+    const now = new Date();
+    return formatIsoYmd(now.getFullYear(), now.getMonth(), now.getDate());
+  }, []);
+
   const [targetPatientId, setTargetPatientId] = useState(patient?.id || patients[0]?.id || '');
   const [ptId, setPtId] = useState(patient?.assignedPtId || ptUsers[0]?.id || '');
-  const [exerciseId, setExerciseId] = useState(exercises[0]?.id || '');
+  const [exerciseCategoryFilter, setExerciseCategoryFilter] = useState<
+    'all' | 'upper_limb' | 'lower_limb' | 'neck_trunk' | 'balance'
+  >('all');
+  const [selectedExerciseIds, setSelectedExerciseIds] = useState<string[]>(() =>
+    exercises[0]?.id ? [exercises[0].id] : [],
+  );
   const [modpackId, setModpackId] = useState(modpacks[0]?.id || '');
-  const [startDate, setStartDate] = useState(selectedDateIso || new Date().toISOString().slice(0, 10));
-  const [repeatDays, setRepeatDays] = useState(3);
   const [sets, setSets] = useState(3);
   const [reps, setReps] = useState(10);
   const [notes, setNotes] = useState('ตารางฝึกตามโปรแกรมคลินิก');
+
+  const [dateSelectMode, setDateSelectMode] = useState<'daily' | 'weekly'>('daily');
+  const [viewMonthDate, setViewMonthDate] = useState<{ year: number; month: number }>(() => {
+    const p = parseIsoYmd(selectedDateIso || todayIso);
+    return { year: p.year, month: p.month };
+  });
+  const [manualDates, setManualDates] = useState<string[]>(() => [selectedDateIso || todayIso]);
+  const [selectedWeekdays, setSelectedWeekdays] = useState<number[]>(() => {
+    const p = parseIsoYmd(selectedDateIso || todayIso);
+    return [new Date(p.year, p.month, p.day).getDay()];
+  });
+  const [monthSpan, setMonthSpan] = useState<number>(1);
+  const [startFromAnchorOnly, setStartFromAnchorOnly] = useState<boolean>(false);
+  const [weeklyExcludedDates, setWeeklyExcludedDates] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    if (!mode) return;
+    const anchorIso = selectedDateIso || todayIso;
+    const parsed = parseIsoYmd(anchorIso);
     if (patient?.id) setTargetPatientId(patient.id);
     if (patient?.assignedPtId) setPtId(patient.assignedPtId);
-    if (selectedDateIso) setStartDate(selectedDateIso);
-  }, [patient, selectedDateIso, mode]);
+    setViewMonthDate({ year: parsed.year, month: parsed.month });
+    setManualDates([anchorIso]);
+    setSelectedWeekdays([new Date(parsed.year, parsed.month, parsed.day).getDay()]);
+    setMonthSpan(1);
+    setStartFromAnchorOnly(false);
+    setWeeklyExcludedDates([]);
+    setSelectedExerciseIds((prev) => (prev.length > 0 ? prev : exercises[0]?.id ? [exercises[0].id] : []));
+  }, [patient, selectedDateIso, mode, todayIso, exercises]);
+
+  const activePatient = patients.find((p) => p.id === targetPatientId) || patient;
+  const existingScheduleDatesSet = useMemo(() => {
+    const map = new Map<string, RehabScheduleItem[]>();
+    for (const item of activePatient?.rehabSchedules ?? []) {
+      const list = map.get(item.scheduledDate) ?? [];
+      list.push(item);
+      map.set(item.scheduledDate, list);
+    }
+    return map;
+  }, [activePatient]);
+
+  const dayItems = useMemo(() => {
+    if (mode !== 'day_detail' || !activePatient || !selectedDateIso) return [];
+    return existingScheduleDatesSet.get(selectedDateIso) ?? [];
+  }, [mode, activePatient, selectedDateIso, existingScheduleDatesSet]);
+
+  const filteredExercises = useMemo(() => {
+    if (exerciseCategoryFilter === 'all') return exercises;
+    return exercises.filter((ex) => ex.category === exerciseCategoryFilter);
+  }, [exercises, exerciseCategoryFilter]);
+
+  const computedWeeklyBaseDates = useMemo(() => {
+    const minIso = startFromAnchorOnly ? selectedDateIso || todayIso : null;
+    return computeWeeklyDatesForMonths({
+      startYear: viewMonthDate.year,
+      startMonth: viewMonthDate.month,
+      monthSpan,
+      weekdays: selectedWeekdays,
+      minDateIso: minIso,
+    });
+  }, [viewMonthDate, monthSpan, selectedWeekdays, startFromAnchorOnly, selectedDateIso, todayIso]);
+
+  const finalSelectedDates = useMemo(() => {
+    if (dateSelectMode === 'daily') {
+      return [...manualDates].sort();
+    }
+    const excluded = new Set(weeklyExcludedDates);
+    return computedWeeklyBaseDates.filter((d) => !excluded.has(d));
+  }, [dateSelectMode, manualDates, computedWeeklyBaseDates, weeklyExcludedDates]);
+
+  const finalSelectedDateSet = useMemo(() => new Set(finalSelectedDates), [finalSelectedDates]);
+  const monthCells = useMemo(
+    () => getMonthCalendarCells(viewMonthDate.year, viewMonthDate.month),
+    [viewMonthDate.year, viewMonthDate.month],
+  );
 
   if (!mode) return null;
 
-  const activePatient = patients.find((p) => p.id === targetPatientId) || patient;
-  const dayItems =
-    mode === 'day_detail' && activePatient && selectedDateIso
-      ? (activePatient.rehabSchedules ?? []).filter((s) => s.scheduledDate === selectedDateIso)
-      : [];
+  const anchorIso = selectedDateIso || todayIso;
+
+  const toggleExercise = (id: string) => {
+    setSelectedExerciseIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+  };
+
+  const toggleManualDate = (iso: string) => {
+    setManualDates((prev) => (prev.includes(iso) ? prev.filter((d) => d !== iso) : [...prev, iso].sort()));
+  };
+
+  const toggleWeeklyException = (iso: string) => {
+    const p = parseIsoYmd(iso);
+    const dow = new Date(p.year, p.month, p.day).getDay();
+    if (!selectedWeekdays.includes(dow)) return;
+    setWeeklyExcludedDates((prev) => (prev.includes(iso) ? prev.filter((d) => d !== iso) : [...prev, iso]));
+  };
+
+  const toggleWeekday = (dow: number) => {
+    setWeeklyExcludedDates([]);
+    setSelectedWeekdays((prev) => (prev.includes(dow) ? prev.filter((d) => d !== dow) : [...prev, dow]));
+  };
+
+  const shiftViewMonth = (delta: number) => {
+    setViewMonthDate((prev) => {
+      const next = new Date(prev.year, prev.month + delta, 1);
+      return { year: next.getFullYear(), month: next.getMonth() };
+    });
+  };
+
+  const selectThisWeekInDaily = () => {
+    const p = parseIsoYmd(anchorIso);
+    const base = new Date(p.year, p.month, p.day);
+    const dow = base.getDay();
+    const sunday = new Date(base.getFullYear(), base.getMonth(), base.getDate() - dow);
+    const weekDates: string[] = [];
+    for (let i = 0; i < 7; i += 1) {
+      const d = new Date(sunday.getFullYear(), sunday.getMonth(), sunday.getDate() + i);
+      weekDates.push(formatIsoYmd(d.getFullYear(), d.getMonth(), d.getDate()));
+    }
+    setManualDates((prev) => Array.from(new Set([...prev, ...weekDates])).sort());
+  };
+
+  const handleSaveSchedule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activePatient || selectedExerciseIds.length === 0 || finalSelectedDates.length === 0) return;
+    setSaving(true);
+    try {
+      const replacementKeys = new Set<string>();
+      const generated: RehabScheduleItem[] = [];
+      const baseTs = Date.now();
+      let seq = 0;
+
+      for (const dateIso of finalSelectedDates) {
+        for (const exId of selectedExerciseIds) {
+          replacementKeys.add(`${dateIso}::${exId}`);
+          seq += 1;
+          generated.push({
+            id: `sched-${baseTs}-${seq}`,
+            patientId: activePatient.id,
+            ptId: ptId || activePatient.assignedPtId,
+            exerciseId: exId,
+            modpackId: modpackId || undefined,
+            scheduledDate: dateIso,
+            sets,
+            reps,
+            status: 'ACTIVE',
+            notes,
+          });
+        }
+      }
+
+      const keptExisting = (activePatient.rehabSchedules ?? []).filter(
+        (item) => !replacementKeys.has(`${item.scheduledDate}::${item.exerciseId || ''}`),
+      );
+      const merged = [...keptExisting, ...generated].sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate));
+      const upcomingActive = merged.find((item) => item.status === 'ACTIVE' && item.scheduledDate >= todayIso);
+      const nextAppt = upcomingActive?.scheduledDate || finalSelectedDates[0] || activePatient.nextAppointmentDate;
+
+      await apiClient.updatePatient(activePatient.id, {
+        nextAppointmentDate: nextAppt,
+        rehabSchedules: merged,
+      });
+
+      await onSaved(
+        `บันทึกตารางกายภาพ ${selectedExerciseIds.length} ท่า จำนวน ${finalSelectedDates.length} วัน (${generated.length} รายการ) ให้ ${activePatient.fullName} แล้ว`,
+      );
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <Calendar className="h-5 w-5 text-emerald-600 shrink-0" />
-            <h3 className="text-base font-black text-slate-900 truncate">
-              {mode === 'create'
-                ? sm.schedCreateTitle
-                : `${sm.schedDayTitle} ${selectedDateIso}`}
-            </h3>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-3 sm:p-4 backdrop-blur-sm">
+      <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto rounded-3xl bg-white p-5 sm:p-7 shadow-2xl border border-slate-200 space-y-5 text-xs">
+        {/* Modal Header */}
+        <div className="flex items-center justify-between border-b border-slate-100 pb-3.5">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-200">
+              <CalendarDays className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-base sm:text-lg font-black text-slate-900 truncate">
+                {mode === 'day_detail'
+                  ? `${sm.schedDayTitle} ${selectedDateIso}`
+                  : sm.schedCreateTitle}
+              </h3>
+              <p className="text-[11px] font-semibold text-slate-500">
+                เลือกท่ากายภาพบำบัด และกำหนดวันฝึกแบบรายวันหรือรายสัปดาห์ต่อเดือน
+              </p>
+            </div>
           </div>
-          <button type="button" onClick={onClose} className="rounded-xl p-1 text-slate-400 hover:bg-slate-100 shrink-0">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 shrink-0 cursor-pointer"
+          >
             <X className="h-5 w-5" />
           </button>
         </div>
 
+        {/* Section A: Existing Scheduled Items on Clicked Date */}
         {mode === 'day_detail' && activePatient && selectedDateIso && (
-          <div className="space-y-3">
-            <div className="rounded-xl bg-slate-50 px-3.5 py-2.5 font-bold text-slate-700">
-              {sm.patientLabel} {activePatient.fullName} ({activePatient.hn})
-            </div>
-
-            {dayItems.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center text-slate-400 space-y-2">
-                <p>
-                  {sm.emptyDayMsg} {selectedDateIso}
-                </p>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="font-extrabold text-slate-800">
+                รายการที่กำหนดไว้ในวันที่ <span className="text-emerald-700 font-mono">{selectedDateIso}</span> •{' '}
+                {activePatient.fullName} ({activePatient.hn})
+              </div>
+              {dayItems.length > 1 && (
                 <button
                   type="button"
                   onClick={async () => {
-                    const updated: RehabScheduleItem[] = [
-                      ...(activePatient.rehabSchedules ?? []),
-                      {
-                        id: `sched-${Date.now()}`,
-                        patientId: activePatient.id,
-                        ptId: activePatient.assignedPtId,
-                        exerciseId: exercises[0]?.id,
-                        modpackId: modpacks[0]?.id,
-                        scheduledDate: selectedDateIso,
-                        sets: 3,
-                        reps: 10,
-                        status: 'ACTIVE',
-                        notes: 'เพิ่มนัดหมายจากการคลิกปฏิทิน',
-                      },
-                    ];
-                    await apiClient.updatePatient(activePatient.id, {
-                      nextAppointmentDate: selectedDateIso,
-                      rehabSchedules: updated,
-                    });
-                    await onSaved(`เพิ่มตารางฝึกวันที่ ${selectedDateIso} แล้ว`);
-                    onClose();
+                    const nextList = (activePatient.rehabSchedules ?? []).filter(
+                      (s) => s.scheduledDate !== selectedDateIso,
+                    );
+                    await apiClient.updatePatient(activePatient.id, { rehabSchedules: nextList });
+                    await onSaved(`ลบรายการฝึกทั้งหมดของวันที่ ${selectedDateIso} แล้ว`);
                   }}
-                  className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1 rounded-xl bg-emerald-600 font-bold text-white"
+                  className="whitespace-nowrap rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-bold text-rose-700 hover:bg-rose-100 cursor-pointer"
                 >
-                  <Plus className="h-3.5 w-3.5 shrink-0" /> {sm.addTodayApptBtn}
+                  <Trash2 className="inline h-3 w-3 mr-1" /> ลบทั้งหมดของวันนี้ ({dayItems.length})
                 </button>
+              )}
+            </div>
+
+            {dayItems.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-3 text-slate-500 font-semibold">
+                {sm.emptyDayMsg} {selectedDateIso} — สามารถเลือกท่ากายภาพและวันฝึกด้านล่างได้ทันที
               </div>
             ) : (
-              <div className="space-y-2.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 {dayItems.map((item) => {
                   const ex = exercises.find((e) => e.id === item.exerciseId);
                   const mp = modpacks.find((m) => m.id === item.modpackId);
                   return (
-                    <div key={item.id} className="rounded-2xl border border-slate-200 p-3.5 space-y-2.5">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="font-extrabold text-slate-900">
+                    <div key={item.id} className="rounded-2xl border border-slate-200 bg-white p-3 space-y-2 shadow-xs">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-extrabold text-slate-900 truncate">
                             {ex ? ex.name[lang] || ex.name.th : 'Rehab Course'} {mp ? `• ${mp.name}` : ''}
                           </div>
                           <div className="text-[11px] text-slate-500">
                             {item.sets} × {item.reps} {item.notes ? `• ${item.notes}` : ''}
                           </div>
                         </div>
-                        <span className="whitespace-nowrap rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-black">
+                        <span className="whitespace-nowrap rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-black text-slate-700">
                           {item.status}
                         </span>
                       </div>
@@ -1348,7 +1642,7 @@ export function ScheduleCreatorAndDayModal({
                               await apiClient.updatePatient(activePatient.id, { rehabSchedules: nextList });
                               await onSaved(`เปลี่ยนสถานะวันที่ ${selectedDateIso} เป็น ${btn.label}`);
                             }}
-                            className={`whitespace-nowrap rounded-lg px-2.5 py-1 text-[11px] font-bold ${btn.cls}`}
+                            className={`whitespace-nowrap rounded-lg px-2 py-1 text-[10px] font-bold cursor-pointer ${btn.cls}`}
                           >
                             {btn.label}
                           </button>
@@ -1360,7 +1654,7 @@ export function ScheduleCreatorAndDayModal({
                             await apiClient.updatePatient(activePatient.id, { rehabSchedules: nextList });
                             await onSaved(`ลบนัดหมายวันที่ ${selectedDateIso} แล้ว`);
                           }}
-                          className="whitespace-nowrap rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-bold text-rose-700"
+                          className="whitespace-nowrap rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-bold text-rose-700 cursor-pointer"
                         >
                           <Trash2 className="inline h-3 w-3 mr-0.5" /> {sm.deleteBtn}
                         </button>
@@ -1373,96 +1667,175 @@ export function ScheduleCreatorAndDayModal({
           </div>
         )}
 
-        {mode === 'create' && (
-          <form
-            onSubmit={async (e) => {
-              e.preventDefault();
-              if (!activePatient) return;
-              setSaving(true);
-              try {
-                const start = new Date(startDate);
-                const generated: RehabScheduleItem[] = [];
-                for (let i = 0; i < Math.max(1, repeatDays); i += 1) {
-                  const d = new Date(start.getTime() + i * 2 * 24 * 60 * 60 * 1000);
-                  generated.push({
-                    id: `sched-${Date.now()}-${i}`,
-                    patientId: activePatient.id,
-                    ptId,
-                    exerciseId,
-                    modpackId,
-                    scheduledDate: d.toISOString().slice(0, 10),
-                    sets,
-                    reps,
-                    status: 'ACTIVE',
-                    notes,
-                  });
-                }
-                const merged = [...(activePatient.rehabSchedules ?? []), ...generated];
-                await apiClient.updatePatient(activePatient.id, {
-                  nextAppointmentDate: startDate,
-                  rehabSchedules: merged,
-                });
-                await onSaved(`สร้างตารางนัด ${generated.length} วันให้ ${activePatient.fullName} แล้ว`);
-                onClose();
-              } finally {
-                setSaving(false);
-              }
-            }}
-            className="space-y-3"
-          >
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">{sm.selectPatientLabel}</label>
-                <select
-                  value={targetPatientId}
-                  onChange={(e) => setTargetPatientId(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 font-semibold"
-                >
-                  {patients.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.fullName} ({p.hn})
-                    </option>
-                  ))}
-                </select>
+        {/* Section B & C: Posture Selector + Dual-Mode Date Builder */}
+        <form onSubmit={handleSaveSchedule} className="space-y-5">
+          {/* Patient & PT Selection */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block font-bold text-slate-600 mb-1">{sm.selectPatientLabel}</label>
+              <select
+                value={targetPatientId}
+                onChange={(e) => setTargetPatientId(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-bold text-slate-800"
+              >
+                {patients.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.fullName} ({p.hn})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block font-bold text-slate-600 mb-1">{sm.selectPtLabel}</label>
+              <select
+                value={ptId}
+                onChange={(e) => setPtId(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-bold text-slate-800"
+              >
+                {ptUsers.map((pt) => (
+                  <option key={pt.id} value={pt.id}>
+                    {pt.fullName}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* 1. เลือกท่าทางในการกายภาพได้ */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-600 text-[11px] font-black text-white">
+                  1
+                </span>
+                <span className="text-sm font-black text-slate-900 flex items-center gap-1.5">
+                  <Dumbbell className="h-4 w-4 text-emerald-600" />
+                  เลือกท่าทางในการกายภาพบำบัด (เลือกได้หลายท่า)
+                </span>
+                <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[11px] font-extrabold text-emerald-700">
+                  เลือกแล้ว {selectedExerciseIds.length} ท่า
+                </span>
               </div>
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">{sm.selectPtLabel}</label>
-                <select
-                  value={ptId}
-                  onChange={(e) => setPtId(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 font-semibold"
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setSelectedExerciseIds(filteredExercises.map((ex) => ex.id))}
+                  className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 cursor-pointer"
                 >
-                  {ptUsers.map((pt) => (
-                    <option key={pt.id} value={pt.id}>
-                      {pt.fullName}
-                    </option>
-                  ))}
-                </select>
+                  เลือกทั้งหมดในหมวดนี้
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedExerciseIds([])}
+                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-500 hover:bg-rose-50 hover:text-rose-700 cursor-pointer"
+                >
+                  ล้างท่า
+                </button>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">{sm.exerciseLabel}</label>
-                <select
-                  value={exerciseId}
-                  onChange={(e) => setExerciseId(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2"
+            {/* Category Filter Tabs */}
+            <div className="flex flex-wrap gap-1.5">
+              {EXERCISE_FILTER_TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setExerciseCategoryFilter(tab.id)}
+                  className={`rounded-xl px-3 py-1.5 text-[11px] font-bold transition cursor-pointer ${
+                    exerciseCategoryFilter === tab.id
+                      ? 'bg-slate-900 text-white shadow-xs'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
                 >
-                  {exercises.map((ex) => (
-                    <option key={ex.id} value={ex.id}>
-                      {ex.name[lang] || ex.name.th}
-                    </option>
-                  ))}
-                </select>
+                  {tab.label[lang]}
+                </button>
+              ))}
+            </div>
+
+            {/* Interactive Posture Multi-Select Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-60 overflow-y-auto pr-1">
+              {filteredExercises.map((ex) => {
+                const checked = selectedExerciseIds.includes(ex.id);
+                return (
+                  <button
+                    key={ex.id}
+                    type="button"
+                    onClick={() => toggleExercise(ex.id)}
+                    className={`rounded-2xl border p-3 text-left transition cursor-pointer flex items-start gap-2.5 ${
+                      checked
+                        ? 'border-emerald-500 bg-emerald-50/70 ring-1 ring-emerald-500/40 shadow-xs'
+                        : 'border-slate-200 bg-white hover:border-emerald-300 hover:bg-slate-50/60'
+                    }`}
+                  >
+                    <span
+                      className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${
+                        checked
+                          ? 'border-emerald-600 bg-emerald-600 text-white'
+                          : 'border-slate-300 bg-white text-transparent'
+                      }`}
+                    >
+                      <Check className="h-3.5 w-3.5 stroke-[3]" />
+                    </span>
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="font-extrabold text-slate-900 truncate">
+                          {ex.name[lang] || ex.name.th}
+                        </span>
+                        <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-600">
+                          {ex.code}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 line-clamp-1">
+                        {ex.instruction[lang] || ex.instruction.th}
+                      </p>
+                      <div className="text-[10px] font-bold text-emerald-700">
+                        มุมเป้า {ex.detection.targetMinDeg}°–{ex.detection.targetMaxDeg}° • ค้าง {ex.detection.holdSec} วิ • แนะนำ {ex.detection.defaultSets}×{ex.detection.defaultReps}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {selectedExerciseIds.length === 0 && (
+              <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] font-bold text-amber-800">
+                กรุณาเลือกท่ากายภาพบำบัดอย่างน้อย 1 ท่า
+              </div>
+            )}
+
+            {/* Sets, Reps, Modpack, Notes */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1 border-t border-slate-100">
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">จำนวนเซต (Sets)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={sets}
+                  onChange={(e) => setSets(Math.max(1, Number(e.target.value)))}
+                  className="w-full rounded-xl border border-slate-200 px-2.5 py-2 text-center font-bold"
+                />
               </div>
               <div>
-                <label className="block font-bold text-slate-600 mb-1">{sm.modpackLabel}</label>
+                <label className="block font-bold text-slate-600 mb-1">จำนวนครั้ง (Reps)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={30}
+                  value={reps}
+                  onChange={(e) => setReps(Math.max(1, Number(e.target.value)))}
+                  className="w-full rounded-xl border border-slate-200 px-2.5 py-2 text-center font-bold"
+                />
+              </div>
+              <div className="col-span-2">
+                <label className="block font-bold text-slate-600 mb-1">{sm.modpackLabel} (เสริม)</label>
                 <select
                   value={modpackId}
                   onChange={(e) => setModpackId(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2"
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 font-semibold"
                 >
+                  <option value="">ไม่ระบุ (ฝึกเฉพาะท่ากายภาพ AI)</option>
                   {modpacks.map((m) => (
                     <option key={m.id} value={m.id}>
                       {m.name}
@@ -1472,75 +1845,317 @@ export function ScheduleCreatorAndDayModal({
               </div>
             </div>
 
-            <div className="grid grid-cols-4 gap-2">
-              <div className="col-span-2">
-                <label className="block font-bold text-slate-600 mb-1">{sm.startDateLabel}</label>
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">{sm.daysLabel}</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={14}
-                  value={repeatDays}
-                  onChange={(e) => setRepeatDays(Number(e.target.value))}
-                  className="w-full rounded-xl border border-slate-200 px-2.5 py-2 text-center"
-                />
-              </div>
-              <div>
-                <label className="block font-bold text-slate-600 mb-1">{sm.setsRepsLabel}</label>
-                <div className="flex gap-1">
-                  <input
-                    type="number"
-                    min={1}
-                    max={10}
-                    value={sets}
-                    onChange={(e) => setSets(Number(e.target.value))}
-                    className="w-1/2 rounded-xl border border-slate-200 px-1.5 py-2 text-center"
-                  />
-                  <input
-                    type="number"
-                    min={1}
-                    max={30}
-                    value={reps}
-                    onChange={(e) => setReps(Number(e.target.value))}
-                    className="w-1/2 rounded-xl border border-slate-200 px-1.5 py-2 text-center"
-                  />
-                </div>
-              </div>
-            </div>
-
             <input
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="..."
+              placeholder="หมายเหตุการฝึก (เช่น ฝึกช่วงเช้า ระวังปวดไหล่)"
               className="w-full rounded-xl border border-slate-200 px-3 py-2"
             />
+          </div>
 
-            <div className="flex justify-end gap-2 pt-2">
+          {/* 2. เลือกวันกายภาพได้ 2 แบบ: 2.1 รายวัน (ตารางวัน) / 2.2 รายสัปดาห์ต่อเดือน (จันทร์-อาทิตย์) */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 text-[11px] font-black text-white">
+                  2
+                </span>
+                <span className="text-sm font-black text-slate-900">
+                  เลือกวันจัดกายภาพบำบัด (เลือกได้ 2 รูปแบบ)
+                </span>
+              </div>
+              <span className="rounded-full bg-blue-50 border border-blue-200 px-3 py-0.5 text-[11px] font-extrabold text-blue-700">
+                เลือกไว้ทั้งหมด {finalSelectedDates.length} วัน
+              </span>
+            </div>
+
+            {/* Dual Mode Switcher */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={() => setDateSelectMode('daily')}
+                className={`rounded-2xl border-2 p-3 text-left transition cursor-pointer ${
+                  dateSelectMode === 'daily'
+                    ? 'border-emerald-600 bg-emerald-50/80 shadow-xs'
+                    : 'border-slate-200 bg-slate-50/50 hover:border-emerald-300'
+                }`}
+              >
+                <div className="font-black text-slate-900 text-xs sm:text-sm">
+                  2.1 เลือกวันแบบรายวัน (ตารางปฏิทิน)
+                </div>
+                <div className="mt-0.5 text-[11px] font-semibold text-slate-500">
+                  กดจิ้มเลือกวันจากในตารางปฏิทินเป็นวันๆ ไป
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setDateSelectMode('weekly')}
+                className={`rounded-2xl border-2 p-3 text-left transition cursor-pointer ${
+                  dateSelectMode === 'weekly'
+                    ? 'border-blue-600 bg-blue-50/80 shadow-xs'
+                    : 'border-slate-200 bg-slate-50/50 hover:border-blue-300'
+                }`}
+              >
+                <div className="font-black text-slate-900 text-xs sm:text-sm">
+                  2.2 เลือกวันเป็นรายสัปดาห์ ต่อเดือน (จันทร์–อาทิตย์)
+                </div>
+                <div className="mt-0.5 text-[11px] font-semibold text-slate-500">
+                  เลือกว่าใน 1 สัปดาห์ต้องการกายภาพวันไหนบ้าง แล้วสร้างให้ทั้งเดือนอัตโนมัติ
+                </div>
+              </button>
+            </div>
+
+            {/* Weekly Mode Controls (2.2: จันทร์ - อาทิตย์ ต่อเดือน) */}
+            {dateSelectMode === 'weekly' && (
+              <div className="rounded-2xl border border-blue-200 bg-blue-50/40 p-3.5 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-extrabold text-slate-800">
+                    เลือกวันใน 1 สัปดาห์ที่ต้องการทำกายภาพ (จันทร์ – อาทิตย์):
+                  </span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {WEEKDAY_PRESETS.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => {
+                          setWeeklyExcludedDates([]);
+                          setSelectedWeekdays(preset.days);
+                        }}
+                        className="rounded-lg border border-blue-200 bg-white px-2.5 py-1 text-[10px] font-bold text-blue-700 hover:bg-blue-600 hover:text-white cursor-pointer transition"
+                      >
+                        {preset.label[lang]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 7 Weekday Toggle Buttons (Mon -> Sun) */}
+                <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+                  {WEEKDAY_TOGGLE_OPTIONS.map((w) => {
+                    const active = selectedWeekdays.includes(w.dayIndex);
+                    return (
+                      <button
+                        key={w.dayIndex}
+                        type="button"
+                        onClick={() => toggleWeekday(w.dayIndex)}
+                        className={`rounded-xl border-2 py-2.5 px-2 text-center font-extrabold transition cursor-pointer ${
+                          active
+                            ? 'border-blue-600 bg-blue-600 text-white shadow-sm'
+                            : 'border-slate-200 bg-white text-slate-700 hover:border-blue-300'
+                        }`}
+                      >
+                        <div className="text-xs">{w.label[lang]}</div>
+                        <div className={`text-[10px] mt-0.5 ${active ? 'text-blue-100' : 'text-slate-400'}`}>
+                          {active ? '✓ ฝึก' : 'พัก'}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Month Span & Anchor Option */}
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-bold text-slate-700">ช่วงระยะเวลา (ต่อเดือน):</span>
+                    {[1, 2, 3].map((span) => (
+                      <button
+                        key={span}
+                        type="button"
+                        onClick={() => {
+                          setWeeklyExcludedDates([]);
+                          setMonthSpan(span);
+                        }}
+                        className={`rounded-lg px-3 py-1 text-[11px] font-bold cursor-pointer border ${
+                          monthSpan === span
+                            ? 'border-slate-900 bg-slate-900 text-white'
+                            : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        {span} เดือน
+                      </button>
+                    ))}
+                  </div>
+
+                  <label className="inline-flex items-center gap-2 font-semibold text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={startFromAnchorOnly}
+                      onChange={(e) => {
+                        setWeeklyExcludedDates([]);
+                        setStartFromAnchorOnly(e.target.checked);
+                      }}
+                      className="h-4 w-4 accent-blue-600 rounded"
+                    />
+                    <span>เริ่มนับตั้งแต่วันที่ {anchorIso} เป็นต้นไป</span>
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {/* Shared Interactive Monthly Calendar Grid (used in both 2.1 Daily Picker & 2.2 Weekly Month Preview) */}
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-3.5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => shiftViewMonth(-1)}
+                    className="rounded-lg border border-slate-200 bg-white p-1.5 hover:bg-slate-100 cursor-pointer"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <span className="text-sm font-black text-slate-900 min-w-[160px] text-center">
+                    {lang === 'th'
+                      ? `${MONTH_LABELS.th[viewMonthDate.month]} ${viewMonthDate.year + 543}`
+                      : `${MONTH_LABELS[lang][viewMonthDate.month]} ${viewMonthDate.year}`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => shiftViewMonth(1)}
+                    className="rounded-lg border border-slate-200 bg-white p-1.5 hover:bg-slate-100 cursor-pointer"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+
+                {dateSelectMode === 'daily' ? (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setManualDates([anchorIso])}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 cursor-pointer"
+                    >
+                      เฉพาะวันที่ {anchorIso}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={selectThisWeekInDaily}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 cursor-pointer"
+                    >
+                      เลือกทั้งสัปดาห์นี้
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setManualDates([])}
+                      className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-bold text-rose-700 hover:bg-rose-100 cursor-pointer"
+                    >
+                      ล้างวันที่เลือก
+                    </button>
+                  </div>
+                ) : (
+                  <span className="text-[11px] font-semibold text-blue-700">
+                    คลิกวันที่ในปฏิทินด้านล่างเพื่อยกเว้น/เปิดคืนเฉพาะวันได้ ({monthSpan} เดือน)
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-7 gap-1.5 text-center text-[11px] font-bold text-slate-500">
+                {CALENDAR_DOW_HEADERS[lang].map((dLabel) => (
+                  <div key={dLabel} className="py-1">
+                    {dLabel}
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-7 gap-1.5">
+                {monthCells.map((dayNum, idx) => {
+                  if (dayNum === null) {
+                    return <div key={`blank-${idx}`} className="h-12 rounded-xl bg-slate-100/60" />;
+                  }
+                  const cellIso = formatIsoYmd(viewMonthDate.year, viewMonthDate.month, dayNum);
+                  const isSelected = finalSelectedDateSet.has(cellIso);
+                  const existingCount = existingScheduleDatesSet.get(cellIso)?.length ?? 0;
+                  const isAnchor = cellIso === anchorIso;
+                  const dow = new Date(viewMonthDate.year, viewMonthDate.month, dayNum).getDay();
+                  const isWeeklyPatternMatch = dateSelectMode === 'weekly' && selectedWeekdays.includes(dow);
+                  const isExcluded = isWeeklyPatternMatch && weeklyExcludedDates.includes(cellIso);
+
+                  return (
+                    <button
+                      key={cellIso}
+                      type="button"
+                      onClick={() => {
+                        if (dateSelectMode === 'daily') toggleManualDate(cellIso);
+                        else toggleWeeklyException(cellIso);
+                      }}
+                      className={`h-12 rounded-xl border px-1.5 py-1 flex flex-col items-center justify-between transition cursor-pointer ${
+                        isSelected
+                          ? dateSelectMode === 'daily'
+                            ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm'
+                            : 'border-blue-600 bg-blue-600 text-white shadow-sm'
+                          : isExcluded
+                            ? 'border-amber-300 bg-amber-50 text-amber-700 line-through'
+                            : isAnchor
+                              ? 'border-emerald-400 bg-emerald-50 text-slate-900'
+                              : 'border-slate-200 bg-white text-slate-800 hover:border-emerald-300'
+                      }`}
+                    >
+                      <span className="text-xs font-extrabold">{dayNum}</span>
+                      <span className={`text-[9px] font-bold ${isSelected ? 'text-white/90' : 'text-emerald-600'}`}>
+                        {isSelected ? '✓ เลือก' : existingCount > 0 ? `${existingCount} ท่าเดิม` : ''}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Selected Dates Chips Summary */}
+              {finalSelectedDates.length > 0 && (
+                <div className="pt-1 flex flex-wrap items-center gap-1.5 max-h-24 overflow-y-auto">
+                  <span className="text-[11px] font-bold text-slate-600 mr-1">วันที่เลือก:</span>
+                  {finalSelectedDates.map((iso) => (
+                    <span
+                      key={iso}
+                      className="inline-flex items-center gap-1 rounded-full bg-white border border-slate-200 px-2 py-0.5 font-mono text-[10px] font-bold text-slate-700"
+                    >
+                      {iso}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (dateSelectMode === 'daily') toggleManualDate(iso);
+                          else toggleWeeklyException(iso);
+                        }}
+                        className="text-slate-400 hover:text-rose-600 cursor-pointer"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Summary Bar & Submit */}
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-slate-900 px-4 py-3 text-white">
+            <div className="space-y-0.5">
+              <div className="font-extrabold text-xs sm:text-sm">
+                สรุป: {selectedExerciseIds.length} ท่ากายภาพ × {finalSelectedDates.length} วัน ={' '}
+                <span className="text-emerald-400">{selectedExerciseIds.length * finalSelectedDates.length} รายการ</span>
+              </div>
+              <div className="text-[11px] text-slate-300">
+                เซต × ครั้ง: {sets} × {reps} • โหมด:{' '}
+                {dateSelectMode === 'daily' ? 'รายวัน (จากตารางวัน)' : `รายสัปดาห์ (${monthSpan} เดือน)`}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={onClose}
-                className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl border border-slate-200 font-bold"
+                className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl border border-white/20 bg-white/10 font-bold text-white hover:bg-white/20 cursor-pointer"
               >
                 {sm.cancelBtn}
               </button>
               <button
                 type="submit"
-                disabled={saving}
-                className="whitespace-nowrap h-10 px-5 inline-flex items-center justify-center rounded-xl bg-emerald-600 font-extrabold text-white hover:bg-emerald-500 disabled:opacity-50"
+                disabled={saving || selectedExerciseIds.length === 0 || finalSelectedDates.length === 0}
+                className="whitespace-nowrap h-10 px-5 inline-flex items-center justify-center rounded-xl bg-emerald-500 font-extrabold text-slate-950 hover:bg-emerald-400 disabled:opacity-40 cursor-pointer"
               >
                 {saving ? sm.savingBtn : sm.saveScheduleBtn}
               </button>
             </div>
-          </form>
-        )}
+          </div>
+        </form>
       </div>
     </div>
   );

@@ -2780,7 +2780,7 @@ export function ClinicalStaffPortalShell({
                     <div className="grid grid-cols-7 gap-2">
                       {calendarDays.map((dayNum, idx) => {
                         if (dayNum === null) {
-                          return <div key={`empty-${idx}`} className="h-20 rounded-xl bg-slate-50/40" />;
+                          return <div key={`empty-${idx}`} className="min-h-[88px] sm:min-h-[96px] rounded-xl bg-slate-50/40" />;
                         }
                         const year = calendarDate.getFullYear();
                         const month = calendarDate.getMonth();
@@ -2793,6 +2793,13 @@ export function ClinicalStaffPortalShell({
                         const customForDay = (selectedSchedulePatient?.rehabSchedules ?? []).filter(
                           (s) => s.scheduledDate === dateIso,
                         );
+                        const firstCustomEx =
+                          customForDay.length > 0
+                            ? exercises.find((ex) => ex.id === customForDay[0].exerciseId)
+                            : undefined;
+                        const firstCustomName = firstCustomEx
+                          ? firstCustomEx.name[lang] || firstCustomEx.name.th
+                          : null;
                         const planDay = weeklySchedule[weekday];
                         const isTraining = planDay?.dayType === 'training' && Boolean(patientCourse);
 
@@ -2804,42 +2811,56 @@ export function ClinicalStaffPortalShell({
                               setSelectedCalendarDateIso(dateIso);
                               setScheduleModalMode('day_detail');
                             }}
-                            className={`h-20 rounded-xl border p-2 flex flex-col justify-between text-left text-xs transition cursor-pointer ${
+                            className={`min-h-[88px] sm:min-h-[96px] rounded-xl border p-2 flex flex-col justify-between text-left text-xs transition cursor-pointer ${
                               isToday
                                 ? 'border-emerald-500 bg-emerald-50/30 ring-1 ring-emerald-500/30'
                                 : 'border-slate-100 bg-white hover:border-emerald-300'
                             }`}
                           >
-                            <span
-                              className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold ${
-                                isToday ? 'bg-emerald-600 text-white' : 'text-slate-700'
-                              }`}
-                            >
-                              {dayNum}
-                            </span>
-                            <div className="w-full truncate text-[10px]">
-                              {customForDay.length > 0 ? (
-                                <span
-                                  className={`inline-block whitespace-nowrap rounded px-1.5 py-0.5 font-bold ${
-                                    customForDay[0].status === 'COMPLETED'
-                                      ? 'bg-blue-100 text-blue-800'
-                                      : customForDay[0].status === 'REST'
-                                        ? 'bg-amber-100 text-amber-800'
-                                        : customForDay[0].status === 'MISSED'
-                                          ? 'bg-rose-100 text-rose-800'
-                                          : 'bg-emerald-100 text-emerald-800'
-                                  }`}
-                                >
-                                  {customForDay[0].status === 'COMPLETED'
-                                    ? locale.schedules.statusCompleted
-                                    : customForDay[0].status === 'REST'
-                                      ? locale.schedules.statusRest
-                                      : customForDay[0].status === 'MISSED'
-                                        ? locale.schedules.statusMissed
-                                        : locale.schedules.statusActive}
+                            <div className="w-full flex items-center justify-between gap-1">
+                              <span
+                                className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold ${
+                                  isToday ? 'bg-emerald-600 text-white' : 'text-slate-700'
+                                }`}
+                              >
+                                {dayNum}
+                              </span>
+                              {customForDay.length > 1 && (
+                                <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-extrabold text-slate-600">
+                                  +{customForDay.length - 1} ท่า
                                 </span>
+                              )}
+                            </div>
+                            <div className="w-full space-y-1">
+                              {customForDay.length > 0 ? (
+                                <>
+                                  <span
+                                    className={`inline-block whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                                      customForDay[0].status === 'COMPLETED'
+                                        ? 'bg-blue-100 text-blue-800'
+                                        : customForDay[0].status === 'REST'
+                                          ? 'bg-amber-100 text-amber-800'
+                                          : customForDay[0].status === 'MISSED'
+                                            ? 'bg-rose-100 text-rose-800'
+                                            : 'bg-emerald-100 text-emerald-800'
+                                    }`}
+                                  >
+                                    {customForDay[0].status === 'COMPLETED'
+                                      ? locale.schedules.statusCompleted
+                                      : customForDay[0].status === 'REST'
+                                        ? locale.schedules.statusRest
+                                        : customForDay[0].status === 'MISSED'
+                                          ? locale.schedules.statusMissed
+                                          : locale.schedules.statusActive}
+                                  </span>
+                                  {firstCustomName && (
+                                    <div className="w-full truncate text-[10px] font-bold text-slate-700">
+                                      {firstCustomName}
+                                    </div>
+                                  )}
+                                </>
                               ) : isTraining ? (
-                                <span className="inline-block whitespace-nowrap rounded bg-emerald-100 px-1.5 py-0.5 font-bold text-emerald-800">
+                                <span className="inline-block whitespace-nowrap rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">
                                   {lang === 'cn'
                                     ? planDay.activityType === 'physio_exercise'
                                       ? 'AI 训练'
@@ -2853,7 +2874,7 @@ export function ClinicalStaffPortalShell({
                                         : 'มินิเกม'}
                                 </span>
                               ) : (
-                                <span className="text-slate-300">{locale.schedules.restDayLabel}</span>
+                                <span className="text-[10px] text-slate-300">{locale.schedules.restDayLabel}</span>
                               )}
                             </div>
                           </button>
