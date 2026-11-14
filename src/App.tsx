@@ -13,6 +13,7 @@ import {
   KioskBiometricLoginView,
   type KioskLoginSuccessPayload,
 } from './components/KioskBiometricLoginView';
+import { RandomHandStartPrompt } from './components/RandomHandStartPrompt';
 import { SmartRehabKioskUI } from './components/SmartRehabKioskUI';
 
 type AppRoute = '/' | '/login' | '/admin' | '/pt' | '/patient';
@@ -295,20 +296,15 @@ export function App() {
                   ))}
                 </div>
 
-                <div className="mt-6 flex flex-col gap-2.5">
+                <RandomHandStartPrompt onConfirmStart={() => setStartedCardGame(true)} />
+
+                <div className="mt-4 flex flex-col gap-2">
                   <button
                     type="button"
                     onClick={() => setKioskMode('rehab')}
-                    className="w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg cursor-pointer"
+                    className="w-full py-2.5 px-4 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-900 text-xs font-extrabold cursor-pointer"
                   >
-                    เริ่มฝึกท่ากายภาพบำบัดผ่านกล้อง AI (Smart Rehab Telemetry) ➔
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setStartedCardGame(true)}
-                    className="w-full py-3 px-4 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-900 text-xs font-extrabold cursor-pointer"
-                  >
-                    เข้าสู่มินิเกมการ์ดกายภาพบำบัด ➔
+                    เปิดหน้าจอวิเคราะห์ชีวกลศาสตร์ (Smart Rehab Telemetry)
                   </button>
                   <button
                     type="button"

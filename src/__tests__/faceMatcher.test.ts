@@ -15,6 +15,7 @@ import {
   matchMultiAngleEmbedding,
 } from '../lib/faceMatcher';
 import { chooseCaptureBucket, classifyDisplayBucket } from '../components/FaceID120Scanner';
+import { evaluateRandomHandChallenge } from '../components/RandomHandStartPrompt';
 
 function makeRealisticFaceVector(seed: number, angleBias = 0): number[] {
   const raw = new Array<number>(FACE_EMBEDDING_DIM);
@@ -370,5 +371,37 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     expect(scheduledToday.todayExercises[0].nameTh).toContain('ยกแขนตรงไปด้านหน้า');
     expect(scheduledToday.todayExercises[0].sets).toBe(3);
     expect(scheduledToday.todayExercises[0].reps).toBe(10);
+  });
+
+  it('evaluates random left/right hand challenge accurately from mirrored front-camera hand coordinates', () => {
+    const makeSingleHand = (anchorX: number) =>
+      Array.from({ length: 21 }, (_, idx) => ({
+        x: idx === 9 || idx === 0 ? anchorX : anchorX,
+        y: 0.45,
+      }));
+
+    // Left hand in raw front camera coords (anchorX >= 0.5 renders on left side of mirrored video)
+    const raisedLeftHand = [makeSingleHand(0.75)];
+    const leftChallengeMatch = evaluateRandomHandChallenge(raisedLeftHand, null, 'left');
+    expect(leftChallengeMatch.leftRaised).toBe(true);
+    expect(leftChallengeMatch.rightRaised).toBe(false);
+    expect(leftChallengeMatch.targetMatched).toBe(true);
+    expect(leftChallengeMatch.wrongSideRaised).toBe(false);
+
+    const leftRaisedWhenRightRequested = evaluateRandomHandChallenge(raisedLeftHand, null, 'right');
+    expect(leftRaisedWhenRightRequested.targetMatched).toBe(false);
+    expect(leftRaisedWhenRightRequested.wrongSideRaised).toBe(true);
+
+    // Right hand in raw front camera coords (anchorX < 0.5 renders on right side of mirrored video)
+    const raisedRightHand = [makeSingleHand(0.25)];
+    const rightChallengeMatch = evaluateRandomHandChallenge(raisedRightHand, null, 'right');
+    expect(rightChallengeMatch.rightRaised).toBe(true);
+    expect(rightChallengeMatch.leftRaised).toBe(false);
+    expect(rightChallengeMatch.targetMatched).toBe(true);
+    expect(rightChallengeMatch.wrongSideRaised).toBe(false);
+
+    const rightRaisedWhenLeftRequested = evaluateRandomHandChallenge(raisedRightHand, null, 'left');
+    expect(rightRaisedWhenLeftRequested.targetMatched).toBe(false);
+    expect(rightRaisedWhenLeftRequested.wrongSideRaised).toBe(true);
   });
 });
