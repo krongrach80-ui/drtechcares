@@ -149,6 +149,7 @@ export function App() {
         <KioskBiometricLoginView
           apiClient={apiClient}
           kioskId="kiosk-01"
+          staffModalOpen={staffModalIntent !== null}
           onPatientAuthenticated={(payload) => {
             setAuthenticatedPatient(payload);
             setKioskMode('rehab');

@@ -61,6 +61,7 @@ export interface KioskLoginSuccessPayload {
 interface KioskBiometricLoginViewProps {
   apiClient: DrTechCaresApiClient;
   kioskId?: string;
+  staffModalOpen?: boolean;
   onPatientAuthenticated: (payload: KioskLoginSuccessPayload) => void;
   onOpenStaffLogin: () => void;
   onOpenStaffRegister: () => void;
@@ -193,6 +194,7 @@ const COPY: Record<
 export function KioskBiometricLoginView({
   apiClient,
   kioskId = 'kiosk-01',
+  staffModalOpen = false,
   onPatientAuthenticated,
   onOpenStaffLogin,
   onOpenStaffRegister,
@@ -311,9 +313,27 @@ export function KioskBiometricLoginView({
   }, []);
 
   const isNotFoundStage = scanStage === 'not_found';
+  const prevStaffModalOpenRef = useRef(staffModalOpen);
 
   useEffect(() => {
-    if (cameraPaused || isNotFoundStage || verifiedModalPayload || showPinModal) {
+    const wasOpen = prevStaffModalOpenRef.current;
+    prevStaffModalOpenRef.current = staffModalOpen;
+    if (staffModalOpen && !wasOpen) {
+      verifyingLockRef.current = false;
+      presenceRef.current.reset();
+      loginCtrlRef.current.reset();
+      temporalMatcherRef.current.reset();
+      setHudBox(null);
+      setHudLandmarks([]);
+      setLiveMatchHud(null);
+      setBurstCount(0);
+    } else if (!staffModalOpen && wasOpen) {
+      handleRestartScan();
+    }
+  }, [staffModalOpen, handleRestartScan]);
+
+  useEffect(() => {
+    if (cameraPaused || staffModalOpen || isNotFoundStage || verifiedModalPayload || showPinModal) {
       return;
     }
 
@@ -343,20 +363,26 @@ export function KioskBiometricLoginView({
           return;
         }
         const deviceId = await selectClinicalCameraDeviceId();
+        if (!active) return;
         stream = await navigator.mediaDevices.getUserMedia({
           video: deviceId
             ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }
             : { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
           audio: false,
         });
-        if (!active || !videoRef.current) return;
+        if (!active || !videoRef.current) {
+          stream.getTracks().forEach((track) => track.stop());
+          stream = null;
+          return;
+        }
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
+        if (!active) return;
         setCameraError(null);
 
         const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
         if (!active) return;
-        landmarker = await FaceLandmarker.createFromOptions(vision, {
+        const createdLandmarker = await FaceLandmarker.createFromOptions(vision, {
           baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
           runningMode: 'VIDEO',
           numFaces: 2,
@@ -364,6 +390,11 @@ export function KioskBiometricLoginView({
           minFacePresenceConfidence: 0.55,
           minTrackingConfidence: 0.55,
         });
+        if (!active) {
+          createdLandmarker.close();
+          return;
+        }
+        landmarker = createdLandmarker;
 
         let lastEmbedCheckAt = 0;
         const KEY_MESH_LANDMARK_INDICES = [
@@ -655,6 +686,7 @@ export function KioskBiometricLoginView({
       }
     }
 
+    const videoEl = videoRef.current;
     startFacePipeline();
 
     return () => {
@@ -662,8 +694,11 @@ export function KioskBiometricLoginView({
       cancelAnimationFrame(rafId);
       landmarker?.close();
       stream?.getTracks().forEach((track) => track.stop());
+      if (videoEl) {
+        videoEl.srcObject = null;
+      }
     };
-  }, [apiClient, cameraPaused, isNotFoundStage, scanGeneration, showPinModal, verifiedModalPayload]);
+  }, [apiClient, cameraPaused, isNotFoundStage, scanGeneration, showPinModal, staffModalOpen, verifiedModalPayload]);
 
   const handleCallStaff = async () => {
     try {
@@ -867,7 +902,7 @@ export function KioskBiometricLoginView({
         <div className="w-full flex-1 flex flex-col justify-between bg-white rounded-[28px] border border-slate-200/90 shadow-2xl shadow-emerald-950/10 p-2 sm:p-3 relative z-10 min-h-0">
           {/* Dark Camera Viewport */}
           <div className="relative flex-1 w-full h-full min-h-[420px] sm:min-h-[540px] rounded-2xl bg-slate-950 overflow-hidden border border-slate-800">
-            {!cameraPaused ? (
+            {!cameraPaused && !staffModalOpen ? (
               <>
                 <video
                   ref={videoRef}
