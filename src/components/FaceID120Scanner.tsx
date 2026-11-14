@@ -19,6 +19,12 @@ import {
 } from '@drtechcares/face-client';
 import { evaluateFrameQuality, l2Normalize } from '@drtechcares/smart-biometric-core';
 import type { AngleEmbeddings5D } from '@drtechcares/api-client';
+import {
+  edgeFaceEnrollFinalize,
+  edgeFaceEnrollFrame,
+  edgeFaceEnrollStart,
+  probeEdgeVisionHealth,
+} from '../hooks/useEdgeVisionSocket';
 
 export interface FaceID120Result {
   masterEmbedding: number[];
@@ -253,7 +259,9 @@ export default function FaceID120Scanner({
   const [targetBucketHint, setTargetBucketHint] = useState<Bucket5Key>('center');
   const [finalQualityPct, setFinalQualityPct] = useState(0);
   const [retryNonce, setRetryNonce] = useState(0);
+  const [edgeBackendActive, setEdgeBackendActive] = useState(false);
 
+  const edgeSessionIdRef = useRef<string | null>(null);
   const samplesRef = useRef<CapturedSample[]>([]);
   const bucketCountsRef = useRef<Record<Bucket5Key, number>>({ ...bucketCounts });
   const prevLandmarksRef = useRef<Array<{ x: number; y: number; z?: number }> | null>(null);
@@ -337,7 +345,8 @@ export default function FaceID120Scanner({
   const finalizeScan = useCallback(async (): Promise<FaceID120Result | null> => {
     if (finalizedResultRef.current) return finalizedResultRef.current;
     if (finalizePromiseRef.current) return finalizePromiseRef.current;
-    if (samplesRef.current.length === 0) return null;
+    const edgeSid = edgeSessionIdRef.current;
+    if (!edgeSid && samplesRef.current.length === 0) return null;
 
     completedRef.current = true;
     setPhase('computing');
@@ -345,6 +354,50 @@ export default function FaceID120Scanner({
     setSubCueText('ประมวลผลเวกเตอร์เฉลี่ย 5 มุมมอง (Center, Left, Right, Up, Down)');
 
     const run = async (): Promise<FaceID120Result | null> => {
+      if (edgeSid && samplesRef.current.length === 0) {
+        const edgeRes = await edgeFaceEnrollFinalize({
+          session_id: edgeSid,
+          hn,
+          persist_to_supabase: false,
+        });
+        if (unmountedRef.current) return null;
+
+        if (!edgeRes.avatar_data_url && hasSnapshotFrameRef.current && snapshotCanvasRef.current) {
+          try {
+            bestFrontalDataUrlRef.current = snapshotCanvasRef.current.toDataURL('image/jpeg', 0.88);
+          } catch {
+            bestFrontalDataUrlRef.current = '';
+          }
+        }
+        const avatarDataUrl = edgeRes.avatar_data_url || bestFrontalDataUrlRef.current;
+        const resultPayload: FaceID120Result = {
+          masterEmbedding: edgeRes.master_embedding,
+          angleEmbeddings: {
+            center: edgeRes.angle_embeddings.center ?? edgeRes.master_embedding,
+            left: edgeRes.angle_embeddings.left ?? edgeRes.master_embedding,
+            right: edgeRes.angle_embeddings.right ?? edgeRes.master_embedding,
+            up: edgeRes.angle_embeddings.up ?? edgeRes.master_embedding,
+            down: edgeRes.angle_embeddings.down ?? edgeRes.master_embedding,
+          },
+          framesCaptured: edgeRes.frames_captured,
+          qualityScore: edgeRes.quality_score,
+          avatarDataUrl,
+        };
+        finalizedResultRef.current = resultPayload;
+        setFinalQualityPct(Math.round(edgeRes.quality_score * 100));
+        setPhase('completed');
+        setGuidanceText(`ยืนยันการเก็บใบหน้า ${edgeRes.frames_captured} เฟรม (Edge ArcFace 512-D) สำเร็จ!`);
+        setSubCueText(`บันทึก 5 มุมมองครบถ้วน • คุณภาพ ${Math.round(edgeRes.quality_score * 100)}%`);
+        playSuccessChime();
+        speakGuidance('บันทึกใบหน้าสามมิติครบเรียบร้อยแล้วค่ะ สามารถกดบันทึกและเปิดใช้งานตู้คีออสได้เลยค่ะ', true);
+        stopHardware();
+        if (!unmountedRef.current) {
+          onCompleteRef.current(resultPayload);
+          onReadyStateChangeRef.current?.(true, async () => resultPayload);
+        }
+        return resultPayload;
+      }
+
       const samples = [...samplesRef.current];
       if (unmountedRef.current) return null;
 
@@ -411,9 +464,11 @@ export default function FaceID120Scanner({
 
     finalizePromiseRef.current = run();
     return finalizePromiseRef.current;
-  }, [speakGuidance, stopHardware]);
+  }, [hn, speakGuidance, stopHardware]);
 
   const resetScannerState = useCallback(() => {
+    edgeSessionIdRef.current = null;
+    setEdgeBackendActive(false);
     samplesRef.current = [];
     const emptyBucket: Record<Bucket5Key, number> = {
       center: 0,
@@ -456,6 +511,142 @@ export default function FaceID120Scanner({
       try {
         setModelStatus('loading');
         setCameraError(null);
+        setModelProgressMsg('กำลังตรวจสอบ Edge InsightFace Server...');
+
+        const edgeHealth = await probeEdgeVisionHealth(450);
+        if (cancelled) return;
+
+        const preferredDeviceId = await selectClinicalCameraDeviceId();
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            deviceId: preferredDeviceId ? { ideal: preferredDeviceId } : undefined,
+            facingMode: 'user',
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+          audio: false,
+        });
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+
+        streamRef.current = stream;
+        const video = videoRef.current;
+        if (!video) return;
+        video.srcObject = stream;
+        await video.play();
+        setCameraReady(true);
+
+        const snapCanvas = snapshotCanvasRef.current || document.createElement('canvas');
+        snapCanvas.width = 480;
+        snapCanvas.height = 480;
+        snapshotCanvasRef.current = snapCanvas;
+
+        // Path A: Edge Vision InsightFace (buffalo_l ArcFace 512-D)
+        if (edgeHealth) {
+          try {
+            const edgeSess = await edgeFaceEnrollStart({
+              hn,
+              full_name: patientName,
+            });
+            if (cancelled) return;
+
+            if (edgeSess?.session_id) {
+              edgeSessionIdRef.current = edgeSess.session_id;
+              setEdgeBackendActive(true);
+              setModelProgressMsg('พร้อมสแกนด้วย Edge InsightFace ArcFace 512-D');
+              setModelStatus('ready');
+              setGuidanceText('วางใบหน้าให้อยู่ในกรอบวงกลม');
+              speakGuidance('เชื่อมต่อระบบ Edge InsightFace สำเร็จ กรุณามองกล้องและหมุนศีรษะช้าๆ ค่ะ', true);
+
+              const edgeCanvas = workCanvasRef.current || document.createElement('canvas');
+              edgeCanvas.width = 240;
+              edgeCanvas.height = 240;
+              workCanvasRef.current = edgeCanvas;
+
+              while (!cancelled && !completedRef.current) {
+                const vid = videoRef.current;
+                if (!vid || vid.readyState < 2 || vid.videoWidth <= 0) {
+                  await new Promise((r) => window.setTimeout(r, 60));
+                  continue;
+                }
+
+                const ectx = edgeCanvas.getContext('2d');
+                if (!ectx) break;
+                const side = Math.min(vid.videoWidth, vid.videoHeight);
+                const sx = Math.max(0, (vid.videoWidth - side) / 2);
+                const sy = Math.max(0, (vid.videoHeight - side) / 2);
+                ectx.save();
+                ectx.translate(240, 0);
+                ectx.scale(-1, 1);
+                ectx.drawImage(vid, sx, sy, side, side, 0, 0, 240, 240);
+                ectx.restore();
+
+                if (!hasSnapshotFrameRef.current) {
+                  const sctx = snapCanvas.getContext('2d');
+                  if (sctx) {
+                    sctx.save();
+                    sctx.translate(480, 0);
+                    sctx.scale(-1, 1);
+                    sctx.drawImage(vid, sx, sy, side, side, 0, 0, 480, 480);
+                    sctx.restore();
+                    hasSnapshotFrameRef.current = true;
+                  }
+                }
+
+                const image_base64 = edgeCanvas.toDataURL('image/jpeg', 0.78);
+                const state = await edgeFaceEnrollFrame({
+                  session_id: edgeSess.session_id,
+                  image_base64,
+                });
+                if (cancelled || completedRef.current) return;
+
+                const nextCounts: Record<Bucket5Key, number> = {
+                  center: state.bucket_counts.center ?? 0,
+                  left: state.bucket_counts.left ?? 0,
+                  right: state.bucket_counts.right ?? 0,
+                  up: state.bucket_counts.up ?? 0,
+                  down: state.bucket_counts.down ?? 0,
+                };
+                bucketCountsRef.current = nextCounts;
+                setBucketCounts(nextCounts);
+                setCapturedCount(state.frames_captured);
+
+                const poseKey = (['center', 'left', 'right', 'up', 'down'].includes(state.current_pose)
+                  ? state.current_pose
+                  : 'center') as Bucket5Key;
+                setActiveBucket(poseKey);
+                const nextMissing = findNextMissingBucket(nextCounts);
+                setTargetBucketHint(nextMissing);
+                setLivePose({
+                  yaw: Math.round(state.yaw_deg),
+                  pitch: Math.round(state.pitch_deg),
+                  roll: Math.round(state.roll_deg),
+                  sharpness: Math.round(state.sharpness),
+                  faceDetected: state.face_detected,
+                });
+                setGuidanceText(state.guidance_th || `${TARGET_GUIDANCE[nextMissing].stepTitle} (${state.frames_captured}/120)`);
+                setSubCueText(`Edge InsightFace 512-D • มุม ${nextMissing} (${nextCounts[nextMissing]}/${BUCKET_TARGETS[nextMissing]})`);
+
+                if (state.frames_captured >= TOTAL_TICKS || state.phase === 'completed') {
+                  readyNotifiedRef.current = true;
+                  await finalizeScan();
+                  return;
+                }
+
+                await new Promise((r) => window.setTimeout(r, 45));
+              }
+              return;
+            }
+          } catch {
+            // Fall through gracefully to browser MediaPipe Web AI
+            edgeSessionIdRef.current = null;
+            setEdgeBackendActive(false);
+          }
+        }
+
+        // Path B: Auto-Fallback to Browser MediaPipe Web AI
         setModelProgressMsg('กำลังโหลด MediaPipe Face Landmarker & WASM...');
 
         const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
@@ -482,28 +673,6 @@ export default function FaceID120Scanner({
 
         setModelProgressMsg('พร้อมสแกนใบหน้า 3 มิติ (Hybrid 512-D Real-Time)');
         setModelStatus('ready');
-
-        const preferredDeviceId = await selectClinicalCameraDeviceId();
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            deviceId: preferredDeviceId ? { ideal: preferredDeviceId } : undefined,
-            facingMode: 'user',
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
-          audio: false,
-        });
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-
-        streamRef.current = stream;
-        const video = videoRef.current;
-        if (!video) return;
-        video.srcObject = stream;
-        await video.play();
-        setCameraReady(true);
         setGuidanceText('วางใบหน้าให้อยู่ในกรอบวงกลม');
         speakGuidance('กรุณาวางใบหน้าให้อยู่ในกรอบวงกลม แล้วค่อยๆ หมุนศีรษะช้าๆ ค่ะ', true);
 
@@ -511,11 +680,6 @@ export default function FaceID120Scanner({
         workCanvas.width = 112;
         workCanvas.height = 112;
         workCanvasRef.current = workCanvas;
-
-        const snapCanvas = snapshotCanvasRef.current || document.createElement('canvas');
-        snapCanvas.width = 480;
-        snapCanvas.height = 480;
-        snapshotCanvasRef.current = snapCanvas;
 
         const tickLoop = () => {
           if (cancelled || completedRef.current) return;
@@ -726,7 +890,9 @@ export default function FaceID120Scanner({
         <div className="flex items-center gap-2">
           <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-3 py-1 text-xs font-extrabold text-emerald-300">
             <Sparkles className="h-3.5 w-3.5" />
-            iPhone-Style 3D Face ID • 120 เฟรม
+            {edgeBackendActive
+              ? 'Edge InsightFace 512-D • 120 เฟรม'
+              : 'iPhone-Style 3D Face ID • 120 เฟรม'}
           </span>
           {patientName && (
             <span className="text-xs font-bold text-slate-300">

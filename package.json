@@ -11,6 +11,7 @@
     "dev": "node scripts/dev-all.mjs",
     "typecheck": "tsc --noEmit",
     "build": "node scripts/copy-wasm.mjs && tsc --noEmit && vite build && node scripts/build-worker.mjs && node scripts/strip-models.mjs",
+    "deploy": "npm run build && npx wrangler deploy",
     "test": "vitest run",
     "predev": "node scripts/copy-wasm.mjs",
     "api:dev": "node --experimental-strip-types apps/api/src/index.ts"

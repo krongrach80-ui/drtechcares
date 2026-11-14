@@ -41,6 +41,7 @@ export function DynamicExerciseSessionView({
   const [aiDecision, setAiDecision] = useState<ClinicalBiomechanicsDecision | null>(null);
   const [painStopped, setPainStopped] = useState(false);
   const [continuousGuardOk, setContinuousGuardOk] = useState(true);
+  const [multiPersonPaused, setMultiPersonPaused] = useState(false);
   const [pinOverrideOpen, setPinOverrideOpen] = useState(false);
   const [staffPin, setStaffPin] = useState('');
 
@@ -51,6 +52,7 @@ export function DynamicExerciseSessionView({
   const voiceRef = useRef(new VoiceFeedbackController());
   const chimeRef = useRef(new AudioChimeSynthesizer());
   const replayLogRef = useRef<{ tMs: number; angleDeg: number }[]>([]);
+  const lastMultiPersonTtsAtRef = useRef<number>(0);
 
   useEffect(() => {
     pipelineRef.current.reset(selectedExercise);
@@ -71,6 +73,7 @@ export function DynamicExerciseSessionView({
     let prevPose: PoseLandmark[] | null = null;
     let prevAngle: number | null = null;
     let lastTickAt = performance.now();
+    let singlePersonStreak = 0;
     const startedAt = performance.now();
 
     async function initPoseCamera() {
@@ -96,6 +99,31 @@ export function DynamicExerciseSessionView({
           if (videoRef.current.readyState >= 2) {
             const now = performance.now();
             const res = poseLandmarker.detectForVideo(videoRef.current, now);
+            const detectedPeople = res.landmarks?.length ?? 0;
+
+            if (detectedPeople > 1) {
+              singlePersonStreak = 0;
+              setMultiPersonPaused(true);
+              setContinuousGuardOk(false);
+              if (now - lastMultiPersonTtsAtRef.current >= 4000) {
+                lastMultiPersonTtsAtRef.current = now;
+                voiceRef.current.speak(
+                  'ตรวจพบมีบุคคลอยู่หลายคนในเฟรม กรุณาให้คนไข้ยืนหน้ากล้องเพียงลำพัง ระบบจึงจะนับรอบการฝึกต่อครับ',
+                  'th',
+                );
+              }
+              rafId = requestAnimationFrame(loop);
+              return;
+            }
+
+            if (detectedPeople === 1) {
+              singlePersonStreak += 1;
+              if (singlePersonStreak >= 3) {
+                setMultiPersonPaused(false);
+                setContinuousGuardOk(true);
+              }
+            }
+
             const subject = selectSubjectPoseWithIdentity(res.landmarks ?? []);
             if (subject) {
               const stabilized = stabilizeArmIdentity(subject, prevPose);
@@ -242,9 +270,27 @@ export function DynamicExerciseSessionView({
           {/* Clean Framing Guide Box */}
           <div className="pointer-events-none absolute inset-6 rounded-3xl border-2 border-dashed border-white/25" />
 
-          {!continuousGuardOk && (
-            <div className="absolute top-4 inset-x-4 rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white">
-              <ShieldAlert className="inline h-4 w-4 mr-1" /> Continuous 1:1 Identity Guard Paused Session
+          {multiPersonPaused && (
+            <div className="absolute top-4 inset-x-4 z-20 rounded-2xl border-2 border-amber-300 bg-amber-500/95 px-4 py-3 text-slate-950 shadow-xl">
+              <div className="text-sm font-extrabold">
+                <ShieldAlert className="inline h-4 w-4 mr-1.5" />
+                ตรวจพบมีบุคคลอยู่หลายคนในเฟรม
+              </div>
+              <div className="mt-0.5 text-xs font-bold">
+                กรุณาให้คนไข้ยืนหน้ากล้องเพียงลำพัง ระบบจึงจะนับรอบการฝึกต่อครับ
+              </div>
+            </div>
+          )}
+
+          {!continuousGuardOk && !multiPersonPaused && (
+            <div className="absolute top-4 inset-x-4 z-20 rounded-2xl border-2 border-rose-300 bg-rose-600/95 px-4 py-3 text-white shadow-xl">
+              <div className="text-sm font-extrabold">
+                <ShieldAlert className="inline h-4 w-4 mr-1.5" />
+                คุณไม่ใช่คนไข้ที่ลงทะเบียนไว้
+              </div>
+              <div className="mt-0.5 text-xs font-semibold text-rose-100">
+                ระบบจะไม่นับรอบการฝึก กรุณาให้คนไข้ตัวจริงเข้าฝึกครับ
+              </div>
             </div>
           )}
 

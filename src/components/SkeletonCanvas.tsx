@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Activity, AlertTriangle, CheckCircle2, Ruler, ShieldAlert } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, Ruler, ShieldAlert, UserCheck, Users, UserX } from 'lucide-react';
 import type { ExercisePrescriptionOption, KioskDecisionPayload } from '../hooks/useKioskSocket';
+import { drawWholeBody133OnCanvas } from '../hooks/useEdgeVisionSocket';
 
 interface SkeletonCanvasProps {
   payload: KioskDecisionPayload;
@@ -9,6 +10,8 @@ interface SkeletonCanvasProps {
   isDemoMode: boolean;
   distanceM: number;
   trunkTiltDeg: number;
+  hasLiveCamera?: boolean;
+  liveVideoOverlay?: React.ReactNode;
   children?: React.ReactNode;
 }
 
@@ -54,14 +57,56 @@ export function SkeletonCanvas({
   isDemoMode,
   distanceM,
   trunkTiltDeg,
+  hasLiveCamera = false,
+  liveVideoOverlay,
   children,
 }: SkeletonCanvasProps) {
   const { kiosk_state, telemetry_analysis, rep_counter, ui_directives } = payload;
+  const edgeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const latestPayloadRef = useRef(payload);
+  latestPayloadRef.current = payload;
+
+  const hasEdge3D = Boolean(!isDemoMode && payload.keypoints_3d && payload.keypoints_3d.length >= 17);
+
+  useEffect(() => {
+    if (!hasEdge3D) return;
+    let rafId = 0;
+    const renderFrame = () => {
+      const canvas = edgeCanvasRef.current;
+      const cur = latestPayloadRef.current;
+      if (canvas && cur.keypoints_3d && cur.keypoints_3d.length >= 17) {
+        const w = canvas.clientWidth || 800;
+        const h = canvas.clientHeight || 540;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+          canvas.width = Math.round(w * dpr);
+          canvas.height = Math.round(h * dpr);
+        }
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          drawWholeBody133OnCanvas(ctx, w, h, cur.keypoints_3d, {
+            highlightColor: cur.ui_directives?.highlight_color ?? 'GREEN',
+            mirrorX: false,
+            detectedBoxes: cur.identity_guard?.detected_boxes,
+            guardStatus: cur.identity_guard?.status,
+          });
+        }
+      }
+      rafId = requestAnimationFrame(renderFrame);
+    };
+    rafId = requestAnimationFrame(renderFrame);
+    return () => cancelAnimationFrame(rafId);
+  }, [hasEdge3D]);
+
   const currentRom = telemetry_analysis.current_rom_deg;
   const targetRom = telemetry_analysis.target_rom_deg || exercise.target_rom_deg;
   const hasTrunkLean = telemetry_analysis.compensation_detected.includes('TRUNK_LEAN');
   const hasShoulderHike = telemetry_analysis.compensation_detected.includes('SHOULDER_HIKE');
   const hasKneeValgus = telemetry_analysis.compensation_detected.includes('KNEE_VALGUS');
+  const guard = payload.identity_guard;
+  const isMultiPerson = kiosk_state === 'PAUSED_MULTI_PERSON' || guard?.status === 'MULTI_PERSON';
+  const isImpostor = kiosk_state === 'PAUSED_IMPOSTOR' || guard?.status === 'IMPOSTOR';
   const isEmergency = kiosk_state === 'EMERGENCY_HALT';
   const isHold = kiosk_state === 'HOLD_PHASE';
 
@@ -173,13 +218,17 @@ export function SkeletonCanvas({
         isEmergency ? 'ring-4 ring-rose-500/70' : ''
       }`}
     >
-      {/* Live Camera Frame (when connected to backend webcam) or Clinical Zen Stage Backdrop */}
+      {/* Live Camera Frame (Edge Vision / Local Webcam) or Clinical Zen Stage Backdrop */}
       {!isDemoMode && payload.frame_base64 ? (
         <img
           src={`data:image/jpeg;base64,${payload.frame_base64}`}
           alt="Live Rehabilitation Vision Feed"
           className="absolute inset-0 h-full w-full object-cover"
         />
+      ) : hasLiveCamera && liveVideoOverlay ? (
+        <div className="absolute inset-0 z-0 h-full w-full overflow-hidden bg-slate-950">
+          {liveVideoOverlay}
+        </div>
       ) : (
         <div className="absolute inset-0 bg-gradient-to-br from-[#F4F9F9] via-[#E6F4F6] to-[#DCF0F7]">
           {/* Subtle Clinical Calibration Grid */}
@@ -234,20 +283,102 @@ export function SkeletonCanvas({
           <span>
             {isEmergency
               ? 'หยุดพักฉุกเฉิน (EMERGENCY HALT)'
-              : hasTrunkLean
-                ? 'ตรวจพบการเอียงลำตัวชดเชย'
-                : isHold
-                  ? 'คงท่าตามมุมเป้าหมาย'
-                  : telemetry_analysis.is_form_valid
-                    ? 'ท่าทางถูกต้อง • เคลื่อนไหวต่อเนื่อง'
-                    : 'กรุณาจัดตำแหน่งร่างกาย'}
+              : isImpostor
+                ? 'ผู้ใช้งานไม่ใช่คนไข้ที่ลงทะเบียน'
+                : isMultiPerson
+                  ? `พบบุคคล ${guard?.person_count ?? 2} คน • หยุดนับชั่วคราว`
+                  : hasTrunkLean
+                    ? 'ตรวจพบการเอียงลำตัวชดเชย'
+                    : isHold
+                      ? 'คงท่าตามมุมเป้าหมาย'
+                      : telemetry_analysis.is_form_valid
+                        ? 'ท่าทางถูกต้อง • เคลื่อนไหวต่อเนื่อง'
+                        : 'กรุณาจัดตำแหน่งร่างกาย'}
           </span>
         </motion.div>
       </div>
 
-      {/* Glowing SVG Anatomical Skeleton + Target ROM Fan */}
+      {/* Continuous Anti-Cheat & Identity Guard Prominent Banner (Rule 1 + Rule 2) */}
+      {(isMultiPerson || isImpostor) && (
+        <div
+          role="alert"
+          className={`relative z-20 mx-4 mb-2 flex items-center gap-3 rounded-2xl border-2 px-4 py-3 shadow-lg backdrop-blur-md sm:mx-5 ${
+            isImpostor
+              ? 'border-rose-400 bg-rose-600/95 text-white'
+              : 'border-amber-400 bg-amber-500/95 text-slate-950'
+          }`}
+        >
+          <div
+            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${
+              isImpostor ? 'bg-white/20 text-white' : 'bg-slate-950/15 text-slate-950'
+            }`}
+          >
+            {isImpostor ? <UserX className="h-6 w-6" /> : <Users className="h-6 w-6" />}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-black tracking-tight sm:text-base">
+              {guard?.alert_title_th ||
+                (isImpostor
+                  ? 'คุณไม่ใช่คนไข้ที่ลงทะเบียนไว้'
+                  : 'ตรวจพบมีบุคคลอยู่หลายคนในเฟรม')}
+            </div>
+            <div
+              className={`mt-0.5 text-xs font-bold sm:text-sm ${
+                isImpostor ? 'text-rose-100' : 'text-slate-900'
+              }`}
+            >
+              {guard?.alert_subtitle_th ||
+                (isImpostor
+                  ? 'ระบบจะไม่นับรอบการฝึก กรุณาให้คนไข้ตัวจริงเข้าฝึกครับ'
+                  : 'กรุณาให้คนไข้ยืนหน้ากล้องเพียงลำพัง ระบบจึงจะนับรอบการฝึกต่อครับ')}
+            </div>
+          </div>
+          <span
+            className={`shrink-0 rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-wider ${
+              isImpostor ? 'bg-rose-900/60 text-rose-100' : 'bg-amber-900/20 text-slate-950'
+            }`}
+          >
+            {isImpostor ? 'LOCKED • 0 REPS' : 'PAUSED'}
+          </span>
+        </div>
+      )}
+
+      {!isMultiPerson && !isImpostor && guard?.status === 'VERIFIED' && guard.is_counting_allowed && (
+        <div className="relative z-20 mx-4 mb-1 inline-flex w-fit items-center gap-1.5 rounded-full border border-emerald-300/80 bg-emerald-500/15 px-3 py-1 text-[11px] font-extrabold text-emerald-800 backdrop-blur-sm sm:mx-5">
+          <UserCheck className="h-3.5 w-3.5 text-emerald-600" />
+          <span>ยืนยันคนไข้ตัวจริง ({Math.round((guard.match_confidence || 1) * 100)}%)</span>
+        </div>
+      )}
+
+      {/* Glowing 3D RTMW3D-l Canvas (when Edge Server active) or SVG Anatomical Skeleton + Target ROM Fan */}
       <div className="relative z-10 flex flex-1 items-center justify-center px-2 pb-2">
-        <svg viewBox="0 0 800 540" className="h-full max-h-[500px] w-full select-none overflow-visible">
+        {hasEdge3D && (
+          <canvas
+            ref={edgeCanvasRef}
+            aria-label="RTMW3D-l 133-Keypoints 3D WholeBody Skeleton"
+            className="pointer-events-none absolute inset-0 z-10 h-full w-full"
+          />
+        )}
+
+        {!isDemoMode && payload.calibration && !payload.calibration.is_calibrated && (
+          <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-2xl border border-sky-300/60 bg-slate-950/85 px-5 py-2.5 text-center text-white shadow-xl backdrop-blur-md">
+            <div className="text-xs font-extrabold text-sky-300">
+              {payload.calibration.message_th}
+            </div>
+            <div className="mt-1.5 h-2 w-56 overflow-hidden rounded-full bg-slate-800">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-sky-400 to-emerald-400 transition-all duration-150"
+                style={{ width: `${Math.round((payload.calibration.progress || 0) * 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {!hasLiveCamera && (
+          <svg
+            viewBox="0 0 800 540"
+            className={`h-full max-h-[500px] w-full select-none overflow-visible ${hasEdge3D ? 'opacity-20' : ''}`}
+          >
           <defs>
             <linearGradient id="romFillGrad" x1="0%" y1="100%" x2="100%" y2="0%">
               <stop offset="0%" stopColor="#0284C7" stopOpacity="0.22" />
@@ -520,16 +651,68 @@ export function SkeletonCanvas({
               {currentRom.toFixed(0)}°
             </text>
           </g>
-        </svg>
+
+          {/* Identity Guard Bounding Boxes overlay for Demo / SVG mode */}
+          {!hasEdge3D &&
+            (isMultiPerson || isImpostor) &&
+            (guard?.detected_boxes ?? []).map((box, bIdx) => {
+              const bx = (box.bbox[0] / 1280) * 800;
+              const by = (box.bbox[1] / 720) * 540;
+              const bw = Math.max(40, ((box.bbox[2] - box.bbox[0]) / 1280) * 800);
+              const bh = Math.max(40, ((box.bbox[3] - box.bbox[1]) / 720) * 540);
+              const boxHex = box.is_authorized
+                ? '#10B981'
+                : isImpostor
+                  ? '#EF4444'
+                  : '#F59E0B';
+              return (
+                <g key={`guard-box-${bIdx}`}>
+                  <rect
+                    x={bx}
+                    y={by}
+                    width={bw}
+                    height={bh}
+                    rx="12"
+                    fill="none"
+                    stroke={boxHex}
+                    strokeWidth="4"
+                    strokeDasharray={box.is_authorized ? undefined : '10 6'}
+                  />
+                  <rect
+                    x={bx}
+                    y={Math.max(4, by - 28)}
+                    width={Math.min(bw + 40, Math.max(150, box.label.length * 8.5))}
+                    height="24"
+                    rx="6"
+                    fill={boxHex}
+                  />
+                  <text
+                    x={bx + 8}
+                    y={Math.max(20, by - 12)}
+                    fill="#FFFFFF"
+                    fontSize="12"
+                    fontWeight="800"
+                  >
+                    {box.label}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+        )}
       </div>
 
       {/* Bottom Camera Status Strip */}
-      <div className="relative z-10 flex items-center justify-between border-t border-white/70 bg-white/70 px-5 py-2.5 text-xs font-semibold text-[#0F4C81]/80 backdrop-blur-md">
+      <div className="relative z-10 flex items-center justify-between border-t border-white/70 bg-white/85 px-5 py-2.5 text-xs font-semibold text-[#0F4C81]/90 backdrop-blur-md">
         <span className="inline-flex items-center gap-1.5">
           <Activity className="h-4 w-4 text-[#0D9488]" />
-          {isDemoMode
-            ? 'โหมดจำลองกายวิภาคเชิงโต้ตอบ (Interactive Demo Canvas)'
-            : 'RTMPose 133-Keypoints + One-Euro Filter Active'}
+          {hasLiveCamera
+            ? 'กล้องตรวจจับท่าทางกายภาพบำบัดสด (Live AI Camera Pose Tracking)'
+            : isDemoMode
+              ? 'โหมดจำลองกายวิภาคเชิงโต้ตอบ (Interactive Demo Canvas)'
+              : `${payload.engine_backend || 'RTMW3D-l 133-Keypoints + One-Euro Filter Active'}${
+                  payload.fps ? ` • ${payload.fps.toFixed(0)} FPS` : ''
+                }`}
         </span>
         <span className="tabular-mono text-[#0284C7]">
           TARGET ROM {targetRom}° • HOLD {exercise.hold_sec}s

@@ -51,19 +51,29 @@ const DEMO_PRESETS: { id: DemoPresetId; label: string; shortLabel: string }[] = 
   { id: 'HOLD_PHASE', label: 'Hold Phase', shortLabel: '4. Hold' },
   { id: 'REP_COMPLETED', label: 'Rep Completed', shortLabel: '5. Rep +' },
   { id: 'SET_FINISHED', label: 'Set Finished', shortLabel: '6. Finished' },
+  { id: 'MULTI_PERSON', label: 'Multi-Person Alert (2+ คน)', shortLabel: '7. Multi-Person' },
+  { id: 'IMPOSTOR', label: 'Impostor Blocked (ผิดคน)', shortLabel: '8. Impostor' },
 ];
 
 function measureLiveJointAngleAndTilt(
   landmarks: readonly NormalizedLandmark[],
   targetJoint: ExercisePrescriptionOption['target_joint'],
 ): { romDeg: number | null; trunkTiltDeg: number } {
+  const MIN_VIS = 0.25;
   const lSh = landmarks[POSE_INDEX.LEFT_SHOULDER];
   const rSh = landmarks[POSE_INDEX.RIGHT_SHOULDER];
   const lHip = landmarks[POSE_INDEX.LEFT_HIP];
   const rHip = landmarks[POSE_INDEX.RIGHT_HIP];
 
   let trunkTiltDeg = 2.0;
-  if (lSh && rSh && lHip && rHip && (lHip.visibility ?? 0) >= 0.35 && (rHip.visibility ?? 0) >= 0.35) {
+  if (
+    lSh &&
+    rSh &&
+    lHip &&
+    rHip &&
+    (lHip.visibility ?? 0) >= MIN_VIS &&
+    (rHip.visibility ?? 0) >= MIN_VIS
+  ) {
     const midShX = (lSh.x + rSh.x) / 2;
     const midShY = (lSh.y + rSh.y) / 2;
     const midHipX = (lHip.x + rHip.x) / 2;
@@ -71,26 +81,52 @@ function measureLiveJointAngleAndTilt(
     trunkTiltDeg = Math.abs(
       (Math.atan2(midShX - midHipX, Math.max(0.05, midHipY - midShY)) * 180) / Math.PI,
     );
-  } else if (lSh && rSh && (lSh.visibility ?? 0) >= 0.4 && (rSh.visibility ?? 0) >= 0.4) {
-    trunkTiltDeg = Math.abs(
-      (Math.atan2(rSh.y - lSh.y, Math.max(0.08, Math.abs(lSh.x - rSh.x))) * 180) / Math.PI,
-    );
+  } else if (lSh && rSh && (lSh.visibility ?? 0) >= MIN_VIS && (rSh.visibility ?? 0) >= MIN_VIS) {
+    trunkTiltDeg =
+      Math.abs((Math.atan2(rSh.y - lSh.y, Math.max(0.08, Math.abs(lSh.x - rSh.x))) * 180) / Math.PI) *
+      0.55;
   }
+
+  const computeArmElevationDeg = (side: 'left' | 'right'): number | null => {
+    const sh = landmarks[side === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
+    const elbow = landmarks[side === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
+    const wrist = landmarks[side === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
+    const hip = landmarks[side === 'left' ? POSE_INDEX.LEFT_HIP : POSE_INDEX.RIGHT_HIP];
+    if (!sh || (sh.visibility ?? 0) < MIN_VIS) return null;
+
+    const shScaled = { x: sh.x, y: sh.y, z: (sh.z ?? 0) * 0.35 };
+    const refHip =
+      hip && (hip.visibility ?? 0) >= MIN_VIS && hip.y <= 0.98
+        ? { x: hip.x, y: hip.y, z: (hip.z ?? 0) * 0.35 }
+        : { x: sh.x, y: sh.y + 0.35, z: (sh.z ?? 0) * 0.35 };
+
+    const candidates: number[] = [];
+    for (const pt of [wrist, elbow]) {
+      if (!pt || (pt.visibility ?? 0) < MIN_VIS) continue;
+      const dx = pt.x - sh.x;
+      const dy = pt.y - sh.y;
+      const len = Math.hypot(dx, dy);
+      if (len >= 0.03) {
+        const cosDown = Math.max(-1, Math.min(1, dy / len));
+        const elev2D = (Math.acos(cosDown) * 180) / Math.PI;
+        const ptScaled = { x: pt.x, y: pt.y, z: (pt.z ?? 0) * 0.35 };
+        const angle3D = computeJointAngle3D(refHip, shScaled, ptScaled);
+        candidates.push(Math.max(elev2D, angle3D));
+      }
+    }
+    return candidates.length > 0 ? Math.max(...candidates) : null;
+  };
 
   let romDeg: number | null = null;
   if (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder') {
-    const isLeft = targetJoint === 'left_shoulder';
-    const sh = landmarks[isLeft ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
-    const wrist = landmarks[isLeft ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
-    const elbow = landmarks[isLeft ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
-    const hip = landmarks[isLeft ? POSE_INDEX.LEFT_HIP : POSE_INDEX.RIGHT_HIP];
-    const distal = (wrist?.visibility ?? 0) >= 0.4 ? wrist : (elbow?.visibility ?? 0) >= 0.4 ? elbow : null;
-    if (sh && (sh.visibility ?? 0) >= 0.45 && distal) {
-      const refHip =
-        hip && (hip.visibility ?? 0) >= 0.45 && hip.y <= 0.98
-          ? hip
-          : { x: sh.x, y: sh.y + 0.35, z: sh.z ?? 0 };
-      romDeg = computeJointAngle3D(refHip, sh, distal);
+    const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
+    const oppositeSide: 'left' | 'right' = primarySide === 'left' ? 'right' : 'left';
+    const primaryDeg = computeArmElevationDeg(primarySide);
+    const oppositeDeg = computeArmElevationDeg(oppositeSide);
+    if (primaryDeg !== null && oppositeDeg !== null) {
+      romDeg = oppositeDeg > primaryDeg + 20 ? Math.max(primaryDeg, oppositeDeg) : primaryDeg;
+    } else {
+      romDeg = primaryDeg ?? oppositeDeg;
     }
   } else if (targetJoint === 'left_knee' || targetJoint === 'right_knee') {
     const isLeft = targetJoint === 'left_knee';
@@ -101,17 +137,278 @@ function measureLiveJointAngleAndTilt(
       hip &&
       knee &&
       ankle &&
-      (hip.visibility ?? 0) >= 0.4 &&
-      (knee.visibility ?? 0) >= 0.4 &&
-      (ankle.visibility ?? 0) >= 0.4
+      (hip.visibility ?? 0) >= MIN_VIS &&
+      (knee.visibility ?? 0) >= MIN_VIS &&
+      (ankle.visibility ?? 0) >= MIN_VIS
     ) {
       romDeg = computeJointAngle3D(hip, knee, ankle);
+    } else if (
+      lSh &&
+      rSh &&
+      lHip &&
+      rHip &&
+      (lSh.visibility ?? 0) >= MIN_VIS &&
+      (lHip.visibility ?? 0) >= MIN_VIS
+    ) {
+      // Fallback for close webcam framing: approximate squat/knee flexion from hip-shoulder vertical span
+      const midShY = (lSh.y + rSh.y) / 2;
+      const midHipY = (lHip.y + rHip.y) / 2;
+      const dropNorm = Math.max(0, Math.min(1, (midHipY - midShY - 0.18) / 0.25));
+      romDeg = Number((105 + dropNorm * 65).toFixed(1));
     }
   } else if (targetJoint === 'spine') {
     romDeg = Number(Math.max(0, 15 - trunkTiltDeg).toFixed(1));
   }
 
   return { romDeg, trunkTiltDeg: Number(trunkTiltDeg.toFixed(1)) };
+}
+
+const LIVE_BODY_BONELINE_PAIRS: readonly [number, number][] = [
+  [POSE_INDEX.LEFT_SHOULDER, POSE_INDEX.RIGHT_SHOULDER],
+  [POSE_INDEX.LEFT_SHOULDER, POSE_INDEX.LEFT_ELBOW],
+  [POSE_INDEX.LEFT_ELBOW, POSE_INDEX.LEFT_WRIST],
+  [POSE_INDEX.RIGHT_SHOULDER, POSE_INDEX.RIGHT_ELBOW],
+  [POSE_INDEX.RIGHT_ELBOW, POSE_INDEX.RIGHT_WRIST],
+  [POSE_INDEX.LEFT_SHOULDER, POSE_INDEX.LEFT_HIP],
+  [POSE_INDEX.RIGHT_SHOULDER, POSE_INDEX.RIGHT_HIP],
+  [POSE_INDEX.LEFT_HIP, POSE_INDEX.RIGHT_HIP],
+  [POSE_INDEX.LEFT_HIP, POSE_INDEX.LEFT_KNEE],
+  [POSE_INDEX.LEFT_KNEE, POSE_INDEX.LEFT_ANKLE],
+  [POSE_INDEX.RIGHT_HIP, POSE_INDEX.RIGHT_KNEE],
+  [POSE_INDEX.RIGHT_KNEE, POSE_INDEX.RIGHT_ANKLE],
+];
+
+const LIVE_KEYPOINT_INDICES: readonly number[] = [
+  POSE_INDEX.NOSE,
+  POSE_INDEX.LEFT_SHOULDER,
+  POSE_INDEX.RIGHT_SHOULDER,
+  POSE_INDEX.LEFT_ELBOW,
+  POSE_INDEX.RIGHT_ELBOW,
+  POSE_INDEX.LEFT_WRIST,
+  POSE_INDEX.RIGHT_WRIST,
+  POSE_INDEX.LEFT_HIP,
+  POSE_INDEX.RIGHT_HIP,
+  POSE_INDEX.LEFT_KNEE,
+  POSE_INDEX.RIGHT_KNEE,
+  POSE_INDEX.LEFT_ANKLE,
+  POSE_INDEX.RIGHT_ANKLE,
+];
+
+function drawLivePoseOverlayOnCanvas(
+  canvas: HTMLCanvasElement | null,
+  landmarksList: readonly (readonly NormalizedLandmark[])[],
+  opts: {
+    targetJoint: ExercisePrescriptionOption['target_joint'];
+    romDeg: number | null;
+    targetRomDeg: number;
+    holdRatio: number;
+    trunkTiltDeg: number;
+    isMultiPerson: boolean;
+    isImpostorOrEmergency: boolean;
+    videoWidth?: number;
+    videoHeight?: number;
+  },
+): void {
+  if (!canvas) return;
+  const w = canvas.clientWidth || 640;
+  const h = canvas.clientHeight || 480;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+  }
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (landmarksList.length === 0) return;
+
+  // Match CSS object-cover scale/crop so mirrored landmarks align 1:1 over the video feed
+  const vw = opts.videoWidth && opts.videoWidth > 0 ? opts.videoWidth : w;
+  const vh = opts.videoHeight && opts.videoHeight > 0 ? opts.videoHeight : h;
+  const coverScale = Math.max(w / vw, h / vh);
+  const renderW = vw * coverScale;
+  const renderH = vh * coverScale;
+  const offsetX = (w - renderW) / 2;
+  const offsetY = (h - renderH) / 2;
+  const toCanvasX = (normX: number) => offsetX + (1 - normX) * renderW;
+  const toCanvasY = (normY: number) => offsetY + normY * renderH;
+
+  const activeColor = opts.isImpostorOrEmergency
+    ? '#EF4444'
+    : opts.isMultiPerson || opts.trunkTiltDeg > 10
+      ? '#F59E0B'
+      : '#10B981';
+
+  const isHighlightedEdge = (a: number, b: number) => {
+    if (opts.targetJoint === 'left_shoulder') {
+      return (
+        (a === POSE_INDEX.LEFT_SHOULDER && b === POSE_INDEX.LEFT_ELBOW) ||
+        (a === POSE_INDEX.LEFT_ELBOW && b === POSE_INDEX.LEFT_WRIST)
+      );
+    }
+    if (opts.targetJoint === 'right_shoulder') {
+      return (
+        (a === POSE_INDEX.RIGHT_SHOULDER && b === POSE_INDEX.RIGHT_ELBOW) ||
+        (a === POSE_INDEX.RIGHT_ELBOW && b === POSE_INDEX.RIGHT_WRIST)
+      );
+    }
+    if (opts.targetJoint === 'left_knee') {
+      return (
+        (a === POSE_INDEX.LEFT_HIP && b === POSE_INDEX.LEFT_KNEE) ||
+        (a === POSE_INDEX.LEFT_KNEE && b === POSE_INDEX.LEFT_ANKLE)
+      );
+    }
+    if (opts.targetJoint === 'right_knee') {
+      return (
+        (a === POSE_INDEX.RIGHT_HIP && b === POSE_INDEX.RIGHT_KNEE) ||
+        (a === POSE_INDEX.RIGHT_KNEE && b === POSE_INDEX.RIGHT_ANKLE)
+      );
+    }
+    return (
+      (a === POSE_INDEX.LEFT_SHOULDER && b === POSE_INDEX.RIGHT_SHOULDER) ||
+      (a === POSE_INDEX.LEFT_SHOULDER && b === POSE_INDEX.LEFT_HIP) ||
+      (a === POSE_INDEX.RIGHT_SHOULDER && b === POSE_INDEX.RIGHT_HIP)
+    );
+  };
+
+  // Primary patient live skeleton overlay
+  const primary = landmarksList[0];
+  ctx.save();
+  ctx.lineCap = 'round';
+  for (const [aIdx, bIdx] of LIVE_BODY_BONELINE_PAIRS) {
+    const a = primary[aIdx];
+    const b = primary[bIdx];
+    if (!a || !b || (a.visibility ?? 0) < 0.25 || (b.visibility ?? 0) < 0.25) continue;
+    const ax = toCanvasX(a.x);
+    const ay = toCanvasY(a.y);
+    const bx = toCanvasX(b.x);
+    const by = toCanvasY(b.y);
+    const emphasized = isHighlightedEdge(aIdx, bIdx);
+
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.lineWidth = emphasized ? 6 : 3.2;
+    ctx.strokeStyle = emphasized ? activeColor : 'rgba(56, 189, 248, 0.85)';
+    if (emphasized) {
+      ctx.shadowColor = activeColor;
+      ctx.shadowBlur = 12;
+    } else {
+      ctx.shadowBlur = 0;
+    }
+    ctx.stroke();
+  }
+  ctx.shadowBlur = 0;
+
+  // Joint keypoints
+  for (const idx of LIVE_KEYPOINT_INDICES) {
+    const lm = primary[idx];
+    if (!lm || (lm.visibility ?? 0) < 0.25) continue;
+    const px = toCanvasX(lm.x);
+    const py = toCanvasY(lm.y);
+    const r = idx === POSE_INDEX.NOSE ? 5 : 6;
+    ctx.beginPath();
+    ctx.arc(px, py, r, 0, Math.PI * 2);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fill();
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = activeColor;
+    ctx.stroke();
+  }
+
+  // On-body floating angle badge & radial hold indicator
+  const anchorIdx =
+    opts.targetJoint === 'left_shoulder'
+      ? POSE_INDEX.LEFT_SHOULDER
+      : opts.targetJoint === 'right_shoulder'
+        ? POSE_INDEX.RIGHT_SHOULDER
+        : opts.targetJoint === 'left_knee'
+          ? POSE_INDEX.LEFT_KNEE
+          : opts.targetJoint === 'right_knee'
+            ? POSE_INDEX.RIGHT_KNEE
+            : POSE_INDEX.NOSE;
+  const anchorLm = primary[anchorIdx] ?? primary[POSE_INDEX.NOSE];
+  if (anchorLm && opts.romDeg !== null) {
+    const jx = Math.max(64, Math.min(w - 64, toCanvasX(anchorLm.x)));
+    const jy = Math.max(54, Math.min(h - 40, toCanvasY(anchorLm.y) - 42));
+
+    if (opts.holdRatio > 0) {
+      ctx.beginPath();
+      ctx.arc(jx, jy, 34, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, opts.holdRatio));
+      ctx.strokeStyle = '#10B981';
+      ctx.lineWidth = 5;
+      ctx.stroke();
+    }
+
+    const badgeText = `${Math.round(opts.romDeg)}° / ${opts.targetRomDeg}°`;
+    ctx.font = '800 14px "Sarabun", sans-serif';
+    const tw = ctx.measureText(badgeText).width;
+    const bw = Math.max(82, tw + 20);
+    const bh = 30;
+    const bx = jx - bw / 2;
+    const by = jy - bh / 2;
+
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+    ctx.strokeStyle = activeColor;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, 15);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#FFFFFF';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(badgeText, jx, jy);
+  }
+
+  // Multi-person camera bounding boxes when 2+ people enter view
+  if (opts.isMultiPerson || landmarksList.length > 1) {
+    landmarksList.forEach((person, pIdx) => {
+      let minX = w;
+      let maxX = 0;
+      let minY = h;
+      let maxY = 0;
+      let any = false;
+      for (const idx of LIVE_KEYPOINT_INDICES) {
+        const lm = person[idx];
+        if (!lm || (lm.visibility ?? 0) < 0.2) continue;
+        const cx = toCanvasX(lm.x);
+        const cy = toCanvasY(lm.y);
+        minX = Math.min(minX, cx);
+        maxX = Math.max(maxX, cx);
+        minY = Math.min(minY, cy);
+        maxY = Math.max(maxY, cy);
+        any = true;
+      }
+      if (!any) return;
+      const x1 = Math.max(8, minX - 24);
+      const y1 = Math.max(8, minY - 28);
+      const bw = Math.min(w - x1 - 8, Math.max(72, maxX - minX + 48));
+      const bh = Math.min(h - y1 - 8, Math.max(96, maxY - minY + 44));
+      const boxHex = pIdx === 0 ? '#10B981' : '#F59E0B';
+      const label = pIdx === 0 ? '✓ คนไข้หลัก' : '⚠ บุคคลเกินในเฟรม';
+
+      ctx.strokeStyle = boxHex;
+      ctx.lineWidth = 3;
+      ctx.setLineDash(pIdx === 0 ? [] : [8, 5]);
+      ctx.strokeRect(x1, y1, bw, bh);
+      ctx.setLineDash([]);
+
+      ctx.font = '800 12px "Sarabun", sans-serif';
+      const lw = ctx.measureText(label).width + 16;
+      const ly = Math.max(6, y1 - 24);
+      ctx.fillStyle = boxHex;
+      ctx.fillRect(x1, ly, lw, 22);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, x1 + 8, ly + 11);
+    });
+  }
+  ctx.restore();
 }
 
 export function SmartRehabKioskUI({
@@ -162,20 +459,28 @@ export function SmartRehabKioskUI({
   const [voiceMuted, setVoiceMuted] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(() => !patientProp);
   const [completedIds, setCompletedIds] = useState<string[]>([]);
-  const [livePoseActive, setLivePoseActive] = useState<boolean>(() => Boolean(patientProp));
+  const [livePoseActive, setLivePoseActive] = useState<boolean>(true);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const poseCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const onExerciseCompletedRef = useRef(onExerciseCompleted);
   const onAllExercisesCompletedRef = useRef(onAllExercisesCompleted);
   const selectedExerciseRef = useRef(selectedExercise);
   const demoValidRepsRef = useRef(demoValidReps);
+  const demoPresetRef = useRef(demoPreset);
+  const countingLockedRef = useRef(false);
 
   onExerciseCompletedRef.current = onExerciseCompleted;
   onAllExercisesCompletedRef.current = onAllExercisesCompleted;
   selectedExerciseRef.current = selectedExercise;
   demoValidRepsRef.current = demoValidReps;
+  demoPresetRef.current = demoPreset;
+  countingLockedRef.current =
+    payload.kiosk_state === 'PAUSED_MULTI_PERSON' ||
+    payload.kiosk_state === 'PAUSED_IMPOSTOR' ||
+    payload.identity_guard?.is_counting_allowed === false;
 
   const { kiosk_state, patient, telemetry_analysis, rep_counter, ui_directives, tts_voice_th } = payload;
   const compensations = telemetry_analysis.compensation_detected;
@@ -276,12 +581,17 @@ export function SmartRehabKioskUI({
     let holdAccumMs = 0;
     let awaitingReturn = false;
     let repCelebrateUntil = 0;
+    let singlePersonRecoveryFrames = 0;
     let trackedExId = selectedExerciseRef.current.exercise_id;
 
     const cleanup = () => {
       if (rafId) {
         cancelAnimationFrame(rafId);
         rafId = 0;
+      }
+      if (poseCanvasRef.current) {
+        const ctx = poseCanvasRef.current.getContext('2d');
+        ctx?.clearRect(0, 0, poseCanvasRef.current.width, poseCanvasRef.current.height);
       }
       if (stream) {
         stream.getTracks().forEach((t) => t.stop());
@@ -353,7 +663,7 @@ export function SmartRehabKioskUI({
                   ...(delegate ? { delegate } : {}),
                 },
                 runningMode: 'VIDEO',
-                numPoses: 1,
+                numPoses: 2,
               });
               if (!active) {
                 created.close();
@@ -408,58 +718,129 @@ export function SmartRehabKioskUI({
               const ts = Math.max(lastDetectTs + 1, Math.round(now));
               lastDetectTs = ts;
               const poseRes = poseLandmarker.detectForVideo(source, ts);
-              const landmarks = poseRes.landmarks?.[0];
-              if (landmarks) {
-                const measured = measureLiveJointAngleAndTilt(landmarks, curEx.target_joint);
-                setDemoTrunkTiltDeg(measured.trunkTiltDeg);
-                if (measured.romDeg !== null) {
-                  smoothedRom =
-                    smoothedRom === null
-                      ? measured.romDeg
-                      : Number((smoothedRom + 0.35 * (measured.romDeg - smoothedRom)).toFixed(1));
-                  setDemoRomDeg(smoothedRom);
+              const allLandmarks = poseRes.landmarks ?? [];
+              const poseCount = allLandmarks.length;
 
-                  const targetThreshold = curEx.target_joint.includes('knee')
-                    ? curEx.target_rom_deg + 10
-                    : curEx.target_rom_deg * 0.88;
-                  const atTarget = curEx.target_joint.includes('knee')
-                    ? smoothedRom <= targetThreshold
-                    : smoothedRom >= targetThreshold;
-                  const atRest = curEx.target_joint.includes('knee')
-                    ? smoothedRom >= 145
-                    : smoothedRom <= Math.min(55, curEx.target_rom_deg * 0.45);
-
-                  if (atRest) {
-                    awaitingReturn = false;
-                  }
-
-                  if (demoValidRepsRef.current < curEx.target_reps) {
-                    if (atTarget && !awaitingReturn && measured.trunkTiltDeg <= 14) {
-                      holdAccumMs += dtMs;
-                      const holdTargetMs = Math.max(1000, curEx.hold_sec * 1000);
-                      const remSec = Math.max(0, Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)));
-                      setDemoHoldRemainingSec(remSec);
-                      if (holdAccumMs >= holdTargetMs) {
-                        holdAccumMs = 0;
-                        awaitingReturn = true;
-                        repCelebrateUntil = now + 1200;
-                        setDemoHoldRemainingSec(0);
-                        setDemoValidReps((r) => {
-                          const next = Math.min(curEx.target_reps, r + 1);
-                          setDemoPresetState(next >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED');
-                          return next;
-                        });
-                      } else {
-                        setDemoPresetState('HOLD_PHASE');
-                      }
+              // Rule 1 Fallback: freeze rep counting when 2+ people enter webcam view
+              if (poseCount > 1) {
+                singlePersonRecoveryFrames = 0;
+                holdAccumMs = 0;
+                setDemoHoldRemainingSec(curEx.hold_sec);
+                setDemoPresetState('MULTI_PERSON');
+                drawLivePoseOverlayOnCanvas(poseCanvasRef.current, allLandmarks, {
+                  targetJoint: curEx.target_joint,
+                  romDeg: smoothedRom,
+                  targetRomDeg: curEx.target_rom_deg,
+                  holdRatio: 0,
+                  trunkTiltDeg: 0,
+                  isMultiPerson: true,
+                  isImpostorOrEmergency: false,
+                  videoWidth: v.videoWidth,
+                  videoHeight: v.videoHeight,
+                });
+              } else if (demoPresetRef.current === 'IMPOSTOR') {
+                // Keep manual IMPOSTOR guard paused until reset
+                holdAccumMs = 0;
+                drawLivePoseOverlayOnCanvas(poseCanvasRef.current, allLandmarks, {
+                  targetJoint: curEx.target_joint,
+                  romDeg: smoothedRom,
+                  targetRomDeg: curEx.target_rom_deg,
+                  holdRatio: 0,
+                  trunkTiltDeg: 0,
+                  isMultiPerson: false,
+                  isImpostorOrEmergency: true,
+                  videoWidth: v.videoWidth,
+                  videoHeight: v.videoHeight,
+                });
+              } else {
+                const landmarks = allLandmarks[0];
+                if (landmarks) {
+                  if (demoPresetRef.current === 'MULTI_PERSON') {
+                    singlePersonRecoveryFrames += 1;
+                    if (singlePersonRecoveryFrames < 3) {
+                      holdAccumMs = 0;
+                      setDemoHoldRemainingSec(curEx.hold_sec);
                     } else {
-                      holdAccumMs = Math.max(0, holdAccumMs - dtMs * 0.6);
-                      if (now > repCelebrateUntil) {
-                        setDemoHoldRemainingSec(curEx.hold_sec);
-                        setDemoPresetState(measured.trunkTiltDeg > 10 ? 'TRUNK_LEAN' : 'ACTIVE_REP');
+                      singlePersonRecoveryFrames = 0;
+                      setDemoPresetState('ACTIVE_REP');
+                    }
+                  }
+                  const measured = measureLiveJointAngleAndTilt(landmarks, curEx.target_joint);
+                  setDemoTrunkTiltDeg(measured.trunkTiltDeg);
+                  const holdTargetMs = Math.max(1000, curEx.hold_sec * 1000);
+                  if (measured.romDeg !== null) {
+                    smoothedRom =
+                      smoothedRom === null
+                        ? measured.romDeg
+                        : Number((smoothedRom + 0.35 * (measured.romDeg - smoothedRom)).toFixed(1));
+                    setDemoRomDeg(smoothedRom);
+
+                    const targetThreshold = curEx.target_joint.includes('knee')
+                      ? curEx.target_rom_deg + 10
+                      : curEx.target_rom_deg * 0.88;
+                    const atTarget = curEx.target_joint.includes('knee')
+                      ? smoothedRom <= targetThreshold
+                      : smoothedRom >= targetThreshold;
+                    const atRest = curEx.target_joint.includes('knee')
+                      ? smoothedRom >= 145
+                      : smoothedRom <= Math.min(55, curEx.target_rom_deg * 0.45);
+
+                    if (atRest) {
+                      awaitingReturn = false;
+                    }
+
+                    const blockCounting =
+                      demoPresetRef.current === 'MULTI_PERSON' ||
+                      countingLockedRef.current;
+
+                    if (!blockCounting && demoValidRepsRef.current < curEx.target_reps) {
+                      if (atTarget && !awaitingReturn && measured.trunkTiltDeg <= 14) {
+                        holdAccumMs += dtMs;
+                        const remSec = Math.max(0, Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)));
+                        setDemoHoldRemainingSec(remSec);
+                        if (holdAccumMs >= holdTargetMs) {
+                          holdAccumMs = 0;
+                          awaitingReturn = true;
+                          repCelebrateUntil = now + 1200;
+                          setDemoHoldRemainingSec(0);
+                          setDemoValidReps((r) => {
+                            const next = Math.min(curEx.target_reps, r + 1);
+                            setDemoPresetState(next >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED');
+                            return next;
+                          });
+                        } else {
+                          setDemoPresetState('HOLD_PHASE');
+                        }
+                      } else {
+                        holdAccumMs = Math.max(0, holdAccumMs - dtMs * 0.6);
+                        if (now > repCelebrateUntil) {
+                          setDemoHoldRemainingSec(curEx.hold_sec);
+                          setDemoPresetState(measured.trunkTiltDeg > 10 ? 'TRUNK_LEAN' : 'ACTIVE_REP');
+                        }
                       }
                     }
                   }
+                  drawLivePoseOverlayOnCanvas(poseCanvasRef.current, allLandmarks, {
+                    targetJoint: curEx.target_joint,
+                    romDeg: smoothedRom,
+                    targetRomDeg: curEx.target_rom_deg,
+                    holdRatio: holdAccumMs > 0 ? Math.min(1, holdAccumMs / holdTargetMs) : 0,
+                    trunkTiltDeg: measured.trunkTiltDeg,
+                    isMultiPerson: demoPresetRef.current === 'MULTI_PERSON',
+                    isImpostorOrEmergency: countingLockedRef.current,
+                    videoWidth: v.videoWidth,
+                    videoHeight: v.videoHeight,
+                  });
+                } else {
+                  drawLivePoseOverlayOnCanvas(poseCanvasRef.current, [], {
+                    targetJoint: curEx.target_joint,
+                    romDeg: null,
+                    targetRomDeg: curEx.target_rom_deg,
+                    holdRatio: 0,
+                    trunkTiltDeg: 0,
+                    isMultiPerson: false,
+                    isImpostorOrEmergency: false,
+                  });
                 }
               }
             } catch {
@@ -519,6 +900,18 @@ export function SmartRehabKioskUI({
       label: 'ความเร็วเคลื่อนไหวสม่ำเสมอ',
       ok: !tooFastAlert && !isEmergency,
       warnText: 'เร็วเกินไป',
+    },
+    {
+      label: 'ยืนยันตัวตนคนไข้ตัวจริง (1 คนในเฟรม)',
+      ok:
+        kiosk_state !== 'PAUSED_MULTI_PERSON' &&
+        kiosk_state !== 'PAUSED_IMPOSTOR' &&
+        payload.identity_guard?.is_counting_allowed !== false &&
+        !isEmergency,
+      warnText:
+        kiosk_state === 'PAUSED_IMPOSTOR' || payload.identity_guard?.status === 'IMPOSTOR'
+          ? 'ไม่ใช่คนไข้'
+          : 'พบหลายคน',
     },
   ];
 
@@ -712,23 +1105,33 @@ export function SmartRehabKioskUI({
               isDemoMode={isDemoMode}
               distanceM={demoDistanceM}
               trunkTiltDeg={demoTrunkTiltDeg}
+              hasLiveCamera={livePoseActive && !cameraError}
+              liveVideoOverlay={
+                livePoseActive && !cameraError ? (
+                  <div className="relative h-full w-full bg-slate-950">
+                    <video
+                      ref={videoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="h-full w-full object-cover"
+                      style={{ transform: 'scaleX(-1)' }}
+                    />
+                    <canvas
+                      ref={poseCanvasRef}
+                      aria-label="Live Pose Skeleton & Angle Overlay"
+                      className="pointer-events-none absolute inset-0 h-full w-full"
+                    />
+                    <div className="pointer-events-none absolute left-4 top-16 z-10 inline-flex items-center gap-1.5 rounded-full border border-emerald-400/50 bg-slate-950/75 px-3 py-1 text-[11px] font-bold text-emerald-300 backdrop-blur-md">
+                      <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
+                      <span>
+                        {cameraReady ? '📷 กล้องตรวจจับท่าทางสด (Live AI Pose)' : '⏳ กำลังเปิดกล้อง...'}
+                      </span>
+                    </div>
+                  </div>
+                ) : undefined
+              }
             >
-              {livePoseActive && !cameraError && (
-                <div className="pointer-events-none absolute bottom-3 left-3 z-20 w-36 sm:w-44 h-28 sm:h-32 overflow-hidden rounded-2xl border-2 border-emerald-400/80 bg-slate-900 shadow-lg">
-                  <video
-                    ref={videoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="h-full w-full object-cover"
-                    style={{ transform: 'scaleX(-1)' }}
-                  />
-                  <span className="absolute left-1.5 top-1.5 rounded-full bg-slate-950/80 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
-                    {cameraReady ? '📷 Live AI Pose' : '⏳ เปิดกล้อง...'}
-                  </span>
-                </div>
-              )}
-
               {kiosk_state === 'AUTH_FRAMING' && (
                 <FaceScanOverlay
                   verified={demoFaceMatched || Boolean(patient?.id)}
@@ -1054,9 +1457,11 @@ export function SmartRehabKioskUI({
                           onClick={() => setDemoPreset(p.id)}
                           className={`rounded-xl px-3 py-1.5 text-xs font-bold transition-all ${
                             active
-                              ? p.id === 'TRUNK_LEAN'
-                                ? 'bg-[#F59E0B] text-white shadow-sm'
-                                : 'bg-[#0284C7] text-white shadow-sm'
+                              ? p.id === 'IMPOSTOR'
+                                ? 'bg-[#EF4444] text-white shadow-sm'
+                                : p.id === 'TRUNK_LEAN' || p.id === 'MULTI_PERSON'
+                                  ? 'bg-[#F59E0B] text-white shadow-sm'
+                                  : 'bg-[#0284C7] text-white shadow-sm'
                               : 'bg-white/80 text-[#0F4C81] hover:bg-sky-50'
                           }`}
                         >

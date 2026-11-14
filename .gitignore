@@ -9,4 +9,7 @@ dist-worker/
 *.log
 data/*.tmp
 public/models/w600k_r50.onnx
+edge-vision/.venv/
+__pycache__/
+*.py[cod]
 

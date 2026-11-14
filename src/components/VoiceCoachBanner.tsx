@@ -67,6 +67,21 @@ export function VoiceCoachBanner({
     speakNow(clean);
   }, [textTh, kioskState, muted]);
 
+  // Throttle 4-second voice reminders while paused by Multi-Person / Impostor guard
+  useEffect(() => {
+    if (muted || (kioskState !== 'PAUSED_MULTI_PERSON' && kioskState !== 'PAUSED_IMPOSTOR')) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      const clean = textTh.trim();
+      if (!clean) return;
+      lastSpokenTextRef.current = clean;
+      lastSpokenAtRef.current = Date.now();
+      speakNow(clean);
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [kioskState, textTh, muted]);
+
   const badgeTone =
     highlightColor === 'RED'
       ? 'bg-rose-500 text-white'

@@ -40,6 +40,10 @@ import {
   purgeLegacyBiometricCache,
 } from '@drtechcares/smart-biometric-core';
 import {
+  useEdgeVisionSocket,
+  type EdgeKioskTelemetryPayload,
+} from '../hooks/useEdgeVisionSocket';
+import {
   AlertCircle,
   Bell,
   CameraOff,
@@ -308,6 +312,56 @@ export function KioskBiometricLoginView({
   const presenceRef = useRef(new FacePresenceTracker());
   const loginCtrlRef = useRef(new SingleScanLoginController());
   const verifyingLockRef = useRef(false);
+  const edgeTelemetryRef = useRef<EdgeKioskTelemetryPayload | null>(null);
+
+  const { connected: edgeConnected, telemetry: edgeTelemetry } = useEdgeVisionSocket({
+    enabled: !cameraPaused && !staffModalOpen && !showPinModal,
+    onPatientMatch: (edgeMatch) => {
+      if (verifiedModalPayloadRef.current || verifyingLockRef.current || !edgeMatch.id) return;
+      const entry = biometricIndexRef.current.find(
+        (e) => e.patientId === edgeMatch.id || (edgeMatch.hn && e.hn === edgeMatch.hn),
+      );
+      if (entry) {
+        const nextPayload = buildKioskLoginSuccessPayload({
+          patient: {
+            id: entry.patientId,
+            hn: entry.hn,
+            fullName: entry.fullName,
+            nextAppointmentDate: entry.nextAppointmentDate,
+          },
+          todayRoutine: entry.todayRoutine ?? null,
+          confidencePercent: Math.round((edgeMatch.similarity || 0.92) * 100),
+          indexEntry: entry,
+        });
+        verifiedModalPayloadRef.current = nextPayload;
+        setVerifiedModalPayload(nextPayload);
+        return;
+      }
+      void apiClient
+        .listPatients()
+        .then((patients) => {
+          const found = patients.find(
+            (p) => p.id === edgeMatch.id || (edgeMatch.hn && p.hn === edgeMatch.hn),
+          );
+          if (!found || verifiedModalPayloadRef.current) return;
+          const nextPayload = buildKioskLoginSuccessPayload({
+            patient: {
+              id: found.id,
+              hn: found.hn,
+              fullName: found.fullName,
+              nextAppointmentDate: found.nextAppointmentDate,
+            },
+            todayRoutine: null,
+            confidencePercent: Math.round((edgeMatch.similarity || 0.92) * 100),
+            rehabSchedules: found.rehabSchedules,
+          });
+          verifiedModalPayloadRef.current = nextPayload;
+          setVerifiedModalPayload(nextPayload);
+        })
+        .catch(() => {});
+    },
+  });
+  edgeTelemetryRef.current = edgeTelemetry;
   const biometricIndexRef = useRef<PatientBiometricIndexEntry[]>([]);
   const temporalMatcherRef = useRef(new TemporalBiometricMatcher(3, 0.74));
   const mirroredRef = useRef(mirrored);
@@ -606,7 +660,23 @@ export function KioskBiometricLoginView({
               lastGestureFrameAt = now;
               const v = videoRef.current;
 
-              if (v.readyState >= 2 && v.videoWidth > 0 && (handLandmarker || poseLandmarker)) {
+              if (
+                v.readyState >= 2 &&
+                v.videoWidth > 0 &&
+                (handLandmarker || poseLandmarker || Boolean(edgeTelemetryRef.current?.hand_status))
+              ) {
+                const edgeHands = edgeTelemetryRef.current?.hand_status;
+                if (edgeHands) {
+                  if (edgeHands.left_raised) lastLeftRaisedAt = now;
+                  if (edgeHands.right_raised) lastRightRaisedAt = now;
+                  const edgeBoth =
+                    edgeHands.active_card_zone === 'BOTH' ||
+                    (edgeHands.left_raised && edgeHands.right_raised);
+                  if (edgeBoth) {
+                    latestBothHandsUp = true;
+                  }
+                }
+
                 if (v.currentTime !== lastGestureVideoTime || now - lastGestureInferenceAt >= 33) {
                   lastGestureVideoTime = v.currentTime;
                   lastGestureInferenceAt = now;
@@ -651,7 +721,14 @@ export function KioskBiometricLoginView({
                   const sides = extractRaisedHandSides(detectedHands, detectedPose);
                   if (sides.leftRaised) lastLeftRaisedAt = now;
                   if (sides.rightRaised) lastRightRaisedAt = now;
+                  const edgeHandsNow = edgeTelemetryRef.current?.hand_status;
+                  const edgeBothNow = Boolean(
+                    edgeHandsNow &&
+                      (edgeHandsNow.active_card_zone === 'BOTH' ||
+                        (edgeHandsNow.left_raised && edgeHandsNow.right_raised)),
+                  );
                   latestBothHandsUp =
+                    edgeBothNow ||
                     sides.bothRaised ||
                     (now - lastLeftRaisedAt <= 450 && now - lastRightRaisedAt <= 450);
                 }
@@ -1099,7 +1176,7 @@ export function KioskBiometricLoginView({
               {/* Cloud Online + Clock Pill */}
               <div className="hidden sm:inline-flex h-9 px-3 items-center gap-2 rounded-xl bg-emerald-950/75 border border-emerald-500/25 text-xs font-semibold text-emerald-200 whitespace-nowrap">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0 shadow-[0_0_8px_#34d399]" />
-                <span>Cloud Online</span>
+                <span>{edgeConnected ? 'Cloud + Edge 3D' : 'Cloud Online'}</span>
                 <span className="text-emerald-500/60">•</span>
                 <span className="font-mono tabular-nums font-bold text-white">{clockText}</span>
               </div>

@@ -417,9 +417,45 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
     let rafId = 0;
     let handLandmarker: HandLandmarker | null = null;
     let poseLandmarker: PoseLandmarker | null = null;
+    let edgeWs: WebSocket | null = null;
+    type EdgeHandTelemetry = {
+      left_raised?: boolean;
+      right_raised?: boolean;
+      active_card_zone?: 'LEFT' | 'RIGHT' | 'BOTH' | 'NONE';
+      left_palm_2d?: [number, number] | null;
+      right_palm_2d?: [number, number] | null;
+      left_hand_landmarks?: Array<{ x: number; y: number; z?: number }>;
+      right_hand_landmarks?: Array<{ x: number; y: number; z?: number }>;
+    };
+    let edgeHandStatus: EdgeHandTelemetry | null = null;
+    let edgeHandTs = 0;
     setCameraError(null);
     setDetectorReady(false);
     resetTrackingRefs();
+
+    // Optional Edge Vision WS (RTMW3D-l 133-point Wholebody) with automatic MediaPipe fallback
+    try {
+      const wsUrl = (import.meta.env.VITE_EDGE_VISION_WS as string | undefined)?.trim() || 'ws://localhost:8000/ws/kiosk';
+      edgeWs = new WebSocket(wsUrl);
+      edgeWs.onmessage = (evt) => {
+        if (!active) return;
+        try {
+          const msg = JSON.parse(evt.data) as { hand_status?: EdgeHandTelemetry };
+          if (msg?.hand_status) {
+            edgeHandStatus = msg.hand_status;
+            edgeHandTs = Date.now();
+            setDetectorReady(true);
+          }
+        } catch {
+          // ignore malformed frames
+        }
+      };
+      edgeWs.onerror = () => {
+        edgeWs?.close();
+      };
+    } catch {
+      edgeWs = null;
+    }
 
     async function createHandOrPoseDetector() {
       const vision = await resolveVisionTasks();
@@ -510,12 +546,15 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
       const mode = await createHandOrPoseDetector();
       if (!active) return;
 
-      if (mode === 'none') {
+      const edgeAlive = () => Boolean(edgeHandStatus && Date.now() - edgeHandTs < 450);
+      if (mode === 'none' && !edgeAlive()) {
         setCameraError('ระบบตรวจจับมือไม่พร้อมใช้งาน กรุณาคลิกเลือกคำตอบด้านล่างแทน');
         return;
       }
 
-      setDetectorReady(true);
+      if (mode !== 'none' || edgeAlive()) {
+        setDetectorReady(true);
+      }
       lastFrameTimeRef.current = performance.now();
       lastVideoTimeRef.current = -1;
       lastInferenceTsRef.current = 0;
@@ -552,7 +591,38 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
         }
 
         const isTrackingPaused = Boolean(feedbackRef.current) || submittingRef.current;
-        if (!isTrackingPaused && video.readyState >= 2) {
+        const isEdgeFresh = Boolean(edgeHandStatus && Date.now() - edgeHandTs < 350);
+
+        if (!isTrackingPaused && isEdgeFresh && edgeHandStatus) {
+          const eh = edgeHandStatus;
+          const nextBothWarn = eh.active_card_zone === 'BOTH';
+          if (bothHandsWarnRef.current !== nextBothWarn) {
+            bothHandsWarnRef.current = nextBothWarn;
+            setBothHandsWarn(nextBothWarn);
+          }
+          if (nextBothWarn) {
+            activeHandRef.current = null;
+            palmPxRef.current = null;
+            targetLandmarksRef.current = null;
+          } else if (eh.active_card_zone === 'LEFT' || eh.active_card_zone === 'RIGHT') {
+            activeHandRef.current = eh.active_card_zone;
+            const rawLms = eh.active_card_zone === 'LEFT' ? eh.left_hand_landmarks : eh.right_hand_landmarks;
+            targetLandmarksRef.current =
+              rawLms && rawLms.length >= 21
+                ? rawLms.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0, visibility: 1 }))
+                : null;
+            const palmRaw = eh.active_card_zone === 'LEFT' ? eh.left_palm_2d : eh.right_palm_2d;
+            if (palmRaw) {
+              const mapped = mapMirroredLandmarkToScreen({ x: palmRaw[0], y: palmRaw[1] }, tf);
+              palmPxRef.current = { px: mapped.px, py: mapped.py };
+            }
+          } else {
+            activeHandRef.current = null;
+            palmPxRef.current = null;
+            targetLandmarksRef.current = null;
+            smoothedLandmarksRef.current = null;
+          }
+        } else if (!isTrackingPaused && video.readyState >= 2) {
           const isNewVideoFrame = video.currentTime !== lastVideoTimeRef.current;
           if (isNewVideoFrame) {
             lastVideoTimeRef.current = video.currentTime;
@@ -720,7 +790,7 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
           // Render interpolated 120fps hand or pose skeleton + progress halo directly on canvas
           if (ctx) {
             const smoothAlpha = 1 - Math.exp(-LANDMARK_SMOOTH_SPEED * dt);
-            if (mode === 'hand' && targetLandmarksRef.current) {
+            if ((mode === 'hand' || isEdgeFresh) && targetLandmarksRef.current) {
               smoothedLandmarksRef.current = lerpLandmarks(
                 smoothedLandmarksRef.current,
                 targetLandmarksRef.current,
@@ -765,6 +835,7 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
     return () => {
       active = false;
       cancelAnimationFrame(rafId);
+      edgeWs?.close();
       handLandmarker?.close();
       poseLandmarker?.close();
       stopCameraTracks();

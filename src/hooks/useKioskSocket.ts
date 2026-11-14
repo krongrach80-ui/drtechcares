@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CLINICAL_EXERCISES } from '@drtechcares/pose-engine';
 import type { TodayPrescribedExerciseItem } from '@drtechcares/api-client';
+import type {
+  CalibrationState,
+  HandRaiseTelemetry,
+  IdentityGuardState,
+  Keypoint3DPoint,
+} from './useEdgeVisionSocket';
 
 export type KioskState =
   | 'AUTH_FRAMING'
@@ -9,13 +15,16 @@ export type KioskState =
   | 'HOLD_PHASE'
   | 'REP_COMPLETED'
   | 'SET_FINISHED'
-  | 'EMERGENCY_HALT';
+  | 'EMERGENCY_HALT'
+  | 'PAUSED_MULTI_PERSON'
+  | 'PAUSED_IMPOSTOR';
 
 export type CompensationCode =
   | 'NONE'
   | 'TRUNK_LEAN'
   | 'SHOULDER_HIKE'
   | 'KNEE_VALGUS'
+  | 'HEEL_LIFT'
   | 'TOO_FAST'
   | 'INCOMPLETE_ROM';
 
@@ -32,12 +41,20 @@ export type HighlightColor = 'GREEN' | 'AMBER' | 'RED';
 export interface PatientSummary {
   id: string | null;
   name: string | null;
+  hn?: string | null;
+  similarity?: number;
+  latency_ms?: number;
 }
 
 export interface TelemetryAnalysis {
   current_rom_deg: number;
   target_rom_deg: number;
   rom_completion_pct: number;
+  trunk_tilt_deg?: number;
+  shoulder_hike_cm?: number;
+  knee_valgus_deg?: number;
+  heel_lift_cm?: number;
+  angular_velocity_deg_s?: number;
   is_form_valid: boolean;
   compensation_detected: CompensationCode[];
   pain_alert: boolean;
@@ -47,6 +64,7 @@ export interface RepCounter {
   valid_reps: number;
   invalid_reps: number;
   hold_remaining_sec: number;
+  target_reps?: number;
 }
 
 export interface UIDirectives {
@@ -57,11 +75,19 @@ export interface UIDirectives {
 
 export interface KioskDecisionPayload {
   kiosk_state: KioskState;
+  fsm_state?: string;
+  fps?: number;
+  engine_backend?: string;
+  camera_mode?: string;
   patient: PatientSummary | null;
   telemetry_analysis: TelemetryAnalysis;
   rep_counter: RepCounter;
   ui_directives: UIDirectives;
   tts_voice_th: string;
+  calibration?: CalibrationState;
+  hand_status?: HandRaiseTelemetry;
+  identity_guard?: IdentityGuardState;
+  keypoints_3d?: Keypoint3DPoint[];
   frame_base64: string | null;
 }
 
@@ -85,6 +111,8 @@ export type DemoPresetId =
   | 'HOLD_PHASE'
   | 'REP_COMPLETED'
   | 'SET_FINISHED'
+  | 'MULTI_PERSON'
+  | 'IMPOSTOR'
   | 'EMERGENCY_HALT';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'offline';
@@ -225,6 +253,90 @@ export function synthesizeDemoPayload({
   const targetRom = exercise.target_rom_deg;
   const clampedRom = Math.max(0, Math.min(180, Number(romDeg.toFixed(1))));
   const romPct = Math.max(0, Math.min(120, Math.round((clampedRom / targetRom) * 100)));
+
+  if (preset === 'MULTI_PERSON') {
+    const authLabel = activePatient.hn
+      ? `${activePatient.hn} ${activePatient.name || 'คนไข้หลัก'}`
+      : (activePatient.name || 'คนไข้หลัก');
+    return {
+      kiosk_state: 'PAUSED_MULTI_PERSON',
+      fsm_state: 'PAUSED_MULTI_PERSON',
+      patient: activePatient,
+      telemetry_analysis: {
+        current_rom_deg: clampedRom,
+        target_rom_deg: targetRom,
+        rom_completion_pct: romPct,
+        is_form_valid: false,
+        compensation_detected: ['NONE'],
+        pain_alert: false,
+      },
+      rep_counter: {
+        valid_reps: validReps,
+        invalid_reps: invalidReps,
+        hold_remaining_sec: exercise.hold_sec,
+      },
+      ui_directives: {
+        skeleton_highlight_joint: 'none',
+        highlight_color: 'AMBER',
+        show_target_arc: false,
+      },
+      identity_guard: {
+        status: 'MULTI_PERSON',
+        person_count: 2,
+        face_count: 2,
+        match_confidence: 0.91,
+        is_counting_allowed: false,
+        alert_title_th: 'ตรวจพบมีบุคคลอยู่หลายคนในเฟรม',
+        alert_subtitle_th: 'กรุณาให้คนไข้ยืนหน้ากล้องเพียงลำพัง ระบบจึงจะนับรอบการฝึกต่อครับ',
+        detected_boxes: [
+          { bbox: [220, 90, 560, 670], label: authLabel, is_authorized: true },
+          { bbox: [730, 120, 1060, 665], label: 'บุคคลเกินในเฟรม', is_authorized: false },
+        ],
+      },
+      tts_voice_th: 'ตรวจพบมีบุคคลอยู่หลายคนในเฟรม กรุณาให้คนไข้ยืนหน้ากล้องเพียงลำพัง ระบบจึงจะนับรอบการฝึกต่อครับ',
+      frame_base64: null,
+    };
+  }
+
+  if (preset === 'IMPOSTOR') {
+    return {
+      kiosk_state: 'PAUSED_IMPOSTOR',
+      fsm_state: 'PAUSED_IMPOSTOR',
+      patient: activePatient,
+      telemetry_analysis: {
+        current_rom_deg: clampedRom,
+        target_rom_deg: targetRom,
+        rom_completion_pct: romPct,
+        is_form_valid: false,
+        compensation_detected: ['NONE'],
+        pain_alert: false,
+      },
+      rep_counter: {
+        valid_reps: validReps,
+        invalid_reps: invalidReps,
+        hold_remaining_sec: exercise.hold_sec,
+      },
+      ui_directives: {
+        skeleton_highlight_joint: 'none',
+        highlight_color: 'RED',
+        show_target_arc: false,
+      },
+      identity_guard: {
+        status: 'IMPOSTOR',
+        person_count: 1,
+        face_count: 1,
+        match_confidence: 0.34,
+        is_counting_allowed: false,
+        alert_title_th: 'คุณไม่ใช่คนไข้ที่ลงทะเบียนไว้',
+        alert_subtitle_th: 'ระบบจะไม่นับรอบการฝึก กรุณาให้คนไข้ตัวจริงเข้าฝึกครับ',
+        detected_boxes: [
+          { bbox: [420, 80, 860, 680], label: '✕ ไม่ใช่คนไข้ที่ลงทะเบียน', is_authorized: false },
+        ],
+      },
+      tts_voice_th: 'คุณไม่ใช่คนไข้ที่ลงทะเบียนไว้ ระบบจะไม่นับรอบการฝึก กรุณาให้คนไข้ตัวจริงเข้าฝึกครับ',
+      frame_base64: null,
+    };
+  }
 
   if (preset === 'EMERGENCY_HALT') {
     return {
@@ -474,8 +586,15 @@ export function useKioskSocket(
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(
         JSON.stringify({
+          type: 'config',
+          stream_video: true,
+        }),
+      );
+      ws.send(
+        JSON.stringify({
+          type: 'prescription',
           include_frame: true,
-          prescription: {
+          data: {
             exercise_id: rx.catalog_exercise_id ?? rx.exercise_id,
             exercise_name: `${rx.name_en} (${rx.name_th})`,
             target_joint: rx.target_joint,
@@ -533,6 +652,19 @@ export function useKioskSocket(
           if (!userToggledModeRef.current) {
             setIsDemoMode(false);
           }
+          if (options?.patientOverride?.id) {
+            ws.send(
+              JSON.stringify({
+                type: 'lock_patient',
+                patient: {
+                  id: options.patientOverride.id,
+                  hn: options.patientOverride.hn ?? '',
+                  full_name: options.patientOverride.name ?? options.patientOverride.id,
+                },
+                start_calibration: false,
+              }),
+            );
+          }
           sendExercisePrescription(selectedExercise);
         };
 
@@ -584,6 +716,30 @@ export function useKioskSocket(
       }
     };
   }, [wsUrl, sendExercisePrescription]);
+
+  // Keep Edge Vision active_patient locked whenever authenticated patient updates
+  useEffect(() => {
+    const ws = wsRef.current;
+    if (connectionStatus !== 'connected' || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const pid = options?.patientOverride?.id;
+    if (!pid) return;
+    ws.send(
+      JSON.stringify({
+        type: 'lock_patient',
+        patient: {
+          id: pid,
+          hn: options?.patientOverride?.hn ?? '',
+          full_name: options?.patientOverride?.name ?? pid,
+        },
+        start_calibration: false,
+      }),
+    );
+  }, [
+    connectionStatus,
+    options?.patientOverride?.id,
+    options?.patientOverride?.hn,
+    options?.patientOverride?.name,
+  ]);
 
   // Face scan animated streak in FACE_SCAN preset
   useEffect(() => {
@@ -694,6 +850,12 @@ export function useKioskSocket(
         case 'EMERGENCY_HALT':
           setDemoTrunkTiltDeg(4.0);
           break;
+        case 'MULTI_PERSON':
+          setDemoTrunkTiltDeg(2.0);
+          break;
+        case 'IMPOSTOR':
+          setDemoTrunkTiltDeg(2.0);
+          break;
       }
     },
     [selectedExercise],
@@ -706,19 +868,29 @@ export function useKioskSocket(
 
   const triggerEmergencyStop = useCallback(() => {
     setAutoCycleDemo(false);
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN && !isDemoMode) {
+      ws.send(JSON.stringify({ type: 'emergency_stop', reason: 'Kiosk Emergency Stop Pressed' }));
+      return;
+    }
     userToggledModeRef.current = true;
     setIsDemoMode(true);
     setDemoPresetState('EMERGENCY_HALT');
-  }, []);
+  }, [isDemoMode]);
 
   const resetDemoSession = useCallback(() => {
     setAutoCycleDemo(false);
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN && !isDemoMode) {
+      ws.send(JSON.stringify({ type: 'reset_session', return_to_auth: false }));
+      return;
+    }
     setDemoValidReps(0);
     setDemoInvalidReps(0);
     setDemoTrunkTiltDeg(1.8);
     setDemoRomDeg(Math.round(selectedExercise.target_rom_deg * 0.65));
     setDemoPresetState('ACTIVE_REP');
-  }, [selectedExercise.target_rom_deg]);
+  }, [isDemoMode, selectedExercise.target_rom_deg]);
 
   const completeCurrentExercise = useCallback(() => {
     setAutoCycleDemo(false);
