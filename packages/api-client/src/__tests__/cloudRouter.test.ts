@@ -372,6 +372,31 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
               error: null,
             });
         }
+        if (table === 'patients') {
+          q.then = (resolve: (val: unknown) => void) =>
+            resolve({
+              data: [
+                {
+                  id: 'pat-delegated-1',
+                  hn: 'HN-61716',
+                  full_name: 'Pdasdwa',
+                  age: 45,
+                  gender: 'ชาย',
+                  phone: '0811112233',
+                  diagnosis: 'เข่า (Knee)',
+                  assigned_pt_id: '00000000-0000-4000-8000-000000000002',
+                  delegated_to_pt_id: null,
+                  delegation_note: null,
+                  next_appointment_date: '2026-11-15',
+                  registration_status: 'active',
+                  face_biometric_status: 'VERIFIED',
+                  history: {},
+                  created_at: '2026-11-14T10:00:00.000Z',
+                },
+              ],
+              error: null,
+            });
+        }
         return q;
       },
     } as unknown as SupabaseClient;
@@ -379,7 +404,25 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     const state: CloudRouterState = {
       users: [],
       deleted_staff_call_ids: ['call-deleted'],
-      patients: [],
+      patients: [
+        {
+          id: 'pat-delegated-1',
+          hn: 'HN-61716',
+          fullName: 'Pdasdwa',
+          age: 45,
+          gender: 'ชาย',
+          phone: '0811112233',
+          diagnosis: 'เข่า (Knee)',
+          assignedPtId: '00000000-0000-4000-8000-000000000002',
+          delegatedToPtId: '00000000-0000-4000-8000-000000000003',
+          delegationDate: '2026-11-14',
+          delegationNote: 'ดูแลฝึกช่วงบ่าย',
+          nextAppointmentDate: '2026-11-15',
+          registrationStatus: 'active',
+          enrolledAt: '2026-11-14T10:00:00.000Z',
+          faceBiometricStatus: 'VERIFIED',
+        },
+      ],
       face_templates: [],
       medical_notes: [],
       patient_courses: [],
@@ -456,6 +499,21 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(state.audit_logs.some((l) => l.id === 'audit-local')).toBe(true);
     expect(state.active_sessions[0].token).toBe('tok-newer');
     expect(state.active_sessions[1].token).toBe('tok-older');
+    const hydratedPatient = state.patients.find((p) => p.id === 'pat-delegated-1');
+    expect(hydratedPatient?.delegatedToPtId).toBe('00000000-0000-4000-8000-000000000003');
+    expect(hydratedPatient?.delegationDate).toBe('2026-11-14');
+    expect(hydratedPatient?.delegationNote).toBe('ดูแลฝึกช่วงบ่าย');
+
+    // Verify explicit cancellation via override remains cleared across hydration
+    state.delegation_overrides = {
+      'pat-delegated-1': {
+        delegatedToPtId: null,
+        delegationDate: null,
+        delegationNote: null,
+      },
+    };
+    await hydrateStateFromSupabase(mockSupabase, state);
+    expect(state.patients.find((p) => p.id === 'pat-delegated-1')?.delegatedToPtId).toBeNull();
   });
 });
 

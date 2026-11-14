@@ -1440,11 +1440,12 @@ export function ClinicalStaffPortalShell({
       setPatients(
         pRes.map((p) => {
           const ov = localDelegations[p.id];
-          if (ov && p.delegatedToPtId && ov.delegatedToPtId === p.delegatedToPtId) {
+          if (ov && ov.delegatedToPtId) {
             return {
               ...p,
+              delegatedToPtId: p.delegatedToPtId || ov.delegatedToPtId,
               delegationDate: p.delegationDate || ov.delegationDate,
-              delegationNote: p.delegationNote || ov.delegationNote,
+              delegationNote: p.delegationNote ?? ov.delegationNote,
             };
           }
           return p;

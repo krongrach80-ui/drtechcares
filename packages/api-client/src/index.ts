@@ -280,6 +280,13 @@ const DRTECH_SESSION_STORAGE_KEY = 'drtech_session';
 const DRTECH_TOKEN_STORAGE_KEY = 'drtechcares_auth_token';
 const DRTECH_STAFF_CALLS_STORAGE_KEY = 'drtechcares_staff_calls_v1';
 const DRTECH_DELETED_CALL_IDS_STORAGE_KEY = 'drtechcares_deleted_staff_calls_v1';
+const DRTECH_CASE_DELEGATIONS_STORAGE_KEY = 'drtechcares_case_delegations_v1';
+
+interface StoredCaseDelegationEntry {
+  delegatedToPtId: string | null;
+  delegationDate: string | null;
+  delegationNote: string | null;
+}
 
 const STAFF_CALL_STATUS_RANK: Record<StaffCallRecord['status'], number> = {
   open: 0,
@@ -697,10 +704,52 @@ export class DrTechCaresApiClient {
     );
   }
 
+  private readCaseDelegationOverrides(): Record<string, StoredCaseDelegationEntry> {
+    try {
+      if (typeof globalThis.localStorage === 'undefined') return {};
+      const raw = globalThis.localStorage.getItem(DRTECH_CASE_DELEGATIONS_STORAGE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw) as unknown;
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, StoredCaseDelegationEntry>) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private writeCaseDelegationOverride(
+    patientId: string,
+    entry: StoredCaseDelegationEntry | null,
+  ): void {
+    try {
+      if (typeof globalThis.localStorage === 'undefined') return;
+      const current = this.readCaseDelegationOverrides();
+      if (entry && entry.delegatedToPtId) {
+        current[patientId] = entry;
+      } else {
+        delete current[patientId];
+      }
+      globalThis.localStorage.setItem(DRTECH_CASE_DELEGATIONS_STORAGE_KEY, JSON.stringify(current));
+    } catch {
+      // ignore storage quota errors
+    }
+  }
+
   // Patients, Delegation, Notes
   async listPatients(): Promise<PatientRecord[]> {
     const res = await this.request<{ patients: PatientRecord[] }>('/api/patients');
-    return res.patients;
+    const overrides = this.readCaseDelegationOverrides();
+    return res.patients.map((p) => {
+      const ov = overrides[p.id];
+      if (ov && ov.delegatedToPtId) {
+        return {
+          ...p,
+          delegatedToPtId: p.delegatedToPtId || ov.delegatedToPtId,
+          delegationDate: p.delegationDate || ov.delegationDate,
+          delegationNote: p.delegationNote ?? ov.delegationNote,
+        };
+      }
+      return p;
+    });
   }
 
   async updatePatient(id: string, patch: Partial<PatientRecord>): Promise<PatientRecord> {
@@ -712,6 +761,7 @@ export class DrTechCaresApiClient {
   }
 
   async deletePatientCascading(patientId: string): Promise<void> {
+    this.writeCaseDelegationOverride(patientId, null);
     await this.request(`/api/patients/${patientId}`, { method: 'DELETE' });
     purgeLegacyBiometricCache();
   }
@@ -726,6 +776,15 @@ export class DrTechCaresApiClient {
       method: 'POST',
       body: JSON.stringify({ targetPtId, note, delegationDate }),
     });
+    if (targetPtId) {
+      this.writeCaseDelegationOverride(patientId, {
+        delegatedToPtId: res.patient.delegatedToPtId ?? targetPtId,
+        delegationDate: res.patient.delegationDate ?? delegationDate ?? new Date().toISOString().slice(0, 10),
+        delegationNote: res.patient.delegationNote ?? (note || null),
+      });
+    } else {
+      this.writeCaseDelegationOverride(patientId, null);
+    }
     return res.patient;
   }
 

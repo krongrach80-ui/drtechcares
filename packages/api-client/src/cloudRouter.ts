@@ -252,6 +252,7 @@ function createInitialState(useUuidIds = false): CloudRouterState {
     deleted_patient_ids: [],
     deleted_ban_ids: [],
     deleted_staff_call_ids: [],
+    delegation_overrides: {},
     patients: [],
     face_templates: [],
     medical_notes: [],
@@ -1841,16 +1842,64 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           ? `[${patient.delegationDate}] ${patient.delegationNote ?? ''}`.trim()
           : patient.delegationNote
         : null;
-      persistToSupabase(supabase, (db) =>
-        db
+      state.delegation_overrides = state.delegation_overrides ?? {};
+      state.delegation_overrides[patient.id] = {
+        delegatedToPtId: patient.delegatedToPtId,
+        delegationDate: patient.delegationDate ?? null,
+        delegationNote: patient.delegationNote ?? null,
+      };
+      await persistToSupabase(supabase, async (db) => {
+        if (patient.delegatedToPtId) {
+          const targetPt = state.users.find((u) => u.id === patient.delegatedToPtId);
+          if (targetPt) {
+            await db.from('staff_users').upsert({
+              id: targetPt.id,
+              username: targetPt.username,
+              password_hash: targetPt.passwordHash,
+              full_name: targetPt.fullName,
+              phone: targetPt.phone,
+              specialty: targetPt.specialty ?? null,
+              license_no: targetPt.licenseNo ?? null,
+              patient_id: null,
+              role: targetPt.role,
+              active: targetPt.active,
+            });
+          }
+        }
+        const existingRow = await db
+          .from('patients')
+          .select('history')
+          .eq('id', patient.id)
+          .maybeSingle();
+        const existingHistory =
+          existingRow.data?.history && typeof existingRow.data.history === 'object'
+            ? { ...(existingRow.data.history as Record<string, unknown>) }
+            : {};
+        existingHistory.delegatedToPtId = patient.delegatedToPtId;
+        existingHistory.delegationDate = patient.delegationDate ?? null;
+        existingHistory.delegationNote = patient.delegationNote ?? null;
+
+        const updateRes = await db
           .from('patients')
           .update({
             delegated_to_pt_id: patient.delegatedToPtId,
             delegation_note: serializedDelegationNote,
+            history: existingHistory,
             updated_at: new Date().toISOString(),
           })
-          .eq('id', patient.id),
-      );
+          .eq('id', patient.id);
+
+        if (updateRes.error) {
+          await db
+            .from('patients')
+            .update({
+              delegation_note: serializedDelegationNote,
+              history: existingHistory,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', patient.id);
+        }
+      });
       recordAudit({
         eventType: 'CASE_DELEGATED',
         actorRole: actor.role,

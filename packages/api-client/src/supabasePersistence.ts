@@ -34,12 +34,19 @@ export const SEEDED_DEFAULT_USER_IDS = new Set([
   'user-pt-2',
 ]);
 
+export interface DelegationOverrideEntry {
+  delegatedToPtId: string | null;
+  delegationDate: string | null;
+  delegationNote: string | null;
+}
+
 export interface CloudRouterState {
   users: StoredUserAccount[];
   deleted_user_ids?: string[];
   deleted_patient_ids?: string[];
   deleted_ban_ids?: string[];
   deleted_staff_call_ids?: string[];
+  delegation_overrides?: Record<string, DelegationOverrideEntry>;
   patients: PatientRecord[];
   face_templates: EnrolledTemplateCandidate[];
   medical_notes: MedicalNoteRecord[];
@@ -240,10 +247,12 @@ export async function hydrateStateFromSupabase(
   }
 
   if (patientsRes.status === 'fulfilled' && !patientsRes.value.error && Array.isArray(patientsRes.value.data)) {
+    const prevPatientsById = new Map(state.patients.map((p) => [p.id, p]));
     state.patients = patientsRes.value.data
       .filter((r: Record<string, unknown>) => !deletedPatientSet.has(String(r.id)))
       .map((r: Record<string, unknown>) => {
       const pid = String(r.id);
+      const prevPatient = prevPatientsById.get(pid);
       const history = (r.history as Record<string, unknown>) ?? {};
       const tpl = parsedTemplatesByPatient.get(pid);
       const b120 = biometrics120ByPatient.get(pid);
@@ -284,10 +293,47 @@ export async function hydrateStateFromSupabase(
         (typeof history.faceFramesCount === 'number' ? history.faceFramesCount : undefined) ??
         (resolvedFaceStatus === 'VERIFIED' ? 120 : 0);
 
+      const override = state.delegation_overrides?.[pid];
       const rawDelegationNote = r.delegation_note ? String(r.delegation_note) : null;
       const delegationMatch = rawDelegationNote?.match(/^\[(\d{4}-\d{2}-\d{2})\]\s*(.*)$/);
-      const parsedDelegationDate = delegationMatch ? delegationMatch[1] : null;
-      const parsedDelegationNote = delegationMatch ? (delegationMatch[2].trim() || null) : rawDelegationNote;
+      const parsedColDate = delegationMatch ? delegationMatch[1] : null;
+      const parsedColNote = delegationMatch ? (delegationMatch[2].trim() || null) : rawDelegationNote;
+
+      const historyDelegatedToPtId =
+        typeof history.delegatedToPtId === 'string' && history.delegatedToPtId
+          ? history.delegatedToPtId
+          : null;
+      const historyDelegationDate =
+        typeof history.delegationDate === 'string' && history.delegationDate
+          ? history.delegationDate
+          : null;
+      const historyDelegationNote =
+        typeof history.delegationNote === 'string' && history.delegationNote
+          ? history.delegationNote
+          : null;
+
+      const hasHistoryDelegationKey = Object.prototype.hasOwnProperty.call(history, 'delegatedToPtId');
+      const resolvedDelegatedToPtId = override
+        ? override.delegatedToPtId
+        : r.delegated_to_pt_id
+          ? String(r.delegated_to_pt_id)
+          : hasHistoryDelegationKey
+            ? historyDelegatedToPtId
+            : prevPatient?.delegatedToPtId ?? null;
+
+      const resolvedDelegationDate = resolvedDelegatedToPtId
+        ? override?.delegationDate ??
+          parsedColDate ??
+          historyDelegationDate ??
+          prevPatient?.delegationDate ??
+          null
+        : null;
+
+      const resolvedDelegationNote = resolvedDelegatedToPtId
+        ? override
+          ? override.delegationNote
+          : parsedColNote ?? historyDelegationNote ?? prevPatient?.delegationNote ?? null
+        : null;
 
       return {
         id: pid,
@@ -298,9 +344,9 @@ export async function hydrateStateFromSupabase(
         phone: String(r.phone ?? ''),
         diagnosis: String(r.diagnosis ?? ''),
         assignedPtId: String(r.assigned_pt_id ?? ''),
-        delegatedToPtId: r.delegated_to_pt_id ? String(r.delegated_to_pt_id) : null,
-        delegationNote: parsedDelegationNote,
-        delegationDate: parsedDelegationDate,
+        delegatedToPtId: resolvedDelegatedToPtId,
+        delegationNote: resolvedDelegationNote,
+        delegationDate: resolvedDelegationDate,
         nextAppointmentDate: String(r.next_appointment_date ?? ''),
         registrationStatus: (r.registration_status as 'active' | 'archived') ?? 'active',
         enrolledAt: String(r.created_at ?? new Date().toISOString()),
