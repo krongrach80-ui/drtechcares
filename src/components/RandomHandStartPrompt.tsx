@@ -402,8 +402,8 @@ export function RandomHandStartPrompt({
     >
       {/* Live Mirrored Camera Preview (Clean unobstructed frame; target side shown under main card heading) */}
       <div
-        className={`relative mx-auto w-full h-72 sm:h-80 md:h-96 rounded-2xl overflow-hidden bg-slate-900 border-2 shadow-inner transition-colors ${
-          isLeft ? 'border-orange-400/80' : 'border-emerald-400/80'
+        className={`relative mx-auto w-full h-72 sm:h-80 md:h-96 rounded-2xl overflow-hidden bg-gradient-to-br from-sky-100 via-emerald-50 to-white border-2 shadow-inner transition-colors ${
+          isLeft ? 'border-sky-300' : 'border-emerald-300'
         }`}
       >
         <video
@@ -416,12 +416,12 @@ export function RandomHandStartPrompt({
         />
 
         {!cameraReady && !cameraError && (
-          <div className="absolute inset-0 flex items-center justify-center bg-slate-900/85 text-xs sm:text-sm font-bold text-slate-200 px-4">
+          <div className="absolute inset-0 flex items-center justify-center bg-white/90 text-xs sm:text-sm font-bold text-[#0F4C81] px-4">
             กำลังเปิดกล้องตรวจจับการยกมือ...
           </div>
         )}
         {cameraError && (
-          <div className="absolute inset-0 flex items-center justify-center bg-slate-900/90 text-xs sm:text-sm font-bold text-amber-200 px-4">
+          <div className="absolute inset-0 flex items-center justify-center bg-white/95 text-xs sm:text-sm font-bold text-[#0284C7] px-4">
             {cameraError}
           </div>
         )}
@@ -431,13 +431,11 @@ export function RandomHandStartPrompt({
             className={`px-3.5 py-1.5 rounded-full text-xs font-extrabold backdrop-blur border shadow ${
               evalState.targetMatched
                 ? isLeft
-                  ? 'bg-orange-500/95 text-white border-orange-200 animate-pulse'
-                  : 'bg-emerald-500/95 text-white border-emerald-200 animate-pulse'
+                  ? 'bg-[#0284C7] text-white border-sky-200 animate-pulse'
+                  : 'bg-emerald-600 text-white border-emerald-200 animate-pulse'
                 : evalState.wrongSideRaised
-                  ? 'bg-amber-500/95 text-slate-950 border-amber-200'
-                  : isLeft
-                    ? 'bg-slate-950/80 text-orange-200 border-orange-400/50'
-                    : 'bg-slate-950/80 text-emerald-200 border-emerald-500/40'
+                  ? 'bg-amber-500 text-white border-amber-200'
+                  : 'bg-white/95 text-[#0F4C81] border-emerald-300'
             }`}
           >
             {evalState.targetMatched

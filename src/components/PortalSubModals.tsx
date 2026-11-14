@@ -590,7 +590,7 @@ export function WelcomeFaceScanModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
       <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
           <div className="flex items-center gap-2 min-w-0">
@@ -605,7 +605,7 @@ export function WelcomeFaceScanModal({
           </button>
         </div>
 
-        <div className="relative overflow-hidden rounded-2xl bg-slate-950 aspect-[4/3] border border-slate-800">
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-sky-100 via-emerald-50 to-white aspect-[4/3] border border-sky-200">
           <video ref={videoRef} playsInline muted className="h-full w-full object-cover -scale-x-100" />
 
           {hudBox && (
@@ -637,18 +637,18 @@ export function WelcomeFaceScanModal({
               </div>
 
               {liveMatchHud?.candidate ? (
-                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-emerald-400/45 bg-slate-950/90 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
-                  <div className="text-[11px] font-black text-emerald-300">
+                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-emerald-400 bg-white/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
+                  <div className="text-[11px] font-black text-emerald-700">
                     ✓ {sm.matchedOk}: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
                   </div>
-                  <div className="text-[10px] font-bold text-white/90">
+                  <div className="text-[10px] font-bold text-[#0F4C81]">
                     {liveMatchHud.confidencePercent.toFixed(1)}% (3D Multi-Angle Match •{' '}
                     {liveMatchHud.streak}/5)
                   </div>
                 </div>
               ) : (
-                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-cyan-400/45 bg-slate-950/88 px-3 py-1 text-center backdrop-blur-md shadow-xl">
-                  <div className="text-[10px] font-extrabold text-cyan-200">
+                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-sky-300 bg-white/95 px-3 py-1 text-center backdrop-blur-md shadow-xl">
+                  <div className="text-[10px] font-extrabold text-[#0F4C81]">
                     กำลังสแกนใบหน้าเทียบฐานข้อมูล... {autoScanCount}/5
                   </div>
                 </div>
@@ -657,7 +657,7 @@ export function WelcomeFaceScanModal({
           )}
 
           {cameraError && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 p-5 text-center text-amber-300">
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/95 p-5 text-center text-[#0F4C81]">
               <Camera className="h-8 w-8 mb-2" />
               <p className="font-bold">{cameraError}</p>
             </div>
@@ -762,7 +762,7 @@ export function ResetPasswordModal({
   if (!user) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
       <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 min-w-0">
@@ -894,7 +894,7 @@ export function PatientProfileAndHistoryModal({
   const ptNameMap = new Map(ptUsers.map((p) => [p.id, p.fullName]));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
       <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-5 text-xs">
         <div className="flex items-start justify-between border-b border-slate-100 pb-4">
           <div className="flex items-center gap-3 min-w-0">
@@ -1167,7 +1167,7 @@ export function PatientProfileAndHistoryModal({
                   setReportRec('');
                   onFlash('success', 'ออกใบสรุปผลการรักษาเรียบร้อยแล้ว');
                 }}
-                className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-slate-900 font-bold text-white"
+                className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] font-bold text-white shadow-xs"
               >
                 {sm.saveReportBtn}
               </button>
@@ -1601,7 +1601,7 @@ export function ScheduleCreatorAndDayModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-3 sm:p-4 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-3 sm:p-4 backdrop-blur-sm">
       <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto rounded-3xl bg-white p-5 sm:p-7 shadow-2xl border border-slate-200 space-y-5 text-xs">
         {/* Modal Header */}
         <div className="flex items-center justify-between border-b border-slate-100 pb-3.5">
@@ -1808,8 +1808,8 @@ export function ScheduleCreatorAndDayModal({
                   onClick={() => setExerciseCategoryFilter(tab.id)}
                   className={`rounded-xl px-3 py-1.5 text-[11px] font-bold transition cursor-pointer ${
                     exerciseCategoryFilter === tab.id
-                      ? 'bg-slate-900 text-white shadow-xs'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      ? 'bg-gradient-to-r from-[#0F4C81] to-[#0284C7] text-white shadow-xs'
+                      : 'bg-sky-50 text-[#0F4C81] hover:bg-sky-100'
                   }`}
                 >
                   {tab.label[lang]}
@@ -2032,8 +2032,8 @@ export function ScheduleCreatorAndDayModal({
                         }}
                         className={`rounded-lg px-3 py-1 text-[11px] font-bold cursor-pointer border ${
                           monthSpan === span
-                            ? 'border-slate-900 bg-slate-900 text-white'
-                            : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                            ? 'border-[#0284C7] bg-gradient-to-r from-[#0F4C81] to-[#0284C7] text-white'
+                            : 'border-sky-200 bg-white text-[#0F4C81] hover:bg-sky-50'
                         }`}
                       >
                         {span} เดือน
@@ -2191,13 +2191,13 @@ export function ScheduleCreatorAndDayModal({
           </div>
 
           {/* Summary Bar & Submit */}
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-slate-900 px-4 py-3 text-white">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-3 text-white shadow-sm">
             <div className="space-y-0.5">
               <div className="font-extrabold text-xs sm:text-sm">
                 สรุป: {selectedExerciseIds.length} ท่ากายภาพ × {finalSelectedDates.length} วัน ={' '}
-                <span className="text-emerald-400">{selectedExerciseIds.length * finalSelectedDates.length} รายการ</span>
+                <span className="text-emerald-200">{selectedExerciseIds.length * finalSelectedDates.length} รายการ</span>
               </div>
-              <div className="text-[11px] text-slate-300">
+              <div className="text-[11px] text-sky-100">
                 เซต × ครั้ง: {sets} × {reps} • โหมด:{' '}
                 {dateSelectMode === 'daily' ? 'รายวัน (จากตารางวัน)' : `รายสัปดาห์ (${monthSpan} เดือน)`}
               </div>

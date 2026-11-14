@@ -279,8 +279,8 @@ export function StaffLoginModalOrPage({
   };
 
   const wrapperClass = asModal
-    ? 'fixed inset-0 z-[70] flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-md'
-    : 'min-h-screen flex items-center justify-center p-2 sm:p-4 bg-gradient-to-br from-[#0b2724] via-[#133834] to-[#0a1d24]';
+    ? 'fixed inset-0 z-[70] flex items-center justify-center p-2 sm:p-4 bg-[#0F4C81]/35 backdrop-blur-md'
+    : 'min-h-screen flex items-center justify-center p-2 sm:p-4 bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-white';
 
   return (
     <div

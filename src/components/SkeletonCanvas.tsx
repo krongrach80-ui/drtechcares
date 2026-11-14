@@ -232,7 +232,7 @@ export function SkeletonCanvas({
           className="absolute inset-0 h-full w-full object-cover"
         />
       ) : hasLiveCamera && liveVideoOverlay ? (
-        <div className="absolute inset-0 z-0 h-full w-full overflow-hidden bg-slate-950">
+        <div className="absolute inset-0 z-0 h-full w-full overflow-hidden bg-gradient-to-br from-sky-100 via-emerald-50 to-white">
           {liveVideoOverlay}
         </div>
       ) : (
@@ -392,13 +392,13 @@ export function SkeletonCanvas({
         )}
 
         {!isDemoMode && payload.calibration && !payload.calibration.is_calibrated && (
-          <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-2xl border border-sky-300/60 bg-slate-950/85 px-5 py-2.5 text-center text-white shadow-xl backdrop-blur-md">
-            <div className="text-xs font-extrabold text-sky-300">
+          <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-2xl border border-sky-300 bg-white/95 px-5 py-2.5 text-center text-[#0F4C81] shadow-xl backdrop-blur-md">
+            <div className="text-xs font-extrabold text-[#0284C7]">
               {payload.calibration.message_th}
             </div>
-            <div className="mt-1.5 h-2 w-56 overflow-hidden rounded-full bg-slate-800">
+            <div className="mt-1.5 h-2 w-56 overflow-hidden rounded-full bg-sky-100">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-sky-400 to-emerald-400 transition-all duration-150"
+                className="h-full rounded-full bg-gradient-to-r from-[#0284C7] to-[#10B981] transition-all duration-150"
                 style={{ width: `${Math.round((payload.calibration.progress || 0) * 100)}%` }}
               />
             </div>

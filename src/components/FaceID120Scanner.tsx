@@ -884,18 +884,18 @@ export default function FaceID120Scanner({
   const cy = circumferenceSize / 2;
 
   return (
-    <div className="rounded-3xl border border-slate-200 bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 p-5 text-white shadow-2xl">
+    <div className="rounded-3xl border-2 border-emerald-200 bg-gradient-to-b from-[#F0FDF9] via-[#EFF6FF] to-white p-5 text-[#0F4C81] shadow-xl">
       {/* Top Status & Voice Toggle */}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-3 py-1 text-xs font-extrabold text-emerald-300">
-            <Sparkles className="h-3.5 w-3.5" />
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-gradient-to-r from-emerald-50 to-sky-50 px-3 py-1 text-xs font-extrabold text-emerald-700 shadow-xs">
+            <Sparkles className="h-3.5 w-3.5 text-emerald-600" />
             {edgeBackendActive
               ? 'Edge InsightFace 512-D • 120 เฟรม'
               : 'iPhone-Style 3D Face ID • 120 เฟรม'}
           </span>
           {patientName && (
-            <span className="text-xs font-bold text-slate-300">
+            <span className="text-xs font-bold text-[#0F4C81]">
               {patientName} {hn ? `(${hn})` : ''}
             </span>
           )}
@@ -905,17 +905,17 @@ export default function FaceID120Scanner({
           <button
             type="button"
             onClick={() => setVoiceEnabled((v) => !v)}
-            className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800/80 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:bg-slate-700"
+            className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-white px-2.5 py-1 text-[11px] font-bold text-[#0F4C81] shadow-xs hover:bg-sky-50"
           >
-            {voiceEnabled ? <Volume2 className="h-3.5 w-3.5 text-emerald-400" /> : <VolumeX className="h-3.5 w-3.5 text-slate-500" />}
+            {voiceEnabled ? <Volume2 className="h-3.5 w-3.5 text-emerald-600" /> : <VolumeX className="h-3.5 w-3.5 text-slate-400" />}
             {voiceEnabled ? 'เสียงนำทางเปิด' : 'ปิดเสียง'}
           </button>
           <button
             type="button"
             onClick={() => setRetryNonce((n) => n + 1)}
-            className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800/80 px-2.5 py-1 text-[11px] font-bold text-slate-300 hover:bg-slate-700"
+            className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-white px-2.5 py-1 text-[11px] font-bold text-[#0F4C81] shadow-xs hover:bg-sky-50"
           >
-            <RefreshCw className="h-3.5 w-3.5" />
+            <RefreshCw className="h-3.5 w-3.5 text-[#0284C7]" />
             รีเซ็ต 0/120
           </button>
         </div>
@@ -951,8 +951,8 @@ export default function FaceID120Scanner({
             const y1 = cy + innerR * Math.sin(rad);
             const x2 = cx + outerR * Math.cos(rad);
             const y2 = cy + outerR * Math.sin(rad);
-            const stroke = isLit ? '#10B981' : isHint ? '#38BDF8' : '#CBD5E1';
-            const opacity = isLit ? 1 : isHint ? 0.72 : 0.28;
+            const stroke = isLit ? '#10B981' : isHint ? '#0284C7' : '#93C5FD';
+            const opacity = isLit ? 1 : isHint ? 0.85 : 0.55;
 
             return (
               <line
@@ -973,7 +973,7 @@ export default function FaceID120Scanner({
         </svg>
 
         {/* Exact 280px x 280px Circular Live Webcam Feed */}
-        <div className="relative h-[280px] w-[280px] overflow-hidden rounded-full border-4 border-slate-800 bg-slate-950 shadow-[0_0_50px_rgba(16,185,129,0.22)]">
+        <div className="relative h-[280px] w-[280px] overflow-hidden rounded-full border-4 border-sky-200 bg-gradient-to-br from-sky-100 to-emerald-50 shadow-[0_0_40px_rgba(2,132,199,0.2)]">
           <video
             ref={videoRef}
             muted
@@ -982,26 +982,26 @@ export default function FaceID120Scanner({
           />
 
           {/* Subtle Inner Reticle */}
-          <div className="pointer-events-none absolute inset-3 rounded-full border border-dashed border-white/25" />
+          <div className="pointer-events-none absolute inset-3 rounded-full border border-dashed border-white/60" />
 
           {/* Model Loading / Camera Error Overlay */}
           {(modelStatus === 'loading' || (!cameraReady && !cameraError)) && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/85 p-5 text-center">
-              <Loader2 className="mb-2 h-8 w-8 animate-spin text-emerald-400" />
-              <div className="text-xs font-extrabold text-emerald-300">{modelProgressMsg}</div>
-              <div className="mt-1 text-[11px] text-slate-400">กรุณารอสักครู่...</div>
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/90 p-5 text-center backdrop-blur-xs">
+              <Loader2 className="mb-2 h-8 w-8 animate-spin text-emerald-600" />
+              <div className="text-xs font-extrabold text-[#0F4C81]">{modelProgressMsg}</div>
+              <div className="mt-1 text-[11px] text-[#0284C7]">กรุณารอสักครู่...</div>
             </div>
           )}
 
           {cameraError && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/92 p-5 text-center">
-              <Camera className="mb-2 h-8 w-8 text-rose-400" />
-              <div className="text-xs font-extrabold text-rose-300">ไม่พบสิทธิ์เข้าถึงกล้อง</div>
-              <div className="mt-1 text-[11px] text-slate-300">{cameraError}</div>
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/95 p-5 text-center">
+              <Camera className="mb-2 h-8 w-8 text-rose-500" />
+              <div className="text-xs font-extrabold text-rose-700">ไม่พบสิทธิ์เข้าถึงกล้อง</div>
+              <div className="mt-1 text-[11px] text-slate-600">{cameraError}</div>
               <button
                 type="button"
                 onClick={() => setRetryNonce((n) => n + 1)}
-                className="mt-3 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white"
+                className="mt-3 rounded-lg bg-gradient-to-r from-[#0284C7] to-[#10B981] px-3 py-1.5 text-xs font-bold text-white"
               >
                 ลองเปิดกล้องอีกครั้ง
               </button>
@@ -1010,23 +1010,23 @@ export default function FaceID120Scanner({
 
           {/* Computing Phase Overlay */}
           {phase === 'computing' && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/75 p-4 text-center backdrop-blur-xs">
-              <Loader2 className="mb-2 h-9 w-9 animate-spin text-emerald-400" />
-              <div className="text-sm font-black text-emerald-300">กำลังประมวลผล 120 เฟรม...</div>
-              <div className="mt-1 text-[11px] text-slate-300">คำนวณ Master + 5 Angle Embeddings</div>
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/88 p-4 text-center backdrop-blur-xs">
+              <Loader2 className="mb-2 h-9 w-9 animate-spin text-[#0284C7]" />
+              <div className="text-sm font-black text-[#0F4C81]">กำลังประมวลผล 120 เฟรม...</div>
+              <div className="mt-1 text-[11px] text-[#0284C7]">คำนวณ Master + 5 Angle Embeddings</div>
             </div>
           )}
 
           {/* Apple Face ID Checkmark Burst on Completion */}
           {phase === 'completed' && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-emerald-950/80 p-4 text-center backdrop-blur-xs animate-in fade-in zoom-in duration-300">
-              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500 shadow-[0_0_40px_rgba(16,185,129,0.8)]">
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-emerald-50/92 p-4 text-center backdrop-blur-xs animate-in fade-in zoom-in duration-300">
+              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-[#10B981] to-[#0284C7] shadow-[0_0_32px_rgba(16,185,129,0.5)]">
                 <CheckCircle2 className="h-12 w-12 text-white" />
               </div>
-              <div className="mt-3 text-sm font-black text-emerald-200">
+              <div className="mt-3 text-sm font-black text-emerald-800">
                 120 / 120 เฟรม สมบูรณ์แบบ
               </div>
-              <div className="mt-0.5 text-xs font-bold text-white/90">
+              <div className="mt-0.5 text-xs font-bold text-[#0F4C81]">
                 คุณภาพแม่แบบ 3D: {finalQualityPct}%
               </div>
             </div>
@@ -1036,13 +1036,13 @@ export default function FaceID120Scanner({
 
       {/* Live Counter & Dynamic Thai Guidance */}
       <div className="mt-3 text-center">
-        <div className="inline-flex items-baseline gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-4 py-1">
-          <span className="font-mono text-2xl font-black text-emerald-400">{capturedCount}</span>
-          <span className="text-xs font-bold text-slate-300">/ 120 เฟรม ({progressPct}%)</span>
+        <div className="inline-flex items-baseline gap-2 rounded-full border border-emerald-300 bg-white px-4 py-1 shadow-xs">
+          <span className="font-mono text-2xl font-black text-emerald-600">{capturedCount}</span>
+          <span className="text-xs font-bold text-[#0F4C81]">/ 120 เฟรม ({progressPct}%)</span>
         </div>
 
-        <h4 className="mt-2 text-base font-black text-white">{guidanceText}</h4>
-        <p className="mt-0.5 text-xs font-medium text-sky-300">{subCueText}</p>
+        <h4 className="mt-2 text-base font-black text-[#0F4C81]">{guidanceText}</h4>
+        <p className="mt-0.5 text-xs font-semibold text-[#0284C7]">{subCueText}</p>
       </div>
 
       {/* 5-Angle Multi-Perspective Telemetry Pills */}
@@ -1059,14 +1059,14 @@ export default function FaceID120Scanner({
               key={item.key}
               className={`rounded-xl border px-1.5 py-2 font-bold transition-colors ${
                 ok
-                  ? 'border-emerald-500/70 bg-emerald-500/20 text-emerald-300'
+                  ? 'border-emerald-400 bg-emerald-50 text-emerald-800 shadow-xs'
                   : isActivelyCapturing
-                    ? 'border-sky-400 bg-sky-500/20 text-sky-200 ring-2 ring-sky-400/70'
+                    ? 'border-[#0284C7] bg-sky-50 text-[#0F4C81] ring-2 ring-[#0284C7]/40'
                     : isTarget
-                      ? 'border-amber-400 bg-amber-500/20 text-amber-200 ring-2 ring-amber-400/70 animate-pulse'
+                      ? 'border-amber-400 bg-amber-50 text-amber-800 ring-2 ring-amber-400/50 animate-pulse'
                       : started
-                        ? 'border-sky-500/50 bg-sky-500/10 text-sky-200'
-                        : 'border-slate-700 bg-slate-800/70 text-slate-400'
+                        ? 'border-sky-300 bg-sky-50/70 text-[#0284C7]'
+                        : 'border-sky-200 bg-white text-slate-600'
               }`}
             >
               <div className="truncate">{item.label}</div>
@@ -1079,17 +1079,17 @@ export default function FaceID120Scanner({
       </div>
 
       {/* Live Head Pose Diagnostics */}
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-900/90 px-3 py-2 text-[11px] text-slate-400">
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-200 bg-gradient-to-r from-emerald-50/80 via-sky-50/80 to-white px-3 py-2 text-[11px] text-[#0F4C81]">
         <div className="flex items-center gap-2">
-          <ShieldCheck className={`h-3.5 w-3.5 ${livePose.faceDetected ? 'text-emerald-400' : 'text-amber-400'}`} />
+          <ShieldCheck className={`h-3.5 w-3.5 ${livePose.faceDetected ? 'text-emerald-600' : 'text-amber-500'}`} />
           <span>
-            Yaw: <strong className="font-mono text-white">{livePose.yaw}°</strong> • Pitch:{' '}
-            <strong className="font-mono text-white">{livePose.pitch}°</strong> • Angle:{' '}
-            <strong className="font-mono text-emerald-300">{activeBucket}</strong>
+            Yaw: <strong className="font-mono text-[#0F4C81]">{livePose.yaw}°</strong> • Pitch:{' '}
+            <strong className="font-mono text-[#0F4C81]">{livePose.pitch}°</strong> • Angle:{' '}
+            <strong className="font-mono text-emerald-700">{activeBucket}</strong>
           </span>
         </div>
         <span>
-          Sharpness: <strong className="font-mono text-white">{livePose.sharpness}</strong>
+          Sharpness: <strong className="font-mono text-[#0F4C81]">{livePose.sharpness}</strong>
         </span>
       </div>
 
@@ -1101,7 +1101,7 @@ export default function FaceID120Scanner({
               stopHardware();
               onCancel();
             }}
-            className="rounded-lg px-3 py-1.5 text-xs font-bold text-slate-400 hover:bg-slate-800 hover:text-white"
+            className="rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-xs font-bold text-[#0F4C81] hover:bg-sky-50"
           >
             ปิดกล้องชั่วคราว
           </button>

@@ -45,20 +45,20 @@ export function FaceIdCircularOverlay({
   return (
     <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-between p-3">
       {/* Top Primary + Sub-Prompt Banner */}
-      <div className="w-full max-w-md rounded-2xl bg-slate-950/85 backdrop-blur-sm border border-slate-700/80 px-4 py-2.5 text-center shadow-lg">
+      <div className="w-full max-w-md rounded-2xl bg-white/92 backdrop-blur-sm border border-sky-200 px-4 py-2.5 text-center shadow-lg">
         <div className="flex items-center justify-center gap-2">
           {isSpoof ? (
-            <ShieldAlert className="h-4 w-4 text-rose-400 shrink-0" />
+            <ShieldAlert className="h-4 w-4 text-rose-500 shrink-0" />
           ) : isPass ? (
-            <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+            <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
           ) : (
-            <AlertTriangle className="h-4 w-4 text-teal-400 shrink-0" />
+            <AlertTriangle className="h-4 w-4 text-[#0284C7] shrink-0" />
           )}
-          <span className="text-sm font-extrabold text-white tracking-tight">
+          <span className="text-sm font-extrabold text-[#0F4C81] tracking-tight">
             {screenPrompt.primaryPrompt}
           </span>
         </div>
-        <p className="mt-0.5 text-[11px] text-slate-300">{screenPrompt.subPrompt}</p>
+        <p className="mt-0.5 text-[11px] text-[#0284C7]">{screenPrompt.subPrompt}</p>
       </div>
 
       {/* Center Circular iPhone Face ID Tick Ring */}
@@ -111,10 +111,10 @@ export function FaceIdCircularOverlay({
                 key={cp.key}
                 className={`rounded-lg px-2 py-1 text-center text-[10px] font-bold border ${
                   !inspection
-                    ? 'bg-slate-900/75 border-slate-700 text-slate-400'
+                    ? 'bg-white/90 border-sky-200 text-[#0F4C81]'
                     : ok
-                      ? 'bg-emerald-950/85 border-emerald-500/50 text-emerald-300'
-                      : 'bg-rose-950/85 border-rose-500/50 text-rose-300'
+                      ? 'bg-emerald-50/95 border-emerald-400 text-emerald-800'
+                      : 'bg-rose-50/95 border-rose-400 text-rose-700'
                 }`}
               >
                 {ok ? '✓ ' : '• '}
@@ -127,10 +127,10 @@ export function FaceIdCircularOverlay({
           <div
             className={`rounded-xl px-3 py-1.5 text-center text-xs font-bold border ${
               isSpoof
-                ? 'bg-rose-950/90 border-rose-500 text-rose-200'
+                ? 'bg-rose-50/95 border-rose-400 text-rose-700'
                 : isPass
-                  ? 'bg-emerald-950/90 border-emerald-500 text-emerald-200'
-                  : 'bg-slate-950/85 border-amber-500/60 text-amber-200'
+                  ? 'bg-emerald-50/95 border-emerald-400 text-emerald-800'
+                  : 'bg-sky-50/95 border-sky-300 text-[#0F4C81]'
             }`}
           >
             {inspection.user_instruction_th} ({inspection.detected_pose} • {inspection.error_code})

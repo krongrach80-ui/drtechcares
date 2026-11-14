@@ -1223,7 +1223,7 @@ export function SmartRehabKioskUI({
               hasLiveCamera={livePoseActive && !cameraError}
               liveVideoOverlay={
                 livePoseActive && !cameraError ? (
-                  <div className="relative h-full w-full bg-slate-950">
+                  <div className="relative h-full w-full bg-gradient-to-br from-sky-100 via-emerald-50 to-white">
                     <video
                       ref={videoRef}
                       autoPlay
@@ -1237,7 +1237,7 @@ export function SmartRehabKioskUI({
                       aria-label="Live Pose Skeleton & Angle Overlay"
                       className="pointer-events-none absolute inset-0 h-full w-full"
                     />
-                    <div className="pointer-events-none absolute left-4 top-16 z-10 inline-flex items-center gap-1.5 rounded-full border border-emerald-400/50 bg-slate-950/75 px-3 py-1 text-[11px] font-bold text-emerald-300 backdrop-blur-md">
+                    <div className="pointer-events-none absolute left-4 top-16 z-10 inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-white/90 px-3 py-1 text-[11px] font-bold text-[#0F4C81] shadow-sm backdrop-blur-md">
                       <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
                       <span>
                         {cameraReady ? '📷 กล้องตรวจจับท่าทางสด (Live AI Pose)' : '⏳ กำลังเปิดกล้อง...'}

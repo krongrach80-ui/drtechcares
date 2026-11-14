@@ -2051,24 +2051,24 @@ export function ClinicalStaffPortalShell({
   ).length;
 
   return (
-    <div className="min-h-screen flex bg-[#f4f7fb] text-slate-900">
-      {/* Dark Navy Left Sidebar */}
+    <div className="min-h-screen flex bg-gradient-to-br from-[#F0FDF9] via-[#F0F7FF] to-[#F8FAFC] text-[#0F4C81]">
+      {/* Clinical Blue-Teal Left Sidebar */}
       <aside
         className={`${
           sidebarCollapsed ? 'w-20 shrink-0' : 'w-64 shrink-0'
-        } bg-[#0b1f33] text-slate-100 flex flex-col justify-between border-r border-slate-800/80 transition-all duration-200 select-none`}
+        } bg-gradient-to-b from-[#0F4C81] via-[#0284C7] to-[#0D9488] text-white flex flex-col justify-between border-r border-sky-200/40 transition-all duration-200 select-none shadow-lg`}
       >
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="flex h-[72px] items-center justify-between gap-2 px-4 border-b border-white/10">
+          <div className="flex h-[72px] items-center justify-between gap-2 px-4 border-b border-white/20">
             <div className="flex items-center gap-3 min-w-0">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-400 to-cyan-500 text-slate-950 shadow-md">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-300 to-white text-[#0F4C81] shadow-md">
                 <HeartHandshake className="h-5 w-5" />
               </div>
               {!sidebarCollapsed && (
                 <div className="min-w-0">
                   <div className="text-sm font-black tracking-tight text-white truncate">Dr.Tech.Care</div>
-                  <div className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 border border-emerald-400/30 px-2 py-0.5 text-[10px] font-bold text-emerald-300 whitespace-nowrap">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0" />
+                  <div className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-white/20 border border-white/30 px-2 py-0.5 text-[10px] font-bold text-white whitespace-nowrap">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-300 shrink-0" />
                     <span className="truncate">{isAdmin ? locale.sidebar.adminRole : locale.sidebar.ptRole}</span>
                   </div>
                 </div>
@@ -2077,7 +2077,7 @@ export function ClinicalStaffPortalShell({
             <button
               type="button"
               onClick={() => setSidebarCollapsed((c) => !c)}
-              className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white cursor-pointer shrink-0"
+              className="rounded-lg p-1.5 text-white/80 hover:bg-white/15 hover:text-white cursor-pointer shrink-0"
               title={locale.sidebar.collapseTitle}
             >
               <Monitor className="h-4 w-4" />
@@ -2115,16 +2115,16 @@ export function ClinicalStaffPortalShell({
                   onClick={() => setActiveTab(item.id)}
                   className={`w-full h-11 flex items-center justify-between gap-3 rounded-xl px-3.5 text-left whitespace-nowrap overflow-hidden text-ellipsis transition cursor-pointer ${
                     isActive
-                      ? 'bg-gradient-to-r from-emerald-500 to-sky-500 text-white font-bold shadow-md shadow-emerald-950/30'
-                      : 'text-slate-300 hover:bg-white/5 hover:text-white'
+                      ? 'bg-white text-[#0F4C81] font-extrabold shadow-md'
+                      : 'text-white/90 hover:bg-white/15 hover:text-white'
                   }`}
                 >
                   <span className="flex items-center gap-3 min-w-0 overflow-hidden">
-                    <Icon className="h-4 w-4 shrink-0" />
+                    <Icon className={`h-4 w-4 shrink-0 ${isActive ? 'text-[#0284C7]' : ''}`} />
                     {!sidebarCollapsed && <span className="truncate">{item.label}</span>}
                   </span>
                   {!sidebarCollapsed && item.badge ? (
-                    <span className="flex h-5 min-w-[20px] shrink-0 items-center justify-center rounded-full bg-amber-400 px-1.5 text-[10px] font-black text-slate-950">
+                    <span className="flex h-5 min-w-[20px] shrink-0 items-center justify-center rounded-full bg-amber-300 px-1.5 text-[10px] font-black text-[#0F4C81]">
                       {item.badge}
                     </span>
                   ) : null}
@@ -2141,15 +2141,15 @@ export function ClinicalStaffPortalShell({
                 onClick={() => setActiveTab('profile')}
                 className={`w-full rounded-2xl border p-3 text-left transition cursor-pointer ${
                   activeTab === 'profile'
-                    ? 'border-emerald-400/60 bg-emerald-500/15 shadow-md'
-                    : 'border-white/10 bg-white/5 hover:border-emerald-400/40 hover:bg-white/10'
+                    ? 'border-white/70 bg-white/25 shadow-md'
+                    : 'border-white/25 bg-white/15 hover:border-white/50 hover:bg-white/20'
                 }`}
               >
                 <div className="flex items-center justify-between gap-2 mb-2">
-                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-300">
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-200">
                     {locale.profile.sidebarCardTitle}
                   </span>
-                  <span className="text-[10px] font-semibold text-sky-300 underline decoration-sky-400/50">
+                  <span className="text-[10px] font-semibold text-white underline decoration-white/60">
                     {locale.profile.sidebarEditHint}
                   </span>
                 </div>
@@ -2157,17 +2157,17 @@ export function ClinicalStaffPortalShell({
                   <img
                     src={myProfile.avatarUrl}
                     alt={myProfile.fullName}
-                    className="h-12 w-12 shrink-0 rounded-xl object-cover border-2 border-emerald-400/40 bg-white"
+                    className="h-12 w-12 shrink-0 rounded-xl object-cover border-2 border-white/60 bg-white"
                   />
                   <div className="min-w-0 flex-1">
                     <div className="text-xs font-extrabold text-white truncate">{myProfile.fullName}</div>
-                    <div className="mt-0.5 flex items-center gap-1 text-[11px] text-emerald-200 font-mono truncate">
+                    <div className="mt-0.5 flex items-center gap-1 text-[11px] text-emerald-100 font-mono truncate">
                       <Phone className="h-3 w-3 shrink-0" />
                       <span className="truncate">{myProfile.phone || locale.profile.noPhone}</span>
                     </div>
                   </div>
                 </div>
-                <p className="mt-2.5 rounded-xl bg-slate-900/50 border border-white/5 px-2.5 py-2 text-[11px] leading-relaxed text-slate-300 line-clamp-3">
+                <p className="mt-2.5 rounded-xl bg-white/15 border border-white/20 px-2.5 py-2 text-[11px] leading-relaxed text-white/95 line-clamp-3">
                   {myProfile.bio}
                 </p>
               </button>
@@ -2178,7 +2178,7 @@ export function ClinicalStaffPortalShell({
                 type="button"
                 onClick={() => setActiveTab('profile')}
                 title={`${myProfile.fullName} • ${myProfile.phone || locale.profile.noPhone}`}
-                className="rounded-xl p-1 border border-white/15 bg-white/5 hover:border-emerald-400/60 cursor-pointer"
+                className="rounded-xl p-1 border border-white/30 bg-white/15 hover:border-white/70 cursor-pointer"
               >
                 <img
                   src={myProfile.avatarUrl}
@@ -2190,25 +2190,25 @@ export function ClinicalStaffPortalShell({
           )}
         </div>
 
-        <div className="p-3 space-y-2 border-t border-white/10 text-xs">
+        <div className="p-3 space-y-2 border-t border-white/20 text-xs">
           <button
             type="button"
             onClick={() => setCardGameModalOpen(true)}
-            className="w-full h-10 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-blue-600 px-3 font-extrabold text-white shadow hover:opacity-95 whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer"
+            className="w-full h-10 flex items-center justify-center gap-2 rounded-xl bg-white text-[#0F4C81] hover:bg-emerald-50 px-3 font-extrabold shadow whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer"
           >
-            <Gamepad2 className="h-4 w-4 shrink-0" />
+            <Gamepad2 className="h-4 w-4 shrink-0 text-emerald-600" />
             {!sidebarCollapsed && <span className="truncate">{locale.actions.cardGame}</span>}
           </button>
 
           {!sidebarCollapsed && (
-            <div className="flex h-9 items-center justify-between rounded-xl border border-white/10 bg-slate-900/60 px-3 text-[11px] whitespace-nowrap">
-              <span className="text-slate-400 truncate">{locale.sidebar.dbCloud}</span>
+            <div className="flex h-9 items-center justify-between rounded-xl border border-white/25 bg-white/15 px-3 text-[11px] whitespace-nowrap">
+              <span className="text-white/90 truncate">{locale.sidebar.dbCloud}</span>
               <span
                 className={`inline-flex items-center gap-1 font-bold shrink-0 ${
-                  cloudHealth.online ? 'text-emerald-400' : 'text-rose-400'
+                  cloudHealth.online ? 'text-emerald-200' : 'text-rose-200'
                 }`}
               >
-                <span className={`h-2 w-2 rounded-full ${cloudHealth.online ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+                <span className={`h-2 w-2 rounded-full ${cloudHealth.online ? 'bg-emerald-300' : 'bg-rose-300'}`} />
                 {cloudHealth.online ? locale.sidebar.dbNormal : locale.sidebar.dbOffline}
               </span>
             </div>
@@ -2218,7 +2218,7 @@ export function ClinicalStaffPortalShell({
             <button
               type="button"
               onClick={onReturnToKiosk}
-              className="w-full h-10 flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 font-bold text-slate-200 hover:bg-white/10 whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer"
+              className="w-full h-10 flex items-center justify-center gap-2 rounded-xl border border-white/25 bg-white/15 px-3 font-bold text-white hover:bg-white/25 whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer"
             >
               <Monitor className="h-4 w-4 shrink-0" />
               {!sidebarCollapsed && <span className="truncate">{locale.actions.returnKiosk}</span>}
@@ -2228,7 +2228,7 @@ export function ClinicalStaffPortalShell({
           <button
             type="button"
             onClick={() => void onLogout()}
-            className="w-full h-10 flex items-center justify-center gap-2 rounded-xl border border-rose-500/20 bg-rose-500/10 px-3 font-bold text-rose-300 hover:bg-rose-500/20 whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer"
+            className="w-full h-10 flex items-center justify-center gap-2 rounded-xl border border-rose-200/40 bg-rose-500/25 px-3 font-bold text-white hover:bg-rose-500/40 whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer"
           >
             <LogOut className="h-4 w-4 shrink-0" />
             {!sidebarCollapsed && <span className="truncate">{locale.actions.logout}</span>}
@@ -3184,7 +3184,7 @@ export function ClinicalStaffPortalShell({
                     <button
                       type="submit"
                       disabled={submitting}
-                      className="sm:col-span-2 whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-slate-900 font-bold text-white hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
+                      className="sm:col-span-2 whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] font-bold text-white hover:brightness-105 disabled:opacity-50 cursor-pointer shadow-sm"
                     >
                       {locale.exercises.addExerciseBtn}
                     </button>
@@ -3732,7 +3732,7 @@ export function ClinicalStaffPortalShell({
                   <button
                     type="button"
                     onClick={() => void refreshAll()}
-                    className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-white hover:bg-slate-800 cursor-pointer shrink-0"
+                    className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] text-white hover:brightness-105 cursor-pointer shrink-0 shadow-xs"
                     title={locale.staff.refreshTitle}
                   >
                     <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -5016,7 +5016,7 @@ export function ClinicalStaffPortalShell({
 
       {/* Add Staff Modal */}
       {addStaffModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-extrabold text-slate-900">+ เพิ่มเจ้าหน้าที่ใหม่</h3>
@@ -5128,7 +5128,7 @@ export function ClinicalStaffPortalShell({
       {selectedPtDetailModal && (() => {
         const modalPtProfile = resolveUserProfile(selectedPtDetailModal, profileOverrides);
         return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
           <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-3 min-w-0">
@@ -5227,7 +5227,7 @@ export function ClinicalStaffPortalShell({
 
       {/* Quick Check-in Modal */}
       {quickCheckinModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -5291,7 +5291,7 @@ export function ClinicalStaffPortalShell({
 
       {/* Register Kiosk Modal */}
       {registerKioskModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
           <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-black text-slate-900">+ ลงทะเบียนตู้ Kiosk ใหม่</h3>

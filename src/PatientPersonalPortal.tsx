@@ -142,7 +142,7 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
                   setNewPw('');
                   setNotice('เปลี่ยนรหัสผ่านเรียบร้อย');
                 }}
-                className="rounded-xl bg-slate-800 px-3 py-2 text-xs font-bold text-white"
+                className="rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] px-3 py-2 text-xs font-bold text-white"
               >
                 เปลี่ยนรหัส
               </button>

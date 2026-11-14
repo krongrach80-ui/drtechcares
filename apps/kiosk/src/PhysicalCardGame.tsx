@@ -934,7 +934,7 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
           <span className="mg-badge-top inline-flex items-center gap-2.5 rounded-full bg-indigo-50 px-5 py-2.5 font-black text-indigo-700">
             <Sparkles className="h-6 w-6 shrink-0" /> {t('startCognitiveGameBtn')} • {patientName}
           </span>
-          <span className="mg-score-pill rounded-2xl bg-slate-900 px-7 py-3.5 font-black text-white shadow-md whitespace-nowrap">
+          <span className="mg-score-pill rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#10B981] px-7 py-3.5 font-black text-white shadow-md whitespace-nowrap">
             ข้อที่ {index + 1} / {cards.length} • คะแนน {score}
           </span>
         </div>
@@ -958,13 +958,13 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
               draggable={false}
             />
           </div>
-          <h2 className="mg-question-title font-black text-slate-950 max-w-5xl">
+          <h2 className="mg-question-title font-black text-[#0F4C81] max-w-5xl">
             {pick(currentCard.question)}
           </h2>
         </div>
 
         {/* Middle Card: Full-Size Live Camera Viewport (120Hz Hand Tracking) */}
-        <div className="flex-[1.4] min-h-[360px] sm:min-h-[480px] relative w-full overflow-hidden rounded-3xl bg-slate-900 border-4 border-slate-800 shadow-inner">
+        <div className="flex-[1.4] min-h-[360px] sm:min-h-[480px] relative w-full overflow-hidden rounded-3xl bg-gradient-to-br from-sky-100 via-emerald-50 to-white border-4 border-sky-200 shadow-inner">
           <video ref={videoRef} playsInline muted className="h-full w-full object-cover -scale-x-100" />
           <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
 
@@ -983,8 +983,8 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
                   <span ref={badgePctRef}>0%</span>
                 </span>
               ) : (
-                <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-slate-950/85 px-6 py-3 font-black text-slate-100 shadow-xl backdrop-blur border-2 border-white/15">
-                  <span className={`h-4 w-4 rounded-full shrink-0 ${detectorReady ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`} />
+                <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-white/95 px-6 py-3 font-black text-[#0F4C81] shadow-xl backdrop-blur border-2 border-emerald-300">
+                  <span className={`h-4 w-4 rounded-full shrink-0 ${detectorReady ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'}`} />
                   {detectorReady ? 'พร้อมตรวจจับมือ 120Hz' : 'กำลังเตรียมระบบตรวจจับมือ...'}
                 </span>
               )}
@@ -992,14 +992,14 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
           )}
 
           {cameraError && (
-            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-slate-950/90 p-8 text-center">
-              <Hand className="h-24 w-24 mb-5 text-amber-400" />
-              <p className="mg-cam-status max-w-2xl font-black text-amber-200">{cameraError}</p>
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-gradient-to-br from-sky-50/95 via-white/95 to-emerald-50/95 p-8 text-center">
+              <Hand className="h-24 w-24 mb-5 text-[#0284C7]" />
+              <p className="mg-cam-status max-w-2xl font-black text-[#0F4C81]">{cameraError}</p>
             </div>
           )}
 
           {bothHandsWarn && (
-            <div className="mg-cam-status absolute top-20 inset-x-4 z-10 flex items-center gap-3 rounded-2xl bg-amber-500/95 px-6 py-3.5 font-black text-slate-950 shadow-xl">
+            <div className="mg-cam-status absolute top-20 inset-x-4 z-10 flex items-center gap-3 rounded-2xl bg-amber-500/95 px-6 py-3.5 font-black text-white shadow-xl">
               <AlertTriangle className="h-8 w-8 shrink-0" />
               <span>{t('bothHandsWarning')}</span>
             </div>
@@ -1014,22 +1014,22 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
 
           {!cameraError && !pendingChoice && (
             <div className="pointer-events-none absolute bottom-4 inset-x-4 flex items-center justify-between gap-3">
-              <span className="mg-cam-zone rounded-2xl bg-rose-950/85 px-6 py-3 font-black text-rose-100 border-2 border-rose-400/50 shadow-lg">
+              <span className="mg-cam-zone rounded-2xl bg-rose-50/95 px-6 py-3 font-black text-rose-700 border-2 border-rose-300 shadow-lg">
                 ← ซ้าย: ไม่ใช่ (NO)
               </span>
-              <span className="mg-cam-zone rounded-2xl bg-emerald-950/85 px-6 py-3 font-black text-emerald-100 border-2 border-emerald-400/50 shadow-lg">
+              <span className="mg-cam-zone rounded-2xl bg-emerald-50/95 px-6 py-3 font-black text-emerald-800 border-2 border-emerald-300 shadow-lg">
                 ขวา: ใช่ (YES) →
               </span>
             </div>
           )}
 
           {pendingChoice && (
-            <div className="absolute bottom-4 inset-x-4 z-10 rounded-2xl bg-slate-950/90 p-5 sm:p-6 text-white backdrop-blur border-2 border-white/20 shadow-2xl">
+            <div className="absolute bottom-4 inset-x-4 z-10 rounded-2xl bg-white/95 p-5 sm:p-6 text-[#0F4C81] backdrop-blur border-2 border-sky-300 shadow-2xl">
               <div className="mg-hold-label flex items-center justify-between font-black mb-2.5">
                 <span>{pendingChoice === 'yes' ? t('minigameRightYes') : t('minigameLeftNo')}</span>
                 <span ref={progressPctRef}>0%</span>
               </div>
-              <div className="h-7 sm:h-8 w-full overflow-hidden rounded-full bg-slate-700">
+              <div className="h-7 sm:h-8 w-full overflow-hidden rounded-full bg-sky-100 border border-sky-200">
                 <div
                   ref={progressBarFillRef}
                   className={`h-full will-change-[width] ${

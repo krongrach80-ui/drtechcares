@@ -109,7 +109,7 @@ export function App() {
   if (route === '/') {
     if (kioskMode === 'classic') {
       return (
-        <div className="min-h-screen bg-slate-950 p-4">
+        <div className="min-h-screen bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <button
               type="button"
@@ -117,14 +117,14 @@ export function App() {
                 setAuthenticatedPatient(null);
                 setKioskMode('login');
               }}
-              className="rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-4 py-1.5 text-xs font-bold text-emerald-300 hover:bg-emerald-500/25 cursor-pointer"
+              className="rounded-xl border border-emerald-300 bg-white px-4 py-1.5 text-xs font-bold text-[#0F4C81] shadow-xs hover:bg-emerald-50 cursor-pointer"
             >
               ← กลับหน้าสแกนใบหน้า (Kiosk Login)
             </button>
             <button
               type="button"
               onClick={() => setKioskMode('rehab')}
-              className="rounded-xl border border-teal-500/40 bg-teal-500/10 px-4 py-1.5 text-xs font-bold text-teal-300 hover:bg-teal-500/20 cursor-pointer"
+              className="rounded-xl border border-sky-300 bg-white px-4 py-1.5 text-xs font-bold text-[#0284C7] shadow-xs hover:bg-sky-50 cursor-pointer"
             >
               หน้าวิเคราะห์ชีวกลศาสตร์ (Smart Rehab UI)
             </button>
@@ -201,10 +201,10 @@ export function App() {
 
       if (!hasAppointmentToday && !allowRestDayPractice) {
         return (
-          <div className="min-h-screen w-full bg-slate-950 flex flex-col">
-            <div className="bg-[#042924] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs border-b border-emerald-500/20">
+          <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
+            <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm border-b border-white/20">
               <div className="flex items-center gap-2 font-bold">
-                <span className="px-2.5 py-0.5 rounded-full bg-amber-500/25 text-amber-200">
+                <span className="px-2.5 py-0.5 rounded-full bg-white/20 text-white border border-white/25">
                   Rest Day • วันพักผ่อน
                 </span>
                 <span>
@@ -214,7 +214,7 @@ export function App() {
               <button
                 type="button"
                 onClick={handleExitToLogin}
-                className="rounded-xl border border-emerald-400/50 bg-emerald-600/25 px-3 py-1.5 font-bold text-emerald-100 hover:bg-emerald-600/40 cursor-pointer"
+                className="rounded-xl border border-white/30 bg-white/15 px-3 py-1.5 font-bold text-white hover:bg-white/25 cursor-pointer"
               >
                 ← กลับหน้าสแกนใบหน้า (Kiosk Login)
               </button>
@@ -264,10 +264,10 @@ export function App() {
 
       if (hasAppointmentToday && trainingStage === 'overview') {
         return (
-          <div className="min-h-screen w-full bg-slate-950 flex flex-col">
-            <div className="bg-[#042924] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs border-b border-emerald-500/20">
+          <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
+            <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm border-b border-white/20">
               <div className="flex items-center gap-2 font-bold">
-                <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-300">
+                <span className="px-2.5 py-0.5 rounded-full bg-emerald-400/25 border border-emerald-200/40 text-white">
                   Scheduled Today • มีนัดกายภาพวันนี้
                 </span>
                 <span>
@@ -277,7 +277,7 @@ export function App() {
               <button
                 type="button"
                 onClick={handleExitToLogin}
-                className="rounded-xl border border-emerald-400/50 bg-emerald-600/25 px-3 py-1.5 font-bold text-emerald-100 hover:bg-emerald-600/40 cursor-pointer"
+                className="rounded-xl border border-white/30 bg-white/15 px-3 py-1.5 font-bold text-white hover:bg-white/25 cursor-pointer"
               >
                 ← กลับหน้าสแกนใบหน้า (Kiosk Login)
               </button>
@@ -403,16 +403,16 @@ export function App() {
 
       if (trainingStage === 'rehab_exercises') {
         return (
-          <div className="min-h-screen w-full bg-slate-950 flex flex-col">
-            <div className="bg-[#042924] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs border-b border-emerald-500/20">
+          <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
+            <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm border-b border-white/20">
               <div className="flex flex-wrap items-center gap-2 font-bold">
-                <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-300">
+                <span className="px-2.5 py-0.5 rounded-full bg-white/20 border border-white/25 text-white">
                   AI Kiosk Session
                 </span>
                 <span>
                   ผู้ป่วย: {authenticatedPatient.patient.fullName} (HN: {authenticatedPatient.patient.hn})
                 </span>
-                <span className="px-2.5 py-0.5 rounded-full bg-sky-500/20 text-sky-200">
+                <span className="px-2.5 py-0.5 rounded-full bg-emerald-400/25 border border-emerald-200/35 text-white">
                   ขั้นตอนที่ 1/2: ฝึกท่ากายภาพบำบัดตามกำหนด
                 </span>
               </div>
@@ -421,7 +421,7 @@ export function App() {
                   <button
                     type="button"
                     onClick={() => setTrainingStage('overview')}
-                    className="rounded-xl border border-teal-400/40 bg-teal-500/15 px-3 py-1.5 font-bold text-teal-200 hover:bg-teal-500/30 cursor-pointer"
+                    className="rounded-xl border border-white/30 bg-white/15 px-3 py-1.5 font-bold text-white hover:bg-white/25 cursor-pointer"
                   >
                     ← กลับหน้ารายการกายภาพวันนี้
                   </button>
@@ -429,14 +429,14 @@ export function App() {
                 <button
                   type="button"
                   onClick={() => setTrainingStage('minigame')}
-                  className="rounded-xl border border-sky-400/40 bg-sky-500/15 px-3 py-1.5 font-bold text-sky-200 hover:bg-sky-500/30 cursor-pointer"
+                  className="rounded-xl border border-white/30 bg-white/15 px-3 py-1.5 font-bold text-white hover:bg-white/25 cursor-pointer"
                 >
                   ข้ามไปมินิเกม (ขั้นตอนสุดท้าย) ➔
                 </button>
                 <button
                   type="button"
                   onClick={handleExitToLogin}
-                  className="rounded-xl border border-emerald-400/50 bg-emerald-600/25 px-3 py-1.5 font-bold text-emerald-100 hover:bg-emerald-600/40 cursor-pointer"
+                  className="rounded-xl border border-emerald-200/40 bg-emerald-500/30 px-3 py-1.5 font-bold text-white hover:bg-emerald-500/45 cursor-pointer"
                 >
                   ← กลับหน้าสแกนใบหน้า (Kiosk Login)
                 </button>
@@ -467,10 +467,10 @@ export function App() {
       }
 
       return (
-        <div className="min-h-screen w-full bg-slate-950 flex flex-col">
-          <div className="bg-[#042924] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs border-b border-emerald-500/20">
+        <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
+          <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm border-b border-white/20">
             <div className="flex items-center gap-2 font-bold">
-              <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-300">
+              <span className="px-2.5 py-0.5 rounded-full bg-white/20 border border-white/25 text-white">
                 AI Kiosk Training • ขั้นตอนสุดท้าย (มินิเกม)
               </span>
               <span>
@@ -481,21 +481,21 @@ export function App() {
               <button
                 type="button"
                 onClick={() => setTrainingStage('rehab_exercises')}
-                className="rounded-xl border border-teal-400/40 bg-teal-500/15 px-3 py-1.5 font-bold text-teal-200 hover:bg-teal-500/30 cursor-pointer"
+                className="rounded-xl border border-white/30 bg-white/15 px-3 py-1.5 font-bold text-white hover:bg-white/25 cursor-pointer"
               >
                 ← กลับหน้าท่ากายภาพบำบัด
               </button>
               <button
                 type="button"
                 onClick={handleExitToLogin}
-                className="rounded-xl border border-emerald-400/50 bg-emerald-600/25 px-3 py-1.5 font-bold text-emerald-100 hover:bg-emerald-600/40 cursor-pointer"
+                className="rounded-xl border border-emerald-200/40 bg-emerald-500/30 px-3 py-1.5 font-bold text-white hover:bg-emerald-500/45 cursor-pointer"
               >
                 ← กลับหน้าสแกนใบหน้า (Kiosk Login)
               </button>
             </div>
           </div>
           <div className="flex-1 flex flex-col gap-4 p-3 sm:p-5">
-            <div className="rounded-2xl border border-emerald-400/40 bg-emerald-500/15 px-4 py-3 text-emerald-100 text-xs sm:text-sm font-bold flex flex-wrap items-center justify-between gap-2">
+            <div className="rounded-2xl border border-emerald-300 bg-gradient-to-r from-emerald-50 via-teal-50 to-sky-50 px-4 py-3 text-[#0F4C81] text-xs sm:text-sm font-bold flex flex-wrap items-center justify-between gap-2 shadow-sm">
               <span>
                 🎉 ยอดเยี่ยมมาก! คุณทำท่ากายภาพบำบัดครบตามกำหนดแล้ว — ขั้นตอนสุดท้าย: มินิเกมฝึกสมองและการ์ดกายภาพ
               </span>
@@ -512,10 +512,10 @@ export function App() {
 
     if (kioskMode === 'rehab') {
       return (
-        <div className="relative min-h-screen">
-          <div className="bg-[#042924] px-4 py-2 text-white flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div className="relative min-h-screen bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC]">
+          <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-2 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm">
             <div className="flex items-center gap-2 font-bold">
-              <span className="px-2 py-0.5 rounded-full bg-emerald-500/25 text-emerald-300">AI Kiosk Session</span>
+              <span className="px-2 py-0.5 rounded-full bg-white/20 text-white">AI Kiosk Session</span>
               {authenticatedPatient ? (
                 <span>
                   ผู้ป่วย: {authenticatedPatient.patient.fullName} (HN: {authenticatedPatient.patient.hn})
@@ -637,7 +637,7 @@ export function App() {
           <p className="mt-2 text-sm text-rose-700">เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) เท่านั้นที่เข้าถึงหน้านี้ได้</p>
           <button
             onClick={() => navigate(currentUser.role === 'pt' ? '/pt' : '/patient')}
-            className="mt-4 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white"
+            className="mt-4 rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] px-4 py-2 text-xs font-bold text-white shadow-sm"
           >
             กลับพอร์ทัลของคุณ
           </button>

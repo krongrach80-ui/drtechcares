@@ -281,7 +281,7 @@ export function StaffAssistedEnrollmentModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-3 sm:p-6 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-3 sm:p-6 backdrop-blur-sm">
       <div className="relative flex max-h-[94vh] w-full max-w-2xl flex-col overflow-hidden rounded-[24px] bg-white shadow-2xl border border-slate-200">
         {/* Top Modal Header */}
         <div className="flex items-start justify-between border-b border-slate-100 px-6 py-4">
@@ -688,14 +688,14 @@ export function StaffAssistedEnrollmentModal({
                   onCancel={() => setCapturing(false)}
                 />
               ) : (
-                <div className="flex flex-col items-center justify-center rounded-3xl border border-slate-800 bg-slate-950 p-8 text-center text-white">
-                  <Camera className="mb-3 h-10 w-10 text-emerald-400" />
+                <div className="flex flex-col items-center justify-center rounded-3xl border-2 border-emerald-200 bg-gradient-to-br from-emerald-50 via-sky-50 to-white p-8 text-center text-[#0F4C81] shadow-sm">
+                  <Camera className="mb-3 h-10 w-10 text-emerald-600" />
                   <p className="text-sm font-extrabold">
                     {biometric120Result
                       ? 'สแกนใบหน้า 120 เฟรม (3D Multi-Angle) สำเร็จแล้ว'
                       : 'กล้องสแกนใบหน้า 120 เฟรมหยุดพักชั่วคราว'}
                   </p>
-                  <p className="mt-1 text-xs text-slate-300">
+                  <p className="mt-1 text-xs text-slate-600">
                     หมุนศีรษะช้าๆ เพื่อสร้าง Master Embedding + Angle Embeddings (Center, Left, Right, Up, Down)
                   </p>
                   <button
