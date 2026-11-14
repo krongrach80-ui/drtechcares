@@ -66,6 +66,14 @@ const candidateAssets = [
     ],
     dest: path.join(modelsDest, 'face_landmarker.task'),
   },
+  {
+    name: 'hand_landmarker.task',
+    sources: [
+      ...(envCacheDir ? [path.join(envCacheDir, 'hand_landmarker.task')] : []),
+      'C:\\Users\\Administrator\\drtech-kiosk\\public\\models\\hand_landmarker.task',
+    ],
+    dest: path.join(modelsDest, 'hand_landmarker.task'),
+  },
 ];
 
 const present = [];

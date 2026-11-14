@@ -3783,6 +3783,38 @@ export function ClinicalStaffPortalShell({
             </div>
             <PhysicalCardGame
               patientName={selectedSchedulePatient?.fullName ?? currentUser.fullName}
+              onSessionFinished={async (summary) => {
+                const targetPatient = selectedSchedulePatient ?? patients[0];
+                if (targetPatient?.id) {
+                  try {
+                    const created = await apiClient.recordRehabSession({
+                      patientId: targetPatient.id,
+                      activityType: 'minigame',
+                      exerciseId: 'cognitive-card-game',
+                      exerciseName: 'มินิเกมฝึกสมอง (การ์ดกายภาพ 10 ข้อ)',
+                      completedSets: 1,
+                      completedReps: summary.total,
+                      accuracyPercent: summary.accuracyPct,
+                      maxRomDeg: 0,
+                      painStopTriggered: false,
+                      aiFeedback: `Cognitive Accuracy ${summary.accuracyPct}% (${summary.correct}/${summary.total}) in ${summary.durationSec}s`,
+                      kinematicsReplay: [],
+                      minigameScore: {
+                        correct: summary.correct,
+                        total: summary.total,
+                        category: summary.category,
+                      },
+                    });
+                    setSessions((prev) => [created, ...prev]);
+                  } catch {
+                    // ignore background session sync failure
+                  }
+                }
+                flashBanner(
+                  'success',
+                  `ทดสอบการ์ดกายภาพเสร็จสิ้น (${summary.correct}/${summary.total} คะแนน • ${summary.accuracyPct}% • ${summary.durationSec} วินาที)`,
+                );
+              }}
               onComplete={(summary) => {
                 setCardGameModalOpen(false);
                 flashBanner(
