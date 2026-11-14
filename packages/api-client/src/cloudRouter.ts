@@ -7,6 +7,7 @@ import {
   COMMON_MODE_ALPHA,
   FACE_EMBEDDING_DIM,
   CANONICAL_HUMAN_FACE_BASELINE_512,
+  computeFaceCoreMetrics,
   cosineSimilarity,
   l2Normalize,
   verifyHybridBiometricIdentity,
@@ -1584,8 +1585,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       let matchedPatientName = matchedPatientId ? result.patientName : null;
       let matchedConfidence = result.confidencePercent;
 
-      // Multi-angle check across all active database patient/user accounts (master + 5 angles + face_templates + history)
-      // Aligned with client matcher: raw >= 0.74, whitened >= 0.56, margin >= 0.04 when multiple accounts exist
+      // Multi-angle + clothing/lighting-invariant inner-face & 3D craniofacial check across all active database accounts
       if (!matchedPatientId) {
         const probeWhite = whitenEmbedding(probeNorm, CANONICAL_HUMAN_FACE_BASELINE_512, COMMON_MODE_ALPHA);
         const scoresByPatient: {
@@ -1594,6 +1594,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           raw: number;
           effectiveRaw: number;
           white: number;
+          bestCoreSim: number;
+          bestCoreWhite: number;
+          bestCos3D: number;
+          bestCraniofacialCos: number;
           rankScore: number;
         }[] = [];
         for (const p of state.patients) {
@@ -1626,21 +1630,36 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           if (rawVecs.length === 0) continue;
 
           const masterNorm = l2Normalize(p.masterEmbedding ?? p.biometricHistory?.overall_centroid ?? rawVecs[0]);
-          const masterRaw = cosineSimilarity(probeNorm, masterNorm);
+          const masterCore = computeFaceCoreMetrics(probeNorm, masterNorm);
+          const masterRaw = Math.max(cosineSimilarity(probeNorm, masterNorm), masterCore.faceCoreSim);
 
           let bestRaw = -1;
           let bestWhite = -1;
+          let bestCoreSim = 0;
+          let bestCoreWhite = 0;
+          let bestCos3D = 0;
+          let bestCraniofacialCos = 0;
+          let bestCoreCombined = -1;
           for (const v of rawVecs) {
             if (v.length !== FACE_EMBEDDING_DIM) continue;
             const vNorm = l2Normalize(v);
-            const raw = cosineSimilarity(probeNorm, vNorm);
+            const core = computeFaceCoreMetrics(probeNorm, vNorm);
+            const raw = Math.max(cosineSimilarity(probeNorm, vNorm), core.faceCoreSim);
             const vWhite = whitenEmbedding(vNorm, CANONICAL_HUMAN_FACE_BASELINE_512, COMMON_MODE_ALPHA);
-            const wCos = cosineSimilarity(probeWhite, vWhite);
+            const wCos = Math.max(cosineSimilarity(probeWhite, vWhite), core.faceCoreWhitenedSim);
             if (raw > bestRaw) {
               bestRaw = raw;
             }
             if (wCos > bestWhite) {
               bestWhite = wCos;
+            }
+            const coreCombined = core.faceCoreSim + core.faceCoreWhitenedSim;
+            if (coreCombined > bestCoreCombined) {
+              bestCoreCombined = coreCombined;
+              bestCoreSim = core.faceCoreSim;
+              bestCoreWhite = core.faceCoreWhitenedSim;
+              bestCos3D = core.cos3DNormalized;
+              bestCraniofacialCos = core.craniofacialCos;
             }
           }
           const effectiveRaw = Math.max(bestRaw * 0.75 + masterRaw * 0.25, masterRaw);
@@ -1650,6 +1669,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             raw: bestRaw,
             effectiveRaw,
             white: bestWhite,
+            bestCoreSim,
+            bestCoreWhite,
+            bestCos3D,
+            bestCraniofacialCos,
             rankScore: effectiveRaw * 0.65 + bestWhite * 0.35,
           });
         }
@@ -1659,10 +1682,24 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         const effectiveMargin = runner ? top.effectiveRaw - runner.effectiveRaw : 1;
         const rawMargin = runner ? top.raw - runner.raw : 1;
         const margin = Math.max(effectiveMargin, rawMargin);
-        if (top && top.raw >= 0.74 && top.white >= 0.56 && (scoresByPatient.length === 1 || margin >= 0.04)) {
+        const passesMargin = scoresByPatient.length === 1 || margin >= 0.04;
+        const passesStandard = Boolean(top && top.raw >= 0.74 && top.white >= 0.56 && passesMargin);
+        const passesFaceCore = Boolean(
+          top &&
+            top.bestCoreSim >= 0.72 &&
+            top.bestCoreWhite >= 0.52 &&
+            top.bestCos3D >= 0.965 &&
+            top.bestCraniofacialCos >= 0.55 &&
+            passesMargin,
+        );
+        if (top && (passesStandard || passesFaceCore)) {
           matchedPatientId = top.patientId;
           matchedPatientName = top.fullName;
-          matchedConfidence = Number(Math.min(99.9, top.raw * 100).toFixed(1));
+          const calibratedConf = Math.max(
+            top.raw,
+            top.bestCoreSim >= 0.72 ? Math.max(top.raw, top.bestCoreSim * 0.9 + 0.08) : top.raw,
+          );
+          matchedConfidence = Number(Math.min(99.9, calibratedConf * 100).toFixed(1));
         }
       }
 

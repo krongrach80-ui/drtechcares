@@ -6,6 +6,7 @@ import {
   CANONICAL_HUMAN_FACE_BASELINE_512,
   COMMON_MODE_ALPHA,
   FACE_EMBEDDING_DIM,
+  computeFaceCoreMetrics,
   cosineSimilarity as coreCosineSimilarity,
   l2Normalize,
   whitenEmbedding,
@@ -119,6 +120,10 @@ export function matchMultiAngleEmbedding(
     rawSim: number;
     combinedSim: number;
     whitenedSim: number;
+    bestCoreSim: number;
+    bestCoreWhitenedSim: number;
+    bestCos3D: number;
+    bestCraniofacialCos: number;
   }[] = [];
 
   for (const cand of candidates) {
@@ -138,12 +143,37 @@ export function matchMultiAngleEmbedding(
     let bestRaw = -1;
     let bestWhite = -1;
     let masterRaw = -1;
+    let bestCoreSim = 0;
+    let bestCoreWhitenedSim = 0;
+    let bestCos3D = 0;
+    let bestCraniofacialCos = 0;
+    let bestCoreCombined = -1;
 
     for (const item of vectorsToCompare) {
       if (!Array.isArray(item.vec) || item.vec.length !== normalizedProbe.length) continue;
       const normalizedItem = l2Normalize(item.vec);
-      const rawSim = cosineSimilarity(normalizedProbe, normalizedItem);
-      const whitenedSim = computeWhitenedSimilarity(normalizedProbe, normalizedItem);
+      const globalRawSim = cosineSimilarity(normalizedProbe, normalizedItem);
+      const globalWhitenedSim = computeWhitenedSimilarity(normalizedProbe, normalizedItem);
+      const core =
+        normalizedProbe.length === FACE_EMBEDDING_DIM
+          ? computeFaceCoreMetrics(normalizedProbe, normalizedItem)
+          : null;
+      const rawSim = core ? Math.max(globalRawSim, core.faceCoreSim) : globalRawSim;
+      const whitenedSim = core
+        ? Math.max(globalWhitenedSim, core.faceCoreWhitenedSim)
+        : globalWhitenedSim;
+
+      if (core) {
+        const coreCombined = core.faceCoreSim + core.faceCoreWhitenedSim;
+        if (coreCombined > bestCoreCombined) {
+          bestCoreCombined = coreCombined;
+          bestCoreSim = core.faceCoreSim;
+          bestCoreWhitenedSim = core.faceCoreWhitenedSim;
+          bestCos3D = core.cos3DNormalized;
+          bestCraniofacialCos = core.craniofacialCos;
+        }
+      }
+
       if (item.angle === 'master') {
         masterRaw = rawSim;
       }
@@ -163,6 +193,10 @@ export function matchMultiAngleEmbedding(
         rawSim: bestRaw,
         combinedSim,
         whitenedSim: bestWhite,
+        bestCoreSim,
+        bestCoreWhitenedSim,
+        bestCos3D,
+        bestCraniofacialCos,
       });
     }
   }
@@ -186,13 +220,23 @@ export function matchMultiAngleEmbedding(
   const margin = runnerUp ? Math.max(top.rawSim - runnerUp.rawSim, top.combinedSim - runnerUp.combinedSim) : 1;
 
   const passesMargin = scored.length < 2 || margin >= marginThreshold;
-  const matched =
+  const passesStandardGate =
     top.rawSim >= similarityThreshold &&
     top.whitenedSim >= whitenedThreshold &&
     passesMargin;
+  const passesFaceCoreGate =
+    top.bestCoreSim >= 0.72 &&
+    top.bestCoreWhitenedSim >= 0.52 &&
+    top.bestCos3D >= 0.965 &&
+    top.bestCraniofacialCos >= 0.55 &&
+    passesMargin;
+  const matched = passesStandardGate || passesFaceCoreGate;
 
+  const calibratedScore = matched
+    ? Math.max(top.rawSim, top.bestCoreSim >= 0.72 ? Math.max(top.rawSim, top.bestCoreSim * 0.9 + 0.08) : top.rawSim)
+    : Math.min(0.49, top.rawSim * 0.5);
   const displayPercent = Number(
-    Math.max(0, Math.min(99.9, (matched ? top.rawSim : Math.min(0.49, top.rawSim * 0.5)) * 100)).toFixed(1),
+    Math.max(0, Math.min(99.9, calibratedScore * 100)).toFixed(1),
   );
 
   return {
@@ -213,6 +257,7 @@ export function matchMultiAngleEmbedding(
  */
 export class TemporalBiometricMatcher {
   readonly requiredConsecutiveFrames: number;
+  readonly defaultSimilarityThreshold?: number;
   private streakPatientId: string | null = null;
   private streakFrames: {
     match: MultiAngleMatchResult;
@@ -223,8 +268,9 @@ export class TemporalBiometricMatcher {
     blinkDetected: boolean;
   }[] = [];
 
-  constructor(requiredConsecutiveFrames = 4) {
+  constructor(requiredConsecutiveFrames = 4, defaultSimilarityThreshold?: number) {
     this.requiredConsecutiveFrames = requiredConsecutiveFrames;
+    this.defaultSimilarityThreshold = defaultSimilarityThreshold;
   }
 
   get currentStreak(): number {
@@ -241,7 +287,11 @@ export class TemporalBiometricMatcher {
     candidates: readonly PatientBiometricIndexEntry[],
     options?: MultiAngleMatchOptions,
   ): TemporalMatchResult {
-    const match = matchMultiAngleEmbedding(observation.probeVector, candidates, options);
+    const mergedOptions: MultiAngleMatchOptions | undefined =
+      this.defaultSimilarityThreshold !== undefined
+        ? { similarityThreshold: this.defaultSimilarityThreshold, ...options }
+        : options;
+    const match = matchMultiAngleEmbedding(observation.probeVector, candidates, mergedOptions);
 
     if (!match.matched || !match.bestCandidate) {
       this.reset();

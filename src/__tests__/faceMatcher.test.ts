@@ -186,4 +186,92 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     expect(box!.height).toBeGreaterThan(0.45);
     expect(box!.confidence).toBeGreaterThan(0.9);
   });
+
+  it('recognizes the same patient even when clothing/border/lighting indices (0..255) change drastically', () => {
+    const buildHybridLikePerson = (seed: number, shirtBias: number, lightingGain: number): number[] => {
+      const vec = new Array<number>(FACE_EMBEDDING_DIM).fill(0);
+      let state = seed >>> 0;
+      const nextRand = (): number => {
+        state = (state * 1664525 + 1013904223) >>> 0;
+        return (state % 2000) / 1000 - 1;
+      };
+
+      // 0..127 DCT: u=0 or v=0 carries heavy shirt/background gradient; interior u>=1,v>=1 carries face structure
+      let dctIdx = 0;
+      for (let u = 0; u < 12 && dctIdx < 128; u += 1) {
+        for (let v = 0; v < 12 && dctIdx < 128; v += 1) {
+          if (u === 0 && v === 0) continue;
+          const innerWave = nextRand() * 0.32 * lightingGain;
+          vec[dctIdx] =
+            u === 0 || v === 0
+              ? shirtBias * (0.85 - u * 0.04) * (v % 2 === 0 ? 1 : -0.7)
+              : CANONICAL_HUMAN_FACE_BASELINE_512[dctIdx] * 0.4 + innerWave;
+          dctIdx += 1;
+        }
+      }
+
+      // 128..255 Patches: outer 12 patches carry shirt/background; inner 4 patches carry inner facial gradients
+      for (let py = 0; py < 4; py += 1) {
+        for (let px = 0; px < 4; px += 1) {
+          const offset = 128 + (py * 4 + px) * 8;
+          const isInner = py >= 1 && py <= 2 && px >= 1 && px <= 2;
+          for (let slot = 0; slot < 8; slot += 1) {
+            const innerWave = nextRand() * 0.25 * lightingGain;
+            vec[offset + slot] = isInner && slot <= 2
+              ? CANONICAL_HUMAN_FACE_BASELINE_512[offset + slot] * 0.45 + innerWave
+              : shirtBias * ((slot % 3) - 1) * 0.9;
+          }
+        }
+      }
+
+      // 256..511: 478-point 3D craniofacial landmark ratios
+      for (let i = 256; i < FACE_EMBEDDING_DIM; i += 1) {
+        const cranioWave = nextRand() * 0.04;
+        vec[i] = 0.65 * CANONICAL_HUMAN_FACE_BASELINE_512[i] + cranioWave;
+      }
+
+      return l2Normalize(vec);
+    };
+
+    const enrolledPerson = {
+      ...makeEnrolledPatient('pat-clothes-a', 'HN-77001', 'ปิยะ ทดสอบชุด', 777),
+      masterEmbedding: buildHybridLikePerson(7777, 1.4, 1.0),
+      angleEmbeddings: {
+        center: buildHybridLikePerson(7777, 1.4, 1.0),
+        left: buildHybridLikePerson(7777, 1.35, 1.0),
+        right: buildHybridLikePerson(7777, 1.45, 1.0),
+        up: buildHybridLikePerson(7777, 1.38, 1.0),
+        down: buildHybridLikePerson(7777, 1.42, 1.0),
+      },
+    };
+    const otherEnrolled = {
+      ...makeEnrolledPatient('pat-clothes-b', 'HN-77002', 'ผู้ป่วยอีกคน', 888),
+      masterEmbedding: buildHybridLikePerson(88888, 1.4, 1.0),
+      angleEmbeddings: {
+        center: buildHybridLikePerson(88888, 1.4, 1.0),
+        left: buildHybridLikePerson(88888, 1.4, 1.0),
+        right: buildHybridLikePerson(88888, 1.4, 1.0),
+        up: buildHybridLikePerson(88888, 1.4, 1.0),
+        down: buildHybridLikePerson(88888, 1.4, 1.0),
+      },
+    };
+
+    // Same person changes from tank top (+1.4) to bright blue T-shirt (-2.2) and different lighting (1.8x),
+    // plus slight 3D landmark capture jitter.
+    const samePersonNewShirt = buildHybridLikePerson(7777, -2.2, 1.8).map((v, idx) =>
+      idx >= 256 ? v + ((idx % 5) - 2) * 0.0012 : v,
+    );
+    const sameRes = matchMultiAngleEmbedding(l2Normalize(samePersonNewShirt), [
+      enrolledPerson,
+      otherEnrolled,
+    ]);
+    expect(sameRes.matched).toBe(true);
+    expect(sameRes.bestCandidate?.patientId).toBe('pat-clothes-a');
+    expect(sameRes.confidencePercent).toBeGreaterThanOrEqual(80);
+
+    // Stranger wearing the EXACT same shirt & background (+1.4) must still be rejected
+    const strangerSameShirt = buildHybridLikePerson(999999, 1.4, 1.0);
+    const strangerRes = matchMultiAngleEmbedding(strangerSameShirt, [enrolledPerson, otherEnrolled]);
+    expect(strangerRes.matched).toBe(false);
+  });
 });

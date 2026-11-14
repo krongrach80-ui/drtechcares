@@ -133,24 +133,63 @@ export function extractHybrid512Descriptor(
   const { width, height, data } = image;
   const vec = new Array<number>(FACE_EMBEDDING_DIM).fill(0);
 
-  // Downsample grayscale to 16x16 grid with 2x2 cell averaging for noise-resistant DCT (0..127)
+  // Downsample inner-face elliptical ROI (excluding shirt collar/neck/background borders)
+  // to 16x16 grid with z-score illumination normalization for clothing- & lighting-invariant DCT (0..127)
   const grid = 16;
+  const rawGrid = new Float32Array(grid * grid);
   const gray16 = new Float32Array(grid * grid);
-  const cellW = Math.max(1, width / grid);
-  const cellH = Math.max(1, height / grid);
+  const roiX0 = width * (18 / 112);
+  const roiW = Math.max(1, width * (76 / 112));
+  const roiY0 = height * (20 / 112);
+  const roiH = Math.max(1, height * (72 / 112));
+  const cellW = Math.max(1, roiW / grid);
+  const cellH = Math.max(1, roiH / grid);
   const sampleLum = (px: number, py: number): number => {
-    const idx = (py * width + px) * 4;
+    const cx = Math.min(width - 1, Math.max(0, px));
+    const cy = Math.min(height - 1, Math.max(0, py));
+    const idx = (cy * width + cx) * 4;
     return 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
   };
 
+  let ellipSum = 0;
+  let ellipCount = 0;
   for (let gy = 0; gy < grid; gy += 1) {
     for (let gx = 0; gx < grid; gx += 1) {
-      const x0 = Math.min(width - 1, Math.floor((gx + 0.25) * cellW));
-      const x1 = Math.min(width - 1, Math.floor((gx + 0.75) * cellW));
-      const y0 = Math.min(height - 1, Math.floor((gy + 0.25) * cellH));
-      const y1 = Math.min(height - 1, Math.floor((gy + 0.75) * cellH));
-      gray16[gy * grid + gx] =
-        (sampleLum(x0, y0) + sampleLum(x1, y0) + sampleLum(x0, y1) + sampleLum(x1, y1)) / (4 * 255.0);
+      const x0 = Math.floor(roiX0 + (gx + 0.25) * cellW);
+      const x1 = Math.floor(roiX0 + (gx + 0.75) * cellW);
+      const y0 = Math.floor(roiY0 + (gy + 0.25) * cellH);
+      const y1 = Math.floor(roiY0 + (gy + 0.75) * cellH);
+      const cellAvg =
+        (sampleLum(x0, y0) + sampleLum(x1, y0) + sampleLum(x0, y1) + sampleLum(x1, y1)) / 4;
+      rawGrid[gy * grid + gx] = cellAvg;
+      const ellipDistSq = ((gx - 7.5) / 8.0) ** 2 + ((gy - 7.5) / 8.0) ** 2;
+      if (ellipDistSq <= 1.0) {
+        ellipSum += cellAvg;
+        ellipCount += 1;
+      }
+    }
+  }
+
+  const faceMean = ellipCount > 0 ? ellipSum / ellipCount : 127.5;
+  let varSum = 0;
+  for (let gy = 0; gy < grid; gy += 1) {
+    for (let gx = 0; gx < grid; gx += 1) {
+      const ellipDistSq = ((gx - 7.5) / 8.0) ** 2 + ((gy - 7.5) / 8.0) ** 2;
+      if (ellipDistSq <= 1.0) {
+        const diff = rawGrid[gy * grid + gx] - faceMean;
+        varSum += diff * diff;
+      }
+    }
+  }
+  const faceStd = Math.max(12.0, ellipCount > 0 ? Math.sqrt(varSum / ellipCount) : 32.0);
+
+  for (let gy = 0; gy < grid; gy += 1) {
+    for (let gx = 0; gx < grid; gx += 1) {
+      const idx = gy * grid + gx;
+      const normLum = Math.max(0.05, Math.min(0.95, ((rawGrid[idx] - faceMean) / faceStd) * 0.22 + 0.5));
+      const ellipDistSq = ((gx - 7.5) / 8.0) ** 2 + ((gy - 7.5) / 8.0) ** 2;
+      const blend = ellipDistSq > 1.0 ? Math.max(0, 1 - (ellipDistSq - 1.0) * 3.0) : 1.0;
+      gray16[idx] = 0.5 + (normLum - 0.5) * blend;
     }
   }
 
@@ -173,31 +212,36 @@ export function extractHybrid512Descriptor(
     }
   }
 
-  // 128..255: 16-Patch (4x4 patches x 8 gradient/LBP bins)
-  const patchW = Math.max(2, Math.floor(width / 4));
-  const patchH = Math.max(2, Math.floor(height / 4));
+  // 128..255: Inner-face 16-Patch (4x4 patches within [24..87]x[26..86] using 3x3 illumination-normalized blocks)
+  const scaleX = width / 112;
+  const scaleY = height / 112;
+  const blockLum = (bx: number, by: number): number => {
+    let total = 0;
+    for (let dy = -1; dy <= 1; dy += 1) {
+      for (let dx = -1; dx <= 1; dx += 1) {
+        total += sampleLum(bx + dx, by + dy);
+      }
+    }
+    return total / 9;
+  };
+  const invPatchScale = 1 / (faceStd * 4.0);
   for (let py = 0; py < 4; py += 1) {
     for (let px = 0; px < 4; px += 1) {
       const patchOffset = 128 + (py * 4 + px) * 8;
-      const cx = Math.min(width - 2, Math.max(1, px * patchW + Math.floor(patchW / 2)));
-      const cy = Math.min(height - 2, Math.max(1, py * patchH + Math.floor(patchH / 2)));
+      const cx = Math.min(width - 2, Math.max(1, Math.round((24 + px * 21) * scaleX)));
+      const cy = Math.min(height - 2, Math.max(1, Math.round((26 + py * 20) * scaleY)));
 
-      const lum = (x: number, y: number): number => {
-        const p = (y * width + x) * 4;
-        return 0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2];
-      };
-
-      const center = lum(cx, cy);
-      const gxVal = (lum(cx + 1, cy) - lum(cx - 1, cy)) / 255.0;
-      const gyVal = (lum(cx, cy + 1) - lum(cx, cy - 1)) / 255.0;
+      const center = blockLum(cx, cy);
+      const gxVal = (blockLum(cx + 1, cy) - blockLum(cx - 1, cy)) * invPatchScale;
+      const gyVal = (blockLum(cx, cy + 1) - blockLum(cx, cy - 1)) * invPatchScale;
       vec[patchOffset] = gxVal;
       vec[patchOffset + 1] = gyVal;
       vec[patchOffset + 2] = Math.hypot(gxVal, gyVal);
-      vec[patchOffset + 3] = lum(cx - 1, cy - 1) > center ? 0.1 : -0.1;
-      vec[patchOffset + 4] = lum(cx + 1, cy - 1) > center ? 0.1 : -0.1;
-      vec[patchOffset + 5] = lum(cx + 1, cy + 1) > center ? 0.1 : -0.1;
-      vec[patchOffset + 6] = lum(cx - 1, cy + 1) > center ? 0.1 : -0.1;
-      vec[patchOffset + 7] = center / 255.0 - 0.5;
+      vec[patchOffset + 3] = blockLum(cx - 1, cy - 1) > center ? 0.05 : -0.05;
+      vec[patchOffset + 4] = blockLum(cx + 1, cy - 1) > center ? 0.05 : -0.05;
+      vec[patchOffset + 5] = blockLum(cx + 1, cy + 1) > center ? 0.05 : -0.05;
+      vec[patchOffset + 6] = blockLum(cx - 1, cy + 1) > center ? 0.05 : -0.05;
+      vec[patchOffset + 7] = Math.max(-0.5, Math.min(0.5, (center - faceMean) * invPatchScale));
     }
   }
 

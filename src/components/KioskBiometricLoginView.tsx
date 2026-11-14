@@ -270,7 +270,7 @@ export function KioskBiometricLoginView({
   const loginCtrlRef = useRef(new SingleScanLoginController());
   const verifyingLockRef = useRef(false);
   const biometricIndexRef = useRef<PatientBiometricIndexEntry[]>([]);
-  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(4));
+  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(3, 0.74));
   const mirroredRef = useRef(mirrored);
   mirroredRef.current = mirrored;
 
@@ -863,9 +863,9 @@ export function KioskBiometricLoginView({
                         }
                         // Secondary match check against active Supabase database index entries
                         const localFallback = matchMultiAngleEmbedding(probe, biometricIndexRef.current, {
-                          similarityThreshold: 0.76,
-                          whitenedThreshold: 0.58,
-                          marginThreshold: 0.05,
+                          similarityThreshold: 0.72,
+                          whitenedThreshold: 0.52,
+                          marginThreshold: 0.04,
                         });
                         if (localFallback.matched && localFallback.bestCandidate) {
                           const fbCand = localFallback.bestCandidate;

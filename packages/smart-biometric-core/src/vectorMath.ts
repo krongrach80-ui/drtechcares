@@ -37,6 +37,19 @@ export interface SubbandMetrics {
   maxDiff3D: number;
 }
 
+export interface FaceCoreMetrics {
+  cos3DNormalized: number;
+  craniofacialCos: number;
+  mad3DNormalized: number;
+  maxDiff3DNormalized: number;
+  innerDctCos: number;
+  innerDctWhitenedCos: number;
+  innerPatchCos: number;
+  innerPatchWhitenedCos: number;
+  faceCoreSim: number;
+  faceCoreWhitenedSim: number;
+}
+
 export interface VerificationThresholds {
   minRawCosSingle: number;
   minRawCosMulti: number;
@@ -206,6 +219,147 @@ function sliceCosine(a: readonly number[], b: readonly number[], start: number, 
   return Math.max(-1, Math.min(1, dot / denom));
 }
 
+function subvectorNorm(vec: readonly number[], start: number, endInclusive: number): number {
+  let sumSq = 0;
+  const maxIdx = Math.min(endInclusive, vec.length - 1);
+  for (let i = start; i <= maxIdx; i += 1) {
+    sumSq += vec[i] * vec[i];
+  }
+  return Math.sqrt(sumSq);
+}
+
+// Interior 2D DCT frequencies (u >= 1 && v >= 1) in 0..127, excluding u=0 vertical ceiling/shirt
+// gradients and v=0 horizontal room wall/window brightness gradients.
+const INNER_DCT_INDICES: readonly number[] = (() => {
+  const indices: number[] = [];
+  let dctIdx = 0;
+  for (let u = 0; u < 12 && dctIdx < 128; u += 1) {
+    for (let v = 0; v < 12 && dctIdx < 128; v += 1) {
+      if (u === 0 && v === 0) continue;
+      if (u >= 1 && v >= 1) {
+        indices.push(dctIdx);
+      }
+      dctIdx += 1;
+    }
+  }
+  return Object.freeze(indices);
+})();
+
+// Inner 4 facial patches (py in {1, 2}, px in {1, 2}: eyes, nose, cheeks) using gradient
+// slots (+0, +1, +2) only, excluding the 12 outer border/shirt/hair/background patches and raw intensity.
+const INNER_PATCH_INDICES: readonly number[] = (() => {
+  const indices: number[] = [];
+  for (const py of [1, 2]) {
+    for (const px of [1, 2]) {
+      const baseOffset = 128 + (py * 4 + px) * 8;
+      indices.push(baseOffset, baseOffset + 1, baseOffset + 2);
+    }
+  }
+  return Object.freeze(indices);
+})();
+
+function orthogonalResidualNorm(unitVec: readonly number[], unitBase: readonly number[]): number {
+  const proj = dotProduct(unitVec, unitBase);
+  let sumSq = 0;
+  for (let i = 0; i < unitVec.length; i += 1) {
+    const diff = unitVec[i] - proj * (unitBase[i] ?? 0);
+    sumSq += diff * diff;
+  }
+  return Math.sqrt(sumSq);
+}
+
+function computeIndexedSubbandCosines(
+  probe: readonly number[],
+  candidate: readonly number[],
+  indices: readonly number[],
+  baseline: readonly number[],
+  alpha: number,
+): { rawCos: number; whitenedCos: number } {
+  const pSub = indices.map((idx) => probe[idx] ?? 0);
+  const cSub = indices.map((idx) => candidate[idx] ?? 0);
+  const bSub = indices.map((idx) => baseline[idx] ?? 0);
+
+  const pUnit = l2Normalize(pSub);
+  const cUnit = l2Normalize(cSub);
+  const bUnit = l2Normalize(bSub);
+
+  const rawCos = cosineSimilarity(pUnit, cUnit);
+  const pResid = orthogonalResidualNorm(pUnit, bUnit);
+  const cResid = orthogonalResidualNorm(cUnit, bUnit);
+  if (pResid < 0.02 || cResid < 0.02) {
+    return { rawCos, whitenedCos: 0 };
+  }
+
+  const pWhite = whitenEmbedding(pUnit, bUnit, alpha);
+  const cWhite = whitenEmbedding(cUnit, bUnit, alpha);
+  const whitenedCos = cosineSimilarity(pWhite, cWhite);
+  return { rawCos, whitenedCos };
+}
+
+/**
+ * Clothing-, background-, and illumination-invariant biometric core metrics.
+ * Independently L2-normalizes the 3D craniofacial landmark subband (256..511), interior 2D DCT
+ * frequencies (u >= 1, v >= 1 in 0..127), and inner 4 facial patches (eyes/nose/cheeks in 128..255)
+ * so changes in shirts, background, or global norm scale (1/N) cannot degrade face matching.
+ */
+export function computeFaceCoreMetrics(
+  probe: readonly number[],
+  candidate: readonly number[],
+  baseline: readonly number[] = CANONICAL_HUMAN_FACE_BASELINE_512,
+): FaceCoreMetrics {
+  const p3D = l2Normalize(probe.slice(256, 512));
+  const c3D = l2Normalize(candidate.slice(256, 512));
+  const b3D = l2Normalize(baseline.slice(256, 512));
+
+  const cos3DNormalized = cosineSimilarity(p3D, c3D);
+  const p3DResid = orthogonalResidualNorm(p3D, b3D);
+  const c3DResid = orthogonalResidualNorm(c3D, b3D);
+  const craniofacialCos =
+    p3DResid < 0.02 || c3DResid < 0.02
+      ? 0
+      : cosineSimilarity(whitenEmbedding(p3D, b3D, 0.96), whitenEmbedding(c3D, b3D, 0.96));
+
+  let sumAbs3D = 0;
+  const madLen = Math.min(64, p3D.length, c3D.length);
+  for (let i = 0; i < madLen; i += 1) {
+    sumAbs3D += Math.abs(p3D[i] - c3D[i]);
+  }
+  const mad3DNormalized = madLen > 0 ? sumAbs3D / madLen : 1;
+
+  let maxDiff3DNormalized = 0;
+  const full3DLen = Math.min(256, p3D.length, c3D.length);
+  for (let i = 0; i < full3DLen; i += 1) {
+    const diff = Math.abs(p3D[i] - c3D[i]);
+    if (diff > maxDiff3DNormalized) maxDiff3DNormalized = diff;
+  }
+
+  const innerDct = computeIndexedSubbandCosines(probe, candidate, INNER_DCT_INDICES, baseline, 0.85);
+  const innerPatch = computeIndexedSubbandCosines(probe, candidate, INNER_PATCH_INDICES, baseline, 0.95);
+
+  const faceCoreSim =
+    0.55 * Math.max(0, cos3DNormalized) +
+    0.30 * Math.max(0, innerDct.rawCos) +
+    0.15 * Math.max(0, innerPatch.rawCos);
+
+  const faceCoreWhitenedSim =
+    0.55 * craniofacialCos +
+    0.30 * innerDct.whitenedCos +
+    0.15 * innerPatch.whitenedCos;
+
+  return {
+    cos3DNormalized,
+    craniofacialCos,
+    mad3DNormalized,
+    maxDiff3DNormalized,
+    innerDctCos: innerDct.rawCos,
+    innerDctWhitenedCos: innerDct.whitenedCos,
+    innerPatchCos: innerPatch.rawCos,
+    innerPatchWhitenedCos: innerPatch.whitenedCos,
+    faceCoreSim,
+    faceCoreWhitenedSim,
+  };
+}
+
 export function computeSubbandMetrics(
   probe: readonly number[],
   candidate: readonly number[],
@@ -215,37 +369,30 @@ export function computeSubbandMetrics(
   const pNorm = l2Normalize(probe);
   const cNorm = l2Normalize(candidate);
 
-  const rawCos = cosineSimilarity(pNorm, cNorm);
+  const rawGlobalCos = cosineSimilarity(pNorm, cNorm);
   const euclid = euclideanDistance(pNorm, cNorm);
 
   const pWhite = whitenEmbedding(pNorm, baseline, alpha);
   const cWhite = whitenEmbedding(cNorm, baseline, alpha);
-  const whitenedCos = cosineSimilarity(pWhite, cWhite);
+  const whitenedGlobalCos = cosineSimilarity(pWhite, cWhite);
 
-  const cosDct = sliceCosine(pNorm, cNorm, 0, 127);
-  const cosPatch = sliceCosine(pNorm, cNorm, 128, 255);
-  const cos3D = sliceCosine(pNorm, cNorm, 256, 511);
+  const rawCosDct = sliceCosine(pNorm, cNorm, 0, 127);
+  const rawCosPatch = sliceCosine(pNorm, cNorm, 128, 255);
+  const rawCos3D = sliceCosine(pNorm, cNorm, 256, 511);
 
-  // mad3D across indices 256..319 (64 dims)
-  let sumAbs3D = 0;
-  let countMad = 0;
-  for (let i = 256; i <= Math.min(319, pNorm.length - 1, cNorm.length - 1); i += 1) {
-    sumAbs3D += Math.abs(pNorm[i] - cNorm[i]);
-    countMad += 1;
-  }
-  const mad3D = countMad > 0 ? sumAbs3D / countMad : 1;
+  const core = computeFaceCoreMetrics(pNorm, cNorm, baseline);
+  const c3DSliceNorm = subvectorNorm(cNorm, 256, 511);
 
-  // maxDiff3D across indices 256..511
-  let maxDiff3D = 0;
-  for (let i = 256; i <= Math.min(511, pNorm.length - 1, cNorm.length - 1); i += 1) {
-    const diff = Math.abs(pNorm[i] - cNorm[i]);
-    if (diff > maxDiff3D) maxDiff3D = diff;
-  }
+  const cosDct = Math.max(rawCosDct, core.innerDctCos);
+  const cosPatch = Math.max(rawCosPatch, core.innerPatchCos);
+  const cos3D = Math.max(rawCos3D, core.cos3DNormalized);
+  const mad3D = core.mad3DNormalized * c3DSliceNorm;
+  const maxDiff3D = core.maxDiff3DNormalized * c3DSliceNorm;
 
   return {
-    rawCos,
+    rawCos: Math.max(rawGlobalCos, core.faceCoreSim),
     euclideanDistance: euclid,
-    whitenedCos,
+    whitenedCos: Math.max(whitenedGlobalCos, core.faceCoreWhitenedSim),
     cosDct,
     cosPatch,
     cos3D,
