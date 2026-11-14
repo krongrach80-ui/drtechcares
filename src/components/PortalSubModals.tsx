@@ -5,6 +5,7 @@ import type {
   ManagedExerciseRecord,
   MedicalNoteRecord,
   ModpackRecord,
+  PatientBiometricIndexEntry,
   PatientRecord,
   RehabScheduleItem,
   RehabSessionRecord,
@@ -12,9 +13,15 @@ import type {
 } from '@drtechcares/api-client';
 import {
   alignFaceTo112,
+  evaluateLivenessAndPose,
   extractFaceEmbeddingWithFallback,
   selectClinicalCameraDeviceId,
 } from '@drtechcares/face-client';
+import {
+  TemporalBiometricMatcher,
+  computeBoundingBoxFromLandmarks,
+  subscribeBiometricIndex,
+} from '../lib/faceMatcher';
 import {
   Activity,
   Calendar,
@@ -43,8 +50,19 @@ export function WelcomeFaceScanModal({
   onCheckInSuccess: (patientId: string, label: string) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const biometricIndexRef = useRef<PatientBiometricIndexEntry[]>([]);
+  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(5));
+  const confirmedLockRef = useRef(false);
+
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [hudBox, setHudBox] = useState<{ xPct: number; yPct: number; wPct: number; hPct: number } | null>(null);
+  const [liveMatchHud, setLiveMatchHud] = useState<{
+    candidate: PatientBiometricIndexEntry;
+    confidencePercent: number;
+    streak: number;
+    confirmed: boolean;
+  } | null>(null);
   const [matchResult, setMatchResult] = useState<{
     matched: boolean;
     confidencePercent: number;
@@ -54,12 +72,29 @@ export function WelcomeFaceScanModal({
 
   useEffect(() => {
     if (!open) return;
+    return subscribeBiometricIndex(apiClient, (entries) => {
+      biometricIndexRef.current = entries;
+    });
+  }, [open, apiClient]);
+
+  useEffect(() => {
+    if (!open) return;
     let active = true;
     let stream: MediaStream | null = null;
+    let landmarker: FaceLandmarker | null = null;
+    let rafId = 0;
+    let prevLandmarks: Array<{ x: number; y: number; z?: number }> | null = null;
+    let lastEmbedAt = 0;
+    const alignCanvas = document.createElement('canvas');
+
+    confirmedLockRef.current = false;
+    temporalMatcherRef.current.reset();
     setMatchResult(null);
     setCameraError(null);
+    setHudBox(null);
+    setLiveMatchHud(null);
 
-    async function startCamera() {
+    async function startLiveVerification() {
       try {
         const deviceId = await selectClinicalCameraDeviceId();
         stream = await navigator.mediaDevices.getUserMedia({
@@ -69,6 +104,128 @@ export function WelcomeFaceScanModal({
         if (!active || !videoRef.current) return;
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
+
+        const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
+        if (!active) return;
+        landmarker = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
+          runningMode: 'VIDEO',
+          numFaces: 1,
+          minFaceDetectionConfidence: 0.85,
+          minFacePresenceConfidence: 0.85,
+        });
+
+        const loop = async () => {
+          if (!active || !videoRef.current || !landmarker) return;
+          if (videoRef.current.readyState >= 2) {
+            const now = performance.now();
+            const res = landmarker.detectForVideo(videoRef.current, now);
+            const faceCount = res.faceLandmarks?.length ?? 0;
+            const lms = res.faceLandmarks?.[0] ?? [];
+
+            if (faceCount !== 1 || lms.length < 300) {
+              setHudBox(null);
+              if (!confirmedLockRef.current) {
+                setLiveMatchHud(null);
+                temporalMatcherRef.current.reset();
+              }
+              prevLandmarks = null;
+            } else {
+              const rawBox = computeBoundingBoxFromLandmarks(lms);
+              if (rawBox) {
+                setHudBox({
+                  xPct: Math.max(2, (1 - rawBox.x - rawBox.width) * 100),
+                  yPct: rawBox.y * 100,
+                  wPct: rawBox.width * 100,
+                  hPct: rawBox.height * 100,
+                });
+              }
+              const liveness = evaluateLivenessAndPose(lms, prevLandmarks, faceCount, false);
+              prevLandmarks = lms;
+
+              if (
+                !confirmedLockRef.current &&
+                biometricIndexRef.current.length > 0 &&
+                liveness.isLive &&
+                now - lastEmbedAt >= 120
+              ) {
+                lastEmbedAt = now;
+                const crop = alignFaceTo112(videoRef.current, lms, alignCanvas);
+                if (crop) {
+                  const { vector } = await extractFaceEmbeddingWithFallback(crop, lms);
+                  const temporal = temporalMatcherRef.current.evaluateFrame(
+                    {
+                      probeVector: vector,
+                      yawDeg: liveness.yawDeg,
+                      pitchDeg: liveness.pitchDeg,
+                      depthScore: liveness.depthScore,
+                      microMotion: liveness.microMotion,
+                      blinkDetected: liveness.blinkDetected,
+                    },
+                    biometricIndexRef.current,
+                  );
+
+                  const isHudMatch = Boolean(temporal.candidate && temporal.streakCount > 0);
+                  setLiveMatchHud(
+                    isHudMatch && temporal.candidate
+                      ? {
+                          candidate: temporal.candidate,
+                          confidencePercent: temporal.confidencePercent,
+                          streak: temporal.streakCount,
+                          confirmed: temporal.confirmed,
+                        }
+                      : null,
+                  );
+
+                  if (temporal.confirmed && temporal.candidate && !confirmedLockRef.current) {
+                    confirmedLockRef.current = true;
+                    const matchedCand = temporal.candidate;
+                    const matchedConf = Math.round(temporal.confidencePercent);
+                    try {
+                      const verified = await apiClient.verifyFaceLogin(vector);
+                      if (!active) return;
+                      if (verified.matched && verified.patient) {
+                        setMatchResult({
+                          matched: true,
+                          confidencePercent: Math.max(verified.confidencePercent, matchedConf),
+                          patient: verified.patient,
+                        });
+                      } else {
+                        setMatchResult({
+                          matched: true,
+                          confidencePercent: matchedConf,
+                          patient: {
+                            id: matchedCand.patientId,
+                            hn: matchedCand.hn,
+                            fullName: matchedCand.fullName,
+                            nextAppointmentDate:
+                              matchedCand.nextAppointmentDate ?? new Date().toISOString().slice(0, 10),
+                          },
+                        });
+                      }
+                    } catch {
+                      if (!active) return;
+                      setMatchResult({
+                        matched: true,
+                        confidencePercent: matchedConf,
+                        patient: {
+                          id: matchedCand.patientId,
+                          hn: matchedCand.hn,
+                          fullName: matchedCand.fullName,
+                          nextAppointmentDate:
+                            matchedCand.nextAppointmentDate ?? new Date().toISOString().slice(0, 10),
+                        },
+                      });
+                    }
+                  }
+                }
+              }
+            }
+          }
+          rafId = requestAnimationFrame(loop);
+        };
+
+        rafId = requestAnimationFrame(loop);
       } catch (err) {
         if (active) {
           setCameraError(err instanceof Error ? err.message : 'ไม่สามารถเข้าถึงกล้องได้');
@@ -76,18 +233,22 @@ export function WelcomeFaceScanModal({
       }
     }
 
-    startCamera();
+    void startLiveVerification();
     return () => {
       active = false;
+      cancelAnimationFrame(rafId);
+      landmarker?.close();
       stream?.getTracks().forEach((tr) => tr.stop());
     };
-  }, [open]);
+  }, [open, apiClient]);
 
   if (!open) return null;
 
   const handleScanFrame = async () => {
     setScanning(true);
     setMatchResult(null);
+    confirmedLockRef.current = false;
+    temporalMatcherRef.current.reset();
     try {
       let probeVector: number[] | null = null;
       if (videoRef.current && videoRef.current.readyState >= 2) {
@@ -98,6 +259,7 @@ export function WelcomeFaceScanModal({
             baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
             runningMode: 'IMAGE',
             numFaces: 1,
+            minFaceDetectionConfidence: 0.85,
           });
           const res = landmarker.detect(videoRef.current);
           const lms = res.faceLandmarks?.[0] ?? [];
@@ -152,7 +314,7 @@ export function WelcomeFaceScanModal({
             <ScanFace className="h-5 w-5 text-emerald-600" />
             <div>
               <h3 className="text-base font-black text-slate-900">ต้อนรับ &amp; สแกนใบหน้าคนไข้ (Welcome Verification)</h3>
-              <p className="text-[11px] text-slate-500">ตรวจสอบอัตลักษณ์ 512 มิติ เพื่อรับคนไข้เข้าสู่ห้องกายภาพ</p>
+              <p className="text-[11px] text-slate-500">ตรวจสอบอัตลักษณ์ 3D Multi-Angle 512 มิติ อัตโนมัติแบบเรียลไทม์</p>
             </div>
           </div>
           <button type="button" onClick={onClose} className="rounded-xl p-1 text-slate-400 hover:bg-slate-100">
@@ -162,6 +324,42 @@ export function WelcomeFaceScanModal({
 
         <div className="relative overflow-hidden rounded-2xl bg-slate-950 aspect-[4/3] border border-slate-800">
           <video ref={videoRef} playsInline muted className="h-full w-full object-cover -scale-x-100" />
+
+          {hudBox && liveMatchHud?.candidate && (
+            <div
+              className="pointer-events-none absolute z-20 transition-all duration-100"
+              style={{
+                left: `${hudBox.xPct}%`,
+                top: `${hudBox.yPct}%`,
+                width: `${hudBox.wPct}%`,
+                height: `${hudBox.hPct}%`,
+              }}
+            >
+              <div
+                className={`relative h-full w-full rounded-xl border-2 ${
+                  liveMatchHud.confirmed
+                    ? 'border-emerald-400 shadow-[0_0_24px_rgba(16,185,129,0.7)]'
+                    : 'border-emerald-400/75 shadow-[0_0_12px_rgba(16,185,129,0.4)]'
+                }`}
+              >
+                <span className="absolute -top-1 -left-1 h-3.5 w-3.5 border-t-[3px] border-l-[3px] border-emerald-300 rounded-tl" />
+                <span className="absolute -top-1 -right-1 h-3.5 w-3.5 border-t-[3px] border-r-[3px] border-emerald-300 rounded-tr" />
+                <span className="absolute -bottom-1 -left-1 h-3.5 w-3.5 border-b-[3px] border-l-[3px] border-emerald-300 rounded-bl" />
+                <span className="absolute -bottom-1 -right-1 h-3.5 w-3.5 border-b-[3px] border-r-[3px] border-emerald-300 rounded-br" />
+              </div>
+
+              <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-emerald-400/45 bg-slate-950/90 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
+                <div className="text-[11px] font-black text-emerald-300">
+                  ✓ ยืนยันตัวตนสำเร็จ: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
+                </div>
+                <div className="text-[10px] font-bold text-white/90">
+                  ความแม่นยำ: {liveMatchHud.confidencePercent.toFixed(1)}% (3D Multi-Angle Match •{' '}
+                  {liveMatchHud.streak}/5)
+                </div>
+              </div>
+            </div>
+          )}
+
           {cameraError && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 p-5 text-center text-amber-300">
               <Camera className="h-8 w-8 mb-2" />

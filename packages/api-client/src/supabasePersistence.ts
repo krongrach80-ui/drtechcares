@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { EnrolledTemplateCandidate, BiometricPose } from '@drtechcares/smart-biometric-core';
 import type {
   ActiveSessionRecord,
+  AngleEmbeddings5D,
   AuditLogRecord,
   BannedTargetRecord,
   DailyScheduleDay,
@@ -72,6 +73,7 @@ export async function hydrateStateFromSupabase(
     activeSessionsRes,
     settingsRes,
     kiosksRes,
+    biometrics120Res,
   ] = await Promise.allSettled([
     supabase.from('staff_users').select('*'),
     supabase.from('patients').select('*'),
@@ -88,6 +90,7 @@ export async function hydrateStateFromSupabase(
     supabase.from('active_sessions').select('*').eq('revoked', false),
     supabase.from('system_settings').select('*').eq('id', 1).maybeSingle(),
     supabase.from('kiosks').select('*'),
+    supabase.from('patient_biometrics').select('*'),
   ]);
 
   if (usersRes.status === 'fulfilled' && Array.isArray(usersRes.value.data) && usersRes.value.data.length > 0) {
@@ -145,16 +148,72 @@ export async function hydrateStateFromSupabase(
     }
   }
 
+  const biometrics120ByPatient = new Map<
+    string,
+    {
+      masterEmbedding?: number[];
+      angleEmbeddings?: AngleEmbeddings5D;
+      framesCaptured?: number;
+      avatarUrl?: string;
+    }
+  >();
+  if (biometrics120Res.status === 'fulfilled' && Array.isArray(biometrics120Res.value.data)) {
+    for (const row of biometrics120Res.value.data as Record<string, unknown>[]) {
+      const pid = String(row.patient_id);
+      biometrics120ByPatient.set(pid, {
+        masterEmbedding: Array.isArray(row.master_embedding) ? (row.master_embedding as number[]) : undefined,
+        angleEmbeddings:
+          row.angle_embeddings && typeof row.angle_embeddings === 'object'
+            ? (row.angle_embeddings as AngleEmbeddings5D)
+            : undefined,
+        framesCaptured: Number(row.frames_captured ?? 120),
+        avatarUrl: typeof row.avatar_url === 'string' ? row.avatar_url : undefined,
+      });
+    }
+  }
+
   if (patientsRes.status === 'fulfilled' && Array.isArray(patientsRes.value.data)) {
     state.patients = patientsRes.value.data.map((r: Record<string, unknown>) => {
       const pid = String(r.id);
       const history = (r.history as Record<string, unknown>) ?? {};
       const tpl = parsedTemplatesByPatient.get(pid);
-      const hasTemplates = Boolean(tpl && tpl.raw.length > 0);
+      const b120 = biometrics120ByPatient.get(pid);
+      const hasTemplates = Boolean((tpl && tpl.raw.length > 0) || b120?.masterEmbedding);
       const historyStatus = history.faceBiometricStatus;
       const colStatus = r.face_biometric_status;
       const resolvedFaceStatus: 'PENDING' | 'VERIFIED' =
         colStatus === 'VERIFIED' || historyStatus === 'VERIFIED' || hasTemplates ? 'VERIFIED' : 'PENDING';
+
+      const fallbackMaster =
+        b120?.masterEmbedding ??
+        (Array.isArray(history.masterEmbedding) ? (history.masterEmbedding as number[]) : undefined) ??
+        tpl?.overall ??
+        tpl?.frontal;
+
+      let fallbackAngles: AngleEmbeddings5D | undefined =
+        b120?.angleEmbeddings ??
+        (history.angleEmbeddings && typeof history.angleEmbeddings === 'object'
+          ? (history.angleEmbeddings as AngleEmbeddings5D)
+          : undefined);
+      if (!fallbackAngles && fallbackMaster) {
+        const frontVec = tpl?.raw.find((f) => f.pose === 'front')?.vector ?? tpl?.frontal ?? fallbackMaster;
+        const leftVec = tpl?.raw.find((f) => f.pose === 'left')?.vector ?? fallbackMaster;
+        const rightVec = tpl?.raw.find((f) => f.pose === 'right')?.vector ?? fallbackMaster;
+        const nodVec = tpl?.raw.find((f) => f.pose === 'nod')?.vector ?? fallbackMaster;
+        fallbackAngles = {
+          center: frontVec,
+          left: leftVec,
+          right: rightVec,
+          up: nodVec,
+          down: nodVec,
+        };
+      }
+
+      const resolvedFramesCount =
+        b120?.framesCaptured ??
+        (typeof r.face_frames_count === 'number' ? r.face_frames_count : undefined) ??
+        (typeof history.faceFramesCount === 'number' ? history.faceFramesCount : undefined) ??
+        (resolvedFaceStatus === 'VERIFIED' ? 120 : 0);
 
       return {
         id: pid,
@@ -171,12 +230,16 @@ export async function hydrateStateFromSupabase(
         registrationStatus: (r.registration_status as 'active' | 'archived') ?? 'active',
         enrolledAt: String(r.created_at ?? new Date().toISOString()),
         faceBiometricStatus: resolvedFaceStatus,
+        faceFramesCount: resolvedFramesCount,
         faceImageUrl:
-          typeof r.face_image_url === 'string'
+          b120?.avatarUrl ??
+          (typeof r.face_image_url === 'string'
             ? r.face_image_url
             : typeof history.faceImageUrl === 'string'
               ? history.faceImageUrl
-              : undefined,
+              : undefined),
+        masterEmbedding: fallbackMaster,
+        angleEmbeddings: fallbackAngles,
         rehabSchedules: Array.isArray(history.rehabSchedules)
           ? (history.rehabSchedules as RehabScheduleItem[])
           : [],
@@ -187,7 +250,13 @@ export async function hydrateStateFromSupabase(
                 overall_centroid: tpl.overall,
                 raw_frames: tpl.raw,
               }
-            : undefined,
+            : fallbackMaster
+              ? {
+                  frontal_centroid: fallbackAngles?.center ?? fallbackMaster,
+                  overall_centroid: fallbackMaster,
+                  raw_frames: [],
+                }
+              : undefined,
       };
     });
   }

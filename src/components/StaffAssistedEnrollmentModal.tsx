@@ -1,18 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
+import React, { useEffect, useState } from 'react';
 import type { DrTechCaresApiClient, PatientRecord, UserAccount } from '@drtechcares/api-client';
 import { useClinicalI18n } from '@drtechcares/clinical-i18n';
-import {
-  TenShotEnrollmentController,
-  alignFaceTo112,
-  evaluateLivenessAndPose,
-  extractFaceEmbeddingWithFallback,
-  inspectBiometricFrame3D,
-  resolveFaceIdScreenPrompt,
-  selectClinicalCameraDeviceId,
-  type BiometricVerificationJson,
-} from '@drtechcares/face-client';
-import { FACE_EMBEDDING_DIM, evaluateFrameQuality, l2Normalize } from '@drtechcares/smart-biometric-core';
 import {
   Activity,
   Camera,
@@ -24,7 +12,7 @@ import {
   UserPlus,
   X,
 } from 'lucide-react';
-import { FaceIdCircularOverlay } from './FaceIdCircularOverlay';
+import FaceID120Scanner, { type FaceID120Result } from './FaceID120Scanner';
 
 interface StaffAssistedEnrollmentModalProps {
   open: boolean;
@@ -36,44 +24,8 @@ interface StaffAssistedEnrollmentModalProps {
   onEnrolled: (patient: PatientRecord) => void;
 }
 
-const POSE_PROMPT: Record<'front' | 'left' | 'right' | 'nod', string> = {
-  front: 'มองตรงเข้ากล้อง (หน้าตรง 4 ช็อต)',
-  left: 'หันหน้าไปทางซ้ายเล็กน้อย (2 ช็อต)',
-  right: 'หันหน้าไปทางขวาเล็กน้อย (2 ช็อต)',
-  nod: 'พยักหน้าก้มลงเล็กน้อย (2 ช็อต)',
-};
-
 function generatePatientHn(): string {
   return `HN-${Math.floor(10000 + Math.random() * 89999)}`;
-}
-
-function buildFallbackSyntheticPoseVectors(seedText: string) {
-  const controller = new TenShotEnrollmentController();
-  const poses: ('front' | 'left' | 'right' | 'nod')[] = [
-    'front',
-    'front',
-    'front',
-    'front',
-    'left',
-    'left',
-    'right',
-    'right',
-    'nod',
-    'nod',
-  ];
-  let seed = 0;
-  for (let i = 0; i < seedText.length; i += 1) {
-    seed = (seed * 31 + seedText.charCodeAt(i)) >>> 0;
-  }
-  poses.forEach((pose, idx) => {
-    const raw = new Array<number>(FACE_EMBEDDING_DIM);
-    for (let d = 0; d < FACE_EMBEDDING_DIM; d += 1) {
-      seed = (seed * 1664525 + 1013904223 + idx * 7 + d) >>> 0;
-      raw[d] = ((seed % 2000) / 1000 - 1) * 0.25 + (d % 4 === idx % 4 ? 0.4 : 0);
-    }
-    controller.acceptShot(pose, l2Normalize(raw), 12);
-  });
-  return controller.buildPayload();
 }
 
 export function StaffAssistedEnrollmentModal({
@@ -117,28 +69,20 @@ export function StaffAssistedEnrollmentModal({
   // Section 4: PDPA Consent
   const [pdpaAccepted, setPdpaAccepted] = useState(true);
 
-  // Step 2 Camera 10-shot state
+  // Step 2 Camera 120-frame 3D Face ID state
   const [capturing, setCapturing] = useState(false);
-  const [shotsCount, setShotsCount] = useState(0);
+  const [biometric120Result, setBiometric120Result] = useState<FaceID120Result | null>(null);
   const [capturedSnapshotUrl, setCapturedSnapshotUrl] = useState<string | undefined>(undefined);
-  const [statusNote, setStatusNote] = useState('กด "เปิดกล้องสแกนใบหน้า 10 เฟรม" เพื่อเริ่มเก็บแม่แบบ 512 มิติ');
-  const [liveInspection, setLiveInspection] = useState<BiometricVerificationJson | null>(null);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [createdPatient, setCreatedPatient] = useState<PatientRecord | null>(null);
-
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const enrollRef = useRef(new TenShotEnrollmentController());
 
   useEffect(() => {
     if (!open) {
       setCapturing(false);
       return;
     }
-    enrollRef.current.reset();
-    setShotsCount(0);
-    setLiveInspection(null);
+    setBiometric120Result(null);
     setCreatedPatient(null);
     setCapturedSnapshotUrl(undefined);
     setErrorMsg(null);
@@ -149,7 +93,6 @@ export function StaffAssistedEnrollmentModal({
       setPhone(targetPatient.phone);
       setStep(2);
       setCapturing(true);
-      setStatusNote(`กำลังเตรียมกล้องสแกนใบหน้าสำหรับ ${targetPatient.fullName} (${targetPatient.hn})`);
     } else {
       setStep(1);
       if (!assignedPtId && ptList.length > 0) {
@@ -157,129 +100,6 @@ export function StaffAssistedEnrollmentModal({
       }
     }
   }, [open, targetPatient, ptList, assignedPtId, currentUser.id, currentUser.role]);
-
-  useEffect(() => {
-    if (!open || step !== 2 || !capturing) return;
-    let active = true;
-    let stream: MediaStream | null = null;
-    let rafId = 0;
-    let landmarker: FaceLandmarker | null = null;
-    let prevLandmarks: { x: number; y: number; z?: number }[] | null = null;
-    let lastShotAt = 0;
-
-    async function runCapture() {
-      try {
-        const deviceId = await selectClinicalCameraDeviceId();
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: deviceId ? { deviceId: { exact: deviceId }, width: 640, height: 480 } : { width: 640, height: 480 },
-          audio: false,
-        });
-        if (!active || !videoRef.current) return;
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-
-        const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
-        landmarker = await FaceLandmarker.createFromOptions(vision, {
-          baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
-          runningMode: 'VIDEO',
-          numFaces: 1,
-        });
-
-        const tick = async () => {
-          if (!active || !videoRef.current || !landmarker || enrollRef.current.isComplete) return;
-          if (videoRef.current.readyState >= 2) {
-            const now = performance.now();
-            const res = landmarker.detectForVideo(videoRef.current, now);
-            const faceCount = res.faceLandmarks?.length ?? 0;
-            const landmarks = res.faceLandmarks?.[0] ?? [];
-            const liveness = evaluateLivenessAndPose(landmarks, prevLandmarks, faceCount);
-            prevLandmarks = landmarks;
-
-            if (!canvasRef.current) canvasRef.current = document.createElement('canvas');
-            const crop =
-              landmarks.length >= 300 ? alignFaceTo112(videoRef.current, landmarks, canvasRef.current) : null;
-
-            const poseNeeded = enrollRef.current.expectedPose;
-            const inspection = inspectBiometricFrame3D({
-              landmarks3D: landmarks,
-              prevLandmarks3D: prevLandmarks,
-              faceCount,
-              image: crop,
-              requestedPose: enrollRef.current.expected3DPose,
-            });
-            setLiveInspection(inspection);
-
-            if (inspection.scan_status === 'SPOOF_DETECTED') {
-              setStatusNote(inspection.user_instruction_th);
-            } else if (
-              !liveness.isLive ||
-              !inspection.checks.framing_ok ||
-              !inspection.checks.lighting_ok ||
-              !inspection.checks.no_obstruction
-            ) {
-              setStatusNote(inspection.user_instruction_th);
-            } else if (poseNeeded && now - lastShotAt > 500) {
-              const poseOk =
-                (poseNeeded === 'front' && Math.abs(liveness.yawDeg) <= 15 && Math.abs(liveness.pitchDeg) <= 15) ||
-                (poseNeeded === 'left' && liveness.yawDeg <= -10) ||
-                (poseNeeded === 'right' && liveness.yawDeg >= 10) ||
-                (poseNeeded === 'nod' &&
-                  (Math.abs(liveness.pitchDeg) >= 8 ||
-                    inspection.detected_pose === 'TILT_UP' ||
-                    inspection.detected_pose === 'TILT_DOWN'));
-
-              setStatusNote(
-                poseOk
-                  ? `กำลังบันทึกช็อต (${poseNeeded})...`
-                  : inspection.user_instruction_th || POSE_PROMPT[poseNeeded],
-              );
-
-              if (poseOk && crop) {
-                const q = evaluateFrameQuality(crop, liveness, 35, 35);
-                if (q.sharpness >= 4.0) {
-                  const { vector } = await extractFaceEmbeddingWithFallback(crop, landmarks);
-                  if (enrollRef.current.acceptShot(poseNeeded, vector, q.sharpness)) {
-                    lastShotAt = now;
-                    setShotsCount(enrollRef.current.currentStepIndex);
-                    if (enrollRef.current.currentStepIndex === 1 && canvasRef.current) {
-                      try {
-                        setCapturedSnapshotUrl(canvasRef.current.toDataURL('image/jpeg', 0.78));
-                      } catch {
-                        // ignore canvas export errors
-                      }
-                    }
-                    if (enrollRef.current.isComplete) {
-                      setCapturing(false);
-                      setStatusNote('เก็บข้อมูลใบหน้า 10 เฟรม (512 มิติ) สำเร็จ พร้อมบันทึก');
-                    }
-                  }
-                } else {
-                  setStatusNote('ภาพไม่คมชัด กรุณาหยุดนิ่งสักครู่');
-                }
-              }
-            }
-          }
-          rafId = requestAnimationFrame(tick);
-        };
-        rafId = requestAnimationFrame(tick);
-      } catch (err) {
-        setErrorMsg(
-          err instanceof Error
-            ? `ไม่สามารถเปิดกล้องได้ (${err.message}) — สามารถกดปุ่ม "ถ่ายภาพ/บันทึกใบหน้าทันที" หรือ "บันทึกไว้ก่อน (สแกนทีหลัง)" ได้ครับ`
-            : 'ไม่สามารถเปิดกล้องเว็บแคมได้',
-        );
-        setCapturing(false);
-      }
-    }
-
-    runCapture();
-    return () => {
-      active = false;
-      cancelAnimationFrame(rafId);
-      landmarker?.close();
-      stream?.getTracks().forEach((tr) => tr.stop());
-    };
-  }, [open, step, capturing]);
 
   if (!open) return null;
 
@@ -312,11 +132,9 @@ export function StaffAssistedEnrollmentModal({
     setEmergencyRelation('');
     setEmergencyPhone('');
     setPdpaAccepted(true);
-    enrollRef.current.reset();
-    setShotsCount(0);
+    setBiometric120Result(null);
     setCapturedSnapshotUrl(undefined);
     setCapturing(false);
-    setLiveInspection(null);
     setCreatedPatient(null);
     setErrorMsg(null);
   };
@@ -333,82 +151,42 @@ export function StaffAssistedEnrollmentModal({
     }
     setErrorMsg(null);
     setStep(2);
-  };
-
-  const handleInstantSnapshotCapture = async () => {
-    setErrorMsg(null);
-    let snapshotDataUrl = capturedSnapshotUrl;
-    let vector: number[] | null = null;
-    if (videoRef.current && videoRef.current.readyState >= 2) {
-      const snapCanvas = canvasRef.current || document.createElement('canvas');
-      snapCanvas.width = 224;
-      snapCanvas.height = 224;
-      const ctx = snapCanvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(videoRef.current, 0, 0, 224, 224);
-        snapshotDataUrl = snapCanvas.toDataURL('image/jpeg', 0.8);
-        setCapturedSnapshotUrl(snapshotDataUrl);
-        try {
-          const img = ctx.getImageData(0, 0, 112, 112);
-          const extracted = await extractFaceEmbeddingWithFallback(img, []);
-          vector = extracted.vector;
-        } catch {
-          vector = null;
-        }
-      }
-    }
-    if (!vector) {
-      const fallback = buildFallbackSyntheticPoseVectors(`${hn}-${fullName}-${Date.now()}`);
-      vector = fallback.frontal_centroid;
-    }
-    enrollRef.current.reset();
-    const poses: ('front' | 'left' | 'right' | 'nod')[] = [
-      'front',
-      'front',
-      'front',
-      'front',
-      'left',
-      'left',
-      'right',
-      'right',
-      'nod',
-      'nod',
-    ];
-    for (const p of poses) {
-      enrollRef.current.acceptShot(p, vector, 15);
-    }
-    setShotsCount(10);
-    setCapturing(false);
-    setStatusNote('จับภาพใบหน้าและบันทึกแม่แบบ 512 มิติสำเร็จ (10/10)');
-    await handleFinalizeEnrollment('verified', snapshotDataUrl);
+    setCapturing(true);
   };
 
   const handleFinalizeEnrollment = async (
     mode: 'verified' | 'pending_skip',
     overrideImageUrl?: string,
+    overrideBiometric120?: FaceID120Result,
   ) => {
     setSaving(true);
     setErrorMsg(null);
     try {
+      const bio = overrideBiometric120 ?? biometric120Result;
       const isPending = mode === 'pending_skip' && !isExistingPatientMode;
-      const payload =
-        !isPending && enrollRef.current.isComplete
-          ? enrollRef.current.buildPayload()
-          : !isPending
-            ? buildFallbackSyntheticPoseVectors(`${hn}-${fullName}-${Date.now()}`)
-            : null;
+      const finalSnapshot = overrideImageUrl ?? bio?.avatarDataUrl ?? capturedSnapshotUrl;
 
-      const finalSnapshot = overrideImageUrl ?? capturedSnapshotUrl;
+      if (!isPending && !bio) {
+        setErrorMsg('กรุณาสแกนใบหน้าให้ครบ 120 เฟรมก่อนบันทึกข้อมูล');
+        setSaving(false);
+        return;
+      }
 
-      if (targetPatient && payload) {
+      if (targetPatient && bio) {
+        const compatRawFrames: { pose: 'front' | 'left' | 'right' | 'nod'; vector: number[]; qualityScore: number }[] = [
+          { pose: 'front', vector: bio.angleEmbeddings.center, qualityScore: bio.qualityScore },
+          { pose: 'left', vector: bio.angleEmbeddings.left, qualityScore: bio.qualityScore },
+          { pose: 'right', vector: bio.angleEmbeddings.right, qualityScore: bio.qualityScore },
+          { pose: 'nod', vector: bio.angleEmbeddings.down, qualityScore: bio.qualityScore },
+        ];
         const updated = await apiClient.enrollExistingPatientFace(targetPatient.id, {
-          frontalCentroid: payload.frontal_centroid,
-          overallCentroid: payload.overall_centroid,
-          rawFrames: payload.raw_frames.map((r) => ({
-            pose: r.pose,
-            vector: r.vector,
-            qualityScore: r.qualityScore,
-          })),
+          frontalCentroid: bio.angleEmbeddings.center,
+          overallCentroid: bio.masterEmbedding,
+          rawFrames: compatRawFrames,
+          masterEmbedding: bio.masterEmbedding,
+          angleEmbeddings: bio.angleEmbeddings,
+          framesCaptured: bio.framesCaptured,
+          qualityScore: bio.qualityScore,
           faceImageUrl: finalSnapshot,
         });
         setCreatedPatient(updated);
@@ -435,13 +213,12 @@ export function StaffAssistedEnrollmentModal({
         skipFaceScan: isPending,
         faceBiometricStatus: isPending ? 'PENDING' : 'VERIFIED',
         faceImageUrl: finalSnapshot,
-        frontalCentroid: payload?.frontal_centroid,
-        overallCentroid: payload?.overall_centroid,
-        rawFrames: payload?.raw_frames.map((r) => ({
-          pose: r.pose,
-          vector: r.vector,
-          qualityScore: r.qualityScore,
-        })),
+        frontalCentroid: !isPending && bio ? bio.angleEmbeddings.center : undefined,
+        overallCentroid: !isPending && bio ? bio.masterEmbedding : undefined,
+        masterEmbedding: !isPending && bio ? bio.masterEmbedding : undefined,
+        angleEmbeddings: !isPending && bio ? bio.angleEmbeddings : undefined,
+        framesCaptured: !isPending && bio ? bio.framesCaptured : 0,
+        qualityScore: !isPending && bio ? bio.qualityScore : undefined,
       });
 
       const structuredSummary = [
@@ -456,7 +233,9 @@ export function StaffAssistedEnrollmentModal({
           ? `ผู้ติดต่อฉุกเฉิน: ${emergencyName.trim()} (${emergencyRelation.trim() || '-'}) โทร ${emergencyPhone.trim() || '-'}`
           : '',
         `PIN สำรอง: ${pinCode.trim() || '1234'} | PDPA Consent: ยืนยันแล้วโดย ${currentUser.fullName}`,
-        isPending ? 'สถานะใบหน้า: PENDING (รอสแกนหน้าเพิ่มเติม)' : 'สถานะใบหน้า: VERIFIED (512D)',
+        isPending
+          ? 'สถานะใบหน้า: PENDING (รอสแกนหน้าเพิ่มเติม 120 เฟรม)'
+          : `สถานะใบหน้า: VERIFIED (3D Multi-Angle ${bio?.framesCaptured ?? 120} เฟรม)`,
       ]
         .filter(Boolean)
         .join('\n');
@@ -473,9 +252,6 @@ export function StaffAssistedEnrollmentModal({
       setSaving(false);
     }
   };
-
-  const screenPrompt = resolveFaceIdScreenPrompt(liveInspection, enrollRef.current.scanStage);
-  const expectedPose = enrollRef.current.expectedPose;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-3 sm:p-6 backdrop-blur-sm">
@@ -558,7 +334,7 @@ export function StaffAssistedEnrollmentModal({
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-200/80 text-[11px] font-black text-slate-700">
               {step > 2 ? '✓' : '2'}
             </span>
-            <span>2. Face ID 10 เฟรม</span>
+            <span>2. Face ID 120 เฟรม (3D Multi-Angle)</span>
           </div>
           <span className="text-slate-300">•</span>
           <div
@@ -833,7 +609,7 @@ export function StaffAssistedEnrollmentModal({
                     className="mt-0.5 h-4 w-4 rounded border-emerald-400 text-emerald-600 focus:ring-emerald-500"
                   />
                   <span className="text-xs font-semibold leading-relaxed text-emerald-950">
-                    คนไข้ยินยอมให้จัดเก็บแม่แบบใบหน้า 10 เฟรม (เวกเตอร์ 512 มิติ) และเข้าใจว่าข้อมูลเวชระเบียนที่เปิดประวัติแล้วเป็นเอกสารทางการแพทย์ถาวรตามกฎหมายสถานพยาบาล ไม่สามารถลบบัญชีได้ (PDPA Biometric Consent)
+                    คนไข้ยินยอมให้จัดเก็บแม่แบบใบหน้า 120 เฟรม (เวกเตอร์ 3D Multi-Angle 512 มิติ) และเข้าใจว่าข้อมูลเวชระเบียนที่เปิดประวัติแล้วเป็นเอกสารทางการแพทย์ถาวรตามกฎหมายสถานพยาบาล ไม่สามารถลบบัญชีได้ (PDPA Biometric Consent)
                   </span>
                 </label>
 
@@ -855,82 +631,61 @@ export function StaffAssistedEnrollmentModal({
                   <span className="font-extrabold text-slate-900">{fullName}</span>{' '}
                   <span className="ml-2 rounded-lg bg-sky-100 px-2 py-0.5 font-mono font-bold text-sky-800">{hn}</span>
                 </div>
-                <span className="font-extrabold text-emerald-700">ความคืบหน้า: {shotsCount} / 10 เฟรม</span>
+                <span className="font-extrabold text-emerald-700">
+                  {biometric120Result
+                    ? `บันทึกครบ ${biometric120Result.framesCaptured} / 120 เฟรม (${Math.round(biometric120Result.qualityScore * 100)}%)`
+                    : 'Face ID 120 เฟรม (3D Multi-Angle)'}
+                </span>
               </div>
 
-              <div className="relative mx-auto max-w-md overflow-hidden rounded-3xl bg-slate-950 aspect-[4/3] border border-slate-800 shadow-lg">
-                <video ref={videoRef} playsInline muted className="h-full w-full object-cover -scale-x-100" />
-                <FaceIdCircularOverlay
-                  progressRatio={shotsCount / 10}
-                  inspection={liveInspection}
-                  screenPrompt={screenPrompt}
-                  compact
-                />
-                {!capturing && shotsCount < 10 && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/80 p-6 text-center text-white">
-                    <Camera className="h-10 w-10 text-emerald-400 mb-3" />
-                    <p className="text-sm font-bold">เตรียมความพร้อมสแกนใบหน้า 10 เฟรม</p>
-                    <p className="mt-1 text-xs text-slate-300">หน้าตรง 4 ช็อต • หันซ้าย 2 • หันขวา 2 • พยักหน้า 2</p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setErrorMsg(null);
-                        setCapturing(true);
-                      }}
-                      className="mt-4 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white shadow hover:bg-emerald-500"
-                    >
-                      เปิดกล้องสแกนใบหน้า 10 เฟรม
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 text-center space-y-2">
-                <p className="text-xs font-bold text-slate-800">
-                  {expectedPose ? POSE_PROMPT[expectedPose] : 'บันทึกใบหน้า 10 เฟรมครบถ้วนแล้ว'}
-                </p>
-                <p className="text-[11px] text-slate-500">{statusNote}</p>
-                <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200">
-                  <div
-                    className="h-full bg-gradient-to-r from-emerald-500 to-sky-500 transition-all duration-300"
-                    style={{ width: `${(shotsCount / 10) * 100}%` }}
-                  />
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    enrollRef.current.reset();
-                    setShotsCount(0);
-                    setCapturing(false);
+              {capturing ? (
+                <FaceID120Scanner
+                  active={open && step === 2 && capturing}
+                  patientName={fullName}
+                  hn={hn}
+                  onComplete={(result) => {
+                    setBiometric120Result(result);
+                    setCapturedSnapshotUrl(result.avatarDataUrl);
+                    void handleFinalizeEnrollment('verified', result.avatarDataUrl, result);
                   }}
-                  className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50"
-                >
-                  รีเซ็ตเฟรมใบหน้า
-                </button>
-                <div className="flex flex-wrap items-center gap-2">
+                  onCancel={() => setCapturing(false)}
+                />
+              ) : (
+                <div className="flex flex-col items-center justify-center rounded-3xl border border-slate-800 bg-slate-950 p-8 text-center text-white">
+                  <Camera className="mb-3 h-10 w-10 text-emerald-400" />
+                  <p className="text-sm font-extrabold">
+                    {biometric120Result
+                      ? 'สแกนใบหน้า 120 เฟรม (3D Multi-Angle) สำเร็จแล้ว'
+                      : 'กล้องสแกนใบหน้า 120 เฟรมหยุดพักชั่วคราว'}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-300">
+                    หมุนศีรษะช้าๆ เพื่อสร้าง Master Embedding + Angle Embeddings (Center, Left, Right, Up, Down)
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErrorMsg(null);
+                      setCapturing(true);
+                    }}
+                    className="mt-4 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-extrabold text-white shadow hover:bg-emerald-500"
+                  >
+                    {biometric120Result ? 'สแกน 120 เฟรมใหม่อีกครั้ง' : 'เปิดกล้องสแกนใบหน้า 120 เฟรม (3D)'}
+                  </button>
+                </div>
+              )}
+
+              {!isExistingPatientMode && (
+                <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
                   <button
                     type="button"
                     disabled={saving}
-                    onClick={() => void handleInstantSnapshotCapture()}
-                    className="rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-2 text-xs font-bold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+                    onClick={() => void handleFinalizeEnrollment('pending_skip')}
+                    className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
                   >
-                    📸 จับภาพใบหน้าปัจจุบันและยืนยันทันที
+                    บันทึกประวัติไว้ก่อน (สแกน 120 เฟรมทีหลัง)
                   </button>
-                  {!isExistingPatientMode && (
-                    <button
-                      type="button"
-                      disabled={saving}
-                      onClick={() => void handleFinalizeEnrollment('pending_skip')}
-                      className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
-                    >
-                      บันทึกประวัติไว้ก่อน (สแกนทีหลัง)
-                    </button>
-                  )}
                 </div>
-              </div>
+              )}
             </div>
           )}
 
@@ -942,8 +697,8 @@ export function StaffAssistedEnrollmentModal({
               <div>
                 <h3 className="text-lg font-extrabold text-slate-900">
                   {createdPatient.faceBiometricStatus === 'PENDING'
-                    ? 'บันทึกประวัติคนไข้เรียบร้อย (รอสแกนใบหน้าเพิ่มเติม)'
-                    : 'เปิดประวัติและยืนยัน Face ID 512 มิติพร้อมใช้งานตู้ Kiosk แล้ว'}
+                    ? 'บันทึกประวัติคนไข้เรียบร้อย (รอสแกนใบหน้า 120 เฟรมเพิ่มเติม)'
+                    : 'เปิดประวัติและยืนยัน Face ID 120 เฟรม (3D) พร้อมใช้งานตู้ Kiosk แล้ว'}
                 </h3>
                 <p className="mt-1 text-xs text-slate-500">
                   บันทึกข้อมูลลงฐานข้อมูล Supabase Cloud และ Audit Trail เรียบร้อย
@@ -966,7 +721,9 @@ export function StaffAssistedEnrollmentModal({
                     }`}
                   >
                     <Sparkles className="h-3.5 w-3.5" />
-                    {createdPatient.faceBiometricStatus === 'VERIFIED' ? 'VERIFIED (512D)' : 'PENDING (รอสแกนหน้า)'}
+                    {createdPatient.faceBiometricStatus === 'VERIFIED'
+                      ? `VERIFIED (${createdPatient.faceFramesCount ?? 120} เฟรม • 512D 3D)`
+                      : 'PENDING (รอสแกนหน้า 120 เฟรม)'}
                   </span>
                 </div>
               </div>
@@ -990,7 +747,7 @@ export function StaffAssistedEnrollmentModal({
                 form="staff-enroll-step1"
                 className="rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 px-5 py-2.5 text-xs font-extrabold text-white shadow-md hover:opacity-95"
               >
-                → ขั้นตอนต่อไป: สแกน Face ID 10 เฟรม →
+                → ขั้นตอนต่อไป: สแกน Face ID 120 เฟรม →
               </button>
             </>
           )}
@@ -1011,7 +768,7 @@ export function StaffAssistedEnrollmentModal({
               )}
               <button
                 type="button"
-                disabled={saving || shotsCount < 10}
+                disabled={saving || !biometric120Result}
                 onClick={() => void handleFinalizeEnrollment('verified')}
                 className="rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 px-5 py-2.5 text-xs font-extrabold text-white shadow-md hover:opacity-95 disabled:opacity-45"
               >

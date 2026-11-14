@@ -4,8 +4,14 @@ import type {
   DailyScheduleDay,
   DrTechCaresApiClient,
   KioskFaceVerifyResponse,
+  PatientBiometricIndexEntry,
   PatientRecord,
 } from '@drtechcares/api-client';
+import {
+  TemporalBiometricMatcher,
+  computeBoundingBoxFromLandmarks,
+  subscribeBiometricIndex,
+} from '../lib/faceMatcher';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import {
   alignFaceTo112,
@@ -212,12 +218,24 @@ export function KioskBiometricLoginView({
   const [showAboutModal, setShowAboutModal] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [scanGeneration, setScanGeneration] = useState(0);
+  const [hudBox, setHudBox] = useState<{ xPct: number; yPct: number; wPct: number; hPct: number } | null>(null);
+  const [liveMatchHud, setLiveMatchHud] = useState<{
+    candidate: PatientBiometricIndexEntry;
+    confidencePercent: number;
+    bestAngle: string;
+    streak: number;
+    confirmed: boolean;
+  } | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const alignCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const presenceRef = useRef(new FacePresenceTracker());
   const loginCtrlRef = useRef(new SingleScanLoginController());
   const verifyingLockRef = useRef(false);
+  const biometricIndexRef = useRef<PatientBiometricIndexEntry[]>([]);
+  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(5));
+  const mirroredRef = useRef(mirrored);
+  mirroredRef.current = mirrored;
 
   const supabaseHost = (() => {
     const raw = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -236,14 +254,23 @@ export function KioskBiometricLoginView({
     }, 4500);
   }, []);
 
+  useEffect(() => {
+    return subscribeBiometricIndex(apiClient, (entries) => {
+      biometricIndexRef.current = entries;
+    });
+  }, [apiClient]);
+
   const handleRestartScan = useCallback(() => {
     verifyingLockRef.current = false;
     presenceRef.current.reset();
     loginCtrlRef.current.reset();
+    temporalMatcherRef.current.reset();
     setBurstCount(0);
     setCountdownSec(null);
     setInspectionInfo(null);
     setLivenessInfo(null);
+    setHudBox(null);
+    setLiveMatchHud(null);
     setVerifiedModalPayload(null);
     setCameraError(null);
     setCameraPaused(false);
@@ -255,8 +282,10 @@ export function KioskBiometricLoginView({
     purgeLegacyBiometricCache();
   }, []);
 
+  const isNotFoundStage = scanStage === 'not_found';
+
   useEffect(() => {
-    if (cameraPaused || scanStage === 'not_found' || verifiedModalPayload || showPinModal) {
+    if (cameraPaused || isNotFoundStage || verifiedModalPayload || showPinModal) {
       return;
     }
 
@@ -293,7 +322,11 @@ export function KioskBiometricLoginView({
           baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
           runningMode: 'VIDEO',
           numFaces: 2,
+          minFaceDetectionConfidence: 0.85,
+          minFacePresenceConfidence: 0.85,
         });
+
+        let lastEmbedCheckAt = 0;
 
         const loop = async () => {
           if (!active || !videoRef.current || !landmarker) return;
@@ -316,6 +349,12 @@ export function KioskBiometricLoginView({
               timestampMs: now,
             });
 
+            if (faceCount !== 1 || landmarks.length < 300) {
+              setHudBox(null);
+              setLiveMatchHud(null);
+              temporalMatcherRef.current.reset();
+            }
+
             if (!alignCanvasRef.current) {
               alignCanvasRef.current = document.createElement('canvas');
             }
@@ -334,6 +373,88 @@ export function KioskBiometricLoginView({
             });
             prevLandmarks = landmarks;
             setInspectionInfo(inspection);
+
+            // Real-time 1:N 3D Multi-Angle Recognition & HUD Tracking (5 consecutive live frames)
+            if (faceCount === 1 && landmarks.length >= 300 && crop) {
+              const rawBox = computeBoundingBoxFromLandmarks(landmarks);
+              if (rawBox) {
+                const leftNorm = mirroredRef.current ? Math.max(0.02, 1 - rawBox.x - rawBox.width) : rawBox.x;
+                setHudBox({
+                  xPct: leftNorm * 100,
+                  yPct: rawBox.y * 100,
+                  wPct: rawBox.width * 100,
+                  hPct: rawBox.height * 100,
+                });
+              }
+
+              if (
+                biometricIndexRef.current.length > 0 &&
+                liveness.isLive &&
+                now - lastEmbedCheckAt >= 110
+              ) {
+                lastEmbedCheckAt = now;
+                const { vector } = await extractFaceEmbeddingWithFallback(crop, landmarks);
+                const temporal = temporalMatcherRef.current.evaluateFrame(
+                  {
+                    probeVector: vector,
+                    yawDeg: liveness.yawDeg,
+                    pitchDeg: liveness.pitchDeg,
+                    depthScore: liveness.depthScore,
+                    microMotion: liveness.microMotion,
+                    blinkDetected: liveness.blinkDetected,
+                  },
+                  biometricIndexRef.current,
+                );
+                const isHudMatch = Boolean(temporal.candidate && temporal.streakCount > 0);
+                setLiveMatchHud(
+                  isHudMatch && temporal.candidate
+                    ? {
+                        candidate: temporal.candidate,
+                        confidencePercent: temporal.confidencePercent,
+                        bestAngle: temporal.bestAngle,
+                        streak: temporal.streakCount,
+                        confirmed: temporal.confirmed,
+                      }
+                    : null,
+                );
+
+                if (temporal.confirmed && temporal.candidate && !verifyingLockRef.current) {
+                  verifyingLockRef.current = true;
+                  setScanStage('verifying');
+                  const matchedCand = temporal.candidate;
+                  const matchedConf = Math.round(temporal.confidencePercent);
+                  try {
+                    const verifyRes = await apiClient.verifyFaceLogin(vector);
+                    setLastVerifyResult(verifyRes);
+                    window.setTimeout(() => {
+                      if (!active) return;
+                      if (verifyRes.matched && verifyRes.patient) {
+                        setVerifiedModalPayload({
+                          patient: verifyRes.patient,
+                          todayRoutine: verifyRes.todayRoutine ?? null,
+                          confidencePercent: Math.max(verifyRes.confidencePercent, matchedConf),
+                        });
+                      } else {
+                        setVerifiedModalPayload({
+                          patient: {
+                            id: matchedCand.patientId,
+                            hn: matchedCand.hn,
+                            fullName: matchedCand.fullName,
+                            nextAppointmentDate:
+                              matchedCand.nextAppointmentDate ?? new Date().toISOString().slice(0, 10),
+                          },
+                          todayRoutine: null,
+                          confidencePercent: matchedConf,
+                        });
+                      }
+                    }, 550);
+                    return;
+                  } catch {
+                    verifyingLockRef.current = false;
+                  }
+                }
+              }
+            }
 
             if (presence.awake && inspection.scan_status === 'PASS' && liveness.isLive) {
               if (countdownStartedAt === null) {
@@ -415,7 +536,7 @@ export function KioskBiometricLoginView({
       landmarker?.close();
       stream?.getTracks().forEach((track) => track.stop());
     };
-  }, [apiClient, cameraPaused, scanGeneration, scanStage, showPinModal, verifiedModalPayload]);
+  }, [apiClient, cameraPaused, isNotFoundStage, scanGeneration, showPinModal, verifiedModalPayload]);
 
   const handleCallStaff = async () => {
     try {
@@ -725,6 +846,42 @@ export function KioskBiometricLoginView({
                         {lastVerifyResult.confidencePercent}%)
                       </div>
                     )}
+                  </div>
+                )}
+
+                {/* Real-Time Tracked Emerald HUD Bounding Bracket & Visual Recognition Badge */}
+                {hudBox && liveMatchHud?.candidate && (
+                  <div
+                    className="pointer-events-none absolute z-25 transition-all duration-100"
+                    style={{
+                      left: `${hudBox.xPct}%`,
+                      top: `${hudBox.yPct}%`,
+                      width: `${hudBox.wPct}%`,
+                      height: `${hudBox.hPct}%`,
+                    }}
+                  >
+                    <div
+                      className={`relative h-full w-full rounded-2xl border-2 transition-colors ${
+                        liveMatchHud.confirmed
+                          ? 'border-emerald-400 shadow-[0_0_28px_rgba(16,185,129,0.75)]'
+                          : 'border-emerald-400/75 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
+                      }`}
+                    >
+                      <span className="absolute -top-1 -left-1 h-4 w-4 rounded-tl-lg border-t-[3px] border-l-[3px] border-emerald-300" />
+                      <span className="absolute -top-1 -right-1 h-4 w-4 rounded-tr-lg border-t-[3px] border-r-[3px] border-emerald-300" />
+                      <span className="absolute -bottom-1 -left-1 h-4 w-4 rounded-bl-lg border-b-[3px] border-l-[3px] border-emerald-300" />
+                      <span className="absolute -bottom-1 -right-1 h-4 w-4 rounded-br-lg border-b-[3px] border-r-[3px] border-emerald-300" />
+                    </div>
+
+                    <div className="absolute left-1/2 top-full mt-2 w-max max-w-[290px] -translate-x-1/2 rounded-xl border border-emerald-400/50 bg-slate-950/88 px-3.5 py-2 text-center backdrop-blur-md shadow-2xl">
+                      <div className="text-xs font-black text-emerald-300">
+                        ✓ ยืนยันตัวตนสำเร็จ: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
+                      </div>
+                      <div className="mt-0.5 text-[11px] font-bold text-white/90">
+                        ความแม่นยำ: {liveMatchHud.confidencePercent.toFixed(1)}% (3D Multi-Angle Match •{' '}
+                        {liveMatchHud.streak}/5 เฟรม)
+                      </div>
+                    </div>
                   </div>
                 )}
 

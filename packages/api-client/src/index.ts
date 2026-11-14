@@ -38,6 +38,29 @@ export interface RehabScheduleItem {
   notes?: string;
 }
 
+export interface AngleEmbeddings5D {
+  center: number[];
+  left: number[];
+  right: number[];
+  up: number[];
+  down: number[];
+}
+
+export interface PatientBiometricIndexEntry {
+  patientId: string;
+  hn: string;
+  fullName: string;
+  diagnosis: string;
+  assignedPtId: string;
+  nextAppointmentDate: string;
+  avatarUrl?: string;
+  framesCaptured: number;
+  qualityScore: number;
+  masterEmbedding: number[];
+  angleEmbeddings: AngleEmbeddings5D;
+  todayRoutine?: DailyScheduleDay | null;
+}
+
 export interface PatientRecord {
   id: string;
   hn: string;
@@ -53,7 +76,10 @@ export interface PatientRecord {
   registrationStatus: 'active' | 'archived';
   enrolledAt: string;
   faceBiometricStatus?: 'PENDING' | 'VERIFIED';
+  faceFramesCount?: number;
   faceImageUrl?: string;
+  masterEmbedding?: number[];
+  angleEmbeddings?: AngleEmbeddings5D;
   rehabSchedules?: RehabScheduleItem[];
   biometricHistory?: {
     frontal_centroid: number[];
@@ -441,6 +467,11 @@ export class DrTechCaresApiClient {
     return body;
   }
 
+  async getBiometricIndex(): Promise<PatientBiometricIndexEntry[]> {
+    const res = await this.request<{ index: PatientBiometricIndexEntry[] }>('/api/biometrics/index');
+    return res.index ?? [];
+  }
+
   async enrollPatient10Shot(input: {
     hn: string;
     fullName: string;
@@ -458,6 +489,10 @@ export class DrTechCaresApiClient {
     frontalCentroid?: number[];
     overallCentroid?: number[];
     rawFrames?: { pose: 'front' | 'left' | 'right' | 'nod'; vector: number[]; qualityScore: number }[];
+    masterEmbedding?: number[];
+    angleEmbeddings?: AngleEmbeddings5D;
+    framesCaptured?: number;
+    qualityScore?: number;
   }): Promise<PatientRecord> {
     const res = await this.request<{ patient: PatientRecord }>('/api/biometric/enroll', {
       method: 'POST',
@@ -473,6 +508,10 @@ export class DrTechCaresApiClient {
       overallCentroid: number[];
       rawFrames: { pose: 'front' | 'left' | 'right' | 'nod'; vector: number[]; qualityScore: number }[];
       faceImageUrl?: string;
+      masterEmbedding?: number[];
+      angleEmbeddings?: AngleEmbeddings5D;
+      framesCaptured?: number;
+      qualityScore?: number;
     },
   ): Promise<PatientRecord> {
     const res = await this.request<{ patient: PatientRecord }>(`/api/patients/${patientId}/enroll-face`, {
