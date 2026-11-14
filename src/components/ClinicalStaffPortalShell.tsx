@@ -1745,16 +1745,35 @@ export function ClinicalStaffPortalShell({
                               >
                                 <KeyRound className="h-3.5 w-3.5" />
                               </button>
-                              {u.id !== currentUser.id && u.role !== 'super_admin' && (
+                              {(u.role !== 'super_admin' || users.filter((acc) => acc.role === 'super_admin').length > 1) && (
                                 <button
                                   type="button"
+                                  disabled={submitting}
                                   onClick={async () => {
-                                    if (!window.confirm(`ยืนยันลบบัญชี ${u.fullName}?`)) return;
-                                    await apiClient.deleteUser(u.id);
-                                    flashBanner('success', `ลบบัญชี @${u.username} เรียบร้อยแล้ว`);
-                                    await refreshAll();
+                                    const deletingSelf = u.id === currentUser.id;
+                                    const confirmMsg = deletingSelf
+                                      ? `ยืนยันลบบัญชีแอดมินของตนเอง (${u.fullName})? ระบบจะออกจากระบบอัตโนมัติ`
+                                      : `ยืนยันลบบัญชี ${u.fullName} (@${u.username})?`;
+                                    if (!window.confirm(confirmMsg)) return;
+                                    setSubmitting(true);
+                                    try {
+                                      await apiClient.deleteUser(u.id);
+                                      if (deletingSelf) {
+                                        onLogout();
+                                        return;
+                                      }
+                                      flashBanner('success', `ลบบัญชี @${u.username} เรียบร้อยแล้ว`);
+                                      await refreshAll();
+                                    } catch (err) {
+                                      flashBanner(
+                                        'error',
+                                        err instanceof Error ? err.message : 'ไม่สามารถลบบัญชีผู้ใช้ได้',
+                                      );
+                                    } finally {
+                                      setSubmitting(false);
+                                    }
                                   }}
-                                  className="whitespace-nowrap rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-rose-600 hover:bg-rose-100 cursor-pointer"
+                                  className="whitespace-nowrap rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-rose-600 hover:bg-rose-100 disabled:opacity-50 cursor-pointer"
                                   title={locale.staff.deleteTitle}
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />

@@ -1042,7 +1042,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
       if (idx === -1) return jsonResponse({ error: 'USER_NOT_FOUND' }, 404);
       const removed = state.users.splice(idx, 1)[0];
-      await persistToSupabase(supabase, (db) => db.from('staff_users').delete().eq('id', removed.id));
+      state.deleted_user_ids = Array.from(new Set([...(state.deleted_user_ids ?? []), removed.id]));
+      state.active_sessions = state.active_sessions.filter((s) => s.userId !== removed.id);
+      await persistToSupabase(supabase, async (db) => {
+        await db.from('active_sessions').delete().eq('user_id', removed.id);
+        await db.from('staff_users').delete().eq('id', removed.id);
+        await db.from('staff_users').delete().eq('username', removed.username);
+      });
       recordAudit({
         eventType: 'USER_DELETED',
         actorRole: authUser!.role,

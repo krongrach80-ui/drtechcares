@@ -25,8 +25,18 @@ export interface StoredUserAccount extends UserAccount {
   passwordHash: string;
 }
 
+export const SEEDED_DEFAULT_USER_IDS = new Set([
+  '00000000-0000-4000-8000-000000000001',
+  '00000000-0000-4000-8000-000000000002',
+  '00000000-0000-4000-8000-000000000003',
+  'user-super-1',
+  'user-pt-1',
+  'user-pt-2',
+]);
+
 export interface CloudRouterState {
   users: StoredUserAccount[];
+  deleted_user_ids?: string[];
   patients: PatientRecord[];
   face_templates: EnrolledTemplateCandidate[];
   medical_notes: MedicalNoteRecord[];
@@ -100,32 +110,39 @@ export async function hydrateStateFromSupabase(
     supabase.from('patient_biometrics').select('*'),
   ]);
 
-  if (usersRes.status === 'fulfilled' && Array.isArray(usersRes.value.data) && usersRes.value.data.length > 0) {
-    const dbUsers: StoredUserAccount[] = usersRes.value.data.map((r: Record<string, unknown>) => ({
-      id: String(r.id),
-      username: String(r.username),
-      passwordHash: String(r.password_hash ?? ''),
-      role: normalizeStaffRole(r.role),
-      fullName: String(r.full_name ?? ''),
-      phone: String(r.phone ?? ''),
-      specialty: r.specialty ? String(r.specialty) : undefined,
-      licenseNo: r.license_no
-        ? String(r.license_no)
-        : r.license_number
-          ? String(r.license_number)
-          : undefined,
-      patientId: r.patient_id ? String(r.patient_id) : undefined,
-      active:
-        r.active !== undefined && r.active !== null
-          ? Boolean(r.active)
-          : String(r.status ?? 'ACTIVE').toUpperCase() !== 'SUSPENDED',
-      forceLoggedOutAt: r.force_logged_out_at ? String(r.force_logged_out_at) : null,
-      createdAt: String(r.created_at ?? new Date().toISOString()),
-    }));
+  if (usersRes.status === 'fulfilled' && !usersRes.value.error && Array.isArray(usersRes.value.data)) {
+    const deletedSet = new Set(state.deleted_user_ids ?? []);
+    const dbUsers: StoredUserAccount[] = usersRes.value.data
+      .map((r: Record<string, unknown>) => ({
+        id: String(r.id),
+        username: String(r.username),
+        passwordHash: String(r.password_hash ?? ''),
+        role: normalizeStaffRole(r.role),
+        fullName: String(r.full_name ?? ''),
+        phone: String(r.phone ?? ''),
+        specialty: r.specialty ? String(r.specialty) : undefined,
+        licenseNo: r.license_no
+          ? String(r.license_no)
+          : r.license_number
+            ? String(r.license_number)
+            : undefined,
+        patientId: r.patient_id ? String(r.patient_id) : undefined,
+        active:
+          r.active !== undefined && r.active !== null
+            ? Boolean(r.active)
+            : String(r.status ?? 'ACTIVE').toUpperCase() !== 'SUSPENDED',
+        forceLoggedOutAt: r.force_logged_out_at ? String(r.force_logged_out_at) : null,
+        createdAt: String(r.created_at ?? new Date().toISOString()),
+      }))
+      .filter((u) => !deletedSet.has(u.id));
     const dbIds = new Set(dbUsers.map((u) => u.id));
     const dbUsernames = new Set(dbUsers.map((u) => u.username.toLowerCase()));
     const localOnly = state.users.filter(
-      (u) => !dbIds.has(u.id) && !dbUsernames.has(u.username.toLowerCase()),
+      (u) =>
+        SEEDED_DEFAULT_USER_IDS.has(u.id) &&
+        !deletedSet.has(u.id) &&
+        !dbIds.has(u.id) &&
+        !dbUsernames.has(u.username.toLowerCase()),
     );
     state.users = [...dbUsers, ...localOnly];
   }
