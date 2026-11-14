@@ -383,6 +383,34 @@ export async function hydrateStateFromSupabase(
     }));
   }
 
+  // Strip legacy auto-generated default training schedules / nextAppointmentDate when unscheduled
+  const legacyDefaultLabels = new Set([
+    'Cognitive Rehab Card Game',
+    'Physical Rehab (Pending AI Unlock)',
+    'พักฟื้น',
+  ]);
+  for (const patient of state.patients) {
+    if ((patient.rehabSchedules ?? []).length > 0) continue;
+    const course = state.patient_courses.find((c) => c.patientId === patient.id);
+    const isLegacyAutoCourse =
+      !course ||
+      ((course.title.endsWith('— แผนฟื้นฟูสมรรถภาพ') || course.title === 'ล้างตารางนัดชั่วคราว') &&
+        course.weeklySchedule.every(
+          (d) => (d.exercises ?? []).length === 0 && legacyDefaultLabels.has(d.label),
+        ));
+    if (isLegacyAutoCourse) {
+      patient.nextAppointmentDate = '';
+      if (course) {
+        course.weeklySchedule = course.weeklySchedule.map((d) => ({
+          ...d,
+          dayType: 'rest',
+          label: 'พักฟื้น',
+          exercises: [],
+        }));
+      }
+    }
+  }
+
   if (sessionsRes.status === 'fulfilled' && Array.isArray(sessionsRes.value.data)) {
     state.rehab_sessions = sessionsRes.value.data.map((r: Record<string, unknown>) => ({
       id: String(r.id),

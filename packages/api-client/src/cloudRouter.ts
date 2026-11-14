@@ -193,18 +193,15 @@ async function verifyPasswordEdge(password: string, storedHash: string): Promise
 }
 
 function defaultWeeklySchedule(): DailyScheduleDay[] {
-  return [0, 1, 2, 3, 4, 5, 6].map((dayIndex) => {
-    const isTraining = [1, 3, 5].includes(dayIndex);
-    return {
-      dayIndex,
-      dayType: isTraining ? 'training' : 'rest',
-      activityType: isTraining ? 'minigame' : 'physio_exercise',
-      difficulty: 'medium',
-      label: isTraining ? 'Cognitive Rehab Card Game' : 'Physical Rehab (Pending AI Unlock)',
-      exercises: [],
-      cognitiveModpackId: 'modpack-core-99',
-    };
-  });
+  return [0, 1, 2, 3, 4, 5, 6].map((dayIndex) => ({
+    dayIndex,
+    dayType: 'rest',
+    activityType: 'minigame',
+    difficulty: 'easy',
+    label: 'พักฟื้น',
+    exercises: [],
+    cognitiveModpackId: 'modpack-core-99',
+  }));
 }
 
 function createInitialState(useUuidIds = false): CloudRouterState {
@@ -596,6 +593,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       (pathname === '/api/biometrics/index' && method === 'GET') ||
       (pathname === '/api/biometric/verify' && method === 'POST') ||
       (pathname === '/api/patients' && method === 'GET') ||
+      (pathname.startsWith('/api/courses/') && method === 'GET') ||
       (pathname.startsWith('/api/patients/') && method === 'DELETE') ||
       (/^\/api\/(?:users|staff)\/[^/]+$/.test(pathname) && method === 'DELETE');
 
@@ -1176,9 +1174,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         authUser!.role === 'pt'
           ? authUser!.id
           : body.assignedPtId || state.users.find((u) => u.role === 'pt')?.id || authUser!.id;
-      const nextAppt =
-        body.nextAppointmentDate ||
-        new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const nextAppt = body.nextAppointmentDate ?? '';
 
       const rawFrames = (!isPendingSkip && Array.isArray(body.rawFrames) ? body.rawFrames : []) as {
         pose: 'front' | 'left' | 'right' | 'nod';
@@ -1260,7 +1256,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           phone: patient.phone,
           diagnosis: patient.diagnosis,
           assigned_pt_id: patient.assignedPtId,
-          next_appointment_date: patient.nextAppointmentDate,
+          next_appointment_date: patient.nextAppointmentDate || null,
           registration_status: 'active',
           face_biometric_status: faceStatus,
           face_image_url: storedFaceImageUrl ?? null,
@@ -2201,6 +2197,15 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         }
         if (Array.isArray(body.rehabSchedules)) {
           patient.rehabSchedules = body.rehabSchedules as RehabScheduleItem[];
+          if (body.nextAppointmentDate === undefined) {
+            const todayStr = new Date().toISOString().slice(0, 10);
+            const activeDates = patient.rehabSchedules
+              .filter((s) => s.status === 'ACTIVE' && s.scheduledDate)
+              .map((s) => s.scheduledDate)
+              .sort();
+            patient.nextAppointmentDate =
+              activeDates.find((d) => d >= todayStr) || activeDates[0] || '';
+          }
         }
       }
       await persistToSupabase(supabase, (db) =>
@@ -2212,7 +2217,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             phone: patient.phone,
             diagnosis: patient.diagnosis,
             assigned_pt_id: patient.assignedPtId,
-            next_appointment_date: patient.nextAppointmentDate,
+            next_appointment_date: patient.nextAppointmentDate || null,
             history: {
               gender: patient.gender ?? 'ชาย',
               faceBiometricStatus: patient.faceBiometricStatus ?? 'PENDING',

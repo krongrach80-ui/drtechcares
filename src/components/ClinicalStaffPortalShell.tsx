@@ -1163,10 +1163,10 @@ export function ClinicalStaffPortalShell({
               ? course.weeklySchedule
               : Array.from({ length: 7 }, (_, dayIndex) => ({
                   dayIndex,
-                  dayType: dayIndex % 2 === 0 ? 'training' : 'rest',
+                  dayType: 'rest',
                   activityType: 'minigame',
-                  difficulty: 'medium',
-                  label: dayIndex % 2 === 0 ? 'มินิเกมกระตุ้นสมอง' : 'วันพักฟื้น',
+                  difficulty: 'easy',
+                  label: 'พักฟื้น',
                   exercises: [],
                   cognitiveModpackId: fallbackModpackId,
                 })),
@@ -1305,9 +1305,9 @@ export function ClinicalStaffPortalShell({
 
   const handleClearSchedule = async () => {
     if (!selectedSchedulePatient) return;
-    if (!window.confirm(`ยืนยันล้างตารางนัดทั้งหมดของ ${selectedSchedulePatient.fullName}?`)) return;
     setSubmitting(true);
     try {
+      const targetPatientId = selectedSchedulePatient.id;
       const emptyRest = Array.from({ length: 7 }, (_, dayIndex) => ({
         dayIndex,
         dayType: 'rest' as const,
@@ -1317,16 +1317,22 @@ export function ClinicalStaffPortalShell({
         exercises: [],
         cognitiveModpackId: modpacks[0]?.id || 'modpack-core-99',
       }));
-      await apiClient.upsertPatientCourse({
-        patientId: selectedSchedulePatient.id,
+      const clearedCourse = await apiClient.upsertPatientCourse({
+        patientId: targetPatientId,
         title: 'ล้างตารางนัดชั่วคราว',
         cognitiveModpackId: modpacks[0]?.id || 'modpack-core-99',
         weeklySchedule: emptyRest,
       });
-      await apiClient.updatePatient(selectedSchedulePatient.id, {
+      await apiClient.updatePatient(targetPatientId, {
         nextAppointmentDate: '',
         rehabSchedules: [],
       });
+      setPatients((prev) =>
+        prev.map((p) =>
+          p.id === targetPatientId ? { ...p, nextAppointmentDate: '', rehabSchedules: [] } : p,
+        ),
+      );
+      setPatientCourse(clearedCourse);
       setWeeklySchedule(emptyRest);
       flashBanner('success', `ล้างตารางนัดทั้งหมดของ ${selectedSchedulePatient.fullName} แล้ว`);
       await refreshAll();
@@ -1382,7 +1388,13 @@ export function ClinicalStaffPortalShell({
         customForDay.length > 0 ? exercises.find((ex) => ex.id === customForDay[0].exerciseId) : undefined;
       const firstCustomName = firstCustomEx ? firstCustomEx.name[lang] || firstCustomEx.name.th : null;
       const planDay = weeklySchedule[weekday];
-      const isTraining = !hasCustomSchedules && planDay?.dayType === 'training' && Boolean(patientCourse);
+      const isTraining =
+        !hasCustomSchedules &&
+        planDay?.dayType === 'training' &&
+        ((planDay.exercises?.length ?? 0) > 0 ||
+          (Boolean(patientCourse) &&
+            !patientCourse!.title.endsWith('— แผนฟื้นฟูสมรรถภาพ') &&
+            patientCourse!.title !== 'ล้างตารางนัดชั่วคราว'));
       const hasCompletedSession = completedSessionDates.has(dateIso);
 
       let cellStatus: 'ACTIVE' | 'REST' | 'COMPLETED' | 'MISSED' = 'REST';
@@ -1427,7 +1439,7 @@ export function ClinicalStaffPortalShell({
       if (day.cellStatus === 'COMPLETED') completed += 1;
       else if (day.cellStatus === 'ACTIVE') active += 1;
       else if (day.cellStatus === 'MISSED') missed += 1;
-      else paused += 1;
+      else if (day.customForDay.some((s) => s.status === 'REST')) paused += 1;
     });
 
     return {

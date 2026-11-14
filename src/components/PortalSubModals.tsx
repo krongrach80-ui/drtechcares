@@ -1367,6 +1367,14 @@ function computeWeeklyDatesForMonths(opts: {
   return results;
 }
 
+/** Returns the next active scheduled date (>= todayIso if available, otherwise earliest active or ''). */
+function computeNextAppointmentDate(schedules: readonly RehabScheduleItem[], todayIso: string): string {
+  const activeDates = Array.from(
+    new Set(schedules.filter((s) => s.status === 'ACTIVE' && s.scheduledDate).map((s) => s.scheduledDate)),
+  ).sort();
+  return activeDates.find((d) => d >= todayIso) || activeDates[0] || '';
+}
+
 export function ScheduleCreatorAndDayModal({
   mode,
   selectedDateIso,
@@ -1563,8 +1571,7 @@ export function ScheduleCreatorAndDayModal({
         (item) => !replacementKeys.has(`${item.scheduledDate}::${item.exerciseId || ''}`),
       );
       const merged = [...keptExisting, ...generated].sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate));
-      const upcomingActive = merged.find((item) => item.status === 'ACTIVE' && item.scheduledDate >= todayIso);
-      const nextAppt = upcomingActive?.scheduledDate || finalSelectedDates[0] || activePatient.nextAppointmentDate;
+      const nextAppt = computeNextAppointmentDate(merged, todayIso) || finalSelectedDates[0] || '';
 
       await apiClient.updatePatient(activePatient.id, {
         nextAppointmentDate: nextAppt,
@@ -1624,7 +1631,10 @@ export function ScheduleCreatorAndDayModal({
                     const nextList = (activePatient.rehabSchedules ?? []).filter(
                       (s) => s.scheduledDate !== selectedDateIso,
                     );
-                    await apiClient.updatePatient(activePatient.id, { rehabSchedules: nextList });
+                    await apiClient.updatePatient(activePatient.id, {
+                      nextAppointmentDate: computeNextAppointmentDate(nextList, todayIso),
+                      rehabSchedules: nextList,
+                    });
                     await onSaved(`ลบรายการฝึกทั้งหมดของวันที่ ${selectedDateIso} แล้ว`);
                   }}
                   className="whitespace-nowrap rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-[11px] font-bold text-rose-700 hover:bg-rose-100 cursor-pointer"
@@ -1674,7 +1684,10 @@ export function ScheduleCreatorAndDayModal({
                               const nextList = (activePatient.rehabSchedules ?? []).map((s) =>
                                 s.id === item.id ? { ...s, status: btn.status } : s,
                               );
-                              await apiClient.updatePatient(activePatient.id, { rehabSchedules: nextList });
+                              await apiClient.updatePatient(activePatient.id, {
+                                nextAppointmentDate: computeNextAppointmentDate(nextList, todayIso),
+                                rehabSchedules: nextList,
+                              });
                               await onSaved(`เปลี่ยนสถานะวันที่ ${selectedDateIso} เป็น ${btn.label}`);
                             }}
                             className={`whitespace-nowrap rounded-lg px-2 py-1 text-[10px] font-bold cursor-pointer ${btn.cls}`}
@@ -1686,7 +1699,10 @@ export function ScheduleCreatorAndDayModal({
                           type="button"
                           onClick={async () => {
                             const nextList = (activePatient.rehabSchedules ?? []).filter((s) => s.id !== item.id);
-                            await apiClient.updatePatient(activePatient.id, { rehabSchedules: nextList });
+                            await apiClient.updatePatient(activePatient.id, {
+                              nextAppointmentDate: computeNextAppointmentDate(nextList, todayIso),
+                              rehabSchedules: nextList,
+                            });
                             await onSaved(`ลบนัดหมายวันที่ ${selectedDateIso} แล้ว`);
                           }}
                           className="whitespace-nowrap rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-bold text-rose-700 cursor-pointer"

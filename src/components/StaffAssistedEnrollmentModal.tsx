@@ -230,7 +230,7 @@ export function StaffAssistedEnrollmentModal({
         phone: phone.trim(),
         diagnosis: cleanedDiagnosis,
         assignedPtId: assignedPtId || undefined,
-        nextAppointmentDate: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+        nextAppointmentDate: '',
         password: pinCode.trim() || '1234',
         skipFaceScan: isPending,
         faceBiometricStatus: isPending ? 'PENDING' : 'VERIFIED',
