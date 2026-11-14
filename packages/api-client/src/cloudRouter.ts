@@ -45,6 +45,7 @@ import type {
 import {
   hydrateStateFromSupabase,
   newRecordId,
+  normalizeStaffRole,
   persistToSupabase,
   type CloudRouterState,
   type StoredUserAccount,
@@ -63,6 +64,74 @@ function timingSafeEqualStr(a: string, b: string): boolean {
     diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   }
   return diff === 0;
+}
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return globalThis.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function base64UrlToBytes(b64u: string): Uint8Array | null {
+  try {
+    const padded = b64u.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (b64u.length % 4)) % 4);
+    const binary = globalThis.atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+interface SignedStaffTokenPayload {
+  uid: string;
+  usr: string;
+  role: UserRole;
+  iat: number;
+  rnd: string;
+}
+
+async function signPayloadEdge(payloadB64: string, secret: string): Promise<string> {
+  const data = new TextEncoder().encode(`${payloadB64}.${secret}`);
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function createStaffToken(user: StoredUserAccount, secret: string): Promise<string> {
+  const payload: SignedStaffTokenPayload = {
+    uid: user.id,
+    usr: user.username,
+    role: user.role,
+    iat: Date.now(),
+    rnd: randomHex(8),
+  };
+  const payloadB64 = bytesToBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
+  const sig = await signPayloadEdge(payloadB64, secret);
+  return `stf.${payloadB64}.${sig}`;
+}
+
+async function verifyStaffToken(token: string, secret: string): Promise<SignedStaffTokenPayload | null> {
+  if (!token.startsWith('stf.')) return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [, payloadB64, sigHex] = parts;
+  const expected = await signPayloadEdge(payloadB64, secret);
+  if (!timingSafeEqualStr(sigHex, expected)) return null;
+  const bytes = base64UrlToBytes(payloadB64);
+  if (!bytes) return null;
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Partial<SignedStaffTokenPayload>;
+    if (!parsed.uid || !parsed.usr || !parsed.role || typeof parsed.iat !== 'number') return null;
+    if (Date.now() - parsed.iat > 7 * 24 * 60 * 60 * 1000) return null;
+    return parsed as SignedStaffTokenPayload;
+  } catch {
+    return null;
+  }
 }
 
 async function hashPasswordEdge(password: string): Promise<string> {
@@ -333,7 +402,7 @@ function jsonResponse(body: unknown, status = 200): Response {
     headers: {
       'content-type': 'application/json; charset=utf-8',
       'access-control-allow-origin': '*',
-      'access-control-allow-headers': 'Content-Type, Authorization, x-device-id',
+      'access-control-allow-headers': 'Content-Type, Authorization, X-Staff-Token, x-device-id',
       'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     },
   });
@@ -354,6 +423,7 @@ async function readJsonBody<T = Record<string, unknown>>(request: Request): Prom
 export function createCloudRouter(config: CloudClientConfig = {}) {
   const url = config.supabaseUrl || '';
   const key = config.supabaseServiceKey || config.supabaseAnonKey || '';
+  const tokenSecret = config.supabaseServiceKey || config.supabaseAnonKey || 'drtechcares-clinical-edge-token-secret-2026';
   const supabase: SupabaseClient | null =
     url && key
       ? createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
@@ -362,9 +432,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
   let hydrationPromise: Promise<void> | null = null;
   let lastHydratedAt = 0;
-  const ensureHydrated = async (force = false) => {
+  const ensureHydrated = async (force = false, bypassCooldown = false) => {
     if (!supabase) return;
-    if (!hydrationPromise || (force && Date.now() - lastHydratedAt > 2500)) {
+    if (!hydrationPromise || (force && (bypassCooldown || Date.now() - lastHydratedAt > 2500))) {
       hydrationPromise = hydrateStateFromSupabase(supabase, state).then(() => {
         lastHydratedAt = Date.now();
       });
@@ -397,18 +467,103 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     return log;
   };
 
-  const authenticate = (request: Request): { user?: StoredUserAccount; token?: string } => {
-    const header = request.headers.get('authorization');
-    if (!header || !header.startsWith('Bearer ')) return {};
-    const token = header.slice(7).trim();
-    const session = state.active_sessions.find((s) => s.token === token && !s.revoked);
-    if (!session) return {};
-    const user = state.users.find((u) => u.id === session.userId && u.active);
-    if (!user) return {};
-    const forcedBefore =
-      user.forceLoggedOutAt && new Date(session.createdAt) <= new Date(user.forceLoggedOutAt);
-    if (forcedBefore) return {};
-    return { user, token };
+  const extractToken = (request: Request): string | null => {
+    const authHeader = request.headers.get('authorization');
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const t = authHeader.slice(7).trim();
+      if (t) return t;
+    }
+    const staffHeader = request.headers.get('x-staff-token');
+    if (staffHeader && staffHeader.trim()) {
+      return staffHeader.trim();
+    }
+    return null;
+  };
+
+  const authenticate = async (
+    request: Request,
+    clientIp = 'unknown',
+    clientDeviceId = 'kiosk-browser',
+  ): Promise<{ user?: StoredUserAccount; token?: string }> => {
+    const token = extractToken(request);
+    if (!token) return {};
+
+    // 1. Check existing in-memory / hydrated session row (honors revocations & force logouts)
+    const session = state.active_sessions.find((s) => s.token === token);
+    if (session) {
+      if (session.revoked) return {};
+      let user = state.users.find((u) => u.id === session.userId && u.active);
+      if (!user && supabase) {
+        await ensureHydrated(true, true);
+        user = state.users.find((u) => u.id === session.userId && u.active);
+      }
+      if (!user) return {};
+      const forcedBefore =
+        user.forceLoggedOutAt && new Date(session.createdAt) <= new Date(user.forceLoggedOutAt);
+      if (forcedBefore) return {};
+      return { user, token };
+    }
+
+    // 2. Stateless HMAC-like verification for stf.<payload>.<sig> tokens across edge isolates
+    const signed = await verifyStaffToken(token, tokenSecret);
+    if (signed) {
+      let user = state.users.find(
+        (u) => (u.id === signed.uid || u.username.toLowerCase() === signed.usr.toLowerCase()) && u.active,
+      );
+      if (!user && supabase) {
+        await ensureHydrated(true, true);
+        user = state.users.find(
+          (u) => (u.id === signed.uid || u.username.toLowerCase() === signed.usr.toLowerCase()) && u.active,
+        );
+      }
+      if (!user) return {};
+      const forcedBefore =
+        user.forceLoggedOutAt && signed.iat <= new Date(user.forceLoggedOutAt).getTime();
+      if (forcedBefore) return {};
+      state.active_sessions.push({
+        token,
+        userId: user.id,
+        role: user.role,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        createdAt: new Date(signed.iat).toISOString(),
+        revoked: false,
+      });
+      return { user, token };
+    }
+
+    // 3. Fallback: verify Supabase Auth JWT if a Supabase session token was sent directly
+    if (supabase && token.includes('.')) {
+      try {
+        const { data } = await supabase.auth.getUser(token);
+        const sbUser = data?.user;
+        if (sbUser) {
+          const emailPrefix = sbUser.email ? sbUser.email.split('@')[0]?.toLowerCase() : '';
+          const metaUsername =
+            typeof sbUser.user_metadata?.username === 'string'
+              ? sbUser.user_metadata.username.toLowerCase()
+              : emailPrefix;
+          let matched = state.users.find(
+            (u) =>
+              (u.id === sbUser.id || (metaUsername && u.username.toLowerCase() === metaUsername)) &&
+              u.active,
+          );
+          if (!matched) {
+            await ensureHydrated(true, true);
+            matched = state.users.find(
+              (u) =>
+                (u.id === sbUser.id || (metaUsername && u.username.toLowerCase() === metaUsername)) &&
+                u.active,
+            );
+          }
+          if (matched) return { user: matched, token };
+        }
+      } catch {
+        // Ignore invalid JWT
+      }
+    }
+
+    return {};
   };
 
   const requireAuth = (
@@ -457,7 +612,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       );
     }
 
-    const { user: authUser, token: authToken } = authenticate(request);
+    const { user: authUser, token: authToken } = await authenticate(request, clientIp, clientDeviceId);
 
     // Health
     if (pathname === '/api/health' && method === 'GET') {
@@ -491,9 +646,15 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
       const rawUsername = body.username.trim().toLowerCase();
       const normalizedUsername = rawUsername === 'director' ? 'admin' : rawUsername;
-      const user = state.users.find(
+      let user = state.users.find(
         (u) => u.username.toLowerCase() === normalizedUsername && u.active,
       );
+      if (!user && supabase) {
+        await ensureHydrated(true, true);
+        user = state.users.find(
+          (u) => u.username.toLowerCase() === normalizedUsername && u.active,
+        );
+      }
       if (!user || !(await verifyPasswordEdge(body.password, user.passwordHash))) {
         recordAudit({
           eventType: 'LOGIN_FAILED',
@@ -510,7 +671,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         );
       }
 
-      const token = randomHex(32);
+      const token = await createStaffToken(user, tokenSecret);
       const sessionRow = {
         token,
         userId: user.id,
@@ -521,7 +682,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         revoked: false,
       };
       state.active_sessions.push(sessionRow);
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db.from('active_sessions').insert({
           token: sessionRow.token,
           user_id: sessionRow.userId,
@@ -545,13 +706,115 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       return jsonResponse({ token, user: publicUser(user) });
     }
 
+    if (pathname === '/api/auth/register' && method === 'POST') {
+      const body = await readJsonBody<{
+        username?: string;
+        password?: string;
+        role?: string;
+        fullName?: string;
+        phone?: string;
+        specialty?: string;
+        licenseNo?: string;
+      }>(request);
+      const cleanUsername = body?.username?.trim();
+      const cleanFullName = body?.fullName?.trim();
+      const rawPassword = body?.password ?? '';
+      if (!cleanUsername || !cleanFullName || rawPassword.length < 4) {
+        return jsonResponse(
+          {
+            error: 'VALIDATION_ERROR',
+            message: 'กรุณากรอกชื่อ-นามสกุล, Username และรหัสผ่านอย่างน้อย 4 ตัวอักษร',
+          },
+          400,
+        );
+      }
+      const targetRole = normalizeStaffRole(body?.role ?? 'pt');
+      if (targetRole === 'patient') {
+        return jsonResponse({ error: 'FORBIDDEN_ROLE', message: 'Invalid staff registration role' }, 400);
+      }
+      if (supabase) {
+        await ensureHydrated(true, true);
+      }
+      if (state.users.some((u) => u.username.toLowerCase() === cleanUsername.toLowerCase())) {
+        return jsonResponse(
+          { error: 'USERNAME_EXISTS', message: `ชื่อผู้ใช้ "@${cleanUsername}" ถูกใช้งานแล้ว` },
+          409,
+        );
+      }
+
+      const created: StoredUserAccount = {
+        id: newRecordId(Boolean(supabase), 'user'),
+        username: cleanUsername,
+        passwordHash: await hashPasswordEdge(rawPassword),
+        role: targetRole,
+        fullName: cleanFullName,
+        phone: body?.phone?.trim() ?? '',
+        specialty: body?.specialty?.trim() || (targetRole === 'super_admin' ? 'บริหารโรงพยาบาล' : 'เวชศาสตร์ฟื้นฟูกายภาพบำบัด'),
+        licenseNo: body?.licenseNo?.trim() || undefined,
+        active: true,
+        forceLoggedOutAt: null,
+        createdAt: new Date().toISOString(),
+      };
+      state.users.push(created);
+
+      await persistToSupabase(supabase, (db) =>
+        db.from('staff_users').insert({
+          id: created.id,
+          username: created.username,
+          password_hash: created.passwordHash,
+          full_name: created.fullName,
+          phone: created.phone,
+          specialty: created.specialty ?? null,
+          license_no: created.licenseNo ?? null,
+          patient_id: null,
+          role: created.role,
+          active: created.active,
+        }),
+      );
+
+      const token = await createStaffToken(created, tokenSecret);
+      const sessionRow = {
+        token,
+        userId: created.id,
+        role: created.role,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        createdAt: new Date().toISOString(),
+        revoked: false,
+      };
+      state.active_sessions.push(sessionRow);
+      await persistToSupabase(supabase, (db) =>
+        db.from('active_sessions').insert({
+          token: sessionRow.token,
+          user_id: sessionRow.userId,
+          role: sessionRow.role,
+          ip_address: sessionRow.ipAddress,
+          device_id: sessionRow.deviceId,
+          revoked: false,
+        }),
+      );
+
+      recordAudit({
+        eventType: 'STAFF_REGISTERED',
+        actorRole: created.role,
+        actorId: created.id,
+        actorName: created.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: created.id,
+        detail: `Self-registered ${created.role} account @${created.username}`,
+      });
+
+      return jsonResponse({ token, user: publicUser(created) }, 201);
+    }
+
     if (pathname === '/api/auth/logout' && method === 'POST') {
       const err = requireAuth(authUser);
       if (err) return err;
       const session = state.active_sessions.find((s) => s.token === authToken);
       if (session) {
         session.revoked = true;
-        persistToSupabase(supabase, (db) =>
+        await persistToSupabase(supabase, (db) =>
           db.from('active_sessions').update({ revoked: true }).eq('token', session.token),
         );
       }
@@ -581,7 +844,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         );
       }
       authUser!.passwordHash = await hashPasswordEdge(body.newPassword);
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db.from('staff_users').update({ password_hash: authUser!.passwordHash }).eq('id', authUser!.id),
       );
       recordAudit({
@@ -599,7 +862,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     // ========================
     // 2. USER & RBAC MANAGEMENT
     // ========================
-    if (pathname === '/api/users' && method === 'GET') {
+    if ((pathname === '/api/users' || pathname === '/api/staff') && method === 'GET') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
       const users =
@@ -609,13 +872,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       return jsonResponse({ users: users.map(publicUser) });
     }
 
-    if (pathname === '/api/users' && method === 'POST') {
+    if ((pathname === '/api/users' || pathname === '/api/staff') && method === 'POST') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
       const body = await readJsonBody<{
         username?: string;
         password?: string;
-        role?: UserRole;
+        role?: string;
         fullName?: string;
         phone?: string;
         specialty?: string;
@@ -625,31 +888,35 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       if (!body?.username || !body?.password || !body?.role || !body?.fullName) {
         return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
       }
-      if (authUser!.role === 'pt' && body.role !== 'patient') {
+      const normalizedRole = normalizeStaffRole(body.role);
+      if (authUser!.role === 'pt' && normalizedRole !== 'patient') {
         return jsonResponse(
           { error: 'FORBIDDEN', message: 'PT cannot create Admin or PT accounts' },
           403,
         );
       }
-      if (state.users.some((u) => u.username.toLowerCase() === body.username!.toLowerCase())) {
-        return jsonResponse({ error: 'USERNAME_EXISTS' }, 409);
+      if (supabase) {
+        await ensureHydrated(true, true);
+      }
+      if (state.users.some((u) => u.username.toLowerCase() === body.username!.trim().toLowerCase())) {
+        return jsonResponse({ error: 'USERNAME_EXISTS', message: 'ชื่อผู้ใช้นี้มีอยู่ในระบบแล้ว' }, 409);
       }
       const created: StoredUserAccount = {
         id: newRecordId(Boolean(supabase), 'user'),
-        username: body.username,
+        username: body.username.trim(),
         passwordHash: await hashPasswordEdge(body.password),
-        role: body.role,
-        fullName: body.fullName,
-        phone: body.phone ?? '',
-        specialty: body.specialty,
-        licenseNo: body.licenseNo,
+        role: normalizedRole,
+        fullName: body.fullName.trim(),
+        phone: body.phone?.trim() ?? '',
+        specialty: body.specialty?.trim(),
+        licenseNo: body.licenseNo?.trim(),
         patientId: body.patientId,
         active: true,
         forceLoggedOutAt: null,
         createdAt: new Date().toISOString(),
       };
       state.users.push(created);
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db.from('staff_users').insert({
           id: created.id,
           username: created.username,
@@ -671,16 +938,20 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         ipAddress: clientIp,
         deviceId: clientDeviceId,
         targetId: created.id,
-        detail: `Created ${body.role} account @${body.username}`,
+        detail: `Created ${normalizedRole} account @${created.username}`,
       });
       return jsonResponse({ user: publicUser(created) }, 201);
     }
 
-    const userResetMatch = pathname.match(/^\/api\/users\/([^/]+)\/reset-password$/);
+    const userResetMatch = pathname.match(/^\/api\/(?:users|staff)\/([^/]+)\/reset-password$/);
     if (userResetMatch && method === 'POST') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
-      const target = state.users.find((u) => u.id === userResetMatch[1]);
+      let target = state.users.find((u) => u.id === userResetMatch[1]);
+      if (!target && supabase) {
+        await ensureHydrated(true, true);
+        target = state.users.find((u) => u.id === userResetMatch[1]);
+      }
       if (!target) return jsonResponse({ error: 'USER_NOT_FOUND' }, 404);
       if (authUser!.role === 'pt' && target.role !== 'patient') {
         return jsonResponse(
@@ -690,8 +961,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
       const body = await readJsonBody<{ newPassword?: string }>(request);
       target.passwordHash = await hashPasswordEdge(body?.newPassword || 'Patient@2026');
-      persistToSupabase(supabase, (db) =>
-        db.from('staff_users').update({ password_hash: target.passwordHash }).eq('id', target.id),
+      await persistToSupabase(supabase, (db) =>
+        db.from('staff_users').update({ password_hash: target!.passwordHash }).eq('id', target!.id),
       );
       recordAudit({
         eventType: 'PASSWORD_RESET',
@@ -706,11 +977,15 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       return jsonResponse({ ok: true });
     }
 
-    const userMatch = pathname.match(/^\/api\/users\/([^/]+)$/);
+    const userMatch = pathname.match(/^\/api\/(?:users|staff)\/([^/]+)$/);
     if (userMatch && method === 'PUT') {
       const err = requireAuth(authUser);
       if (err) return err;
-      const target = state.users.find((u) => u.id === userMatch[1]);
+      let target = state.users.find((u) => u.id === userMatch[1]);
+      if (!target && supabase) {
+        await ensureHydrated(true, true);
+        target = state.users.find((u) => u.id === userMatch[1]);
+      }
       if (!target) return jsonResponse({ error: 'USER_NOT_FOUND' }, 404);
       const actor = authUser!;
       if (actor.role === 'pt' && target.id !== actor.id && target.role !== 'patient') {
@@ -727,21 +1002,21 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       if (body.phone !== undefined) target.phone = body.phone;
       if (body.specialty !== undefined && actor.role !== 'patient') target.specialty = body.specialty;
       if (body.licenseNo !== undefined && actor.role !== 'patient') target.licenseNo = body.licenseNo;
-      if (body.role !== undefined && actor.role === 'super_admin') target.role = body.role;
+      if (body.role !== undefined && actor.role === 'super_admin') target.role = normalizeStaffRole(body.role);
       if (body.active !== undefined && actor.role === 'super_admin') target.active = body.active;
 
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db
           .from('staff_users')
           .update({
-            full_name: target.fullName,
-            phone: target.phone,
-            specialty: target.specialty ?? null,
-            license_no: target.licenseNo ?? null,
-            role: target.role,
-            active: target.active,
+            full_name: target!.fullName,
+            phone: target!.phone,
+            specialty: target!.specialty ?? null,
+            license_no: target!.licenseNo ?? null,
+            role: target!.role,
+            active: target!.active,
           })
-          .eq('id', target.id),
+          .eq('id', target!.id),
       );
 
       recordAudit({
@@ -760,10 +1035,14 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (userMatch && method === 'DELETE') {
       const err = requireAuth(authUser, ['super_admin']);
       if (err) return err;
-      const idx = state.users.findIndex((u) => u.id === userMatch[1]);
+      let idx = state.users.findIndex((u) => u.id === userMatch[1]);
+      if (idx === -1 && supabase) {
+        await ensureHydrated(true, true);
+        idx = state.users.findIndex((u) => u.id === userMatch[1]);
+      }
       if (idx === -1) return jsonResponse({ error: 'USER_NOT_FOUND' }, 404);
       const removed = state.users.splice(idx, 1)[0];
-      persistToSupabase(supabase, (db) => db.from('staff_users').delete().eq('id', removed.id));
+      await persistToSupabase(supabase, (db) => db.from('staff_users').delete().eq('id', removed.id));
       recordAudit({
         eventType: 'USER_DELETED',
         actorRole: authUser!.role,
@@ -1017,7 +1296,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         updatedAt: new Date().toISOString(),
       };
       state.patient_courses.push(defaultCourse);
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db.from('patient_courses').insert({
           id: defaultCourse.id,
           patient_id: defaultCourse.patientId,
@@ -1042,7 +1321,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           createdAt: new Date().toISOString(),
         };
         state.users.push(patUser);
-        persistToSupabase(supabase, (db) =>
+        await persistToSupabase(supabase, (db) =>
           db.from('staff_users').insert({
             id: patUser.id,
             username: patUser.username,
@@ -2405,7 +2684,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       for (const s of state.active_sessions) {
         if (s.userId === user.id) s.revoked = true;
       }
-      persistToSupabase(supabase, async (db) => {
+      await persistToSupabase(supabase, async (db) => {
         await db
           .from('staff_users')
           .update({ force_logged_out_at: user.forceLoggedOutAt })
@@ -2437,7 +2716,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         ...state.system_settings,
         ...patch,
       };
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db
           .from('system_settings')
           .upsert({

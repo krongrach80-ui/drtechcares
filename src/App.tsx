@@ -30,8 +30,6 @@ export function App() {
   const [kioskMode, setKioskMode] = useState<KioskViewMode>('login');
   const [staffModalIntent, setStaffModalIntent] = useState<StaffAuthIntent | null>(null);
   const [authenticatedPatient, setAuthenticatedPatient] = useState<KioskLoginSuccessPayload | null>(null);
-  const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
-  const [authChecked, setAuthChecked] = useState(false);
 
   const apiClient = useMemo(
     () =>
@@ -42,6 +40,9 @@ export function App() {
     [],
   );
 
+  const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => apiClient.getStoredUser());
+  const [authChecked, setAuthChecked] = useState(false);
+
   const navigate = (next: AppRoute) => {
     setRoute(next);
     if (typeof window !== 'undefined' && window.location.pathname !== next) {
@@ -51,8 +52,16 @@ export function App() {
 
   useEffect(() => {
     const onPop = () => setRoute(resolveRoute(window.location.pathname));
+    const onAuthExpired = () => {
+      setCurrentUser(null);
+      setAuthChecked(true);
+    };
     window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
+    window.addEventListener('drtech:auth-expired', onAuthExpired);
+    return () => {
+      window.removeEventListener('popstate', onPop);
+      window.removeEventListener('drtech:auth-expired', onAuthExpired);
+    };
   }, []);
 
   useEffect(() => {
@@ -60,10 +69,16 @@ export function App() {
       setAuthChecked(true);
       return;
     }
+    let cancelled = false;
     apiClient.getMe().then((u) => {
-      setCurrentUser(u);
-      setAuthChecked(true);
+      if (!cancelled) {
+        setCurrentUser(u);
+        setAuthChecked(true);
+      }
     });
+    return () => {
+      cancelled = true;
+    };
   }, [route, apiClient]);
 
   // Locked Kiosk Mode (/) — Exact Kiosk Biometric Login UI by default, transitioning into Rehab / Classic Kiosk

@@ -253,9 +253,23 @@ export class ApiError extends Error {
   }
 }
 
+const DRTECH_SESSION_STORAGE_KEY = 'drtech_session';
+const DRTECH_TOKEN_STORAGE_KEY = 'drtechcares_auth_token';
+
+export interface StaffRegisterInput {
+  username: string;
+  password: string;
+  role: 'super_admin' | 'pt' | 'ADMIN' | 'PT';
+  fullName: string;
+  phone?: string;
+  specialty?: string;
+  licenseNo?: string;
+}
+
 export class DrTechCaresApiClient {
   private supabase: SupabaseClient | null = null;
   private authToken: string | null = null;
+  private storedUser: UserAccount | null = null;
   private readonly baseUrl: string;
   private readonly deviceId: string;
 
@@ -264,9 +278,9 @@ export class DrTechCaresApiClient {
     this.baseUrl = config.apiBaseUrl ?? '';
     this.deviceId = this.resolveDeviceId();
 
-    if (typeof globalThis.sessionStorage !== 'undefined') {
-      this.authToken = globalThis.sessionStorage.getItem('drtechcares_auth_token');
-    }
+    const persisted = this.readPersistedSession();
+    this.authToken = persisted.token;
+    this.storedUser = persisted.user;
 
     const url = config.supabaseUrl || '';
     const key = config.supabaseServiceKey || config.supabaseAnonKey || '';
@@ -289,16 +303,81 @@ export class DrTechCaresApiClient {
     return 'server-worker';
   }
 
-  setAuthToken(token: string | null): void {
+  private readPersistedSession(): { token: string | null; user: UserAccount | null } {
+    let token: string | null = null;
+    let user: UserAccount | null = null;
+    try {
+      if (typeof globalThis.localStorage !== 'undefined') {
+        const rawSession = globalThis.localStorage.getItem(DRTECH_SESSION_STORAGE_KEY);
+        if (rawSession) {
+          const parsed = JSON.parse(rawSession) as { token?: string; user?: UserAccount } | null;
+          if (parsed?.token) {
+            token = parsed.token;
+            user = parsed.user ?? null;
+          }
+        }
+        if (!token) {
+          token = globalThis.localStorage.getItem(DRTECH_TOKEN_STORAGE_KEY);
+        }
+      }
+      if (!token && typeof globalThis.sessionStorage !== 'undefined') {
+        token = globalThis.sessionStorage.getItem(DRTECH_TOKEN_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage access or malformed JSON errors
+    }
+    return { token, user };
+  }
+
+  /** Persist both Bearer token and authenticated user across localStorage and sessionStorage. */
+  setSession(token: string | null, user: UserAccount | null = null): void {
     this.authToken = token;
-    if (typeof globalThis.sessionStorage !== 'undefined') {
-      if (token) globalThis.sessionStorage.setItem('drtechcares_auth_token', token);
-      else globalThis.sessionStorage.removeItem('drtechcares_auth_token');
+    this.storedUser = token ? (user ?? this.storedUser) : null;
+    try {
+      if (typeof globalThis.sessionStorage !== 'undefined') {
+        if (token) globalThis.sessionStorage.setItem(DRTECH_TOKEN_STORAGE_KEY, token);
+        else globalThis.sessionStorage.removeItem(DRTECH_TOKEN_STORAGE_KEY);
+      }
+      if (typeof globalThis.localStorage !== 'undefined') {
+        if (token) {
+          globalThis.localStorage.setItem(DRTECH_TOKEN_STORAGE_KEY, token);
+          globalThis.localStorage.setItem(
+            DRTECH_SESSION_STORAGE_KEY,
+            JSON.stringify({ token, user: this.storedUser }),
+          );
+        } else {
+          globalThis.localStorage.removeItem(DRTECH_TOKEN_STORAGE_KEY);
+          globalThis.localStorage.removeItem(DRTECH_SESSION_STORAGE_KEY);
+        }
+      }
+    } catch {
+      // Ignore storage quota or security restrictions
     }
   }
 
+  setAuthToken(token: string | null): void {
+    this.setSession(token, token ? this.storedUser : null);
+  }
+
   getAuthToken(): string | null {
+    if (!this.authToken) {
+      const persisted = this.readPersistedSession();
+      this.authToken = persisted.token;
+      if (!this.storedUser && persisted.user) {
+        this.storedUser = persisted.user;
+      }
+    }
     return this.authToken;
+  }
+
+  /** Return the cached authenticated user if an active token is present. */
+  getStoredUser(): UserAccount | null {
+    const token = this.getAuthToken();
+    if (!token) return null;
+    if (!this.storedUser) {
+      this.storedUser = this.readPersistedSession().user;
+    }
+    return this.storedUser;
   }
 
   getSupabaseClient(): SupabaseClient | null {
@@ -335,20 +414,25 @@ export class DrTechCaresApiClient {
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const activeToken = this.getAuthToken();
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-device-id': this.deviceId,
       ...(init.headers as Record<string, string> | undefined),
     };
-    if (this.authToken) {
-      headers.Authorization = `Bearer ${this.authToken}`;
+    if (activeToken) {
+      headers.Authorization = `Bearer ${activeToken}`;
+      headers['X-Staff-Token'] = activeToken;
     }
     const res = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
     const text = await res.text();
     const data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
     if (!res.ok) {
-      if (res.status === 401 && path !== '/api/auth/login' && path !== '/api/biometric/verify') {
-        this.setAuthToken(null);
+      if (res.status === 401 && path === '/api/auth/me') {
+        this.setSession(null, null);
+        if (typeof globalThis.dispatchEvent === 'function' && typeof globalThis.CustomEvent === 'function') {
+          globalThis.dispatchEvent(new globalThis.CustomEvent('drtech:auth-expired'));
+        }
       }
       throw new ApiError(
         res.status,
@@ -365,7 +449,17 @@ export class DrTechCaresApiClient {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     });
-    this.setAuthToken(res.token);
+    this.setSession(res.token, res.user);
+    return res;
+  }
+
+  /** Register a new Admin or PT staff member and persist their active session immediately. */
+  async registerStaff(input: StaffRegisterInput): Promise<{ token: string; user: UserAccount }> {
+    const res = await this.request<{ token: string; user: UserAccount }>('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+    this.setSession(res.token, res.user);
     return res;
   }
 
@@ -373,16 +467,21 @@ export class DrTechCaresApiClient {
     try {
       await this.request('/api/auth/logout', { method: 'POST' });
     } finally {
-      this.setAuthToken(null);
+      this.setSession(null, null);
     }
   }
 
   async getMe(): Promise<UserAccount | null> {
-    if (!this.authToken) return null;
+    const activeToken = this.getAuthToken();
+    if (!activeToken) return null;
     try {
       const res = await this.request<{ user: UserAccount }>('/api/auth/me');
+      this.setSession(activeToken, res.user);
       return res.user;
-    } catch {
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        this.setSession(null, null);
+      }
       return null;
     }
   }

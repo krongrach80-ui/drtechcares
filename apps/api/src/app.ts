@@ -268,9 +268,17 @@ export function createDrTechCaresApiApp(
 
   // Attach optional auth session
   app.use('/api', (req: AuthenticatedRequest, _res: Response, next: NextFunction) => {
-    const header = req.headers.authorization;
-    if (header && header.startsWith('Bearer ')) {
-      const token = header.slice(7).trim();
+    const authHeader = req.headers.authorization;
+    const xStaffHeader = Array.isArray(req.headers['x-staff-token'])
+      ? req.headers['x-staff-token'][0]
+      : req.headers['x-staff-token'];
+    const token =
+      authHeader && authHeader.startsWith('Bearer ')
+        ? authHeader.slice(7).trim()
+        : typeof xStaffHeader === 'string' && xStaffHeader.trim()
+          ? xStaffHeader.trim()
+          : '';
+    if (token) {
       const session = db.state.active_sessions.find((s) => s.token === token && !s.revoked);
       if (session) {
         const user = db.state.users.find((u) => u.id === session.userId && u.active);
@@ -297,6 +305,30 @@ export function createDrTechCaresApiApp(
       return;
     }
     next();
+  };
+
+  /** Create and persist an active session token for a newly logged-in or registered user. */
+  const issueSessionForUser = (user: UserAccount, req: AuthenticatedRequest): string => {
+    const token = crypto.randomBytes(32).toString('hex');
+    db.state.active_sessions.push({
+      token,
+      userId: user.id,
+      role: user.role,
+      ipAddress: req.clientIp ?? 'unknown',
+      deviceId: req.clientDeviceId ?? 'unknown',
+      createdAt: new Date().toISOString(),
+      revoked: false,
+    });
+    db.save();
+    return token;
+  };
+
+  /** Normalize external role aliases into canonical Express UserRole values. */
+  const normalizeStaffRole = (rawRole?: string): UserRole => {
+    const upper = (rawRole ?? 'pt').trim().toUpperCase();
+    if (upper === 'SUPER_ADMIN' || upper === 'ADMIN' || upper === 'DIRECTOR') return 'super_admin';
+    if (upper === 'PATIENT') return 'patient';
+    return 'pt';
   };
 
   app.get('/api/health', (_req: Request, res: Response) => {
@@ -329,17 +361,7 @@ export function createDrTechCaresApiApp(
       return;
     }
 
-    const token = crypto.randomBytes(32).toString('hex');
-    db.state.active_sessions.push({
-      token,
-      userId: user.id,
-      role: user.role,
-      ipAddress: req.clientIp ?? 'unknown',
-      deviceId: req.clientDeviceId ?? 'unknown',
-      createdAt: new Date().toISOString(),
-      revoked: false,
-    });
-    db.save();
+    const token = issueSessionForUser(user, req);
 
     db.recordAudit({
       eventType: 'USER_LOGIN',
@@ -352,6 +374,71 @@ export function createDrTechCaresApiApp(
     });
 
     res.json({ token, user: db.publicUser(user) });
+  });
+
+  app.post('/api/auth/register', (req: AuthenticatedRequest, res: Response) => {
+    const body = (req.body ?? {}) as {
+      username?: string;
+      password?: string;
+      role?: string;
+      fullName?: string;
+      phone?: string;
+      specialty?: string;
+      licenseNo?: string;
+    };
+    const cleanUsername = body.username?.trim() ?? '';
+    const cleanFullName = body.fullName?.trim() ?? '';
+    const rawPassword = body.password ?? '';
+    if (!cleanUsername || !cleanFullName || rawPassword.length < 4) {
+      res.status(400).json({
+        error: 'VALIDATION_ERROR',
+        message: 'กรุณากรอกชื่อ-นามสกุล, Username และรหัสผ่านอย่างน้อย 4 ตัวอักษร',
+      });
+      return;
+    }
+    const targetRole = normalizeStaffRole(body.role);
+    if (targetRole === 'patient') {
+      res.status(400).json({ error: 'FORBIDDEN_ROLE', message: 'Invalid staff registration role' });
+      return;
+    }
+    if (db.state.users.some((u) => u.username.toLowerCase() === cleanUsername.toLowerCase())) {
+      res.status(409).json({
+        error: 'USERNAME_EXISTS',
+        message: `ชื่อผู้ใช้ "@${cleanUsername}" ถูกใช้งานแล้ว`,
+      });
+      return;
+    }
+
+    const created: UserAccount = {
+      id: `user-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
+      username: cleanUsername,
+      passwordHash: hashPassword(rawPassword),
+      role: targetRole,
+      fullName: cleanFullName,
+      phone: body.phone?.trim() ?? '',
+      specialty:
+        body.specialty?.trim() ||
+        (targetRole === 'super_admin' ? 'บริหารโรงพยาบาล' : 'เวชศาสตร์ฟื้นฟูกายภาพบำบัด'),
+      licenseNo: body.licenseNo?.trim() || undefined,
+      active: true,
+      forceLoggedOutAt: null,
+      createdAt: new Date().toISOString(),
+    };
+    db.state.users.push(created);
+    const token = issueSessionForUser(created, req);
+
+    db.recordAudit({
+      eventType: 'USER_CREATED',
+      actorRole: created.role,
+      actorId: created.id,
+      actorName: created.fullName,
+      ipAddress: req.clientIp ?? 'unknown',
+      deviceId: req.clientDeviceId ?? 'unknown',
+      targetId: created.id,
+      detail: `Self-registered ${created.role} account @${created.username}`,
+    });
+
+    res.status(201).json({ token, user: db.publicUser(created) });
   });
 
   app.post('/api/auth/logout', requireAuth(), (req: AuthenticatedRequest, res: Response) => {
@@ -394,7 +481,7 @@ export function createDrTechCaresApiApp(
   // ========================
   // 2. USER & RBAC MANAGEMENT
   // ========================
-  app.get('/api/users', requireAuth(['super_admin', 'pt']), (req: AuthenticatedRequest, res: Response) => {
+  app.get(['/api/users', '/api/staff'], requireAuth(['super_admin', 'pt']), (req: AuthenticatedRequest, res: Response) => {
     const users =
       req.authUser!.role === 'super_admin'
         ? db.state.users
@@ -402,7 +489,7 @@ export function createDrTechCaresApiApp(
     res.json({ users: users.map((u) => db.publicUser(u)) });
   });
 
-  app.post('/api/users', requireAuth(['super_admin', 'pt']), (req: AuthenticatedRequest, res: Response) => {
+  app.post(['/api/users', '/api/staff'], requireAuth(['super_admin', 'pt']), (req: AuthenticatedRequest, res: Response) => {
     const { username, password, role, fullName, phone, specialty, licenseNo, patientId } = req.body as {
       username?: string;
       password?: string;
@@ -413,11 +500,12 @@ export function createDrTechCaresApiApp(
       licenseNo?: string;
       patientId?: string;
     };
-    if (!username || !password || !role || !fullName) {
+    const normalizedRole = role ? normalizeStaffRole(role) : undefined;
+    if (!username || !password || !normalizedRole || !fullName) {
       res.status(400).json({ error: 'VALIDATION_ERROR' });
       return;
     }
-    if (req.authUser!.role === 'pt' && role !== 'patient') {
+    if (req.authUser!.role === 'pt' && normalizedRole !== 'patient') {
       res.status(403).json({
         error: 'FORBIDDEN',
         message: 'PT cannot create Admin or PT accounts',
@@ -432,7 +520,7 @@ export function createDrTechCaresApiApp(
       id: `user-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
       username,
       passwordHash: hashPassword(password),
-      role,
+      role: normalizedRole,
       fullName,
       phone: phone ?? '',
       specialty,

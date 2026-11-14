@@ -43,6 +43,13 @@ export interface CloudRouterState {
   kiosks: KioskStatusRecord[];
 }
 
+export function normalizeStaffRole(rawRole: unknown): UserRole {
+  const r = String(rawRole ?? 'pt').trim().toLowerCase();
+  if (r === 'super_admin' || r === 'admin' || r === 'director') return 'super_admin';
+  if (r === 'patient') return 'patient';
+  return 'pt';
+}
+
 export function newRecordId(useUuid: boolean, prefix: string): string {
   if (useUuid && typeof globalThis.crypto?.randomUUID === 'function') {
     return globalThis.crypto.randomUUID();
@@ -94,20 +101,33 @@ export async function hydrateStateFromSupabase(
   ]);
 
   if (usersRes.status === 'fulfilled' && Array.isArray(usersRes.value.data) && usersRes.value.data.length > 0) {
-    state.users = usersRes.value.data.map((r: Record<string, unknown>) => ({
+    const dbUsers: StoredUserAccount[] = usersRes.value.data.map((r: Record<string, unknown>) => ({
       id: String(r.id),
       username: String(r.username),
       passwordHash: String(r.password_hash ?? ''),
-      role: (r.role as UserRole) ?? 'pt',
+      role: normalizeStaffRole(r.role),
       fullName: String(r.full_name ?? ''),
       phone: String(r.phone ?? ''),
       specialty: r.specialty ? String(r.specialty) : undefined,
-      licenseNo: r.license_no ? String(r.license_no) : undefined,
+      licenseNo: r.license_no
+        ? String(r.license_no)
+        : r.license_number
+          ? String(r.license_number)
+          : undefined,
       patientId: r.patient_id ? String(r.patient_id) : undefined,
-      active: Boolean(r.active ?? true),
+      active:
+        r.active !== undefined && r.active !== null
+          ? Boolean(r.active)
+          : String(r.status ?? 'ACTIVE').toUpperCase() !== 'SUSPENDED',
       forceLoggedOutAt: r.force_logged_out_at ? String(r.force_logged_out_at) : null,
       createdAt: String(r.created_at ?? new Date().toISOString()),
     }));
+    const dbIds = new Set(dbUsers.map((u) => u.id));
+    const dbUsernames = new Set(dbUsers.map((u) => u.username.toLowerCase()));
+    const localOnly = state.users.filter(
+      (u) => !dbIds.has(u.id) && !dbUsernames.has(u.username.toLowerCase()),
+    );
+    state.users = [...dbUsers, ...localOnly];
   }
 
   const parsedTemplatesByPatient = new Map<
@@ -412,15 +432,24 @@ export async function hydrateStateFromSupabase(
   }
 
   if (activeSessionsRes.status === 'fulfilled' && Array.isArray(activeSessionsRes.value.data)) {
-    state.active_sessions = activeSessionsRes.value.data.map((r: Record<string, unknown>) => ({
-      token: String(r.token),
-      userId: String(r.user_id),
-      role: (r.role as UserRole) ?? 'pt',
-      ipAddress: String(r.ip_address ?? 'unknown'),
-      deviceId: String(r.device_id ?? 'unknown'),
-      createdAt: String(r.created_at),
-      revoked: Boolean(r.revoked),
-    }));
+    const merged = new Map<string, ActiveSessionRecord>();
+    for (const s of state.active_sessions) {
+      merged.set(s.token, s);
+    }
+    for (const r of activeSessionsRes.value.data as Record<string, unknown>[]) {
+      const token = String(r.token);
+      const prev = merged.get(token);
+      merged.set(token, {
+        token,
+        userId: String(r.user_id),
+        role: normalizeStaffRole(r.role),
+        ipAddress: String(r.ip_address ?? 'unknown'),
+        deviceId: String(r.device_id ?? 'unknown'),
+        createdAt: String(r.created_at),
+        revoked: Boolean(prev?.revoked) || Boolean(r.revoked),
+      });
+    }
+    state.active_sessions = Array.from(merged.values());
   }
 
   if (settingsRes.status === 'fulfilled' && settingsRes.value.data) {

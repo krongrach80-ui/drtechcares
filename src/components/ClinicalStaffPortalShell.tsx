@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ApiError } from '@drtechcares/api-client';
 import type {
   ActiveSessionRecord,
   AuditLogRecord,
@@ -985,6 +986,26 @@ export function ClinicalStaffPortalShell({
   const [mpCategory, setMpCategory] = useState('ผลไม้');
 
   const prevOpenCallCountRef = useRef(0);
+  const onLogoutRef = useRef(onLogout);
+  onLogoutRef.current = onLogout;
+
+  const isAuthError = (err: unknown): boolean =>
+    (err instanceof ApiError && err.status === 401) ||
+    (err instanceof Error && err.message === 'Authentication required');
+
+  /** Verify session via /api/auth/me when a 401 occurs and sign out cleanly if invalid. */
+  const handleAuthFailureIfExpired = useCallback(
+    async (err: unknown): Promise<boolean> => {
+      if (!isAuthError(err)) return false;
+      const verified = await apiClient.getMe();
+      if (!verified) {
+        await onLogoutRef.current();
+        return true;
+      }
+      return false;
+    },
+    [apiClient],
+  );
 
   const flashBanner = useCallback((kind: 'success' | 'error', text: string) => {
     setBannerMessage({ kind, text });
@@ -1001,8 +1022,12 @@ export function ClinicalStaffPortalShell({
   const refreshAll = useCallback(async () => {
     setLoading(true);
     try {
+      let listUsersError: unknown = null;
       const [uRes, pRes, exRes, mpRes, sessRes, callsRes, settingsRes, secRes, healthRes] = await Promise.all([
-        apiClient.listUsers().catch(() => []),
+        apiClient.listUsers().catch((err) => {
+          listUsersError = err;
+          return null;
+        }),
         apiClient.listPatients().catch(() => []),
         apiClient.listExercises().catch(() => []),
         apiClient.listModpacks().catch(() => []),
@@ -1013,7 +1038,21 @@ export function ClinicalStaffPortalShell({
         apiClient.checkHealth().catch(() => ({ ok: false, supabaseConnected: false, latencyMs: 0 })),
       ]);
 
-      setUsers(uRes);
+      if (listUsersError) {
+        if (await handleAuthFailureIfExpired(listUsersError)) return;
+        flashBanner(
+          'error',
+          listUsersError instanceof Error ? listUsersError.message : 'ไม่สามารถโหลดข้อมูลบุคลากรได้',
+        );
+      }
+
+      if (uRes && uRes.length > 0) {
+        setUsers(uRes);
+      } else if (uRes) {
+        setUsers([currentUser]);
+      } else {
+        setUsers((prev) => (prev.length > 0 ? prev : [currentUser]));
+      }
       setPatients(pRes);
       setExercises(exRes);
       setModpacks(mpRes);
@@ -1046,7 +1085,15 @@ export function ClinicalStaffPortalShell({
     } finally {
       setLoading(false);
     }
-  }, [apiClient, isAdmin, selectedSchedulePatientId, courseModpackId]);
+  }, [
+    apiClient,
+    isAdmin,
+    currentUser,
+    handleAuthFailureIfExpired,
+    flashBanner,
+    selectedSchedulePatientId,
+    courseModpackId,
+  ]);
 
   useEffect(() => {
     refreshAll();
@@ -1212,6 +1259,7 @@ export function ClinicalStaffPortalShell({
       flashBanner('success', 'เพิ่มบัญชีบุคลากรและบันทึก Audit Log เรียบร้อยแล้ว');
       await refreshAll();
     } catch (err) {
+      if (await handleAuthFailureIfExpired(err)) return;
       flashBanner('error', err instanceof Error ? err.message : 'เพิ่มบุคลากรไม่สำเร็จ');
     } finally {
       setSubmitting(false);
