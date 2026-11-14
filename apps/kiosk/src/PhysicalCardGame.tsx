@@ -950,8 +950,13 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
           <span className="mg-category-pill inline-block rounded-full bg-white px-7 py-2.5 font-black uppercase tracking-wider text-indigo-700 shadow-sm border-2 border-indigo-100">
             {currentCard.category.replace('_', ' ')}
           </span>
-          <div className="mg-icon-hero my-3 sm:my-4 select-none">
-            {currentCard.icon}
+          <div className="my-3 sm:my-4 flex items-center justify-center">
+            <img
+              src={currentCard.imageUrl}
+              alt={pick(currentCard.subject)}
+              className="h-36 w-56 sm:h-44 sm:w-72 rounded-2xl object-contain shadow-md border-2 border-indigo-100 bg-white p-1.5"
+              draggable={false}
+            />
           </div>
           <h2 className="mg-question-title font-black text-slate-950 max-w-5xl">
             {pick(currentCard.question)}
