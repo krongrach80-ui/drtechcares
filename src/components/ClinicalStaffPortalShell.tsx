@@ -2046,9 +2046,33 @@ export function ClinicalStaffPortalShell({
   }, [calendarDayStateByDate]);
 
   const currentHeader = locale.headers[activeTab];
-  const scheduledBadgeCount = patients.filter(
-    (p) => Boolean(p.nextAppointmentDate) || Boolean(p.rehabSchedules?.length),
-  ).length;
+  const totalScheduledAppointmentDays = useMemo(() => {
+    return patients.reduce((sum, p) => {
+      const distinctDates = new Set(
+        (p.rehabSchedules ?? [])
+          .filter((s) => s.status !== 'REST')
+          .map((s) => s.scheduledDate),
+      );
+      if (p.id === selectedSchedulePatient?.id) {
+        return (
+          sum +
+          (scheduleStats.total > 0
+            ? scheduleStats.total
+            : distinctDates.size > 0
+              ? distinctDates.size
+              : p.nextAppointmentDate
+                ? 1
+                : 0)
+        );
+      }
+      return sum + (distinctDates.size > 0 ? distinctDates.size : p.nextAppointmentDate ? 1 : 0);
+    }, 0);
+  }, [patients, selectedSchedulePatient?.id, scheduleStats.total]);
+
+  const scheduledBadgeCount =
+    scheduleSubTab === 'individual' && selectedSchedulePatient
+      ? scheduleStats.total || totalScheduledAppointmentDays
+      : totalScheduledAppointmentDays;
 
   return (
     <div className="min-h-screen flex bg-gradient-to-br from-[#F0FDF9] via-[#F0F7FF] to-[#F8FAFC] text-[#0F4C81]">
@@ -3291,7 +3315,7 @@ export function ClinicalStaffPortalShell({
                       scheduleSubTab === 'all' ? 'bg-emerald-50 text-emerald-700' : 'text-slate-500'
                     }`}
                   >
-                    {locale.schedules.subAll} ({patients.length})
+                    {locale.schedules.subAll} ({totalScheduledAppointmentDays})
                   </button>
                 </div>
 
