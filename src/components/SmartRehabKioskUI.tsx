@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { FilesetResolver, PoseLandmarker, type NormalizedLandmark } from '@mediapipe/tasks-vision';
 import { selectClinicalCameraDeviceId } from '@drtechcares/face-client';
-import { POSE_INDEX, computeJointAngle3D } from '@drtechcares/pose-engine';
+import { POSE_INDEX, ClinicalOneEuroLandmarkFilter, computeJointAngle3D } from '@drtechcares/pose-engine';
 import {
   Activity,
   AlertOctagon,
@@ -1207,6 +1207,62 @@ function drawLivePoseOverlayOnCanvas(
       primary[anchorIdx] ? anchorIdx : POSE_INDEX.NOSE,
       anchorLm,
     );
+
+    // Draw real-time geometric angle arc directly at the active joint
+    if (
+      opts.targetJoint === 'left_shoulder' ||
+      opts.targetJoint === 'right_shoulder' ||
+      opts.targetJoint === 'left_knee' ||
+      opts.targetJoint === 'right_knee'
+    ) {
+      const isLeftSide =
+        opts.targetJoint === 'left_shoulder' || opts.targetJoint === 'left_knee';
+      let refLm: NormalizedLandmark | undefined;
+      let movLm: NormalizedLandmark | undefined;
+      if (opts.targetJoint === 'left_shoulder' || opts.targetJoint === 'right_shoulder') {
+        if (overlayJointMode === 'elbow') {
+          refLm = primary[isLeftSide ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
+          movLm = primary[isLeftSide ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
+        } else {
+          refLm = primary[isLeftSide ? POSE_INDEX.LEFT_HIP : POSE_INDEX.RIGHT_HIP];
+          movLm = primary[isLeftSide ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
+        }
+      } else {
+        refLm = primary[isLeftSide ? POSE_INDEX.LEFT_HIP : POSE_INDEX.RIGHT_HIP];
+        movLm = primary[isLeftSide ? POSE_INDEX.LEFT_ANKLE : POSE_INDEX.RIGHT_ANKLE];
+      }
+
+      if (movLm && (movLm.visibility ?? 0) >= 0.18) {
+        const movPt = toCanvasPt(anchorIdx, movLm);
+        const refPt =
+          refLm && (refLm.visibility ?? 0) >= 0.18
+            ? toCanvasPt(anchorIdx, refLm)
+            : { x: anchorPt.x, y: anchorPt.y + 80 };
+        const aRef = Math.atan2(refPt.y - anchorPt.y, refPt.x - anchorPt.x);
+        const aMov = Math.atan2(movPt.y - anchorPt.y, movPt.x - anchorPt.x);
+        let deltaAng = aMov - aRef;
+        while (deltaAng <= -Math.PI) deltaAng += Math.PI * 2;
+        while (deltaAng > Math.PI) deltaAng -= Math.PI * 2;
+        const anticlockwise = deltaAng < 0;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(anchorPt.x, anchorPt.y);
+        ctx.arc(anchorPt.x, anchorPt.y, 32, aRef, aRef + deltaAng, anticlockwise);
+        ctx.closePath();
+        ctx.globalAlpha = 0.24;
+        ctx.fillStyle = activeColor;
+        ctx.fill();
+        ctx.globalAlpha = 0.92;
+        ctx.beginPath();
+        ctx.arc(anchorPt.x, anchorPt.y, 32, aRef, aRef + deltaAng, anticlockwise);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = activeColor;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
     const jx = Math.max(64, Math.min(w - 64, anchorPt.x));
     const jy = Math.max(54, Math.min(h - 40, anchorPt.y - 42));
 
@@ -1218,7 +1274,7 @@ function drawLivePoseOverlayOnCanvas(
       ctx.stroke();
     }
 
-    const badgeText = `${Math.round(opts.romDeg)}° / ${opts.targetRomDeg}°`;
+    const badgeText = `${opts.romDeg.toFixed(1)}° / ${opts.targetRomDeg}°`;
     ctx.font = '800 14px "Sarabun", sans-serif';
     const tw = ctx.measureText(badgeText).width;
     const bw = Math.max(82, tw + 20);
@@ -1626,6 +1682,7 @@ export function SmartRehabKioskUI({
       maxAlpha: 0.85,
       velocityScale: 15.0,
     });
+    const worldOneEuroFilter = new ClinicalOneEuroLandmarkFilter(0.6, 0.03, 1.0);
     let enableCustomSmooth = true;
     const formatSmoothingHud = () => {
       if (!enableCustomSmooth) {
@@ -1649,7 +1706,10 @@ export function SmartRehabKioskUI({
       }
       if (event.key === '1') {
         enableCustomSmooth = !enableCustomSmooth;
-        if (!enableCustomSmooth) landmarkSmoother.reset();
+        if (!enableCustomSmooth) {
+          landmarkSmoother.reset();
+          worldOneEuroFilter.reset();
+        }
       } else if (event.key === '2') {
         landmarkSmoother.adaptive = !landmarkSmoother.adaptive;
       } else if (event.key === '+' || event.key === '=') {
@@ -1686,6 +1746,7 @@ export function SmartRehabKioskUI({
     const cleanup = () => {
       window.removeEventListener('keydown', handleSmoothingKeyDown);
       landmarkSmoother.reset();
+      worldOneEuroFilter.reset();
       if (rafId) {
         cancelAnimationFrame(rafId);
         rafId = 0;
@@ -1821,6 +1882,7 @@ export function SmartRehabKioskUI({
             trackedExId = curEx.exercise_id;
             torsoAnchor = null;
             landmarkSmoother.reset();
+            worldOneEuroFilter.reset();
             occludedFrames = 0;
             wrongSideStreak = 0;
             wrongPlaneStreak = 0;
@@ -1912,6 +1974,7 @@ export function SmartRehabKioskUI({
                 latestLandmarks = null;
                 renderPrimaryLandmarks = null;
                 landmarkSmoother.reset();
+                worldOneEuroFilter.reset();
               } else if (demoPresetRef.current !== 'IMPOSTOR' || !stepACheckIdentity) {
                 const rawLandmarks = allLandmarks[0] ?? null;
                 if (rawLandmarks) {
@@ -1950,7 +2013,16 @@ export function SmartRehabKioskUI({
                       emitPresetState('ACTIVE_REP');
                     }
                   }
-                  const worldLandmarks = poseRes?.worldLandmarks?.[0] ?? undefined;
+                  const rawWorldLandmarks = poseRes?.worldLandmarks?.[0];
+                  const worldLandmarks =
+                    rawWorldLandmarks && enableCustomSmooth
+                      ? worldOneEuroFilter.filterLandmarks(rawWorldLandmarks, now).map((lm, idx) => ({
+                          x: lm.x,
+                          y: lm.y,
+                          z: lm.z ?? rawWorldLandmarks[idx]?.z ?? 0,
+                          visibility: lm.visibility ?? rawWorldLandmarks[idx]?.visibility ?? 0,
+                        }))
+                      : rawWorldLandmarks;
                   const measured = measureLiveJointAngleAndTilt(
                     landmarks,
                     curEx.target_joint,
@@ -1975,6 +2047,7 @@ export function SmartRehabKioskUI({
                   latestLandmarks = null;
                   renderPrimaryLandmarks = null;
                   landmarkSmoother.reset();
+                  worldOneEuroFilter.reset();
                 }
               }
             } catch {

@@ -1,0 +1,415 @@
+import math
+import os
+import time
+import cv2
+import mediapipe as mp
+import numpy as np
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
+
+class OneEuroFilter:
+    """
+    อัลกอริทึม 1€ Filter มาตรฐานงานวิจัยและเครื่องมือแพทย์
+    ใช้อัตราการเปลี่ยนแปลงตามเวลาจริง (dt) เพื่อตัดอาการสั่นโดยไม่ทำให้ภาพหน่วง
+    """
+
+    def __init__(self, min_cutoff: float = 1.0, beta: float = 0.05, d_cutoff: float = 1.0) -> None:
+        self.min_cutoff = float(min_cutoff)
+        self.beta = float(beta)
+        self.d_cutoff = float(d_cutoff)
+        self.x_prev: np.ndarray | None = None
+        self.dx_prev: np.ndarray | None = None
+        self.t_prev: float | None = None
+
+    def _smoothing_factor(self, dt: float, cutoff: np.ndarray | float) -> np.ndarray | float:
+        r = 2.0 * math.pi * cutoff * dt
+        return r / (r + 1.0)
+
+    def apply(self, x, t: float | None = None) -> np.ndarray:
+        if t is None:
+            t = time.perf_counter()
+        x_arr = np.asarray(x, dtype=np.float64)
+
+        if self.x_prev is None or self.x_prev.shape != x_arr.shape or self.t_prev is None:
+            self.x_prev = x_arr
+            self.dx_prev = np.zeros_like(x_arr, dtype=np.float64)
+            self.t_prev = t
+            return x_arr
+
+        dt = t - self.t_prev
+        if dt <= 1e-6:
+            return self.x_prev
+
+        # คำนวณความเร็วการเคลื่อนที่และกรองสัญญาณความเร็ว
+        a_d = self._smoothing_factor(dt, self.d_cutoff)
+        dx = (x_arr - self.x_prev) / dt
+        dx_hat = a_d * dx + (1.0 - a_d) * self.dx_prev
+
+        # ปรับค่า Cutoff อัตโนมัติตามความเร็ว (ขยับช้า = นิ่งสนิท, ขยับเร็ว = ตามทันทันที)
+        cutoff = self.min_cutoff + self.beta * np.abs(dx_hat)
+        a = self._smoothing_factor(dt, cutoff)
+        x_hat = a * x_arr + (1.0 - a) * self.x_prev
+
+        self.x_prev = x_hat
+        self.dx_prev = dx_hat
+        self.t_prev = t
+        return x_hat
+
+    def reset(self) -> None:
+        self.x_prev = None
+        self.dx_prev = None
+        self.t_prev = None
+
+
+def calculate_3d_angle(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    """คำนวณมุมจริงในปริภูมิ 3 มิติ (0-180 องศา) จาก Dot Product โดยมีจุด b เป็นจุดหมุนข้อต่อ"""
+    ba = a - b
+    bc = c - b
+    norm_ba = float(np.linalg.norm(ba))
+    norm_bc = float(np.linalg.norm(bc))
+    if norm_ba < 1e-6 or norm_bc < 1e-6:
+        return 0.0
+    cosine_angle = float(np.dot(ba, bc)) / (norm_ba * norm_bc)
+    cosine_angle = float(np.clip(cosine_angle, -1.0, 1.0))
+    return float(np.degrees(np.arccos(cosine_angle)))
+
+
+def calculate_2d_tilt_angle(p1: np.ndarray, p2: np.ndarray) -> float:
+    """วัดมุมความเอียงของเส้นเชื่อมจุด 2 จุด เทียบกับแนวระนาบ (ตรวจจับการยกไหล่/เอียงตัว)"""
+    dy = abs(float(p1[1]) - float(p2[1]))
+    dx = abs(float(p1[0]) - float(p2[0]))
+    if dx < 1e-6:
+        return 90.0
+    return float(np.degrees(np.arctan2(dy, dx)))
+
+
+def _load_thai_font(size: int):
+    if not PIL_AVAILABLE:
+        return None
+    candidates = [
+        r"C:\Windows\Fonts\leelawui.ttf",
+        r"C:\Windows\Fonts\LeelawUI.ttf",
+        r"C:\Windows\Fonts\tahoma.ttf",
+        r"C:\Windows\Fonts\Tahoma.ttf",
+        "/usr/share/fonts/truetype/tlwg/Garuda.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except OSError:
+                continue
+    return None
+
+
+def draw_hud_text(
+    frame: np.ndarray,
+    text: str,
+    pos: tuple[int, int],
+    color_bgr: tuple[int, int, int] = (255, 255, 255),
+    font_size: int = 20,
+    fallback_ascii: str | None = None,
+) -> np.ndarray:
+    """แสดงข้อความภาษาไทย/อังกฤษที่คมชัดบน OpenCV (ใช้ Pillow หากมีฟอนต์ไทย มิฉะนั้นใช้ ASCII Fallback)"""
+    font = _load_thai_font(font_size) if PIL_AVAILABLE else None
+    if font is not None:
+        rgb_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(rgb_img)
+        color_rgb = (color_bgr[2], color_bgr[1], color_bgr[0])
+        draw.text(pos, text, font=font, fill=color_rgb)
+        return cv2.cvtColor(np.asarray(rgb_img), cv2.COLOR_RGB2BGR)
+
+    label = fallback_ascii if fallback_ascii is not None else text.encode("ascii", "ignore").decode("ascii")
+    cv2.putText(
+        frame,
+        label,
+        (pos[0], pos[1] + font_size),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        max(0.5, font_size / 30.0),
+        color_bgr,
+        2,
+    )
+    return frame
+
+
+def draw_joint_angle_arc(
+    frame: np.ndarray,
+    joint_pt: tuple[int, int],
+    ref_pt: tuple[int, int],
+    moving_pt: tuple[int, int],
+    angle_deg: float,
+    color_bgr: tuple[int, int, int],
+    radius: int = 44,
+) -> None:
+    """วาดเส้นโค้ง (Arc) แสดงมุมที่ข้อต่อไหล่แบบ Real-time ระหว่างแกนลำตัวกับแขน"""
+    ref_ang = math.degrees(math.atan2(ref_pt[1] - joint_pt[1], ref_pt[0] - joint_pt[0]))
+    mov_ang = math.degrees(math.atan2(moving_pt[1] - joint_pt[1], moving_pt[0] - joint_pt[0]))
+    delta = (mov_ang - ref_ang + 540.0) % 360.0 - 180.0
+
+    overlay = frame.copy()
+    cv2.ellipse(
+        overlay,
+        joint_pt,
+        (radius, radius),
+        0.0,
+        ref_ang,
+        ref_ang + delta,
+        color_bgr,
+        -1,
+    )
+    cv2.addWeighted(overlay, 0.28, frame, 0.72, 0.0, frame)
+    cv2.ellipse(
+        frame,
+        joint_pt,
+        (radius, radius),
+        0.0,
+        ref_ang,
+        ref_ang + delta,
+        color_bgr,
+        3,
+    )
+    cv2.putText(
+        frame,
+        f"{angle_deg:.1f} deg",
+        (joint_pt[0] - 45, joint_pt[1] - radius - 14),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.75,
+        (255, 255, 255),
+        2,
+    )
+
+
+def main() -> None:
+    mp_pose = mp.solutions.pose
+    # ตั้งค่าโมเดลความละเอียดสูงสุด (model_complexity=2) สำหรับงานคลินิก
+    pose = mp_pose.Pose(
+        static_image_mode=False,
+        model_complexity=2,
+        smooth_landmarks=True,
+        min_detection_confidence=0.7,
+        min_tracking_confidence=0.7,
+    )
+
+    # สร้าง 1€ Filter แยกสำหรับพิกัด 2D (วาดจอ), 3D (คำนวณมุมจริง) และตัวเลขมุม
+    filter_2d = OneEuroFilter(min_cutoff=0.8, beta=0.04)
+    filter_3d = OneEuroFilter(min_cutoff=0.6, beta=0.03)
+    angle_filter = OneEuroFilter(min_cutoff=0.5, beta=0.02)
+
+    # พารามิเตอร์สำหรับท่ากายภาพ: กางแขนซ้าย (Left Shoulder Abduction: 23 -> 11 -> 13)
+    TARGET_MIN_ANGLE = 85.0
+    TARGET_MAX_ANGLE = 110.0
+    REQUIRED_HOLD_TIME = 3.0
+    VISIBILITY_THRESHOLD = 0.75  # คัดกรองความชัดเจนขั้นต่ำ 0.75
+    MAX_SHOULDER_TILT_DEG = 12.0
+    MIN_ELBOW_EXTENSION_DEG = 150.0
+
+    reps = 0
+    hold_time = 0.0
+    last_frame_time = time.perf_counter()
+    rep_completed_in_current_hold = False
+
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+    try:
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            now = time.perf_counter()
+            dt = max(0.0, now - last_frame_time)
+            last_frame_time = now
+
+            # พลิกภาพกระจกให้ผู้ป่วยดูตามได้ง่าย
+            frame = cv2.flip(frame, 1)
+            h, w, _ = frame.shape
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = pose.process(rgb_frame)
+
+            feedback_th = "เตรียมพร้อม: กางแขนซ้ายขึ้นระดับ 85-110 องศา"
+            feedback_ascii = "Ready: Abduct left arm to 85-110 deg"
+            status_color = (220, 220, 220)
+            shoulder_angle = 0.0
+
+            if results.pose_landmarks and results.pose_world_landmarks:
+                raw_2d = results.pose_landmarks.landmark
+                raw_3d = results.pose_world_landmarks.landmark
+
+                # ตรวจสอบ visibility ของทุกจุดที่ใช้ (11, 12, 13, 15, 23)
+                req_indices = [11, 12, 13, 15, 23]
+                visibilities = [raw_2d[i].visibility for i in req_indices]
+
+                if min(visibilities) < VISIBILITY_THRESHOLD:
+                    # ระงับการวัดค่าชั่วคราวและหยุดเวลา Hold Timer ทันที
+                    feedback_th = "แจ้งเตือน: มองเห็นข้อต่อไม่ชัดเจน (< 0.75) กรุณาจัดตำแหน่งกล้องใหม่"
+                    feedback_ascii = "Alert: Low visibility (< 0.75) - Reposition camera"
+                    status_color = (0, 165, 255)
+                else:
+                    pts_2d = np.array([[lm.x * w, lm.y * h] for lm in raw_2d], dtype=np.float64)
+                    pts_3d = np.array([[lm.x, lm.y, lm.z] for lm in raw_3d], dtype=np.float64)
+
+                    smooth_2d = filter_2d.apply(pts_2d, now)
+                    smooth_3d = filter_3d.apply(pts_3d, now)
+
+                    # 1. มุมกางแขนซ้าย 3 มิติ (23 -> 11 -> 13) จาก pose_world_landmarks
+                    raw_shoulder_angle = calculate_3d_angle(smooth_3d[23], smooth_3d[11], smooth_3d[13])
+                    shoulder_angle = float(angle_filter.apply(raw_shoulder_angle, now))
+
+                    # 2. มุมเหยียดข้อศอกซ้าย 3 มิติ (11 -> 13 -> 15)
+                    elbow_angle = calculate_3d_angle(smooth_3d[11], smooth_3d[13], smooth_3d[15])
+
+                    # 3. มุมความเอียงระหว่างไหล่ซ้าย (11) และไหล่ขวา (12) เทียบแนวระนาบ
+                    shoulder_tilt = calculate_2d_tilt_angle(smooth_2d[11], smooth_2d[12])
+
+                    # ตรวจจับการชดเชยท่า (Compensation Detection)
+                    is_compensated = False
+                    if shoulder_tilt > MAX_SHOULDER_TILT_DEG:
+                        feedback_th = f"ห้ามยกไหล่หรือเอียงตัวช่วย (เอียง {shoulder_tilt:.1f} องศา)"
+                        feedback_ascii = f"Warning: Do not shrug or tilt ({shoulder_tilt:.1f} deg)"
+                        status_color = (0, 0, 255)
+                        is_compensated = True
+                    elif elbow_angle < MIN_ELBOW_EXTENSION_DEG and shoulder_angle > 25.0:
+                        feedback_th = f"กรุณาเหยียดแขนให้ตรง (มุมข้อศอก {elbow_angle:.0f} องศา)"
+                        feedback_ascii = f"Warning: Straighten elbow ({elbow_angle:.0f} deg)"
+                        status_color = (0, 0, 255)
+                        is_compensated = True
+
+                    in_target_zone = TARGET_MIN_ANGLE <= shoulder_angle <= TARGET_MAX_ANGLE
+
+                    if is_compensated:
+                        # หยุดเวลา Hold Timer ทันทีเมื่อตรวจพบการชดเชยท่า
+                        pass
+                    elif in_target_zone:
+                        if not rep_completed_in_current_hold:
+                            hold_time += dt
+                            feedback_th = (
+                                f"เยี่ยมมาก! ค้างท่าต่อเนื่อง ({hold_time:.1f} / {REQUIRED_HOLD_TIME:.1f} วินาที)"
+                            )
+                            feedback_ascii = f"Good! Hold steady ({hold_time:.1f} / {REQUIRED_HOLD_TIME:.1f}s)"
+                            status_color = (0, 220, 0)
+                            if hold_time >= REQUIRED_HOLD_TIME:
+                                reps += 1
+                                rep_completed_in_current_hold = True
+                                hold_time = REQUIRED_HOLD_TIME
+                                feedback_th = "สำเร็จ 1 ครั้ง! ค่อยๆ ลดแขนลงข้างลำตัวได้"
+                                feedback_ascii = "Rep Completed! Lower arm slowly"
+                        else:
+                            feedback_th = "ครบเวลาแล้ว ค่อยๆ ลดแขนลงข้างลำตัวเพื่อเริ่มครั้งถัดไป"
+                            feedback_ascii = "Done! Lower arm to prepare next rep"
+                            status_color = (255, 200, 0)
+                    else:
+                        # แขนตก/หลุดจากช่วงเป้าหมายก่อนครบเวลาให้รีเซ็ตเวลาใหม่ทันที
+                        if not rep_completed_in_current_hold:
+                            hold_time = 0.0
+                        if shoulder_angle < TARGET_MIN_ANGLE:
+                            if shoulder_angle < 35.0:
+                                rep_completed_in_current_hold = False
+                                hold_time = 0.0
+                            feedback_th = f"กางแขนขึ้นสู่ช่วงเป้าหมาย ({TARGET_MIN_ANGLE:.0f}-{TARGET_MAX_ANGLE:.0f} องศา)"
+                            feedback_ascii = f"Raise arm to target ({TARGET_MIN_ANGLE:.0f}-{TARGET_MAX_ANGLE:.0f} deg)"
+                            status_color = (255, 190, 0)
+                        else:
+                            feedback_th = "กางแขนสูงเกินไป ลดระดับลงเล็กน้อย"
+                            feedback_ascii = "Too high! Lower arm slightly"
+                            status_color = (0, 140, 255)
+
+                    # พิกัดข้อต่อ 2 มิติที่กรองแล้วสำหรับวาด Clinical Overlay
+                    p_sh_l = tuple(smooth_2d[11].astype(int))
+                    p_sh_r = tuple(smooth_2d[12].astype(int))
+                    p_el_l = tuple(smooth_2d[13].astype(int))
+                    p_wr_l = tuple(smooth_2d[15].astype(int))
+                    p_hip_l = tuple(smooth_2d[23].astype(int))
+
+                    tilt_color = (0, 0, 255) if shoulder_tilt > MAX_SHOULDER_TILT_DEG else (255, 255, 0)
+                    cv2.line(frame, p_sh_l, p_sh_r, tilt_color, 3)
+
+                    arm_color = (
+                        (0, 0, 255)
+                        if is_compensated
+                        else (0, 230, 0)
+                        if in_target_zone
+                        else (0, 165, 255)
+                    )
+                    cv2.line(frame, p_hip_l, p_sh_l, (200, 200, 200), 4)
+                    cv2.line(frame, p_sh_l, p_el_l, arm_color, 6)
+                    cv2.line(frame, p_el_l, p_wr_l, arm_color, 6)
+
+                    # วาดเส้นโค้ง Arc แสดงมุมที่ข้อต่อไหล่พร้อมตัวเลขทศนิยม 1 ตำแหน่ง
+                    draw_joint_angle_arc(frame, p_sh_l, p_hip_l, p_el_l, shoulder_angle, arm_color)
+
+                    for pt in (p_sh_l, p_sh_r, p_el_l, p_wr_l, p_hip_l):
+                        cv2.circle(frame, pt, 8, (255, 255, 255), -1)
+                        cv2.circle(frame, pt, 6, arm_color, -1)
+            else:
+                hold_time = 0.0
+                rep_completed_in_current_hold = False
+                filter_2d.reset()
+                filter_3d.reset()
+                angle_filter.reset()
+
+            # แผงควบคุม Clinical HUD ด้านบนจอ
+            cv2.rectangle(frame, (0, 0), (w, 125), (24, 24, 32), -1)
+            cv2.putText(frame, f"REPS: {reps}", (24, 48), cv2.FONT_HERSHEY_SIMPLEX, 1.35, (255, 255, 255), 3)
+            cv2.putText(
+                frame,
+                f"ROM: {shoulder_angle:.1f} deg  |  Target: {TARGET_MIN_ANGLE:.0f}-{TARGET_MAX_ANGLE:.0f} deg",
+                (24, 92),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (160, 255, 190),
+                2,
+            )
+
+            # หลอด Progress Bar สำหรับ Hold Timer
+            bar_x, bar_y, bar_w, bar_h = 340, 20, 380, 32
+            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (70, 70, 80), -1)
+            fill_ratio = max(0.0, min(1.0, hold_time / REQUIRED_HOLD_TIME))
+            bar_fill_color = (0, 0, 255) if status_color == (0, 0, 255) else (0, 220, 100)
+            cv2.rectangle(
+                frame,
+                (bar_x, bar_y),
+                (bar_x + int(bar_w * fill_ratio), bar_y + bar_h),
+                bar_fill_color,
+                -1,
+            )
+            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (255, 255, 255), 2)
+            cv2.putText(
+                frame,
+                f"HOLD: {hold_time:.1f}s / {REQUIRED_HOLD_TIME:.1f}s",
+                (bar_x + 95, bar_y + 23),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 255, 255),
+                2,
+            )
+
+            # แถบสถานะแจ้งเตือนความถูกต้องของท่าทาง
+            frame = draw_hud_text(
+                frame,
+                f"สถานะ: {feedback_th}",
+                (470, 74),
+                color_bgr=status_color,
+                font_size=22,
+                fallback_ascii=f"Status: {feedback_ascii}",
+            )
+
+            cv2.imshow("Clinical ROM Assessment (High-Precision 3D)", frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+    finally:
+        pose.close()
+        cap.release()
+        cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
