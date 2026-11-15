@@ -82,6 +82,7 @@ class CachedPatientBiometric:
     full_name: str
     master_embedding: np.ndarray
     angle_embeddings: Dict[str, np.ndarray] = field(default_factory=dict)
+    has_biometric_template: bool = True
 
 
 @dataclass
@@ -442,6 +443,7 @@ class InsightFace120Manager:
                 full_name=full_name or patient_id,
                 master_embedding=l2_normalize(np.ones((512,), dtype=np.float64)),
                 angle_embeddings={},
+                has_biometric_template=False,
             )
             self.active_patient = placeholder
         self.reset_identity_guard(clear_patient=False)
@@ -650,7 +652,12 @@ class InsightFace120Manager:
                 }
             ]
 
-        if self.active_patient is not None and frame_bgr is not None and frame_bgr.size > 0:
+        if (
+            self.active_patient is not None
+            and self.active_patient.has_biometric_template
+            and frame_bgr is not None
+            and frame_bgr.size > 0
+        ):
             emb = self._deterministic_fallback_embedding(frame_bgr)
         elif self.active_patient is not None:
             emb = self.active_patient.master_embedding

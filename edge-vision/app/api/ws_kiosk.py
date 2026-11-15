@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, Optional, Set, Tuple
 
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -22,7 +22,11 @@ from app.schemas.telemetry import (
 )
 from app.vision.camera import ThreadedCameraCapture
 from app.vision.face_120 import InsightFace120Manager
-from app.vision.pose_3d import RTMW3DPoseEstimator
+from app.vision.pose_3d import (
+    RTMW3DPoseEstimator,
+    map_mediapipe33_to_wholebody133,
+    wholebody133_to_world_meters,
+)
 
 logger = logging.getLogger("edge_vision.ws_kiosk")
 router = APIRouter()
@@ -49,6 +53,11 @@ class KioskRuntimeCoordinator:
         self._last_frame_b64: Optional[str] = None
         self._mock_pose_override: Optional[str] = None
         self._latest_face_enroll_state: Optional[FaceEnrollmentStateSchema] = None
+        self._client_pose_2d: Optional[np.ndarray] = None
+        self._client_pose_world_3d: Optional[np.ndarray] = None
+        self._client_vis_33: Optional[np.ndarray] = None
+        self._client_person_count: int = 1
+        self._client_landmarks_at: float = -999.0
 
     @property
     def effective_fps(self) -> float:
@@ -82,25 +91,63 @@ class KioskRuntimeCoordinator:
     def set_mock_pose_override(self, pose: Optional[str]) -> None:
         self._mock_pose_override = pose
 
+    @staticmethod
+    def _parse_mediapipe_landmark_array(raw: Any) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        if not isinstance(raw, list) or len(raw) < 33:
+            return None
+        pts = np.zeros((33, 3), dtype=np.float64)
+        vis = np.ones((33,), dtype=np.float64)
+        for i in range(33):
+            item = raw[i]
+            if isinstance(item, dict):
+                pts[i, 0] = float(item.get("x", 0.0))
+                pts[i, 1] = float(item.get("y", 0.0))
+                pts[i, 2] = float(item.get("z", 0.0))
+                vis[i] = float(item.get("score", item.get("visibility", 1.0)))
+        return pts, np.clip(vis, 0.0, 1.0)
+
     def step_once(self, include_frame: bool = False) -> EdgeKioskTelemetryPayload:
         """Execute one synchronous vision + biomechanics + FSM tick (useful for loop & tests)."""
         now_sec = time.perf_counter() - self._started_at
         _, frame = self.camera.read_latest()
         is_mock = self.camera.mode == "synthetic_mock"
 
-        pose_frame = self.pose_estimator.estimate_clinical_with_crowd(
-            frame_bgr=frame,
-            timestamp_sec=now_sec,
-            exercise_id=self.fsm.rule.id,
-            is_calibrating=(self.fsm.fsm_state == "CALIBRATE_2S"),
-            mock_pose_override=self._mock_pose_override,
-            is_mock_mode=is_mock,
+        has_fresh_client_pose = (
+            self._client_pose_2d is not None
+            and self._client_vis_33 is not None
+            and (now_sec - self._client_landmarks_at) <= 2.0
         )
-        xyz = pose_frame.wholebody_2d_133
-        world_xyz = pose_frame.wholebody_world_133
-        scores = pose_frame.scores_133
-        skeleton_count = pose_frame.skeleton_count
-        skeleton_bboxes = pose_frame.valid_bboxes
+        if has_fresh_client_pose:
+            pose_landmarks_2d = self._client_pose_2d
+            vis_33 = self._client_vis_33
+            xyz, scores = map_mediapipe33_to_wholebody133(pose_landmarks_2d, vis_33)
+            if self._client_pose_world_3d is not None:
+                pose_world_landmarks_3d = self._client_pose_world_3d
+                world_xyz, _ = map_mediapipe33_to_wholebody133(pose_world_landmarks_3d, vis_33)
+            else:
+                pose_world_landmarks_3d = pose_landmarks_2d
+                world_xyz = wholebody133_to_world_meters(xyz)
+            skeleton_count = self._client_person_count
+            skeleton_bboxes = []
+            effective_camera_mode = "live_browser_bridge"
+        else:
+            pose_frame = self.pose_estimator.estimate_clinical_with_crowd(
+                frame_bgr=frame,
+                timestamp_sec=now_sec,
+                exercise_id=self.fsm.rule.id,
+                is_calibrating=(self.fsm.fsm_state == "CALIBRATE_2S"),
+                mock_pose_override=self._mock_pose_override,
+                is_mock_mode=is_mock,
+            )
+            xyz = pose_frame.wholebody_2d_133
+            world_xyz = pose_frame.wholebody_world_133
+            scores = pose_frame.scores_133
+            pose_landmarks_2d = pose_frame.pose_landmarks_2d
+            pose_world_landmarks_3d = pose_frame.pose_world_landmarks_3d
+            vis_33 = pose_frame.visibilities_33
+            skeleton_count = pose_frame.skeleton_count
+            skeleton_bboxes = pose_frame.valid_bboxes
+            effective_camera_mode = self.camera.mode
 
         # Face ID 120 active enrollment or real-time 1:N authentication
         active_sid = self.face_manager.active_session_id
@@ -129,7 +176,13 @@ class KioskRuntimeCoordinator:
                     self.fsm.set_patient_matched(match, auto_start_calibration=True)
 
         # Continuous Anti-Cheat & Identity Guard (Rule 1 + Rule 2) during active rehab
-        if self.fsm.fsm_state != "FACE_AUTH" and not active_sid:
+        if has_fresh_client_pose and frame is None:
+            identity_guard = IdentityGuardSchema(
+                person_count=skeleton_count,
+                status="MULTI_PERSON" if skeleton_count > 1 else "VERIFIED",
+                is_counting_allowed=(skeleton_count <= 1),
+            )
+        elif self.fsm.fsm_state != "FACE_AUTH" and not active_sid:
             identity_guard = self.face_manager.evaluate_identity_guard(
                 frame_bgr=frame,
                 primary_xyz=xyz,
@@ -143,12 +196,12 @@ class KioskRuntimeCoordinator:
 
         keypoints_3d = self.pose_estimator.to_keypoint_schemas(xyz, scores)
         pose_landmarks = self.pose_estimator.to_world_landmark_schemas(
-            pose_frame.pose_landmarks_2d,
-            pose_frame.visibilities_33,
+            pose_landmarks_2d,
+            vis_33,
         )
         pose_world_landmarks = self.pose_estimator.to_world_landmark_schemas(
-            pose_frame.pose_world_landmarks_3d,
-            pose_frame.visibilities_33,
+            pose_world_landmarks_3d,
+            vis_33,
         )
         hand_status = self.pose_estimator.extract_hand_raise_telemetry(xyz, scores)
         frame_b64: Optional[str] = None
@@ -164,7 +217,7 @@ class KioskRuntimeCoordinator:
             scores=scores,
             timestamp_sec=now_sec,
             fps=self.effective_fps,
-            camera_mode=self.camera.mode,
+            camera_mode=effective_camera_mode,
             hand_status=hand_status,
             keypoints_3d=keypoints_3d,
             face_enrollment=face_enroll_state or self._latest_face_enroll_state,
@@ -308,6 +361,16 @@ class KioskRuntimeCoordinator:
             elif msg.get("stream_video") is False:
                 self._stream_video_clients.discard(ws)
             await ws.send_json({"type": "ack", "command": "config"})
+            return
+
+        if cmd == "client_landmarks":
+            parsed_2d = self._parse_mediapipe_landmark_array(msg.get("pose_landmarks"))
+            if parsed_2d is not None:
+                self._client_pose_2d, self._client_vis_33 = parsed_2d
+                parsed_world = self._parse_mediapipe_landmark_array(msg.get("pose_world_landmarks"))
+                self._client_pose_world_3d = parsed_world[0] if parsed_world is not None else None
+                self._client_person_count = max(1, int(msg.get("person_count") or 1))
+                self._client_landmarks_at = time.perf_counter() - self._started_at
             return
 
         if cmd == "start_face_enroll":

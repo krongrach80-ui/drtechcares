@@ -1576,10 +1576,8 @@ export function SmartRehabKioskUI({
     payload,
     connectionStatus,
     isDemoMode,
-    isEdgeLiveCameraActive,
-    isEdgeSyntheticMock,
-    activeWsUrl,
-    isHttpsRemoteOrigin,
+    isEdgeDirectCamera,
+    sendClientLandmarks,
     toggleDemoMode,
     exerciseOptions,
     selectedExercise,
@@ -1604,6 +1602,9 @@ export function SmartRehabKioskUI({
     resetDemoSession,
     completeCurrentExercise,
   } = useKioskSocket('ws://localhost:8000/ws/kiosk', socketOptions);
+
+  const sendClientLandmarksRef = useRef(sendClientLandmarks);
+  sendClientLandmarksRef.current = sendClientLandmarks;
 
   const [voiceMuted, setVoiceMuted] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(() => !patientProp);
@@ -1794,7 +1795,7 @@ export function SmartRehabKioskUI({
 
   // Live MediaPipe PoseLandmarker camera tracking (skip when Python Edge Vision owns the physical webcam)
   useEffect(() => {
-    if (!livePoseActive || autoCycleDemo || isEmergency || isEdgeLiveCameraActive) {
+    if (!livePoseActive || autoCycleDemo || isEmergency || isEdgeDirectCamera) {
       setCameraReady(false);
       return;
     }
@@ -1899,6 +1900,7 @@ export function SmartRehabKioskUI({
     let lastRomEmitAt = 0;
     let lastTiltEmitAt = 0;
     let lastHoldEmitAt = 0;
+    let lastEdgeBridgeSentAt = 0;
 
     const cleanup = () => {
       window.removeEventListener('keydown', handleSmoothingKeyDown);
@@ -2197,6 +2199,10 @@ export function SmartRehabKioskUI({
                     rawWorldLandmarks && enableCustomSmooth
                       ? applyOneEuro(worldOneEuroFilter, rawWorldLandmarks)
                       : rawWorldLandmarks;
+                  if (now - lastEdgeBridgeSentAt >= 65) {
+                    lastEdgeBridgeSentAt = now;
+                    sendClientLandmarksRef.current(landmarks, worldLandmarks, latestPoseCount);
+                  }
                   const measured = measureLiveJointAngleAndTilt(
                     landmarks,
                     curEx.target_joint,
@@ -2503,7 +2509,7 @@ export function SmartRehabKioskUI({
     livePoseActive,
     autoCycleDemo,
     isEmergency,
-    isEdgeLiveCameraActive,
+    isEdgeDirectCamera,
     setDemoHoldRemainingSec,
     setDemoPresetState,
     setDemoRomDeg,
@@ -2640,54 +2646,46 @@ export function SmartRehabKioskUI({
 
             <div
               className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-bold ${
-                isEdgeLiveCameraActive
+                !isDemoMode && (connectionStatus === 'connected' || livePoseActive)
                   ? 'border-emerald-200 bg-emerald-50 text-[#0D9488]'
-                  : !isDemoMode && livePoseActive
-                    ? 'border-amber-200 bg-amber-50 text-amber-800'
-                    : 'border-sky-200 bg-sky-50 text-[#0284C7]'
+                  : 'border-sky-200 bg-sky-50 text-[#0284C7]'
               }`}
             >
               <span className="relative flex h-2.5 w-2.5">
                 <span
                   className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 ${
-                    isEdgeLiveCameraActive
+                    !isDemoMode && (connectionStatus === 'connected' || livePoseActive)
                       ? 'bg-[#10B981]'
-                      : !isDemoMode && livePoseActive
-                        ? 'bg-amber-400'
-                        : 'bg-[#38BDF8]'
+                      : 'bg-[#38BDF8]'
                   }`}
                 />
                 <span
                   className={`relative inline-flex h-2.5 w-2.5 rounded-full ${
-                    isEdgeLiveCameraActive
+                    !isDemoMode && (connectionStatus === 'connected' || livePoseActive)
                       ? 'bg-[#10B981]'
-                      : !isDemoMode && livePoseActive
-                        ? 'bg-amber-500'
-                        : 'bg-[#0284C7]'
+                      : 'bg-[#0284C7]'
                   }`}
                 />
               </span>
-              {isEdgeLiveCameraActive ? (
+              {!isDemoMode && (connectionStatus === 'connected' || livePoseActive) ? (
                 <>
                   <Wifi className="h-3.5 w-3.5" />
-                  <span>Connected to Edge Vision</span>
+                  <span>
+                    {connectionStatus === 'connected'
+                      ? 'Connected to Edge Vision (Heavy 3D)'
+                      : 'Live AI Heavy 3D Active'}
+                  </span>
                 </>
               ) : !isDemoMode ? (
                 <>
                   <WifiOff className="h-3.5 w-3.5" />
-                  <span>
-                    {isEdgeSyntheticMock
-                      ? 'Edge Mock • Browser AI Active'
-                      : livePoseActive
-                        ? 'Browser AI Active (Edge Offline)'
-                        : 'Edge Vision Offline'}
-                  </span>
+                  <span>Edge Vision & Camera Paused</span>
                 </>
               ) : (
                 <>
                   <WifiOff className="h-3.5 w-3.5" />
                   <span>
-                    {connectionStatus === 'connected' && !isEdgeSyntheticMock
+                    {connectionStatus === 'connected'
                       ? 'Demo Simulator (Live Paused)'
                       : 'Demo Simulator Mode'}
                   </span>
@@ -2746,7 +2744,7 @@ export function SmartRehabKioskUI({
               <span>
                 {isDemoMode
                   ? 'Demo Simulator: ON'
-                  : isEdgeLiveCameraActive
+                  : isEdgeDirectCamera
                     ? 'Live Edge: ON'
                     : 'Demo Simulator: OFF'}
               </span>
@@ -2783,53 +2781,32 @@ export function SmartRehabKioskUI({
           </div>
         </header>
 
-        {/* Clear Edge Vision Connection & Browser MediaPipe AI Alert Banner */}
-        {!isDemoMode && !isEdgeLiveCameraActive && (
+        {/* Camera Hardware Alert Banner (only shown if local camera access fails) */}
+        {!isDemoMode && !isEdgeDirectCamera && cameraError && (
           <div
-            role="status"
-            className="glass-card flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-300/90 bg-amber-50/95 px-4 py-2.5 text-amber-950 shadow-sm"
+            role="alert"
+            className="glass-card flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-300/90 bg-rose-50/95 px-4 py-2.5 text-rose-950 shadow-sm"
           >
-            <div className="flex min-w-0 flex-1 items-start gap-2.5 sm:items-center">
-              <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-700 sm:mt-0">
+            <div className="flex min-w-0 flex-1 items-center gap-2.5">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-rose-500/15 text-rose-700">
                 <AlertTriangle className="h-4 w-4" />
               </div>
-              <div className="min-w-0 text-xs">
-                <p className="font-extrabold text-amber-950">
-                  {isEdgeSyntheticMock
-                    ? `Edge Vision (${activeWsUrl}) ยังไม่มีภาพกล้องจริง (Synthetic Mock) — สลับใช้ Browser MediaPipe AI ชั่วคราว`
-                    : isHttpsRemoteOrigin
-                      ? `ยังไม่ได้เชื่อมต่อ Edge Vision (${activeWsUrl}) จากหน้า HTTPS — ระบบกำลังตรวจจับผ่าน Browser MediaPipe AI`
-                      : `ยังไม่พบ run_kiosk_vision (${activeWsUrl}) — ระบบกำลังตรวจจับโครงกระดูกจริงผ่าน Browser MediaPipe AI`}
-                </p>
-                <p className="mt-0.5 font-medium text-amber-800">
-                  {
-                    'หากต้องการใช้โหมดเซิร์ฟเวอร์ Heavy 3D ให้รัน edge-vision\\run_kiosk_vision.bat (พอร์ต 8000) โดยไม่ต้องแย่งกล้องเว็บแคม'
-                  }
-                </p>
-              </div>
+              <p className="text-xs font-extrabold text-rose-950">
+                ไม่สามารถเปิดกล้องเว็บแคมได้: {cameraError}
+              </p>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
-              {!livePoseActive && (
-                <button
-                  type="button"
-                  onClick={() => setLivePoseActive(true)}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-amber-600 px-3 py-1.5 text-xs font-extrabold text-white shadow-sm hover:bg-amber-500"
-                >
-                  <Camera className="h-3.5 w-3.5" />
-                  <span>เปิดกล้อง AI ทันที</span>
-                </button>
-              )}
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-white/90 px-3 py-1 text-[11px] font-bold text-[#0D9488]">
-                <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                {!livePoseActive
-                  ? 'Browser AI: ปิดอยู่'
-                  : cameraError
-                    ? cameraError
-                    : cameraReady
-                      ? 'Browser AI: กำลังตรวจจับ'
-                      : 'Browser AI: กำลังเปิดกล้อง...'}
-              </span>
-            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setCameraError(null);
+                setLivePoseActive(false);
+                window.setTimeout(() => setLivePoseActive(true), 120);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-extrabold text-white shadow-sm hover:bg-rose-500"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              <span>ลองเปิดกล้องใหม่</span>
+            </button>
           </div>
         )}
 
@@ -2870,9 +2847,9 @@ export function SmartRehabKioskUI({
               isDemoMode={isDemoMode}
               distanceM={demoDistanceM}
               trunkTiltDeg={demoTrunkTiltDeg}
-              hasLiveCamera={!isEdgeLiveCameraActive && livePoseActive && !cameraError}
+              hasLiveCamera={!isEdgeDirectCamera && livePoseActive && !cameraError}
               liveVideoOverlay={
-                !isEdgeLiveCameraActive && livePoseActive && !cameraError ? (
+                !isEdgeDirectCamera && livePoseActive && !cameraError ? (
                   <div className="relative h-full w-full bg-[#0B192C]">
                     <video
                       ref={videoRef}

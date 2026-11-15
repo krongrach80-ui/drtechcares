@@ -876,6 +876,49 @@ class TestClinicalEdgeVision(unittest.TestCase):
                 self.assertIn("pose_landmarks", nxt)
                 self.assertEqual(len(nxt["pose_landmarks"]), TOTAL_MEDIAPIPE_KEYPOINTS)
 
+                # Bridge live 33-point browser MediaPipe pose/world landmarks -> Edge 3D evaluator
+                mp_2d = [{"x": 0.5, "y": 0.5, "z": 0.0, "score": 0.99} for _ in range(TOTAL_MEDIAPIPE_KEYPOINTS)]
+                mp_2d[11] = {"x": 0.62, "y": 0.78, "z": 0.0, "score": 0.99}
+                mp_2d[12] = {"x": 0.38, "y": 0.78, "z": 0.0, "score": 0.99}
+                mp_2d[14] = {"x": 0.38, "y": 0.78, "z": -0.18, "score": 0.99}
+                mp_2d[16] = {"x": 0.38, "y": 0.78, "z": -0.35, "score": 0.99}
+                mp_2d[23] = {"x": 0.58, "y": 1.15, "z": 0.0, "score": 0.05}
+                mp_2d[24] = {"x": 0.42, "y": 1.15, "z": 0.0, "score": 0.05}
+                mp_world = [{"x": 0.0, "y": 0.0, "z": 0.0, "score": 0.99} for _ in range(TOTAL_MEDIAPIPE_KEYPOINTS)]
+                mp_world[11] = {"x": 0.19, "y": 0.0, "z": 0.0, "score": 0.99}
+                mp_world[12] = {"x": -0.19, "y": 0.0, "z": 0.0, "score": 0.99}
+                mp_world[14] = {"x": -0.19, "y": 0.0, "z": -0.28, "score": 0.99}
+                mp_world[16] = {"x": -0.19, "y": 0.0, "z": -0.54, "score": 0.99}
+                ws.send_json(
+                    {
+                        "type": "prescription",
+                        "start_calibration": False,
+                        "data": {
+                            "exercise_id": "ex-01",
+                            "exercise_name": "Right Shoulder Flexion",
+                            "target_joint": "right_shoulder",
+                            "target_rom_deg": 110,
+                            "hold_sec": 3.0,
+                            "target_reps": 10,
+                        },
+                    }
+                )
+                ws.send_json(
+                    {
+                        "type": "client_landmarks",
+                        "person_count": 1,
+                        "pose_landmarks": mp_2d,
+                        "pose_world_landmarks": mp_world,
+                    }
+                )
+                bridged = ws.receive_json()
+                for _ in range(25):
+                    if bridged.get("camera_mode") == "live_browser_bridge":
+                        break
+                    bridged = ws.receive_json()
+                self.assertEqual(bridged.get("camera_mode"), "live_browser_bridge")
+                self.assertGreater(bridged["telemetry_analysis"]["current_rom_deg"], 80.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

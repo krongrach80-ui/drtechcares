@@ -877,6 +877,12 @@ export function useKioskSocket(
       try {
         const targetWsUrl = wsCandidates[attempt % wsCandidates.length] ?? wsUrl;
         setActiveWsUrl(targetWsUrl);
+        // Trigger CORS + Private Network Access preflight prior to loopback WebSocket upgrade
+        const healthUrl = targetWsUrl
+          .replace(/^ws:/i, 'http:')
+          .replace(/^wss:/i, 'https:')
+          .replace(/\/ws\/kiosk.*$/i, '/health');
+        void fetch(healthUrl, { mode: 'cors' }).catch(() => undefined);
         const ws = new WebSocket(targetWsUrl);
         wsRef.current = ws;
 
@@ -1211,8 +1217,46 @@ export function useKioskSocket(
     patientOverride: options?.patientOverride,
   });
 
+  const sendClientLandmarks = useCallback(
+    (
+      poseLandmarks: ReadonlyArray<{ x: number; y: number; z?: number; visibility?: number }>,
+      worldLandmarks?: ReadonlyArray<{ x: number; y: number; z?: number; visibility?: number }>,
+      personCount = 1,
+    ) => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(
+        JSON.stringify({
+          type: 'client_landmarks',
+          person_count: personCount,
+          pose_landmarks: poseLandmarks.map((lm) => ({
+            x: Number(lm.x.toFixed(4)),
+            y: Number(lm.y.toFixed(4)),
+            z: Number((lm.z ?? 0).toFixed(4)),
+            score: Number((lm.visibility ?? 1).toFixed(3)),
+          })),
+          pose_world_landmarks: worldLandmarks?.map((lm) => ({
+            x: Number(lm.x.toFixed(4)),
+            y: Number(lm.y.toFixed(4)),
+            z: Number((lm.z ?? 0).toFixed(4)),
+            score: Number((lm.visibility ?? 1).toFixed(3)),
+          })),
+        }),
+      );
+    },
+    [],
+  );
+
   const isEdgeSyntheticMock = Boolean(
     connectionStatus === 'connected' && livePayload?.camera_mode === 'synthetic_mock',
+  );
+  const isEdgeDirectCamera = Boolean(
+    !isDemoMode &&
+      connectionStatus === 'connected' &&
+      (livePayload?.camera_mode === 'live_webcam' ||
+        livePayload?.camera_mode === 'live_camera' ||
+        livePayload?.camera_mode?.startsWith('mock_video:')) &&
+      livePayload?.frame_base64,
   );
   const isEdgeLiveCameraActive = Boolean(
     !isDemoMode &&
@@ -1225,19 +1269,21 @@ export function useKioskSocket(
     window.location.protocol === 'https:' &&
     !/^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname);
 
-  // When Edge Vision is offline or stuck in synthetic_mock, serve demoPayload driven
-  // by the browser's live @mediapipe/tasks-vision PoseLandmarker instead of synthetic noise.
+  // Use Edge Vision's full frame + payload only when Python directly owns the camera;
+  // otherwise keep browser webcam/MediaPipe driving demoPayload & bridging landmarks to Edge.
   const payload: KioskDecisionPayload =
-    isEdgeLiveCameraActive && livePayload ? livePayload : demoPayload;
+    isEdgeDirectCamera && livePayload ? livePayload : demoPayload;
 
   return {
     payload,
     connectionStatus,
     isDemoMode,
+    isEdgeDirectCamera,
     isEdgeLiveCameraActive,
     isEdgeSyntheticMock,
     activeWsUrl,
     isHttpsRemoteOrigin,
+    sendClientLandmarks,
     toggleDemoMode,
     exerciseOptions,
     selectedExercise,
