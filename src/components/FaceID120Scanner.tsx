@@ -20,6 +20,15 @@ import {
 import { evaluateFrameQuality, l2Normalize } from '@drtechcares/smart-biometric-core';
 import type { AngleEmbeddings5D } from '@drtechcares/api-client';
 import {
+  useClinicalI18n,
+  type ClinicalLang,
+} from '@drtechcares/clinical-i18n';
+import {
+  buildTtsProxyUrl,
+  pickSpeechVoice,
+  type VoiceCoachLanguage,
+} from './VoiceCoachBanner';
+import {
   edgeFaceEnrollFinalize,
   edgeFaceEnrollFrame,
   edgeFaceEnrollStart,
@@ -90,13 +99,259 @@ const BUCKET_TICK_INDICES: Record<Bucket5Key, number[]> = (() => {
   return map;
 })();
 
-const BUCKET_LABELS: Array<{ key: Bucket5Key; label: string }> = [
-  { key: 'center', label: 'หน้าตรง' },
-  { key: 'left', label: 'ซ้าย (<-8°)' },
-  { key: 'right', label: 'ขวา (>8°)' },
-  { key: 'up', label: 'เงย (<-6°)' },
-  { key: 'down', label: 'ก้ม (>6°)' },
-];
+export interface FaceId120GuidanceItem {
+  label: string;
+  stepTitle: string;
+  turnCue: string;
+  holdCue: string;
+  voice: string;
+}
+
+const FACE_ID_120_GUIDANCE: Record<ClinicalLang, Record<Bucket5Key, FaceId120GuidanceItem>> = {
+  th: {
+    center: {
+      label: 'หน้าตรง',
+      stepTitle: 'ขั้นตอนที่ 1/5: มองตรงเข้าหากล้อง',
+      turnCue: 'กรุณามองตรงเข้าหากล้องให้อยู่ในกรอบ',
+      holdCue: 'ค้างหน้าตรงไว้สักครู่',
+      voice: 'ขั้นตอนที่ 1 กรุณามองตรงเข้าหากล้องครับ',
+    },
+    left: {
+      label: 'ซ้าย (<-8°)',
+      stepTitle: 'ขั้นตอนที่ 2/5: หันหน้าไปทางซ้าย (<-8°)',
+      turnCue: 'หน้าตรงครบแล้ว — กรุณาหันหน้าไปทางซ้ายเล็กน้อย',
+      holdCue: 'กำลังเก็บมิติใบหน้าด้านซ้าย',
+      voice: 'ขั้นตอนที่ 2 กรุณาค่อยๆ หันหน้าไปทางซ้ายเล็กน้อยครับ',
+    },
+    right: {
+      label: 'ขวา (>8°)',
+      stepTitle: 'ขั้นตอนที่ 3/5: หันหน้าไปทางขวา (>8°)',
+      turnCue: 'ด้านซ้ายครบแล้ว — กรุณาหันหน้าไปทางขวาเล็กน้อย',
+      holdCue: 'กำลังเก็บมิติใบหน้าด้านขวา',
+      voice: 'ขั้นตอนที่ 3 กรุณาค่อยๆ หันหน้าไปทางขวาเล็กน้อยครับ',
+    },
+    up: {
+      label: 'เงย (<-6°)',
+      stepTitle: 'ขั้นตอนที่ 4/5: เงยหน้าขึ้นเล็กน้อย (<-6°)',
+      turnCue: 'ด้านขวาครบแล้ว — กรุณาเงยหน้าขึ้นเล็กน้อย',
+      holdCue: 'กำลังเก็บมิติมุมเงยและแนวคาง',
+      voice: 'ขั้นตอนที่ 4 กรุณาเงยหน้าขึ้นเล็กน้อยครับ',
+    },
+    down: {
+      label: 'ก้ม (>6°)',
+      stepTitle: 'ขั้นตอนที่ 5/5: ก้มหน้าลงเล็กน้อย (>6°)',
+      turnCue: 'มุมเงยครบแล้ว — กรุณาก้มหน้าลงเล็กน้อย',
+      holdCue: 'กำลังเก็บมิติมุมก้มและหน้าผาก',
+      voice: 'ขั้นตอนที่ 5 ขั้นตอนสุดท้าย กรุณาก้มหน้าลงเล็กน้อยครับ',
+    },
+  },
+  en: {
+    center: {
+      label: 'Center',
+      stepTitle: 'Step 1/5: Look Straight at the Camera',
+      turnCue: 'Please look straight into the circular frame',
+      holdCue: 'Hold your face straight for a moment',
+      voice: 'Step 1. Please look straight at the camera.',
+    },
+    left: {
+      label: 'Left (<-8°)',
+      stepTitle: 'Step 2/5: Turn Your Face Left (<-8°)',
+      turnCue: 'Center complete — please turn your head slightly to the left',
+      holdCue: 'Capturing left facial angle',
+      voice: 'Step 2. Please turn your face slightly to the left.',
+    },
+    right: {
+      label: 'Right (>8°)',
+      stepTitle: 'Step 3/5: Turn Your Face Right (>8°)',
+      turnCue: 'Left side complete — please turn your head slightly to the right',
+      holdCue: 'Capturing right facial angle',
+      voice: 'Step 3. Please turn your face slightly to the right.',
+    },
+    up: {
+      label: 'Tilt Up (<-6°)',
+      stepTitle: 'Step 4/5: Tilt Your Chin Up (<-6°)',
+      turnCue: 'Right side complete — please tilt your head slightly up',
+      holdCue: 'Capturing upward facial angle',
+      voice: 'Step 4. Please tilt your head slightly up.',
+    },
+    down: {
+      label: 'Tilt Down (>6°)',
+      stepTitle: 'Step 5/5: Tilt Your Chin Down (>6°)',
+      turnCue: 'Upward angle complete — please tilt your head slightly down',
+      holdCue: 'Capturing downward facial angle',
+      voice: 'Step 5, final step. Please tilt your head slightly down.',
+    },
+  },
+  cn: {
+    center: {
+      label: '正视',
+      stepTitle: '步骤 1/5：请正视镜头',
+      turnCue: '请正视摄像头并保持面部在圆框内',
+      holdCue: '请保持正视片刻',
+      voice: '第一步，请正视摄像头。',
+    },
+    left: {
+      label: '向左 (<-8°)',
+      stepTitle: '步骤 2/5：请向左转头 (<-8°)',
+      turnCue: '正视已完成 — 请将头部微微向左转',
+      holdCue: '正在采集左侧面部角度',
+      voice: '第二步，请将脸微微向左转。',
+    },
+    right: {
+      label: '向右 (>8°)',
+      stepTitle: '步骤 3/5：请向右转头 (>8°)',
+      turnCue: '左侧已完成 — 请将头部微微向右转',
+      holdCue: '正在采集右侧面部角度',
+      voice: '第三步，请将脸微微向右转。',
+    },
+    up: {
+      label: '抬头 (<-6°)',
+      stepTitle: '步骤 4/5：请微微抬头 (<-6°)',
+      turnCue: '右侧已完成 — 请微微抬头',
+      holdCue: '正在采集仰视面部角度',
+      voice: '第四步，请微微抬头。',
+    },
+    down: {
+      label: '低头 (>6°)',
+      stepTitle: '步骤 5/5：请微微低头 (>6°)',
+      turnCue: '仰视已完成 — 请微微低头',
+      holdCue: '正在采集俯视面部角度',
+      voice: '第五步，最后一步，请微微低头。',
+    },
+  },
+};
+
+export function getFaceId120TargetGuidance(
+  lang: ClinicalLang,
+  bucket: Bucket5Key,
+): FaceId120GuidanceItem {
+  return (FACE_ID_120_GUIDANCE[lang] ?? FACE_ID_120_GUIDANCE.th)[bucket];
+}
+
+const BUCKET_ORDER: Bucket5Key[] = ['center', 'left', 'right', 'up', 'down'];
+
+const FACE_ID_120_UI_COPY: Record<
+  ClinicalLang,
+  {
+    preparingModel: string;
+    checkingEdge: string;
+    loadingWasm: string;
+    readyEdge: string;
+    readyWeb: string;
+    placeFaceCircle: string;
+    detecting3d: string;
+    readyStartCue: string;
+    noFaceDetectedSub: string;
+    computingTitle: string;
+    computingSub: string;
+    completedVoice: string;
+    completedBadge: string;
+    qualityLabel: (pct: number) => string;
+    completedHeading: (frames: number) => string;
+    completedSub: (pct: number) => string;
+    framesUnit: string;
+    angleFrameUnit: string;
+    voiceOnBtn: string;
+    voiceOffBtn: string;
+    replayBtn: string;
+    resetBtn: string;
+    pauseCamBtn: string;
+    camErrTitle: string;
+    camRetryBtn: string;
+    waitMoment: string;
+  }
+> = {
+  th: {
+    preparingModel: 'กำลังเตรียมโมเดล Face Landmarker 3D...',
+    checkingEdge: 'กำลังตรวจสอบ Edge InsightFace Server...',
+    loadingWasm: 'กำลังโหลด MediaPipe Face Landmarker & WASM...',
+    readyEdge: 'พร้อมสแกนด้วย Edge InsightFace ArcFace 512-D',
+    readyWeb: 'พร้อมสแกนใบหน้า 3 มิติ (Hybrid 512-D Real-Time)',
+    placeFaceCircle: 'วางใบหน้าให้อยู่ในกรอบวงกลม',
+    detecting3d: 'ระบบกำลังตรวจจับตำแหน่งใบหน้า 3 มิติ...',
+    readyStartCue: 'เตรียมพร้อม... มองตรงเข้าหากล้องเพื่อเริ่มต้น',
+    noFaceDetectedSub: 'ยังไม่พบใบหน้า — ขยับเข้าใกล้กล้องในระยะ 40–60 ซม.',
+    computingTitle: 'กำลังประมวลผล 120 เฟรม...',
+    computingSub: 'คำนวณ Master + 5 Angle Embeddings',
+    completedVoice: 'บันทึกใบหน้าสามมิติครบเรียบร้อยแล้วครับ สามารถกดบันทึกและเปิดใช้งานตู้คีออสได้เลยครับ',
+    completedBadge: '120 / 120 เฟรม สมบูรณ์แบบ',
+    qualityLabel: (pct) => `คุณภาพแม่แบบ 3D: ${pct}%`,
+    completedHeading: (frames) => `ยืนยันการเก็บใบหน้า ${frames} เฟรม (3D) สำเร็จ!`,
+    completedSub: (pct) => `บันทึก 5 มุมมองครบถ้วน • คุณภาพ ${pct}%`,
+    framesUnit: 'เฟรม',
+    angleFrameUnit: 'เฟรม',
+    voiceOnBtn: 'เสียงนำทางเปิด',
+    voiceOffBtn: 'ปิดเสียง',
+    replayBtn: 'พูดซ้ำ',
+    resetBtn: 'รีเซ็ต 0/120',
+    pauseCamBtn: 'ปิดกล้องชั่วคราว',
+    camErrTitle: 'ไม่พบสิทธิ์เข้าถึงกล้อง',
+    camRetryBtn: 'ลองเปิดกล้องอีกครั้ง',
+    waitMoment: 'กรุณารอสักครู่...',
+  },
+  en: {
+    preparingModel: 'Preparing 3D Face Landmarker model...',
+    checkingEdge: 'Checking Edge InsightFace Server...',
+    loadingWasm: 'Loading MediaPipe Face Landmarker & WASM...',
+    readyEdge: 'Ready with Edge InsightFace ArcFace 512-D',
+    readyWeb: 'Ready for 3D Multi-Angle Scan (Hybrid 512-D)',
+    placeFaceCircle: 'Position your face inside the circle',
+    detecting3d: 'Detecting 3D facial landmarks...',
+    readyStartCue: 'Get ready... look straight into the camera to begin',
+    noFaceDetectedSub: 'No face detected — move within 40–60 cm of the camera',
+    computingTitle: 'Processing 120 frames...',
+    computingSub: 'Computing Master + 5 Angle Embeddings',
+    completedVoice: '3D multi-angle Face ID capture is complete. You can now save and activate the kiosk.',
+    completedBadge: '120 / 120 Frames Complete',
+    qualityLabel: (pct) => `3D Template Quality: ${pct}%`,
+    completedHeading: (frames) => `Captured ${frames} 3D Face ID frames successfully!`,
+    completedSub: (pct) => `All 5 angles saved • Quality ${pct}%`,
+    framesUnit: 'frames',
+    angleFrameUnit: 'frames',
+    voiceOnBtn: 'Voice On',
+    voiceOffBtn: 'Muted',
+    replayBtn: 'Replay',
+    resetBtn: 'Reset 0/120',
+    pauseCamBtn: 'Pause Camera',
+    camErrTitle: 'Camera access unavailable',
+    camRetryBtn: 'Retry Camera',
+    waitMoment: 'Please wait a moment...',
+  },
+  cn: {
+    preparingModel: '正在准备 3D 人脸特征模型...',
+    checkingEdge: '正在检测 Edge InsightFace 服务器...',
+    loadingWasm: '正在加载 MediaPipe 人脸模型与 WASM...',
+    readyEdge: '已就绪：Edge InsightFace ArcFace 512 维',
+    readyWeb: '已就绪：3D 多角度人脸扫描 (Hybrid 512-D)',
+    placeFaceCircle: '请将面部置于圆形框内',
+    detecting3d: '正在实时检测 3D 面部位置...',
+    readyStartCue: '准备开始... 请先正视摄像头',
+    noFaceDetectedSub: '未检测到人脸 — 请保持距离镜头 40–60 厘米',
+    computingTitle: '正在处理 120 帧数据...',
+    computingSub: '正在生成主特征与 5 角度向量模板',
+    completedVoice: '3D 多角度人脸采集已完成，现在可以保存并启用自助机了。',
+    completedBadge: '120 / 120 帧 采集完成',
+    qualityLabel: (pct) => `3D 模板质量：${pct}%`,
+    completedHeading: (frames) => `已成功采集 ${frames} 帧 3D 人脸特征！`,
+    completedSub: (pct) => `5 个角度全部完成 • 质量 ${pct}%`,
+    framesUnit: '帧',
+    angleFrameUnit: '帧',
+    voiceOnBtn: '语音开启',
+    voiceOffBtn: '静音',
+    replayBtn: '重播',
+    resetBtn: '重置 0/120',
+    pauseCamBtn: '暂停摄像头',
+    camErrTitle: '无法访问摄像头',
+    camRetryBtn: '重新打开摄像头',
+    waitMoment: '请稍候...',
+  },
+};
+
+function toTtsLangAndBcp47(lang: ClinicalLang): { ttsLang: VoiceCoachLanguage; bcp47: string } {
+  if (lang === 'en') return { ttsLang: 'en', bcp47: 'en-US' };
+  if (lang === 'cn') return { ttsLang: 'zh', bcp47: 'zh-CN' };
+  return { ttsLang: 'th', bcp47: 'th-TH' };
+}
 
 interface CapturedSample {
   yawDeg: number;
@@ -140,45 +395,8 @@ export function chooseCaptureBucket(
   return candidates.find((b) => (counts[b] ?? 0) < BUCKET_TARGETS[b]) ?? null;
 }
 
-const TARGET_GUIDANCE: Record<
-  Bucket5Key,
-  { stepTitle: string; turnCue: string; holdCue: string; voice: string }
-> = {
-  center: {
-    stepTitle: 'ขั้นตอนที่ 1/5: มองตรงเข้าหากล้อง',
-    turnCue: 'กรุณามองตรงเข้าหากล้องให้อยู่ในกรอบ',
-    holdCue: 'ค้างหน้าตรงไว้สักครู่',
-    voice: 'ขั้นตอนที่หนึ่ง กรุณามองตรงเข้าหากล้องค่ะ',
-  },
-  left: {
-    stepTitle: 'ขั้นตอนที่ 2/5: หันหน้าไปทางซ้าย (<-8°)',
-    turnCue: 'หน้าตรงครบแล้ว — กรุณาหันหน้าไปทางซ้ายเล็กน้อย',
-    holdCue: 'กำลังเก็บมิติใบหน้าด้านซ้าย',
-    voice: 'ขั้นตอนที่สอง กรุณาหันหน้าไปทางซ้ายเล็กน้อยค่ะ',
-  },
-  right: {
-    stepTitle: 'ขั้นตอนที่ 3/5: หันหน้าไปทางขวา (>8°)',
-    turnCue: 'ด้านซ้ายครบแล้ว — กรุณาหันหน้าไปทางขวาเล็กน้อย',
-    holdCue: 'กำลังเก็บมิติใบหน้าด้านขวา',
-    voice: 'ขั้นตอนที่สาม กรุณาหันหน้าไปทางขวาเล็กน้อยค่ะ',
-  },
-  up: {
-    stepTitle: 'ขั้นตอนที่ 4/5: เงยหน้าขึ้นเล็กน้อย (<-6°)',
-    turnCue: 'ด้านขวาครบแล้ว — กรุณาเงยหน้าขึ้นเล็กน้อย',
-    holdCue: 'กำลังเก็บมิติมุมเงยและแนวคาง',
-    voice: 'ขั้นตอนที่สี่ กรุณาเงยหน้าขึ้นเล็กน้อยค่ะ',
-  },
-  down: {
-    stepTitle: 'ขั้นตอนที่ 5/5: ก้มหน้าลงเล็กน้อย (>6°)',
-    turnCue: 'มุมเงยครบแล้ว — กรุณาก้มหน้าลงเล็กน้อย',
-    holdCue: 'กำลังเก็บมิติมุมก้มและหน้าผาก',
-    voice: 'ขั้นตอนสุดท้าย กรุณาก้มหน้าลงเล็กน้อยค่ะ',
-  },
-};
-
 function findNextMissingBucket(counts: Record<Bucket5Key, number>): Bucket5Key {
-  const order: Bucket5Key[] = ['center', 'left', 'right', 'up', 'down'];
-  return order.find((key) => (counts[key] ?? 0) < BUCKET_TARGETS[key]) ?? 'down';
+  return BUCKET_ORDER.find((key) => (counts[key] ?? 0) < BUCKET_TARGETS[key]) ?? 'down';
 }
 
 function averageNormalizedEmbeddings(vectors: number[][]): number[] {
@@ -230,15 +448,25 @@ export default function FaceID120Scanner({
   onReadyStateChange,
   onCancel,
 }: FaceID120ScannerProps) {
+  const { lang, setLang } = useClinicalI18n();
+  const ui = FACE_ID_120_UI_COPY[lang] ?? FACE_ID_120_UI_COPY.th;
+  const langRef = useRef<ClinicalLang>(lang);
+  langRef.current = lang;
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const workCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const snapshotCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const landmarkerRef = useRef<FaceLandmarker | null>(null);
   const rafRef = useRef<number | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const webFallbackTimerRef = useRef<number | null>(null);
+  const speakSeqRef = useRef(0);
+  const isSpeakingRef = useRef(false);
+  const queuedSpeechRef = useRef<{ phrase: string; lang: ClinicalLang } | null>(null);
 
   const [modelStatus, setModelStatus] = useState<'loading' | 'ready' | 'error'>('loading');
-  const [modelProgressMsg, setModelProgressMsg] = useState('กำลังเตรียมโมเดล Face Landmarker 3D...');
+  const [modelProgressMsg, setModelProgressMsg] = useState(ui.preparingModel);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
@@ -254,8 +482,8 @@ export default function FaceID120Scanner({
   });
   const [activeBucket, setActiveBucket] = useState<Bucket5Key>('center');
   const [livePose, setLivePose] = useState({ yaw: 0, pitch: 0, roll: 0, sharpness: 0, faceDetected: false });
-  const [guidanceText, setGuidanceText] = useState('วางใบหน้าให้อยู่ในกรอบวงกลม');
-  const [subCueText, setSubCueText] = useState('ระบบกำลังตรวจจับตำแหน่งใบหน้า 3 มิติ...');
+  const [guidanceText, setGuidanceText] = useState(ui.placeFaceCircle);
+  const [subCueText, setSubCueText] = useState(ui.detecting3d);
   const [targetBucketHint, setTargetBucketHint] = useState<Bucket5Key>('center');
   const [finalQualityPct, setFinalQualityPct] = useState(0);
   const [retryNonce, setRetryNonce] = useState(0);
@@ -285,29 +513,197 @@ export default function FaceID120Scanner({
   const voiceEnabledRef = useRef(voiceEnabled);
   voiceEnabledRef.current = voiceEnabled;
 
-  const speakGuidance = useCallback((phrase: string, force = false) => {
-    if (!voiceEnabledRef.current || typeof window === 'undefined' || !('speechSynthesis' in window)) {
-      return;
+  const stopVoicePlayback = useCallback((clearQueue = true) => {
+    speakSeqRef.current += 1;
+    isSpeakingRef.current = false;
+    if (clearQueue) {
+      queuedSpeechRef.current = null;
     }
-    const now = Date.now();
-    if (!force && (phrase === lastSpokenCueRef.current || now - lastSpokenAtRef.current < 3200)) {
-      return;
+    if (typeof window !== 'undefined') {
+      if (webFallbackTimerRef.current !== null) {
+        window.clearTimeout(webFallbackTimerRef.current);
+        webFallbackTimerRef.current = null;
+      }
+      if ('speechSynthesis' in window) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {
+          // ignore
+        }
+      }
     }
-    try {
-      window.speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(phrase);
-      utter.lang = 'th-TH';
-      utter.rate = 1.05;
-      utter.pitch = 1.02;
-      window.speechSynthesis.speak(utter);
-      lastSpokenAtRef.current = now;
-      lastSpokenCueRef.current = phrase;
-    } catch {
-      // Ignore TTS blocks
+    if (audioRef.current) {
+      try {
+        audioRef.current.pause();
+        audioRef.current.src = '';
+      } catch {
+        // ignore
+      }
+      audioRef.current = null;
     }
   }, []);
 
-  const stopHardware = useCallback(() => {
+  const playUtterance = useCallback((phrase: string, speakLang: ClinicalLang) => {
+    if (!voiceEnabledRef.current || typeof window === 'undefined' || unmountedRef.current) {
+      isSpeakingRef.current = false;
+      return;
+    }
+    const trimmed = phrase.trim();
+    if (!trimmed) {
+      isSpeakingRef.current = false;
+      return;
+    }
+
+    const seq = ++speakSeqRef.current;
+    const { ttsLang, bcp47 } = toTtsLangAndBcp47(speakLang);
+    isSpeakingRef.current = true;
+    lastSpokenAtRef.current = Date.now();
+    lastSpokenCueRef.current = trimmed;
+
+    if (webFallbackTimerRef.current !== null) {
+      window.clearTimeout(webFallbackTimerRef.current);
+      webFallbackTimerRef.current = null;
+    }
+    if (audioRef.current) {
+      try {
+        audioRef.current.pause();
+        audioRef.current.src = '';
+      } catch {
+        // ignore
+      }
+      audioRef.current = null;
+    }
+    if ('speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // ignore
+      }
+    }
+
+    const handleFinished = () => {
+      if (seq !== speakSeqRef.current) return;
+      if (webFallbackTimerRef.current !== null) {
+        window.clearTimeout(webFallbackTimerRef.current);
+        webFallbackTimerRef.current = null;
+      }
+      isSpeakingRef.current = false;
+      const queued = queuedSpeechRef.current;
+      queuedSpeechRef.current = null;
+      if (queued && voiceEnabledRef.current && !unmountedRef.current) {
+        playUtterance(queued.phrase, queued.lang);
+      }
+    };
+
+    let started = false;
+    let fallbackUsed = false;
+
+    const triggerWebSpeech = () => {
+      if (seq !== speakSeqRef.current || started || fallbackUsed) return;
+      fallbackUsed = true;
+      if (audioRef.current) {
+        try {
+          audioRef.current.pause();
+          audioRef.current.src = '';
+        } catch {
+          // ignore
+        }
+        audioRef.current = null;
+      }
+      if (!('speechSynthesis' in window)) {
+        handleFinished();
+        return;
+      }
+      try {
+        window.speechSynthesis.cancel();
+        const utter = new SpeechSynthesisUtterance(trimmed);
+        utter.lang = bcp47;
+        utter.rate = speakLang === 'en' ? 1.0 : 1.04;
+        utter.pitch = 1.02;
+        const matched = pickSpeechVoice(window.speechSynthesis.getVoices(), bcp47);
+        if (matched) {
+          utter.voice = matched;
+        }
+        utter.onend = handleFinished;
+        utter.onerror = handleFinished;
+        window.speechSynthesis.speak(utter);
+      } catch {
+        handleFinished();
+      }
+    };
+
+    const audio = new Audio(buildTtsProxyUrl(trimmed, ttsLang));
+    audio.preload = 'auto';
+    audio.playbackRate = speakLang === 'en' ? 1.0 : 1.04;
+    audioRef.current = audio;
+    audio.onplaying = () => {
+      if (seq !== speakSeqRef.current) return;
+      started = true;
+      if (webFallbackTimerRef.current !== null) {
+        window.clearTimeout(webFallbackTimerRef.current);
+        webFallbackTimerRef.current = null;
+      }
+    };
+    audio.onended = handleFinished;
+    audio.onerror = triggerWebSpeech;
+
+    webFallbackTimerRef.current = window.setTimeout(() => {
+      if (!started && seq === speakSeqRef.current) {
+        triggerWebSpeech();
+      }
+    }, 1100);
+
+    try {
+      const playPromise = audio.play();
+      if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch(() => {
+          triggerWebSpeech();
+        });
+      }
+    } catch {
+      triggerWebSpeech();
+    }
+  }, []);
+
+  const speakGuidance = useCallback(
+    (phrase: string, options: { force?: boolean; interrupt?: boolean; speakLang?: ClinicalLang } | boolean = false) => {
+      if (!voiceEnabledRef.current || typeof window === 'undefined' || unmountedRef.current) {
+        return;
+      }
+      const opts = typeof options === 'boolean' ? { force: options, interrupt: false } : options;
+      const force = Boolean(opts.force);
+      const interrupt = Boolean(opts.interrupt);
+      const speakLang = opts.speakLang ?? langRef.current;
+      const cleanPhrase = phrase.trim();
+      if (!cleanPhrase) return;
+
+      const now = Date.now();
+      if (!force && (cleanPhrase === lastSpokenCueRef.current && now - lastSpokenAtRef.current < 6200)) {
+        return;
+      }
+      if (!force && now - lastSpokenAtRef.current < 3200) {
+        return;
+      }
+
+      if (interrupt) {
+        queuedSpeechRef.current = null;
+        playUtterance(cleanPhrase, speakLang);
+        return;
+      }
+
+      if (isSpeakingRef.current) {
+        if (cleanPhrase !== lastSpokenCueRef.current) {
+          queuedSpeechRef.current = { phrase: cleanPhrase, lang: speakLang };
+        }
+        return;
+      }
+
+      playUtterance(cleanPhrase, speakLang);
+    },
+    [playUtterance],
+  );
+
+  const stopCameraHardware = useCallback(() => {
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
@@ -333,14 +729,36 @@ export default function FaceID120Scanner({
       }
       landmarkerRef.current = null;
     }
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      try {
-        window.speechSynthesis.cancel();
-      } catch {
-        // ignore
-      }
-    }
   }, []);
+
+  const stopHardware = useCallback(() => {
+    stopCameraHardware();
+    stopVoicePlayback(true);
+  }, [stopCameraHardware, stopVoicePlayback]);
+
+  // Speak immediately in the new language if staff or patient switches TH / EN / 中文 mid-scan
+  const prevLangRef = useRef<ClinicalLang>(lang);
+  useEffect(() => {
+    if (prevLangRef.current === lang) return;
+    prevLangRef.current = lang;
+    const copy = FACE_ID_120_UI_COPY[lang] ?? FACE_ID_120_UI_COPY.th;
+    if (phase === 'completed') {
+      const doneFrames = finalizedResultRef.current?.framesCaptured ?? capturedCount;
+      const donePct = finalQualityPct;
+      setGuidanceText(copy.completedHeading(doneFrames));
+      setSubCueText(copy.completedSub(donePct));
+      speakGuidance(copy.completedVoice, { force: true, interrupt: true, speakLang: lang });
+      return;
+    }
+    if (phase === 'scanning' && modelStatus === 'ready') {
+      const cue = getFaceId120TargetGuidance(lang, targetBucketHint);
+      setGuidanceText(`${cue.stepTitle} (${capturedCount}/120)`);
+      setSubCueText(
+        `${cue.turnCue} (${bucketCountsRef.current[targetBucketHint] ?? 0}/${BUCKET_TARGETS[targetBucketHint]} ${copy.angleFrameUnit})`,
+      );
+      speakGuidance(cue.voice, { force: true, interrupt: true, speakLang: lang });
+    }
+  }, [capturedCount, finalQualityPct, lang, modelStatus, phase, speakGuidance, targetBucketHint]);
 
   const finalizeScan = useCallback(async (): Promise<FaceID120Result | null> => {
     if (finalizedResultRef.current) return finalizedResultRef.current;
@@ -348,10 +766,12 @@ export default function FaceID120Scanner({
     const edgeSid = edgeSessionIdRef.current;
     if (!edgeSid && samplesRef.current.length === 0) return null;
 
+    const currentLang = langRef.current;
+    const copy = FACE_ID_120_UI_COPY[currentLang] ?? FACE_ID_120_UI_COPY.th;
     completedRef.current = true;
     setPhase('computing');
-    setGuidanceText('กำลังสร้างรหัส Biometric 3D 512 มิติ...');
-    setSubCueText('ประมวลผลเวกเตอร์เฉลี่ย 5 มุมมอง (Center, Left, Right, Up, Down)');
+    setGuidanceText(copy.computingTitle);
+    setSubCueText(copy.computingSub);
 
     const run = async (): Promise<FaceID120Result | null> => {
       if (edgeSid && samplesRef.current.length === 0) {
@@ -384,13 +804,16 @@ export default function FaceID120Scanner({
           avatarDataUrl,
         };
         finalizedResultRef.current = resultPayload;
-        setFinalQualityPct(Math.round(edgeRes.quality_score * 100));
+        const pct = Math.round(edgeRes.quality_score * 100);
+        const doneLang = langRef.current;
+        const doneCopy = FACE_ID_120_UI_COPY[doneLang] ?? FACE_ID_120_UI_COPY.th;
+        setFinalQualityPct(pct);
         setPhase('completed');
-        setGuidanceText(`ยืนยันการเก็บใบหน้า ${edgeRes.frames_captured} เฟรม (Edge ArcFace 512-D) สำเร็จ!`);
-        setSubCueText(`บันทึก 5 มุมมองครบถ้วน • คุณภาพ ${Math.round(edgeRes.quality_score * 100)}%`);
+        setGuidanceText(doneCopy.completedHeading(edgeRes.frames_captured));
+        setSubCueText(doneCopy.completedSub(pct));
         playSuccessChime();
-        speakGuidance('บันทึกใบหน้าสามมิติครบเรียบร้อยแล้วค่ะ สามารถกดบันทึกและเปิดใช้งานตู้คีออสได้เลยค่ะ', true);
-        stopHardware();
+        speakGuidance(doneCopy.completedVoice, { force: true, speakLang: doneLang });
+        stopCameraHardware();
         if (!unmountedRef.current) {
           onCompleteRef.current(resultPayload);
           onReadyStateChangeRef.current?.(true, async () => resultPayload);
@@ -428,7 +851,8 @@ export default function FaceID120Scanner({
       const qualityScore = Number(
         Math.min(0.99, 0.72 + Math.min(0.18, meanSharpness / 350) + diversityCount * 0.02).toFixed(3),
       );
-      setFinalQualityPct(Math.round(qualityScore * 100));
+      const pct = Math.round(qualityScore * 100);
+      setFinalQualityPct(pct);
 
       if (!bestFrontalDataUrlRef.current && hasSnapshotFrameRef.current && snapshotCanvasRef.current) {
         try {
@@ -447,13 +871,15 @@ export default function FaceID120Scanner({
       };
       finalizedResultRef.current = resultPayload;
 
+      const doneLang = langRef.current;
+      const doneCopy = FACE_ID_120_UI_COPY[doneLang] ?? FACE_ID_120_UI_COPY.th;
       setPhase('completed');
-      setGuidanceText(`ยืนยันการเก็บใบหน้า ${samples.length} เฟรม (3D) สำเร็จ!`);
-      setSubCueText(`บันทึก 5 มุมมองครบถ้วน • คุณภาพ ${Math.round(qualityScore * 100)}%`);
+      setGuidanceText(doneCopy.completedHeading(samples.length));
+      setSubCueText(doneCopy.completedSub(pct));
       playSuccessChime();
-      speakGuidance('บันทึกใบหน้าสามมิติครบเรียบร้อยแล้วค่ะ สามารถกดบันทึกและเปิดใช้งานตู้คีออสได้เลยค่ะ', true);
+      speakGuidance(doneCopy.completedVoice, { force: true, speakLang: doneLang });
 
-      stopHardware();
+      stopCameraHardware();
 
       if (!unmountedRef.current) {
         onCompleteRef.current(resultPayload);
@@ -464,9 +890,10 @@ export default function FaceID120Scanner({
 
     finalizePromiseRef.current = run();
     return finalizePromiseRef.current;
-  }, [hn, speakGuidance, stopHardware]);
+  }, [hn, speakGuidance, stopCameraHardware]);
 
   const resetScannerState = useCallback(() => {
+    const copy = FACE_ID_120_UI_COPY[langRef.current] ?? FACE_ID_120_UI_COPY.th;
     edgeSessionIdRef.current = null;
     setEdgeBackendActive(false);
     samplesRef.current = [];
@@ -481,8 +908,8 @@ export default function FaceID120Scanner({
     setBucketCounts(emptyBucket);
     setCapturedCount(0);
     setPhase('scanning');
-    setGuidanceText('วางใบหน้าให้อยู่ในกรอบวงกลม');
-    setSubCueText('เตรียมพร้อม... มองตรงเข้าหากล้องเพื่อเริ่มต้น');
+    setGuidanceText(copy.placeFaceCircle);
+    setSubCueText(copy.readyStartCue);
     setTargetBucketHint('center');
     hasSnapshotFrameRef.current = false;
     lastVideoTimeRef.current = -1;
@@ -509,9 +936,10 @@ export default function FaceID120Scanner({
 
     const startEngineAndCamera = async () => {
       try {
+        const initCopy = FACE_ID_120_UI_COPY[langRef.current] ?? FACE_ID_120_UI_COPY.th;
         setModelStatus('loading');
         setCameraError(null);
-        setModelProgressMsg('กำลังตรวจสอบ Edge InsightFace Server...');
+        setModelProgressMsg(initCopy.checkingEdge);
 
         const edgeHealth = await probeEdgeVisionHealth(450);
         if (cancelled) return;
@@ -553,12 +981,17 @@ export default function FaceID120Scanner({
             if (cancelled) return;
 
             if (edgeSess?.session_id) {
+              const readyLang = langRef.current;
+              const readyCopy = FACE_ID_120_UI_COPY[readyLang] ?? FACE_ID_120_UI_COPY.th;
+              const firstCue = getFaceId120TargetGuidance(readyLang, 'center');
               edgeSessionIdRef.current = edgeSess.session_id;
               setEdgeBackendActive(true);
-              setModelProgressMsg('พร้อมสแกนด้วย Edge InsightFace ArcFace 512-D');
+              setModelProgressMsg(readyCopy.readyEdge);
               setModelStatus('ready');
-              setGuidanceText('วางใบหน้าให้อยู่ในกรอบวงกลม');
-              speakGuidance('เชื่อมต่อระบบ Edge InsightFace สำเร็จ กรุณามองกล้องและหมุนศีรษะช้าๆ ค่ะ', true);
+              setGuidanceText(`${firstCue.stepTitle} (0/120)`);
+              setSubCueText(firstCue.turnCue);
+              lastGuidedTargetRef.current = 'center';
+              speakGuidance(firstCue.voice, { force: true, interrupt: true, speakLang: readyLang });
 
               const edgeCanvas = workCanvasRef.current || document.createElement('canvas');
               edgeCanvas.width = 240;
@@ -626,8 +1059,28 @@ export default function FaceID120Scanner({
                   sharpness: Math.round(state.sharpness),
                   faceDetected: state.face_detected,
                 });
-                setGuidanceText(state.guidance_th || `${TARGET_GUIDANCE[nextMissing].stepTitle} (${state.frames_captured}/120)`);
-                setSubCueText(`Edge InsightFace 512-D • มุม ${nextMissing} (${nextCounts[nextMissing]}/${BUCKET_TARGETS[nextMissing]})`);
+
+                const activeLang = langRef.current;
+                const activeCopy = FACE_ID_120_UI_COPY[activeLang] ?? FACE_ID_120_UI_COPY.th;
+                const cue = getFaceId120TargetGuidance(activeLang, nextMissing);
+                if (!state.face_detected) {
+                  setGuidanceText(activeCopy.placeFaceCircle);
+                  setSubCueText(activeCopy.noFaceDetectedSub);
+                } else {
+                  const isCapturingTarget = poseKey === nextMissing;
+                  if (lastGuidedTargetRef.current !== nextMissing) {
+                    lastGuidedTargetRef.current = nextMissing;
+                    speakGuidance(cue.voice, { force: true, speakLang: activeLang });
+                  } else if (!isCapturingTarget) {
+                    speakGuidance(cue.voice, { speakLang: activeLang });
+                  }
+                  setGuidanceText(`${cue.stepTitle} (${state.frames_captured}/120)`);
+                  setSubCueText(
+                    isCapturingTarget
+                      ? `${cue.holdCue} • ${nextCounts[nextMissing]}/${BUCKET_TARGETS[nextMissing]} ${activeCopy.angleFrameUnit}`
+                      : `${cue.turnCue} (${nextCounts[nextMissing]}/${BUCKET_TARGETS[nextMissing]} ${activeCopy.angleFrameUnit})`,
+                  );
+                }
 
                 if (state.frames_captured >= TOTAL_TICKS || state.phase === 'completed') {
                   readyNotifiedRef.current = true;
@@ -647,7 +1100,8 @@ export default function FaceID120Scanner({
         }
 
         // Path B: Auto-Fallback to Browser MediaPipe Web AI
-        setModelProgressMsg('กำลังโหลด MediaPipe Face Landmarker & WASM...');
+        const loadCopy = FACE_ID_120_UI_COPY[langRef.current] ?? FACE_ID_120_UI_COPY.th;
+        setModelProgressMsg(loadCopy.loadingWasm);
 
         const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
         if (cancelled) return;
@@ -671,10 +1125,15 @@ export default function FaceID120Scanner({
         }
         landmarkerRef.current = landmarker;
 
-        setModelProgressMsg('พร้อมสแกนใบหน้า 3 มิติ (Hybrid 512-D Real-Time)');
+        const readyLang = langRef.current;
+        const readyCopy = FACE_ID_120_UI_COPY[readyLang] ?? FACE_ID_120_UI_COPY.th;
+        const firstCue = getFaceId120TargetGuidance(readyLang, 'center');
+        setModelProgressMsg(readyCopy.readyWeb);
         setModelStatus('ready');
-        setGuidanceText('วางใบหน้าให้อยู่ในกรอบวงกลม');
-        speakGuidance('กรุณาวางใบหน้าให้อยู่ในกรอบวงกลม แล้วค่อยๆ หมุนศีรษะช้าๆ ค่ะ', true);
+        setGuidanceText(`${firstCue.stepTitle} (0/120)`);
+        setSubCueText(firstCue.turnCue);
+        lastGuidedTargetRef.current = 'center';
+        speakGuidance(firstCue.voice, { force: true, interrupt: true, speakLang: readyLang });
 
         const workCanvas = workCanvasRef.current || document.createElement('canvas');
         workCanvas.width = 112;
@@ -706,10 +1165,13 @@ export default function FaceID120Scanner({
           }
 
           const rawFaces = result?.faceLandmarks ?? [];
+          const activeLang = langRef.current;
+          const activeCopy = FACE_ID_120_UI_COPY[activeLang] ?? FACE_ID_120_UI_COPY.th;
+
           if (rawFaces.length === 0) {
             setLivePose((p) => ({ ...p, faceDetected: false }));
-            setGuidanceText('วางใบหน้าให้อยู่ในกรอบวงกลม');
-            setSubCueText('ยังไม่พบใบหน้า — ขยับเข้าใกล้กล้องในระยะ 40–60 ซม.');
+            setGuidanceText(activeCopy.placeFaceCircle);
+            setSubCueText(activeCopy.noFaceDetectedSub);
             prevLandmarksRef.current = null;
             rafRef.current = requestAnimationFrame(tickLoop);
             return;
@@ -812,24 +1274,26 @@ export default function FaceID120Scanner({
           const nextTotal = samplesRef.current.length;
           const nextTarget = findNextMissingBucket(bc);
           setTargetBucketHint(nextTarget);
-          const cue = TARGET_GUIDANCE[nextTarget];
+          const cue = getFaceId120TargetGuidance(activeLang, nextTarget);
 
           if (lastGuidedTargetRef.current !== nextTarget) {
             lastGuidedTargetRef.current = nextTarget;
-            speakGuidance(cue.voice, true);
+            speakGuidance(cue.voice, { force: true, speakLang: activeLang });
           } else if (!captureBucket) {
-            speakGuidance(cue.voice, false);
+            speakGuidance(cue.voice, { speakLang: activeLang });
           }
 
           if (captureBucket) {
-            const capCue = TARGET_GUIDANCE[captureBucket];
+            const capCue = getFaceId120TargetGuidance(activeLang, captureBucket);
             setGuidanceText(`${capCue.stepTitle} (${nextTotal}/120)`);
             setSubCueText(
-              `${capCue.holdCue} • มุมนี้ ${bc[captureBucket]}/${BUCKET_TARGETS[captureBucket]} เฟรม`,
+              `${capCue.holdCue} • ${bc[captureBucket]}/${BUCKET_TARGETS[captureBucket]} ${activeCopy.angleFrameUnit}`,
             );
           } else {
             setGuidanceText(`${cue.stepTitle} (${nextTotal}/120)`);
-            setSubCueText(`${cue.turnCue} (${bc[nextTarget]}/${BUCKET_TARGETS[nextTarget]} เฟรม)`);
+            setSubCueText(
+              `${cue.turnCue} (${bc[nextTarget]}/${BUCKET_TARGETS[nextTarget]} ${activeCopy.angleFrameUnit})`,
+            );
           }
 
           rafRef.current = requestAnimationFrame(tickLoop);
@@ -901,22 +1365,87 @@ export default function FaceID120Scanner({
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <div className="inline-flex items-center rounded-lg border border-sky-200 bg-white p-0.5 text-[11px] font-bold shadow-xs">
+            {(
+              [
+                { code: 'th', label: '1. ไทย' },
+                { code: 'en', label: '2. EN' },
+                { code: 'cn', label: '3. 中文' },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.code}
+                type="button"
+                onClick={() => {
+                  setLang(opt.code);
+                  const nextCopy = FACE_ID_120_UI_COPY[opt.code];
+                  const nextText =
+                    phase === 'completed'
+                      ? nextCopy.completedVoice
+                      : getFaceId120TargetGuidance(opt.code, targetBucketHint).voice;
+                  if (opt.code === lang) {
+                    speakGuidance(nextText, { force: true, interrupt: true, speakLang: opt.code });
+                  }
+                }}
+                className={`rounded-md px-2 py-0.5 transition cursor-pointer ${
+                  lang === opt.code
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-[#0F4C81] hover:bg-sky-50'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
           <button
             type="button"
-            onClick={() => setVoiceEnabled((v) => !v)}
-            className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-white px-2.5 py-1 text-[11px] font-bold text-[#0F4C81] shadow-xs hover:bg-sky-50"
+            onClick={() => {
+              const phrase =
+                phase === 'completed'
+                  ? ui.completedVoice
+                  : getFaceId120TargetGuidance(lang, targetBucketHint).voice;
+              if (!voiceEnabled) {
+                setVoiceEnabled(true);
+                voiceEnabledRef.current = true;
+              }
+              speakGuidance(phrase, { force: true, interrupt: true, speakLang: lang });
+            }}
+            className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-white px-2.5 py-1 text-[11px] font-bold text-[#0F4C81] shadow-xs hover:bg-sky-50 cursor-pointer"
+          >
+            <Volume2 className="h-3.5 w-3.5 text-[#0284C7]" />
+            {ui.replayBtn}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setVoiceEnabled((prev) => {
+                const next = !prev;
+                voiceEnabledRef.current = next;
+                if (!next) {
+                  stopVoicePlayback(true);
+                } else {
+                  const phrase =
+                    phase === 'completed'
+                      ? ui.completedVoice
+                      : getFaceId120TargetGuidance(lang, targetBucketHint).voice;
+                  speakGuidance(phrase, { force: true, interrupt: true, speakLang: lang });
+                }
+                return next;
+              });
+            }}
+            className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-white px-2.5 py-1 text-[11px] font-bold text-[#0F4C81] shadow-xs hover:bg-sky-50 cursor-pointer"
           >
             {voiceEnabled ? <Volume2 className="h-3.5 w-3.5 text-emerald-600" /> : <VolumeX className="h-3.5 w-3.5 text-slate-400" />}
-            {voiceEnabled ? 'เสียงนำทางเปิด' : 'ปิดเสียง'}
+            {voiceEnabled ? ui.voiceOnBtn : ui.voiceOffBtn}
           </button>
           <button
             type="button"
             onClick={() => setRetryNonce((n) => n + 1)}
-            className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-white px-2.5 py-1 text-[11px] font-bold text-[#0F4C81] shadow-xs hover:bg-sky-50"
+            className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-white px-2.5 py-1 text-[11px] font-bold text-[#0F4C81] shadow-xs hover:bg-sky-50 cursor-pointer"
           >
             <RefreshCw className="h-3.5 w-3.5 text-[#0284C7]" />
-            รีเซ็ต 0/120
+            {ui.resetBtn}
           </button>
         </div>
       </div>
@@ -989,21 +1518,21 @@ export default function FaceID120Scanner({
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/90 p-5 text-center backdrop-blur-xs">
               <Loader2 className="mb-2 h-8 w-8 animate-spin text-emerald-600" />
               <div className="text-xs font-extrabold text-[#0F4C81]">{modelProgressMsg}</div>
-              <div className="mt-1 text-[11px] text-[#0284C7]">กรุณารอสักครู่...</div>
+              <div className="mt-1 text-[11px] text-[#0284C7]">{ui.waitMoment}</div>
             </div>
           )}
 
           {cameraError && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/95 p-5 text-center">
               <Camera className="mb-2 h-8 w-8 text-rose-500" />
-              <div className="text-xs font-extrabold text-rose-700">ไม่พบสิทธิ์เข้าถึงกล้อง</div>
+              <div className="text-xs font-extrabold text-rose-700">{ui.camErrTitle}</div>
               <div className="mt-1 text-[11px] text-slate-600">{cameraError}</div>
               <button
                 type="button"
                 onClick={() => setRetryNonce((n) => n + 1)}
                 className="mt-3 rounded-lg bg-gradient-to-r from-[#0284C7] to-[#10B981] px-3 py-1.5 text-xs font-bold text-white"
               >
-                ลองเปิดกล้องอีกครั้ง
+                {ui.camRetryBtn}
               </button>
             </div>
           )}
@@ -1012,8 +1541,8 @@ export default function FaceID120Scanner({
           {phase === 'computing' && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/88 p-4 text-center backdrop-blur-xs">
               <Loader2 className="mb-2 h-9 w-9 animate-spin text-[#0284C7]" />
-              <div className="text-sm font-black text-[#0F4C81]">กำลังประมวลผล 120 เฟรม...</div>
-              <div className="mt-1 text-[11px] text-[#0284C7]">คำนวณ Master + 5 Angle Embeddings</div>
+              <div className="text-sm font-black text-[#0F4C81]">{ui.computingTitle}</div>
+              <div className="mt-1 text-[11px] text-[#0284C7]">{ui.computingSub}</div>
             </div>
           )}
 
@@ -1024,21 +1553,21 @@ export default function FaceID120Scanner({
                 <CheckCircle2 className="h-12 w-12 text-white" />
               </div>
               <div className="mt-3 text-sm font-black text-emerald-800">
-                120 / 120 เฟรม สมบูรณ์แบบ
+                {ui.completedBadge}
               </div>
               <div className="mt-0.5 text-xs font-bold text-[#0F4C81]">
-                คุณภาพแม่แบบ 3D: {finalQualityPct}%
+                {ui.qualityLabel(finalQualityPct)}
               </div>
             </div>
           )}
         </div>
       </div>
 
-      {/* Live Counter & Dynamic Thai Guidance */}
+      {/* Live Counter & Dynamic Multi-Language Guidance */}
       <div className="mt-3 text-center">
         <div className="inline-flex items-baseline gap-2 rounded-full border border-emerald-300 bg-white px-4 py-1 shadow-xs">
           <span className="font-mono text-2xl font-black text-emerald-600">{capturedCount}</span>
-          <span className="text-xs font-bold text-[#0F4C81]">/ 120 เฟรม ({progressPct}%)</span>
+          <span className="text-xs font-bold text-[#0F4C81]">/ 120 {ui.framesUnit} ({progressPct}%)</span>
         </div>
 
         <h4 className="mt-2 text-base font-black text-[#0F4C81]">{guidanceText}</h4>
@@ -1047,16 +1576,17 @@ export default function FaceID120Scanner({
 
       {/* 5-Angle Multi-Perspective Telemetry Pills */}
       <div className="mt-4 grid grid-cols-5 gap-1.5 text-center text-[11px]">
-        {BUCKET_LABELS.map((item) => {
-          const count = bucketCounts[item.key] ?? 0;
-          const target = BUCKET_TARGETS[item.key];
+        {BUCKET_ORDER.map((bucketKey) => {
+          const itemLabel = getFaceId120TargetGuidance(lang, bucketKey).label;
+          const count = bucketCounts[bucketKey] ?? 0;
+          const target = BUCKET_TARGETS[bucketKey];
           const ok = count >= target;
-          const isTarget = phase === 'scanning' && !ok && targetBucketHint === item.key;
-          const isActivelyCapturing = isTarget && activeBucket === item.key;
+          const isTarget = phase === 'scanning' && !ok && targetBucketHint === bucketKey;
+          const isActivelyCapturing = isTarget && activeBucket === bucketKey;
           const started = count > 0;
           return (
             <div
-              key={item.key}
+              key={bucketKey}
               className={`rounded-xl border px-1.5 py-2 font-bold transition-colors ${
                 ok
                   ? 'border-emerald-400 bg-emerald-50 text-emerald-800 shadow-xs'
@@ -1069,7 +1599,7 @@ export default function FaceID120Scanner({
                         : 'border-sky-200 bg-white text-slate-600'
               }`}
             >
-              <div className="truncate">{item.label}</div>
+              <div className="truncate">{itemLabel}</div>
               <div className="mt-0.5 font-mono text-xs font-black">
                 {count}/{target} {ok ? '✓' : isTarget ? '•' : ''}
               </div>
@@ -1103,7 +1633,7 @@ export default function FaceID120Scanner({
             }}
             className="rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-xs font-bold text-[#0F4C81] hover:bg-sky-50"
           >
-            ปิดกล้องชั่วคราว
+            {ui.pauseCamBtn}
           </button>
         </div>
       )}

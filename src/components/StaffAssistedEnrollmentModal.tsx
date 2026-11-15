@@ -304,7 +304,7 @@ export function StaffAssistedEnrollmentModal({
           </div>
 
           <div className="flex items-center gap-2">
-            <div className="hidden sm:flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 text-[11px] font-bold">
+            <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 text-[11px] font-bold">
               {(['th', 'en', 'cn'] as const).map((code) => (
                 <button
                   key={code}

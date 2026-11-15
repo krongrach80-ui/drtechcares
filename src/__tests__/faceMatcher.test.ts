@@ -14,7 +14,11 @@ import {
   cosineSimilarity,
   matchMultiAngleEmbedding,
 } from '../lib/faceMatcher';
-import { chooseCaptureBucket, classifyDisplayBucket } from '../components/FaceID120Scanner';
+import {
+  chooseCaptureBucket,
+  classifyDisplayBucket,
+  getFaceId120TargetGuidance,
+} from '../components/FaceID120Scanner';
 import { evaluateRandomHandChallenge } from '../components/RandomHandStartPrompt';
 
 function makeRealisticFaceVector(seed: number, angleBias = 0): number[] {
@@ -403,5 +407,36 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     const rightRaisedWhenLeftRequested = evaluateRandomHandChallenge(raisedRightHand, null, 'left');
     expect(rightRaisedWhenLeftRequested.targetMatched).toBe(false);
     expect(rightRaisedWhenLeftRequested.wrongSideRaised).toBe(true);
+  });
+
+  it('provides 3-language (th, en, cn) directional voice and visual guidance for all 5 Face ID 120-frame scan steps', () => {
+    const directions = ['center', 'left', 'right', 'up', 'down'] as const;
+    for (const dir of directions) {
+      const th = getFaceId120TargetGuidance('th', dir);
+      const en = getFaceId120TargetGuidance('en', dir);
+      const cn = getFaceId120TargetGuidance('cn', dir);
+
+      expect(th.voice.length).toBeGreaterThan(5);
+      expect(en.voice.length).toBeGreaterThan(5);
+      expect(cn.voice.length).toBeGreaterThan(5);
+      expect(th.stepTitle).not.toBe(en.stepTitle);
+      expect(en.stepTitle).not.toBe(cn.stepTitle);
+    }
+
+    expect(getFaceId120TargetGuidance('th', 'left').voice).toContain('ซ้าย');
+    expect(getFaceId120TargetGuidance('en', 'left').voice.toLowerCase()).toContain('left');
+    expect(getFaceId120TargetGuidance('cn', 'left').voice).toContain('左');
+
+    expect(getFaceId120TargetGuidance('th', 'right').voice).toContain('ขวา');
+    expect(getFaceId120TargetGuidance('en', 'right').voice.toLowerCase()).toContain('right');
+    expect(getFaceId120TargetGuidance('cn', 'right').voice).toContain('右');
+
+    expect(getFaceId120TargetGuidance('th', 'up').voice).toContain('เงย');
+    expect(getFaceId120TargetGuidance('en', 'up').voice.toLowerCase()).toContain('up');
+    expect(getFaceId120TargetGuidance('cn', 'up').voice).toContain('抬头');
+
+    expect(getFaceId120TargetGuidance('th', 'down').voice).toContain('ก้ม');
+    expect(getFaceId120TargetGuidance('en', 'down').voice.toLowerCase()).toContain('down');
+    expect(getFaceId120TargetGuidance('cn', 'down').voice).toContain('低头');
   });
 });
