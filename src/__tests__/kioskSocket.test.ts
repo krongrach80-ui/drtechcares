@@ -18,6 +18,7 @@ import {
   interpolatePoseLandmarks,
   isFormRuleActive,
   measureLiveJointAngleAndTilt,
+  sanitizeAndStabilizePoseLandmarks,
   stepSmoothRomAngle,
 } from '../components/SmartRehabKioskUI';
 import {
@@ -894,6 +895,72 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     });
     const kneeOutCheck = measureLiveJointAngleAndTilt(upperBodyOnly, 'right_knee');
     expect(kneeOutCheck.romDeg).toBeNull();
+  });
+
+  it('stabilizes torso anchor when hand occlusion collapses shoulders and rescues foreshortened forward reach without false WRONG_PLANE', () => {
+    // 1. Valid baseline frame establishes anatomical torso anchor
+    const validTorsoFrame = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.62, y: 0.55, z: 0, visibility: 0.96 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.38, y: 0.55, z: 0, visibility: 0.96 },
+      [POSE_INDEX.NOSE]: { x: 0.5, y: 0.38, z: -0.05, visibility: 0.96 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.41, y: 0.56, z: -0.15, visibility: 0.92 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.44, y: 0.58, z: -0.32, visibility: 0.92 },
+    });
+    const baseStab = sanitizeAndStabilizePoseLandmarks(validTorsoFrame, null, 'right_shoulder');
+    expect(baseStab.occludedFallback).toBe(false);
+    expect(baseStab.anchor).not.toBeNull();
+
+    // 2. Occluded frame where MediaPipe collapses shoulders/hips/knees onto outstretched hand at center
+    const collapsedHandFrame = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.49, y: 0.52, z: 0, visibility: 0.72 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.44, y: 0.56, z: 0, visibility: 0.75 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.46, y: 0.56, z: -0.08, visibility: 0.85 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.45, y: 0.56, z: -0.12, visibility: 0.95 },
+      [POSE_INDEX.LEFT_HIP]: { x: 0.5, y: 0.58, z: 0, visibility: 0.45 },
+      [POSE_INDEX.RIGHT_HIP]: { x: 0.45, y: 0.58, z: 0, visibility: 0.45 },
+      [POSE_INDEX.RIGHT_KNEE]: { x: 0.46, y: 0.61, z: 0, visibility: 0.4 },
+    });
+    const rescuedStab = sanitizeAndStabilizePoseLandmarks(
+      collapsedHandFrame,
+      baseStab.anchor,
+      'right_shoulder',
+    );
+    expect(rescuedStab.occludedFallback).toBe(true);
+    expect(rescuedStab.landmarks[POSE_INDEX.LEFT_SHOULDER].x).toBe(0.62);
+    expect(rescuedStab.landmarks[POSE_INDEX.RIGHT_SHOULDER].x).toBe(0.38);
+    expect(rescuedStab.landmarks[POSE_INDEX.LEFT_HIP].visibility).toBe(0);
+    expect(rescuedStab.landmarks[POSE_INDEX.RIGHT_KNEE].visibility).toBe(0);
+
+    // 3. Even if worldLandmarks under-reports 3D depth (~34 deg) under hand self-occlusion,
+    // foreshortened forward reach measures ~75..98 deg and NEVER triggers WRONG_PLANE or TRUNK_LEAN
+    const noisyWorldOcclusion = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0, y: 0, z: 0, visibility: 0.95 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.02, y: 0.16, z: -0.11, visibility: 0.85 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.03, y: 0.30, z: -0.20, visibility: 0.9 },
+    });
+    const stabilizedForwardFrame = sanitizeAndStabilizePoseLandmarks(
+      createNeutralLandmarks({
+        [POSE_INDEX.LEFT_SHOULDER]: { x: 0.62, y: 0.55, z: 0, visibility: 0.96 },
+        [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.38, y: 0.55, z: 0, visibility: 0.96 },
+        [POSE_INDEX.LEFT_HIP]: { x: 0.58, y: 1.05, z: 0, visibility: 0.05 },
+        [POSE_INDEX.RIGHT_HIP]: { x: 0.42, y: 1.05, z: 0, visibility: 0.05 },
+        [POSE_INDEX.RIGHT_ELBOW]: { x: 0.41, y: 0.57, z: -0.05, visibility: 0.9 },
+        [POSE_INDEX.RIGHT_WRIST]: { x: 0.44, y: 0.58, z: -0.06, visibility: 0.95 },
+      }),
+      baseStab.anchor,
+      'right_shoulder',
+    ).landmarks;
+    const forwardOcclusionCheck = measureLiveJointAngleAndTilt(
+      stabilizedForwardFrame,
+      'right_shoulder',
+      'flexion',
+      noisyWorldOcclusion,
+    );
+    expect(forwardOcclusionCheck.wrongPlaneRaised).toBe(false);
+    expect(forwardOcclusionCheck.trunkTiltDeg).toBeLessThan(10);
+    expect(forwardOcclusionCheck.romDeg).not.toBeNull();
+    expect(forwardOcclusionCheck.romDeg!).toBeGreaterThanOrEqual(75);
+    expect(forwardOcclusionCheck.romDeg!).toBeLessThanOrEqual(100);
   });
 });
 

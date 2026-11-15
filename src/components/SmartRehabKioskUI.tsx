@@ -101,6 +101,7 @@ export function isFormRuleActive(
 
 export interface LiveJointMeasurement {
   romDeg: number | null;
+  rawPrimaryRomDeg?: number | null;
   trunkTiltDeg: number;
   wrongSideRaised: boolean;
   oppositeRomDeg: number | null;
@@ -108,6 +109,168 @@ export interface LiveJointMeasurement {
   wrongPlaneRaised: boolean;
   wrongPlaneBannerTh: string | null;
   xyzVector?: { x: number; y: number; z: number } | null;
+}
+
+export interface TorsoAnchorState {
+  leftShoulder: NormalizedLandmark;
+  rightShoulder: NormalizedLandmark;
+  nose?: NormalizedLandmark;
+  spanX: number;
+}
+
+const LOWER_BODY_POSE_INDICES = [
+  POSE_INDEX.LEFT_HIP,
+  POSE_INDEX.RIGHT_HIP,
+  POSE_INDEX.LEFT_KNEE,
+  POSE_INDEX.RIGHT_KNEE,
+  POSE_INDEX.LEFT_ANKLE,
+  POSE_INDEX.RIGHT_ANKLE,
+] as const;
+
+/**
+ * Validates anatomical torso landmarks and prevents MediaPipe self-occlusion collapse
+ * (e.g., shoulders/hips jumping onto an outstretched hand approaching the camera lens).
+ */
+export function sanitizeAndStabilizePoseLandmarks(
+  rawLandmarks: readonly NormalizedLandmark[],
+  prevAnchor: TorsoAnchorState | null,
+  targetJoint: ExercisePrescriptionOption['target_joint'],
+): { landmarks: NormalizedLandmark[]; anchor: TorsoAnchorState | null; occludedFallback: boolean } {
+  const stabilized = rawLandmarks.map((lm) => ({ ...lm }));
+  const lSh = stabilized[POSE_INDEX.LEFT_SHOULDER];
+  const rSh = stabilized[POSE_INDEX.RIGHT_SHOULDER];
+  const nose = stabilized[POSE_INDEX.NOSE];
+  const lWrist = stabilized[POSE_INDEX.LEFT_WRIST];
+  const rWrist = stabilized[POSE_INDEX.RIGHT_WRIST];
+
+  let occludedFallback = false;
+  let nextAnchor = prevAnchor;
+
+  const hasShoulderVis = Boolean(
+    lSh && rSh && (lSh.visibility ?? 0) >= 0.4 && (rSh.visibility ?? 0) >= 0.4,
+  );
+  const rawSpanX = lSh && rSh ? lSh.x - rSh.x : 0;
+  const reasonableTilt = Boolean(
+    lSh && rSh && rawSpanX >= 0.11 && Math.abs(lSh.y - rSh.y) <= rawSpanX * 0.58,
+  );
+
+  const isWristCollapsedCluster = (wrist: NormalizedLandmark | undefined) => {
+    if (!wrist || (wrist.visibility ?? 0) < 0.35 || !lSh || !rSh) return false;
+    const dL = Math.hypot(lSh.x - wrist.x, lSh.y - wrist.y);
+    const dR = Math.hypot(rSh.x - wrist.x, rSh.y - wrist.y);
+    return dL < 0.075 && dR < 0.075;
+  };
+
+  let suddenJumpCollapse = false;
+  if (prevAnchor && lSh && rSh) {
+    const prevMidX = (prevAnchor.leftShoulder.x + prevAnchor.rightShoulder.x) / 2;
+    const prevMidY = (prevAnchor.leftShoulder.y + prevAnchor.rightShoulder.y) / 2;
+    const curMidX = (lSh.x + rSh.x) / 2;
+    const curMidY = (lSh.y + rSh.y) / 2;
+    const midJump = Math.hypot(curMidX - prevMidX, curMidY - prevMidY);
+    const wristNearCluster =
+      (rWrist &&
+        (rWrist.visibility ?? 0) >= 0.3 &&
+        Math.hypot(rSh.x - rWrist.x, rSh.y - rWrist.y) < 0.075) ||
+      (lWrist &&
+        (lWrist.visibility ?? 0) >= 0.3 &&
+        Math.hypot(lSh.x - lWrist.x, lSh.y - lWrist.y) < 0.075);
+    if (midJump > 0.09 && (rawSpanX < prevAnchor.spanX * 0.78 || wristNearCluster)) {
+      suddenJumpCollapse = true;
+    }
+  }
+
+  const shouldersAnatomical =
+    hasShoulderVis &&
+    reasonableTilt &&
+    !isWristCollapsedCluster(rWrist) &&
+    !isWristCollapsedCluster(lWrist) &&
+    !suddenJumpCollapse;
+
+  if (shouldersAnatomical && lSh && rSh) {
+    nextAnchor = {
+      leftShoulder: { ...lSh },
+      rightShoulder: { ...rSh },
+      nose:
+        nose && (nose.visibility ?? 0) >= 0.4
+          ? { ...nose }
+          : prevAnchor?.nose
+            ? { ...prevAnchor.nose }
+            : undefined,
+      spanX: rawSpanX,
+    };
+  } else if (prevAnchor) {
+    occludedFallback = true;
+    stabilized[POSE_INDEX.LEFT_SHOULDER] = {
+      ...prevAnchor.leftShoulder,
+      visibility: Math.max(0.65, prevAnchor.leftShoulder.visibility ?? 0.65),
+    };
+    stabilized[POSE_INDEX.RIGHT_SHOULDER] = {
+      ...prevAnchor.rightShoulder,
+      visibility: Math.max(0.65, prevAnchor.rightShoulder.visibility ?? 0.65),
+    };
+    if (prevAnchor.nose) {
+      const midX = (prevAnchor.leftShoulder.x + prevAnchor.rightShoulder.x) / 2;
+      const midY = (prevAnchor.leftShoulder.y + prevAnchor.rightShoulder.y) / 2;
+      const noseOk =
+        nose &&
+        (nose.visibility ?? 0) >= 0.4 &&
+        Math.hypot(nose.x - midX, nose.y - midY) <= prevAnchor.spanX * 1.65;
+      if (!noseOk) {
+        stabilized[POSE_INDEX.NOSE] = {
+          ...prevAnchor.nose,
+          visibility: Math.max(0.65, prevAnchor.nose.visibility ?? 0.65),
+        };
+      }
+    }
+  }
+
+  const effLSh = stabilized[POSE_INDEX.LEFT_SHOULDER];
+  const effRSh = stabilized[POSE_INDEX.RIGHT_SHOULDER];
+  const effSpanX = effLSh && effRSh ? Math.max(0.14, Math.abs(effLSh.x - effRSh.x)) : 0.2;
+
+  // Suppress impossible chest/hand-height hallucinated hips/knees/ankles during upper-body exercises
+  if (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder' || targetJoint === 'spine') {
+    const maxShY = effLSh && effRSh ? Math.max(effLSh.y, effRSh.y) : 0.5;
+    for (const lowerIdx of LOWER_BODY_POSE_INDICES) {
+      const lm = stabilized[lowerIdx];
+      if (lm && lm.y <= maxShY + 0.12) {
+        stabilized[lowerIdx] = { ...lm, visibility: 0 };
+      }
+    }
+
+    // Repair missing or wildly warped active elbow so bone segments stay anchored cleanly
+    if (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder') {
+      const shIdx =
+        targetJoint === 'left_shoulder' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER;
+      const elbowIdx =
+        targetJoint === 'left_shoulder' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW;
+      const wristIdx =
+        targetJoint === 'left_shoulder' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST;
+      const activeSh = stabilized[shIdx];
+      const activeElbow = stabilized[elbowIdx];
+      const activeWrist = stabilized[wristIdx];
+      if (activeSh && activeWrist && (activeWrist.visibility ?? 0) >= 0.28) {
+        const elbowDistFromSh = activeElbow
+          ? Math.hypot(activeElbow.x - activeSh.x, activeElbow.y - activeSh.y)
+          : 999;
+        if (
+          !activeElbow ||
+          (activeElbow.visibility ?? 0) < 0.2 ||
+          elbowDistFromSh > effSpanX * 2.15
+        ) {
+          stabilized[elbowIdx] = {
+            x: (activeSh.x + activeWrist.x) / 2,
+            y: (activeSh.y + activeWrist.y) / 2,
+            z: ((activeSh.z ?? 0) + (activeWrist.z ?? 0)) / 2,
+            visibility: Math.max(0.5, activeWrist.visibility ?? 0.5),
+          };
+        }
+      }
+    }
+  }
+
+  return { landmarks: stabilized, anchor: nextAnchor, occludedFallback };
 }
 
 export function measureLiveJointAngleAndTilt(
@@ -124,6 +287,7 @@ export function measureLiveJointAngleAndTilt(
   const rHip = landmarks[POSE_INDEX.RIGHT_HIP];
 
   const shoulderSpanX = lSh && rSh ? Math.max(0.12, Math.abs(lSh.x - rSh.x)) : 0.18;
+  const shouldersSeparated = Boolean(lSh && rSh && Math.abs(lSh.x - rSh.x) >= 0.11);
   const hipsVisible = Boolean(
     lSh &&
       rSh &&
@@ -156,13 +320,14 @@ export function measureLiveJointAngleAndTilt(
       (Math.atan2(midShX - midHipX, Math.max(0.05, midHipY - midShY)) * 180) / Math.PI,
     );
   } else if (
+    shouldersSeparated &&
     lSh &&
     rSh &&
-    (lSh.visibility ?? 0) >= UPPER_MIN_VIS &&
-    (rSh.visibility ?? 0) >= UPPER_MIN_VIS
+    (lSh.visibility ?? 0) >= 0.35 &&
+    (rSh.visibility ?? 0) >= 0.35
   ) {
     trunkTiltDeg =
-      Math.abs((Math.atan2(rSh.y - lSh.y, Math.max(0.08, Math.abs(lSh.x - rSh.x))) * 180) / Math.PI) *
+      Math.abs((Math.atan2(rSh.y - lSh.y, Math.max(0.11, Math.abs(lSh.x - rSh.x))) * 180) / Math.PI) *
       0.55;
   }
 
@@ -190,7 +355,51 @@ export function measureLiveJointAngleAndTilt(
     ): { angleDeg: number; xyzVector: { x: number; y: number; z: number } } | null => {
       if (!pt || (pt.visibility ?? 0) < UPPER_MIN_VIS) return null;
 
-      // Prefer true isotropic metric 3D coordinates when MediaPipe worldLandmarks are valid
+      const dx = (pt.x - sh.x) * 1.22;
+      const dy = pt.y - sh.y;
+      const dzSensor = ((pt.z ?? 0) - (sh.z ?? 0)) * 1.22;
+
+      const refLen = isWrist ? wristUpRef : wristUpRef * 0.54;
+      const len2D = Math.hypot(dx, dy);
+      const dzSphere = Math.sqrt(Math.max(0, refLen * refLen - dx * dx - dy * dy));
+      const isPlaneRestricted = expectedPlane === 'flexion' || expectedPlane === 'abduction';
+      const sagittalWeight =
+        isPlaneRestricted || Math.abs(dx) <= shoulderSpanX * 0.45
+          ? 1
+          : Math.max(0, 1 - (Math.abs(dx) - shoulderSpanX * 0.45) / (shoulderSpanX * 0.45));
+
+      // When arm reaches straight toward the camera (near shoulder height, strong 2D foreshortening),
+      // reconstruct forward Z depth smoothly while leaving neutral hanging/seated rest near 0..10 deg.
+      const foreshortenedForward =
+        expectedPlane !== 'abduction' && dy <= shoulderSpanX * 0.38
+          ? Math.max(0, Math.min(1, (shoulderSpanX * 0.38 - dy) / (shoulderSpanX * 0.25))) *
+            Math.max(0, Math.min(1, (refLen * 0.68 - len2D) / (refLen * 0.26)))
+          : 0;
+      const downForwardWeight =
+        dy > 0
+          ? expectedPlane === 'abduction'
+            ? 0
+            : Math.max(Math.min(1, Math.abs(dzSensor) / 0.14), foreshortenedForward)
+          : 1;
+      const absDz = Math.max(
+        Math.abs(dzSensor),
+        dzSphere * sagittalWeight * downForwardWeight,
+      );
+      const dz = (dzSensor > 1e-4 ? 1 : -1) * absDz;
+      const horizMagXZ = Math.hypot(dx, absDz);
+      const mag3D = Math.hypot(dx, dy, dz);
+      const angle3D = mag3D >= 0.02 ? (Math.atan2(horizMagXZ, dy) * 180) / Math.PI : null;
+      const xyz2DSphere =
+        mag3D >= 0.02
+          ? {
+              x: Number((dx / mag3D).toFixed(3)),
+              y: Number((dy / mag3D).toFixed(3)),
+              z: Number((dz / mag3D).toFixed(3)),
+            }
+          : null;
+
+      // Prefer true isotropic metric 3D coordinates when MediaPipe worldLandmarks are valid,
+      // but rescue self-occluded forward-reach dropouts where 2D perspective clearly shows ~90 deg reach.
       if (worldLandmarks) {
         const wSh = worldLandmarks[shIdx];
         const wPt = worldLandmarks[ptIdx];
@@ -202,6 +411,19 @@ export function measureLiveJointAngleAndTilt(
           if (wLen3D >= 0.08) {
             const worldHorizXZ = Math.hypot(wDx, wDz);
             const worldAngleDeg = (Math.atan2(worldHorizXZ, wDy) * 180) / Math.PI;
+            const stronglyForeshortenedFront =
+              expectedPlane !== 'abduction' &&
+              angle3D !== null &&
+              angle3D >= 68 &&
+              dy <= shoulderSpanX * 0.35 &&
+              Math.abs(dx) <= shoulderSpanX * 0.65 &&
+              len2D <= refLen * 0.54;
+            if (stronglyForeshortenedFront && worldAngleDeg < angle3D - 22 && xyz2DSphere) {
+              return {
+                angleDeg: Number((0.2 * worldAngleDeg + 0.8 * angle3D).toFixed(1)),
+                xyzVector: xyz2DSphere,
+              };
+            }
             return {
               angleDeg: worldAngleDeg,
               xyzVector: {
@@ -214,39 +436,11 @@ export function measureLiveJointAngleAndTilt(
         }
       }
 
-      const dx = (pt.x - sh.x) * 1.22;
-      const dy = pt.y - sh.y;
-      const dzSensor = ((pt.z ?? 0) - (sh.z ?? 0)) * 1.22;
+      if (angle3D === null || !xyz2DSphere) return null;
 
-      const refLen = isWrist ? wristUpRef : wristUpRef * 0.54;
-      const dzSphere = Math.sqrt(Math.max(0, refLen * refLen - dx * dx - dy * dy));
-      const isPlaneRestricted = expectedPlane === 'flexion' || expectedPlane === 'abduction';
-      const sagittalWeight =
-        isPlaneRestricted || Math.abs(dx) <= shoulderSpanX * 0.45
-          ? 1
-          : Math.max(0, 1 - (Math.abs(dx) - shoulderSpanX * 0.45) / (shoulderSpanX * 0.45));
-
-      // When arm hangs below shoulder height (dy > 0), weight spherical Z fill by actual forward depth
-      // so a neutral hanging arm measures near 0°–10° rather than being inflated to 35°–50°.
-      const downForwardWeight =
-        dy > 0 ? (expectedPlane === 'abduction' ? 0 : Math.min(1, Math.abs(dzSensor) / 0.14)) : 1;
-      const absDz = Math.max(
-        Math.abs(dzSensor),
-        dzSphere * sagittalWeight * downForwardWeight,
-      );
-      const dz = (dzSensor > 1e-4 ? 1 : -1) * absDz;
-      const horizMagXZ = Math.hypot(dx, absDz);
-      const mag3D = Math.hypot(dx, dy, dz);
-      if (mag3D < 0.02) return null;
-
-      const angle3D = (Math.atan2(horizMagXZ, dy) * 180) / Math.PI;
       return {
         angleDeg: angle3D,
-        xyzVector: {
-          x: Number((dx / mag3D).toFixed(3)),
-          y: Number((dy / mag3D).toFixed(3)),
-          z: Number((dz / mag3D).toFixed(3)),
-        },
+        xyzVector: xyz2DSphere,
       };
     };
 
@@ -269,6 +463,7 @@ export function measureLiveJointAngleAndTilt(
   };
 
   let romDeg: number | null = null;
+  let rawPrimaryRomDeg: number | null = null;
   let oppositeRomDeg: number | null = null;
   let wrongSideRaised = false;
   let wrongSideBannerTh: string | null = null;
@@ -283,6 +478,7 @@ export function measureLiveJointAngleAndTilt(
     const oppositeResult = computeArmElevationDeg(oppositeSide);
     const primaryDeg = primaryResult.angleDeg;
     const oppositeDeg = oppositeResult.angleDeg;
+    rawPrimaryRomDeg = primaryDeg !== null ? Number(primaryDeg.toFixed(1)) : null;
     xyzVector = primaryResult.xyzVector;
     wrongSideRaised =
       oppositeDeg !== null &&
@@ -293,6 +489,14 @@ export function measureLiveJointAngleAndTilt(
       const sh = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
       const elbow = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
       const wrist = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
+      const lIsPositiveX = !lSh || !rSh || lSh.x >= rSh.x;
+      const outwardSign = lIsPositiveX
+        ? primarySide === 'right'
+          ? -1
+          : 1
+        : primarySide === 'right'
+          ? 1
+          : -1;
       const elbowLatRatio =
         sh && elbow && (elbow.visibility ?? 0) >= UPPER_MIN_VIS
           ? Math.abs(elbow.x - sh.x) / shoulderSpanX
@@ -300,6 +504,14 @@ export function measureLiveJointAngleAndTilt(
       const wristLatRatio =
         sh && wrist && (wrist.visibility ?? 0) >= UPPER_MIN_VIS
           ? Math.abs(wrist.x - sh.x) / shoulderSpanX
+          : 0;
+      const elbowOutwardLatRatio =
+        sh && elbow && (elbow.visibility ?? 0) >= UPPER_MIN_VIS
+          ? ((elbow.x - sh.x) * outwardSign) / shoulderSpanX
+          : 0;
+      const wristOutwardLatRatio =
+        sh && wrist && (wrist.visibility ?? 0) >= UPPER_MIN_VIS
+          ? ((wrist.x - sh.x) * outwardSign) / shoulderSpanX
           : 0;
       const distalPt = wrist && (wrist.visibility ?? 0) >= UPPER_MIN_VIS ? wrist : elbow;
       const dxAbs = sh && distalPt ? Math.abs(distalPt.x - sh.x) : 0;
@@ -309,9 +521,10 @@ export function measureLiveJointAngleAndTilt(
 
       if (
         expectedPlane === 'flexion' &&
-        primaryDeg >= 38 &&
-        (wristLatRatio >= 0.62 || elbowLatRatio >= 0.48) &&
-        horizRatioFlex >= 0.45
+        primaryDeg >= 42 &&
+        (wristOutwardLatRatio >= 0.8 || elbowOutwardLatRatio >= 0.68) &&
+        dxAbs > dyAbs * 1.15 &&
+        horizRatioFlex >= 0.62
       ) {
         wrongPlaneRaised = true;
         wrongPlaneBannerTh = getPrescribedPlanePromptTh('flexion').bannerAlertTh;
@@ -332,9 +545,7 @@ export function measureLiveJointAngleAndTilt(
     romDeg =
       wrongSideRaised || wrongPlaneRaised
         ? 0
-        : primaryDeg !== null
-          ? Number(primaryDeg.toFixed(1))
-          : null;
+        : rawPrimaryRomDeg;
     oppositeRomDeg = oppositeDeg;
     if (wrongSideRaised) {
       wrongSideBannerTh = getPrescribedLimbPromptTh(targetJoint).bannerAlertTh;
@@ -378,6 +589,7 @@ export function measureLiveJointAngleAndTilt(
 
   return {
     romDeg,
+    rawPrimaryRomDeg,
     trunkTiltDeg: Number(trunkTiltDeg.toFixed(1)),
     wrongSideRaised,
     oppositeRomDeg,
@@ -552,13 +764,79 @@ function drawLivePoseOverlayOnCanvas(
     }
     return { x: cx, y: cy };
   };
-  const minVisFor = (idx: number) => (UPPER_BODY_KEYPOINTS.has(idx) ? 0.02 : 0.2);
+  const minVisFor = (idx: number) => (UPPER_BODY_KEYPOINTS.has(idx) ? 0.28 : 0.55);
 
   const activeColor = opts.isImpostorOrEmergency
     ? '#EF4444'
     : opts.wrongPlaneRaised || opts.isMultiPerson || opts.trunkTiltDeg > 10
       ? '#F59E0B'
       : '#10B981';
+
+  const primary = landmarksList[0];
+  const isUpperLimbOrSpine =
+    opts.targetJoint === 'left_shoulder' ||
+    opts.targetJoint === 'right_shoulder' ||
+    opts.targetJoint === 'spine';
+  const lShLm = primary[POSE_INDEX.LEFT_SHOULDER];
+  const rShLm = primary[POSE_INDEX.RIGHT_SHOULDER];
+  const maxShY =
+    lShLm && rShLm ? Math.max(lShLm.y, rShLm.y) : (lShLm?.y ?? rShLm?.y ?? 0.5);
+  const lHipLm = primary[POSE_INDEX.LEFT_HIP];
+  const rHipLm = primary[POSE_INDEX.RIGHT_HIP];
+  const hipsCleanlyBelowShoulders = Boolean(
+    lHipLm &&
+      rHipLm &&
+      (lHipLm.visibility ?? 0) >= 0.55 &&
+      (rHipLm.visibility ?? 0) >= 0.55 &&
+      lHipLm.y > maxShY + 0.16 &&
+      rHipLm.y > maxShY + 0.16 &&
+      Math.abs(lHipLm.x - rHipLm.x) >= 0.09,
+  );
+  const activeWristLm =
+    opts.targetJoint === 'left_shoulder'
+      ? primary[POSE_INDEX.LEFT_WRIST]
+      : opts.targetJoint === 'right_shoulder'
+        ? primary[POSE_INDEX.RIGHT_WRIST]
+        : undefined;
+
+  const isOppositeArmIdx = (idx: number) => {
+    if (opts.targetJoint === 'left_shoulder') {
+      return idx === POSE_INDEX.RIGHT_ELBOW || idx === POSE_INDEX.RIGHT_WRIST;
+    }
+    if (opts.targetJoint === 'right_shoulder') {
+      return idx === POSE_INDEX.LEFT_ELBOW || idx === POSE_INDEX.LEFT_WRIST;
+    }
+    return false;
+  };
+
+  const isPointDrawable = (idx: number): boolean => {
+    const lm = primary[idx];
+    if (!lm) return false;
+    const isLowerLeg =
+      idx === POSE_INDEX.LEFT_KNEE ||
+      idx === POSE_INDEX.RIGHT_KNEE ||
+      idx === POSE_INDEX.LEFT_ANKLE ||
+      idx === POSE_INDEX.RIGHT_ANKLE;
+    const isHip = idx === POSE_INDEX.LEFT_HIP || idx === POSE_INDEX.RIGHT_HIP;
+    if (isUpperLimbOrSpine) {
+      // Never draw hallucinated knee/ankle lines during upper-body camera exercises
+      if (isLowerLeg) return false;
+      if (isHip && !hipsCleanlyBelowShoulders) return false;
+    }
+    const minV = isOppositeArmIdx(idx) ? 0.4 : minVisFor(idx);
+    if ((lm.visibility ?? 0) < minV) return false;
+    // Prevent phantom opposite elbow/wrist keypoints collapsed onto the reaching hand
+    if (
+      isOppositeArmIdx(idx) &&
+      !opts.wrongSideRaised &&
+      activeWristLm &&
+      (activeWristLm.visibility ?? 0) >= 0.28 &&
+      Math.hypot(lm.x - activeWristLm.x, lm.y - activeWristLm.y) < 0.08
+    ) {
+      return false;
+    }
+    return true;
+  };
 
   const isHighlightedEdge = (a: number, b: number) => {
     if (opts.targetJoint === 'left_shoulder') {
@@ -609,15 +887,14 @@ function drawLivePoseOverlayOnCanvas(
   };
 
   // Primary patient live skeleton overlay
-  const primary = landmarksList[0];
   ctx.save();
   ctx.lineCap = 'round';
   for (const [aIdx, bIdx] of LIVE_BODY_BONELINE_PAIRS) {
-    const a = primary[aIdx];
-    const b = primary[bIdx];
-    if (!a || !b || (a.visibility ?? 0) < minVisFor(aIdx) || (b.visibility ?? 0) < minVisFor(bIdx)) {
+    if (!isPointDrawable(aIdx) || !isPointDrawable(bIdx)) {
       continue;
     }
+    const a = primary[aIdx]!;
+    const b = primary[bIdx]!;
     const aPt = toCanvasPt(aIdx, a);
     const bPt = toCanvasPt(bIdx, b);
     const emphasized = isHighlightedEdge(aIdx, bIdx);
@@ -653,13 +930,11 @@ function drawLivePoseOverlayOnCanvas(
 
   // Head/neck guide lines (NOSE -> shoulder midpoint NECK -> both shoulders)
   const noseLm = primary[POSE_INDEX.NOSE];
-  const lShLm = primary[POSE_INDEX.LEFT_SHOULDER];
-  const rShLm = primary[POSE_INDEX.RIGHT_SHOULDER];
   if (
     lShLm &&
     rShLm &&
-    (lShLm.visibility ?? 0) >= 0.02 &&
-    (rShLm.visibility ?? 0) >= 0.02
+    (lShLm.visibility ?? 0) >= 0.28 &&
+    (rShLm.visibility ?? 0) >= 0.28
   ) {
     const lShPt = toCanvasPt(POSE_INDEX.LEFT_SHOULDER, lShLm);
     const rShPt = toCanvasPt(POSE_INDEX.RIGHT_SHOULDER, rShLm);
@@ -672,7 +947,7 @@ function drawLivePoseOverlayOnCanvas(
     ctx.moveTo(lShPt.x, lShPt.y);
     ctx.lineTo(neckPt.x, neckPt.y);
     ctx.lineTo(rShPt.x, rShPt.y);
-    if (noseLm && (noseLm.visibility ?? 0) >= 0.02) {
+    if (noseLm && (noseLm.visibility ?? 0) >= 0.28) {
       const nosePt = toCanvasPt(POSE_INDEX.NOSE, noseLm);
       ctx.moveTo(neckPt.x, neckPt.y);
       ctx.lineTo(nosePt.x, nosePt.y);
@@ -691,8 +966,8 @@ function drawLivePoseOverlayOnCanvas(
 
   // Joint keypoints
   for (const idx of LIVE_KEYPOINT_INDICES) {
-    const lm = primary[idx];
-    if (!lm || (lm.visibility ?? 0) < minVisFor(idx)) continue;
+    if (!isPointDrawable(idx)) continue;
+    const lm = primary[idx]!;
     const pt = toCanvasPt(idx, lm);
     const r = idx === POSE_INDEX.NOSE ? 5 : 6;
     ctx.beginPath();
@@ -1115,6 +1390,10 @@ export function SmartRehabKioskUI({
     let lastRepCompletedAt = 0;
     let singlePersonRecoveryFrames = 0;
     let trackedExId = selectedExerciseRef.current.exercise_id;
+    let torsoAnchor: TorsoAnchorState | null = null;
+    let wrongSideStreak = 0;
+    let wrongPlaneStreak = 0;
+    let latestRawPrimaryRomDeg: number | null = null;
     let targetRomDeg: number | null = null;
     let latestLandmarks: NormalizedLandmark[] | null = null;
     let renderPrimaryLandmarks: NormalizedLandmark[] | null = null;
@@ -1223,9 +1502,9 @@ export function SmartRehabKioskUI({
         if (!vision || !active) return;
 
         for (const modelPath of [
-          'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
-          '/models/pose_landmarker.task',
           '/models/pose_landmarker_full.task',
+          '/models/pose_landmarker.task',
+          'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
         ]) {
           for (const delegate of ['GPU', 'CPU', undefined] as const) {
             try {
@@ -1236,9 +1515,9 @@ export function SmartRehabKioskUI({
                 },
                 runningMode: 'VIDEO',
                 numPoses: 1,
-                minPoseDetectionConfidence: 0.25,
-                minPosePresenceConfidence: 0.22,
-                minTrackingConfidence: 0.2,
+                minPoseDetectionConfidence: 0.45,
+                minPosePresenceConfidence: 0.45,
+                minTrackingConfidence: 0.45,
               });
               if (!active) {
                 created.close();
@@ -1267,6 +1546,10 @@ export function SmartRehabKioskUI({
           const curExpectedPlane = resolveExpectedPlaneForExercise(curEx);
           if (trackedExId !== curEx.exercise_id) {
             trackedExId = curEx.exercise_id;
+            torsoAnchor = null;
+            wrongSideStreak = 0;
+            wrongPlaneStreak = 0;
+            latestRawPrimaryRomDeg = null;
             smoothedRom = 0;
             smoothedTilt = 0;
             targetRomDeg = null;
@@ -1347,9 +1630,17 @@ export function SmartRehabKioskUI({
                 latestLandmarks = null;
                 renderPrimaryLandmarks = null;
               } else if (demoPresetRef.current !== 'IMPOSTOR' || !stepACheckIdentity) {
-                const landmarks = allLandmarks[0] ?? null;
-                if (landmarks) {
+                const rawLandmarks = allLandmarks[0] ?? null;
+                if (rawLandmarks) {
+                  const stabilizedResult = sanitizeAndStabilizePoseLandmarks(
+                    rawLandmarks,
+                    torsoAnchor,
+                    curEx.target_joint,
+                  );
+                  torsoAnchor = stabilizedResult.anchor;
+                  const landmarks = stabilizedResult.landmarks;
                   latestLandmarks = landmarks;
+                  latestAllLandmarks = [landmarks, ...allLandmarks.slice(1)];
                   lastValidPoseAt = now;
                   if (demoPresetRef.current === 'MULTI_PERSON') {
                     singlePersonRecoveryFrames += 1;
@@ -1373,12 +1664,19 @@ export function SmartRehabKioskUI({
                     worldLandmarks,
                   );
                   latestRawTiltDeg = measured.trunkTiltDeg;
-                  latestWrongSideRaised = measured.wrongSideRaised;
+                  wrongSideStreak = measured.wrongSideRaised ? wrongSideStreak + 1 : 0;
+                  wrongPlaneStreak = measured.wrongPlaneRaised ? wrongPlaneStreak + 1 : 0;
+                  latestWrongSideRaised = wrongSideStreak >= 4;
                   latestWrongSideBannerTh = measured.wrongSideBannerTh;
-                  latestWrongPlaneRaised = measured.wrongPlaneRaised;
+                  latestWrongPlaneRaised = wrongPlaneStreak >= 4;
                   latestWrongPlaneBannerTh = measured.wrongPlaneBannerTh;
-                  targetRomDeg = measured.romDeg;
+                  latestRawPrimaryRomDeg = measured.rawPrimaryRomDeg ?? measured.romDeg;
                 } else if (now - lastValidPoseAt > 220 || !latestLandmarks) {
+                  wrongSideStreak = 0;
+                  wrongPlaneStreak = 0;
+                  latestWrongSideRaised = false;
+                  latestWrongPlaneRaised = false;
+                  latestRawPrimaryRomDeg = null;
                   latestLandmarks = null;
                   renderPrimaryLandmarks = null;
                 }
@@ -1443,6 +1741,8 @@ export function SmartRehabKioskUI({
             const effWrongSideBannerTh = checkLimb ? latestWrongSideBannerTh : null;
             const effWrongPlaneRaised = checkPlane ? latestWrongPlaneRaised : false;
             const effWrongPlaneBannerTh = checkPlane ? latestWrongPlaneBannerTh : null;
+            targetRomDeg =
+              effWrongSideRaised || effWrongPlaneRaised ? 0 : latestRawPrimaryRomDeg;
 
             const tiltDelta = effRawTiltDeg - smoothedTilt;
             if (!checkTrunk) {
@@ -1464,10 +1764,7 @@ export function SmartRehabKioskUI({
               const hitBoundary =
                 (nextEmitRom <= 0.1 || Math.abs(nextEmitRom - curEx.target_rom_deg) <= 0.2) &&
                 Math.abs(nextEmitRom - lastEmittedRom) >= 0.1;
-              if (
-                (now - lastRomEmitAt >= 14 && Math.abs(nextEmitRom - lastEmittedRom) >= 0.2) ||
-                hitBoundary
-              ) {
+              if (Math.abs(nextEmitRom - lastEmittedRom) >= 0.2 || hitBoundary) {
                 lastEmittedRom = nextEmitRom;
                 lastRomEmitAt = now;
                 setDemoRomDeg(nextEmitRom);
