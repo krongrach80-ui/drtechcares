@@ -17,6 +17,7 @@ from app.schemas.telemetry import (
     EdgeKioskTelemetryPayload,
     ExercisePrescriptionSchema,
     FaceEnrollmentStateSchema,
+    HandRaiseTelemetry,
     IdentityGuardSchema,
     PatientMatchSchema,
 )
@@ -117,6 +118,8 @@ class KioskRuntimeCoordinator:
             and self._client_vis_33 is not None
             and (now_sec - self._client_landmarks_at) <= 2.0
         )
+        err_code: Optional[str] = None
+        err_message: Optional[str] = None
         if has_fresh_client_pose:
             pose_landmarks_2d = self._client_pose_2d
             vis_33 = self._client_vis_33
@@ -148,6 +151,17 @@ class KioskRuntimeCoordinator:
             skeleton_count = pose_frame.skeleton_count
             skeleton_bboxes = pose_frame.valid_bboxes
             effective_camera_mode = self.camera.mode
+
+            if not is_mock and self._mock_pose_override is None:
+                if self.camera.mode == "camera_disconnected" or frame is None:
+                    err_code = "CAMERA_DISCONNECTED"
+                    err_message = "Camera Disconnected: ไม่พบการเชื่อมต่อกล้องเว็บแคม"
+                elif pose_frame.backend_used == "AI_MODEL_ERROR":
+                    err_code = "AI_MODEL_ERROR"
+                    err_message = "AI Model Error: โหลดโมเดล MediaPipe PoseLandmarker ล้มเหลว"
+                elif pose_frame.skeleton_count == 0:
+                    err_code = "NO_POSE_DETECTED"
+                    err_message = "ไม่พบผู้ใช้งานในเฟรมกล้อง กรุณาขยับเข้าหน้ากล้อง"
 
         # Face ID 120 active enrollment or real-time 1:N authentication
         active_sid = self.face_manager.active_session_id
@@ -194,22 +208,29 @@ class KioskRuntimeCoordinator:
         else:
             identity_guard = IdentityGuardSchema(person_count=skeleton_count)
 
-        keypoints_3d = self.pose_estimator.to_keypoint_schemas(xyz, scores)
-        pose_landmarks = self.pose_estimator.to_world_landmark_schemas(
-            pose_landmarks_2d,
-            vis_33,
+        has_valid_landmarks = skeleton_count > 0 and err_code is None
+        keypoints_3d = self.pose_estimator.to_keypoint_schemas(xyz, scores) if has_valid_landmarks else []
+        pose_landmarks = (
+            self.pose_estimator.to_world_landmark_schemas(pose_landmarks_2d, vis_33)
+            if has_valid_landmarks
+            else []
         )
-        pose_world_landmarks = self.pose_estimator.to_world_landmark_schemas(
-            pose_world_landmarks_3d,
-            vis_33,
+        pose_world_landmarks = (
+            self.pose_estimator.to_world_landmark_schemas(pose_world_landmarks_3d, vis_33)
+            if has_valid_landmarks
+            else []
         )
-        hand_status = self.pose_estimator.extract_hand_raise_telemetry(xyz, scores)
+        hand_status = (
+            self.pose_estimator.extract_hand_raise_telemetry(xyz, scores)
+            if has_valid_landmarks
+            else HandRaiseTelemetry()
+        )
         frame_b64: Optional[str] = None
         if include_frame and frame is not None:
             frame_b64 = self.camera.encode_jpeg_base64(frame, max_width=640, quality=68)
             if frame_b64:
                 self._last_frame_b64 = frame_b64
-        elif self._stream_video_clients:
+        elif self._stream_video_clients and frame is not None:
             frame_b64 = self._last_frame_b64
 
         payload = self.fsm.step(
@@ -226,6 +247,8 @@ class KioskRuntimeCoordinator:
             world_pts=world_xyz,
             pose_world_landmarks=pose_world_landmarks,
             pose_landmarks=pose_landmarks,
+            error_code=err_code,
+            error_message=err_message,
         )
         self._last_telemetry = payload
         return payload
@@ -386,8 +409,9 @@ class KioskRuntimeCoordinator:
     async def register_ws(self, ws: WebSocket) -> None:
         await ws.accept()
         self._clients.add(ws)
-        # Send immediate initial telemetry frame so client sees backend ready in <10ms
-        initial = self.step_once(include_frame=False)
+        self._stream_video_clients.add(ws)
+        # Send immediate initial telemetry frame (with video frame if live) so client sees backend ready in <10ms
+        initial = self.step_once(include_frame=True)
         await ws.send_json(initial.model_dump())
 
     def unregister_ws(self, ws: WebSocket) -> None:

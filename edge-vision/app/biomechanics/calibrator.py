@@ -169,6 +169,27 @@ class StandingCalibrator:
 
         return (True, "OK", est_dist_m, min_score, [])
 
+    def estimate_live_distance_m(self, pts: np.ndarray, scores: np.ndarray) -> float:
+        """Compute dynamic real-time subject distance (meters) from live 2D shoulders/torso."""
+        if pts is None or scores is None or pts.shape[0] < 13 or scores.size < 13:
+            self.estimated_distance_m = 0.0
+            return 0.0
+        if float(scores[5]) < 0.25 or float(scores[6]) < 0.25:
+            self.estimated_distance_m = 0.0
+            return 0.0
+
+        hips_visible = self._has_visible_hips(pts, scores, 0.25)
+        if hips_visible:
+            mid_sh = 0.5 * (pts[5] + pts[6])
+            mid_hip = 0.5 * (pts[11] + pts[12])
+            torso_h = max(self._dist3(mid_sh, mid_hip), 1e-4)
+            est = round(float(np.clip(2.0 * (0.265 / torso_h), 0.5, 5.0)), 2)
+        else:
+            sh_w = max(self._dist3(pts[5], pts[6]), 1e-4)
+            est = round(float(np.clip(2.0 * (0.19 / sh_w), 0.5, 5.0)), 2)
+        self.estimated_distance_m = est
+        return est
+
     def _compute_bone_lengths(
         self,
         stacked: np.ndarray,

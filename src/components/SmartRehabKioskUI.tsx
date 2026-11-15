@@ -52,7 +52,7 @@ interface SmartRehabKioskUIProps {
   onOpenLegacyKiosk?: () => void;
 }
 
-const PRIVACY_MODE_STORAGE_KEY = 'drtechcares_kiosk_privacy_mode';
+const PRIVACY_MODE_STORAGE_KEY = 'drtechcares_kiosk_privacy_v2';
 
 const DEMO_PRESETS: { id: DemoPresetId; label: string; shortLabel: string }[] = [
   { id: 'FACE_SCAN', label: 'Face Scan Login', shortLabel: '1. Face Scan' },
@@ -1801,12 +1801,12 @@ export function SmartRehabKioskUI({
         typeof window !== 'undefined'
           ? window.localStorage.getItem(PRIVACY_MODE_STORAGE_KEY)
           : null;
-      if (saved === 'false') return false;
       if (saved === 'true') return true;
+      if (saved === 'false') return false;
     } catch {
       // Ignore storage read errors
     }
-    return true;
+    return false;
   });
 
   const canShowManualRepButton = useMemo(() => {
@@ -3067,8 +3067,16 @@ export function SmartRehabKioskUI({
               payload={payload}
               exercise={selectedExercise}
               isDemoMode={isDemoMode}
-              distanceM={demoDistanceM}
-              trunkTiltDeg={demoTrunkTiltDeg}
+              distanceM={
+                !isDemoMode && isEdgeDirectCamera
+                  ? (payload.calibration?.estimated_distance_m ?? 0)
+                  : demoDistanceM
+              }
+              trunkTiltDeg={
+                !isDemoMode && isEdgeDirectCamera
+                  ? (payload.telemetry_analysis?.trunk_tilt_deg ?? 0)
+                  : demoTrunkTiltDeg
+              }
               hasLiveCamera={!isEdgeDirectCamera && livePoseActive && !cameraError}
               isPrivacyMode={isPrivacyMode}
               liveVideoOverlay={

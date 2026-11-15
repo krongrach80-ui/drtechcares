@@ -27,6 +27,13 @@ except ImportError:  # pragma: no cover
     mp = None  # type: ignore
 
 try:
+    from mediapipe.tasks import python as mp_python  # type: ignore
+    from mediapipe.tasks.python import vision as mp_vision  # type: ignore
+except ImportError:  # pragma: no cover
+    mp_python = None  # type: ignore
+    mp_vision = None  # type: ignore
+
+try:
     import onnxruntime as ort  # type: ignore
 except ImportError:  # pragma: no cover
     ort = None  # type: ignore
@@ -543,17 +550,19 @@ class MediaPipePoseEngine:
     def __init__(self, settings: EdgeVisionSettings) -> None:
         self.settings = settings
         self.config = settings.get_mediapipe_pose_config()
+        # Keep One-Euro smoothing responsive down to visibility >= 0.15 so moving joints (elbows/wrists)
+        # never freeze during partial occlusion or quick turns.
         self.filter_2d = OneEuroFilter(
             min_cutoff=settings.ONE_EURO_2D_MIN_CUTOFF,
             beta=settings.ONE_EURO_2D_BETA,
             d_cutoff=settings.ONE_EURO_D_CUTOFF,
-            min_visibility=settings.MIN_LANDMARK_VISIBILITY,
+            min_visibility=0.15,
         )
         self.filter_3d = OneEuroFilter(
             min_cutoff=settings.ONE_EURO_MIN_CUTOFF,
             beta=settings.ONE_EURO_BETA,
             d_cutoff=settings.ONE_EURO_D_CUTOFF,
-            min_visibility=settings.MIN_LANDMARK_VISIBILITY,
+            min_visibility=0.15,
         )
         self._solutions_pose: Optional[Any] = None
         self._tasks_landmarker: Optional[Any] = None
@@ -589,10 +598,39 @@ class MediaPipePoseEngine:
 
     def _init_mediapipe(self) -> None:
         if mp is None:
-            self._backend_label = "MediaPipe Package Missing"
+            self._backend_label = "AI Model Error (mediapipe package missing)"
             return
 
         cfg = self.config
+        det_conf = min(0.5, float(cfg["min_detection_confidence"]))
+        pres_conf = min(0.5, float(cfg["min_presence_confidence"]))
+        track_conf = min(0.5, float(cfg["min_tracking_confidence"]))
+
+        # Primary: MediaPipe Tasks Vision API PoseLandmarker (mediapipe 1.2.3+) with auto-downloaded heavy .task asset
+        model_path = self.settings.resolve_mediapipe_model_path(int(cfg["model_complexity"]))
+        if model_path is not None and mp_python is not None and mp_vision is not None:
+            try:
+                base_opts = mp_python.BaseOptions(model_asset_path=str(model_path))
+                options = mp_vision.PoseLandmarkerOptions(
+                    base_options=base_opts,
+                    running_mode=mp_vision.RunningMode.VIDEO,
+                    num_poses=int(cfg["num_poses"]),
+                    min_pose_detection_confidence=det_conf,
+                    min_pose_presence_confidence=pres_conf,
+                    min_tracking_confidence=track_conf,
+                    output_segmentation_masks=False,
+                )
+                self._tasks_landmarker = mp_vision.PoseLandmarker.create_from_options(options)
+                self._backend_label = (
+                    f"MediaPipe PoseLandmarker ({model_path.name}, complexity={cfg['model_complexity']}, "
+                    f"det={det_conf:.1f}, track={track_conf:.1f})"
+                )
+                logger.info("Initialized %s", self._backend_label)
+                return
+            except Exception as exc:
+                logger.warning("Failed initializing MediaPipe PoseLandmarker: %s", exc)
+
+        # Legacy fallback only if mediapipe.tasks is unavailable on an older environment
         if hasattr(mp, "solutions") and hasattr(mp.solutions, "pose"):
             try:
                 self._solutions_pose = mp.solutions.pose.Pose(
@@ -600,43 +638,19 @@ class MediaPipePoseEngine:
                     model_complexity=int(cfg["model_complexity"]),
                     smooth_landmarks=bool(cfg["smooth_landmarks"]),
                     enable_segmentation=bool(cfg["enable_segmentation"]),
-                    min_detection_confidence=float(cfg["min_detection_confidence"]),
-                    min_tracking_confidence=float(cfg["min_tracking_confidence"]),
+                    min_detection_confidence=det_conf,
+                    min_tracking_confidence=track_conf,
                 )
                 self._backend_label = (
                     f"MediaPipe Pose Solutions (complexity={cfg['model_complexity']}, "
-                    f"det={cfg['min_detection_confidence']:.1f}, track={cfg['min_tracking_confidence']:.1f})"
+                    f"det={det_conf:.1f}, track={track_conf:.1f})"
                 )
                 logger.info("Initialized %s", self._backend_label)
                 return
             except Exception as exc:
                 logger.warning("Failed initializing mp.solutions.pose.Pose: %s", exc)
 
-        model_path = self.settings.resolve_mediapipe_model_path(int(cfg["model_complexity"]))
-        if model_path is not None and hasattr(mp, "tasks"):
-            try:
-                base_opts = mp.tasks.BaseOptions(model_asset_path=str(model_path))
-                vision = mp.tasks.vision
-                options = vision.PoseLandmarkerOptions(
-                    base_options=base_opts,
-                    running_mode=vision.RunningMode.VIDEO,
-                    num_poses=int(cfg["num_poses"]),
-                    min_pose_detection_confidence=float(cfg["min_detection_confidence"]),
-                    min_pose_presence_confidence=float(cfg["min_presence_confidence"]),
-                    min_tracking_confidence=float(cfg["min_tracking_confidence"]),
-                    output_segmentation_masks=False,
-                )
-                self._tasks_landmarker = vision.PoseLandmarker.create_from_options(options)
-                self._backend_label = (
-                    f"MediaPipe PoseLandmarker ({model_path.name}, complexity={cfg['model_complexity']}, "
-                    f"det={cfg['min_detection_confidence']:.1f}, track={cfg['min_tracking_confidence']:.1f})"
-                )
-                logger.info("Initialized %s", self._backend_label)
-                return
-            except Exception as exc:
-                logger.warning("Failed initializing MediaPipe PoseLandmarker: %s", exc)
-
-        self._backend_label = "MediaPipe Fallback (Model Asset Not Found)"
+        self._backend_label = "AI Model Error (PoseLandmarker asset unavailable)"
 
     @staticmethod
     def _landmarks_to_numpy(landmark_list: Sequence[Any]) -> Tuple[np.ndarray, np.ndarray]:
@@ -684,7 +698,8 @@ class MediaPipePoseEngine:
                 raw_2d_list.append((pts2, vis2))
                 raw_3d_list.append(pts3)
         elif self._tasks_landmarker is not None and mp is not None:
-            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
+            rgb_c = np.ascontiguousarray(rgb, dtype=np.uint8)
+            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_c)
             ts_ms = max(self._last_ts_ms + 1, int(round(float(timestamp_sec) * 1000.0)))
             self._last_ts_ms = ts_ms
             res = self._tasks_landmarker.detect_for_video(mp_img, ts_ms)
@@ -958,6 +973,32 @@ class RTMW3DPoseEstimator:
                 logger.debug("RTMW3D frame inference warning: %s", exc)
 
         if raw_xyz is None or scores is None:
+            if not is_mock_mode and mock_pose_override is None:
+                # Never fabricate a procedural skeleton during live clinical mode.
+                if self.mp_engine is not None:
+                    self.mp_engine.reset_filters()
+                if frame_bgr is None:
+                    err_backend = "CAMERA_DISCONNECTED"
+                elif not (self.mp_engine is not None and self.mp_engine.is_ready) and self._model is None:
+                    err_backend = "AI_MODEL_ERROR"
+                else:
+                    err_backend = self.mp_engine.backend_label if self.mp_engine is not None else self._backend_name
+
+                empty_frame = PoseEstimationFrame(
+                    pose_landmarks_2d=np.zeros((0, 3), dtype=np.float64),
+                    pose_world_landmarks_3d=np.zeros((0, 3), dtype=np.float64),
+                    visibilities_33=np.zeros((TOTAL_MEDIAPIPE_KEYPOINTS,), dtype=np.float64),
+                    wholebody_2d_133=np.zeros((TOTAL_WHOLEBODY_KEYPOINTS, 3), dtype=np.float64),
+                    wholebody_world_133=np.zeros((TOTAL_WHOLEBODY_KEYPOINTS, 3), dtype=np.float64),
+                    scores_133=np.zeros((TOTAL_WHOLEBODY_KEYPOINTS,), dtype=np.float64),
+                    skeleton_count=0,
+                    valid_bboxes=[],
+                    visibility_ok=False,
+                    backend_used=err_backend,
+                )
+                self.latest_frame = empty_frame
+                return empty_frame
+
             raw_xyz, scores = generate_synthetic_133_pose(
                 t_sec=timestamp_sec,
                 exercise_id=exercise_id,
@@ -1090,14 +1131,16 @@ class RTMW3DPoseEstimator:
         # Left hand centroid (91..111)
         l_hand_pts = xyz[91:112]
         l_hand_sc = scores[91:112]
+        l_valid = bool(float(scores[9]) > 0.2 or float(np.mean(l_hand_sc)) > 0.25)
         l_palm = np.mean(l_hand_pts[[0, 5, 9, 13, 17]], axis=0) if np.mean(l_hand_sc) > 0.25 else xyz[9]
-        l_raised = bool(float(l_palm[1]) < l_sh_y + 0.08 or float(l_palm[1]) < 0.62)
+        l_raised = bool(l_valid and (float(l_palm[1]) < l_sh_y + 0.08 or float(l_palm[1]) < 0.62))
 
         # Right hand centroid (112..132)
         r_hand_pts = xyz[112:133]
         r_hand_sc = scores[112:133]
+        r_valid = bool(float(scores[10]) > 0.2 or float(np.mean(r_hand_sc)) > 0.25)
         r_palm = np.mean(r_hand_pts[[0, 5, 9, 13, 17]], axis=0) if np.mean(r_hand_sc) > 0.25 else xyz[10]
-        r_raised = bool(float(r_palm[1]) < r_sh_y + 0.08 or float(r_palm[1]) < 0.62)
+        r_raised = bool(r_valid and (float(r_palm[1]) < r_sh_y + 0.08 or float(r_palm[1]) < 0.62))
 
         zone = "NONE"
         if l_raised and r_raised:

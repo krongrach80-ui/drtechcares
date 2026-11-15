@@ -23,6 +23,7 @@ from app.schemas.telemetry import (
     MovementPhase,
     PatientMatchSchema,
     RepCounterSchema,
+    TelemetryAnalysisSchema,
     UIDirectivesSchema,
 )
 
@@ -226,16 +227,96 @@ class ClinicalRehabFSM:
         world_pts: Optional[np.ndarray] = None,
         pose_world_landmarks: Optional[List[Keypoint3D]] = None,
         pose_landmarks: Optional[List[Keypoint3D]] = None,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
     ) -> EdgeKioskTelemetryPayload:
         """Advance FSM one frame and emit complete WebSocket telemetry payload."""
         guard = identity_guard or IdentityGuardSchema()
 
+        no_live_pose = (
+            camera_mode != "synthetic_mock"
+            and not error_code
+            and len(keypoints_3d) == 0
+            and len(pose_landmarks or []) == 0
+        )
+        effective_err_code = error_code or ("NO_POSE_DETECTED" if no_live_pose else None)
+        effective_err_msg = error_message or (
+            "ไม่พบโครงกระดูกผู้ใช้งานในเฟรมกล้อง กรุณาขยับตัวเข้ามาหน้ากล้อง"
+            if no_live_pose
+            else None
+        )
+
+        if effective_err_code:
+            self.calibrator.estimated_distance_m = 0.0
+            halt_calib = CalibrationStateSchema(
+                is_calibrated=self.calibrator.is_calibrated,
+                progress=0.0,
+                remaining_sec=self.settings.CALIBRATION_DURATION_SEC,
+                message_th=effective_err_msg or "ไม่สามารถตรวจจับท่าทางได้",
+                distance_status="OCCLUDED",
+                estimated_distance_m=0.0,
+                min_visibility=0.0,
+                missing_joints=[],
+                bone_lengths=self.calibrator.bone_lengths,
+            )
+            idle_analysis = TelemetryAnalysisSchema(
+                current_rom_deg=0.0,
+                target_rom_deg=self._target_rom_deg(),
+                rom_completion_pct=0.0,
+                is_form_valid=False,
+                visibility_ok=False,
+                compensation_detected=["NONE"],
+                compensation_warnings=[effective_err_msg] if effective_err_msg else [],
+                pain_alert=False,
+            )
+            highlight = "RED" if effective_err_code in ("CAMERA_DISCONNECTED", "AI_MODEL_ERROR") else "AMBER"
+            return EdgeKioskTelemetryPayload(
+                kiosk_state=self._kiosk_state_alias(),  # type: ignore[arg-type]
+                fsm_state=self.fsm_state,  # type: ignore[arg-type]
+                timestamp_ms=int(time.time() * 1000),
+                fps=round(fps, 1),
+                engine_backend="MediaPipe PoseLandmarker Heavy + OneEuroFilter",
+                camera_mode=camera_mode,
+                movement_phase="IDLE",
+                hold_progress_pct=self.hold_progress_pct,
+                stability_score=0.0,
+                compensation_warnings=idle_analysis.compensation_warnings,
+                patient=self.patient,
+                telemetry_analysis=idle_analysis,
+                rep_counter=RepCounterSchema(
+                    valid_reps=self.valid_reps,
+                    invalid_reps=self.invalid_reps,
+                    hold_remaining_sec=round(self.hold_remaining_sec, 2),
+                    hold_progress_pct=self.hold_progress_pct,
+                    hold_timer_frozen=self._hold_timer_frozen,
+                    movement_phase="IDLE",
+                    target_reps=self.target_reps,
+                ),
+                ui_directives=UIDirectivesSchema(
+                    skeleton_highlight_joint=self.prescription.target_joint or self.rule.target_joint,
+                    highlight_color=highlight,  # type: ignore[arg-type]
+                    show_target_arc=False,
+                ),
+                tts_voice_th=effective_err_msg or self._last_tts,
+                calibration=halt_calib,
+                hand_status=HandRaiseTelemetry(),
+                face_enrollment=face_enrollment,
+                identity_guard=guard,
+                keypoints_3d=[],
+                pose_landmarks=[],
+                pose_world_landmarks=[],
+                frame_base64=frame_base64,
+                error_code=effective_err_code,
+                error_message=effective_err_msg,
+            )
+
+        live_dist_m = self.calibrator.estimate_live_distance_m(pts, scores)
         calib_state = CalibrationStateSchema(
             is_calibrated=self.calibrator.is_calibrated,
             progress=1.0 if self.calibrator.is_calibrated else 0.0,
             remaining_sec=0.0 if self.calibrator.is_calibrated else self.settings.CALIBRATION_DURATION_SEC,
             bone_lengths=self.calibrator.bone_lengths,
-            estimated_distance_m=self.calibrator.estimated_distance_m,
+            estimated_distance_m=live_dist_m,
         )
 
         # Continuous Anti-Cheat & Identity Guard enforcement (Rule 1 + Rule 2)

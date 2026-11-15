@@ -86,11 +86,14 @@ export interface KioskDecisionPayload {
   rep_counter: RepCounter;
   ui_directives: UIDirectives;
   tts_voice_th: string;
+  error_code?: string | null;
+  error_message?: string | null;
   calibration?: CalibrationState;
   hand_status?: HandRaiseTelemetry;
   identity_guard?: IdentityGuardState;
   keypoints_3d?: Keypoint3DPoint[];
   pose_landmarks?: Keypoint3DPoint[];
+  pose_world_landmarks?: Keypoint3DPoint[];
   frame_base64: string | null;
 }
 
@@ -1253,10 +1256,9 @@ export function useKioskSocket(
   const isEdgeDirectCamera = Boolean(
     !isDemoMode &&
       connectionStatus === 'connected' &&
-      (livePayload?.camera_mode === 'live_webcam' ||
-        livePayload?.camera_mode === 'live_camera' ||
-        livePayload?.camera_mode?.startsWith('mock_video:')) &&
-      livePayload?.frame_base64,
+      livePayload &&
+      livePayload.camera_mode !== 'live_browser_bridge' &&
+      livePayload.camera_mode !== 'synthetic_mock',
   );
   const isEdgeLiveCameraActive = Boolean(
     !isDemoMode &&
@@ -1269,10 +1271,15 @@ export function useKioskSocket(
     window.location.protocol === 'https:' &&
     !/^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname);
 
-  // Use Edge Vision's full frame + payload only when Python directly owns the camera;
-  // otherwise keep browser webcam/MediaPipe driving demoPayload & bridging landmarks to Edge.
+  // In live mode, reflect Edge Vision's direct telemetry (including CAMERA_DISCONNECTED /
+  // AI_MODEL_ERROR / NO_POSE_DETECTED states) instead of reverting to synthetic demoPayload.
   const payload: KioskDecisionPayload =
-    isEdgeDirectCamera && livePayload ? livePayload : demoPayload;
+    !isDemoMode &&
+    connectionStatus === 'connected' &&
+    livePayload &&
+    livePayload.camera_mode !== 'live_browser_bridge'
+      ? livePayload
+      : demoPayload;
 
   return {
     payload,

@@ -919,6 +919,88 @@ class TestClinicalEdgeVision(unittest.TestCase):
                 self.assertEqual(bridged.get("camera_mode"), "live_browser_bridge")
                 self.assertGreater(bridged["telemetry_analysis"]["current_rom_deg"], 80.0)
 
+    def test_17_live_mode_no_synthetic_fallback_on_missing_frame_or_camera_disconnect(self) -> None:
+        """
+        Verify live mode never falls back to procedural/synthetic skeleton coordinates
+        when camera frames are absent (frame=None) or camera is disconnected, and returns
+        explicit CAMERA_DISCONNECTED error metadata + zero/empty telemetry.
+        """
+        live_settings = EdgeVisionSettings(
+            MOCK_VIDEO_PATH="",
+            SUPABASE_URL="",
+            SUPABASE_ANON_KEY="",
+            SUPABASE_SERVICE_ROLE_KEY="",
+        )
+        estimator = RTMW3DPoseEstimator(live_settings)
+        try:
+            result = estimator.estimate_clinical_with_crowd(
+                frame_bgr=None,
+                timestamp_sec=1.0,
+                is_mock_mode=False,
+            )
+            self.assertEqual(result.skeleton_count, 0)
+            self.assertEqual(result.backend_used, "CAMERA_DISCONNECTED")
+            self.assertEqual(result.pose_landmarks_2d.shape[0], 0)
+            self.assertEqual(result.pose_world_landmarks_3d.shape[0], 0)
+            self.assertTrue(bool(np.allclose(result.scores_133, 0.0)))
+        finally:
+            estimator.close()
+
+        hand_zero = RTMW3DPoseEstimator.extract_hand_raise_telemetry(
+            np.zeros((133, 3), dtype=np.float64),
+            np.zeros((133,), dtype=np.float64),
+        )
+        self.assertFalse(hand_zero.left_raised)
+        self.assertFalse(hand_zero.right_raised)
+
+        fsm = ClinicalRehabFSM(live_settings)
+        fsm.set_prescription(
+            ExercisePrescriptionSchema(
+                exercise_id="ex-01",
+                exercise_name="Right Shoulder Flexion",
+                target_joint="right_shoulder",
+                target_rom_deg=145.0,
+                hold_sec=3.0,
+                target_reps=10,
+            ),
+            start_calibration=False,
+        )
+        payload = fsm.step(
+            pts=np.zeros((133, 3), dtype=np.float64),
+            scores=np.zeros((133,), dtype=np.float64),
+            timestamp_sec=2.0,
+            fps=30.0,
+            camera_mode="camera_disconnected",
+            hand_status=HandRaiseTelemetry(),
+            keypoints_3d=[],
+            pose_world_landmarks=[],
+            pose_landmarks=[],
+            error_code="CAMERA_DISCONNECTED",
+            error_message="Camera unavailable",
+        )
+        self.assertEqual(payload.error_code, "CAMERA_DISCONNECTED")
+        self.assertEqual(payload.error_message, "Camera unavailable")
+        self.assertEqual(payload.pose_landmarks, [])
+        self.assertEqual(payload.keypoints_3d, [])
+        self.assertEqual(payload.telemetry_analysis.current_rom_deg, 0.0)
+        self.assertEqual(payload.calibration.estimated_distance_m, 0.0)
+        self.assertFalse(payload.hand_status.left_raised)
+        self.assertFalse(payload.hand_status.right_raised)
+
+        from app.api.ws_kiosk import KioskRuntimeCoordinator
+
+        coordinator = KioskRuntimeCoordinator(live_settings)
+        try:
+            coordinator.camera._mode = "camera_disconnected"
+            coord_payload = coordinator.step_once(include_frame=True)
+            self.assertEqual(coord_payload.error_code, "CAMERA_DISCONNECTED")
+            self.assertEqual(coord_payload.pose_landmarks, [])
+            self.assertEqual(coord_payload.keypoints_3d, [])
+            self.assertFalse(coord_payload.hand_status.left_raised)
+            self.assertFalse(coord_payload.hand_status.right_raised)
+        finally:
+            coordinator.pose_estimator.close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

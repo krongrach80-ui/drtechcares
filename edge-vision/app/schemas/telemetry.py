@@ -239,6 +239,8 @@ class EdgeKioskTelemetryPayload(BaseModel):
     pose_landmarks: List[Keypoint3D] = Field(default_factory=list)
     pose_world_landmarks: List[Keypoint3D] = Field(default_factory=list)
     frame_base64: Optional[str] = None
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
 
 
 class EnrollStartRequest(BaseModel):

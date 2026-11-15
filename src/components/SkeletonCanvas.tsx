@@ -8,7 +8,11 @@ import {
   type ExercisePrescriptionOption,
   type KioskDecisionPayload,
 } from '../hooks/useKioskSocket';
-import { drawWholeBody133OnCanvas, type Keypoint3DPoint } from '../hooks/useEdgeVisionSocket';
+import {
+  drawMediaPipe33OnCanvas,
+  drawWholeBody133OnCanvas,
+  type Keypoint3DPoint,
+} from '../hooks/useEdgeVisionSocket';
 
 interface SkeletonCanvasProps {
   payload: KioskDecisionPayload;
@@ -71,6 +75,7 @@ export function SkeletonCanvas({
 }: SkeletonCanvasProps) {
   const { kiosk_state, telemetry_analysis, rep_counter, ui_directives } = payload;
   const edgeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const edgeImgRef = useRef<HTMLImageElement | null>(null);
   const latestPayloadRef = useRef(payload);
   latestPayloadRef.current = payload;
 
@@ -80,6 +85,7 @@ export function SkeletonCanvas({
   ] as const;
 
   const resolveEdgeKeypoints = (cur: KioskDecisionPayload): Keypoint3DPoint[] | undefined => {
+    if (cur.error_code) return undefined;
     if (cur.keypoints_3d && cur.keypoints_3d.length >= 17) return cur.keypoints_3d;
     if (cur.pose_landmarks && cur.pose_landmarks.length >= 33) {
       return MEDIAPIPE_33_TO_COCO_23.map((mpIdx) => cur.pose_landmarks![mpIdx]);
@@ -90,39 +96,71 @@ export function SkeletonCanvas({
     return undefined;
   };
 
-  const hasEdge3D = Boolean(!isDemoMode && resolveEdgeKeypoints(payload));
+  const hasEdgePose = Boolean(
+    !isDemoMode &&
+      !payload.error_code &&
+      ((payload.pose_landmarks && payload.pose_landmarks.length >= 33) ||
+        resolveEdgeKeypoints(payload)),
+  );
+  const hasEdge3D = hasEdgePose;
 
   useEffect(() => {
-    if (!hasEdge3D) return;
+    const canvas = edgeCanvasRef.current;
+    if (isDemoMode) {
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        ctx?.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      return;
+    }
+
     let rafId = 0;
     const renderFrame = () => {
-      const canvas = edgeCanvasRef.current;
+      const c = edgeCanvasRef.current;
       const cur = latestPayloadRef.current;
-      const keypointsToDraw = resolveEdgeKeypoints(cur);
-      if (canvas && keypointsToDraw && keypointsToDraw.length >= 17) {
-        const w = canvas.clientWidth || 800;
-        const h = canvas.clientHeight || 540;
+      if (c) {
+        const w = c.clientWidth || 800;
+        const h = c.clientHeight || 540;
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
-          canvas.width = Math.round(w * dpr);
-          canvas.height = Math.round(h * dpr);
+        if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+          c.width = Math.round(w * dpr);
+          c.height = Math.round(h * dpr);
         }
-        const ctx = canvas.getContext('2d');
+        const ctx = c.getContext('2d');
         if (ctx) {
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-          drawWholeBody133OnCanvas(ctx, w, h, keypointsToDraw, {
-            highlightColor: cur.ui_directives?.highlight_color ?? 'GREEN',
-            mirrorX: Boolean(cur.frame_base64),
-            detectedBoxes: cur.identity_guard?.detected_boxes,
-            guardStatus: cur.identity_guard?.status,
-          });
+          if (cur.error_code) {
+            ctx.clearRect(0, 0, w, h);
+          } else {
+            const img = edgeImgRef.current;
+            const videoWidth = !isPrivacyMode && img && img.naturalWidth > 0 ? img.naturalWidth : undefined;
+            const videoHeight = !isPrivacyMode && img && img.naturalHeight > 0 ? img.naturalHeight : undefined;
+            const drawOpts = {
+              highlightColor: cur.ui_directives?.highlight_color ?? 'GREEN',
+              mirrorX: Boolean(cur.frame_base64),
+              videoWidth,
+              videoHeight,
+              detectedBoxes: cur.identity_guard?.detected_boxes,
+              guardStatus: cur.identity_guard?.status,
+            };
+            if (cur.pose_landmarks && cur.pose_landmarks.length >= 33) {
+              drawMediaPipe33OnCanvas(ctx, w, h, cur.pose_landmarks, drawOpts);
+            } else {
+              const keypointsToDraw = resolveEdgeKeypoints(cur);
+              if (keypointsToDraw && keypointsToDraw.length >= 17) {
+                drawWholeBody133OnCanvas(ctx, w, h, keypointsToDraw, drawOpts);
+              } else {
+                ctx.clearRect(0, 0, w, h);
+              }
+            }
+          }
         }
       }
       rafId = requestAnimationFrame(renderFrame);
     };
     rafId = requestAnimationFrame(renderFrame);
     return () => cancelAnimationFrame(rafId);
-  }, [hasEdge3D]);
+  }, [isDemoMode, isPrivacyMode, hasEdge3D]);
 
   const currentRom = telemetry_analysis.current_rom_deg;
   const targetRom = telemetry_analysis.target_rom_deg || exercise.target_rom_deg;
@@ -142,7 +180,7 @@ export function SkeletonCanvas({
   const isRepCompletedOrFinished = kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED';
   const isLowerBody = exercise.target_joint.includes('knee') || exercise.target_joint.includes('hip');
 
-  const distanceIdeal = distanceM >= 1.8 && distanceM <= 2.2;
+  const distanceIdeal = distanceM > 0 && distanceM >= 1.8 && distanceM <= 2.2;
   const accentColor =
     ui_directives.highlight_color === 'RED'
       ? '#EF4444'
@@ -250,63 +288,91 @@ export function SkeletonCanvas({
         isEmergency ? 'ring-4 ring-rose-500/70' : ''
       }`}
     >
-      {/* Live Camera Frame (Edge Vision / Local Webcam) or Privacy Stickman Black Stage */}
-      {!isDemoMode && payload.frame_base64 ? (
-        isPrivacyMode ? (
+      {/* Live Camera Frame (Edge Vision / Local Webcam) or Privacy Stickman Black Stage + 1:1 33-Point Skeleton Overlay */}
+      <div className="absolute inset-0 z-0 overflow-hidden">
+        {!isDemoMode && payload.frame_base64 ? (
+          isPrivacyMode ? (
+            <div
+              aria-label="Privacy Stickman Black Stage"
+              className="h-full w-full bg-[#050811]"
+            />
+          ) : (
+            <img
+              ref={edgeImgRef}
+              src={`data:image/jpeg;base64,${payload.frame_base64}`}
+              alt="Live Rehabilitation Vision Feed"
+              className="h-full w-full bg-slate-950 object-contain"
+              style={{ transform: 'scaleX(-1)' }}
+            />
+          )
+        ) : hasLiveCamera && liveVideoOverlay ? (
+          <div
+            className={`h-full w-full overflow-hidden ${
+              isPrivacyMode ? 'bg-[#050811]' : 'bg-gradient-to-br from-sky-100 via-emerald-50 to-white'
+            }`}
+          >
+            {liveVideoOverlay}
+          </div>
+        ) : !isDemoMode && isPrivacyMode ? (
           <div
             aria-label="Privacy Stickman Black Stage"
-            className="absolute inset-0 bg-[#050811]"
+            className="h-full w-full bg-[#050811]"
+          />
+        ) : !isDemoMode ? (
+          <div
+            aria-label="Live Vision Stage"
+            className="h-full w-full bg-slate-950"
           />
         ) : (
-          <img
-            src={`data:image/jpeg;base64,${payload.frame_base64}`}
-            alt="Live Rehabilitation Vision Feed"
-            className="absolute inset-0 h-full w-full object-cover"
-            style={{ transform: 'scaleX(-1)' }}
+          <div className="h-full w-full bg-gradient-to-br from-[#F4F9F9] via-[#E6F4F6] to-[#DCF0F7]">
+            {/* Subtle Clinical Calibration Grid */}
+            <svg className="h-full w-full opacity-45" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <pattern id="clinicalGrid" width="40" height="40" patternUnits="userSpaceOnUse">
+                  <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#BAE6FD" strokeWidth="1" />
+                </pattern>
+              </defs>
+              <rect width="100%" height="100%" fill="url(#clinicalGrid)" />
+            </svg>
+            {/* Floor horizon ellipse */}
+            <div className="pointer-events-none absolute bottom-6 left-1/2 h-10 w-72 -translate-x-1/2 rounded-full bg-[#0284C7]/10 blur-md" />
+          </div>
+        )}
+
+        {!isDemoMode && !(hasLiveCamera && liveVideoOverlay) && (
+          <canvas
+            ref={edgeCanvasRef}
+            aria-label="MediaPipe 33-Keypoints 1:1 Skeleton Overlay"
+            className="pointer-events-none absolute inset-0 h-full w-full"
           />
-        )
-      ) : hasLiveCamera && liveVideoOverlay ? (
-        <div
-          className={`absolute inset-0 z-0 h-full w-full overflow-hidden ${
-            isPrivacyMode ? 'bg-[#050811]' : 'bg-gradient-to-br from-sky-100 via-emerald-50 to-white'
-          }`}
-        >
-          {liveVideoOverlay}
-        </div>
-      ) : !isDemoMode && isPrivacyMode ? (
-        <div
-          aria-label="Privacy Stickman Black Stage"
-          className="absolute inset-0 bg-[#050811]"
-        />
-      ) : (
-        <div className="absolute inset-0 bg-gradient-to-br from-[#F4F9F9] via-[#E6F4F6] to-[#DCF0F7]">
-          {/* Subtle Clinical Calibration Grid */}
-          <svg className="h-full w-full opacity-45" xmlns="http://www.w3.org/2000/svg">
-            <defs>
-              <pattern id="clinicalGrid" width="40" height="40" patternUnits="userSpaceOnUse">
-                <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#BAE6FD" strokeWidth="1" />
-              </pattern>
-            </defs>
-            <rect width="100%" height="100%" fill="url(#clinicalGrid)" />
-          </svg>
-          {/* Floor horizon ellipse */}
-          <div className="pointer-events-none absolute bottom-6 left-1/2 h-10 w-72 -translate-x-1/2 rounded-full bg-[#0284C7]/10 blur-md" />
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Top HUD Overlay: Distance & Posture Status */}
       <div className="relative z-10 flex flex-wrap items-center justify-between gap-2 p-4 sm:p-5">
         <div
           className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-bold shadow-sm backdrop-blur-md sm:text-sm ${
-            distanceIdeal
-              ? 'border-emerald-200 bg-white/85 text-[#0F4C81]'
-              : 'border-amber-300 bg-amber-50/90 text-amber-800'
+            distanceM <= 0
+              ? 'border-sky-200 bg-white/90 text-[#0F4C81]'
+              : distanceIdeal
+                ? 'border-emerald-200 bg-white/85 text-[#0F4C81]'
+                : 'border-amber-300 bg-amber-50/90 text-amber-800'
           }`}
         >
-          <Ruler className={`h-4 w-4 ${distanceIdeal ? 'text-[#10B981]' : 'text-[#F59E0B]'}`} />
+          <Ruler
+            className={`h-4 w-4 ${
+              distanceM <= 0 ? 'text-[#0284C7]' : distanceIdeal ? 'text-[#10B981]' : 'text-[#F59E0B]'
+            }`}
+          />
           <span>
-            ระยะยืน: <span className="tabular-mono">{distanceM.toFixed(1)}</span> ม. -{' '}
-            {distanceIdeal ? 'เหมาะสม' : distanceM < 1.8 ? 'กรุณาถอยหลังเล็กน้อย' : 'กรุณาขยับเข้าอีกนิด'}
+            {distanceM > 0 ? (
+              <>
+                ระยะยืน: <span className="tabular-mono">{distanceM.toFixed(1)}</span> ม. -{' '}
+                {distanceIdeal ? 'เหมาะสม' : distanceM < 1.8 ? 'กรุณาถอยหลังเล็กน้อย' : 'กรุณาขยับเข้าอีกนิด'}
+              </>
+            ) : (
+              <span>ระยะยืน: กำลังวัดระยะ...</span>
+            )}
           </span>
         </div>
 
@@ -451,17 +517,34 @@ export function SkeletonCanvas({
         </div>
       )}
 
-      {/* Glowing 3D RTMW3D-l Canvas (when Edge Server active) or SVG Anatomical Skeleton + Target ROM Fan */}
+      {/* Clinical Live Error / Pose Waiting Overlay or Demo Procedural SVG Stickman */}
       <div className="relative z-10 flex flex-1 items-center justify-center px-2 pb-2">
-        {hasEdge3D && (
-          <canvas
-            ref={edgeCanvasRef}
-            aria-label="RTMW3D-l 133-Keypoints 3D WholeBody Skeleton"
-            className="pointer-events-none absolute inset-0 z-10 h-full w-full"
-          />
+        {!isDemoMode && (payload.error_code === 'CAMERA_DISCONNECTED' || payload.error_code === 'AI_MODEL_ERROR') && (
+          <div
+            role="alert"
+            className="relative z-20 mx-auto max-w-md rounded-2xl border-2 border-rose-400 bg-rose-950/90 px-5 py-4 text-center text-white shadow-2xl backdrop-blur-md"
+          >
+            <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-rose-500/20 text-rose-300">
+              <AlertTriangle className="h-6 w-6" />
+            </div>
+            <div className="text-sm font-extrabold text-rose-200">
+              {payload.error_code === 'CAMERA_DISCONNECTED'
+                ? 'ไม่พบกล้องเว็บแคม หรือเปิดกล้องไม่สำเร็จ'
+                : 'ไม่สามารถโหลดโมเดล MediaPipe Pose AI'}
+            </div>
+            <div className="mt-1 text-xs font-medium text-rose-100/90">
+              {payload.error_message || 'กรุณาตรวจสอบการเชื่อมต่อกล้องเว็บแคมและสิทธิ์การใช้งาน'}
+            </div>
+          </div>
         )}
 
-        {!isDemoMode && payload.calibration && !payload.calibration.is_calibrated && (
+        {!isDemoMode && payload.error_code === 'NO_POSE_DETECTED' && (
+          <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full border border-amber-300/80 bg-slate-900/85 px-4 py-1.5 text-xs font-bold text-amber-200 shadow-lg backdrop-blur-md">
+            {payload.error_message || 'กำลังค้นหาร่างกายผู้ป่วยในเฟรมกล้อง (กรุณายืนให้อยู่ในมุมกล้อง)'}
+          </div>
+        )}
+
+        {!isDemoMode && !payload.error_code && payload.calibration && !payload.calibration.is_calibrated && (
           <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-2xl border border-sky-300 bg-white/95 px-5 py-2.5 text-center text-[#0F4C81] shadow-xl backdrop-blur-md">
             <div className="text-xs font-extrabold text-[#0284C7]">
               {payload.calibration.message_th}
@@ -475,10 +558,10 @@ export function SkeletonCanvas({
           </div>
         )}
 
-        {!hasLiveCamera && !(isPrivacyMode && hasEdge3D) && (
+        {isDemoMode && (
           <svg
             viewBox="0 0 800 540"
-            className={`h-full max-h-[500px] w-full select-none overflow-visible ${hasEdge3D ? 'opacity-20' : ''}`}
+            className="h-full max-h-[500px] w-full select-none overflow-visible"
           >
           <defs>
             <linearGradient id="romFillGrad" x1="0%" y1="100%" x2="100%" y2="0%">
@@ -811,9 +894,11 @@ export function SkeletonCanvas({
             ? 'กล้องตรวจจับท่าทางกายภาพบำบัดสด (Live AI Camera Pose Tracking)'
             : isDemoMode
               ? 'โหมดจำลองกายวิภาคเชิงโต้ตอบ (Interactive Demo Canvas)'
-              : `${payload.engine_backend || 'RTMW3D-l 133-Keypoints + One-Euro Filter Active'}${
-                  payload.fps ? ` • ${payload.fps.toFixed(0)} FPS` : ''
-                }`}
+              : payload.error_code
+                ? `Edge Vision Alert: ${payload.error_code}`
+                : `${payload.engine_backend || 'MediaPipe Pose Heavy 3D + One-Euro Filter Active'}${
+                    payload.fps ? ` • ${payload.fps.toFixed(0)} FPS` : ''
+                  }`}
         </span>
         <span className="tabular-mono text-[#0284C7]">
           TARGET ROM {targetRom}° • HOLD {exercise.hold_sec}s

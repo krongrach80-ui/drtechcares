@@ -32,7 +32,12 @@ import {
 } from '../components/VoiceCoachBanner';
 import { getKioskVerifiedModalCopy } from '../components/KioskBiometricLoginView';
 import { getKioskOverviewVoiceNarration } from '../App';
-import { drawWholeBody133OnCanvas, type Keypoint3DPoint } from '../hooks/useEdgeVisionSocket';
+import {
+  computeContainRect,
+  drawMediaPipe33OnCanvas,
+  drawWholeBody133OnCanvas,
+  type Keypoint3DPoint,
+} from '../hooks/useEdgeVisionSocket';
 
 function createNeutralLandmarks(
   overrides: Partial<Record<number, NormalizedLandmark>> = {},
@@ -1324,6 +1329,93 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(arcCalls.some((c) => Math.abs(c.x - 0.42 * 800) < 1 && Math.abs(c.y - 0.92 * 600) < 1)).toBe(true);
     expect(arcCalls.some((c) => Math.abs(c.x - 0.25 * 800) < 1 && Math.abs(c.y - 0.45 * 600) < 1)).toBe(true);
     expect(arcCalls.some((c) => Math.abs(c.x - 0.75 * 800) < 1 && Math.abs(c.y - 0.45 * 600) < 1)).toBe(true);
+  });
+});
+
+describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () => {
+  it('computes exact CSS object-contain pillarbox and letterbox rectangles', () => {
+    const pillar = computeContainRect(1000, 500, 640, 480);
+    expect(pillar.offsetY).toBe(0);
+    expect(pillar.renderH).toBe(500);
+    expect(pillar.renderW).toBeCloseTo(666.667, 2);
+    expect(pillar.offsetX).toBeCloseTo(166.667, 2);
+
+    const letter = computeContainRect(400, 600, 640, 480);
+    expect(letter.offsetX).toBe(0);
+    expect(letter.renderW).toBe(400);
+    expect(letter.renderH).toBe(300);
+    expect(letter.offsetY).toBe(150);
+
+    const fallback = computeContainRect(800, 600);
+    expect(fallback).toEqual({ offsetX: 0, offsetY: 0, renderW: 800, renderH: 600 });
+  });
+
+  it('draws 33-point MediaPipe skeleton aligned 1:1 with video aspect ratio and omits face dots', () => {
+    const arcCalls: Array<{ x: number; y: number; r: number }> = [];
+    const mockCtx = {
+      clearRect: () => {},
+      save: () => {},
+      restore: () => {},
+      setLineDash: () => {},
+      beginPath: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      stroke: () => {},
+      fill: () => {},
+      strokeRect: () => {},
+      fillRect: () => {},
+      fillText: () => {},
+      arc: (x: number, y: number, r: number) => {
+        arcCalls.push({ x, y, r });
+      },
+      lineCap: 'round',
+      lineJoin: 'round',
+      lineWidth: 2,
+      strokeStyle: '#10B981',
+      fillStyle: '#6EE7B7',
+      shadowBlur: 0,
+      shadowColor: 'transparent',
+    } as unknown as CanvasRenderingContext2D;
+
+    const mp33: Keypoint3DPoint[] = Array.from({ length: 33 }, (_, index) => ({
+      index,
+      x: 0.5,
+      y: 0.5,
+      z: 0,
+      score: 0.99,
+    }));
+    mp33[0] = { index: 0, x: 0.5, y: 0.2, z: 0, score: 0.99 };
+    mp33[7] = { index: 7, x: 0.45, y: 0.2, z: 0, score: 0.99 };
+    mp33[8] = { index: 8, x: 0.55, y: 0.2, z: 0, score: 0.99 };
+    mp33[11] = { index: 11, x: 0.6, y: 0.35, z: 0, score: 0.99 };
+    mp33[12] = { index: 12, x: 0.4, y: 0.35, z: 0, score: 0.99 };
+    mp33[14] = { index: 14, x: 0.3, y: 0.45, z: 0, score: 0.99 };
+    mp33[16] = { index: 16, x: 0.2, y: 0.5, z: 0, score: 0.99 };
+    mp33[23] = { index: 23, x: 0.56, y: 0.65, z: 0, score: 0.99 };
+    mp33[24] = { index: 24, x: 0.44, y: 0.65, z: 0, score: 0.99 };
+    mp33[31] = { index: 31, x: 0.56, y: 0.92, z: 0, score: 0.99 };
+
+    // Container 1000x500 with 640x480 video + mirrorX=true:
+    // offsetX = 166.67, renderW = 666.67 -> mirrored x=0.2 maps to 166.67 + 0.8 * 666.67 = 700
+    drawMediaPipe33OnCanvas(mockCtx, 1000, 500, mp33, {
+      mirrorX: true,
+      videoWidth: 640,
+      videoHeight: 480,
+      highlightColor: 'GREEN',
+    });
+
+    // Head circle rendered at mirrored nose (500, 100) with radius >= 14
+    expect(
+      arcCalls.some((c) => Math.abs(c.x - 500) < 1 && Math.abs(c.y - 100) < 1 && c.r >= 14),
+    ).toBe(true);
+    // Small face dots at nose (500, 100) must NOT be drawn
+    expect(
+      arcCalls.filter((c) => Math.abs(c.x - 500) < 1 && Math.abs(c.y - 100) < 1 && c.r < 12),
+    ).toHaveLength(0);
+    // Mirrored right wrist (index 16 at x=0.2 -> 700, y=0.5 -> 250) aligned to contain rect
+    expect(
+      arcCalls.some((c) => Math.abs(c.x - 700) < 1 && Math.abs(c.y - 250) < 1),
+    ).toBe(true);
   });
 });
 

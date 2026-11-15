@@ -8,7 +8,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import numpy as np
 
@@ -88,17 +88,19 @@ class ThreadedCameraCapture:
             return
 
         if cv2 is None:
-            self._mode = "synthetic_mock"
+            self._cap = None
+            self._mode = "synthetic_mock" if (mock_path and mock_path.upper() == "SYNTHETIC") else "camera_disconnected"
             self._width = 1280
             self._height = 720
-            logger.warning("OpenCV (cv2) not installed; falling back to SYNTHETIC mock frames.")
+            logger.warning("OpenCV (cv2) not installed; camera mode=%s.", self._mode)
             return
 
         if mock_path:
             resolved = Path(mock_path)
             if not resolved.exists():
-                logger.warning("MOCK_VIDEO_PATH=%s not found; using SYNTHETIC mock frames.", mock_path)
-                self._mode = "synthetic_mock"
+                logger.warning("MOCK_VIDEO_PATH=%s not found; marking camera disconnected.", mock_path)
+                self._cap = None
+                self._mode = "camera_disconnected"
                 self._width = 1280
                 self._height = 720
                 return
@@ -111,57 +113,81 @@ class ThreadedCameraCapture:
                 logger.info("Opened mock video file %s (%dx%d).", resolved, self._width, self._height)
                 return
 
-        # Physical camera open (prefer DirectShow on Windows for fast 60fps & manual focus control)
+        def _configure_and_probe(vc: Any, label: str) -> bool:
+            if vc is None or not vc.isOpened():
+                return False
+            try:
+                vc.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            except Exception:
+                pass
+            vc.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.settings.CAMERA_WIDTH))
+            vc.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.settings.CAMERA_HEIGHT))
+            vc.set(cv2.CAP_PROP_FPS, float(self.settings.CAMERA_FPS))
+
+            w_chk = int(vc.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            h_chk = int(vc.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            if w_chk < 1280 or h_chk < 720:
+                vc.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.settings.CAMERA_FALLBACK_WIDTH))
+                vc.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.settings.CAMERA_FALLBACK_HEIGHT))
+                vc.set(cv2.CAP_PROP_FPS, float(self.settings.CAMERA_FPS))
+
+            # Enable auto-exposure & auto-focus so Windows DSHOW/MSMF webcams never output pitch-black frames
+            try:
+                vc.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3.0)
+                vc.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
+                vc.set(cv2.CAP_PROP_AUTOFOCUS, 1.0)
+            except Exception:
+                pass
+
+            # Probe up to 5 warmup frames to verify non-black imagery
+            for _ in range(5):
+                ok_probe, probe_img = vc.read()
+                if ok_probe and probe_img is not None and float(probe_img.mean()) >= 3.0:
+                    return True
+                time.sleep(0.03)
+            logger.warning("Camera backend %s returned dark/unreadable warmup frames (mean < 3.0).", label)
+            return False
+
+        # Physical camera open: try DSHOW first on Windows, fall back to MSMF/default if DSHOW is dark/unavailable
         cap = None
         if os.name == "nt":
-            cap = cv2.VideoCapture(self.settings.CAMERA_INDEX, cv2.CAP_DSHOW)
-        if cap is None or not cap.isOpened():
-            cap = cv2.VideoCapture(self.settings.CAMERA_INDEX)
+            candidate_dshow = cv2.VideoCapture(self.settings.CAMERA_INDEX, cv2.CAP_DSHOW)
+            if _configure_and_probe(candidate_dshow, "CAP_DSHOW"):
+                cap = candidate_dshow
+            elif candidate_dshow is not None:
+                try:
+                    candidate_dshow.release()
+                except Exception:
+                    pass
+
+        if cap is None:
+            candidate_default = cv2.VideoCapture(self.settings.CAMERA_INDEX)
+            if candidate_default is not None and candidate_default.isOpened():
+                _configure_and_probe(candidate_default, "CAP_ANY")
+                cap = candidate_default
 
         if not cap or not cap.isOpened():
-            logger.warning("No physical webcam detected on index %d; switching to SYNTHETIC mock mode.", self.settings.CAMERA_INDEX)
+            logger.warning("Camera Disconnected: No physical webcam detected on index %d.", self.settings.CAMERA_INDEX)
             self._cap = None
-            self._mode = "synthetic_mock"
+            with self._lock:
+                self._frame = None
+            self._mode = "camera_disconnected"
             self._width = 1280
             self._height = 720
             return
 
-        # Enforce MJPG for high-bandwidth 1080p60 over USB
-        try:
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        except Exception:
-            pass
-
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.settings.CAMERA_WIDTH))
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.settings.CAMERA_HEIGHT))
-        cap.set(cv2.CAP_PROP_FPS, float(self.settings.CAMERA_FPS))
-
-        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        if actual_w < 1280 or actual_h < 720:
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.settings.CAMERA_FALLBACK_WIDTH))
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.settings.CAMERA_FALLBACK_HEIGHT))
-            cap.set(cv2.CAP_PROP_FPS, float(self.settings.CAMERA_FPS))
-            actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or self.settings.CAMERA_FALLBACK_WIDTH)
-            actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or self.settings.CAMERA_FALLBACK_HEIGHT)
-
-        # Clinical optical lock: Disable Auto-Focus & Auto-Exposure to eliminate ROM focal distortion
-        cap.set(cv2.CAP_PROP_AUTOFOCUS, float(self.settings.AUTOFOCUS_OFF))
-        cap.set(cv2.CAP_PROP_FOCUS, float(self.settings.FIXED_FOCUS_2M))
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, float(self.settings.AUTO_EXPOSURE_MANUAL))
-        cap.set(cv2.CAP_PROP_EXPOSURE, float(self.settings.FIXED_EXPOSURE))
+        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or self.settings.CAMERA_FALLBACK_WIDTH)
+        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or self.settings.CAMERA_FALLBACK_HEIGHT)
 
         self._cap = cap
         self._width = actual_w
         self._height = actual_h
         self._mode = "live_webcam"
         logger.info(
-            "Webcam locked at %dx%d @ %.0f FPS target (autofocus=%d, fixed_focus=%d).",
+            "Webcam live at %dx%d @ %.0f FPS target (auto-exposure enabled).",
             actual_w,
             actual_h,
             cap.get(cv2.CAP_PROP_FPS) or self.settings.CAMERA_FPS,
-            self.settings.AUTOFOCUS_OFF,
-            self.settings.FIXED_FOCUS_2M,
         )
 
     def _generate_synthetic_frame(self, t_sec: float) -> np.ndarray:
@@ -195,6 +221,7 @@ class ThreadedCameraCapture:
         target_interval = 1.0 / max(15.0, float(self.settings.CAMERA_FPS))
         fps_window_start = time.perf_counter()
         fps_counter = 0
+        consecutive_failures = 0
 
         while self._running:
             loop_start = time.perf_counter()
@@ -203,6 +230,7 @@ class ThreadedCameraCapture:
             if (
                 self._cap is None
                 and cv2 is not None
+                and self._mode != "synthetic_mock"
                 and not self.settings.MOCK_VIDEO_PATH
                 and (loop_start - self._last_reopen_attempt) >= 2.5
             ):
@@ -217,8 +245,27 @@ class ThreadedCameraCapture:
                     ok, grabbed = self._cap.read()  # type: ignore[attr-defined]
                 if ok and grabbed is not None:
                     frame = grabbed
-            else:
+                    consecutive_failures = 0
+                    if not self._mode.startswith("mock_video"):
+                        self._mode = "live_webcam"
+                else:
+                    consecutive_failures += 1
+                    if consecutive_failures >= 30 and not self._mode.startswith("mock_video"):
+                        logger.warning("Webcam stopped delivering frames; marking camera_disconnected.")
+                        try:
+                            self._cap.release()  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                        self._cap = None
+                        self._mode = "camera_disconnected"
+                        with self._lock:
+                            self._frame = None
+            elif self._mode == "synthetic_mock":
                 frame = self._generate_synthetic_frame(loop_start - self._started_at)
+            else:
+                self._mode = "camera_disconnected"
+                with self._lock:
+                    self._frame = None
 
             if frame is not None:
                 with self._lock:

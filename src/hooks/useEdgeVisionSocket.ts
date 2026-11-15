@@ -27,6 +27,7 @@ export interface CalibrationState {
   progress: number;
   remaining_sec: number;
   message_th: string;
+  estimated_distance_m?: number;
   bone_lengths: BoneLengths3D | null;
 }
 
@@ -135,12 +136,15 @@ export interface EdgeKioskTelemetryPayload {
     show_target_arc: boolean;
   };
   tts_voice_th: string;
+  error_code?: string | null;
+  error_message?: string | null;
   calibration?: CalibrationState;
   hand_status?: HandRaiseTelemetry;
   face_enrollment?: FaceEnrollmentState | null;
   identity_guard?: IdentityGuardState;
   keypoints_3d?: Keypoint3DPoint[];
   pose_landmarks?: Keypoint3DPoint[];
+  pose_world_landmarks?: Keypoint3DPoint[];
   frame_base64: string | null;
 }
 
@@ -305,22 +309,316 @@ const HAND_BONE_PAIRS: ReadonlyArray<[number, number]> = [
  * as a clean Stickman silhouette (head circle, neck guide, Z-depth joints, feet, and 21-point hands),
  * intentionally omitting the 5 raw facial dots (indices 0..4) for a clean clinical look.
  */
+export interface PoseCanvasDrawOptions {
+  highlightColor?: 'GREEN' | 'AMBER' | 'RED';
+  mirrorX?: boolean;
+  videoWidth?: number;
+  videoHeight?: number;
+  minVisibility?: number;
+  detectedBoxes?: IdentityDetectedBox[];
+  guardStatus?: IdentityGuardState['status'];
+}
+
+export function computeContainRect(
+  containerWidth: number,
+  containerHeight: number,
+  mediaWidth?: number,
+  mediaHeight?: number,
+): { offsetX: number; offsetY: number; renderW: number; renderH: number } {
+  if (
+    !mediaWidth ||
+    !mediaHeight ||
+    mediaWidth <= 0 ||
+    mediaHeight <= 0 ||
+    containerWidth <= 0 ||
+    containerHeight <= 0
+  ) {
+    return { offsetX: 0, offsetY: 0, renderW: containerWidth, renderH: containerHeight };
+  }
+  const containerAspect = containerWidth / containerHeight;
+  const mediaAspect = mediaWidth / mediaHeight;
+  if (mediaAspect > containerAspect) {
+    const renderW = containerWidth;
+    const renderH = containerWidth / mediaAspect;
+    return {
+      offsetX: 0,
+      offsetY: (containerHeight - renderH) / 2,
+      renderW,
+      renderH,
+    };
+  }
+  const renderH = containerHeight;
+  const renderW = containerHeight * mediaAspect;
+  return {
+    offsetX: (containerWidth - renderW) / 2,
+    offsetY: 0,
+    renderW,
+    renderH,
+  };
+}
+
+function resolveHighlightPalette(highlightColor?: 'GREEN' | 'AMBER' | 'RED'): {
+  bone: string;
+  joint: string;
+  glow: string;
+} {
+  if (highlightColor === 'RED') {
+    return { bone: '#EF4444', joint: '#FCA5A5', glow: 'rgba(239, 68, 68, 0.45)' };
+  }
+  if (highlightColor === 'AMBER') {
+    return { bone: '#F59E0B', joint: '#FDE68A', glow: 'rgba(245, 158, 11, 0.45)' };
+  }
+  return { bone: '#10B981', joint: '#6EE7B7', glow: 'rgba(16, 185, 129, 0.45)' };
+}
+
+const MEDIAPIPE33_BODY_EDGES: ReadonlyArray<readonly [number, number, number]> = [
+  // Torso & shoulders (width weight 4.2)
+  [11, 12, 4.2],
+  [11, 23, 4.2],
+  [12, 24, 4.2],
+  [23, 24, 4.2],
+  // Upper & lower arms (bent elbows preserved at 13, 14)
+  [11, 13, 4.5],
+  [13, 15, 4.2],
+  [12, 14, 4.5],
+  [14, 16, 4.2],
+  // Hands & wrist rotation wireframe (15..22)
+  [15, 17, 2.2],
+  [15, 19, 2.2],
+  [15, 21, 2.2],
+  [17, 19, 2.0],
+  [16, 18, 2.2],
+  [16, 20, 2.2],
+  [16, 22, 2.2],
+  [18, 20, 2.0],
+  // Legs & feet (23..32)
+  [23, 25, 4.2],
+  [25, 27, 4.0],
+  [24, 26, 4.2],
+  [26, 28, 4.0],
+  [27, 29, 2.6],
+  [29, 31, 2.6],
+  [27, 31, 2.4],
+  [28, 30, 2.6],
+  [30, 32, 2.6],
+  [28, 32, 2.4],
+];
+
+function drawIdentityBoxesOnCanvas(
+  ctx: CanvasRenderingContext2D,
+  rect: { offsetX: number; offsetY: number; renderW: number; renderH: number },
+  mirror: boolean,
+  opts?: PoseCanvasDrawOptions,
+): void {
+  const boxes = opts?.detectedBoxes ?? [];
+  if (
+    boxes.length === 0 ||
+    !(
+      opts?.guardStatus === 'MULTI_PERSON' ||
+      opts?.guardStatus === 'IMPOSTOR' ||
+      boxes.length > 1 ||
+      !boxes[0]?.is_authorized
+    )
+  ) {
+    return;
+  }
+
+  const refW = opts?.videoWidth && opts.videoWidth > 0 ? opts.videoWidth : 1280;
+  const refH = opts?.videoHeight && opts.videoHeight > 0 ? opts.videoHeight : 720;
+  const sx = rect.renderW / refW;
+  const sy = rect.renderH / refH;
+
+  ctx.save();
+  for (const box of boxes) {
+    const [rawX1, rawY1, rawX2, rawY2] = box.bbox;
+    const x1 = rect.offsetX + (mirror ? rect.renderW - rawX2 * sx : rawX1 * sx);
+    const x2 = rect.offsetX + (mirror ? rect.renderW - rawX1 * sx : rawX2 * sx);
+    const y1 = rect.offsetY + rawY1 * sy;
+    const y2 = rect.offsetY + rawY2 * sy;
+    const bw = Math.max(24, x2 - x1);
+    const bh = Math.max(24, y2 - y1);
+    const boxHex = box.is_authorized
+      ? '#10B981'
+      : opts?.guardStatus === 'MULTI_PERSON'
+        ? '#F59E0B'
+        : '#EF4444';
+
+    ctx.strokeStyle = boxHex;
+    ctx.lineWidth = Math.max(2.5, rect.renderW * 0.004);
+    ctx.setLineDash(box.is_authorized ? [] : [8, 4]);
+    ctx.strokeRect(x1, y1, bw, bh);
+    ctx.setLineDash([]);
+
+    if (box.label) {
+      ctx.font = `bold ${Math.max(12, Math.round(rect.renderW * 0.018))}px "Sarabun", sans-serif`;
+      const textWidth = ctx.measureText(box.label).width;
+      const padX = 8;
+      const labelH = Math.max(22, Math.round(rect.renderW * 0.028));
+      const ly = Math.max(4, y1 - labelH - 4);
+      ctx.fillStyle = boxHex;
+      ctx.fillRect(x1, ly, textWidth + padX * 2, labelH);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillText(box.label, x1 + padX, ly + labelH - 6);
+    }
+  }
+  ctx.restore();
+}
+
+/**
+ * Draw 33-point MediaPipe Pose Landmarks with 1:1 object-contain alignment
+ * directly on top of the live webcam stream (clean Stickman head circle, hiding 5 face dots).
+ */
+export function drawMediaPipe33OnCanvas(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  landmarks: Keypoint3DPoint[],
+  opts?: PoseCanvasDrawOptions,
+): void {
+  ctx.clearRect(0, 0, width, height);
+  if (!landmarks || landmarks.length < 33) return;
+
+  const mirror = opts?.mirrorX ?? false;
+  const minVis = opts?.minVisibility ?? 0.15;
+  const rect = computeContainRect(width, height, opts?.videoWidth, opts?.videoHeight);
+  const palette = resolveHighlightPalette(opts?.highlightColor);
+
+  const toXY = (kp: Keypoint3DPoint) => ({
+    px: rect.offsetX + (mirror ? 1 - kp.x : kp.x) * rect.renderW,
+    py: rect.offsetY + kp.y * rect.renderH,
+    z: kp.z ?? 0,
+    score: kp.score ?? 1,
+  });
+
+  const pts = landmarks.map(toXY);
+
+  // Optional identity guard bounding boxes
+  drawIdentityBoxesOnCanvas(ctx, rect, mirror, opts);
+
+  // Draw crisp bone lines (dark halo under glowing clinical accent for visibility on bright video)
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const [i, j, lineW] of MEDIAPIPE33_BODY_EDGES) {
+    const a = pts[i];
+    const b = pts[j];
+    if (!a || !b || a.score < minVis || b.score < minVis) continue;
+
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.55)';
+    ctx.lineWidth = lineW + 3;
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.moveTo(a.px, a.py);
+    ctx.lineTo(b.px, b.py);
+    ctx.stroke();
+
+    ctx.strokeStyle = palette.bone;
+    ctx.lineWidth = lineW;
+    ctx.shadowColor = palette.glow;
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.moveTo(a.px, a.py);
+    ctx.lineTo(b.px, b.py);
+    ctx.stroke();
+  }
+
+  // Clean Stickman neck & head circle (omitting 5 face dots 0..10 for clinical clarity)
+  const shL = pts[11];
+  const shR = pts[12];
+  const nose = pts[0];
+  const earL = pts[7];
+  const earR = pts[8];
+  if (shL && shR && shL.score >= minVis && shR.score >= minVis) {
+    const neckX = (shL.px + shR.px) / 2;
+    const neckY = (shL.py + shR.py) / 2;
+    const shoulderSpan = Math.hypot(shL.px - shR.px, shL.py - shR.py);
+    let headX = neckX;
+    let headY = neckY - Math.max(shoulderSpan * 0.48, 28);
+    if (nose && nose.score >= minVis) {
+      headX = nose.px;
+      headY = nose.py;
+    } else if (earL && earR && earL.score >= minVis && earR.score >= minVis) {
+      headX = (earL.px + earR.px) / 2;
+      headY = (earL.py + earR.py) / 2;
+    }
+    const earSpan =
+      earL && earR && earL.score >= minVis && earR.score >= minVis
+        ? Math.hypot(earL.px - earR.px, earL.py - earR.py)
+        : shoulderSpan * 0.42;
+    const headRadius = Math.max(14, Math.min(44, earSpan * 0.68));
+
+    const dx = headX - neckX;
+    const dy = headY - neckY;
+    const dist = Math.hypot(dx, dy);
+    if (dist > headRadius) {
+      const stopX = headX - (dx / dist) * headRadius;
+      const stopY = headY - (dy / dist) * headRadius;
+      ctx.strokeStyle = 'rgba(15, 23, 42, 0.55)';
+      ctx.lineWidth = 6.5;
+      ctx.shadowBlur = 0;
+      ctx.beginPath();
+      ctx.moveTo(neckX, neckY);
+      ctx.lineTo(stopX, stopY);
+      ctx.stroke();
+
+      ctx.strokeStyle = palette.bone;
+      ctx.lineWidth = 3.5;
+      ctx.shadowColor = palette.glow;
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.moveTo(neckX, neckY);
+      ctx.lineTo(stopX, stopY);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.55)';
+    ctx.lineWidth = 6.2;
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.strokeStyle = palette.bone;
+    ctx.lineWidth = 3.2;
+    ctx.shadowColor = palette.glow;
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Draw anatomical body, hand & foot joints (11..32) — face landmarks (0..10) intentionally excluded
+  for (let idx = 11; idx < 33; idx += 1) {
+    const p = pts[idx];
+    if (!p || p.score < minVis) continue;
+    const isMajor = idx >= 11 && idx <= 16 ? true : idx >= 23 && idx <= 28;
+    const radius = isMajor ? 5.2 : 3.2;
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
+    ctx.beginPath();
+    ctx.arc(p.px, p.py, radius + 1.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = palette.joint;
+    ctx.beginPath();
+    ctx.arc(p.px, p.py, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 export function drawWholeBody133OnCanvas(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
   keypoints: Keypoint3DPoint[],
-  opts?: {
-    highlightColor?: 'GREEN' | 'AMBER' | 'RED';
-    mirrorX?: boolean;
-    detectedBoxes?: IdentityDetectedBox[];
-    guardStatus?: IdentityGuardState['status'];
-  },
+  opts?: PoseCanvasDrawOptions,
 ): void {
-  if (!keypoints || keypoints.length < 17) return;
   ctx.clearRect(0, 0, width, height);
+  if (!keypoints || keypoints.length < 17) return;
 
   const mirror = opts?.mirrorX ?? false;
+  const rect = computeContainRect(width, height, opts?.videoWidth, opts?.videoHeight);
   const color =
     opts?.highlightColor === 'RED'
       ? '#EF4444'
@@ -329,8 +627,8 @@ export function drawWholeBody133OnCanvas(
         : '#10B981';
 
   const toXY = (kp: Keypoint3DPoint) => ({
-    px: (mirror ? 1 - kp.x : kp.x) * width,
-    py: kp.y * height,
+    px: rect.offsetX + (mirror ? 1 - kp.x : kp.x) * rect.renderW,
+    py: rect.offsetY + kp.y * rect.renderH,
     z: kp.z ?? 0,
     score: kp.score ?? 1,
   });
@@ -461,44 +759,8 @@ export function drawWholeBody133OnCanvas(
   drawHand(91, '#818CF8');
   drawHand(112, '#34D399');
 
-  // Identity Guard person/face bounding boxes (scaled from 1280x720)
-  const boxes = opts?.detectedBoxes ?? [];
-  if (boxes.length > 0 && (opts?.guardStatus === 'MULTI_PERSON' || opts?.guardStatus === 'IMPOSTOR' || boxes.length > 1 || !boxes[0]?.is_authorized)) {
-    const sx = width / 1280;
-    const sy = height / 720;
-    for (const box of boxes) {
-      const [rawX1, rawY1, rawX2, rawY2] = box.bbox;
-      const x1 = mirror ? width - rawX2 * sx : rawX1 * sx;
-      const x2 = mirror ? width - rawX1 * sx : rawX2 * sx;
-      const y1 = rawY1 * sy;
-      const y2 = rawY2 * sy;
-      const bw = Math.max(24, x2 - x1);
-      const bh = Math.max(24, y2 - y1);
-      const boxHex = box.is_authorized
-        ? '#10B981'
-        : opts?.guardStatus === 'MULTI_PERSON'
-          ? '#F59E0B'
-          : '#EF4444';
-
-      ctx.strokeStyle = boxHex;
-      ctx.lineWidth = Math.max(2.5, width * 0.004);
-      ctx.setLineDash(box.is_authorized ? [] : [8, 4]);
-      ctx.strokeRect(x1, y1, bw, bh);
-      ctx.setLineDash([]);
-
-      if (box.label) {
-        ctx.font = `bold ${Math.max(12, Math.round(width * 0.018))}px "Sarabun", sans-serif`;
-        const textWidth = ctx.measureText(box.label).width;
-        const padX = 8;
-        const labelH = Math.max(22, Math.round(width * 0.028));
-        const ly = Math.max(4, y1 - labelH - 4);
-        ctx.fillStyle = boxHex;
-        ctx.fillRect(x1, ly, textWidth + padX * 2, labelH);
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillText(box.label, x1 + padX, ly + labelH - 6);
-      }
-    }
-  }
+  // Identity Guard person/face bounding boxes
+  drawIdentityBoxesOnCanvas(ctx, rect, mirror, opts);
   ctx.restore();
 }
 
