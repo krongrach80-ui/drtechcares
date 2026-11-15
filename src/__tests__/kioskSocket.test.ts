@@ -8,7 +8,12 @@ import {
   resolveExpectedPlaneForExercise,
   synthesizeDemoPayload,
 } from '../hooks/useKioskSocket';
-import { measureLiveJointAngleAndTilt, stepSmoothRomAngle } from '../components/SmartRehabKioskUI';
+import {
+  DEFAULT_FORM_ASSESSMENT_RULES,
+  isFormRuleActive,
+  measureLiveJointAngleAndTilt,
+  stepSmoothRomAngle,
+} from '../components/SmartRehabKioskUI';
 import {
   VOICE_COACH_LANGUAGES,
   buildTtsProxyUrl,
@@ -702,6 +707,38 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
       elapsedSinceLastSpokenMs: 400,
     });
     expect(manualReplayDecision.action).toBe('SPEAK_IMMEDIATELY');
+  });
+
+  it('supports toggling real-time form assessment master switch and individual rules ON/OFF', () => {
+    expect(DEFAULT_FORM_ASSESSMENT_RULES).toEqual({
+      enabled: true,
+      limb: true,
+      plane: true,
+      trunk: true,
+      posture: true,
+      velocity: true,
+      identity: true,
+    });
+
+    const ruleKeys = ['limb', 'plane', 'trunk', 'posture', 'velocity', 'identity'] as const;
+    for (const key of ruleKeys) {
+      expect(isFormRuleActive(DEFAULT_FORM_ASSESSMENT_RULES, key)).toBe(true);
+    }
+
+    // Master switch OFF disables every rule immediately without mutating per-rule preferences
+    const masterDisabled = { ...DEFAULT_FORM_ASSESSMENT_RULES, enabled: false };
+    for (const key of ruleKeys) {
+      expect(isFormRuleActive(masterDisabled, key)).toBe(false);
+    }
+
+    // Individual rule toggle turns OFF only the targeted rule while keeping others ON
+    const planeOnlyDisabled = { ...DEFAULT_FORM_ASSESSMENT_RULES, plane: false, trunk: false };
+    expect(isFormRuleActive(planeOnlyDisabled, 'plane')).toBe(false);
+    expect(isFormRuleActive(planeOnlyDisabled, 'trunk')).toBe(false);
+    expect(isFormRuleActive(planeOnlyDisabled, 'limb')).toBe(true);
+    expect(isFormRuleActive(planeOnlyDisabled, 'posture')).toBe(true);
+    expect(isFormRuleActive(planeOnlyDisabled, 'velocity')).toBe(true);
+    expect(isFormRuleActive(planeOnlyDisabled, 'identity')).toBe(true);
   });
 });
 

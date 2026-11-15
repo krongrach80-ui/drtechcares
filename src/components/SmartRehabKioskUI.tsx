@@ -62,6 +62,43 @@ const DEMO_PRESETS: { id: DemoPresetId; label: string; shortLabel: string }[] = 
   { id: 'IMPOSTOR', label: 'Impostor Blocked (ผิดคน)', shortLabel: '8. Impostor' },
 ];
 
+export type FormAssessmentRuleKey =
+  | 'limb'
+  | 'plane'
+  | 'trunk'
+  | 'posture'
+  | 'velocity'
+  | 'identity';
+
+export interface FormAssessmentRulesConfig {
+  enabled: boolean;
+  limb: boolean;
+  plane: boolean;
+  trunk: boolean;
+  posture: boolean;
+  velocity: boolean;
+  identity: boolean;
+}
+
+export const DEFAULT_FORM_ASSESSMENT_RULES: FormAssessmentRulesConfig = {
+  enabled: true,
+  limb: true,
+  plane: true,
+  trunk: true,
+  posture: true,
+  velocity: true,
+  identity: true,
+};
+
+const FORM_ASSESSMENT_STORAGE_KEY = 'drtechcares_form_assessment_rules_v1';
+
+export function isFormRuleActive(
+  config: FormAssessmentRulesConfig,
+  rule: FormAssessmentRuleKey,
+): boolean {
+  return Boolean(config.enabled && config[rule]);
+}
+
 export interface LiveJointMeasurement {
   romDeg: number | null;
   trunkTiltDeg: number;
@@ -855,6 +892,20 @@ export function SmartRehabKioskUI({
 
   const [voiceMuted, setVoiceMuted] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(() => !patientProp);
+  const [formRules, setFormRules] = useState<FormAssessmentRulesConfig>(() => {
+    try {
+      const saved =
+        typeof window !== 'undefined' ? window.localStorage.getItem(FORM_ASSESSMENT_STORAGE_KEY) : null;
+      if (saved) {
+        const parsed = JSON.parse(saved) as Partial<FormAssessmentRulesConfig>;
+        return { ...DEFAULT_FORM_ASSESSMENT_RULES, ...parsed };
+      }
+    } catch {
+      // Ignore storage read errors
+    }
+    return DEFAULT_FORM_ASSESSMENT_RULES;
+  });
+  const [formChecklistExpanded, setFormChecklistExpanded] = useState<boolean>(true);
   const [completedIds, setCompletedIds] = useState<string[]>([]);
   const [livePoseActive, setLivePoseActive] = useState<boolean>(true);
   const [cameraReady, setCameraReady] = useState(false);
@@ -867,6 +918,7 @@ export function SmartRehabKioskUI({
   const selectedExerciseRef = useRef(selectedExercise);
   const demoValidRepsRef = useRef(demoValidReps);
   const demoPresetRef = useRef(demoPreset);
+  const formRulesRef = useRef<FormAssessmentRulesConfig>(formRules);
   const countingLockedRef = useRef(false);
 
   onExerciseCompletedRef.current = onExerciseCompleted;
@@ -874,19 +926,66 @@ export function SmartRehabKioskUI({
   selectedExerciseRef.current = selectedExercise;
   demoValidRepsRef.current = demoValidReps;
   demoPresetRef.current = demoPreset;
+  formRulesRef.current = formRules;
   countingLockedRef.current =
-    payload.kiosk_state === 'PAUSED_MULTI_PERSON' ||
-    payload.kiosk_state === 'PAUSED_IMPOSTOR' ||
-    payload.identity_guard?.is_counting_allowed === false;
+    isFormRuleActive(formRules, 'identity') &&
+    (payload.kiosk_state === 'PAUSED_MULTI_PERSON' ||
+      payload.kiosk_state === 'PAUSED_IMPOSTOR' ||
+      payload.identity_guard?.is_counting_allowed === false);
+
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(FORM_ASSESSMENT_STORAGE_KEY, JSON.stringify(formRules));
+      }
+    } catch {
+      // Ignore storage write errors
+    }
+  }, [formRules]);
+
+  useEffect(() => {
+    if (
+      (demoPreset === 'WRONG_LIMB' && !isFormRuleActive(formRules, 'limb')) ||
+      (demoPreset === 'WRONG_PLANE' && !isFormRuleActive(formRules, 'plane')) ||
+      (demoPreset === 'TRUNK_LEAN' && !isFormRuleActive(formRules, 'trunk')) ||
+      (demoPreset === 'MULTI_PERSON' && !isFormRuleActive(formRules, 'identity'))
+    ) {
+      setDemoPresetState('ACTIVE_REP');
+    }
+  }, [formRules, demoPreset, setDemoPresetState]);
+
+  const toggleMasterFormAssessment = () => {
+    setFormRules((prev) => {
+      const nextEnabled = !prev.enabled;
+      if (nextEnabled) {
+        setFormChecklistExpanded(true);
+      }
+      return { ...prev, enabled: nextEnabled };
+    });
+  };
+
+  const toggleSingleFormRule = (rule: FormAssessmentRuleKey) => {
+    setFormRules((prev) => {
+      if (!prev.enabled) {
+        return { ...prev, enabled: true, [rule]: true };
+      }
+      return { ...prev, [rule]: !prev[rule] };
+    });
+  };
+
+  const resetAllFormRules = () => {
+    setFormRules(DEFAULT_FORM_ASSESSMENT_RULES);
+    setFormChecklistExpanded(true);
+  };
 
   const { kiosk_state, patient, telemetry_analysis, rep_counter, ui_directives, tts_voice_th } = payload;
   const compensations = telemetry_analysis.compensation_detected;
-  const trunkLeanAlert = compensations.includes('TRUNK_LEAN');
-  const shoulderHikeAlert = compensations.includes('SHOULDER_HIKE');
-  const kneeValgusAlert = compensations.includes('KNEE_VALGUS');
-  const tooFastAlert = compensations.includes('TOO_FAST');
-  const wrongLimbAlert = compensations.includes('WRONG_LIMB');
-  const wrongPlaneAlert = compensations.includes('WRONG_PLANE');
+  const trunkLeanAlert = isFormRuleActive(formRules, 'trunk') && compensations.includes('TRUNK_LEAN');
+  const shoulderHikeAlert = isFormRuleActive(formRules, 'posture') && compensations.includes('SHOULDER_HIKE');
+  const kneeValgusAlert = isFormRuleActive(formRules, 'posture') && compensations.includes('KNEE_VALGUS');
+  const tooFastAlert = isFormRuleActive(formRules, 'velocity') && compensations.includes('TOO_FAST');
+  const wrongLimbAlert = isFormRuleActive(formRules, 'limb') && compensations.includes('WRONG_LIMB');
+  const wrongPlaneAlert = isFormRuleActive(formRules, 'plane') && compensations.includes('WRONG_PLANE');
   const activeExpectedPlane = resolveExpectedPlaneForExercise(selectedExercise);
   const isHoldPhase = kiosk_state === 'HOLD_PHASE';
   const isRepCelebration = kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED';
@@ -1211,11 +1310,14 @@ export function SmartRehabKioskUI({
               latestAllLandmarks = allLandmarks;
               latestPoseCount = allLandmarks.length;
 
-              if (latestPoseCount > 1) {
+              const stepARules = formRulesRef.current;
+              const stepACheckIdentity = isFormRuleActive(stepARules, 'identity');
+
+              if (latestPoseCount > 1 && stepACheckIdentity) {
                 singlePersonRecoveryFrames = 0;
                 latestLandmarks = null;
                 renderPrimaryLandmarks = null;
-              } else if (demoPresetRef.current !== 'IMPOSTOR') {
+              } else if (demoPresetRef.current !== 'IMPOSTOR' || !stepACheckIdentity) {
                 const landmarks = allLandmarks[0] ?? null;
                 latestLandmarks = landmarks;
                 if (landmarks) {
@@ -1258,8 +1360,13 @@ export function SmartRehabKioskUI({
           }
 
           // Step B: 120Hz landmark & ROM interpolation + 1:1 wall-clock hold timer + canvas redraw
+          const activeRules = formRulesRef.current;
+          const checkLimb = isFormRuleActive(activeRules, 'limb');
+          const checkPlane = isFormRuleActive(activeRules, 'plane');
+          const checkTrunk = isFormRuleActive(activeRules, 'trunk');
+          const checkIdentity = isFormRuleActive(activeRules, 'identity');
           const holdTargetMs = Math.max(1000, curEx.hold_sec * 1000);
-          if (latestPoseCount > 1) {
+          if (latestPoseCount > 1 && checkIdentity) {
             holdAccumMs = 0;
             if (lastEmittedHold !== curEx.hold_sec) {
               lastEmittedHold = curEx.hold_sec;
@@ -1278,7 +1385,7 @@ export function SmartRehabKioskUI({
               videoWidth: v.videoWidth,
               videoHeight: v.videoHeight,
             });
-          } else if (demoPresetRef.current === 'IMPOSTOR') {
+          } else if (demoPresetRef.current === 'IMPOSTOR' && checkIdentity) {
             holdAccumMs = 0;
             drawLivePoseOverlayOnCanvas(poseCanvasRef.current, latestAllLandmarks, {
               targetJoint: curEx.target_joint,
@@ -1302,8 +1409,16 @@ export function SmartRehabKioskUI({
               ...latestAllLandmarks.slice(1),
             ];
 
-            const tiltDelta = latestRawTiltDeg - smoothedTilt;
-            if (Math.abs(tiltDelta) >= 0.4) {
+            const effRawTiltDeg = checkTrunk ? latestRawTiltDeg : 0;
+            const effWrongSideRaised = checkLimb ? latestWrongSideRaised : false;
+            const effWrongSideBannerTh = checkLimb ? latestWrongSideBannerTh : null;
+            const effWrongPlaneRaised = checkPlane ? latestWrongPlaneRaised : false;
+            const effWrongPlaneBannerTh = checkPlane ? latestWrongPlaneBannerTh : null;
+
+            const tiltDelta = effRawTiltDeg - smoothedTilt;
+            if (!checkTrunk) {
+              smoothedTilt = 0;
+            } else if (Math.abs(tiltDelta) >= 0.4) {
               const tiltAlpha = 1 - Math.exp(-kinematicDtMs / 120);
               smoothedTilt = Math.max(0, smoothedTilt + tiltDelta * tiltAlpha);
             }
@@ -1351,11 +1466,11 @@ export function SmartRehabKioskUI({
               }
 
               const blockCounting =
-                demoPresetRef.current === 'MULTI_PERSON' ||
+                (demoPresetRef.current === 'MULTI_PERSON' && checkIdentity) ||
                 countingLockedRef.current;
 
               if (demoValidRepsRef.current < curEx.target_reps) {
-                if (latestWrongSideRaised) {
+                if (effWrongSideRaised) {
                   holdAccumMs = 0;
                   if (lastEmittedHold !== curEx.hold_sec) {
                     lastEmittedHold = curEx.hold_sec;
@@ -1363,7 +1478,7 @@ export function SmartRehabKioskUI({
                     setDemoHoldRemainingSec(curEx.hold_sec);
                   }
                   setDemoPresetState('WRONG_LIMB');
-                } else if (latestWrongPlaneRaised) {
+                } else if (effWrongPlaneRaised) {
                   holdAccumMs = 0;
                   if (lastEmittedHold !== curEx.hold_sec) {
                     lastEmittedHold = curEx.hold_sec;
@@ -1373,7 +1488,7 @@ export function SmartRehabKioskUI({
                   setDemoPresetState('WRONG_PLANE');
                 } else if (!blockCounting) {
                   const holdingZone = atTarget || (holdAccumMs > 0 && atMaintainTarget);
-                  if (holdingZone && !awaitingReturn && latestTrunkTiltDeg <= 14) {
+                  if (holdingZone && !awaitingReturn && (!checkTrunk || latestTrunkTiltDeg <= 14)) {
                     holdAccumMs += wallDtMs;
                     const remSec = Math.max(0, Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)));
                     if (now - lastHoldEmitAt >= 40 && remSec !== lastEmittedHold) {
@@ -1418,7 +1533,7 @@ export function SmartRehabKioskUI({
                         lastHoldEmitAt = now;
                         setDemoHoldRemainingSec(fallbackHoldSec);
                       }
-                      setDemoPresetState(latestTrunkTiltDeg > 10 ? 'TRUNK_LEAN' : 'ACTIVE_REP');
+                      setDemoPresetState(checkTrunk && latestTrunkTiltDeg > 10 ? 'TRUNK_LEAN' : 'ACTIVE_REP');
                     }
                   }
                 }
@@ -1432,12 +1547,12 @@ export function SmartRehabKioskUI({
               targetRomDeg: curEx.target_rom_deg,
               holdRatio: holdAccumMs > 0 ? Math.min(1, holdAccumMs / holdTargetMs) : 0,
               trunkTiltDeg: latestTrunkTiltDeg,
-              isMultiPerson: demoPresetRef.current === 'MULTI_PERSON',
+              isMultiPerson: demoPresetRef.current === 'MULTI_PERSON' && checkIdentity,
               isImpostorOrEmergency: countingLockedRef.current,
-              wrongSideRaised: latestWrongSideRaised,
-              wrongSideBannerTh: latestWrongSideBannerTh,
-              wrongPlaneRaised: latestWrongPlaneRaised,
-              wrongPlaneBannerTh: latestWrongPlaneBannerTh,
+              wrongSideRaised: effWrongSideRaised,
+              wrongSideBannerTh: effWrongSideBannerTh,
+              wrongPlaneRaised: effWrongPlaneRaised,
+              wrongPlaneBannerTh: effWrongPlaneBannerTh,
               videoWidth: v.videoWidth,
               videoHeight: v.videoHeight,
             });
@@ -1485,16 +1600,24 @@ export function SmartRehabKioskUI({
 
   const patientRevealed = Boolean(patient?.name && (kiosk_state !== 'AUTH_FRAMING' || demoFaceMatched));
 
-  const checklistItems = [
+  const checklistItems: {
+    ruleKey: FormAssessmentRuleKey;
+    label: string;
+    ok: boolean;
+    ruleActive: boolean;
+    warnText: string;
+  }[] = [
     ...(selectedExercise.target_joint === 'left_shoulder' ||
     selectedExercise.target_joint === 'right_shoulder'
       ? [
           {
+            ruleKey: 'limb' as const,
             label:
               selectedExercise.target_joint === 'left_shoulder'
                 ? 'ยกเฉพาะแขนซ้ายตามท่าที่กำหนด'
                 : 'ยกเฉพาะแขนขวาตามท่าที่กำหนด',
             ok: !wrongLimbAlert && !isEmergency,
+            ruleActive: isFormRuleActive(formRules, 'limb'),
             warnText:
               selectedExercise.target_joint === 'left_shoulder'
                 ? 'กรุณายกแขนซ้าย'
@@ -1503,11 +1626,13 @@ export function SmartRehabKioskUI({
           ...(activeExpectedPlane === 'flexion' || activeExpectedPlane === 'abduction'
             ? [
                 {
+                  ruleKey: 'plane' as const,
                   label:
                     activeExpectedPlane === 'flexion'
                       ? 'ทิศทางถูกต้อง (ยกแขนไปด้านหน้าเท่านั้น)'
                       : 'ทิศทางถูกต้อง (กางแขนออกด้านข้างเท่านั้น)',
                   ok: !wrongPlaneAlert && !isEmergency,
+                  ruleActive: isFormRuleActive(formRules, 'plane'),
                   warnText:
                     activeExpectedPlane === 'flexion' ? 'ห้ามกางด้านข้าง' : 'ห้ามยกด้านหน้า',
                 },
@@ -1516,11 +1641,14 @@ export function SmartRehabKioskUI({
         ]
       : []),
     {
+      ruleKey: 'trunk',
       label: 'ลำตัวตั้งตรง ไม่เอียงชดเชย',
       ok: !trunkLeanAlert && !isEmergency,
+      ruleActive: isFormRuleActive(formRules, 'trunk'),
       warnText: 'เอียงลำตัว',
     },
     {
+      ruleKey: 'posture',
       label:
         selectedExercise.target_joint === 'right_knee'
           ? 'เข่าตรงแนว ไม่บิดเข้าด้านใน'
@@ -1529,26 +1657,34 @@ export function SmartRehabKioskUI({
         selectedExercise.target_joint === 'right_knee'
           ? !kneeValgusAlert && !isEmergency
           : !shoulderHikeAlert && !isEmergency,
+      ruleActive: isFormRuleActive(formRules, 'posture'),
       warnText: selectedExercise.target_joint === 'right_knee' ? 'เข่าบิดใน' : 'ยักไหล่',
     },
     {
+      ruleKey: 'velocity',
       label: 'ความเร็วเคลื่อนไหวสม่ำเสมอ',
       ok: !tooFastAlert && !isEmergency,
+      ruleActive: isFormRuleActive(formRules, 'velocity'),
       warnText: 'เร็วเกินไป',
     },
     {
+      ruleKey: 'identity',
       label: 'ยืนยันตัวตนคนไข้ตัวจริง (1 คนในเฟรม)',
       ok:
-        kiosk_state !== 'PAUSED_MULTI_PERSON' &&
-        kiosk_state !== 'PAUSED_IMPOSTOR' &&
-        payload.identity_guard?.is_counting_allowed !== false &&
-        !isEmergency,
+        !isFormRuleActive(formRules, 'identity') ||
+        (kiosk_state !== 'PAUSED_MULTI_PERSON' &&
+          kiosk_state !== 'PAUSED_IMPOSTOR' &&
+          payload.identity_guard?.is_counting_allowed !== false &&
+          !isEmergency),
+      ruleActive: isFormRuleActive(formRules, 'identity'),
       warnText:
         kiosk_state === 'PAUSED_IMPOSTOR' || payload.identity_guard?.status === 'IMPOSTOR'
           ? 'ไม่ใช่คนไข้'
           : 'พบหลายคน',
     },
   ];
+  const hasDisabledFormRule =
+    !formRules.enabled || checklistItems.some((item) => !item.ruleActive);
 
   return (
     <div className="clinical-mist-bg relative min-h-screen w-full overflow-x-hidden text-[#0F4C81]">
@@ -2046,44 +2182,162 @@ export function SmartRehabKioskUI({
 
             {/* Card 4: Biomechanical Form Checklist */}
             <div className="glass-card rounded-3xl p-5">
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="flex items-center gap-2 text-sm font-extrabold text-[#0F4C81]">
-                  <Activity className="h-4 w-4 text-[#0D9488]" />
-                  การประเมินท่าทางแบบเรียลไทม์
-                </h3>
-                <span className="tabular-mono text-xs font-bold text-[#0284C7]">
-                  เอียงลำตัว {demoTrunkTiltDeg.toFixed(1)}°
-                </span>
-              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFormChecklistExpanded((prev) => !prev)}
+                  className="flex items-center gap-2 text-left text-sm font-extrabold text-[#0F4C81] hover:text-[#0284C7] cursor-pointer"
+                  aria-expanded={formChecklistExpanded}
+                >
+                  <Activity
+                    className={`h-4 w-4 shrink-0 ${formRules.enabled ? 'text-[#0D9488]' : 'text-slate-400'}`}
+                  />
+                  <span>การประเมินท่าทางแบบเรียลไทม์</span>
+                </button>
 
-              <div className="space-y-2">
-                {checklistItems.map((item) => (
-                  <div
-                    key={item.label}
-                    className={`flex items-center justify-between rounded-2xl border px-3.5 py-2.5 text-sm font-semibold transition-colors ${
-                      item.ok
-                        ? 'border-emerald-100 bg-emerald-50/60 text-[#0F4C81]'
-                        : 'border-amber-300 bg-amber-50 text-amber-900'
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={toggleMasterFormAssessment}
+                    aria-pressed={formRules.enabled}
+                    title={formRules.enabled ? 'กดเพื่อปิดระบบประเมินท่าทางแบบเรียลไทม์' : 'กดเพื่อเปิดระบบประเมินท่าทางแบบเรียลไทม์'}
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-extrabold transition-colors cursor-pointer ${
+                      formRules.enabled
+                        ? 'border-emerald-300 bg-emerald-50 text-[#0D9488] hover:bg-emerald-100'
+                        : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
                   >
-                    <span className="flex items-center gap-2">
-                      {item.ok ? (
-                        <CheckCircle2 className="h-4 w-4 shrink-0 text-[#10B981]" />
-                      ) : (
-                        <AlertTriangle className="h-4 w-4 shrink-0 text-[#F59E0B]" />
-                      )}
-                      {item.label}
-                    </span>
                     <span
-                      className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${
-                        item.ok ? 'bg-emerald-100 text-[#0D9488]' : 'bg-amber-200 text-amber-900'
+                      className={`inline-flex h-3.5 w-6 items-center rounded-full p-0.5 transition-colors ${
+                        formRules.enabled ? 'bg-[#10B981] justify-end' : 'bg-slate-400 justify-start'
                       }`}
                     >
-                      {item.ok ? 'ผ่าน' : item.warnText}
+                      <span className="h-2.5 w-2.5 rounded-full bg-white shadow-sm" />
                     </span>
-                  </div>
-                ))}
+                    <span>{formRules.enabled ? 'เปิดประเมิน' : 'ปิดประเมิน'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setFormChecklistExpanded((prev) => !prev)}
+                    aria-label={formChecklistExpanded ? 'ซ่อนรายการประเมินท่าทาง' : 'เปิดดูรายการประเมินท่าทาง'}
+                    className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-white/80 px-2.5 py-1 text-[11px] font-bold text-[#0F4C81] hover:bg-sky-50 cursor-pointer"
+                  >
+                    <span>{formChecklistExpanded ? 'ซ่อน' : 'เปิดดู'}</span>
+                    {formChecklistExpanded ? (
+                      <ChevronUp className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                </div>
               </div>
+
+              <AnimatePresence initial={false}>
+                {formChecklistExpanded ? (
+                  <motion.div
+                    key="form-checklist-expanded"
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2, ease: 'easeOut' }}
+                    className="overflow-hidden"
+                  >
+                    <div className="mt-2.5 mb-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span className="tabular-mono font-bold text-[#0284C7]">
+                        {isFormRuleActive(formRules, 'trunk')
+                          ? `เอียงลำตัว ${demoTrunkTiltDeg.toFixed(1)}°`
+                          : 'เอียงลำตัว: ปิดเช็ก'}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-semibold text-slate-500">
+                          กดแต่ละหัวข้อเพื่อเปิด/ปิด
+                        </span>
+                        {hasDisabledFormRule && (
+                          <button
+                            type="button"
+                            onClick={resetAllFormRules}
+                            className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-bold text-[#0284C7] hover:bg-sky-100 cursor-pointer"
+                          >
+                            <RotateCcw className="h-3 w-3" />
+                            <span>เปิดทั้งหมด</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {!formRules.enabled && (
+                      <div className="mb-2.5 flex items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-600">
+                        <span>ปิดการประเมินท่าทางอยู่ • นับรอบตามมุมองศาอย่างเดียว</span>
+                        <button
+                          type="button"
+                          onClick={toggleMasterFormAssessment}
+                          className="shrink-0 rounded-full bg-emerald-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
+                        >
+                          กดเปิดประเมิน
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="space-y-2">
+                      {checklistItems.map((item) => (
+                        <button
+                          key={item.label}
+                          type="button"
+                          onClick={() => toggleSingleFormRule(item.ruleKey)}
+                          aria-pressed={item.ruleActive}
+                          className={`flex w-full items-center justify-between gap-2 rounded-2xl border px-3.5 py-2.5 text-left text-sm font-semibold transition-colors cursor-pointer ${
+                            !item.ruleActive
+                              ? 'border-dashed border-slate-200 bg-slate-50/70 text-slate-400 hover:border-slate-300 hover:bg-slate-100/70'
+                              : item.ok
+                                ? 'border-emerald-100 bg-emerald-50/60 text-[#0F4C81] hover:bg-emerald-50'
+                                : 'border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100/70'
+                          }`}
+                        >
+                          <span className="flex items-center gap-2">
+                            {!item.ruleActive ? (
+                              <Pause className="h-4 w-4 shrink-0 text-slate-400" />
+                            ) : item.ok ? (
+                              <CheckCircle2 className="h-4 w-4 shrink-0 text-[#10B981]" />
+                            ) : (
+                              <AlertTriangle className="h-4 w-4 shrink-0 text-[#F59E0B]" />
+                            )}
+                            <span className={!item.ruleActive ? 'line-through decoration-slate-300' : ''}>
+                              {item.label}
+                            </span>
+                          </span>
+                          <span
+                            className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                              !item.ruleActive
+                                ? 'bg-slate-200 text-slate-600'
+                                : item.ok
+                                  ? 'bg-emerald-100 text-[#0D9488]'
+                                  : 'bg-amber-200 text-amber-900'
+                            }`}
+                          >
+                            {!item.ruleActive ? 'ปิดอยู่' : item.ok ? 'ผ่าน' : item.warnText}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </motion.div>
+                ) : (
+                  <div className="mt-2 flex items-center justify-between text-xs font-semibold text-slate-500">
+                    <span>
+                      {formRules.enabled
+                        ? `กำลังเปิดประเมิน (${checklistItems.filter((item) => item.ruleActive).length}/${checklistItems.length} หัวข้อ)`
+                        : 'ปิดการประเมินท่าทางอยู่ • นับรอบตามมุมองศาอย่างเดียว'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setFormChecklistExpanded(true)}
+                      className="font-bold text-[#0284C7] hover:underline cursor-pointer"
+                    >
+                      คลิกเพื่อเปิดดูรายการ
+                    </button>
+                  </div>
+                )}
+              </AnimatePresence>
             </div>
           </aside>
         </main>
