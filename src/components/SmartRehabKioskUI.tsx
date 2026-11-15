@@ -70,12 +70,14 @@ export interface LiveJointMeasurement {
   wrongSideBannerTh: string | null;
   wrongPlaneRaised: boolean;
   wrongPlaneBannerTh: string | null;
+  xyzVector?: { x: number; y: number; z: number } | null;
 }
 
 export function measureLiveJointAngleAndTilt(
   landmarks: readonly NormalizedLandmark[],
   targetJoint: ExercisePrescriptionOption['target_joint'],
   expectedPlane: ExpectedMovementPlane = 'any',
+  worldLandmarks?: readonly NormalizedLandmark[],
 ): LiveJointMeasurement {
   const UPPER_MIN_VIS = 0.02;
   const LOWER_MIN_VIS = 0.2;
@@ -85,6 +87,20 @@ export function measureLiveJointAngleAndTilt(
   const rHip = landmarks[POSE_INDEX.RIGHT_HIP];
 
   const shoulderSpanX = lSh && rSh ? Math.max(0.12, Math.abs(lSh.x - rSh.x)) : 0.18;
+  const hipsVisible = Boolean(
+    lSh &&
+      rSh &&
+      lHip &&
+      rHip &&
+      (lHip.visibility ?? 0) >= LOWER_MIN_VIS &&
+      (rHip.visibility ?? 0) >= LOWER_MIN_VIS &&
+      (lHip.y + rHip.y) / 2 <= 0.94 &&
+      (lHip.y + rHip.y) / 2 - (lSh.y + rSh.y) / 2 >= 0.15,
+  );
+  const torsoSpanY =
+    hipsVisible && lSh && rSh && lHip && rHip
+      ? Math.abs((lHip.y + rHip.y) / 2 - (lSh.y + rSh.y) / 2)
+      : 0;
 
   let trunkTiltDeg = 2.0;
   if (
@@ -113,66 +129,103 @@ export function measureLiveJointAngleAndTilt(
       0.55;
   }
 
-  const calibrateShoulderElevationDeg = (rawDeg: number): number =>
-    rawDeg > 85 ? Math.min(180, 85 + (rawDeg - 85) * 1.25) : rawDeg;
+  const computeArmElevationDeg = (
+    side: 'left' | 'right',
+  ): { angleDeg: number | null; xyzVector: { x: number; y: number; z: number } | null } => {
+    const shIdx = side === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER;
+    const elbowIdx = side === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW;
+    const wristIdx = side === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST;
+    const sh = landmarks[shIdx];
+    const elbow = landmarks[elbowIdx];
+    const wrist = landmarks[wristIdx];
+    if (!sh || (sh.visibility ?? 0) < UPPER_MIN_VIS) {
+      return { angleDeg: null, xyzVector: null };
+    }
 
-  const computeArmElevationDeg = (side: 'left' | 'right'): number | null => {
-    const sh = landmarks[side === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
-    const elbow = landmarks[side === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
-    const wrist = landmarks[side === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
-    const hip = landmarks[side === 'left' ? POSE_INDEX.LEFT_HIP : POSE_INDEX.RIGHT_HIP];
-    if (!sh || (sh.visibility ?? 0) < UPPER_MIN_VIS) return null;
+    const availDownY = Math.max(0.12, 0.95 - sh.y);
+    const wristUpRef = hipsVisible
+      ? Math.max(torsoSpanY * 1.02, shoulderSpanX * 1.88)
+      : Math.max(shoulderSpanX * 2.65, sh.y * 0.96);
 
-    const shScaled = { x: sh.x, y: sh.y, z: (sh.z ?? 0) * 0.35 };
-    const refHip =
-      hip && (hip.visibility ?? 0) >= LOWER_MIN_VIS && hip.y <= 0.98
-        ? { x: hip.x, y: hip.y, z: (hip.z ?? 0) * 0.35 }
-        : { x: sh.x, y: sh.y + 0.35, z: (sh.z ?? 0) * 0.35 };
-
-    const candidates: number[] = [];
-    for (const pt of [wrist, elbow]) {
-      if (!pt || (pt.visibility ?? 0) < UPPER_MIN_VIS) continue;
-      // Scale horizontal span for wide webcam aspect ratio and compensate sagittal foreshortening
+    const measureSegment3D = (
+      ptIdx: number,
+      pt: NormalizedLandmark | undefined,
+      isWrist: boolean,
+    ): { angleDeg: number; xyzVector: { x: number; y: number; z: number } } | null => {
+      if (!pt || (pt.visibility ?? 0) < UPPER_MIN_VIS) return null;
       const dx = (pt.x - sh.x) * 1.22;
       const dy = pt.y - sh.y;
-      const len = Math.hypot(dx, dy);
-      const refSegLen = pt === wrist ? shoulderSpanX * 1.32 : shoulderSpanX * 0.72;
-      const isPlaneRestricted = expectedPlane === 'flexion' || expectedPlane === 'abduction';
-      const effectiveLen = isPlaneRestricted ? Math.max(len, refSegLen) : len;
-      if (effectiveLen >= 0.03 && (isPlaneRestricted || len >= 0.03)) {
-        const cosDown = Math.max(-1, Math.min(1, dy / effectiveLen));
-        const elev2D = (Math.acos(cosDown) * 180) / Math.PI;
-        let combinedRaw = elev2D;
-        if (!(isPlaneRestricted && len < refSegLen * 0.85)) {
-          const ptScaled = { x: pt.x, y: pt.y, z: (pt.z ?? 0) * 0.35 };
-          const angle3D = computeJointAngle3D(refHip, shScaled, ptScaled);
-          combinedRaw = Math.max(elev2D, angle3D);
+      const dzSensor = ((pt.z ?? 0) - (sh.z ?? 0)) * 1.22;
+
+      const refLen =
+        dy > 0
+          ? isWrist
+            ? hipsVisible
+              ? wristUpRef
+              : Math.min(wristUpRef, availDownY * 0.92)
+            : hipsVisible
+              ? wristUpRef * 0.54
+              : Math.min(wristUpRef * 0.54, availDownY * 0.55)
+          : isWrist
+            ? wristUpRef
+            : wristUpRef * 0.54;
+
+      let dzWorld = 0;
+      if (worldLandmarks) {
+        const wSh = worldLandmarks[shIdx];
+        const wPt = worldLandmarks[ptIdx];
+        if (wSh && wPt) {
+          const wLen3D = Math.hypot(
+            wPt.x - wSh.x,
+            wPt.y - wSh.y,
+            (wPt.z ?? 0) - (wSh.z ?? 0),
+          );
+          if (wLen3D >= 0.08) {
+            dzWorld = (Math.abs((wPt.z ?? 0) - (wSh.z ?? 0)) / wLen3D) * refLen;
+          }
         }
-        candidates.push(calibrateShoulderElevationDeg(combinedRaw));
       }
-    }
 
-    // Measure forearm elevation vector (elbow -> wrist) when raised for close-up webcam perspective
-    if (
-      elbow &&
-      wrist &&
-      (elbow.visibility ?? 0) >= UPPER_MIN_VIS &&
-      (wrist.visibility ?? 0) >= UPPER_MIN_VIS &&
-      wrist.y < elbow.y
-    ) {
-      const fDx = (wrist.x - elbow.x) * 1.22;
-      const fDy = wrist.y - elbow.y;
-      const fLen = Math.hypot(fDx, fDy);
+      const dzSphere = Math.sqrt(Math.max(0, refLen * refLen - dx * dx - dy * dy));
       const isPlaneRestricted = expectedPlane === 'flexion' || expectedPlane === 'abduction';
-      const fEffectiveLen = isPlaneRestricted ? Math.max(fLen, shoulderSpanX * 0.65) : fLen;
-      if (fEffectiveLen >= 0.03 && (isPlaneRestricted || fLen >= 0.03)) {
-        const fCosDown = Math.max(-1, Math.min(1, fDy / fEffectiveLen));
-        const forearmElev2D = (Math.acos(fCosDown) * 180) / Math.PI;
-        candidates.push(calibrateShoulderElevationDeg(forearmElev2D));
-      }
+      const sagittalWeight =
+        isPlaneRestricted || Math.abs(dx) <= shoulderSpanX * 0.45
+          ? 1
+          : Math.max(0, 1 - (Math.abs(dx) - shoulderSpanX * 0.45) / (shoulderSpanX * 0.45));
+
+      const absDz = Math.max(Math.abs(dzSensor), dzWorld, dzSphere * sagittalWeight);
+      const dz = (dzSensor > 1e-4 ? 1 : -1) * absDz;
+      const horizMagXZ = Math.hypot(dx, absDz);
+      const mag3D = Math.hypot(dx, dy, dz);
+      if (mag3D < 0.02) return null;
+
+      const angle3D = (Math.atan2(horizMagXZ, dy) * 180) / Math.PI;
+      return {
+        angleDeg: angle3D,
+        xyzVector: {
+          x: Number((dx / mag3D).toFixed(3)),
+          y: Number((dy / mag3D).toFixed(3)),
+          z: Number((dz / mag3D).toFixed(3)),
+        },
+      };
+    };
+
+    const wristMeasure = measureSegment3D(wristIdx, wrist, true);
+    const elbowMeasure = measureSegment3D(elbowIdx, elbow, false);
+
+    let angleDeg: number | null = null;
+    if (wristMeasure && elbowMeasure) {
+      angleDeg = 0.75 * wristMeasure.angleDeg + 0.25 * elbowMeasure.angleDeg;
+    } else if (wristMeasure) {
+      angleDeg = wristMeasure.angleDeg;
+    } else if (elbowMeasure) {
+      angleDeg = elbowMeasure.angleDeg;
     }
 
-    return candidates.length > 0 ? Math.max(...candidates) : null;
+    return {
+      angleDeg,
+      xyzVector: wristMeasure?.xyzVector ?? elbowMeasure?.xyzVector ?? null,
+    };
   };
 
   let romDeg: number | null = null;
@@ -181,12 +234,16 @@ export function measureLiveJointAngleAndTilt(
   let wrongSideBannerTh: string | null = null;
   let wrongPlaneRaised = false;
   let wrongPlaneBannerTh: string | null = null;
+  let xyzVector: { x: number; y: number; z: number } | null = null;
 
   if (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder') {
     const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
     const oppositeSide: 'left' | 'right' = primarySide === 'left' ? 'right' : 'left';
-    const primaryDeg = computeArmElevationDeg(primarySide);
-    const oppositeDeg = computeArmElevationDeg(oppositeSide);
+    const primaryResult = computeArmElevationDeg(primarySide);
+    const oppositeResult = computeArmElevationDeg(oppositeSide);
+    const primaryDeg = primaryResult.angleDeg;
+    const oppositeDeg = oppositeResult.angleDeg;
+    xyzVector = primaryResult.xyzVector;
     wrongSideRaised =
       oppositeDeg !== null &&
       oppositeDeg >= 45 &&
@@ -282,6 +339,7 @@ export function measureLiveJointAngleAndTilt(
     wrongSideBannerTh,
     wrongPlaneRaised,
     wrongPlaneBannerTh,
+    xyzVector,
   };
 }
 
@@ -1175,10 +1233,12 @@ export function SmartRehabKioskUI({
                       setDemoPresetState('ACTIVE_REP');
                     }
                   }
+                  const worldLandmarks = poseRes?.worldLandmarks?.[0] ?? undefined;
                   const measured = measureLiveJointAngleAndTilt(
                     landmarks,
                     curEx.target_joint,
                     curExpectedPlane,
+                    worldLandmarks,
                   );
                   latestRawTiltDeg = measured.trunkTiltDeg;
                   latestWrongSideRaised = measured.wrongSideRaised;
@@ -1775,8 +1835,8 @@ export function SmartRehabKioskUI({
                         <div className="inline-flex items-center gap-1.5 rounded-xl border border-sky-300 bg-sky-50 px-3 py-1 text-xs font-extrabold text-[#0F4C81]">
                           <span>
                             {activeExpectedPlane === 'flexion'
-                              ? '⬆️ ทิศทาง: ยกตรงไปด้านหน้าเท่านั้น (ห้ามกางด้านข้าง)'
-                              : '↔️ ทิศทาง: กางออกด้านข้างเท่านั้น (ห้ามยกด้านหน้า)'}
+                              ? '⬆️ ทิศทาง: ยกตรงไปด้านหน้า • ตรวจจับมุม 3 มิติ (แกน X-Y-Z)'
+                              : '↔️ ทิศทาง: กางออกด้านข้าง • ตรวจจับมุม 3 มิติ (แกน X-Y-Z)'}
                           </span>
                         </div>
                       )}

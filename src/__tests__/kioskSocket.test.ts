@@ -538,5 +538,70 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(translateVoiceCoachText(abductionWrongPayload.tts_voice_th, 'en')).toContain('out to the side');
     expect(translateVoiceCoachText(abductionWrongPayload.tts_voice_th, 'zh')).toContain('向身体侧面外展抬起');
   });
+
+  it('measures forward flexion progressively across 3D X-Y-Z axes without jumping prematurely to 180 deg', () => {
+    // 1. Close-up 16:9 webcam framing (hips occluded below frame, shoulderSpanX = 0.28, sh.y = 0.82)
+    const eyeLevelCloseUp = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.64, y: 0.82, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.36, y: 0.82, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_HIP]: { x: 0.60, y: 1.15, z: 0, visibility: 0.05 },
+      [POSE_INDEX.RIGHT_HIP]: { x: 0.40, y: 1.15, z: 0, visibility: 0.05 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.36, y: 0.58, z: -0.18, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.36, y: 0.37, z: -0.35, visibility: 0.99 },
+    });
+    const eyeCheck = measureLiveJointAngleAndTilt(eyeLevelCloseUp, 'right_shoulder', 'flexion');
+    expect(eyeCheck.wrongPlaneRaised).toBe(false);
+    expect(eyeCheck.romDeg).not.toBeNull();
+    expect(eyeCheck.romDeg!).toBeGreaterThanOrEqual(115);
+    expect(eyeCheck.romDeg!).toBeLessThanOrEqual(128);
+    expect(eyeCheck.xyzVector).not.toBeNull();
+    expect(eyeCheck.xyzVector!.z).toBeLessThan(-0.3);
+
+    // 2. Target-level forward raise matching screenshot (wrist.y = 0.16, elbow.y = 0.45) -> ~145..160 deg, NOT 180 deg
+    const targetLevelCloseUp = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.64, y: 0.82, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.36, y: 0.82, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_HIP]: { x: 0.60, y: 1.15, z: 0, visibility: 0.05 },
+      [POSE_INDEX.RIGHT_HIP]: { x: 0.40, y: 1.15, z: 0, visibility: 0.05 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.36, y: 0.45, z: -0.12, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.36, y: 0.16, z: -0.22, visibility: 0.99 },
+    });
+    const targetCheck = measureLiveJointAngleAndTilt(targetLevelCloseUp, 'right_shoulder', 'flexion');
+    expect(targetCheck.wrongPlaneRaised).toBe(false);
+    expect(targetCheck.romDeg).not.toBeNull();
+    expect(targetCheck.romDeg!).toBeGreaterThanOrEqual(145);
+    expect(targetCheck.romDeg!).toBeLessThanOrEqual(160);
+    expect(targetCheck.xyzVector).not.toBeNull();
+    expect(targetCheck.xyzVector!.z).toBeLessThan(-0.3);
+
+    // 3. Explicit 3D worldLandmarks Z depth progression (45 deg -> 90 deg -> 135 deg)
+    const world45 = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0, y: 0, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0, y: 0.212, z: -0.212, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0, y: 0.424, z: -0.424, visibility: 0.99 },
+    });
+    const pose45 = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.42, y: 0.46, z: -0.11, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.42, y: 0.56, z: -0.22, visibility: 0.99 },
+    });
+    const check45 = measureLiveJointAngleAndTilt(pose45, 'right_shoulder', 'flexion', world45);
+    expect(check45.romDeg!).toBeGreaterThanOrEqual(38);
+    expect(check45.romDeg!).toBeLessThanOrEqual(52);
+    expect(check45.xyzVector!.z).toBeLessThan(-0.4);
+
+    const world90 = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0, y: 0, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0, y: 0, z: -0.30, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0, y: 0, z: -0.60, visibility: 0.99 },
+    });
+    const pose90 = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.42, y: 0.35, z: -0.18, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.42, y: 0.35, z: -0.35, visibility: 0.99 },
+    });
+    const check90 = measureLiveJointAngleAndTilt(pose90, 'right_shoulder', 'flexion', world90);
+    expect(check90.romDeg!).toBeGreaterThanOrEqual(85);
+    expect(check90.romDeg!).toBeLessThanOrEqual(95);
+    expect(check90.xyzVector!.z).toBeLessThan(-0.9);
+  });
 });
 
