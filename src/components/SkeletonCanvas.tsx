@@ -17,6 +17,7 @@ interface SkeletonCanvasProps {
   distanceM: number;
   trunkTiltDeg: number;
   hasLiveCamera?: boolean;
+  isPrivacyMode?: boolean;
   liveVideoOverlay?: React.ReactNode;
   children?: React.ReactNode;
 }
@@ -64,6 +65,7 @@ export function SkeletonCanvas({
   distanceM,
   trunkTiltDeg,
   hasLiveCamera = false,
+  isPrivacyMode = false,
   liveVideoOverlay,
   children,
 }: SkeletonCanvasProps) {
@@ -72,14 +74,18 @@ export function SkeletonCanvas({
   const latestPayloadRef = useRef(payload);
   latestPayloadRef.current = payload;
 
-  const MEDIAPIPE_33_TO_COCO_17 = [
+  const MEDIAPIPE_33_TO_COCO_23 = [
     0, 2, 5, 7, 8, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28,
+    31, 31, 29, 32, 32, 30,
   ] as const;
 
   const resolveEdgeKeypoints = (cur: KioskDecisionPayload): Keypoint3DPoint[] | undefined => {
     if (cur.keypoints_3d && cur.keypoints_3d.length >= 17) return cur.keypoints_3d;
+    if (cur.pose_landmarks && cur.pose_landmarks.length >= 33) {
+      return MEDIAPIPE_33_TO_COCO_23.map((mpIdx) => cur.pose_landmarks![mpIdx]);
+    }
     if (cur.pose_landmarks && cur.pose_landmarks.length >= 29) {
-      return MEDIAPIPE_33_TO_COCO_17.map((mpIdx) => cur.pose_landmarks![mpIdx]);
+      return MEDIAPIPE_33_TO_COCO_23.slice(0, 17).map((mpIdx) => cur.pose_landmarks![mpIdx]);
     }
     return undefined;
   };
@@ -244,18 +250,34 @@ export function SkeletonCanvas({
         isEmergency ? 'ring-4 ring-rose-500/70' : ''
       }`}
     >
-      {/* Live Camera Frame (Edge Vision / Local Webcam) or Clinical Zen Stage Backdrop */}
+      {/* Live Camera Frame (Edge Vision / Local Webcam) or Privacy Stickman Black Stage */}
       {!isDemoMode && payload.frame_base64 ? (
-        <img
-          src={`data:image/jpeg;base64,${payload.frame_base64}`}
-          alt="Live Rehabilitation Vision Feed"
-          className="absolute inset-0 h-full w-full object-cover"
-          style={{ transform: 'scaleX(-1)' }}
-        />
+        isPrivacyMode ? (
+          <div
+            aria-label="Privacy Stickman Black Stage"
+            className="absolute inset-0 bg-[#050811]"
+          />
+        ) : (
+          <img
+            src={`data:image/jpeg;base64,${payload.frame_base64}`}
+            alt="Live Rehabilitation Vision Feed"
+            className="absolute inset-0 h-full w-full object-cover"
+            style={{ transform: 'scaleX(-1)' }}
+          />
+        )
       ) : hasLiveCamera && liveVideoOverlay ? (
-        <div className="absolute inset-0 z-0 h-full w-full overflow-hidden bg-gradient-to-br from-sky-100 via-emerald-50 to-white">
+        <div
+          className={`absolute inset-0 z-0 h-full w-full overflow-hidden ${
+            isPrivacyMode ? 'bg-[#050811]' : 'bg-gradient-to-br from-sky-100 via-emerald-50 to-white'
+          }`}
+        >
           {liveVideoOverlay}
         </div>
+      ) : !isDemoMode && isPrivacyMode ? (
+        <div
+          aria-label="Privacy Stickman Black Stage"
+          className="absolute inset-0 bg-[#050811]"
+        />
       ) : (
         <div className="absolute inset-0 bg-gradient-to-br from-[#F4F9F9] via-[#E6F4F6] to-[#DCF0F7]">
           {/* Subtle Clinical Calibration Grid */}
@@ -453,7 +475,7 @@ export function SkeletonCanvas({
           </div>
         )}
 
-        {!hasLiveCamera && (
+        {!hasLiveCamera && !(isPrivacyMode && hasEdge3D) && (
           <svg
             viewBox="0 0 800 540"
             className={`h-full max-h-[500px] w-full select-none overflow-visible ${hasEdge3D ? 'opacity-20' : ''}`}

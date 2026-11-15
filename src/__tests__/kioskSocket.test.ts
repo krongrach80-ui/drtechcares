@@ -32,6 +32,7 @@ import {
 } from '../components/VoiceCoachBanner';
 import { getKioskVerifiedModalCopy } from '../components/KioskBiometricLoginView';
 import { getKioskOverviewVoiceNarration } from '../App';
+import { drawWholeBody133OnCanvas, type Keypoint3DPoint } from '../hooks/useEdgeVisionSocket';
 
 function createNeutralLandmarks(
   overrides: Partial<Record<number, NormalizedLandmark>> = {},
@@ -1246,6 +1247,83 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(candidates).toContain('ws://localhost:8000/ws/kiosk');
     expect(candidates).toContain('ws://127.0.0.1:8000/ws/kiosk');
     expect(new Set(candidates).size).toBe(candidates.length);
+  });
+
+  it('draws a clean Stickman head circle while hiding the 5 facial dots and keeping hand/foot keypoints', () => {
+    const arcCalls: { x: number; y: number; r: number }[] = [];
+    const mockCtx = {
+      save: () => {},
+      restore: () => {},
+      clearRect: () => {},
+      beginPath: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      stroke: () => {},
+      fill: () => {},
+      strokeRect: () => {},
+      fillRect: () => {},
+      fillText: () => {},
+      arc: (x: number, y: number, r: number) => {
+        arcCalls.push({ x, y, r });
+      },
+      measureText: () => ({ width: 40 }),
+      lineCap: 'round',
+      lineWidth: 2,
+      strokeStyle: '#10B981',
+      fillStyle: '#FFFFFF',
+      font: 'bold 12px sans-serif',
+    } as unknown as CanvasRenderingContext2D;
+
+    const kp: Keypoint3DPoint[] = Array.from({ length: 133 }, (_, index) => ({
+      index,
+      x: 0.5,
+      y: 0.5,
+      z: 0,
+      score: 0.99,
+    }));
+    // 5 facial points (0..4)
+    kp[0] = { index: 0, x: 0.5, y: 0.2, z: 0, score: 0.99 };
+    kp[1] = { index: 1, x: 0.48, y: 0.17, z: 0, score: 0.99 };
+    kp[2] = { index: 2, x: 0.52, y: 0.17, z: 0, score: 0.99 };
+    kp[3] = { index: 3, x: 0.44, y: 0.19, z: 0, score: 0.99 };
+    kp[4] = { index: 4, x: 0.56, y: 0.19, z: 0, score: 0.99 };
+    // Shoulders & torso
+    kp[5] = { index: 5, x: 0.4, y: 0.36, z: 0, score: 0.99 };
+    kp[6] = { index: 6, x: 0.6, y: 0.36, z: 0, score: 0.99 };
+    // Feet (17..22)
+    kp[17] = { index: 17, x: 0.42, y: 0.92, z: 0, score: 0.99 };
+    kp[20] = { index: 20, x: 0.58, y: 0.92, z: 0, score: 0.99 };
+    // Left & right hand tips (e.g. 95, 116)
+    kp[95] = { index: 95, x: 0.25, y: 0.45, z: 0, score: 0.99 };
+    kp[116] = { index: 116, x: 0.75, y: 0.45, z: 0, score: 0.99 };
+
+    drawWholeBody133OnCanvas(mockCtx, 800, 600, kp);
+
+    // Head circle exists at nose anchor (400, 120) with large Stickman radius
+    const headCircles = arcCalls.filter(
+      (c) => Math.abs(c.x - 400) < 1 && Math.abs(c.y - 120) < 1 && c.r >= 16,
+    );
+    expect(headCircles).toHaveLength(1);
+
+    // No small facial landmark dots drawn at eye/ear/nose coordinates
+    const faceCoords = [
+      { x: 400, y: 120 },
+      { x: 384, y: 102 },
+      { x: 416, y: 102 },
+      { x: 352, y: 114 },
+      { x: 448, y: 114 },
+    ];
+    for (const fc of faceCoords) {
+      const smallDotAtFace = arcCalls.filter(
+        (c) => Math.abs(c.x - fc.x) < 1 && Math.abs(c.y - fc.y) < 1 && c.r < 12,
+      );
+      expect(smallDotAtFace).toHaveLength(0);
+    }
+
+    // Foot landmarks & hand landmarks are still rendered
+    expect(arcCalls.some((c) => Math.abs(c.x - 0.42 * 800) < 1 && Math.abs(c.y - 0.92 * 600) < 1)).toBe(true);
+    expect(arcCalls.some((c) => Math.abs(c.x - 0.25 * 800) < 1 && Math.abs(c.y - 0.45 * 600) < 1)).toBe(true);
+    expect(arcCalls.some((c) => Math.abs(c.x - 0.75 * 800) < 1 && Math.abs(c.y - 0.45 * 600) < 1)).toBe(true);
   });
 });
 

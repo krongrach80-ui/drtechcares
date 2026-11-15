@@ -11,6 +11,8 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Eye,
+  EyeOff,
   Gamepad2,
   HeartPulse,
   Pause,
@@ -42,12 +44,15 @@ import {
 interface SmartRehabKioskUIProps {
   patient?: PatientSummary | null;
   prescribedExercises?: ExercisePrescriptionOption[];
+  isStaffAuthorized?: boolean;
   onExerciseCompleted?: (exercise: ExercisePrescriptionOption) => void;
   onAllExercisesCompleted?: () => void;
   onEmergencyStop?: (info: { reason: string; patientId?: string; exerciseNameTh?: string }) => void;
   onOpenStaffPortal?: () => void;
   onOpenLegacyKiosk?: () => void;
 }
+
+const PRIVACY_MODE_STORAGE_KEY = 'drtechcares_kiosk_privacy_mode';
 
 const DEMO_PRESETS: { id: DemoPresetId; label: string; shortLabel: string }[] = [
   { id: 'FACE_SCAN', label: 'Face Scan Login', shortLabel: '1. Face Scan' },
@@ -991,7 +996,6 @@ const LIVE_BODY_BONELINE_PAIRS: readonly [number, number][] = [
 ];
 
 const LIVE_KEYPOINT_INDICES: readonly number[] = [
-  POSE_INDEX.NOSE,
   POSE_INDEX.LEFT_SHOULDER,
   POSE_INDEX.RIGHT_SHOULDER,
   POSE_INDEX.LEFT_ELBOW,
@@ -1006,14 +1010,52 @@ const LIVE_KEYPOINT_INDICES: readonly number[] = [
   POSE_INDEX.RIGHT_ANKLE,
 ];
 
+const LIVE_HAND_BONELINE_PAIRS: readonly [number, number][] = [
+  [POSE_INDEX.LEFT_WRIST, POSE_INDEX.LEFT_PINKY],
+  [POSE_INDEX.LEFT_WRIST, POSE_INDEX.LEFT_INDEX],
+  [POSE_INDEX.LEFT_WRIST, POSE_INDEX.LEFT_THUMB],
+  [POSE_INDEX.LEFT_PINKY, POSE_INDEX.LEFT_INDEX],
+  [POSE_INDEX.RIGHT_WRIST, POSE_INDEX.RIGHT_PINKY],
+  [POSE_INDEX.RIGHT_WRIST, POSE_INDEX.RIGHT_INDEX],
+  [POSE_INDEX.RIGHT_WRIST, POSE_INDEX.RIGHT_THUMB],
+  [POSE_INDEX.RIGHT_PINKY, POSE_INDEX.RIGHT_INDEX],
+];
+
+const LIVE_FOOT_BONELINE_PAIRS: readonly [number, number][] = [
+  [POSE_INDEX.LEFT_ANKLE, POSE_INDEX.LEFT_HEEL],
+  [POSE_INDEX.LEFT_ANKLE, POSE_INDEX.LEFT_FOOT_INDEX],
+  [POSE_INDEX.LEFT_HEEL, POSE_INDEX.LEFT_FOOT_INDEX],
+  [POSE_INDEX.RIGHT_ANKLE, POSE_INDEX.RIGHT_HEEL],
+  [POSE_INDEX.RIGHT_ANKLE, POSE_INDEX.RIGHT_FOOT_INDEX],
+  [POSE_INDEX.RIGHT_HEEL, POSE_INDEX.RIGHT_FOOT_INDEX],
+];
+
+const LIVE_EXTREMITY_KEYPOINT_INDICES: readonly number[] = [
+  POSE_INDEX.LEFT_PINKY,
+  POSE_INDEX.RIGHT_PINKY,
+  POSE_INDEX.LEFT_INDEX,
+  POSE_INDEX.RIGHT_INDEX,
+  POSE_INDEX.LEFT_THUMB,
+  POSE_INDEX.RIGHT_THUMB,
+  POSE_INDEX.LEFT_HEEL,
+  POSE_INDEX.RIGHT_HEEL,
+  POSE_INDEX.LEFT_FOOT_INDEX,
+  POSE_INDEX.RIGHT_FOOT_INDEX,
+];
+
 const UPPER_BODY_KEYPOINTS = new Set<number>([
-  POSE_INDEX.NOSE,
   POSE_INDEX.LEFT_SHOULDER,
   POSE_INDEX.RIGHT_SHOULDER,
   POSE_INDEX.LEFT_ELBOW,
   POSE_INDEX.RIGHT_ELBOW,
   POSE_INDEX.LEFT_WRIST,
   POSE_INDEX.RIGHT_WRIST,
+  POSE_INDEX.LEFT_PINKY,
+  POSE_INDEX.RIGHT_PINKY,
+  POSE_INDEX.LEFT_INDEX,
+  POSE_INDEX.RIGHT_INDEX,
+  POSE_INDEX.LEFT_THUMB,
+  POSE_INDEX.RIGHT_THUMB,
 ]);
 
 function drawLivePoseOverlayOnCanvas(
@@ -1107,10 +1149,22 @@ function drawLivePoseOverlayOnCanvas(
 
   const isOppositeArmIdx = (idx: number) => {
     if (opts.targetJoint === 'left_shoulder') {
-      return idx === POSE_INDEX.RIGHT_ELBOW || idx === POSE_INDEX.RIGHT_WRIST;
+      return (
+        idx === POSE_INDEX.RIGHT_ELBOW ||
+        idx === POSE_INDEX.RIGHT_WRIST ||
+        idx === POSE_INDEX.RIGHT_PINKY ||
+        idx === POSE_INDEX.RIGHT_INDEX ||
+        idx === POSE_INDEX.RIGHT_THUMB
+      );
     }
     if (opts.targetJoint === 'right_shoulder') {
-      return idx === POSE_INDEX.LEFT_ELBOW || idx === POSE_INDEX.LEFT_WRIST;
+      return (
+        idx === POSE_INDEX.LEFT_ELBOW ||
+        idx === POSE_INDEX.LEFT_WRIST ||
+        idx === POSE_INDEX.LEFT_PINKY ||
+        idx === POSE_INDEX.LEFT_INDEX ||
+        idx === POSE_INDEX.LEFT_THUMB
+      );
     }
     return false;
   };
@@ -1118,15 +1172,23 @@ function drawLivePoseOverlayOnCanvas(
   const isPointDrawable = (idx: number): boolean => {
     const lm = primary[idx];
     if (!lm) return false;
-    const isLowerLeg =
-      idx === POSE_INDEX.LEFT_KNEE ||
-      idx === POSE_INDEX.RIGHT_KNEE ||
+    const isKnee = idx === POSE_INDEX.LEFT_KNEE || idx === POSE_INDEX.RIGHT_KNEE;
+    const isFootOrAnkle =
       idx === POSE_INDEX.LEFT_ANKLE ||
-      idx === POSE_INDEX.RIGHT_ANKLE;
+      idx === POSE_INDEX.RIGHT_ANKLE ||
+      idx === POSE_INDEX.LEFT_HEEL ||
+      idx === POSE_INDEX.RIGHT_HEEL ||
+      idx === POSE_INDEX.LEFT_FOOT_INDEX ||
+      idx === POSE_INDEX.RIGHT_FOOT_INDEX;
     const isHip = idx === POSE_INDEX.LEFT_HIP || idx === POSE_INDEX.RIGHT_HIP;
     if (isUpperLimbOrSpine) {
-      // Never draw hallucinated knee/ankle lines during upper-body camera exercises
-      if (isLowerLeg) return false;
+      // Never draw hallucinated off-screen knee/ankle lines during seated upper-body camera exercises,
+      // while preserving genuinely visible in-frame feet for full-body stance verification.
+      if (isKnee) return false;
+      if (isFootOrAnkle) {
+        const inFrame = lm.x >= 0.02 && lm.x <= 0.98 && lm.y >= 0.02 && lm.y <= 0.98;
+        if (!inFrame || (lm.visibility ?? 0) < 0.55) return false;
+      }
       if (isHip && !hipsCleanlyBelowShoulders) return false;
     }
     const minV = isOppositeArmIdx(idx) ? 0.28 : minVisFor(idx);
@@ -1234,8 +1296,22 @@ function drawLivePoseOverlayOnCanvas(
     ctx.stroke();
   }
 
-  // Head/neck guide lines (NOSE -> shoulder midpoint NECK -> both shoulders)
+  // Clean Stickman head circle & neck stem (omits raw nose/eye/ear dots above/inside head circle)
   const noseLm = primary[POSE_INDEX.NOSE];
+  const lEarLm = primary[POSE_INDEX.LEFT_EAR];
+  const rEarLm = primary[POSE_INDEX.RIGHT_EAR];
+  const headLm =
+    noseLm && (noseLm.visibility ?? 0) >= 0.18
+      ? noseLm
+      : lEarLm && rEarLm && (lEarLm.visibility ?? 0) >= 0.18 && (rEarLm.visibility ?? 0) >= 0.18
+        ? {
+            x: (lEarLm.x + rEarLm.x) / 2,
+            y: (lEarLm.y + rEarLm.y) / 2,
+            z: ((lEarLm.z ?? 0) + (rEarLm.z ?? 0)) / 2,
+          }
+        : null;
+  let shoulderSpanPx = renderW * 0.18;
+  let neckPt: { x: number; y: number } | null = null;
   if (
     lShLm &&
     rShLm &&
@@ -1244,7 +1320,8 @@ function drawLivePoseOverlayOnCanvas(
   ) {
     const lShPt = toCanvasPt(POSE_INDEX.LEFT_SHOULDER, lShLm);
     const rShPt = toCanvasPt(POSE_INDEX.RIGHT_SHOULDER, rShLm);
-    const neckPt = { x: (lShPt.x + rShPt.x) / 2, y: (lShPt.y + rShPt.y) / 2 };
+    shoulderSpanPx = Math.max(44, Math.hypot(lShPt.x - rShPt.x, lShPt.y - rShPt.y));
+    neckPt = { x: (lShPt.x + rShPt.x) / 2, y: (lShPt.y + rShPt.y) / 2 };
 
     ctx.shadowBlur = 0;
     ctx.strokeStyle = 'rgba(13, 148, 136, 0.85)';
@@ -1253,11 +1330,6 @@ function drawLivePoseOverlayOnCanvas(
     ctx.moveTo(lShPt.x, lShPt.y);
     ctx.lineTo(neckPt.x, neckPt.y);
     ctx.lineTo(rShPt.x, rShPt.y);
-    if (noseLm && (noseLm.visibility ?? 0) >= 0.18) {
-      const nosePt = toCanvasPt(POSE_INDEX.NOSE, noseLm);
-      ctx.moveTo(neckPt.x, neckPt.y);
-      ctx.lineTo(nosePt.x, nosePt.y);
-    }
     ctx.stroke();
 
     ctx.beginPath();
@@ -1268,9 +1340,82 @@ function drawLivePoseOverlayOnCanvas(
     ctx.strokeStyle = activeColor;
     ctx.stroke();
   }
+
+  if (headLm) {
+    const headPt = toCanvasPt(POSE_INDEX.NOSE, headLm as NormalizedLandmark);
+    const headRadius = Math.max(18, Math.min(44, shoulderSpanPx * 0.28));
+
+    if (neckPt) {
+      const dx = headPt.x - neckPt.x;
+      const dy = headPt.y - neckPt.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > headRadius + 2) {
+        const edgeX = headPt.x - (dx / dist) * headRadius;
+        const edgeY = headPt.y - (dy / dist) * headRadius;
+        ctx.beginPath();
+        ctx.moveTo(neckPt.x, neckPt.y);
+        ctx.lineTo(edgeX, edgeY);
+        ctx.lineWidth = 3.2;
+        ctx.strokeStyle = 'rgba(13, 148, 136, 0.9)';
+        ctx.stroke();
+      }
+    }
+
+    ctx.beginPath();
+    ctx.arc(headPt.x, headPt.y, headRadius, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.55)';
+    ctx.fill();
+    ctx.lineWidth = 3.2;
+    ctx.strokeStyle = activeColor;
+    ctx.stroke();
+  }
   ctx.shadowBlur = 0;
 
-  // Joint keypoints
+  // Hand wrist-rotation & foot stance bones
+  const drawExtremityPairs = (
+    pairs: readonly [number, number][],
+    leftStroke: string,
+    rightStroke: string,
+    isLeftFn: (idx: number) => boolean,
+  ) => {
+    ctx.lineWidth = 2.2;
+    for (const [aIdx, bIdx] of pairs) {
+      if (!isPointDrawable(aIdx) || !isPointDrawable(bIdx)) continue;
+      const aLm = primary[aIdx]!;
+      const bLm = primary[bIdx]!;
+      if (
+        aLm.x < -0.02 || aLm.x > 1.02 || aLm.y < -0.02 || aLm.y > 1.02 ||
+        bLm.x < -0.02 || bLm.x > 1.02 || bLm.y < -0.02 || bLm.y > 1.02
+      ) {
+        continue;
+      }
+      const aPt = toCanvasPt(aIdx, aLm);
+      const bPt = toCanvasPt(bIdx, bLm);
+      ctx.beginPath();
+      ctx.moveTo(aPt.x, aPt.y);
+      ctx.lineTo(bPt.x, bPt.y);
+      ctx.strokeStyle = isLeftFn(aIdx) ? leftStroke : rightStroke;
+      ctx.stroke();
+    }
+  };
+  drawExtremityPairs(
+    LIVE_HAND_BONELINE_PAIRS,
+    '#818CF8',
+    '#34D399',
+    (idx) =>
+      idx === POSE_INDEX.LEFT_WRIST ||
+      idx === POSE_INDEX.LEFT_PINKY ||
+      idx === POSE_INDEX.LEFT_INDEX ||
+      idx === POSE_INDEX.LEFT_THUMB,
+  );
+  drawExtremityPairs(
+    LIVE_FOOT_BONELINE_PAIRS,
+    '#38BDF8',
+    '#38BDF8',
+    () => true,
+  );
+
+  // Body joint keypoints (facial landmarks excluded for clean Stickman head)
   for (const idx of LIVE_KEYPOINT_INDICES) {
     if (!isPointDrawable(idx)) continue;
     const lm = primary[idx]!;
@@ -1278,13 +1423,38 @@ function drawLivePoseOverlayOnCanvas(
       continue;
     }
     const pt = toCanvasPt(idx, lm);
-    const r = idx === POSE_INDEX.NOSE ? 5 : 6;
     ctx.beginPath();
-    ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
+    ctx.arc(pt.x, pt.y, 6, 0, Math.PI * 2);
     ctx.fillStyle = '#FFFFFF';
     ctx.fill();
     ctx.lineWidth = 2.5;
     ctx.strokeStyle = activeColor;
+    ctx.stroke();
+  }
+
+  // Hand (wrist-twist rotation) & Foot keypoint nodes
+  for (const idx of LIVE_EXTREMITY_KEYPOINT_INDICES) {
+    if (!isPointDrawable(idx)) continue;
+    const lm = primary[idx]!;
+    if (lm.x < -0.02 || lm.x > 1.02 || lm.y < -0.02 || lm.y > 1.02) {
+      continue;
+    }
+    const isFoot =
+      idx === POSE_INDEX.LEFT_HEEL ||
+      idx === POSE_INDEX.RIGHT_HEEL ||
+      idx === POSE_INDEX.LEFT_FOOT_INDEX ||
+      idx === POSE_INDEX.RIGHT_FOOT_INDEX;
+    const isLeftHand =
+      idx === POSE_INDEX.LEFT_PINKY ||
+      idx === POSE_INDEX.LEFT_INDEX ||
+      idx === POSE_INDEX.LEFT_THUMB;
+    const pt = toCanvasPt(idx, lm);
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, isFoot ? 4.5 : 4, 0, Math.PI * 2);
+    ctx.fillStyle = isFoot ? '#38BDF8' : isLeftHand ? '#818CF8' : '#34D399';
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#FFFFFF';
     ctx.stroke();
   }
 
@@ -1558,6 +1728,7 @@ function drawLivePoseOverlayOnCanvas(
 export function SmartRehabKioskUI({
   patient: patientProp,
   prescribedExercises,
+  isStaffAuthorized = false,
   onExerciseCompleted,
   onAllExercisesCompleted,
   onEmergencyStop,
@@ -1624,6 +1795,38 @@ export function SmartRehabKioskUI({
   const [formChecklistExpanded, setFormChecklistExpanded] = useState<boolean>(true);
   const [completedIds, setCompletedIds] = useState<string[]>([]);
   const [livePoseActive, setLivePoseActive] = useState<boolean>(true);
+  const [isPrivacyMode, setIsPrivacyMode] = useState<boolean>(() => {
+    try {
+      const saved =
+        typeof window !== 'undefined'
+          ? window.localStorage.getItem(PRIVACY_MODE_STORAGE_KEY)
+          : null;
+      if (saved === 'false') return false;
+      if (saved === 'true') return true;
+    } catch {
+      // Ignore storage read errors
+    }
+    return true;
+  });
+
+  const canShowManualRepButton = useMemo(() => {
+    if (isDemoMode || isStaffAuthorized) return true;
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get('debug') === '1' || params.get('debug') === 'true';
+  }, [isDemoMode, isStaffAuthorized]);
+
+  const handleTogglePrivacyMode = () => {
+    setIsPrivacyMode((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(PRIVACY_MODE_STORAGE_KEY, String(next));
+      } catch {
+        // Ignore storage write errors
+      }
+      return next;
+    });
+  };
 
   const handleToggleDemoMode = () => {
     if (isDemoMode) {
@@ -2716,7 +2919,7 @@ export function SmartRehabKioskUI({
             )}
           </AnimatePresence>
 
-          {/* Right: Live Camera Toggle + Demo Mode Switch + Portal Switch + Emergency Stop */}
+          {/* Right: Live Camera Toggle + Privacy Mode Switch + Demo Mode Switch + Portal Switch + Emergency Stop */}
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -2729,6 +2932,25 @@ export function SmartRehabKioskUI({
             >
               <Camera className="h-4 w-4" />
               <span>{livePoseActive ? 'กล้อง AI: ON' : 'กล้อง AI: OFF'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleTogglePrivacyMode}
+              aria-pressed={isPrivacyMode}
+              title="สลับระหว่างโหมดความเป็นส่วนตัว (พื้นหลังดำ) และโหมดแสดงภาพกล้องจริง"
+              className={`inline-flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-bold transition-all cursor-pointer sm:text-sm ${
+                isPrivacyMode
+                  ? 'border-slate-700 bg-slate-900 text-emerald-300 shadow-sm hover:bg-slate-800'
+                  : 'border-sky-300 bg-sky-50 text-[#0F4C81] hover:bg-sky-100'
+              }`}
+            >
+              {isPrivacyMode ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              <span>
+                {isPrivacyMode
+                  ? 'โหมดความเป็นส่วนตัว (พื้นหลังดำ)'
+                  : 'โหมดแสดงภาพกล้องจริง'}
+              </span>
             </button>
 
             <button
@@ -2848,15 +3070,18 @@ export function SmartRehabKioskUI({
               distanceM={demoDistanceM}
               trunkTiltDeg={demoTrunkTiltDeg}
               hasLiveCamera={!isEdgeDirectCamera && livePoseActive && !cameraError}
+              isPrivacyMode={isPrivacyMode}
               liveVideoOverlay={
                 !isEdgeDirectCamera && livePoseActive && !cameraError ? (
-                  <div className="relative h-full w-full bg-[#0B192C]">
+                  <div className={`relative h-full w-full ${isPrivacyMode ? 'bg-[#050811]' : 'bg-[#0B192C]'}`}>
                     <video
                       ref={videoRef}
                       autoPlay
                       playsInline
                       muted
-                      className="h-full w-full object-contain"
+                      className={`h-full w-full object-contain transition-opacity duration-200 ${
+                        isPrivacyMode ? 'opacity-0' : 'opacity-100'
+                      }`}
                       style={{ transform: 'scaleX(-1)' }}
                     />
                     <canvas
@@ -3109,17 +3334,19 @@ export function SmartRehabKioskUI({
                 })}
               </div>
 
-              {/* Action Controls: Count Rep / Complete Current Exercise -> Next or Final Minigame */}
+              {/* Action Controls: Manual Test Rep (Debug/Demo/Staff only) / Complete Current Exercise -> Next or Final Minigame */}
               <div className="mt-3.5 flex flex-col gap-2">
-                <button
-                  type="button"
-                  onClick={() => setDemoPreset('REP_COMPLETED')}
-                  disabled={rep_counter.valid_reps >= selectedExercise.target_reps}
-                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-bold text-[#0F4C81] hover:bg-sky-100 disabled:opacity-50 cursor-pointer"
-                >
-                  <PlusCircle className="h-3.5 w-3.5" />
-                  <span>+1 ครั้ง (นับครั้งสำเร็จ)</span>
-                </button>
+                {canShowManualRepButton && (
+                  <button
+                    type="button"
+                    onClick={() => setDemoPreset('REP_COMPLETED')}
+                    disabled={rep_counter.valid_reps >= selectedExercise.target_reps}
+                    className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-bold text-[#0F4C81] hover:bg-sky-100 disabled:opacity-50 cursor-pointer"
+                  >
+                    <PlusCircle className="h-3.5 w-3.5" />
+                    <span>+1 ครั้ง (นับครั้งสำเร็จ)</span>
+                  </button>
+                )}
 
                 {nextUncompletedExercise ? (
                   <button

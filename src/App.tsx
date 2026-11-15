@@ -1183,6 +1183,9 @@ export function App() {
                 name: authenticatedPatient.patient.fullName,
               }}
               prescribedExercises={prescribedOptions}
+              isStaffAuthorized={Boolean(
+                currentUser && (currentUser.role === 'super_admin' || currentUser.role === 'pt'),
+              )}
               onExerciseCompleted={handleExerciseCompleted}
               onAllExercisesCompleted={() => {
                 markDailyRehabDone();
@@ -1296,6 +1299,9 @@ export function App() {
                 : undefined
             }
             prescribedExercises={authenticatedPatient ? prescribedOptions : undefined}
+            isStaffAuthorized={Boolean(
+              currentUser && (currentUser.role === 'super_admin' || currentUser.role === 'pt'),
+            )}
             onExerciseCompleted={
               authenticatedPatient && overviewScheduleState ? handleExerciseCompleted : undefined
             }

@@ -286,8 +286,10 @@ const COCO_BODY_CONNECTIONS: ReadonlyArray<[number, number]> = [
   [14, 16],
   [15, 17],
   [15, 19],
+  [17, 19],
   [16, 20],
   [16, 22],
+  [20, 22],
 ];
 
 const HAND_BONE_PAIRS: ReadonlyArray<[number, number]> = [
@@ -300,7 +302,8 @@ const HAND_BONE_PAIRS: ReadonlyArray<[number, number]> = [
 
 /**
  * Draw 133-point RTMW3D WholeBody 3D landmarks onto an HTML5 Canvas at 60 FPS
- * with Z-depth node scaling, target-joint clinical glow, and 21-point hand overlays.
+ * as a clean Stickman silhouette (head circle, neck guide, Z-depth joints, feet, and 21-point hands),
+ * intentionally omitting the 5 raw facial dots (indices 0..4) for a clean clinical look.
  */
 export function drawWholeBody133OnCanvas(
   ctx: CanvasRenderingContext2D,
@@ -332,7 +335,7 @@ export function drawWholeBody133OnCanvas(
     score: kp.score ?? 1,
   });
 
-  // Body & foot bones (0..22)
+  // Body & foot bones (indices 5..22 — no raw facial bone clutter)
   ctx.save();
   ctx.lineCap = 'round';
   ctx.lineWidth = Math.max(2.5, width * 0.0055);
@@ -349,13 +352,76 @@ export function drawWholeBody133OnCanvas(
     ctx.stroke();
   }
 
-  // Body & foot keypoint nodes
-  for (let i = 0; i < Math.min(23, keypoints.length); i++) {
+  // Stickman head circle + neck stem (hides the 5 facial keypoints 0..4 while keeping head posture clear)
+  const nose = keypoints[0];
+  const lEar = keypoints[3];
+  const rEar = keypoints[4];
+  const lSh = keypoints[5];
+  const rSh = keypoints[6];
+  const lShValid = Boolean(lSh && lSh.score >= 0.2);
+  const rShValid = Boolean(rSh && rSh.score >= 0.2);
+
+  let headCenterPx: { px: number; py: number } | null = null;
+  if (nose && nose.score >= 0.2) {
+    headCenterPx = toXY(nose);
+  } else if (lEar && rEar && lEar.score >= 0.2 && rEar.score >= 0.2) {
+    const peL = toXY(lEar);
+    const peR = toXY(rEar);
+    headCenterPx = { px: (peL.px + peR.px) / 2, py: (peL.py + peR.py) / 2 };
+  }
+
+  let shoulderSpanPx = width * 0.16;
+  let neckPt: { px: number; py: number } | null = null;
+  if (lShValid && rShValid && lSh && rSh) {
+    const pL = toXY(lSh);
+    const pR = toXY(rSh);
+    shoulderSpanPx = Math.max(40, Math.hypot(pL.px - pR.px, pL.py - pR.py));
+    neckPt = { px: (pL.px + pR.px) / 2, py: (pL.py + pR.py) / 2 };
+  }
+
+  if (headCenterPx) {
+    const maxR = Math.max(26, width * 0.065);
+    const headRadius = Math.max(16, Math.min(maxR, shoulderSpanPx * 0.28));
+
+    if (neckPt) {
+      const dx = headCenterPx.px - neckPt.px;
+      const dy = headCenterPx.py - neckPt.py;
+      const dist = Math.hypot(dx, dy);
+      if (dist > headRadius + 2) {
+        const edgeX = headCenterPx.px - (dx / dist) * headRadius;
+        const edgeY = headCenterPx.py - (dy / dist) * headRadius;
+        ctx.beginPath();
+        ctx.moveTo(neckPt.px, neckPt.py);
+        ctx.lineTo(edgeX, edgeY);
+        ctx.lineWidth = Math.max(2.5, width * 0.005);
+        ctx.strokeStyle = color;
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(neckPt.px, neckPt.py, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = color;
+      ctx.stroke();
+    }
+
+    ctx.beginPath();
+    ctx.arc(headCenterPx.px, headCenterPx.py, headRadius, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.6)';
+    ctx.fill();
+    ctx.lineWidth = Math.max(2.5, width * 0.0055);
+    ctx.strokeStyle = color;
+    ctx.stroke();
+  }
+
+  // Body & foot keypoint nodes (start at index 5 — omit 5 raw facial dots 0..4)
+  for (let i = 5; i < Math.min(23, keypoints.length); i++) {
     const kp = keypoints[i];
     if (!kp || kp.score < 0.2) continue;
     const { px, py, z } = toXY(kp);
     const depthScale = Math.max(0.75, Math.min(1.45, 1 - z * 0.8));
-    const r = (i <= 4 ? 3.5 : 5.5) * depthScale;
+    const r = 5.5 * depthScale;
     ctx.beginPath();
     ctx.arc(px, py, r, 0, Math.PI * 2);
     ctx.fillStyle = i >= 17 ? '#38BDF8' : '#FFFFFF';
