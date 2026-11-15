@@ -1125,5 +1125,89 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     });
     expect(adaptiveSmoother.apply(afterReset)[POSE_INDEX.RIGHT_WRIST].y).toBeCloseTo(0.25, 5);
   });
+
+  it('rejects out-of-frame or anatomically hallucinated knees even with worldLandmarks and flags bent-elbow or shoulder-shrug compensations', () => {
+    const fakeWorldLeg = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_HIP]: { x: 0.1, y: 0, z: 0, visibility: 0.95 },
+      [POSE_INDEX.RIGHT_KNEE]: { x: 0.1, y: 0.4, z: 0, visibility: 0.95 },
+      [POSE_INDEX.RIGHT_ANKLE]: { x: 0.1, y: 0.8, z: -0.05, visibility: 0.95 },
+    });
+
+    // 1a. Low visibility (< 0.55) leg landmarks + straight worldLandmarks must NOT produce ~170 deg
+    const lowVisLeg = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_HIP]: { x: 0.44, y: 0.65, z: 0, visibility: 0.35 },
+      [POSE_INDEX.RIGHT_KNEE]: { x: 0.44, y: 0.8, z: 0, visibility: 0.35 },
+      [POSE_INDEX.RIGHT_ANKLE]: { x: 0.44, y: 0.95, z: 0, visibility: 0.35 },
+    });
+    const lowVisResult = measureLiveJointAngleAndTilt(
+      lowVisLeg,
+      'right_knee',
+      'any',
+      fakeWorldLeg,
+    );
+    expect(lowVisResult.romDeg).toBeNull();
+    expect(lowVisResult.lowVisibilityAlertTh).toContain('มองไม่เห็นสะโพก-เข่า-ข้อเท้าชัดเจน');
+
+    // 1b. High visibility but anatomically invalid vertical order (hip <= maxShY + 0.10) must also return null
+    const hallucinatedChestHip = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.62, y: 0.72, z: 0, visibility: 0.96 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.38, y: 0.72, z: 0, visibility: 0.96 },
+      [POSE_INDEX.RIGHT_HIP]: { x: 0.44, y: 0.78, z: 0, visibility: 0.85 },
+      [POSE_INDEX.RIGHT_KNEE]: { x: 0.44, y: 0.86, z: 0, visibility: 0.85 },
+      [POSE_INDEX.RIGHT_ANKLE]: { x: 0.44, y: 0.94, z: 0, visibility: 0.85 },
+    });
+    const chestHipResult = measureLiveJointAngleAndTilt(
+      hallucinatedChestHip,
+      'right_knee',
+      'any',
+      fakeWorldLeg,
+    );
+    expect(chestHipResult.romDeg).toBeNull();
+    expect(chestHipResult.lowVisibilityAlertTh).toContain('มองไม่เห็นสะโพก-เข่า-ข้อเท้าชัดเจน');
+
+    // 2a. Shoulder abduction with bent elbow (< 138 deg) triggers postureCompensated & elbow banner
+    const bentElbow2d = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.58, y: 0.4, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.42, y: 0.4, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.24, y: 0.4, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.24, y: 0.22, z: 0, visibility: 0.98 },
+    });
+    const bentElbow3d = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0, y: 0, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: -0.28, y: 0, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: -0.28, y: -0.25, z: 0, visibility: 0.98 },
+    });
+    const bentElbowRes = measureLiveJointAngleAndTilt(
+      bentElbow2d,
+      'right_shoulder',
+      'abduction',
+      bentElbow3d,
+    );
+    expect(bentElbowRes.postureCompensated).toBe(true);
+    expect(bentElbowRes.elbowAngleDeg).toBeLessThan(138);
+    expect(bentElbowRes.postureBannerTh).toContain('กรุณาเหยียดข้อศอกให้ตรง');
+
+    // 2b. Shoulder abduction with shoulder shrug/tilt (> 13.5 deg) triggers shrug banner
+    const shrug2d = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.58, y: 0.44, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.42, y: 0.36, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.24, y: 0.36, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.08, y: 0.36, z: 0, visibility: 0.98 },
+    });
+    const shrug3d = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0, y: 0, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: -0.28, y: 0, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: -0.54, y: 0, z: 0, visibility: 0.98 },
+    });
+    const shrugRes = measureLiveJointAngleAndTilt(
+      shrug2d,
+      'right_shoulder',
+      'abduction',
+      shrug3d,
+    );
+    expect(shrugRes.postureCompensated).toBe(true);
+    expect(shrugRes.shoulderTiltDeg).toBeGreaterThan(13.5);
+    expect(shrugRes.postureBannerTh).toContain('ห้ามยกไหล่หรือเอียงไหล่ช่วย');
+  });
 });
 

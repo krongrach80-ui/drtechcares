@@ -109,6 +109,11 @@ export interface LiveJointMeasurement {
   wrongPlaneRaised: boolean;
   wrongPlaneBannerTh: string | null;
   xyzVector?: { x: number; y: number; z: number } | null;
+  lowVisibilityAlertTh?: string | null;
+  postureCompensated?: boolean;
+  postureBannerTh?: string | null;
+  elbowAngleDeg?: number | null;
+  shoulderTiltDeg?: number;
 }
 
 export interface TorsoAnchorState {
@@ -205,48 +210,46 @@ export function sanitizeAndStabilizePoseLandmarks(
   const effLSh = stabilized[POSE_INDEX.LEFT_SHOULDER];
   const effRSh = stabilized[POSE_INDEX.RIGHT_SHOULDER];
 
-  // Suppress impossible chest/hand-height hallucinated hips/knees/ankles during upper-body exercises
-  if (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder' || targetJoint === 'spine') {
-    const maxShY = effLSh && effRSh ? Math.max(effLSh.y, effRSh.y) : 0.5;
-    for (const lowerIdx of LOWER_BODY_POSE_INDICES) {
-      const lm = stabilized[lowerIdx];
-      const isHipIdx = lowerIdx === POSE_INDEX.LEFT_HIP || lowerIdx === POSE_INDEX.RIGHT_HIP;
-      const maxHallucinatedOffset = isHipIdx ? 0.05 : 0.12;
-      if (lm && lm.y <= maxShY + maxHallucinatedOffset) {
-        stabilized[lowerIdx] = { ...lm, visibility: 0 };
-      }
+  // Suppress anatomically impossible chest/hand-height hallucinated hips/knees/ankles across all exercises
+  const maxShY = effLSh && effRSh ? Math.max(effLSh.y, effRSh.y) : 0.5;
+  for (const lowerIdx of LOWER_BODY_POSE_INDICES) {
+    const lm = stabilized[lowerIdx];
+    const isHipIdx = lowerIdx === POSE_INDEX.LEFT_HIP || lowerIdx === POSE_INDEX.RIGHT_HIP;
+    const maxHallucinatedOffset = isHipIdx ? 0.05 : 0.12;
+    if (lm && lm.y <= maxShY + maxHallucinatedOffset) {
+      stabilized[lowerIdx] = { ...lm, visibility: 0 };
     }
+  }
 
-    // Repair overhead out-of-frame wrist foldback when hand exits the top of the camera frame
-    if (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder') {
-      const shIdx =
-        targetJoint === 'left_shoulder' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER;
-      const elbowIdx =
-        targetJoint === 'left_shoulder' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW;
-      const wristIdx =
-        targetJoint === 'left_shoulder' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST;
-      const activeSh = stabilized[shIdx];
-      const activeElbow = stabilized[elbowIdx];
-      const activeWrist = stabilized[wristIdx];
-      if (
-        activeSh &&
-        activeElbow &&
-        (activeElbow.visibility ?? 0) >= 0.3 &&
-        activeElbow.y < activeSh.y - 0.08 &&
-        activeWrist &&
-        activeWrist.y > activeElbow.y + 0.08 &&
-        (activeWrist.visibility ?? 0) < 0.65
-      ) {
-        stabilized[wristIdx] = {
-          x: activeElbow.x + (activeElbow.x - activeSh.x) * 0.85,
-          y: activeElbow.y + (activeElbow.y - activeSh.y) * 0.85,
-          z:
-            activeElbow.z !== undefined && activeSh.z !== undefined
-              ? activeElbow.z + (activeElbow.z - activeSh.z) * 0.85
-              : (activeElbow.z ?? 0),
-          visibility: Math.max(0.55, activeElbow.visibility ?? 0.55),
-        };
-      }
+  // Repair overhead out-of-frame wrist foldback when hand exits the top of the camera frame
+  if (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder') {
+    const shIdx =
+      targetJoint === 'left_shoulder' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER;
+    const elbowIdx =
+      targetJoint === 'left_shoulder' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW;
+    const wristIdx =
+      targetJoint === 'left_shoulder' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST;
+    const activeSh = stabilized[shIdx];
+    const activeElbow = stabilized[elbowIdx];
+    const activeWrist = stabilized[wristIdx];
+    if (
+      activeSh &&
+      activeElbow &&
+      (activeElbow.visibility ?? 0) >= 0.3 &&
+      activeElbow.y < activeSh.y - 0.08 &&
+      activeWrist &&
+      activeWrist.y > activeElbow.y + 0.08 &&
+      (activeWrist.visibility ?? 0) < 0.65
+    ) {
+      stabilized[wristIdx] = {
+        x: activeElbow.x + (activeElbow.x - activeSh.x) * 0.85,
+        y: activeElbow.y + (activeElbow.y - activeSh.y) * 0.85,
+        z:
+          activeElbow.z !== undefined && activeSh.z !== undefined
+            ? activeElbow.z + (activeElbow.z - activeSh.z) * 0.85
+            : (activeElbow.z ?? 0),
+        visibility: Math.max(0.55, activeElbow.visibility ?? 0.55),
+      };
     }
   }
 
@@ -561,6 +564,18 @@ export function measureLiveJointAngleAndTilt(
   let wrongPlaneRaised = false;
   let wrongPlaneBannerTh: string | null = null;
   let xyzVector: { x: number; y: number; z: number } | null = null;
+  let lowVisibilityAlertTh: string | null = null;
+  let postureCompensated = false;
+  let postureBannerTh: string | null = null;
+  let elbowAngleDeg: number | null = null;
+  const shoulderTiltDeg =
+    lSh && rSh && (lSh.visibility ?? 0) >= 0.35 && (rSh.visibility ?? 0) >= 0.35
+      ? Number(
+          Math.abs(
+            (Math.atan2(rSh.y - lSh.y, Math.max(0.11, Math.abs(lSh.x - rSh.x))) * 180) / Math.PI,
+          ).toFixed(1),
+        )
+      : 0;
 
   if (jointMode === 'elbow' && (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder')) {
     const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
@@ -590,15 +605,46 @@ export function measureLiveJointAngleAndTilt(
     const oppositeDeg = oppositeResult.angleDeg;
     rawPrimaryRomDeg = primaryDeg !== null ? Number(primaryDeg.toFixed(1)) : null;
     xyzVector = primaryResult.xyzVector;
+
+    const pShIdx = primarySide === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER;
+    const pElIdx = primarySide === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW;
+    const pWrIdx = primarySide === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST;
+    const pSh = landmarks[pShIdx];
+    const pEl = landmarks[pElIdx];
+    const pWr = landmarks[pWrIdx];
+    if (
+      pSh &&
+      pEl &&
+      pWr &&
+      (pSh.visibility ?? 0) >= 0.35 &&
+      (pEl.visibility ?? 0) >= 0.35 &&
+      (pWr.visibility ?? 0) >= 0.35
+    ) {
+      const wSh = worldLandmarks?.[pShIdx];
+      const wEl = worldLandmarks?.[pElIdx];
+      const wWr = worldLandmarks?.[pWrIdx];
+      const validWorldArm = Boolean(
+        wSh &&
+          wEl &&
+          wWr &&
+          Math.hypot(wSh.x - wEl.x, wSh.y - wEl.y, (wSh.z ?? 0) - (wEl.z ?? 0)) >= 0.08 &&
+          Math.hypot(wWr.x - wEl.x, wWr.y - wEl.y, (wWr.z ?? 0) - (wEl.z ?? 0)) >= 0.08,
+      );
+      elbowAngleDeg =
+        validWorldArm && wSh && wEl && wWr
+          ? computeJointAngle3D(wSh, wEl, wWr)
+          : computeJointAngle3D(pSh, pEl, pWr);
+    }
+
     wrongSideRaised =
       oppositeDeg !== null &&
       oppositeDeg >= 45 &&
       (primaryDeg === null || (primaryDeg < 65 && oppositeDeg > primaryDeg + 18));
 
     if (!wrongSideRaised && primaryDeg !== null && (expectedPlane === 'flexion' || expectedPlane === 'abduction')) {
-      const sh = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
-      const elbow = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
-      const wrist = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
+      const sh = pSh;
+      const elbow = pEl;
+      const wrist = pWr;
       const lIsPositiveX = !lSh || !rSh || lSh.x >= rSh.x;
       const outwardSign = lIsPositiveX
         ? primarySide === 'right'
@@ -651,6 +697,22 @@ export function measureLiveJointAngleAndTilt(
       }
     }
 
+    if (rawPrimaryRomDeg === null) {
+      lowVisibilityAlertTh = 'มองเห็นข้อต่อแขนไม่ชัดเจน (< 0.70) กรุณาขยับให้อยู่ในกรอบกล้อง';
+    } else if (!wrongSideRaised && !wrongPlaneRaised && rawPrimaryRomDeg >= 40) {
+      if (shoulderTiltDeg > 13.5) {
+        postureCompensated = true;
+        postureBannerTh = `ห้ามยกไหล่หรือเอียงไหล่ช่วย (${shoulderTiltDeg.toFixed(1)}°)`;
+      } else if (
+        (expectedPlane === 'flexion' || expectedPlane === 'abduction') &&
+        elbowAngleDeg !== null &&
+        elbowAngleDeg < 138
+      ) {
+        postureCompensated = true;
+        postureBannerTh = `กรุณาเหยียดข้อศอกให้ตรง (${elbowAngleDeg.toFixed(0)}°)`;
+      }
+    }
+
     // Strict side & plane enforcement: block wrong-side or wrong-plane movements at 0 deg
     romDeg =
       wrongSideRaised || wrongPlaneRaised
@@ -668,17 +730,32 @@ export function measureLiveJointAngleAndTilt(
     const hip = landmarks[hipIdx];
     const knee = landmarks[kneeIdx];
     const ankle = landmarks[ankleIdx];
-    const KNEE_JOINT_MIN_VIS = 0.12;
-    const inFrameKneeJoint =
+    const KNEE_JOINT_MIN_VIS = 0.55;
+    const hasShouldersForOrder = Boolean(
+      lSh && rSh && (lSh.visibility ?? 0) >= 0.35 && (rSh.visibility ?? 0) >= 0.35,
+    );
+    const maxShY = hasShouldersForOrder && lSh && rSh ? Math.max(lSh.y, rSh.y) : 0;
+    const anatomicalOrderOk = Boolean(
       hip &&
-      knee &&
-      ankle &&
-      (hip.visibility ?? 0) >= KNEE_JOINT_MIN_VIS &&
-      (knee.visibility ?? 0) >= KNEE_JOINT_MIN_VIS &&
-      (ankle.visibility ?? 0) >= KNEE_JOINT_MIN_VIS &&
-      knee.y <= 0.99 &&
-      ankle.y <= 0.99;
-    if (inFrameKneeJoint) {
+        knee &&
+        ankle &&
+        (!hasShouldersForOrder || hip.y > maxShY + 0.10) &&
+        knee.y >= hip.y - 0.08 &&
+        ankle.y > knee.y + 0.06,
+    );
+    const inFrameKneeJoint = Boolean(
+      hip &&
+        knee &&
+        ankle &&
+        (hip.visibility ?? 0) >= KNEE_JOINT_MIN_VIS &&
+        (knee.visibility ?? 0) >= KNEE_JOINT_MIN_VIS &&
+        (ankle.visibility ?? 0) >= KNEE_JOINT_MIN_VIS &&
+        hip.y <= 0.96 &&
+        knee.y <= 0.96 &&
+        ankle.y <= 0.96 &&
+        anatomicalOrderOk,
+    );
+    if (inFrameKneeJoint && hip && knee && ankle) {
       const wHip = worldLandmarks?.[hipIdx];
       const wKnee = worldLandmarks?.[kneeIdx];
       const wAnkle = worldLandmarks?.[ankleIdx];
@@ -698,6 +775,8 @@ export function measureLiveJointAngleAndTilt(
           ? Number(Math.max(0, 180 - kneeInteriorDeg).toFixed(1))
           : kneeInteriorDeg;
       rawPrimaryRomDeg = romDeg;
+    } else {
+      lowVisibilityAlertTh = 'มองไม่เห็นสะโพก-เข่า-ข้อเท้าชัดเจน กรุณาถอยห่างจากกล้องให้เห็นขาเต็มช่วง';
     }
   } else if (jointMode === 'neck') {
     const nose = landmarks[POSE_INDEX.NOSE];
@@ -731,6 +810,11 @@ export function measureLiveJointAngleAndTilt(
     wrongPlaneRaised,
     wrongPlaneBannerTh,
     xyzVector,
+    lowVisibilityAlertTh,
+    postureCompensated,
+    postureBannerTh,
+    elbowAngleDeg,
+    shoulderTiltDeg,
   };
 }
 
@@ -933,6 +1017,8 @@ function drawLivePoseOverlayOnCanvas(
     wrongSideBannerTh?: string | null;
     wrongPlaneRaised?: boolean;
     wrongPlaneBannerTh?: string | null;
+    lowVisibilityAlertTh?: string | null;
+    postureBannerTh?: string | null;
     videoWidth?: number;
     videoHeight?: number;
     smoothingStatusText?: string;
@@ -967,13 +1053,14 @@ function drawLivePoseOverlayOnCanvas(
     x: rawCanvasX(lm.x),
     y: rawCanvasY(lm.y),
   });
-  const minVisFor = (idx: number) => (UPPER_BODY_KEYPOINTS.has(idx) ? 0.18 : 0.48);
+  const minVisFor = (idx: number) => (UPPER_BODY_KEYPOINTS.has(idx) ? 0.35 : 0.55);
 
-  const activeColor = opts.isImpostorOrEmergency
-    ? '#EF4444'
-    : opts.wrongPlaneRaised || opts.isMultiPerson || opts.trunkTiltDeg > 10
-      ? '#F59E0B'
-      : '#10B981';
+  const activeColor =
+    opts.isImpostorOrEmergency || opts.postureBannerTh
+      ? '#EF4444'
+      : opts.wrongPlaneRaised || opts.isMultiPerson || opts.trunkTiltDeg > 10 || opts.lowVisibilityAlertTh
+        ? '#F59E0B'
+        : '#10B981';
 
   const primary = landmarksList[0];
   const isUpperLimbOrSpine =
@@ -1406,6 +1493,33 @@ function drawLivePoseOverlayOnCanvas(
     });
   }
 
+  const clinicalAlertBanner = !opts.wrongSideRaised && !opts.wrongPlaneRaised
+    ? opts.postureBannerTh
+      ? { text: `⚠ ${opts.postureBannerTh}`, bg: 'rgba(220, 38, 38, 0.92)', border: '#FCA5A5' }
+      : opts.lowVisibilityAlertTh
+        ? { text: `⚠ ${opts.lowVisibilityAlertTh}`, bg: 'rgba(217, 119, 6, 0.92)', border: '#FDE68A' }
+        : null
+    : null;
+  if (clinicalAlertBanner) {
+    ctx.font = '800 13px "Sarabun", sans-serif';
+    const tw = ctx.measureText(clinicalAlertBanner.text).width;
+    const bw = Math.min(w - 24, tw + 26);
+    const bh = 32;
+    const bx = w / 2;
+    const by = h - 68;
+    ctx.fillStyle = clinicalAlertBanner.bg;
+    ctx.strokeStyle = clinicalAlertBanner.border;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(bx - bw / 2, by - bh / 2, bw, bh, 16);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#FFFFFF';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(clinicalAlertBanner.text, bx, by, bw - 18);
+  }
+
   if (opts.smoothingStatusText) {
     ctx.font = '700 11px "Sarabun", sans-serif';
     const textW = ctx.measureText(opts.smoothingStatusText).width;
@@ -1682,13 +1796,18 @@ export function SmartRehabKioskUI({
       maxAlpha: 0.85,
       velocityScale: 15.0,
     });
-    const worldOneEuroFilter = new ClinicalOneEuroLandmarkFilter(0.6, 0.03, 1.0);
+    const pose2dOneEuroFilter = new ClinicalOneEuroLandmarkFilter(1.1, 0.06, 1.0);
+    const worldOneEuroFilter = new ClinicalOneEuroLandmarkFilter(0.7, 0.04, 1.0);
+    let smoothingMode: 'one_euro' | 'adaptive_ema' | 'fixed_ema' = 'one_euro';
     let enableCustomSmooth = true;
     const formatSmoothingHud = () => {
       if (!enableCustomSmooth) {
-        return `Smoothing: OFF (alpha=${landmarkSmoother.alpha.toFixed(2)}) • [1] On/Off [2] Mode [+/-] Alpha`;
+        return `Smoothing: OFF • [1] On/Off [2] Mode [+/-] Alpha`;
       }
-      if (landmarkSmoother.adaptive) {
+      if (smoothingMode === 'one_euro') {
+        return `Smoothing: 1€ Filter (Heavy 3D+2D) • [1] On/Off [2] Mode [+/-] Alpha`;
+      }
+      if (smoothingMode === 'adaptive_ema') {
         return `Smoothing: Adaptive EMA (min=${landmarkSmoother.minAlpha.toFixed(2)}, max=${landmarkSmoother.maxAlpha.toFixed(2)}) • [1] On/Off [2] Mode [+/-] Alpha`;
       }
       return `Smoothing: Fixed EMA (alpha=${landmarkSmoother.alpha.toFixed(2)}) • [1] On/Off [2] Mode [+/-] Alpha`;
@@ -1708,10 +1827,17 @@ export function SmartRehabKioskUI({
         enableCustomSmooth = !enableCustomSmooth;
         if (!enableCustomSmooth) {
           landmarkSmoother.reset();
+          pose2dOneEuroFilter.reset();
           worldOneEuroFilter.reset();
         }
       } else if (event.key === '2') {
-        landmarkSmoother.adaptive = !landmarkSmoother.adaptive;
+        smoothingMode =
+          smoothingMode === 'one_euro'
+            ? 'adaptive_ema'
+            : smoothingMode === 'adaptive_ema'
+              ? 'fixed_ema'
+              : 'one_euro';
+        landmarkSmoother.adaptive = smoothingMode === 'adaptive_ema';
       } else if (event.key === '+' || event.key === '=') {
         landmarkSmoother.alpha = Math.min(0.95, Number((landmarkSmoother.alpha + 0.05).toFixed(2)));
       } else if (event.key === '-' || event.key === '_') {
@@ -1736,6 +1862,9 @@ export function SmartRehabKioskUI({
     let latestWrongSideBannerTh: string | null = null;
     let latestWrongPlaneRaised = false;
     let latestWrongPlaneBannerTh: string | null = null;
+    let latestLowVisibilityAlertTh: string | null = null;
+    let latestPostureCompensated = false;
+    let latestPostureBannerTh: string | null = null;
     let lastEmittedRom = -999;
     let lastEmittedTilt = -999;
     let lastEmittedHold = -999;
@@ -1746,6 +1875,7 @@ export function SmartRehabKioskUI({
     const cleanup = () => {
       window.removeEventListener('keydown', handleSmoothingKeyDown);
       landmarkSmoother.reset();
+      pose2dOneEuroFilter.reset();
       worldOneEuroFilter.reset();
       if (rafId) {
         cancelAnimationFrame(rafId);
@@ -1835,33 +1965,37 @@ export function SmartRehabKioskUI({
         }
         if (!vision || !active) return;
 
-        for (const modelPath of [
-          'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
-          '/models/pose_landmarker.task',
+        const POSE_MODEL_PATHS = [
+          'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task',
           '/models/pose_landmarker_full.task',
-        ]) {
-          for (const delegate of ['GPU', 'CPU', undefined] as const) {
-            try {
-              const created = await PoseLandmarker.createFromOptions(vision, {
-                baseOptions: {
-                  modelAssetPath: modelPath,
-                  ...(delegate ? { delegate } : {}),
-                },
-                runningMode: 'VIDEO',
-                numPoses: 1,
-                minPoseDetectionConfidence: 0.35,
-                minPosePresenceConfidence: 0.35,
-                minTrackingConfidence: 0.35,
-              });
-              if (!active) {
-                created.close();
-                return;
+          '/models/pose_landmarker.task',
+        ];
+        for (const minConf of [0.7, 0.5] as const) {
+          for (const modelPath of POSE_MODEL_PATHS) {
+            for (const delegate of ['GPU', 'CPU', undefined] as const) {
+              try {
+                const created = await PoseLandmarker.createFromOptions(vision, {
+                  baseOptions: {
+                    modelAssetPath: modelPath,
+                    ...(delegate ? { delegate } : {}),
+                  },
+                  runningMode: 'VIDEO',
+                  numPoses: 1,
+                  minPoseDetectionConfidence: minConf,
+                  minPosePresenceConfidence: minConf,
+                  minTrackingConfidence: minConf,
+                });
+                if (!active) {
+                  created.close();
+                  return;
+                }
+                poseLandmarker = created;
+                break;
+              } catch {
+                // Try fallback
               }
-              poseLandmarker = created;
-              break;
-            } catch {
-              // Try fallback
             }
+            if (poseLandmarker) break;
           }
           if (poseLandmarker) break;
         }
@@ -1882,6 +2016,7 @@ export function SmartRehabKioskUI({
             trackedExId = curEx.exercise_id;
             torsoAnchor = null;
             landmarkSmoother.reset();
+            pose2dOneEuroFilter.reset();
             worldOneEuroFilter.reset();
             occludedFrames = 0;
             wrongSideStreak = 0;
@@ -1901,6 +2036,9 @@ export function SmartRehabKioskUI({
             latestWrongSideBannerTh = null;
             latestWrongPlaneRaised = false;
             latestWrongPlaneBannerTh = null;
+            latestLowVisibilityAlertTh = null;
+            latestPostureCompensated = false;
+            latestPostureBannerTh = null;
             lastEmittedRom = -999;
             lastEmittedTilt = -999;
             lastEmittedHold = -999;
@@ -1974,6 +2112,7 @@ export function SmartRehabKioskUI({
                 latestLandmarks = null;
                 renderPrimaryLandmarks = null;
                 landmarkSmoother.reset();
+                pose2dOneEuroFilter.reset();
                 worldOneEuroFilter.reset();
               } else if (demoPresetRef.current !== 'IMPOSTOR' || !stepACheckIdentity) {
                 const rawLandmarks = allLandmarks[0] ?? null;
@@ -1993,9 +2132,21 @@ export function SmartRehabKioskUI({
                   } else {
                     occludedFrames = 0;
                   }
-                  const landmarks = enableCustomSmooth
-                    ? landmarkSmoother.apply(stabilizedResult.landmarks)
-                    : stabilizedResult.landmarks;
+                  const applyOneEuro = (
+                    flt: ClinicalOneEuroLandmarkFilter,
+                    src: readonly NormalizedLandmark[],
+                  ): NormalizedLandmark[] =>
+                    flt.filterLandmarks(src, now).map((lm, idx) => ({
+                      x: lm.x,
+                      y: lm.y,
+                      z: lm.z ?? src[idx]?.z ?? 0,
+                      visibility: lm.visibility ?? src[idx]?.visibility ?? 0,
+                    }));
+                  const landmarks = !enableCustomSmooth
+                    ? stabilizedResult.landmarks
+                    : smoothingMode === 'one_euro'
+                      ? applyOneEuro(pose2dOneEuroFilter, stabilizedResult.landmarks)
+                      : landmarkSmoother.apply(stabilizedResult.landmarks);
                   latestLandmarks = landmarks;
                   latestAllLandmarks = [landmarks, ...allLandmarks.slice(1)];
                   lastValidPoseAt = now;
@@ -2016,12 +2167,7 @@ export function SmartRehabKioskUI({
                   const rawWorldLandmarks = poseRes?.worldLandmarks?.[0];
                   const worldLandmarks =
                     rawWorldLandmarks && enableCustomSmooth
-                      ? worldOneEuroFilter.filterLandmarks(rawWorldLandmarks, now).map((lm, idx) => ({
-                          x: lm.x,
-                          y: lm.y,
-                          z: lm.z ?? rawWorldLandmarks[idx]?.z ?? 0,
-                          visibility: lm.visibility ?? rawWorldLandmarks[idx]?.visibility ?? 0,
-                        }))
+                      ? applyOneEuro(worldOneEuroFilter, rawWorldLandmarks)
                       : rawWorldLandmarks;
                   const measured = measureLiveJointAngleAndTilt(
                     landmarks,
@@ -2037,16 +2183,23 @@ export function SmartRehabKioskUI({
                   latestWrongSideBannerTh = measured.wrongSideBannerTh;
                   latestWrongPlaneRaised = wrongPlaneStreak >= 4;
                   latestWrongPlaneBannerTh = measured.wrongPlaneBannerTh;
+                  latestLowVisibilityAlertTh = measured.lowVisibilityAlertTh ?? null;
+                  latestPostureCompensated = Boolean(measured.postureCompensated);
+                  latestPostureBannerTh = measured.postureBannerTh ?? null;
                   latestRawPrimaryRomDeg = measured.rawPrimaryRomDeg ?? measured.romDeg;
                 } else if (now - lastValidPoseAt > 220 || !latestLandmarks) {
                   wrongSideStreak = 0;
                   wrongPlaneStreak = 0;
                   latestWrongSideRaised = false;
                   latestWrongPlaneRaised = false;
+                  latestLowVisibilityAlertTh = null;
+                  latestPostureCompensated = false;
+                  latestPostureBannerTh = null;
                   latestRawPrimaryRomDeg = null;
                   latestLandmarks = null;
                   renderPrimaryLandmarks = null;
                   landmarkSmoother.reset();
+                  pose2dOneEuroFilter.reset();
                   worldOneEuroFilter.reset();
                 }
               }
@@ -2060,6 +2213,7 @@ export function SmartRehabKioskUI({
           const checkLimb = isFormRuleActive(activeRules, 'limb');
           const checkPlane = isFormRuleActive(activeRules, 'plane');
           const checkTrunk = isFormRuleActive(activeRules, 'trunk');
+          const checkPosture = isFormRuleActive(activeRules, 'posture');
           const checkIdentity = isFormRuleActive(activeRules, 'identity');
           const holdTargetMs = Math.max(1000, curEx.hold_sec * 1000);
           if (latestPoseCount > 1 && checkIdentity) {
@@ -2112,6 +2266,8 @@ export function SmartRehabKioskUI({
             const effWrongSideBannerTh = checkLimb ? latestWrongSideBannerTh : null;
             const effWrongPlaneRaised = checkPlane ? latestWrongPlaneRaised : false;
             const effWrongPlaneBannerTh = checkPlane ? latestWrongPlaneBannerTh : null;
+            const effPostureCompensated = checkPosture ? latestPostureCompensated : false;
+            const effPostureBannerTh = checkPosture ? latestPostureBannerTh : null;
             targetRomDeg =
               effWrongSideRaised || effWrongPlaneRaised ? 0 : latestRawPrimaryRomDeg;
 
@@ -2174,6 +2330,9 @@ export function SmartRehabKioskUI({
                 (demoPresetRef.current === 'MULTI_PERSON' && checkIdentity) ||
                 countingLockedRef.current;
 
+              const isCompensatedNow =
+                (checkTrunk && latestTrunkTiltDeg > 12) || effPostureCompensated;
+
               if (demoValidRepsRef.current < curEx.target_reps) {
                 if (effWrongSideRaised) {
                   holdAccumMs = 0;
@@ -2193,53 +2352,54 @@ export function SmartRehabKioskUI({
                   emitPresetState('WRONG_PLANE');
                 } else if (!blockCounting) {
                   const holdingZone = atTarget || (holdAccumMs > 0 && atMaintainTarget);
-                  if (holdingZone && !awaitingReturn && (!checkTrunk || latestTrunkTiltDeg <= 14)) {
-                    holdAccumMs += wallDtMs;
-                    const remSec = Math.max(0, Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)));
-                    if (now - lastHoldEmitAt >= 40 && remSec !== lastEmittedHold) {
-                      lastEmittedHold = remSec;
-                      lastHoldEmitAt = now;
-                      setDemoHoldRemainingSec(remSec);
-                    }
-                    if (holdAccumMs >= holdTargetMs) {
-                      holdAccumMs = 0;
-                      awaitingReturn = true;
-                      lastRepCompletedAt = now;
-                      repCelebrateUntil = now + 4000;
-                      lastEmittedHold = 0;
-                      lastHoldEmitAt = now;
-                      setDemoHoldRemainingSec(0);
-                      setDemoValidReps((r) => {
-                        const next = Math.min(curEx.target_reps, r + 1);
-                        emitPresetState(next >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED');
-                        return next;
-                      });
+                  if (holdingZone && !awaitingReturn) {
+                    if (isCompensatedNow) {
+                      // Freeze Hold Timer immediately when posture compensation is detected
+                      emitPresetState('TRUNK_LEAN');
                     } else {
-                      emitPresetState('HOLD_PHASE');
-                    }
-                  } else {
-                    holdAccumMs = atRest ? 0 : Math.max(0, holdAccumMs - wallDtMs * 0.45);
-                    if (awaitingReturn || now <= repCelebrateUntil) {
-                      if (lastEmittedHold !== 0) {
+                      holdAccumMs += wallDtMs;
+                      const remSec = Math.max(0, Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)));
+                      if (now - lastHoldEmitAt >= 40 && remSec !== lastEmittedHold) {
+                        lastEmittedHold = remSec;
+                        lastHoldEmitAt = now;
+                        setDemoHoldRemainingSec(remSec);
+                      }
+                      if (holdAccumMs >= holdTargetMs) {
+                        holdAccumMs = 0;
+                        awaitingReturn = true;
+                        lastRepCompletedAt = now;
+                        repCelebrateUntil = now + 4000;
                         lastEmittedHold = 0;
                         lastHoldEmitAt = now;
                         setDemoHoldRemainingSec(0);
+                        setDemoValidReps((r) => {
+                          const next = Math.min(curEx.target_reps, r + 1);
+                          emitPresetState(next >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED');
+                          return next;
+                        });
+                      } else {
+                        emitPresetState('HOLD_PHASE');
                       }
-                      emitPresetState(
-                        demoValidRepsRef.current >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED',
-                      );
-                    } else {
-                      const fallbackHoldSec =
-                        holdAccumMs > 0
-                          ? Math.max(0, Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)))
-                          : curEx.hold_sec;
-                      if (lastEmittedHold !== fallbackHoldSec && now - lastHoldEmitAt >= 40) {
-                        lastEmittedHold = fallbackHoldSec;
-                        lastHoldEmitAt = now;
-                        setDemoHoldRemainingSec(fallbackHoldSec);
-                      }
-                      emitPresetState(checkTrunk && latestTrunkTiltDeg > 10 ? 'TRUNK_LEAN' : 'ACTIVE_REP');
                     }
+                  } else if (awaitingReturn || now <= repCelebrateUntil) {
+                    holdAccumMs = 0;
+                    if (lastEmittedHold !== 0) {
+                      lastEmittedHold = 0;
+                      lastHoldEmitAt = now;
+                      setDemoHoldRemainingSec(0);
+                    }
+                    emitPresetState(
+                      demoValidRepsRef.current >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED',
+                    );
+                  } else {
+                    // Immediate Hold Timer reset on leaving the target zone before completion
+                    holdAccumMs = 0;
+                    if (lastEmittedHold !== curEx.hold_sec) {
+                      lastEmittedHold = curEx.hold_sec;
+                      lastHoldEmitAt = now;
+                      setDemoHoldRemainingSec(curEx.hold_sec);
+                    }
+                    emitPresetState(isCompensatedNow ? 'TRUNK_LEAN' : 'ACTIVE_REP');
                   }
                 }
               }
@@ -2251,6 +2411,12 @@ export function SmartRehabKioskUI({
                 lastRomEmitAt = now;
                 setDemoRomDeg(0);
               }
+              if (lastEmittedHold !== curEx.hold_sec) {
+                lastEmittedHold = curEx.hold_sec;
+                lastHoldEmitAt = now;
+                setDemoHoldRemainingSec(curEx.hold_sec);
+              }
+              emitPresetState('ACTIVE_REP');
             }
 
             drawLivePoseOverlayOnCanvas(poseCanvasRef.current, renderLandmarksList, {
@@ -2267,6 +2433,8 @@ export function SmartRehabKioskUI({
               wrongSideBannerTh: effWrongSideBannerTh,
               wrongPlaneRaised: effWrongPlaneRaised,
               wrongPlaneBannerTh: effWrongPlaneBannerTh,
+              lowVisibilityAlertTh: latestLowVisibilityAlertTh,
+              postureBannerTh: effPostureBannerTh,
               videoWidth: v.videoWidth,
               videoHeight: v.videoHeight,
               smoothingStatusText: formatSmoothingHud(),

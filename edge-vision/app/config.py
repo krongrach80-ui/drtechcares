@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import urllib.request
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -171,6 +172,22 @@ class EdgeVisionSettings(BaseModel):
 
         lvl = self.resolve_model_complexity() if complexity is None else max(0, min(2, int(complexity)))
         if lvl >= 2:
+            heavy_target = EDGE_ROOT / "models" / "pose_landmarker_heavy.task"
+            if not heavy_target.exists():
+                heavy_url = (
+                    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+                    "pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task"
+                )
+                try:
+                    heavy_target.parent.mkdir(parents=True, exist_ok=True)
+                    tmp_target = heavy_target.with_suffix(".task.tmp")
+                    urllib.request.urlretrieve(heavy_url, str(tmp_target))
+                    tmp_target.replace(heavy_target)
+                except Exception:
+                    try:
+                        heavy_target.with_suffix(".task.tmp").unlink(missing_ok=True)
+                    except OSError:
+                        pass
             names = ("pose_landmarker_heavy.task", "pose_landmarker_full.task", "pose_landmarker.task")
         elif lvl == 1:
             names = ("pose_landmarker_full.task", "pose_landmarker.task", "pose_landmarker_lite.task")

@@ -73,6 +73,7 @@ export function DynamicExerciseSessionView({
     let prevPose: PoseLandmark[] | null = null;
     let prevAngle: number | null = null;
     let lastTickAt = performance.now();
+    let lastDetectTsMs = 0;
     let singlePersonStreak = 0;
     const startedAt = performance.now();
 
@@ -88,17 +89,42 @@ export function DynamicExerciseSessionView({
         await videoRef.current.play();
 
         const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
-        poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-          baseOptions: { modelAssetPath: '/models/pose_landmarker_full.task' },
-          runningMode: 'VIDEO',
-          numPoses: 2,
-        });
+        const POSE_MODEL_PATHS = [
+          'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task',
+          '/models/pose_landmarker_full.task',
+        ];
+        for (const minConf of [0.7, 0.5] as const) {
+          for (const modelAssetPath of POSE_MODEL_PATHS) {
+            try {
+              const created = await PoseLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath },
+                runningMode: 'VIDEO',
+                numPoses: 2,
+                minPoseDetectionConfidence: minConf,
+                minPosePresenceConfidence: minConf,
+                minTrackingConfidence: minConf,
+              });
+              if (!active) {
+                created.close();
+                return;
+              }
+              poseLandmarker = created;
+              break;
+            } catch {
+              // Try next model / confidence tier
+            }
+          }
+          if (poseLandmarker) break;
+        }
+        if (!poseLandmarker || !active) return;
 
         const loop = () => {
           if (!active || !videoRef.current || !poseLandmarker) return;
           if (videoRef.current.readyState >= 2) {
             const now = performance.now();
-            const res = poseLandmarker.detectForVideo(videoRef.current, now);
+            const detectTsMs = Math.max(lastDetectTsMs + 1, Math.round(now));
+            lastDetectTsMs = detectTsMs;
+            const res = poseLandmarker.detectForVideo(videoRef.current, detectTsMs);
             const detectedPeople = res.landmarks?.length ?? 0;
 
             if (detectedPeople > 1) {
