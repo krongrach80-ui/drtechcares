@@ -973,5 +973,66 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(verifyJson.todayExercises[0]?.sets).toBe(3);
     expect(verifyJson.todayExercises[0]?.reps).toBe(12);
   });
+
+  it('rejects unregistered stranger sharing 3D craniofacial subband during POST /api/biometric/verify', async () => {
+    const router = createCloudDelegatedRouter({});
+    const ptLogin = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const { token: ptToken } = (await ptLogin.json()) as { token: string };
+
+    const ownerVec = makeHybridEmbedding(4.25);
+    const rawFrames = [
+      ...Array.from({ length: 4 }, () => ({ pose: 'front', vector: ownerVec, qualityScore: 0.97 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'left', vector: ownerVec, qualityScore: 0.93 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'right', vector: ownerVec, qualityScore: 0.94 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'nod', vector: ownerVec, qualityScore: 0.95 })),
+    ];
+
+    const enrollRes = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-STRANGER-GUARD-01',
+        fullName: 'พัทธดนย์ ทดสอบยืนยันตัวตน',
+        age: 30,
+        diagnosis: 'ฟื้นฟูข้อไหล่',
+        frontalCentroid: ownerVec,
+        overallCentroid: ownerVec,
+        rawFrames,
+      },
+    });
+    expect(enrollRes.status).toBe(201);
+
+    const strangerShared3D = l2Normalize([
+      ...makeHybridEmbedding(19.75).slice(0, 256),
+      ...ownerVec.slice(256),
+    ]);
+
+    const strangerVerify = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: { probeVector: strangerShared3D },
+    });
+    expect(strangerVerify.status).toBe(401);
+    const strangerJson = (await strangerVerify.json()) as {
+      matched: boolean;
+      patient?: unknown;
+    };
+    expect(strangerJson.matched).toBe(false);
+    expect(strangerJson.patient).toBeUndefined();
+
+    const ownerVerify = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: { probeVector: ownerVec },
+    });
+    expect(ownerVerify.status).toBe(200);
+    const ownerJson = (await ownerVerify.json()) as {
+      matched: boolean;
+      confidencePercent: number;
+    };
+    expect(ownerJson.matched).toBe(true);
+    expect(ownerJson.confidencePercent).toBeGreaterThanOrEqual(85);
+  });
 });
 

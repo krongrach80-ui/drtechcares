@@ -96,9 +96,9 @@ export function matchMultiAngleEmbedding(
   candidates: readonly PatientBiometricIndexEntry[],
   options: MultiAngleMatchOptions = {},
 ): MultiAngleMatchResult {
-  const similarityThreshold = options.similarityThreshold ?? 0.74;
-  const whitenedThreshold = options.whitenedThreshold ?? 0.56;
-  const marginThreshold = options.marginThreshold ?? 0.04;
+  const similarityThreshold = options.similarityThreshold ?? 0.84;
+  const whitenedThreshold = options.whitenedThreshold ?? 0.68;
+  const marginThreshold = options.marginThreshold ?? 0.06;
 
   if (probeVector.length === 0 || candidates.length === 0) {
     return {
@@ -120,10 +120,15 @@ export function matchMultiAngleEmbedding(
     rawSim: number;
     combinedSim: number;
     whitenedSim: number;
+    hasCore: boolean;
     bestCoreSim: number;
     bestCoreWhitenedSim: number;
     bestCos3D: number;
     bestCraniofacialCos: number;
+    bestInnerDctCos: number;
+    bestInnerDctWhite: number;
+    bestInnerPatchCos: number;
+    bestInnerPatchWhite: number;
   }[] = [];
 
   for (const cand of candidates) {
@@ -143,10 +148,15 @@ export function matchMultiAngleEmbedding(
     let bestRaw = -1;
     let bestWhite = -1;
     let masterRaw = -1;
+    let hasCore = false;
     let bestCoreSim = 0;
     let bestCoreWhitenedSim = 0;
     let bestCos3D = 0;
     let bestCraniofacialCos = 0;
+    let bestInnerDctCos = 0;
+    let bestInnerDctWhite = 0;
+    let bestInnerPatchCos = 0;
+    let bestInnerPatchWhite = 0;
     let bestCoreCombined = -1;
 
     for (const item of vectorsToCompare) {
@@ -164,6 +174,7 @@ export function matchMultiAngleEmbedding(
         : globalWhitenedSim;
 
       if (core) {
+        hasCore = true;
         const coreCombined = core.faceCoreSim + core.faceCoreWhitenedSim;
         if (coreCombined > bestCoreCombined) {
           bestCoreCombined = coreCombined;
@@ -171,6 +182,10 @@ export function matchMultiAngleEmbedding(
           bestCoreWhitenedSim = core.faceCoreWhitenedSim;
           bestCos3D = core.cos3DNormalized;
           bestCraniofacialCos = core.craniofacialCos;
+          bestInnerDctCos = core.innerDctCos;
+          bestInnerDctWhite = core.innerDctWhitenedCos;
+          bestInnerPatchCos = core.innerPatchCos;
+          bestInnerPatchWhite = core.innerPatchWhitenedCos;
         }
       }
 
@@ -193,10 +208,15 @@ export function matchMultiAngleEmbedding(
         rawSim: bestRaw,
         combinedSim,
         whitenedSim: bestWhite,
+        hasCore,
         bestCoreSim,
         bestCoreWhitenedSim,
         bestCos3D,
         bestCraniofacialCos,
+        bestInnerDctCos,
+        bestInnerDctWhite,
+        bestInnerPatchCos,
+        bestInnerPatchWhite,
       });
     }
   }
@@ -220,20 +240,38 @@ export function matchMultiAngleEmbedding(
   const margin = runnerUp ? Math.max(top.rawSim - runnerUp.rawSim, top.combinedSim - runnerUp.combinedSim) : 1;
 
   const passesMargin = scored.length < 2 || margin >= marginThreshold;
+  const passesSubbandFloor =
+    !top.hasCore ||
+    (top.bestInnerDctCos >= 0.76 &&
+      top.bestInnerDctWhite >= 0.60 &&
+      top.bestInnerPatchCos >= 0.70 &&
+      top.bestInnerPatchWhite >= 0.54 &&
+      top.bestCos3D >= 0.80);
   const passesStandardGate =
     top.rawSim >= similarityThreshold &&
     top.whitenedSim >= whitenedThreshold &&
+    passesSubbandFloor &&
     passesMargin;
+  const coreSimFloor = Math.max(0.84, similarityThreshold);
+  const coreWhitenedFloor = Math.max(0.68, whitenedThreshold);
   const passesFaceCoreGate =
-    top.bestCoreSim >= 0.72 &&
-    top.bestCoreWhitenedSim >= 0.52 &&
-    top.bestCos3D >= 0.965 &&
-    top.bestCraniofacialCos >= 0.55 &&
+    top.hasCore &&
+    top.bestCoreSim >= coreSimFloor &&
+    top.bestCoreWhitenedSim >= coreWhitenedFloor &&
+    top.bestInnerDctCos >= 0.78 &&
+    top.bestInnerDctWhite >= 0.62 &&
+    top.bestInnerPatchCos >= 0.72 &&
+    top.bestInnerPatchWhite >= 0.56 &&
+    top.bestCos3D >= 0.80 &&
+    top.bestCraniofacialCos >= 0.62 &&
     passesMargin;
   const matched = passesStandardGate || passesFaceCoreGate;
 
+  const rawMatchedScore = top.hasCore
+    ? Math.max(top.rawSim, top.bestCoreSim)
+    : top.rawSim;
   const calibratedScore = matched
-    ? Math.max(top.rawSim, top.bestCoreSim >= 0.72 ? Math.max(top.rawSim, top.bestCoreSim * 0.9 + 0.08) : top.rawSim)
+    ? rawMatchedScore
     : Math.min(0.49, top.rawSim * 0.5);
   const displayPercent = Number(
     Math.max(0, Math.min(99.9, calibratedScore * 100)).toFixed(1),

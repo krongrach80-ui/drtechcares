@@ -222,6 +222,53 @@ export function getKioskVerifiedModalCopy(
   };
 }
 
+const REQUIRED_LOGIN_FACE_LANDMARKS = [10, 152, 33, 263, 1, 61, 291] as const;
+
+export function isFullFrontalFaceReadyForLogin(
+  landmarks: readonly { x: number; y: number; z?: number }[],
+  liveness: Pick<LivenessAndPoseReport, 'yawDeg' | 'pitchDeg' | 'depthScore'>,
+  inspection: Pick<BiometricVerificationJson, 'scan_status' | 'error_code'>,
+): boolean {
+  if (landmarks.length < 300) return false;
+  if (inspection.scan_status === 'SPOOF_DETECTED') return false;
+  if (
+    inspection.error_code === 'OBSTRUCTED_EYES' ||
+    inspection.error_code === 'OBSTRUCTED_MOUTH'
+  ) {
+    return false;
+  }
+
+  for (const idx of REQUIRED_LOGIN_FACE_LANDMARKS) {
+    const pt = landmarks[idx];
+    if (
+      !pt ||
+      !Number.isFinite(pt.x) ||
+      !Number.isFinite(pt.y) ||
+      pt.x < 0.03 ||
+      pt.x > 0.97 ||
+      pt.y < 0.03 ||
+      pt.y > 0.97
+    ) {
+      return false;
+    }
+  }
+
+  const box = computeBoundingBoxFromLandmarks(landmarks);
+  if (!box || box.height < 0.22 || box.width < 0.14) {
+    return false;
+  }
+
+  if (Math.abs(liveness.yawDeg) > 18 || Math.abs(liveness.pitchDeg) > 16) {
+    return false;
+  }
+
+  if (liveness.depthScore < 0.25) {
+    return false;
+  }
+
+  return true;
+}
+
 const COPY: Record<
   ClinicalLang,
   {
@@ -605,6 +652,7 @@ export function KioskBiometricLoginView({
     enabled: !cameraPaused && !staffModalOpen && !showPinModal,
     onPatientMatch: (edgeMatch) => {
       if (verifiedModalPayloadRef.current || verifyingLockRef.current || !edgeMatch.id) return;
+      if (typeof edgeMatch.similarity === 'number' && edgeMatch.similarity < 0.85) return;
       const entry = biometricIndexRef.current.find(
         (e) => e.patientId === edgeMatch.id || (edgeMatch.hn && e.hn === edgeMatch.hn),
       );
@@ -650,7 +698,7 @@ export function KioskBiometricLoginView({
   });
   edgeTelemetryRef.current = edgeTelemetry;
   const biometricIndexRef = useRef<PatientBiometricIndexEntry[]>([]);
-  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(3, 0.74));
+  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(5, 0.85));
   const mirroredRef = useRef(mirrored);
   mirroredRef.current = mirrored;
 
@@ -1142,7 +1190,21 @@ export function KioskBiometricLoginView({
                   setHudLandmarks(mappedPoints);
                 }
 
-                if (now - lastEmbedCheckAt >= 120 && !verifyingLockRef.current) {
+                const faceReadyForLogin = isFullFrontalFaceReadyForLogin(
+                  landmarks,
+                  liveness,
+                  inspection,
+                );
+                if (!faceReadyForLogin) {
+                  if (!verifyingLockRef.current) {
+                    temporalMatcherRef.current.reset();
+                    loginCtrlRef.current.reset();
+                    burstStarted = false;
+                    setBurstCount(0);
+                    setLiveMatchHud(null);
+                    setScanStage('scanning');
+                  }
+                } else if (now - lastEmbedCheckAt >= 120 && !verifyingLockRef.current) {
                   lastEmbedCheckAt = now;
                   const { vector } = await extractFaceEmbeddingWithFallback(crop, landmarks);
                   if (!active) {
@@ -1187,7 +1249,12 @@ export function KioskBiometricLoginView({
                           return;
                         }
                         setLastVerifyResult(verifyRes);
-                        if (verifyRes.matched && verifyRes.patient) {
+                        if (
+                          verifyRes.matched &&
+                          verifyRes.patient &&
+                          verifyRes.patient.id === temporal.candidate.patientId &&
+                          verifyRes.confidencePercent >= 85
+                        ) {
                           didAuthenticate = true;
                           const matchedEntry = biometricIndexRef.current.find(
                             (e) => e.patientId === verifyRes.patient?.id,
@@ -1260,50 +1327,39 @@ export function KioskBiometricLoginView({
                           return;
                         }
                         setLastVerifyResult(verifyRes);
-                        if (verifyRes.matched && verifyRes.patient) {
-                          didFinishRound = true;
+                        if (verifyRes.matched && verifyRes.patient && verifyRes.confidencePercent >= 85) {
+                          const verifiedPatientId = verifyRes.patient.id;
                           const matchedEntry = biometricIndexRef.current.find(
-                            (e) => e.patientId === verifyRes.patient?.id,
+                            (e) => e.patientId === verifiedPatientId,
                           );
-                          const nextPayload = buildKioskLoginSuccessPayload({
-                            patient: verifyRes.patient,
-                            todayRoutine: verifyRes.todayRoutine ?? null,
-                            confidencePercent: verifyRes.confidencePercent,
-                            rehabSchedules: verifyRes.rehabSchedules,
-                            serverTodayExercises: verifyRes.todayExercises,
-                            serverCompletedToday: verifyRes.completedToday,
-                            indexEntry: matchedEntry,
-                          });
-                          verifiedModalPayloadRef.current = nextPayload;
-                          setVerifiedModalPayload(nextPayload);
-                          return;
-                        }
-                        // Secondary match check against active Supabase database index entries
-                        const localFallback = matchMultiAngleEmbedding(probe, biometricIndexRef.current, {
-                          similarityThreshold: 0.72,
-                          whitenedThreshold: 0.52,
-                          marginThreshold: 0.04,
-                        });
-                        if (localFallback.matched && localFallback.bestCandidate) {
-                          const fbCand = localFallback.bestCandidate;
-                          didFinishRound = true;
-                          const nextPayload = buildKioskLoginSuccessPayload({
-                            patient: {
-                              id: fbCand.patientId,
-                              hn: fbCand.hn,
-                              fullName: fbCand.fullName,
-                              nextAppointmentDate: fbCand.nextAppointmentDate,
-                            },
-                            todayRoutine: fbCand.todayRoutine ?? null,
-                            confidencePercent: localFallback.confidencePercent,
-                            rehabSchedules: fbCand.rehabSchedules,
-                            serverTodayExercises: fbCand.todayExercises,
-                            serverCompletedToday: fbCand.completedToday,
-                            indexEntry: fbCand,
-                          });
-                          verifiedModalPayloadRef.current = nextPayload;
-                          setVerifiedModalPayload(nextPayload);
-                          return;
+                          const strictLocalMatch = matchedEntry
+                            ? matchMultiAngleEmbedding(probe, biometricIndexRef.current, {
+                                similarityThreshold: 0.85,
+                                whitenedThreshold: 0.68,
+                                marginThreshold: 0.06,
+                              })
+                            : null;
+                          const agreesWithStrictLocal =
+                            !matchedEntry ||
+                            Boolean(
+                              strictLocalMatch?.matched &&
+                                strictLocalMatch.bestCandidate?.patientId === verifiedPatientId,
+                            );
+                          if (agreesWithStrictLocal) {
+                            didFinishRound = true;
+                            const nextPayload = buildKioskLoginSuccessPayload({
+                              patient: verifyRes.patient,
+                              todayRoutine: verifyRes.todayRoutine ?? null,
+                              confidencePercent: verifyRes.confidencePercent,
+                              rehabSchedules: verifyRes.rehabSchedules,
+                              serverTodayExercises: verifyRes.todayExercises,
+                              serverCompletedToday: verifyRes.completedToday,
+                              indexEntry: matchedEntry,
+                            });
+                            verifiedModalPayloadRef.current = nextPayload;
+                            setVerifiedModalPayload(nextPayload);
+                            return;
+                          }
                         }
                       } catch {
                         if (!active) {

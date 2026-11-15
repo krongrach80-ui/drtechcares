@@ -439,4 +439,103 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     expect(getFaceId120TargetGuidance('en', 'down').voice.toLowerCase()).toContain('down');
     expect(getFaceId120TargetGuidance('cn', 'down').voice).toContain('低头');
   });
+
+  it('decisively rejects unregistered stranger even when 3D craniofacial subband matches enrolled single patient', () => {
+    const enrolledOwner = makeEnrolledPatient('pat-owner', 'HN-65964', 'พัทธดนย์ ผ่องอารมย์', 424242);
+    const otherAppearance = makeRealisticFaceVector(878787, 0);
+    const strangerShared3D = l2Normalize([
+      ...otherAppearance.slice(0, 256),
+      ...enrolledOwner.masterEmbedding.slice(256),
+    ]);
+
+    const res = matchMultiAngleEmbedding(strangerShared3D, [enrolledOwner]);
+    expect(res.matched).toBe(false);
+    expect(res.confidencePercent).toBeLessThan(85);
+
+    const temporal = new TemporalBiometricMatcher(5, 0.85);
+    for (let i = 0; i < 6; i += 1) {
+      const step = temporal.evaluateFrame(
+        {
+          probeVector: strangerShared3D,
+          yawDeg: (i % 2) * 0.5,
+          pitchDeg: 0,
+          depthScore: 0.42,
+          microMotion: 0.002,
+          blinkDetected: i === 2,
+        },
+        [enrolledOwner],
+      );
+      expect(step.confirmed).toBe(false);
+      expect(step.streakCount).toBe(0);
+    }
+
+    const validOwnerRes = matchMultiAngleEmbedding(enrolledOwner.angleEmbeddings.center, [enrolledOwner]);
+    expect(validOwnerRes.matched).toBe(true);
+    expect(validOwnerRes.confidencePercent).toBeGreaterThanOrEqual(85);
+  });
+
+  it('provides 3-language (th, en, cn) directional voice and visual guidance for all 5 Face ID 120-frame scan steps', () => {
+    const directions = ['center', 'left', 'right', 'up', 'down'] as const;
+    for (const dir of directions) {
+      const th = getFaceId120TargetGuidance('th', dir);
+      const en = getFaceId120TargetGuidance('en', dir);
+      const cn = getFaceId120TargetGuidance('cn', dir);
+
+      expect(th.voice.length).toBeGreaterThan(5);
+      expect(en.voice.length).toBeGreaterThan(5);
+      expect(cn.voice.length).toBeGreaterThan(5);
+      expect(th.stepTitle).not.toBe(en.stepTitle);
+      expect(en.stepTitle).not.toBe(cn.stepTitle);
+    }
+
+    expect(getFaceId120TargetGuidance('th', 'left').voice).toContain('ซ้าย');
+    expect(getFaceId120TargetGuidance('en', 'left').voice.toLowerCase()).toContain('left');
+    expect(getFaceId120TargetGuidance('cn', 'left').voice).toContain('左');
+
+    expect(getFaceId120TargetGuidance('th', 'right').voice).toContain('ขวา');
+    expect(getFaceId120TargetGuidance('en', 'right').voice.toLowerCase()).toContain('right');
+    expect(getFaceId120TargetGuidance('cn', 'right').voice).toContain('右');
+
+    expect(getFaceId120TargetGuidance('th', 'up').voice).toContain('เงย');
+    expect(getFaceId120TargetGuidance('en', 'up').voice.toLowerCase()).toContain('up');
+    expect(getFaceId120TargetGuidance('cn', 'up').voice).toContain('抬头');
+
+    expect(getFaceId120TargetGuidance('th', 'down').voice).toContain('ก้ม');
+    expect(getFaceId120TargetGuidance('en', 'down').voice.toLowerCase()).toContain('down');
+    expect(getFaceId120TargetGuidance('cn', 'down').voice).toContain('低头');
+  });
+
+  it('decisively rejects unregistered stranger even when 3D craniofacial subband matches enrolled single patient', () => {
+    const enrolledOwner = makeEnrolledPatient('pat-owner', 'HN-65964', 'พัทธดนย์ ผ่องอารมย์', 424242);
+    const otherAppearance = makeRealisticFaceVector(878787, 0);
+    const strangerShared3D = l2Normalize([
+      ...otherAppearance.slice(0, 256),
+      ...enrolledOwner.masterEmbedding.slice(256),
+    ]);
+
+    const res = matchMultiAngleEmbedding(strangerShared3D, [enrolledOwner]);
+    expect(res.matched).toBe(false);
+    expect(res.confidencePercent).toBeLessThan(85);
+
+    const temporal = new TemporalBiometricMatcher(5, 0.85);
+    for (let i = 0; i < 6; i += 1) {
+      const step = temporal.evaluateFrame(
+        {
+          probeVector: strangerShared3D,
+          yawDeg: (i % 2) * 0.5,
+          pitchDeg: 0,
+          depthScore: 0.42,
+          microMotion: 0.002,
+          blinkDetected: i === 2,
+        },
+        [enrolledOwner],
+      );
+      expect(step.confirmed).toBe(false);
+      expect(step.streakCount).toBe(0);
+    }
+
+    const validOwnerRes = matchMultiAngleEmbedding(enrolledOwner.angleEmbeddings.center, [enrolledOwner]);
+    expect(validOwnerRes.matched).toBe(true);
+    expect(validOwnerRes.confidencePercent).toBeGreaterThanOrEqual(85);
+  });
 });

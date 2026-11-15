@@ -336,15 +336,23 @@ export function computeFaceCoreMetrics(
   const innerDct = computeIndexedSubbandCosines(probe, candidate, INNER_DCT_INDICES, baseline, 0.85);
   const innerPatch = computeIndexedSubbandCosines(probe, candidate, INNER_PATCH_INDICES, baseline, 0.95);
 
-  const faceCoreSim =
-    0.55 * Math.max(0, cos3DNormalized) +
-    0.30 * Math.max(0, innerDct.rawCos) +
-    0.15 * Math.max(0, innerPatch.rawCos);
+  const rawInnerDct = Math.max(0, innerDct.rawCos);
+  const rawInnerPatch = Math.max(0, innerPatch.rawCos);
+  const weightedFaceCoreSim =
+    0.25 * Math.max(0, cos3DNormalized) +
+    0.45 * rawInnerDct +
+    0.30 * rawInnerPatch;
+  const faceCoreSim = Math.min(weightedFaceCoreSim, rawInnerDct + 0.06, rawInnerPatch + 0.10);
 
-  const faceCoreWhitenedSim =
-    0.55 * craniofacialCos +
-    0.30 * innerDct.whitenedCos +
-    0.15 * innerPatch.whitenedCos;
+  const weightedFaceCoreWhitenedSim =
+    0.25 * craniofacialCos +
+    0.45 * innerDct.whitenedCos +
+    0.30 * innerPatch.whitenedCos;
+  const faceCoreWhitenedSim = Math.min(
+    weightedFaceCoreWhitenedSim,
+    Math.max(0, innerDct.whitenedCos) + 0.06,
+    Math.max(0, innerPatch.whitenedCos) + 0.10,
+  );
 
   return {
     cos3DNormalized,

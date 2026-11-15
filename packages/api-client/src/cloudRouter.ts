@@ -1712,6 +1712,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           bestCoreWhite: number;
           bestCos3D: number;
           bestCraniofacialCos: number;
+          bestInnerDctCos: number;
+          bestInnerDctWhite: number;
+          bestInnerPatchCos: number;
+          bestInnerPatchWhite: number;
           rankScore: number;
         }[] = [];
         for (const p of state.patients) {
@@ -1753,6 +1757,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           let bestCoreWhite = 0;
           let bestCos3D = 0;
           let bestCraniofacialCos = 0;
+          let bestInnerDctCos = 0;
+          let bestInnerDctWhite = 0;
+          let bestInnerPatchCos = 0;
+          let bestInnerPatchWhite = 0;
           let bestCoreCombined = -1;
           for (const v of rawVecs) {
             if (v.length !== FACE_EMBEDDING_DIM) continue;
@@ -1774,6 +1782,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               bestCoreWhite = core.faceCoreWhitenedSim;
               bestCos3D = core.cos3DNormalized;
               bestCraniofacialCos = core.craniofacialCos;
+              bestInnerDctCos = core.innerDctCos;
+              bestInnerDctWhite = core.innerDctWhitenedCos;
+              bestInnerPatchCos = core.innerPatchCos;
+              bestInnerPatchWhite = core.innerPatchWhitenedCos;
             }
           }
           const effectiveRaw = Math.max(bestRaw * 0.75 + masterRaw * 0.25, masterRaw);
@@ -1787,6 +1799,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             bestCoreWhite,
             bestCos3D,
             bestCraniofacialCos,
+            bestInnerDctCos,
+            bestInnerDctWhite,
+            bestInnerPatchCos,
+            bestInnerPatchWhite,
             rankScore: effectiveRaw * 0.65 + bestWhite * 0.35,
           });
         }
@@ -1796,29 +1812,56 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         const effectiveMargin = runner ? top.effectiveRaw - runner.effectiveRaw : 1;
         const rawMargin = runner ? top.raw - runner.raw : 1;
         const margin = Math.max(effectiveMargin, rawMargin);
-        const passesMargin = scoresByPatient.length === 1 || margin >= 0.04;
-        const passesStandard = Boolean(top && top.raw >= 0.74 && top.white >= 0.56 && passesMargin);
+        const passesMargin = scoresByPatient.length === 1 || margin >= 0.06;
+        const passesSubbandFloor = Boolean(
+          top &&
+            top.bestInnerDctCos >= 0.76 &&
+            top.bestInnerDctWhite >= 0.60 &&
+            top.bestInnerPatchCos >= 0.70 &&
+            top.bestInnerPatchWhite >= 0.54 &&
+            top.bestCos3D >= 0.80,
+        );
+        const passesStandard = Boolean(
+          top &&
+            top.raw >= 0.84 &&
+            top.white >= 0.68 &&
+            passesSubbandFloor &&
+            passesMargin,
+        );
         const passesFaceCore = Boolean(
           top &&
-            top.bestCoreSim >= 0.72 &&
-            top.bestCoreWhite >= 0.52 &&
-            top.bestCos3D >= 0.965 &&
-            top.bestCraniofacialCos >= 0.55 &&
+            top.bestCoreSim >= 0.84 &&
+            top.bestCoreWhite >= 0.68 &&
+            top.bestInnerDctCos >= 0.78 &&
+            top.bestInnerDctWhite >= 0.62 &&
+            top.bestInnerPatchCos >= 0.72 &&
+            top.bestInnerPatchWhite >= 0.56 &&
+            top.bestCos3D >= 0.80 &&
+            top.bestCraniofacialCos >= 0.62 &&
             passesMargin,
         );
         if (top && (passesStandard || passesFaceCore)) {
-          matchedPatientId = top.patientId;
-          matchedPatientName = top.fullName;
-          const calibratedConf = Math.max(
-            top.raw,
-            top.bestCoreSim >= 0.72 ? Math.max(top.raw, top.bestCoreSim * 0.9 + 0.08) : top.raw,
-          );
-          matchedConfidence = Number(Math.min(99.9, calibratedConf * 100).toFixed(1));
+          const calibratedConf = Math.max(top.raw, top.bestCoreSim);
+          const candidateConf = Number(Math.min(99.9, calibratedConf * 100).toFixed(1));
+          matchedConfidence = candidateConf;
+          if (candidateConf >= 85.0) {
+            matchedPatientId = top.patientId;
+            matchedPatientName = top.fullName;
+          }
         }
       }
 
-      if (!matchedPatientId) {
-        return jsonResponse({ ...result, matched: false }, 401);
+      if (!matchedPatientId || matchedConfidence < 85.0) {
+        return jsonResponse(
+          {
+            ...result,
+            matched: false,
+            patientId: undefined,
+            patientName: undefined,
+            confidencePercent: matchedConfidence,
+          },
+          401,
+        );
       }
 
       const patient =
