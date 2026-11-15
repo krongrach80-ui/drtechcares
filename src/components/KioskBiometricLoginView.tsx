@@ -7,6 +7,7 @@ import {
   type NormalizedLandmark,
 } from '@mediapipe/tasks-vision';
 import {
+  isPatientCompletedTodayInStorage,
   resolveTodayPatientSchedule,
   type DailyScheduleDay,
   type DrTechCaresApiClient,
@@ -72,6 +73,7 @@ export interface KioskLoginSuccessPayload {
   rehabSchedules?: RehabScheduleItem[];
   todayExercises?: TodayPrescribedExerciseItem[];
   hasAppointmentToday?: boolean;
+  completedToday?: boolean;
 }
 
 function buildKioskLoginSuccessPayload(params: {
@@ -85,16 +87,24 @@ function buildKioskLoginSuccessPayload(params: {
   todayRoutine?: DailyScheduleDay | null;
   rehabSchedules?: RehabScheduleItem[];
   serverTodayExercises?: TodayPrescribedExerciseItem[];
+  serverCompletedToday?: boolean;
   indexEntry?: PatientBiometricIndexEntry | null;
 }): KioskLoginSuccessPayload {
   const resolvedSchedules = params.rehabSchedules ?? params.indexEntry?.rehabSchedules;
   const resolvedRoutine = params.todayRoutine ?? params.indexEntry?.todayRoutine ?? null;
   const serverExercises = params.serverTodayExercises ?? params.indexEntry?.todayExercises;
+  const storedDone =
+    isPatientCompletedTodayInStorage(params.patient.id) ||
+    isPatientCompletedTodayInStorage(params.patient.hn);
+  const completedOverride = Boolean(
+    params.serverCompletedToday || params.indexEntry?.completedToday || storedDone,
+  );
   const todaySchedule = resolveTodayPatientSchedule({
     rehabSchedules: resolvedSchedules,
     todayRoutine: resolvedRoutine,
     nextAppointmentDate: params.patient.nextAppointmentDate,
     serverTodayExercises: serverExercises,
+    completedTodayOverride: completedOverride,
     now: new Date(),
   });
   return {
@@ -104,6 +114,7 @@ function buildKioskLoginSuccessPayload(params: {
     rehabSchedules: resolvedSchedules ?? [],
     todayExercises: todaySchedule.todayExercises,
     hasAppointmentToday: todaySchedule.hasAppointmentToday,
+    completedToday: todaySchedule.completedToday,
   };
 }
 
@@ -911,6 +922,7 @@ export function KioskBiometricLoginView({
                             confidencePercent: Math.max(verifyRes.confidencePercent, matchedConf),
                             rehabSchedules: verifyRes.rehabSchedules,
                             serverTodayExercises: verifyRes.todayExercises,
+                            serverCompletedToday: verifyRes.completedToday,
                             indexEntry: matchedEntry,
                           });
                           verifiedModalPayloadRef.current = nextPayload;
@@ -983,6 +995,7 @@ export function KioskBiometricLoginView({
                             confidencePercent: verifyRes.confidencePercent,
                             rehabSchedules: verifyRes.rehabSchedules,
                             serverTodayExercises: verifyRes.todayExercises,
+                            serverCompletedToday: verifyRes.completedToday,
                             indexEntry: matchedEntry,
                           });
                           verifiedModalPayloadRef.current = nextPayload;
@@ -1009,6 +1022,7 @@ export function KioskBiometricLoginView({
                             confidencePercent: localFallback.confidencePercent,
                             rehabSchedules: fbCand.rehabSchedules,
                             serverTodayExercises: fbCand.todayExercises,
+                            serverCompletedToday: fbCand.completedToday,
                             indexEntry: fbCand,
                           });
                           verifiedModalPayloadRef.current = nextPayload;

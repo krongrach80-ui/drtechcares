@@ -24,6 +24,7 @@ type BiomechanicsEvaluationPacket = Parameters<typeof evaluateClinicalBiomechani
 type RepCounterState = NonNullable<Parameters<typeof evaluateClinicalBiomechanicsPacket>[1]>;
 type FrameInspectionInput = Parameters<typeof inspectBiometricFrame3D>[0];
 import {
+  formatLocalIsoDate,
   resolveTodayPatientSchedule,
   type AngleEmbeddings5D,
   type AuditLogRecord,
@@ -1504,6 +1505,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         const todayRoutine = course?.weeklySchedule.find((d) => d.dayIndex === todayIdx) ?? null;
         const todaySchedule = resolveTodayPatientSchedule({
           rehabSchedules: p.rehabSchedules,
+          rehabSessions: state.rehab_sessions.filter((s) => s.patientId === p.id),
           todayRoutine,
           nextAppointmentDate: p.nextAppointmentDate,
           exercisesCatalog: state.exercises,
@@ -1524,6 +1526,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           rehabSchedules: p.rehabSchedules ?? [],
           todayExercises: todaySchedule.todayExercises,
           hasAppointmentToday: todaySchedule.hasAppointmentToday,
+          completedToday: todaySchedule.completedToday,
         });
       }
       return jsonResponse({ index });
@@ -1793,6 +1796,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const todayRoutine = course?.weeklySchedule.find((d) => d.dayIndex === todayIdx) ?? null;
       const todaySchedule = resolveTodayPatientSchedule({
         rehabSchedules: patient.rehabSchedules,
+        rehabSessions: state.rehab_sessions.filter((s) => s.patientId === patient.id),
         todayRoutine,
         nextAppointmentDate: patient.nextAppointmentDate,
         exercisesCatalog: state.exercises,
@@ -1825,6 +1829,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         rehabSchedules: patient.rehabSchedules ?? [],
         todayExercises: todaySchedule.todayExercises,
         hasAppointmentToday: todaySchedule.hasAppointmentToday,
+        completedToday: todaySchedule.completedToday,
       });
     }
 
@@ -2545,13 +2550,20 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     }
 
     if (pathname === '/api/sessions' && method === 'POST') {
-      const body = await readJsonBody<Partial<RehabSessionRecord>>(request);
+      await ensureHydrated();
+      const body = await readJsonBody<
+        Partial<RehabSessionRecord> & { scheduledDate?: string; markDailyCompleted?: boolean }
+      >(request);
       if (!body?.patientId || !body?.exerciseId || !body?.exerciseName) {
         return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
       }
+      const matchedPatient = state.patients.find(
+        (p) => p.id === body.patientId || p.hn === body.patientId,
+      );
+      const resolvedPatientId = matchedPatient?.id ?? body.patientId;
       const session: RehabSessionRecord = {
         id: `sess-${Date.now()}-${randomHex(2)}`,
-        patientId: body.patientId,
+        patientId: resolvedPatientId,
         activityType: body.activityType ?? 'minigame',
         exerciseId: body.exerciseId,
         exerciseName: body.exerciseName,
@@ -2566,8 +2578,56 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         createdAt: new Date().toISOString(),
       };
       state.rehab_sessions.unshift(session);
-      persistToSupabase(supabase, (db) =>
-        db.from('rehab_sessions').insert({
+
+      if (matchedPatient && session.exerciseId !== 'CLINIC_CHECKIN') {
+        const utcIso = new Date().toISOString().slice(0, 10);
+        const localIso = formatLocalIsoDate(new Date());
+        const targetDates = new Set<string>(
+          [body.scheduledDate, utcIso, localIso].filter((d): d is string => Boolean(d && d.trim())),
+        );
+        const existingSchedules = [...(matchedPatient.rehabSchedules ?? [])];
+        let matchedAnyToday = false;
+        let updatedSchedules = existingSchedules.map((item) => {
+          if (!targetDates.has(item.scheduledDate)) return item;
+          matchedAnyToday = true;
+          if (
+            body.markDailyCompleted === true ||
+            session.activityType === 'minigame' ||
+            item.exerciseId === session.exerciseId ||
+            (!item.exerciseId && item.modpackId === session.exerciseId)
+          ) {
+            return { ...item, status: 'COMPLETED' as const };
+          }
+          return item;
+        });
+
+        const anyActiveLeft = updatedSchedules.some(
+          (item) => targetDates.has(item.scheduledDate) && item.status === 'ACTIVE',
+        );
+        if (!anyActiveLeft && matchedAnyToday) {
+          updatedSchedules = updatedSchedules.map((item) =>
+            targetDates.has(item.scheduledDate) ? { ...item, status: 'COMPLETED' as const } : item,
+          );
+        }
+
+        if (!matchedAnyToday && (body.markDailyCompleted === true || session.activityType === 'minigame')) {
+          updatedSchedules.push({
+            id: `sched-done-${Date.now()}`,
+            patientId: matchedPatient.id,
+            ptId: matchedPatient.delegatedToPtId || matchedPatient.assignedPtId,
+            scheduledDate: body.scheduledDate || localIso || utcIso,
+            exerciseId: session.exerciseId,
+            sets: Math.max(1, session.completedSets || 1),
+            reps: Math.max(1, session.completedReps || 1),
+            status: 'COMPLETED',
+            notes: 'Completed daily physical therapy at Kiosk',
+          });
+        }
+        matchedPatient.rehabSchedules = updatedSchedules;
+      }
+
+      await persistToSupabase(supabase, async (db) => {
+        await db.from('rehab_sessions').insert({
           patient_id: session.patientId,
           exercise_id: session.exerciseId,
           completed_sets: session.completedSets,
@@ -2577,8 +2637,25 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           pain_stop_triggered: session.painStopTriggered,
           kinematics_replay: session.kinematicsReplay,
           minigame_score: session.minigameScore ?? null,
-        }),
-      );
+        });
+        if (matchedPatient && session.exerciseId !== 'CLINIC_CHECKIN') {
+          await db
+            .from('patients')
+            .update({
+              history: {
+                gender: matchedPatient.gender ?? 'ชาย',
+                faceBiometricStatus: matchedPatient.faceBiometricStatus ?? 'PENDING',
+                faceFramesCount: matchedPatient.faceFramesCount ?? 0,
+                faceImageUrl: matchedPatient.faceImageUrl ?? null,
+                masterEmbedding: matchedPatient.masterEmbedding ?? null,
+                angleEmbeddings: matchedPatient.angleEmbeddings ?? null,
+                rehabSchedules: matchedPatient.rehabSchedules ?? [],
+              },
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', matchedPatient.id);
+        }
+      });
       return jsonResponse({ session }, 201);
     }
 

@@ -4,6 +4,8 @@ import { KioskPortalApp, PhysicalCardGame, type PhysicalCardGameSummary } from '
 import { PtPortalApp } from '@apps/pt';
 import {
   DrTechCaresApiClient,
+  isPatientCompletedTodayInStorage,
+  markPatientCompletedTodayInStorage,
   resolveTodayPatientSchedule,
   type UserAccount,
 } from '@drtechcares/api-client';
@@ -13,7 +15,7 @@ import {
   KioskBiometricLoginView,
   type KioskLoginSuccessPayload,
 } from './components/KioskBiometricLoginView';
-import { Shuffle } from 'lucide-react';
+import { CheckCircle2, Shuffle } from 'lucide-react';
 import {
   RandomHandStartPrompt,
   pickRandomHandSide,
@@ -48,12 +50,16 @@ export function App() {
   const [allowRestDayPractice, setAllowRestDayPractice] = useState(false);
   const [trainingStage, setTrainingStage] = useState<'overview' | 'rehab_exercises' | 'minigame'>('overview');
   const [randomHandSide, setRandomHandSide] = useState<HandChallengeSide>(() => pickRandomHandSide());
+  const [completedTodaySession, setCompletedTodaySession] = useState(false);
+  const [completedTodayExerciseIds, setCompletedTodayExerciseIds] = useState<string[]>([]);
 
   useEffect(() => {
     setAllowRestDayPractice(false);
     setTrainingStage('overview');
     setRandomHandSide(pickRandomHandSide());
-  }, [authenticatedPatient]);
+    setCompletedTodaySession(false);
+    setCompletedTodayExerciseIds([]);
+  }, [authenticatedPatient?.patient.id]);
 
   const apiClient = useMemo(
     () =>
@@ -147,17 +153,59 @@ export function App() {
         authenticatedPatient.todayExercises && authenticatedPatient.todayExercises.length > 0
           ? authenticatedPatient.todayExercises
           : todaySchedule.todayExercises;
+      const hasCompletedRehabToday = Boolean(
+        completedTodaySession ||
+          authenticatedPatient.completedToday ||
+          todaySchedule.completedToday ||
+          isPatientCompletedTodayInStorage(authenticatedPatient.patient.id, todaySchedule.todayIso) ||
+          isPatientCompletedTodayInStorage(authenticatedPatient.patient.hn, todaySchedule.todayIso),
+      );
 
       const prescribedOptions = mapTodayExercisesToPrescriptions(todayExercises);
+
+      const markDailyRehabDone = () => {
+        markPatientCompletedTodayInStorage(
+          [authenticatedPatient.patient.id, authenticatedPatient.patient.hn],
+          todaySchedule.todayIso,
+        );
+        setCompletedTodaySession(true);
+        setAuthenticatedPatient((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            completedToday: true,
+            rehabSchedules: (prev.rehabSchedules ?? []).map((item) =>
+              item.scheduledDate === todaySchedule.todayIso
+                ? { ...item, status: 'COMPLETED' as const }
+                : item,
+            ),
+            todayExercises: (prev.todayExercises ?? []).map((ex) => ({
+              ...ex,
+              status: 'COMPLETED' as const,
+            })),
+          };
+        });
+      };
 
       const handleExitToLogin = () => {
         setAllowRestDayPractice(false);
         setTrainingStage('overview');
+        setCompletedTodaySession(false);
+        setCompletedTodayExerciseIds([]);
         setAuthenticatedPatient(null);
         setKioskMode('login');
       };
 
       const handleExerciseCompleted = async (ex: ExercisePrescriptionOption) => {
+        const nextIds = completedTodayExerciseIds.includes(ex.exercise_id)
+          ? completedTodayExerciseIds
+          : [...completedTodayExerciseIds, ex.exercise_id];
+        setCompletedTodayExerciseIds(nextIds);
+        const allDoneNow =
+          prescribedOptions.length <= 1 || nextIds.length >= prescribedOptions.length;
+        if (allDoneNow) {
+          markDailyRehabDone();
+        }
         try {
           await apiClient.recordRehabSession({
             patientId: authenticatedPatient.patient.id,
@@ -171,6 +219,8 @@ export function App() {
             painStopTriggered: false,
             aiFeedback: `Completed prescribed ${ex.name_th} (${ex.target_reps} reps)`,
             kinematicsReplay: [],
+            scheduledDate: todaySchedule.todayIso,
+            markDailyCompleted: allDoneNow,
           });
         } catch {
           // Keep Kiosk flow responsive even if offline
@@ -178,6 +228,7 @@ export function App() {
       };
 
       const saveTrainingSession = async (summary: PhysicalCardGameSummary) => {
+        markDailyRehabDone();
         const accuracy = Math.round((summary.correct / Math.max(1, summary.total)) * 100);
         try {
           await apiClient.recordRehabSession({
@@ -193,11 +244,96 @@ export function App() {
             aiFeedback: `Cognitive Accuracy ${accuracy}% (${summary.correct}/${summary.total})`,
             kinematicsReplay: [],
             minigameScore: summary,
+            scheduledDate: todaySchedule.todayIso,
+            markDailyCompleted: true,
           });
         } catch {
           // Allow patient summary screen to remain responsive even if offline
         }
       };
+
+      if (hasCompletedRehabToday && trainingStage === 'overview') {
+        return (
+          <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
+            <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm border-b border-white/20">
+              <div className="flex items-center gap-2 font-bold">
+                <span className="px-2.5 py-0.5 rounded-full bg-emerald-400/25 border border-emerald-200/40 text-white">
+                  Completed Today • ทำกายภาพวันนี้เรียบร้อยแล้ว
+                </span>
+                <span>
+                  ผู้ป่วย: {authenticatedPatient.patient.fullName} (HN: {authenticatedPatient.patient.hn})
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleExitToLogin}
+                className="rounded-xl border border-white/30 bg-white/15 px-3 py-1.5 font-bold text-white hover:bg-white/25 cursor-pointer"
+              >
+                ← กลับหน้าสแกนใบหน้า (Kiosk Login)
+              </button>
+            </div>
+            <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
+              <div className="w-full max-w-2xl rounded-3xl bg-white border-2 border-emerald-400 shadow-2xl p-6 sm:p-10 text-center">
+                <div className="mx-auto w-20 h-20 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center shadow-inner mb-5">
+                  <CheckCircle2 className="h-11 w-11" />
+                </div>
+                <span className="inline-block px-3.5 py-1 rounded-full bg-sky-50 border border-sky-200 text-[#0F4C81] text-xs font-extrabold mb-3">
+                  จำกัดการทำกายภาพบำบัด 1 ครั้งต่อ 1 วัน • ประจำวันที่ {todaySchedule.todayIso}
+                </span>
+                <h1 className="text-2xl sm:text-3xl font-black text-[#0F4C81]">
+                  คุณได้ทำการกายภาพของวันนี้ไปแล้ว ( {authenticatedPatient.patient.fullName} )
+                </h1>
+                <p className="text-sm sm:text-base text-slate-600 mt-3 leading-relaxed">
+                  ระบบอนุญาตให้ทำกายภาพบำบัดได้{' '}
+                  <span className="font-extrabold text-[#0284C7]">1 ครั้ง ต่อ 1 วันเท่านั้น</span>{' '}
+                  และได้บันทึกผลการกายภาพของคุณในวันนี้เรียบร้อยแล้ว
+                  <br />
+                  <span className="font-semibold text-emerald-700">
+                    กรุณากลับมาฝึกอีกครั้งในวันนัดหมายถัดไป
+                    {authenticatedPatient.patient.nextAppointmentDate
+                      ? ` (${authenticatedPatient.patient.nextAppointmentDate})`
+                      : ''}
+                  </span>
+                </p>
+
+                {todayExercises.length > 0 && (
+                  <div className="mt-6 space-y-2.5 text-left max-h-60 overflow-y-auto pr-1">
+                    {todayExercises.map((item, idx) => (
+                      <div
+                        key={item.id}
+                        className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 flex items-center justify-between gap-3"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="shrink-0 w-7 h-7 rounded-full bg-emerald-600 text-white text-xs font-black flex items-center justify-center">
+                            {idx + 1}
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-sm font-extrabold text-slate-900 truncate">{item.nameTh}</p>
+                            <p className="text-[11px] text-slate-500 truncate">{item.nameEn}</p>
+                          </div>
+                        </div>
+                        <span className="shrink-0 rounded-xl bg-white border border-emerald-300 px-3 py-1 text-xs font-extrabold text-emerald-700">
+                          ทำครบแล้ววันนี้ ✓
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="mt-7">
+                  <button
+                    type="button"
+                    onClick={handleExitToLogin}
+                    className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#10B981] hover:opacity-95 text-white font-black text-sm sm:text-base shadow-lg cursor-pointer transition"
+                  >
+                    ← กลับหน้าสแกนใบหน้า (Kiosk Login)
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
 
       if (!hasAppointmentToday && !allowRestDayPractice) {
         return (
@@ -449,7 +585,10 @@ export function App() {
               }}
               prescribedExercises={prescribedOptions}
               onExerciseCompleted={handleExerciseCompleted}
-              onAllExercisesCompleted={() => setTrainingStage('minigame')}
+              onAllExercisesCompleted={() => {
+                markDailyRehabDone();
+                setTrainingStage('minigame');
+              }}
               onEmergencyStop={({ reason }) => {
                 void apiClient
                   .createStaffCall(
@@ -478,13 +617,23 @@ export function App() {
               </span>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setTrainingStage('rehab_exercises')}
-                className="rounded-xl border border-white/30 bg-white/15 px-3 py-1.5 font-bold text-white hover:bg-white/25 cursor-pointer"
-              >
-                ← กลับหน้าท่ากายภาพบำบัด
-              </button>
+              {!hasCompletedRehabToday ? (
+                <button
+                  type="button"
+                  onClick={() => setTrainingStage('rehab_exercises')}
+                  className="rounded-xl border border-white/30 bg-white/15 px-3 py-1.5 font-bold text-white hover:bg-white/25 cursor-pointer"
+                >
+                  ← กลับหน้าท่ากายภาพบำบัด
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setTrainingStage('overview')}
+                  className="rounded-xl border border-white/30 bg-white/15 px-3 py-1.5 font-bold text-white hover:bg-white/25 cursor-pointer"
+                >
+                  ← ดูสรุปผลการกายภาพวันนี้
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleExitToLogin}
@@ -502,8 +651,12 @@ export function App() {
             </div>
             <PhysicalCardGame
               patientName={`${authenticatedPatient.patient.fullName} (${authenticatedPatient.patient.hn})`}
+              allowReplay={false}
               onSessionFinished={saveTrainingSession}
-              onComplete={handleExitToLogin}
+              onComplete={() => {
+                markDailyRehabDone();
+                setTrainingStage('overview');
+              }}
             />
           </div>
         </div>

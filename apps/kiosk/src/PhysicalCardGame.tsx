@@ -249,6 +249,7 @@ interface PhysicalCardGameProps {
   patientName: string;
   onComplete: (summary: PhysicalCardGameSummary) => void;
   onSessionFinished?: (summary: PhysicalCardGameSummary) => Promise<void> | void;
+  allowReplay?: boolean;
 }
 
 interface CoverTransform {
@@ -575,7 +576,12 @@ function MinigameVoiceBar({
   );
 }
 
-export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }: PhysicalCardGameProps) {
+export function PhysicalCardGame({
+  patientName,
+  onComplete,
+  onSessionFinished,
+  allowReplay = true,
+}: PhysicalCardGameProps) {
   const { lang, t } = useClinicalI18n();
   const [cards, setCards] = useState<CognitiveCardQuestion[]>(() => sampleTenCognitiveCards());
   const [index, setIndex] = useState(0);
@@ -1570,13 +1576,15 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
         </div>
 
         <div className="flex flex-wrap items-center justify-center gap-5 pt-2">
-          <button
-            type="button"
-            onClick={handleReplay}
-            className="mg-summary-btn inline-flex items-center gap-3 rounded-3xl border-2 border-indigo-200 bg-indigo-50 min-h-[84px] px-10 py-5 font-black text-indigo-700 hover:bg-indigo-100 active:scale-95 transition cursor-pointer"
-          >
-            <RotateCcw className="h-8 w-8 shrink-0" /> เล่นใหม่อีกครั้ง
-          </button>
+          {allowReplay && (
+            <button
+              type="button"
+              onClick={handleReplay}
+              className="mg-summary-btn inline-flex items-center gap-3 rounded-3xl border-2 border-indigo-200 bg-indigo-50 min-h-[84px] px-10 py-5 font-black text-indigo-700 hover:bg-indigo-100 active:scale-95 transition cursor-pointer"
+            >
+              <RotateCcw className="h-8 w-8 shrink-0" /> เล่นใหม่อีกครั้ง
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {

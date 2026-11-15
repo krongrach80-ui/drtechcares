@@ -8,7 +8,9 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   clampTtsText,
   createCloudDelegatedRouter,
+  formatLocalIsoDate,
   normalizeTtsLang,
+  resolveTodayPatientSchedule,
   synthesizeTtsAudio,
 } from '../index';
 import { hydrateStateFromSupabase, type CloudRouterState } from '../supabasePersistence';
@@ -552,6 +554,170 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(result?.provider).toBe('google-gtx');
     expect(result?.contentType).toBe('audio/mpeg');
     expect(result?.audio.byteLength).toBe(512);
+  });
+
+  it('enforces 1 rehab session per day by marking completedToday in resolveTodayPatientSchedule and /api/sessions', async () => {
+    const todayIso = formatLocalIsoDate(new Date());
+    const baseSchedule = {
+      id: 'sched-1',
+      patientId: 'pat-1',
+      ptId: 'user-pt-1',
+      scheduledDate: todayIso,
+      exerciseId: 'ex-shoulder-flexion-r',
+      sets: 3,
+      reps: 10,
+      status: 'ACTIVE' as const,
+    };
+
+    const beforeDone = resolveTodayPatientSchedule({
+      rehabSchedules: [baseSchedule],
+      rehabSessions: [
+        {
+          id: 'sess-checkin',
+          patientId: 'pat-1',
+          activityType: 'physio_exercise',
+          exerciseId: 'CLINIC_CHECKIN',
+          exerciseName: 'Check-in',
+          completedSets: 0,
+          completedReps: 0,
+          accuracyPercent: 100,
+          maxRomDeg: 0,
+          painStopTriggered: false,
+          aiFeedback: 'Checked in',
+          kinematicsReplay: [],
+          createdAt: `${todayIso}T08:00:00.000Z`,
+        },
+      ],
+    });
+    expect(beforeDone.hasAppointmentToday).toBe(true);
+    expect(beforeDone.completedToday).toBe(false);
+    expect(beforeDone.todayExercises[0]?.status).toBe('ACTIVE');
+
+    const afterSession = resolveTodayPatientSchedule({
+      rehabSchedules: [baseSchedule],
+      rehabSessions: [
+        {
+          id: 'sess-physio-1',
+          patientId: 'pat-1',
+          activityType: 'physio_exercise',
+          exerciseId: 'ex-shoulder-flexion-r',
+          exerciseName: 'ยกแขนตรงไปด้านหน้า (ขวา)',
+          completedSets: 3,
+          completedReps: 10,
+          accuracyPercent: 100,
+          maxRomDeg: 145,
+          painStopTriggered: false,
+          aiFeedback: 'Completed',
+          kinematicsReplay: [],
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+    expect(afterSession.completedToday).toBe(true);
+    expect(afterSession.todayExercises[0]?.status).toBe('COMPLETED');
+
+    // Router end-to-end check with POST /api/sessions -> /api/biometric/index + /api/biometric/verify
+    const dailyRouter = createCloudDelegatedRouter({});
+    const ptLogin = await callRouter(dailyRouter, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const { token: ptToken } = (await ptLogin.json()) as { token: string };
+    const dailyCentroid = makeHybridEmbedding(5.42);
+    const rawFrames = [
+      ...Array.from({ length: 4 }, () => ({ pose: 'front', vector: dailyCentroid, qualityScore: 0.96 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'left', vector: dailyCentroid, qualityScore: 0.91 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'right', vector: dailyCentroid, qualityScore: 0.92 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'nod', vector: dailyCentroid, qualityScore: 0.93 })),
+    ];
+    const enrollRes = await callRouter(dailyRouter, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-DAILY-01',
+        fullName: 'คุณทดสอบ วันละหนึ่งครั้ง',
+        age: 60,
+        diagnosis: 'Shoulder Rehab',
+        frontalCentroid: dailyCentroid,
+        overallCentroid: dailyCentroid,
+        rawFrames,
+      },
+    });
+    expect(enrollRes.status).toBe(201);
+    const { patient } = (await enrollRes.json()) as { patient: { id: string } };
+
+    // Schedule today's rehab for the patient
+    const updateSchedRes = await callRouter(dailyRouter, `/api/patients/${patient.id}`, {
+      method: 'PUT',
+      token: ptToken,
+      body: {
+        rehabSchedules: [
+          {
+            id: 'sched-daily-1',
+            patientId: patient.id,
+            ptId: 'user-pt-1',
+            scheduledDate: todayIso,
+            exerciseId: 'ex-shoulder-flexion-r',
+            sets: 3,
+            reps: 10,
+            status: 'ACTIVE',
+          },
+        ],
+      },
+    });
+    expect(updateSchedRes.status).toBe(200);
+
+    const beforeVerify = await callRouter(dailyRouter, '/api/biometric/verify', {
+      method: 'POST',
+      body: { probeVector: dailyCentroid },
+    });
+    expect(beforeVerify.status).toBe(200);
+    const beforeVerifyJson = (await beforeVerify.json()) as {
+      matched: boolean;
+      hasAppointmentToday: boolean;
+      completedToday: boolean;
+    };
+    expect(beforeVerifyJson.matched).toBe(true);
+    expect(beforeVerifyJson.hasAppointmentToday).toBe(true);
+    expect(beforeVerifyJson.completedToday).toBe(false);
+
+    const sessionRes = await callRouter(dailyRouter, '/api/sessions', {
+      method: 'POST',
+      body: {
+        patientId: patient.id,
+        activityType: 'physio_exercise',
+        exerciseId: 'ex-shoulder-flexion-r',
+        exerciseName: 'ยกแขนตรงไปด้านหน้า (ขวา)',
+        completedSets: 3,
+        completedReps: 10,
+        accuracyPercent: 100,
+        maxRomDeg: 145,
+        painStopTriggered: false,
+        scheduledDate: todayIso,
+        markDailyCompleted: true,
+      },
+    });
+    expect(sessionRes.status).toBe(201);
+
+    const afterVerify = await callRouter(dailyRouter, '/api/biometric/verify', {
+      method: 'POST',
+      body: { probeVector: dailyCentroid },
+    });
+    expect(afterVerify.status).toBe(200);
+    const afterVerifyJson = (await afterVerify.json()) as {
+      completedToday: boolean;
+      todayExercises: Array<{ status: string }>;
+    };
+    expect(afterVerifyJson.completedToday).toBe(true);
+    expect(afterVerifyJson.todayExercises[0]?.status).toBe('COMPLETED');
+
+    const indexRes = await callRouter(dailyRouter, '/api/biometrics/index');
+    expect(indexRes.status).toBe(200);
+    const indexJson = (await indexRes.json()) as {
+      index: Array<{ patientId: string; completedToday?: boolean }>;
+    };
+    const indexEntry = indexJson.index.find((e) => e.patientId === patient.id);
+    expect(indexEntry?.completedToday).toBe(true);
   });
 });
 

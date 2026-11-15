@@ -78,6 +78,7 @@ export interface PatientBiometricIndexEntry {
   rehabSchedules?: RehabScheduleItem[];
   todayExercises?: TodayPrescribedExerciseItem[];
   hasAppointmentToday?: boolean;
+  completedToday?: boolean;
 }
 
 export interface PatientRecord {
@@ -257,6 +258,7 @@ export interface KioskFaceVerifyResponse extends BiometricVerificationResult {
   rehabSchedules?: RehabScheduleItem[];
   todayExercises?: TodayPrescribedExerciseItem[];
   hasAppointmentToday?: boolean;
+  completedToday?: boolean;
 }
 
 export interface CloudClientConfig {
@@ -825,7 +827,12 @@ export class DrTechCaresApiClient {
     return res.sessions;
   }
 
-  async recordRehabSession(session: Omit<RehabSessionRecord, 'id' | 'createdAt'>): Promise<RehabSessionRecord> {
+  async recordRehabSession(
+    session: Omit<RehabSessionRecord, 'id' | 'createdAt'> & {
+      scheduledDate?: string;
+      markDailyCompleted?: boolean;
+    },
+  ): Promise<RehabSessionRecord> {
     const res = await this.request<{ session: RehabSessionRecord }>('/api/sessions', {
       method: 'POST',
       body: JSON.stringify(session),
@@ -1122,6 +1129,56 @@ function buildExerciseSummary(
   };
 }
 
+export const DAILY_REHAB_DONE_STORAGE_KEY = 'drtechcares_daily_rehab_done_v1';
+
+function readDailyRehabDoneMap(): Record<string, string> {
+  if (typeof globalThis.window === 'undefined') return {};
+  try {
+    const raw = globalThis.window.localStorage.getItem(DAILY_REHAB_DONE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function isPatientCompletedTodayInStorage(
+  patientKey: string,
+  todayIso: string = formatLocalIsoDate(),
+): boolean {
+  if (!patientKey) return false;
+  const map = readDailyRehabDoneMap();
+  return map[patientKey] === todayIso;
+}
+
+export function markPatientCompletedTodayInStorage(
+  patientKeys: readonly string[],
+  todayIso: string = formatLocalIsoDate(),
+): void {
+  if (typeof globalThis.window === 'undefined') return;
+  try {
+    const map = readDailyRehabDoneMap();
+    for (const key of patientKeys) {
+      const trimmed = key.trim();
+      if (trimmed) {
+        map[trimmed] = todayIso;
+      }
+    }
+    globalThis.window.localStorage.setItem(DAILY_REHAB_DONE_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // Ignore storage quota or private mode restrictions
+  }
+}
+
+function isSameCalendarDate(isoOrTimestamp: string | undefined, targetIso: string): boolean {
+  if (!isoOrTimestamp) return false;
+  if (isoOrTimestamp.slice(0, 10) === targetIso) return true;
+  const parsed = new Date(isoOrTimestamp);
+  if (Number.isNaN(parsed.getTime())) return false;
+  return formatLocalIsoDate(parsed) === targetIso;
+}
+
 /**
  * Resolves whether a patient has an appointment today (`todayIso`) and the list of
  * prescribed exercises/poses to perform today. Explicit `rehabSchedules` entries take
@@ -1129,14 +1186,17 @@ function buildExerciseSummary(
  */
 export function resolveTodayPatientSchedule(input: {
   rehabSchedules?: readonly RehabScheduleItem[];
+  rehabSessions?: readonly RehabSessionRecord[];
   todayRoutine?: DailyScheduleDay | null;
   nextAppointmentDate?: string;
   exercisesCatalog?: readonly ExerciseConfig[];
   serverTodayExercises?: readonly TodayPrescribedExerciseItem[];
+  completedTodayOverride?: boolean;
   now?: Date;
 }): {
   todayIso: string;
   hasAppointmentToday: boolean;
+  completedToday: boolean;
   todayExercises: TodayPrescribedExerciseItem[];
 } {
   const todayIso = formatLocalIsoDate(input.now ?? new Date());
@@ -1147,14 +1207,30 @@ export function resolveTodayPatientSchedule(input: {
     fallbackById.set(item.exerciseId, item);
   }
 
+  const hasCompletedSessionToday = (input.rehabSessions ?? []).some(
+    (s) =>
+      s.exerciseId !== 'CLINIC_CHECKIN' &&
+      isSameCalendarDate(s.createdAt, todayIso) &&
+      (s.activityType === 'minigame' || (s.completedReps ?? 0) > 0 || (s.completedSets ?? 0) > 0),
+  );
+
   const schedules = input.rehabSchedules ?? [];
   if (schedules.length > 0) {
     const scheduledToday = schedules.filter(
       (item) => item.scheduledDate === todayIso && (item.status === 'ACTIVE' || item.status === 'COMPLETED'),
     );
     if (scheduledToday.length === 0) {
-      return { todayIso, hasAppointmentToday: false, todayExercises: [] };
+      return {
+        todayIso,
+        hasAppointmentToday: false,
+        completedToday: Boolean(input.completedTodayOverride || hasCompletedSessionToday),
+        todayExercises: [],
+      };
     }
+    const allScheduledCompleted = scheduledToday.every((item) => item.status === 'COMPLETED');
+    const completedToday = Boolean(
+      input.completedTodayOverride || hasCompletedSessionToday || allScheduledCompleted,
+    );
     const todayExercises: TodayPrescribedExerciseItem[] = scheduledToday.map((item) => {
       const exId = item.exerciseId || item.modpackId || 'minigame';
       const meta = buildExerciseSummary(exId, catalog, fallbackById, item.modpackId);
@@ -1168,13 +1244,14 @@ export function resolveTodayPatientSchedule(input: {
         sets: item.sets,
         reps: item.reps,
         holdSec: meta.holdSec,
-        status: item.status === 'COMPLETED' ? 'COMPLETED' : 'ACTIVE',
+        status: completedToday || item.status === 'COMPLETED' ? 'COMPLETED' : 'ACTIVE',
         notes: item.notes,
       };
     });
-    return { todayIso, hasAppointmentToday: true, todayExercises };
+    return { todayIso, hasAppointmentToday: true, completedToday, todayExercises };
   }
 
+  const completedToday = Boolean(input.completedTodayOverride || hasCompletedSessionToday);
   const routine = input.todayRoutine;
   if (routine?.dayType === 'training' && (routine.exercises ?? []).length > 0) {
     const todayExercises: TodayPrescribedExerciseItem[] = routine.exercises.map((item, idx) => {
@@ -1189,16 +1266,17 @@ export function resolveTodayPatientSchedule(input: {
         sets: item.sets,
         reps: item.reps,
         holdSec: item.holdSec ?? meta.holdSec,
-        status: 'ACTIVE',
+        status: completedToday ? 'COMPLETED' : 'ACTIVE',
       };
     });
-    return { todayIso, hasAppointmentToday: true, todayExercises };
+    return { todayIso, hasAppointmentToday: true, completedToday, todayExercises };
   }
 
   if (routine?.dayType === 'training' && input.nextAppointmentDate === todayIso) {
     return {
       todayIso,
       hasAppointmentToday: true,
+      completedToday,
       todayExercises: [
         {
           id: 'routine-today-default',
@@ -1210,13 +1288,13 @@ export function resolveTodayPatientSchedule(input: {
           sets: 1,
           reps: 10,
           holdSec: 3,
-          status: 'ACTIVE',
+          status: completedToday ? 'COMPLETED' : 'ACTIVE',
         },
       ],
     };
   }
 
-  return { todayIso, hasAppointmentToday: false, todayExercises: [] };
+  return { todayIso, hasAppointmentToday: false, completedToday, todayExercises: [] };
 }
 
 import { createCloudRouter } from './cloudRouter';
