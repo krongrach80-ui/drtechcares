@@ -70,7 +70,8 @@ export function measureLiveJointAngleAndTilt(
   landmarks: readonly NormalizedLandmark[],
   targetJoint: ExercisePrescriptionOption['target_joint'],
 ): LiveJointMeasurement {
-  const MIN_VIS = 0.25;
+  const UPPER_MIN_VIS = 0.02;
+  const LOWER_MIN_VIS = 0.2;
   const lSh = landmarks[POSE_INDEX.LEFT_SHOULDER];
   const rSh = landmarks[POSE_INDEX.RIGHT_SHOULDER];
   const lHip = landmarks[POSE_INDEX.LEFT_HIP];
@@ -82,8 +83,8 @@ export function measureLiveJointAngleAndTilt(
     rSh &&
     lHip &&
     rHip &&
-    (lHip.visibility ?? 0) >= MIN_VIS &&
-    (rHip.visibility ?? 0) >= MIN_VIS
+    (lHip.visibility ?? 0) >= LOWER_MIN_VIS &&
+    (rHip.visibility ?? 0) >= LOWER_MIN_VIS
   ) {
     const midShX = (lSh.x + rSh.x) / 2;
     const midShY = (lSh.y + rSh.y) / 2;
@@ -92,29 +93,38 @@ export function measureLiveJointAngleAndTilt(
     trunkTiltDeg = Math.abs(
       (Math.atan2(midShX - midHipX, Math.max(0.05, midHipY - midShY)) * 180) / Math.PI,
     );
-  } else if (lSh && rSh && (lSh.visibility ?? 0) >= MIN_VIS && (rSh.visibility ?? 0) >= MIN_VIS) {
+  } else if (
+    lSh &&
+    rSh &&
+    (lSh.visibility ?? 0) >= UPPER_MIN_VIS &&
+    (rSh.visibility ?? 0) >= UPPER_MIN_VIS
+  ) {
     trunkTiltDeg =
       Math.abs((Math.atan2(rSh.y - lSh.y, Math.max(0.08, Math.abs(lSh.x - rSh.x))) * 180) / Math.PI) *
       0.55;
   }
+
+  const calibrateShoulderElevationDeg = (rawDeg: number): number =>
+    rawDeg > 85 ? Math.min(180, 85 + (rawDeg - 85) * 1.25) : rawDeg;
 
   const computeArmElevationDeg = (side: 'left' | 'right'): number | null => {
     const sh = landmarks[side === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
     const elbow = landmarks[side === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
     const wrist = landmarks[side === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
     const hip = landmarks[side === 'left' ? POSE_INDEX.LEFT_HIP : POSE_INDEX.RIGHT_HIP];
-    if (!sh || (sh.visibility ?? 0) < MIN_VIS) return null;
+    if (!sh || (sh.visibility ?? 0) < UPPER_MIN_VIS) return null;
 
     const shScaled = { x: sh.x, y: sh.y, z: (sh.z ?? 0) * 0.35 };
     const refHip =
-      hip && (hip.visibility ?? 0) >= MIN_VIS && hip.y <= 0.98
+      hip && (hip.visibility ?? 0) >= LOWER_MIN_VIS && hip.y <= 0.98
         ? { x: hip.x, y: hip.y, z: (hip.z ?? 0) * 0.35 }
         : { x: sh.x, y: sh.y + 0.35, z: (sh.z ?? 0) * 0.35 };
 
     const candidates: number[] = [];
     for (const pt of [wrist, elbow]) {
-      if (!pt || (pt.visibility ?? 0) < MIN_VIS) continue;
-      const dx = pt.x - sh.x;
+      if (!pt || (pt.visibility ?? 0) < UPPER_MIN_VIS) continue;
+      // Scale horizontal span for 4:3 / 16:9 webcam aspect ratio so abducted arms read true angle
+      const dx = (pt.x - sh.x) * 1.22;
       const dy = pt.y - sh.y;
       const len = Math.hypot(dx, dy);
       if (len >= 0.03) {
@@ -122,9 +132,28 @@ export function measureLiveJointAngleAndTilt(
         const elev2D = (Math.acos(cosDown) * 180) / Math.PI;
         const ptScaled = { x: pt.x, y: pt.y, z: (pt.z ?? 0) * 0.35 };
         const angle3D = computeJointAngle3D(refHip, shScaled, ptScaled);
-        candidates.push(Math.max(elev2D, angle3D));
+        candidates.push(calibrateShoulderElevationDeg(Math.max(elev2D, angle3D)));
       }
     }
+
+    // Measure forearm elevation vector (elbow -> wrist) when raised for close-up webcam perspective
+    if (
+      elbow &&
+      wrist &&
+      (elbow.visibility ?? 0) >= UPPER_MIN_VIS &&
+      (wrist.visibility ?? 0) >= UPPER_MIN_VIS &&
+      wrist.y < elbow.y
+    ) {
+      const fDx = (wrist.x - elbow.x) * 1.22;
+      const fDy = wrist.y - elbow.y;
+      const fLen = Math.hypot(fDx, fDy);
+      if (fLen >= 0.03) {
+        const fCosDown = Math.max(-1, Math.min(1, fDy / fLen));
+        const forearmElev2D = (Math.acos(fCosDown) * 180) / Math.PI;
+        candidates.push(calibrateShoulderElevationDeg(forearmElev2D));
+      }
+    }
+
     return candidates.length > 0 ? Math.max(...candidates) : null;
   };
 
@@ -137,13 +166,14 @@ export function measureLiveJointAngleAndTilt(
     const oppositeSide: 'left' | 'right' = primarySide === 'left' ? 'right' : 'left';
     const primaryDeg = computeArmElevationDeg(primarySide);
     const oppositeDeg = computeArmElevationDeg(oppositeSide);
-    // Strict side enforcement: measure ONLY the prescribed arm; never substitute the opposite arm
-    romDeg = primaryDeg !== null ? primaryDeg : 0;
-    oppositeRomDeg = oppositeDeg;
     wrongSideRaised =
       oppositeDeg !== null &&
       oppositeDeg >= 45 &&
       (primaryDeg === null || (primaryDeg < 65 && oppositeDeg > primaryDeg + 18));
+    // Strict side enforcement: measure ONLY the prescribed arm; hold last reading on transient drop
+    romDeg =
+      primaryDeg !== null ? Number(primaryDeg.toFixed(1)) : wrongSideRaised ? 0 : null;
+    oppositeRomDeg = oppositeDeg;
     if (wrongSideRaised) {
       wrongSideBannerTh = getPrescribedLimbPromptTh(targetJoint).bannerAlertTh;
     }
@@ -156,9 +186,9 @@ export function measureLiveJointAngleAndTilt(
       hip &&
       knee &&
       ankle &&
-      (hip.visibility ?? 0) >= MIN_VIS &&
-      (knee.visibility ?? 0) >= MIN_VIS &&
-      (ankle.visibility ?? 0) >= MIN_VIS
+      (hip.visibility ?? 0) >= LOWER_MIN_VIS &&
+      (knee.visibility ?? 0) >= LOWER_MIN_VIS &&
+      (ankle.visibility ?? 0) >= LOWER_MIN_VIS
     ) {
       romDeg = computeJointAngle3D(hip, knee, ankle);
     } else if (
@@ -166,8 +196,8 @@ export function measureLiveJointAngleAndTilt(
       rSh &&
       lHip &&
       rHip &&
-      (lSh.visibility ?? 0) >= MIN_VIS &&
-      (lHip.visibility ?? 0) >= MIN_VIS
+      (lSh.visibility ?? 0) >= UPPER_MIN_VIS &&
+      (lHip.visibility ?? 0) >= LOWER_MIN_VIS
     ) {
       // Fallback for close webcam framing: approximate squat/knee flexion from hip-shoulder vertical span
       const midShY = (lSh.y + rSh.y) / 2;
@@ -189,8 +219,8 @@ export function measureLiveJointAngleAndTilt(
 }
 
 /**
- * Smooths noisy joint ROM readings with a deadband and human-paced slew-rate limiter
- * so gauge arcs and numeric degree displays climb gradually instead of jumping or fluttering.
+ * Smooths noisy joint ROM readings with a compact anti-jitter deadband and responsive slew rate
+ * so gauge arcs and numeric degree readouts track real body movement without artificial lag.
  */
 export function stepSmoothRomAngle(
   currentRom: number | null,
@@ -203,19 +233,49 @@ export function stepSmoothRomAngle(
   }
   const safeDt = Math.min(100, Math.max(1, dtMs));
   const rawDelta = safeTarget - currentRom;
-  // Deadband of 1.2 deg prevents micro-jitter when holding still
-  if (Math.abs(rawDelta) < 1.2) {
+  // Deadband of 0.8 deg suppresses stationary jitter while staying tight to real motion
+  if (Math.abs(rawDelta) < 0.8) {
     return currentRom;
   }
-  // Smooth exponential filter (tau = 240ms) + human-paced slew-rate cap:
-  // Climbs gradually at max 36 deg/sec (~3.5-4s from rest to 150 deg) and lowers at max 48 deg/sec
-  const alpha = 1 - Math.exp(-safeDt / 240);
+  // Responsive exponential filter (tau = 50ms) + natural biomechanical slew cap (260/280 deg/s)
+  const alpha = 1 - Math.exp(-safeDt / 50);
   const emaStep = rawDelta * alpha;
-  const maxUpStep = (36 * safeDt) / 1000;
-  const maxDownStep = (48 * safeDt) / 1000;
+  const maxUpStep = (260 * safeDt) / 1000;
+  const maxDownStep = (280 * safeDt) / 1000;
   const step =
     emaStep > 0 ? Math.min(emaStep, maxUpStep) : Math.max(emaStep, -maxDownStep);
   return Math.max(0, Math.min(180, currentRom + step));
+}
+
+/**
+ * Interpolates 33 pose landmarks at 120Hz between camera inference ticks so canvas lines follow
+ * live movement smoothly without visible frame-stepping.
+ */
+export function interpolatePoseLandmarks(
+  prev: NormalizedLandmark[] | null,
+  next: readonly NormalizedLandmark[],
+  dtMs: number,
+): NormalizedLandmark[] {
+  if (!prev || prev.length !== next.length) {
+    return next.map((lm) => ({ ...lm }));
+  }
+  const safeDt = Math.min(100, Math.max(1, dtMs));
+  const alpha = Math.min(1, 1 - Math.exp(-safeDt / 20));
+  return next.map((target, idx) => {
+    const cur = prev[idx];
+    if (!cur) return { ...target };
+    const vis =
+      target.visibility !== undefined
+        ? (cur.visibility ?? target.visibility) +
+          (target.visibility - (cur.visibility ?? target.visibility)) * alpha
+        : cur.visibility;
+    return {
+      x: cur.x + (target.x - cur.x) * alpha,
+      y: cur.y + (target.y - cur.y) * alpha,
+      z: cur.z + (target.z - cur.z) * alpha,
+      visibility: vis,
+    };
+  });
 }
 
 const LIVE_BODY_BONELINE_PAIRS: readonly [number, number][] = [
@@ -248,6 +308,16 @@ const LIVE_KEYPOINT_INDICES: readonly number[] = [
   POSE_INDEX.LEFT_ANKLE,
   POSE_INDEX.RIGHT_ANKLE,
 ];
+
+const UPPER_BODY_KEYPOINTS = new Set<number>([
+  POSE_INDEX.NOSE,
+  POSE_INDEX.LEFT_SHOULDER,
+  POSE_INDEX.RIGHT_SHOULDER,
+  POSE_INDEX.LEFT_ELBOW,
+  POSE_INDEX.RIGHT_ELBOW,
+  POSE_INDEX.LEFT_WRIST,
+  POSE_INDEX.RIGHT_WRIST,
+]);
 
 function drawLivePoseOverlayOnCanvas(
   canvas: HTMLCanvasElement | null,
@@ -289,8 +359,20 @@ function drawLivePoseOverlayOnCanvas(
   const renderH = vh * coverScale;
   const offsetX = (w - renderW) / 2;
   const offsetY = (h - renderH) / 2;
-  const toCanvasX = (normX: number) => offsetX + (1 - normX) * renderW;
-  const toCanvasY = (normY: number) => offsetY + normY * renderH;
+  const rawCanvasX = (normX: number) => offsetX + (1 - normX) * renderW;
+  const rawCanvasY = (normY: number) => offsetY + normY * renderH;
+  const toCanvasPt = (idx: number, lm: NormalizedLandmark) => {
+    const cx = rawCanvasX(lm.x);
+    const cy = rawCanvasY(lm.y);
+    if (UPPER_BODY_KEYPOINTS.has(idx)) {
+      return {
+        x: Math.max(18, Math.min(w - 18, cx)),
+        y: Math.max(18, Math.min(h - 18, cy)),
+      };
+    }
+    return { x: cx, y: cy };
+  };
+  const minVisFor = (idx: number) => (UPPER_BODY_KEYPOINTS.has(idx) ? 0.02 : 0.2);
 
   const activeColor = opts.isImpostorOrEmergency
     ? '#EF4444'
@@ -353,23 +435,23 @@ function drawLivePoseOverlayOnCanvas(
   for (const [aIdx, bIdx] of LIVE_BODY_BONELINE_PAIRS) {
     const a = primary[aIdx];
     const b = primary[bIdx];
-    if (!a || !b || (a.visibility ?? 0) < 0.25 || (b.visibility ?? 0) < 0.25) continue;
-    const ax = toCanvasX(a.x);
-    const ay = toCanvasY(a.y);
-    const bx = toCanvasX(b.x);
-    const by = toCanvasY(b.y);
+    if (!a || !b || (a.visibility ?? 0) < minVisFor(aIdx) || (b.visibility ?? 0) < minVisFor(bIdx)) {
+      continue;
+    }
+    const aPt = toCanvasPt(aIdx, a);
+    const bPt = toCanvasPt(bIdx, b);
     const emphasized = isHighlightedEdge(aIdx, bIdx);
     const isWrongRaisedEdge = Boolean(opts.wrongSideRaised && isOppositeArmEdge(aIdx, bIdx));
 
     ctx.beginPath();
-    ctx.moveTo(ax, ay);
-    ctx.lineTo(bx, by);
-    ctx.lineWidth = isWrongRaisedEdge ? 6 : emphasized ? 6 : 3.2;
+    ctx.moveTo(aPt.x, aPt.y);
+    ctx.lineTo(bPt.x, bPt.y);
+    ctx.lineWidth = isWrongRaisedEdge ? 6 : emphasized ? 6 : 3.5;
     ctx.strokeStyle = isWrongRaisedEdge
       ? '#EF4444'
       : emphasized
         ? activeColor
-        : 'rgba(56, 189, 248, 0.85)';
+        : 'rgba(56, 189, 248, 0.9)';
     if (isWrongRaisedEdge || emphasized) {
       ctx.shadowColor = isWrongRaisedEdge ? '#EF4444' : activeColor;
       ctx.shadowBlur = 12;
@@ -378,17 +460,53 @@ function drawLivePoseOverlayOnCanvas(
     }
     ctx.stroke();
   }
+
+  // Head/neck guide lines (NOSE -> shoulder midpoint NECK -> both shoulders)
+  const noseLm = primary[POSE_INDEX.NOSE];
+  const lShLm = primary[POSE_INDEX.LEFT_SHOULDER];
+  const rShLm = primary[POSE_INDEX.RIGHT_SHOULDER];
+  if (
+    lShLm &&
+    rShLm &&
+    (lShLm.visibility ?? 0) >= 0.02 &&
+    (rShLm.visibility ?? 0) >= 0.02
+  ) {
+    const lShPt = toCanvasPt(POSE_INDEX.LEFT_SHOULDER, lShLm);
+    const rShPt = toCanvasPt(POSE_INDEX.RIGHT_SHOULDER, rShLm);
+    const neckPt = { x: (lShPt.x + rShPt.x) / 2, y: (lShPt.y + rShPt.y) / 2 };
+
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(13, 148, 136, 0.85)';
+    ctx.lineWidth = 3.2;
+    ctx.beginPath();
+    ctx.moveTo(lShPt.x, lShPt.y);
+    ctx.lineTo(neckPt.x, neckPt.y);
+    ctx.lineTo(rShPt.x, rShPt.y);
+    if (noseLm && (noseLm.visibility ?? 0) >= 0.02) {
+      const nosePt = toCanvasPt(POSE_INDEX.NOSE, noseLm);
+      ctx.moveTo(neckPt.x, neckPt.y);
+      ctx.lineTo(nosePt.x, nosePt.y);
+    }
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(neckPt.x, neckPt.y, 4.5, 0, Math.PI * 2);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = activeColor;
+    ctx.stroke();
+  }
   ctx.shadowBlur = 0;
 
   // Joint keypoints
   for (const idx of LIVE_KEYPOINT_INDICES) {
     const lm = primary[idx];
-    if (!lm || (lm.visibility ?? 0) < 0.25) continue;
-    const px = toCanvasX(lm.x);
-    const py = toCanvasY(lm.y);
+    if (!lm || (lm.visibility ?? 0) < minVisFor(idx)) continue;
+    const pt = toCanvasPt(idx, lm);
     const r = idx === POSE_INDEX.NOSE ? 5 : 6;
     ctx.beginPath();
-    ctx.arc(px, py, r, 0, Math.PI * 2);
+    ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
     ctx.fillStyle = '#FFFFFF';
     ctx.fill();
     ctx.lineWidth = 2.5;
@@ -409,8 +527,12 @@ function drawLivePoseOverlayOnCanvas(
             : POSE_INDEX.NOSE;
   const anchorLm = primary[anchorIdx] ?? primary[POSE_INDEX.NOSE];
   if (anchorLm && opts.romDeg !== null) {
-    const jx = Math.max(64, Math.min(w - 64, toCanvasX(anchorLm.x)));
-    const jy = Math.max(54, Math.min(h - 40, toCanvasY(anchorLm.y) - 42));
+    const anchorPt = toCanvasPt(
+      primary[anchorIdx] ? anchorIdx : POSE_INDEX.NOSE,
+      anchorLm,
+    );
+    const jx = Math.max(64, Math.min(w - 64, anchorPt.x));
+    const jy = Math.max(54, Math.min(h - 40, anchorPt.y - 42));
 
     if (opts.holdRatio > 0) {
       ctx.beginPath();
@@ -456,9 +578,9 @@ function drawLivePoseOverlayOnCanvas(
     const wbw = Math.min(w - 24, wtw + 24);
     const wbh = 32;
     const wx = wrongLm
-      ? Math.max(wbw / 2 + 12, Math.min(w - wbw / 2 - 12, toCanvasX(wrongLm.x)))
+      ? Math.max(wbw / 2 + 12, Math.min(w - wbw / 2 - 12, rawCanvasX(wrongLm.x)))
       : w / 2;
-    const wy = wrongLm ? Math.max(88, Math.min(h - 36, toCanvasY(wrongLm.y) - 34)) : 96;
+    const wy = wrongLm ? Math.max(88, Math.min(h - 36, rawCanvasY(wrongLm.y) - 34)) : 96;
 
     ctx.fillStyle = 'rgba(220, 38, 38, 0.92)';
     ctx.strokeStyle = '#FCA5A5';
@@ -484,9 +606,10 @@ function drawLivePoseOverlayOnCanvas(
       let any = false;
       for (const idx of LIVE_KEYPOINT_INDICES) {
         const lm = person[idx];
-        if (!lm || (lm.visibility ?? 0) < 0.2) continue;
-        const cx = toCanvasX(lm.x);
-        const cy = toCanvasY(lm.y);
+        if (!lm || (lm.visibility ?? 0) < minVisFor(idx)) continue;
+        const pt = toCanvasPt(idx, lm);
+        const cx = pt.x;
+        const cy = pt.y;
         minX = Math.min(minX, cx);
         maxX = Math.max(maxX, cx);
         minY = Math.min(minY, cy);
@@ -694,6 +817,7 @@ export function SmartRehabKioskUI({
     let rafId = 0;
     let poseLandmarker: PoseLandmarker | null = null;
     let offscreenCanvas: HTMLCanvasElement | null = null;
+    let useOffscreenFallback = false;
     let lastVideoTime = -1;
     let lastInferenceAt = 0;
     let lastDetectTs = 0;
@@ -708,6 +832,7 @@ export function SmartRehabKioskUI({
     let trackedExId = selectedExerciseRef.current.exercise_id;
     let targetRomDeg: number | null = null;
     let latestLandmarks: NormalizedLandmark[] | null = null;
+    let renderPrimaryLandmarks: NormalizedLandmark[] | null = null;
     let latestAllLandmarks: NormalizedLandmark[][] = [];
     let latestPoseCount = 0;
     let latestRawTiltDeg = 0;
@@ -812,6 +937,9 @@ export function SmartRehabKioskUI({
                 },
                 runningMode: 'VIDEO',
                 numPoses: 2,
+                minPoseDetectionConfidence: 0.3,
+                minPosePresenceConfidence: 0.3,
+                minTrackingConfidence: 0.3,
               });
               if (!active) {
                 created.close();
@@ -836,6 +964,7 @@ export function SmartRehabKioskUI({
             smoothedTilt = 0;
             targetRomDeg = null;
             latestLandmarks = null;
+            renderPrimaryLandmarks = null;
             latestAllLandmarks = [];
             latestPoseCount = 0;
             latestRawTiltDeg = 0;
@@ -856,44 +985,58 @@ export function SmartRehabKioskUI({
 
           const v = videoRef.current;
           const now = performance.now();
-          const dtMs = lastFrameAt > 0 ? Math.min(100, Math.max(1, now - lastFrameAt)) : 8.3;
+          const wallDtMs = lastFrameAt > 0 ? Math.min(500, Math.max(1, now - lastFrameAt)) : 16.7;
+          const kinematicDtMs = Math.min(100, wallDtMs);
           lastFrameAt = now;
 
-          // Step A: Run AI pose inference whenever a fresh video frame arrives
+          // Step A: Run AI pose inference when a new video frame arrives (zero-copy HTMLVideoElement first)
           if (
             v.readyState >= 2 &&
             v.videoWidth > 0 &&
-            (v.currentTime !== lastVideoTime || now - lastInferenceAt >= 24)
+            (v.currentTime !== lastVideoTime || now - lastInferenceAt >= 36)
           ) {
             lastVideoTime = v.currentTime;
             lastInferenceAt = now;
 
-            if (!offscreenCanvas) {
-              offscreenCanvas = document.createElement('canvas');
-            }
-            const offW = 224;
-            const offH = Math.max(126, Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))));
-            if (offscreenCanvas.width !== offW || offscreenCanvas.height !== offH) {
-              offscreenCanvas.width = offW;
-              offscreenCanvas.height = offH;
-            }
-            const offCtx = offscreenCanvas.getContext('2d', { alpha: false });
-            if (offCtx) {
-              offCtx.drawImage(v, 0, 0, offW, offH);
-            }
-            const source = offCtx ? offscreenCanvas : v;
+            const runDetect = (source: HTMLVideoElement | HTMLCanvasElement, ts: number) =>
+              poseLandmarker!.detectForVideo(source, ts);
 
             try {
               const ts = Math.max(lastDetectTs + 1, Math.round(now));
               lastDetectTs = ts;
-              const poseRes = poseLandmarker.detectForVideo(source, ts);
-              const allLandmarks = poseRes.landmarks ?? [];
+              let poseRes;
+              if (!useOffscreenFallback) {
+                try {
+                  poseRes = runDetect(v, ts);
+                } catch {
+                  useOffscreenFallback = true;
+                }
+              }
+              if (useOffscreenFallback) {
+                if (!offscreenCanvas) {
+                  offscreenCanvas = document.createElement('canvas');
+                }
+                const offW = 256;
+                const offH = Math.max(144, Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))));
+                if (offscreenCanvas.width !== offW || offscreenCanvas.height !== offH) {
+                  offscreenCanvas.width = offW;
+                  offscreenCanvas.height = offH;
+                }
+                const offCtx = offscreenCanvas.getContext('2d', { alpha: false });
+                if (offCtx) {
+                  offCtx.drawImage(v, 0, 0, offW, offH);
+                }
+                poseRes = runDetect(offCtx ? offscreenCanvas : v, ts);
+              }
+
+              const allLandmarks = poseRes?.landmarks ?? [];
               latestAllLandmarks = allLandmarks;
               latestPoseCount = allLandmarks.length;
 
               if (latestPoseCount > 1) {
                 singlePersonRecoveryFrames = 0;
                 latestLandmarks = null;
+                renderPrimaryLandmarks = null;
               } else if (demoPresetRef.current !== 'IMPOSTOR') {
                 const landmarks = allLandmarks[0] ?? null;
                 latestLandmarks = landmarks;
@@ -904,6 +1047,7 @@ export function SmartRehabKioskUI({
                       holdAccumMs = 0;
                       if (lastEmittedHold !== curEx.hold_sec) {
                         lastEmittedHold = curEx.hold_sec;
+                        lastHoldEmitAt = now;
                         setDemoHoldRemainingSec(curEx.hold_sec);
                       }
                     } else {
@@ -918,6 +1062,8 @@ export function SmartRehabKioskUI({
                   if (measured.romDeg !== null) {
                     targetRomDeg = measured.romDeg;
                   }
+                } else {
+                  renderPrimaryLandmarks = null;
                 }
               }
             } catch {
@@ -925,7 +1071,7 @@ export function SmartRehabKioskUI({
             }
           }
 
-          // Step B: 120Hz smooth kinematic interpolation, real-time wall-clock hold timer & canvas redraw
+          // Step B: 120Hz landmark & ROM interpolation + 1:1 wall-clock hold timer + canvas redraw
           const holdTargetMs = Math.max(1000, curEx.hold_sec * 1000);
           if (latestPoseCount > 1) {
             holdAccumMs = 0;
@@ -960,26 +1106,36 @@ export function SmartRehabKioskUI({
               videoHeight: v.videoHeight,
             });
           } else if (latestLandmarks) {
+            renderPrimaryLandmarks = interpolatePoseLandmarks(
+              renderPrimaryLandmarks,
+              latestLandmarks,
+              kinematicDtMs,
+            );
+            const renderLandmarksList: NormalizedLandmark[][] = [
+              renderPrimaryLandmarks,
+              ...latestAllLandmarks.slice(1),
+            ];
+
             const tiltDelta = latestRawTiltDeg - smoothedTilt;
-            if (Math.abs(tiltDelta) >= 0.5) {
-              const tiltAlpha = 1 - Math.exp(-dtMs / 250);
+            if (Math.abs(tiltDelta) >= 0.4) {
+              const tiltAlpha = 1 - Math.exp(-kinematicDtMs / 120);
               smoothedTilt = Math.max(0, smoothedTilt + tiltDelta * tiltAlpha);
             }
             latestTrunkTiltDeg = Number(smoothedTilt.toFixed(1));
-            if (now - lastTiltEmitAt >= 120 && Math.abs(latestTrunkTiltDeg - lastEmittedTilt) >= 0.3) {
+            if (now - lastTiltEmitAt >= 90 && Math.abs(latestTrunkTiltDeg - lastEmittedTilt) >= 0.3) {
               lastEmittedTilt = latestTrunkTiltDeg;
               lastTiltEmitAt = now;
               setDemoTrunkTiltDeg(latestTrunkTiltDeg);
             }
 
             if (targetRomDeg !== null) {
-              smoothedRom = stepSmoothRomAngle(smoothedRom, targetRomDeg, dtMs);
+              smoothedRom = stepSmoothRomAngle(smoothedRom, targetRomDeg, kinematicDtMs);
               const nextEmitRom = Number(smoothedRom.toFixed(1));
               const hitBoundary =
                 (nextEmitRom <= 0.1 || Math.abs(nextEmitRom - curEx.target_rom_deg) <= 0.2) &&
                 Math.abs(nextEmitRom - lastEmittedRom) >= 0.1;
               if (
-                (now - lastRomEmitAt >= 65 && Math.abs(nextEmitRom - lastEmittedRom) >= 0.4) ||
+                (now - lastRomEmitAt >= 24 && Math.abs(nextEmitRom - lastEmittedRom) >= 0.25) ||
                 hitBoundary
               ) {
                 lastEmittedRom = nextEmitRom;
@@ -987,13 +1143,20 @@ export function SmartRehabKioskUI({
                 setDemoRomDeg(nextEmitRom);
               }
 
-              const targetThreshold = curEx.target_joint.includes('knee')
-                ? curEx.target_rom_deg + 10
-                : curEx.target_rom_deg * 0.88;
-              const atTarget = curEx.target_joint.includes('knee')
+              const isKneeExercise = curEx.target_joint.includes('knee');
+              const targetThreshold = isKneeExercise
+                ? curEx.target_rom_deg + 15
+                : curEx.target_rom_deg * 0.82;
+              const holdMaintainThreshold = isKneeExercise
+                ? curEx.target_rom_deg + 22
+                : curEx.target_rom_deg * 0.75;
+              const atTarget = isKneeExercise
                 ? smoothedRom <= targetThreshold
                 : smoothedRom >= targetThreshold;
-              const atRest = curEx.target_joint.includes('knee')
+              const atMaintainTarget = isKneeExercise
+                ? smoothedRom <= holdMaintainThreshold
+                : smoothedRom >= holdMaintainThreshold;
+              const atRest = isKneeExercise
                 ? smoothedRom >= 145
                 : smoothedRom <= Math.min(55, curEx.target_rom_deg * 0.45);
 
@@ -1015,10 +1178,11 @@ export function SmartRehabKioskUI({
                   }
                   setDemoPresetState('WRONG_LIMB');
                 } else if (!blockCounting) {
-                  if (atTarget && !awaitingReturn && latestTrunkTiltDeg <= 14) {
-                    holdAccumMs += dtMs;
+                  const holdingZone = atTarget || (holdAccumMs > 0 && atMaintainTarget);
+                  if (holdingZone && !awaitingReturn && latestTrunkTiltDeg <= 14) {
+                    holdAccumMs += wallDtMs;
                     const remSec = Math.max(0, Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)));
-                    if (now - lastHoldEmitAt >= 90 && remSec !== lastEmittedHold) {
+                    if (now - lastHoldEmitAt >= 40 && remSec !== lastEmittedHold) {
                       lastEmittedHold = remSec;
                       lastHoldEmitAt = now;
                       setDemoHoldRemainingSec(remSec);
@@ -1040,7 +1204,7 @@ export function SmartRehabKioskUI({
                       setDemoPresetState('HOLD_PHASE');
                     }
                   } else {
-                    holdAccumMs = Math.max(0, holdAccumMs - dtMs * 1.2);
+                    holdAccumMs = atRest ? 0 : Math.max(0, holdAccumMs - wallDtMs * 0.45);
                     if (awaitingReturn || now <= repCelebrateUntil) {
                       if (lastEmittedHold !== 0) {
                         lastEmittedHold = 0;
@@ -1051,10 +1215,14 @@ export function SmartRehabKioskUI({
                         demoValidRepsRef.current >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED',
                       );
                     } else {
-                      if (lastEmittedHold !== curEx.hold_sec && now - lastHoldEmitAt >= 90) {
-                        lastEmittedHold = curEx.hold_sec;
+                      const fallbackHoldSec =
+                        holdAccumMs > 0
+                          ? Math.max(0, Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)))
+                          : curEx.hold_sec;
+                      if (lastEmittedHold !== fallbackHoldSec && now - lastHoldEmitAt >= 40) {
+                        lastEmittedHold = fallbackHoldSec;
                         lastHoldEmitAt = now;
-                        setDemoHoldRemainingSec(curEx.hold_sec);
+                        setDemoHoldRemainingSec(fallbackHoldSec);
                       }
                       setDemoPresetState(latestTrunkTiltDeg > 10 ? 'TRUNK_LEAN' : 'ACTIVE_REP');
                     }
@@ -1063,7 +1231,7 @@ export function SmartRehabKioskUI({
               }
             }
 
-            drawLivePoseOverlayOnCanvas(poseCanvasRef.current, latestAllLandmarks, {
+            drawLivePoseOverlayOnCanvas(poseCanvasRef.current, renderLandmarksList, {
               targetJoint: curEx.target_joint,
               romDeg: smoothedRom,
               targetRomDeg: curEx.target_rom_deg,
@@ -1077,6 +1245,7 @@ export function SmartRehabKioskUI({
               videoHeight: v.videoHeight,
             });
           } else {
+            renderPrimaryLandmarks = null;
             drawLivePoseOverlayOnCanvas(poseCanvasRef.current, [], {
               targetJoint: curEx.target_joint,
               romDeg: null,

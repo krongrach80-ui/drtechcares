@@ -842,13 +842,15 @@ export function useKioskSocket(
     return () => window.clearInterval(timer);
   }, [isDemoMode, demoPreset]);
 
-  // Hold phase smooth countdown when manually inspecting HOLD_PHASE
+  // Hold phase smooth wall-clock countdown when manually inspecting HOLD_PHASE
   useEffect(() => {
     if (!isDemoMode || demoPreset !== 'HOLD_PHASE' || !manualHoldCountdown || autoCycleDemo) return;
-    let remaining = selectedExercise.hold_sec;
-    setDemoHoldRemainingSec(remaining);
+    const holdDurationSec = selectedExercise.hold_sec;
+    const startedAt = performance.now();
+    setDemoHoldRemainingSec(holdDurationSec);
     const interval = window.setInterval(() => {
-      remaining = Number(Math.max(0, remaining - 0.1).toFixed(1));
+      const elapsedSec = (performance.now() - startedAt) / 1000;
+      const remaining = Number(Math.max(0, holdDurationSec - elapsedSec).toFixed(1));
       setDemoHoldRemainingSec(remaining);
       if (remaining <= 0) {
         window.clearInterval(interval);
@@ -861,7 +863,7 @@ export function useKioskSocket(
           return next;
         });
       }
-    }, 100);
+    }, 50);
     return () => window.clearInterval(interval);
   }, [
     isDemoMode,
@@ -876,27 +878,40 @@ export function useKioskSocket(
   useEffect(() => {
     if (!isDemoMode || !autoCycleDemo) return;
     let phaseT = 0;
-    let holdAccum = 0;
-    let repCelebrateTicks = 0;
+    let holdAccumSec = 0;
+    let repCelebrateRemainingSec = 0;
+    let lastTickAt = performance.now();
     const interval = window.setInterval(() => {
-      if (repCelebrateTicks > 0) {
-        repCelebrateTicks -= 1;
+      const now = performance.now();
+      const dtSec = Math.min(0.25, Math.max(0.001, (now - lastTickAt) / 1000));
+      lastTickAt = now;
+
+      if (repCelebrateRemainingSec > 0) {
+        repCelebrateRemainingSec = Math.max(0, repCelebrateRemainingSec - dtSec);
         return;
       }
-      phaseT += 0.032;
+
       const target = selectedExercise.target_rom_deg;
+      const currentSine = (Math.sin(phaseT - Math.PI / 2) + 1) / 2;
+      const currentRom = Math.round(currentSine * (target + 4));
+      const inPeakHoldWindow = currentRom >= target * 0.95 && holdAccumSec < selectedExercise.hold_sec;
+
+      if (!inPeakHoldWindow) {
+        phaseT += dtSec * 0.95;
+      }
       const sine = (Math.sin(phaseT - Math.PI / 2) + 1) / 2;
       const rom = Math.round(sine * (target + 4));
       setDemoRomDeg(rom);
 
       if (rom >= target * 0.95) {
-        holdAccum += 0.05;
-        const rem = Math.max(0.1, Number((selectedExercise.hold_sec - holdAccum).toFixed(1)));
+        holdAccumSec += dtSec;
+        const rem = Math.max(0.1, Number((selectedExercise.hold_sec - holdAccumSec).toFixed(1)));
         setDemoHoldRemainingSec(rem);
         setDemoPresetState('HOLD_PHASE');
-        if (holdAccum >= selectedExercise.hold_sec) {
-          holdAccum = 0;
-          repCelebrateTicks = 75;
+        if (holdAccumSec >= selectedExercise.hold_sec) {
+          holdAccumSec = 0;
+          phaseT = 0;
+          repCelebrateRemainingSec = 3.5;
           setDemoHoldRemainingSec(0);
           setDemoValidReps((r) => {
             const next = Math.min(selectedExercise.target_reps, r + 1);
@@ -910,11 +925,11 @@ export function useKioskSocket(
           });
         }
       } else {
-        holdAccum = 0;
+        holdAccumSec = 0;
         setDemoHoldRemainingSec(selectedExercise.hold_sec);
         setDemoPresetState(demoTrunkTiltDeg > 10 ? 'TRUNK_LEAN' : 'ACTIVE_REP');
       }
-    }, 50);
+    }, 16);
     return () => window.clearInterval(interval);
   }, [
     isDemoMode,

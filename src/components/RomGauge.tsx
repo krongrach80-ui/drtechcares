@@ -40,7 +40,7 @@ export function RomGauge({
       const cur = visualRomRef.current;
       const diff = target - cur;
 
-      if (Math.abs(diff) < 0.35) {
+      if (Math.abs(diff) < 0.4) {
         visualRomRef.current = target;
         setVisualRomDeg(target);
         const finalInt = Math.round(target);
@@ -48,10 +48,10 @@ export function RomGauge({
         return;
       }
 
-      // Smooth slew-rate follower: 38 deg/s climb, 50 deg/s lower with gentle ease-out
-      const maxUp = (38 * dtMs) / 1000;
-      const maxDown = (50 * dtMs) / 1000;
-      const alpha = 1 - Math.exp(-dtMs / 180);
+      // Fast 120Hz visual follower so gauge arc & degrees track real arm motion with zero multi-second lag
+      const maxUp = (320 * dtMs) / 1000;
+      const maxDown = (340 * dtMs) / 1000;
+      const alpha = 1 - Math.exp(-dtMs / 32);
       const rawStep = diff * alpha;
       const step =
         diff > 0
@@ -61,7 +61,7 @@ export function RomGauge({
       visualRomRef.current = next;
       setVisualRomDeg(next);
 
-      if (now - lastDisplaySyncAtRef.current >= 95 || Math.abs(target - next) < 0.35) {
+      if (now - lastDisplaySyncAtRef.current >= 32 || Math.abs(target - next) < 0.4) {
         lastDisplaySyncAtRef.current = now;
         const nextInt = Math.round(next);
         setDisplayedRomInt((prev) => (prev === nextInt ? prev : nextInt));
@@ -70,9 +70,12 @@ export function RomGauge({
       rafId = requestAnimationFrame(tick);
     };
 
-    // Deadband of 0.8 deg keeps the readout steady when standing still
-    if (Math.abs(targetRomRef.current - visualRomRef.current) >= 0.8) {
+    // Deadband of 0.4 deg suppresses noise while reacting immediately to body motion
+    if (Math.abs(targetRomRef.current - visualRomRef.current) >= 0.4) {
       rafId = requestAnimationFrame(tick);
+    } else {
+      const settledInt = Math.round(clampedInputRom);
+      setDisplayedRomInt((prev) => (prev === settledInt ? prev : settledInt));
     }
 
     return () => {
@@ -84,11 +87,10 @@ export function RomGauge({
   const semiCircumference = Math.PI * radius;
   const clampedRatio = Math.max(0, Math.min(1, visualRomDeg / Math.max(10, targetRomDeg)));
   const dashOffset = semiCircumference * (1 - clampedRatio);
-  const displayRatio = Math.max(0, Math.min(1, displayedRomInt / Math.max(10, targetRomDeg)));
-  const isSettled = Math.abs(clampedInputRom - visualRomDeg) < 0.8;
-  const exactPct = isSettled
-    ? Math.max(completionPct, Math.round(displayRatio * 100))
-    : Math.round(displayRatio * 100);
+  const exactPct = Math.max(
+    completionPct,
+    Math.round((Math.round(clampedInputRom) / Math.max(10, targetRomDeg)) * 100),
+  );
 
   const outerRadius = 122;
   const outerSemi = Math.PI * outerRadius;

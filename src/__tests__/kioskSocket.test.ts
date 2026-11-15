@@ -366,35 +366,39 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect((clampedParams.get('text') || '').length).toBeLessThanOrEqual(190);
   });
 
-  it('smoothly ramps ROM angles with deadband and human-paced slew rate instead of jumping rapidly', () => {
-    // 1. Ignores micro-jitter within < 1.2 deg deadband
-    expect(stepSmoothRomAngle(45, 45.9, 16)).toBe(45);
-    expect(stepSmoothRomAngle(45, 44.0, 16)).toBe(45);
+  it('smoothly tracks real-time ROM angles with anti-jitter deadband and responsive slew rate', () => {
+    // 1. Ignores micro-jitter within < 0.8 deg deadband
+    expect(stepSmoothRomAngle(45, 45.6, 16)).toBe(45);
+    expect(stepSmoothRomAngle(45, 44.3, 16)).toBe(45);
 
-    // 2. Caps single-frame jump (15 -> 150 deg) to <= 36 deg/sec
+    // 2. Bounds single-frame spikes (15 -> 150 deg in 16ms) to <= 260 deg/sec
     const singleStep = stepSmoothRomAngle(15, 150, 16);
     expect(singleStep).toBeGreaterThan(15);
-    expect(singleStep).toBeLessThanOrEqual(15 + (36 * 16) / 1000 + 1e-6);
+    expect(singleStep).toBeLessThanOrEqual(15 + (260 * 16) / 1000 + 1e-6);
 
-    // 3. Climbs gradually over 1 second rather than jumping straight to 150 deg
+    // 3. Converges to >= 148 deg within ~0.65 seconds (39 frames at 60Hz) matching real human arm speed
     let rom = 15;
-    for (let i = 0; i < 60; i += 1) {
+    for (let i = 0; i < 39; i += 1) {
       rom = stepSmoothRomAngle(rom, 150, 1000 / 60);
     }
-    expect(rom).toBeGreaterThan(45);
-    expect(rom).toBeLessThanOrEqual(52);
-
-    // 4. Converges smoothly within deadband over ~5 seconds
-    for (let i = 0; i < 240; i += 1) {
-      rom = stepSmoothRomAngle(rom, 150, 1000 / 60);
-    }
-    expect(rom).toBeGreaterThanOrEqual(148.5);
+    expect(rom).toBeGreaterThanOrEqual(148);
     expect(rom).toBeLessThanOrEqual(150);
 
-    // 5. Caps downward return speed to <= 48 deg/sec
+    // 4. Caps downward return speed to <= 280 deg/sec
     const downStep = stepSmoothRomAngle(150, 15, 20);
     expect(downStep).toBeLessThan(150);
-    expect(downStep).toBeGreaterThanOrEqual(150 - (48 * 20) / 1000 - 1e-6);
+    expect(downStep).toBeGreaterThanOrEqual(150 - (280 * 20) / 1000 - 1e-6);
+
+    // 5. Still measures low-visibility close-up upper-body landmarks (visibility: 0.08)
+    const closeUpRightArm = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.42, y: 0.72, z: 0, visibility: 0.08 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.25, y: 0.42, z: 0, visibility: 0.08 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.28, y: 0.14, z: 0, visibility: 0.08 },
+    });
+    const lowVisMeasure = measureLiveJointAngleAndTilt(closeUpRightArm, 'right_shoulder');
+    expect(lowVisMeasure.wrongSideRaised).toBe(false);
+    expect(lowVisMeasure.romDeg).not.toBeNull();
+    expect(lowVisMeasure.romDeg!).toBeGreaterThan(145);
   });
 
   it('localizes the Verified Patient Confirmation Modal across Thai, English, and Chinese', () => {
