@@ -48,10 +48,10 @@ export function RomGauge({
         return;
       }
 
-      // Fast 120Hz visual follower so gauge arc & degrees track rapid motion without secondary lag
-      const maxUp = (800 * dtMs) / 1000;
-      const maxDown = (850 * dtMs) / 1000;
-      const alpha = 1 - Math.exp(-dtMs / 10);
+      // Ultra-fast 120Hz visual follower so sidebar gauge stays locked with live on-body ROM badge
+      const maxUp = (1400 * dtMs) / 1000;
+      const maxDown = (1400 * dtMs) / 1000;
+      const alpha = 1 - Math.exp(-dtMs / 5);
       const rawStep = diff * alpha;
       const step =
         diff > 0

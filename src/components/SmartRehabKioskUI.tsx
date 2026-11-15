@@ -381,8 +381,8 @@ export function measureLiveJointAngleAndTilt(
 }
 
 /**
- * Smooths noisy joint ROM readings with a compact anti-jitter deadband and velocity-adaptive
- * fast-pursuit slew rate so gauge arcs and degree readouts keep up with fast arm raises.
+ * Smooths noisy joint ROM readings with a compact anti-jitter deadband and instant
+ * fast-pursuit slew rate so gauge arcs and degree readouts lock onto rapid arm motion.
  */
 export function stepSmoothRomAngle(
   currentRom: number | null,
@@ -399,21 +399,21 @@ export function stepSmoothRomAngle(
   if (Math.abs(rawDelta) < 0.8) {
     return currentRom;
   }
-  // Velocity-adaptive exponential filter (tau: 9..26ms) + fast biomechanical slew cap (680/720 deg/s)
+  // Instant fast-pursuit filter (tau: 5..20ms) + high slew cap (1100/1150 deg/s)
   const absDelta = Math.abs(rawDelta);
-  const adaptiveTau = absDelta >= 22 ? 9 : absDelta >= 8 ? 15 : 26;
+  const adaptiveTau = absDelta >= 15 ? 5 : absDelta >= 6 ? 10 : 20;
   const alpha = 1 - Math.exp(-safeDt / adaptiveTau);
   const emaStep = rawDelta * alpha;
-  const maxUpStep = (680 * safeDt) / 1000;
-  const maxDownStep = (720 * safeDt) / 1000;
+  const maxUpStep = (1100 * safeDt) / 1000;
+  const maxDownStep = (1150 * safeDt) / 1000;
   const step =
     emaStep > 0 ? Math.min(emaStep, maxUpStep) : Math.max(emaStep, -maxDownStep);
   return Math.max(0, Math.min(180, currentRom + step));
 }
 
 /**
- * Velocity-adaptive One-Euro / fast-pursuit filter across 33 pose landmarks.
- * Damps stationary tremor while snapping immediately to rapid limb swings with near-zero lag.
+ * Zero-delay 1:1 landmark follower: MediaPipe VIDEO mode already applies its internal C++ One-Euro
+ * filter, so only sub-pixel stationary tremor (< 0.0015 norm) is damped while active movement snaps 1:1.
  */
 export function interpolatePoseLandmarks(
   prev: NormalizedLandmark[] | null,
@@ -424,18 +424,17 @@ export function interpolatePoseLandmarks(
     return next.map((lm) => ({ ...lm }));
   }
   const safeDt = Math.min(100, Math.max(1, dtMs));
-  const dtSec = safeDt / 1000;
+  const jitterAlpha = Math.min(1, 1 - Math.exp(-safeDt / 22));
   return next.map((target, idx) => {
     const cur = prev[idx];
     if (!cur) return { ...target };
     const dx = target.x - cur.x;
     const dy = target.y - cur.y;
     const dist2D = Math.hypot(dx, dy);
-    const speed = dist2D / dtSec;
-    const effectiveTau =
-      dist2D < 0.0015 ? 22 : Math.max(1.5, 16 / (1 + speed * 22 + dist2D * 240));
-    const alpha =
-      dist2D >= 0.04 ? 0.98 : Math.min(0.98, 1 - Math.exp(-safeDt / effectiveTau));
+    const alpha = dist2D < 0.0015 ? jitterAlpha : dist2D < 0.0035 ? 0.85 : 1.0;
+    if (alpha >= 1) {
+      return { ...target };
+    }
     const vis =
       target.visibility !== undefined
         ? (cur.visibility ?? target.visibility) +
@@ -446,37 +445,6 @@ export function interpolatePoseLandmarks(
       y: cur.y + dy * alpha,
       z: cur.z + (target.z - cur.z) * alpha,
       visibility: vis,
-    };
-  });
-}
-
-/**
- * Extrapolates moving landmarks along recent camera-frame velocity during sub-frame render ticks
- * so 60–120Hz skeleton lines stay locked onto fast arm swings between 30fps camera captures.
- */
-export function predictSubframeLandmarks(
-  latest: readonly NormalizedLandmark[],
-  prevCam: readonly NormalizedLandmark[] | null,
-  subDtMs: number,
-  camIntervalMs: number,
-): NormalizedLandmark[] {
-  if (!prevCam || prevCam.length !== latest.length || subDtMs <= 1 || subDtMs > 32) {
-    return latest as NormalizedLandmark[];
-  }
-  const leadFactor = Math.min(0.55, (subDtMs / Math.max(16, camIntervalMs)) * 0.55);
-  return latest.map((cur, idx) => {
-    const prev = prevCam[idx];
-    if (!prev) return cur;
-    const vx = cur.x - prev.x;
-    const vy = cur.y - prev.y;
-    const dist2D = Math.hypot(vx, vy);
-    if (dist2D < 0.004) return cur;
-    const vz = cur.z - prev.z;
-    return {
-      x: Math.max(0.01, Math.min(0.99, cur.x + vx * leadFactor)),
-      y: Math.max(0.01, Math.min(0.99, cur.y + vy * leadFactor)),
-      z: cur.z + vz * leadFactor * 0.5,
-      visibility: cur.visibility,
     };
   });
 }
@@ -1129,10 +1097,7 @@ export function SmartRehabKioskUI({
     let rafId = 0;
     let poseLandmarker: PoseLandmarker | null = null;
     let offscreenCanvas: HTMLCanvasElement | null = null;
-    let offscreenCtx: CanvasRenderingContext2D | null = null;
-    let lastVideoTime = -1;
-    let lastInferenceAt = 0;
-    let lastCamIntervalMs = 33.3;
+    let useOffscreenFallback = false;
     let lastValidPoseAt = 0;
     let lastDetectTs = 0;
     let lastFrameAt = 0;
@@ -1146,7 +1111,6 @@ export function SmartRehabKioskUI({
     let trackedExId = selectedExerciseRef.current.exercise_id;
     let targetRomDeg: number | null = null;
     let latestLandmarks: NormalizedLandmark[] | null = null;
-    let prevCameraLandmarks: NormalizedLandmark[] | null = null;
     let renderPrimaryLandmarks: NormalizedLandmark[] | null = null;
     let latestAllLandmarks: NormalizedLandmark[][] = [];
     let latestPoseCount = 0;
@@ -1201,8 +1165,8 @@ export function SmartRehabKioskUI({
         if (!active) return;
 
         const baseVideoConstraints: MediaTrackConstraints = {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
+          width: { ideal: 640 },
+          height: { ideal: 360 },
           aspectRatio: { ideal: 16 / 9 },
           frameRate: { ideal: 60, max: 120 },
           facingMode: 'user',
@@ -1252,7 +1216,11 @@ export function SmartRehabKioskUI({
         }
         if (!vision || !active) return;
 
-        for (const modelPath of ['/models/pose_landmarker.task', '/models/pose_landmarker_full.task']) {
+        for (const modelPath of [
+          'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+          '/models/pose_landmarker.task',
+          '/models/pose_landmarker_full.task',
+        ]) {
           for (const delegate of ['GPU', 'CPU', undefined] as const) {
             try {
               const created = await PoseLandmarker.createFromOptions(vision, {
@@ -1297,8 +1265,6 @@ export function SmartRehabKioskUI({
             smoothedTilt = 0;
             targetRomDeg = null;
             latestLandmarks = null;
-            prevCameraLandmarks = null;
-            lastCamIntervalMs = 33.3;
             lastValidPoseAt = 0;
             renderPrimaryLandmarks = null;
             latestAllLandmarks = [];
@@ -1327,49 +1293,40 @@ export function SmartRehabKioskUI({
           const kinematicDtMs = Math.min(100, wallDtMs);
           lastFrameAt = now;
 
-          // Step A: Run AI pose inference only on fresh video frames via downscaled 320x180 canvas
-          if (
-            v.readyState >= 2 &&
-            v.videoWidth > 0 &&
-            (v.currentTime !== lastVideoTime || now - lastInferenceAt >= 120) &&
-            now - lastInferenceAt >= 11
-          ) {
-            const prevInferenceAt = lastInferenceAt;
-            lastVideoTime = v.currentTime;
-            lastInferenceAt = now;
-
+          // Step A: Run zero-copy MediaPipe pose inference on every animation frame (fallback canvas on exception)
+          if (v.readyState >= 2 && v.videoWidth > 0) {
             const runDetect = (source: HTMLVideoElement | HTMLCanvasElement, ts: number) =>
               poseLandmarker!.detectForVideo(source, ts);
 
             try {
               const ts = Math.max(lastDetectTs + 1, Math.round(now));
               lastDetectTs = ts;
-              if (!offscreenCanvas) {
-                offscreenCanvas = document.createElement('canvas');
-              }
-              const offW = 320;
-              const offH = Math.max(
-                180,
-                Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))),
-              );
-              if (offscreenCanvas.width !== offW || offscreenCanvas.height !== offH) {
-                offscreenCanvas.width = offW;
-                offscreenCanvas.height = offH;
-                offscreenCtx = offscreenCanvas.getContext('2d', { alpha: false });
-              }
-              if (!offscreenCtx) {
-                offscreenCtx = offscreenCanvas.getContext('2d', { alpha: false });
-              }
               let poseRes;
-              if (offscreenCtx) {
-                offscreenCtx.drawImage(v, 0, 0, offW, offH);
+              if (!useOffscreenFallback) {
                 try {
-                  poseRes = runDetect(offscreenCanvas, ts);
-                } catch {
                   poseRes = runDetect(v, ts);
+                } catch {
+                  useOffscreenFallback = true;
                 }
-              } else {
-                poseRes = runDetect(v, ts);
+              }
+              if (useOffscreenFallback) {
+                if (!offscreenCanvas) {
+                  offscreenCanvas = document.createElement('canvas');
+                }
+                const offW = 256;
+                const offH = Math.max(
+                  144,
+                  Math.round(offW * ((v.videoHeight || 360) / (v.videoWidth || 640))),
+                );
+                if (offscreenCanvas.width !== offW || offscreenCanvas.height !== offH) {
+                  offscreenCanvas.width = offW;
+                  offscreenCanvas.height = offH;
+                }
+                const offCtx = offscreenCanvas.getContext('2d', { alpha: false });
+                if (offCtx) {
+                  offCtx.drawImage(v, 0, 0, offW, offH);
+                }
+                poseRes = runDetect(offCtx ? offscreenCanvas : v, ts);
               }
 
               const allLandmarks = poseRes?.landmarks ?? [];
@@ -1382,15 +1339,10 @@ export function SmartRehabKioskUI({
               if (latestPoseCount > 1 && stepACheckIdentity) {
                 singlePersonRecoveryFrames = 0;
                 latestLandmarks = null;
-                prevCameraLandmarks = null;
                 renderPrimaryLandmarks = null;
               } else if (demoPresetRef.current !== 'IMPOSTOR' || !stepACheckIdentity) {
                 const landmarks = allLandmarks[0] ?? null;
                 if (landmarks) {
-                  if (prevInferenceAt > 0) {
-                    lastCamIntervalMs = Math.min(120, Math.max(12, now - prevInferenceAt));
-                  }
-                  prevCameraLandmarks = latestLandmarks;
                   latestLandmarks = landmarks;
                   lastValidPoseAt = now;
                   if (demoPresetRef.current === 'MULTI_PERSON') {
@@ -1424,7 +1376,6 @@ export function SmartRehabKioskUI({
                   }
                 } else if (now - lastValidPoseAt > 220 || !latestLandmarks) {
                   latestLandmarks = null;
-                  prevCameraLandmarks = null;
                   renderPrimaryLandmarks = null;
                 }
               }
@@ -1433,7 +1384,7 @@ export function SmartRehabKioskUI({
             }
           }
 
-          // Step B: 120Hz sub-frame landmark prediction & interpolation + hold timer + canvas redraw
+          // Step B: 1:1 landmark tracking & instantaneous ROM update + hold timer + canvas redraw
           const activeRules = formRulesRef.current;
           const checkLimb = isFormRuleActive(activeRules, 'limb');
           const checkPlane = isFormRuleActive(activeRules, 'plane');
@@ -1473,15 +1424,9 @@ export function SmartRehabKioskUI({
               videoHeight: v.videoHeight,
             });
           } else if (latestLandmarks) {
-            const predictedTarget = predictSubframeLandmarks(
-              latestLandmarks,
-              prevCameraLandmarks,
-              now - lastInferenceAt,
-              lastCamIntervalMs,
-            );
             renderPrimaryLandmarks = interpolatePoseLandmarks(
               renderPrimaryLandmarks,
-              predictedTarget,
+              latestLandmarks,
               kinematicDtMs,
             );
             const renderLandmarksList: NormalizedLandmark[][] = [
@@ -1637,7 +1582,6 @@ export function SmartRehabKioskUI({
               videoHeight: v.videoHeight,
             });
           } else {
-            prevCameraLandmarks = null;
             renderPrimaryLandmarks = null;
             drawLivePoseOverlayOnCanvas(poseCanvasRef.current, [], {
               targetJoint: curEx.target_joint,
