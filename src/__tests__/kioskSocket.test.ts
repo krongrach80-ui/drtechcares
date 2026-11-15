@@ -22,6 +22,7 @@ import {
   translateVoiceCoachText,
 } from '../components/VoiceCoachBanner';
 import { getKioskVerifiedModalCopy } from '../components/KioskBiometricLoginView';
+import { getKioskOverviewVoiceNarration } from '../App';
 
 function createNeutralLandmarks(
   overrides: Partial<Record<number, NormalizedLandmark>> = {},
@@ -739,6 +740,39 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(isFormRuleActive(planeOnlyDisabled, 'posture')).toBe(true);
     expect(isFormRuleActive(planeOnlyDisabled, 'velocity')).toBe(true);
     expect(isFormRuleActive(planeOnlyDisabled, 'identity')).toBe(true);
+  });
+
+  it('builds 3-language entry voice narrations within 190 chars for completed-today, rest-day, and scheduled overview screens', () => {
+    const langs = ['th', 'en', 'cn'] as const;
+    const statuses = ['completed_today', 'rest_day', 'scheduled_today'] as const;
+    for (const status of statuses) {
+      for (const lang of langs) {
+        const text = getKioskOverviewVoiceNarration(lang, {
+          status,
+          fullName: 'Pize',
+          handSide: 'left',
+        });
+        expect(text).toContain('Pize');
+        expect(text.length).toBeGreaterThan(10);
+        expect(text.length).toBeLessThanOrEqual(190);
+      }
+    }
+    expect(
+      getKioskOverviewVoiceNarration('th', { status: 'completed_today', fullName: 'Pize' }),
+    ).toContain('คุณได้ทำการกายภาพของวันนี้ไปแล้ว');
+    expect(
+      getKioskOverviewVoiceNarration('en', { status: 'completed_today', fullName: 'Pize' }),
+    ).toContain("already completed today's physical therapy");
+    expect(
+      getKioskOverviewVoiceNarration('cn', { status: 'completed_today', fullName: 'Pize' }),
+    ).toContain('您今天已完成物理康复训练');
+    expect(
+      getKioskOverviewVoiceNarration('th', {
+        status: 'scheduled_today',
+        fullName: 'Pize',
+        handSide: 'right',
+      }),
+    ).toContain('มือขวา');
   });
 });
 

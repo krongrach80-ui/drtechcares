@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AdminPortalApp } from '@apps/admin';
 import { KioskPortalApp, PhysicalCardGame, type PhysicalCardGameSummary } from '@apps/kiosk';
 import { PtPortalApp } from '@apps/pt';
@@ -10,14 +10,14 @@ import {
   type UserAccount,
 } from '@drtechcares/api-client';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
-import { buildTtsProxyUrl } from './components/VoiceCoachBanner';
+import { buildTtsProxyUrl, pickSpeechVoice } from './components/VoiceCoachBanner';
 import { PatientPersonalPortal } from './PatientPersonalPortal';
 import { StaffLoginModalOrPage, type StaffAuthIntent } from './StaffLoginModalOrPage';
 import {
   KioskBiometricLoginView,
   type KioskLoginSuccessPayload,
 } from './components/KioskBiometricLoginView';
-import { CheckCircle2, Shuffle } from 'lucide-react';
+import { CheckCircle2, Shuffle, Volume2 } from 'lucide-react';
 import {
   RandomHandStartPrompt,
   pickRandomHandSide,
@@ -41,16 +41,64 @@ function resolveRoute(pathname: string): AppRoute {
   return '/';
 }
 
-const KIOSK_LANG_PILLS: readonly { code: ClinicalLang; label: string; ttsLang: 'th' | 'en' | 'zh' }[] = [
-  { code: 'th', label: '1. ไทย', ttsLang: 'th' },
-  { code: 'en', label: '2. อังกฤษ (EN)', ttsLang: 'en' },
-  { code: 'cn', label: '3. จีน (中文)', ttsLang: 'zh' },
+const KIOSK_LANG_PILLS: readonly {
+  code: ClinicalLang;
+  label: string;
+  ttsLang: 'th' | 'en' | 'zh';
+  bcp47: string;
+}[] = [
+  { code: 'th', label: '1. ไทย', ttsLang: 'th', bcp47: 'th-TH' },
+  { code: 'en', label: '2. อังกฤษ (EN)', ttsLang: 'en', bcp47: 'en-US' },
+  { code: 'cn', label: '3. จีน (中文)', ttsLang: 'zh', bcp47: 'zh-CN' },
 ];
+
+export type KioskOverviewStatus = 'completed_today' | 'rest_day' | 'scheduled_today';
+
+export function getKioskOverviewVoiceNarration(
+  lang: ClinicalLang,
+  params: {
+    status: KioskOverviewStatus;
+    fullName: string;
+    handSide?: HandChallengeSide;
+  },
+): string {
+  const name = params.fullName.trim();
+  const side = params.handSide ?? 'right';
+  if (params.status === 'completed_today') {
+    if (lang === 'en') {
+      return `You have already completed today's physical therapy, ${name}. Only 1 session per day is allowed, and today's results are saved. See you next visit.`;
+    }
+    if (lang === 'cn') {
+      return `您今天已完成物理康复训练，${name}。每日限做 1 次物理康复训练，今日记录已保存完毕，请于下次预约日再来训练。`;
+    }
+    return `คุณได้ทำการกายภาพของวันนี้ไปแล้ว คุณ ${name} ระบบอนุญาตให้ทำ 1 ครั้งต่อ 1 วันเท่านั้น และบันทึกผลวันนี้เรียบร้อยแล้วครับ`;
+  }
+  if (params.status === 'rest_day') {
+    if (lang === 'en') {
+      return `Today is your rest day, ${name}. There are no physical therapy sessions scheduled for today. Please return on your next appointment.`;
+    }
+    if (lang === 'cn') {
+      return `今天是您的休息日，${name}。今日暂无物理康复训练安排，请于下次预约日再来训练。`;
+    }
+    return `วันนี้คือวันพักผ่อนของคุณ ${name} ไม่มีรายการนัดทำกายภาพบำบัดวันนี้ กรุณากลับมาฝึกในวันนัดถัดไปครับ`;
+  }
+  const handTh = side === 'left' ? 'มือซ้าย' : 'มือขวา';
+  const handEn = side === 'left' ? 'left hand' : 'right hand';
+  const handZh = side === 'left' ? '左手' : '右手';
+  if (lang === 'en') {
+    return `Your physical therapy program today, ${name}. Please hold your ${handEn} up in front of the camera to start automatically.`;
+  }
+  if (lang === 'cn') {
+    return `您今日的物理康复训练计划，${name}。请在镜头前举起${handZh}并保持，以自动开始康复训练。`;
+  }
+  return `รายการกายภาพบำบัดวันนี้ของคุณ ${name} กรุณาชู${handTh}ค้างไว้หน้ากล้องเพื่อเริ่มฝึกอัตโนมัติครับ`;
+}
 
 const KIOSK_TRAINING_COPY: Record<
   ClinicalLang,
   {
     backToLogin: string;
+    replayVoiceBtn: string;
     patientLabel: string;
     smartRehabUiBtn: string;
     telemetryModeLabel: string;
@@ -92,6 +140,7 @@ const KIOSK_TRAINING_COPY: Record<
 > = {
   th: {
     backToLogin: '← กลับหน้าสแกนใบหน้า (Kiosk Login)',
+    replayVoiceBtn: 'ฟังเสียง',
     patientLabel: 'ผู้ป่วย:',
     smartRehabUiBtn: 'หน้าวิเคราะห์ชีวกลศาสตร์ (Smart Rehab UI)',
     telemetryModeLabel: 'โหมดวิเคราะห์ชีวกลศาสตร์กายภาพบำบัด',
@@ -137,6 +186,7 @@ const KIOSK_TRAINING_COPY: Record<
   },
   en: {
     backToLogin: '← Back to Face Scan (Kiosk Login)',
+    replayVoiceBtn: 'Voice',
     patientLabel: 'Patient:',
     smartRehabUiBtn: 'Biomechanics Telemetry (Smart Rehab UI)',
     telemetryModeLabel: 'Biomechanics Physical Therapy Mode',
@@ -183,6 +233,7 @@ const KIOSK_TRAINING_COPY: Record<
   },
   cn: {
     backToLogin: '← 返回人脸识别首页 (Kiosk Login)',
+    replayVoiceBtn: '语音播报',
     patientLabel: '患者:',
     smartRehabUiBtn: '生物力学分析界面 (Smart Rehab UI)',
     telemetryModeLabel: '生物力学康复训练模式',
@@ -227,6 +278,137 @@ export function App() {
   const { lang, setLang } = useClinicalI18n();
   const kc = KIOSK_TRAINING_COPY[lang];
 
+  const overviewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const overviewSpeakSeqRef = useRef(0);
+  const overviewWebSpeechTimerRef = useRef<number | null>(null);
+  const overviewEntryTimerRef = useRef<number | null>(null);
+  const lastSpokenOverviewKeyRef = useRef<string | null>(null);
+  const overviewPendingAudioRef = useRef<{ text: string; lang: ClinicalLang } | null>(null);
+
+  const stopKioskOverviewSpeech = useCallback(() => {
+    overviewSpeakSeqRef.current += 1;
+    overviewPendingAudioRef.current = null;
+    if (typeof window !== 'undefined') {
+      if (overviewEntryTimerRef.current !== null) {
+        window.clearTimeout(overviewEntryTimerRef.current);
+        overviewEntryTimerRef.current = null;
+      }
+      if (overviewWebSpeechTimerRef.current !== null) {
+        window.clearTimeout(overviewWebSpeechTimerRef.current);
+        overviewWebSpeechTimerRef.current = null;
+      }
+      if ('speechSynthesis' in window) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {
+          // Ignore synthesis cancel errors
+        }
+      }
+    }
+    const audio = overviewAudioRef.current;
+    if (audio) {
+      try {
+        audio.onplay = null;
+        audio.onended = null;
+        audio.onerror = null;
+        audio.pause();
+        audio.currentTime = 0;
+      } catch {
+        // Ignore audio cleanup errors
+      }
+    }
+  }, []);
+
+  const speakWithWebSpeechFallback = useCallback(
+    (text: string, targetLang: ClinicalLang, seq: number) => {
+      if (typeof window === 'undefined' || overviewSpeakSeqRef.current !== seq) return;
+      if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') return;
+      const opt = KIOSK_LANG_PILLS.find((p) => p.code === targetLang) ?? KIOSK_LANG_PILLS[0];
+      try {
+        const synth = window.speechSynthesis;
+        const wasBusy = synth.speaking || synth.pending;
+        if (wasBusy) {
+          synth.cancel();
+        }
+        const startUtterance = () => {
+          if (overviewSpeakSeqRef.current !== seq) return;
+          const voices = synth.getVoices();
+          const matchedVoice = pickSpeechVoice(voices, opt.bcp47);
+          const utterance = new SpeechSynthesisUtterance(text);
+          utterance.lang = matchedVoice?.lang || opt.bcp47;
+          if (matchedVoice) utterance.voice = matchedVoice;
+          utterance.rate = targetLang === 'th' ? 0.96 : targetLang === 'cn' ? 0.98 : 1.0;
+          synth.speak(utterance);
+        };
+        if (wasBusy) {
+          overviewWebSpeechTimerRef.current = window.setTimeout(() => {
+            overviewWebSpeechTimerRef.current = null;
+            startUtterance();
+          }, 60);
+        } else {
+          startUtterance();
+        }
+      } catch {
+        // Ignore browser speech restriction
+      }
+    },
+    [],
+  );
+
+  const speakKioskOverview = useCallback(
+    (spokenText: string, targetLang: ClinicalLang) => {
+      const clean = spokenText.trim();
+      if (!clean || typeof window === 'undefined') return;
+      stopKioskOverviewSpeech();
+      const seq = overviewSpeakSeqRef.current;
+      lastSpokenOverviewKeyRef.current = `${targetLang}:${clean}`;
+      const opt = KIOSK_LANG_PILLS.find((p) => p.code === targetLang) ?? KIOSK_LANG_PILLS[0];
+
+      if (typeof Audio !== 'undefined') {
+        try {
+          let audio = overviewAudioRef.current;
+          if (!audio) {
+            audio = new Audio();
+            audio.preload = 'auto';
+            overviewAudioRef.current = audio;
+          }
+          audio.playbackRate = targetLang === 'th' ? 1.0 : targetLang === 'cn' ? 0.98 : 1.0;
+          audio.onplay = () => {
+            if (overviewSpeakSeqRef.current === seq) {
+              overviewPendingAudioRef.current = null;
+            }
+          };
+          audio.onerror = () => {
+            if (overviewSpeakSeqRef.current === seq) {
+              speakWithWebSpeechFallback(clean, targetLang, seq);
+            }
+          };
+          audio.src = buildTtsProxyUrl(clean, opt.ttsLang);
+          const playPromise = audio.play();
+          if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch((err: unknown) => {
+              if (overviewSpeakSeqRef.current !== seq) return;
+              const errName =
+                err && typeof err === 'object' && 'name' in err
+                  ? String((err as { name: string }).name)
+                  : '';
+              if (errName === 'AbortError') return;
+              if (errName === 'NotAllowedError') {
+                overviewPendingAudioRef.current = { text: clean, lang: targetLang };
+              }
+              speakWithWebSpeechFallback(clean, targetLang, seq);
+            });
+          }
+          return;
+        } catch {
+          // Fall through to Web Speech API
+        }
+      }
+      speakWithWebSpeechFallback(clean, targetLang, seq);
+    },
+    [stopKioskOverviewSpeech, speakWithWebSpeechFallback],
+  );
+
   const handleSelectKioskLang = (nextLang: ClinicalLang, spokenText?: string) => {
     setLang(nextLang);
     if (typeof window !== 'undefined') {
@@ -238,14 +420,8 @@ export function App() {
       } catch {
         // Ignore storage error
       }
-      if (spokenText && typeof Audio !== 'undefined') {
-        try {
-          const opt = KIOSK_LANG_PILLS.find((p) => p.code === nextLang) ?? KIOSK_LANG_PILLS[0];
-          const audio = new Audio(buildTtsProxyUrl(spokenText, opt.ttsLang));
-          void audio.play().catch(() => {});
-        } catch {
-          // Ignore audio playback errors
-        }
+      if (spokenText) {
+        speakKioskOverview(spokenText, nextLang);
       }
     }
   };
@@ -267,6 +443,18 @@ export function App() {
           </button>
         );
       })}
+      {spokenTextForLang && (
+        <button
+          type="button"
+          onClick={() => speakKioskOverview(spokenTextForLang(lang), lang)}
+          title={kc.replayVoiceBtn}
+          aria-label={kc.replayVoiceBtn}
+          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-extrabold text-white/95 hover:bg-white/25 cursor-pointer"
+        >
+          <Volume2 className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">{kc.replayVoiceBtn}</span>
+        </button>
+      )}
     </div>
   );
   const [route, setRoute] = useState<AppRoute>(() =>
@@ -289,6 +477,112 @@ export function App() {
     setCompletedTodaySession(false);
     setCompletedTodayExerciseIds([]);
   }, [authenticatedPatient?.patient.id]);
+
+  const overviewScheduleState = useMemo(() => {
+    if (route !== '/' || kioskMode !== 'training' || !authenticatedPatient) {
+      return null;
+    }
+    const todaySchedule = resolveTodayPatientSchedule({
+      rehabSchedules: authenticatedPatient.rehabSchedules,
+      todayRoutine: authenticatedPatient.todayRoutine,
+      nextAppointmentDate: authenticatedPatient.patient.nextAppointmentDate,
+      serverTodayExercises: authenticatedPatient.todayExercises,
+    });
+    const hasAppointmentToday =
+      authenticatedPatient.hasAppointmentToday ?? todaySchedule.hasAppointmentToday;
+    const todayExercises =
+      authenticatedPatient.todayExercises && authenticatedPatient.todayExercises.length > 0
+        ? authenticatedPatient.todayExercises
+        : todaySchedule.todayExercises;
+    const hasCompletedRehabToday = Boolean(
+      completedTodaySession ||
+        authenticatedPatient.completedToday ||
+        todaySchedule.completedToday ||
+        isPatientCompletedTodayInStorage(authenticatedPatient.patient.id, todaySchedule.todayIso) ||
+        isPatientCompletedTodayInStorage(authenticatedPatient.patient.hn, todaySchedule.todayIso),
+    );
+    return {
+      todaySchedule,
+      hasAppointmentToday,
+      todayExercises,
+      hasCompletedRehabToday,
+    };
+  }, [route, kioskMode, authenticatedPatient, completedTodaySession]);
+
+  const activeOverviewStatus: KioskOverviewStatus | null =
+    overviewScheduleState && trainingStage === 'overview'
+      ? overviewScheduleState.hasCompletedRehabToday
+        ? 'completed_today'
+        : !overviewScheduleState.hasAppointmentToday && !allowRestDayPractice
+          ? 'rest_day'
+          : 'scheduled_today'
+      : null;
+
+  const activeOverviewNarration =
+    activeOverviewStatus && authenticatedPatient
+      ? getKioskOverviewVoiceNarration(lang, {
+          status: activeOverviewStatus,
+          fullName: authenticatedPatient.patient.fullName,
+          handSide: randomHandSide,
+        })
+      : '';
+
+  const isOverviewVisible = Boolean(activeOverviewNarration);
+
+  useEffect(() => {
+    if (!isOverviewVisible) {
+      lastSpokenOverviewKeyRef.current = null;
+      stopKioskOverviewSpeech();
+    }
+  }, [isOverviewVisible, stopKioskOverviewSpeech]);
+
+  useEffect(() => {
+    return () => {
+      stopKioskOverviewSpeech();
+    };
+  }, [stopKioskOverviewSpeech]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const unlockOverviewAudio = () => {
+      const pending = overviewPendingAudioRef.current;
+      if (pending) {
+        overviewPendingAudioRef.current = null;
+        speakKioskOverview(pending.text, pending.lang);
+      }
+    };
+    window.addEventListener('pointerdown', unlockOverviewAudio, { passive: true });
+    window.addEventListener('keydown', unlockOverviewAudio, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlockOverviewAudio);
+      window.removeEventListener('keydown', unlockOverviewAudio);
+    };
+  }, [speakKioskOverview]);
+
+  useEffect(() => {
+    if (!activeOverviewNarration || typeof window === 'undefined') {
+      return;
+    }
+    const key = `${lang}:${activeOverviewNarration}`;
+    if (lastSpokenOverviewKeyRef.current === key) {
+      return;
+    }
+    if (overviewEntryTimerRef.current !== null) {
+      window.clearTimeout(overviewEntryTimerRef.current);
+    }
+    overviewEntryTimerRef.current = window.setTimeout(() => {
+      overviewEntryTimerRef.current = null;
+      if (lastSpokenOverviewKeyRef.current !== key) {
+        speakKioskOverview(activeOverviewNarration, lang);
+      }
+    }, 140);
+    return () => {
+      if (overviewEntryTimerRef.current !== null) {
+        window.clearTimeout(overviewEntryTimerRef.current);
+        overviewEntryTimerRef.current = null;
+      }
+    };
+  }, [activeOverviewNarration, lang, speakKioskOverview]);
 
   const apiClient = useMemo(
     () =>
@@ -369,26 +663,9 @@ export function App() {
       );
     }
 
-    if (kioskMode === 'training' && authenticatedPatient) {
-      const todaySchedule = resolveTodayPatientSchedule({
-        rehabSchedules: authenticatedPatient.rehabSchedules,
-        todayRoutine: authenticatedPatient.todayRoutine,
-        nextAppointmentDate: authenticatedPatient.patient.nextAppointmentDate,
-        serverTodayExercises: authenticatedPatient.todayExercises,
-      });
-      const hasAppointmentToday =
-        authenticatedPatient.hasAppointmentToday ?? todaySchedule.hasAppointmentToday;
-      const todayExercises =
-        authenticatedPatient.todayExercises && authenticatedPatient.todayExercises.length > 0
-          ? authenticatedPatient.todayExercises
-          : todaySchedule.todayExercises;
-      const hasCompletedRehabToday = Boolean(
-        completedTodaySession ||
-          authenticatedPatient.completedToday ||
-          todaySchedule.completedToday ||
-          isPatientCompletedTodayInStorage(authenticatedPatient.patient.id, todaySchedule.todayIso) ||
-          isPatientCompletedTodayInStorage(authenticatedPatient.patient.hn, todaySchedule.todayIso),
-      );
+    if (kioskMode === 'training' && authenticatedPatient && overviewScheduleState) {
+      const { todaySchedule, hasAppointmentToday, todayExercises, hasCompletedRehabToday } =
+        overviewScheduleState;
 
       const prescribedOptions = mapTodayExercisesToPrescriptions(todayExercises);
 
@@ -495,7 +772,10 @@ export function App() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {renderKioskLangSwitcher((next) =>
-                  KIOSK_TRAINING_COPY[next].completedHeading(authenticatedPatient.patient.fullName),
+                  getKioskOverviewVoiceNarration(next, {
+                    status: 'completed_today',
+                    fullName: authenticatedPatient.patient.fullName,
+                  }),
                 )}
                 <button
                   type="button"
@@ -584,7 +864,10 @@ export function App() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {renderKioskLangSwitcher((next) =>
-                  KIOSK_TRAINING_COPY[next].restHeading(authenticatedPatient.patient.fullName),
+                  getKioskOverviewVoiceNarration(next, {
+                    status: 'rest_day',
+                    fullName: authenticatedPatient.patient.fullName,
+                  }),
                 )}
                 <button
                   type="button"
@@ -652,7 +935,11 @@ export function App() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {renderKioskLangSwitcher((next) =>
-                  KIOSK_TRAINING_COPY[next].scheduledHeading(authenticatedPatient.patient.fullName),
+                  getKioskOverviewVoiceNarration(next, {
+                    status: 'scheduled_today',
+                    fullName: authenticatedPatient.patient.fullName,
+                    handSide: randomHandSide,
+                  }),
                 )}
                 <button
                   type="button"

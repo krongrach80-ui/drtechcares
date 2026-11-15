@@ -477,8 +477,14 @@ export function KioskBiometricLoginView({
     const seq = ++modalSpeakSeqRef.current;
     const langOpt = LANG_OPTIONS.find((item) => item.code === lang) ?? LANG_OPTIONS[0];
 
+    let webFallbackTimer: number | null = null;
+
     const stopSpeech = () => {
       modalSpeakSeqRef.current += 1;
+      if (webFallbackTimer !== null) {
+        window.clearTimeout(webFallbackTimer);
+        webFallbackTimer = null;
+      }
       const audio = modalAudioRef.current;
       if (audio) {
         try {
@@ -504,14 +510,26 @@ export function KioskBiometricLoginView({
       if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') return;
       try {
         const synth = window.speechSynthesis;
-        if (synth.speaking || synth.pending) synth.cancel();
-        const voices = synth.getVoices();
-        const matchedVoice = pickSpeechVoice(voices, langOpt.bcp47);
-        const utterance = new SpeechSynthesisUtterance(greeting);
-        utterance.lang = matchedVoice?.lang || langOpt.bcp47;
-        if (matchedVoice) utterance.voice = matchedVoice;
-        utterance.rate = lang === 'th' ? 0.96 : lang === 'cn' ? 0.98 : 1.0;
-        synth.speak(utterance);
+        const wasBusy = synth.speaking || synth.pending;
+        if (wasBusy) synth.cancel();
+        const startUtterance = () => {
+          if (modalSpeakSeqRef.current !== seq) return;
+          const voices = synth.getVoices();
+          const matchedVoice = pickSpeechVoice(voices, langOpt.bcp47);
+          const utterance = new SpeechSynthesisUtterance(greeting);
+          utterance.lang = matchedVoice?.lang || langOpt.bcp47;
+          if (matchedVoice) utterance.voice = matchedVoice;
+          utterance.rate = lang === 'th' ? 0.96 : lang === 'cn' ? 0.98 : 1.0;
+          synth.speak(utterance);
+        };
+        if (wasBusy) {
+          webFallbackTimer = window.setTimeout(() => {
+            webFallbackTimer = null;
+            startUtterance();
+          }, 60);
+        } else {
+          startUtterance();
+        }
       } catch {
         // Ignore browser TTS restriction
       }
@@ -533,7 +551,7 @@ export function KioskBiometricLoginView({
           p.catch((err: unknown) => {
             const name =
               err && typeof err === 'object' && 'name' in err ? String((err as { name: string }).name) : '';
-            if (name !== 'NotAllowedError' && name !== 'AbortError') {
+            if (name !== 'AbortError') {
               speakWebFallback();
             }
           });
