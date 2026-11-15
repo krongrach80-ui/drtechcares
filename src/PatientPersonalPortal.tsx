@@ -100,8 +100,12 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
           </h2>
           <div className="flex gap-2">
             <input
+              type="tel"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={10}
               value={phone}
-              onChange={(e) => setPhone(e.target.value)}
+              onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
               placeholder="เบอร์โทรศัพท์"
               className="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm"
             />

@@ -227,8 +227,15 @@ export function SmartEnrollmentView({
             <label className="text-xs font-semibold text-slate-600">อายุ (ปี)</label>
             <input
               type="number"
+              inputMode="numeric"
               value={age}
-              onChange={(e) => setAge(Number(e.target.value))}
+              onKeyDown={(e) => {
+                if (['e', 'E', '+', '-', '.'].includes(e.key)) e.preventDefault();
+              }}
+              onChange={(e) => {
+                const digits = e.target.value.replace(/\D/g, '').slice(0, 3);
+                setAge(digits ? Math.min(120, Number(digits)) : 0);
+              }}
               className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
               min={1}
               max={120}
@@ -251,9 +258,13 @@ export function SmartEnrollmentView({
           <div>
             <label className="text-xs font-semibold text-slate-600">เบอร์โทรศัพท์</label>
             <input
+              type="tel"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={10}
               value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="08x-xxx-xxxx"
+              onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+              placeholder="08xxxxxxxx"
               className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
             />
           </div>

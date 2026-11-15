@@ -726,10 +726,17 @@ export function StaffAssistedEnrollmentModal({
                     <label className="block text-[11px] font-bold text-slate-600 mb-1">อายุ (ปี)</label>
                     <input
                       type="number"
+                      inputMode="numeric"
                       min={1}
                       max={120}
                       value={age}
-                      onChange={(e) => setAge(Number(e.target.value))}
+                      onKeyDown={(e) => {
+                        if (['e', 'E', '+', '-', '.'].includes(e.key)) e.preventDefault();
+                      }}
+                      onChange={(e) => {
+                        const digits = e.target.value.replace(/\D/g, '').slice(0, 3);
+                        setAge(digits ? Math.min(120, Number(digits)) : 0);
+                      }}
                       className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-center text-sm font-bold text-slate-800 focus:border-teal-500 focus:bg-white focus:outline-none"
                     />
                   </div>
@@ -751,9 +758,13 @@ export function StaffAssistedEnrollmentModal({
                   <div>
                     <label className="block text-[11px] font-bold text-slate-600 mb-1">เบอร์โทรศัพท์ (10 หลัก)</label>
                     <input
+                      type="tel"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      maxLength={10}
                       value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      placeholder="08X-XXX-XXXX"
+                      onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                      placeholder="08XXXXXXXX"
                       className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
                     />
                   </div>
@@ -864,9 +875,12 @@ export function StaffAssistedEnrollmentModal({
                   <div>
                     <label className="block text-[11px] font-bold text-slate-600 mb-1">รหัส PIN สำรอง (4 หลัก)</label>
                     <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
                       value={pinCode}
-                      maxLength={6}
-                      onChange={(e) => setPinCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      maxLength={4}
+                      onChange={(e) => setPinCode(e.target.value.replace(/\D/g, '').slice(0, 4))}
                       className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-center font-mono text-sm font-bold text-slate-800 focus:border-teal-500 focus:bg-white focus:outline-none"
                     />
                   </div>
@@ -894,9 +908,13 @@ export function StaffAssistedEnrollmentModal({
                     className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800"
                   />
                   <input
+                    type="tel"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    maxLength={10}
                     value={emergencyPhone}
-                    onChange={(e) => setEmergencyPhone(e.target.value)}
-                    placeholder="08X-XXX-XXXX"
+                    onChange={(e) => setEmergencyPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                    placeholder="08XXXXXXXX"
                     className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800"
                   />
                 </div>
@@ -1179,10 +1197,17 @@ export function StaffAssistedEnrollmentModal({
                     <label className="block font-bold text-slate-600 mb-1">จำนวนเซต (Sets)</label>
                     <input
                       type="number"
+                      inputMode="numeric"
                       min={1}
                       max={10}
                       value={prescriptionSets}
-                      onChange={(e) => setPrescriptionSets(Math.max(1, Number(e.target.value)))}
+                      onKeyDown={(e) => {
+                        if (['e', 'E', '+', '-', '.'].includes(e.key)) e.preventDefault();
+                      }}
+                      onChange={(e) => {
+                        const digits = e.target.value.replace(/\D/g, '').slice(0, 2);
+                        setPrescriptionSets(digits ? Math.min(10, Math.max(1, Number(digits))) : 1);
+                      }}
                       className="w-full rounded-xl border border-slate-200 px-2.5 py-2 text-center font-bold text-slate-800"
                     />
                   </div>
@@ -1190,10 +1215,17 @@ export function StaffAssistedEnrollmentModal({
                     <label className="block font-bold text-slate-600 mb-1">จำนวนครั้ง (Reps)</label>
                     <input
                       type="number"
+                      inputMode="numeric"
                       min={1}
                       max={50}
                       value={prescriptionReps}
-                      onChange={(e) => setPrescriptionReps(Math.max(1, Number(e.target.value)))}
+                      onKeyDown={(e) => {
+                        if (['e', 'E', '+', '-', '.'].includes(e.key)) e.preventDefault();
+                      }}
+                      onChange={(e) => {
+                        const digits = e.target.value.replace(/\D/g, '').slice(0, 2);
+                        setPrescriptionReps(digits ? Math.min(50, Math.max(1, Number(digits))) : 1);
+                      }}
                       className="w-full rounded-xl border border-slate-200 px-2.5 py-2 text-center font-bold text-slate-800"
                     />
                   </div>

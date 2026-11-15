@@ -1075,8 +1075,17 @@ export function PatientProfileAndHistoryModal({
                 <div className="flex gap-1.5">
                   <input
                     type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={120}
                     value={age}
-                    onChange={(e) => setAge(Number(e.target.value))}
+                    onKeyDown={(e) => {
+                      if (['e', 'E', '+', '-', '.'].includes(e.key)) e.preventDefault();
+                    }}
+                    onChange={(e) => {
+                      const digits = e.target.value.replace(/\D/g, '').slice(0, 3);
+                      setAge(digits ? Math.min(120, Number(digits)) : 0);
+                    }}
                     className="w-16 rounded-xl border border-slate-200 bg-white px-2 py-2 text-center"
                   />
                   <select
@@ -1090,8 +1099,12 @@ export function PatientProfileAndHistoryModal({
                   </select>
                 </div>
                 <input
+                  type="tel"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={10}
                   value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
+                  onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
                   placeholder="เบอร์โทร"
                   className="rounded-xl border border-slate-200 bg-white px-3 py-2"
                 />
@@ -1955,10 +1968,17 @@ export function ScheduleCreatorAndDayModal({
                 <label className="block font-bold text-slate-600 mb-1">จำนวนเซต (Sets)</label>
                 <input
                   type="number"
+                  inputMode="numeric"
                   min={1}
                   max={10}
                   value={sets}
-                  onChange={(e) => setSets(Math.max(1, Number(e.target.value)))}
+                  onKeyDown={(e) => {
+                    if (['e', 'E', '+', '-', '.'].includes(e.key)) e.preventDefault();
+                  }}
+                  onChange={(e) => {
+                    const digits = e.target.value.replace(/\D/g, '').slice(0, 2);
+                    setSets(digits ? Math.min(10, Math.max(1, Number(digits))) : 1);
+                  }}
                   className="w-full rounded-xl border border-slate-200 px-2.5 py-2 text-center font-bold"
                 />
               </div>
@@ -1966,10 +1986,17 @@ export function ScheduleCreatorAndDayModal({
                 <label className="block font-bold text-slate-600 mb-1">จำนวนครั้ง (Reps)</label>
                 <input
                   type="number"
+                  inputMode="numeric"
                   min={1}
                   max={30}
                   value={reps}
-                  onChange={(e) => setReps(Math.max(1, Number(e.target.value)))}
+                  onKeyDown={(e) => {
+                    if (['e', 'E', '+', '-', '.'].includes(e.key)) e.preventDefault();
+                  }}
+                  onChange={(e) => {
+                    const digits = e.target.value.replace(/\D/g, '').slice(0, 2);
+                    setReps(digits ? Math.min(30, Math.max(1, Number(digits))) : 1);
+                  }}
                   className="w-full rounded-xl border border-slate-200 px-2.5 py-2 text-center font-bold"
                 />
               </div>

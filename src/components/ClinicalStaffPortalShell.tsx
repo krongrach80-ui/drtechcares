@@ -3042,10 +3042,17 @@ export function ClinicalStaffPortalShell({
                     </select>
                     <input
                       type="number"
+                      inputMode="numeric"
                       min={5}
                       max={99}
                       value={mpQuestionCount}
-                      onChange={(e) => setMpQuestionCount(Number(e.target.value))}
+                      onKeyDown={(e) => {
+                        if (['e', 'E', '+', '-', '.'].includes(e.key)) e.preventDefault();
+                      }}
+                      onChange={(e) => {
+                        const digits = e.target.value.replace(/\D/g, '').slice(0, 2);
+                        setMpQuestionCount(digits ? Math.min(99, Math.max(5, Number(digits))) : 5);
+                      }}
                       className="rounded-xl border border-slate-200 px-3 py-2"
                     />
                     <button
@@ -4612,12 +4619,16 @@ export function ClinicalStaffPortalShell({
                         {locale.profile.phoneLabel}
                       </label>
                       <input
+                        type="tel"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        maxLength={10}
                         value={profilePhone}
                         onChange={(e) => {
                           profileDirtyRef.current = true;
-                          setProfilePhone(e.target.value);
+                          setProfilePhone(e.target.value.replace(/\D/g, '').slice(0, 10));
                         }}
-                        placeholder="08X-XXX-XXXX"
+                        placeholder="08XXXXXXXX"
                         className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-mono font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none"
                       />
                     </div>
@@ -5107,9 +5118,13 @@ export function ClinicalStaffPortalShell({
                 <div>
                   <label className="block font-bold text-slate-600 mb-1">เบอร์โทรศัพท์</label>
                   <input
+                    type="tel"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    maxLength={10}
                     value={newStaffPhone}
-                    onChange={(e) => setNewStaffPhone(e.target.value)}
-                    placeholder="08X-XXX-XXXX"
+                    onChange={(e) => setNewStaffPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                    placeholder="08XXXXXXXX"
                     className="w-full rounded-xl border border-slate-200 px-3 py-2"
                   />
                 </div>

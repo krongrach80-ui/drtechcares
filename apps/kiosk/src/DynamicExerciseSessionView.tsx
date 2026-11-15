@@ -438,8 +438,11 @@ export function DynamicExerciseSessionView({
             <h3 className="text-lg font-bold text-slate-900">Staff Override PIN</h3>
             <input
               type="password"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={6}
               value={staffPin}
-              onChange={(e) => setStaffPin(e.target.value)}
+              onChange={(e) => setStaffPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
               placeholder="Enter Staff Override PIN (e.g. 2026)"
               className="mt-3 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
             />
