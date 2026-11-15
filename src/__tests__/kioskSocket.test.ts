@@ -15,6 +15,7 @@ import {
 } from '../hooks/useKioskSocket';
 import {
   DEFAULT_FORM_ASSESSMENT_RULES,
+  LandmarkSmoother,
   interpolatePoseLandmarks,
   isFormRuleActive,
   measureLiveJointAngleAndTilt,
@@ -1075,6 +1076,54 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     });
     expect(marchCheck.romDeg).not.toBeNull();
     expect(marchCheck.romDeg!).toBeGreaterThanOrEqual(45);
+  });
+
+  it('smooths landmarks via Fixed EMA and velocity-based Adaptive EMA and resets cleanly', () => {
+    const fixedSmoother = new LandmarkSmoother({ alpha: 0.3, adaptive: false });
+    const frame0 = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.4, y: 0.5, z: 0, visibility: 0.95 },
+    });
+    const out0 = fixedSmoother.apply(frame0);
+    expect(out0[POSE_INDEX.RIGHT_WRIST].y).toBeCloseTo(0.5, 5);
+
+    const frame1 = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.4, y: 0.6, z: 0, visibility: 0.95 },
+    });
+    const out1 = fixedSmoother.apply(frame1);
+    // S_1 = 0.3 * 0.6 + 0.7 * 0.5 = 0.53
+    expect(out1[POSE_INDEX.RIGHT_WRIST].y).toBeCloseTo(0.53, 5);
+
+    const adaptiveSmoother = new LandmarkSmoother({
+      alpha: 0.25,
+      adaptive: true,
+      minAlpha: 0.1,
+      maxAlpha: 0.8,
+      velocityScale: 15.0,
+    });
+    adaptiveSmoother.apply(frame0);
+    // Small stationary jitter (delta = 0.001 -> alpha = 0.1 + 0.015 = 0.115)
+    const jitterFrame = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.4, y: 0.501, z: 0, visibility: 0.95 },
+    });
+    const jitterOut = adaptiveSmoother.apply(jitterFrame);
+    expect(jitterOut[POSE_INDEX.RIGHT_WRIST].y).toBeCloseTo(0.5 + 0.001 * 0.115, 5);
+
+    // Fast movement (delta ~ 0.10 -> velocity*scale = 1.5 -> clamped to maxAlpha = 0.8)
+    const fastFrame = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.4, y: 0.600115, z: 0, visibility: 0.95 },
+    });
+    const fastOut = adaptiveSmoother.apply(fastFrame);
+    const prevY = jitterOut[POSE_INDEX.RIGHT_WRIST].y;
+    expect(fastOut[POSE_INDEX.RIGHT_WRIST].y).toBeCloseTo(
+      prevY + 0.8 * (0.600115 - prevY),
+      5,
+    );
+
+    adaptiveSmoother.reset();
+    const afterReset = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.2, y: 0.25, z: 0, visibility: 0.95 },
+    });
+    expect(adaptiveSmoother.apply(afterReset)[POSE_INDEX.RIGHT_WRIST].y).toBeCloseTo(0.25, 5);
   });
 });
 

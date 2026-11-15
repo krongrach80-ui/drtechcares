@@ -763,6 +763,80 @@ export function stepSmoothRomAngle(
   return Math.max(0, Math.min(180, currentRom + step));
 }
 
+export interface LandmarkSmootherOptions {
+  alpha?: number;
+  adaptive?: boolean;
+  minAlpha?: number;
+  maxAlpha?: number;
+  velocityScale?: number;
+}
+
+/**
+ * Dual-mode EMA & Velocity-based Adaptive EMA smoother over (N, 3) pose [x, y, z] coordinates.
+ */
+export class LandmarkSmoother {
+  alpha: number;
+  adaptive: boolean;
+  minAlpha: number;
+  maxAlpha: number;
+  velocityScale: number;
+  private smoothedCoords: Array<[number, number, number]> | null = null;
+
+  constructor(options: LandmarkSmootherOptions = {}) {
+    this.alpha = options.alpha ?? 0.3;
+    this.adaptive = options.adaptive ?? true;
+    this.minAlpha = options.minAlpha ?? 0.1;
+    this.maxAlpha = options.maxAlpha ?? 0.8;
+    this.velocityScale = options.velocityScale ?? 15.0;
+  }
+
+  apply(currentLandmarks: readonly NormalizedLandmark[]): NormalizedLandmark[] {
+    if (currentLandmarks.length === 0) return [];
+    if (!this.smoothedCoords || this.smoothedCoords.length !== currentLandmarks.length) {
+      this.smoothedCoords = currentLandmarks.map((lm) => [lm.x, lm.y, lm.z ?? 0]);
+      return currentLandmarks.map((lm) => ({ ...lm }));
+    }
+
+    const nextCoords: Array<[number, number, number]> = [];
+    const output: NormalizedLandmark[] = new Array(currentLandmarks.length);
+
+    for (let i = 0; i < currentLandmarks.length; i += 1) {
+      const lm = currentLandmarks[i]!;
+      const prev = this.smoothedCoords[i]!;
+      const curX = lm.x;
+      const curY = lm.y;
+      const curZ = lm.z ?? 0;
+
+      let effectiveAlpha = this.alpha;
+      if (this.adaptive) {
+        const velocity = Math.hypot(curX - prev[0], curY - prev[1], curZ - prev[2]);
+        effectiveAlpha = Math.max(
+          this.minAlpha,
+          Math.min(this.maxAlpha, this.minAlpha + velocity * this.velocityScale),
+        );
+      }
+
+      const sx = effectiveAlpha * curX + (1 - effectiveAlpha) * prev[0];
+      const sy = effectiveAlpha * curY + (1 - effectiveAlpha) * prev[1];
+      const sz = effectiveAlpha * curZ + (1 - effectiveAlpha) * prev[2];
+      nextCoords.push([sx, sy, sz]);
+      output[i] = {
+        ...lm,
+        x: sx,
+        y: sy,
+        z: sz,
+      };
+    }
+
+    this.smoothedCoords = nextCoords;
+    return output;
+  }
+
+  reset(): void {
+    this.smoothedCoords = null;
+  }
+}
+
 /**
  * Zero-delay 1:1 landmark follower: MediaPipe VIDEO mode already applies its internal C++ One-Euro
  * filter, so only sub-pixel stationary tremor (< 0.0015 norm) is damped while active movement snaps 1:1.
@@ -801,29 +875,15 @@ export function interpolatePoseLandmarks(
   });
 }
 
-const POSE_FACE_INDICES = {
-  NOSE: 0,
-  LEFT_EYE: 2,
-  RIGHT_EYE: 5,
-  LEFT_EAR: 7,
-  RIGHT_EAR: 8,
-  MOUTH_LEFT: 9,
-  MOUTH_RIGHT: 10,
-} as const;
-
-const LIVE_FACE_BONELINE_PAIRS: readonly [number, number][] = [
-  [POSE_FACE_INDICES.LEFT_EAR, POSE_FACE_INDICES.LEFT_EYE],
-  [POSE_FACE_INDICES.LEFT_EYE, POSE_FACE_INDICES.NOSE],
-  [POSE_FACE_INDICES.NOSE, POSE_FACE_INDICES.RIGHT_EYE],
-  [POSE_FACE_INDICES.RIGHT_EYE, POSE_FACE_INDICES.RIGHT_EAR],
-  [POSE_FACE_INDICES.MOUTH_LEFT, POSE_FACE_INDICES.MOUTH_RIGHT],
-];
-
 const LIVE_BODY_BONELINE_PAIRS: readonly [number, number][] = [
+  [POSE_INDEX.LEFT_SHOULDER, POSE_INDEX.RIGHT_SHOULDER],
   [POSE_INDEX.LEFT_SHOULDER, POSE_INDEX.LEFT_ELBOW],
   [POSE_INDEX.LEFT_ELBOW, POSE_INDEX.LEFT_WRIST],
   [POSE_INDEX.RIGHT_SHOULDER, POSE_INDEX.RIGHT_ELBOW],
   [POSE_INDEX.RIGHT_ELBOW, POSE_INDEX.RIGHT_WRIST],
+  [POSE_INDEX.LEFT_SHOULDER, POSE_INDEX.LEFT_HIP],
+  [POSE_INDEX.RIGHT_SHOULDER, POSE_INDEX.RIGHT_HIP],
+  [POSE_INDEX.LEFT_HIP, POSE_INDEX.RIGHT_HIP],
   [POSE_INDEX.LEFT_HIP, POSE_INDEX.LEFT_KNEE],
   [POSE_INDEX.LEFT_KNEE, POSE_INDEX.LEFT_ANKLE],
   [POSE_INDEX.RIGHT_HIP, POSE_INDEX.RIGHT_KNEE],
@@ -831,13 +891,7 @@ const LIVE_BODY_BONELINE_PAIRS: readonly [number, number][] = [
 ];
 
 const LIVE_KEYPOINT_INDICES: readonly number[] = [
-  POSE_FACE_INDICES.NOSE,
-  POSE_FACE_INDICES.LEFT_EYE,
-  POSE_FACE_INDICES.RIGHT_EYE,
-  POSE_FACE_INDICES.LEFT_EAR,
-  POSE_FACE_INDICES.RIGHT_EAR,
-  POSE_FACE_INDICES.MOUTH_LEFT,
-  POSE_FACE_INDICES.MOUTH_RIGHT,
+  POSE_INDEX.NOSE,
   POSE_INDEX.LEFT_SHOULDER,
   POSE_INDEX.RIGHT_SHOULDER,
   POSE_INDEX.LEFT_ELBOW,
@@ -853,13 +907,7 @@ const LIVE_KEYPOINT_INDICES: readonly number[] = [
 ];
 
 const UPPER_BODY_KEYPOINTS = new Set<number>([
-  POSE_FACE_INDICES.NOSE,
-  POSE_FACE_INDICES.LEFT_EYE,
-  POSE_FACE_INDICES.RIGHT_EYE,
-  POSE_FACE_INDICES.LEFT_EAR,
-  POSE_FACE_INDICES.RIGHT_EAR,
-  POSE_FACE_INDICES.MOUTH_LEFT,
-  POSE_FACE_INDICES.MOUTH_RIGHT,
+  POSE_INDEX.NOSE,
   POSE_INDEX.LEFT_SHOULDER,
   POSE_INDEX.RIGHT_SHOULDER,
   POSE_INDEX.LEFT_ELBOW,
@@ -887,6 +935,7 @@ function drawLivePoseOverlayOnCanvas(
     wrongPlaneBannerTh?: string | null;
     videoWidth?: number;
     videoHeight?: number;
+    smoothingStatusText?: string;
   },
 ): void {
   if (!canvas) return;
@@ -918,8 +967,7 @@ function drawLivePoseOverlayOnCanvas(
     x: rawCanvasX(lm.x),
     y: rawCanvasY(lm.y),
   });
-  const minVisFor = (idx: number) =>
-    idx <= 10 ? 0.25 : UPPER_BODY_KEYPOINTS.has(idx) ? 0.18 : 0.48;
+  const minVisFor = (idx: number) => (UPPER_BODY_KEYPOINTS.has(idx) ? 0.18 : 0.48);
 
   const activeColor = opts.isImpostorOrEmergency
     ? '#EF4444'
@@ -932,6 +980,21 @@ function drawLivePoseOverlayOnCanvas(
     opts.targetJoint === 'left_shoulder' ||
     opts.targetJoint === 'right_shoulder' ||
     opts.targetJoint === 'spine';
+  const lShLm = primary[POSE_INDEX.LEFT_SHOULDER];
+  const rShLm = primary[POSE_INDEX.RIGHT_SHOULDER];
+  const maxShY =
+    lShLm && rShLm ? Math.max(lShLm.y, rShLm.y) : (lShLm?.y ?? rShLm?.y ?? 0.5);
+  const lHipLm = primary[POSE_INDEX.LEFT_HIP];
+  const rHipLm = primary[POSE_INDEX.RIGHT_HIP];
+  const hipsCleanlyBelowShoulders = Boolean(
+    lHipLm &&
+      rHipLm &&
+      (lHipLm.visibility ?? 0) >= 0.55 &&
+      (rHipLm.visibility ?? 0) >= 0.55 &&
+      lHipLm.y > maxShY + 0.16 &&
+      rHipLm.y > maxShY + 0.16 &&
+      Math.abs(lHipLm.x - rHipLm.x) >= 0.09,
+  );
   const activeWristLm =
     opts.targetJoint === 'left_shoulder'
       ? primary[POSE_INDEX.LEFT_WRIST]
@@ -958,9 +1021,10 @@ function drawLivePoseOverlayOnCanvas(
       idx === POSE_INDEX.LEFT_ANKLE ||
       idx === POSE_INDEX.RIGHT_ANKLE;
     const isHip = idx === POSE_INDEX.LEFT_HIP || idx === POSE_INDEX.RIGHT_HIP;
-    if (isUpperLimbOrSpine && (isLowerLeg || isHip)) {
-      // Never draw hallucinated torso/hip/knee/ankle keypoints during upper-body camera exercises
-      return false;
+    if (isUpperLimbOrSpine) {
+      // Never draw hallucinated knee/ankle lines during upper-body camera exercises
+      if (isLowerLeg) return false;
+      if (isHip && !hipsCleanlyBelowShoulders) return false;
     }
     const minV = isOppositeArmIdx(idx) ? 0.28 : minVisFor(idx);
     if ((lm.visibility ?? 0) < minV) return false;
@@ -1067,34 +1131,41 @@ function drawLivePoseOverlayOnCanvas(
     ctx.stroke();
   }
 
-  // Face landmark lines (ears, eyes, nose, mouth — no chest/torso connecting lines)
-  ctx.shadowBlur = 0;
-  ctx.strokeStyle = 'rgba(16, 185, 129, 0.85)';
-  ctx.lineWidth = 2.8;
-  for (const [faIdx, fbIdx] of LIVE_FACE_BONELINE_PAIRS) {
-    const fa = primary[faIdx];
-    const fb = primary[fbIdx];
-    if (!fa || !fb) continue;
-    if ((fa.visibility ?? 0) < 0.25 || (fb.visibility ?? 0) < 0.25) continue;
-    if (
-      fa.x < -0.02 ||
-      fa.x > 1.02 ||
-      fa.y < -0.02 ||
-      fa.y > 1.02 ||
-      fb.x < -0.02 ||
-      fb.x > 1.02 ||
-      fb.y < -0.02 ||
-      fb.y > 1.02
-    ) {
-      continue;
-    }
-    const faPt = toCanvasPt(faIdx, fa);
-    const fbPt = toCanvasPt(fbIdx, fb);
+  // Head/neck guide lines (NOSE -> shoulder midpoint NECK -> both shoulders)
+  const noseLm = primary[POSE_INDEX.NOSE];
+  if (
+    lShLm &&
+    rShLm &&
+    (lShLm.visibility ?? 0) >= 0.18 &&
+    (rShLm.visibility ?? 0) >= 0.18
+  ) {
+    const lShPt = toCanvasPt(POSE_INDEX.LEFT_SHOULDER, lShLm);
+    const rShPt = toCanvasPt(POSE_INDEX.RIGHT_SHOULDER, rShLm);
+    const neckPt = { x: (lShPt.x + rShPt.x) / 2, y: (lShPt.y + rShPt.y) / 2 };
+
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(13, 148, 136, 0.85)';
+    ctx.lineWidth = 3.2;
     ctx.beginPath();
-    ctx.moveTo(faPt.x, faPt.y);
-    ctx.lineTo(fbPt.x, fbPt.y);
+    ctx.moveTo(lShPt.x, lShPt.y);
+    ctx.lineTo(neckPt.x, neckPt.y);
+    ctx.lineTo(rShPt.x, rShPt.y);
+    if (noseLm && (noseLm.visibility ?? 0) >= 0.18) {
+      const nosePt = toCanvasPt(POSE_INDEX.NOSE, noseLm);
+      ctx.moveTo(neckPt.x, neckPt.y);
+      ctx.lineTo(nosePt.x, nosePt.y);
+    }
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(neckPt.x, neckPt.y, 4.5, 0, Math.PI * 2);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = activeColor;
     ctx.stroke();
   }
+  ctx.shadowBlur = 0;
 
   // Joint keypoints
   for (const idx of LIVE_KEYPOINT_INDICES) {
@@ -1104,7 +1175,7 @@ function drawLivePoseOverlayOnCanvas(
       continue;
     }
     const pt = toCanvasPt(idx, lm);
-    const r = idx <= 10 ? 4 : 6;
+    const r = idx === POSE_INDEX.NOSE ? 5 : 6;
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
     ctx.fillStyle = '#FFFFFF';
@@ -1277,6 +1348,23 @@ function drawLivePoseOverlayOnCanvas(
       ctx.textBaseline = 'middle';
       ctx.fillText(label, x1 + 8, ly + 11);
     });
+  }
+
+  if (opts.smoothingStatusText) {
+    ctx.font = '700 11px "Sarabun", sans-serif';
+    const textW = ctx.measureText(opts.smoothingStatusText).width;
+    const pillW = Math.min(w - 28, textW + 18);
+    const pillH = 22;
+    const pillX = 14;
+    const pillY = h - 32;
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+    ctx.beginPath();
+    ctx.roundRect(pillX, pillY, pillW, pillH, 11);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(226, 232, 240, 0.96)';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(opts.smoothingStatusText, pillX + 9, pillY + pillH / 2, pillW - 18);
   }
   ctx.restore();
 }
@@ -1531,6 +1619,46 @@ export function SmartRehabKioskUI({
     let singlePersonRecoveryFrames = 0;
     let trackedExId = selectedExerciseRef.current.exercise_id;
     let torsoAnchor: TorsoAnchorState | null = null;
+    const landmarkSmoother = new LandmarkSmoother({
+      alpha: 0.25,
+      adaptive: true,
+      minAlpha: 0.1,
+      maxAlpha: 0.85,
+      velocityScale: 15.0,
+    });
+    let enableCustomSmooth = true;
+    const formatSmoothingHud = () => {
+      if (!enableCustomSmooth) {
+        return `Smoothing: OFF (alpha=${landmarkSmoother.alpha.toFixed(2)}) • [1] On/Off [2] Mode [+/-] Alpha`;
+      }
+      if (landmarkSmoother.adaptive) {
+        return `Smoothing: Adaptive EMA (min=${landmarkSmoother.minAlpha.toFixed(2)}, max=${landmarkSmoother.maxAlpha.toFixed(2)}) • [1] On/Off [2] Mode [+/-] Alpha`;
+      }
+      return `Smoothing: Fixed EMA (alpha=${landmarkSmoother.alpha.toFixed(2)}) • [1] On/Off [2] Mode [+/-] Alpha`;
+    };
+    const handleSmoothingKeyDown = (event: KeyboardEvent) => {
+      const targetEl = event.target as HTMLElement | null;
+      if (
+        targetEl &&
+        (targetEl.tagName === 'INPUT' ||
+          targetEl.tagName === 'TEXTAREA' ||
+          targetEl.tagName === 'SELECT' ||
+          targetEl.isContentEditable)
+      ) {
+        return;
+      }
+      if (event.key === '1') {
+        enableCustomSmooth = !enableCustomSmooth;
+        if (!enableCustomSmooth) landmarkSmoother.reset();
+      } else if (event.key === '2') {
+        landmarkSmoother.adaptive = !landmarkSmoother.adaptive;
+      } else if (event.key === '+' || event.key === '=') {
+        landmarkSmoother.alpha = Math.min(0.95, Number((landmarkSmoother.alpha + 0.05).toFixed(2)));
+      } else if (event.key === '-' || event.key === '_') {
+        landmarkSmoother.alpha = Math.max(0.05, Number((landmarkSmoother.alpha - 0.05).toFixed(2)));
+      }
+    };
+    window.addEventListener('keydown', handleSmoothingKeyDown);
     let occludedFrames = 0;
     let lastVideoTime = -1;
     let lastDetectWallMs = 0;
@@ -1556,6 +1684,8 @@ export function SmartRehabKioskUI({
     let lastHoldEmitAt = 0;
 
     const cleanup = () => {
+      window.removeEventListener('keydown', handleSmoothingKeyDown);
+      landmarkSmoother.reset();
       if (rafId) {
         cancelAnimationFrame(rafId);
         rafId = 0;
@@ -1690,6 +1820,7 @@ export function SmartRehabKioskUI({
           if (trackedExId !== curEx.exercise_id) {
             trackedExId = curEx.exercise_id;
             torsoAnchor = null;
+            landmarkSmoother.reset();
             occludedFrames = 0;
             wrongSideStreak = 0;
             wrongPlaneStreak = 0;
@@ -1780,6 +1911,7 @@ export function SmartRehabKioskUI({
                 singlePersonRecoveryFrames = 0;
                 latestLandmarks = null;
                 renderPrimaryLandmarks = null;
+                landmarkSmoother.reset();
               } else if (demoPresetRef.current !== 'IMPOSTOR' || !stepACheckIdentity) {
                 const rawLandmarks = allLandmarks[0] ?? null;
                 if (rawLandmarks) {
@@ -1798,7 +1930,9 @@ export function SmartRehabKioskUI({
                   } else {
                     occludedFrames = 0;
                   }
-                  const landmarks = stabilizedResult.landmarks;
+                  const landmarks = enableCustomSmooth
+                    ? landmarkSmoother.apply(stabilizedResult.landmarks)
+                    : stabilizedResult.landmarks;
                   latestLandmarks = landmarks;
                   latestAllLandmarks = [landmarks, ...allLandmarks.slice(1)];
                   lastValidPoseAt = now;
@@ -1840,6 +1974,7 @@ export function SmartRehabKioskUI({
                   latestRawPrimaryRomDeg = null;
                   latestLandmarks = null;
                   renderPrimaryLandmarks = null;
+                  landmarkSmoother.reset();
                 }
               }
             } catch {
@@ -2061,6 +2196,7 @@ export function SmartRehabKioskUI({
               wrongPlaneBannerTh: effWrongPlaneBannerTh,
               videoWidth: v.videoWidth,
               videoHeight: v.videoHeight,
+              smoothingStatusText: formatSmoothingHud(),
             });
           } else {
             renderPrimaryLandmarks = null;
