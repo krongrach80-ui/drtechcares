@@ -48,10 +48,10 @@ export function RomGauge({
         return;
       }
 
-      // Fast 120Hz visual follower so gauge arc & degrees track real arm motion with zero multi-second lag
-      const maxUp = (320 * dtMs) / 1000;
-      const maxDown = (340 * dtMs) / 1000;
-      const alpha = 1 - Math.exp(-dtMs / 32);
+      // Fast 120Hz visual follower so gauge arc & degrees track rapid motion without secondary lag
+      const maxUp = (800 * dtMs) / 1000;
+      const maxDown = (850 * dtMs) / 1000;
+      const alpha = 1 - Math.exp(-dtMs / 10);
       const rawStep = diff * alpha;
       const step =
         diff > 0

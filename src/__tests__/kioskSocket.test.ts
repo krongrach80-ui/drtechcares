@@ -10,6 +10,7 @@ import {
 } from '../hooks/useKioskSocket';
 import {
   DEFAULT_FORM_ASSESSMENT_RULES,
+  interpolatePoseLandmarks,
   isFormRuleActive,
   measureLiveJointAngleAndTilt,
   stepSmoothRomAngle,
@@ -379,23 +380,23 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(stepSmoothRomAngle(45, 45.6, 16)).toBe(45);
     expect(stepSmoothRomAngle(45, 44.3, 16)).toBe(45);
 
-    // 2. Bounds single-frame spikes (15 -> 150 deg in 16ms) to <= 260 deg/sec
+    // 2. Bounds single-frame spikes (15 -> 150 deg in 16ms) to <= 680 deg/sec
     const singleStep = stepSmoothRomAngle(15, 150, 16);
     expect(singleStep).toBeGreaterThan(15);
-    expect(singleStep).toBeLessThanOrEqual(15 + (260 * 16) / 1000 + 1e-6);
+    expect(singleStep).toBeLessThanOrEqual(15 + (680 * 16) / 1000 + 1e-6);
 
-    // 3. Converges to >= 148 deg within ~0.65 seconds (39 frames at 60Hz) matching real human arm speed
+    // 3. Converges to >= 148 deg within <= 16 frames (~0.27s at 60Hz) for fast arm raises
     let rom = 15;
-    for (let i = 0; i < 39; i += 1) {
+    for (let i = 0; i < 16; i += 1) {
       rom = stepSmoothRomAngle(rom, 150, 1000 / 60);
     }
     expect(rom).toBeGreaterThanOrEqual(148);
     expect(rom).toBeLessThanOrEqual(150);
 
-    // 4. Caps downward return speed to <= 280 deg/sec
+    // 4. Caps downward return speed to <= 720 deg/sec
     const downStep = stepSmoothRomAngle(150, 15, 20);
     expect(downStep).toBeLessThan(150);
-    expect(downStep).toBeGreaterThanOrEqual(150 - (280 * 20) / 1000 - 1e-6);
+    expect(downStep).toBeGreaterThanOrEqual(150 - (720 * 20) / 1000 - 1e-6);
 
     // 5. Still measures low-visibility close-up upper-body landmarks (visibility: 0.08)
     const closeUpRightArm = createNeutralLandmarks({
@@ -407,6 +408,30 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(lowVisMeasure.wrongSideRaised).toBe(false);
     expect(lowVisMeasure.romDeg).not.toBeNull();
     expect(lowVisMeasure.romDeg!).toBeGreaterThan(145);
+  });
+
+  it('interpolates pose landmarks with stationary jitter damping and instant fast-swing pursuit', () => {
+    const base = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.40, y: 0.65, z: 0, visibility: 0.99 },
+    });
+
+    // 1. Stationary micro-jitter (< 0.0015 norm units) is smoothed rather than snapping 100%
+    const jitterTarget = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.4008, y: 0.6505, z: 0, visibility: 0.99 },
+    });
+    const damped = interpolatePoseLandmarks(base, jitterTarget, 16);
+    const dampedStep = damped[POSE_INDEX.RIGHT_WRIST].x - 0.40;
+    expect(dampedStep).toBeGreaterThan(0);
+    expect(dampedStep).toBeLessThan(0.0006);
+
+    // 2. Fast arm swing (dist >= 0.05 in 16ms) snaps >= 95% immediately with near-zero lag
+    const fastSwingTarget = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.46, y: 0.30, z: -0.25, visibility: 0.99 },
+    });
+    const pursued = interpolatePoseLandmarks(base, fastSwingTarget, 16);
+    const yProgressRatio = (0.65 - pursued[POSE_INDEX.RIGHT_WRIST].y) / (0.65 - 0.30);
+    expect(yProgressRatio).toBeGreaterThanOrEqual(0.95);
+    expect(pursued[POSE_INDEX.RIGHT_WRIST].x).toBeGreaterThan(0.455);
   });
 
   it('localizes the Verified Patient Confirmation Modal across Thai, English, and Chinese', () => {
