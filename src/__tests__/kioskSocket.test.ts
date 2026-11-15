@@ -5,6 +5,7 @@ import {
   EXERCISE_OPTIONS,
   getPrescribedLimbPromptTh,
   mapTodayExercisesToPrescriptions,
+  resolveExpectedPlaneForExercise,
   synthesizeDemoPayload,
 } from '../hooks/useKioskSocket';
 import { measureLiveJointAngleAndTilt, stepSmoothRomAngle } from '../components/SmartRehabKioskUI';
@@ -432,6 +433,110 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(cn.gestureDetectedPill).toContain('50%');
     expect(cn.notMeBtn).toContain('不是我本人');
     expect(cn.voiceGreeting).toContain('Pdasdwa');
+  });
+
+  it('enforces movement plane strictly: forward flexion rejects side abduction and side abduction rejects forward flexion', () => {
+    expect(
+      resolveExpectedPlaneForExercise({
+        name_th: 'ยกแขนตรงไปด้านหน้า (ขวา)',
+        name_en: 'Right Shoulder Flexion',
+        target_joint: 'right_shoulder',
+      }),
+    ).toBe('flexion');
+
+    expect(
+      resolveExpectedPlaneForExercise({
+        name_th: 'กางแขนตรงออกด้านข้าง (ขวา)',
+        name_en: 'Right Shoulder Abduction',
+        target_joint: 'right_shoulder',
+      }),
+    ).toBe('abduction');
+
+    // High forward flexion raise: valid for 'flexion'
+    const forwardHigh = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.41, y: 0.22, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.40, y: 0.08, z: 0, visibility: 0.99 },
+    });
+    const flexionHighCheck = measureLiveJointAngleAndTilt(forwardHigh, 'right_shoulder', 'flexion');
+    expect(flexionHighCheck.wrongPlaneRaised).toBe(false);
+    expect(flexionHighCheck.wrongPlaneBannerTh).toBeNull();
+    expect(flexionHighCheck.romDeg).not.toBeNull();
+    expect(flexionHighCheck.romDeg!).toBeGreaterThan(140);
+
+    // Mid forward raise (~90 deg foreshortened in 2D webcam view): valid for 'flexion'
+    const forwardMid = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.41, y: 0.34, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.40, y: 0.34, z: 0, visibility: 0.99 },
+    });
+    const flexionMidCheck = measureLiveJointAngleAndTilt(forwardMid, 'right_shoulder', 'flexion');
+    expect(flexionMidCheck.wrongPlaneRaised).toBe(false);
+    expect(flexionMidCheck.romDeg).not.toBeNull();
+    expect(flexionMidCheck.romDeg!).toBeGreaterThanOrEqual(85);
+    expect(flexionMidCheck.romDeg!).toBeLessThanOrEqual(98);
+
+    // Side abduction raise: rejected for 'flexion'
+    const sideAbduction = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.24, y: 0.34, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.12, y: 0.32, z: 0, visibility: 0.99 },
+    });
+    const flexionRejectsSide = measureLiveJointAngleAndTilt(sideAbduction, 'right_shoulder', 'flexion');
+    expect(flexionRejectsSide.wrongPlaneRaised).toBe(true);
+    expect(flexionRejectsSide.romDeg).toBe(0);
+    expect(flexionRejectsSide.wrongPlaneBannerTh).toContain('ยกแขนตรงไปด้านหน้า');
+
+    // Side abduction raise: valid for 'abduction'
+    const abductionCheck = measureLiveJointAngleAndTilt(sideAbduction, 'right_shoulder', 'abduction');
+    expect(abductionCheck.wrongPlaneRaised).toBe(false);
+    expect(abductionCheck.wrongPlaneBannerTh).toBeNull();
+    expect(abductionCheck.romDeg).not.toBeNull();
+    expect(abductionCheck.romDeg!).toBeGreaterThan(90);
+
+    // Forward raise at 90 deg: rejected for 'abduction'
+    const abductionRejectsForward = measureLiveJointAngleAndTilt(forwardMid, 'right_shoulder', 'abduction');
+    expect(abductionRejectsForward.wrongPlaneRaised).toBe(true);
+    expect(abductionRejectsForward.romDeg).toBe(0);
+    expect(abductionRejectsForward.wrongPlaneBannerTh).toContain('กางแขนออกด้านข้าง');
+
+    // synthesizeDemoPayload WRONG_PLANE + 3-language Voice Coach translation
+    const flexionExercise = {
+      ...rightShoulder,
+      exercise_id: 'ex-01',
+      name_th: 'ยกแขนตรงไปด้านหน้า (ขวา)',
+      name_en: 'Right Shoulder Flexion',
+      expected_plane: 'flexion' as const,
+    };
+    const wrongPlanePayload = synthesizeDemoPayload({
+      preset: 'WRONG_PLANE',
+      romDeg: 0,
+      trunkTiltDeg: 2,
+      distanceM: 2.0,
+      exercise: flexionExercise,
+      validReps: 2,
+      invalidReps: 0,
+      holdRemainingSec: 3,
+    });
+    expect(wrongPlanePayload.telemetry_analysis.is_form_valid).toBe(false);
+    expect(wrongPlanePayload.telemetry_analysis.compensation_detected).toContain('WRONG_PLANE');
+    expect(translateVoiceCoachText(wrongPlanePayload.tts_voice_th, 'th')).toContain('ยกแขนตรงไปด้านหน้า');
+    expect(translateVoiceCoachText(wrongPlanePayload.tts_voice_th, 'en')).toContain('straight forward');
+    expect(translateVoiceCoachText(wrongPlanePayload.tts_voice_th, 'zh')).toContain('向正前方抬起');
+
+    const abductionWrongPayload = synthesizeDemoPayload({
+      preset: 'WRONG_PLANE',
+      romDeg: 0,
+      trunkTiltDeg: 2,
+      distanceM: 2.0,
+      exercise: {
+        ...rightShoulder,
+        expected_plane: 'abduction' as const,
+      },
+      validReps: 2,
+      invalidReps: 0,
+      holdRemainingSec: 3,
+    });
+    expect(translateVoiceCoachText(abductionWrongPayload.tts_voice_th, 'th')).toContain('กางแขนออกด้านข้าง');
+    expect(translateVoiceCoachText(abductionWrongPayload.tts_voice_th, 'en')).toContain('out to the side');
+    expect(translateVoiceCoachText(abductionWrongPayload.tts_voice_th, 'zh')).toContain('向身体侧面外展抬起');
   });
 });
 

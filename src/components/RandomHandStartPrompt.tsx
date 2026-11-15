@@ -227,14 +227,35 @@ export function RandomHandStartPrompt({
 
         stream = await navigator.mediaDevices.getUserMedia({
           video: deviceId
-            ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
-            : { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+            ? {
+                deviceId: { exact: deviceId },
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                aspectRatio: { ideal: 16 / 9 },
+                facingMode: 'user',
+              }
+            : {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                aspectRatio: { ideal: 16 / 9 },
+                facingMode: 'user',
+              },
           audio: false,
         });
 
         if (!active || !videoRef.current) {
           cleanupMedia();
           return;
+        }
+
+        const videoTrack = stream.getVideoTracks()[0];
+        const caps = videoTrack?.getCapabilities?.() as { zoom?: { min?: number } } | undefined;
+        if (videoTrack && caps?.zoom && typeof caps.zoom.min === 'number') {
+          await videoTrack
+            .applyConstraints({
+              advanced: [{ zoom: caps.zoom.min } as MediaTrackConstraintSet],
+            })
+            .catch(() => undefined);
         }
 
         videoRef.current.srcObject = stream;

@@ -3,6 +3,8 @@ import { motion } from 'framer-motion';
 import { Activity, AlertTriangle, CheckCircle2, Ruler, ShieldAlert, UserCheck, Users, UserX } from 'lucide-react';
 import {
   getPrescribedLimbPromptTh,
+  getPrescribedPlanePromptTh,
+  resolveExpectedPlaneForExercise,
   type ExercisePrescriptionOption,
   type KioskDecisionPayload,
 } from '../hooks/useKioskSocket';
@@ -109,7 +111,10 @@ export function SkeletonCanvas({
   const hasShoulderHike = telemetry_analysis.compensation_detected.includes('SHOULDER_HIKE');
   const hasKneeValgus = telemetry_analysis.compensation_detected.includes('KNEE_VALGUS');
   const wrongLimbAlert = telemetry_analysis.compensation_detected.includes('WRONG_LIMB');
+  const wrongPlaneAlert = telemetry_analysis.compensation_detected.includes('WRONG_PLANE');
   const limbPrompt = getPrescribedLimbPromptTh(exercise.target_joint);
+  const expectedPlane = resolveExpectedPlaneForExercise(exercise);
+  const planePrompt = getPrescribedPlanePromptTh(expectedPlane);
   const guard = payload.identity_guard;
   const isMultiPerson = kiosk_state === 'PAUSED_MULTI_PERSON' || guard?.status === 'MULTI_PERSON';
   const isImpostor = kiosk_state === 'PAUSED_IMPOSTOR' || guard?.status === 'IMPOSTOR';
@@ -222,7 +227,7 @@ export function SkeletonCanvas({
 
   return (
     <div
-      className={`glass-card relative flex h-full min-h-[420px] w-full flex-col justify-between overflow-hidden rounded-3xl transition-colors duration-300 ${
+      className={`glass-card relative flex min-h-[420px] h-[460px] sm:h-[540px] lg:h-[620px] w-full flex-col justify-between overflow-hidden rounded-3xl transition-colors duration-300 ${
         isEmergency ? 'ring-4 ring-rose-500/70' : ''
       }`}
     >
@@ -270,18 +275,18 @@ export function SkeletonCanvas({
         </div>
 
         <motion.div
-          key={`${kiosk_state}-${ui_directives.highlight_color}-${wrongLimbAlert ? 'wrong' : 'ok'}`}
+          key={`${kiosk_state}-${ui_directives.highlight_color}-${wrongLimbAlert ? 'wrong' : wrongPlaneAlert ? 'wrong_plane' : 'ok'}`}
           initial={{ scale: 0.96, opacity: 0.85 }}
           animate={{ scale: 1, opacity: 1 }}
           className={`inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-xs font-bold shadow-sm backdrop-blur-md sm:text-sm ${
-            ui_directives.highlight_color === 'RED' || wrongLimbAlert
+            ui_directives.highlight_color === 'RED' || wrongLimbAlert || wrongPlaneAlert
               ? 'border-rose-300 bg-rose-500 text-white'
               : ui_directives.highlight_color === 'AMBER'
                 ? 'border-amber-300 bg-amber-100/95 text-amber-900'
                 : 'border-emerald-200 bg-white/88 text-[#0D9488]'
           }`}
         >
-          {ui_directives.highlight_color === 'RED' || wrongLimbAlert ? (
+          {ui_directives.highlight_color === 'RED' || wrongLimbAlert || wrongPlaneAlert ? (
             <ShieldAlert className="h-4 w-4" />
           ) : ui_directives.highlight_color === 'AMBER' ? (
             <AlertTriangle className="h-4 w-4 text-[#F59E0B]" />
@@ -297,7 +302,9 @@ export function SkeletonCanvas({
                   ? `พบบุคคล ${guard?.person_count ?? 2} คน • หยุดนับชั่วคราว`
                   : wrongLimbAlert
                     ? `⚠️ ยกแขนผิดข้าง • ${limbPrompt.bannerAlertTh}`
-                    : hasTrunkLean
+                    : wrongPlaneAlert
+                      ? `⚠️ ผิดทิศทาง • ${planePrompt.bannerAlertTh}`
+                      : hasTrunkLean
                       ? 'ตรวจพบการเอียงลำตัวชดเชย'
                       : isRepCompletedOrFinished
                         ? `ครบ ${exercise.hold_sec} วินาทีแล้ว • ${isLowerBody ? 'ค่อยๆ เอาขาลงช้าๆ' : 'ค่อยๆ เอาแขนลงช้าๆ'}`
@@ -325,6 +332,29 @@ export function SkeletonCanvas({
             </div>
             <div className="mt-0.5 text-xs font-bold text-rose-100 sm:text-sm">
               กรุณายก{limbPrompt.requiredLimbTh} (ท่ากายภาพนี้ต้องทำด้วย{limbPrompt.requiredLimbTh}เท่านั้น)
+            </div>
+          </div>
+          <span className="shrink-0 rounded-full bg-rose-900/60 px-3 py-1 text-[11px] font-black uppercase tracking-wider text-rose-100">
+            0 REPS ADDED
+          </span>
+        </div>
+      )}
+
+      {/* Wrong-Plane Enforcement Alert Banner */}
+      {!isEmergency && !isImpostor && !isMultiPerson && !wrongLimbAlert && wrongPlaneAlert && (
+        <div
+          role="alert"
+          className="relative z-20 mx-4 mb-2 flex items-center gap-3 rounded-2xl border-2 border-rose-400 bg-rose-600/95 px-4 py-3 text-white shadow-lg backdrop-blur-md sm:mx-5"
+        >
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/20 text-white">
+            <AlertTriangle className="h-6 w-6" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-black tracking-tight sm:text-base">
+              ⚠️ เคลื่อนไหวผิดทิศทาง! ระบบไม่นับรอบ (กำลัง{planePrompt.wrongPlaneTh}อยู่)
+            </div>
+            <div className="mt-0.5 text-xs font-bold text-rose-100 sm:text-sm">
+              {planePrompt.bannerAlertTh}
             </div>
           </div>
           <span className="shrink-0 rounded-full bg-rose-900/60 px-3 py-1 text-[11px] font-black uppercase tracking-wider text-rose-100">

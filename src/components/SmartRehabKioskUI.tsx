@@ -30,9 +30,12 @@ import { SkeletonCanvas } from './SkeletonCanvas';
 import { VoiceCoachBanner } from './VoiceCoachBanner';
 import {
   getPrescribedLimbPromptTh,
+  getPrescribedPlanePromptTh,
+  resolveExpectedPlaneForExercise,
   useKioskSocket,
   type DemoPresetId,
   type ExercisePrescriptionOption,
+  type ExpectedMovementPlane,
   type PatientSummary,
 } from '../hooks/useKioskSocket';
 
@@ -51,6 +54,7 @@ const DEMO_PRESETS: { id: DemoPresetId; label: string; shortLabel: string }[] = 
   { id: 'ACTIVE_REP', label: 'Active Exercise', shortLabel: '2. Active' },
   { id: 'TRUNK_LEAN', label: 'Cheating / Trunk Lean', shortLabel: '3. Trunk Lean' },
   { id: 'WRONG_LIMB', label: 'Wrong Arm (ยกผิดข้าง)', shortLabel: '3b. Wrong Arm' },
+  { id: 'WRONG_PLANE', label: 'Wrong Plane (ยกผิดทิศทาง)', shortLabel: '3c. Wrong Plane' },
   { id: 'HOLD_PHASE', label: 'Hold Phase', shortLabel: '4. Hold' },
   { id: 'REP_COMPLETED', label: 'Rep Completed', shortLabel: '5. Rep +' },
   { id: 'SET_FINISHED', label: 'Set Finished', shortLabel: '6. Finished' },
@@ -64,11 +68,14 @@ export interface LiveJointMeasurement {
   wrongSideRaised: boolean;
   oppositeRomDeg: number | null;
   wrongSideBannerTh: string | null;
+  wrongPlaneRaised: boolean;
+  wrongPlaneBannerTh: string | null;
 }
 
 export function measureLiveJointAngleAndTilt(
   landmarks: readonly NormalizedLandmark[],
   targetJoint: ExercisePrescriptionOption['target_joint'],
+  expectedPlane: ExpectedMovementPlane = 'any',
 ): LiveJointMeasurement {
   const UPPER_MIN_VIS = 0.02;
   const LOWER_MIN_VIS = 0.2;
@@ -76,6 +83,8 @@ export function measureLiveJointAngleAndTilt(
   const rSh = landmarks[POSE_INDEX.RIGHT_SHOULDER];
   const lHip = landmarks[POSE_INDEX.LEFT_HIP];
   const rHip = landmarks[POSE_INDEX.RIGHT_HIP];
+
+  const shoulderSpanX = lSh && rSh ? Math.max(0.12, Math.abs(lSh.x - rSh.x)) : 0.18;
 
   let trunkTiltDeg = 2.0;
   if (
@@ -123,16 +132,23 @@ export function measureLiveJointAngleAndTilt(
     const candidates: number[] = [];
     for (const pt of [wrist, elbow]) {
       if (!pt || (pt.visibility ?? 0) < UPPER_MIN_VIS) continue;
-      // Scale horizontal span for 4:3 / 16:9 webcam aspect ratio so abducted arms read true angle
+      // Scale horizontal span for wide webcam aspect ratio and compensate sagittal foreshortening
       const dx = (pt.x - sh.x) * 1.22;
       const dy = pt.y - sh.y;
       const len = Math.hypot(dx, dy);
-      if (len >= 0.03) {
-        const cosDown = Math.max(-1, Math.min(1, dy / len));
+      const refSegLen = pt === wrist ? shoulderSpanX * 1.32 : shoulderSpanX * 0.72;
+      const isPlaneRestricted = expectedPlane === 'flexion' || expectedPlane === 'abduction';
+      const effectiveLen = isPlaneRestricted ? Math.max(len, refSegLen) : len;
+      if (effectiveLen >= 0.03 && (isPlaneRestricted || len >= 0.03)) {
+        const cosDown = Math.max(-1, Math.min(1, dy / effectiveLen));
         const elev2D = (Math.acos(cosDown) * 180) / Math.PI;
-        const ptScaled = { x: pt.x, y: pt.y, z: (pt.z ?? 0) * 0.35 };
-        const angle3D = computeJointAngle3D(refHip, shScaled, ptScaled);
-        candidates.push(calibrateShoulderElevationDeg(Math.max(elev2D, angle3D)));
+        let combinedRaw = elev2D;
+        if (!(isPlaneRestricted && len < refSegLen * 0.85)) {
+          const ptScaled = { x: pt.x, y: pt.y, z: (pt.z ?? 0) * 0.35 };
+          const angle3D = computeJointAngle3D(refHip, shScaled, ptScaled);
+          combinedRaw = Math.max(elev2D, angle3D);
+        }
+        candidates.push(calibrateShoulderElevationDeg(combinedRaw));
       }
     }
 
@@ -147,8 +163,10 @@ export function measureLiveJointAngleAndTilt(
       const fDx = (wrist.x - elbow.x) * 1.22;
       const fDy = wrist.y - elbow.y;
       const fLen = Math.hypot(fDx, fDy);
-      if (fLen >= 0.03) {
-        const fCosDown = Math.max(-1, Math.min(1, fDy / fLen));
+      const isPlaneRestricted = expectedPlane === 'flexion' || expectedPlane === 'abduction';
+      const fEffectiveLen = isPlaneRestricted ? Math.max(fLen, shoulderSpanX * 0.65) : fLen;
+      if (fEffectiveLen >= 0.03 && (isPlaneRestricted || fLen >= 0.03)) {
+        const fCosDown = Math.max(-1, Math.min(1, fDy / fEffectiveLen));
         const forearmElev2D = (Math.acos(fCosDown) * 180) / Math.PI;
         candidates.push(calibrateShoulderElevationDeg(forearmElev2D));
       }
@@ -161,6 +179,9 @@ export function measureLiveJointAngleAndTilt(
   let oppositeRomDeg: number | null = null;
   let wrongSideRaised = false;
   let wrongSideBannerTh: string | null = null;
+  let wrongPlaneRaised = false;
+  let wrongPlaneBannerTh: string | null = null;
+
   if (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder') {
     const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
     const oppositeSide: 'left' | 'right' = primarySide === 'left' ? 'right' : 'left';
@@ -170,9 +191,53 @@ export function measureLiveJointAngleAndTilt(
       oppositeDeg !== null &&
       oppositeDeg >= 45 &&
       (primaryDeg === null || (primaryDeg < 65 && oppositeDeg > primaryDeg + 18));
-    // Strict side enforcement: measure ONLY the prescribed arm; hold last reading on transient drop
+
+    if (!wrongSideRaised && primaryDeg !== null && (expectedPlane === 'flexion' || expectedPlane === 'abduction')) {
+      const sh = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
+      const elbow = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
+      const wrist = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
+      const elbowLatRatio =
+        sh && elbow && (elbow.visibility ?? 0) >= UPPER_MIN_VIS
+          ? Math.abs(elbow.x - sh.x) / shoulderSpanX
+          : 0;
+      const wristLatRatio =
+        sh && wrist && (wrist.visibility ?? 0) >= UPPER_MIN_VIS
+          ? Math.abs(wrist.x - sh.x) / shoulderSpanX
+          : 0;
+      const distalPt = wrist && (wrist.visibility ?? 0) >= UPPER_MIN_VIS ? wrist : elbow;
+      const dxAbs = sh && distalPt ? Math.abs(distalPt.x - sh.x) : 0;
+      const dyAbs = sh && distalPt ? Math.abs(distalPt.y - sh.y) : 0;
+      const horizRatioFlex = dxAbs / Math.max(0.04, Math.hypot(dxAbs, dyAbs));
+      const horizRatioAbd = dxAbs / Math.max(shoulderSpanX, Math.hypot(dxAbs, dyAbs));
+
+      if (
+        expectedPlane === 'flexion' &&
+        primaryDeg >= 38 &&
+        (wristLatRatio >= 0.62 || elbowLatRatio >= 0.48) &&
+        horizRatioFlex >= 0.45
+      ) {
+        wrongPlaneRaised = true;
+        wrongPlaneBannerTh = getPrescribedPlanePromptTh('flexion').bannerAlertTh;
+      } else if (
+        expectedPlane === 'abduction' &&
+        primaryDeg >= 45 &&
+        primaryDeg <= 140 &&
+        wristLatRatio < 0.34 &&
+        elbowLatRatio < 0.28 &&
+        horizRatioAbd < 0.32
+      ) {
+        wrongPlaneRaised = true;
+        wrongPlaneBannerTh = getPrescribedPlanePromptTh('abduction').bannerAlertTh;
+      }
+    }
+
+    // Strict side & plane enforcement: block wrong-side or wrong-plane movements at 0 deg
     romDeg =
-      primaryDeg !== null ? Number(primaryDeg.toFixed(1)) : wrongSideRaised ? 0 : null;
+      wrongSideRaised || wrongPlaneRaised
+        ? 0
+        : primaryDeg !== null
+          ? Number(primaryDeg.toFixed(1))
+          : null;
     oppositeRomDeg = oppositeDeg;
     if (wrongSideRaised) {
       wrongSideBannerTh = getPrescribedLimbPromptTh(targetJoint).bannerAlertTh;
@@ -215,6 +280,8 @@ export function measureLiveJointAngleAndTilt(
     wrongSideRaised,
     oppositeRomDeg,
     wrongSideBannerTh,
+    wrongPlaneRaised,
+    wrongPlaneBannerTh,
   };
 }
 
@@ -324,6 +391,7 @@ function drawLivePoseOverlayOnCanvas(
   landmarksList: readonly (readonly NormalizedLandmark[])[],
   opts: {
     targetJoint: ExercisePrescriptionOption['target_joint'];
+    expectedPlane?: ExpectedMovementPlane;
     romDeg: number | null;
     targetRomDeg: number;
     holdRatio: number;
@@ -332,6 +400,8 @@ function drawLivePoseOverlayOnCanvas(
     isImpostorOrEmergency: boolean;
     wrongSideRaised?: boolean;
     wrongSideBannerTh?: string | null;
+    wrongPlaneRaised?: boolean;
+    wrongPlaneBannerTh?: string | null;
     videoWidth?: number;
     videoHeight?: number;
   },
@@ -351,12 +421,12 @@ function drawLivePoseOverlayOnCanvas(
   ctx.clearRect(0, 0, w, h);
   if (landmarksList.length === 0) return;
 
-  // Match CSS object-cover scale/crop so mirrored landmarks align 1:1 over the video feed
+  // Match CSS object-contain wide-angle framing so mirrored landmarks align 1:1 over the uncropped video feed
   const vw = opts.videoWidth && opts.videoWidth > 0 ? opts.videoWidth : w;
   const vh = opts.videoHeight && opts.videoHeight > 0 ? opts.videoHeight : h;
-  const coverScale = Math.max(w / vw, h / vh);
-  const renderW = vw * coverScale;
-  const renderH = vh * coverScale;
+  const fitScale = Math.min(w / vw, h / vh);
+  const renderW = vw * fitScale;
+  const renderH = vh * fitScale;
   const offsetX = (w - renderW) / 2;
   const offsetY = (h - renderH) / 2;
   const rawCanvasX = (normX: number) => offsetX + (1 - normX) * renderW;
@@ -376,7 +446,7 @@ function drawLivePoseOverlayOnCanvas(
 
   const activeColor = opts.isImpostorOrEmergency
     ? '#EF4444'
-    : opts.isMultiPerson || opts.trunkTiltDeg > 10
+    : opts.wrongPlaneRaised || opts.isMultiPerson || opts.trunkTiltDeg > 10
       ? '#F59E0B'
       : '#10B981';
 
@@ -441,7 +511,10 @@ function drawLivePoseOverlayOnCanvas(
     const aPt = toCanvasPt(aIdx, a);
     const bPt = toCanvasPt(bIdx, b);
     const emphasized = isHighlightedEdge(aIdx, bIdx);
-    const isWrongRaisedEdge = Boolean(opts.wrongSideRaised && isOppositeArmEdge(aIdx, bIdx));
+    const isWrongRaisedEdge = Boolean(
+      (opts.wrongSideRaised && isOppositeArmEdge(aIdx, bIdx)) ||
+        (opts.wrongPlaneRaised && emphasized),
+    );
 
     ctx.beginPath();
     ctx.moveTo(aPt.x, aPt.y);
@@ -562,6 +635,38 @@ function drawLivePoseOverlayOnCanvas(
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(badgeText, jx, jy);
+  }
+
+  // On-body alert badge when patient raises in wrong movement plane (e.g. side abduction instead of forward flexion)
+  if (opts.wrongPlaneRaised && !opts.wrongSideRaised) {
+    const activeElbowIdx =
+      opts.targetJoint === 'left_shoulder' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW;
+    const activeShIdx =
+      opts.targetJoint === 'left_shoulder' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER;
+    const activeLm = primary[activeElbowIdx] ?? primary[activeShIdx] ?? primary[POSE_INDEX.NOSE];
+    const planeInfo = getPrescribedPlanePromptTh(opts.expectedPlane ?? 'any');
+    const warnText = `✗ ${planeInfo.wrongPlaneTh} • กรุณา${planeInfo.requiredPlaneTh}`;
+    ctx.font = '800 13px "Sarabun", sans-serif';
+    const wtw = ctx.measureText(warnText).width;
+    const wbw = Math.min(w - 24, wtw + 24);
+    const wbh = 32;
+    const wx = activeLm
+      ? Math.max(wbw / 2 + 12, Math.min(w - wbw / 2 - 12, rawCanvasX(activeLm.x)))
+      : w / 2;
+    const wy = activeLm ? Math.max(88, Math.min(h - 36, rawCanvasY(activeLm.y) - 34)) : 96;
+
+    ctx.fillStyle = 'rgba(220, 38, 38, 0.92)';
+    ctx.strokeStyle = '#FCA5A5';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(wx - wbw / 2, wy - wbh / 2, wbw, wbh, 16);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#FFFFFF';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(warnText, wx, wy);
   }
 
   // On-body alert badge when patient raises the wrong arm
@@ -723,6 +828,8 @@ export function SmartRehabKioskUI({
   const kneeValgusAlert = compensations.includes('KNEE_VALGUS');
   const tooFastAlert = compensations.includes('TOO_FAST');
   const wrongLimbAlert = compensations.includes('WRONG_LIMB');
+  const wrongPlaneAlert = compensations.includes('WRONG_PLANE');
+  const activeExpectedPlane = resolveExpectedPlaneForExercise(selectedExercise);
   const isHoldPhase = kiosk_state === 'HOLD_PHASE';
   const isRepCelebration = kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED';
   const isEmergency = kiosk_state === 'EMERGENCY_HALT';
@@ -839,6 +946,8 @@ export function SmartRehabKioskUI({
     let latestTrunkTiltDeg = 0;
     let latestWrongSideRaised = false;
     let latestWrongSideBannerTh: string | null = null;
+    let latestWrongPlaneRaised = false;
+    let latestWrongPlaneBannerTh: string | null = null;
     let lastEmittedRom = -999;
     let lastEmittedTilt = -999;
     let lastEmittedHold = -999;
@@ -883,26 +992,34 @@ export function SmartRehabKioskUI({
         const deviceId = await selectClinicalCameraDeviceId();
         if (!active) return;
 
+        const baseVideoConstraints: MediaTrackConstraints = {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          aspectRatio: { ideal: 16 / 9 },
+          frameRate: { ideal: 60, max: 120 },
+          facingMode: 'user',
+        };
         stream = await navigator.mediaDevices.getUserMedia({
           video: deviceId
             ? {
                 deviceId: { exact: deviceId },
-                width: { ideal: 640 },
-                height: { ideal: 480 },
-                frameRate: { ideal: 60, max: 120 },
-                facingMode: 'user',
+                ...baseVideoConstraints,
               }
-            : {
-                width: { ideal: 640 },
-                height: { ideal: 480 },
-                frameRate: { ideal: 60, max: 120 },
-                facingMode: 'user',
-              },
+            : baseVideoConstraints,
           audio: false,
         });
         if (!active || !videoRef.current) {
           cleanup();
           return;
+        }
+        const videoTrack = stream.getVideoTracks()[0];
+        const caps = videoTrack?.getCapabilities?.() as { zoom?: { min?: number } } | undefined;
+        if (videoTrack && caps?.zoom && typeof caps.zoom.min === 'number') {
+          await videoTrack
+            .applyConstraints({
+              advanced: [{ zoom: caps.zoom.min } as MediaTrackConstraintSet],
+            })
+            .catch(() => undefined);
         }
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
@@ -958,6 +1075,7 @@ export function SmartRehabKioskUI({
         const loop = () => {
           if (!active || !videoRef.current || !poseLandmarker) return;
           const curEx = selectedExerciseRef.current;
+          const curExpectedPlane = resolveExpectedPlaneForExercise(curEx);
           if (trackedExId !== curEx.exercise_id) {
             trackedExId = curEx.exercise_id;
             smoothedRom = 0;
@@ -971,6 +1089,8 @@ export function SmartRehabKioskUI({
             latestTrunkTiltDeg = 0;
             latestWrongSideRaised = false;
             latestWrongSideBannerTh = null;
+            latestWrongPlaneRaised = false;
+            latestWrongPlaneBannerTh = null;
             lastEmittedRom = -999;
             lastEmittedTilt = -999;
             lastEmittedHold = -999;
@@ -1055,10 +1175,16 @@ export function SmartRehabKioskUI({
                       setDemoPresetState('ACTIVE_REP');
                     }
                   }
-                  const measured = measureLiveJointAngleAndTilt(landmarks, curEx.target_joint);
+                  const measured = measureLiveJointAngleAndTilt(
+                    landmarks,
+                    curEx.target_joint,
+                    curExpectedPlane,
+                  );
                   latestRawTiltDeg = measured.trunkTiltDeg;
                   latestWrongSideRaised = measured.wrongSideRaised;
                   latestWrongSideBannerTh = measured.wrongSideBannerTh;
+                  latestWrongPlaneRaised = measured.wrongPlaneRaised;
+                  latestWrongPlaneBannerTh = measured.wrongPlaneBannerTh;
                   if (measured.romDeg !== null) {
                     targetRomDeg = measured.romDeg;
                   }
@@ -1177,6 +1303,14 @@ export function SmartRehabKioskUI({
                     setDemoHoldRemainingSec(curEx.hold_sec);
                   }
                   setDemoPresetState('WRONG_LIMB');
+                } else if (latestWrongPlaneRaised) {
+                  holdAccumMs = 0;
+                  if (lastEmittedHold !== curEx.hold_sec) {
+                    lastEmittedHold = curEx.hold_sec;
+                    lastHoldEmitAt = now;
+                    setDemoHoldRemainingSec(curEx.hold_sec);
+                  }
+                  setDemoPresetState('WRONG_PLANE');
                 } else if (!blockCounting) {
                   const holdingZone = atTarget || (holdAccumMs > 0 && atMaintainTarget);
                   if (holdingZone && !awaitingReturn && latestTrunkTiltDeg <= 14) {
@@ -1233,6 +1367,7 @@ export function SmartRehabKioskUI({
 
             drawLivePoseOverlayOnCanvas(poseCanvasRef.current, renderLandmarksList, {
               targetJoint: curEx.target_joint,
+              expectedPlane: curExpectedPlane,
               romDeg: smoothedRom,
               targetRomDeg: curEx.target_rom_deg,
               holdRatio: holdAccumMs > 0 ? Math.min(1, holdAccumMs / holdTargetMs) : 0,
@@ -1241,6 +1376,8 @@ export function SmartRehabKioskUI({
               isImpostorOrEmergency: countingLockedRef.current,
               wrongSideRaised: latestWrongSideRaised,
               wrongSideBannerTh: latestWrongSideBannerTh,
+              wrongPlaneRaised: latestWrongPlaneRaised,
+              wrongPlaneBannerTh: latestWrongPlaneBannerTh,
               videoWidth: v.videoWidth,
               videoHeight: v.videoHeight,
             });
@@ -1303,6 +1440,19 @@ export function SmartRehabKioskUI({
                 ? 'กรุณายกแขนซ้าย'
                 : 'กรุณายกแขนขวา',
           },
+          ...(activeExpectedPlane === 'flexion' || activeExpectedPlane === 'abduction'
+            ? [
+                {
+                  label:
+                    activeExpectedPlane === 'flexion'
+                      ? 'ทิศทางถูกต้อง (ยกแขนไปด้านหน้าเท่านั้น)'
+                      : 'ทิศทางถูกต้อง (กางแขนออกด้านข้างเท่านั้น)',
+                  ok: !wrongPlaneAlert && !isEmergency,
+                  warnText:
+                    activeExpectedPlane === 'flexion' ? 'ห้ามกางด้านข้าง' : 'ห้ามยกด้านหน้า',
+                },
+              ]
+            : []),
         ]
       : []),
     {
@@ -1523,7 +1673,7 @@ export function SmartRehabKioskUI({
         {/* 3. Main Clinical Workspace: 16:9 Landscape (~65% Left / ~35% Right), 9:16 Portrait Responsive */}
         <main className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-12">
           {/* Left Stage (~65% width) */}
-          <section className="lg:col-span-8">
+          <section className="lg:col-span-8 lg:sticky lg:top-4 lg:self-start">
             <SkeletonCanvas
               payload={payload}
               exercise={selectedExercise}
@@ -1533,13 +1683,13 @@ export function SmartRehabKioskUI({
               hasLiveCamera={livePoseActive && !cameraError}
               liveVideoOverlay={
                 livePoseActive && !cameraError ? (
-                  <div className="relative h-full w-full bg-gradient-to-br from-sky-100 via-emerald-50 to-white">
+                  <div className="relative h-full w-full bg-[#0B192C]">
                     <video
                       ref={videoRef}
                       autoPlay
                       playsInline
                       muted
-                      className="h-full w-full object-cover"
+                      className="h-full w-full object-contain"
                       style={{ transform: 'scaleX(-1)' }}
                     />
                     <canvas
@@ -1606,19 +1756,30 @@ export function SmartRehabKioskUI({
                   <p className="text-xs font-semibold text-[#0284C7]">{selectedExercise.name_en}</p>
                   {(selectedExercise.target_joint === 'left_shoulder' ||
                     selectedExercise.target_joint === 'right_shoulder') && (
-                    <div
-                      className={`mt-2 inline-flex items-center gap-1.5 rounded-xl border px-3 py-1 text-xs font-extrabold ${
-                        selectedExercise.target_joint === 'left_shoulder'
-                          ? 'border-orange-300 bg-orange-50 text-orange-800'
-                          : 'border-emerald-300 bg-emerald-50 text-emerald-800'
-                      }`}
-                    >
-                      <span>✋ ท่านี้ต้องยกเฉพาะ:</span>
-                      <span>
-                        {selectedExercise.target_joint === 'left_shoulder'
-                          ? 'แขนซ้าย (Left Arm Only)'
-                          : 'แขนขวา (Right Arm Only)'}
-                      </span>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      <div
+                        className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1 text-xs font-extrabold ${
+                          selectedExercise.target_joint === 'left_shoulder'
+                            ? 'border-orange-300 bg-orange-50 text-orange-800'
+                            : 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                        }`}
+                      >
+                        <span>✋ ท่านี้ต้องยกเฉพาะ:</span>
+                        <span>
+                          {selectedExercise.target_joint === 'left_shoulder'
+                            ? 'แขนซ้าย (Left Arm Only)'
+                            : 'แขนขวา (Right Arm Only)'}
+                        </span>
+                      </div>
+                      {(activeExpectedPlane === 'flexion' || activeExpectedPlane === 'abduction') && (
+                        <div className="inline-flex items-center gap-1.5 rounded-xl border border-sky-300 bg-sky-50 px-3 py-1 text-xs font-extrabold text-[#0F4C81]">
+                          <span>
+                            {activeExpectedPlane === 'flexion'
+                              ? '⬆️ ทิศทาง: ยกตรงไปด้านหน้าเท่านั้น (ห้ามกางด้านข้าง)'
+                              : '↔️ ทิศทาง: กางออกด้านข้างเท่านั้น (ห้ามยกด้านหน้า)'}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1645,7 +1806,7 @@ export function SmartRehabKioskUI({
                 </div>
               </div>
 
-              <div className="mt-3 flex flex-wrap gap-1.5">
+              <div className="mt-3 flex max-h-36 flex-wrap gap-1.5 overflow-y-auto pr-1">
                 {exerciseOptions.map((opt, idx) => {
                   const active = opt.exercise_id === selectedExercise.exercise_id;
                   const done = completedIds.includes(opt.exercise_id);
@@ -1930,7 +2091,10 @@ export function SmartRehabKioskUI({
                             active
                               ? p.id === 'IMPOSTOR'
                                 ? 'bg-[#EF4444] text-white shadow-sm'
-                                : p.id === 'TRUNK_LEAN' || p.id === 'MULTI_PERSON' || p.id === 'WRONG_LIMB'
+                                : p.id === 'TRUNK_LEAN' ||
+                                    p.id === 'MULTI_PERSON' ||
+                                    p.id === 'WRONG_LIMB' ||
+                                    p.id === 'WRONG_PLANE'
                                   ? 'bg-[#F59E0B] text-white shadow-sm'
                                   : 'bg-[#0284C7] text-white shadow-sm'
                               : 'bg-white/80 text-[#0F4C81] hover:bg-sky-50'

@@ -144,6 +144,14 @@ const EXACT_TRANSLATIONS: Record<string, { en: string; zh: string }> = {
     en: 'Please raise your right arm. This exercise must be performed with your right arm; raising your left arm will not be counted.',
     zh: '请抬起右臂。此动作必须使用右臂，抬起左臂将不计入次数。',
   },
+  'กรุณายกแขนตรงไปด้านหน้านะครับ ท่านี้ห้ามกางแขนออกด้านข้าง ระบบจะไม่นับรอบครับ': {
+    en: 'Please raise your arm straight forward. Do not raise it out to the side; side raises will not be counted.',
+    zh: '请将手臂向正前方抬起，此动作不要向侧面展开，向侧面抬起将不计入次数。',
+  },
+  'กรุณากางแขนออกด้านข้างนะครับ ท่านี้ห้ามยกแขนไปด้านหน้า ระบบจะไม่นับรอบครับ': {
+    en: 'Please raise your arm out to the side. Do not raise it forward; forward raises will not be counted.',
+    zh: '请将手臂向身体侧面外展抬起，不要向前方抬起，向前抬起将不计入次数。',
+  },
   'กรุณาทำท่าด้วยขาซ้ายตามที่กำหนดนะครับ': {
     en: 'Please perform this exercise using your left leg as prescribed.',
     zh: '请按照规定使用左腿完成此动作。',

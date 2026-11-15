@@ -27,7 +27,8 @@ export type CompensationCode =
   | 'HEEL_LIFT'
   | 'TOO_FAST'
   | 'INCOMPLETE_ROM'
-  | 'WRONG_LIMB';
+  | 'WRONG_LIMB'
+  | 'WRONG_PLANE';
 
 export type HighlightJoint =
   | 'none'
@@ -92,6 +93,8 @@ export interface KioskDecisionPayload {
   frame_base64: string | null;
 }
 
+export type ExpectedMovementPlane = 'flexion' | 'abduction' | 'any';
+
 export interface ExercisePrescriptionOption {
   exercise_id: string;
   catalog_exercise_id?: string;
@@ -99,6 +102,7 @@ export interface ExercisePrescriptionOption {
   name_th: string;
   name_en: string;
   target_joint: Exclude<HighlightJoint, 'none'>;
+  expected_plane?: ExpectedMovementPlane;
   target_rom_deg: number;
   hold_sec: number;
   target_reps: number;
@@ -110,12 +114,89 @@ export type DemoPresetId =
   | 'ACTIVE_REP'
   | 'TRUNK_LEAN'
   | 'WRONG_LIMB'
+  | 'WRONG_PLANE'
   | 'HOLD_PHASE'
   | 'REP_COMPLETED'
   | 'SET_FINISHED'
   | 'MULTI_PERSON'
   | 'IMPOSTOR'
   | 'EMERGENCY_HALT';
+
+export function resolveExpectedPlaneForExercise(item: {
+  exercise_id?: string;
+  catalog_exercise_id?: string;
+  name_th?: string;
+  name_en?: string;
+  target_joint?: string;
+  expected_plane?: ExpectedMovementPlane;
+}): ExpectedMovementPlane {
+  if (
+    item.expected_plane === 'flexion' ||
+    item.expected_plane === 'abduction' ||
+    item.expected_plane === 'any'
+  ) {
+    return item.expected_plane;
+  }
+  if (item.target_joint && item.target_joint !== 'left_shoulder' && item.target_joint !== 'right_shoulder') {
+    return 'any';
+  }
+  const found = CLINICAL_EXERCISES.find(
+    (c) =>
+      c.id === item.catalog_exercise_id ||
+      c.code === item.catalog_exercise_id ||
+      c.id === item.exercise_id ||
+      c.code === item.exercise_id,
+  );
+  if (found?.detection.expectedPlane) {
+    return found.detection.expectedPlane;
+  }
+  const combined = `${item.name_th ?? ''} ${item.name_en ?? ''} ${item.exercise_id ?? ''}`.toLowerCase();
+  if (
+    !combined.includes('elbow') &&
+    !combined.includes('ข้อศอก') &&
+    (combined.includes('ด้านหน้า') || combined.includes('ข้างหน้า') || combined.includes('flexion'))
+  ) {
+    return 'flexion';
+  }
+  if (
+    combined.includes('ด้านข้าง') ||
+    combined.includes('กางแขน') ||
+    combined.includes('abduction')
+  ) {
+    return 'abduction';
+  }
+  return 'any';
+}
+
+export function getPrescribedPlanePromptTh(expectedPlane: ExpectedMovementPlane): {
+  requiredPlaneTh: string;
+  wrongPlaneTh: string;
+  bannerAlertTh: string;
+  voicePromptTh: string;
+} {
+  if (expectedPlane === 'flexion') {
+    return {
+      requiredPlaneTh: 'ยกแขนตรงไปด้านหน้า',
+      wrongPlaneTh: 'กางแขนออกด้านข้าง',
+      bannerAlertTh: 'ท่านี้ต้องยกแขนตรงไปด้านหน้าเท่านั้น (ห้ามกางแขนออกด้านข้าง)',
+      voicePromptTh: 'กรุณายกแขนตรงไปด้านหน้านะครับ ท่านี้ห้ามกางแขนออกด้านข้าง ระบบจะไม่นับรอบครับ',
+    };
+  }
+  if (expectedPlane === 'abduction') {
+    return {
+      requiredPlaneTh: 'กางแขนออกด้านข้าง',
+      wrongPlaneTh: 'ยกแขนไปด้านหน้า',
+      bannerAlertTh: 'ท่านี้ต้องกางแขนออกด้านข้างเท่านั้น (ห้ามยกแขนไปด้านหน้า)',
+      voicePromptTh: 'กรุณากางแขนออกด้านข้างนะครับ ท่านี้ห้ามยกแขนไปด้านหน้า ระบบจะไม่นับรอบครับ',
+    };
+  }
+  return {
+    requiredPlaneTh: 'ยกแขนตามทิศทางที่กำหนด',
+    wrongPlaneTh: 'เคลื่อนไหวผิดทิศทาง',
+    bannerAlertTh: 'กรุณายกแขนตามทิศทางที่กำหนดครับ',
+    voicePromptTh: 'กรุณายกแขนตามทิศทางที่กำหนดนะครับ',
+  };
+}
 
 export function getPrescribedLimbPromptTh(
   targetJoint: ExercisePrescriptionOption['target_joint'],
@@ -165,6 +246,7 @@ export const EXERCISE_OPTIONS: ExercisePrescriptionOption[] = [
     name_th: 'กางแขนขวาด้านข้าง',
     name_en: 'Right Shoulder Abduction',
     target_joint: 'right_shoulder',
+    expected_plane: 'abduction',
     target_rom_deg: 150,
     hold_sec: 3,
     target_reps: 10,
@@ -174,6 +256,7 @@ export const EXERCISE_OPTIONS: ExercisePrescriptionOption[] = [
     name_th: 'กางแขนซ้ายด้านข้าง',
     name_en: 'Left Shoulder Abduction',
     target_joint: 'left_shoulder',
+    expected_plane: 'abduction',
     target_rom_deg: 150,
     hold_sec: 3,
     target_reps: 10,
@@ -258,6 +341,14 @@ export function mapTodayExercisesToPrescriptions(
       name_th: item.nameTh,
       name_en: item.nameEn,
       target_joint,
+      expected_plane:
+        found?.detection.expectedPlane ??
+        resolveExpectedPlaneForExercise({
+          exercise_id: item.exerciseId,
+          name_th: item.nameTh,
+          name_en: item.nameEn,
+          target_joint,
+        }),
       target_rom_deg,
       hold_sec: item.holdSec || (found?.detection.holdSec ?? 3),
       target_reps: item.reps || (found?.detection.defaultReps ?? 10),
@@ -526,6 +617,35 @@ export function synthesizeDemoPayload({
         show_target_arc: true,
       },
       tts_voice_th: limbInfo.voicePromptTh,
+      frame_base64: null,
+    };
+  }
+
+  if (preset === 'WRONG_PLANE') {
+    const expectedPlane = resolveExpectedPlaneForExercise(exercise);
+    const planeInfo = getPrescribedPlanePromptTh(expectedPlane);
+    return {
+      kiosk_state: 'ACTIVE_REP',
+      patient: activePatient,
+      telemetry_analysis: {
+        current_rom_deg: 0,
+        target_rom_deg: targetRom,
+        rom_completion_pct: 0,
+        is_form_valid: false,
+        compensation_detected: ['WRONG_PLANE'],
+        pain_alert: false,
+      },
+      rep_counter: {
+        valid_reps: validReps,
+        invalid_reps: Math.max(1, invalidReps),
+        hold_remaining_sec: exercise.hold_sec,
+      },
+      ui_directives: {
+        skeleton_highlight_joint: exercise.target_joint,
+        highlight_color: 'AMBER',
+        show_target_arc: true,
+      },
+      tts_voice_th: planeInfo.voicePromptTh,
       frame_base64: null,
     };
   }
@@ -963,6 +1083,11 @@ export function useKioskSocket(
         case 'WRONG_LIMB':
           setDemoTrunkTiltDeg(2.0);
           setDemoRomDeg(12);
+          setDemoInvalidReps((r) => Math.max(1, r));
+          break;
+        case 'WRONG_PLANE':
+          setDemoTrunkTiltDeg(2.0);
+          setDemoRomDeg(0);
           setDemoInvalidReps((r) => Math.max(1, r));
           break;
         case 'HOLD_PHASE':
