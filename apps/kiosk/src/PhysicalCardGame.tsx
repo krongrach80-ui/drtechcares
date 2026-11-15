@@ -3,11 +3,189 @@ import { FilesetResolver, HandLandmarker, PoseLandmarker, type NormalizedLandmar
 import { useClinicalI18n } from '@drtechcares/clinical-i18n';
 import {
   AudioChimeSynthesizer,
-  VoiceFeedbackController,
 } from '@drtechcares/kiosk-input';
 import { selectClinicalCameraDeviceId } from '@drtechcares/face-client';
-import { AlertTriangle, Award, CheckCircle2, Clock, Hand, RotateCcw, Sparkles, XCircle } from 'lucide-react';
+import {
+  AlertTriangle,
+  Award,
+  CheckCircle2,
+  Clock,
+  Hand,
+  Languages,
+  RotateCcw,
+  Sparkles,
+  Volume2,
+  VolumeX,
+  XCircle,
+} from 'lucide-react';
 import { sampleTenCognitiveCards, type CognitiveCardQuestion } from './PhysicalCardGameData';
+
+export type MinigameVoiceLang = 'th' | 'en' | 'zh';
+
+export interface MinigameVoiceOption {
+  code: MinigameVoiceLang;
+  shortLabel: string;
+  badgeLabel: string;
+  speechLang: string;
+  statusReady: string;
+  statusSpeaking: string;
+  statusMuted: string;
+  replayLabel: string;
+  muteLabel: string;
+  unmuteLabel: string;
+}
+
+export const MINIGAME_VOICE_LANG_OPTIONS: ReadonlyArray<MinigameVoiceOption> = [
+  {
+    code: 'th',
+    shortLabel: '1. ไทย',
+    badgeLabel: 'THAI AI VOICE COACH',
+    speechLang: 'th-TH',
+    statusReady: 'พร้อมอ่านคำถาม',
+    statusSpeaking: 'กำลังพูด',
+    statusMuted: 'ปิดเสียง',
+    replayLabel: 'พูดซ้ำ',
+    muteLabel: 'เสียงปกติ',
+    unmuteLabel: 'ปิดเสียง',
+  },
+  {
+    code: 'en',
+    shortLabel: '2. อังกฤษ (EN)',
+    badgeLabel: 'ENGLISH AI VOICE COACH',
+    speechLang: 'en-US',
+    statusReady: 'READY',
+    statusSpeaking: 'SPEAKING',
+    statusMuted: 'MUTED',
+    replayLabel: 'พูดซ้ำ',
+    muteLabel: 'เสียงปกติ',
+    unmuteLabel: 'ปิดเสียง',
+  },
+  {
+    code: 'zh',
+    shortLabel: '3. จีน (中文)',
+    badgeLabel: 'CHINESE AI VOICE COACH',
+    speechLang: 'zh-CN',
+    statusReady: '准备就绪',
+    statusSpeaking: '正在播报',
+    statusMuted: '已静音',
+    replayLabel: 'พูดซ้ำ',
+    muteLabel: 'เสียงปกติ',
+    unmuteLabel: 'ปิดเสียง',
+  },
+];
+
+const VOICE_LANG_STORAGE_KEY = 'drtechcares_voice_coach_lang_v1';
+
+export function normalizeClinicalLangToMinigameVoice(clinicalLang?: string | null): MinigameVoiceLang {
+  const lower = (clinicalLang ?? 'th').trim().toLowerCase();
+  if (lower.startsWith('zh') || lower === 'cn' || lower.startsWith('cmn')) return 'zh';
+  if (lower.startsWith('en')) return 'en';
+  return 'th';
+}
+
+function readStoredMinigameVoiceLang(fallbackClinicalLang?: string): MinigameVoiceLang {
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = window.localStorage.getItem(VOICE_LANG_STORAGE_KEY);
+      if (raw === 'th' || raw === 'en' || raw === 'zh') {
+        return raw;
+      }
+    } catch {
+      // Ignore storage restriction
+    }
+  }
+  return normalizeClinicalLangToMinigameVoice(fallbackClinicalLang);
+}
+
+export function pickCardTextByVoiceLang(
+  textMap: { th: string; en: string; cn: string },
+  voiceLang: MinigameVoiceLang,
+): string {
+  if (voiceLang === 'en') return textMap.en || textMap.th;
+  if (voiceLang === 'zh') return textMap.cn || textMap.th;
+  return textMap.th || textMap.en;
+}
+
+export function formatMinigameAnswerSpeech(
+  card: CognitiveCardQuestion,
+  isCorrect: boolean,
+  voiceLang: MinigameVoiceLang,
+): string {
+  const explanation = pickCardTextByVoiceLang(card.explanation, voiceLang).trim();
+  if (voiceLang === 'en') {
+    const prefix = isCorrect ? 'Correct!' : 'Not quite.';
+    return explanation ? `${prefix} ${explanation}` : prefix;
+  }
+  if (voiceLang === 'zh') {
+    const prefix = isCorrect ? '回答正确！' : '不太对哦。';
+    return explanation ? `${prefix} ${explanation}` : prefix;
+  }
+  const prefix = isCorrect ? 'เก่งมาก ถูกต้องครับ!' : 'ยังไม่ถูกนะครับ!';
+  return explanation ? `${prefix} ${explanation}` : prefix;
+}
+
+export function formatMinigameSummarySpeech(
+  summary: PhysicalCardGameSummary,
+  voiceLang: MinigameVoiceLang,
+): string {
+  if (voiceLang === 'en') {
+    return `Congratulations! You scored ${summary.correct} out of ${summary.total}, with ${summary.accuracyPct} percent accuracy in ${summary.durationSec} seconds.`;
+  }
+  if (voiceLang === 'zh') {
+    return `恭喜完成训练！您在${summary.durationSec}秒内答对了${summary.total}题中的${summary.correct}题，准确率${summary.accuracyPct}%。`;
+  }
+  return `เก่งมากครับ ทำแบบทดสอบครบแล้ว ได้คะแนน ${summary.correct} เต็ม ${summary.total} คะแนน ความแม่นยำ ${summary.accuracyPct} เปอร์เซ็นต์ ใช้เวลา ${summary.durationSec} วินาที`;
+}
+
+export function buildMinigameTtsUrl(text: string, voiceLang: MinigameVoiceLang): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  const maxLen = 190;
+  let clipped = collapsed;
+  if (collapsed.length > maxLen) {
+    const sliced = collapsed.slice(0, maxLen);
+    const lastSpace = sliced.lastIndexOf(' ');
+    clipped =
+      lastSpace >= Math.floor(maxLen * 0.5) ? sliced.slice(0, lastSpace).trim() : sliced.trim();
+  }
+  const params = new URLSearchParams({
+    lang: voiceLang,
+    text: clipped,
+  });
+  return `/api/tts?${params.toString()}`;
+}
+
+function pickMinigameSpeechVoice(
+  voices: readonly SpeechSynthesisVoice[],
+  bcp47: string,
+): SpeechSynthesisVoice | null {
+  if (!voices.length) return null;
+  const targetLower = bcp47.toLowerCase();
+  const langPrefix = targetLower.split('-')[0];
+
+  const exactMatches = voices.filter((v) => v.lang.toLowerCase() === targetLower);
+  const chineseExtraMatches =
+    langPrefix === 'zh'
+      ? voices.filter((v) => {
+          const l = v.lang.toLowerCase();
+          return l.startsWith('zh') || l.startsWith('cmn') || v.name.toLowerCase().includes('chinese');
+        })
+      : [];
+  const prefixMatches = voices.filter((v) => v.lang.toLowerCase().startsWith(langPrefix));
+
+  const candidates =
+    exactMatches.length > 0
+      ? exactMatches
+      : chineseExtraMatches.length > 0
+        ? chineseExtraMatches
+        : prefixMatches;
+
+  if (!candidates.length) return null;
+  const preferred = candidates.find((v) => {
+    const name = v.name.toLowerCase();
+    return name.includes('natural') || name.includes('google') || name.includes('microsoft');
+  });
+  return preferred ?? candidates[0];
+}
 
 const HOLD_DURATION_SEC = 0.8;
 const HAND_RELEASE_DECAY_RATE = 2.5;
@@ -270,8 +448,135 @@ async function resolveVisionTasks() {
   }
 }
 
+interface MinigameVoiceBarProps {
+  voiceLang: MinigameVoiceLang;
+  voiceMuted: boolean;
+  isSpeaking: boolean;
+  spokenText: string;
+  onSelectLang: (nextLang: MinigameVoiceLang) => void;
+  onReplay: () => void;
+  onToggleMute: () => void;
+}
+
+function MinigameVoiceBar({
+  voiceLang,
+  voiceMuted,
+  isSpeaking,
+  spokenText,
+  onSelectLang,
+  onReplay,
+  onToggleMute,
+}: MinigameVoiceBarProps) {
+  const activeOption =
+    MINIGAME_VOICE_LANG_OPTIONS.find((item) => item.code === voiceLang) ??
+    MINIGAME_VOICE_LANG_OPTIONS[0];
+
+  return (
+    <div
+      data-minigame-voice-control="true"
+      className="w-full rounded-2xl border-2 border-sky-200 bg-gradient-to-r from-sky-50 via-white to-emerald-50/70 px-4 py-3 shadow-sm flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between text-left"
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-3.5">
+        <button
+          type="button"
+          onClick={onReplay}
+          disabled={voiceMuted}
+          title={activeOption.replayLabel}
+          className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full shadow-md transition-transform active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer ${
+            voiceMuted
+              ? 'bg-slate-200 text-slate-500'
+              : 'bg-gradient-to-br from-[#0284C7] to-[#10B981] text-white'
+          }`}
+        >
+          {voiceMuted ? (
+            <VolumeX className="h-6 w-6" />
+          ) : (
+            <Volume2 className={`h-6 w-6 ${isSpeaking ? 'animate-pulse' : ''}`} />
+          )}
+        </button>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2 text-xs font-extrabold uppercase tracking-wider text-[#0284C7]">
+            <span>{activeOption.badgeLabel}</span>
+            <span className="rounded-full bg-sky-100 px-2.5 py-0.5 text-[11px] font-black text-[#0F4C81]">
+              {voiceMuted
+                ? activeOption.statusMuted
+                : isSpeaking
+                  ? activeOption.statusSpeaking
+                  : activeOption.statusReady}
+            </span>
+          </div>
+          <p className="mt-0.5 line-clamp-2 text-base sm:text-lg font-extrabold text-[#0F4C81]">
+            “{spokenText}”
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 shrink-0">
+        <div
+          role="group"
+          aria-label="เลือกภาษาเสียงพากย์มินิเกม"
+          className="inline-flex flex-wrap items-center gap-1 rounded-full border-2 border-sky-200 bg-white p-1 shadow-sm"
+        >
+          <Languages className="ml-2 mr-0.5 hidden sm:block h-4 w-4 text-[#0284C7]" />
+          {MINIGAME_VOICE_LANG_OPTIONS.map((opt) => {
+            const active = opt.code === voiceLang;
+            return (
+              <button
+                key={opt.code}
+                type="button"
+                aria-pressed={active}
+                onClick={() => onSelectLang(opt.code)}
+                className={`rounded-full px-3.5 py-2 text-xs sm:text-sm font-black transition-all cursor-pointer ${
+                  active
+                    ? 'bg-[#0284C7] text-white shadow-sm'
+                    : 'text-[#0F4C81] hover:bg-sky-50'
+                }`}
+              >
+                {opt.shortLabel}
+              </button>
+            );
+          })}
+        </div>
+
+        <button
+          type="button"
+          onClick={onReplay}
+          disabled={voiceMuted}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-full border-2 border-sky-200 bg-white px-3.5 py-2 text-xs sm:text-sm font-black text-[#0F4C81] transition-colors hover:bg-sky-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+        >
+          <RotateCcw className="h-4 w-4 text-[#0284C7]" />
+          <span>{activeOption.replayLabel}</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={onToggleMute}
+          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border-2 px-3.5 py-2 text-xs sm:text-sm font-black transition-colors active:scale-95 cursor-pointer ${
+            voiceMuted
+              ? 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
+              : 'border-sky-200 bg-sky-50 text-[#0F4C81] hover:bg-sky-100'
+          }`}
+        >
+          {voiceMuted ? (
+            <>
+              <VolumeX className="h-4 w-4" />
+              <span>{activeOption.unmuteLabel}</span>
+            </>
+          ) : (
+            <>
+              <Volume2 className="h-4 w-4 text-[#0284C7]" />
+              <span>{activeOption.muteLabel}</span>
+            </>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }: PhysicalCardGameProps) {
-  const { lang, t, pick } = useClinicalI18n();
+  const { lang, t } = useClinicalI18n();
   const [cards, setCards] = useState<CognitiveCardQuestion[]>(() => sampleTenCognitiveCards());
   const [index, setIndex] = useState(0);
   const [score, setScore] = useState(0);
@@ -285,6 +590,12 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
   const [savingResult, setSavingResult] = useState(false);
   const [sessionKey, setSessionKey] = useState(0);
 
+  const [voiceLang, setVoiceLang] = useState<MinigameVoiceLang>(() =>
+    readStoredMinigameVoiceLang(lang),
+  );
+  const [voiceMuted, setVoiceMuted] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -293,8 +604,19 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
   const progressPctRef = useRef<HTMLSpanElement | null>(null);
   const badgePctRef = useRef<HTMLSpanElement | null>(null);
 
-  const voiceRef = useRef(new VoiceFeedbackController());
   const chimeRef = useRef(new AudioChimeSynthesizer());
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  const speakSeqRef = useRef(0);
+  const webSpeechTimerRef = useRef<number | null>(null);
+  const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
+  const blockedByAutoplayRef = useRef(false);
+
+  const voiceLangRef = useRef(voiceLang);
+  voiceLangRef.current = voiceLang;
+  const voiceMutedRef = useRef(voiceMuted);
+  voiceMutedRef.current = voiceMuted;
+  const activeFeedbackMetaRef = useRef<{ card: CognitiveCardQuestion; correct: boolean } | null>(null);
 
   const activeHandRef = useRef<ActiveHandSide>(null);
   const lockedHandRef = useRef<ActiveHandSide>(null);
@@ -316,12 +638,261 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
 
   const feedbackRef = useRef(feedback);
   feedbackRef.current = feedback;
+  const completedSummaryRef = useRef(completedSummary);
+  completedSummaryRef.current = completedSummary;
   const indexRef = useRef(index);
   indexRef.current = index;
   const scoreRef = useRef(score);
   scoreRef.current = score;
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
+
+  const stopMinigameSpeech = useCallback(() => {
+    speakSeqRef.current += 1;
+    if (webSpeechTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(webSpeechTimerRef.current);
+      webSpeechTimerRef.current = null;
+    }
+    const audio = ttsAudioRef.current;
+    if (audio) {
+      try {
+        audio.onplay = null;
+        audio.onended = null;
+        audio.onerror = null;
+        audio.pause();
+        audio.currentTime = 0;
+      } catch {
+        // Ignore audio reset errors
+      }
+    }
+    activeUtteranceRef.current = null;
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // Ignore speechSynthesis cancel failure
+      }
+    }
+    setIsSpeaking(false);
+  }, []);
+
+  const speakWithWebSpeechFallback = useCallback(
+    (clean: string, targetLang: MinigameVoiceLang, seq: number) => {
+      if (
+        voiceMutedRef.current ||
+        !clean ||
+        typeof window === 'undefined' ||
+        !('speechSynthesis' in window) ||
+        typeof SpeechSynthesisUtterance === 'undefined'
+      ) {
+        return;
+      }
+
+      const targetOpt =
+        MINIGAME_VOICE_LANG_OPTIONS.find((item) => item.code === targetLang) ??
+        MINIGAME_VOICE_LANG_OPTIONS[0];
+
+      try {
+        const synth = window.speechSynthesis;
+        const wasBusy = synth.speaking || synth.pending;
+        if (wasBusy) {
+          synth.cancel();
+        }
+
+        const startUtterance = () => {
+          if (speakSeqRef.current !== seq || voiceMutedRef.current) return;
+          if (synth.paused) {
+            synth.resume();
+          }
+          const availableVoices =
+            voicesRef.current.length > 0 ? voicesRef.current : synth.getVoices();
+          const matchedVoice = pickMinigameSpeechVoice(availableVoices, targetOpt.speechLang);
+
+          const utterance = new SpeechSynthesisUtterance(clean);
+          utterance.lang = matchedVoice?.lang || targetOpt.speechLang;
+          if (matchedVoice) {
+            utterance.voice = matchedVoice;
+          }
+          utterance.rate = targetLang === 'th' ? 0.96 : targetLang === 'zh' ? 0.98 : 1.0;
+          utterance.pitch = 1.0;
+          utterance.volume = 1.0;
+          activeUtteranceRef.current = utterance;
+
+          utterance.onstart = () => {
+            if (speakSeqRef.current !== seq) return;
+            blockedByAutoplayRef.current = false;
+            setIsSpeaking(true);
+          };
+          utterance.onend = () => {
+            if (activeUtteranceRef.current === utterance) {
+              activeUtteranceRef.current = null;
+            }
+            if (speakSeqRef.current !== seq) return;
+            setIsSpeaking(false);
+          };
+          utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
+            if (activeUtteranceRef.current === utterance) {
+              activeUtteranceRef.current = null;
+            }
+            if (speakSeqRef.current !== seq) return;
+            setIsSpeaking(false);
+            if (event?.error === 'not-allowed') {
+              blockedByAutoplayRef.current = true;
+            }
+          };
+
+          setIsSpeaking(true);
+          synth.speak(utterance);
+        };
+
+        if (wasBusy) {
+          webSpeechTimerRef.current = window.setTimeout(() => {
+            webSpeechTimerRef.current = null;
+            startUtterance();
+          }, 50);
+        } else {
+          startUtterance();
+        }
+      } catch {
+        setIsSpeaking(false);
+      }
+    },
+    [],
+  );
+
+  const speakMinigameText = useCallback(
+    (text: string, targetLang: MinigameVoiceLang) => {
+      const clean = text.trim();
+      if (voiceMutedRef.current || !clean || typeof window === 'undefined') {
+        return;
+      }
+
+      stopMinigameSpeech();
+      const seq = speakSeqRef.current;
+
+      if (typeof Audio !== 'undefined') {
+        try {
+          let audio = ttsAudioRef.current;
+          if (!audio) {
+            audio = new Audio();
+            audio.preload = 'auto';
+            ttsAudioRef.current = audio;
+          }
+          audio.playbackRate = targetLang === 'zh' ? 0.98 : 1.0;
+
+          audio.onplay = () => {
+            if (speakSeqRef.current !== seq) return;
+            blockedByAutoplayRef.current = false;
+            setIsSpeaking(true);
+          };
+          audio.onended = () => {
+            if (speakSeqRef.current !== seq) return;
+            setIsSpeaking(false);
+          };
+          audio.onerror = () => {
+            if (speakSeqRef.current !== seq) return;
+            setIsSpeaking(false);
+            speakWithWebSpeechFallback(clean, targetLang, seq);
+          };
+
+          audio.src = buildMinigameTtsUrl(clean, targetLang);
+          const playPromise = audio.play();
+          setIsSpeaking(true);
+
+          if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch((err: unknown) => {
+              if (speakSeqRef.current !== seq) return;
+              setIsSpeaking(false);
+              const errName =
+                err && typeof err === 'object' && 'name' in err
+                  ? String((err as { name: string }).name)
+                  : '';
+              if (errName === 'NotAllowedError') {
+                blockedByAutoplayRef.current = true;
+                return;
+              }
+              if (errName === 'AbortError') {
+                return;
+              }
+              speakWithWebSpeechFallback(clean, targetLang, seq);
+            });
+          }
+          return;
+        } catch {
+          // Fall through to Web Speech API
+        }
+      }
+
+      speakWithWebSpeechFallback(clean, targetLang, seq);
+    },
+    [speakWithWebSpeechFallback, stopMinigameSpeech],
+  );
+
+  const getActiveVoiceText = useCallback((targetLang: MinigameVoiceLang): string => {
+    if (completedSummaryRef.current) {
+      return formatMinigameSummarySpeech(completedSummaryRef.current, targetLang);
+    }
+    if (activeFeedbackMetaRef.current) {
+      return formatMinigameAnswerSpeech(
+        activeFeedbackMetaRef.current.card,
+        activeFeedbackMetaRef.current.correct,
+        targetLang,
+      );
+    }
+    const activeCard = cardsRef.current[indexRef.current];
+    return activeCard ? pickCardTextByVoiceLang(activeCard.question, targetLang) : '';
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    const synth = window.speechSynthesis;
+    const syncVoices = () => {
+      try {
+        const list = synth.getVoices();
+        if (list.length > 0) {
+          voicesRef.current = list;
+        }
+      } catch {
+        // Ignore unavailable voice list
+      }
+    };
+    syncVoices();
+    if ('addEventListener' in synth) {
+      synth.addEventListener('voiceschanged', syncVoices);
+      return () => synth.removeEventListener('voiceschanged', syncVoices);
+    }
+    return undefined;
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const unlockAutoplay = (event: Event) => {
+      try {
+        if ('speechSynthesis' in window && window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest('[data-minigame-voice-control="true"]')) {
+          return;
+        }
+        if (blockedByAutoplayRef.current && !voiceMutedRef.current) {
+          blockedByAutoplayRef.current = false;
+          const activeText = getActiveVoiceText(voiceLangRef.current);
+          if (activeText) {
+            speakMinigameText(activeText, voiceLangRef.current);
+          }
+        }
+      } catch {
+        // Ignore audio unlock errors
+      }
+    };
+    window.addEventListener('pointerdown', unlockAutoplay, { passive: true });
+    window.addEventListener('keydown', unlockAutoplay, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlockAutoplay);
+      window.removeEventListener('keydown', unlockAutoplay);
+    };
+  }, [getActiveVoiceText, speakMinigameText]);
 
   const stopCameraTracks = useCallback(() => {
     if (streamRef.current) {
@@ -351,6 +922,81 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
 
   const currentCard = cards[index];
 
+  // Auto-speak active card question when card changes or game resets
+  useEffect(() => {
+    if (completedSummary || !currentCard || feedbackRef.current) return;
+    const text = pickCardTextByVoiceLang(currentCard.question, voiceLangRef.current);
+    if (!voiceMutedRef.current && text.trim()) {
+      speakMinigameText(text, voiceLangRef.current);
+    }
+  }, [completedSummary, currentCard?.id, sessionKey, speakMinigameText]);
+
+  // Auto-speak final summary when all 10 cards are finished
+  useEffect(() => {
+    if (!completedSummary) return;
+    const summarySpeech = formatMinigameSummarySpeech(completedSummary, voiceLangRef.current);
+    if (!voiceMutedRef.current && summarySpeech.trim()) {
+      speakMinigameText(summarySpeech, voiceLangRef.current);
+    }
+  }, [completedSummary, speakMinigameText]);
+
+  const handleSelectVoiceLang = useCallback(
+    (nextLang: MinigameVoiceLang) => {
+      voiceLangRef.current = nextLang;
+      setVoiceLang(nextLang);
+      if (voiceMutedRef.current) {
+        voiceMutedRef.current = false;
+        setVoiceMuted(false);
+      }
+      try {
+        window.localStorage.setItem(VOICE_LANG_STORAGE_KEY, nextLang);
+      } catch {
+        // Ignore storage failure
+      }
+
+      if (activeFeedbackMetaRef.current) {
+        const localizedFeedback = formatMinigameAnswerSpeech(
+          activeFeedbackMetaRef.current.card,
+          activeFeedbackMetaRef.current.correct,
+          nextLang,
+        );
+        setFeedback({
+          correct: activeFeedbackMetaRef.current.correct,
+          message: localizedFeedback,
+        });
+        speakMinigameText(localizedFeedback, nextLang);
+        return;
+      }
+
+      const nextText = getActiveVoiceText(nextLang);
+      if (nextText) {
+        speakMinigameText(nextText, nextLang);
+      }
+    },
+    [getActiveVoiceText, speakMinigameText],
+  );
+
+  const handleReplayVoice = useCallback(() => {
+    const text = getActiveVoiceText(voiceLangRef.current);
+    if (text && !voiceMutedRef.current) {
+      speakMinigameText(text, voiceLangRef.current);
+    }
+  }, [getActiveVoiceText, speakMinigameText]);
+
+  const handleToggleVoiceMute = useCallback(() => {
+    const nextMuted = !voiceMutedRef.current;
+    voiceMutedRef.current = nextMuted;
+    setVoiceMuted(nextMuted);
+    if (nextMuted) {
+      stopMinigameSpeech();
+      return;
+    }
+    const text = getActiveVoiceText(voiceLangRef.current);
+    if (text) {
+      speakMinigameText(text, voiceLangRef.current);
+    }
+  }, [getActiveVoiceText, speakMinigameText, stopMinigameSpeech]);
+
   const submitAnswer = useCallback(
     (choice: 'yes' | 'no') => {
       const card = cardsRef.current[indexRef.current];
@@ -365,13 +1011,19 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
       chimeRef.current.playTone(isCorrect ? 'correct' : 'wrong');
       const nextScore = isCorrect ? scoreRef.current + 1 : scoreRef.current;
       if (isCorrect) setScore(nextScore);
-      const msg = pick(card.explanation);
+
+      const activeLang = voiceLangRef.current;
+      const msg = formatMinigameAnswerSpeech(card, isCorrect, activeLang);
+      activeFeedbackMetaRef.current = { card, correct: isCorrect };
       setFeedback({ correct: isCorrect, message: msg });
-      voiceRef.current.speak(msg, lang, true);
+      if (!voiceMutedRef.current) {
+        speakMinigameText(msg, activeLang);
+      }
 
       if (timerRef.current) window.clearTimeout(timerRef.current);
       timerRef.current = window.setTimeout(async () => {
         resetTrackingRefs();
+        activeFeedbackMetaRef.current = null;
         setFeedback(null);
         setPendingChoice(null);
         submittingRef.current = false;
@@ -402,9 +1054,9 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
         } else {
           setIndex((i) => i + 1);
         }
-      }, 1350);
+      }, 2200);
     },
-    [lang, onSessionFinished, pick, resetTrackingRefs, stopCameraTracks],
+    [onSessionFinished, resetTrackingRefs, speakMinigameText, stopCameraTracks],
   );
 
   const submitAnswerRef = useRef(submitAnswer);
@@ -839,20 +1491,23 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
       handLandmarker?.close();
       poseLandmarker?.close();
       stopCameraTracks();
-      voiceRef.current.flush();
+      stopMinigameSpeech();
     };
-  }, [completedSummary, resetTrackingRefs, sessionKey, stopCameraTracks]);
+  }, [completedSummary, resetTrackingRefs, sessionKey, stopCameraTracks, stopMinigameSpeech]);
 
   useEffect(() => {
     return () => {
       if (timerRef.current) window.clearTimeout(timerRef.current);
       stopCameraTracks();
+      stopMinigameSpeech();
     };
-  }, [stopCameraTracks]);
+  }, [stopCameraTracks, stopMinigameSpeech]);
 
   const handleReplay = () => {
     if (timerRef.current) window.clearTimeout(timerRef.current);
+    stopMinigameSpeech();
     resetTrackingRefs();
+    activeFeedbackMetaRef.current = null;
     submittingRef.current = false;
     startedAtRef.current = Date.now();
     setCards(sampleTenCognitiveCards());
@@ -867,8 +1522,21 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
   };
 
   if (completedSummary) {
+    const summarySpeechText = formatMinigameSummarySpeech(completedSummary, voiceLang);
     return (
-      <div className="w-full flex-1 flex flex-col items-center justify-center rounded-3xl bg-white p-6 sm:p-12 shadow-xl border-2 border-slate-200 text-center space-y-8">
+      <div className="w-full flex-1 flex flex-col items-center justify-center rounded-3xl bg-white p-6 sm:p-12 shadow-xl border-2 border-slate-200 text-center space-y-6">
+        <div className="w-full max-w-5xl">
+          <MinigameVoiceBar
+            voiceLang={voiceLang}
+            voiceMuted={voiceMuted}
+            isSpeaking={isSpeaking}
+            spokenText={summarySpeechText}
+            onSelectLang={handleSelectVoiceLang}
+            onReplay={handleReplayVoice}
+            onToggleMute={handleToggleVoiceMute}
+          />
+        </div>
+
         <div className="mx-auto flex h-32 w-32 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 shadow-inner">
           <Award className="h-20 w-20" />
         </div>
@@ -912,6 +1580,7 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
           <button
             type="button"
             onClick={() => {
+              stopMinigameSpeech();
               stopCameraTracks();
               onComplete(completedSummary);
             }}
@@ -925,6 +1594,10 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
   }
 
   if (!currentCard) return null;
+
+  const localizedQuestion = pickCardTextByVoiceLang(currentCard.question, voiceLang);
+  const localizedSubject = pickCardTextByVoiceLang(currentCard.subject, voiceLang);
+  const activeVoiceQuote = feedback ? feedback.message : localizedQuestion;
 
   return (
     <div className="w-full flex-1 flex flex-col justify-between rounded-3xl bg-white p-4 sm:p-7 shadow-xl border-2 border-slate-200 gap-4 sm:gap-5">
@@ -941,6 +1614,15 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
         <p className="mg-sub-instruction font-extrabold text-slate-700">
           ยกมือค้าง 0.8 วินาทีเพื่อตอบ (ซ้าย = ไม่ใช่ / ขวา = ใช่) หรือคลิกปุ่มคำตอบได้ทันที
         </p>
+        <MinigameVoiceBar
+          voiceLang={voiceLang}
+          voiceMuted={voiceMuted}
+          isSpeaking={isSpeaking}
+          spokenText={activeVoiceQuote}
+          onSelectLang={handleSelectVoiceLang}
+          onReplay={handleReplayVoice}
+          onToggleMute={handleToggleVoiceMute}
+        />
       </div>
 
       {/* Main Full-Size Vertical Stack: Top = Question & Illustration, Middle = Camera, Bottom = Answer Buttons */}
@@ -953,14 +1635,19 @@ export function PhysicalCardGame({ patientName, onComplete, onSessionFinished }:
           <div className="my-3 sm:my-5 flex items-center justify-center w-full">
             <img
               src={currentCard.imageUrl}
-              alt={pick(currentCard.subject)}
+              alt={localizedSubject}
               className="h-64 w-[26rem] sm:h-80 sm:w-[34rem] lg:h-[22rem] lg:w-[38rem] max-w-full rounded-3xl object-contain shadow-lg border-4 border-indigo-200 bg-white p-2"
               draggable={false}
             />
           </div>
           <h2 className="mg-question-title font-black text-[#0F4C81] max-w-5xl">
-            {pick(currentCard.question)}
+            {localizedQuestion}
           </h2>
+          {voiceLang !== 'th' && (
+            <p className="mt-2 text-lg sm:text-xl font-bold text-slate-500 max-w-4xl">
+              ไทย: {currentCard.question.th}
+            </p>
+          )}
         </div>
 
         {/* Middle Card: Full-Size Live Camera Viewport (120Hz Hand Tracking) */}

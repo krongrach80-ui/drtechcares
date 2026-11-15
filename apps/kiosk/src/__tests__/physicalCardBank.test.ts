@@ -4,6 +4,14 @@ import {
   COGNITIVE_CARD_BANK_100,
   sampleTenCognitiveCards,
 } from '../PhysicalCardGameData';
+import {
+  MINIGAME_VOICE_LANG_OPTIONS,
+  buildMinigameTtsUrl,
+  formatMinigameAnswerSpeech,
+  formatMinigameSummarySpeech,
+  normalizeClinicalLangToMinigameVoice,
+  pickCardTextByVoiceLang,
+} from '../PhysicalCardGame';
 
 describe('PhysicalCardGame Cognitive Card Bank (100 Question-Matched SVG Cards)', () => {
   it('contains 100 unique cards with distinct art keys and valid SVG illustrations', () => {
@@ -54,6 +62,56 @@ describe('PhysicalCardGame Cognitive Card Bank (100 Question-Matched SVG Cards)'
     const positionSample = sampleTenCognitiveCards(['position']);
     expect(positionSample).toHaveLength(8);
     expect(positionSample.every((c) => c.category === 'position')).toBe(true);
+  });
+});
+
+describe('PhysicalCardGame Trilingual AI Voiceover Helpers', () => {
+  it('exposes the 3 voiceover language options in Thai, English, and Chinese order', () => {
+    expect(MINIGAME_VOICE_LANG_OPTIONS.map((opt) => [opt.code, opt.shortLabel])).toEqual([
+      ['th', '1. ไทย'],
+      ['en', '2. อังกฤษ (EN)'],
+      ['zh', '3. จีน (中文)'],
+    ]);
+    expect(normalizeClinicalLangToMinigameVoice('cn')).toBe('zh');
+    expect(normalizeClinicalLangToMinigameVoice('en')).toBe('en');
+    expect(normalizeClinicalLangToMinigameVoice('th')).toBe('th');
+  });
+
+  it('picks trilingual card questions, answer explanations, and summary speech per selected language', () => {
+    const card = COGNITIVE_CARD_BANK_100[2];
+    expect(pickCardTextByVoiceLang(card.question, 'th')).toBe(card.question.th);
+    expect(pickCardTextByVoiceLang(card.question, 'en')).toBe(card.question.en);
+    expect(pickCardTextByVoiceLang(card.question, 'zh')).toBe(card.question.cn);
+
+    expect(formatMinigameAnswerSpeech(card, true, 'th')).toContain(card.explanation.th);
+    expect(formatMinigameAnswerSpeech(card, false, 'en')).toContain('Not quite.');
+    expect(formatMinigameAnswerSpeech(card, false, 'en')).toContain(card.explanation.en);
+    expect(formatMinigameAnswerSpeech(card, true, 'zh')).toContain('回答正确！');
+    expect(formatMinigameAnswerSpeech(card, true, 'zh')).toContain(card.explanation.cn);
+
+    const summary = {
+      correct: 9,
+      total: 10,
+      category: 'mixed-99',
+      durationSec: 42,
+      accuracyPct: 90,
+    };
+    expect(formatMinigameSummarySpeech(summary, 'th')).toContain('9 เต็ม 10');
+    expect(formatMinigameSummarySpeech(summary, 'en')).toContain('9 out of 10');
+    expect(formatMinigameSummarySpeech(summary, 'zh')).toContain('答对了10题中的9题');
+  });
+
+  it('builds valid /api/tts proxy URLs and clamps overly long prompts cleanly', () => {
+    const urlZh = buildMinigameTtsUrl('这是一张绿色西兰花的图片吗？', 'zh');
+    expect(urlZh.startsWith('/api/tts?')).toBe(true);
+    const parsed = new URL(`https://example.com${urlZh}`);
+    expect(parsed.searchParams.get('lang')).toBe('zh');
+    expect(parsed.searchParams.get('text')).toBe('这是一张绿色西兰花的图片吗？');
+
+    const longText = 'คำถามทดสอบความจำกายภาพ '.repeat(20);
+    const clampedUrl = buildMinigameTtsUrl(longText, 'th');
+    const parsedClamped = new URL(`https://example.com${clampedUrl}`);
+    expect((parsedClamped.searchParams.get('text') ?? '').length).toBeLessThanOrEqual(190);
   });
 });
 
