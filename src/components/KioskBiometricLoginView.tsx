@@ -25,6 +25,11 @@ import {
 } from '../lib/faceMatcher';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import {
+  buildTtsProxyUrl,
+  pickSpeechVoice,
+  type VoiceCoachLanguage,
+} from './VoiceCoachBanner';
+import {
   alignFaceTo112,
   evaluateLivenessAndPose,
   extractFaceEmbeddingWithFallback,
@@ -132,13 +137,86 @@ type LangButtonOption = {
   code: ClinicalLang;
   prefix: string;
   label: string;
+  numberedLabel: string;
+  ttsLang: VoiceCoachLanguage;
+  bcp47: string;
 };
 
 const LANG_OPTIONS: LangButtonOption[] = [
-  { code: 'cn', prefix: 'CN', label: '中文' },
-  { code: 'th', prefix: 'TH', label: 'ไทย' },
-  { code: 'en', prefix: 'EN', label: 'ENG' },
+  { code: 'th', prefix: 'TH', label: 'ไทย', numberedLabel: '1. ไทย', ttsLang: 'th', bcp47: 'th-TH' },
+  { code: 'en', prefix: 'EN', label: 'ENG', numberedLabel: '2. อังกฤษ (EN)', ttsLang: 'en', bcp47: 'en-US' },
+  { code: 'cn', prefix: 'CN', label: '中文', numberedLabel: '3. จีน (中文)', ttsLang: 'zh', bcp47: 'zh-CN' },
 ];
+
+export interface KioskVerifiedModalCopy {
+  confidenceBadge: string;
+  hnAndNextAppointment: string;
+  openingCamera: string;
+  gestureDetectedPill: string;
+  gestureLoadingPill: string;
+  gestureReadyPill: string;
+  startBtnHolding: string;
+  startBtnIdle: string;
+  telemetryBtn: string;
+  notMeBtn: string;
+  voiceGreeting: string;
+}
+
+export function getKioskVerifiedModalCopy(
+  lang: ClinicalLang,
+  params: {
+    fullName: string;
+    hn: string;
+    nextAppointmentDate: string;
+    confidencePercent: number;
+    twoHandProgressPct: number;
+  },
+): KioskVerifiedModalCopy {
+  const nextAppt = params.nextAppointmentDate || '-';
+  if (lang === 'en') {
+    return {
+      confidenceBadge: `Biometric Confidence ${params.confidencePercent}% (Verified)`,
+      hnAndNextAppointment: `HN: ${params.hn} • Next Appointment: ${nextAppt}`,
+      openingCamera: 'Opening camera for 2-hand gesture detection...',
+      gestureDetectedPill: `👐 Both hands detected! Hold steady ${params.twoHandProgressPct}%`,
+      gestureLoadingPill: '⏳ Preparing AI 2-hand gesture detector...',
+      gestureReadyPill: '📷 Raise & hold both hands in front of the camera to start automatically',
+      startBtnHolding: `👐 Holding both hands... (${params.twoHandProgressPct}%)`,
+      startBtnIdle: '👐 Raise Both Hands or Tap Here to Start ➔',
+      telemetryBtn: 'Open Biomechanics Telemetry (Smart Rehab Telemetry)',
+      notMeBtn: 'Not me (Scan again)',
+      voiceGreeting: `Identity verified. Welcome, ${params.fullName}. Please raise and hold both hands in front of the camera, or tap the button to start.`,
+    };
+  }
+  if (lang === 'cn') {
+    return {
+      confidenceBadge: `生物识别准确度 ${params.confidencePercent}%（验证通过）`,
+      hnAndNextAppointment: `病历号 HN: ${params.hn} • 下次预约: ${nextAppt}`,
+      openingCamera: '正在开启双手举起检测摄像头...',
+      gestureDetectedPill: `👐 已检测到双手举起！请保持 ${params.twoHandProgressPct}%`,
+      gestureLoadingPill: '⏳ 正在准备 AI 双手识别模块...',
+      gestureReadyPill: '📷 请在镜头前举起双手并保持以自动开始训练',
+      startBtnHolding: `👐 请保持双手举起... (${params.twoHandProgressPct}%)`,
+      startBtnIdle: '👐 举起双手 或 点击此处开始训练 ➔',
+      telemetryBtn: '打开生物力学分析界面 (Smart Rehab Telemetry)',
+      notMeBtn: '不是我本人（重新扫描）',
+      voiceGreeting: `身份验证成功，欢迎您，${params.fullName}。请在镜头前举起双手并保持，或点击按钮开始训练。`,
+    };
+  }
+  return {
+    confidenceBadge: `ความแม่นยำชีวมาตร ${params.confidencePercent}% (ผ่านเกณฑ์)`,
+    hnAndNextAppointment: `HN: ${params.hn} • นัดถัดไป: ${nextAppt}`,
+    openingCamera: 'กำลังเปิดกล้องตรวจจับการยก 2 มือ...',
+    gestureDetectedPill: `👐 ตรวจพบยก 2 มือแล้ว! ค้างไว้ ${params.twoHandProgressPct}%`,
+    gestureLoadingPill: '⏳ กำลังเตรียม AI ตรวจจับการยก 2 มือ...',
+    gestureReadyPill: '📷 ชู 2 มือขึ้นหน้ากล้องค้างไว้เพื่อเริ่มฝึกอัตโนมัติ',
+    startBtnHolding: `👐 ยก 2 มือค้างไว้... (${params.twoHandProgressPct}%)`,
+    startBtnIdle: '👐 ยก 2 มือขึ้น หรือ กดที่นี่เพื่อเริ่มฝึก ➔',
+    telemetryBtn: 'เปิดหน้าจอวิเคราะห์ชีวกลศาสตร์ (Smart Rehab Telemetry)',
+    notMeBtn: 'ไม่ใช่ฉัน (สแกนใหม่)',
+    voiceGreeting: `ยืนยันตัวตนสำเร็จ ยินดีต้อนรับคุณ ${params.fullName} กรุณาชู 2 มือขึ้นหน้ากล้องค้างไว้ หรือกดปุ่มเพื่อเริ่มฝึกครับ`,
+  };
+}
 
 const COPY: Record<
   ClinicalLang,
@@ -167,6 +245,23 @@ const COPY: Record<
     staffAssistBtn: string;
     retryScanBtn: string;
     countdownLabel: string;
+    liveMatchVerified: string;
+    liveMatchAccuracy: string;
+    framesUnit: string;
+    scanningDbTitle: string;
+    comparingAccountsPrefix: string;
+    comparingAccountsSuffix: string;
+    pinModalTitle: string;
+    pinModalDesc: string;
+    pinClearBtn: string;
+    pinNotFoundError: string;
+    pinAuthError: string;
+    aboutBullet1: string;
+    aboutBullet2Prefix: string;
+    aboutBullet2Suffix: string;
+    aboutBullet3: string;
+    aboutTelemetryBtn: string;
+    aboutCloseBtn: string;
   }
 > = {
   th: {
@@ -195,6 +290,23 @@ const COPY: Record<
     staffAssistBtn: 'เจ้าหน้าที่ลงทะเบียนให้',
     retryScanBtn: 'ลองสแกนใหม่อีกครั้ง',
     countdownLabel: 'กำลังนับถอยหลัง',
+    liveMatchVerified: '✓ ยืนยันตัวตนสำเร็จ',
+    liveMatchAccuracy: 'ความแม่นยำ',
+    framesUnit: 'เฟรม',
+    scanningDbTitle: 'กำลังสแกนใบหน้าเทียบฐานข้อมูล...',
+    comparingAccountsPrefix: 'เทียบฐานข้อมูล',
+    comparingAccountsSuffix: 'บัญชี • ตรวจจับละเอียด 478 จุดใบหน้า',
+    pinModalTitle: 'ยืนยันตัวตนด้วยรหัส PIN',
+    pinModalDesc: 'กรอกรหัส PIN 4 หลักประจำตัวผู้ป่วยเพื่อเริ่มฝึก',
+    pinClearBtn: 'ล้าง',
+    pinNotFoundError: 'ไม่พบข้อมูลผู้ป่วยสำหรับรหัส PIN นี้ (หรือต้องให้เจ้าหน้าที่เข้าสู่ระบบก่อน)',
+    pinAuthError: 'การค้นหารหัส PIN 4 หลักต้องใช้สิทธิ์เจ้าหน้าที่ หรือติดต่อเคาน์เตอร์พยาบาล',
+    aboutBullet1: '• ระบบยืนยันตัวตนชีวมาตร 512 มิติ พร้อม Anti-Spoofing 3D Liveness Detection',
+    aboutBullet2Prefix: '• เชื่อมต่อฐานข้อมูล Supabase Cloud (',
+    aboutBullet2Suffix: ') แบบเรียลไทม์',
+    aboutBullet3: '• รองรับการใช้งาน 3 ภาษา (ไทย / 中文 / English) และการควบคุมไร้สัมผัส',
+    aboutTelemetryBtn: 'เปิดโหมดจำลองกายภาพบำบัด (SmartRehab Telemetry)',
+    aboutCloseBtn: 'ปิดหน้าต่าง',
   },
   en: {
     subtitle: 'AI Smart Rehabilitation Platform',
@@ -222,6 +334,23 @@ const COPY: Record<
     staffAssistBtn: 'Staff Register Patient',
     retryScanBtn: 'Scan Face Again',
     countdownLabel: 'Hold steady',
+    liveMatchVerified: '✓ Identity Verified',
+    liveMatchAccuracy: 'Confidence',
+    framesUnit: 'frames',
+    scanningDbTitle: 'Scanning face against database...',
+    comparingAccountsPrefix: 'Matching',
+    comparingAccountsSuffix: 'profiles • 478-point 3D facial mesh',
+    pinModalTitle: 'Sign In with 4-Digit PIN',
+    pinModalDesc: 'Enter your 4-digit patient PIN to begin rehabilitation',
+    pinClearBtn: 'Clear',
+    pinNotFoundError: 'No patient matched that PIN (or staff login may be required first)',
+    pinAuthError: 'PIN lookup requires clinical authorization. Please ask staff for assistance.',
+    aboutBullet1: '• 512-D facial biometric authentication with 3D Anti-Spoofing Liveness Detection',
+    aboutBullet2Prefix: '• Connected in real time to Supabase Cloud (',
+    aboutBullet2Suffix: ')',
+    aboutBullet3: '• Full trilingual support (Thai / English / 中文) & touchless gesture control',
+    aboutTelemetryBtn: 'Open Physical Therapy Simulator (SmartRehab Telemetry)',
+    aboutCloseBtn: 'Close',
   },
   cn: {
     subtitle: '智能物理康复训练系统',
@@ -248,6 +377,23 @@ const COPY: Record<
     staffAssistBtn: '医护人员协助建档',
     retryScanBtn: '重新识别人脸',
     countdownLabel: '倒计时准备中',
+    liveMatchVerified: '✓ 身份验证成功',
+    liveMatchAccuracy: '匹配准确度',
+    framesUnit: '帧',
+    scanningDbTitle: '正在扫描并与人脸库比对...',
+    comparingAccountsPrefix: '比对数据库共',
+    comparingAccountsSuffix: '位档案 • 478 点三维人脸特征追踪',
+    pinModalTitle: '使用 4 位 PIN 码验证',
+    pinModalDesc: '请输入患者 4 位 PIN 码开始康复训练',
+    pinClearBtn: '清空',
+    pinNotFoundError: '未找到匹配该 PIN 码的患者档案（或需医护人员先登录）',
+    pinAuthError: '查询 4 位 PIN 码需要医护权限，请联系护士台协助。',
+    aboutBullet1: '• 512 维面部生物识别认证，配备 3D 防伪活体检测',
+    aboutBullet2Prefix: '• 实时连接 Supabase 云端数据库（',
+    aboutBullet2Suffix: '）',
+    aboutBullet3: '• 支持三语界面（泰语 / 英语 / 中文）及无接触手势控制',
+    aboutTelemetryBtn: '打开物理康复分析界面 (SmartRehab Telemetry)',
+    aboutCloseBtn: '关闭窗口',
   },
 };
 
@@ -262,6 +408,23 @@ export function KioskBiometricLoginView({
 }: KioskBiometricLoginViewProps) {
   const { lang, setLang } = useClinicalI18n();
   const c = COPY[lang];
+
+  const handleSelectLang = useCallback(
+    (nextLang: ClinicalLang) => {
+      setLang(nextLang);
+      if (typeof window !== 'undefined') {
+        try {
+          window.localStorage.setItem(
+            'drtechcares_voice_coach_lang_v1',
+            nextLang === 'cn' ? 'zh' : nextLang,
+          );
+        } catch {
+          // Ignore storage errors
+        }
+      }
+    },
+    [setLang],
+  );
 
   const [cameraPaused, setCameraPaused] = useState(false);
   const [clockText, setClockText] = useState<string>(() =>
@@ -293,6 +456,97 @@ export function KioskBiometricLoginView({
   const [twoHandDetected, setTwoHandDetected] = useState(false);
   const [twoHandCameraReady, setTwoHandCameraReady] = useState(false);
   const [twoHandDetectorReady, setTwoHandDetectorReady] = useState(false);
+
+  const modalCopy = verifiedModalPayload
+    ? getKioskVerifiedModalCopy(lang, {
+        fullName: verifiedModalPayload.patient.fullName,
+        hn: verifiedModalPayload.patient.hn,
+        nextAppointmentDate: verifiedModalPayload.patient.nextAppointmentDate,
+        confidencePercent: verifiedModalPayload.confidencePercent,
+        twoHandProgressPct: Math.round(twoHandProgress * 100),
+      })
+    : null;
+  const modalAudioRef = useRef<HTMLAudioElement | null>(null);
+  const modalSpeakSeqRef = useRef<number>(0);
+
+  useEffect(() => {
+    const greeting = modalCopy?.voiceGreeting;
+    if (!verifiedModalPayload || !greeting || typeof window === 'undefined') {
+      return;
+    }
+    const seq = ++modalSpeakSeqRef.current;
+    const langOpt = LANG_OPTIONS.find((item) => item.code === lang) ?? LANG_OPTIONS[0];
+
+    const stopSpeech = () => {
+      modalSpeakSeqRef.current += 1;
+      const audio = modalAudioRef.current;
+      if (audio) {
+        try {
+          audio.onended = null;
+          audio.onerror = null;
+          audio.pause();
+          audio.currentTime = 0;
+        } catch {
+          // Ignore audio cleanup errors
+        }
+      }
+      if ('speechSynthesis' in window) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {
+          // Ignore synthesis cancel errors
+        }
+      }
+    };
+
+    const speakWebFallback = () => {
+      if (modalSpeakSeqRef.current !== seq) return;
+      if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') return;
+      try {
+        const synth = window.speechSynthesis;
+        if (synth.speaking || synth.pending) synth.cancel();
+        const voices = synth.getVoices();
+        const matchedVoice = pickSpeechVoice(voices, langOpt.bcp47);
+        const utterance = new SpeechSynthesisUtterance(greeting);
+        utterance.lang = matchedVoice?.lang || langOpt.bcp47;
+        if (matchedVoice) utterance.voice = matchedVoice;
+        utterance.rate = lang === 'th' ? 0.96 : lang === 'cn' ? 0.98 : 1.0;
+        synth.speak(utterance);
+      } catch {
+        // Ignore browser TTS restriction
+      }
+    };
+
+    if (typeof Audio !== 'undefined') {
+      try {
+        let audio = modalAudioRef.current;
+        if (!audio) {
+          audio = new Audio();
+          audio.preload = 'auto';
+          modalAudioRef.current = audio;
+        }
+        audio.playbackRate = lang === 'th' ? 1.0 : lang === 'cn' ? 0.98 : 1.0;
+        audio.onerror = () => speakWebFallback();
+        audio.src = buildTtsProxyUrl(greeting, langOpt.ttsLang);
+        const p = audio.play();
+        if (p && typeof p.catch === 'function') {
+          p.catch((err: unknown) => {
+            const name =
+              err && typeof err === 'object' && 'name' in err ? String((err as { name: string }).name) : '';
+            if (name !== 'NotAllowedError' && name !== 'AbortError') {
+              speakWebFallback();
+            }
+          });
+        }
+      } catch {
+        speakWebFallback();
+      }
+    } else {
+      speakWebFallback();
+    }
+
+    return stopSpeech;
+  }, [verifiedModalPayload?.patient.id, lang, modalCopy?.voiceGreeting]);
 
   const [showPinModal, setShowPinModal] = useState(false);
   const [pinDigits, setPinDigits] = useState('');
@@ -1121,9 +1375,9 @@ export function KioskBiometricLoginView({
         setVerifiedModalPayload(pinPayload);
         return;
       }
-      setPinError(`ไม่พบข้อมูลผู้ป่วยสำหรับรหัส PIN "${normalized}" (หรือต้องให้เจ้าหน้าที่เข้าสู่ระบบก่อน)`);
+      setPinError(c.pinNotFoundError);
     } catch {
-      setPinError('การค้นหารหัส PIN 4 หลักต้องใช้สิทธิ์เจ้าหน้าที่ หรือติดต่อเคาน์เตอร์พยาบาล');
+      setPinError(c.pinAuthError);
     } finally {
       setPinSubmitting(false);
     }
@@ -1206,7 +1460,7 @@ export function KioskBiometricLoginView({
                     <button
                       key={opt.code}
                       type="button"
-                      onClick={() => setLang(opt.code)}
+                      onClick={() => handleSelectLang(opt.code)}
                       className={`h-7 w-[72px] inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-lg text-xs font-bold transition-all cursor-pointer ${
                         active
                           ? 'bg-white text-[#0F4C81] shadow-sm'
@@ -1458,20 +1712,20 @@ export function KioskBiometricLoginView({
                     {liveMatchHud?.candidate ? (
                       <div className="absolute left-1/2 top-full mt-2 w-max max-w-[310px] -translate-x-1/2 rounded-xl border border-emerald-400 bg-white/95 px-3.5 py-2 text-center backdrop-blur-md shadow-2xl">
                         <div className="text-xs font-black text-emerald-700">
-                          ✓ ยืนยันตัวตนสำเร็จ: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
+                          {c.liveMatchVerified}: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
                         </div>
                         <div className="mt-0.5 text-[11px] font-bold text-[#0F4C81]">
-                          ความแม่นยำ: {liveMatchHud.confidencePercent.toFixed(1)}% (3D Multi-Angle Match •{' '}
-                          {liveMatchHud.streak}/4 เฟรม)
+                          {c.liveMatchAccuracy}: {liveMatchHud.confidencePercent.toFixed(1)}% (3D Multi-Angle Match •{' '}
+                          {liveMatchHud.streak}/4 {c.framesUnit})
                         </div>
                       </div>
                     ) : (
                       <div className="absolute left-1/2 top-full mt-2 w-max max-w-[320px] -translate-x-1/2 rounded-xl border border-sky-300 bg-white/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
                         <div className="text-[11px] font-extrabold text-[#0F4C81]">
-                          กำลังสแกนใบหน้าเทียบฐานข้อมูล... {burstCount}/{BURST_FRAME_COUNT}
+                          {c.scanningDbTitle} {burstCount}/{BURST_FRAME_COUNT}
                         </div>
                         <div className="mt-0.5 text-[10px] font-semibold text-[#0284C7]">
-                          เทียบฐานข้อมูล {dbAccountCount} บัญชี • ตรวจจับละเอียด 478 จุดใบหน้า
+                          {c.comparingAccountsPrefix} {dbAccountCount} {c.comparingAccountsSuffix}
                         </div>
                       </div>
                     )}
@@ -1592,8 +1846,8 @@ export function KioskBiometricLoginView({
             <div className="w-12 h-12 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-700 flex items-center justify-center mx-auto mb-2">
               <KeyRound className="w-6 h-6 text-amber-500" />
             </div>
-            <h3 className="text-lg font-extrabold text-slate-900">ยืนยันตัวตนด้วยรหัส PIN</h3>
-            <p className="text-xs text-slate-500 mt-0.5">กรอกรหัส PIN 4 หลักประจำตัวผู้ป่วยเพื่อเริ่มฝึก</p>
+            <h3 className="text-lg font-extrabold text-slate-900">{c.pinModalTitle}</h3>
+            <p className="text-xs text-slate-500 mt-0.5">{c.pinModalDesc}</p>
 
             <div className="flex justify-center gap-3 my-5">
               {[0, 1, 2, 3].map((idx) => (
@@ -1633,7 +1887,7 @@ export function KioskBiometricLoginView({
                 }}
                 className="h-12 rounded-xl bg-slate-100 border border-slate-200 text-slate-600 font-bold text-xs hover:bg-slate-200 cursor-pointer"
               >
-                ล้าง
+                {c.pinClearBtn}
               </button>
               <button
                 type="button"
@@ -1699,21 +1953,45 @@ export function KioskBiometricLoginView({
       )}
 
       {/* Verified Patient Confirmation Modal */}
-      {verifiedModalPayload && (
+      {verifiedModalPayload && modalCopy && (
         <div className="fixed inset-0 z-50 bg-[#0F4C81]/40 backdrop-blur-md flex items-center justify-center p-4">
           <div className="w-full max-w-md rounded-3xl bg-white border-2 border-emerald-500/50 shadow-2xl p-6 text-center">
+            {/* 3-Language Selector Bar inside Verified Patient Modal */}
+            <div
+              className="mb-4 inline-flex items-center gap-1 rounded-2xl border border-sky-200 bg-sky-50/90 p-1"
+              data-testid="verified-modal-language-switcher"
+            >
+              {LANG_OPTIONS.map((opt) => {
+                const active = lang === opt.code;
+                return (
+                  <button
+                    key={opt.code}
+                    type="button"
+                    onClick={() => handleSelectLang(opt.code)}
+                    className={`rounded-xl px-2.5 py-1 text-[11px] sm:text-xs font-extrabold transition cursor-pointer ${
+                      active
+                        ? 'bg-[#0284C7] text-white shadow-sm'
+                        : 'text-[#0F4C81] hover:bg-white'
+                    }`}
+                  >
+                    {opt.numberedLabel}
+                  </button>
+                );
+              })}
+            </div>
+
             <div className="w-20 h-20 rounded-full mx-auto bg-gradient-to-tr from-emerald-500 to-teal-400 text-white flex items-center justify-center text-3xl font-black shadow-lg mb-3">
               {verifiedModalPayload.patient.fullName?.[0] || 'P'}
             </div>
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-bold border border-emerald-200 mb-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              <span>ความแม่นยำชีวมาตร {verifiedModalPayload.confidencePercent}% (ผ่านเกณฑ์)</span>
+              <span>{modalCopy.confidenceBadge}</span>
             </div>
             <h2 className="text-2xl font-extrabold text-slate-900">
               {verifiedModalPayload.patient.fullName}
             </h2>
             <p className="text-xs text-slate-500 mt-1 font-mono">
-              HN: {verifiedModalPayload.patient.hn} • นัดถัดไป: {verifiedModalPayload.patient.nextAppointmentDate || '-'}
+              {modalCopy.hnAndNextAppointment}
             </p>
 
             {/* Compact Live Camera Preview for 2-Hand Start Gesture */}
@@ -1728,7 +2006,7 @@ export function KioskBiometricLoginView({
               />
               {!twoHandCameraReady && (
                 <div className="absolute inset-0 flex items-center justify-center bg-white/90 text-xs font-bold text-[#0F4C81]">
-                  กำลังเปิดกล้องตรวจจับการยก 2 มือ...
+                  {modalCopy.openingCamera}
                 </div>
               )}
               <div className="absolute inset-x-2 bottom-2 flex items-center justify-center">
@@ -1740,10 +2018,10 @@ export function KioskBiometricLoginView({
                   }`}
                 >
                   {twoHandDetected
-                    ? `👐 ตรวจพบยก 2 มือแล้ว! ค้างไว้ ${Math.round(twoHandProgress * 100)}%`
+                    ? modalCopy.gestureDetectedPill
                     : !twoHandDetectorReady
-                      ? '⏳ กำลังเตรียม AI ตรวจจับการยก 2 มือ...'
-                      : '📷 ชู 2 มือขึ้นหน้ากล้องค้างไว้เพื่อเริ่มฝึกอัตโนมัติ'}
+                      ? modalCopy.gestureLoadingPill
+                      : modalCopy.gestureReadyPill}
                 </span>
               </div>
             </div>
@@ -1763,8 +2041,8 @@ export function KioskBiometricLoginView({
                 <span className="relative z-10 flex items-center justify-center gap-2">
                   <span>
                     {twoHandProgress > 0
-                      ? `👐 ยก 2 มือค้างไว้... (${Math.round(twoHandProgress * 100)}%)`
-                      : '👐 ยก 2 มือขึ้น หรือ กดที่นี่เพื่อเริ่มฝึก ➔'}
+                      ? modalCopy.startBtnHolding
+                      : modalCopy.startBtnIdle}
                   </span>
                 </span>
               </button>
@@ -1774,7 +2052,7 @@ export function KioskBiometricLoginView({
                   onClick={onOpenTelemetrySimulator}
                   className="w-full py-2.5 px-4 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-800 text-xs font-bold cursor-pointer"
                 >
-                  เปิดหน้าจอวิเคราะห์ชีวกลศาสตร์ (Smart Rehab Telemetry)
+                  {modalCopy.telemetryBtn}
                 </button>
               )}
               <button
@@ -1782,7 +2060,7 @@ export function KioskBiometricLoginView({
                 onClick={handleRestartScan}
                 className="text-xs text-slate-500 hover:text-slate-700 underline py-1 cursor-pointer"
               >
-                ไม่ใช่ฉัน (สแกนใหม่)
+                {modalCopy.notMeBtn}
               </button>
             </div>
           </div>
@@ -1806,13 +2084,17 @@ export function KioskBiometricLoginView({
               </div>
               <div>
                 <h3 className="text-lg font-extrabold text-slate-900">Dr.Tech.Care AI Kiosk</h3>
-                <p className="text-xs text-slate-500">Clinical Biometrics & Rehab Platform</p>
+                <p className="text-xs text-slate-500">Clinical Biometrics &amp; Rehab Platform</p>
               </div>
             </div>
             <div className="space-y-2 text-xs text-slate-600 leading-relaxed">
-              <p>• ระบบยืนยันตัวตนชีวมาตร 512 มิติ พร้อม Anti-Spoofing 3D Liveness Detection</p>
-              <p>• เชื่อมต่อฐานข้อมูล Supabase Cloud ({supabaseHost}) แบบเรียลไทม์</p>
-              <p>• รองรับการใช้งาน 3 ภาษา (ไทย / 中文 / English) และการควบคุมไร้สัมผัส</p>
+              <p>{c.aboutBullet1}</p>
+              <p>
+                {c.aboutBullet2Prefix}
+                {supabaseHost}
+                {c.aboutBullet2Suffix}
+              </p>
+              <p>{c.aboutBullet3}</p>
             </div>
             <div className="mt-5 flex flex-col gap-2">
               {onOpenTelemetrySimulator && (
@@ -1824,7 +2106,7 @@ export function KioskBiometricLoginView({
                   }}
                   className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold cursor-pointer"
                 >
-                  เปิดโหมดจำลองกายภาพบำบัด (SmartRehab Telemetry)
+                  {c.aboutTelemetryBtn}
                 </button>
               )}
               <button
@@ -1832,7 +2114,7 @@ export function KioskBiometricLoginView({
                 onClick={() => setShowAboutModal(false)}
                 className="w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold cursor-pointer"
               >
-                ปิดหน้าต่าง
+                {c.aboutCloseBtn}
               </button>
             </div>
           </div>

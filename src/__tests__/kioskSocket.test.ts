@@ -14,6 +14,7 @@ import {
   pickSpeechVoice,
   translateVoiceCoachText,
 } from '../components/VoiceCoachBanner';
+import { getKioskVerifiedModalCopy } from '../components/KioskBiometricLoginView';
 
 function createNeutralLandmarks(
   overrides: Partial<Record<number, NormalizedLandmark>> = {},
@@ -394,6 +395,39 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     const downStep = stepSmoothRomAngle(150, 15, 20);
     expect(downStep).toBeLessThan(150);
     expect(downStep).toBeGreaterThanOrEqual(150 - (48 * 20) / 1000 - 1e-6);
+  });
+
+  it('localizes the Verified Patient Confirmation Modal across Thai, English, and Chinese', () => {
+    const sampleParams = {
+      fullName: 'Pdasdwa',
+      hn: 'HN-61716',
+      nextAppointmentDate: '2026-11-20',
+      confidencePercent: 77,
+      twoHandProgressPct: 50,
+    };
+
+    const th = getKioskVerifiedModalCopy('th', sampleParams);
+    expect(th.confidenceBadge).toContain('ความแม่นยำชีวมาตร 77%');
+    expect(th.hnAndNextAppointment).toContain('นัดถัดไป: 2026-11-20');
+    expect(th.startBtnIdle).toContain('ยก 2 มือขึ้น');
+    expect(th.notMeBtn).toContain('ไม่ใช่ฉัน');
+    expect(th.voiceGreeting).toContain('Pdasdwa');
+
+    const en = getKioskVerifiedModalCopy('en', sampleParams);
+    expect(en.confidenceBadge).toContain('Biometric Confidence 77%');
+    expect(en.hnAndNextAppointment).toContain('Next Appointment: 2026-11-20');
+    expect(en.startBtnIdle).toContain('Raise Both Hands');
+    expect(en.gestureDetectedPill).toContain('50%');
+    expect(en.notMeBtn).toContain('Not me');
+    expect(en.voiceGreeting).toContain('Welcome, Pdasdwa');
+
+    const cn = getKioskVerifiedModalCopy('cn', sampleParams);
+    expect(cn.confidenceBadge).toContain('生物识别准确度 77%');
+    expect(cn.hnAndNextAppointment).toContain('下次预约: 2026-11-20');
+    expect(cn.startBtnIdle).toContain('举起双手');
+    expect(cn.gestureDetectedPill).toContain('50%');
+    expect(cn.notMeBtn).toContain('不是我本人');
+    expect(cn.voiceGreeting).toContain('Pdasdwa');
   });
 });
 

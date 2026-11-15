@@ -6,8 +6,58 @@ import {
   type NormalizedLandmark,
 } from '@mediapipe/tasks-vision';
 import { selectClinicalCameraDeviceId } from '@drtechcares/face-client';
+import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import { extractRaisedHandSides } from '@drtechcares/kiosk-input';
 import type { PoseLandmark } from '@drtechcares/pose-engine';
+
+const RANDOM_HAND_COPY: Record<
+  ClinicalLang,
+  {
+    openingCamera: string;
+    errUnsupported: string;
+    errOpenFailed: string;
+    matchedBadge: (pct: number) => string;
+    wrongSideBadge: string;
+    preparingBadge: string;
+    holdPromptBadge: string;
+    confirmingBtn: (pct: number) => string;
+    idleBtn: string;
+  }
+> = {
+  th: {
+    openingCamera: 'กำลังเปิดกล้องตรวจจับการยกมือ...',
+    errUnsupported: 'เบราว์เซอร์ไม่รองรับกล้อง สามารถกดปุ่มด้านล่างเพื่อเริ่มกายภาพได้ทันที',
+    errOpenFailed: 'ไม่สามารถเปิดกล้องได้ — สามารถกดปุ่มด้านล่างเพื่อเริ่มการกายภาพได้ทันที',
+    matchedBadge: (pct) => `✅ ตรวจพบการยกมือถูกต้องแล้ว! ค้างไว้ ${pct}%`,
+    wrongSideBadge: '⚠️ กรุณายกมืออีกข้างตามที่ระบุไว้ด้านบน',
+    preparingBadge: '⏳ กำลังเตรียมระบบตรวจจับการยกมือ...',
+    holdPromptBadge: '📷 ชูมือค้างไว้หน้ากล้องตามคำสั่งด้านบนเพื่อเริ่มอัตโนมัติ',
+    confirmingBtn: (pct) => `🖐️ กำลังยืนยันท่าทาง... (${pct}%)`,
+    idleBtn: '🖐️ ยกมือตามคำสั่งด้านบน หรือ กดที่นี่เพื่อเริ่มการกายภาพบำบัด ➔',
+  },
+  en: {
+    openingCamera: 'Opening camera for hand-raise detection...',
+    errUnsupported: 'Camera unavailable in browser. Tap below to start physical therapy.',
+    errOpenFailed: 'Unable to open camera — you can tap the button below to start immediately.',
+    matchedBadge: (pct) => `✅ Correct hand raised! Hold steady ${pct}%`,
+    wrongSideBadge: '⚠️ Please raise the other hand as shown above',
+    preparingBadge: '⏳ Preparing hand gesture detector...',
+    holdPromptBadge: '📷 Hold your hand up as instructed above to start automatically',
+    confirmingBtn: (pct) => `🖐️ Confirming gesture... (${pct}%)`,
+    idleBtn: '🖐️ Raise the instructed hand or tap here to start rehabilitation ➔',
+  },
+  cn: {
+    openingCamera: '正在开启举手识别摄像头...',
+    errUnsupported: '当前浏览器不支持摄像头，可直接点击下方按钮开始康复训练。',
+    errOpenFailed: '无法开启摄像头 — 请直接点击下方按钮开始物理治疗训练。',
+    matchedBadge: (pct) => `✅ 已识别到正确手部！请保持 ${pct}%`,
+    wrongSideBadge: '⚠️ 请举起上方指示的另一只手',
+    preparingBadge: '⏳ 正在准备手势识别系统...',
+    holdPromptBadge: '📷 请按上方提示举手并保持，系统将自动开始训练',
+    confirmingBtn: (pct) => `🖐️ 正在确认手势... (${pct}%)`,
+    idleBtn: '🖐️ 请按上方提示举手 或 点击此处开始物理治疗训练 ➔',
+  },
+};
 
 export type HandChallengeSide = 'left' | 'right';
 
@@ -80,13 +130,15 @@ export function RandomHandStartPrompt({
   initialSide,
   targetSide: controlledTargetSide,
 }: RandomHandStartPromptProps) {
+  const { lang } = useClinicalI18n();
+  const rhCopy = RANDOM_HAND_COPY[lang];
   const [internalSide] = useState<HandChallengeSide>(
     () => initialSide ?? pickRandomHandSide(),
   );
   const targetSide = controlledTargetSide ?? internalSide;
   const [cameraReady, setCameraReady] = useState(false);
   const [detectorReady, setDetectorReady] = useState(false);
-  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [cameraErrorKey, setCameraErrorKey] = useState<'unsupported' | 'open_failed' | null>(null);
   const [holdProgress, setHoldProgress] = useState(0);
   const [evalState, setEvalState] = useState<RandomHandEvaluationResult>({
     leftRaised: false,
@@ -166,7 +218,7 @@ export function RandomHandStartPrompt({
     async function initHandChallengeCamera() {
       try {
         if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-          setCameraError('เบราว์เซอร์ไม่รองรับกล้อง สามารถกดปุ่มด้านล่างเพื่อเริ่มกายภาพได้ทันที');
+          setCameraErrorKey('unsupported');
           return;
         }
 
@@ -371,7 +423,7 @@ export function RandomHandStartPrompt({
         rafId = requestAnimationFrame(loop);
       } catch {
         if (active) {
-          setCameraError('ไม่สามารถเปิดกล้องได้ — สามารถกดปุ่มด้านล่างเพื่อเริ่มการกายภาพได้ทันที');
+          setCameraErrorKey('open_failed');
         }
       }
     }
@@ -391,6 +443,12 @@ export function RandomHandStartPrompt({
   };
 
   const isLeft = targetSide === 'left';
+  const cameraErrorText =
+    cameraErrorKey === 'unsupported'
+      ? rhCopy.errUnsupported
+      : cameraErrorKey === 'open_failed'
+        ? rhCopy.errOpenFailed
+        : null;
 
   return (
     <div
@@ -415,14 +473,14 @@ export function RandomHandStartPrompt({
           style={{ transform: 'scaleX(-1)' }}
         />
 
-        {!cameraReady && !cameraError && (
+        {!cameraReady && !cameraErrorText && (
           <div className="absolute inset-0 flex items-center justify-center bg-white/90 text-xs sm:text-sm font-bold text-[#0F4C81] px-4">
-            กำลังเปิดกล้องตรวจจับการยกมือ...
+            {rhCopy.openingCamera}
           </div>
         )}
-        {cameraError && (
+        {cameraErrorText && (
           <div className="absolute inset-0 flex items-center justify-center bg-white/95 text-xs sm:text-sm font-bold text-[#0284C7] px-4">
-            {cameraError}
+            {cameraErrorText}
           </div>
         )}
 
@@ -439,12 +497,12 @@ export function RandomHandStartPrompt({
             }`}
           >
             {evalState.targetMatched
-              ? `✅ ตรวจพบการยกมือถูกต้องแล้ว! ค้างไว้ ${Math.round(holdProgress * 100)}%`
+              ? rhCopy.matchedBadge(Math.round(holdProgress * 100))
               : evalState.wrongSideRaised
-                ? '⚠️ กรุณายกมืออีกข้างตามที่ระบุไว้ด้านบน'
+                ? rhCopy.wrongSideBadge
                 : !detectorReady
-                  ? '⏳ กำลังเตรียมระบบตรวจจับการยกมือ...'
-                  : '📷 ชูมือค้างไว้หน้ากล้องตามคำสั่งด้านบนเพื่อเริ่มอัตโนมัติ'}
+                  ? rhCopy.preparingBadge
+                  : rhCopy.holdPromptBadge}
           </span>
         </div>
       </div>
@@ -469,8 +527,8 @@ export function RandomHandStartPrompt({
         <span className="relative z-10 flex items-center justify-center gap-2">
           <span>
             {holdProgress > 0
-              ? `🖐️ กำลังยืนยันท่าทาง... (${Math.round(holdProgress * 100)}%)`
-              : '🖐️ ยกมือตามคำสั่งด้านบน หรือ กดที่นี่เพื่อเริ่มการกายภาพบำบัด ➔'}
+              ? rhCopy.confirmingBtn(Math.round(holdProgress * 100))
+              : rhCopy.idleBtn}
           </span>
         </span>
       </button>
