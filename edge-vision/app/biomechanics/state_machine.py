@@ -225,6 +225,7 @@ class ClinicalRehabFSM:
         identity_guard: Optional[IdentityGuardSchema] = None,
         world_pts: Optional[np.ndarray] = None,
         pose_world_landmarks: Optional[List[Keypoint3D]] = None,
+        pose_landmarks: Optional[List[Keypoint3D]] = None,
     ) -> EdgeKioskTelemetryPayload:
         """Advance FSM one frame and emit complete WebSocket telemetry payload."""
         guard = identity_guard or IdentityGuardSchema()
@@ -455,6 +456,7 @@ class ClinicalRehabFSM:
             face_enrollment=face_enrollment,
             identity_guard=guard,
             keypoints_3d=keypoints_3d,
+            pose_landmarks=pose_landmarks or [],
             pose_world_landmarks=pose_world_landmarks or [],
             frame_base64=frame_base64,
         )

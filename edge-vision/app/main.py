@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response, StreamingResponse
 
 from app.api.routes_enroll import router as enroll_router
 from app.api.ws_kiosk import KioskRuntimeCoordinator, router as ws_router
@@ -47,10 +49,35 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,
+        allow_origin_regex=r"^https?://.*",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def allow_private_network_access(request: Request, call_next: Any) -> Response:
+        """Grant Chrome Private Network Access (PNA) so HTTPS frontends can probe localhost:8000."""
+        if (
+            request.method == "OPTIONS"
+            and request.headers.get("access-control-request-private-network") == "true"
+        ):
+            origin = request.headers.get("origin", "*")
+            return Response(
+                status_code=204,
+                headers={
+                    "Access-Control-Allow-Origin": origin,
+                    "Access-Control-Allow-Credentials": "true",
+                    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+                    "Access-Control-Allow-Headers": request.headers.get(
+                        "access-control-request-headers", "*"
+                    ),
+                    "Access-Control-Allow-Private-Network": "true",
+                },
+            )
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
 
     app.include_router(ws_router)
     app.include_router(enroll_router)
@@ -99,6 +126,34 @@ def create_app() -> FastAPI:
             "compensation_warnings": payload.compensation_warnings,
             "telemetry": payload.model_dump(exclude={"frame_base64"}),
         }
+
+    @app.get("/api/video/mjpeg")
+    async def mjpeg_video_stream() -> StreamingResponse:
+        """Stream live JPEG frames as MJPEG over HTTP so browser clients never fight for getUserMedia."""
+        coordinator: KioskRuntimeCoordinator = app.state.coordinator
+
+        async def frame_generator() -> AsyncIterator[bytes]:
+            last_id = -1
+            while True:
+                fid, frame = coordinator.camera.read_latest()
+                if frame is not None and fid != last_id:
+                    last_id = fid
+                    jpeg = coordinator.camera.encode_jpeg_bytes(frame, max_width=640, quality=70)
+                    if jpeg:
+                        yield (
+                            b"--frame\r\n"
+                            b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+                        )
+                await asyncio.sleep(1.0 / 30.0)
+
+        return StreamingResponse(
+            frame_generator(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "Access-Control-Allow-Private-Network": "true",
+            },
+        )
 
     return app
 

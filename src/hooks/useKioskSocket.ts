@@ -90,6 +90,7 @@ export interface KioskDecisionPayload {
   hand_status?: HandRaiseTelemetry;
   identity_guard?: IdentityGuardState;
   keypoints_3d?: Keypoint3DPoint[];
+  pose_landmarks?: Keypoint3DPoint[];
   frame_base64: string | null;
 }
 
@@ -735,6 +736,33 @@ export function synthesizeDemoPayload({
   };
 }
 
+/**
+ * Builds an ordered, deduplicated list of Kiosk Edge Vision WebSocket endpoints
+ * across env overrides, localStorage config, and localhost / 127.0.0.1 fallbacks.
+ */
+export function resolveKioskWsCandidates(defaultWsUrl: string): string[] {
+  const candidates: string[] = [];
+  const pushUnique = (val?: string | null) => {
+    const trimmed = val?.trim();
+    if (trimmed && !candidates.includes(trimmed)) {
+      candidates.push(trimmed);
+    }
+  };
+  pushUnique(import.meta.env.VITE_KIOSK_WS_URL as string | undefined);
+  pushUnique(import.meta.env.VITE_EDGE_VISION_WS as string | undefined);
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      pushUnique(window.localStorage.getItem('drtechcares_edge_ws_url'));
+    } catch {
+      // Ignore storage access errors
+    }
+  }
+  pushUnique(defaultWsUrl);
+  pushUnique('ws://localhost:8000/ws/kiosk');
+  pushUnique('ws://127.0.0.1:8000/ws/kiosk');
+  return candidates;
+}
+
 export function useKioskSocket(
   wsUrl = 'ws://localhost:8000/ws/kiosk',
   options?: {
@@ -742,6 +770,9 @@ export function useKioskSocket(
     patientOverride?: PatientSummary | null;
   },
 ) {
+  const wsCandidates = useMemo(() => resolveKioskWsCandidates(wsUrl), [wsUrl]);
+  const [activeWsUrl, setActiveWsUrl] = useState<string>(() => wsCandidates[0] ?? wsUrl);
+
   const exerciseOptions = useMemo(
     () =>
       options?.prescribedExercises && options.prescribedExercises.length > 0
@@ -844,7 +875,9 @@ export function useKioskSocket(
       setConnectionStatus('connecting');
 
       try {
-        const ws = new WebSocket(wsUrl);
+        const targetWsUrl = wsCandidates[attempt % wsCandidates.length] ?? wsUrl;
+        setActiveWsUrl(targetWsUrl);
+        const ws = new WebSocket(targetWsUrl);
         wsRef.current = ws;
 
         ws.onopen = () => {
@@ -854,6 +887,7 @@ export function useKioskSocket(
           if (!userToggledModeRef.current) {
             setIsDemoMode(false);
           }
+          ws.send(JSON.stringify({ type: 'config', stream_video: true }));
           if (options?.patientOverride?.id) {
             ws.send(
               JSON.stringify({
@@ -903,6 +937,9 @@ export function useKioskSocket(
         if (!userToggledModeRef.current) {
           setIsDemoMode(true);
         }
+        const delayMs = Math.min(10000, 1500 * Math.pow(1.6, attempt));
+        attempt += 1;
+        reconnectTimer = window.setTimeout(connect, delayMs);
       }
     };
 
@@ -917,7 +954,7 @@ export function useKioskSocket(
         wsRef.current = null;
       }
     };
-  }, [wsUrl, sendExercisePrescription]);
+  }, [wsCandidates, wsUrl, sendExercisePrescription]);
 
   // Keep Edge Vision active_patient locked whenever authenticated patient updates
   useEffect(() => {
@@ -1174,12 +1211,33 @@ export function useKioskSocket(
     patientOverride: options?.patientOverride,
   });
 
-  const payload: KioskDecisionPayload = !isDemoMode && livePayload ? livePayload : demoPayload;
+  const isEdgeSyntheticMock = Boolean(
+    connectionStatus === 'connected' && livePayload?.camera_mode === 'synthetic_mock',
+  );
+  const isEdgeLiveCameraActive = Boolean(
+    !isDemoMode &&
+      connectionStatus === 'connected' &&
+      livePayload &&
+      livePayload.camera_mode !== 'synthetic_mock',
+  );
+  const isHttpsRemoteOrigin =
+    typeof window !== 'undefined' &&
+    window.location.protocol === 'https:' &&
+    !/^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname);
+
+  // When Edge Vision is offline or stuck in synthetic_mock, serve demoPayload driven
+  // by the browser's live @mediapipe/tasks-vision PoseLandmarker instead of synthetic noise.
+  const payload: KioskDecisionPayload =
+    isEdgeLiveCameraActive && livePayload ? livePayload : demoPayload;
 
   return {
     payload,
     connectionStatus,
     isDemoMode,
+    isEdgeLiveCameraActive,
+    isEdgeSyntheticMock,
+    activeWsUrl,
+    isHttpsRemoteOrigin,
     toggleDemoMode,
     exerciseOptions,
     selectedExercise,

@@ -816,6 +816,66 @@ class TestClinicalEdgeVision(unittest.TestCase):
                 self.assertIn(key, body)
             self.assertEqual(len(body["telemetry"]["pose_world_landmarks"]), TOTAL_MEDIAPIPE_KEYPOINTS)
 
+    def test_16_seated_shoulder_flexion_vertical_reference_and_pna_headers(self) -> None:
+        """Seated Right Shoulder Flexion (ex-01) with occluded/out-of-frame hips uses [0, 1, 0] vertical vector."""
+        rule_flex = resolve_exercise_rule("ex-01")
+        req_indices = rule_flex.required_landmark_indices()
+        self.assertNotIn(11, req_indices)
+        self.assertNotIn(12, req_indices)
+        self.assertIn(6, req_indices)
+        self.assertIn(8, req_indices)
+
+        # Simulate seated desk posture: hips occluded (visibility=0.05) and out-of-frame (y=1.08),
+        # while right arm reaches forward ~90 deg toward camera (-Z in MediaPipe world coords).
+        pts_2d, scores = generate_synthetic_133_pose(0.0, is_calibrating=True)
+        world_pts = wholebody133_to_world_meters(pts_2d)
+        pts_2d[11, 1] = 1.08
+        pts_2d[12, 1] = 1.08
+        scores[11] = 0.05
+        scores[12] = 0.05
+
+        world_pts[8] = world_pts[6] + np.array([0.0, 0.0, -0.28])
+        world_pts[10] = world_pts[8] + np.array([0.0, 0.0, -0.26])
+
+        solver = Biomechanics3DSolver(self.settings)
+        cal = StandingCalibrator(duration_sec=0.2)
+        for step in range(4):
+            st = cal.update(pts_2d, scores, step * 0.1, world_pts=world_pts, required_indices=req_indices)
+        self.assertTrue(st.is_calibrated)
+
+        res, emerg = solver.analyze(
+            pts_2d,
+            rule_flex,
+            cal,
+            timestamp_sec=1.0,
+            target_rom_override=110.0,
+            world_pts=world_pts,
+            scores=scores,
+        )
+        self.assertIsNone(emerg)
+        self.assertTrue(res.visibility_ok)
+        self.assertGreater(res.current_rom_deg, 85.0)
+        self.assertLess(res.trunk_tilt_deg, 10.0)
+        self.assertNotIn("PELVIC_TILT", res.compensation_detected)
+
+        # Verify PNA middleware header is present for cross-origin HTTPS -> localhost connections
+        app = create_app()
+        with TestClient(app) as client:
+            resp = client.get("/health", headers={"Origin": "https://drtechcares-platform.krongrach80.workers.dev"})
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.headers.get("access-control-allow-private-network"), "true")
+
+            with client.websocket_connect("/ws/kiosk") as ws:
+                _ = ws.receive_json()
+                ws.send_json({"type": "config", "stream_video": True})
+                ack = ws.receive_json()
+                while ack.get("type") != "ack":
+                    ack = ws.receive_json()
+                self.assertEqual(ack["command"], "config")
+                nxt = ws.receive_json()
+                self.assertIn("pose_landmarks", nxt)
+                self.assertEqual(len(nxt["pose_landmarks"]), TOTAL_MEDIAPIPE_KEYPOINTS)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -8,7 +8,7 @@ import {
   type ExercisePrescriptionOption,
   type KioskDecisionPayload,
 } from '../hooks/useKioskSocket';
-import { drawWholeBody133OnCanvas } from '../hooks/useEdgeVisionSocket';
+import { drawWholeBody133OnCanvas, type Keypoint3DPoint } from '../hooks/useEdgeVisionSocket';
 
 interface SkeletonCanvasProps {
   payload: KioskDecisionPayload;
@@ -72,7 +72,19 @@ export function SkeletonCanvas({
   const latestPayloadRef = useRef(payload);
   latestPayloadRef.current = payload;
 
-  const hasEdge3D = Boolean(!isDemoMode && payload.keypoints_3d && payload.keypoints_3d.length >= 17);
+  const MEDIAPIPE_33_TO_COCO_17 = [
+    0, 2, 5, 7, 8, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28,
+  ] as const;
+
+  const resolveEdgeKeypoints = (cur: KioskDecisionPayload): Keypoint3DPoint[] | undefined => {
+    if (cur.keypoints_3d && cur.keypoints_3d.length >= 17) return cur.keypoints_3d;
+    if (cur.pose_landmarks && cur.pose_landmarks.length >= 29) {
+      return MEDIAPIPE_33_TO_COCO_17.map((mpIdx) => cur.pose_landmarks![mpIdx]);
+    }
+    return undefined;
+  };
+
+  const hasEdge3D = Boolean(!isDemoMode && resolveEdgeKeypoints(payload));
 
   useEffect(() => {
     if (!hasEdge3D) return;
@@ -80,7 +92,8 @@ export function SkeletonCanvas({
     const renderFrame = () => {
       const canvas = edgeCanvasRef.current;
       const cur = latestPayloadRef.current;
-      if (canvas && cur.keypoints_3d && cur.keypoints_3d.length >= 17) {
+      const keypointsToDraw = resolveEdgeKeypoints(cur);
+      if (canvas && keypointsToDraw && keypointsToDraw.length >= 17) {
         const w = canvas.clientWidth || 800;
         const h = canvas.clientHeight || 540;
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -91,9 +104,9 @@ export function SkeletonCanvas({
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-          drawWholeBody133OnCanvas(ctx, w, h, cur.keypoints_3d, {
+          drawWholeBody133OnCanvas(ctx, w, h, keypointsToDraw, {
             highlightColor: cur.ui_directives?.highlight_color ?? 'GREEN',
-            mirrorX: false,
+            mirrorX: Boolean(cur.frame_base64),
             detectedBoxes: cur.identity_guard?.detected_boxes,
             guardStatus: cur.identity_guard?.status,
           });
@@ -237,6 +250,7 @@ export function SkeletonCanvas({
           src={`data:image/jpeg;base64,${payload.frame_base64}`}
           alt="Live Rehabilitation Vision Feed"
           className="absolute inset-0 h-full w-full object-cover"
+          style={{ transform: 'scaleX(-1)' }}
         />
       ) : hasLiveCamera && liveVideoOverlay ? (
         <div className="absolute inset-0 z-0 h-full w-full overflow-hidden bg-gradient-to-br from-sky-100 via-emerald-50 to-white">

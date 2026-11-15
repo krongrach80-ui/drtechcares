@@ -85,6 +85,17 @@ class StandingCalibrator:
         return float(abs(math.degrees(math.atan2(abs(float(delta[1])), horiz))))
 
     @staticmethod
+    def _has_visible_hips(pts: np.ndarray, scores: np.ndarray, min_visibility: float) -> bool:
+        """Return True when both hips are clearly visible and anatomically below shoulders."""
+        if scores.size < 17:
+            return False
+        if float(scores[11]) < min_visibility or float(scores[12]) < min_visibility:
+            return False
+        mid_hip_y = 0.5 * float(pts[11, 1] + pts[12, 1])
+        mid_sh_y = 0.5 * float(pts[5, 1] + pts[6, 1])
+        return mid_hip_y <= 0.96 and (mid_hip_y - mid_sh_y) >= 0.08
+
+    @staticmethod
     def _spine_tilt_from_vertical(pts: np.ndarray) -> float:
         mid_shoulder = 0.5 * (pts[5] + pts[6])
         mid_hip = 0.5 * (pts[11] + pts[12])
@@ -134,6 +145,18 @@ class StandingCalibrator:
         ):
             return (False, "OUT_OF_FRAME", self.estimated_distance_m, min_score, [])
 
+        hips_req = 11 in req or 12 in req
+        hips_visible = self._has_visible_hips(pts, scores, self.min_visibility)
+
+        if not hips_req and not hips_visible:
+            shoulder_width = max(self._dist3(pts[5], pts[6]), 1e-4)
+            est_dist_m = round(float(np.clip(2.0 * (0.19 / shoulder_width), 0.6, 5.0)), 2)
+            if shoulder_width < 0.08:
+                return (False, "TOO_FAR", est_dist_m, min_score, [])
+            if shoulder_width > 0.72:
+                return (False, "TOO_CLOSE", est_dist_m, min_score, [])
+            return (True, "OK", est_dist_m, min_score, [])
+
         mid_shoulder = 0.5 * (pts[5] + pts[6])
         mid_hip = 0.5 * (pts[11] + pts[12])
         torso_height = max(self._dist3(mid_shoulder, mid_hip), 1e-4)
@@ -166,26 +189,31 @@ class StandingCalibrator:
         shoulder_width = max(self._dist3(med[5], med[6]), 0.05)
         mid_shoulder = 0.5 * (med[5] + med[6])
         mid_hip = 0.5 * (med[11] + med[12])
+        has_anatomical_torso = float(mid_hip[1] - mid_shoulder[1]) >= 0.08 and float(mid_hip[1]) <= 0.96
         torso_vec = mid_shoulder - mid_hip
-        torso_height = max(float(np.linalg.norm(torso_vec)), 0.05)
+        raw_torso_height = float(np.linalg.norm(torso_vec))
 
-        if torso_height > 1e-5:
+        if has_anatomical_torso and raw_torso_height > 1e-5:
+            torso_height = max(raw_torso_height, 0.05)
             unit = torso_vec / torso_height
+            cm_from_torso = 52.0 / torso_height
+            cm_from_shoulder = 38.0 / shoulder_width
+            cm_per_unit = float(np.clip(0.7 * cm_from_torso + 0.3 * cm_from_shoulder, 40.0, 450.0))
+            self.estimated_distance_m = round(float(np.clip(2.0 * (0.265 / max(torso_height, 1e-4)), 0.6, 5.0)), 2)
         else:
+            torso_height = max(shoulder_width * 1.38, 0.05)
             unit = np.array([0.0, -1.0, 0.0], dtype=np.float64)
-
-        # Blend torso height (52 cm avg adult) and biacromial shoulder width (38 cm avg)
-        cm_from_torso = 52.0 / torso_height
-        cm_from_shoulder = 38.0 / shoulder_width
-        cm_per_unit = float(np.clip(0.7 * cm_from_torso + 0.3 * cm_from_shoulder, 40.0, 450.0))
+            cm_per_unit = float(np.clip(38.0 / shoulder_width, 40.0, 450.0))
+            self.estimated_distance_m = round(float(np.clip(2.0 * (0.19 / shoulder_width), 0.6, 5.0)), 2)
 
         self.baseline_left_shoulder_y = float(med[5, 1])
         self.baseline_right_shoulder_y = float(med[6, 1])
         self.baseline_left_heel_y = float(med[19, 1])
         self.baseline_right_heel_y = float(med[22, 1])
         self.baseline_shoulder_tilt_deg = self._coronal_tilt_deg(med_world[5], med_world[6])
-        self.baseline_pelvic_tilt_deg = self._coronal_tilt_deg(med_world[11], med_world[12])
-        self.estimated_distance_m = round(float(np.clip(2.0 * (0.265 / max(torso_height, 1e-4)), 0.6, 5.0)), 2)
+        self.baseline_pelvic_tilt_deg = (
+            self._coronal_tilt_deg(med_world[11], med_world[12]) if has_anatomical_torso else 0.0
+        )
 
         avg_upper = 0.5 * (l_upper + r_upper)
         avg_fore = 0.5 * (l_fore + r_fore)
@@ -279,11 +307,16 @@ class StandingCalibrator:
                 bone_lengths=None,
             )
 
-        tilt_deg = self._spine_tilt_from_vertical(pts)
         posture_ref = world_pts if world_pts is not None else pts
         sh_tilt = self._coronal_tilt_deg(posture_ref[5], posture_ref[6])
-        pelvic_tilt = self._coronal_tilt_deg(posture_ref[11], posture_ref[12])
-        worst_tilt = max(tilt_deg, sh_tilt, pelvic_tilt)
+        req_check = tuple(required_indices) if required_indices is not None else (5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)
+        hips_visible = self._has_visible_hips(pts, scores, self.min_visibility)
+        if (11 in req_check or 12 in req_check) or hips_visible:
+            tilt_deg = self._spine_tilt_from_vertical(pts)
+            pelvic_tilt = self._coronal_tilt_deg(posture_ref[11], posture_ref[12])
+            worst_tilt = max(tilt_deg, sh_tilt, pelvic_tilt)
+        else:
+            worst_tilt = sh_tilt
 
         if worst_tilt > self.stability_max_tilt_deg:
             self._start_ts = None

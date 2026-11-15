@@ -43,6 +43,7 @@ class ThreadedCameraCapture:
         self._mode: str = "uninitialized"
         self._width: int = settings.CAMERA_WIDTH
         self._height: int = settings.CAMERA_HEIGHT
+        self._last_reopen_attempt: float = 0.0
 
     @property
     def mode(self) -> str:
@@ -199,6 +200,15 @@ class ThreadedCameraCapture:
             loop_start = time.perf_counter()
             frame: Optional[np.ndarray] = None
 
+            if (
+                self._cap is None
+                and cv2 is not None
+                and not self.settings.MOCK_VIDEO_PATH
+                and (loop_start - self._last_reopen_attempt) >= 2.5
+            ):
+                self._last_reopen_attempt = loop_start
+                self._open_source()
+
             if self._cap is not None and cv2 is not None:
                 ok, grabbed = self._cap.read()  # type: ignore[attr-defined]
                 if not ok and self._mode.startswith("mock_video"):
@@ -234,7 +244,7 @@ class ThreadedCameraCapture:
                 return (self._frame_id, None)
             return (self._frame_id, self._frame.copy())
 
-    def encode_jpeg_base64(self, frame: np.ndarray, max_width: int = 640, quality: int = 70) -> Optional[str]:
+    def encode_jpeg_bytes(self, frame: np.ndarray, max_width: int = 640, quality: int = 70) -> Optional[bytes]:
         if cv2 is None or frame is None:
             return None
         try:
@@ -246,7 +256,13 @@ class ThreadedCameraCapture:
             ok, buf = cv2.imencode(".jpg", resized, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
             if not ok:
                 return None
-            return base64.b64encode(buf.tobytes()).decode("ascii")
+            return buf.tobytes()
         except Exception:
             return None
+
+    def encode_jpeg_base64(self, frame: np.ndarray, max_width: int = 640, quality: int = 70) -> Optional[str]:
+        jpeg_bytes = self.encode_jpeg_bytes(frame, max_width=max_width, quality=quality)
+        if not jpeg_bytes:
+            return None
+        return base64.b64encode(jpeg_bytes).decode("ascii")
 

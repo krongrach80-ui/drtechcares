@@ -11,6 +11,7 @@ import {
   getPrescribedLimbPromptTh,
   mapTodayExercisesToPrescriptions,
   resolveExpectedPlaneForExercise,
+  resolveKioskWsCandidates,
   synthesizeDemoPayload,
 } from '../hooks/useKioskSocket';
 import {
@@ -1208,6 +1209,43 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(shrugRes.postureCompensated).toBe(true);
     expect(shrugRes.shoulderTiltDeg).toBeGreaterThan(13.5);
     expect(shrugRes.postureBannerTh).toContain('ห้ามยกไหล่หรือเอียงไหล่ช่วย');
+  });
+
+  it('rescues close seated forward shoulder flexion when worldLandmarks compress depth (~34 deg) without false WRONG_PLANE', () => {
+    const seatedPose2d = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.64, y: 0.78, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.36, y: 0.78, z: 0, visibility: 0.98 },
+      [POSE_INDEX.LEFT_HIP]: { x: 0.60, y: 1.15, z: 0, visibility: 0.05 },
+      [POSE_INDEX.RIGHT_HIP]: { x: 0.40, y: 1.15, z: 0, visibility: 0.05 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.31, y: 0.78, z: -0.18, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.24, y: 0.77, z: -0.35, visibility: 0.98 },
+    });
+    const compressedWorld3d = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0, y: 0, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: -0.05, y: 0.21, z: -0.13, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: -0.10, y: 0.42, z: -0.26, visibility: 0.98 },
+    });
+
+    const result = measureLiveJointAngleAndTilt(
+      seatedPose2d,
+      'right_shoulder',
+      'flexion',
+      compressedWorld3d,
+    );
+    expect(result.wrongSideRaised).toBe(false);
+    expect(result.wrongPlaneRaised).toBe(false);
+    expect(result.wrongPlaneBannerTh).toBeNull();
+    expect(result.postureCompensated).toBe(false);
+    expect(result.romDeg).not.toBeNull();
+    expect(result.romDeg!).toBeGreaterThanOrEqual(80);
+    expect(result.romDeg!).toBeLessThanOrEqual(98);
+  });
+
+  it('builds deduplicated Edge Vision WebSocket endpoint candidates with loopback fallback', () => {
+    const candidates = resolveKioskWsCandidates('ws://localhost:8000/ws/kiosk');
+    expect(candidates).toContain('ws://localhost:8000/ws/kiosk');
+    expect(candidates).toContain('ws://127.0.0.1:8000/ws/kiosk');
+    expect(new Set(candidates).size).toBe(candidates.length);
   });
 });
 

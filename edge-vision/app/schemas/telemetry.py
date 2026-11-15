@@ -236,6 +236,7 @@ class EdgeKioskTelemetryPayload(BaseModel):
     hand_status: HandRaiseTelemetry
     face_enrollment: Optional[FaceEnrollmentStateSchema] = None
     keypoints_3d: List[Keypoint3D] = Field(default_factory=list)
+    pose_landmarks: List[Keypoint3D] = Field(default_factory=list)
     pose_world_landmarks: List[Keypoint3D] = Field(default_factory=list)
     frame_base64: Optional[str] = None
 

@@ -444,13 +444,13 @@ export function measureLiveJointAngleAndTilt(
             const stronglyForeshortenedFront =
               expectedPlane !== 'abduction' &&
               angle3D !== null &&
-              angle3D >= 68 &&
-              dy <= shoulderSpanX * 0.35 &&
-              Math.abs(dx) <= shoulderSpanX * 0.65 &&
-              len2D <= refLen * 0.54;
-            if (stronglyForeshortenedFront && worldAngleDeg < angle3D - 22 && xyz2DSphere) {
+              angle3D >= 65 &&
+              dy <= shoulderSpanX * 0.45 &&
+              Math.abs(dx) <= shoulderSpanX * 0.85 &&
+              len2D <= refLen * 0.68;
+            if (stronglyForeshortenedFront && worldAngleDeg < angle3D - 18 && xyz2DSphere) {
               return {
-                angleDeg: Number((0.2 * worldAngleDeg + 0.8 * angle3D).toFixed(1)),
+                angleDeg: Number((0.15 * worldAngleDeg + 0.85 * angle3D).toFixed(1)),
                 xyzVector: xyz2DSphere,
               };
             }
@@ -672,14 +672,30 @@ export function measureLiveJointAngleAndTilt(
       const distalPt = wrist && (wrist.visibility ?? 0) >= UPPER_MIN_VIS ? wrist : elbow;
       const dxAbs = sh && distalPt ? Math.abs(distalPt.x - sh.x) : 0;
       const dyAbs = sh && distalPt ? Math.abs(distalPt.y - sh.y) : 0;
-      const horizRatioFlex = dxAbs / Math.max(0.04, Math.hypot(dxAbs, dyAbs));
+      const sensorDzAbs = sh && distalPt ? Math.abs((distalPt.z ?? 0) - (sh.z ?? 0)) : 0;
+      const distalIdx = distalPt === wrist ? pWrIdx : pElIdx;
+      const wShFlex = worldLandmarks?.[pShIdx];
+      const wDistalFlex = worldLandmarks?.[distalIdx];
+      const wDxFlex = wShFlex && wDistalFlex ? Math.abs(wDistalFlex.x - wShFlex.x) : 0;
+      const wDzFlex =
+        wShFlex && wDistalFlex ? Math.abs((wDistalFlex.z ?? 0) - (wShFlex.z ?? 0)) : 0;
+      const worldForwardDominant =
+        Boolean(
+          wShFlex &&
+            wDistalFlex &&
+            Math.hypot(wDxFlex, wDistalFlex.y - wShFlex.y, wDzFlex) >= 0.08,
+        ) && wDzFlex > wDxFlex * 1.15;
+      const forwardDepthProxy = Math.max(dyAbs, sensorDzAbs * 0.65);
+      const horizRatioFlex = dxAbs / Math.max(0.04, Math.hypot(dxAbs, forwardDepthProxy));
       const horizRatioAbd = dxAbs / Math.max(shoulderSpanX, Math.hypot(dxAbs, dyAbs));
 
       if (
         expectedPlane === 'flexion' &&
         primaryDeg >= 42 &&
-        (wristOutwardLatRatio >= 0.8 || elbowOutwardLatRatio >= 0.68) &&
-        dxAbs > dyAbs * 1.15 &&
+        !worldForwardDominant &&
+        ((wristOutwardLatRatio >= 0.85 && elbowOutwardLatRatio >= 0.45) ||
+          elbowOutwardLatRatio >= 0.7) &&
+        dxAbs > forwardDepthProxy * 1.15 &&
         horizRatioFlex >= 0.62
       ) {
         wrongPlaneRaised = true;
@@ -1560,6 +1576,10 @@ export function SmartRehabKioskUI({
     payload,
     connectionStatus,
     isDemoMode,
+    isEdgeLiveCameraActive,
+    isEdgeSyntheticMock,
+    activeWsUrl,
+    isHttpsRemoteOrigin,
     toggleDemoMode,
     exerciseOptions,
     selectedExercise,
@@ -1603,6 +1623,14 @@ export function SmartRehabKioskUI({
   const [formChecklistExpanded, setFormChecklistExpanded] = useState<boolean>(true);
   const [completedIds, setCompletedIds] = useState<string[]>([]);
   const [livePoseActive, setLivePoseActive] = useState<boolean>(true);
+
+  const handleToggleDemoMode = () => {
+    if (isDemoMode) {
+      setAutoCycleDemo(false);
+      setLivePoseActive(true);
+    }
+    toggleDemoMode();
+  };
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -1764,9 +1792,9 @@ export function SmartRehabKioskUI({
     setSelectedExercise,
   ]);
 
-  // Live MediaPipe PoseLandmarker camera tracking (when enabled & not auto-cycling demo)
+  // Live MediaPipe PoseLandmarker camera tracking (skip when Python Edge Vision owns the physical webcam)
   useEffect(() => {
-    if (!livePoseActive || autoCycleDemo || isEmergency) {
+    if (!livePoseActive || autoCycleDemo || isEmergency || isEdgeLiveCameraActive) {
       setCameraReady(false);
       return;
     }
@@ -2475,6 +2503,7 @@ export function SmartRehabKioskUI({
     livePoseActive,
     autoCycleDemo,
     isEmergency,
+    isEdgeLiveCameraActive,
     setDemoHoldRemainingSec,
     setDemoPresetState,
     setDemoRomDeg,
@@ -2611,32 +2640,57 @@ export function SmartRehabKioskUI({
 
             <div
               className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-bold ${
-                !isDemoMode && connectionStatus === 'connected'
+                isEdgeLiveCameraActive
                   ? 'border-emerald-200 bg-emerald-50 text-[#0D9488]'
-                  : 'border-sky-200 bg-sky-50 text-[#0284C7]'
+                  : !isDemoMode && livePoseActive
+                    ? 'border-amber-200 bg-amber-50 text-amber-800'
+                    : 'border-sky-200 bg-sky-50 text-[#0284C7]'
               }`}
             >
               <span className="relative flex h-2.5 w-2.5">
                 <span
                   className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 ${
-                    !isDemoMode && connectionStatus === 'connected' ? 'bg-[#10B981]' : 'bg-[#38BDF8]'
+                    isEdgeLiveCameraActive
+                      ? 'bg-[#10B981]'
+                      : !isDemoMode && livePoseActive
+                        ? 'bg-amber-400'
+                        : 'bg-[#38BDF8]'
                   }`}
                 />
                 <span
                   className={`relative inline-flex h-2.5 w-2.5 rounded-full ${
-                    !isDemoMode && connectionStatus === 'connected' ? 'bg-[#10B981]' : 'bg-[#0284C7]'
+                    isEdgeLiveCameraActive
+                      ? 'bg-[#10B981]'
+                      : !isDemoMode && livePoseActive
+                        ? 'bg-amber-500'
+                        : 'bg-[#0284C7]'
                   }`}
                 />
               </span>
-              {!isDemoMode && connectionStatus === 'connected' ? (
+              {isEdgeLiveCameraActive ? (
                 <>
                   <Wifi className="h-3.5 w-3.5" />
                   <span>Connected to Edge Vision</span>
                 </>
+              ) : !isDemoMode ? (
+                <>
+                  <WifiOff className="h-3.5 w-3.5" />
+                  <span>
+                    {isEdgeSyntheticMock
+                      ? 'Edge Mock • Browser AI Active'
+                      : livePoseActive
+                        ? 'Browser AI Active (Edge Offline)'
+                        : 'Edge Vision Offline'}
+                  </span>
+                </>
               ) : (
                 <>
                   <WifiOff className="h-3.5 w-3.5" />
-                  <span>{connectionStatus === 'connected' ? 'Demo Simulator (Live Paused)' : 'Demo Simulator Mode'}</span>
+                  <span>
+                    {connectionStatus === 'connected' && !isEdgeSyntheticMock
+                      ? 'Demo Simulator (Live Paused)'
+                      : 'Demo Simulator Mode'}
+                  </span>
                 </>
               )}
             </div>
@@ -2681,7 +2735,7 @@ export function SmartRehabKioskUI({
 
             <button
               type="button"
-              onClick={() => toggleDemoMode()}
+              onClick={handleToggleDemoMode}
               className={`inline-flex items-center gap-2 rounded-2xl border px-3.5 py-2 text-xs font-bold transition-all sm:text-sm ${
                 isDemoMode
                   ? 'border-[#38BDF8] bg-[#E0F2FE] text-[#0F4C81]'
@@ -2689,7 +2743,13 @@ export function SmartRehabKioskUI({
               }`}
             >
               <SlidersHorizontal className="h-4 w-4" />
-              <span>{isDemoMode ? 'Demo Simulator: ON' : 'Live Edge: ON'}</span>
+              <span>
+                {isDemoMode
+                  ? 'Demo Simulator: ON'
+                  : isEdgeLiveCameraActive
+                    ? 'Live Edge: ON'
+                    : 'Demo Simulator: OFF'}
+              </span>
             </button>
 
             {onOpenLegacyKiosk && (
@@ -2722,6 +2782,56 @@ export function SmartRehabKioskUI({
             </button>
           </div>
         </header>
+
+        {/* Clear Edge Vision Connection & Browser MediaPipe AI Alert Banner */}
+        {!isDemoMode && !isEdgeLiveCameraActive && (
+          <div
+            role="status"
+            className="glass-card flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-300/90 bg-amber-50/95 px-4 py-2.5 text-amber-950 shadow-sm"
+          >
+            <div className="flex min-w-0 flex-1 items-start gap-2.5 sm:items-center">
+              <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-700 sm:mt-0">
+                <AlertTriangle className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 text-xs">
+                <p className="font-extrabold text-amber-950">
+                  {isEdgeSyntheticMock
+                    ? `Edge Vision (${activeWsUrl}) ยังไม่มีภาพกล้องจริง (Synthetic Mock) — สลับใช้ Browser MediaPipe AI ชั่วคราว`
+                    : isHttpsRemoteOrigin
+                      ? `ยังไม่ได้เชื่อมต่อ Edge Vision (${activeWsUrl}) จากหน้า HTTPS — ระบบกำลังตรวจจับผ่าน Browser MediaPipe AI`
+                      : `ยังไม่พบ run_kiosk_vision (${activeWsUrl}) — ระบบกำลังตรวจจับโครงกระดูกจริงผ่าน Browser MediaPipe AI`}
+                </p>
+                <p className="mt-0.5 font-medium text-amber-800">
+                  {
+                    'หากต้องการใช้โหมดเซิร์ฟเวอร์ Heavy 3D ให้รัน edge-vision\\run_kiosk_vision.bat (พอร์ต 8000) โดยไม่ต้องแย่งกล้องเว็บแคม'
+                  }
+                </p>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {!livePoseActive && (
+                <button
+                  type="button"
+                  onClick={() => setLivePoseActive(true)}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-amber-600 px-3 py-1.5 text-xs font-extrabold text-white shadow-sm hover:bg-amber-500"
+                >
+                  <Camera className="h-3.5 w-3.5" />
+                  <span>เปิดกล้อง AI ทันที</span>
+                </button>
+              )}
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-white/90 px-3 py-1 text-[11px] font-bold text-[#0D9488]">
+                <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                {!livePoseActive
+                  ? 'Browser AI: ปิดอยู่'
+                  : cameraError
+                    ? cameraError
+                    : cameraReady
+                      ? 'Browser AI: กำลังตรวจจับ'
+                      : 'Browser AI: กำลังเปิดกล้อง...'}
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* Completion Banner when all prescribed exercises are finished */}
         {allExercisesCompleted && onAllExercisesCompleted && (
@@ -2760,9 +2870,9 @@ export function SmartRehabKioskUI({
               isDemoMode={isDemoMode}
               distanceM={demoDistanceM}
               trunkTiltDeg={demoTrunkTiltDeg}
-              hasLiveCamera={livePoseActive && !cameraError}
+              hasLiveCamera={!isEdgeLiveCameraActive && livePoseActive && !cameraError}
               liveVideoOverlay={
-                livePoseActive && !cameraError ? (
+                !isEdgeLiveCameraActive && livePoseActive && !cameraError ? (
                   <div className="relative h-full w-full bg-[#0B192C]">
                     <video
                       ref={videoRef}

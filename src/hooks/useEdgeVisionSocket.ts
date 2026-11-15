@@ -140,6 +140,7 @@ export interface EdgeKioskTelemetryPayload {
   face_enrollment?: FaceEnrollmentState | null;
   identity_guard?: IdentityGuardState;
   keypoints_3d?: Keypoint3DPoint[];
+  pose_landmarks?: Keypoint3DPoint[];
   frame_base64: string | null;
 }
 
@@ -172,15 +173,29 @@ export interface EdgeVerifyResponse {
   candidate_count: number;
 }
 
+function readStoredEndpoint(storageKey: string): string | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const val = window.localStorage.getItem(storageKey)?.trim();
+    return val ? val : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getEdgeVisionHttpBase(): string {
   const envHttp = (import.meta.env.VITE_EDGE_VISION_HTTP as string | undefined)?.trim();
   if (envHttp) return envHttp.replace(/\/$/, '');
+  const storedHttp = readStoredEndpoint('drtechcares_edge_http_url');
+  if (storedHttp) return storedHttp.replace(/\/$/, '');
   return 'http://localhost:8000';
 }
 
 export function getEdgeVisionWsUrl(): string {
   const envWs = (import.meta.env.VITE_EDGE_VISION_WS as string | undefined)?.trim();
   if (envWs) return envWs;
+  const storedWs = readStoredEndpoint('drtechcares_edge_ws_url');
+  if (storedWs) return storedWs;
   return 'ws://localhost:8000/ws/kiosk';
 }
 

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Dict, List, Literal, Optional, Tuple
+
+import numpy as np
 
 
 MetricKind = Literal[
@@ -90,7 +93,11 @@ class ClinicalExerciseRule:
 
     def required_landmark_indices(self) -> Tuple[int, ...]:
         """Return 133-topology body indices needed for reliable ROM and compensation tracking."""
-        base = [5, 6, 11, 12]
+        # Upper-body exercises only require shoulders + active arm/head so seated users (hips out of frame) track smoothly.
+        if self.metric_kind in ("shoulder_elevation", "elbow_flexion", "neck_lateral_tilt"):
+            base = [5, 6]
+        else:
+            base = [5, 6, 11, 12]
         if self.metric_kind in ("shoulder_elevation", "elbow_flexion"):
             if self.side in ("left", "both"):
                 base.extend([7, 9])
@@ -104,6 +111,96 @@ class ClinicalExerciseRule:
         elif self.metric_kind == "neck_lateral_tilt":
             base.append(0)
         return tuple(dict.fromkeys(base))
+
+
+def are_hips_reliable(
+    pts: np.ndarray,
+    scores: Optional[np.ndarray] = None,
+    min_visibility: float = 0.70,
+    pts_2d: Optional[np.ndarray] = None,
+) -> bool:
+    """Return True only when both left and right hips are clearly visible and anatomically below shoulders."""
+    arr = np.asarray(pts, dtype=np.float64)
+    is_mp33 = arr.shape[0] == 33
+    l_sh_idx, r_sh_idx = (11, 12) if is_mp33 else (5, 6)
+    l_hp_idx, r_hp_idx = (23, 24) if is_mp33 else (11, 12)
+    if arr.shape[0] <= max(l_hp_idx, r_hp_idx):
+        return False
+
+    if scores is not None and len(scores) > max(l_hp_idx, r_hp_idx):
+        sc = np.asarray(scores, dtype=np.float64).reshape(-1)
+        if float(sc[l_hp_idx]) < float(min_visibility) or float(sc[r_hp_idx]) < float(min_visibility):
+            return False
+
+    ref_2d = np.asarray(pts_2d, dtype=np.float64) if pts_2d is not None else arr
+    if pts_2d is not None and ref_2d.shape[0] > max(l_hp_idx, r_hp_idx):
+        mid_hip_y = 0.5 * float(ref_2d[l_hp_idx, 1] + ref_2d[r_hp_idx, 1])
+        mid_sh_y = 0.5 * float(ref_2d[l_sh_idx, 1] + ref_2d[r_sh_idx, 1])
+        if mid_hip_y > 0.96 or (mid_hip_y - mid_sh_y) < 0.08:
+            return False
+
+    mid_sh_3d = 0.5 * (arr[l_sh_idx] + arr[r_sh_idx])
+    mid_hp_3d = 0.5 * (arr[l_hp_idx] + arr[r_hp_idx])
+    return float(mid_hp_3d[1] - mid_sh_3d[1]) >= 0.06
+
+
+def compute_shoulder_elevation_with_vertical_fallback(
+    pts_3d: np.ndarray,
+    side: str = "right",
+    scores: Optional[np.ndarray] = None,
+    min_visibility: float = 0.70,
+    pts_2d: Optional[np.ndarray] = None,
+) -> float:
+    """
+    Compute 3D shoulder flexion/abduction angle against torso-down vector when hips are visible,
+    or seamlessly fall back to gravity Vertical Reference Vector [0, 1, 0] for seated desk users.
+    Supports both (133, 3) Wholebody and (33, 3) MediaPipe arrays.
+    """
+    arr = np.asarray(pts_3d, dtype=np.float64)
+    is_mp33 = arr.shape[0] == 33
+    use_left = side == "left"
+
+    sh_idx = (11 if use_left else 12) if is_mp33 else (5 if use_left else 6)
+    el_idx = (13 if use_left else 14) if is_mp33 else (7 if use_left else 8)
+    wr_idx = (15 if use_left else 16) if is_mp33 else (9 if use_left else 10)
+    l_sh_idx, r_sh_idx = (11, 12) if is_mp33 else (5, 6)
+    l_hp_idx, r_hp_idx = (23, 24) if is_mp33 else (11, 12)
+
+    vertical_down = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    if are_hips_reliable(arr, scores=scores, min_visibility=min_visibility, pts_2d=pts_2d):
+        mid_shoulder = 0.5 * (arr[l_sh_idx] + arr[r_sh_idx])
+        mid_hip = 0.5 * (arr[l_hp_idx] + arr[r_hp_idx])
+        trunk_vec = mid_hip - mid_shoulder
+        trunk_norm = float(np.linalg.norm(trunk_vec))
+        ref_down = trunk_vec / trunk_norm if trunk_norm > 1e-6 else vertical_down
+    else:
+        # Seated close to webcam without hips visible: anchor reference axis along gravity [0, 1, 0].
+        ref_down = vertical_down
+
+    sh = arr[sh_idx]
+    el = arr[el_idx]
+    wr = arr[wr_idx]
+    upper_arm = el - sh
+    full_arm = wr - sh
+    u_norm = float(np.linalg.norm(upper_arm))
+    f_norm = float(np.linalg.norm(full_arm))
+
+    def _deg(vec: np.ndarray, norm_val: float) -> Optional[float]:
+        if norm_val < 1e-5:
+            return None
+        cos_t = float(np.clip(np.dot(vec / norm_val, ref_down), -1.0, 1.0))
+        return float(math.degrees(math.acos(cos_t)))
+
+    deg_upper = _deg(upper_arm, u_norm)
+    deg_full = _deg(full_arm, f_norm)
+
+    if deg_upper is not None and u_norm >= 0.04:
+        return round(deg_upper, 2)
+    if deg_full is not None:
+        return round(deg_full, 2)
+    if deg_upper is not None:
+        return round(deg_upper, 2)
+    return 0.0
 
 
 ALL_26_EXERCISES: List[ClinicalExerciseRule] = [

@@ -46,6 +46,7 @@ class KioskRuntimeCoordinator:
         self._effective_fps: float = 0.0
         self._last_face_check_at: float = 0.0
         self._last_telemetry: Optional[EdgeKioskTelemetryPayload] = None
+        self._last_frame_b64: Optional[str] = None
         self._mock_pose_override: Optional[str] = None
         self._latest_face_enroll_state: Optional[FaceEnrollmentStateSchema] = None
 
@@ -141,16 +142,22 @@ class KioskRuntimeCoordinator:
             identity_guard = IdentityGuardSchema(person_count=skeleton_count)
 
         keypoints_3d = self.pose_estimator.to_keypoint_schemas(xyz, scores)
+        pose_landmarks = self.pose_estimator.to_world_landmark_schemas(
+            pose_frame.pose_landmarks_2d,
+            pose_frame.visibilities_33,
+        )
         pose_world_landmarks = self.pose_estimator.to_world_landmark_schemas(
             pose_frame.pose_world_landmarks_3d,
             pose_frame.visibilities_33,
         )
         hand_status = self.pose_estimator.extract_hand_raise_telemetry(xyz, scores)
-        frame_b64 = (
-            self.camera.encode_jpeg_base64(frame, max_width=640, quality=68)
-            if include_frame and frame is not None
-            else None
-        )
+        frame_b64: Optional[str] = None
+        if include_frame and frame is not None:
+            frame_b64 = self.camera.encode_jpeg_base64(frame, max_width=640, quality=68)
+            if frame_b64:
+                self._last_frame_b64 = frame_b64
+        elif self._stream_video_clients:
+            frame_b64 = self._last_frame_b64
 
         payload = self.fsm.step(
             pts=xyz,
@@ -165,6 +172,7 @@ class KioskRuntimeCoordinator:
             identity_guard=identity_guard,
             world_pts=world_xyz,
             pose_world_landmarks=pose_world_landmarks,
+            pose_landmarks=pose_landmarks,
         )
         self._last_telemetry = payload
         return payload
@@ -178,7 +186,7 @@ class KioskRuntimeCoordinator:
         while self._running:
             t0 = time.perf_counter()
             if self._clients:
-                need_video = len(self._stream_video_clients) > 0 and (tick_count % 3 == 0)
+                need_video = len(self._stream_video_clients) > 0 and (tick_count % 2 == 0)
                 payload = await asyncio.to_thread(self.step_once, need_video)
                 base_dict = payload.model_dump()
                 dead: Set[WebSocket] = set()

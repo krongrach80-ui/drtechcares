@@ -10,7 +10,11 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 import numpy as np
 
 from app.biomechanics.calibrator import StandingCalibrator
-from app.biomechanics.exercises import ClinicalExerciseRule
+from app.biomechanics.exercises import (
+    ClinicalExerciseRule,
+    are_hips_reliable,
+    compute_shoulder_elevation_with_vertical_fallback,
+)
 from app.config import EdgeVisionSettings
 from app.schemas.telemetry import BoneLengths3D, TelemetryAnalysisSchema
 from app.vision.pose_3d import map_mediapipe33_to_wholebody133
@@ -150,10 +154,11 @@ class Biomechanics3DSolver:
         rule: ClinicalExerciseRule,
         spine_vertical_unit: np.ndarray,
         baseline_heel_y: float,
+        scores: Optional[np.ndarray] = None,
+        pts_2d: Optional[np.ndarray] = None,
     ) -> float:
         mid_shoulder = 0.5 * (pts[5] + pts[6])
         mid_hip = 0.5 * (pts[11] + pts[12])
-        trunk_down = mid_hip - mid_shoulder
 
         side = rule.side if rule.side in ("left", "right") else "right"
         sh_idx = 5 if side == "left" else 6
@@ -167,8 +172,13 @@ class Biomechanics3DSolver:
 
         kind = rule.metric_kind
         if kind == "shoulder_elevation":
-            upper_arm = pts[el_idx] - pts[sh_idx]
-            return angle_between_vectors_3d(upper_arm, trunk_down)
+            return compute_shoulder_elevation_with_vertical_fallback(
+                pts_3d=pts,
+                side=side,
+                scores=scores,
+                min_visibility=float(self.settings.MIN_LANDMARK_VISIBILITY),
+                pts_2d=pts_2d,
+            )
 
         if kind == "elbow_flexion":
             return joint_angle_3d(pts[sh_idx], pts[el_idx], pts[wr_idx])
@@ -240,6 +250,16 @@ class Biomechanics3DSolver:
         """
         pts_wb = _as_wholebody_133(pts)
         world_wb = _as_wholebody_133(world_pts) if world_pts is not None else pts_wb
+        scores_wb: Optional[np.ndarray] = None
+        if scores is not None and len(scores) > 0:
+            sc_raw = np.asarray(scores, dtype=np.float64).reshape(-1)
+            if sc_raw.shape[0] == 33:
+                _, scores_wb = map_mediapipe33_to_wholebody133(
+                    np.asarray(pts, dtype=np.float64),
+                    sc_raw,
+                )
+            else:
+                scores_wb = sc_raw
 
         bones: Optional[BoneLengths3D] = calibrator.bone_lengths
         if bones is not None:
@@ -259,21 +279,28 @@ class Biomechanics3DSolver:
 
         # Visibility gating across active exercise landmarks
         req_indices = rule.required_landmark_indices()
-        if scores is not None and len(scores) > 0:
-            sc_arr = np.asarray(scores, dtype=np.float64).reshape(-1)
-            valid_req = [i for i in req_indices if i < sc_arr.shape[0]]
-            min_vis = float(np.min(sc_arr[valid_req])) if valid_req else float(np.min(sc_arr))
+        if scores_wb is not None and len(scores_wb) > 0:
+            valid_req = [i for i in req_indices if i < scores_wb.shape[0]]
+            min_vis = float(np.min(scores_wb[valid_req])) if valid_req else float(np.min(scores_wb))
         else:
             min_vis = 1.0
         visibility_ok = min_vis >= float(self.settings.MIN_LANDMARK_VISIBILITY)
+        hips_visible = are_hips_reliable(
+            world_wb,
+            scores=scores_wb,
+            min_visibility=float(self.settings.MIN_LANDMARK_VISIBILITY),
+            pts_2d=pts_wb,
+        )
 
-        # True 3D ROM calculation using world landmarks (immune to perspective yaw distortion)
+        # True 3D ROM calculation using world landmarks (with vertical fallback when hips out of frame)
         world_heel_y = float(0.5 * (world_wb[19, 1] + world_wb[22, 1]))
         rom_deg = self._compute_primary_rom(
             world_wb,
             rule,
             spine_unit,
             world_heel_y if world_pts is not None else 0.5 * (base_l_heel_y + base_r_heel_y),
+            scores=scores_wb,
+            pts_2d=pts_wb,
         )
         target_rom = float(target_rom_override) if target_rom_override is not None else rule.min_angle_deg
         if rule.is_descending_target:
@@ -291,20 +318,23 @@ class Biomechanics3DSolver:
             dt = max(timestamp_sec - self._prev_ts, 1e-3)
             if self._prev_rom_deg is not None:
                 ang_vel = abs(rom_deg - self._prev_rom_deg) / dt
-            if self._prev_hip_y is not None:
+            if hips_visible and self._prev_hip_y is not None:
                 hip_drop_vel = (hip_y - self._prev_hip_y) / dt
 
         self._prev_rom_deg = rom_deg
-        self._prev_hip_y = hip_y
+        self._prev_hip_y = hip_y if hips_visible else None
         self._prev_ts = float(timestamp_sec)
 
-        # 1. Torso Plane & TRUNK_LEAN > 10°
-        torso_plane = compute_torso_plane(world_wb, reference_up=spine_unit)
-        trunk_tilt_deg = float(torso_plane["tilt_deg"])
-
-        # 2. Shoulder Coronal Tilt & SHOULDER_HIKE > 3.0 cm
+        # 1. Shoulder Coronal Tilt, Torso Plane & TRUNK_LEAN > 10°
         shoulder_tilt_deg = compute_shoulder_tilt_deg(world_wb)
-        pelvic_tilt_deg = compute_pelvic_tilt_deg(world_wb)
+        if hips_visible:
+            torso_plane = compute_torso_plane(world_wb, reference_up=spine_unit)
+            trunk_tilt_deg = float(torso_plane["tilt_deg"])
+            pelvic_tilt_deg = compute_pelvic_tilt_deg(world_wb)
+        else:
+            # Seated close to webcam without visible hips: estimate upper trunk lean from shoulder level
+            trunk_tilt_deg = round(shoulder_tilt_deg * 0.7, 1) if rule.category in ("shoulder", "arm", "neck") else 0.0
+            pelvic_tilt_deg = 0.0
 
         if rule.side == "left":
             hike_cm = max(0.0, (base_l_sh_y - float(pts_wb[5, 1])) * cm_per_unit)
@@ -359,7 +389,8 @@ class Biomechanics3DSolver:
             if shoulder_tilt_deg > self.settings.SHOULDER_TILT_MAX_DEG:
                 compensations.append("SHOULDER_TILT")
         if (
-            ("PELVIC_TILT" in checks or rule.category in ("leg", "balance", "trunk", "shoulder"))
+            hips_visible
+            and ("PELVIC_TILT" in checks or rule.category in ("leg", "balance", "trunk", "shoulder"))
             and pelvic_tilt_deg > self.settings.PELVIC_TILT_MAX_DEG
         ):
             compensations.append("PELVIC_TILT")
@@ -390,8 +421,9 @@ class Biomechanics3DSolver:
 
         # Safety / Fall override: sudden downward hip/head drop or hip collapsing near floor
         emergency_reason: Optional[str] = None
-        if (hip_y > 0.80 and trunk_tilt_deg > 28.0) or (
-            hip_drop_vel > self.settings.FALL_DROP_VELOCITY_THRESHOLD
+        if hips_visible and (
+            (hip_y > 0.80 and trunk_tilt_deg > 28.0)
+            or (hip_drop_vel > self.settings.FALL_DROP_VELOCITY_THRESHOLD)
         ):
             emergency_reason = (
                 f"Fall/Collapse Safety Alert on {rule.code} "
