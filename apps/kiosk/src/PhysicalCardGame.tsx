@@ -613,6 +613,11 @@ export function PhysicalCardGame({
   const chimeRef = useRef(new AudioChimeSynthesizer());
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   const speakSeqRef = useRef(0);
+  const isSpeakingRef = useRef(false);
+  const queuedSpeechRef = useRef<{ text: string; lang: MinigameVoiceLang } | null>(null);
+  const pendingSpeakTimerRef = useRef<number | null>(null);
+  const speakingWatchdogRef = useRef<number | null>(null);
+  const onMinigameSpeechEndedRef = useRef<(seq: number) => void>(() => {});
   const webSpeechTimerRef = useRef<number | null>(null);
   const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
@@ -653,34 +658,57 @@ export function PhysicalCardGame({
   const cardsRef = useRef(cards);
   cardsRef.current = cards;
 
-  const stopMinigameSpeech = useCallback(() => {
-    speakSeqRef.current += 1;
-    if (webSpeechTimerRef.current !== null && typeof window !== 'undefined') {
-      window.clearTimeout(webSpeechTimerRef.current);
-      webSpeechTimerRef.current = null;
+  const clearPendingSpeakTimer = useCallback(() => {
+    if (pendingSpeakTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(pendingSpeakTimerRef.current);
+      pendingSpeakTimerRef.current = null;
     }
-    const audio = ttsAudioRef.current;
-    if (audio) {
-      try {
-        audio.onplay = null;
-        audio.onended = null;
-        audio.onerror = null;
-        audio.pause();
-        audio.currentTime = 0;
-      } catch {
-        // Ignore audio reset errors
-      }
-    }
-    activeUtteranceRef.current = null;
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      try {
-        window.speechSynthesis.cancel();
-      } catch {
-        // Ignore speechSynthesis cancel failure
-      }
-    }
-    setIsSpeaking(false);
   }, []);
+
+  const clearSpeakingWatchdog = useCallback(() => {
+    if (speakingWatchdogRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(speakingWatchdogRef.current);
+      speakingWatchdogRef.current = null;
+    }
+  }, []);
+
+  const stopMinigameSpeech = useCallback(
+    (clearQueue = true) => {
+      speakSeqRef.current += 1;
+      clearSpeakingWatchdog();
+      if (clearQueue) {
+        queuedSpeechRef.current = null;
+        clearPendingSpeakTimer();
+      }
+      if (webSpeechTimerRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(webSpeechTimerRef.current);
+        webSpeechTimerRef.current = null;
+      }
+      const audio = ttsAudioRef.current;
+      if (audio) {
+        try {
+          audio.onplay = null;
+          audio.onended = null;
+          audio.onerror = null;
+          audio.pause();
+          audio.currentTime = 0;
+        } catch {
+          // Ignore audio reset errors
+        }
+      }
+      activeUtteranceRef.current = null;
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {
+          // Ignore speechSynthesis cancel failure
+        }
+      }
+      isSpeakingRef.current = false;
+      setIsSpeaking(false);
+    },
+    [clearPendingSpeakTimer, clearSpeakingWatchdog],
+  );
 
   const speakWithWebSpeechFallback = useCallback(
     (clean: string, targetLang: MinigameVoiceLang, seq: number) => {
@@ -727,27 +755,38 @@ export function PhysicalCardGame({
           utterance.onstart = () => {
             if (speakSeqRef.current !== seq) return;
             blockedByAutoplayRef.current = false;
+            isSpeakingRef.current = true;
             setIsSpeaking(true);
           };
           utterance.onend = () => {
             if (activeUtteranceRef.current === utterance) {
               activeUtteranceRef.current = null;
             }
-            if (speakSeqRef.current !== seq) return;
-            setIsSpeaking(false);
+            onMinigameSpeechEndedRef.current(seq);
           };
           utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
             if (activeUtteranceRef.current === utterance) {
               activeUtteranceRef.current = null;
             }
-            if (speakSeqRef.current !== seq) return;
-            setIsSpeaking(false);
             if (event?.error === 'not-allowed') {
-              blockedByAutoplayRef.current = true;
+              clearSpeakingWatchdog();
+              if (speakSeqRef.current === seq) {
+                blockedByAutoplayRef.current = true;
+                isSpeakingRef.current = false;
+                setIsSpeaking(false);
+              }
+              return;
             }
+            onMinigameSpeechEndedRef.current(seq);
           };
 
+          isSpeakingRef.current = true;
           setIsSpeaking(true);
+          clearSpeakingWatchdog();
+          speakingWatchdogRef.current = window.setTimeout(() => {
+            speakingWatchdogRef.current = null;
+            onMinigameSpeechEndedRef.current(seq);
+          }, 11000);
           synth.speak(utterance);
         };
 
@@ -760,20 +799,32 @@ export function PhysicalCardGame({
           startUtterance();
         }
       } catch {
+        clearSpeakingWatchdog();
+        isSpeakingRef.current = false;
         setIsSpeaking(false);
       }
     },
-    [],
+    [clearSpeakingWatchdog],
   );
 
   const speakMinigameText = useCallback(
-    (text: string, targetLang: MinigameVoiceLang) => {
+    (
+      text: string,
+      targetLang: MinigameVoiceLang,
+      options?: { forceInterrupt?: boolean },
+    ) => {
       const clean = text.trim();
       if (voiceMutedRef.current || !clean || typeof window === 'undefined') {
         return;
       }
 
-      stopMinigameSpeech();
+      if (!options?.forceInterrupt && isSpeakingRef.current) {
+        queuedSpeechRef.current = { text: clean, lang: targetLang };
+        return;
+      }
+
+      clearPendingSpeakTimer();
+      stopMinigameSpeech(Boolean(options?.forceInterrupt));
       const seq = speakSeqRef.current;
 
       if (typeof Audio !== 'undefined') {
@@ -789,25 +840,35 @@ export function PhysicalCardGame({
           audio.onplay = () => {
             if (speakSeqRef.current !== seq) return;
             blockedByAutoplayRef.current = false;
+            isSpeakingRef.current = true;
             setIsSpeaking(true);
           };
           audio.onended = () => {
-            if (speakSeqRef.current !== seq) return;
-            setIsSpeaking(false);
+            onMinigameSpeechEndedRef.current(seq);
           };
           audio.onerror = () => {
             if (speakSeqRef.current !== seq) return;
+            clearSpeakingWatchdog();
+            isSpeakingRef.current = false;
             setIsSpeaking(false);
             speakWithWebSpeechFallback(clean, targetLang, seq);
           };
 
           audio.src = buildMinigameTtsUrl(clean, targetLang);
           const playPromise = audio.play();
+          isSpeakingRef.current = true;
           setIsSpeaking(true);
+          clearSpeakingWatchdog();
+          speakingWatchdogRef.current = window.setTimeout(() => {
+            speakingWatchdogRef.current = null;
+            onMinigameSpeechEndedRef.current(seq);
+          }, 11000);
 
           if (playPromise && typeof playPromise.catch === 'function') {
             playPromise.catch((err: unknown) => {
               if (speakSeqRef.current !== seq) return;
+              clearSpeakingWatchdog();
+              isSpeakingRef.current = false;
               setIsSpeaking(false);
               const errName =
                 err && typeof err === 'object' && 'name' in err
@@ -831,8 +892,32 @@ export function PhysicalCardGame({
 
       speakWithWebSpeechFallback(clean, targetLang, seq);
     },
-    [speakWithWebSpeechFallback, stopMinigameSpeech],
+    [clearPendingSpeakTimer, clearSpeakingWatchdog, speakWithWebSpeechFallback, stopMinigameSpeech],
   );
+
+  onMinigameSpeechEndedRef.current = (seq: number) => {
+    if (speakSeqRef.current !== seq) return;
+    clearSpeakingWatchdog();
+    isSpeakingRef.current = false;
+    setIsSpeaking(false);
+
+    if (voiceMutedRef.current) {
+      queuedSpeechRef.current = null;
+      return;
+    }
+
+    const queued = queuedSpeechRef.current;
+    queuedSpeechRef.current = null;
+    if (queued && queued.text) {
+      clearPendingSpeakTimer();
+      pendingSpeakTimerRef.current = window.setTimeout(() => {
+        pendingSpeakTimerRef.current = null;
+        if (!voiceMutedRef.current) {
+          speakMinigameText(queued.text, queued.lang);
+        }
+      }, 200);
+    }
+  };
 
   const getActiveVoiceText = useCallback((targetLang: MinigameVoiceLang): string => {
     if (completedSummaryRef.current) {
@@ -970,13 +1055,13 @@ export function PhysicalCardGame({
           correct: activeFeedbackMetaRef.current.correct,
           message: localizedFeedback,
         });
-        speakMinigameText(localizedFeedback, nextLang);
+        speakMinigameText(localizedFeedback, nextLang, { forceInterrupt: true });
         return;
       }
 
       const nextText = getActiveVoiceText(nextLang);
       if (nextText) {
-        speakMinigameText(nextText, nextLang);
+        speakMinigameText(nextText, nextLang, { forceInterrupt: true });
       }
     },
     [getActiveVoiceText, speakMinigameText],
@@ -985,7 +1070,7 @@ export function PhysicalCardGame({
   const handleReplayVoice = useCallback(() => {
     const text = getActiveVoiceText(voiceLangRef.current);
     if (text && !voiceMutedRef.current) {
-      speakMinigameText(text, voiceLangRef.current);
+      speakMinigameText(text, voiceLangRef.current, { forceInterrupt: true });
     }
   }, [getActiveVoiceText, speakMinigameText]);
 
@@ -994,12 +1079,12 @@ export function PhysicalCardGame({
     voiceMutedRef.current = nextMuted;
     setVoiceMuted(nextMuted);
     if (nextMuted) {
-      stopMinigameSpeech();
+      stopMinigameSpeech(true);
       return;
     }
     const text = getActiveVoiceText(voiceLangRef.current);
     if (text) {
-      speakMinigameText(text, voiceLangRef.current);
+      speakMinigameText(text, voiceLangRef.current, { forceInterrupt: true });
     }
   }, [getActiveVoiceText, speakMinigameText, stopMinigameSpeech]);
 
@@ -1027,7 +1112,9 @@ export function PhysicalCardGame({
       }
 
       if (timerRef.current) window.clearTimeout(timerRef.current);
-      timerRef.current = window.setTimeout(async () => {
+      const answerStartedAt = Date.now();
+      const advanceCard = async () => {
+        timerRef.current = null;
         resetTrackingRefs();
         activeFeedbackMetaRef.current = null;
         setFeedback(null);
@@ -1060,7 +1147,22 @@ export function PhysicalCardGame({
         } else {
           setIndex((i) => i + 1);
         }
-      }, 2200);
+      };
+
+      const checkSpeechDoneThenAdvance = () => {
+        if (
+          (isSpeakingRef.current ||
+            Boolean(queuedSpeechRef.current) ||
+            Boolean(pendingSpeakTimerRef.current)) &&
+          Date.now() - answerStartedAt < 6500
+        ) {
+          timerRef.current = window.setTimeout(checkSpeechDoneThenAdvance, 250);
+          return;
+        }
+        timerRef.current = window.setTimeout(advanceCard, 250);
+      };
+
+      timerRef.current = window.setTimeout(checkSpeechDoneThenAdvance, 2200);
     },
     [onSessionFinished, resetTrackingRefs, speakMinigameText, stopCameraTracks],
   );

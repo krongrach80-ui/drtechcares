@@ -509,6 +509,88 @@ function readStoredVoiceLang(): VoiceCoachLanguage {
   return 'th';
 }
 
+export interface QueuedCoachUtterance {
+  text: string;
+  lang: VoiceCoachLanguage;
+  kioskState: KioskState;
+  isCompletion: boolean;
+}
+
+export interface SpeechTurnDecisionInput {
+  isCurrentlySpeaking: boolean;
+  forceInterrupt?: boolean;
+  isEmergency?: boolean;
+  incomingText: string;
+  incomingLang: VoiceCoachLanguage;
+  incomingState: KioskState;
+  lastSpokenKey: string;
+  lastSpokenState: KioskState | null;
+  lastSpokenLang: VoiceCoachLanguage | null;
+  elapsedSinceLastSpokenMs: number;
+  existingQueued?: QueuedCoachUtterance | null;
+}
+
+export interface SpeechTurnDecision {
+  action: 'SPEAK_IMMEDIATELY' | 'QUEUE_AFTER_CURRENT' | 'SKIP';
+  queuedItem: QueuedCoachUtterance | null;
+}
+
+/**
+ * Decides whether a new AI Voice Coach message should play right away, queue cleanly
+ * behind an in-progress utterance so the current sentence finishes first, or be skipped.
+ */
+export function decideVoiceCoachSpeechTurn(
+  input: SpeechTurnDecisionInput,
+): SpeechTurnDecision {
+  const clean = input.incomingText.trim();
+  if (!clean) {
+    return { action: 'SKIP', queuedItem: input.existingQueued ?? null };
+  }
+
+  const isEmergency = Boolean(input.isEmergency || input.incomingState === 'EMERGENCY_HALT');
+  const isCompletion =
+    input.incomingState === 'REP_COMPLETED' || input.incomingState === 'SET_FINISHED';
+  const messageKey = `${input.incomingLang}:${clean}`;
+
+  if (input.forceInterrupt || isEmergency) {
+    return { action: 'SPEAK_IMMEDIATELY', queuedItem: null };
+  }
+
+  if (!isCompletion && messageKey === input.lastSpokenKey && input.elapsedSinceLastSpokenMs < 3500) {
+    return { action: 'SKIP', queuedItem: input.existingQueued ?? null };
+  }
+
+  if (
+    input.incomingState === 'HOLD_PHASE' &&
+    input.lastSpokenState === 'HOLD_PHASE' &&
+    input.lastSpokenLang === input.incomingLang &&
+    input.elapsedSinceLastSpokenMs < 4500
+  ) {
+    return { action: 'SKIP', queuedItem: input.existingQueued ?? null };
+  }
+
+  if (input.isCurrentlySpeaking) {
+    if (
+      input.existingQueued?.isCompletion &&
+      !isCompletion &&
+      input.incomingState === 'ACTIVE_REP'
+    ) {
+      return { action: 'QUEUE_AFTER_CURRENT', queuedItem: input.existingQueued };
+    }
+    return {
+      action: 'QUEUE_AFTER_CURRENT',
+      queuedItem: {
+        text: clean,
+        lang: input.incomingLang,
+        kioskState: input.incomingState,
+        isCompletion,
+      },
+    };
+  }
+
+  return { action: 'SPEAK_IMMEDIATELY', queuedItem: null };
+}
+
 interface VoiceCoachBannerProps {
   textTh: string;
   kioskState: KioskState;
@@ -537,6 +619,9 @@ export function VoiceCoachBanner({
   latestKioskStateRef.current = kioskState;
   const pendingSpeakTimerRef = useRef<number | null>(null);
   const webSpeechTimerRef = useRef<number | null>(null);
+  const speakingWatchdogRef = useRef<number | null>(null);
+  const queuedSpeechRef = useRef<QueuedCoachUtterance | null>(null);
+  const onSpeechEndedRef = useRef<(seq: number) => void>(() => {});
   const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const speakSeqRef = useRef<number>(0);
@@ -566,35 +651,50 @@ export function VoiceCoachBanner({
     }
   }, []);
 
-  const stopAllSpeech = useCallback(() => {
-    speakSeqRef.current += 1;
-    if (webSpeechTimerRef.current !== null && typeof window !== 'undefined') {
-      window.clearTimeout(webSpeechTimerRef.current);
-      webSpeechTimerRef.current = null;
+  const clearSpeakingWatchdog = useCallback(() => {
+    if (speakingWatchdogRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(speakingWatchdogRef.current);
+      speakingWatchdogRef.current = null;
     }
-    const audio = audioRef.current;
-    if (audio) {
-      try {
-        audio.onplay = null;
-        audio.onended = null;
-        audio.onerror = null;
-        audio.pause();
-        audio.currentTime = 0;
-      } catch {
-        // Ignore audio reset errors
-      }
-    }
-    activeUtteranceRef.current = null;
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      try {
-        window.speechSynthesis.cancel();
-      } catch {
-        // Ignore unavailable speechSynthesis cancel
-      }
-    }
-    isSpeakingRef.current = false;
-    setIsSpeaking(false);
   }, []);
+
+  const stopAllSpeech = useCallback(
+    (clearQueue = true) => {
+      speakSeqRef.current += 1;
+      clearSpeakingWatchdog();
+      if (clearQueue) {
+        queuedSpeechRef.current = null;
+        clearPendingSpeakTimer();
+      }
+      if (webSpeechTimerRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(webSpeechTimerRef.current);
+        webSpeechTimerRef.current = null;
+      }
+      const audio = audioRef.current;
+      if (audio) {
+        try {
+          audio.onplay = null;
+          audio.onended = null;
+          audio.onerror = null;
+          audio.pause();
+          audio.currentTime = 0;
+        } catch {
+          // Ignore audio reset errors
+        }
+      }
+      activeUtteranceRef.current = null;
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {
+          // Ignore unavailable speechSynthesis cancel
+        }
+      }
+      isSpeakingRef.current = false;
+      setIsSpeaking(false);
+    },
+    [clearPendingSpeakTimer, clearSpeakingWatchdog],
+  );
 
   // Load & subscribe to available OS/browser SpeechSynthesis voices
   useEffect(() => {
@@ -621,9 +721,10 @@ export function VoiceCoachBanner({
   useEffect(() => {
     return () => {
       clearPendingSpeakTimer();
-      stopAllSpeech();
+      clearSpeakingWatchdog();
+      stopAllSpeech(true);
     };
-  }, [clearPendingSpeakTimer, stopAllSpeech]);
+  }, [clearPendingSpeakTimer, clearSpeakingWatchdog, stopAllSpeech]);
 
   const speakWithWebSpeech = useCallback(
     (clean: string, targetLang: VoiceCoachLanguage, seq: number) => {
@@ -677,24 +778,31 @@ export function VoiceCoachBanner({
             if (activeUtteranceRef.current === utterance) {
               activeUtteranceRef.current = null;
             }
-            if (speakSeqRef.current !== seq) return;
-            isSpeakingRef.current = false;
-            setIsSpeaking(false);
+            onSpeechEndedRef.current(seq);
           };
           utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
             if (activeUtteranceRef.current === utterance) {
               activeUtteranceRef.current = null;
             }
-            if (speakSeqRef.current !== seq) return;
-            isSpeakingRef.current = false;
-            setIsSpeaking(false);
             if (event?.error === 'not-allowed') {
-              blockedByAutoplayRef.current = true;
+              clearSpeakingWatchdog();
+              if (speakSeqRef.current === seq) {
+                blockedByAutoplayRef.current = true;
+                isSpeakingRef.current = false;
+                setIsSpeaking(false);
+              }
+              return;
             }
+            onSpeechEndedRef.current(seq);
           };
 
           isSpeakingRef.current = true;
           setIsSpeaking(true);
+          clearSpeakingWatchdog();
+          speakingWatchdogRef.current = window.setTimeout(() => {
+            speakingWatchdogRef.current = null;
+            onSpeechEndedRef.current(seq);
+          }, 11000);
           synth.speak(utterance);
         };
 
@@ -708,26 +816,51 @@ export function VoiceCoachBanner({
           startUtterance();
         }
       } catch {
+        clearSpeakingWatchdog();
         isSpeakingRef.current = false;
         setIsSpeaking(false);
       }
     },
-    [muted, voices],
+    [muted, voices, clearSpeakingWatchdog],
   );
 
   const speakNow = useCallback(
-    (text: string, targetLang: VoiceCoachLanguage) => {
+    (
+      text: string,
+      targetLang: VoiceCoachLanguage,
+      options?: { forceInterrupt?: boolean; stateOverride?: KioskState },
+    ) => {
       const clean = text.trim();
       if (muted || !clean || typeof window === 'undefined') {
         return;
       }
 
-      stopAllSpeech();
+      const activeState = options?.stateOverride ?? latestKioskStateRef.current;
+
+      if (!options?.forceInterrupt && isSpeakingRef.current) {
+        const decision = decideVoiceCoachSpeechTurn({
+          isCurrentlySpeaking: true,
+          incomingText: clean,
+          incomingLang: targetLang,
+          incomingState: activeState,
+          lastSpokenKey: lastSpokenKeyRef.current,
+          lastSpokenState: lastSpokenStateRef.current,
+          lastSpokenLang: lastSpokenLangRef.current,
+          elapsedSinceLastSpokenMs: Date.now() - lastSpokenAtRef.current,
+          existingQueued: queuedSpeechRef.current,
+        });
+        if (decision.action === 'QUEUE_AFTER_CURRENT') {
+          queuedSpeechRef.current = decision.queuedItem;
+        }
+        return;
+      }
+
+      stopAllSpeech(Boolean(options?.forceInterrupt));
       const seq = speakSeqRef.current;
 
       lastSpokenKeyRef.current = `${targetLang}:${clean}`;
       lastSpokenAtRef.current = Date.now();
-      lastSpokenStateRef.current = latestKioskStateRef.current;
+      lastSpokenStateRef.current = activeState;
       lastSpokenLangRef.current = targetLang;
 
       // Primary path: play real neural MP3 audio via same-origin /api/tts proxy so Thai,
@@ -749,12 +882,11 @@ export function VoiceCoachBanner({
             setIsSpeaking(true);
           };
           audio.onended = () => {
-            if (speakSeqRef.current !== seq) return;
-            isSpeakingRef.current = false;
-            setIsSpeaking(false);
+            onSpeechEndedRef.current(seq);
           };
           audio.onerror = () => {
             if (speakSeqRef.current !== seq) return;
+            clearSpeakingWatchdog();
             isSpeakingRef.current = false;
             setIsSpeaking(false);
             speakWithWebSpeech(clean, targetLang, seq);
@@ -764,10 +896,16 @@ export function VoiceCoachBanner({
           const playPromise = audio.play();
           isSpeakingRef.current = true;
           setIsSpeaking(true);
+          clearSpeakingWatchdog();
+          speakingWatchdogRef.current = window.setTimeout(() => {
+            speakingWatchdogRef.current = null;
+            onSpeechEndedRef.current(seq);
+          }, 11000);
 
           if (playPromise && typeof playPromise.catch === 'function') {
             playPromise.catch((err: unknown) => {
               if (speakSeqRef.current !== seq) return;
+              clearSpeakingWatchdog();
               isSpeakingRef.current = false;
               setIsSpeaking(false);
               const errName =
@@ -792,8 +930,59 @@ export function VoiceCoachBanner({
 
       speakWithWebSpeech(clean, targetLang, seq);
     },
-    [muted, stopAllSpeech, speakWithWebSpeech],
+    [muted, stopAllSpeech, speakWithWebSpeech, clearSpeakingWatchdog],
   );
+
+  onSpeechEndedRef.current = (seq: number) => {
+    if (speakSeqRef.current !== seq) return;
+    clearSpeakingWatchdog();
+    isSpeakingRef.current = false;
+    setIsSpeaking(false);
+
+    if (latestDisplayRef.current.muted) {
+      queuedSpeechRef.current = null;
+      return;
+    }
+
+    const queued = queuedSpeechRef.current;
+    queuedSpeechRef.current = null;
+    if (!queued) return;
+
+    const now = Date.now();
+    if (queued.isCompletion && `${queued.lang}:${queued.text}` !== lastSpokenKeyRef.current) {
+      clearPendingSpeakTimer();
+      pendingSpeakTimerRef.current = window.setTimeout(() => {
+        pendingSpeakTimerRef.current = null;
+        if (!latestDisplayRef.current.muted) {
+          speakNow(queued.text, queued.lang, { stateOverride: queued.kioskState });
+        }
+      }, 220);
+      return;
+    }
+
+    const liveText = latestDisplayRef.current.text.trim();
+    const liveLang = latestDisplayRef.current.lang;
+    const liveState = latestKioskStateRef.current;
+    const nextDecision = decideVoiceCoachSpeechTurn({
+      isCurrentlySpeaking: false,
+      incomingText: liveText,
+      incomingLang: liveLang,
+      incomingState: liveState,
+      lastSpokenKey: lastSpokenKeyRef.current,
+      lastSpokenState: lastSpokenStateRef.current,
+      lastSpokenLang: lastSpokenLangRef.current,
+      elapsedSinceLastSpokenMs: now - lastSpokenAtRef.current,
+    });
+    if (nextDecision.action === 'SPEAK_IMMEDIATELY') {
+      clearPendingSpeakTimer();
+      pendingSpeakTimerRef.current = window.setTimeout(() => {
+        pendingSpeakTimerRef.current = null;
+        if (!latestDisplayRef.current.muted) {
+          speakNow(liveText, liveLang, { stateOverride: liveState });
+        }
+      }, 220);
+    }
+  };
 
   // Unlock / resume Web Speech + Audio autoplay on first user interaction
   useEffect(() => {
@@ -809,7 +998,9 @@ export function VoiceCoachBanner({
         }
         if (blockedByAutoplayRef.current && !latestDisplayRef.current.muted) {
           blockedByAutoplayRef.current = false;
-          speakNow(latestDisplayRef.current.text, latestDisplayRef.current.lang);
+          speakNow(latestDisplayRef.current.text, latestDisplayRef.current.lang, {
+            forceInterrupt: true,
+          });
         }
       } catch {
         // Ignore
@@ -823,15 +1014,16 @@ export function VoiceCoachBanner({
     };
   }, [speakNow]);
 
-  // Speak automatically whenever the displayed coaching message or language changes
+  // Speak automatically whenever the displayed coaching message or language changes, waiting for active speech to end
   useEffect(() => {
-    clearPendingSpeakTimer();
     const clean = displayedText.trim();
 
     if (!clean || muted) {
+      clearPendingSpeakTimer();
       if (muted) {
-        stopAllSpeech();
+        stopAllSpeech(true);
       } else {
+        queuedSpeechRef.current = null;
         isSpeakingRef.current = false;
         setIsSpeaking(false);
       }
@@ -839,52 +1031,43 @@ export function VoiceCoachBanner({
     }
 
     const now = Date.now();
-    const messageKey = `${voiceLang}:${clean}`;
-    const isEmergency = kioskState === 'EMERGENCY_HALT';
-    const isRepCompletion = kioskState === 'REP_COMPLETED' || kioskState === 'SET_FINISHED';
-    const isPriority = isEmergency || isRepCompletion;
-    const isSame = messageKey === lastSpokenKeyRef.current;
+    const decision = decideVoiceCoachSpeechTurn({
+      isCurrentlySpeaking: isSpeakingRef.current,
+      isEmergency: kioskState === 'EMERGENCY_HALT',
+      incomingText: clean,
+      incomingLang: voiceLang,
+      incomingState: kioskState,
+      lastSpokenKey: lastSpokenKeyRef.current,
+      lastSpokenState: lastSpokenStateRef.current,
+      lastSpokenLang: lastSpokenLangRef.current,
+      elapsedSinceLastSpokenMs: now - lastSpokenAtRef.current,
+      existingQueued: queuedSpeechRef.current,
+    });
 
-    if (!isEmergency && isSame && now - lastSpokenAtRef.current < 3500) {
+    if (decision.action === 'SKIP') {
       return;
     }
 
-    // Avoid restarting HOLD_PHASE countdown speech on 1s ticks if HOLD_PHASE was already announced recently
-    if (!isPriority && kioskState === 'HOLD_PHASE') {
-      const holdSpokenRecently =
-        lastSpokenStateRef.current === 'HOLD_PHASE' &&
-        lastSpokenLangRef.current === voiceLang &&
-        now - lastSpokenAtRef.current < 2800;
-      if (
-        holdSpokenRecently ||
-        (isSpeakingRef.current && lastSpokenKeyRef.current.startsWith(`${voiceLang}:`))
-      ) {
-        return clearPendingSpeakTimer;
-      }
+    if (decision.action === 'QUEUE_AFTER_CURRENT') {
+      queuedSpeechRef.current = decision.queuedItem;
+      return;
     }
 
-    const elapsed = now - lastSpokenAtRef.current;
-    const minCooldownMs = 650;
-    if (!isPriority && elapsed < minCooldownMs) {
-      pendingSpeakTimerRef.current = window.setTimeout(() => {
-        pendingSpeakTimerRef.current = null;
-        speakNow(clean, voiceLang);
-      }, Math.max(50, minCooldownMs - elapsed));
-      return clearPendingSpeakTimer;
-    }
-
-    speakNow(clean, voiceLang);
-    return clearPendingSpeakTimer;
+    clearPendingSpeakTimer();
+    speakNow(clean, voiceLang, {
+      forceInterrupt: kioskState === 'EMERGENCY_HALT',
+      stateOverride: kioskState,
+    });
   }, [displayedText, voiceLang, kioskState, muted, speakNow, clearPendingSpeakTimer, stopAllSpeech]);
 
-  // Repeat warning every 4s while paused by Multi-Person / Impostor guard
+  // Repeat warning every 4s while paused by Multi-Person / Impostor guard without interrupting active speech
   useEffect(() => {
     if (muted || (kioskState !== 'PAUSED_MULTI_PERSON' && kioskState !== 'PAUSED_IMPOSTOR')) {
       return;
     }
     const timer = window.setInterval(() => {
       const clean = displayedText.trim();
-      if (!clean) return;
+      if (!clean || isSpeakingRef.current) return;
       speakNow(clean, voiceLang);
     }, 4000);
     return () => window.clearInterval(timer);
@@ -900,7 +1083,7 @@ export function VoiceCoachBanner({
     clearPendingSpeakTimer();
     const nextText = translateVoiceCoachText(textTh, nextLang);
     if (!muted) {
-      speakNow(nextText, nextLang);
+      speakNow(nextText, nextLang, { forceInterrupt: true });
     }
   };
 
@@ -930,7 +1113,7 @@ export function VoiceCoachBanner({
         <button
           type="button"
           data-voice-coach-control="true"
-          onClick={() => speakNow(displayedText, voiceLang)}
+          onClick={() => speakNow(displayedText, voiceLang, { forceInterrupt: true })}
           title={langOption.replayTitle}
           className={`flex h-12 w-14 shrink-0 items-center justify-center gap-1 rounded-full shadow-md transition-transform active:scale-95 ${badgeTone}`}
         >

@@ -12,6 +12,7 @@ import { measureLiveJointAngleAndTilt, stepSmoothRomAngle } from '../components/
 import {
   VOICE_COACH_LANGUAGES,
   buildTtsProxyUrl,
+  decideVoiceCoachSpeechTurn,
   pickSpeechVoice,
   translateVoiceCoachText,
 } from '../components/VoiceCoachBanner';
@@ -602,6 +603,105 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(check90.romDeg!).toBeGreaterThanOrEqual(85);
     expect(check90.romDeg!).toBeLessThanOrEqual(95);
     expect(check90.xyzVector!.z).toBeLessThan(-0.9);
+  });
+
+  it('waits for current Voice Coach utterance to finish before speaking next prompt and preserves rep completion speech', () => {
+    // 1. Active utterance is speaking -> incoming HOLD_PHASE queues after current sentence finishes
+    const holdWhileSpeaking = decideVoiceCoachSpeechTurn({
+      isCurrentlySpeaking: true,
+      incomingText: 'คงท่าค้างไว้ 3 วินาทีครับ',
+      incomingLang: 'th',
+      incomingState: 'HOLD_PHASE',
+      lastSpokenKey: 'th:ค่อยๆ เคลื่อนไหวไปยังเป้าหมาย 145 องศาครับ',
+      lastSpokenState: 'ACTIVE_REP',
+      lastSpokenLang: 'th',
+      elapsedSinceLastSpokenMs: 900,
+    });
+    expect(holdWhileSpeaking.action).toBe('QUEUE_AFTER_CURRENT');
+    expect(holdWhileSpeaking.queuedItem?.text).toBe('คงท่าค้างไว้ 3 วินาทีครับ');
+    expect(holdWhileSpeaking.queuedItem?.isCompletion).toBe(false);
+
+    // 2. While HOLD_PHASE is speaking, REP_COMPLETED arrives and queues with isCompletion: true;
+    // a subsequent ACTIVE_REP frame must NOT overwrite the queued REP_COMPLETED speech.
+    const completionQueued = decideVoiceCoachSpeechTurn({
+      isCurrentlySpeaking: true,
+      incomingText: 'ครบ 3 วินาทีแล้ว ดีมากครับ ครบ 1 ครั้ง ค่อยๆ เอาแขนลงช้าๆ ครับ',
+      incomingLang: 'th',
+      incomingState: 'REP_COMPLETED',
+      lastSpokenKey: 'th:คงท่าค้างไว้ 3 วินาทีครับ',
+      lastSpokenState: 'HOLD_PHASE',
+      lastSpokenLang: 'th',
+      elapsedSinceLastSpokenMs: 1200,
+    });
+    expect(completionQueued.action).toBe('QUEUE_AFTER_CURRENT');
+    expect(completionQueued.queuedItem?.isCompletion).toBe(true);
+
+    const activeRepAfterCompletion = decideVoiceCoachSpeechTurn({
+      isCurrentlySpeaking: true,
+      incomingText: 'ค่อยๆ เคลื่อนไหวไปยังเป้าหมาย 145 องศาครับ',
+      incomingLang: 'th',
+      incomingState: 'ACTIVE_REP',
+      lastSpokenKey: 'th:คงท่าค้างไว้ 3 วินาทีครับ',
+      lastSpokenState: 'HOLD_PHASE',
+      lastSpokenLang: 'th',
+      elapsedSinceLastSpokenMs: 1400,
+      existingQueued: completionQueued.queuedItem,
+    });
+    expect(activeRepAfterCompletion.action).toBe('QUEUE_AFTER_CURRENT');
+    expect(activeRepAfterCompletion.queuedItem?.isCompletion).toBe(true);
+    expect(activeRepAfterCompletion.queuedItem?.text).toContain('ครบ 3 วินาทีแล้ว');
+
+    // 3. While REP_COMPLETED is actively speaking, incoming ACTIVE_REP queues rather than cutting off
+    const activeWhileCompletionSpeaking = decideVoiceCoachSpeechTurn({
+      isCurrentlySpeaking: true,
+      incomingText: 'ค่อยๆ เคลื่อนไหวไปยังเป้าหมาย 145 องศาครับ',
+      incomingLang: 'th',
+      incomingState: 'ACTIVE_REP',
+      lastSpokenKey: 'th:ครบ 3 วินาทีแล้ว ดีมากครับ ครบ 1 ครั้ง ค่อยๆ เอาแขนลงช้าๆ ครับ',
+      lastSpokenState: 'REP_COMPLETED',
+      lastSpokenLang: 'th',
+      elapsedSinceLastSpokenMs: 800,
+    });
+    expect(activeWhileCompletionSpeaking.action).toBe('QUEUE_AFTER_CURRENT');
+
+    // 4. Duplicate HOLD_PHASE 1s countdown ticks within 4500ms are skipped even when idle
+    const holdTickSkipped = decideVoiceCoachSpeechTurn({
+      isCurrentlySpeaking: false,
+      incomingText: 'ดีมากครับ ค้างท่าไว้อีก 2 วินาที',
+      incomingLang: 'th',
+      incomingState: 'HOLD_PHASE',
+      lastSpokenKey: 'th:คงท่าค้างไว้ 3 วินาทีครับ',
+      lastSpokenState: 'HOLD_PHASE',
+      lastSpokenLang: 'th',
+      elapsedSinceLastSpokenMs: 2100,
+    });
+    expect(holdTickSkipped.action).toBe('SKIP');
+
+    // 5. EMERGENCY_HALT and explicit forceInterrupt bypass the wait immediately
+    const emergencyDecision = decideVoiceCoachSpeechTurn({
+      isCurrentlySpeaking: true,
+      incomingText: 'หยุดฉุกเฉินครับ กรุณานั่งพัก',
+      incomingLang: 'th',
+      incomingState: 'EMERGENCY_HALT',
+      lastSpokenKey: 'th:ค่อยๆ เคลื่อนไหวไปยังเป้าหมาย 145 องศาครับ',
+      lastSpokenState: 'ACTIVE_REP',
+      lastSpokenLang: 'th',
+      elapsedSinceLastSpokenMs: 400,
+    });
+    expect(emergencyDecision.action).toBe('SPEAK_IMMEDIATELY');
+
+    const manualReplayDecision = decideVoiceCoachSpeechTurn({
+      isCurrentlySpeaking: true,
+      forceInterrupt: true,
+      incomingText: 'Please raise your arm straight forward.',
+      incomingLang: 'en',
+      incomingState: 'ACTIVE_REP',
+      lastSpokenKey: 'th:ค่อยๆ เคลื่อนไหวไปยังเป้าหมาย 145 องศาครับ',
+      lastSpokenState: 'ACTIVE_REP',
+      lastSpokenLang: 'th',
+      elapsedSinceLastSpokenMs: 400,
+    });
+    expect(manualReplayDecision.action).toBe('SPEAK_IMMEDIATELY');
   });
 });
 
