@@ -1,9 +1,12 @@
 import math
 import os
 import time
+import urllib.request
 import cv2
 import mediapipe as mp
 import numpy as np
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -11,6 +14,45 @@ try:
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
+
+MODEL_PATH = os.path.join("models", "pose_landmarker_heavy.task")
+MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+    "pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task"
+)
+
+
+def ensure_pose_landmarker_model(
+    model_path: str = MODEL_PATH,
+    model_url: str = MODEL_URL,
+) -> str:
+    """ตรวจสอบไฟล์โมเดล MediaPipe Pose Landmarker Heavy และดาวน์โหลดอัตโนมัติหากยังไม่มี"""
+    model_dir = os.path.dirname(model_path)
+    if model_dir:
+        os.makedirs(model_dir, exist_ok=True)
+    if not os.path.exists(model_path):
+        print(f"[INFO] Downloading PoseLandmarker Heavy model to {model_path} ...")
+        urllib.request.urlretrieve(model_url, model_path)
+        print("[INFO] Model download complete.")
+    return model_path
+
+
+def create_pose_landmarker(
+    model_path: str = MODEL_PATH,
+    model_url: str = MODEL_URL,
+) -> vision.PoseLandmarker:
+    """สร้างอินสแตนซ์ PoseLandmarker (Tasks Vision API) ในโหมด VIDEO ความละเอียดสูง"""
+    resolved_path = ensure_pose_landmarker_model(model_path=model_path, model_url=model_url)
+    base_options = python.BaseOptions(model_asset_path=resolved_path)
+    options = vision.PoseLandmarkerOptions(
+        base_options=base_options,
+        running_mode=vision.RunningMode.VIDEO,
+        num_poses=1,
+        min_pose_detection_confidence=0.7,
+        min_pose_presence_confidence=0.7,
+        min_tracking_confidence=0.7,
+    )
+    return vision.PoseLandmarker.create_from_options(options)
 
 
 class OneEuroFilter:
@@ -187,15 +229,8 @@ def draw_joint_angle_arc(
 
 
 def main() -> None:
-    mp_pose = mp.solutions.pose
-    # ตั้งค่าโมเดลความละเอียดสูงสุด (model_complexity=2) สำหรับงานคลินิก
-    pose = mp_pose.Pose(
-        static_image_mode=False,
-        model_complexity=2,
-        smooth_landmarks=True,
-        min_detection_confidence=0.7,
-        min_tracking_confidence=0.7,
-    )
+    # ตั้งค่า MediaPipe Tasks Vision API (PoseLandmarker Heavy) สำหรับงานคลินิก
+    landmarker = create_pose_landmarker()
 
     # สร้าง 1€ Filter แยกสำหรับพิกัด 2D (วาดจอ), 3D (คำนวณมุมจริง) และตัวเลขมุม
     filter_2d = OneEuroFilter(min_cutoff=0.8, beta=0.04)
@@ -212,7 +247,9 @@ def main() -> None:
 
     reps = 0
     hold_time = 0.0
-    last_frame_time = time.perf_counter()
+    start_time = time.perf_counter()
+    last_frame_time = start_time
+    last_timestamp_ms = 0
     rep_completed_in_current_hold = False
 
     cap = cv2.VideoCapture(0)
@@ -229,11 +266,18 @@ def main() -> None:
             dt = max(0.0, now - last_frame_time)
             last_frame_time = now
 
+            # สร้าง timestamp_ms แบบเพิ่มขึ้นต่อเนื่องทุกเฟรมตามข้อกำหนดโหมด VIDEO
+            timestamp_ms = int((now - start_time) * 1000)
+            if timestamp_ms <= last_timestamp_ms:
+                timestamp_ms = last_timestamp_ms + 1
+            last_timestamp_ms = timestamp_ms
+
             # พลิกภาพกระจกให้ผู้ป่วยดูตามได้ง่าย
             frame = cv2.flip(frame, 1)
             h, w, _ = frame.shape
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = pose.process(rgb_frame)
+            rgb_frame = np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+            results = landmarker.detect_for_video(mp_image, timestamp_ms)
 
             feedback_th = "เตรียมพร้อม: กางแขนซ้ายขึ้นระดับ 85-110 องศา"
             feedback_ascii = "Ready: Abduct left arm to 85-110 deg"
@@ -241,12 +285,15 @@ def main() -> None:
             shoulder_angle = 0.0
 
             if results.pose_landmarks and results.pose_world_landmarks:
-                raw_2d = results.pose_landmarks.landmark
-                raw_3d = results.pose_world_landmarks.landmark
+                raw_2d = results.pose_landmarks[0]
+                raw_3d = results.pose_world_landmarks[0]
 
                 # ตรวจสอบ visibility ของทุกจุดที่ใช้ (11, 12, 13, 15, 23)
                 req_indices = [11, 12, 13, 15, 23]
-                visibilities = [raw_2d[i].visibility for i in req_indices]
+                visibilities = [
+                    raw_2d[i].visibility if raw_2d[i].visibility is not None else 0.0
+                    for i in req_indices
+                ]
 
                 if min(visibilities) < VISIBILITY_THRESHOLD:
                     # ระงับการวัดค่าชั่วคราวและหยุดเวลา Hold Timer ทันที
@@ -406,7 +453,7 @@ def main() -> None:
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
     finally:
-        pose.close()
+        landmarker.close()
         cap.release()
         cv2.destroyAllWindows()
 
