@@ -1343,7 +1343,7 @@ export function PhysicalCardGame({
         }
 
         const tf = computeMirroredCoverTransform(cw, ch, vw, vh);
-        const ctx = canvas?.getContext('2d', { desynchronized: true }) ?? null;
+        const ctx = canvas?.getContext('2d') ?? null;
         if (ctx) {
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
           ctx.clearRect(0, 0, cw, ch);
@@ -1735,35 +1735,36 @@ export function PhysicalCardGame({
         />
       </div>
 
-      {/* Main Full-Size Vertical Stack: Top = Question & Illustration, Middle = Camera, Bottom = Answer Buttons */}
+      {/* Main Full-Size Vertical Stack: Top Grid (Question & Camera Side-by-Side on Desktop), Bottom = Answer Buttons */}
       <div className="flex-1 flex flex-col justify-between gap-4 sm:gap-5 min-h-0">
-        {/* Top Card: Question & Illustration */}
-        <div className="flex-[1] min-h-[360px] sm:min-h-[450px] rounded-3xl bg-gradient-to-br from-indigo-50 via-white to-sky-50 p-6 sm:p-8 border-2 border-indigo-200 text-center flex flex-col items-center justify-center shadow-sm">
-          <span className="mg-category-pill inline-block rounded-full bg-white px-7 py-2.5 font-black uppercase tracking-wider text-indigo-700 shadow-sm border-2 border-indigo-100">
-            {currentCard.category.replace('_', ' ')}
-          </span>
-          <div className="my-3 sm:my-5 flex items-center justify-center w-full">
-            <img
-              src={currentCard.imageUrl}
-              alt={localizedSubject}
-              className="h-64 w-[26rem] sm:h-80 sm:w-[34rem] lg:h-[22rem] lg:w-[38rem] max-w-full rounded-3xl object-contain shadow-lg border-4 border-indigo-200 bg-white p-2"
-              draggable={false}
-            />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5 items-stretch">
+          {/* Question & Illustration Card */}
+          <div className="h-[340px] sm:h-[400px] lg:h-[440px] overflow-hidden rounded-3xl bg-gradient-to-br from-indigo-50 via-white to-sky-50 p-4 sm:p-6 border-2 border-indigo-200 text-center flex flex-col items-center justify-center shadow-sm">
+            <span className="mg-category-pill inline-block rounded-full bg-white px-7 py-2 font-black uppercase tracking-wider text-indigo-700 shadow-sm border-2 border-indigo-100">
+              {currentCard.category.replace('_', ' ')}
+            </span>
+            <div className="my-2 sm:my-3 flex items-center justify-center w-full">
+              <img
+                src={currentCard.imageUrl}
+                alt={localizedSubject}
+                className="h-40 w-64 sm:h-48 sm:w-80 lg:h-52 lg:w-96 max-w-full rounded-3xl object-contain shadow-lg border-4 border-indigo-200 bg-white p-2"
+                draggable={false}
+              />
+            </div>
+            <h2 className="mg-question-title font-black text-[#0F4C81] max-w-5xl">
+              {localizedQuestion}
+            </h2>
+            {voiceLang !== 'th' && (
+              <p className="mt-1.5 text-base sm:text-lg font-bold text-slate-500 max-w-4xl">
+                ไทย: {currentCard.question.th}
+              </p>
+            )}
           </div>
-          <h2 className="mg-question-title font-black text-[#0F4C81] max-w-5xl">
-            {localizedQuestion}
-          </h2>
-          {voiceLang !== 'th' && (
-            <p className="mt-2 text-lg sm:text-xl font-bold text-slate-500 max-w-4xl">
-              ไทย: {currentCard.question.th}
-            </p>
-          )}
-        </div>
 
-        {/* Middle Card: Full-Size Live Camera Viewport (120Hz Hand Tracking) */}
-        <div className="flex-[1.4] min-h-[360px] sm:min-h-[480px] relative w-full overflow-hidden rounded-3xl bg-gradient-to-br from-sky-100 via-emerald-50 to-white border-4 border-sky-200 shadow-inner">
-          <video ref={videoRef} playsInline muted className="h-full w-full object-cover -scale-x-100" />
-          <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
+          {/* Live Camera Viewport (120Hz Hand Tracking) */}
+          <div className="h-[340px] sm:h-[400px] lg:h-[440px] relative w-full overflow-hidden rounded-3xl bg-gradient-to-br from-sky-100 via-emerald-50 to-white border-4 border-sky-200 shadow-inner">
+            <video ref={videoRef} playsInline muted className="absolute inset-0 h-full w-full object-cover -scale-x-100" />
+            <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
 
           {!cameraError && (
             <div className="pointer-events-none absolute top-4 right-4 z-10">
@@ -1837,6 +1838,7 @@ export function PhysicalCardGame({
               </div>
             </div>
           )}
+          </div>
         </div>
 
         {/* Bottom Controls: Feedback Banner or Giant YES/NO Answer Buttons */}
