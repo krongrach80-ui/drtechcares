@@ -9,6 +9,8 @@ import {
   resolveNextAppointmentDate,
   resolvePrescribedExercisesFromSchedules,
   resolveTodayPatientSchedule,
+  type ManagedExerciseRecord,
+  type ModpackRecord,
   type UserAccount,
 } from '@drtechcares/api-client';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
@@ -19,6 +21,7 @@ import {
   KioskBiometricLoginView,
   type KioskLoginSuccessPayload,
 } from './components/KioskBiometricLoginView';
+import { StaffAssistedEnrollmentModal } from './components/StaffAssistedEnrollmentModal';
 import { CheckCircle2, Shuffle, Volume2 } from 'lucide-react';
 import {
   RandomHandStartPrompt,
@@ -612,6 +615,38 @@ export function App() {
 
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => apiClient.getStoredUser());
   const [authChecked, setAuthChecked] = useState(false);
+  const [kioskEnrollModalOpen, setKioskEnrollModalOpen] = useState(false);
+  const [kioskPtList, setKioskPtList] = useState<UserAccount[]>([]);
+  const [kioskExercises, setKioskExercises] = useState<ManagedExerciseRecord[]>([]);
+  const [kioskModpacks, setKioskModpacks] = useState<ModpackRecord[]>([]);
+
+  useEffect(() => {
+    if (!kioskEnrollModalOpen || !currentUser) return;
+    let cancelled = false;
+    void Promise.all([
+      apiClient.listUsers().catch(() => [] as UserAccount[]),
+      apiClient.listExercises().catch(() => [] as ManagedExerciseRecord[]),
+      apiClient.listModpacks().catch(() => [] as ModpackRecord[]),
+    ]).then(([usersList, exercisesList, modpacksList]) => {
+      if (cancelled) return;
+      const activePts = usersList.filter((u) => u.role === 'pt' && u.active);
+      const fallbackPts = usersList.filter((u) => u.role === 'pt');
+      setKioskPtList(
+        activePts.length > 0
+          ? activePts
+          : fallbackPts.length > 0
+            ? fallbackPts
+            : currentUser.role === 'pt'
+              ? [currentUser]
+              : [],
+      );
+      setKioskExercises(exercisesList);
+      setKioskModpacks(modpacksList);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [kioskEnrollModalOpen, currentUser, apiClient]);
 
   const navigate = (next: AppRoute) => {
     setRoute(next);
@@ -1288,7 +1323,7 @@ export function App() {
         <KioskBiometricLoginView
           apiClient={apiClient}
           kioskId="kiosk-01"
-          staffModalOpen={staffModalIntent !== null}
+          staffModalOpen={staffModalIntent !== null || kioskEnrollModalOpen}
           onPatientAuthenticated={(payload) => {
             setAuthenticatedPatient(payload);
             setKioskMode('training');
@@ -1310,8 +1345,7 @@ export function App() {
               setStaffModalIntent(null);
               setCurrentUser(user);
               if (intent === 'kiosk_patient_registration' && (user.role === 'pt' || user.role === 'super_admin')) {
-                setPendingAutoOpenEnroll(true);
-                navigate(user.role === 'super_admin' ? '/admin' : '/pt');
+                setKioskEnrollModalOpen(true);
               } else if (user.role === 'super_admin') {
                 navigate('/admin');
               } else if (user.role === 'pt') {
@@ -1320,6 +1354,18 @@ export function App() {
                 navigate('/patient');
               }
             }}
+          />
+        )}
+        {kioskEnrollModalOpen && currentUser && (
+          <StaffAssistedEnrollmentModal
+            open={kioskEnrollModalOpen}
+            apiClient={apiClient}
+            currentUser={currentUser}
+            ptList={kioskPtList}
+            exercises={kioskExercises}
+            modpacks={kioskModpacks}
+            onClose={() => setKioskEnrollModalOpen(false)}
+            onEnrolled={() => {}}
           />
         )}
       </>

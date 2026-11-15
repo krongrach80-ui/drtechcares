@@ -39,6 +39,7 @@ const STAFF_LOGIN_COPY: Record<
     badge: string;
     registrationBadge: string;
     title: string;
+    registrationTitle: string;
     subtitle: string;
     registrationSubtitle: string;
     usernameLabel: string;
@@ -48,6 +49,7 @@ const STAFF_LOGIN_COPY: Record<
     roleNotice: string;
     loggingIn: string;
     loginBtn: string;
+    registrationLoginBtn: string;
     returnToPatientMain: string;
     securityNotice: string;
     requiredFields: string;
@@ -68,6 +70,7 @@ const STAFF_LOGIN_COPY: Record<
     licenseLabel: string;
     licensePlaceholder: string;
     registerBtn: string;
+    registrationRegisterBtn: string;
     registering: string;
     registerRequiredFields: string;
     registerPasswordHint: string;
@@ -77,6 +80,7 @@ const STAFF_LOGIN_COPY: Record<
     badge: '+ Dr.Tech.Care • Hospital Staff Portal',
     registrationBadge: '👨‍⚕️ เจ้าหน้าที่ลงทะเบียนคนไข้ (STAFF-ASSISTED MODE)',
     title: 'เข้าสู่ระบบบุคลากร Dr.Tech.Care',
+    registrationTitle: 'ยืนยันสิทธิ์เจ้าหน้าที่เพื่อสมัครคนไข้ใหม่',
     subtitle: 'เข้าถึงระบบบริหารเวชระเบียนคลินิกและตารางกายภาพบำบัด',
     registrationSubtitle: 'กรุณาเข้าสู่ระบบด้วยบัญชี Admin, ผอ.รพ. หรือ นักกายภาพบำบัด (PT)',
     usernameLabel: 'Username (ชื่อผู้ใช้) *',
@@ -86,6 +90,7 @@ const STAFF_LOGIN_COPY: Record<
     roleNotice: 'ระบบตรวจสอบสิทธิ์อัตโนมัติ: ผอ.รพ. / Super Admin หรือ นักกายภาพบำบัด PT',
     loggingIn: 'กำลังเข้าสู่ระบบ...',
     loginBtn: 'เข้าสู่ระบบบุคลากร',
+    registrationLoginBtn: 'ยืนยันรหัสและเปิดหน้าสมัครคนไข้',
     returnToPatientMain: 'กลับหน้าหลัก (คนไข้)',
     securityNotice: 'Hospital Clinical Grade Security • HttpOnly Session Cookie • Zero-PII Leak',
     requiredFields: 'กรุณากรอกชื่อผู้ใช้และรหัสผ่านให้ครบถ้วน',
@@ -106,6 +111,7 @@ const STAFF_LOGIN_COPY: Record<
     licenseLabel: 'เลขที่ใบประกอบวิชาชีพ',
     licensePlaceholder: 'เช่น กภ. 99421 (ถ้ามี)',
     registerBtn: 'สมัครสมาชิกและเข้าใช้งานทันที',
+    registrationRegisterBtn: 'สร้างบัญชีและเปิดหน้าสมัครคนไข้ทันที',
     registering: 'กำลังสร้างบัญชีบุคลากร...',
     registerRequiredFields: 'กรุณากรอกชื่อ-นามสกุล, Username และรหัสผ่านอย่างน้อย 4 ตัวอักษร',
     registerPasswordHint: 'ตั้งรหัสผ่านอย่างน้อย 4 ตัวอักษร',
@@ -114,6 +120,7 @@ const STAFF_LOGIN_COPY: Record<
     badge: '+ Dr.Tech.Care • Hospital Staff Portal',
     registrationBadge: '👨‍⚕️ Staff-Assisted Patient Registration Mode',
     title: 'Dr.Tech.Care Hospital Staff Login',
+    registrationTitle: 'Staff Verification for Patient Enrollment',
     subtitle: 'Access clinical medical records and physical therapy schedule management',
     registrationSubtitle:
       'Please sign in with Admin, Hospital Director, or Physical Therapist (PT) credentials',
@@ -124,6 +131,7 @@ const STAFF_LOGIN_COPY: Record<
     roleNotice: 'Automatic Role Detection: Hospital Director / Super Admin or PT Specialist',
     loggingIn: 'Logging in...',
     loginBtn: 'Sign In to Staff Portal',
+    registrationLoginBtn: 'Verify & Open Patient Registration',
     returnToPatientMain: 'Back to Main (Patient)',
     securityNotice: 'Hospital Clinical Grade Security • HttpOnly Session Cookie • Zero-PII Leak',
     requiredFields: 'Please fill in both username and password',
@@ -144,6 +152,7 @@ const STAFF_LOGIN_COPY: Record<
     licenseLabel: 'License Number',
     licensePlaceholder: 'e.g. PT-99421 (Optional)',
     registerBtn: 'Create Account & Enter Portal',
+    registrationRegisterBtn: 'Create Account & Open Patient Registration',
     registering: 'Creating staff account...',
     registerRequiredFields: 'Please enter full name, username, and a password of at least 4 characters',
     registerPasswordHint: 'Minimum 4 characters',
@@ -152,6 +161,7 @@ const STAFF_LOGIN_COPY: Record<
     badge: '+ Dr.Tech.Care • Hospital Staff Portal',
     registrationBadge: '👨‍⚕️ 医护人员协助建档模式',
     title: 'Dr.Tech.Care 医院员工登录',
+    registrationTitle: '医护人员验证 • 患者建档',
     subtitle: '访问临床病历管理系统与物理康复治疗日程',
     registrationSubtitle: '请使用管理员、院长或物理康复理疗师 (PT) 账号登录验证',
     usernameLabel: '用户名 (Username) *',
@@ -161,6 +171,7 @@ const STAFF_LOGIN_COPY: Record<
     roleNotice: '自动权限校验：医院院长 / 超级管理员 或 物理康复理疗师 PT',
     loggingIn: '正在登录...',
     loginBtn: '登录医护系统',
+    registrationLoginBtn: '验证并打开患者注册弹窗',
     returnToPatientMain: '返回首页 (患者)',
     securityNotice: 'Hospital Clinical Grade Security • HttpOnly Session Cookie • Zero-PII Leak',
     requiredFields: '请填写完整的用户名和密码',
@@ -181,6 +192,7 @@ const STAFF_LOGIN_COPY: Record<
     licenseLabel: '执业医师/理疗师证号',
     licensePlaceholder: '例如 PT-99421（选填）',
     registerBtn: '注册并立即进入后台',
+    registrationRegisterBtn: '创建账号并立即打开患者注册',
     registering: '正在创建账号...',
     registerRequiredFields: '请填写姓名、用户名以及至少 4 位密码',
     registerPasswordHint: '至少 4 位字符',
@@ -332,7 +344,11 @@ export function StaffLoginModalOrPage({
           </span>
 
           <h1 className="text-2xl sm:text-3xl font-black text-slate-800 tracking-normal">
-            {mode === 'register' ? copy.registerTitle : copy.title}
+            {mode === 'register'
+              ? copy.registerTitle
+              : isRegistrationMode
+                ? copy.registrationTitle
+                : copy.title}
           </h1>
           <p className="text-sm sm:text-base text-slate-600 mt-2 leading-relaxed max-w-md mx-auto">
             {mode === 'register'
@@ -610,7 +626,15 @@ export function StaffLoginModalOrPage({
                 ) : (
                   <ArrowRight className="w-5 h-5 shrink-0" />
                 )}
-                <span>{mode === 'register' ? copy.registerBtn : copy.loginBtn}</span>
+                <span>
+                  {mode === 'register'
+                    ? isRegistrationMode
+                      ? copy.registrationRegisterBtn
+                      : copy.registerBtn
+                    : isRegistrationMode
+                      ? copy.registrationLoginBtn
+                      : copy.loginBtn}
+                </span>
               </>
             )}
           </button>

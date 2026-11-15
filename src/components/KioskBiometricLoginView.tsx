@@ -770,6 +770,7 @@ export function KioskBiometricLoginView({
       presenceRef.current.reset();
       loginCtrlRef.current.reset();
       temporalMatcherRef.current.reset();
+      setScanStage('scanning');
       setHudBox(null);
       setHudLandmarks([]);
       setLiveMatchHud(null);
@@ -1987,7 +1988,7 @@ export function KioskBiometricLoginView({
       )}
 
       {/* Account Not Found Modal */}
-      {scanStage === 'not_found' && (
+      {scanStage === 'not_found' && !staffModalOpen && (
         <div className="fixed inset-0 z-50 bg-[#0F4C81]/40 backdrop-blur-md flex items-center justify-center p-4">
           <div className="w-full max-w-md rounded-3xl bg-white border-2 border-rose-500/45 shadow-2xl p-6 text-center">
             <div className="w-16 h-16 rounded-full bg-rose-50 border border-rose-200 flex items-center justify-center mx-auto mb-3">
