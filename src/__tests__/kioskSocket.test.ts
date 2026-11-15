@@ -7,7 +7,7 @@ import {
   mapTodayExercisesToPrescriptions,
   synthesizeDemoPayload,
 } from '../hooks/useKioskSocket';
-import { measureLiveJointAngleAndTilt } from '../components/SmartRehabKioskUI';
+import { measureLiveJointAngleAndTilt, stepSmoothRomAngle } from '../components/SmartRehabKioskUI';
 import {
   VOICE_COACH_LANGUAGES,
   buildTtsProxyUrl,
@@ -363,6 +363,37 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     const clampedParams = new URLSearchParams(buildTtsProxyUrl(longText, 'zh').split('?')[1]);
     expect(clampedParams.get('lang')).toBe('zh');
     expect((clampedParams.get('text') || '').length).toBeLessThanOrEqual(190);
+  });
+
+  it('smoothly ramps ROM angles with deadband and human-paced slew rate instead of jumping rapidly', () => {
+    // 1. Ignores micro-jitter within < 1.2 deg deadband
+    expect(stepSmoothRomAngle(45, 45.9, 16)).toBe(45);
+    expect(stepSmoothRomAngle(45, 44.0, 16)).toBe(45);
+
+    // 2. Caps single-frame jump (15 -> 150 deg) to <= 36 deg/sec
+    const singleStep = stepSmoothRomAngle(15, 150, 16);
+    expect(singleStep).toBeGreaterThan(15);
+    expect(singleStep).toBeLessThanOrEqual(15 + (36 * 16) / 1000 + 1e-6);
+
+    // 3. Climbs gradually over 1 second rather than jumping straight to 150 deg
+    let rom = 15;
+    for (let i = 0; i < 60; i += 1) {
+      rom = stepSmoothRomAngle(rom, 150, 1000 / 60);
+    }
+    expect(rom).toBeGreaterThan(45);
+    expect(rom).toBeLessThanOrEqual(52);
+
+    // 4. Converges smoothly within deadband over ~5 seconds
+    for (let i = 0; i < 240; i += 1) {
+      rom = stepSmoothRomAngle(rom, 150, 1000 / 60);
+    }
+    expect(rom).toBeGreaterThanOrEqual(148.5);
+    expect(rom).toBeLessThanOrEqual(150);
+
+    // 5. Caps downward return speed to <= 48 deg/sec
+    const downStep = stepSmoothRomAngle(150, 15, 20);
+    expect(downStep).toBeLessThan(150);
+    expect(downStep).toBeGreaterThanOrEqual(150 - (48 * 20) / 1000 - 1e-6);
   });
 });
 

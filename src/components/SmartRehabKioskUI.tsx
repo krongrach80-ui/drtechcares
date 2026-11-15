@@ -188,6 +188,36 @@ export function measureLiveJointAngleAndTilt(
   };
 }
 
+/**
+ * Smooths noisy joint ROM readings with a deadband and human-paced slew-rate limiter
+ * so gauge arcs and numeric degree displays climb gradually instead of jumping or fluttering.
+ */
+export function stepSmoothRomAngle(
+  currentRom: number | null,
+  targetRom: number,
+  dtMs: number,
+): number {
+  const safeTarget = Math.max(0, Math.min(180, targetRom));
+  if (currentRom === null || !Number.isFinite(currentRom)) {
+    return safeTarget;
+  }
+  const safeDt = Math.min(100, Math.max(1, dtMs));
+  const rawDelta = safeTarget - currentRom;
+  // Deadband of 1.2 deg prevents micro-jitter when holding still
+  if (Math.abs(rawDelta) < 1.2) {
+    return currentRom;
+  }
+  // Smooth exponential filter (tau = 240ms) + human-paced slew-rate cap:
+  // Climbs gradually at max 36 deg/sec (~3.5-4s from rest to 150 deg) and lowers at max 48 deg/sec
+  const alpha = 1 - Math.exp(-safeDt / 240);
+  const emaStep = rawDelta * alpha;
+  const maxUpStep = (36 * safeDt) / 1000;
+  const maxDownStep = (48 * safeDt) / 1000;
+  const step =
+    emaStep > 0 ? Math.min(emaStep, maxUpStep) : Math.max(emaStep, -maxDownStep);
+  return Math.max(0, Math.min(180, currentRom + step));
+}
+
 const LIVE_BODY_BONELINE_PAIRS: readonly [number, number][] = [
   [POSE_INDEX.LEFT_SHOULDER, POSE_INDEX.RIGHT_SHOULDER],
   [POSE_INDEX.LEFT_SHOULDER, POSE_INDEX.LEFT_ELBOW],
@@ -668,22 +698,28 @@ export function SmartRehabKioskUI({
     let lastInferenceAt = 0;
     let lastDetectTs = 0;
     let lastFrameAt = 0;
-    let smoothedRom: number | null = null;
+    let smoothedRom: number | null = 0;
+    let smoothedTilt = 0;
     let holdAccumMs = 0;
     let awaitingReturn = false;
     let repCelebrateUntil = 0;
+    let lastRepCompletedAt = 0;
     let singlePersonRecoveryFrames = 0;
     let trackedExId = selectedExerciseRef.current.exercise_id;
     let targetRomDeg: number | null = null;
     let latestLandmarks: NormalizedLandmark[] | null = null;
     let latestAllLandmarks: NormalizedLandmark[][] = [];
     let latestPoseCount = 0;
+    let latestRawTiltDeg = 0;
     let latestTrunkTiltDeg = 0;
     let latestWrongSideRaised = false;
     let latestWrongSideBannerTh: string | null = null;
     let lastEmittedRom = -999;
     let lastEmittedTilt = -999;
     let lastEmittedHold = -999;
+    let lastRomEmitAt = 0;
+    let lastTiltEmitAt = 0;
+    let lastHoldEmitAt = 0;
 
     const cleanup = () => {
       if (rafId) {
@@ -796,20 +832,26 @@ export function SmartRehabKioskUI({
           const curEx = selectedExerciseRef.current;
           if (trackedExId !== curEx.exercise_id) {
             trackedExId = curEx.exercise_id;
-            smoothedRom = null;
+            smoothedRom = 0;
+            smoothedTilt = 0;
             targetRomDeg = null;
             latestLandmarks = null;
             latestAllLandmarks = [];
             latestPoseCount = 0;
+            latestRawTiltDeg = 0;
             latestTrunkTiltDeg = 0;
             latestWrongSideRaised = false;
             latestWrongSideBannerTh = null;
             lastEmittedRom = -999;
             lastEmittedTilt = -999;
             lastEmittedHold = -999;
+            lastRomEmitAt = 0;
+            lastTiltEmitAt = 0;
+            lastHoldEmitAt = 0;
             holdAccumMs = 0;
             awaitingReturn = false;
             repCelebrateUntil = 0;
+            lastRepCompletedAt = 0;
           }
 
           const v = videoRef.current;
@@ -870,13 +912,9 @@ export function SmartRehabKioskUI({
                     }
                   }
                   const measured = measureLiveJointAngleAndTilt(landmarks, curEx.target_joint);
-                  latestTrunkTiltDeg = measured.trunkTiltDeg;
+                  latestRawTiltDeg = measured.trunkTiltDeg;
                   latestWrongSideRaised = measured.wrongSideRaised;
                   latestWrongSideBannerTh = measured.wrongSideBannerTh;
-                  if (Math.abs(measured.trunkTiltDeg - lastEmittedTilt) >= 0.1) {
-                    lastEmittedTilt = measured.trunkTiltDeg;
-                    setDemoTrunkTiltDeg(measured.trunkTiltDeg);
-                  }
                   if (measured.romDeg !== null) {
                     targetRomDeg = measured.romDeg;
                   }
@@ -893,12 +931,13 @@ export function SmartRehabKioskUI({
             holdAccumMs = 0;
             if (lastEmittedHold !== curEx.hold_sec) {
               lastEmittedHold = curEx.hold_sec;
+              lastHoldEmitAt = now;
               setDemoHoldRemainingSec(curEx.hold_sec);
             }
             setDemoPresetState('MULTI_PERSON');
             drawLivePoseOverlayOnCanvas(poseCanvasRef.current, latestAllLandmarks, {
               targetJoint: curEx.target_joint,
-              romDeg: smoothedRom,
+              romDeg: targetRomDeg !== null ? smoothedRom : null,
               targetRomDeg: curEx.target_rom_deg,
               holdRatio: 0,
               trunkTiltDeg: 0,
@@ -911,7 +950,7 @@ export function SmartRehabKioskUI({
             holdAccumMs = 0;
             drawLivePoseOverlayOnCanvas(poseCanvasRef.current, latestAllLandmarks, {
               targetJoint: curEx.target_joint,
-              romDeg: smoothedRom,
+              romDeg: targetRomDeg !== null ? smoothedRom : null,
               targetRomDeg: curEx.target_rom_deg,
               holdRatio: 0,
               trunkTiltDeg: 0,
@@ -921,15 +960,31 @@ export function SmartRehabKioskUI({
               videoHeight: v.videoHeight,
             });
           } else if (latestLandmarks) {
+            const tiltDelta = latestRawTiltDeg - smoothedTilt;
+            if (Math.abs(tiltDelta) >= 0.5) {
+              const tiltAlpha = 1 - Math.exp(-dtMs / 250);
+              smoothedTilt = Math.max(0, smoothedTilt + tiltDelta * tiltAlpha);
+            }
+            latestTrunkTiltDeg = Number(smoothedTilt.toFixed(1));
+            if (now - lastTiltEmitAt >= 120 && Math.abs(latestTrunkTiltDeg - lastEmittedTilt) >= 0.3) {
+              lastEmittedTilt = latestTrunkTiltDeg;
+              lastTiltEmitAt = now;
+              setDemoTrunkTiltDeg(latestTrunkTiltDeg);
+            }
+
             if (targetRomDeg !== null) {
-              const alpha = 1 - Math.exp(-dtMs / 26);
-              smoothedRom =
-                smoothedRom === null
-                  ? targetRomDeg
-                  : Number((smoothedRom + alpha * (targetRomDeg - smoothedRom)).toFixed(1));
-              if (Math.abs(smoothedRom - lastEmittedRom) >= 0.05) {
-                lastEmittedRom = smoothedRom;
-                setDemoRomDeg(smoothedRom);
+              smoothedRom = stepSmoothRomAngle(smoothedRom, targetRomDeg, dtMs);
+              const nextEmitRom = Number(smoothedRom.toFixed(1));
+              const hitBoundary =
+                (nextEmitRom <= 0.1 || Math.abs(nextEmitRom - curEx.target_rom_deg) <= 0.2) &&
+                Math.abs(nextEmitRom - lastEmittedRom) >= 0.1;
+              if (
+                (now - lastRomEmitAt >= 65 && Math.abs(nextEmitRom - lastEmittedRom) >= 0.4) ||
+                hitBoundary
+              ) {
+                lastEmittedRom = nextEmitRom;
+                lastRomEmitAt = now;
+                setDemoRomDeg(nextEmitRom);
               }
 
               const targetThreshold = curEx.target_joint.includes('knee')
@@ -942,7 +997,7 @@ export function SmartRehabKioskUI({
                 ? smoothedRom >= 145
                 : smoothedRom <= Math.min(55, curEx.target_rom_deg * 0.45);
 
-              if (atRest) {
+              if (atRest && now - lastRepCompletedAt >= 1200) {
                 awaitingReturn = false;
               }
 
@@ -955,6 +1010,7 @@ export function SmartRehabKioskUI({
                   holdAccumMs = 0;
                   if (lastEmittedHold !== curEx.hold_sec) {
                     lastEmittedHold = curEx.hold_sec;
+                    lastHoldEmitAt = now;
                     setDemoHoldRemainingSec(curEx.hold_sec);
                   }
                   setDemoPresetState('WRONG_LIMB');
@@ -962,15 +1018,18 @@ export function SmartRehabKioskUI({
                   if (atTarget && !awaitingReturn && latestTrunkTiltDeg <= 14) {
                     holdAccumMs += dtMs;
                     const remSec = Math.max(0, Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)));
-                    if (remSec !== lastEmittedHold) {
+                    if (now - lastHoldEmitAt >= 90 && remSec !== lastEmittedHold) {
                       lastEmittedHold = remSec;
+                      lastHoldEmitAt = now;
                       setDemoHoldRemainingSec(remSec);
                     }
                     if (holdAccumMs >= holdTargetMs) {
                       holdAccumMs = 0;
                       awaitingReturn = true;
+                      lastRepCompletedAt = now;
                       repCelebrateUntil = now + 4000;
                       lastEmittedHold = 0;
+                      lastHoldEmitAt = now;
                       setDemoHoldRemainingSec(0);
                       setDemoValidReps((r) => {
                         const next = Math.min(curEx.target_reps, r + 1);
@@ -981,23 +1040,21 @@ export function SmartRehabKioskUI({
                       setDemoPresetState('HOLD_PHASE');
                     }
                   } else {
-                    holdAccumMs = Math.max(0, holdAccumMs - dtMs * 0.6);
+                    holdAccumMs = Math.max(0, holdAccumMs - dtMs * 1.2);
                     if (awaitingReturn || now <= repCelebrateUntil) {
                       if (lastEmittedHold !== 0) {
                         lastEmittedHold = 0;
+                        lastHoldEmitAt = now;
                         setDemoHoldRemainingSec(0);
                       }
                       setDemoPresetState(
                         demoValidRepsRef.current >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED',
                       );
                     } else {
-                      const remSec = Math.max(
-                        0,
-                        Number(((holdTargetMs - holdAccumMs) / 1000).toFixed(1)),
-                      );
-                      if (remSec !== lastEmittedHold) {
-                        lastEmittedHold = remSec;
-                        setDemoHoldRemainingSec(remSec);
+                      if (lastEmittedHold !== curEx.hold_sec && now - lastHoldEmitAt >= 90) {
+                        lastEmittedHold = curEx.hold_sec;
+                        lastHoldEmitAt = now;
+                        setDemoHoldRemainingSec(curEx.hold_sec);
                       }
                       setDemoPresetState(latestTrunkTiltDeg > 10 ? 'TRUNK_LEAN' : 'ACTIVE_REP');
                     }

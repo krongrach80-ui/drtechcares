@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { HighlightColor, KioskState } from '../hooks/useKioskSocket';
 
 interface RomGaugeProps {
@@ -20,11 +20,75 @@ export function RomGauge({
   holdRemainingSec,
   holdTargetSec,
 }: RomGaugeProps) {
+  const clampedInputRom = Math.max(0, Math.min(180, currentRomDeg));
+  const [visualRomDeg, setVisualRomDeg] = useState<number>(() => clampedInputRom);
+  const [displayedRomInt, setDisplayedRomInt] = useState<number>(() => Math.round(clampedInputRom));
+  const targetRomRef = useRef<number>(clampedInputRom);
+  const visualRomRef = useRef<number>(clampedInputRom);
+  const lastDisplaySyncAtRef = useRef<number>(0);
+
+  targetRomRef.current = clampedInputRom;
+
+  useEffect(() => {
+    let rafId = 0;
+    let lastTs = performance.now();
+
+    const tick = (now: number) => {
+      const dtMs = Math.min(100, Math.max(1, now - lastTs));
+      lastTs = now;
+      const target = targetRomRef.current;
+      const cur = visualRomRef.current;
+      const diff = target - cur;
+
+      if (Math.abs(diff) < 0.35) {
+        visualRomRef.current = target;
+        setVisualRomDeg(target);
+        const finalInt = Math.round(target);
+        setDisplayedRomInt((prev) => (prev === finalInt ? prev : finalInt));
+        return;
+      }
+
+      // Smooth slew-rate follower: 38 deg/s climb, 50 deg/s lower with gentle ease-out
+      const maxUp = (38 * dtMs) / 1000;
+      const maxDown = (50 * dtMs) / 1000;
+      const alpha = 1 - Math.exp(-dtMs / 180);
+      const rawStep = diff * alpha;
+      const step =
+        diff > 0
+          ? Math.min(Math.max(rawStep, 0.01), maxUp)
+          : Math.max(Math.min(rawStep, -0.01), -maxDown);
+      const next = Math.max(0, Math.min(180, cur + step));
+      visualRomRef.current = next;
+      setVisualRomDeg(next);
+
+      if (now - lastDisplaySyncAtRef.current >= 95 || Math.abs(target - next) < 0.35) {
+        lastDisplaySyncAtRef.current = now;
+        const nextInt = Math.round(next);
+        setDisplayedRomInt((prev) => (prev === nextInt ? prev : nextInt));
+      }
+
+      rafId = requestAnimationFrame(tick);
+    };
+
+    // Deadband of 0.8 deg keeps the readout steady when standing still
+    if (Math.abs(targetRomRef.current - visualRomRef.current) >= 0.8) {
+      rafId = requestAnimationFrame(tick);
+    }
+
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [clampedInputRom]);
+
   const radius = 104;
   const semiCircumference = Math.PI * radius;
-  const clampedRatio = Math.max(0, Math.min(1, currentRomDeg / Math.max(10, targetRomDeg)));
+  const clampedRatio = Math.max(0, Math.min(1, visualRomDeg / Math.max(10, targetRomDeg)));
   const dashOffset = semiCircumference * (1 - clampedRatio);
-  const exactPct = Math.max(completionPct, Math.round(clampedRatio * 100));
+  const displayRatio = Math.max(0, Math.min(1, displayedRomInt / Math.max(10, targetRomDeg)));
+  const isSettled = Math.abs(clampedInputRom - visualRomDeg) < 0.8;
+  const exactPct = isSettled
+    ? Math.max(completionPct, Math.round(displayRatio * 100))
+    : Math.round(displayRatio * 100);
 
   const outerRadius = 122;
   const outerSemi = Math.PI * outerRadius;
@@ -133,7 +197,7 @@ export function RomGauge({
         {/* Center Numeric Readout */}
         <div className="-mt-16 flex flex-col items-center text-center">
           <div className="tabular-mono text-4xl font-extrabold tracking-tight text-[#0F4C81] sm:text-5xl">
-            {currentRomDeg.toFixed(1)}°
+            {displayedRomInt}°
           </div>
           <p className="mt-1 text-xs font-semibold text-[#0F4C81]/70">
             เป้าหมาย <span className="tabular-mono font-bold text-[#0D9488]">{targetRomDeg.toFixed(0)}°</span>

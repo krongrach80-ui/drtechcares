@@ -641,8 +641,14 @@ export function useKioskSocket(
   const [livePayload, setLivePayload] = useState<KioskDecisionPayload | null>(null);
 
   // Interactive Demo Simulator state
-  const [demoPreset, setDemoPresetState] = useState<DemoPresetId>('ACTIVE_REP');
+  const [demoPreset, setRawDemoPresetState] = useState<DemoPresetId>('ACTIVE_REP');
+  const [manualHoldCountdown, setManualHoldCountdown] = useState<boolean>(false);
   const [demoRomDeg, setDemoRomDeg] = useState<number>(() => (hasExplicitContext ? 15 : 112));
+
+  const setDemoPresetState = useCallback((next: DemoPresetId) => {
+    setManualHoldCountdown(false);
+    setRawDemoPresetState(next);
+  }, []);
   const [demoTrunkTiltDeg, setDemoTrunkTiltDeg] = useState<number>(2.4);
   const [demoDistanceM, setDemoDistanceM] = useState<number>(2.0);
   const [demoValidReps, setDemoValidReps] = useState<number>(() => (hasExplicitContext ? 0 : 4));
@@ -838,7 +844,7 @@ export function useKioskSocket(
 
   // Hold phase smooth countdown when manually inspecting HOLD_PHASE
   useEffect(() => {
-    if (!isDemoMode || demoPreset !== 'HOLD_PHASE' || autoCycleDemo) return;
+    if (!isDemoMode || demoPreset !== 'HOLD_PHASE' || !manualHoldCountdown || autoCycleDemo) return;
     let remaining = selectedExercise.hold_sec;
     setDemoHoldRemainingSec(remaining);
     const interval = window.setInterval(() => {
@@ -846,15 +852,25 @@ export function useKioskSocket(
       setDemoHoldRemainingSec(remaining);
       if (remaining <= 0) {
         window.clearInterval(interval);
+        setManualHoldCountdown(false);
         setDemoValidReps((r) => {
           const next = Math.min(selectedExercise.target_reps, r + 1);
-          setDemoPresetState(next >= selectedExercise.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED');
+          setRawDemoPresetState(
+            next >= selectedExercise.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED',
+          );
           return next;
         });
       }
     }, 100);
     return () => window.clearInterval(interval);
-  }, [isDemoMode, demoPreset, autoCycleDemo, selectedExercise.hold_sec, selectedExercise.target_reps]);
+  }, [
+    isDemoMode,
+    demoPreset,
+    manualHoldCountdown,
+    autoCycleDemo,
+    selectedExercise.hold_sec,
+    selectedExercise.target_reps,
+  ]);
 
   // Smooth continuous auto-simulation loop when Auto-Cycle Demo is toggled ON
   useEffect(() => {
@@ -867,7 +883,7 @@ export function useKioskSocket(
         repCelebrateTicks -= 1;
         return;
       }
-      phaseT += 0.06;
+      phaseT += 0.032;
       const target = selectedExercise.target_rom_deg;
       const sine = (Math.sin(phaseT - Math.PI / 2) + 1) / 2;
       const rom = Math.round(sine * (target + 4));
@@ -900,12 +916,21 @@ export function useKioskSocket(
       }
     }, 50);
     return () => window.clearInterval(interval);
-  }, [isDemoMode, autoCycleDemo, selectedExercise.target_rom_deg, selectedExercise.hold_sec, selectedExercise.target_reps, demoTrunkTiltDeg]);
+  }, [
+    isDemoMode,
+    autoCycleDemo,
+    selectedExercise.target_rom_deg,
+    selectedExercise.hold_sec,
+    selectedExercise.target_reps,
+    demoTrunkTiltDeg,
+    setDemoPresetState,
+  ]);
 
   const setDemoPreset = useCallback(
     (preset: DemoPresetId) => {
       setAutoCycleDemo(false);
-      setDemoPresetState(preset);
+      setManualHoldCountdown(preset === 'HOLD_PHASE');
+      setRawDemoPresetState(preset);
       switch (preset) {
         case 'FACE_SCAN':
           setDemoTrunkTiltDeg(1.5);
