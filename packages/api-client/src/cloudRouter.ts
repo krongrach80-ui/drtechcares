@@ -443,6 +443,39 @@ async function readJsonBody<T = Record<string, unknown>>(request: Request): Prom
  * Full-parity edge/cloud API router for Cloudflare Workers & Supabase delegation.
  * Mirrors every route, RBAC rule, biometric gate, and clinical guard in apps/api/src/app.ts.
  */
+function normalizeInitialRehabSchedules(
+  rawSchedules: unknown,
+  patientId: string,
+  assignedPtId: string,
+): RehabScheduleItem[] {
+  if (!Array.isArray(rawSchedules)) return [];
+  const validStatuses = new Set<RehabScheduleItem['status']>(['ACTIVE', 'REST', 'COMPLETED', 'MISSED']);
+  const out: RehabScheduleItem[] = [];
+  rawSchedules.forEach((raw, idx) => {
+    if (!raw || typeof raw !== 'object') return;
+    const item = raw as Record<string, unknown>;
+    const scheduledDate = typeof item.scheduledDate === 'string' ? item.scheduledDate.trim() : '';
+    if (!scheduledDate) return;
+    const rawStatus = typeof item.status === 'string' ? (item.status as RehabScheduleItem['status']) : 'ACTIVE';
+    const status = validStatuses.has(rawStatus) ? rawStatus : 'ACTIVE';
+    const sets = typeof item.sets === 'number' && Number.isFinite(item.sets) ? Math.max(1, Math.round(item.sets)) : 3;
+    const reps = typeof item.reps === 'number' && Number.isFinite(item.reps) ? Math.max(1, Math.round(item.reps)) : 10;
+    out.push({
+      id: typeof item.id === 'string' && item.id.trim() ? item.id.trim() : `sched-${Date.now()}-${idx + 1}`,
+      patientId,
+      ptId: typeof item.ptId === 'string' && item.ptId.trim() ? item.ptId.trim() : assignedPtId,
+      exerciseId: typeof item.exerciseId === 'string' && item.exerciseId.trim() ? item.exerciseId.trim() : undefined,
+      modpackId: typeof item.modpackId === 'string' && item.modpackId.trim() ? item.modpackId.trim() : undefined,
+      scheduledDate,
+      sets,
+      reps,
+      status,
+      notes: typeof item.notes === 'string' ? item.notes : undefined,
+    });
+  });
+  return out.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate));
+}
+
 export function createCloudRouter(config: CloudClientConfig = {}) {
   const url = config.supabaseUrl || '';
   const key = config.supabaseServiceKey || config.supabaseAnonKey || '';
@@ -1194,6 +1227,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         angleEmbeddings?: unknown;
         framesCaptured?: number;
         qualityScore?: number;
+        rehabSchedules?: unknown;
       }>(request);
 
       const isPendingSkip = Boolean(body?.skipFaceScan);
@@ -1235,7 +1269,15 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         authUser!.role === 'pt'
           ? authUser!.id
           : body.assignedPtId || state.users.find((u) => u.role === 'pt')?.id || authUser!.id;
-      const nextAppt = body.nextAppointmentDate ?? '';
+      const initialSchedules = normalizeInitialRehabSchedules(body.rehabSchedules, patientId, assignedPtId);
+      const nextAppt =
+        initialSchedules.length > 0
+          ? resolveNextAppointmentDate({
+              rehabSchedules: initialSchedules,
+              fallbackNextAppointmentDate: body.nextAppointmentDate ?? '',
+              todayIso: formatLocalIsoDate(new Date()),
+            })
+          : body.nextAppointmentDate ?? '';
 
       const rawFrames = (!isPendingSkip && Array.isArray(body.rawFrames) ? body.rawFrames : []) as {
         pose: 'front' | 'left' | 'right' | 'nod';
@@ -1297,7 +1339,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         faceImageUrl: storedFaceImageUrl,
         masterEmbedding: masterVec,
         angleEmbeddings: resolvedAngles,
-        rehabSchedules: [],
+        rehabSchedules: initialSchedules,
         biometricHistory:
           !isPendingSkip && frontalVec && masterVec
             ? {
@@ -1329,7 +1371,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             faceImageUrl: storedFaceImageUrl ?? null,
             masterEmbedding: masterVec ?? null,
             angleEmbeddings: resolvedAngles ?? null,
-            rehabSchedules: [],
+            rehabSchedules: initialSchedules,
           },
         }),
       );

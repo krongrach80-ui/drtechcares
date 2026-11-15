@@ -883,5 +883,95 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       futureIso,
     );
   });
+
+  it('persists initial rehabSchedules and synced nextAppointmentDate during POST /api/biometric/enroll', async () => {
+    const router = createCloudDelegatedRouter({});
+    const ptLogin = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const { token: ptToken } = (await ptLogin.json()) as { token: string };
+
+    const today = new Date();
+    const todayIso = formatLocalIsoDate(today);
+    const plus2 = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 2);
+    const plus2Iso = formatLocalIsoDate(plus2);
+
+    const centroid = makeHybridEmbedding(7.41);
+    const rawFrames = [
+      ...Array.from({ length: 4 }, () => ({ pose: 'front', vector: centroid, qualityScore: 0.97 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'left', vector: centroid, qualityScore: 0.93 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'right', vector: centroid, qualityScore: 0.94 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'nod', vector: centroid, qualityScore: 0.95 })),
+    ];
+
+    const enrollRes = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-ENROLL-RX-01',
+        fullName: 'คนไข้ใหม่ กำหนดท่ากายภาพ',
+        age: 52,
+        diagnosis: 'ข้อไหล่ติด',
+        nextAppointmentDate: '',
+        rehabSchedules: [
+          {
+            id: 'sched-init-2',
+            patientId: 'pending',
+            exerciseId: 'ex-03',
+            scheduledDate: plus2Iso,
+            sets: 3,
+            reps: 10,
+            status: 'ACTIVE',
+            notes: 'ฝึกต่อที่คลินิก',
+          },
+          {
+            id: 'sched-init-1',
+            patientId: 'pending',
+            exerciseId: 'ex-01',
+            scheduledDate: todayIso,
+            sets: 3,
+            reps: 12,
+            status: 'ACTIVE',
+            notes: 'เริ่มฝึกวันแรกที่ตู้',
+          },
+        ],
+        frontalCentroid: centroid,
+        overallCentroid: centroid,
+        rawFrames,
+      },
+    });
+    expect(enrollRes.status).toBe(201);
+    const { patient } = (await enrollRes.json()) as {
+      patient: {
+        id: string;
+        nextAppointmentDate: string;
+        rehabSchedules: Array<{ id: string; patientId: string; exerciseId?: string; scheduledDate: string }>;
+      };
+    };
+
+    expect(patient.nextAppointmentDate).toBe(todayIso);
+    expect(patient.rehabSchedules).toHaveLength(2);
+    expect(patient.rehabSchedules.every((s) => s.patientId === patient.id)).toBe(true);
+    expect(patient.rehabSchedules[0]?.exerciseId).toBe('ex-01');
+
+    const verifyRes = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: { probeVector: centroid },
+    });
+    expect(verifyRes.status).toBe(200);
+    const verifyJson = (await verifyRes.json()) as {
+      matched: boolean;
+      hasAppointmentToday: boolean;
+      todayExercises: Array<{ exerciseId: string; sets: number; reps: number }>;
+      patient: { nextAppointmentDate: string };
+    };
+    expect(verifyJson.matched).toBe(true);
+    expect(verifyJson.hasAppointmentToday).toBe(true);
+    expect(verifyJson.patient.nextAppointmentDate).toBe(todayIso);
+    expect(verifyJson.todayExercises.map((e) => e.exerciseId)).toEqual(['ex-01']);
+    expect(verifyJson.todayExercises[0]?.sets).toBe(3);
+    expect(verifyJson.todayExercises[0]?.reps).toBe(12);
+  });
 });
 

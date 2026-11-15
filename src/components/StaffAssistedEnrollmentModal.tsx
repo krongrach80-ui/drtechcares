@@ -1,11 +1,25 @@
-import React, { useEffect, useRef, useState } from 'react';
-import type { DrTechCaresApiClient, PatientRecord, UserAccount } from '@drtechcares/api-client';
-import { useClinicalI18n } from '@drtechcares/clinical-i18n';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  formatLocalIsoDate,
+  resolveNextAppointmentDate,
+  type DrTechCaresApiClient,
+  type ManagedExerciseRecord,
+  type ModpackRecord,
+  type PatientRecord,
+  type RehabScheduleItem,
+  type UserAccount,
+} from '@drtechcares/api-client';
+import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
+import { CLINICAL_EXERCISES } from '@drtechcares/pose-engine';
 import {
   Activity,
+  CalendarDays,
   Camera,
+  Check,
   CheckCircle2,
+  Dumbbell,
   HeartPulse,
+  Plus,
   RefreshCw,
   ShieldCheck,
   Sparkles,
@@ -19,13 +33,71 @@ interface StaffAssistedEnrollmentModalProps {
   apiClient: DrTechCaresApiClient;
   currentUser: UserAccount;
   ptList: UserAccount[];
+  exercises?: ManagedExerciseRecord[];
+  modpacks?: ModpackRecord[];
   targetPatient?: PatientRecord | null;
   onClose: () => void;
   onEnrolled: (patient: PatientRecord) => void;
 }
 
+type ExerciseFilterCategory = 'all' | 'upper_limb' | 'lower_limb' | 'neck_trunk' | 'balance';
+
+const ENROLLMENT_EXERCISE_FILTER_TABS: ReadonlyArray<{
+  id: ExerciseFilterCategory;
+  label: Record<ClinicalLang, string>;
+}> = [
+  { id: 'all', label: { th: 'ทั้งหมด', en: 'All Postures', cn: '全部动作' } },
+  { id: 'upper_limb', label: { th: 'แขนและไหล่', en: 'Upper Limb', cn: '上肢/肩肘' } },
+  { id: 'lower_limb', label: { th: 'ขาและเข่า', en: 'Lower Limb', cn: '下肢/膝踝' } },
+  { id: 'neck_trunk', label: { th: 'คอและลำตัว', en: 'Neck & Trunk', cn: '颈部/躯干' } },
+  { id: 'balance', label: { th: 'ฝึกทรงตัว', en: 'Balance', cn: '平衡训练' } },
+];
+
+const FALLBACK_MANAGED_EXERCISES: ManagedExerciseRecord[] = CLINICAL_EXERCISES.map((ex) => ({
+  ...ex,
+  createdBy: 'system',
+}));
+
 function generatePatientHn(): string {
   return `HN-${Math.floor(10000 + Math.random() * 89999)}`;
+}
+
+function addDaysToIso(baseIso: string, deltaDays: number): string {
+  const [y, m, d] = baseIso.split('-').map(Number);
+  if (!y || !m || !d) return formatLocalIsoDate();
+  return formatLocalIsoDate(new Date(y, m - 1, d + deltaDays));
+}
+
+function buildTriWeeklyDates(startIso: string, count = 6): string[] {
+  const [y, m, d] = startIso.split('-').map(Number);
+  if (!y || !m || !d) return [startIso];
+  const result: string[] = [];
+  for (let offset = 0; offset < 28 && result.length < count; offset += 1) {
+    const dt = new Date(y, m - 1, d + offset);
+    const dow = dt.getDay();
+    if (dow === 1 || dow === 3 || dow === 5) {
+      result.push(formatLocalIsoDate(dt));
+    }
+  }
+  return result.length > 0 ? result : [startIso];
+}
+
+function getRecommendedExerciseIdsForJoint(
+  jointLabel: string,
+  catalog: readonly ManagedExerciseRecord[],
+): string[] {
+  const preferredByJoint: Record<string, string[]> = {
+    'เข่า (Knee)': ['ex-13', 'ex-14', 'ex-26'],
+    'ข้อไหล่ (Shoulder)': ['ex-01', 'ex-02', 'ex-03', 'ex-04'],
+    'หลังส่วนล่าง (Lower Back)': ['ex-23', 'ex-15', 'ex-16'],
+    'ข้อศอกและแขน (Elbow & Arm)': ['ex-05', 'ex-06', 'ex-01', 'ex-02'],
+    'การทรงตัวและสมอง (Neuro & Cognitive)': ['ex-21', 'ex-22', 'ex-15', 'ex-16'],
+  };
+  const preferred = preferredByJoint[jointLabel] ?? ['ex-01', 'ex-02'];
+  const validSet = new Set(catalog.map((e) => e.id));
+  const filtered = preferred.filter((id) => validSet.has(id));
+  if (filtered.length > 0) return filtered;
+  return catalog.slice(0, 2).map((e) => e.id);
 }
 
 export function StaffAssistedEnrollmentModal({
@@ -33,13 +105,20 @@ export function StaffAssistedEnrollmentModal({
   apiClient,
   currentUser,
   ptList,
+  exercises = [],
+  modpacks = [],
   targetPatient = null,
   onClose,
   onEnrolled,
 }: StaffAssistedEnrollmentModalProps) {
   const { lang, setLang } = useClinicalI18n();
   const isExistingPatientMode = Boolean(targetPatient);
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  const todayIso = useMemo(() => formatLocalIsoDate(), []);
+  const catalogExercises = useMemo(
+    () => (exercises.length > 0 ? exercises : FALLBACK_MANAGED_EXERCISES),
+    [exercises],
+  );
 
   // Section 1: General Info
   const [hn, setHn] = useState(generatePatientHn);
@@ -74,6 +153,21 @@ export function StaffAssistedEnrollmentModal({
   const [allFiveAnglesReady, setAllFiveAnglesReady] = useState(false);
   const [biometric120Result, setBiometric120Result] = useState<FaceID120Result | null>(null);
   const [capturedSnapshotUrl, setCapturedSnapshotUrl] = useState<string | undefined>(undefined);
+  const [pendingSkipFaceScan, setPendingSkipFaceScan] = useState(false);
+
+  // Step 3 Initial Rehab Prescription state
+  const [exerciseCategoryFilter, setExerciseCategoryFilter] = useState<ExerciseFilterCategory>('all');
+  const [selectedExerciseIds, setSelectedExerciseIds] = useState<string[]>(() =>
+    getRecommendedExerciseIdsForJoint('เข่า (Knee)', catalogExercises),
+  );
+  const [prescriptionTouched, setPrescriptionTouched] = useState(false);
+  const [prescriptionSets, setPrescriptionSets] = useState(3);
+  const [prescriptionReps, setPrescriptionReps] = useState(10);
+  const [selectedModpackId, setSelectedModpackId] = useState('');
+  const [scheduleNotes, setScheduleNotes] = useState('');
+  const [scheduledDates, setScheduledDates] = useState<string[]>(() => [todayIso]);
+  const [customDateInput, setCustomDateInput] = useState(todayIso);
+
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -87,11 +181,21 @@ export function StaffAssistedEnrollmentModal({
     }
     setBiometric120Result(null);
     setAllFiveAnglesReady(false);
+    setPendingSkipFaceScan(false);
     triggerFinalizeRef.current = null;
     setCreatedPatient(null);
     setCapturedSnapshotUrl(undefined);
     setErrorMsg(null);
     setToastMsg(null);
+    setExerciseCategoryFilter('all');
+    setPrescriptionTouched(false);
+    setSelectedExerciseIds(getRecommendedExerciseIdsForJoint('เข่า (Knee)', catalogExercises));
+    setPrescriptionSets(3);
+    setPrescriptionReps(10);
+    setSelectedModpackId('');
+    setScheduleNotes('');
+    setScheduledDates([todayIso]);
+    setCustomDateInput(todayIso);
     if (targetPatient) {
       setHn(targetPatient.hn);
       setFullName(targetPatient.fullName);
@@ -102,7 +206,7 @@ export function StaffAssistedEnrollmentModal({
     } else {
       setStep(1);
     }
-  }, [open, targetPatient]);
+  }, [open, targetPatient, catalogExercises, todayIso]);
 
   useEffect(() => {
     if (!open || targetPatient) return;
@@ -110,6 +214,11 @@ export function StaffAssistedEnrollmentModal({
       setAssignedPtId(currentUser.role === 'pt' ? currentUser.id : ptList[0].id);
     }
   }, [open, targetPatient, ptList, assignedPtId, currentUser.id, currentUser.role]);
+
+  const filteredExercises = useMemo(() => {
+    if (exerciseCategoryFilter === 'all') return catalogExercises;
+    return catalogExercises.filter((ex) => ex.category === exerciseCategoryFilter);
+  }, [catalogExercises, exerciseCategoryFilter]);
 
   if (!open) return null;
 
@@ -144,33 +253,134 @@ export function StaffAssistedEnrollmentModal({
     setPdpaAccepted(true);
     setBiometric120Result(null);
     setAllFiveAnglesReady(false);
+    setPendingSkipFaceScan(false);
     triggerFinalizeRef.current = null;
     setCapturedSnapshotUrl(undefined);
     setCapturing(false);
+    setExerciseCategoryFilter('all');
+    setPrescriptionTouched(false);
+    setSelectedExerciseIds(getRecommendedExerciseIdsForJoint('เข่า (Knee)', catalogExercises));
+    setPrescriptionSets(3);
+    setPrescriptionReps(10);
+    setSelectedModpackId('');
+    setScheduleNotes('');
+    setScheduledDates([todayIso]);
+    setCustomDateInput(todayIso);
     setCreatedPatient(null);
     setErrorMsg(null);
     setToastMsg(null);
   };
 
-  const handleGoStep2 = (e: React.FormEvent) => {
-    e.preventDefault();
+  const validateStep1 = (): boolean => {
     if (!fullName.trim()) {
       setErrorMsg('กรุณากรอกชื่อ-นามสกุล คนไข้');
-      return;
+      return false;
     }
     if (!pdpaAccepted) {
       setErrorMsg('กรุณายืนยันความยินยอม PDPA Biometric Consent ก่อนดำเนินการต่อ');
-      return;
+      return false;
     }
+    return true;
+  };
+
+  const syncDefaultPrescriptionIfUntouched = () => {
+    if (!prescriptionTouched) {
+      setSelectedExerciseIds(getRecommendedExerciseIdsForJoint(targetJoint, catalogExercises));
+    }
+  };
+
+  const handleGoStep2 = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validateStep1()) return;
     setErrorMsg(null);
+    setPendingSkipFaceScan(false);
     setStep(2);
     setCapturing(true);
+  };
+
+  const handleSkipFaceToStep3 = () => {
+    if (!validateStep1()) return;
+    setErrorMsg(null);
+    setPendingSkipFaceScan(true);
+    setCapturing(false);
+    syncDefaultPrescriptionIfUntouched();
+    setStep(3);
+  };
+
+  const handleProceedFromStep2ToStep3 = async () => {
+    setErrorMsg(null);
+    let bio = biometric120Result;
+    if (!bio && triggerFinalizeRef.current) {
+      setSaving(true);
+      try {
+        const finalized = await triggerFinalizeRef.current();
+        if (finalized) {
+          bio = finalized;
+          setBiometric120Result(finalized);
+          setCapturedSnapshotUrl(finalized.avatarDataUrl);
+        }
+      } finally {
+        setSaving(false);
+      }
+    }
+    if (!bio) {
+      setErrorMsg('กรุณาสแกนใบหน้าให้ครบ 5 มุมหรือครบ 120 เฟรมก่อนดำเนินการต่อ');
+      return;
+    }
+    setPendingSkipFaceScan(false);
+    setCapturing(false);
+    syncDefaultPrescriptionIfUntouched();
+    setStep(3);
+  };
+
+  const toggleExerciseSelection = (id: string) => {
+    setPrescriptionTouched(true);
+    setSelectedExerciseIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+  };
+
+  const toggleScheduledDate = (iso: string) => {
+    if (!iso) return;
+    setScheduledDates((prev) => (prev.includes(iso) ? prev.filter((d) => d !== iso) : [...prev, iso].sort()));
+  };
+
+  const addScheduledDates = (datesToAdd: string[]) => {
+    const valid = datesToAdd.filter(Boolean);
+    if (valid.length === 0) return;
+    setScheduledDates((prev) => Array.from(new Set([...prev, ...valid])).sort());
+  };
+
+  const buildPrescriptionSchedules = (): RehabScheduleItem[] => {
+    if (selectedExerciseIds.length === 0 || scheduledDates.length === 0) return [];
+    const sortedDates = [...scheduledDates].sort();
+    const ptId = assignedPtId || currentUser.id;
+    const baseTs = Date.now();
+    const out: RehabScheduleItem[] = [];
+    let seq = 0;
+    for (const dateIso of sortedDates) {
+      for (const exId of selectedExerciseIds) {
+        seq += 1;
+        out.push({
+          id: `sched-${baseTs}-${seq}`,
+          patientId: 'pending',
+          ptId,
+          exerciseId: exId,
+          modpackId: selectedModpackId || undefined,
+          scheduledDate: dateIso,
+          sets: Math.max(1, Number(prescriptionSets) || 3),
+          reps: Math.max(1, Number(prescriptionReps) || 10),
+          status: 'ACTIVE',
+          notes: scheduleNotes.trim() || undefined,
+        });
+      }
+    }
+    return out;
   };
 
   const handleFinalizeEnrollment = async (
     mode: 'verified' | 'pending_skip',
     overrideImageUrl?: string,
     overrideBiometric120?: FaceID120Result,
+    customSchedules: RehabScheduleItem[] = [],
   ) => {
     setSaving(true);
     setErrorMsg(null);
@@ -213,7 +423,7 @@ export function StaffAssistedEnrollmentModal({
         setToastMsg('ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ!');
         setCreatedPatient(updated);
         setCapturing(false);
-        setStep(3);
+        setStep(4);
         onEnrolled(updated);
         return;
       }
@@ -222,7 +432,12 @@ export function StaffAssistedEnrollmentModal({
         clinicalDiagnosis.trim() ||
         `${targetJoint}${underlyingDiseases.trim() ? ` | โรคประจำตัว: ${underlyingDiseases.trim()}` : ''}`;
 
-      const enrolled = await apiClient.enrollPatient10Shot({
+      const effectiveNextAppointmentDate =
+        customSchedules.length > 0
+          ? resolveNextAppointmentDate({ rehabSchedules: customSchedules, todayIso })
+          : '';
+
+      let enrolled = await apiClient.enrollPatient10Shot({
         hn: hn.trim() || generatePatientHn(),
         fullName: fullName.trim(),
         age: Number(age) || 45,
@@ -230,7 +445,8 @@ export function StaffAssistedEnrollmentModal({
         phone: phone.trim(),
         diagnosis: cleanedDiagnosis,
         assignedPtId: assignedPtId || undefined,
-        nextAppointmentDate: '',
+        nextAppointmentDate: effectiveNextAppointmentDate,
+        rehabSchedules: customSchedules,
         password: pinCode.trim() || '1234',
         skipFaceScan: isPending,
         faceBiometricStatus: isPending ? 'PENDING' : 'VERIFIED',
@@ -242,6 +458,25 @@ export function StaffAssistedEnrollmentModal({
         framesCaptured: !isPending && bio ? bio.framesCaptured : 0,
         qualityScore: !isPending && bio ? bio.qualityScore : undefined,
       });
+
+      if (customSchedules.length > 0 && (enrolled.rehabSchedules ?? []).length === 0) {
+        const finalizedSchedules = customSchedules.map((s) => ({ ...s, patientId: enrolled.id }));
+        const patched = await apiClient
+          .updatePatient(enrolled.id, {
+            nextAppointmentDate: effectiveNextAppointmentDate,
+            rehabSchedules: finalizedSchedules,
+          })
+          .catch(() => null);
+        enrolled = patched ?? {
+          ...enrolled,
+          nextAppointmentDate: effectiveNextAppointmentDate,
+          rehabSchedules: finalizedSchedules,
+        };
+      }
+
+      const prescribedUniqueCount = new Set(
+        (enrolled.rehabSchedules ?? customSchedules).map((s) => s.exerciseId).filter(Boolean),
+      ).size;
 
       const structuredSummary = [
         `[เปิดเวชระเบียน Staff-Assisted] ข้อต่อเป้าหมาย: ${targetJoint}`,
@@ -258,6 +493,11 @@ export function StaffAssistedEnrollmentModal({
         isPending
           ? 'สถานะใบหน้า: PENDING (รอสแกนหน้าเพิ่มเติม 120 เฟรม)'
           : `สถานะใบหน้า: VERIFIED (3D Multi-Angle ${bio?.framesCaptured ?? 120} เฟรม)`,
+        customSchedules.length > 0
+          ? `ท่ากายภาพเริ่มต้น: ${prescribedUniqueCount} ท่า (${customSchedules.length} รายการ${
+              effectiveNextAppointmentDate ? ` • นัดถัดไป ${effectiveNextAppointmentDate}` : ''
+            })`
+          : 'ท่ากายภาพเริ่มต้น: ยังไม่ได้กำหนด (สามารถเพิ่มภายหลังในตารางนัด)',
       ]
         .filter(Boolean)
         .join('\n');
@@ -266,12 +506,16 @@ export function StaffAssistedEnrollmentModal({
 
       setToastMsg(
         isPending
-          ? 'บันทึกประวัติคนไข้เรียบร้อย (รอสแกน Face ID เพิ่มเติม)'
-          : 'ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ!',
+          ? customSchedules.length > 0
+            ? `บันทึกประวัติและท่ากายภาพ ${prescribedUniqueCount} ท่าเรียบร้อย (รอสแกน Face ID เพิ่มเติม)`
+            : 'บันทึกประวัติคนไข้เรียบร้อย (รอสแกน Face ID เพิ่มเติม)'
+          : customSchedules.length > 0
+            ? `ลงทะเบียนคนไข้ บันทึก Face ID 120 เฟรม และกำหนดท่ากายภาพ ${prescribedUniqueCount} ท่าสำเร็จ!`
+            : 'ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ!',
       );
       setCreatedPatient(enrolled);
       setCapturing(false);
-      setStep(3);
+      setStep(4);
       onEnrolled(enrolled);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'ไม่สามารถบันทึกข้อมูลผู้ป่วยได้');
@@ -282,7 +526,11 @@ export function StaffAssistedEnrollmentModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-3 sm:p-6 backdrop-blur-sm">
-      <div className="relative flex max-h-[94vh] w-full max-w-2xl flex-col overflow-hidden rounded-[24px] bg-white shadow-2xl border border-slate-200">
+      <div
+        className={`relative flex max-h-[94vh] w-full flex-col overflow-hidden rounded-[24px] bg-white shadow-2xl border border-slate-200 transition-all ${
+          step === 3 ? 'max-w-3xl' : 'max-w-2xl'
+        }`}
+      >
         {/* Top Modal Header */}
         <div className="flex items-start justify-between border-b border-slate-100 px-6 py-4">
           <div className="flex items-center gap-3">
@@ -333,24 +581,29 @@ export function StaffAssistedEnrollmentModal({
         </div>
 
         {/* Stepper Bar */}
-        <div className="flex items-center justify-center gap-2 sm:gap-4 border-b border-slate-100 bg-slate-50/70 px-4 py-3 text-xs font-bold">
+        <div className="flex flex-wrap items-center justify-center gap-1.5 sm:gap-2.5 border-b border-slate-100 bg-slate-50/70 px-4 py-3 text-[11px] sm:text-xs font-bold">
+          {!isExistingPatientMode && (
+            <>
+              <div
+                className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 transition ${
+                  step === 1
+                    ? 'bg-emerald-600 text-white shadow-sm'
+                    : step > 1
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-white text-slate-500 border border-slate-200'
+                }`}
+              >
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/25 text-[11px] font-black">
+                  {step > 1 ? '✓' : '1'}
+                </span>
+                <span>1. กรอกข้อมูลคนไข้</span>
+              </div>
+              <span className="text-slate-300">•</span>
+            </>
+          )}
+
           <div
-            className={`flex items-center gap-2 rounded-full px-3.5 py-1.5 transition ${
-              step === 1
-                ? 'bg-emerald-600 text-white shadow-sm'
-                : step > 1
-                  ? 'bg-emerald-100 text-emerald-800'
-                  : 'bg-white text-slate-500 border border-slate-200'
-            }`}
-          >
-            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/20 text-[11px] font-black">
-              {step > 1 ? '✓' : '1'}
-            </span>
-            <span>1. กรอกข้อมูลคนไข้</span>
-          </div>
-          <span className="text-slate-300">•</span>
-          <div
-            className={`flex items-center gap-2 rounded-full px-3.5 py-1.5 transition ${
+            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 transition ${
               step === 2
                 ? 'bg-emerald-600 text-white shadow-sm'
                 : step > 2
@@ -359,22 +612,43 @@ export function StaffAssistedEnrollmentModal({
             }`}
           >
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-200/80 text-[11px] font-black text-slate-700">
-              {step > 2 ? '✓' : '2'}
+              {step > 2 ? '✓' : isExistingPatientMode ? '1' : '2'}
             </span>
-            <span>2. Face ID 120 เฟรม (3D Multi-Angle)</span>
+            <span>{isExistingPatientMode ? '1. Face ID 120 เฟรม (3D)' : '2. Face ID 120 เฟรม (3D)'}</span>
           </div>
+
+          {!isExistingPatientMode && (
+            <>
+              <span className="text-slate-300">•</span>
+              <div
+                className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 transition ${
+                  step === 3
+                    ? 'bg-emerald-600 text-white shadow-sm'
+                    : step > 3
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-white text-slate-500 border border-slate-200'
+                }`}
+              >
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-200/80 text-[11px] font-black text-slate-700">
+                  {step > 3 ? '✓' : '3'}
+                </span>
+                <span>3. กำหนดท่ากายภาพบำบัด</span>
+              </div>
+            </>
+          )}
+
           <span className="text-slate-300">•</span>
           <div
-            className={`flex items-center gap-2 rounded-full px-3.5 py-1.5 transition ${
-              step === 3
+            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 transition ${
+              step === 4
                 ? 'bg-emerald-600 text-white shadow-sm'
                 : 'bg-white text-slate-500 border border-slate-200'
             }`}
           >
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-200/80 text-[11px] font-black text-slate-700">
-              3
+              {isExistingPatientMode ? '2' : '4'}
             </span>
-            <span>3. พร้อมใช้งานตู้</span>
+            <span>{isExistingPatientMode ? '2. พร้อมใช้งานตู้' : '4. พร้อมใช้งานตู้'}</span>
           </div>
         </div>
 
@@ -716,18 +990,317 @@ export function StaffAssistedEnrollmentModal({
                   <button
                     type="button"
                     disabled={saving}
-                    onClick={() => void handleFinalizeEnrollment('pending_skip')}
+                    onClick={handleSkipFaceToStep3}
                     className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
                   >
-                    บันทึกประวัติไว้ก่อน (สแกน 120 เฟรมทีหลัง)
+                    ข้ามสแกนใบหน้าไปกำหนดท่ากายภาพ (สแกนทีหลัง) →
                   </button>
                 </div>
               )}
             </div>
           )}
 
-          {step === 3 && createdPatient && (
-            <div className="py-6 text-center space-y-4">
+          {step === 3 && !isExistingPatientMode && (
+            <div className="space-y-4">
+              {/* Patient & Biometric Status Banner */}
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-bold text-slate-500">คนไข้:</span>
+                  <span className="font-extrabold text-slate-900">{fullName}</span>
+                  <span className="rounded-lg bg-sky-100 px-2 py-0.5 font-mono font-bold text-sky-800">{hn}</span>
+                  <span className="rounded-lg bg-teal-50 border border-teal-200 px-2 py-0.5 font-bold text-teal-800">
+                    {targetJoint}
+                  </span>
+                </div>
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-extrabold ${
+                    !pendingSkipFaceScan && biometric120Result
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-amber-100 text-amber-800'
+                  }`}
+                >
+                  {!pendingSkipFaceScan && biometric120Result
+                    ? `Face ID 120 เฟรม พร้อมแล้ว ✓ (${Math.round(biometric120Result.qualityScore * 100)}%)`
+                    : 'รอสแกน Face ID ภายหลัง'}
+                </span>
+              </div>
+
+              {/* Section A: Multi-Select Rehab Exercises */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-600 text-[11px] font-black text-white">
+                      1
+                    </span>
+                    <span className="text-sm font-black text-slate-900 flex items-center gap-1.5">
+                      <Dumbbell className="h-4 w-4 text-emerald-600" />
+                      เลือกท่ากายภาพบำบัดสำหรับคนไข้รายนี้ (เลือกได้หลายท่า)
+                    </span>
+                    <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[11px] font-extrabold text-emerald-700">
+                      เลือกแล้ว {selectedExerciseIds.length} ท่า
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPrescriptionTouched(true);
+                        setSelectedExerciseIds(getRecommendedExerciseIdsForJoint(targetJoint, catalogExercises));
+                      }}
+                      className="rounded-lg border border-teal-200 bg-teal-50 px-2.5 py-1 text-[11px] font-bold text-teal-800 hover:bg-teal-100 cursor-pointer"
+                    >
+                      แนะนำตามข้อต่อ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPrescriptionTouched(true);
+                        setSelectedExerciseIds((prev) =>
+                          Array.from(new Set([...prev, ...filteredExercises.map((ex) => ex.id)])),
+                        );
+                      }}
+                      className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 cursor-pointer"
+                    >
+                      เลือกทั้งหมดในหมวด
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPrescriptionTouched(true);
+                        setSelectedExerciseIds([]);
+                      }}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-500 hover:bg-rose-50 hover:text-rose-700 cursor-pointer"
+                    >
+                      ล้างที่เลือก
+                    </button>
+                  </div>
+                </div>
+
+                {/* Category Filter Tabs */}
+                <div className="flex flex-wrap gap-1.5">
+                  {ENROLLMENT_EXERCISE_FILTER_TABS.map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setExerciseCategoryFilter(tab.id)}
+                      className={`rounded-xl px-3 py-1.5 text-[11px] font-bold transition cursor-pointer ${
+                        exerciseCategoryFilter === tab.id
+                          ? 'bg-gradient-to-r from-[#0F4C81] to-[#0284C7] text-white shadow-xs'
+                          : 'bg-sky-50 text-[#0F4C81] hover:bg-sky-100'
+                      }`}
+                    >
+                      {tab.label[lang]}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Interactive Multi-Select Exercise Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-56 overflow-y-auto pr-1">
+                  {filteredExercises.map((ex) => {
+                    const checked = selectedExerciseIds.includes(ex.id);
+                    return (
+                      <button
+                        key={ex.id}
+                        type="button"
+                        onClick={() => toggleExerciseSelection(ex.id)}
+                        className={`rounded-2xl border p-3 text-left transition cursor-pointer flex items-start gap-2.5 ${
+                          checked
+                            ? 'border-emerald-500 bg-emerald-50/70 ring-1 ring-emerald-500/40 shadow-xs'
+                            : 'border-slate-200 bg-white hover:border-emerald-300 hover:bg-slate-50/60'
+                        }`}
+                      >
+                        <span
+                          className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${
+                            checked
+                              ? 'border-emerald-600 bg-emerald-600 text-white'
+                              : 'border-slate-300 bg-white text-transparent'
+                          }`}
+                        >
+                          <Check className="h-3.5 w-3.5 stroke-[3]" />
+                        </span>
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex items-center justify-between gap-1.5">
+                            <span className="font-extrabold text-slate-900 truncate">
+                              {ex.name[lang] || ex.name.th}
+                            </span>
+                            <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-600">
+                              {ex.code}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-500 line-clamp-1">
+                            {ex.instruction[lang] || ex.instruction.th}
+                          </p>
+                          <div className="text-[10px] font-bold text-emerald-700">
+                            มุมเป้า {ex.detection.targetMinDeg}°–{ex.detection.targetMaxDeg}° • ค้าง {ex.detection.holdSec} วิ • แนะนำ {ex.detection.defaultSets}×{ex.detection.defaultReps}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {selectedExerciseIds.length === 0 && (
+                  <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] font-bold text-amber-800">
+                    กรุณาเลือกท่ากายภาพอย่างน้อย 1 ท่า หรือกด “ข้ามการกำหนดท่า (บันทึกเฉพาะประวัติ)” ด้านล่าง
+                  </div>
+                )}
+
+                {/* Sets, Reps, Modpack, Notes */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2 border-t border-slate-100">
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">จำนวนเซต (Sets)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={10}
+                      value={prescriptionSets}
+                      onChange={(e) => setPrescriptionSets(Math.max(1, Number(e.target.value)))}
+                      className="w-full rounded-xl border border-slate-200 px-2.5 py-2 text-center font-bold text-slate-800"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">จำนวนครั้ง (Reps)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={prescriptionReps}
+                      onChange={(e) => setPrescriptionReps(Math.max(1, Number(e.target.value)))}
+                      className="w-full rounded-xl border border-slate-200 px-2.5 py-2 text-center font-bold text-slate-800"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="block font-bold text-slate-600 mb-1">มินิเกมฝึกสมองควบคู่ (เสริม)</label>
+                    <select
+                      value={selectedModpackId}
+                      onChange={(e) => setSelectedModpackId(e.target.value)}
+                      className="w-full rounded-xl border border-slate-200 px-3 py-2 font-semibold text-slate-800"
+                    >
+                      <option value="">ไม่ระบุ (ฝึกเฉพาะท่ากายภาพ AI)</option>
+                      {modpacks.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <input
+                  value={scheduleNotes}
+                  onChange={(e) => setScheduleNotes(e.target.value)}
+                  placeholder="หมายเหตุการฝึกสำหรับคนไข้รายนี้ (เช่น ยกไม่เกิน 140°, พักระหว่างเซต 30 วิ)"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
+                />
+              </div>
+
+              {/* Section B: Scheduled Rehab Dates */}
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 text-[11px] font-black text-white">
+                      2
+                    </span>
+                    <span className="text-sm font-black text-slate-900 flex items-center gap-1.5">
+                      <CalendarDays className="h-4 w-4 text-blue-600" />
+                      กำหนดวันนัดฝึกกายภาพบำบัด
+                    </span>
+                  </div>
+                  <span className="rounded-full bg-blue-50 border border-blue-200 px-2.5 py-0.5 text-[11px] font-extrabold text-blue-700">
+                    เลือกไว้ {scheduledDates.length} วัน ({selectedExerciseIds.length * scheduledDates.length} รายการ)
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => addScheduledDates([todayIso])}
+                    className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold transition cursor-pointer ${
+                      scheduledDates.includes(todayIso)
+                        ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                        : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-emerald-50'
+                    }`}
+                  >
+                    + วันนี้ ({todayIso})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => addScheduledDates([addDaysToIso(todayIso, 1)])}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-sky-50 cursor-pointer"
+                  >
+                    + พรุ่งนี้ (+1 วัน)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      addScheduledDates([todayIso, addDaysToIso(todayIso, 1), addDaysToIso(todayIso, 2)])
+                    }
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-sky-50 cursor-pointer"
+                  >
+                    + ต่อเนื่อง 3 วัน
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => addScheduledDates(buildTriWeeklyDates(todayIso, 6))}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-sky-50 cursor-pointer"
+                  >
+                    + จันทร์-พุธ-ศุกร์ (2 สัปดาห์)
+                  </button>
+
+                  <div className="ml-auto flex items-center gap-1.5">
+                    <input
+                      type="date"
+                      value={customDateInput}
+                      onChange={(e) => setCustomDateInput(e.target.value)}
+                      className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-800"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => addScheduledDates([customDateInput])}
+                      className="inline-flex items-center gap-1 rounded-lg bg-[#0F4C81] px-2.5 py-1 text-[11px] font-bold text-white hover:bg-[#0c3f6b] cursor-pointer"
+                    >
+                      <Plus className="h-3 w-3" />
+                      เพิ่มวันนัด
+                    </button>
+                  </div>
+                </div>
+
+                {scheduledDates.length === 0 ? (
+                  <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] font-bold text-amber-800">
+                    กรุณาเลือกวันนัดอย่างน้อย 1 วัน (แนะนำ “วันนี้” เพื่อให้คนไข้เข้าฝึกที่ตู้ Kiosk ได้ทันที)
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {scheduledDates.map((d) => (
+                      <span
+                        key={d}
+                        className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-bold ${
+                          d === todayIso
+                            ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                            : 'border-sky-200 bg-sky-50 text-sky-800'
+                        }`}
+                      >
+                        <span className="font-mono">{d}</span>
+                        {d === todayIso && <span className="text-[10px]">(วันนี้ • เข้าตู้ได้ทันที)</span>}
+                        <button
+                          type="button"
+                          onClick={() => toggleScheduledDate(d)}
+                          className="ml-0.5 rounded-full p-0.5 hover:bg-black/10 cursor-pointer"
+                          aria-label={`ลบวันที่ ${d}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {step === 4 && createdPatient && (
+            <div className="py-5 text-center space-y-4">
               <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
                 <CheckCircle2 className="h-9 w-9" />
               </div>
@@ -741,7 +1314,7 @@ export function StaffAssistedEnrollmentModal({
                   บันทึกข้อมูลลงฐานข้อมูล Supabase Cloud และ Audit Trail เรียบร้อย
                 </p>
               </div>
-              <div className="mx-auto max-w-md rounded-2xl border border-slate-200 bg-slate-50 p-4 text-left text-xs space-y-2">
+              <div className="mx-auto max-w-lg rounded-2xl border border-slate-200 bg-slate-50 p-4 text-left text-xs space-y-2.5">
                 <div className="flex justify-between">
                   <span className="text-slate-500">รหัส HN:</span>
                   <span className="font-mono font-extrabold text-sky-700">{createdPatient.hn}</span>
@@ -763,21 +1336,61 @@ export function StaffAssistedEnrollmentModal({
                       : 'PENDING (รอสแกนหน้า 120 เฟรม)'}
                   </span>
                 </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">วันนัดหมายถัดไป:</span>
+                  <span className="font-mono font-bold text-slate-800">
+                    {createdPatient.nextAppointmentDate || '-'}
+                  </span>
+                </div>
+
+                {(createdPatient.rehabSchedules ?? []).length > 0 && (
+                  <div className="border-t border-slate-200 pt-2.5 mt-2 space-y-1.5">
+                    <div className="font-extrabold text-emerald-800 flex items-center gap-1.5">
+                      <Dumbbell className="h-3.5 w-3.5" />
+                      ท่ากายภาพบำบัดที่กำหนดไว้ ({createdPatient.rehabSchedules!.length} รายการ)
+                    </div>
+                    <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
+                      {createdPatient.rehabSchedules!.map((sched) => {
+                        const exMeta = catalogExercises.find((e) => e.id === sched.exerciseId);
+                        return (
+                          <div
+                            key={sched.id}
+                            className="flex items-center justify-between gap-2 rounded-lg bg-white border border-slate-200 px-2.5 py-1.5 text-[11px]"
+                          >
+                            <span className="font-bold text-slate-800 truncate">
+                              {exMeta ? exMeta.name[lang] || exMeta.name.th : sched.exerciseId || 'Rehab'}
+                            </span>
+                            <span className="shrink-0 font-mono text-slate-600">
+                              {sched.scheduledDate} • {sched.sets}×{sched.reps}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
         </div>
 
         {/* Sticky Modal Footer */}
-        <div className="flex items-center justify-end gap-3 border-t border-slate-100 bg-slate-50/80 px-6 py-4">
+        <div className="flex flex-wrap items-center justify-end gap-2.5 border-t border-slate-100 bg-slate-50/80 px-6 py-4">
           {step === 1 && (
             <>
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
               >
                 ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={handleSkipFaceToStep3}
+                className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs font-bold text-amber-800 hover:bg-amber-100"
+              >
+                ข้ามสแกนหน้า → กำหนดท่ากายภาพ
               </button>
               <button
                 type="submit"
@@ -803,22 +1416,89 @@ export function StaffAssistedEnrollmentModal({
                   ← ย้อนกลับแก้ข้อมูล
                 </button>
               )}
+              {isExistingPatientMode ? (
+                <button
+                  type="button"
+                  disabled={saving || (!biometric120Result && !allFiveAnglesReady)}
+                  onClick={() => void handleFinalizeEnrollment('verified')}
+                  className={`rounded-xl px-5 py-2.5 text-xs font-extrabold transition ${
+                    biometric120Result || allFiveAnglesReady
+                      ? 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/30 cursor-pointer'
+                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                  } disabled:opacity-60`}
+                >
+                  {saving ? 'กำลังบันทึกเวชระเบียน...' : 'บันทึกและเปิดใช้งานตู้ Kiosk →'}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={saving || (!biometric120Result && !allFiveAnglesReady)}
+                  onClick={() => void handleProceedFromStep2ToStep3()}
+                  className={`rounded-xl px-5 py-2.5 text-xs font-extrabold transition ${
+                    biometric120Result || allFiveAnglesReady
+                      ? 'bg-gradient-to-r from-emerald-600 to-blue-600 hover:opacity-95 text-white shadow-lg shadow-emerald-500/25 cursor-pointer'
+                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                  } disabled:opacity-60`}
+                >
+                  {saving ? 'กำลังเตรียมข้อมูลใบหน้า...' : '→ ขั้นตอนต่อไป: กำหนดท่ากายภาพบำบัด →'}
+                </button>
+              )}
+            </>
+          )}
+
+          {step === 3 && !isExistingPatientMode && (
+            <>
               <button
                 type="button"
-                disabled={saving || (!biometric120Result && !allFiveAnglesReady)}
-                onClick={() => void handleFinalizeEnrollment('verified')}
-                className={`rounded-xl px-5 py-2.5 text-xs font-extrabold transition ${
-                  biometric120Result || allFiveAnglesReady
-                    ? 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/30 cursor-pointer'
-                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                } disabled:opacity-60`}
+                disabled={saving}
+                onClick={() => {
+                  setErrorMsg(null);
+                  setStep(2);
+                  if (!biometric120Result) {
+                    setCapturing(true);
+                  }
+                }}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
               >
-                {saving ? 'กำลังบันทึกเวชระเบียน...' : 'บันทึกและเปิดใช้งานตู้ Kiosk →'}
+                ← ย้อนกลับสแกนใบหน้า
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() =>
+                  void handleFinalizeEnrollment(
+                    pendingSkipFaceScan ? 'pending_skip' : 'verified',
+                    undefined,
+                    undefined,
+                    [],
+                  )
+                }
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+              >
+                ข้ามการกำหนดท่า (บันทึกเฉพาะประวัติ)
+              </button>
+              <button
+                type="button"
+                disabled={saving || selectedExerciseIds.length === 0 || scheduledDates.length === 0}
+                onClick={() => {
+                  const built = buildPrescriptionSchedules();
+                  void handleFinalizeEnrollment(
+                    pendingSkipFaceScan ? 'pending_skip' : 'verified',
+                    undefined,
+                    undefined,
+                    built,
+                  );
+                }}
+                className="rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-extrabold text-white shadow-lg shadow-emerald-600/25 hover:bg-emerald-500 disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none disabled:cursor-not-allowed cursor-pointer"
+              >
+                {saving
+                  ? 'กำลังบันทึกเวชระเบียนและท่ากายภาพ...'
+                  : `บันทึกคนไข้พร้อมท่ากายภาพ (${selectedExerciseIds.length} ท่า) และเปิดใช้งานตู้ →`}
               </button>
             </>
           )}
 
-          {step === 3 && (
+          {step === 4 && (
             <>
               {!isExistingPatientMode && (
                 <button

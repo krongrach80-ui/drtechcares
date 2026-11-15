@@ -4969,13 +4969,21 @@ export function ClinicalStaffPortalShell({
         apiClient={apiClient}
         currentUser={currentUser}
         ptList={ptUsers}
+        exercises={exercises}
+        modpacks={modpacks}
         targetPatient={enrollTargetPatient}
         onClose={() => {
           setEnrollModalOpen(false);
           setEnrollTargetPatient(null);
         }}
         onEnrolled={(p) => {
-          flashBanner('success', `ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ! (${p.fullName} • ${p.hn})`);
+          const rxCount = p.rehabSchedules?.length ?? 0;
+          flashBanner(
+            'success',
+            rxCount > 0
+              ? `ลงทะเบียนคนไข้ ${p.fullName} (${p.hn}) พร้อมกำหนดท่ากายภาพ ${rxCount} รายการสำเร็จ!`
+              : `ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ! (${p.fullName} • ${p.hn})`,
+          );
           void refreshAll();
         }}
       />

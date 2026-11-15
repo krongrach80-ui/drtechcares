@@ -653,6 +653,7 @@ export class DrTechCaresApiClient {
     diagnosis: string;
     assignedPtId?: string;
     nextAppointmentDate?: string;
+    rehabSchedules?: RehabScheduleItem[];
     username?: string;
     password?: string;
     skipFaceScan?: boolean;
