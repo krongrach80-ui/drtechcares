@@ -108,12 +108,16 @@ function buildKioskLoginSuccessPayload(params: {
     rehabSchedules: resolvedSchedules,
     todayRoutine: resolvedRoutine,
     nextAppointmentDate: params.patient.nextAppointmentDate,
+    fallbackNextAppointmentDate: params.patient.nextAppointmentDate,
     serverTodayExercises: serverExercises,
     completedTodayOverride: completedOverride,
     now: new Date(),
   });
   return {
-    patient: params.patient,
+    patient: {
+      ...params.patient,
+      nextAppointmentDate: todaySchedule.nextAppointmentDate,
+    },
     todayRoutine: resolvedRoutine,
     confidencePercent: params.confidencePercent,
     rehabSchedules: resolvedSchedules ?? [],

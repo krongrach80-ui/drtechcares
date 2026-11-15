@@ -25,6 +25,7 @@ type RepCounterState = NonNullable<Parameters<typeof evaluateClinicalBiomechanic
 type FrameInspectionInput = Parameters<typeof inspectBiometricFrame3D>[0];
 import {
   formatLocalIsoDate,
+  resolveNextAppointmentDate,
   resolveTodayPatientSchedule,
   type AngleEmbeddings5D,
   type AuditLogRecord,
@@ -1507,7 +1508,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           rehabSchedules: p.rehabSchedules,
           rehabSessions: state.rehab_sessions.filter((s) => s.patientId === p.id),
           todayRoutine,
+          weeklySchedule: course?.weeklySchedule,
           nextAppointmentDate: p.nextAppointmentDate,
+          fallbackNextAppointmentDate: p.nextAppointmentDate,
           exercisesCatalog: state.exercises,
         });
         index.push({
@@ -1516,7 +1519,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           fullName: p.fullName,
           diagnosis: p.diagnosis,
           assignedPtId: p.assignedPtId,
-          nextAppointmentDate: p.nextAppointmentDate,
+          nextAppointmentDate: todaySchedule.nextAppointmentDate,
           avatarUrl: p.faceImageUrl,
           framesCaptured: p.faceFramesCount ?? 120,
           qualityScore: 0.96,
@@ -1798,7 +1801,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         rehabSchedules: patient.rehabSchedules,
         rehabSessions: state.rehab_sessions.filter((s) => s.patientId === patient.id),
         todayRoutine,
+        weeklySchedule: course?.weeklySchedule,
         nextAppointmentDate: patient.nextAppointmentDate,
+        fallbackNextAppointmentDate: patient.nextAppointmentDate,
         exercisesCatalog: state.exercises,
       });
 
@@ -1823,7 +1828,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           id: patient.id,
           hn: patient.hn,
           fullName: patient.fullName,
-          nextAppointmentDate: patient.nextAppointmentDate,
+          nextAppointmentDate: todaySchedule.nextAppointmentDate,
         },
         todayRoutine,
         rehabSchedules: patient.rehabSchedules ?? [],
@@ -2319,15 +2324,15 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         }
         if (Array.isArray(body.rehabSchedules)) {
           patient.rehabSchedules = body.rehabSchedules as RehabScheduleItem[];
-          if (body.nextAppointmentDate === undefined) {
-            const todayStr = new Date().toISOString().slice(0, 10);
-            const activeDates = patient.rehabSchedules
-              .filter((s) => s.status === 'ACTIVE' && s.scheduledDate)
-              .map((s) => s.scheduledDate)
-              .sort();
-            patient.nextAppointmentDate =
-              activeDates.find((d) => d >= todayStr) || activeDates[0] || '';
-          }
+          const todayStr = formatLocalIsoDate(new Date());
+          patient.nextAppointmentDate = resolveNextAppointmentDate({
+            rehabSchedules: patient.rehabSchedules,
+            fallbackNextAppointmentDate:
+              typeof body.nextAppointmentDate === 'string'
+                ? body.nextAppointmentDate
+                : patient.nextAppointmentDate,
+            todayIso: todayStr,
+          });
         }
       }
       await persistToSupabase(supabase, (db) =>
@@ -2624,6 +2629,16 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           });
         }
         matchedPatient.rehabSchedules = updatedSchedules;
+        const referenceTodayIso = body.scheduledDate?.trim() || localIso || utcIso;
+        const anyActiveLeftToday = updatedSchedules.some(
+          (item) => targetDates.has(item.scheduledDate) && item.status === 'ACTIVE',
+        );
+        matchedPatient.nextAppointmentDate = resolveNextAppointmentDate({
+          rehabSchedules: updatedSchedules,
+          fallbackNextAppointmentDate: matchedPatient.nextAppointmentDate,
+          todayIso: referenceTodayIso,
+          completedToday: Boolean(body.markDailyCompleted || session.activityType === 'minigame' || !anyActiveLeftToday),
+        });
       }
 
       await persistToSupabase(supabase, async (db) => {
@@ -2642,6 +2657,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           await db
             .from('patients')
             .update({
+              next_appointment_date: matchedPatient.nextAppointmentDate || null,
               history: {
                 gender: matchedPatient.gender ?? 'ชาย',
                 faceBiometricStatus: matchedPatient.faceBiometricStatus ?? 'PENDING',

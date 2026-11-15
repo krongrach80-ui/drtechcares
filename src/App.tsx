@@ -6,6 +6,7 @@ import {
   DrTechCaresApiClient,
   isPatientCompletedTodayInStorage,
   markPatientCompletedTodayInStorage,
+  resolveNextAppointmentDate,
   resolveTodayPatientSchedule,
   type UserAccount,
 } from '@drtechcares/api-client';
@@ -151,7 +152,9 @@ const KIOSK_TRAINING_COPY: Record<
     completedDescLimit: '1 ครั้ง ต่อ 1 วันเท่านั้น',
     completedDescPart2: 'และได้บันทึกผลการกายภาพของคุณในวันนี้เรียบร้อยแล้ว',
     completedNextAppt: (date) =>
-      `กรุณากลับมาฝึกอีกครั้งในวันนัดหมายถัดไป${date ? ` (${date})` : ''}`,
+      date
+        ? `กรุณากลับมาฝึกอีกครั้งในวันนัดหมายถัดไป (${date})`
+        : 'กรุณากลับมาฝึกอีกครั้งในวันนัดหมายถัดไปตามตารางนัดหมาย',
     doneTodayTag: 'ทำครบแล้ววันนี้ ✓',
     restHeaderBadge: 'Rest Day • วันพักผ่อน',
     scheduleCheckBadge: (date) => `ตรวจสอบตารางนัดหมายวันนี้ (${date})`,
@@ -198,7 +201,9 @@ const KIOSK_TRAINING_COPY: Record<
     completedDescLimit: 'only 1 session per day',
     completedDescPart2: 'and your physical therapy results for today have been saved.',
     completedNextAppt: (date) =>
-      `Please return for your next scheduled appointment${date ? ` (${date})` : ''}`,
+      date
+        ? `Please return on your next scheduled appointment (${date})`
+        : 'Please return on your next scheduled appointment',
     doneTodayTag: 'Completed Today ✓',
     restHeaderBadge: 'Rest Day • Recovery Day',
     scheduleCheckBadge: (date) => `Checked Today's Schedule (${date})`,
@@ -243,7 +248,8 @@ const KIOSK_TRAINING_COPY: Record<
     completedDescPart1: '系统规定每位患者每日仅可进行',
     completedDescLimit: '1 次物理康复训练',
     completedDescPart2: '，且您今日的康复训练记录已保存完毕。',
-    completedNextAppt: (date) => `请于下次预约日再来继续训练${date ? ` (${date})` : ''}`,
+    completedNextAppt: (date) =>
+      date ? `请于下次预约日再来继续训练 (${date})` : '请于下次预约日再来继续训练',
     doneTodayTag: '今日已完成 ✓',
     restHeaderBadge: '休息日 • 肌肉恢复日',
     scheduleCheckBadge: (date) => `已核对今日预约安排 (${date})`,
@@ -486,7 +492,11 @@ export function App() {
       rehabSchedules: authenticatedPatient.rehabSchedules,
       todayRoutine: authenticatedPatient.todayRoutine,
       nextAppointmentDate: authenticatedPatient.patient.nextAppointmentDate,
+      fallbackNextAppointmentDate: authenticatedPatient.patient.nextAppointmentDate,
       serverTodayExercises: authenticatedPatient.todayExercises,
+      completedTodayOverride: Boolean(
+        completedTodaySession || authenticatedPatient.completedToday,
+      ),
     });
     const hasAppointmentToday =
       authenticatedPatient.hasAppointmentToday ?? todaySchedule.hasAppointmentToday;
@@ -677,14 +687,26 @@ export function App() {
         setCompletedTodaySession(true);
         setAuthenticatedPatient((prev) => {
           if (!prev) return prev;
+          const updatedSchedules = (prev.rehabSchedules ?? []).map((item) =>
+            item.scheduledDate === todaySchedule.todayIso
+              ? { ...item, status: 'COMPLETED' as const }
+              : item,
+          );
+          const nextAppt = resolveNextAppointmentDate({
+            rehabSchedules: updatedSchedules,
+            fallbackNextAppointmentDate: prev.patient.nextAppointmentDate,
+            todayIso: todaySchedule.todayIso,
+            completedToday: true,
+            afterTodayOnly: true,
+          });
           return {
             ...prev,
             completedToday: true,
-            rehabSchedules: (prev.rehabSchedules ?? []).map((item) =>
-              item.scheduledDate === todaySchedule.todayIso
-                ? { ...item, status: 'COMPLETED' as const }
-                : item,
-            ),
+            patient: {
+              ...prev.patient,
+              nextAppointmentDate: nextAppt,
+            },
+            rehabSchedules: updatedSchedules,
             todayExercises: (prev.todayExercises ?? []).map((ex) => ({
               ...ex,
               status: 'COMPLETED' as const,
@@ -803,7 +825,7 @@ export function App() {
                   {kc.completedDescPart2}
                   <br />
                   <span className="font-semibold text-emerald-700">
-                    {kc.completedNextAppt(authenticatedPatient.patient.nextAppointmentDate)}
+                    {kc.completedNextAppt(todaySchedule.nextAppointmentAfterToday)}
                   </span>
                 </p>
 
@@ -893,7 +915,7 @@ export function App() {
                   {kc.restDesc(todaySchedule.todayIso)}
                   <br />
                   <span className="font-semibold text-emerald-700">
-                    {kc.nextApptLabel(authenticatedPatient.patient.nextAppointmentDate)}
+                    {kc.nextApptLabel(todaySchedule.nextAppointmentAfterToday || todaySchedule.nextAppointmentDate)}
                   </span>
                 </p>
                 <div className="mt-6 flex flex-col gap-3">

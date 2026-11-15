@@ -10,6 +10,7 @@ import {
   createCloudDelegatedRouter,
   formatLocalIsoDate,
   normalizeTtsLang,
+  resolveNextAppointmentDate,
   resolveTodayPatientSchedule,
   synthesizeTtsAudio,
 } from '../index';
@@ -718,6 +719,169 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     };
     const indexEntry = indexJson.index.find((e) => e.patientId === patient.id);
     expect(indexEntry?.completedToday).toBe(true);
+  });
+
+  it('resolves nextAppointmentDate and nextAppointmentAfterToday directly from rehabSchedules before and after daily completion', async () => {
+    const today = new Date();
+    const todayIso = formatLocalIsoDate(today);
+    const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    const tomorrowIso = formatLocalIsoDate(tomorrow);
+    const future = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 3);
+    const futureIso = formatLocalIsoDate(future);
+
+    // 1. Unit checks: today (ACTIVE), tomorrow (REST), +3d (ACTIVE)
+    const schedules = [
+      {
+        id: 'sched-today',
+        patientId: 'pat-next-1',
+        ptId: 'user-pt-1',
+        scheduledDate: todayIso,
+        exerciseId: 'ex-shoulder-flexion-r',
+        sets: 3,
+        reps: 10,
+        status: 'ACTIVE' as const,
+      },
+      {
+        id: 'sched-rest',
+        patientId: 'pat-next-1',
+        ptId: 'user-pt-1',
+        scheduledDate: tomorrowIso,
+        exerciseId: 'ex-shoulder-flexion-r',
+        sets: 3,
+        reps: 10,
+        status: 'REST' as const,
+      },
+      {
+        id: 'sched-future',
+        patientId: 'pat-next-1',
+        ptId: 'user-pt-1',
+        scheduledDate: futureIso,
+        exerciseId: 'ex-shoulder-flexion-l',
+        sets: 3,
+        reps: 10,
+        status: 'ACTIVE' as const,
+      },
+    ];
+
+    // Before today's completion: nextAppointmentDate = todayIso, nextAppointmentAfterToday = futureIso (skips REST tomorrowIso)
+    const beforeSchedule = resolveTodayPatientSchedule({
+      rehabSchedules: schedules,
+      fallbackNextAppointmentDate: todayIso,
+      now: today,
+    });
+    expect(beforeSchedule.nextAppointmentDate).toBe(todayIso);
+    expect(beforeSchedule.nextAppointmentAfterToday).toBe(futureIso);
+
+    // After today's completion: both advance to futureIso, never returning todayIso
+    const completedSchedules = schedules.map((item) =>
+      item.id === 'sched-today' ? { ...item, status: 'COMPLETED' as const } : item,
+    );
+    const afterSchedule = resolveTodayPatientSchedule({
+      rehabSchedules: completedSchedules,
+      fallbackNextAppointmentDate: todayIso,
+      now: today,
+    });
+    expect(afterSchedule.completedToday).toBe(true);
+    expect(afterSchedule.nextAppointmentDate).toBe(futureIso);
+    expect(afterSchedule.nextAppointmentAfterToday).toBe(futureIso);
+
+    // Even if only today was scheduled and completed, nextAppointmentAfterToday must never repeat todayIso
+    expect(
+      resolveNextAppointmentDate({
+        rehabSchedules: [completedSchedules[0]],
+        fallbackNextAppointmentDate: todayIso,
+        todayIso,
+        completedToday: true,
+        afterTodayOnly: true,
+      }),
+    ).toBe('');
+
+    // 2. End-to-end router check: completing today's session via POST /api/sessions advances patient.nextAppointmentDate to futureIso
+    const router = createCloudDelegatedRouter({});
+    const ptLogin = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const { token: ptToken } = (await ptLogin.json()) as { token: string };
+    const centroid = makeHybridEmbedding(6.19);
+    const rawFrames = [
+      ...Array.from({ length: 4 }, () => ({ pose: 'front', vector: centroid, qualityScore: 0.96 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'left', vector: centroid, qualityScore: 0.91 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'right', vector: centroid, qualityScore: 0.92 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'nod', vector: centroid, qualityScore: 0.93 })),
+    ];
+    const enrollRes = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-NEXT-01',
+        fullName: 'Pize Next Date Test',
+        age: 34,
+        diagnosis: 'Shoulder Flexion',
+        frontalCentroid: centroid,
+        overallCentroid: centroid,
+        rawFrames,
+      },
+    });
+    expect(enrollRes.status).toBe(201);
+    const { patient } = (await enrollRes.json()) as { patient: { id: string } };
+
+    // Deliberately pass stale nextAppointmentDate alongside rehabSchedules; router normalizes against schedule table
+    const putSchedRes = await callRouter(router, `/api/patients/${patient.id}`, {
+      method: 'PUT',
+      token: ptToken,
+      body: {
+        nextAppointmentDate: todayIso,
+        rehabSchedules: schedules.map((s) => ({ ...s, patientId: patient.id })),
+      },
+    });
+    expect(putSchedRes.status).toBe(200);
+
+    const beforeVerify = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: { probeVector: centroid },
+    });
+    const beforeVerifyJson = (await beforeVerify.json()) as {
+      patient: { nextAppointmentDate: string };
+    };
+    expect(beforeVerifyJson.patient.nextAppointmentDate).toBe(todayIso);
+
+    const completeRes = await callRouter(router, '/api/sessions', {
+      method: 'POST',
+      body: {
+        patientId: patient.id,
+        activityType: 'physio_exercise',
+        exerciseId: 'ex-shoulder-flexion-r',
+        exerciseName: 'ยกแขนตรงไปด้านหน้า (ขวา)',
+        completedSets: 3,
+        completedReps: 10,
+        accuracyPercent: 100,
+        maxRomDeg: 145,
+        painStopTriggered: false,
+        scheduledDate: todayIso,
+        markDailyCompleted: true,
+      },
+    });
+    expect(completeRes.status).toBe(201);
+
+    const afterVerify = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: { probeVector: centroid },
+    });
+    const afterVerifyJson = (await afterVerify.json()) as {
+      completedToday: boolean;
+      patient: { nextAppointmentDate: string };
+    };
+    expect(afterVerifyJson.completedToday).toBe(true);
+    expect(afterVerifyJson.patient.nextAppointmentDate).toBe(futureIso);
+
+    const indexRes = await callRouter(router, '/api/biometrics/index');
+    const indexJson = (await indexRes.json()) as {
+      index: Array<{ patientId: string; nextAppointmentDate: string }>;
+    };
+    expect(indexJson.index.find((e) => e.patientId === patient.id)?.nextAppointmentDate).toBe(
+      futureIso,
+    );
   });
 });
 

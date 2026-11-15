@@ -1,7 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { EnrolledTemplateCandidate, BiometricPose } from '@drtechcares/smart-biometric-core';
-import type {
-  ActiveSessionRecord,
+import {
+  resolveTodayPatientSchedule,
+  type ActiveSessionRecord,
   AngleEmbeddings5D,
   AuditLogRecord,
   BannedTargetRecord,
@@ -491,6 +492,19 @@ export async function hydrateStateFromSupabase(
       minigameScore: r.minigame_score as { correct: number; total: number; category: string } | undefined,
       createdAt: String(r.created_at),
     }));
+  }
+
+  for (const patient of state.patients) {
+    if ((patient.rehabSchedules ?? []).length > 0) {
+      const course = state.patient_courses.find((c) => c.patientId === patient.id);
+      const todaySchedule = resolveTodayPatientSchedule({
+        rehabSchedules: patient.rehabSchedules,
+        rehabSessions: state.rehab_sessions.filter((s) => s.patientId === patient.id),
+        weeklySchedule: course?.weeklySchedule,
+        fallbackNextAppointmentDate: patient.nextAppointmentDate,
+      });
+      patient.nextAppointmentDate = todaySchedule.nextAppointmentDate;
+    }
   }
 
   if (reportsRes.status === 'fulfilled' && Array.isArray(reportsRes.value.data)) {

@@ -1180,6 +1180,81 @@ function isSameCalendarDate(isoOrTimestamp: string | undefined, targetIso: strin
 }
 
 /**
+ * Resolves the next scheduled appointment date (`YYYY-MM-DD`) directly from the
+ * patient's schedule table (`rehabSchedules`), falling back to `weeklySchedule` or
+ * `fallbackNextAppointmentDate` only when no explicit calendar schedule exists.
+ */
+export function resolveNextAppointmentDate(input: {
+  rehabSchedules?: readonly RehabScheduleItem[];
+  weeklySchedule?: readonly DailyScheduleDay[];
+  fallbackNextAppointmentDate?: string;
+  todayIso?: string;
+  completedToday?: boolean;
+  afterTodayOnly?: boolean;
+}): string {
+  const todayIso = input.todayIso || formatLocalIsoDate();
+  const schedules = input.rehabSchedules ?? [];
+  const strictlyAfterToday = Boolean(input.afterTodayOnly || input.completedToday);
+
+  if (schedules.length > 0) {
+    const nonRestItems = schedules.filter((s) => s.status !== 'REST' && Boolean(s.scheduledDate));
+    const activeTodayExists = nonRestItems.some(
+      (s) => s.scheduledDate === todayIso && s.status === 'ACTIVE',
+    );
+    const completedTodayFromItems =
+      nonRestItems.some((s) => s.scheduledDate === todayIso && s.status === 'COMPLETED') &&
+      !activeTodayExists;
+    const useAfterToday = strictlyAfterToday || completedTodayFromItems;
+
+    const activeDates = Array.from(
+      new Set(
+        nonRestItems
+          .filter((s) => s.status === 'ACTIVE')
+          .map((s) => s.scheduledDate),
+      ),
+    ).sort();
+
+    const matchedActive = activeDates.find((d) => (useAfterToday ? d > todayIso : d >= todayIso));
+    if (matchedActive) {
+      return matchedActive;
+    }
+
+    const allNonRestDates = Array.from(new Set(nonRestItems.map((s) => s.scheduledDate))).sort();
+    const matchedFutureNonRest = allNonRestDates.find((d) =>
+      useAfterToday ? d > todayIso : d >= todayIso,
+    );
+    if (matchedFutureNonRest) {
+      return matchedFutureNonRest;
+    }
+
+    return '';
+  }
+
+  const weekly = input.weeklySchedule ?? [];
+  if (weekly.length > 0) {
+    const startOffset = strictlyAfterToday ? 1 : 0;
+    const [y, m, d] = todayIso.split('-').map(Number);
+    if (y && m && d) {
+      for (let offset = startOffset; offset <= 14; offset += 1) {
+        const candidateDate = new Date(y, m - 1, d + offset);
+        const dayIndex = candidateDate.getDay();
+        const planDay = weekly.find((entry) => entry.dayIndex === dayIndex);
+        if (planDay?.dayType === 'training' && (planDay.exercises ?? []).length > 0) {
+          return formatLocalIsoDate(candidateDate);
+        }
+      }
+    }
+  }
+
+  const fallback = (input.fallbackNextAppointmentDate ?? '').trim();
+  if (!fallback) return '';
+  if (strictlyAfterToday && fallback <= todayIso) {
+    return '';
+  }
+  return fallback;
+}
+
+/**
  * Resolves whether a patient has an appointment today (`todayIso`) and the list of
  * prescribed exercises/poses to perform today. Explicit `rehabSchedules` entries take
  * precedence over generic weekly course templates so rest days are never misreported.
@@ -1188,7 +1263,9 @@ export function resolveTodayPatientSchedule(input: {
   rehabSchedules?: readonly RehabScheduleItem[];
   rehabSessions?: readonly RehabSessionRecord[];
   todayRoutine?: DailyScheduleDay | null;
+  weeklySchedule?: readonly DailyScheduleDay[];
   nextAppointmentDate?: string;
+  fallbackNextAppointmentDate?: string;
   exercisesCatalog?: readonly ExerciseConfig[];
   serverTodayExercises?: readonly TodayPrescribedExerciseItem[];
   completedTodayOverride?: boolean;
@@ -1198,6 +1275,8 @@ export function resolveTodayPatientSchedule(input: {
   hasAppointmentToday: boolean;
   completedToday: boolean;
   todayExercises: TodayPrescribedExerciseItem[];
+  nextAppointmentDate: string;
+  nextAppointmentAfterToday: string;
 } {
   const todayIso = formatLocalIsoDate(input.now ?? new Date());
   const catalog =
@@ -1214,17 +1293,34 @@ export function resolveTodayPatientSchedule(input: {
       (s.activityType === 'minigame' || (s.completedReps ?? 0) > 0 || (s.completedSets ?? 0) > 0),
   );
 
+  const fallbackDate = input.fallbackNextAppointmentDate ?? input.nextAppointmentDate;
   const schedules = input.rehabSchedules ?? [];
   if (schedules.length > 0) {
     const scheduledToday = schedules.filter(
       (item) => item.scheduledDate === todayIso && (item.status === 'ACTIVE' || item.status === 'COMPLETED'),
     );
     if (scheduledToday.length === 0) {
+      const completedToday = Boolean(input.completedTodayOverride || hasCompletedSessionToday);
+      const nextAppointmentDate = resolveNextAppointmentDate({
+        rehabSchedules: schedules,
+        fallbackNextAppointmentDate: fallbackDate,
+        todayIso,
+        completedToday,
+      });
+      const nextAppointmentAfterToday = resolveNextAppointmentDate({
+        rehabSchedules: schedules,
+        fallbackNextAppointmentDate: fallbackDate,
+        todayIso,
+        completedToday: true,
+        afterTodayOnly: true,
+      });
       return {
         todayIso,
         hasAppointmentToday: false,
-        completedToday: Boolean(input.completedTodayOverride || hasCompletedSessionToday),
+        completedToday,
         todayExercises: [],
+        nextAppointmentDate,
+        nextAppointmentAfterToday,
       };
     }
     const allScheduledCompleted = scheduledToday.every((item) => item.status === 'COMPLETED');
@@ -1248,10 +1344,43 @@ export function resolveTodayPatientSchedule(input: {
         notes: item.notes,
       };
     });
-    return { todayIso, hasAppointmentToday: true, completedToday, todayExercises };
+    const nextAppointmentDate = resolveNextAppointmentDate({
+      rehabSchedules: schedules,
+      fallbackNextAppointmentDate: fallbackDate,
+      todayIso,
+      completedToday,
+    });
+    const nextAppointmentAfterToday = resolveNextAppointmentDate({
+      rehabSchedules: schedules,
+      fallbackNextAppointmentDate: fallbackDate,
+      todayIso,
+      completedToday: true,
+      afterTodayOnly: true,
+    });
+    return {
+      todayIso,
+      hasAppointmentToday: true,
+      completedToday,
+      todayExercises,
+      nextAppointmentDate,
+      nextAppointmentAfterToday,
+    };
   }
 
   const completedToday = Boolean(input.completedTodayOverride || hasCompletedSessionToday);
+  const nextAppointmentDate = resolveNextAppointmentDate({
+    weeklySchedule: input.weeklySchedule,
+    fallbackNextAppointmentDate: fallbackDate,
+    todayIso,
+    completedToday,
+  });
+  const nextAppointmentAfterToday = resolveNextAppointmentDate({
+    weeklySchedule: input.weeklySchedule,
+    fallbackNextAppointmentDate: fallbackDate,
+    todayIso,
+    completedToday: true,
+    afterTodayOnly: true,
+  });
   const routine = input.todayRoutine;
   if (routine?.dayType === 'training' && (routine.exercises ?? []).length > 0) {
     const todayExercises: TodayPrescribedExerciseItem[] = routine.exercises.map((item, idx) => {
@@ -1269,10 +1398,17 @@ export function resolveTodayPatientSchedule(input: {
         status: completedToday ? 'COMPLETED' : 'ACTIVE',
       };
     });
-    return { todayIso, hasAppointmentToday: true, completedToday, todayExercises };
+    return {
+      todayIso,
+      hasAppointmentToday: true,
+      completedToday,
+      todayExercises,
+      nextAppointmentDate,
+      nextAppointmentAfterToday,
+    };
   }
 
-  if (routine?.dayType === 'training' && input.nextAppointmentDate === todayIso) {
+  if (routine?.dayType === 'training' && (input.nextAppointmentDate === todayIso || fallbackDate === todayIso)) {
     return {
       todayIso,
       hasAppointmentToday: true,
@@ -1291,10 +1427,19 @@ export function resolveTodayPatientSchedule(input: {
           status: completedToday ? 'COMPLETED' : 'ACTIVE',
         },
       ],
+      nextAppointmentDate,
+      nextAppointmentAfterToday,
     };
   }
 
-  return { todayIso, hasAppointmentToday: false, completedToday, todayExercises: [] };
+  return {
+    todayIso,
+    hasAppointmentToday: false,
+    completedToday,
+    todayExercises: [],
+    nextAppointmentDate,
+    nextAppointmentAfterToday,
+  };
 }
 
 import { createCloudRouter } from './cloudRouter';

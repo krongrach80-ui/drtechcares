@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ApiError } from '@drtechcares/api-client';
+import { ApiError, resolveNextAppointmentDate } from '@drtechcares/api-client';
 import type {
   ActiveSessionRecord,
   AuditLogRecord,
@@ -3688,10 +3688,11 @@ export function ClinicalStaffPortalShell({
                                 ? 1
                                 : 0;
                         const nextAppt =
-                          scheduledDates.find((d) => d >= todayIsoStr) ||
-                          scheduledDates[0] ||
-                          p.nextAppointmentDate ||
-                          '-';
+                          resolveNextAppointmentDate({
+                            rehabSchedules: p.rehabSchedules,
+                            fallbackNextAppointmentDate: p.nextAppointmentDate,
+                            todayIso: todayIsoStr,
+                          }) || '-';
                         return (
                           <tr key={p.id}>
                             <td className="px-5 py-3 font-mono font-bold text-sky-700 whitespace-nowrap">{p.hn}</td>

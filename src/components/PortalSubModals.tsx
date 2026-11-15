@@ -1,16 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
-import type {
-  DrTechCaresApiClient,
-  ManagedExerciseRecord,
-  MedicalNoteRecord,
-  ModpackRecord,
-  PatientBiometricIndexEntry,
-  PatientRecord,
-  RehabScheduleItem,
-  RehabSessionRecord,
-  UserAccount,
+import {
+  resolveNextAppointmentDate,
+  type DrTechCaresApiClient,
+  type ManagedExerciseRecord,
+  type MedicalNoteRecord,
+  type ModpackRecord,
+  type PatientBiometricIndexEntry,
+  type PatientRecord,
+  type RehabScheduleItem,
+  type RehabSessionRecord,
+  type UserAccount,
 } from '@drtechcares/api-client';
 import {
   alignFaceTo112,
@@ -1380,12 +1381,9 @@ function computeWeeklyDatesForMonths(opts: {
   return results;
 }
 
-/** Returns the next active scheduled date (>= todayIso if available, otherwise earliest active or ''). */
+/** Returns the next active scheduled date from the schedule table, advancing past completed today items. */
 function computeNextAppointmentDate(schedules: readonly RehabScheduleItem[], todayIso: string): string {
-  const activeDates = Array.from(
-    new Set(schedules.filter((s) => s.status === 'ACTIVE' && s.scheduledDate).map((s) => s.scheduledDate)),
-  ).sort();
-  return activeDates.find((d) => d >= todayIso) || activeDates[0] || '';
+  return resolveNextAppointmentDate({ rehabSchedules: schedules, todayIso });
 }
 
 export function ScheduleCreatorAndDayModal({
