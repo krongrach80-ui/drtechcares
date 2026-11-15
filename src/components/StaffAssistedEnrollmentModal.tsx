@@ -157,9 +157,7 @@ export function StaffAssistedEnrollmentModal({
 
   // Step 3 Initial Rehab Prescription state
   const [exerciseCategoryFilter, setExerciseCategoryFilter] = useState<ExerciseFilterCategory>('all');
-  const [selectedExerciseIds, setSelectedExerciseIds] = useState<string[]>(() =>
-    getRecommendedExerciseIdsForJoint('เข่า (Knee)', catalogExercises),
-  );
+  const [selectedExerciseIds, setSelectedExerciseIds] = useState<string[]>([]);
   const [prescriptionTouched, setPrescriptionTouched] = useState(false);
   const [prescriptionSets, setPrescriptionSets] = useState(3);
   const [prescriptionReps, setPrescriptionReps] = useState(10);
@@ -189,7 +187,7 @@ export function StaffAssistedEnrollmentModal({
     setToastMsg(null);
     setExerciseCategoryFilter('all');
     setPrescriptionTouched(false);
-    setSelectedExerciseIds(getRecommendedExerciseIdsForJoint('เข่า (Knee)', catalogExercises));
+    setSelectedExerciseIds([]);
     setPrescriptionSets(3);
     setPrescriptionReps(10);
     setSelectedModpackId('');
@@ -259,7 +257,7 @@ export function StaffAssistedEnrollmentModal({
     setCapturing(false);
     setExerciseCategoryFilter('all');
     setPrescriptionTouched(false);
-    setSelectedExerciseIds(getRecommendedExerciseIdsForJoint('เข่า (Knee)', catalogExercises));
+    setSelectedExerciseIds([]);
     setPrescriptionSets(3);
     setPrescriptionReps(10);
     setSelectedModpackId('');
@@ -284,9 +282,7 @@ export function StaffAssistedEnrollmentModal({
   };
 
   const syncDefaultPrescriptionIfUntouched = () => {
-    if (!prescriptionTouched) {
-      setSelectedExerciseIds(getRecommendedExerciseIdsForJoint(targetJoint, catalogExercises));
-    }
+    // Do not auto-preselect exercises behind the user's back; require explicit selection or quick-fill button.
   };
 
   const handleGoStep2 = (e: React.FormEvent) => {
@@ -1081,6 +1077,32 @@ export function StaffAssistedEnrollmentModal({
                     </button>
                   </div>
                 </div>
+
+                {selectedExerciseIds.length > 0 && (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-2.5 space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-emerald-800">
+                      <span>ท่าที่เลือกไว้ทั้งหมด ({selectedExerciseIds.length} ท่า — ทุกหมวด)</span>
+                      <span className="text-[10px] font-medium text-emerald-700">กดที่แท็กเพื่อเอาออกได้</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {selectedExerciseIds.map((exId) => {
+                        const found = catalogExercises.find((c) => c.id === exId);
+                        const label = found ? found.name[lang] || found.name.th : exId;
+                        return (
+                          <button
+                            key={exId}
+                            type="button"
+                            onClick={() => toggleExerciseSelection(exId)}
+                            className="inline-flex items-center gap-1 rounded-full bg-white border border-emerald-300 px-2.5 py-0.5 text-[11px] font-bold text-emerald-900 hover:bg-rose-50 hover:border-rose-300 hover:text-rose-800 cursor-pointer"
+                          >
+                            <span>{label}</span>
+                            <span aria-hidden="true">×</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 {/* Category Filter Tabs */}
                 <div className="flex flex-wrap gap-1.5">

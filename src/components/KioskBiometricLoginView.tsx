@@ -2127,7 +2127,10 @@ export function KioskBiometricLoginView({
               {onOpenTelemetrySimulator && (
                 <button
                   type="button"
-                  onClick={onOpenTelemetrySimulator}
+                  onClick={() => {
+                    onPatientAuthenticated(verifiedModalPayload);
+                    onOpenTelemetrySimulator();
+                  }}
                   className="w-full py-2.5 px-4 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-800 text-xs font-bold cursor-pointer"
                 >
                   {modalCopy.telemetryBtn}

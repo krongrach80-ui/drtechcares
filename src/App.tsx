@@ -7,6 +7,7 @@ import {
   isPatientCompletedTodayInStorage,
   markPatientCompletedTodayInStorage,
   resolveNextAppointmentDate,
+  resolvePrescribedExercisesFromSchedules,
   resolveTodayPatientSchedule,
   type UserAccount,
 } from '@drtechcares/api-client';
@@ -485,7 +486,7 @@ export function App() {
   }, [authenticatedPatient?.patient.id]);
 
   const overviewScheduleState = useMemo(() => {
-    if (route !== '/' || kioskMode !== 'training' || !authenticatedPatient) {
+    if (route !== '/' || !authenticatedPatient) {
       return null;
     }
     const todaySchedule = resolveTodayPatientSchedule({
@@ -501,9 +502,14 @@ export function App() {
     const hasAppointmentToday =
       authenticatedPatient.hasAppointmentToday ?? todaySchedule.hasAppointmentToday;
     const todayExercises =
-      authenticatedPatient.todayExercises && authenticatedPatient.todayExercises.length > 0
-        ? authenticatedPatient.todayExercises
-        : todaySchedule.todayExercises;
+      todaySchedule.todayExercises.length > 0
+        ? todaySchedule.todayExercises
+        : (authenticatedPatient.todayExercises ?? []);
+    const prescribedFromSchedules = resolvePrescribedExercisesFromSchedules(
+      authenticatedPatient.rehabSchedules,
+    );
+    const effectiveKioskExercises =
+      todayExercises.length > 0 ? todayExercises : prescribedFromSchedules;
     const hasCompletedRehabToday = Boolean(
       completedTodaySession ||
         authenticatedPatient.completedToday ||
@@ -515,9 +521,10 @@ export function App() {
       todaySchedule,
       hasAppointmentToday,
       todayExercises,
+      effectiveKioskExercises,
       hasCompletedRehabToday,
     };
-  }, [route, kioskMode, authenticatedPatient, completedTodaySession]);
+  }, [route, authenticatedPatient, completedTodaySession]);
 
   const activeOverviewStatus: KioskOverviewStatus | null =
     overviewScheduleState && trainingStage === 'overview'
@@ -646,16 +653,96 @@ export function App() {
 
   // Locked Kiosk Mode (/) — Exact Kiosk Biometric Login UI by default, transitioning into Rehab / Classic Kiosk
   if (route === '/') {
+    const prescribedOptions = overviewScheduleState
+      ? mapTodayExercisesToPrescriptions(overviewScheduleState.effectiveKioskExercises)
+      : mapTodayExercisesToPrescriptions([]);
+
+    const markDailyRehabDone = () => {
+      if (!authenticatedPatient || !overviewScheduleState) return;
+      const { todaySchedule } = overviewScheduleState;
+      markPatientCompletedTodayInStorage(
+        [authenticatedPatient.patient.id, authenticatedPatient.patient.hn],
+        todaySchedule.todayIso,
+      );
+      setCompletedTodaySession(true);
+      setAuthenticatedPatient((prev) => {
+        if (!prev) return prev;
+        const updatedSchedules = (prev.rehabSchedules ?? []).map((item) =>
+          item.scheduledDate === todaySchedule.todayIso
+            ? { ...item, status: 'COMPLETED' as const }
+            : item,
+        );
+        const nextAppt = resolveNextAppointmentDate({
+          rehabSchedules: updatedSchedules,
+          fallbackNextAppointmentDate: prev.patient.nextAppointmentDate,
+          todayIso: todaySchedule.todayIso,
+          completedToday: true,
+          afterTodayOnly: true,
+        });
+        return {
+          ...prev,
+          completedToday: true,
+          patient: {
+            ...prev.patient,
+            nextAppointmentDate: nextAppt,
+          },
+          rehabSchedules: updatedSchedules,
+          todayExercises: (prev.todayExercises ?? []).map((ex) => ({
+            ...ex,
+            status: 'COMPLETED' as const,
+          })),
+        };
+      });
+    };
+
+    const handleExitToLogin = () => {
+      setAllowRestDayPractice(false);
+      setTrainingStage('overview');
+      setCompletedTodaySession(false);
+      setCompletedTodayExerciseIds([]);
+      setAuthenticatedPatient(null);
+      setKioskMode('login');
+    };
+
+    const handleExerciseCompleted = async (ex: ExercisePrescriptionOption) => {
+      if (!authenticatedPatient || !overviewScheduleState) return;
+      const nextIds = completedTodayExerciseIds.includes(ex.exercise_id)
+        ? completedTodayExerciseIds
+        : [...completedTodayExerciseIds, ex.exercise_id];
+      setCompletedTodayExerciseIds(nextIds);
+      const allDoneNow =
+        prescribedOptions.length <= 1 || nextIds.length >= prescribedOptions.length;
+      if (allDoneNow) {
+        markDailyRehabDone();
+      }
+      try {
+        await apiClient.recordRehabSession({
+          patientId: authenticatedPatient.patient.id,
+          activityType: 'physio_exercise',
+          exerciseId: ex.catalog_exercise_id ?? ex.exercise_id,
+          exerciseName: ex.name_th,
+          completedSets: ex.target_sets ?? 1,
+          completedReps: ex.target_reps,
+          accuracyPercent: 100,
+          maxRomDeg: ex.target_rom_deg,
+          painStopTriggered: false,
+          aiFeedback: `Completed prescribed ${ex.name_th} (${ex.target_reps} reps)`,
+          kinematicsReplay: [],
+          scheduledDate: overviewScheduleState.todaySchedule.todayIso,
+          markDailyCompleted: allDoneNow,
+        });
+      } catch {
+        // Keep Kiosk flow responsive even if offline
+      }
+    };
+
     if (kioskMode === 'classic') {
       return (
         <div className="min-h-screen bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <button
               type="button"
-              onClick={() => {
-                setAuthenticatedPatient(null);
-                setKioskMode('login');
-              }}
+              onClick={handleExitToLogin}
               className="rounded-xl border border-emerald-300 bg-white px-4 py-1.5 text-xs font-bold text-[#0F4C81] shadow-xs hover:bg-emerald-50 cursor-pointer"
             >
               {kc.backToLogin}
@@ -676,84 +763,6 @@ export function App() {
     if (kioskMode === 'training' && authenticatedPatient && overviewScheduleState) {
       const { todaySchedule, hasAppointmentToday, todayExercises, hasCompletedRehabToday } =
         overviewScheduleState;
-
-      const prescribedOptions = mapTodayExercisesToPrescriptions(todayExercises);
-
-      const markDailyRehabDone = () => {
-        markPatientCompletedTodayInStorage(
-          [authenticatedPatient.patient.id, authenticatedPatient.patient.hn],
-          todaySchedule.todayIso,
-        );
-        setCompletedTodaySession(true);
-        setAuthenticatedPatient((prev) => {
-          if (!prev) return prev;
-          const updatedSchedules = (prev.rehabSchedules ?? []).map((item) =>
-            item.scheduledDate === todaySchedule.todayIso
-              ? { ...item, status: 'COMPLETED' as const }
-              : item,
-          );
-          const nextAppt = resolveNextAppointmentDate({
-            rehabSchedules: updatedSchedules,
-            fallbackNextAppointmentDate: prev.patient.nextAppointmentDate,
-            todayIso: todaySchedule.todayIso,
-            completedToday: true,
-            afterTodayOnly: true,
-          });
-          return {
-            ...prev,
-            completedToday: true,
-            patient: {
-              ...prev.patient,
-              nextAppointmentDate: nextAppt,
-            },
-            rehabSchedules: updatedSchedules,
-            todayExercises: (prev.todayExercises ?? []).map((ex) => ({
-              ...ex,
-              status: 'COMPLETED' as const,
-            })),
-          };
-        });
-      };
-
-      const handleExitToLogin = () => {
-        setAllowRestDayPractice(false);
-        setTrainingStage('overview');
-        setCompletedTodaySession(false);
-        setCompletedTodayExerciseIds([]);
-        setAuthenticatedPatient(null);
-        setKioskMode('login');
-      };
-
-      const handleExerciseCompleted = async (ex: ExercisePrescriptionOption) => {
-        const nextIds = completedTodayExerciseIds.includes(ex.exercise_id)
-          ? completedTodayExerciseIds
-          : [...completedTodayExerciseIds, ex.exercise_id];
-        setCompletedTodayExerciseIds(nextIds);
-        const allDoneNow =
-          prescribedOptions.length <= 1 || nextIds.length >= prescribedOptions.length;
-        if (allDoneNow) {
-          markDailyRehabDone();
-        }
-        try {
-          await apiClient.recordRehabSession({
-            patientId: authenticatedPatient.patient.id,
-            activityType: 'physio_exercise',
-            exerciseId: ex.catalog_exercise_id ?? ex.exercise_id,
-            exerciseName: ex.name_th,
-            completedSets: ex.target_sets ?? 1,
-            completedReps: ex.target_reps,
-            accuracyPercent: 100,
-            maxRomDeg: ex.target_rom_deg,
-            painStopTriggered: false,
-            aiFeedback: `Completed prescribed ${ex.name_th} (${ex.target_reps} reps)`,
-            kinematicsReplay: [],
-            scheduledDate: todaySchedule.todayIso,
-            markDailyCompleted: allDoneNow,
-          });
-        } catch {
-          // Keep Kiosk flow responsive even if offline
-        }
-      };
 
       const saveTrainingSession = async (summary: PhysicalCardGameSummary) => {
         markDailyRehabDone();
@@ -1235,10 +1244,7 @@ export function App() {
               {renderKioskLangSwitcher()}
               <button
                 type="button"
-                onClick={() => {
-                  setAuthenticatedPatient(null);
-                  setKioskMode('login');
-                }}
+                onClick={handleExitToLogin}
                 className="rounded-xl border border-emerald-400/50 bg-emerald-600/25 px-3 py-1 font-bold text-emerald-100 hover:bg-emerald-600/40 cursor-pointer"
               >
                 {kc.backToLogin}
@@ -1246,6 +1252,18 @@ export function App() {
             </div>
           </div>
           <SmartRehabKioskUI
+            patient={
+              authenticatedPatient
+                ? {
+                    id: authenticatedPatient.patient.hn,
+                    name: authenticatedPatient.patient.fullName,
+                  }
+                : undefined
+            }
+            prescribedExercises={authenticatedPatient ? prescribedOptions : undefined}
+            onExerciseCompleted={
+              authenticatedPatient && overviewScheduleState ? handleExerciseCompleted : undefined
+            }
             onEmergencyStop={({ reason }) => {
               const label = authenticatedPatient
                 ? `${authenticatedPatient.patient.fullName} (${authenticatedPatient.patient.hn})`

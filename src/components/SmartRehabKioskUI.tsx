@@ -179,10 +179,9 @@ export function measureLiveJointAngleAndTilt(
       return { angleDeg: null, xyzVector: null };
     }
 
-    const availDownY = Math.max(0.12, 0.95 - sh.y);
     const wristUpRef = hipsVisible
       ? Math.max(torsoSpanY * 1.02, shoulderSpanX * 1.88)
-      : Math.max(shoulderSpanX * 2.65, sh.y * 0.96);
+      : shoulderSpanX * 2.72;
 
     const measureSegment3D = (
       ptIdx: number,
@@ -190,39 +189,36 @@ export function measureLiveJointAngleAndTilt(
       isWrist: boolean,
     ): { angleDeg: number; xyzVector: { x: number; y: number; z: number } } | null => {
       if (!pt || (pt.visibility ?? 0) < UPPER_MIN_VIS) return null;
-      const dx = (pt.x - sh.x) * 1.22;
-      const dy = pt.y - sh.y;
-      const dzSensor = ((pt.z ?? 0) - (sh.z ?? 0)) * 1.22;
 
-      const refLen =
-        dy > 0
-          ? isWrist
-            ? hipsVisible
-              ? wristUpRef
-              : Math.min(wristUpRef, availDownY * 0.92)
-            : hipsVisible
-              ? wristUpRef * 0.54
-              : Math.min(wristUpRef * 0.54, availDownY * 0.55)
-          : isWrist
-            ? wristUpRef
-            : wristUpRef * 0.54;
-
-      let dzWorld = 0;
+      // Prefer true isotropic metric 3D coordinates when MediaPipe worldLandmarks are valid
       if (worldLandmarks) {
         const wSh = worldLandmarks[shIdx];
         const wPt = worldLandmarks[ptIdx];
         if (wSh && wPt) {
-          const wLen3D = Math.hypot(
-            wPt.x - wSh.x,
-            wPt.y - wSh.y,
-            (wPt.z ?? 0) - (wSh.z ?? 0),
-          );
+          const wDx = wPt.x - wSh.x;
+          const wDy = wPt.y - wSh.y;
+          const wDz = (wPt.z ?? 0) - (wSh.z ?? 0);
+          const wLen3D = Math.hypot(wDx, wDy, wDz);
           if (wLen3D >= 0.08) {
-            dzWorld = (Math.abs((wPt.z ?? 0) - (wSh.z ?? 0)) / wLen3D) * refLen;
+            const worldHorizXZ = Math.hypot(wDx, wDz);
+            const worldAngleDeg = (Math.atan2(worldHorizXZ, wDy) * 180) / Math.PI;
+            return {
+              angleDeg: worldAngleDeg,
+              xyzVector: {
+                x: Number((wDx / wLen3D).toFixed(3)),
+                y: Number((wDy / wLen3D).toFixed(3)),
+                z: Number((wDz / wLen3D).toFixed(3)),
+              },
+            };
           }
         }
       }
 
+      const dx = (pt.x - sh.x) * 1.22;
+      const dy = pt.y - sh.y;
+      const dzSensor = ((pt.z ?? 0) - (sh.z ?? 0)) * 1.22;
+
+      const refLen = isWrist ? wristUpRef : wristUpRef * 0.54;
       const dzSphere = Math.sqrt(Math.max(0, refLen * refLen - dx * dx - dy * dy));
       const isPlaneRestricted = expectedPlane === 'flexion' || expectedPlane === 'abduction';
       const sagittalWeight =
@@ -230,7 +226,14 @@ export function measureLiveJointAngleAndTilt(
           ? 1
           : Math.max(0, 1 - (Math.abs(dx) - shoulderSpanX * 0.45) / (shoulderSpanX * 0.45));
 
-      const absDz = Math.max(Math.abs(dzSensor), dzWorld, dzSphere * sagittalWeight);
+      // When arm hangs below shoulder height (dy > 0), weight spherical Z fill by actual forward depth
+      // so a neutral hanging arm measures near 0°–10° rather than being inflated to 35°–50°.
+      const downForwardWeight =
+        dy > 0 ? (expectedPlane === 'abduction' ? 0 : Math.min(1, Math.abs(dzSensor) / 0.14)) : 1;
+      const absDz = Math.max(
+        Math.abs(dzSensor),
+        dzSphere * sagittalWeight * downForwardWeight,
+      );
       const dz = (dzSensor > 1e-4 ? 1 : -1) * absDz;
       const horizMagXZ = Math.hypot(dx, absDz);
       const mag3D = Math.hypot(dx, dy, dz);
@@ -338,31 +341,36 @@ export function measureLiveJointAngleAndTilt(
     }
   } else if (targetJoint === 'left_knee' || targetJoint === 'right_knee') {
     const isLeft = targetJoint === 'left_knee';
-    const hip = landmarks[isLeft ? POSE_INDEX.LEFT_HIP : POSE_INDEX.RIGHT_HIP];
-    const knee = landmarks[isLeft ? POSE_INDEX.LEFT_KNEE : POSE_INDEX.RIGHT_KNEE];
-    const ankle = landmarks[isLeft ? POSE_INDEX.LEFT_ANKLE : POSE_INDEX.RIGHT_ANKLE];
-    if (
+    const hipIdx = isLeft ? POSE_INDEX.LEFT_HIP : POSE_INDEX.RIGHT_HIP;
+    const kneeIdx = isLeft ? POSE_INDEX.LEFT_KNEE : POSE_INDEX.RIGHT_KNEE;
+    const ankleIdx = isLeft ? POSE_INDEX.LEFT_ANKLE : POSE_INDEX.RIGHT_ANKLE;
+    const hip = landmarks[hipIdx];
+    const knee = landmarks[kneeIdx];
+    const ankle = landmarks[ankleIdx];
+    const KNEE_JOINT_MIN_VIS = 0.12;
+    const inFrameKneeJoint =
       hip &&
       knee &&
       ankle &&
-      (hip.visibility ?? 0) >= LOWER_MIN_VIS &&
-      (knee.visibility ?? 0) >= LOWER_MIN_VIS &&
-      (ankle.visibility ?? 0) >= LOWER_MIN_VIS
-    ) {
-      romDeg = computeJointAngle3D(hip, knee, ankle);
-    } else if (
-      lSh &&
-      rSh &&
-      lHip &&
-      rHip &&
-      (lSh.visibility ?? 0) >= UPPER_MIN_VIS &&
-      (lHip.visibility ?? 0) >= LOWER_MIN_VIS
-    ) {
-      // Fallback for close webcam framing: approximate squat/knee flexion from hip-shoulder vertical span
-      const midShY = (lSh.y + rSh.y) / 2;
-      const midHipY = (lHip.y + rHip.y) / 2;
-      const dropNorm = Math.max(0, Math.min(1, (midHipY - midShY - 0.18) / 0.25));
-      romDeg = Number((105 + dropNorm * 65).toFixed(1));
+      (hip.visibility ?? 0) >= KNEE_JOINT_MIN_VIS &&
+      (knee.visibility ?? 0) >= KNEE_JOINT_MIN_VIS &&
+      (ankle.visibility ?? 0) >= KNEE_JOINT_MIN_VIS &&
+      knee.y <= 0.99 &&
+      ankle.y <= 0.99;
+    if (inFrameKneeJoint) {
+      const wHip = worldLandmarks?.[hipIdx];
+      const wKnee = worldLandmarks?.[kneeIdx];
+      const wAnkle = worldLandmarks?.[ankleIdx];
+      const hasValidWorldKnee = Boolean(
+        wHip &&
+          wKnee &&
+          wAnkle &&
+          Math.hypot(wHip.x - wKnee.x, wHip.y - wKnee.y, (wHip.z ?? 0) - (wKnee.z ?? 0)) >= 0.08 &&
+          Math.hypot(wAnkle.x - wKnee.x, wAnkle.y - wKnee.y, (wAnkle.z ?? 0) - (wKnee.z ?? 0)) >= 0.08,
+      );
+      romDeg = hasValidWorldKnee && wHip && wKnee && wAnkle
+        ? computeJointAngle3D(wHip, wKnee, wAnkle)
+        : computeJointAngle3D(hip, knee, ankle);
     }
   } else if (targetJoint === 'spine') {
     romDeg = Number(Math.max(0, 15 - trunkTiltDeg).toFixed(1));
@@ -395,19 +403,17 @@ export function stepSmoothRomAngle(
   }
   const safeDt = Math.min(100, Math.max(1, dtMs));
   const rawDelta = safeTarget - currentRom;
-  // Deadband of 0.8 deg suppresses stationary jitter while staying tight to real motion
-  if (Math.abs(rawDelta) < 0.8) {
+  // Tight deadband of 0.35 deg suppresses stationary jitter while locking onto motion without lag
+  if (Math.abs(rawDelta) < 0.35) {
     return currentRom;
   }
-  // Instant fast-pursuit filter (tau: 5..20ms) + high slew cap (1100/1150 deg/s)
+  // Instant fast-pursuit filter (tau: 3..12ms) + high slew cap (1800 deg/s)
   const absDelta = Math.abs(rawDelta);
-  const adaptiveTau = absDelta >= 15 ? 5 : absDelta >= 6 ? 10 : 20;
+  const adaptiveTau = absDelta >= 12 ? 3 : absDelta >= 4 ? 6 : 12;
   const alpha = 1 - Math.exp(-safeDt / adaptiveTau);
   const emaStep = rawDelta * alpha;
-  const maxUpStep = (1100 * safeDt) / 1000;
-  const maxDownStep = (1150 * safeDt) / 1000;
-  const step =
-    emaStep > 0 ? Math.min(emaStep, maxUpStep) : Math.max(emaStep, -maxDownStep);
+  const maxStep = (1800 * safeDt) / 1000;
+  const step = emaStep > 0 ? Math.min(emaStep, maxStep) : Math.max(emaStep, -maxStep);
   return Math.max(0, Math.min(180, currentRom + step));
 }
 
@@ -1371,9 +1377,7 @@ export function SmartRehabKioskUI({
                   latestWrongSideBannerTh = measured.wrongSideBannerTh;
                   latestWrongPlaneRaised = measured.wrongPlaneRaised;
                   latestWrongPlaneBannerTh = measured.wrongPlaneBannerTh;
-                  if (measured.romDeg !== null) {
-                    targetRomDeg = measured.romDeg;
-                  }
+                  targetRomDeg = measured.romDeg;
                 } else if (now - lastValidPoseAt > 220 || !latestLandmarks) {
                   latestLandmarks = null;
                   renderPrimaryLandmarks = null;
@@ -1461,7 +1465,7 @@ export function SmartRehabKioskUI({
                 (nextEmitRom <= 0.1 || Math.abs(nextEmitRom - curEx.target_rom_deg) <= 0.2) &&
                 Math.abs(nextEmitRom - lastEmittedRom) >= 0.1;
               if (
-                (now - lastRomEmitAt >= 42 && Math.abs(nextEmitRom - lastEmittedRom) >= 0.35) ||
+                (now - lastRomEmitAt >= 14 && Math.abs(nextEmitRom - lastEmittedRom) >= 0.2) ||
                 hitBoundary
               ) {
                 lastEmittedRom = nextEmitRom;
@@ -1470,21 +1474,29 @@ export function SmartRehabKioskUI({
               }
 
               const isKneeExercise = curEx.target_joint.includes('knee');
-              const targetThreshold = isKneeExercise
+              const isKneeExtension = isKneeExercise && curEx.target_rom_deg >= 140;
+              const isKneeFlexion = isKneeExercise && curEx.target_rom_deg < 140;
+              const targetThreshold = isKneeFlexion
                 ? curEx.target_rom_deg + 15
-                : curEx.target_rom_deg * 0.82;
-              const holdMaintainThreshold = isKneeExercise
+                : isKneeExtension
+                  ? curEx.target_rom_deg * 0.92
+                  : curEx.target_rom_deg * 0.82;
+              const holdMaintainThreshold = isKneeFlexion
                 ? curEx.target_rom_deg + 22
-                : curEx.target_rom_deg * 0.75;
-              const atTarget = isKneeExercise
+                : isKneeExtension
+                  ? curEx.target_rom_deg * 0.85
+                  : curEx.target_rom_deg * 0.75;
+              const atTarget = isKneeFlexion
                 ? smoothedRom <= targetThreshold
                 : smoothedRom >= targetThreshold;
-              const atMaintainTarget = isKneeExercise
+              const atMaintainTarget = isKneeFlexion
                 ? smoothedRom <= holdMaintainThreshold
                 : smoothedRom >= holdMaintainThreshold;
-              const atRest = isKneeExercise
+              const atRest = isKneeFlexion
                 ? smoothedRom >= 145
-                : smoothedRom <= Math.min(55, curEx.target_rom_deg * 0.45);
+                : isKneeExtension
+                  ? smoothedRom <= 125
+                  : smoothedRom <= Math.min(55, curEx.target_rom_deg * 0.45);
 
               if (atRest && now - lastRepCompletedAt >= 1200) {
                 awaitingReturn = false;
@@ -1563,12 +1575,20 @@ export function SmartRehabKioskUI({
                   }
                 }
               }
+            } else {
+              holdAccumMs = 0;
+              smoothedRom = 0;
+              if (lastEmittedRom !== 0) {
+                lastEmittedRom = 0;
+                lastRomEmitAt = now;
+                setDemoRomDeg(0);
+              }
             }
 
             drawLivePoseOverlayOnCanvas(poseCanvasRef.current, renderLandmarksList, {
               targetJoint: curEx.target_joint,
               expectedPlane: curExpectedPlane,
-              romDeg: smoothedRom,
+              romDeg: targetRomDeg !== null ? smoothedRom : null,
               targetRomDeg: curEx.target_rom_deg,
               holdRatio: holdAccumMs > 0 ? Math.min(1, holdAccumMs / holdTargetMs) : 0,
               trunkTiltDeg: latestTrunkTiltDeg,

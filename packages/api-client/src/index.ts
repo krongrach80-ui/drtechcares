@@ -1261,6 +1261,104 @@ export function resolveNextAppointmentDate(input: {
   return fallback;
 }
 
+const ACCIDENTAL_DEFAULT_KNEE_PREFIX = ['ex-13', 'ex-14', 'ex-26'] as const;
+const ACCIDENTAL_DEFAULT_KNEE_SET = new Set<string>(ACCIDENTAL_DEFAULT_KNEE_PREFIX);
+
+/**
+ * Strips the legacy accidental 3-knee default bundle (`ex-13`, `ex-14`, `ex-26`)
+ * when it appears as an exact prefix on a scheduled day followed by other chosen exercises.
+ */
+export function sanitizeAccidentalDefaultKneePrefix(
+  rehabSchedules: readonly RehabScheduleItem[],
+): RehabScheduleItem[] {
+  if (rehabSchedules.length === 0) return [];
+  const grouped = new Map<string, RehabScheduleItem[]>();
+  const dateOrder: string[] = [];
+  for (const item of rehabSchedules) {
+    const key = item.scheduledDate || '__undated__';
+    let list = grouped.get(key);
+    if (!list) {
+      list = [];
+      grouped.set(key, list);
+      dateOrder.push(key);
+    }
+    list.push(item);
+  }
+
+  const sanitized: RehabScheduleItem[] = [];
+  for (const dateKey of dateOrder) {
+    const items = grouped.get(dateKey) ?? [];
+    const nonRest = items.filter((s) => s.status !== 'REST');
+    const hasExactDefaultPrefix =
+      nonRest.length > ACCIDENTAL_DEFAULT_KNEE_PREFIX.length &&
+      ACCIDENTAL_DEFAULT_KNEE_PREFIX.every((id, idx) => nonRest[idx]?.exerciseId === id);
+    const hasAdditionalChosenExercise =
+      hasExactDefaultPrefix &&
+      nonRest
+        .slice(ACCIDENTAL_DEFAULT_KNEE_PREFIX.length)
+        .some((item) => {
+          const exId = item.exerciseId || item.modpackId || '';
+          return Boolean(exId) && !ACCIDENTAL_DEFAULT_KNEE_SET.has(exId);
+        });
+
+    if (!hasAdditionalChosenExercise) {
+      sanitized.push(...items);
+      continue;
+    }
+
+    const idsToSkip = new Set(nonRest.slice(0, ACCIDENTAL_DEFAULT_KNEE_PREFIX.length));
+    for (const item of items) {
+      if (!idsToSkip.has(item)) {
+        sanitized.push(item);
+      }
+    }
+  }
+  return sanitized;
+}
+
+/**
+ * Resolves unique prescribed exercises across a patient's `rehabSchedules`
+ * (used as fallback when practicing on a rest day or entering telemetry mode).
+ */
+export function resolvePrescribedExercisesFromSchedules(
+  rehabSchedules?: readonly RehabScheduleItem[],
+  exercisesCatalog?: readonly ExerciseConfig[],
+): TodayPrescribedExerciseItem[] {
+  const catalog =
+    exercisesCatalog && exercisesCatalog.length > 0 ? exercisesCatalog : CLINICAL_EXERCISES;
+  const sanitized = sanitizeAccidentalDefaultKneePrefix(rehabSchedules ?? []).filter(
+    (item) => item.status !== 'REST',
+  );
+  if (sanitized.length === 0) return [];
+
+  const activeFirst = sanitized.filter((item) => item.status === 'ACTIVE');
+  const sourcePool = activeFirst.length > 0 ? activeFirst : sanitized;
+  const emptyFallback = new Map<string, TodayPrescribedExerciseItem>();
+  const seenExIds = new Set<string>();
+  const result: TodayPrescribedExerciseItem[] = [];
+
+  for (const item of sourcePool) {
+    const exId = item.exerciseId || item.modpackId || 'minigame';
+    if (seenExIds.has(exId)) continue;
+    seenExIds.add(exId);
+    const meta = buildExerciseSummary(exId, catalog, emptyFallback, item.modpackId);
+    result.push({
+      id: item.id,
+      exerciseId: exId,
+      nameTh: meta.nameTh,
+      nameEn: meta.nameEn,
+      targetJoint: meta.targetJoint,
+      activityType: meta.activityType,
+      sets: item.sets,
+      reps: item.reps,
+      holdSec: meta.holdSec,
+      status: item.status === 'COMPLETED' ? 'COMPLETED' : 'ACTIVE',
+      notes: item.notes,
+    });
+  }
+  return result;
+}
+
 /**
  * Resolves whether a patient has an appointment today (`todayIso`) and the list of
  * prescribed exercises/poses to perform today. Explicit `rehabSchedules` entries take
@@ -1301,7 +1399,7 @@ export function resolveTodayPatientSchedule(input: {
   );
 
   const fallbackDate = input.fallbackNextAppointmentDate ?? input.nextAppointmentDate;
-  const schedules = input.rehabSchedules ?? [];
+  const schedules = sanitizeAccidentalDefaultKneePrefix(input.rehabSchedules ?? []);
   if (schedules.length > 0) {
     const scheduledToday = schedules.filter(
       (item) => item.scheduledDate === todayIso && (item.status === 'ACTIVE' || item.status === 'COMPLETED'),

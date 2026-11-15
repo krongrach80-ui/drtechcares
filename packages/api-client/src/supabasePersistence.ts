@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { EnrolledTemplateCandidate, BiometricPose } from '@drtechcares/smart-biometric-core';
 import {
   resolveTodayPatientSchedule,
+  sanitizeAccidentalDefaultKneePrefix,
   type ActiveSessionRecord,
   AngleEmbeddings5D,
   AuditLogRecord,
@@ -430,7 +431,7 @@ export async function hydrateStateFromSupabase(
         masterEmbedding: fallbackMaster,
         angleEmbeddings: fallbackAngles,
         rehabSchedules: Array.isArray(history.rehabSchedules)
-          ? (history.rehabSchedules as RehabScheduleItem[])
+          ? sanitizeAccidentalDefaultKneePrefix(history.rehabSchedules as RehabScheduleItem[])
           : [],
         biometricHistory:
           tpl && tpl.frontal && tpl.overall

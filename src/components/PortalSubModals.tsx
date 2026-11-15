@@ -3,6 +3,7 @@ import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import {
   resolveNextAppointmentDate,
+  sanitizeAccidentalDefaultKneePrefix,
   type DrTechCaresApiClient,
   type ManagedExerciseRecord,
   type MedicalNoteRecord,
@@ -1496,9 +1497,7 @@ export function ScheduleCreatorAndDayModal({
   const [exerciseCategoryFilter, setExerciseCategoryFilter] = useState<
     'all' | 'upper_limb' | 'lower_limb' | 'neck_trunk' | 'balance'
   >('all');
-  const [selectedExerciseIds, setSelectedExerciseIds] = useState<string[]>(() =>
-    exercises[0]?.id ? [exercises[0].id] : [],
-  );
+  const [selectedExerciseIds, setSelectedExerciseIds] = useState<string[]>([]);
   const [modpackId, setModpackId] = useState(modpacks[0]?.id || '');
   const [sets, setSets] = useState(3);
   const [reps, setReps] = useState(10);
@@ -1531,8 +1530,18 @@ export function ScheduleCreatorAndDayModal({
     setMonthSpan(1);
     setStartFromAnchorOnly(false);
     setWeeklyExcludedDates([]);
-    setSelectedExerciseIds((prev) => (prev.length > 0 ? prev : exercises[0]?.id ? [exercises[0].id] : []));
-  }, [patient, selectedDateIso, mode, todayIso, exercises]);
+    const sanitizedSchedules = sanitizeAccidentalDefaultKneePrefix(patient?.rehabSchedules ?? []);
+    const anchorDayExIds = Array.from(
+      new Set(
+        sanitizedSchedules
+          .filter(
+            (item) => item.scheduledDate === anchorIso && item.status !== 'REST' && Boolean(item.exerciseId),
+          )
+          .map((item) => item.exerciseId as string),
+      ),
+    );
+    setSelectedExerciseIds(anchorDayExIds);
+  }, [patient, selectedDateIso, mode, todayIso]);
 
   const activePatient = patients.find((p) => p.id === targetPatientId) || patient;
   const existingScheduleDatesSet = useMemo(() => {
@@ -1629,14 +1638,13 @@ export function ScheduleCreatorAndDayModal({
     if (!activePatient || selectedExerciseIds.length === 0 || finalSelectedDates.length === 0) return;
     setSaving(true);
     try {
-      const replacementKeys = new Set<string>();
+      const finalSelectedDateSet = new Set(finalSelectedDates);
       const generated: RehabScheduleItem[] = [];
       const baseTs = Date.now();
       let seq = 0;
 
       for (const dateIso of finalSelectedDates) {
         for (const exId of selectedExerciseIds) {
-          replacementKeys.add(`${dateIso}::${exId}`);
           seq += 1;
           generated.push({
             id: `sched-${baseTs}-${seq}`,
@@ -1653,8 +1661,8 @@ export function ScheduleCreatorAndDayModal({
         }
       }
 
-      const keptExisting = (activePatient.rehabSchedules ?? []).filter(
-        (item) => !replacementKeys.has(`${item.scheduledDate}::${item.exerciseId || ''}`),
+      const keptExisting = sanitizeAccidentalDefaultKneePrefix(activePatient.rehabSchedules ?? []).filter(
+        (item) => !finalSelectedDateSet.has(item.scheduledDate),
       );
       const merged = [...keptExisting, ...generated].sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate));
       const nextAppt = computeNextAppointmentDate(merged, todayIso) || finalSelectedDates[0] || '';

@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import {
+  resolvePrescribedExercisesFromSchedules,
+  resolveTodayPatientSchedule,
+  sanitizeAccidentalDefaultKneePrefix,
+} from '@drtechcares/api-client';
 import { POSE_INDEX } from '@drtechcares/pose-engine';
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision';
 import {
@@ -376,27 +381,27 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
   });
 
   it('smoothly tracks real-time ROM angles with anti-jitter deadband and responsive slew rate', () => {
-    // 1. Ignores micro-jitter within < 0.8 deg deadband
-    expect(stepSmoothRomAngle(45, 45.6, 16)).toBe(45);
-    expect(stepSmoothRomAngle(45, 44.3, 16)).toBe(45);
+    // 1. Ignores micro-jitter within < 0.35 deg deadband
+    expect(stepSmoothRomAngle(45, 45.3, 16)).toBe(45);
+    expect(stepSmoothRomAngle(45, 44.7, 16)).toBe(45);
 
-    // 2. Bounds single-frame spikes (15 -> 150 deg in 16ms) to <= 1100 deg/sec
+    // 2. Bounds single-frame spikes (15 -> 150 deg in 16ms) to <= 1800 deg/sec
     const singleStep = stepSmoothRomAngle(15, 150, 16);
     expect(singleStep).toBeGreaterThan(15);
-    expect(singleStep).toBeLessThanOrEqual(15 + (1100 * 16) / 1000 + 1e-6);
+    expect(singleStep).toBeLessThanOrEqual(15 + (1800 * 16) / 1000 + 1e-6);
 
-    // 3. Converges to >= 148 deg within <= 16 frames (~0.27s at 60Hz) for fast arm raises
+    // 3. Converges to >= 149 deg within <= 16 frames (~0.27s at 60Hz) for fast arm raises
     let rom = 15;
     for (let i = 0; i < 16; i += 1) {
       rom = stepSmoothRomAngle(rom, 150, 1000 / 60);
     }
-    expect(rom).toBeGreaterThanOrEqual(148);
+    expect(rom).toBeGreaterThanOrEqual(149);
     expect(rom).toBeLessThanOrEqual(150);
 
-    // 4. Caps downward return speed to <= 1150 deg/sec
+    // 4. Caps downward return speed to <= 1800 deg/sec
     const downStep = stepSmoothRomAngle(150, 15, 20);
     expect(downStep).toBeLessThan(150);
-    expect(downStep).toBeGreaterThanOrEqual(150 - (1150 * 20) / 1000 - 1e-6);
+    expect(downStep).toBeGreaterThanOrEqual(150 - (1800 * 20) / 1000 - 1e-6);
 
     // 5. Still measures low-visibility close-up upper-body landmarks (visibility: 0.08)
     const closeUpRightArm = createNeutralLandmarks({
@@ -798,6 +803,97 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
         handSide: 'right',
       }),
     ).toContain('มือขวา');
+  });
+
+  it('strips accidental knee default prefix when followed by chosen exercises while keeping explicit knee programs', () => {
+    const baseItem = { patientId: 'p1', ptId: 'pt1', scheduledDate: '2026-11-15', sets: 3, reps: 10, status: 'ACTIVE' as const };
+    const contaminated = [
+      { ...baseItem, id: 's1', exerciseId: 'ex-13' },
+      { ...baseItem, id: 's2', exerciseId: 'ex-14' },
+      { ...baseItem, id: 's3', exerciseId: 'ex-26' },
+      { ...baseItem, id: 's4', exerciseId: 'ex-01' },
+      { ...baseItem, id: 's5', exerciseId: 'ex-03' },
+      { ...baseItem, id: 's6', exerciseId: 'ex-02' },
+      { ...baseItem, id: 's7', exerciseId: 'ex-04' },
+    ];
+    const cleaned = sanitizeAccidentalDefaultKneePrefix(contaminated);
+    expect(cleaned.map((x) => x.exerciseId)).toEqual(['ex-01', 'ex-03', 'ex-02', 'ex-04']);
+
+    const pureKnee = contaminated.slice(0, 3);
+    expect(sanitizeAccidentalDefaultKneePrefix(pureKnee).map((x) => x.exerciseId)).toEqual([
+      'ex-13',
+      'ex-14',
+      'ex-26',
+    ]);
+
+    const todayResolved = resolveTodayPatientSchedule({
+      rehabSchedules: contaminated,
+      now: new Date('2026-11-15T10:00:00'),
+    });
+    expect(todayResolved.todayExercises.map((e) => e.exerciseId)).toEqual([
+      'ex-01',
+      'ex-03',
+      'ex-02',
+      'ex-04',
+    ]);
+
+    const restDayFallback = resolvePrescribedExercisesFromSchedules([
+      { ...contaminated[3], scheduledDate: '2026-11-20' },
+      { ...contaminated[5], scheduledDate: '2026-11-20' },
+    ]);
+    expect(restDayFallback.map((e) => e.exerciseId)).toEqual(['ex-01', 'ex-02']);
+  });
+
+  it('tracks full 0..180 deg shoulder range without overhead ceiling and returns null for out-of-frame knees', () => {
+    // Seated distance (~1.8m, shoulderSpanX = 0.17, hips below frame)
+    const seatedRest = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.585, y: 0.82, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.415, y: 0.82, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_HIP]: { x: 0.56, y: 1.25, z: 0, visibility: 0.02 },
+      [POSE_INDEX.RIGHT_HIP]: { x: 0.44, y: 1.25, z: 0, visibility: 0.02 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.41, y: 0.96, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.41, y: 0.99, z: 0, visibility: 0.99 },
+    });
+    const restCheck = measureLiveJointAngleAndTilt(seatedRest, 'right_shoulder', 'flexion');
+    expect(restCheck.romDeg).not.toBeNull();
+    expect(restCheck.romDeg!).toBeLessThan(12);
+
+    const seatedOverhead = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.585, y: 0.86, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.415, y: 0.86, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_HIP]: { x: 0.56, y: 1.25, z: 0, visibility: 0.02 },
+      [POSE_INDEX.RIGHT_HIP]: { x: 0.44, y: 1.25, z: 0, visibility: 0.02 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.415, y: 0.63, z: -0.02, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.415, y: 0.40, z: -0.03, visibility: 0.99 },
+    });
+    const overhead2dCheck = measureLiveJointAngleAndTilt(seatedOverhead, 'right_shoulder', 'flexion');
+    expect(overhead2dCheck.romDeg).not.toBeNull();
+    expect(overhead2dCheck.romDeg!).toBeGreaterThanOrEqual(168);
+
+    // With worldLandmarks straight overhead -> ~172..180 deg even under extreme 2D foreshortening
+    const worldOverhead = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0, y: 0, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0, y: -0.28, z: -0.02, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0, y: -0.56, z: -0.04, visibility: 0.99 },
+    });
+    const worldOverheadCheck = measureLiveJointAngleAndTilt(
+      seatedOverhead,
+      'right_shoulder',
+      'flexion',
+      worldOverhead,
+    );
+    expect(worldOverheadCheck.romDeg).not.toBeNull();
+    expect(worldOverheadCheck.romDeg!).toBeGreaterThanOrEqual(170);
+
+    // Out-of-frame knees (only head/shoulders visible) return null instead of static 170 deg
+    const upperBodyOnly = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_HIP]: { x: 0.44, y: 1.1, z: 0, visibility: 0.3 },
+      [POSE_INDEX.LEFT_HIP]: { x: 0.56, y: 1.1, z: 0, visibility: 0.3 },
+      [POSE_INDEX.RIGHT_KNEE]: { x: 0.44, y: 1.35, z: 0, visibility: 0.04 },
+      [POSE_INDEX.RIGHT_ANKLE]: { x: 0.44, y: 1.55, z: 0, visibility: 0.02 },
+    });
+    const kneeOutCheck = measureLiveJointAngleAndTilt(upperBodyOnly, 'right_knee');
+    expect(kneeOutCheck.romDeg).toBeNull();
   });
 });
 

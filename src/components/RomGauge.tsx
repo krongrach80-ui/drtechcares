@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React from 'react';
 import type { HighlightColor, KioskState } from '../hooks/useKioskSocket';
 
 interface RomGaugeProps {
@@ -21,75 +21,15 @@ export function RomGauge({
   holdTargetSec,
 }: RomGaugeProps) {
   const clampedInputRom = Math.max(0, Math.min(180, currentRomDeg));
-  const [visualRomDeg, setVisualRomDeg] = useState<number>(() => clampedInputRom);
-  const [displayedRomInt, setDisplayedRomInt] = useState<number>(() => Math.round(clampedInputRom));
-  const targetRomRef = useRef<number>(clampedInputRom);
-  const visualRomRef = useRef<number>(clampedInputRom);
-  const lastDisplaySyncAtRef = useRef<number>(0);
-
-  targetRomRef.current = clampedInputRom;
-
-  useEffect(() => {
-    let rafId = 0;
-    let lastTs = performance.now();
-
-    const tick = (now: number) => {
-      const dtMs = Math.min(100, Math.max(1, now - lastTs));
-      lastTs = now;
-      const target = targetRomRef.current;
-      const cur = visualRomRef.current;
-      const diff = target - cur;
-
-      if (Math.abs(diff) < 0.4) {
-        visualRomRef.current = target;
-        setVisualRomDeg(target);
-        const finalInt = Math.round(target);
-        setDisplayedRomInt((prev) => (prev === finalInt ? prev : finalInt));
-        return;
-      }
-
-      // Ultra-fast 120Hz visual follower so sidebar gauge stays locked with live on-body ROM badge
-      const maxUp = (1400 * dtMs) / 1000;
-      const maxDown = (1400 * dtMs) / 1000;
-      const alpha = 1 - Math.exp(-dtMs / 5);
-      const rawStep = diff * alpha;
-      const step =
-        diff > 0
-          ? Math.min(Math.max(rawStep, 0.01), maxUp)
-          : Math.max(Math.min(rawStep, -0.01), -maxDown);
-      const next = Math.max(0, Math.min(180, cur + step));
-      visualRomRef.current = next;
-      setVisualRomDeg(next);
-
-      if (now - lastDisplaySyncAtRef.current >= 32 || Math.abs(target - next) < 0.4) {
-        lastDisplaySyncAtRef.current = now;
-        const nextInt = Math.round(next);
-        setDisplayedRomInt((prev) => (prev === nextInt ? prev : nextInt));
-      }
-
-      rafId = requestAnimationFrame(tick);
-    };
-
-    // Deadband of 0.4 deg suppresses noise while reacting immediately to body motion
-    if (Math.abs(targetRomRef.current - visualRomRef.current) >= 0.4) {
-      rafId = requestAnimationFrame(tick);
-    } else {
-      const settledInt = Math.round(clampedInputRom);
-      setDisplayedRomInt((prev) => (prev === settledInt ? prev : settledInt));
-    }
-
-    return () => {
-      if (rafId) cancelAnimationFrame(rafId);
-    };
-  }, [clampedInputRom]);
+  const displayedRomInt = Math.round(clampedInputRom);
 
   const radius = 104;
   const semiCircumference = Math.PI * radius;
-  const clampedRatio = Math.max(0, Math.min(1, visualRomDeg / Math.max(10, targetRomDeg)));
+  const clampedRatio = Math.max(0, Math.min(1, clampedInputRom / Math.max(10, targetRomDeg)));
   const dashOffset = semiCircumference * (1 - clampedRatio);
   const exactPct = Math.max(
     completionPct,
-    Math.round((Math.round(clampedInputRom) / Math.max(10, targetRomDeg)) * 100),
+    Math.round((displayedRomInt / Math.max(10, targetRomDeg)) * 100),
   );
 
   const outerRadius = 122;
