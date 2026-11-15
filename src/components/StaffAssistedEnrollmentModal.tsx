@@ -395,7 +395,8 @@ export function StaffAssistedEnrollmentModal({
           setBiometric120Result(finalized);
         }
       }
-      const finalSnapshot = overrideImageUrl ?? bio?.avatarDataUrl ?? capturedSnapshotUrl;
+      const finalSnapshot =
+        overrideImageUrl ?? bio?.compositeSheetDataUrl ?? bio?.avatarDataUrl ?? capturedSnapshotUrl;
 
       if (!isPending && !bio) {
         setErrorMsg('กรุณาสแกนใบหน้าให้ครบ 5 มุมหรือครบ 120 เฟรมก่อนบันทึกข้อมูล');
@@ -419,6 +420,8 @@ export function StaffAssistedEnrollmentModal({
           framesCaptured: bio.framesCaptured,
           qualityScore: bio.qualityScore,
           faceImageUrl: finalSnapshot,
+          faceImageUrls: bio.faceImageUrls,
+          angleImageUrls: bio.angleSnapshots,
         });
         setToastMsg('ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ!');
         setCreatedPatient(updated);
@@ -451,6 +454,8 @@ export function StaffAssistedEnrollmentModal({
         skipFaceScan: isPending,
         faceBiometricStatus: isPending ? 'PENDING' : 'VERIFIED',
         faceImageUrl: finalSnapshot,
+        faceImageUrls: !isPending && bio ? bio.faceImageUrls : undefined,
+        angleImageUrls: !isPending && bio ? bio.angleSnapshots : undefined,
         frontalCentroid: !isPending && bio ? bio.angleEmbeddings.center : undefined,
         overallCentroid: !isPending && bio ? bio.masterEmbedding : undefined,
         masterEmbedding: !isPending && bio ? bio.masterEmbedding : undefined,
@@ -1342,6 +1347,53 @@ export function StaffAssistedEnrollmentModal({
                     {createdPatient.nextAppointmentDate || '-'}
                   </span>
                 </div>
+
+                {(() => {
+                  const previewAngles =
+                    createdPatient.angleImageUrls ?? biometric120Result?.angleSnapshots;
+                  if (!previewAngles) return null;
+                  return (
+                    <div className="border-t border-slate-200 pt-2.5 mt-2 space-y-1.5">
+                      <div className="font-extrabold text-emerald-800">
+                        ภาพใบหน้า Face ID 5 มุมมองที่จัดเก็บ
+                      </div>
+                      <div className="grid grid-cols-5 gap-1.5">
+                        {(
+                          [
+                            ['center', 'หน้าตรง'],
+                            ['left', 'ซ้าย'],
+                            ['right', 'ขวา'],
+                            ['up', 'เงย'],
+                            ['down', 'ก้ม'],
+                          ] as const
+                        ).map(([angleKey, label]) => {
+                          const url = previewAngles[angleKey];
+                          return (
+                            <div
+                              key={angleKey}
+                              className="rounded-lg border border-slate-200 bg-white overflow-hidden flex flex-col items-center"
+                            >
+                              {url ? (
+                                <img
+                                  src={url}
+                                  alt={label}
+                                  className="h-12 w-full object-cover"
+                                />
+                              ) : (
+                                <div className="h-12 w-full bg-slate-100 flex items-center justify-center text-[10px] text-slate-400">
+                                  -
+                                </div>
+                              )}
+                              <span className="py-0.5 text-[10px] font-bold text-slate-600">
+                                {label}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {(createdPatient.rehabSchedules ?? []).length > 0 && (
                   <div className="border-t border-slate-200 pt-2.5 mt-2 space-y-1.5">

@@ -1034,5 +1034,157 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(ownerJson.matched).toBe(true);
     expect(ownerJson.confidencePercent).toBeGreaterThanOrEqual(85);
   });
+
+  it('persists 5-angle face photos and auto-heals VERIFIED rows with face_frames_count = 0 during hydration', async () => {
+    const router = createCloudDelegatedRouter({});
+    const ptLogin = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const { token: ptToken } = (await ptLogin.json()) as { token: string };
+
+    const vec = makeHybridEmbedding(7.5);
+    const angleUrls = {
+      center: 'https://cdn.example.test/center.jpg',
+      left: 'https://cdn.example.test/left.jpg',
+      right: 'https://cdn.example.test/right.jpg',
+      up: 'https://cdn.example.test/up.jpg',
+      down: 'https://cdn.example.test/down.jpg',
+    };
+    const compositeUrl = 'https://cdn.example.test/composite-5angles.jpg';
+
+    const enrollRes = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-5ANGLE-01',
+        fullName: 'ผู้ป่วย ทดสอบห้ามุมกล้อง',
+        age: 29,
+        diagnosis: 'ฟื้นฟูข้อเข่า',
+        faceImageUrl: compositeUrl,
+        angleImageUrls: angleUrls,
+        faceImageUrls: [compositeUrl, ...Object.values(angleUrls)],
+        masterEmbedding: vec,
+        angleEmbeddings: {
+          center: vec,
+          left: vec,
+          right: vec,
+          up: vec,
+          down: vec,
+        },
+        framesCaptured: 120,
+        qualityScore: 0.96,
+      },
+    });
+    expect(enrollRes.status).toBe(201);
+    const enrolledJson = (await enrollRes.json()) as {
+      patient: {
+        faceFramesCount?: number;
+        faceImageUrl?: string;
+        faceImageUrls?: string[];
+        angleImageUrls?: Record<string, string>;
+      };
+    };
+    expect(enrolledJson.patient.faceFramesCount).toBe(120);
+    expect(enrolledJson.patient.faceImageUrl).toBe(compositeUrl);
+    expect(enrolledJson.patient.angleImageUrls).toEqual(angleUrls);
+    expect(enrolledJson.patient.faceImageUrls).toHaveLength(6);
+
+    const updatedPayloads: { id: string; payload: Record<string, unknown> }[] = [];
+    const emptyResult = { data: [] as unknown[], error: null };
+    const singleEmptyResult = { data: null, error: null };
+    const makeQuery = (table: string) => {
+      const q: Record<string, unknown> = {
+        then: (resolve: (val: unknown) => void) => resolve(emptyResult),
+      };
+      q.select = () => q;
+      q.order = () => q;
+      q.limit = () => q;
+      q.eq = (col: string, val: string) => {
+        if (table === 'patients' && q._pendingUpdate && col === 'id') {
+          updatedPayloads.push({
+            id: val,
+            payload: q._pendingUpdate as Record<string, unknown>,
+          });
+          return Promise.resolve({ error: null });
+        }
+        return q;
+      };
+      q.update = (payload: Record<string, unknown>) => {
+        const uq = makeQuery(table);
+        uq._pendingUpdate = payload;
+        return uq;
+      };
+      q.maybeSingle = () => Promise.resolve(singleEmptyResult);
+      return q;
+    };
+
+    const mockSupabase = {
+      from: (table: string) => {
+        const q = makeQuery(table);
+        if (table === 'patients') {
+          q.then = (resolve: (val: unknown) => void) =>
+            resolve({
+              data: [
+                {
+                  id: 'pat-heal-120',
+                  hn: 'HN-65964',
+                  full_name: 'พัทธดนย์ ทดสอบ',
+                  age: 18,
+                  phone: '0914448744',
+                  diagnosis: 'ปวดข้อเข่า',
+                  assigned_pt_id: '00000000-0000-4000-8000-000000000002',
+                  registration_status: 'active',
+                  face_biometric_status: 'VERIFIED',
+                  face_frames_count: 0,
+                  face_image_url: compositeUrl,
+                  history: {
+                    gender: 'ชาย',
+                    faceBiometricStatus: 'VERIFIED',
+                    faceFramesCount: 0,
+                    faceImageUrl: compositeUrl,
+                    faceImageUrls: [compositeUrl, ...Object.values(angleUrls)],
+                    angleImageUrls: angleUrls,
+                  },
+                  created_at: '2026-11-15T14:00:00.000Z',
+                },
+              ],
+              error: null,
+            });
+        }
+        return q;
+      },
+    } as unknown as SupabaseClient;
+
+    const state: CloudRouterState = {
+      users: [],
+      patients: [],
+      face_templates: [],
+      medical_notes: [],
+      patient_courses: [],
+      rehab_sessions: [],
+      treatment_reports: [],
+      exercises: [],
+      modpacks: [],
+      staff_calls: [],
+      audit_logs: [],
+      banned_targets: [],
+      active_sessions: [],
+      system_settings: {
+        aiFaceScanEnabled: true,
+        aiFaceThreshold: 0.925,
+        aiPoseDetectionEnabled: false,
+        kioskAutoResetSec: 6,
+      },
+      kiosks: [],
+    };
+
+    await hydrateStateFromSupabase(mockSupabase, state);
+    const healed = state.patients.find((p) => p.id === 'pat-heal-120');
+    expect(healed?.faceFramesCount).toBe(120);
+    expect(healed?.angleImageUrls).toEqual(angleUrls);
+    expect(healed?.faceImageUrls).toHaveLength(6);
+    expect(updatedPayloads.some((u) => u.id === 'pat-heal-120' && u.payload.face_frames_count === 120)).toBe(true);
+  });
 });
 

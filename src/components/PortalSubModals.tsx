@@ -940,6 +940,81 @@ export function PatientProfileAndHistoryModal({
           </div>
         </div>
 
+        {/* 5-Angle Face ID Reference Strip */}
+        {(patient.angleImageUrls || (patient.faceImageUrls && patient.faceImageUrls.length > 0)) && (
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <span className="text-[11px] font-extrabold text-emerald-900">
+                ภาพถ่ายใบหน้า Face ID 5 มุมมอง ({patient.faceFramesCount ?? 0} เฟรม)
+              </span>
+              <span className="text-[10px] font-bold text-emerald-700">
+                {
+                  (
+                    patient.angleImageUrls
+                      ? Object.values(patient.angleImageUrls).filter(Boolean).length
+                      : patient.faceImageUrls?.length ?? 0
+                  )
+                }{' '}
+                รูปที่จัดเก็บในระบบ
+              </span>
+            </div>
+            {patient.angleImageUrls ? (
+              <div className="grid grid-cols-5 gap-2">
+                {(
+                  [
+                    ['center', 'หน้าตรง'],
+                    ['left', 'หันซ้าย'],
+                    ['right', 'หันขวา'],
+                    ['up', 'เงยหน้า'],
+                    ['down', 'ก้มหน้า'],
+                  ] as const
+                ).map(([key, label]) => {
+                  const src = patient.angleImageUrls?.[key];
+                  return (
+                    <div
+                      key={key}
+                      className="rounded-xl border border-emerald-200 bg-white overflow-hidden flex flex-col items-center"
+                    >
+                      {src ? (
+                        <a href={src} target="_blank" rel="noreferrer" className="w-full block">
+                          <img
+                            src={src}
+                            alt={label}
+                            className="h-14 w-full object-cover"
+                          />
+                        </a>
+                      ) : (
+                        <div className="h-14 w-full bg-slate-100 flex items-center justify-center text-[10px] text-slate-400">
+                          -
+                        </div>
+                      )}
+                      <span className="py-1 text-[10px] font-bold text-slate-700">{label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {patient.faceImageUrls?.map((url, idx) => (
+                  <a
+                    key={`${url}-${idx}`}
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-xl border border-emerald-200 bg-white overflow-hidden block"
+                  >
+                    <img
+                      src={url}
+                      alt={`Face angle ${idx + 1}`}
+                      className="h-14 w-16 object-cover"
+                    />
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Modal Sub-tabs */}
         <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1 font-bold">
           <button

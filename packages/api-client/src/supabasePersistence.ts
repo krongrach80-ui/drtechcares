@@ -289,10 +289,81 @@ export async function hydrateStateFromSupabase(
       }
 
       const resolvedFramesCount =
-        b120?.framesCaptured ??
-        (typeof r.face_frames_count === 'number' ? r.face_frames_count : undefined) ??
-        (typeof history.faceFramesCount === 'number' ? history.faceFramesCount : undefined) ??
+        (typeof b120?.framesCaptured === 'number' && b120.framesCaptured > 0
+          ? b120.framesCaptured
+          : undefined) ??
+        (typeof r.face_frames_count === 'number' && r.face_frames_count > 0
+          ? r.face_frames_count
+          : undefined) ??
+        (typeof history.faceFramesCount === 'number' && history.faceFramesCount > 0
+          ? history.faceFramesCount
+          : undefined) ??
         (resolvedFaceStatus === 'VERIFIED' ? 120 : 0);
+
+      const hydratedAngleImageUrls: PatientRecord['angleImageUrls'] = (() => {
+        const raw = history.angleImageUrls;
+        if (!raw || typeof raw !== 'object') return undefined;
+        const rec = raw as Record<string, unknown>;
+        const out: Partial<Record<'center' | 'left' | 'right' | 'up' | 'down', string>> = {};
+        for (const k of ['center', 'left', 'right', 'up', 'down'] as const) {
+          if (typeof rec[k] === 'string' && rec[k].trim().length > 0) {
+            out[k] = rec[k];
+          }
+        }
+        return Object.keys(out).length > 0 ? out : undefined;
+      })();
+
+      const hydratedFaceImageUrls: string[] | undefined = (() => {
+        const list = Array.isArray(history.faceImageUrls)
+          ? history.faceImageUrls.filter(
+              (u): u is string => typeof u === 'string' && u.trim().length > 0,
+            )
+          : [];
+        const angleList = hydratedAngleImageUrls
+          ? (['center', 'left', 'right', 'up', 'down'] as const)
+              .map((k) => hydratedAngleImageUrls[k])
+              .filter((u): u is string => typeof u === 'string' && u.length > 0)
+          : [];
+        const combined = Array.from(new Set([...list, ...angleList]));
+        return combined.length > 0 ? combined : undefined;
+      })();
+
+      const primaryFaceImageUrl =
+        b120?.avatarUrl ??
+        (typeof r.face_image_url === 'string' && r.face_image_url.trim().length > 0
+          ? r.face_image_url
+          : typeof history.faceImageUrl === 'string' && history.faceImageUrl.trim().length > 0
+            ? history.faceImageUrl
+            : hydratedFaceImageUrls?.[0]);
+
+      if (
+        resolvedFaceStatus === 'VERIFIED' &&
+        (typeof r.face_frames_count !== 'number' || r.face_frames_count <= 0) &&
+        resolvedFramesCount > 0
+      ) {
+        try {
+          const tableRef = supabase.from('patients') as unknown as {
+            update?: (payload: Record<string, unknown>) => {
+              eq?: (col: string, val: string) => Promise<unknown>;
+            };
+          };
+          const q = tableRef.update?.({
+            face_frames_count: resolvedFramesCount,
+            history: {
+              ...history,
+              faceBiometricStatus: 'VERIFIED',
+              faceFramesCount: resolvedFramesCount,
+            },
+            updated_at: new Date().toISOString(),
+          });
+          void q?.eq?.('id', pid)?.then(
+            () => {},
+            () => {},
+          );
+        } catch {
+          // ignore best-effort self-heal errors
+        }
+      }
 
       const override = state.delegation_overrides?.[pid];
       const rawDelegationNote = r.delegation_note ? String(r.delegation_note) : null;
@@ -353,13 +424,9 @@ export async function hydrateStateFromSupabase(
         enrolledAt: String(r.created_at ?? new Date().toISOString()),
         faceBiometricStatus: resolvedFaceStatus,
         faceFramesCount: resolvedFramesCount,
-        faceImageUrl:
-          b120?.avatarUrl ??
-          (typeof r.face_image_url === 'string'
-            ? r.face_image_url
-            : typeof history.faceImageUrl === 'string'
-              ? history.faceImageUrl
-              : undefined),
+        faceImageUrl: primaryFaceImageUrl,
+        faceImageUrls: hydratedFaceImageUrls,
+        angleImageUrls: hydratedAngleImageUrls,
         masterEmbedding: fallbackMaster,
         angleEmbeddings: fallbackAngles,
         rehabSchedules: Array.isArray(history.rehabSchedules)

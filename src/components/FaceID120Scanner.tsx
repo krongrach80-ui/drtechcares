@@ -35,15 +35,19 @@ import {
   probeEdgeVisionHealth,
 } from '../hooks/useEdgeVisionSocket';
 
+export type Bucket5Key = keyof AngleEmbeddings5D; // 'center' | 'left' | 'right' | 'up' | 'down'
+export type AngleSnapshots5D = Record<Bucket5Key, string>;
+
 export interface FaceID120Result {
   masterEmbedding: number[];
   angleEmbeddings: AngleEmbeddings5D;
   framesCaptured: number;
   qualityScore: number;
   avatarDataUrl: string;
+  compositeSheetDataUrl?: string;
+  angleSnapshots?: Partial<AngleSnapshots5D>;
+  faceImageUrls?: string[];
 }
-
-export type Bucket5Key = keyof AngleEmbeddings5D; // 'center' | 'left' | 'right' | 'up' | 'down'
 
 export interface FaceID120ScannerProps {
   active: boolean;
@@ -440,6 +444,103 @@ function playSuccessChime() {
   }
 }
 
+const ANGLE_COMPOSITE_LABELS: Record<Bucket5Key, string> = {
+  center: '1. หน้าตรง (Center)',
+  left: '2. หันซ้าย (Left)',
+  right: '3. หันขวา (Right)',
+  up: '4. เงยหน้า (Up)',
+  down: '5. ก้มหน้า (Down)',
+};
+
+function loadHtmlImageFromDataUrl(src: string): Promise<HTMLImageElement | null> {
+  return new Promise((resolve) => {
+    if (typeof Image === 'undefined' || !src) {
+      resolve(null);
+      return;
+    }
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+async function buildFiveAngleCompositeDataUrl(
+  angleSnapshots: Partial<AngleSnapshots5D>,
+  fallbackDataUrl: string,
+  meta: { patientName?: string; hn?: string; framesCaptured: number; qualityPct: number },
+): Promise<string> {
+  if (typeof document === 'undefined') return fallbackDataUrl;
+  const srcs = BUCKET_ORDER.map((k) => angleSnapshots[k] || fallbackDataUrl);
+  if (!srcs.some(Boolean)) return fallbackDataUrl;
+
+  try {
+    const imgs = await Promise.all(srcs.map((s) => loadHtmlImageFromDataUrl(s)));
+    const width = 1200;
+    const height = 360;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return fallbackDataUrl;
+
+    const bgGrad = ctx.createLinearGradient(0, 0, width, height);
+    bgGrad.addColorStop(0, '#F0FDF9');
+    bgGrad.addColorStop(1, '#EFF6FF');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.fillStyle = '#0F4C81';
+    ctx.fillRect(0, 0, width, 54);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillText(
+      `DRTECHCARES 3D Face ID • ${meta.framesCaptured} Frames • 5 Angles (${meta.qualityPct}%)`,
+      24,
+      34,
+    );
+    const identityLabel = [meta.patientName, meta.hn ? `HN: ${meta.hn}` : '']
+      .filter(Boolean)
+      .join(' • ');
+    if (identityLabel) {
+      ctx.font = 'bold 16px sans-serif';
+      const tw = ctx.measureText(identityLabel).width;
+      ctx.fillStyle = '#A7F3D0';
+      ctx.fillText(identityLabel, Math.max(660, width - tw - 24), 33);
+    }
+
+    const tileSize = 216;
+    const gap = 18;
+    const startX = 24;
+    const tileY = 74;
+
+    BUCKET_ORDER.forEach((key, idx) => {
+      const x = startX + idx * (tileSize + gap);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(x - 2, tileY - 2, tileSize + 4, tileSize + 40);
+      ctx.strokeStyle = '#10B981';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x - 2, tileY - 2, tileSize + 4, tileSize + 40);
+
+      const img = imgs[idx];
+      if (img) {
+        ctx.drawImage(img, x, tileY, tileSize, tileSize);
+      } else {
+        ctx.fillStyle = '#E2E8F0';
+        ctx.fillRect(x, tileY, tileSize, tileSize);
+      }
+
+      ctx.fillStyle = '#0F4C81';
+      ctx.font = 'bold 15px sans-serif';
+      ctx.fillText(ANGLE_COMPOSITE_LABELS[key], x + 10, tileY + tileSize + 24);
+    });
+
+    return canvas.toDataURL('image/jpeg', 0.88);
+  } catch {
+    return fallbackDataUrl;
+  }
+}
+
 export default function FaceID120Scanner({
   active,
   patientName,
@@ -488,6 +589,7 @@ export default function FaceID120Scanner({
   const [finalQualityPct, setFinalQualityPct] = useState(0);
   const [retryNonce, setRetryNonce] = useState(0);
   const [edgeBackendActive, setEdgeBackendActive] = useState(false);
+  const [completedAngleSnapshots, setCompletedAngleSnapshots] = useState<Partial<AngleSnapshots5D>>({});
 
   const edgeSessionIdRef = useRef<string | null>(null);
   const samplesRef = useRef<CapturedSample[]>([]);
@@ -501,6 +603,98 @@ export default function FaceID120Scanner({
   const hasSnapshotFrameRef = useRef(false);
   const bestFrontalDataUrlRef = useRef<string>('');
   const bestFrontalScoreRef = useRef<number>(-1);
+  const angleCanvasesRef = useRef<Partial<Record<Bucket5Key, HTMLCanvasElement>>>({});
+  const bestAngleScoresRef = useRef<Record<Bucket5Key, number>>({
+    center: -1,
+    left: -1,
+    right: -1,
+    up: -1,
+    down: -1,
+  });
+
+  const captureAngleFrameToCanvas = useCallback(
+    (vid: HTMLVideoElement, bucket: Bucket5Key, score: number) => {
+      if (typeof document === 'undefined' || vid.videoWidth <= 0 || vid.videoHeight <= 0) return;
+      const existing = angleCanvasesRef.current[bucket];
+      if (existing && score <= (bestAngleScoresRef.current[bucket] ?? -1)) return;
+      const canvas = existing || document.createElement('canvas');
+      canvas.width = 480;
+      canvas.height = 480;
+      angleCanvasesRef.current[bucket] = canvas;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const side = Math.min(vid.videoWidth, vid.videoHeight);
+      const sx = Math.max(0, (vid.videoWidth - side) / 2);
+      const sy = Math.max(0, (vid.videoHeight - side) / 2);
+      ctx.save();
+      ctx.translate(480, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(vid, sx, sy, side, side, 0, 0, 480, 480);
+      ctx.restore();
+      bestAngleScoresRef.current[bucket] = score;
+    },
+    [],
+  );
+
+  const buildFinalAngleBundle = useCallback(
+    async (framesCaptured: number, qualityScore: number, fallbackOverride?: string) => {
+      if (!bestFrontalDataUrlRef.current && hasSnapshotFrameRef.current && snapshotCanvasRef.current) {
+        try {
+          bestFrontalDataUrlRef.current = snapshotCanvasRef.current.toDataURL('image/jpeg', 0.88);
+        } catch {
+          bestFrontalDataUrlRef.current = '';
+        }
+      }
+      const centerCanvas = angleCanvasesRef.current.center;
+      if (!bestFrontalDataUrlRef.current && centerCanvas) {
+        try {
+          bestFrontalDataUrlRef.current = centerCanvas.toDataURL('image/jpeg', 0.88);
+        } catch {
+          // ignore
+        }
+      }
+      const primaryFallback = fallbackOverride || bestFrontalDataUrlRef.current || '';
+      const angleSnapshots: Partial<AngleSnapshots5D> = {};
+      for (const key of BUCKET_ORDER) {
+        const canvas = angleCanvasesRef.current[key];
+        if (canvas) {
+          try {
+            angleSnapshots[key] = canvas.toDataURL('image/jpeg', 0.86);
+            continue;
+          } catch {
+            // fallback below
+          }
+        }
+        if (primaryFallback) {
+          angleSnapshots[key] = primaryFallback;
+        }
+      }
+      const compositeSheetDataUrl = primaryFallback
+        ? await buildFiveAngleCompositeDataUrl(angleSnapshots, primaryFallback, {
+            patientName,
+            hn,
+            framesCaptured,
+            qualityPct: Math.round(qualityScore * 100),
+          })
+        : '';
+      const avatarDataUrl = angleSnapshots.center || primaryFallback;
+      const faceImageUrls = Array.from(
+        new Set(
+          [
+            compositeSheetDataUrl,
+            ...BUCKET_ORDER.map((k) => angleSnapshots[k] ?? ''),
+          ].filter(Boolean),
+        ),
+      );
+      return {
+        avatarDataUrl,
+        compositeSheetDataUrl: compositeSheetDataUrl || avatarDataUrl,
+        angleSnapshots,
+        faceImageUrls,
+      };
+    },
+    [hn, patientName],
+  );
   const completedRef = useRef(false);
   const finalizePromiseRef = useRef<Promise<FaceID120Result | null> | null>(null);
   const finalizedResultRef = useRef<FaceID120Result | null>(null);
@@ -782,14 +976,13 @@ export default function FaceID120Scanner({
         });
         if (unmountedRef.current) return null;
 
-        if (!edgeRes.avatar_data_url && hasSnapshotFrameRef.current && snapshotCanvasRef.current) {
-          try {
-            bestFrontalDataUrlRef.current = snapshotCanvasRef.current.toDataURL('image/jpeg', 0.88);
-          } catch {
-            bestFrontalDataUrlRef.current = '';
-          }
-        }
-        const avatarDataUrl = edgeRes.avatar_data_url || bestFrontalDataUrlRef.current;
+        const visualBundle = await buildFinalAngleBundle(
+          edgeRes.frames_captured,
+          edgeRes.quality_score,
+          edgeRes.avatar_data_url,
+        );
+        if (unmountedRef.current) return null;
+        setCompletedAngleSnapshots(visualBundle.angleSnapshots);
         const resultPayload: FaceID120Result = {
           masterEmbedding: edgeRes.master_embedding,
           angleEmbeddings: {
@@ -801,7 +994,10 @@ export default function FaceID120Scanner({
           },
           framesCaptured: edgeRes.frames_captured,
           qualityScore: edgeRes.quality_score,
-          avatarDataUrl,
+          avatarDataUrl: visualBundle.avatarDataUrl,
+          compositeSheetDataUrl: visualBundle.compositeSheetDataUrl,
+          angleSnapshots: visualBundle.angleSnapshots,
+          faceImageUrls: visualBundle.faceImageUrls,
         };
         finalizedResultRef.current = resultPayload;
         const pct = Math.round(edgeRes.quality_score * 100);
@@ -854,20 +1050,19 @@ export default function FaceID120Scanner({
       const pct = Math.round(qualityScore * 100);
       setFinalQualityPct(pct);
 
-      if (!bestFrontalDataUrlRef.current && hasSnapshotFrameRef.current && snapshotCanvasRef.current) {
-        try {
-          bestFrontalDataUrlRef.current = snapshotCanvasRef.current.toDataURL('image/jpeg', 0.88);
-        } catch {
-          bestFrontalDataUrlRef.current = '';
-        }
-      }
+      const visualBundle = await buildFinalAngleBundle(samples.length, qualityScore);
+      if (unmountedRef.current) return null;
+      setCompletedAngleSnapshots(visualBundle.angleSnapshots);
 
       const resultPayload: FaceID120Result = {
         masterEmbedding,
         angleEmbeddings,
         framesCaptured: samples.length,
         qualityScore,
-        avatarDataUrl: bestFrontalDataUrlRef.current,
+        avatarDataUrl: visualBundle.avatarDataUrl,
+        compositeSheetDataUrl: visualBundle.compositeSheetDataUrl,
+        angleSnapshots: visualBundle.angleSnapshots,
+        faceImageUrls: visualBundle.faceImageUrls,
       };
       finalizedResultRef.current = resultPayload;
 
@@ -890,7 +1085,7 @@ export default function FaceID120Scanner({
 
     finalizePromiseRef.current = run();
     return finalizePromiseRef.current;
-  }, [hn, speakGuidance, stopCameraHardware]);
+  }, [buildFinalAngleBundle, hn, speakGuidance, stopCameraHardware]);
 
   const resetScannerState = useCallback(() => {
     const copy = FACE_ID_120_UI_COPY[langRef.current] ?? FACE_ID_120_UI_COPY.th;
@@ -915,6 +1110,9 @@ export default function FaceID120Scanner({
     lastVideoTimeRef.current = -1;
     bestFrontalDataUrlRef.current = '';
     bestFrontalScoreRef.current = -1;
+    angleCanvasesRef.current = {};
+    bestAngleScoresRef.current = { center: -1, left: -1, right: -1, up: -1, down: -1 };
+    setCompletedAngleSnapshots({});
     completedRef.current = false;
     finalizePromiseRef.current = null;
     finalizedResultRef.current = null;
@@ -1050,6 +1248,9 @@ export default function FaceID120Scanner({
                   ? state.current_pose
                   : 'center') as Bucket5Key;
                 setActiveBucket(poseKey);
+                if (state.face_detected) {
+                  captureAngleFrameToCanvas(vid, poseKey, state.sharpness || 1);
+                }
                 const nextMissing = findNextMissingBucket(nextCounts);
                 setTargetBucketHint(nextMissing);
                 setLivePose({
@@ -1237,6 +1438,10 @@ export default function FaceID120Scanner({
           }
 
           const captureBucket = chooseCaptureBucket(yawDeg, pitchDeg, bucketCountsRef.current);
+          const angleForPhoto = captureBucket ?? displayBucket;
+          if (captureBucket || !angleCanvasesRef.current[angleForPhoto]) {
+            captureAngleFrameToCanvas(vid, angleForPhoto, quality.sharpness);
+          }
           const totalSoFar = samplesRef.current.length;
 
           // Capture frames only when the live head pose matches an unfilled target angle
@@ -1321,6 +1526,7 @@ export default function FaceID120Scanner({
     };
   }, [
     active,
+    captureAngleFrameToCanvas,
     finalizeScan,
     resetScannerState,
     retryNonce,
@@ -1607,6 +1813,35 @@ export default function FaceID120Scanner({
           );
         })}
       </div>
+
+      {/* Captured 5-Angle Multi-Perspective Thumbnails */}
+      {phase === 'completed' && BUCKET_ORDER.some((k) => Boolean(completedAngleSnapshots[k])) && (
+        <div className="mt-3 grid grid-cols-5 gap-2">
+          {BUCKET_ORDER.map((bucketKey) => {
+            const thumb = completedAngleSnapshots[bucketKey];
+            const itemLabel = getFaceId120TargetGuidance(lang, bucketKey).label;
+            return (
+              <div
+                key={`thumb-${bucketKey}`}
+                className="overflow-hidden rounded-xl border border-emerald-300 bg-white shadow-xs"
+              >
+                {thumb ? (
+                  <img
+                    src={thumb}
+                    alt={itemLabel}
+                    className="aspect-square w-full object-cover"
+                  />
+                ) : (
+                  <div className="aspect-square w-full bg-slate-100" />
+                )}
+                <div className="truncate px-1 py-1 text-center text-[10px] font-bold text-[#0F4C81]">
+                  {itemLabel}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Live Head Pose Diagnostics */}
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-200 bg-gradient-to-r from-emerald-50/80 via-sky-50/80 to-white px-3 py-2 text-[11px] text-[#0F4C81]">

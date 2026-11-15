@@ -99,6 +99,8 @@ export interface PatientRecord {
   faceBiometricStatus?: 'PENDING' | 'VERIFIED';
   faceFramesCount?: number;
   faceImageUrl?: string;
+  faceImageUrls?: string[];
+  angleImageUrls?: Partial<Record<keyof AngleEmbeddings5D, string>>;
   masterEmbedding?: number[];
   angleEmbeddings?: AngleEmbeddings5D;
   rehabSchedules?: RehabScheduleItem[];
@@ -659,6 +661,8 @@ export class DrTechCaresApiClient {
     skipFaceScan?: boolean;
     faceBiometricStatus?: 'PENDING' | 'VERIFIED';
     faceImageUrl?: string;
+    faceImageUrls?: string[];
+    angleImageUrls?: Partial<Record<keyof AngleEmbeddings5D, string>>;
     frontalCentroid?: number[];
     overallCentroid?: number[];
     rawFrames?: { pose: 'front' | 'left' | 'right' | 'nod'; vector: number[]; qualityScore: number }[];
@@ -681,6 +685,8 @@ export class DrTechCaresApiClient {
       overallCentroid: number[];
       rawFrames: { pose: 'front' | 'left' | 'right' | 'nod'; vector: number[]; qualityScore: number }[];
       faceImageUrl?: string;
+      faceImageUrls?: string[];
+      angleImageUrls?: Partial<Record<keyof AngleEmbeddings5D, string>>;
       masterEmbedding?: number[];
       angleEmbeddings?: AngleEmbeddings5D;
       framesCaptured?: number;

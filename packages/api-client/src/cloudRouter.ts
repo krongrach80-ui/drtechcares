@@ -377,11 +377,85 @@ function normalizeAngleEmbeddingsInput(rawAngles: unknown): AngleEmbeddings5D | 
   return null;
 }
 
+type FaceAngleKey = 'center' | 'left' | 'right' | 'up' | 'down';
+const FACE_ANGLE_KEYS: readonly FaceAngleKey[] = ['center', 'left', 'right', 'up', 'down'];
+
+function normalizeAngleUrlMap(
+  raw: unknown,
+): Partial<Record<FaceAngleKey, string>> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const rec = raw as Record<string, unknown>;
+  const out: Partial<Record<FaceAngleKey, string>> = {};
+  for (const key of FACE_ANGLE_KEYS) {
+    const val = rec[key];
+    if (typeof val === 'string' && val.trim().length > 0) {
+      out[key] = val;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function buildPatientHistoryPayload(patient: PatientRecord): Record<string, unknown> {
+  return {
+    gender: patient.gender ?? 'ชาย',
+    faceBiometricStatus: patient.faceBiometricStatus ?? 'PENDING',
+    faceFramesCount: patient.faceFramesCount ?? 0,
+    faceImageUrl: patient.faceImageUrl ?? null,
+    faceImageUrls: patient.faceImageUrls ?? [],
+    angleImageUrls: patient.angleImageUrls ?? null,
+    rehabSchedules: patient.rehabSchedules ?? [],
+    delegatedToPtId: patient.delegatedToPtId ?? null,
+    delegationDate: patient.delegationDate ?? null,
+    delegationNote: patient.delegationNote ?? null,
+    masterEmbedding: patient.masterEmbedding ?? null,
+    angleEmbeddings: patient.angleEmbeddings ?? null,
+  };
+}
+
+/** Writes a `patients` row and omits `face_frames_count` only when the schema rejects that column. */
+async function writePatientRowWithFramesFallback(
+  db: SupabaseClient,
+  mode: 'insert' | 'update',
+  fields: Record<string, unknown>,
+  patientId?: string,
+): Promise<void> {
+  const exec = async (payload: Record<string, unknown>) =>
+    (mode === 'insert'
+      ? await db.from('patients').insert(payload)
+      : await db.from('patients').update(payload).eq('id', patientId!)) as
+      | { error?: unknown }
+      | undefined;
+
+  const res = await exec(fields);
+  if (res?.error && 'face_frames_count' in fields) {
+    const fallbackPayload = { ...fields };
+    delete fallbackPayload.face_frames_count;
+    await exec(fallbackPayload);
+  }
+}
+
+/** Inserts an enrollment audit row, retrying with `shot_count: 10` on legacy `CHECK (shot_count = 10)` schemas. */
+async function insertFaceEnrollmentWithCompatShotCount(
+  db: SupabaseClient,
+  payload: {
+    patient_id: string;
+    shot_count: number;
+    liveness_verified: boolean;
+    enrolled_by: string;
+  },
+): Promise<void> {
+  const res = (await db.from('face_enrollments').insert(payload)) as { error?: unknown } | undefined;
+  if (res?.error && payload.shot_count !== 10) {
+    await db.from('face_enrollments').insert({ ...payload, shot_count: 10 });
+  }
+}
+
 /** Uploads a base64 face snapshot into Supabase Storage and falls back cleanly on offline/errors. */
 async function uploadFaceImageIfNeeded(
   supabase: SupabaseClient | null,
   patientId: string,
   rawUrl: string | undefined,
+  tag = 'main',
 ): Promise<string | undefined> {
   if (!supabase || !rawUrl || !rawUrl.startsWith('data:image/')) {
     return rawUrl;
@@ -391,6 +465,7 @@ async function uploadFaceImageIfNeeded(
   const rawSubtype = match[1].toLowerCase();
   const ext = rawSubtype === 'jpeg' ? 'jpg' : rawSubtype.replace(/[^a-z0-9]/g, '') || 'jpg';
   const contentType = `image/${rawSubtype}`;
+  const safeTag = tag.replace(/[^a-zA-Z0-9_-]/g, '') || 'main';
   try {
     const binary = globalThis.atob(match[2]);
     const bytes = new Uint8Array(binary.length);
@@ -398,7 +473,7 @@ async function uploadFaceImageIfNeeded(
       bytes[i] = binary.charCodeAt(i);
     }
     await supabase.storage.createBucket('patient-faces', { public: true }).catch(() => {});
-    const objectPath = `patients/${patientId}-${Date.now()}.${ext}`;
+    const objectPath = `patients/${patientId}-${safeTag}-${Date.now()}.${ext}`;
     const { error } = await supabase.storage
       .from('patient-faces')
       .upload(objectPath, bytes, { contentType, upsert: true });
@@ -408,6 +483,77 @@ async function uploadFaceImageIfNeeded(
   } catch {
     return rawUrl;
   }
+}
+
+async function uploadMultiAngleFaceBundle(
+  supabase: SupabaseClient | null,
+  patientId: string,
+  input: {
+    faceImageUrl?: string;
+    angleImageUrls?: unknown;
+    faceImageUrls?: unknown;
+  },
+): Promise<{
+  primaryFaceImageUrl?: string;
+  angleImageUrls?: Partial<Record<FaceAngleKey, string>>;
+  faceImageUrls?: string[];
+}> {
+  const cleanAngles = normalizeAngleUrlMap(input.angleImageUrls);
+  const angleEntries = await Promise.all(
+    FACE_ANGLE_KEYS.map(async (key) => {
+      const raw = cleanAngles?.[key];
+      if (!raw) return [key, undefined] as const;
+      const uploaded = await uploadFaceImageIfNeeded(supabase, patientId, raw, key);
+      return [key, uploaded] as const;
+    }),
+  );
+
+  const storedAngleUrls: Partial<Record<FaceAngleKey, string>> = {};
+  for (const [key, url] of angleEntries) {
+    if (url) storedAngleUrls[key] = url;
+  }
+
+  const hasMultipleAngles = Object.keys(storedAngleUrls).length > 1;
+  const storedPrimary = input.faceImageUrl
+    ? await uploadFaceImageIfNeeded(
+        supabase,
+        patientId,
+        input.faceImageUrl,
+        hasMultipleAngles ? 'composite-5angles' : 'main',
+      )
+    : storedAngleUrls.center;
+
+  const extraUrls: string[] = [];
+  if (Array.isArray(input.faceImageUrls)) {
+    const seenInputs = new Set<string>(
+      [
+        input.faceImageUrl ?? '',
+        ...FACE_ANGLE_KEYS.map((k) => cleanAngles?.[k] ?? ''),
+      ].filter(Boolean),
+    );
+    for (let i = 0; i < input.faceImageUrls.length; i += 1) {
+      const raw = input.faceImageUrls[i];
+      if (typeof raw !== 'string' || !raw || seenInputs.has(raw)) continue;
+      const uploaded = await uploadFaceImageIfNeeded(supabase, patientId, raw, `extra-${i + 1}`);
+      if (uploaded) extraUrls.push(uploaded);
+    }
+  }
+
+  const combinedUrls = Array.from(
+    new Set(
+      [
+        storedPrimary,
+        ...FACE_ANGLE_KEYS.map((k) => storedAngleUrls[k]),
+        ...extraUrls,
+      ].filter((u): u is string => typeof u === 'string' && u.length > 0),
+    ),
+  );
+
+  return {
+    primaryFaceImageUrl: storedPrimary ?? combinedUrls[0],
+    angleImageUrls: Object.keys(storedAngleUrls).length > 0 ? storedAngleUrls : undefined,
+    faceImageUrls: combinedUrls.length > 0 ? combinedUrls : undefined,
+  };
 }
 
 function sortNewestFirst<T extends { createdAt: string }>(items: readonly T[]): T[] {
@@ -1220,6 +1366,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         skipFaceScan?: boolean;
         faceBiometricStatus?: 'PENDING' | 'VERIFIED';
         faceImageUrl?: string;
+        faceImageUrls?: unknown;
+        angleImageUrls?: unknown;
         frontalCentroid?: unknown;
         overallCentroid?: unknown;
         rawFrames?: { pose?: string; vector?: unknown; qualityScore?: number }[];
@@ -1317,7 +1465,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         ? 'PENDING'
         : body.faceBiometricStatus ?? 'VERIFIED';
       const gender = body.gender || 'ชาย';
-      const storedFaceImageUrl = await uploadFaceImageIfNeeded(supabase, patientId, body.faceImageUrl);
+      const faceBundle = await uploadMultiAngleFaceBundle(supabase, patientId, {
+        faceImageUrl: body.faceImageUrl,
+        angleImageUrls: body.angleImageUrls,
+        faceImageUrls: body.faceImageUrls,
+      });
+      const storedFaceImageUrl = faceBundle.primaryFaceImageUrl;
 
       const patient: PatientRecord = {
         id: patientId,
@@ -1337,6 +1490,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         faceBiometricStatus: faceStatus,
         faceFramesCount: framesCaptured,
         faceImageUrl: storedFaceImageUrl,
+        faceImageUrls: faceBundle.faceImageUrls,
+        angleImageUrls: faceBundle.angleImageUrls,
         masterEmbedding: masterVec,
         angleEmbeddings: resolvedAngles,
         rehabSchedules: initialSchedules,
@@ -1352,7 +1507,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
       state.patients.push(patient);
       await persistToSupabase(supabase, (db) =>
-        db.from('patients').insert({
+        writePatientRowWithFramesFallback(db, 'insert', {
           id: patient.id,
           hn: patient.hn,
           full_name: patient.fullName,
@@ -1363,16 +1518,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           next_appointment_date: patient.nextAppointmentDate || null,
           registration_status: 'active',
           face_biometric_status: faceStatus,
+          face_frames_count: framesCaptured,
           face_image_url: storedFaceImageUrl ?? null,
-          history: {
-            gender,
-            faceBiometricStatus: faceStatus,
-            faceFramesCount: framesCaptured,
-            faceImageUrl: storedFaceImageUrl ?? null,
-            masterEmbedding: masterVec ?? null,
-            angleEmbeddings: resolvedAngles ?? null,
-            rehabSchedules: initialSchedules,
-          },
+          history: buildPatientHistoryPayload(patient),
         }),
       );
       if (!isPendingSkip && frontalVec && masterVec && resolvedAngles) {
@@ -1412,7 +1560,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           })),
         );
         await persistToSupabase(supabase, async (db) => {
-          await db.from('face_enrollments').insert({
+          await insertFaceEnrollmentWithCompatShotCount(db, {
             patient_id: patientId,
             shot_count: framesCaptured,
             liveness_verified: true,
@@ -2129,6 +2277,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         overallCentroid?: unknown;
         rawFrames?: { pose?: string; vector?: unknown; qualityScore?: number }[];
         faceImageUrl?: string;
+        faceImageUrls?: unknown;
+        angleImageUrls?: unknown;
         masterEmbedding?: unknown;
         angleEmbeddings?: unknown;
         framesCaptured?: number;
@@ -2179,8 +2329,21 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       patient.faceFramesCount = framesCaptured;
       patient.masterEmbedding = masterVec;
       patient.angleEmbeddings = resolvedAngles;
-      if (body.faceImageUrl) {
-        patient.faceImageUrl = await uploadFaceImageIfNeeded(supabase, patient.id, body.faceImageUrl);
+      if (body.faceImageUrl || body.angleImageUrls || body.faceImageUrls) {
+        const faceBundle = await uploadMultiAngleFaceBundle(supabase, patient.id, {
+          faceImageUrl: body.faceImageUrl,
+          angleImageUrls: body.angleImageUrls,
+          faceImageUrls: body.faceImageUrls,
+        });
+        if (faceBundle.primaryFaceImageUrl) {
+          patient.faceImageUrl = faceBundle.primaryFaceImageUrl;
+        }
+        if (faceBundle.angleImageUrls) {
+          patient.angleImageUrls = faceBundle.angleImageUrls;
+        }
+        if (faceBundle.faceImageUrls) {
+          patient.faceImageUrls = faceBundle.faceImageUrls;
+        }
       }
       patient.biometricHistory = {
         frontal_centroid: frontalVec,
@@ -2222,7 +2385,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
       await persistToSupabase(supabase, async (db) => {
         await db.from('face_templates').delete().eq('patient_id', patient.id);
-        await db.from('face_enrollments').insert({
+        await insertFaceEnrollmentWithCompatShotCount(db, {
           patient_id: patient.id,
           shot_count: framesCaptured,
           liveness_verified: true,
@@ -2251,23 +2414,18 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           },
           { onConflict: 'patient_id' },
         );
-        await db
-          .from('patients')
-          .update({
+        await writePatientRowWithFramesFallback(
+          db,
+          'update',
+          {
             face_biometric_status: 'VERIFIED',
+            face_frames_count: framesCaptured,
             face_image_url: patient.faceImageUrl ?? null,
-            history: {
-              gender: patient.gender ?? 'ชาย',
-              faceBiometricStatus: 'VERIFIED',
-              faceFramesCount: framesCaptured,
-              faceImageUrl: patient.faceImageUrl ?? null,
-              masterEmbedding: masterVec,
-              angleEmbeddings: resolvedAngles,
-              rehabSchedules: patient.rehabSchedules ?? [],
-            },
+            history: buildPatientHistoryPayload(patient),
             updated_at: new Date().toISOString(),
-          })
-          .eq('id', patient.id);
+          },
+          patient.id,
+        );
       });
 
       recordAudit({
@@ -2329,22 +2487,17 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       state.rehab_sessions.unshift(session);
 
       await persistToSupabase(supabase, async (db) => {
-        await db
-          .from('patients')
-          .update({
+        await writePatientRowWithFramesFallback(
+          db,
+          'update',
+          {
             next_appointment_date: todayIso,
-            history: {
-              gender: patient.gender ?? 'ชาย',
-              faceBiometricStatus: patient.faceBiometricStatus ?? 'PENDING',
-              faceFramesCount: patient.faceFramesCount ?? 0,
-              faceImageUrl: patient.faceImageUrl ?? null,
-              masterEmbedding: patient.masterEmbedding ?? null,
-              angleEmbeddings: patient.angleEmbeddings ?? null,
-              rehabSchedules: existingSchedules,
-            },
+            face_frames_count: patient.faceFramesCount ?? 0,
+            history: buildPatientHistoryPayload(patient),
             updated_at: new Date().toISOString(),
-          })
-          .eq('id', patient.id);
+          },
+          patient.id,
+        );
         await db.from('rehab_sessions').insert({
           patient_id: session.patientId,
           exercise_id: session.exerciseId,
@@ -2404,8 +2557,25 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         if (body.faceBiometricStatus !== undefined) {
           patient.faceBiometricStatus = body.faceBiometricStatus;
         }
-        if (body.faceImageUrl !== undefined) {
-          patient.faceImageUrl = await uploadFaceImageIfNeeded(supabase, patient.id, body.faceImageUrl);
+        if (
+          body.faceImageUrl !== undefined ||
+          body.angleImageUrls !== undefined ||
+          body.faceImageUrls !== undefined
+        ) {
+          const faceBundle = await uploadMultiAngleFaceBundle(supabase, patient.id, {
+            faceImageUrl: body.faceImageUrl,
+            angleImageUrls: body.angleImageUrls,
+            faceImageUrls: body.faceImageUrls,
+          });
+          if (faceBundle.primaryFaceImageUrl !== undefined) {
+            patient.faceImageUrl = faceBundle.primaryFaceImageUrl;
+          }
+          if (faceBundle.angleImageUrls !== undefined) {
+            patient.angleImageUrls = faceBundle.angleImageUrls;
+          }
+          if (faceBundle.faceImageUrls !== undefined) {
+            patient.faceImageUrls = faceBundle.faceImageUrls;
+          }
         }
         if (Array.isArray(body.rehabSchedules)) {
           patient.rehabSchedules = body.rehabSchedules as RehabScheduleItem[];
@@ -2421,27 +2591,24 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         }
       }
       await persistToSupabase(supabase, (db) =>
-        db
-          .from('patients')
-          .update({
+        writePatientRowWithFramesFallback(
+          db,
+          'update',
+          {
             full_name: patient.fullName,
             age: patient.age,
             phone: patient.phone,
             diagnosis: patient.diagnosis,
             assigned_pt_id: patient.assignedPtId,
             next_appointment_date: patient.nextAppointmentDate || null,
-            history: {
-              gender: patient.gender ?? 'ชาย',
-              faceBiometricStatus: patient.faceBiometricStatus ?? 'PENDING',
-              faceFramesCount: patient.faceFramesCount ?? 0,
-              faceImageUrl: patient.faceImageUrl ?? null,
-              masterEmbedding: patient.masterEmbedding ?? null,
-              angleEmbeddings: patient.angleEmbeddings ?? null,
-              rehabSchedules: patient.rehabSchedules ?? [],
-            },
+            face_biometric_status: patient.faceBiometricStatus ?? 'PENDING',
+            face_frames_count: patient.faceFramesCount ?? 0,
+            face_image_url: patient.faceImageUrl ?? null,
+            history: buildPatientHistoryPayload(patient),
             updated_at: new Date().toISOString(),
-          })
-          .eq('id', patient.id),
+          },
+          patient.id,
+        ),
       );
       recordAudit({
         eventType: 'PATIENT_UPDATED',
@@ -2739,22 +2906,17 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           minigame_score: session.minigameScore ?? null,
         });
         if (matchedPatient && session.exerciseId !== 'CLINIC_CHECKIN') {
-          await db
-            .from('patients')
-            .update({
+          await writePatientRowWithFramesFallback(
+            db,
+            'update',
+            {
               next_appointment_date: matchedPatient.nextAppointmentDate || null,
-              history: {
-                gender: matchedPatient.gender ?? 'ชาย',
-                faceBiometricStatus: matchedPatient.faceBiometricStatus ?? 'PENDING',
-                faceFramesCount: matchedPatient.faceFramesCount ?? 0,
-                faceImageUrl: matchedPatient.faceImageUrl ?? null,
-                masterEmbedding: matchedPatient.masterEmbedding ?? null,
-                angleEmbeddings: matchedPatient.angleEmbeddings ?? null,
-                rehabSchedules: matchedPatient.rehabSchedules ?? [],
-              },
+              face_frames_count: matchedPatient.faceFramesCount ?? 0,
+              history: buildPatientHistoryPayload(matchedPatient),
               updated_at: new Date().toISOString(),
-            })
-            .eq('id', matchedPatient.id);
+            },
+            matchedPatient.id,
+          );
         }
       });
       return jsonResponse({ session }, 201);
