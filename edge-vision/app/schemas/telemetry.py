@@ -30,6 +30,12 @@ class BoneLengths3D(BaseModel):
     spine_vertical_unit: Tuple[float, float, float]
     baseline_shoulder_y: float
     baseline_heel_y: float
+    baseline_hip_y: float = 0.54
+    baseline_shoulder_tilt_deg: float = 0.0
+    baseline_pelvic_tilt_deg: float = 0.0
+    arm_to_torso_ratio: float = 0.0
+    leg_to_torso_ratio: float = 0.0
+    estimated_distance_m: float = 2.0
 
 
 class CalibrationStateSchema(BaseModel):
@@ -39,6 +45,10 @@ class CalibrationStateSchema(BaseModel):
     progress: float = 0.0
     remaining_sec: float = 2.0
     message_th: str = "กรุณายืนตรงหันหน้าเข้ากล้อง 2 วินาทีเพื่อคาลิเบรตสัดส่วนร่างกาย"
+    distance_status: Literal["OK", "TOO_CLOSE", "TOO_FAR", "OUT_OF_FRAME", "OCCLUDED"] = "OK"
+    estimated_distance_m: float = 2.0
+    min_visibility: float = 1.0
+    missing_joints: List[str] = Field(default_factory=list)
     bone_lengths: Optional[BoneLengths3D] = None
 
 
@@ -77,6 +87,16 @@ class FaceEnrollmentStateSchema(BaseModel):
     guidance_th: str = "กรุณาวางใบหน้าให้อยู่ในกรอบวงกลม"
 
 
+MovementPhase = Literal[
+    "IDLE",
+    "READY",
+    "CONCENTRIC",
+    "HOLD",
+    "ECCENTRIC",
+    "REP_COMPLETE",
+]
+
+
 class TelemetryAnalysisSchema(BaseModel):
     """Biomechanical joint angle and anti-cheating analysis metrics."""
 
@@ -84,12 +104,22 @@ class TelemetryAnalysisSchema(BaseModel):
     target_rom_deg: float = 150.0
     rom_completion_pct: float = 0.0
     trunk_tilt_deg: float = 0.0
+    torso_plane_tilt_deg: float = 0.0
+    shoulder_tilt_deg: float = 0.0
+    pelvic_tilt_deg: float = 0.0
     shoulder_hike_cm: float = 0.0
+    elbow_flexion_deg: float = 180.0
     knee_valgus_deg: float = 0.0
     heel_lift_cm: float = 0.0
     angular_velocity_deg_s: float = 0.0
+    min_landmark_visibility: float = 1.0
+    visibility_ok: bool = True
+    stability_score: float = 100.0
+    hold_progress_pct: float = 0.0
+    hold_timer_frozen: bool = False
     is_form_valid: bool = True
     compensation_detected: List[str] = Field(default_factory=lambda: ["NONE"])
+    compensation_warnings: List[str] = Field(default_factory=list)
     pain_alert: bool = False
 
 
@@ -99,6 +129,9 @@ class RepCounterSchema(BaseModel):
     valid_reps: int = 0
     invalid_reps: int = 0
     hold_remaining_sec: float = 3.0
+    hold_progress_pct: float = 0.0
+    hold_timer_frozen: bool = False
+    movement_phase: MovementPhase = "IDLE"
     target_reps: int = 10
 
 
@@ -187,8 +220,12 @@ class EdgeKioskTelemetryPayload(BaseModel):
     ]
     timestamp_ms: int
     fps: float
-    engine_backend: str = "RTMW3D-l + InsightFace + OneEuroFilter"
+    engine_backend: str = "MediaPipe Heavy / RTMW3D-l + InsightFace + OneEuroFilter"
     camera_mode: str = "live_webcam"
+    movement_phase: MovementPhase = "IDLE"
+    hold_progress_pct: float = 0.0
+    stability_score: float = 100.0
+    compensation_warnings: List[str] = Field(default_factory=list)
     patient: Optional[PatientMatchSchema] = None
     identity_guard: IdentityGuardSchema = Field(default_factory=IdentityGuardSchema)
     telemetry_analysis: TelemetryAnalysisSchema
@@ -199,6 +236,7 @@ class EdgeKioskTelemetryPayload(BaseModel):
     hand_status: HandRaiseTelemetry
     face_enrollment: Optional[FaceEnrollmentStateSchema] = None
     keypoints_3d: List[Keypoint3D] = Field(default_factory=list)
+    pose_world_landmarks: List[Keypoint3D] = Field(default_factory=list)
     frame_base64: Optional[str] = None
 
 

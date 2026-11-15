@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 
 MetricKind = Literal[
@@ -36,11 +36,74 @@ class ClinicalExerciseRule:
     default_sets: int
     default_reps: int
     anti_cheat_checks: Tuple[str, ...] = ("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST")
+    hysteresis_enter_margin_deg: float = 6.0
+    hysteresis_exit_margin_deg: float = 14.0
+    rest_hysteresis_margin_deg: float = 20.0
 
     @property
     def is_descending_target(self) -> bool:
         """True when active ROM decreases from rest angle (e.g., elbow flexion 145 -> 45)."""
         return self.min_angle_deg < self.rest_angle_deg
+
+    @property
+    def requires_straight_elbow(self) -> bool:
+        """True when straight-arm shoulder raises should guard against excessive elbow bend."""
+        return self.metric_kind == "shoulder_elevation" and self.pattern == "shoulder"
+
+    def target_threshold_enter(self, target_override: Optional[float] = None) -> float:
+        """Target threshold required to enter HOLD (ascending >= target-enter, descending <= target+enter)."""
+        target = float(target_override) if target_override is not None else float(self.min_angle_deg)
+        if self.is_descending_target:
+            return target + float(self.hysteresis_enter_margin_deg)
+        return target - float(self.hysteresis_enter_margin_deg)
+
+    def target_threshold_exit(self, target_override: Optional[float] = None) -> float:
+        """Wider hysteresis exit boundary to prevent oscillation chatter while holding target."""
+        target = float(target_override) if target_override is not None else float(self.min_angle_deg)
+        if self.is_descending_target:
+            return target + float(self.hysteresis_exit_margin_deg)
+        return target - float(self.hysteresis_exit_margin_deg)
+
+    def is_in_target_zone(
+        self,
+        rom_deg: float,
+        currently_holding: bool = False,
+        target_override: Optional[float] = None,
+    ) -> bool:
+        """Hysteresis-stabilized target zone check comparing ascending vs descending state boundaries."""
+        thresh = (
+            self.target_threshold_exit(target_override)
+            if currently_holding
+            else self.target_threshold_enter(target_override)
+        )
+        if self.is_descending_target:
+            return rom_deg <= thresh
+        return rom_deg >= thresh
+
+    def is_in_rest_zone(self, rom_deg: float) -> bool:
+        """Hysteresis-stabilized return-to-rest boundary required before counting next rep."""
+        rest = float(self.rest_angle_deg)
+        margin = float(self.rest_hysteresis_margin_deg)
+        if self.is_descending_target:
+            return rom_deg >= rest - margin
+        return rom_deg <= rest + margin
+
+    def required_landmark_indices(self) -> Tuple[int, ...]:
+        """Return 133-topology body indices needed for reliable ROM and compensation tracking."""
+        base = [5, 6, 11, 12]
+        if self.metric_kind in ("shoulder_elevation", "elbow_flexion"):
+            if self.side in ("left", "both"):
+                base.extend([7, 9])
+            if self.side in ("right", "both"):
+                base.extend([8, 10])
+        elif self.metric_kind in ("knee_extension", "hip_flexion", "heel_raise", "balance_trunk_sway"):
+            if self.side in ("left", "both"):
+                base.extend([13, 15])
+            if self.side in ("right", "both"):
+                base.extend([14, 16])
+        elif self.metric_kind == "neck_lateral_tilt":
+            base.append(0)
+        return tuple(dict.fromkeys(base))
 
 
 ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
@@ -562,6 +625,8 @@ def list_all_exercises() -> List[Dict[str, object]]:
             "default_hold_sec": r.default_hold_sec,
             "default_reps": r.default_reps,
             "anti_cheat_checks": list(r.anti_cheat_checks),
+            "hysteresis_enter_margin_deg": r.hysteresis_enter_margin_deg,
+            "hysteresis_exit_margin_deg": r.hysteresis_exit_margin_deg,
         }
         for r in ALL_26_EXERCISES
     ]

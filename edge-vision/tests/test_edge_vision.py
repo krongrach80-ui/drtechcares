@@ -19,13 +19,31 @@ from fastapi.testclient import TestClient
 
 from app.biomechanics.calibrator import StandingCalibrator
 from app.biomechanics.exercises import ALL_26_EXERCISES, resolve_exercise_rule
-from app.biomechanics.solver_3d import Biomechanics3DSolver, joint_angle_3d
+from app.biomechanics.solver_3d import (
+    Biomechanics3DSolver,
+    compute_pelvic_tilt_deg,
+    compute_shoulder_tilt_deg,
+    compute_torso_plane,
+    joint_angle_3d,
+)
 from app.biomechanics.state_machine import ClinicalRehabFSM
 from app.config import EdgeVisionSettings
 from app.main import create_app
 from app.schemas.telemetry import ExercisePrescriptionSchema, HandRaiseTelemetry, PatientMatchSchema
 from app.vision.face_120 import BUCKET_ORDER, CachedPatientBiometric, InsightFace120Manager, l2_normalize
-from app.vision.pose_3d import OneEuroFilter3D, RTMW3DPoseEstimator, TOTAL_WHOLEBODY_KEYPOINTS, generate_synthetic_133_pose
+from app.vision.pose_3d import (
+    ClinicalPoseEstimator,
+    MediaPipePoseEngine,
+    OneEuroFilter,
+    OneEuroFilter3D,
+    RTMW3DPoseEstimator,
+    TOTAL_MEDIAPIPE_KEYPOINTS,
+    TOTAL_WHOLEBODY_KEYPOINTS,
+    filter_landmarks_by_visibility,
+    generate_synthetic_133_pose,
+    wholebody133_to_mediapipe33,
+    wholebody133_to_world_meters,
+)
 
 
 class TestClinicalEdgeVision(unittest.TestCase):
@@ -37,13 +55,33 @@ class TestClinicalEdgeVision(unittest.TestCase):
             SUPABASE_SERVICE_ROLE_KEY="",
         )
 
-    def test_01_strict_zero_mediapipe_in_edge_vision(self) -> None:
-        """Ensure zero references or imports to mediapipe exist inside edge-vision production code."""
-        for py_file in (EDGE_ROOT / "app").rglob("*.py"):
-            content = py_file.read_text(encoding="utf-8").lower()
-            self.assertNotIn("mediapipe", content, f"Forbidden mediapipe found in {py_file}")
+    def test_01_mediapipe_pose_config_and_requirements(self) -> None:
+        """Verify MediaPipe Pose clinical settings, complexity modes, and requirements alignment."""
+        mp_cfg = self.settings.get_mediapipe_pose_config()
+        self.assertEqual(mp_cfg["model_complexity"], 2)
+        self.assertTrue(mp_cfg["smooth_landmarks"])
+        self.assertGreaterEqual(mp_cfg["min_detection_confidence"], 0.7)
+        self.assertGreaterEqual(mp_cfg["min_tracking_confidence"], 0.7)
+        self.assertGreaterEqual(mp_cfg["min_visibility"], 0.7)
+
+        # Kiosk precision mode overrides
+        self.assertEqual(self.settings.resolve_model_complexity("clinical"), 2)
+        self.assertEqual(self.settings.resolve_model_complexity("balanced"), 1)
+        self.assertEqual(self.settings.resolve_model_complexity("lite"), 0)
+
         req_text = (EDGE_ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
-        self.assertNotIn("mediapipe", req_text)
+        self.assertIn("mediapipe", req_text)
+        self.assertIn("pytest", req_text)
+
+        engine = MediaPipePoseEngine(self.settings)
+        try:
+            self.assertIsNotNone(engine.filter_2d)
+            self.assertIsNotNone(engine.filter_3d)
+            # When .task asset is bundled in workspace public/models, engine should initialize cleanly
+            if self.settings.resolve_mediapipe_model_path() is not None:
+                self.assertTrue(engine.is_ready)
+        finally:
+            engine.close()
 
     def test_02_one_euro_filter_jitter_suppression(self) -> None:
         """One-Euro Filter smooths micro-jitter during static hold across all 133 (X, Y, Z) points."""
@@ -512,6 +550,271 @@ class TestClinicalEdgeVision(unittest.TestCase):
                     frame = ws.receive_json()
                 self.assertEqual(frame["identity_guard"]["status"], "MULTI_PERSON")
                 self.assertFalse(frame["identity_guard"]["is_counting_allowed"])
+
+    def test_11_dual_2d_3d_one_euro_filter_and_visibility_gating(self) -> None:
+        """OneEuroFilter smooths 2D & 3D coordinates using real timestamps and freezes low-visibility outliers."""
+        filter_2d = OneEuroFilter(min_cutoff=1.5, beta=0.08, d_cutoff=1.0, min_visibility=0.70)
+        filter_3d = OneEuroFilter(min_cutoff=1.2, beta=0.08, d_cutoff=1.0, min_visibility=0.70)
+
+        rng = np.random.default_rng(123)
+        base_133, scores_133 = generate_synthetic_133_pose(0.0, is_calibrating=True)
+        base_2d, vis_33 = wholebody133_to_mediapipe33(base_133, scores_133)
+        base_3d = wholebody133_to_world_meters(base_133)[:TOTAL_MEDIAPIPE_KEYPOINTS]
+
+        raw_samples = []
+        smooth_samples = []
+        for i in range(30):
+            ts = i / 60.0
+            n2 = base_2d + rng.normal(0.0, 0.012, size=base_2d.shape)
+            n3 = base_3d + rng.normal(0.0, 0.015, size=base_3d.shape)
+            s2 = filter_2d.filter(n2, timestamp_sec=ts, visibility=vis_33)
+            s3 = filter_3d.filter(n3, timestamp_sec=ts, visibility=vis_33)
+            raw_samples.append(n3[14, 0])
+            if i >= 10:
+                smooth_samples.append(s3[14, 0])
+            self.assertEqual(s2.shape, (TOTAL_MEDIAPIPE_KEYPOINTS, 3))
+            self.assertEqual(s3.shape, (TOTAL_MEDIAPIPE_KEYPOINTS, 3))
+
+        self.assertLess(np.std(smooth_samples), np.std(raw_samples[10:]) * 0.75)
+
+        # Low-visibility spike on landmark 14 (right elbow) should be rejected by filter & gating helper
+        last_valid = filter_3d.filter(base_3d, timestamp_sec=0.60, visibility=vis_33)
+        occluded_vis = vis_33.copy()
+        occluded_vis[14] = 0.20
+        spike_3d = base_3d.copy()
+        spike_3d[14] += np.array([2.5, -2.5, 1.5])
+        held = filter_3d.filter(spike_3d, timestamp_sec=0.62, visibility=occluded_vis)
+        self.assertAlmostEqual(float(held[14, 0]), float(last_valid[14, 0]), places=6)
+
+        cleaned, valid_mask, min_req = filter_landmarks_by_visibility(
+            spike_3d,
+            occluded_vis,
+            min_visibility=0.70,
+            fallback_xyz=last_valid,
+            required_indices=(11, 12, 14, 16, 23, 24),
+        )
+        self.assertFalse(bool(valid_mask[14]))
+        self.assertLess(min_req, 0.70)
+        self.assertTrue(np.allclose(cleaned[14], last_valid[14]))
+
+    def test_12_3d_world_yaw_invariance_torso_plane_shoulder_pelvic_tilt_and_elbow(self) -> None:
+        """True 3D vectors from world landmarks remain invariant to yaw rotation and flag compensations."""
+        solver = Biomechanics3DSolver(self.settings)
+        cal = StandingCalibrator(duration_sec=2.0)
+        stand_pts, scores = generate_synthetic_133_pose(0.0, is_calibrating=True)
+        stand_world = wholebody133_to_world_meters(stand_pts)
+        cal.force_calibrate_from_pose(stand_pts, world_pts=stand_world)
+
+        raised_pts, _ = generate_synthetic_133_pose(0.0, "ex-03", mock_pose_override="raise_right")
+        raised_world = wholebody133_to_world_meters(raised_pts)
+        rule = resolve_exercise_rule("ex-03")
+
+        res_front, _ = solver.analyze(
+            raised_pts, rule, cal, timestamp_sec=1.0, target_rom_override=140.0, world_pts=raised_world, scores=scores
+        )
+        self.assertTrue(res_front.is_form_valid)
+        self.assertGreaterEqual(res_front.stability_score, 85.0)
+
+        # Rotate world landmarks 35 deg around vertical Y axis (patient standing angled to camera)
+        theta = np.radians(35.0)
+        rot_y = np.array(
+            [
+                [np.cos(theta), 0.0, np.sin(theta)],
+                [0.0, 1.0, 0.0],
+                [-np.sin(theta), 0.0, np.cos(theta)],
+            ],
+            dtype=np.float64,
+        )
+        rotated_world = raised_world @ rot_y.T
+        plane = compute_torso_plane(rotated_world)
+        self.assertGreater(abs(plane["yaw_deg"]), 25.0)
+
+        solver.reset()
+        res_rot, _ = solver.analyze(
+            raised_pts, rule, cal, timestamp_sec=1.1, target_rom_override=140.0, world_pts=rotated_world, scores=scores
+        )
+        self.assertAlmostEqual(res_front.current_rom_deg, res_rot.current_rom_deg, delta=1.0)
+
+        # Check Shoulder Tilt, Pelvic Tilt, Elbow Flexion, Low Visibility warnings
+        bad_world = raised_world.copy()
+        bad_world[6, 1] -= 0.12  # heavy right shoulder hike/tilt (> 12 deg)
+        bad_world[12, 1] += 0.08  # pelvic tilt (> 10 deg)
+        # Bend right elbow by folding wrist back toward shoulder (~90 deg < 150 deg)
+        bad_world[10] = bad_world[8] + np.array([0.0, -0.25, 0.0])
+
+        self.assertGreater(compute_shoulder_tilt_deg(bad_world), 12.0)
+        self.assertGreater(compute_pelvic_tilt_deg(bad_world), 10.0)
+
+        low_scores = scores.copy()
+        low_scores[8] = 0.40  # right elbow occluded
+
+        res_bad, _ = solver.analyze(
+            raised_pts, rule, cal, timestamp_sec=1.6, target_rom_override=140.0, world_pts=bad_world, scores=low_scores
+        )
+        self.assertFalse(res_bad.is_form_valid)
+        self.assertFalse(res_bad.visibility_ok)
+        self.assertIn("SHOULDER_HIKE", res_bad.compensation_detected)
+        self.assertIn("SHOULDER_TILT", res_bad.compensation_detected)
+        self.assertIn("PELVIC_TILT", res_bad.compensation_detected)
+        self.assertIn("ELBOW_FLEXION", res_bad.compensation_detected)
+        self.assertIn("LOW_VISIBILITY", res_bad.compensation_detected)
+        self.assertGreater(len(res_bad.compensation_warnings), 0)
+        self.assertLess(res_bad.stability_score, 80.0)
+
+    def test_13_calibrator_distance_framing_and_anthropometrics(self) -> None:
+        """Calibrator rejects too-far, too-close, out-of-frame, or low-visibility poses before starting."""
+        cal = StandingCalibrator(
+            duration_sec=2.0,
+            stability_max_tilt_deg=12.0,
+            min_visibility=0.70,
+            min_torso_height_ratio=0.16,
+            max_torso_height_ratio=0.55,
+        )
+        stand_pts, scores = generate_synthetic_133_pose(0.0, is_calibrating=True)
+
+        # Too far (shrink skeleton around center)
+        too_far = 0.5 + (stand_pts - 0.5) * 0.35
+        st_far = cal.update(too_far, scores, 0.2)
+        self.assertFalse(st_far.is_calibrated)
+        self.assertEqual(st_far.distance_status, "TOO_FAR")
+
+        # Too close (expand torso height > 0.55 inside frame)
+        too_close = stand_pts.copy()
+        too_close[5, 1] = 0.15
+        too_close[6, 1] = 0.15
+        too_close[11, 1] = 0.80
+        too_close[12, 1] = 0.80
+        st_close = cal.update(too_close, scores, 0.4)
+        self.assertFalse(st_close.is_calibrated)
+        self.assertEqual(st_close.distance_status, "TOO_CLOSE")
+
+        # Low visibility
+        low_vis = scores.copy()
+        low_vis[7] = 0.35
+        st_occ = cal.update(stand_pts, low_vis, 0.6)
+        self.assertFalse(st_occ.is_calibrated)
+        self.assertEqual(st_occ.distance_status, "OCCLUDED")
+        self.assertIn("left_elbow", st_occ.missing_joints)
+
+        # Valid framing & anthropometric lock
+        world_pts = wholebody133_to_world_meters(stand_pts)
+        for step in range(25):
+            st_ok = cal.update(stand_pts, scores, 1.0 + step * 0.1, world_pts=world_pts)
+        self.assertTrue(st_ok.is_calibrated)
+        self.assertEqual(st_ok.distance_status, "OK")
+        assert st_ok.bone_lengths is not None
+        self.assertGreater(st_ok.bone_lengths.arm_to_torso_ratio, 0.4)
+        self.assertGreater(st_ok.bone_lengths.leg_to_torso_ratio, 0.8)
+
+    def test_14_fsm_movement_phases_hysteresis_and_freeze_hold_timer(self) -> None:
+        """Verify IDLE->READY->CONCENTRIC->HOLD->REP_COMPLETE->ECCENTRIC, hysteresis band, and Freeze Hold Timer."""
+        fsm = ClinicalRehabFSM(self.settings)
+        self.assertEqual(fsm.movement_phase, "IDLE")
+
+        rx = ExercisePrescriptionSchema(
+            exercise_id="ex-03",
+            target_rom_deg=110.0,
+            hold_sec=2.0,
+            target_reps=2,
+        )
+        fsm.set_prescription(rx, start_calibration=True)
+        stand_pts, scores = generate_synthetic_133_pose(0.0, is_calibrating=True)
+        hand_empty = HandRaiseTelemetry()
+
+        # Calibrate over 2.1s
+        t = 0.0
+        for _ in range(22):
+            p = fsm.step(stand_pts, scores, t, 30.0, "synthetic_mock", hand_empty, [])
+            t += 0.1
+        self.assertEqual(p.fsm_state, "ACTIVE")
+        self.assertEqual(p.movement_phase, "READY")
+
+        # Partial raise (~65 deg) -> CONCENTRIC
+        pts_65, _ = generate_synthetic_133_pose(0.0, is_calibrating=True)
+        upper = 0.145
+        fore = 0.135
+        ang65 = np.radians(65.0)
+        pts_65[8] = [pts_65[6, 0] - np.sin(ang65) * upper, pts_65[6, 1] + np.cos(ang65) * upper, 0.0]
+        pts_65[10] = [pts_65[8, 0] - np.sin(ang65) * fore, pts_65[8, 1] + np.cos(ang65) * fore, 0.0]
+        t += 0.6
+        p_conc = fsm.step(pts_65, scores, t, 30.0, "synthetic_mock", hand_empty, [])
+        self.assertEqual(p_conc.fsm_state, "ACTIVE")
+        self.assertEqual(p_conc.movement_phase, "CONCENTRIC")
+
+        # Enter target zone (>= 110 - 6 = 104 deg) -> HOLD
+        def make_arm_angle(deg: float) -> np.ndarray:
+            arr = stand_pts.copy()
+            r = np.radians(deg)
+            arr[8] = [arr[6, 0] - np.sin(r) * upper, arr[6, 1] + np.cos(r) * upper, 0.0]
+            arr[10] = [arr[8, 0] - np.sin(r) * fore, arr[8, 1] + np.cos(r) * fore, 0.0]
+            return arr
+
+        pts_108 = make_arm_angle(108.0)
+        t += 0.5
+        p_hold0 = fsm.step(pts_108, scores, t, 30.0, "synthetic_mock", hand_empty, [])
+        self.assertEqual(p_hold0.fsm_state, "HOLD")
+        self.assertEqual(p_hold0.movement_phase, "HOLD")
+
+        # Hysteresis test: minor dip to 100 deg (< 104 enter threshold, > 96 exit threshold) stays in HOLD!
+        pts_100 = make_arm_angle(100.0)
+        t += 0.8
+        p_hyst = fsm.step(pts_100, scores, t, 30.0, "synthetic_mock", hand_empty, [])
+        self.assertEqual(p_hyst.fsm_state, "HOLD")
+        self.assertAlmostEqual(p_hyst.hold_progress_pct, 40.0, delta=2.0)
+        frozen_remaining = p_hyst.rep_counter.hold_remaining_sec
+
+        # Compensation during HOLD (trunk lean > 10 deg) freezes Hold Timer immediately!
+        pts_cheat = pts_108.copy()
+        pts_cheat[5, 0] += 0.14
+        pts_cheat[6, 0] += 0.14
+        t += 0.7
+        p_frozen = fsm.step(pts_cheat, scores, t, 30.0, "synthetic_mock", hand_empty, [])
+        self.assertEqual(p_frozen.fsm_state, "HOLD")
+        self.assertTrue(p_frozen.telemetry_analysis.hold_timer_frozen)
+        self.assertAlmostEqual(p_frozen.rep_counter.hold_remaining_sec, frozen_remaining, places=2)
+        self.assertAlmostEqual(p_frozen.hold_progress_pct, p_hyst.hold_progress_pct, places=1)
+
+        # Resume valid hold for remaining 1.25s -> REP_COMPLETE
+        t += 1.3
+        p_done = fsm.step(pts_108, scores, t, 30.0, "synthetic_mock", hand_empty, [])
+        self.assertEqual(p_done.fsm_state, "REP_DONE")
+        self.assertEqual(p_done.movement_phase, "REP_COMPLETE")
+        self.assertEqual(p_done.hold_progress_pct, 100.0)
+        self.assertEqual(p_done.rep_counter.valid_reps, 1)
+
+        # Mid-lowering -> ECCENTRIC, then full rest -> READY
+        t += 0.6
+        p_ecc = fsm.step(pts_65, scores, t, 30.0, "synthetic_mock", hand_empty, [])
+        self.assertEqual(p_ecc.movement_phase, "ECCENTRIC")
+
+        t += 0.8
+        p_ready = fsm.step(stand_pts, scores, t, 30.0, "synthetic_mock", hand_empty, [])
+        self.assertEqual(p_ready.fsm_state, "ACTIVE")
+        self.assertEqual(p_ready.movement_phase, "READY")
+
+    def test_15_telemetry_schema_precision_stability_and_http_endpoint(self) -> None:
+        """Verify main.py /health and /telemetry emit 1-decimal ROM, hold_progress_pct, warnings, and stability_score."""
+        est = ClinicalPoseEstimator(self.settings)
+        self.addCleanup(est.close)
+        app = create_app()
+        with TestClient(app) as client:
+            h = client.get("/health").json()
+            self.assertIn("mediapipe_config", h)
+            self.assertEqual(h["mediapipe_config"]["model_complexity"], 2)
+
+            snap = client.get("/telemetry")
+            self.assertEqual(snap.status_code, 200)
+            body = snap.json()
+            for key in (
+                "current_rom_deg",
+                "hold_progress_pct",
+                "compensation_warnings",
+                "stability_score",
+                "movement_phase",
+                "telemetry",
+            ):
+                self.assertIn(key, body)
+            self.assertEqual(len(body["telemetry"]["pose_world_landmarks"]), TOTAL_MEDIAPIPE_KEYPOINTS)
 
 
 if __name__ == "__main__":

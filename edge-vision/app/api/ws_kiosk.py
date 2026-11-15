@@ -76,6 +76,7 @@ class KioskRuntimeCoordinator:
                 pass
             self._task = None
         self.camera.stop()
+        self.pose_estimator.close()
 
     def set_mock_pose_override(self, pose: Optional[str]) -> None:
         self._mock_pose_override = pose
@@ -86,7 +87,7 @@ class KioskRuntimeCoordinator:
         _, frame = self.camera.read_latest()
         is_mock = self.camera.mode == "synthetic_mock"
 
-        xyz, scores, skeleton_count, skeleton_bboxes = self.pose_estimator.estimate_with_crowd(
+        pose_frame = self.pose_estimator.estimate_clinical_with_crowd(
             frame_bgr=frame,
             timestamp_sec=now_sec,
             exercise_id=self.fsm.rule.id,
@@ -94,6 +95,11 @@ class KioskRuntimeCoordinator:
             mock_pose_override=self._mock_pose_override,
             is_mock_mode=is_mock,
         )
+        xyz = pose_frame.wholebody_2d_133
+        world_xyz = pose_frame.wholebody_world_133
+        scores = pose_frame.scores_133
+        skeleton_count = pose_frame.skeleton_count
+        skeleton_bboxes = pose_frame.valid_bboxes
 
         # Face ID 120 active enrollment or real-time 1:N authentication
         active_sid = self.face_manager.active_session_id
@@ -135,6 +141,10 @@ class KioskRuntimeCoordinator:
             identity_guard = IdentityGuardSchema(person_count=skeleton_count)
 
         keypoints_3d = self.pose_estimator.to_keypoint_schemas(xyz, scores)
+        pose_world_landmarks = self.pose_estimator.to_world_landmark_schemas(
+            pose_frame.pose_world_landmarks_3d,
+            pose_frame.visibilities_33,
+        )
         hand_status = self.pose_estimator.extract_hand_raise_telemetry(xyz, scores)
         frame_b64 = (
             self.camera.encode_jpeg_base64(frame, max_width=640, quality=68)
@@ -153,6 +163,8 @@ class KioskRuntimeCoordinator:
             face_enrollment=face_enroll_state or self._latest_face_enroll_state,
             frame_base64=frame_b64,
             identity_guard=identity_guard,
+            world_pts=world_xyz,
+            pose_world_landmarks=pose_world_landmarks,
         )
         self._last_telemetry = payload
         return payload

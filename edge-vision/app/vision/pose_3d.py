@@ -1,10 +1,12 @@
-"""RTMW3D-l (133-keypoint Wholebody3d) 3D pose estimator with vectorized One-Euro Filter."""
+"""MediaPipe Pose (Heavy) & RTMW3D-l 3D pose estimator with dual 2D/3D timestamped One-Euro Filter."""
 
 from __future__ import annotations
 
 import logging
 import math
-from typing import Dict, List, Optional, Tuple
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy import signal as scipy_signal  # Clinical DSP verification & cutoff helpers
@@ -13,6 +15,16 @@ from app.config import EdgeVisionSettings
 from app.schemas.telemetry import HandRaiseTelemetry, Keypoint3D
 
 logger = logging.getLogger("edge_vision.pose_3d")
+
+try:
+    import cv2  # type: ignore
+except ImportError:  # pragma: no cover
+    cv2 = None  # type: ignore
+
+try:
+    import mediapipe as mp  # type: ignore
+except ImportError:  # pragma: no cover
+    mp = None  # type: ignore
 
 try:
     import onnxruntime as ort  # type: ignore
@@ -25,6 +37,34 @@ except ImportError:  # pragma: no cover
     Wholebody3d = None  # type: ignore
 
 TOTAL_WHOLEBODY_KEYPOINTS = 133
+TOTAL_MEDIAPIPE_KEYPOINTS = 33
+
+# Mapping from MediaPipe 33 Pose landmark index -> COCO-Wholebody 133 index
+MEDIAPIPE_TO_WHOLEBODY_INDEX: Dict[int, int] = {
+    0: 0,   # nose
+    2: 1,   # left_eye
+    5: 2,   # right_eye
+    7: 3,   # left_ear
+    8: 4,   # right_ear
+    11: 5,  # left_shoulder
+    12: 6,  # right_shoulder
+    13: 7,  # left_elbow
+    14: 8,  # right_elbow
+    15: 9,  # left_wrist
+    16: 10, # right_wrist
+    23: 11, # left_hip
+    24: 12, # right_hip
+    25: 13, # left_knee
+    26: 14, # right_knee
+    27: 15, # left_ankle
+    28: 16, # right_ankle
+    29: 19, # left_heel
+    30: 22, # right_heel
+    31: 17, # left_big_toe
+    32: 20, # right_big_toe
+}
+
+WHOLEBODY_TO_MEDIAPIPE_INDEX: Dict[int, int] = {wb: mp_i for mp_i, wb in MEDIAPIPE_TO_WHOLEBODY_INDEX.items()}
 
 BODY_KEYPOINT_NAMES: Dict[int, str] = {
     0: "nose",
@@ -65,7 +105,141 @@ def keypoint_name(index: int) -> str:
     return f"kp_{index}"
 
 
-class OneEuroFilter3D:
+class OneEuroFilter:
+    """
+    Real-time vectorized One-Euro Filter (1€ Filter) using actual frame timestamps (`perf_counter`).
+    Supports 2D `(N, 2/3)` `pose_landmarks`, 3D `(N, 3)` `pose_world_landmarks`, and scalar signals,
+    with visibility gating to prevent occluded/low-confidence landmarks from corrupting derivatives.
+    """
+
+    def __init__(
+        self,
+        min_cutoff: float = 1.2,
+        beta: float = 0.08,
+        d_cutoff: float = 1.0,
+        min_visibility: float = 0.0,
+    ) -> None:
+        self.min_cutoff = float(min_cutoff)
+        self.beta = float(beta)
+        self.d_cutoff = float(d_cutoff)
+        self.min_visibility = float(min_visibility)
+        self._x_prev: Optional[np.ndarray] = None
+        self._dx_prev: Optional[np.ndarray] = None
+        self._last_ts: Optional[float] = None
+
+    def reset(self) -> None:
+        self._x_prev = None
+        self._dx_prev = None
+        self._last_ts = None
+
+    @staticmethod
+    def _alpha(cutoff: np.ndarray | float, dt: float) -> np.ndarray | float:
+        tau = 1.0 / (2.0 * math.pi * np.maximum(cutoff, 1e-4))
+        return 1.0 / (1.0 + tau / dt)
+
+    def __call__(
+        self,
+        values: np.ndarray | float,
+        timestamp_sec: Optional[float] = None,
+        visibility: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        return self.filter(values, timestamp_sec=timestamp_sec, visibility=visibility)
+
+    def filter(
+        self,
+        values: np.ndarray | float,
+        timestamp_sec: Optional[float] = None,
+        visibility: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        ts = float(time.perf_counter() if timestamp_sec is None else timestamp_sec)
+        x = np.asarray(values, dtype=np.float64)
+        scalar_mode = x.ndim == 0
+        if scalar_mode:
+            x = x.reshape(1, 1)
+        elif x.ndim == 1:
+            x = x.reshape(1, -1)
+
+        if self._x_prev is None or self._x_prev.shape != x.shape or self._last_ts is None:
+            self._x_prev = x.copy()
+            self._dx_prev = np.zeros_like(x)
+            self._last_ts = ts
+            out = x.copy()
+            return out.reshape(()) if scalar_mode else out
+
+        raw_dt = ts - self._last_ts
+        dt = max(1e-4, min(0.25, raw_dt if raw_dt > 0.0 else 1.0 / 60.0))
+        self._last_ts = ts
+
+        # Hold prior smoothed coordinate when landmark visibility drops below threshold
+        effective_x = x
+        vis_mask: Optional[np.ndarray] = None
+        if visibility is not None and self.min_visibility > 0.0:
+            vis_arr = np.asarray(visibility, dtype=np.float64).reshape(-1)
+            if vis_arr.shape[0] == x.shape[0]:
+                vis_mask = vis_arr >= self.min_visibility
+                if not np.all(vis_mask):
+                    effective_x = x.copy()
+                    effective_x[~vis_mask] = self._x_prev[~vis_mask]
+
+        dx = (effective_x - self._x_prev) / dt
+        alpha_d = self._alpha(self.d_cutoff, dt)
+        dx_hat = alpha_d * dx + (1.0 - alpha_d) * self._dx_prev
+
+        speed = np.linalg.norm(dx_hat, axis=-1, keepdims=True)
+        cutoff = self.min_cutoff + self.beta * speed
+        alpha = self._alpha(cutoff, dt)
+        x_hat = alpha * effective_x + (1.0 - alpha) * self._x_prev
+
+        if vis_mask is not None and not np.all(vis_mask):
+            x_hat[~vis_mask] = self._x_prev[~vis_mask]
+            dx_hat[~vis_mask] = 0.0
+
+        self._x_prev = x_hat.copy()
+        self._dx_prev = dx_hat.copy()
+        return x_hat.reshape(()) if scalar_mode else x_hat
+
+
+def filter_landmarks_by_visibility(
+    landmarks_xyz: np.ndarray,
+    visibilities: Optional[np.ndarray],
+    min_visibility: float = 0.70,
+    fallback_xyz: Optional[np.ndarray] = None,
+    required_indices: Optional[Sequence[int]] = None,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """
+    Screen unreliable landmarks with visibility < `min_visibility` prior to biomechanics calculation.
+    Returns `(cleaned_xyz, valid_mask, min_required_visibility)`.
+    """
+    pts = np.asarray(landmarks_xyz, dtype=np.float64).copy()
+    n = pts.shape[0]
+    if visibilities is None:
+        return pts, np.ones((n,), dtype=bool), 1.0
+
+    vis = np.asarray(visibilities, dtype=np.float64).reshape(-1)
+    if vis.shape[0] < n:
+        padded_v = np.ones((n,), dtype=np.float64)
+        padded_v[: vis.shape[0]] = vis
+        vis = padded_v
+    elif vis.shape[0] > n:
+        vis = vis[:n]
+
+    valid_mask = vis >= float(min_visibility)
+    if not np.all(valid_mask):
+        if fallback_xyz is not None and np.asarray(fallback_xyz).shape == pts.shape:
+            fb = np.asarray(fallback_xyz, dtype=np.float64)
+            pts[~valid_mask] = fb[~valid_mask]
+        else:
+            pts[~valid_mask] = np.nan
+
+    if required_indices is not None:
+        req = [int(i) for i in required_indices if 0 <= int(i) < n]
+        min_req = float(np.min(vis[req])) if req else float(np.min(vis))
+    else:
+        min_req = float(np.min(vis)) if n > 0 else 0.0
+    return pts, valid_mask, min_req
+
+
+class OneEuroFilter3D(OneEuroFilter):
     """
     Vectorized One-Euro Filter across all 133 (X, Y, Z) coordinates:
     - Eliminates micro-jitter while holding isometric targets (min_cutoff = 1.2 Hz).
@@ -78,29 +252,24 @@ class OneEuroFilter3D:
         min_cutoff: float = 1.2,
         beta: float = 0.08,
         d_cutoff: float = 1.0,
+        min_visibility: float = 0.0,
     ) -> None:
-        self.num_keypoints = num_keypoints
-        self.min_cutoff = float(min_cutoff)
-        self.beta = float(beta)
-        self.d_cutoff = float(d_cutoff)
-        self._x_prev: Optional[np.ndarray] = None
-        self._dx_prev: Optional[np.ndarray] = None
-        self._last_ts: Optional[float] = None
-
+        super().__init__(
+            min_cutoff=min_cutoff,
+            beta=beta,
+            d_cutoff=d_cutoff,
+            min_visibility=min_visibility,
+        )
+        self.num_keypoints = int(num_keypoints)
         # Precompute reference SciPy bilinear filter check for diagnostic telemetry
         self._scipy_b, self._scipy_a = scipy_signal.butter(1, min(0.95, self.min_cutoff / 30.0), btype="low")
 
-    def reset(self) -> None:
-        self._x_prev = None
-        self._dx_prev = None
-        self._last_ts = None
-
-    @staticmethod
-    def _alpha(cutoff: np.ndarray | float, dt: float) -> np.ndarray | float:
-        tau = 1.0 / (2.0 * math.pi * np.maximum(cutoff, 1e-4))
-        return 1.0 / (1.0 + tau / dt)
-
-    def filter(self, points_xyz: np.ndarray, timestamp_sec: float) -> np.ndarray:
+    def filter(
+        self,
+        points_xyz: np.ndarray,
+        timestamp_sec: Optional[float] = None,
+        visibility: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
         """
         Smooth `(N, 3)` float coordinate array at `timestamp_sec` (monotonic seconds).
         Returns `(N, 3)` filtered float64 numpy array.
@@ -113,28 +282,15 @@ class OneEuroFilter3D:
             if cols > 0 and rows > 0:
                 padded[:rows, :cols] = x[:rows, :cols]
             x = padded
-
-        if self._x_prev is None or self._last_ts is None:
-            self._x_prev = x.copy()
-            self._dx_prev = np.zeros_like(x)
-            self._last_ts = float(timestamp_sec)
-            return x.copy()
-
-        dt = max(1e-3, min(0.25, float(timestamp_sec) - self._last_ts))
-        self._last_ts = float(timestamp_sec)
-
-        dx = (x - self._x_prev) / dt
-        alpha_d = self._alpha(self.d_cutoff, dt)
-        dx_hat = alpha_d * dx + (1.0 - alpha_d) * self._dx_prev
-
-        speed = np.linalg.norm(dx_hat, axis=1, keepdims=True)
-        cutoff = self.min_cutoff + self.beta * speed
-        alpha = self._alpha(cutoff, dt)
-        x_hat = alpha * x + (1.0 - alpha) * self._x_prev
-
-        self._x_prev = x_hat.copy()
-        self._dx_prev = dx_hat.copy()
-        return x_hat
+        vis = visibility
+        if vis is not None:
+            v_arr = np.asarray(vis, dtype=np.float64).reshape(-1)
+            if v_arr.shape[0] != self.num_keypoints:
+                v_pad = np.ones((self.num_keypoints,), dtype=np.float64)
+                cnt = min(self.num_keypoints, v_arr.shape[0])
+                v_pad[:cnt] = v_arr[:cnt]
+                vis = v_pad
+        return super().filter(x, timestamp_sec=timestamp_sec, visibility=vis)
 
 
 def generate_synthetic_133_pose(
@@ -263,28 +419,374 @@ def generate_synthetic_133_pose(
     return pts, scores
 
 
-class RTMW3DPoseEstimator:
+def map_mediapipe33_to_wholebody133(
+    landmarks_33: np.ndarray,
+    visibilities_33: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Map 33 MediaPipe Pose landmarks into the 133-point Wholebody3d layout."""
+    lm = np.asarray(landmarks_33, dtype=np.float64)
+    vis = (
+        np.asarray(visibilities_33, dtype=np.float64).reshape(-1)
+        if visibilities_33 is not None
+        else np.ones((TOTAL_MEDIAPIPE_KEYPOINTS,), dtype=np.float64)
+    )
+    out = np.zeros((TOTAL_WHOLEBODY_KEYPOINTS, 3), dtype=np.float64)
+    out_sc = np.zeros((TOTAL_WHOLEBODY_KEYPOINTS,), dtype=np.float64)
+
+    for mp_idx, wb_idx in MEDIAPIPE_TO_WHOLEBODY_INDEX.items():
+        if mp_idx < lm.shape[0]:
+            out[wb_idx] = lm[mp_idx, :3]
+            out_sc[wb_idx] = float(vis[mp_idx]) if mp_idx < vis.shape[0] else 1.0
+
+    # Derive small toes from big toes and hips/ears cleanly if absent
+    out[18] = out[17] + np.array([0.012, 0.0, 0.0], dtype=np.float64)
+    out_sc[18] = out_sc[17]
+    out[21] = out[20] + np.array([-0.012, 0.0, 0.0], dtype=np.float64)
+    out_sc[21] = out_sc[20]
+
+    # Left & right hands (indices 91..111, 112..132) anchored on wrists + MediaPipe finger tips (17, 19, 21 / 18, 20, 22)
+    l_wrist = out[9]
+    l_tip = lm[19, :3] if lm.shape[0] > 19 else l_wrist
+    l_dir = l_tip - l_wrist
+    for i in range(21):
+        frac = ((i - 1) % 4 + 1) / 4.0 if i > 0 else 0.0
+        out[91 + i] = l_wrist + l_dir * frac
+        out_sc[91 + i] = out_sc[9]
+
+    r_wrist = out[10]
+    r_tip = lm[20, :3] if lm.shape[0] > 20 else r_wrist
+    r_dir = r_tip - r_wrist
+    for i in range(21):
+        frac = ((i - 1) % 4 + 1) / 4.0 if i > 0 else 0.0
+        out[112 + i] = r_wrist + r_dir * frac
+        out_sc[112 + i] = out_sc[10]
+
+    # Face contour (23..90) anchored around nose/ears
+    nose = out[0]
+    for idx in range(23, 91):
+        out[idx] = nose
+        out_sc[idx] = out_sc[0]
+
+    return out, np.clip(out_sc, 0.0, 1.0)
+
+
+def wholebody133_to_mediapipe33(
+    xyz_133: np.ndarray,
+    scores_133: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Project 133 Wholebody keypoints into 33 MediaPipe Pose landmarks + visibilities."""
+    wb = np.asarray(xyz_133, dtype=np.float64)
+    sc = (
+        np.asarray(scores_133, dtype=np.float64).reshape(-1)
+        if scores_133 is not None
+        else np.ones((TOTAL_WHOLEBODY_KEYPOINTS,), dtype=np.float64)
+    )
+    out = np.zeros((TOTAL_MEDIAPIPE_KEYPOINTS, 3), dtype=np.float64)
+    vis = np.zeros((TOTAL_MEDIAPIPE_KEYPOINTS,), dtype=np.float64)
+
+    for mp_idx, wb_idx in MEDIAPIPE_TO_WHOLEBODY_INDEX.items():
+        if wb_idx < wb.shape[0]:
+            out[mp_idx] = wb[wb_idx, :3]
+            vis[mp_idx] = float(sc[wb_idx]) if wb_idx < sc.shape[0] else 1.0
+
+    # Fill eye inner/outer & mouth neighbors cleanly from nose/eyes
+    out[1] = out[2]
+    out[3] = out[2]
+    out[4] = out[5]
+    out[6] = out[5]
+    out[9] = out[0] + np.array([0.01, 0.02, 0.0], dtype=np.float64)
+    out[10] = out[0] + np.array([-0.01, 0.02, 0.0], dtype=np.float64)
+    for f_i in (1, 3, 4, 6, 9, 10):
+        vis[f_i] = vis[0]
+
+    # Hand distal landmarks (17,19,21 left; 18,20,22 right) from 91..132 or wrists
+    if wb.shape[0] >= 133:
+        out[17], out[19], out[21] = wb[108], wb[99], wb[95]
+        out[18], out[20], out[22] = wb[129], wb[120], wb[116]
+        for mp_h in (17, 19, 21):
+            vis[mp_h] = vis[15]
+        for mp_h in (18, 20, 22):
+            vis[mp_h] = vis[16]
+
+    return out, np.clip(vis, 0.0, 1.0)
+
+
+def wholebody133_to_world_meters(xyz_133: np.ndarray, scale_m: float = 1.96) -> np.ndarray:
+    """Convert normalized image-space `(133, 3)` coords to isotropic hip-centered meters."""
+    pts = np.asarray(xyz_133, dtype=np.float64)
+    mid_hip = 0.5 * (pts[11] + pts[12])
+    return (pts - mid_hip) * float(scale_m)
+
+
+@dataclass
+class PoseEstimationFrame:
+    """Unified smoothed 2D (`pose_landmarks`) + 3D (`pose_world_landmarks`) frame container."""
+
+    pose_landmarks_2d: np.ndarray        # (33, 3) filtered normalized 2D + relative Z
+    pose_world_landmarks_3d: np.ndarray  # (33, 3) filtered metric 3D (meters, hip-centered)
+    visibilities_33: np.ndarray          # (33,) visibility scores in [0..1]
+    wholebody_2d_133: np.ndarray         # (133, 3) display keypoints
+    wholebody_world_133: np.ndarray      # (133, 3) true 3D metric keypoints (meters)
+    scores_133: np.ndarray               # (133,) scores
+    skeleton_count: int
+    valid_bboxes: List[List[int]]
+    visibility_ok: bool
+    backend_used: str
+
+
+class MediaPipePoseEngine:
     """
-    RTMW3D-l (Wholebody3d 133-point 3D) inference engine backed by rtmlib + onnxruntime-gpu/CPU
-    and paired with 3D One-Euro Filtering for clinical 3D landmark extraction.
+    Clinical MediaPipe Pose engine supporting both legacy `mp.solutions.pose.Pose`
+    and MediaPipe Tasks `PoseLandmarker`, paired with separate 2D & 3D `OneEuroFilter` smoothers.
     """
 
     def __init__(self, settings: EdgeVisionSettings) -> None:
         self.settings = settings
+        self.config = settings.get_mediapipe_pose_config()
+        self.filter_2d = OneEuroFilter(
+            min_cutoff=settings.ONE_EURO_2D_MIN_CUTOFF,
+            beta=settings.ONE_EURO_2D_BETA,
+            d_cutoff=settings.ONE_EURO_D_CUTOFF,
+            min_visibility=settings.MIN_LANDMARK_VISIBILITY,
+        )
+        self.filter_3d = OneEuroFilter(
+            min_cutoff=settings.ONE_EURO_MIN_CUTOFF,
+            beta=settings.ONE_EURO_BETA,
+            d_cutoff=settings.ONE_EURO_D_CUTOFF,
+            min_visibility=settings.MIN_LANDMARK_VISIBILITY,
+        )
+        self._solutions_pose: Optional[Any] = None
+        self._tasks_landmarker: Optional[Any] = None
+        self._last_ts_ms: int = 0
+        self._backend_label: str = "MediaPipe Unavailable"
+        self._init_mediapipe()
+
+    @property
+    def is_ready(self) -> bool:
+        return self._solutions_pose is not None or self._tasks_landmarker is not None
+
+    @property
+    def backend_label(self) -> str:
+        return self._backend_label
+
+    def reset_filters(self) -> None:
+        self.filter_2d.reset()
+        self.filter_3d.reset()
+
+    def close(self) -> None:
+        if self._solutions_pose is not None:
+            try:
+                self._solutions_pose.close()
+            except Exception:
+                pass
+            self._solutions_pose = None
+        if self._tasks_landmarker is not None:
+            try:
+                self._tasks_landmarker.close()
+            except Exception:
+                pass
+            self._tasks_landmarker = None
+
+    def _init_mediapipe(self) -> None:
+        if mp is None:
+            self._backend_label = "MediaPipe Package Missing"
+            return
+
+        cfg = self.config
+        if hasattr(mp, "solutions") and hasattr(mp.solutions, "pose"):
+            try:
+                self._solutions_pose = mp.solutions.pose.Pose(
+                    static_image_mode=False,
+                    model_complexity=int(cfg["model_complexity"]),
+                    smooth_landmarks=bool(cfg["smooth_landmarks"]),
+                    enable_segmentation=bool(cfg["enable_segmentation"]),
+                    min_detection_confidence=float(cfg["min_detection_confidence"]),
+                    min_tracking_confidence=float(cfg["min_tracking_confidence"]),
+                )
+                self._backend_label = (
+                    f"MediaPipe Pose Solutions (complexity={cfg['model_complexity']}, "
+                    f"det={cfg['min_detection_confidence']:.1f}, track={cfg['min_tracking_confidence']:.1f})"
+                )
+                logger.info("Initialized %s", self._backend_label)
+                return
+            except Exception as exc:
+                logger.warning("Failed initializing mp.solutions.pose.Pose: %s", exc)
+
+        model_path = self.settings.resolve_mediapipe_model_path(int(cfg["model_complexity"]))
+        if model_path is not None and hasattr(mp, "tasks"):
+            try:
+                base_opts = mp.tasks.BaseOptions(model_asset_path=str(model_path))
+                vision = mp.tasks.vision
+                options = vision.PoseLandmarkerOptions(
+                    base_options=base_opts,
+                    running_mode=vision.RunningMode.VIDEO,
+                    num_poses=int(cfg["num_poses"]),
+                    min_pose_detection_confidence=float(cfg["min_detection_confidence"]),
+                    min_pose_presence_confidence=float(cfg["min_presence_confidence"]),
+                    min_tracking_confidence=float(cfg["min_tracking_confidence"]),
+                    output_segmentation_masks=False,
+                )
+                self._tasks_landmarker = vision.PoseLandmarker.create_from_options(options)
+                self._backend_label = (
+                    f"MediaPipe PoseLandmarker ({model_path.name}, complexity={cfg['model_complexity']}, "
+                    f"det={cfg['min_detection_confidence']:.1f}, track={cfg['min_tracking_confidence']:.1f})"
+                )
+                logger.info("Initialized %s", self._backend_label)
+                return
+            except Exception as exc:
+                logger.warning("Failed initializing MediaPipe PoseLandmarker: %s", exc)
+
+        self._backend_label = "MediaPipe Fallback (Model Asset Not Found)"
+
+    @staticmethod
+    def _landmarks_to_numpy(landmark_list: Sequence[Any]) -> Tuple[np.ndarray, np.ndarray]:
+        pts = np.zeros((TOTAL_MEDIAPIPE_KEYPOINTS, 3), dtype=np.float64)
+        vis = np.ones((TOTAL_MEDIAPIPE_KEYPOINTS,), dtype=np.float64)
+        cnt = min(TOTAL_MEDIAPIPE_KEYPOINTS, len(landmark_list))
+        for i in range(cnt):
+            lm = landmark_list[i]
+            pts[i, 0] = float(getattr(lm, "x", 0.0))
+            pts[i, 1] = float(getattr(lm, "y", 0.0))
+            pts[i, 2] = float(getattr(lm, "z", 0.0))
+            v = getattr(lm, "visibility", None)
+            p = getattr(lm, "presence", None)
+            if v is not None:
+                vis[i] = float(v)
+            elif p is not None:
+                vis[i] = float(p)
+        return pts, vis
+
+    def infer_frame(
+        self,
+        frame_bgr: np.ndarray,
+        timestamp_sec: float,
+    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, int, List[List[int]]]]:
+        """
+        Run MediaPipe Pose on a BGR image and return smoothed:
+        `(pose_2d_33, pose_world_3d_33, visibility_33, person_count, bboxes_1280x720)`.
+        """
+        if not self.is_ready or frame_bgr is None:
+            return None
+
+        if cv2 is not None:
+            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        else:
+            rgb = frame_bgr[:, :, ::-1].copy()
+
+        raw_2d_list: List[Tuple[np.ndarray, np.ndarray]] = []
+        raw_3d_list: List[np.ndarray] = []
+
+        if self._solutions_pose is not None:
+            results = self._solutions_pose.process(rgb)
+            if results.pose_landmarks and results.pose_world_landmarks:
+                pts2, vis2 = self._landmarks_to_numpy(results.pose_landmarks.landmark)
+                pts3, _ = self._landmarks_to_numpy(results.pose_world_landmarks.landmark)
+                raw_2d_list.append((pts2, vis2))
+                raw_3d_list.append(pts3)
+        elif self._tasks_landmarker is not None and mp is not None:
+            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
+            ts_ms = max(self._last_ts_ms + 1, int(round(float(timestamp_sec) * 1000.0)))
+            self._last_ts_ms = ts_ms
+            res = self._tasks_landmarker.detect_for_video(mp_img, ts_ms)
+            if res.pose_landmarks and res.pose_world_landmarks:
+                count = min(len(res.pose_landmarks), len(res.pose_world_landmarks))
+                for idx in range(count):
+                    pts2, vis2 = self._landmarks_to_numpy(res.pose_landmarks[idx])
+                    pts3, _ = self._landmarks_to_numpy(res.pose_world_landmarks[idx])
+                    raw_2d_list.append((pts2, vis2))
+                    raw_3d_list.append(pts3)
+
+        if not raw_2d_list:
+            return None
+
+        # Evaluate valid human candidates & pick largest/most confident primary patient
+        valid_bboxes: List[List[int]] = []
+        candidates: List[Tuple[float, int, List[int]]] = []
+        min_body_score = float(self.settings.MULTI_PERSON_SKELETON_MIN_SCORE)
+        min_torso_ratio = float(self.settings.MULTI_PERSON_MIN_TORSO_HEIGHT_RATIO)
+        for idx, (pts2, vis2) in enumerate(raw_2d_list):
+            body_vis = float(np.mean(vis2[[11, 12, 13, 14, 15, 16, 23, 24, 25, 26]]))
+            torso_span = float(
+                max(pts2[[11, 12, 23, 24], 1]) - min(pts2[[11, 12, 23, 24], 1])
+            )
+            full_span = float(max(pts2[:, 1]) - min(pts2[:, 1]))
+            xs = np.clip(pts2[:, 0], 0.0, 1.0)
+            ys = np.clip(pts2[:, 1], 0.0, 1.0)
+            bbox = [
+                int(round(max(0.0, float(np.min(xs)) - 0.04) * 1280)),
+                int(round(max(0.0, float(np.min(ys)) - 0.06) * 720)),
+                int(round(min(1.0, float(np.max(xs)) + 0.04) * 1280)),
+                int(round(min(1.0, float(np.max(ys)) + 0.04) * 720)),
+            ]
+            if body_vis >= min_body_score and max(torso_span, full_span * 0.5) >= min_torso_ratio:
+                candidates.append((body_vis * max(full_span, 0.1), idx, bbox))
+                valid_bboxes.append(bbox)
+
+        if candidates:
+            candidates.sort(key=lambda c: c[0], reverse=True)
+            primary_idx = candidates[0][1]
+        else:
+            primary_idx = 0
+            pts2_fallback = raw_2d_list[0][0]
+            xs = np.clip(pts2_fallback[:, 0], 0.0, 1.0)
+            ys = np.clip(pts2_fallback[:, 1], 0.0, 1.0)
+            valid_bboxes = [[
+                int(round(max(0.0, float(np.min(xs)) - 0.04) * 1280)),
+                int(round(max(0.0, float(np.min(ys)) - 0.06) * 720)),
+                int(round(min(1.0, float(np.max(xs)) + 0.04) * 1280)),
+                int(round(min(1.0, float(np.max(ys)) + 0.04) * 720)),
+            ]]
+
+        primary_2d, primary_vis = raw_2d_list[primary_idx]
+        primary_3d = raw_3d_list[primary_idx]
+
+        # Dual timestamped One-Euro filtering (separate 2D image filter + 3D world metric filter)
+        smoothed_2d = self.filter_2d.filter(primary_2d, timestamp_sec=timestamp_sec, visibility=primary_vis)
+        smoothed_3d = self.filter_3d.filter(primary_3d, timestamp_sec=timestamp_sec, visibility=primary_vis)
+
+        return smoothed_2d, smoothed_3d, primary_vis, max(1, len(valid_bboxes)), valid_bboxes
+
+
+class RTMW3DPoseEstimator:
+    """
+    Unified Clinical 3D Pose Estimator supporting MediaPipe Pose (Heavy, complexity=2,
+    dual 2D/3D One-Euro filtering & visibility gating) and RTMW3D-l Wholebody3d fallback.
+    """
+
+    def __init__(self, settings: EdgeVisionSettings) -> None:
+        self.settings = settings
+        self.filter_2d = OneEuroFilter(
+            min_cutoff=settings.ONE_EURO_2D_MIN_CUTOFF,
+            beta=settings.ONE_EURO_2D_BETA,
+            d_cutoff=settings.ONE_EURO_D_CUTOFF,
+            min_visibility=settings.MIN_LANDMARK_VISIBILITY,
+        )
         self.filter_3d = OneEuroFilter3D(
             num_keypoints=TOTAL_WHOLEBODY_KEYPOINTS,
             min_cutoff=settings.ONE_EURO_MIN_CUTOFF,
             beta=settings.ONE_EURO_BETA,
             d_cutoff=settings.ONE_EURO_D_CUTOFF,
         )
+        self.world_filter_3d = OneEuroFilter3D(
+            num_keypoints=TOTAL_WHOLEBODY_KEYPOINTS,
+            min_cutoff=settings.ONE_EURO_MIN_CUTOFF,
+            beta=settings.ONE_EURO_BETA,
+            d_cutoff=settings.ONE_EURO_D_CUTOFF,
+        )
+        self.mp_engine: Optional[MediaPipePoseEngine] = None
+        self.latest_frame: Optional[PoseEstimationFrame] = None
         self._model = None
         self._device = "cpu"
-        self._backend_name = "RTMW3D-l (Pending Init)"
+        self._backend_name = "MediaPipe / RTMW3D-l (Pending Init)"
         self._load_model()
 
     @property
     def backend_name(self) -> str:
         return self._backend_name
+
+    def close(self) -> None:
+        if self.mp_engine is not None:
+            self.mp_engine.close()
 
     def _resolve_device(self) -> str:
         if self.settings.USE_GPU_IF_AVAILABLE and ort is not None:
@@ -298,9 +800,20 @@ class RTMW3DPoseEstimator:
 
     def _load_model(self) -> None:
         self._device = self._resolve_device()
+        preferred = (self.settings.POSE_BACKEND or "mediapipe").strip().lower()
+
+        if preferred in ("mediapipe", "auto"):
+            self.mp_engine = MediaPipePoseEngine(self.settings)
+            if self.mp_engine.is_ready:
+                self._backend_name = self.mp_engine.backend_label
+                return
+
         if Wholebody3d is None:
-            self._backend_name = f"Synthetic133-3D (rtmlib not installed, target={self._device})"
-            logger.warning("rtmlib is unavailable in current Python env; using synthetic 133-point 3D fallback.")
+            if self.mp_engine is not None:
+                self._backend_name = f"Synthetic133-3D ({self.mp_engine.backend_label})"
+            else:
+                self._backend_name = f"Synthetic133-3D (rtmlib not installed, target={self._device})"
+            logger.warning("No native pose runtime loaded; using synthetic 133-point 3D fallback.")
             return
 
         # Attempt CUDA first if available, then fall back cleanly to CPU ONNXRuntime
@@ -339,7 +852,7 @@ class RTMW3DPoseEstimator:
             int(round(max_y * 720)),
         ]
 
-    def estimate_with_crowd(
+    def estimate_clinical_with_crowd(
         self,
         frame_bgr: Optional[np.ndarray],
         timestamp_sec: float,
@@ -347,12 +860,38 @@ class RTMW3DPoseEstimator:
         is_calibrating: bool = False,
         mock_pose_override: Optional[str] = None,
         is_mock_mode: bool = False,
-    ) -> Tuple[np.ndarray, np.ndarray, int, List[List[int]]]:
+    ) -> PoseEstimationFrame:
         """
-        Estimate smoothed 133 `(X, Y, Z)` keypoints for the primary subject PLUS valid human count
-        (filtering reflections/posters via confidence >= 0.60 and torso span >= 25% of frame height).
-        Returns `(filtered_xyz (133,3), scores (133,), skeleton_count, skeleton_bboxes_1280x720)`.
+        Estimate smoothed 2D `pose_landmarks`, 3D `pose_world_landmarks`, visibility scores,
+        and Wholebody-133 keypoints for the primary subject + valid human count.
         """
+        if (
+            self.mp_engine is not None
+            and self.mp_engine.is_ready
+            and frame_bgr is not None
+            and not is_mock_mode
+            and mock_pose_override is None
+        ):
+            mp_out = self.mp_engine.infer_frame(frame_bgr, timestamp_sec)
+            if mp_out is not None:
+                sm_2d_33, sm_3d_33, vis_33, skel_cnt, bboxes = mp_out
+                wb_2d, wb_scores = map_mediapipe33_to_wholebody133(sm_2d_33, vis_33)
+                wb_world, _ = map_mediapipe33_to_wholebody133(sm_3d_33, vis_33)
+                min_core_vis = float(np.min(vis_33[[11, 12, 13, 14, 15, 16, 23, 24]]))
+                frame_res = PoseEstimationFrame(
+                    pose_landmarks_2d=sm_2d_33,
+                    pose_world_landmarks_3d=sm_3d_33,
+                    visibilities_33=vis_33,
+                    wholebody_2d_133=wb_2d,
+                    wholebody_world_133=wb_world,
+                    scores_133=wb_scores,
+                    skeleton_count=skel_cnt,
+                    valid_bboxes=bboxes,
+                    visibility_ok=min_core_vis >= float(self.settings.MIN_LANDMARK_VISIBILITY),
+                    backend_used=self.mp_engine.backend_label,
+                )
+                self.latest_frame = frame_res
+                return frame_res
         raw_xyz: Optional[np.ndarray] = None
         scores: Optional[np.ndarray] = None
         valid_bboxes: List[List[int]] = []
@@ -430,9 +969,61 @@ class RTMW3DPoseEstimator:
             else:
                 valid_bboxes = [self._bbox_from_norm_kpts(raw_xyz, scores)]
 
-        filtered_xyz = self.filter_3d.filter(raw_xyz, timestamp_sec)
+        filtered_xyz = self.filter_3d.filter(raw_xyz, timestamp_sec, visibility=scores)
+        filtered_world_133 = self.world_filter_3d.filter(
+            wholebody133_to_world_meters(filtered_xyz),
+            timestamp_sec,
+            visibility=scores,
+        )
+        mp_2d_33, vis_33 = wholebody133_to_mediapipe33(filtered_xyz, scores)
+        mp_3d_33, _ = wholebody133_to_mediapipe33(filtered_world_133, scores)
+        core_body_idx = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        min_core_vis = float(np.min(scores[core_body_idx])) if scores.shape[0] >= 17 else 1.0
+
         skeleton_count = max(1, len(valid_bboxes))
-        return filtered_xyz, scores, skeleton_count, valid_bboxes
+        backend_used = (
+            self.mp_engine.backend_label
+            if (self.mp_engine is not None and not is_mock_mode and mock_pose_override is None and self._model is None)
+            else self._backend_name
+        )
+        frame_res = PoseEstimationFrame(
+            pose_landmarks_2d=mp_2d_33,
+            pose_world_landmarks_3d=mp_3d_33,
+            visibilities_33=vis_33,
+            wholebody_2d_133=filtered_xyz,
+            wholebody_world_133=filtered_world_133,
+            scores_133=scores,
+            skeleton_count=skeleton_count,
+            valid_bboxes=valid_bboxes,
+            visibility_ok=min_core_vis >= float(self.settings.MIN_LANDMARK_VISIBILITY),
+            backend_used=backend_used,
+        )
+        self.latest_frame = frame_res
+        return frame_res
+
+    def estimate_with_crowd(
+        self,
+        frame_bgr: Optional[np.ndarray],
+        timestamp_sec: float,
+        exercise_id: str = "ex-03",
+        is_calibrating: bool = False,
+        mock_pose_override: Optional[str] = None,
+        is_mock_mode: bool = False,
+    ) -> Tuple[np.ndarray, np.ndarray, int, List[List[int]]]:
+        """
+        Estimate smoothed 133 `(X, Y, Z)` keypoints for the primary subject PLUS valid human count
+        (filtering reflections/posters via confidence >= 0.60 and torso span >= 25% of frame height).
+        Returns `(filtered_xyz (133,3), scores (133,), skeleton_count, skeleton_bboxes_1280x720)`.
+        """
+        res = self.estimate_clinical_with_crowd(
+            frame_bgr=frame_bgr,
+            timestamp_sec=timestamp_sec,
+            exercise_id=exercise_id,
+            is_calibrating=is_calibrating,
+            mock_pose_override=mock_pose_override,
+            is_mock_mode=is_mock_mode,
+        )
+        return res.wholebody_2d_133, res.scores_133, res.skeleton_count, res.valid_bboxes
 
     def estimate(
         self,
@@ -469,6 +1060,22 @@ class RTMW3DPoseEstimator:
                 score=round(float(scores[idx]), 4),
             )
             for idx in range(TOTAL_WHOLEBODY_KEYPOINTS)
+        ]
+
+    @staticmethod
+    def to_world_landmark_schemas(world_33: np.ndarray, vis_33: np.ndarray) -> List[Keypoint3D]:
+        """Serialize 33 true metric `pose_world_landmarks` (meters, hip-centered)."""
+        cnt = min(TOTAL_MEDIAPIPE_KEYPOINTS, world_33.shape[0])
+        return [
+            Keypoint3D(
+                index=idx,
+                name=f"mp_{idx}",
+                x=round(float(world_33[idx, 0]), 5),
+                y=round(float(world_33[idx, 1]), 5),
+                z=round(float(world_33[idx, 2]), 5),
+                score=round(float(vis_33[idx]), 4) if idx < vis_33.shape[0] else 1.0,
+            )
+            for idx in range(cnt)
         ]
 
     @staticmethod
@@ -535,3 +1142,6 @@ class RTMW3DPoseEstimator:
             left_hand_landmarks=left_hand_kpts,
             right_hand_landmarks=right_hand_kpts,
         )
+
+
+ClinicalPoseEstimator = RTMW3DPoseEstimator
