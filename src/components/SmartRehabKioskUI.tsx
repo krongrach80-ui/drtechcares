@@ -801,15 +801,29 @@ export function interpolatePoseLandmarks(
   });
 }
 
+const POSE_FACE_INDICES = {
+  NOSE: 0,
+  LEFT_EYE: 2,
+  RIGHT_EYE: 5,
+  LEFT_EAR: 7,
+  RIGHT_EAR: 8,
+  MOUTH_LEFT: 9,
+  MOUTH_RIGHT: 10,
+} as const;
+
+const LIVE_FACE_BONELINE_PAIRS: readonly [number, number][] = [
+  [POSE_FACE_INDICES.LEFT_EAR, POSE_FACE_INDICES.LEFT_EYE],
+  [POSE_FACE_INDICES.LEFT_EYE, POSE_FACE_INDICES.NOSE],
+  [POSE_FACE_INDICES.NOSE, POSE_FACE_INDICES.RIGHT_EYE],
+  [POSE_FACE_INDICES.RIGHT_EYE, POSE_FACE_INDICES.RIGHT_EAR],
+  [POSE_FACE_INDICES.MOUTH_LEFT, POSE_FACE_INDICES.MOUTH_RIGHT],
+];
+
 const LIVE_BODY_BONELINE_PAIRS: readonly [number, number][] = [
-  [POSE_INDEX.LEFT_SHOULDER, POSE_INDEX.RIGHT_SHOULDER],
   [POSE_INDEX.LEFT_SHOULDER, POSE_INDEX.LEFT_ELBOW],
   [POSE_INDEX.LEFT_ELBOW, POSE_INDEX.LEFT_WRIST],
   [POSE_INDEX.RIGHT_SHOULDER, POSE_INDEX.RIGHT_ELBOW],
   [POSE_INDEX.RIGHT_ELBOW, POSE_INDEX.RIGHT_WRIST],
-  [POSE_INDEX.LEFT_SHOULDER, POSE_INDEX.LEFT_HIP],
-  [POSE_INDEX.RIGHT_SHOULDER, POSE_INDEX.RIGHT_HIP],
-  [POSE_INDEX.LEFT_HIP, POSE_INDEX.RIGHT_HIP],
   [POSE_INDEX.LEFT_HIP, POSE_INDEX.LEFT_KNEE],
   [POSE_INDEX.LEFT_KNEE, POSE_INDEX.LEFT_ANKLE],
   [POSE_INDEX.RIGHT_HIP, POSE_INDEX.RIGHT_KNEE],
@@ -817,7 +831,13 @@ const LIVE_BODY_BONELINE_PAIRS: readonly [number, number][] = [
 ];
 
 const LIVE_KEYPOINT_INDICES: readonly number[] = [
-  POSE_INDEX.NOSE,
+  POSE_FACE_INDICES.NOSE,
+  POSE_FACE_INDICES.LEFT_EYE,
+  POSE_FACE_INDICES.RIGHT_EYE,
+  POSE_FACE_INDICES.LEFT_EAR,
+  POSE_FACE_INDICES.RIGHT_EAR,
+  POSE_FACE_INDICES.MOUTH_LEFT,
+  POSE_FACE_INDICES.MOUTH_RIGHT,
   POSE_INDEX.LEFT_SHOULDER,
   POSE_INDEX.RIGHT_SHOULDER,
   POSE_INDEX.LEFT_ELBOW,
@@ -833,7 +853,13 @@ const LIVE_KEYPOINT_INDICES: readonly number[] = [
 ];
 
 const UPPER_BODY_KEYPOINTS = new Set<number>([
-  POSE_INDEX.NOSE,
+  POSE_FACE_INDICES.NOSE,
+  POSE_FACE_INDICES.LEFT_EYE,
+  POSE_FACE_INDICES.RIGHT_EYE,
+  POSE_FACE_INDICES.LEFT_EAR,
+  POSE_FACE_INDICES.RIGHT_EAR,
+  POSE_FACE_INDICES.MOUTH_LEFT,
+  POSE_FACE_INDICES.MOUTH_RIGHT,
   POSE_INDEX.LEFT_SHOULDER,
   POSE_INDEX.RIGHT_SHOULDER,
   POSE_INDEX.LEFT_ELBOW,
@@ -892,7 +918,8 @@ function drawLivePoseOverlayOnCanvas(
     x: rawCanvasX(lm.x),
     y: rawCanvasY(lm.y),
   });
-  const minVisFor = (idx: number) => (UPPER_BODY_KEYPOINTS.has(idx) ? 0.18 : 0.48);
+  const minVisFor = (idx: number) =>
+    idx <= 10 ? 0.25 : UPPER_BODY_KEYPOINTS.has(idx) ? 0.18 : 0.48;
 
   const activeColor = opts.isImpostorOrEmergency
     ? '#EF4444'
@@ -905,21 +932,6 @@ function drawLivePoseOverlayOnCanvas(
     opts.targetJoint === 'left_shoulder' ||
     opts.targetJoint === 'right_shoulder' ||
     opts.targetJoint === 'spine';
-  const lShLm = primary[POSE_INDEX.LEFT_SHOULDER];
-  const rShLm = primary[POSE_INDEX.RIGHT_SHOULDER];
-  const maxShY =
-    lShLm && rShLm ? Math.max(lShLm.y, rShLm.y) : (lShLm?.y ?? rShLm?.y ?? 0.5);
-  const lHipLm = primary[POSE_INDEX.LEFT_HIP];
-  const rHipLm = primary[POSE_INDEX.RIGHT_HIP];
-  const hipsCleanlyBelowShoulders = Boolean(
-    lHipLm &&
-      rHipLm &&
-      (lHipLm.visibility ?? 0) >= 0.55 &&
-      (rHipLm.visibility ?? 0) >= 0.55 &&
-      lHipLm.y > maxShY + 0.16 &&
-      rHipLm.y > maxShY + 0.16 &&
-      Math.abs(lHipLm.x - rHipLm.x) >= 0.09,
-  );
   const activeWristLm =
     opts.targetJoint === 'left_shoulder'
       ? primary[POSE_INDEX.LEFT_WRIST]
@@ -946,10 +958,9 @@ function drawLivePoseOverlayOnCanvas(
       idx === POSE_INDEX.LEFT_ANKLE ||
       idx === POSE_INDEX.RIGHT_ANKLE;
     const isHip = idx === POSE_INDEX.LEFT_HIP || idx === POSE_INDEX.RIGHT_HIP;
-    if (isUpperLimbOrSpine) {
-      // Never draw hallucinated knee/ankle lines during upper-body camera exercises
-      if (isLowerLeg) return false;
-      if (isHip && !hipsCleanlyBelowShoulders) return false;
+    if (isUpperLimbOrSpine && (isLowerLeg || isHip)) {
+      // Never draw hallucinated torso/hip/knee/ankle keypoints during upper-body camera exercises
+      return false;
     }
     const minV = isOppositeArmIdx(idx) ? 0.28 : minVisFor(idx);
     if ((lm.visibility ?? 0) < minV) return false;
@@ -1056,41 +1067,34 @@ function drawLivePoseOverlayOnCanvas(
     ctx.stroke();
   }
 
-  // Head/neck guide lines (NOSE -> shoulder midpoint NECK -> both shoulders)
-  const noseLm = primary[POSE_INDEX.NOSE];
-  if (
-    lShLm &&
-    rShLm &&
-    (lShLm.visibility ?? 0) >= 0.18 &&
-    (rShLm.visibility ?? 0) >= 0.18
-  ) {
-    const lShPt = toCanvasPt(POSE_INDEX.LEFT_SHOULDER, lShLm);
-    const rShPt = toCanvasPt(POSE_INDEX.RIGHT_SHOULDER, rShLm);
-    const neckPt = { x: (lShPt.x + rShPt.x) / 2, y: (lShPt.y + rShPt.y) / 2 };
-
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = 'rgba(13, 148, 136, 0.85)';
-    ctx.lineWidth = 3.2;
-    ctx.beginPath();
-    ctx.moveTo(lShPt.x, lShPt.y);
-    ctx.lineTo(neckPt.x, neckPt.y);
-    ctx.lineTo(rShPt.x, rShPt.y);
-    if (noseLm && (noseLm.visibility ?? 0) >= 0.18) {
-      const nosePt = toCanvasPt(POSE_INDEX.NOSE, noseLm);
-      ctx.moveTo(neckPt.x, neckPt.y);
-      ctx.lineTo(nosePt.x, nosePt.y);
+  // Face landmark lines (ears, eyes, nose, mouth — no chest/torso connecting lines)
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = 'rgba(16, 185, 129, 0.85)';
+  ctx.lineWidth = 2.8;
+  for (const [faIdx, fbIdx] of LIVE_FACE_BONELINE_PAIRS) {
+    const fa = primary[faIdx];
+    const fb = primary[fbIdx];
+    if (!fa || !fb) continue;
+    if ((fa.visibility ?? 0) < 0.25 || (fb.visibility ?? 0) < 0.25) continue;
+    if (
+      fa.x < -0.02 ||
+      fa.x > 1.02 ||
+      fa.y < -0.02 ||
+      fa.y > 1.02 ||
+      fb.x < -0.02 ||
+      fb.x > 1.02 ||
+      fb.y < -0.02 ||
+      fb.y > 1.02
+    ) {
+      continue;
     }
-    ctx.stroke();
-
+    const faPt = toCanvasPt(faIdx, fa);
+    const fbPt = toCanvasPt(fbIdx, fb);
     ctx.beginPath();
-    ctx.arc(neckPt.x, neckPt.y, 4.5, 0, Math.PI * 2);
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fill();
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = activeColor;
+    ctx.moveTo(faPt.x, faPt.y);
+    ctx.lineTo(fbPt.x, fbPt.y);
     ctx.stroke();
   }
-  ctx.shadowBlur = 0;
 
   // Joint keypoints
   for (const idx of LIVE_KEYPOINT_INDICES) {
@@ -1100,7 +1104,7 @@ function drawLivePoseOverlayOnCanvas(
       continue;
     }
     const pt = toCanvasPt(idx, lm);
-    const r = idx === POSE_INDEX.NOSE ? 5 : 6;
+    const r = idx <= 10 ? 4 : 6;
     ctx.beginPath();
     ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
     ctx.fillStyle = '#FFFFFF';
