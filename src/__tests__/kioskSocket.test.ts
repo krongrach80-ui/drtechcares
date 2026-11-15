@@ -962,5 +962,119 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(forwardOcclusionCheck.romDeg!).toBeGreaterThanOrEqual(75);
     expect(forwardOcclusionCheck.romDeg!).toBeLessThanOrEqual(100);
   });
+
+  it('tracks rapid bending down without freezing shoulders, repairs out-of-frame overhead wrists, and detects elbow flexion/neck/hip-march accurately', () => {
+    const baseline = sanitizeAndStabilizePoseLandmarks(
+      createNeutralLandmarks({
+        [POSE_INDEX.LEFT_SHOULDER]: { x: 0.62, y: 0.45, z: 0, visibility: 0.96 },
+        [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.38, y: 0.45, z: 0, visibility: 0.96 },
+      }),
+      null,
+      'right_shoulder',
+    );
+    expect(baseline.occludedFallback).toBe(false);
+
+    // Rapid bend downward with tilted shoulders (midJump > 0.20) must follow live without freezing
+    const bentDown = sanitizeAndStabilizePoseLandmarks(
+      createNeutralLandmarks({
+        [POSE_INDEX.LEFT_SHOULDER]: { x: 0.63, y: 0.68, z: -0.04, visibility: 0.9 },
+        [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.39, y: 0.78, z: -0.04, visibility: 0.88 },
+      }),
+      baseline.anchor,
+      'right_shoulder',
+    );
+    expect(bentDown.occludedFallback).toBe(false);
+    expect(bentDown.landmarks[POSE_INDEX.RIGHT_SHOULDER].y).toBeCloseTo(0.78, 2);
+
+    // Collapsed torso span (< 0.085) falls back to anchor
+    const collapsed = sanitizeAndStabilizePoseLandmarks(
+      createNeutralLandmarks({
+        [POSE_INDEX.LEFT_SHOULDER]: { x: 0.52, y: 0.6, z: 0, visibility: 0.8 },
+        [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.46, y: 0.6, z: 0, visibility: 0.8 },
+      }),
+      bentDown.anchor,
+      'right_shoulder',
+    );
+    expect(collapsed.occludedFallback).toBe(true);
+
+    // Overhead out-of-frame wrist foldback repair
+    const overheadFoldback = sanitizeAndStabilizePoseLandmarks(
+      createNeutralLandmarks({
+        [POSE_INDEX.LEFT_SHOULDER]: { x: 0.62, y: 0.55, z: 0, visibility: 0.95 },
+        [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.38, y: 0.55, z: 0, visibility: 0.95 },
+        [POSE_INDEX.RIGHT_ELBOW]: { x: 0.38, y: 0.32, z: 0, visibility: 0.88 },
+        [POSE_INDEX.RIGHT_WRIST]: { x: 0.42, y: 0.75, z: 0, visibility: 0.35 },
+      }),
+      baseline.anchor,
+      'right_shoulder',
+    );
+    expect(overheadFoldback.landmarks[POSE_INDEX.RIGHT_WRIST].y).toBeLessThan(
+      overheadFoldback.landmarks[POSE_INDEX.RIGHT_ELBOW].y,
+    );
+
+    // Elbow flexion exercise (ex-05): hanging arm < 20 deg vs flexed curl >= 85 deg
+    const elbowMeta = {
+      exercise_id: 'ex-05',
+      name_th: 'งอ-เหยียดข้อศอก (ขวา)',
+      name_en: 'Right Elbow Flexion',
+    };
+    const hangingElbow = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.62, y: 0.4, z: 0, visibility: 0.95 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.38, y: 0.4, z: 0, visibility: 0.95 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.36, y: 0.58, z: 0, visibility: 0.95 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.35, y: 0.76, z: 0, visibility: 0.95 },
+    });
+    const hangingCheck = measureLiveJointAngleAndTilt(
+      hangingElbow,
+      'right_shoulder',
+      'any',
+      undefined,
+      elbowMeta,
+    );
+    expect(hangingCheck.romDeg).not.toBeNull();
+    expect(hangingCheck.romDeg!).toBeLessThan(20);
+
+    const flexedElbow = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.62, y: 0.4, z: 0, visibility: 0.95 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.38, y: 0.4, z: 0, visibility: 0.95 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.37, y: 0.6, z: 0, visibility: 0.95 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.38, y: 0.44, z: -0.05, visibility: 0.95 },
+    });
+    const flexedCheck = measureLiveJointAngleAndTilt(
+      flexedElbow,
+      'right_shoulder',
+      'any',
+      undefined,
+      elbowMeta,
+    );
+    expect(flexedCheck.wrongPlaneRaised).toBe(false);
+    expect(flexedCheck.romDeg).not.toBeNull();
+    expect(flexedCheck.romDeg!).toBeGreaterThanOrEqual(85);
+
+    // Neck tilt (ex-19) & standing knee march (ex-15)
+    const neckTilted = createNeutralLandmarks({
+      [POSE_INDEX.NOSE]: { x: 0.43, y: 0.28, z: 0, visibility: 0.95 },
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.62, y: 0.45, z: 0, visibility: 0.95 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.38, y: 0.45, z: 0, visibility: 0.95 },
+    });
+    const neckCheck = measureLiveJointAngleAndTilt(neckTilted, 'spine', 'any', undefined, {
+      exercise_id: 'ex-19',
+      name_th: 'เอียงคอช้าๆ ด้านขวา',
+    });
+    expect(neckCheck.romDeg).not.toBeNull();
+    expect(neckCheck.romDeg!).toBeGreaterThanOrEqual(25);
+
+    const kneeMarched = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_HIP]: { x: 0.42, y: 0.55, z: 0, visibility: 0.95 },
+      [POSE_INDEX.RIGHT_KNEE]: { x: 0.42, y: 0.55, z: -0.25, visibility: 0.95 },
+      [POSE_INDEX.RIGHT_ANKLE]: { x: 0.42, y: 0.85, z: -0.25, visibility: 0.95 },
+    });
+    const marchCheck = measureLiveJointAngleAndTilt(kneeMarched, 'right_knee', 'any', undefined, {
+      exercise_id: 'ex-15',
+      name_th: 'ยกเข่าสูงยืนทรงตัว (ขวา)',
+    });
+    expect(marchCheck.romDeg).not.toBeNull();
+    expect(marchCheck.romDeg!).toBeGreaterThanOrEqual(45);
+  });
 });
 
