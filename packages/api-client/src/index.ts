@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import {
+  l2Normalize,
   purgeLegacyBiometricCache,
   verifyHybridBiometricIdentity,
   type BiometricPose,
@@ -74,6 +75,7 @@ export interface PatientBiometricIndexEntry {
   qualityScore: number;
   masterEmbedding: number[];
   angleEmbeddings: AngleEmbeddings5D;
+  extraEmbeddings?: number[][];
   todayRoutine?: DailyScheduleDay | null;
   rehabSchedules?: RehabScheduleItem[];
   todayExercises?: TodayPrescribedExerciseItem[];
@@ -732,7 +734,119 @@ export class DrTechCaresApiClient {
     });
   }
 
-  // Biometric Kiosk Login & 10-Shot Enrollment
+  // Biometric Kiosk Login & Multi-Angle 120-Frame Enrollment
+  private static readonly RECENT_ENROLL_SYNC_KEY = 'drtechcares_recent_enroll_sync_v1';
+
+  private saveRecentEnrolledEntry(
+    patient: PatientRecord,
+    vectors: {
+      masterEmbedding?: number[];
+      overallCentroid?: number[];
+      frontalCentroid?: number[];
+      angleEmbeddings?: AngleEmbeddings5D;
+      framesCaptured?: number;
+      qualityScore?: number;
+    },
+  ): void {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    const rawMaster =
+      vectors.masterEmbedding ?? vectors.overallCentroid ?? vectors.frontalCentroid ?? vectors.angleEmbeddings?.center;
+    if (!rawMaster || rawMaster.length === 0) return;
+    const master = l2Normalize(rawMaster);
+    const angles: AngleEmbeddings5D = vectors.angleEmbeddings
+      ? {
+          center: l2Normalize(vectors.angleEmbeddings.center),
+          left: l2Normalize(vectors.angleEmbeddings.left),
+          right: l2Normalize(vectors.angleEmbeddings.right),
+          up: l2Normalize(vectors.angleEmbeddings.up),
+          down: l2Normalize(vectors.angleEmbeddings.down),
+        }
+      : {
+          center: l2Normalize(vectors.frontalCentroid ?? master),
+          left: master,
+          right: master,
+          up: master,
+          down: master,
+        };
+    const nextItem: PatientBiometricIndexEntry & { syncedAtMs: number } = {
+      patientId: patient.id,
+      hn: patient.hn,
+      fullName: patient.fullName,
+      diagnosis: patient.diagnosis,
+      assignedPtId: patient.assignedPtId,
+      nextAppointmentDate: patient.nextAppointmentDate,
+      avatarUrl: patient.faceImageUrl,
+      framesCaptured: vectors.framesCaptured ?? 120,
+      qualityScore: vectors.qualityScore ?? 0.95,
+      masterEmbedding: master,
+      angleEmbeddings: angles,
+      todayRoutine: null,
+      rehabSchedules: patient.rehabSchedules ?? [],
+      syncedAtMs: Date.now(),
+    };
+    try {
+      const existingRaw = window.localStorage.getItem(DrTechCaresApiClient.RECENT_ENROLL_SYNC_KEY);
+      const parsed = existingRaw ? (JSON.parse(existingRaw) as (PatientBiometricIndexEntry & { syncedAtMs: number })[]) : [];
+      const cutoff = Date.now() - 15 * 60 * 1000;
+      const filtered = (Array.isArray(parsed) ? parsed : []).filter(
+        (item) => item && item.patientId !== patient.id && Number(item.syncedAtMs || 0) >= cutoff,
+      );
+      filtered.unshift(nextItem);
+      window.localStorage.setItem(DrTechCaresApiClient.RECENT_ENROLL_SYNC_KEY, JSON.stringify(filtered.slice(0, 12)));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
+
+  private removeRecentEnrolledEntry(patientId: string): void {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    try {
+      const existingRaw = window.localStorage.getItem(DrTechCaresApiClient.RECENT_ENROLL_SYNC_KEY);
+      if (!existingRaw) return;
+      const parsed = JSON.parse(existingRaw) as (PatientBiometricIndexEntry & { syncedAtMs: number })[];
+      if (!Array.isArray(parsed)) return;
+      const next = parsed.filter((item) => item && item.patientId !== patientId);
+      if (next.length === 0) {
+        window.localStorage.removeItem(DrTechCaresApiClient.RECENT_ENROLL_SYNC_KEY);
+      } else {
+        window.localStorage.setItem(DrTechCaresApiClient.RECENT_ENROLL_SYNC_KEY, JSON.stringify(next));
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  private mergeRecentEnrolledEntries(cloudEntries: PatientBiometricIndexEntry[]): PatientBiometricIndexEntry[] {
+    if (typeof window === 'undefined' || !window.localStorage) return cloudEntries;
+    try {
+      const raw = window.localStorage.getItem(DrTechCaresApiClient.RECENT_ENROLL_SYNC_KEY);
+      if (!raw) return cloudEntries;
+      const parsed = JSON.parse(raw) as (PatientBiometricIndexEntry & { syncedAtMs: number })[];
+      if (!Array.isArray(parsed) || parsed.length === 0) return cloudEntries;
+      const cutoff = Date.now() - 15 * 60 * 1000;
+      const cloudIds = new Set(cloudEntries.map((e) => e.patientId));
+      const extras: PatientBiometricIndexEntry[] = [];
+      const retained: (PatientBiometricIndexEntry & { syncedAtMs: number })[] = [];
+      for (const item of parsed) {
+        if (!item || Number(item.syncedAtMs || 0) < cutoff) continue;
+        if (!cloudIds.has(item.patientId)) {
+          extras.push(item);
+          retained.push(item);
+        }
+      }
+      if (retained.length !== parsed.length) {
+        if (retained.length === 0) {
+          window.localStorage.removeItem(DrTechCaresApiClient.RECENT_ENROLL_SYNC_KEY);
+        } else {
+          window.localStorage.setItem(DrTechCaresApiClient.RECENT_ENROLL_SYNC_KEY, JSON.stringify(retained));
+        }
+      }
+      return extras.length > 0 ? [...cloudEntries, ...extras] : cloudEntries;
+    } catch {
+      return cloudEntries;
+    }
+  }
+
   async verifyFaceLogin(
     probeVector: readonly number[],
     livenessEvidence?: {
@@ -742,6 +856,10 @@ export class DrTechCaresApiClient {
       nonRigidScore: number;
       rppgScore?: number;
       faceHeightRatio?: number;
+      yawDeg?: number;
+      rollDeg?: number;
+      engine?: 'arcface-onnx' | 'hybrid-512d';
+      mirroredProbeVector?: readonly number[];
     },
   ): Promise<KioskFaceVerifyResponse> {
     if (
@@ -765,7 +883,20 @@ export class DrTechCaresApiClient {
       const res = await fetch(`${this.baseUrl}/api/biometric/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-device-id': this.deviceId },
-        body: JSON.stringify(livenessEvidence ? { probeVector, livenessEvidence } : { probeVector }),
+        body: JSON.stringify(
+          livenessEvidence
+            ? {
+                probeVector,
+                ...(livenessEvidence.mirroredProbeVector
+                  ? { mirroredProbeVector: livenessEvidence.mirroredProbeVector }
+                  : {}),
+                yawDeg: livenessEvidence.yawDeg,
+                rollDeg: livenessEvidence.rollDeg,
+                engine: livenessEvidence.engine,
+                livenessEvidence,
+              }
+            : { probeVector },
+        ),
       });
       const body = (await res.json()) as KioskFaceVerifyResponse;
       return body;
@@ -795,7 +926,7 @@ export class DrTechCaresApiClient {
 
   async getBiometricIndex(): Promise<PatientBiometricIndexEntry[]> {
     const res = await this.request<{ index: PatientBiometricIndexEntry[] }>('/api/biometrics/index');
-    return res.index ?? [];
+    return this.mergeRecentEnrolledEntries(res.index ?? []);
   }
 
   async enrollPatient10Shot(input: {
@@ -833,6 +964,7 @@ export class DrTechCaresApiClient {
       method: 'POST',
       body: JSON.stringify(input),
     });
+    this.saveRecentEnrolledEntry(res.patient, input);
     return res.patient;
   }
 
@@ -855,6 +987,7 @@ export class DrTechCaresApiClient {
       method: 'POST',
       body: JSON.stringify(input),
     });
+    this.saveRecentEnrolledEntry(res.patient, input);
     return res.patient;
   }
 
@@ -929,6 +1062,7 @@ export class DrTechCaresApiClient {
 
   async deletePatientCascading(patientId: string): Promise<void> {
     this.writeCaseDelegationOverride(patientId, null);
+    this.removeRecentEnrolledEntry(patientId);
     await this.request(`/api/patients/${patientId}`, { method: 'DELETE' });
     purgeLegacyBiometricCache();
   }

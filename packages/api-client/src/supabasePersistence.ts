@@ -1,6 +1,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { CLINICAL_EXERCISES } from '@drtechcares/pose-engine';
-import type { EnrolledTemplateCandidate, BiometricPose } from '@drtechcares/smart-biometric-core';
+import {
+  parseEmbeddingVector,
+  type BiometricPose,
+  type EnrolledTemplateCandidate,
+} from '@drtechcares/smart-biometric-core';
 import {
   resolveTodayPatientSchedule,
   sanitizeAccidentalDefaultKneePrefix,
@@ -218,36 +222,49 @@ export async function hydrateStateFromSupabase(
       avatarUrl?: string;
     }
   >();
-  const parseVec = (raw: unknown): number[] | undefined => {
-    if (Array.isArray(raw) && raw.length > 0) return raw.map((n) => Number(n));
-    if (typeof raw === 'string' && raw.trim().startsWith('[')) {
+  const parseVec = (raw: unknown): number[] | undefined => parseEmbeddingVector(raw);
+
+  const parseAngleObject = (raw: unknown): AngleEmbeddings5D | undefined => {
+    let obj: Record<string, unknown> | undefined;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      obj = raw as Record<string, unknown>;
+    } else if (typeof raw === 'string' && raw.trim().startsWith('{')) {
       try {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed.map((n) => Number(n));
+        if (parsed && typeof parsed === 'object') obj = parsed as Record<string, unknown>;
       } catch {
         return undefined;
       }
     }
-    return undefined;
+    if (!obj) return undefined;
+    const center = parseVec(obj.center);
+    const left = parseVec(obj.left);
+    const right = parseVec(obj.right);
+    const up = parseVec(obj.up);
+    const down = parseVec(obj.down);
+    const base = center ?? left ?? right ?? up ?? down;
+    if (!base) return undefined;
+    return {
+      center: center ?? base,
+      left: left ?? base,
+      right: right ?? base,
+      up: up ?? base,
+      down: down ?? base,
+    };
   };
 
   if (biometrics120Res.status === 'fulfilled' && !biometrics120Res.value.error && Array.isArray(biometrics120Res.value.data)) {
     for (const row of biometrics120Res.value.data as Record<string, unknown>[]) {
       const pid = String(row.patient_id);
       if (deletedPatientSet.has(pid)) continue;
-      let parsedAngles =
-        row.angle_embeddings && typeof row.angle_embeddings === 'object'
-          ? (row.angle_embeddings as AngleEmbeddings5D)
-          : undefined;
-      if (!parsedAngles && typeof row.angle_embeddings === 'string' && row.angle_embeddings.trim().startsWith('{')) {
-        try {
-          parsedAngles = JSON.parse(row.angle_embeddings) as AngleEmbeddings5D;
-        } catch {
-          parsedAngles = undefined;
-        }
-      }
+      const parsedAngles = parseAngleObject(row.angle_embeddings ?? row.biometric_data);
+      const parsedMaster =
+        parseVec(row.master_embedding) ??
+        parseVec(row.face_embedding) ??
+        parseVec(row.biometric_data) ??
+        parsedAngles?.center;
       biometrics120ByPatient.set(pid, {
-        masterEmbedding: parseVec(row.master_embedding),
+        masterEmbedding: parsedMaster,
         angleEmbeddings: parsedAngles,
         framesCaptured: Number(row.frames_captured ?? 120),
         avatarUrl: typeof row.avatar_url === 'string' ? row.avatar_url : undefined,
@@ -265,7 +282,11 @@ export async function hydrateStateFromSupabase(
       const history = (r.history as Record<string, unknown>) ?? {};
       const tpl = parsedTemplatesByPatient.get(pid);
       const b120 = biometrics120ByPatient.get(pid);
-      const hasTemplates = Boolean((tpl && tpl.raw.length > 0) || b120?.masterEmbedding);
+      const rowMasterVec =
+        parseVec(r.master_embedding) ??
+        parseVec(r.face_embedding) ??
+        parseVec(r.biometric_data);
+      const hasTemplates = Boolean((tpl && tpl.raw.length > 0) || b120?.masterEmbedding || rowMasterVec);
       const historyStatus = history.faceBiometricStatus;
       const colStatus = r.face_biometric_status;
       const resolvedFaceStatus: 'PENDING' | 'VERIFIED' =
@@ -273,15 +294,15 @@ export async function hydrateStateFromSupabase(
 
       const fallbackMaster =
         b120?.masterEmbedding ??
-        (Array.isArray(history.masterEmbedding) ? (history.masterEmbedding as number[]) : undefined) ??
+        rowMasterVec ??
+        parseVec(history.masterEmbedding) ??
         tpl?.overall ??
         tpl?.frontal;
 
       let fallbackAngles: AngleEmbeddings5D | undefined =
         b120?.angleEmbeddings ??
-        (history.angleEmbeddings && typeof history.angleEmbeddings === 'object'
-          ? (history.angleEmbeddings as AngleEmbeddings5D)
-          : undefined);
+        parseAngleObject(r.angle_embeddings ?? r.biometric_data) ??
+        parseAngleObject(history.angleEmbeddings);
       if (!fallbackAngles && fallbackMaster) {
         const frontVec = tpl?.raw.find((f) => f.pose === 'front')?.vector ?? tpl?.frontal ?? fallbackMaster;
         const leftVec = tpl?.raw.find((f) => f.pose === 'left')?.vector ?? fallbackMaster;

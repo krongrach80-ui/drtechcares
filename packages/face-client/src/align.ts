@@ -81,9 +81,75 @@ export function estimateUmeyamaSimilarity2D(
 }
 
 /**
- * Aligns a video frame to canonical 112x112 ImageData using Umeyama 5-point transform.
+ * Extracts left & right eye center coordinates from MediaPipe 468/478 or 5-point landmarks.
+ */
+export function resolveEyeCentersFromLandmarks(
+  landmarksNormalized: readonly Point2D[],
+): { leftEye: Point2D; rightEye: Point2D } | null {
+  if (landmarksNormalized.length >= 468) {
+    const leftEye = landmarksNormalized[468] ?? {
+      x: (landmarksNormalized[33].x + landmarksNormalized[133].x) / 2,
+      y: (landmarksNormalized[33].y + landmarksNormalized[133].y) / 2,
+    };
+    const rightEye = landmarksNormalized[473] ?? {
+      x: (landmarksNormalized[362].x + landmarksNormalized[263].x) / 2,
+      y: (landmarksNormalized[362].y + landmarksNormalized[263].y) / 2,
+    };
+    return { leftEye, rightEye };
+  }
+  if (landmarksNormalized.length >= 2) {
+    return { leftEye: landmarksNormalized[0], rightEye: landmarksNormalized[1] };
+  }
+  return null;
+}
+
+/**
+ * Computes head roll angle (degrees) in pixel aspect coordinates from eye centers.
+ */
+export function computeEyeRollAngleDeg(
+  landmarksNormalized: readonly Point2D[],
+  widthPx = 1,
+  heightPx = 1,
+): number {
+  const eyes = resolveEyeCentersFromLandmarks(landmarksNormalized);
+  if (!eyes) return 0;
+  const dx = (eyes.rightEye.x - eyes.leftEye.x) * Math.max(1, widthPx);
+  const dy = (eyes.rightEye.y - eyes.leftEye.y) * Math.max(1, heightPx);
+  if (Math.hypot(dx, dy) < 1e-6) return 0;
+  return (Math.atan2(dy, dx) * 180) / Math.PI;
+}
+
+/**
+ * Rotates normalized [0..1] landmarks in pixel-aspect space around a pivot by angleRad.
+ */
+export function rotateNormalizedLandmarksForRoll<T extends Point2D>(
+  landmarks: readonly T[],
+  pivotNormX: number,
+  pivotNormY: number,
+  angleRad: number,
+  widthPx = 1,
+  heightPx = 1,
+): T[] {
+  const w = Math.max(1, widthPx);
+  const h = Math.max(1, heightPx);
+  const pxCenter = pivotNormX * w;
+  const pyCenter = pivotNormY * h;
+  const cos = Math.cos(angleRad);
+  const sin = Math.sin(angleRad);
+  return landmarks.map((pt) => {
+    const rx = pt.x * w - pxCenter;
+    const ry = pt.y * h - pyCenter;
+    const nx = (rx * cos - ry * sin + pxCenter) / w;
+    const ny = (rx * sin + ry * cos + pyCenter) / h;
+    return { ...pt, x: nx, y: ny };
+  });
+}
+
+/**
+ * Aligns a video frame to canonical 112x112 ImageData using Roll Tilt Compensation (|roll| > 5°)
+ * followed by Umeyama 5-point similarity warping.
  * For distant faces (height < 0.22), performs Stage-2 256x256 contrast-boosted Smart ROI
- * upscaling from full-resolution source before 5-point affine warping.
+ * upscaling from full-resolution source before warping.
  */
 export function alignFaceTo112(
   source: HTMLVideoElement | HTMLCanvasElement,
@@ -128,6 +194,41 @@ export function alignFaceTo112(
         x: Math.max(0, Math.min(1, (pt.x * width - upscaled.cropPx.sx) / upscaled.cropPx.sw)),
         y: Math.max(0, Math.min(1, (pt.y * height - upscaled.cropPx.sy) / upscaled.cropPx.sh)),
       }));
+    }
+  }
+
+  // Explicit Roll Tilt Compensation when |rollAngle| > 5°: level eyes horizontally before 5-pt warp
+  const rawRollDeg = computeEyeRollAngleDeg(mappedLandmarks, srcW, srcH);
+  if (Math.abs(rawRollDeg) > 5 && typeof document !== 'undefined') {
+    const eyes = resolveEyeCentersFromLandmarks(mappedLandmarks);
+    if (eyes) {
+      const eyeMidNormX = (eyes.leftEye.x + eyes.rightEye.x) / 2;
+      const eyeMidNormY = (eyes.leftEye.y + eyes.rightEye.y) / 2;
+      const rollCompRad = (-rawRollDeg * Math.PI) / 180;
+      const levelCanvas = document.createElement('canvas');
+      levelCanvas.width = srcW;
+      levelCanvas.height = srcH;
+      const lCtx = levelCanvas.getContext('2d', { willReadFrequently: true });
+      if (lCtx) {
+        const cx = eyeMidNormX * srcW;
+        const cy = eyeMidNormY * srcH;
+        lCtx.imageSmoothingEnabled = true;
+        lCtx.imageSmoothingQuality = 'high';
+        lCtx.translate(cx, cy);
+        lCtx.rotate(rollCompRad);
+        lCtx.translate(-cx, -cy);
+        lCtx.drawImage(warpSource, 0, 0, srcW, srcH);
+        lCtx.setTransform(1, 0, 0, 1, 0, 0);
+        warpSource = levelCanvas;
+        mappedLandmarks = rotateNormalizedLandmarksForRoll(
+          mappedLandmarks,
+          eyeMidNormX,
+          eyeMidNormY,
+          rollCompRad,
+          srcW,
+          srcH,
+        );
+      }
     }
   }
 

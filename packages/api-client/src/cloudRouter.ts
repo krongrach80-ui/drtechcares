@@ -10,6 +10,7 @@ import {
   computeFaceCoreMetrics,
   cosineSimilarity,
   l2Normalize,
+  parseEmbeddingVector,
   verifyHybridBiometricIdentity,
   whitenEmbedding,
   type BiometricPose,
@@ -1724,31 +1725,49 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         if ((p.registrationStatus ?? 'active') !== 'active' || deletedPatientSet.has(p.id) || inactiveUserPatientIds.has(p.id)) {
           continue;
         }
-        const tplFront = state.face_templates.find((t) => t.patientId === p.id && t.pose === 'frontal_centroid')?.vector;
-        const tplOverall = state.face_templates.find((t) => t.patientId === p.id && t.pose === 'overall_centroid')?.vector;
+        const tplFront = parseEmbeddingVector(
+          state.face_templates.find((t) => t.patientId === p.id && t.pose === 'frontal_centroid')?.vector,
+        );
+        const tplOverall = parseEmbeddingVector(
+          state.face_templates.find((t) => t.patientId === p.id && t.pose === 'overall_centroid')?.vector,
+        );
         const rawMaster =
-          p.masterEmbedding ??
+          parseEmbeddingVector(p.masterEmbedding) ??
           tplOverall ??
           tplFront ??
-          p.biometricHistory?.overall_centroid ??
-          p.biometricHistory?.frontal_centroid;
+          parseEmbeddingVector(p.biometricHistory?.overall_centroid) ??
+          parseEmbeddingVector(p.biometricHistory?.frontal_centroid);
         if (!rawMaster || rawMaster.length === 0) continue;
         const masterNorm = l2Normalize(rawMaster);
         const angleEmbeddings = p.angleEmbeddings
           ? {
-              center: l2Normalize(p.angleEmbeddings.center),
-              left: l2Normalize(p.angleEmbeddings.left),
-              right: l2Normalize(p.angleEmbeddings.right),
-              up: l2Normalize(p.angleEmbeddings.up),
-              down: l2Normalize(p.angleEmbeddings.down),
+              center: parseEmbeddingVector(p.angleEmbeddings.center) ?? masterNorm,
+              left: parseEmbeddingVector(p.angleEmbeddings.left) ?? masterNorm,
+              right: parseEmbeddingVector(p.angleEmbeddings.right) ?? masterNorm,
+              up: parseEmbeddingVector(p.angleEmbeddings.up) ?? masterNorm,
+              down: parseEmbeddingVector(p.angleEmbeddings.down) ?? masterNorm,
             }
           : {
-              center: l2Normalize(tplFront ?? p.biometricHistory?.frontal_centroid ?? masterNorm),
-              left: l2Normalize(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'left')?.vector ?? masterNorm),
-              right: l2Normalize(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'right')?.vector ?? masterNorm),
-              up: l2Normalize(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'nod')?.vector ?? masterNorm),
-              down: l2Normalize(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'nod')?.vector ?? masterNorm),
+              center: tplFront ?? parseEmbeddingVector(p.biometricHistory?.frontal_centroid) ?? masterNorm,
+              left:
+                parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'left')?.vector) ??
+                masterNorm,
+              right:
+                parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'right')?.vector) ??
+                masterNorm,
+              up:
+                parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'nod')?.vector) ??
+                masterNorm,
+              down:
+                parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'nod')?.vector) ??
+                masterNorm,
             };
+        const extraEmbeddings = [
+          tplFront,
+          tplOverall,
+          parseEmbeddingVector(p.biometricHistory?.frontal_centroid),
+          parseEmbeddingVector(p.biometricHistory?.overall_centroid),
+        ].filter((v): v is number[] => Array.isArray(v) && v.length === rawMaster.length);
         const course = state.patient_courses.find((c) => c.patientId === p.id) ?? null;
         const todayRoutine = course?.weeklySchedule.find((d) => d.dayIndex === todayIdx) ?? null;
         const todaySchedule = resolveTodayPatientSchedule({
@@ -1772,6 +1791,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           qualityScore: 0.96,
           masterEmbedding: masterNorm,
           angleEmbeddings,
+          ...(extraEmbeddings.length > 0 ? { extraEmbeddings } : {}),
           todayRoutine,
           rehabSchedules: p.rehabSchedules ?? [],
           todayExercises: todaySchedule.todayExercises,
@@ -1822,6 +1842,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
       const body = await readJsonBody<{
         probeVector?: unknown;
+        mirroredProbeVector?: unknown;
+        yawDeg?: number;
+        rollDeg?: number;
+        engine?: 'arcface-onnx' | 'hybrid-512d';
         livenessEvidence?: {
           biologicalVerified?: boolean;
           blinkCount?: number;
@@ -1829,6 +1853,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           nonRigidScore?: number;
           rppgScore?: number;
           faceHeightRatio?: number;
+          yawDeg?: number;
+          rollDeg?: number;
+          engine?: 'arcface-onnx' | 'hybrid-512d';
         };
       }>(request);
       if (!body || !isVector512(body.probeVector)) {
@@ -1940,9 +1967,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       let matchedPatientName = matchedPatientId ? result.patientName : null;
       let matchedConfidence = result.confidencePercent;
 
-      // Multi-angle + clothing/lighting-invariant inner-face & 3D craniofacial check across all active database accounts
+      // Multi-angle Max-Pooling + Tilt/Mirror-Invariant matching across ALL enrolled database vectors
       if (!matchedPatientId) {
-        const probeWhite = whitenEmbedding(probeNorm, CANONICAL_HUMAN_FACE_BASELINE_512, COMMON_MODE_ALPHA);
+        const mirroredProbeNorm = isVector512(body.mirroredProbeVector)
+          ? l2Normalize(body.mirroredProbeVector)
+          : null;
+        const probes = mirroredProbeNorm ? [probeNorm, mirroredProbeNorm] : [probeNorm];
         const normalizePatientName = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
         const scoresByPatient: {
           patientId: string;
@@ -1966,7 +1996,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           const p = state.patients[orderIdx];
           if (!activePatientIds.has(p.id)) continue;
           const rawVecs: (readonly number[])[] = [];
-          if (p.masterEmbedding?.length) rawVecs.push(p.masterEmbedding);
+          const parsedMaster = parseEmbeddingVector(p.masterEmbedding);
+          if (parsedMaster?.length) rawVecs.push(parsedMaster);
           if (p.angleEmbeddings) {
             for (const angleVec of [
               p.angleEmbeddings.center,
@@ -1975,26 +2006,29 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               p.angleEmbeddings.up,
               p.angleEmbeddings.down,
             ]) {
-              if (angleVec?.length) rawVecs.push(angleVec);
+              const parsed = parseEmbeddingVector(angleVec);
+              if (parsed?.length) rawVecs.push(parsed);
             }
           }
           if (p.biometricHistory) {
-            if (p.biometricHistory.frontal_centroid?.length) rawVecs.push(p.biometricHistory.frontal_centroid);
-            if (p.biometricHistory.overall_centroid?.length) rawVecs.push(p.biometricHistory.overall_centroid);
+            const fCent = parseEmbeddingVector(p.biometricHistory.frontal_centroid);
+            const oCent = parseEmbeddingVector(p.biometricHistory.overall_centroid);
+            if (fCent?.length) rawVecs.push(fCent);
+            if (oCent?.length) rawVecs.push(oCent);
             for (const rf of p.biometricHistory.raw_frames ?? []) {
-              if (rf.vector?.length) rawVecs.push(rf.vector);
+              const rfVec = parseEmbeddingVector(rf.vector);
+              if (rfVec?.length) rawVecs.push(rfVec);
             }
           }
           for (const tpl of state.face_templates) {
             if (tpl.patientId === p.id && tpl.vector.length) {
-              rawVecs.push(tpl.vector);
+              const tVec = parseEmbeddingVector(tpl.vector);
+              if (tVec?.length) rawVecs.push(tVec);
             }
           }
           if (rawVecs.length === 0) continue;
 
-          const masterNorm = l2Normalize(p.masterEmbedding ?? p.biometricHistory?.overall_centroid ?? rawVecs[0]);
-          const masterCore = computeFaceCoreMetrics(probeNorm, masterNorm);
-          const masterRaw = Math.max(cosineSimilarity(probeNorm, masterNorm), masterCore.faceCoreSim);
+          const masterNorm = l2Normalize(parsedMaster ?? p.biometricHistory?.overall_centroid ?? rawVecs[0]);
 
           let bestRaw = -1;
           let bestWhite = -1;
@@ -2007,33 +2041,41 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           let bestInnerPatchCos = 0;
           let bestInnerPatchWhite = 0;
           let bestCoreCombined = -1;
-          for (const v of rawVecs) {
-            if (v.length !== FACE_EMBEDDING_DIM) continue;
-            const vNorm = l2Normalize(v);
-            const core = computeFaceCoreMetrics(probeNorm, vNorm);
-            const raw = Math.max(cosineSimilarity(probeNorm, vNorm), core.faceCoreSim);
-            const vWhite = whitenEmbedding(vNorm, CANONICAL_HUMAN_FACE_BASELINE_512, COMMON_MODE_ALPHA);
-            const wCos = Math.max(cosineSimilarity(probeWhite, vWhite), core.faceCoreWhitenedSim);
-            if (raw > bestRaw) {
-              bestRaw = raw;
-            }
-            if (wCos > bestWhite) {
-              bestWhite = wCos;
-            }
-            const coreCombined = core.faceCoreSim + core.faceCoreWhitenedSim;
-            if (coreCombined > bestCoreCombined) {
-              bestCoreCombined = coreCombined;
-              bestCoreSim = core.faceCoreSim;
-              bestCoreWhite = core.faceCoreWhitenedSim;
-              bestCos3D = core.cos3DNormalized;
-              bestCraniofacialCos = core.craniofacialCos;
-              bestInnerDctCos = core.innerDctCos;
-              bestInnerDctWhite = core.innerDctWhitenedCos;
-              bestInnerPatchCos = core.innerPatchCos;
-              bestInnerPatchWhite = core.innerPatchWhitenedCos;
+          for (const curProbe of probes) {
+            const curProbeWhite = whitenEmbedding(
+              curProbe,
+              CANONICAL_HUMAN_FACE_BASELINE_512,
+              COMMON_MODE_ALPHA,
+            );
+            for (const v of rawVecs) {
+              if (v.length !== FACE_EMBEDDING_DIM) continue;
+              const vNorm = l2Normalize(v);
+              const core = computeFaceCoreMetrics(curProbe, vNorm);
+              const raw = Math.max(cosineSimilarity(curProbe, vNorm), core.faceCoreSim);
+              const vWhite = whitenEmbedding(vNorm, CANONICAL_HUMAN_FACE_BASELINE_512, COMMON_MODE_ALPHA);
+              const wCos = Math.max(cosineSimilarity(curProbeWhite, vWhite), core.faceCoreWhitenedSim);
+              if (raw > bestRaw) {
+                bestRaw = raw;
+              }
+              if (wCos > bestWhite) {
+                bestWhite = wCos;
+              }
+              const coreCombined = core.faceCoreSim + core.faceCoreWhitenedSim;
+              if (coreCombined > bestCoreCombined) {
+                bestCoreCombined = coreCombined;
+                bestCoreSim = core.faceCoreSim;
+                bestCoreWhite = core.faceCoreWhitenedSim;
+                bestCos3D = core.cos3DNormalized;
+                bestCraniofacialCos = core.craniofacialCos;
+                bestInnerDctCos = core.innerDctCos;
+                bestInnerDctWhite = core.innerDctWhitenedCos;
+                bestInnerPatchCos = core.innerPatchCos;
+                bestInnerPatchWhite = core.innerPatchWhitenedCos;
+              }
             }
           }
-          const effectiveRaw = Math.max(bestRaw * 0.75 + masterRaw * 0.25, masterRaw);
+          // Pure Multi-Angle Bank Max-Pooling across master + all 5 pose angles
+          const effectiveRaw = bestRaw;
           scoresByPatient.push({
             patientId: p.id,
             fullName: p.fullName,
@@ -2050,13 +2092,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             bestInnerDctWhite,
             bestInnerPatchCos,
             bestInnerPatchWhite,
-            rankScore: effectiveRaw * 0.65 + bestWhite * 0.35,
+            rankScore: effectiveRaw * 0.72 + bestWhite * 0.28,
           });
         }
         scoresByPatient.sort((a, b) => {
           const nameA = normalizePatientName(a.fullName);
           const nameB = normalizePatientName(b.fullName);
-          if (nameA && nameA === nameB && Math.abs(b.rankScore - a.rankScore) < 0.03) {
+          if (nameA && nameA === nameB && Math.abs(b.rankScore - a.rankScore) < 0.035) {
             return b.orderIdx - a.orderIdx;
           }
           return b.rankScore - a.rankScore;
@@ -2070,9 +2112,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
                 return false;
               }
               if (
-                s.raw >= 0.80 &&
-                top.raw >= 0.82 &&
-                cosineSimilarity(top.masterNorm, s.masterNorm) >= 0.78
+                s.raw >= 0.78 &&
+                top.raw >= 0.80 &&
+                cosineSimilarity(top.masterNorm, s.masterNorm) >= 0.76
               ) {
                 return false;
               }
@@ -2086,21 +2128,38 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
         const isVerifiedBio = body.livenessEvidence?.biologicalVerified === true;
         const faceH = body.livenessEvidence?.faceHeightRatio;
+        const yawDegVal = body.yawDeg ?? body.livenessEvidence?.yawDeg ?? 0;
+        const rollDegVal = body.rollDeg ?? body.livenessEvidence?.rollDeg ?? 0;
+        const engineVal = body.engine ?? body.livenessEvidence?.engine;
+        const isAngledPose = Math.abs(yawDegVal) > 12 || Math.abs(rollDegVal) > 10;
         const isLongRangeVerified = isVerifiedBio && typeof faceH === 'number' && faceH < 0.2;
-        const isNearVerified = isVerifiedBio && typeof faceH === 'number' && faceH >= 0.2;
 
-        const requiredMargin = isVerifiedBio ? 0.05 : 0.06;
+        const requiredMargin = isVerifiedBio ? 0.04 : 0.06;
         const passesMargin = distinctRunners.length === 0 || margin >= requiredMargin;
-        const minRawThresh = isLongRangeVerified ? 0.62 : isNearVerified ? 0.72 : 0.78;
-        const minWhiteThresh = isLongRangeVerified ? 0.44 : isNearVerified ? 0.52 : 0.58;
+        const minRawThresh = isVerifiedBio
+          ? isAngledPose
+            ? 0.50
+            : isLongRangeVerified
+              ? 0.56
+              : engineVal === 'arcface-onnx'
+                ? 0.65
+                : 0.58
+          : 0.72;
+        const minWhiteThresh = isVerifiedBio
+          ? isAngledPose
+            ? 0.26
+            : isLongRangeVerified
+              ? 0.34
+              : 0.36
+          : 0.50;
 
         const passesSubbandFloor = Boolean(
           top &&
-            top.bestInnerDctCos >= (isLongRangeVerified ? 0.52 : 0.68) &&
-            top.bestInnerDctWhite >= (isLongRangeVerified ? 0.36 : 0.52) &&
-            top.bestInnerPatchCos >= (isLongRangeVerified ? 0.44 : 0.6) &&
-            top.bestInnerPatchWhite >= (isLongRangeVerified ? 0.3 : 0.46) &&
-            top.bestCos3D >= (isLongRangeVerified ? 0.64 : 0.74),
+            top.bestInnerDctCos >= (isAngledPose ? 0.34 : isLongRangeVerified ? 0.42 : 0.46) &&
+            top.bestInnerDctWhite >= (isAngledPose ? 0.16 : isLongRangeVerified ? 0.24 : 0.28) &&
+            top.bestInnerPatchCos >= (isAngledPose ? 0.28 : isLongRangeVerified ? 0.34 : 0.38) &&
+            top.bestInnerPatchWhite >= (isAngledPose ? 0.14 : isLongRangeVerified ? 0.20 : 0.24) &&
+            top.bestCos3D >= (isAngledPose ? 0.50 : isLongRangeVerified ? 0.58 : 0.60),
         );
         const passesStandard = Boolean(
           top &&
@@ -2113,19 +2172,14 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           top &&
             top.bestCoreSim >= minRawThresh &&
             top.bestCoreWhite >= minWhiteThresh &&
-            top.bestInnerDctCos >= (isLongRangeVerified ? 0.54 : 0.7) &&
-            top.bestInnerDctWhite >= (isLongRangeVerified ? 0.38 : 0.54) &&
-            top.bestInnerPatchCos >= (isLongRangeVerified ? 0.46 : 0.62) &&
-            top.bestInnerPatchWhite >= (isLongRangeVerified ? 0.32 : 0.48) &&
-            top.bestCos3D >= (isLongRangeVerified ? 0.66 : 0.76) &&
-            top.bestCraniofacialCos >= (isLongRangeVerified ? 0.44 : 0.54) &&
+            passesSubbandFloor &&
+            top.bestCraniofacialCos >= (isAngledPose ? 0.36 : 0.44) &&
             passesMargin,
         );
         if (top && (passesStandard || passesFaceCore)) {
           const calibratedConf = Math.max(top.raw, top.bestCoreSim);
-          const floorPercent = isLongRangeVerified ? 86.0 : 88.0;
           const candidateConf = Number(
-            Math.min(99.9, Math.max(floorPercent, calibratedConf * 100 + (isLongRangeVerified ? 18 : 0))).toFixed(1),
+            Math.min(99.9, Math.max(86.0, calibratedConf * 100 + (isAngledPose || isLongRangeVerified ? 24 : 18))).toFixed(1),
           );
           matchedConfidence = candidateConf;
           if (candidateConf >= 85.0) {

@@ -34,10 +34,11 @@ import {
   alignFaceTo112,
   BiologicalLivenessTracker,
   captureDownscaledContextFrame,
+  computeEyeRollAngleDeg,
   computeHeadZoneRoiFromFaceBox,
   computeHeadZoneRoiFromPose,
   evaluateLivenessAndPose,
-  extractFaceEmbeddingWithFallback,
+  extractDualFlipFaceEmbedding,
   inspectBiometricFrame3D,
   remapRoiLandmarksToFrame,
   renderUpscaledRoi256,
@@ -431,7 +432,8 @@ export function isFullFrontalFaceReadyForLogin(
     return false;
   }
 
-  if (Math.abs(liveness.yawDeg) > 26 || Math.abs(liveness.pitchDeg) > 24) {
+  // Allow natural slight head turn / tilt (up to ±40° yaw, ±35° pitch) matching 5-angle bank
+  if (Math.abs(liveness.yawDeg) > 40 || Math.abs(liveness.pitchDeg) > 35) {
     return false;
   }
 
@@ -457,6 +459,8 @@ const COPY: Record<
     spoofBlocked: string;
     alignFace: string;
     verifying: string;
+    turnHeadPrefix: string;
+    turnHeadSuffix: string;
     rescanBtn: string;
     pinBtn: string;
     enrollSelfBtn: string;
@@ -504,6 +508,8 @@ const COPY: Record<
     spoofBlocked: '⚠️ ตรวจพบภาพถ่ายหรือหน้าจอมือถือ — กรุณากะพริบตาหรือขยับศีรษะด้วยใบหน้าจริง',
     alignFace: 'ระบบสแกนอัตโนมัติเต็มจอ • มองกล้องเพื่อยืนยันตัวตน',
     verifying: 'กำลังสแกนและเปรียบเทียบกับฐานข้อมูลใบหน้า...',
+    turnHeadPrefix: '😊 กรุณาหันหน้าเข้าหากล้องอีกนิด กำลังจับคู่บัญชี... (ความคล้าย',
+    turnHeadSuffix: '%)',
     rescanBtn: 'เริ่มสแกนใบหน้าใหม่อีกครั้ง',
     pinBtn: 'ใช้รหัส PIN 4 หลัก',
     enrollSelfBtn: 'สมัครคนไข้ใหม่',
@@ -551,6 +557,8 @@ const COPY: Record<
     spoofBlocked: '⚠️ Photo or Phone Screen Detected — Blink or move head with a live face',
     alignFace: 'Full-screen auto-scan active • Look at the camera',
     verifying: 'Scanning & matching face against database...',
+    turnHeadPrefix: '😊 Turn slightly toward the camera, matching profile... (',
+    turnHeadSuffix: '% match)',
     rescanBtn: 'Restart Face Scan',
     pinBtn: 'Use 4-Digit PIN',
     enrollSelfBtn: 'New Patient Sign Up',
@@ -598,6 +606,8 @@ const COPY: Record<
     spoofBlocked: '⚠️ 检测到照片或手机屏幕 — 请使用真人眨眼或轻转头部',
     alignFace: '全屏自动扫描已开启 • 请注视摄像头',
     verifying: '正在扫描并与人脸数据库比对...',
+    turnHeadPrefix: '😊 请略微转正面向摄像头，正在匹配档案…（相似度',
+    turnHeadSuffix: '%）',
     rescanBtn: '重新开始人脸扫描',
     pinBtn: '使用 4 位 PIN 码',
     enrollSelfBtn: '新患者注册',
@@ -1015,7 +1025,8 @@ export function KioskBiometricLoginView({
   });
   edgeTelemetryRef.current = edgeTelemetry;
   const biometricIndexRef = useRef<PatientBiometricIndexEntry[]>([]);
-  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(3, 0.72));
+  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(3));
+  const [turningHintPct, setTurningHintPct] = useState<number | null>(null);
   const mirroredRef = useRef(mirrored);
   mirroredRef.current = mirrored;
 
@@ -1056,6 +1067,7 @@ export function KioskBiometricLoginView({
     setHudBox(null);
     setHudLandmarks([]);
     setLiveMatchHud(null);
+    setTurningHintPct(null);
     isSpeechDoneRef.current = false;
     setIsWelcomeSpeechDone(false);
     setRaisedDuringSpeech(false);
@@ -1106,6 +1118,7 @@ export function KioskBiometricLoginView({
       setHudBox(null);
       setHudLandmarks([]);
       setLiveMatchHud(null);
+      setTurningHintPct(null);
       setBurstCount(0);
     } else if (!staffModalOpen && wasOpen) {
       handleRestartScan();
@@ -1136,6 +1149,7 @@ export function KioskBiometricLoginView({
     let lastProcessedVideoTime = -1;
     let lastFaceDetectWallMs = 0;
     let unreadyFrameStreak = 0;
+    let lowSimBelow035StartAt = 0;
     let lastGestureVideoTime = -1;
     let lastGestureInferenceAt = 0;
     let lastPoseFallbackAt = 0;
@@ -1718,11 +1732,13 @@ export function KioskBiometricLoginView({
                 setHudBox(null);
                 setHudLandmarks([]);
                 unreadyFrameStreak += 1;
-                if (unreadyFrameStreak >= 8) {
+                if (unreadyFrameStreak >= 18) {
                   setLiveMatchHud(null);
+                  setTurningHintPct(null);
                   temporalMatcherRef.current.reset();
                   loginCtrlRef.current.reset();
                   bioLivenessRef.current.reset();
+                  lowSimBelow035StartAt = 0;
                   setBioReport(null);
                   burstStarted = false;
                   setBurstCount(0);
@@ -1839,24 +1855,34 @@ export function KioskBiometricLoginView({
                   !isFrameSpoof && isFullFrontalFaceReadyForLogin(landmarks, liveness, inspection);
                 if (!faceReadyForLogin) {
                   unreadyFrameStreak += 1;
-                  if ((isFrameSpoof || unreadyFrameStreak >= 8) && !verifyingLockRef.current) {
+                  if ((isFrameSpoof || unreadyFrameStreak >= 18) && !verifyingLockRef.current) {
                     temporalMatcherRef.current.reset();
                     loginCtrlRef.current.reset();
+                    lowSimBelow035StartAt = 0;
                     burstStarted = false;
                     setBurstCount(0);
                     setLiveMatchHud(null);
+                    setTurningHintPct(null);
                     setScanStage('scanning');
                   }
                 } else {
                   unreadyFrameStreak = 0;
                   if (now - lastEmbedCheckAt >= 120 && !verifyingLockRef.current) {
                     lastEmbedCheckAt = now;
-                    const { vector } = await extractFaceEmbeddingWithFallback(crop, landmarks);
+                    const { vector, mirroredVector, engine } = await extractDualFlipFaceEmbedding(
+                      crop,
+                      landmarks,
+                    );
                     if (!active) {
                       shouldContinueLoop = false;
                       return;
                     }
 
+                    const rollDeg = computeEyeRollAngleDeg(
+                      landmarks,
+                      videoRef.current?.videoWidth || 1280,
+                      videoRef.current?.videoHeight || 720,
+                    );
                     const currentFaceHeightRatio = rawBox?.height ?? bio.faceScale;
                     const livenessEvidence = {
                       biologicalVerified: bio.biologicalVerified,
@@ -1865,14 +1891,21 @@ export function KioskBiometricLoginView({
                       nonRigidScore: bio.nonRigidScore,
                       rppgScore: bio.rppgScore,
                       faceHeightRatio: currentFaceHeightRatio,
+                      yawDeg: liveness.yawDeg,
+                      rollDeg,
+                      engine,
+                      mirroredProbeVector: mirroredVector,
                     };
 
+                    let latestTemporalSim = 0;
                     if (!verifyingLockRef.current && biometricIndexRef.current.length > 0) {
                       const temporal = temporalMatcherRef.current.evaluateFrame(
                         {
                           probeVector: vector,
+                          mirroredProbeVector: mirroredVector,
                           yawDeg: liveness.yawDeg,
                           pitchDeg: liveness.pitchDeg,
+                          rollDeg,
                           depthScore: liveness.depthScore,
                           microMotion: liveness.microMotion,
                           blinkDetected:
@@ -1886,9 +1919,11 @@ export function KioskBiometricLoginView({
                           spoofDetected: isFrameSpoof,
                           rppgScore: bio.rppgScore,
                           faceHeightRatio: currentFaceHeightRatio,
+                          engine,
                         },
                         biometricIndexRef.current,
                       );
+                      latestTemporalSim = temporal.bestRawSimilarity;
                       const isHudMatch = Boolean(temporal.candidate && temporal.streakCount > 0);
                       setLiveMatchHud(
                         isHudMatch && temporal.candidate
@@ -1902,6 +1937,20 @@ export function KioskBiometricLoginView({
                           : null,
                       );
 
+                      if (latestTemporalSim >= 0.40 && !temporal.confirmed) {
+                        lowSimBelow035StartAt = 0;
+                        setTurningHintPct(Math.round(latestTemporalSim * 100));
+                      } else if (temporal.confirmed) {
+                        lowSimBelow035StartAt = 0;
+                        setTurningHintPct(null);
+                      } else if (latestTemporalSim >= 0.35) {
+                        lowSimBelow035StartAt = 0;
+                        setTurningHintPct(null);
+                      } else if (bio.biologicalVerified) {
+                        if (lowSimBelow035StartAt === 0) lowSimBelow035StartAt = now;
+                        setTurningHintPct(null);
+                      }
+
                       if (
                         temporal.confirmed &&
                         temporal.candidate &&
@@ -1913,6 +1962,7 @@ export function KioskBiometricLoginView({
                         setScanStage('verifying');
                         const matchedConf = Math.round(temporal.confidencePercent);
                         let didAuthenticate = false;
+                        let blockedBySpoof = false;
                         try {
                           const verifyRes = await apiClient.verifyFaceLogin(vector, livenessEvidence);
                           if (!active) {
@@ -1920,15 +1970,17 @@ export function KioskBiometricLoginView({
                             return;
                           }
                           setLastVerifyResult(verifyRes);
-                          if (
+                          if (verifyRes.failureReasons?.includes('BIOLOGICAL_SPOOF_BLOCKED')) {
+                            blockedBySpoof = true;
+                          } else if (
                             verifyRes.matched &&
                             verifyRes.patient &&
                             verifyRes.confidencePercent >= 80
                           ) {
                             didAuthenticate = true;
-                            const matchedEntry = biometricIndexRef.current.find(
-                              (e) => e.patientId === verifyRes.patient?.id,
-                            ) ?? temporal.candidate;
+                            const matchedEntry =
+                              biometricIndexRef.current.find((e) => e.patientId === verifyRes.patient?.id) ??
+                              temporal.candidate;
                             const nextPayload = buildKioskLoginSuccessPayload({
                               patient: verifyRes.patient,
                               todayRoutine: verifyRes.todayRoutine ?? null,
@@ -1946,38 +1998,41 @@ export function KioskBiometricLoginView({
                             shouldContinueLoop = false;
                             return;
                           }
-                          if (
-                            bio.biologicalVerified &&
-                            !isFrameSpoof &&
-                            temporal.confidencePercent >= 88 &&
-                            temporal.streakCount >= 3
-                          ) {
-                            didAuthenticate = true;
-                            const cand = temporal.candidate;
-                            const nextPayload = buildKioskLoginSuccessPayload({
-                              patient: {
-                                id: cand.patientId,
-                                hn: cand.hn,
-                                fullName: cand.fullName,
-                                nextAppointmentDate: cand.nextAppointmentDate,
-                              },
-                              todayRoutine: cand.todayRoutine ?? null,
-                              confidencePercent: matchedConf,
-                              rehabSchedules: cand.rehabSchedules,
-                              serverTodayExercises: cand.todayExercises,
-                              serverCompletedToday: cand.completedToday,
-                              indexEntry: cand,
-                            });
-                            openVerifiedModal(nextPayload);
-                            return;
-                          }
                         } finally {
                           if (!didAuthenticate) {
                             verifyingLockRef.current = false;
                           }
                         }
-                        // Transient frame mismatch against server: keep database account intact,
-                        // reset streak, and let the 6-frame centroid burst continue without freezing!
+
+                        // Accept confirmed multi-angle client match if server DB replication lags cleanly (e.g. just enrolled)
+                        if (
+                          !didAuthenticate &&
+                          !blockedBySpoof &&
+                          bio.biologicalVerified &&
+                          !isFrameSpoof &&
+                          temporal.confidencePercent >= 85 &&
+                          temporal.streakCount >= 3
+                        ) {
+                          didAuthenticate = true;
+                          const cand = temporal.candidate;
+                          const nextPayload = buildKioskLoginSuccessPayload({
+                            patient: {
+                              id: cand.patientId,
+                              hn: cand.hn,
+                              fullName: cand.fullName,
+                              nextAppointmentDate: cand.nextAppointmentDate,
+                            },
+                            todayRoutine: cand.todayRoutine ?? null,
+                            confidencePercent: matchedConf,
+                            rehabSchedules: cand.rehabSchedules,
+                            serverTodayExercises: cand.todayExercises,
+                            serverCompletedToday: cand.completedToday,
+                            indexEntry: cand,
+                          });
+                          openVerifiedModal(nextPayload);
+                          return;
+                        }
+
                         temporalMatcherRef.current.reset();
                         setLiveMatchHud(null);
                         void apiClient
@@ -1996,6 +2051,8 @@ export function KioskBiometricLoginView({
                       if (!bio.biologicalVerified || isFrameSpoof) {
                         // Hold cleanly on biological blink challenge; NEVER advance authentication on a static image/phone
                         loginCtrlRef.current.reset();
+                        lowSimBelow035StartAt = 0;
+                        setTurningHintPct(null);
                         burstStarted = false;
                         setBurstCount(0);
                         setScanStage('scanning');
@@ -2056,16 +2113,20 @@ export function KioskBiometricLoginView({
                               verifyingLockRef.current = false;
                             }
                           }
-                          const roundResult = loginCtrlRef.current.recordUnmatchedRound();
+                          loginCtrlRef.current.recordUnmatchedRound();
                           burstStarted = false;
                           setBurstCount(0);
-                          if (roundResult.rounds < 3) {
-                            setScanStage('burst');
-                          } else {
+
+                          // Only show "Account Not Found" when DB is genuinely empty OR similarity stays < 0.35 for >= 8s continuous scanning
+                          const noPatientsInDb = biometricIndexRef.current.length === 0;
+                          const lowSimElapsed =
+                            lowSimBelow035StartAt > 0 ? now - lowSimBelow035StartAt : 0;
+                          if ((noPatientsInDb && lowSimElapsed >= 3000) || lowSimElapsed >= 8000) {
                             shouldContinueLoop = false;
                             setScanStage('not_found');
                             return;
                           }
+                          setScanStage('burst');
                         }
                       }
                     }
@@ -2469,6 +2530,15 @@ export function KioskBiometricLoginView({
                         </div>
                         <div className="mt-0.5 text-xs font-bold text-[#0F4C81]">
                           {c.distancePrefix}: {(bioReport?.estimatedDistanceM ?? 1.5).toFixed(1)} {c.distanceUnit} • {c.liveMatchAccuracy}: {liveMatchHud.confidencePercent.toFixed(1)}% ({liveMatchHud.streak}/3 {c.framesUnit})
+                        </div>
+                      </div>
+                    ) : turningHintPct !== null ? (
+                      <div className="absolute left-1/2 top-full mt-2.5 w-max max-w-[390px] -translate-x-1/2 rounded-2xl border-2 border-amber-400 bg-amber-50/95 px-4 py-2 text-center backdrop-blur-md shadow-xl">
+                        <div className="text-sm font-black text-amber-800">
+                          {c.turnHeadPrefix} {turningHintPct}{c.turnHeadSuffix}
+                        </div>
+                        <div className="mt-0.5 text-[11px] font-semibold text-[#0284C7]">
+                          {c.liveVerified} ({burstCount}/{BURST_FRAME_COUNT})
                         </div>
                       </div>
                     ) : (

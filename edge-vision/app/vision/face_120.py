@@ -357,32 +357,45 @@ class InsightFace120Manager:
         }
 
     def match_1_to_n(
-        self, query_embedding: np.ndarray, yaw_deg: float = 0.0, pitch_deg: float = 0.0
+        self,
+        query_embedding: np.ndarray,
+        yaw_deg: float = 0.0,
+        pitch_deg: float = 0.0,
+        roll_deg: float = 0.0,
     ) -> PatientMatchSchema:
         """
-        Match a 512-D query embedding against all enrolled patients in RAM in < 100ms.
-        Combines master centroid cosine similarity + matching head angle similarity.
+        Match a 512-D query embedding against all enrolled patients in RAM in < 100ms
+        via Multi-Angle Bank Max-Pooling (master + center/left/right/up/down).
         """
         start_ns = time.perf_counter_ns()
         if not self._patients or self._matrix is None:
             return PatientMatchSchema(similarity=0.0, latency_ms=0.0)
 
         q = l2_normalize(query_embedding)
-        sims = self._matrix @ q
-        best_idx = int(np.argmax(sims))
-        best_score = float(sims[best_idx])
-        best_patient = self._patients[best_idx]
+        master_sims = self._matrix @ q
 
-        # Fuse closest angle centroid when patient turns head naturally
-        pose_bucket = classify_face_bucket(yaw_deg, pitch_deg)
-        angle_vec = best_patient.angle_embeddings.get(pose_bucket)
-        if angle_vec is not None:
-            angle_score = float(np.dot(angle_vec, q))
-            best_score = max(best_score, 0.45 * best_score + 0.55 * angle_score)
+        best_score = -1.0
+        best_patient: Optional[CachedPatientBiometric] = None
+        for idx, pat in enumerate(self._patients):
+            pat_best = float(master_sims[idx])
+            if pat.angle_embeddings:
+                for angle_vec in pat.angle_embeddings.values():
+                    a_score = float(np.dot(angle_vec, q))
+                    if a_score > pat_best:
+                        pat_best = a_score
+            if pat_best > best_score:
+                best_score = pat_best
+                best_patient = pat
 
         elapsed_ms = round((time.perf_counter_ns() - start_ns) / 1_000_000.0, 3)
-        if best_score < self.settings.FACE_MATCH_THRESHOLD:
-            return PatientMatchSchema(similarity=round(best_score, 4), latency_ms=elapsed_ms)
+        is_angled = abs(yaw_deg) > 12.0 or abs(pitch_deg) > 12.0 or abs(roll_deg) > 10.0
+        effective_thresh = (
+            min(float(self.settings.FACE_MATCH_THRESHOLD), 0.50)
+            if is_angled
+            else float(self.settings.FACE_MATCH_THRESHOLD)
+        )
+        if best_patient is None or best_score < effective_thresh:
+            return PatientMatchSchema(similarity=round(max(0.0, best_score), 4), latency_ms=elapsed_ms)
 
         self.lock_active_patient(
             patient_id=best_patient.patient_id,
@@ -497,11 +510,10 @@ class InsightFace120Manager:
             return 1.0
         q = l2_normalize(query_embedding)
         score = float(np.dot(self.active_patient.master_embedding, q))
-        bucket = classify_face_bucket(yaw_deg, pitch_deg)
-        angle_vec = self.active_patient.angle_embeddings.get(bucket)
-        if angle_vec is not None:
+        for angle_vec in self.active_patient.angle_embeddings.values():
             angle_score = float(np.dot(angle_vec, q))
-            score = max(score, 0.45 * score + 0.55 * angle_score)
+            if angle_score > score:
+                score = angle_score
         return score
 
     @staticmethod

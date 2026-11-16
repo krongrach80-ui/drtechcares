@@ -245,14 +245,19 @@ export function extractHybrid512Descriptor(
     }
   }
 
-  // 256..511: High-detail 3D Craniofacial geometric ratios anchored by inter-ocular distance & key anatomical landmarks
+  // 256..511: High-detail Roll-Invariant 3D Craniofacial geometric ratios anchored by inter-ocular eye axis
   if (landmarks3D.length >= 10) {
     const pLeft = landmarks3D[33] ?? landmarks3D[0];
     const pRight = landmarks3D[263] ?? landmarks3D[1];
     const nose = landmarks3D[1] ?? landmarks3D[2];
+    const eyeDx = pRight.x - pLeft.x;
+    const eyeDy = pRight.y - pLeft.y;
+    const eyeSpan2d = Math.hypot(eyeDx, eyeDy);
+    const cosR = eyeSpan2d > 1e-5 ? eyeDx / eyeSpan2d : 1;
+    const sinR = eyeSpan2d > 1e-5 ? -eyeDy / eyeSpan2d : 0;
     const iod = Math.max(
       1e-4,
-      Math.hypot(pRight.x - pLeft.x, pRight.y - pLeft.y, (pRight.z ?? 0) - (pLeft.z ?? 0)),
+      Math.hypot(eyeDx, eyeDy, (pRight.z ?? 0) - (pLeft.z ?? 0)),
     );
     const keyAnchors = [
       landmarks3D[33] ?? nose,
@@ -273,8 +278,10 @@ export function extractHybrid512Descriptor(
       const lmIdx = (k * 7) % landmarks3D.length;
       const lm = landmarks3D[lmIdx];
       const ref = keyAnchors[k % keyAnchors.length];
-      const dx = (lm.x - nose.x) / iod;
-      const dy = (lm.y - nose.y) / iod;
+      const rawDx = (lm.x - nose.x) / iod;
+      const rawDy = (lm.y - nose.y) / iod;
+      const dx = rawDx * cosR - rawDy * sinR;
+      const dy = rawDx * sinR + rawDy * cosR;
       const dz = ((lm.z ?? 0) - (nose.z ?? 0)) / iod;
       const dist = Math.hypot(dx, dy, dz);
       const refDist = Math.hypot(lm.x - ref.x, lm.y - ref.y, (lm.z ?? 0) - (ref.z ?? 0)) / iod;
@@ -290,6 +297,39 @@ export function extractHybrid512Descriptor(
   }
 
   return l2Normalize(vec);
+}
+
+/**
+ * Horizontally flips a 112x112 RGBA crop buffer for Mirror-Flip Invariance matching.
+ */
+export function flipImageDataHorizontally(image: {
+  width: number;
+  height: number;
+  data: Uint8ClampedArray | Uint8Array;
+}): { width: number; height: number; data: Uint8ClampedArray } {
+  const { width, height, data } = image;
+  const out = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    const rowOff = y * width * 4;
+    for (let x = 0; x < width; x += 1) {
+      const srcIdx = rowOff + x * 4;
+      const dstIdx = rowOff + (width - 1 - x) * 4;
+      out[dstIdx] = data[srcIdx];
+      out[dstIdx + 1] = data[srcIdx + 1];
+      out[dstIdx + 2] = data[srcIdx + 2];
+      out[dstIdx + 3] = data[srcIdx + 3];
+    }
+  }
+  return { width, height, data: out };
+}
+
+/**
+ * Horizontally mirrors normalized landmarks across X = 0.5 while swapping left/right pairs if needed.
+ */
+export function flipLandmarksHorizontally(
+  landmarks3D: readonly Landmark3D[],
+): Landmark3D[] {
+  return landmarks3D.map((lm) => ({ ...lm, x: 1 - lm.x }));
 }
 
 /**
@@ -311,4 +351,23 @@ export async function extractFaceEmbeddingWithFallback(
     const vector = extractHybrid512Descriptor(image, landmarks3D);
     return { vector, engine: 'hybrid-512d' };
   }
+}
+
+/**
+ * Extracts both raw-camera and horizontally mirrored embeddings so enrollment/login
+ * stay 100% invariant regardless of mirror state (scale-x-[-1]).
+ */
+export async function extractDualFlipFaceEmbedding(
+  image: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
+  landmarks3D: readonly Landmark3D[],
+): Promise<{ vector: number[]; mirroredVector: number[]; engine: 'arcface-onnx' | 'hybrid-512d' }> {
+  const primary = await extractFaceEmbeddingWithFallback(image, landmarks3D);
+  const flippedImg = flipImageDataHorizontally(image);
+  const flippedLms = flipLandmarksHorizontally(landmarks3D);
+  const mirrored = await extractFaceEmbeddingWithFallback(flippedImg, flippedLms);
+  return {
+    vector: primary.vector,
+    mirroredVector: mirrored.vector,
+    engine: primary.engine,
+  };
 }

@@ -5,7 +5,7 @@
 export const FACE_EMBEDDING_DIM = 512;
 export const COMMON_MODE_ALPHA = 0.92;
 export const NOT_FOUND_CONFIRM_ROUNDS = 1;
-export const BURST_FRAME_COUNT = 6;
+export const BURST_FRAME_COUNT = 3;
 
 export type BiometricPose = 'frontal_centroid' | 'overall_centroid' | 'front' | 'left' | 'right' | 'nod';
 
@@ -124,6 +124,55 @@ export function l2Normalize(vector: readonly number[]): number[] {
     out[i] = vector[i] / norm;
   }
   return out;
+}
+
+/**
+ * Universal embedding parser supporting Array, Float32Array/TypedArray,
+ * JSON strings ("[0.1, ...]"), pgvector literal strings ("{0.1, ...}"),
+ * and nested biometric object wrappers; always returns L2-normalized vectors.
+ */
+export function parseEmbeddingVector(raw: unknown): number[] | undefined {
+  if (!raw) return undefined;
+  let candidate: unknown = raw;
+
+  if (typeof candidate === 'object' && !Array.isArray(candidate) && !ArrayBuffer.isView(candidate)) {
+    const rec = candidate as Record<string, unknown>;
+    candidate =
+      rec.master_embedding ??
+      rec.masterEmbedding ??
+      rec.face_embedding ??
+      rec.faceEmbedding ??
+      rec.embedding ??
+      rec.vector;
+  }
+
+  if (typeof candidate === 'string') {
+    const trimmed = candidate.trim();
+    if (!trimmed) return undefined;
+    if (trimmed.startsWith('[')) {
+      try {
+        candidate = JSON.parse(trimmed);
+      } catch {
+        return undefined;
+      }
+    } else if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      const inner = trimmed.slice(1, -1).trim();
+      candidate = inner.length > 0 ? inner.split(',').map((item) => Number(item.trim())) : [];
+    } else {
+      return undefined;
+    }
+  }
+
+  let nums: number[] | undefined;
+  if (Array.isArray(candidate)) {
+    nums = candidate.map((n) => Number(n));
+  } else if (ArrayBuffer.isView(candidate) && 'length' in candidate) {
+    nums = Array.from(candidate as unknown as ArrayLike<number>, (n) => Number(n));
+  }
+
+  if (!nums || nums.length === 0) return undefined;
+  if (!nums.every((v) => Number.isFinite(v))) return undefined;
+  return l2Normalize(nums);
 }
 
 /**
@@ -416,7 +465,7 @@ export function computeSubbandMetrics(
  */
 export function computeOutlierRejectedCentroid(
   frames: readonly BiometricBurstFrame[],
-  maxBurstFrames: number = BURST_FRAME_COUNT,
+  maxBurstFrames: number = 6,
 ): { centroid: number[]; acceptedCount: number; rejectedCount: number } {
   const freshFrames = frames
     .filter((f) => f.capturedAfterCountdown === true && f.vector.length === FACE_EMBEDDING_DIM)

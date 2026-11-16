@@ -4,10 +4,19 @@ import {
   type PatientBiometricIndexEntry,
 } from '@drtechcares/api-client';
 import {
+  BURST_FRAME_COUNT,
   CANONICAL_HUMAN_FACE_BASELINE_512,
   FACE_EMBEDDING_DIM,
   l2Normalize,
+  parseEmbeddingVector,
 } from '@drtechcares/smart-biometric-core';
+import {
+  computeEyeRollAngleDeg,
+  extractHybrid512Descriptor,
+  flipImageDataHorizontally,
+  flipLandmarksHorizontally,
+  rotateNormalizedLandmarksForRoll,
+} from '@drtechcares/face-client';
 import {
   TemporalBiometricMatcher,
   computeBoundingBoxFromLandmarks,
@@ -754,5 +763,169 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     expect(out.confirmed).toBe(true);
     expect(out.candidate?.patientId).toBe('pat-lr');
     expect(out.confidencePercent).toBeGreaterThanOrEqual(84);
+  });
+
+  it('parses all embedding formats, handles 20-deg roll tilt & mirror flip, and uses 3-frame sliding window with soft decay', () => {
+    // 1. BURST_FRAME_COUNT reduced to 3 for fast responsive 0/3 -> 3/3 progress
+    expect(BURST_FRAME_COUNT).toBe(3);
+
+    // 2. Universal Embedding Loader supports Array, Float32Array, JSON string, pgvector brace, & object wrapper
+    const seedVec = makeRealisticFaceVector(31337, 2);
+    expect(parseEmbeddingVector(new Float32Array(seedVec))?.length).toBe(FACE_EMBEDDING_DIM);
+    expect(parseEmbeddingVector(JSON.stringify(seedVec))?.length).toBe(FACE_EMBEDDING_DIM);
+    expect(parseEmbeddingVector(`{${seedVec.join(',')}}`)?.length).toBe(FACE_EMBEDDING_DIM);
+    expect(parseEmbeddingVector({ master_embedding: seedVec })?.length).toBe(FACE_EMBEDDING_DIM);
+    expect(parseEmbeddingVector('invalid-vector')).toBeUndefined();
+
+    // 3. Pure 5-Angle Max-Pooling matches right-angle template cleanly even when master centroid differs strongly
+    const pureRightOwner: PatientBiometricIndexEntry = {
+      ...makeEnrolledPatient('pat-5angle', 'HN-5A01', 'คุณวิชัย มุมข้าง', 80808),
+      masterEmbedding: makeRealisticFaceVector(11111, 0),
+      angleEmbeddings: {
+        center: makeRealisticFaceVector(11111, 1),
+        left: makeRealisticFaceVector(22222, 2),
+        right: makeRealisticFaceVector(80808, 3),
+        up: makeRealisticFaceVector(33333, 4),
+        down: makeRealisticFaceVector(44444, 5),
+      },
+    };
+    const otherPat = makeEnrolledPatient('pat-other-5a', 'HN-5A02', 'คนไข้ท่านอื่น', 55555);
+    const rightMatch = matchMultiAngleEmbedding(pureRightOwner.angleEmbeddings.right, [otherPat, pureRightOwner], {
+      yawDeg: 22,
+    });
+    expect(rightMatch.matched).toBe(true);
+    expect(rightMatch.bestCandidate?.patientId).toBe('pat-5angle');
+    expect(rightMatch.bestAngle).toBe('right');
+
+    // 4. Roll Tilt Invariance (|roll| > 5 deg) keeps 3D craniofacial descriptor consistent & compensates landmark angle
+    const baseLms = Array.from({ length: 478 }, (_, idx) => ({
+      x: 0.4 + (idx % 17) * 0.012,
+      y: 0.35 + Math.floor(idx / 17) * 0.01,
+      z: (idx % 5) * -0.004,
+    }));
+    baseLms[33] = { x: 0.44, y: 0.46, z: 0 };
+    baseLms[133] = { x: 0.46, y: 0.46, z: 0 };
+    baseLms[468] = { x: 0.45, y: 0.46, z: 0 };
+    baseLms[362] = { x: 0.54, y: 0.46, z: 0 };
+    baseLms[263] = { x: 0.56, y: 0.46, z: 0 };
+    baseLms[473] = { x: 0.55, y: 0.46, z: 0 };
+    baseLms[1] = { x: 0.50, y: 0.51, z: -0.04 };
+
+    const tiltedLms = rotateNormalizedLandmarksForRoll(baseLms, 0.5, 0.46, (20 * Math.PI) / 180, 1280, 720);
+    expect(Math.abs(computeEyeRollAngleDeg(tiltedLms, 1280, 720) - 20)).toBeLessThan(0.5);
+
+    const flatImg = { width: 112, height: 112, data: new Uint8ClampedArray(112 * 112 * 4).fill(128) };
+    const descFlat = extractHybrid512Descriptor(flatImg, baseLms);
+    const descTilted = extractHybrid512Descriptor(flatImg, tiltedLms);
+    expect(cosineSimilarity(descFlat, descTilted)).toBeGreaterThan(0.95);
+
+    // 5. Mirror Flip Invariance preserves match when probe is mirror-flipped
+    const flippedImg = flipImageDataHorizontally(flatImg);
+    const flippedLms = flipLandmarksHorizontally(baseLms);
+    const mirroredDesc = extractHybrid512Descriptor(flippedImg, flippedLms);
+    const mirrorMatch = matchMultiAngleEmbedding(makeRealisticFaceVector(90909, 0), [pureRightOwner], {
+      mirroredProbeVector: pureRightOwner.angleEmbeddings.right,
+      yawDeg: 18,
+    });
+    expect(mirroredDesc.length).toBe(FACE_EMBEDDING_DIM);
+    expect(mirrorMatch.matched).toBe(true);
+    expect(mirrorMatch.bestCandidate?.patientId).toBe('pat-5angle');
+
+    // 6. Allows ±32° head turn in isFullFrontalFaceReadyForLogin (prevents 0/3 lockup)
+    expect(
+      isFullFrontalFaceReadyForLogin(
+        tiltedLms,
+        { yawDeg: 32, pitchDeg: 18, depthScore: 0.42 },
+        { scan_status: 'PASS', error_code: 'NONE' },
+      ),
+    ).toBe(true);
+
+    // 7. TemporalBiometricMatcher defaults to 3 frames & uses soft decay (0.5) instead of wiping to 0 on 1 blink glitch
+    const matcher = new TemporalBiometricMatcher();
+    expect(matcher.requiredConsecutiveFrames).toBe(3);
+
+    const slightDiffVec = makeRealisticFaceVector(918273, 1);
+    const angledProbe = l2Normalize(
+      pureRightOwner.angleEmbeddings.right.map((v, idx) => v * 0.62 + slightDiffVec[idx] * 0.38),
+    );
+    const strangerProbe = makeRealisticFaceVector(444444, 0);
+
+    const f1 = matcher.evaluateFrame(
+      {
+        probeVector: angledProbe,
+        depthScore: 0.52,
+        yawDeg: 22,
+        pitchDeg: 4,
+        rollDeg: 12,
+        microMotion: 0.002,
+        biologicalVerified: true,
+        spoofDetected: false,
+      },
+      [otherPat, pureRightOwner],
+    );
+    expect(f1.streakCount).toBe(1);
+
+    const f2 = matcher.evaluateFrame(
+      {
+        probeVector: angledProbe,
+        depthScore: 0.52,
+        yawDeg: 23,
+        pitchDeg: 4,
+        rollDeg: 12,
+        microMotion: 0.002,
+        biologicalVerified: true,
+        spoofDetected: false,
+      },
+      [otherPat, pureRightOwner],
+    );
+    expect(f2.streakCount).toBe(2);
+
+    // 1 missed frame (e.g. eye blink/motion blur) decays softly rather than wiping streak to 0
+    const glitchFrame = matcher.evaluateFrame(
+      {
+        probeVector: strangerProbe,
+        depthScore: 0.52,
+        yawDeg: 23,
+        pitchDeg: 4,
+        rollDeg: 12,
+        microMotion: 0.002,
+        biologicalVerified: true,
+        spoofDetected: false,
+      },
+      [otherPat, pureRightOwner],
+    );
+    expect(glitchFrame.streakCount).toBeGreaterThanOrEqual(1);
+    expect(glitchFrame.candidate?.patientId).toBe('pat-5angle');
+
+    // Recover smoothly to confirmed (3/3) without restarting from scratch
+    matcher.evaluateFrame(
+      {
+        probeVector: angledProbe,
+        depthScore: 0.52,
+        yawDeg: 24,
+        pitchDeg: 5,
+        rollDeg: 12,
+        microMotion: 0.002,
+        biologicalVerified: true,
+        spoofDetected: false,
+      },
+      [otherPat, pureRightOwner],
+    );
+    const finalConfirm = matcher.evaluateFrame(
+      {
+        probeVector: angledProbe,
+        depthScore: 0.52,
+        yawDeg: 24.5,
+        pitchDeg: 5,
+        rollDeg: 12,
+        microMotion: 0.002,
+        biologicalVerified: true,
+        spoofDetected: false,
+      },
+      [otherPat, pureRightOwner],
+    );
+    expect(finalConfirm.confirmed).toBe(true);
+    expect(finalConfirm.streakCount).toBe(3);
+    expect(finalConfirm.candidate?.patientId).toBe('pat-5angle');
   });
 });
