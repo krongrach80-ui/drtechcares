@@ -82,40 +82,79 @@ export function estimateUmeyamaSimilarity2D(
 
 /**
  * Aligns a video frame to canonical 112x112 ImageData using Umeyama 5-point transform.
+ * For distant faces (height < 0.22), performs Stage-2 256x256 contrast-boosted Smart ROI
+ * upscaling from full-resolution source before 5-point affine warping.
  */
 export function alignFaceTo112(
   source: HTMLVideoElement | HTMLCanvasElement,
   landmarksNormalized: readonly { x: number; y: number }[],
   targetCanvas?: HTMLCanvasElement,
+  roiWorkCanvas?: HTMLCanvasElement | null,
 ): ImageData | null {
   const width = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
   const height = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
   if (!width || !height) return null;
 
+  let minY = 1;
+  let maxY = 0;
+  let minX = 1;
+  let maxX = 0;
+  for (const pt of landmarksNormalized) {
+    if (pt.x < minX) minX = pt.x;
+    if (pt.x > maxX) maxX = pt.x;
+    if (pt.y < minY) minY = pt.y;
+    if (pt.y > maxY) maxY = pt.y;
+  }
+  const faceHeightRatio = maxY - minY;
+
+  // Stage-2 Two-Stage Smart ROI Super-Crop for distant faces (< 22% frame height)
+  let warpSource: HTMLVideoElement | HTMLCanvasElement = source;
+  let srcW = width;
+  let srcH = height;
+  let mappedLandmarks = landmarksNormalized;
+
+  if (faceHeightRatio > 0.01 && faceHeightRatio < 0.22 && typeof document !== 'undefined') {
+    const roiBox = computeHeadZoneRoiFromFaceBox(
+      { x: minX, y: minY, width: Math.max(0.02, maxX - minX), height: faceHeightRatio },
+      2.15,
+    );
+    const workCanvas = roiWorkCanvas ?? document.createElement('canvas');
+    const upscaled = renderUpscaledRoi256(source, roiBox, workCanvas);
+    if (upscaled) {
+      warpSource = upscaled.canvas;
+      srcW = upscaled.canvas.width;
+      srcH = upscaled.canvas.height;
+      mappedLandmarks = landmarksNormalized.map((pt) => ({
+        x: Math.max(0, Math.min(1, (pt.x * width - upscaled.cropPx.sx) / upscaled.cropPx.sw)),
+        y: Math.max(0, Math.min(1, (pt.y * height - upscaled.cropPx.sy) / upscaled.cropPx.sh)),
+      }));
+    }
+  }
+
   // MediaPipe FaceLandmarker 468/478 indices:
   // Left eye center ~ 468 or avg(33,133), Right eye ~ 473 or avg(362,263), Nose tip 1, Mouth corners 61 & 291
   let src5: Point2D[];
-  if (landmarksNormalized.length >= 468) {
-    const lEye = landmarksNormalized[468] ?? {
-      x: (landmarksNormalized[33].x + landmarksNormalized[133].x) / 2,
-      y: (landmarksNormalized[33].y + landmarksNormalized[133].y) / 2,
+  if (mappedLandmarks.length >= 468) {
+    const lEye = mappedLandmarks[468] ?? {
+      x: (mappedLandmarks[33].x + mappedLandmarks[133].x) / 2,
+      y: (mappedLandmarks[33].y + mappedLandmarks[133].y) / 2,
     };
-    const rEye = landmarksNormalized[473] ?? {
-      x: (landmarksNormalized[362].x + landmarksNormalized[263].x) / 2,
-      y: (landmarksNormalized[362].y + landmarksNormalized[263].y) / 2,
+    const rEye = mappedLandmarks[473] ?? {
+      x: (mappedLandmarks[362].x + mappedLandmarks[263].x) / 2,
+      y: (mappedLandmarks[362].y + mappedLandmarks[263].y) / 2,
     };
-    const nose = landmarksNormalized[1];
-    const lMouth = landmarksNormalized[61];
-    const rMouth = landmarksNormalized[291];
+    const nose = mappedLandmarks[1];
+    const lMouth = mappedLandmarks[61];
+    const rMouth = mappedLandmarks[291];
     src5 = [
-      { x: lEye.x * width, y: lEye.y * height },
-      { x: rEye.x * width, y: rEye.y * height },
-      { x: nose.x * width, y: nose.y * height },
-      { x: lMouth.x * width, y: lMouth.y * height },
-      { x: rMouth.x * width, y: rMouth.y * height },
+      { x: lEye.x * srcW, y: lEye.y * srcH },
+      { x: rEye.x * srcW, y: rEye.y * srcH },
+      { x: nose.x * srcW, y: nose.y * srcH },
+      { x: lMouth.x * srcW, y: lMouth.y * srcH },
+      { x: rMouth.x * srcW, y: rMouth.y * srcH },
     ];
-  } else if (landmarksNormalized.length >= 5) {
-    src5 = landmarksNormalized.slice(0, 5).map((p) => ({ x: p.x * width, y: p.y * height }));
+  } else if (mappedLandmarks.length >= 5) {
+    src5 = mappedLandmarks.slice(0, 5).map((p) => ({ x: p.x * srcW, y: p.y * srcH }));
   } else {
     return null;
   }
@@ -128,10 +167,139 @@ export function alignFaceTo112(
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return null;
 
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
   ctx.setTransform(mat.a, mat.b, -mat.b, mat.a, mat.tx, mat.ty);
-  ctx.drawImage(source, 0, 0);
+  ctx.drawImage(warpSource, 0, 0);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   return ctx.getImageData(0, 0, ARCFACE_INPUT_SIZE, ARCFACE_INPUT_SIZE);
+}
+
+export interface NormalizedRoiRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface RoiCropMetrics {
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+  srcW: number;
+  srcH: number;
+}
+
+export function computeHeadZoneRoiFromFaceBox(
+  box: NormalizedRoiRect,
+  expandFactor: number = 2.2,
+): NormalizedRoiRect {
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  const size = Math.max(0.14, Math.min(0.85, Math.max(box.width, box.height) * expandFactor));
+  const x = Math.max(0, Math.min(1 - size, cx - size / 2));
+  const y = Math.max(0, Math.min(1 - size, cy - size / 2));
+  return { x, y, width: Math.min(size, 1 - x), height: Math.min(size, 1 - y) };
+}
+
+/**
+ * Computes a high-probability square Head-Zone focal crop from MediaPipe Pose landmarks
+ * so tiny faces at 2.0-4.5m can be upscaled to 256x256 before running detailed FaceLandmarker.
+ */
+export function computeHeadZoneRoiFromPose(
+  poseLandmarks: readonly { x: number; y: number; visibility?: number }[] | null | undefined,
+): NormalizedRoiRect {
+  if (poseLandmarks && poseLandmarks.length >= 13) {
+    const nose = poseLandmarks[0];
+    const lEar = poseLandmarks[7];
+    const rEar = poseLandmarks[8];
+    const lShoulder = poseLandmarks[11];
+    const rShoulder = poseLandmarks[12];
+    const anchors = [nose, lEar, rEar].filter(
+      (pt) => pt && (pt.visibility ?? 1) >= 0.2 && Number.isFinite(pt.x) && Number.isFinite(pt.y),
+    );
+    if (anchors.length > 0) {
+      const cx = anchors.reduce((a, p) => a + p.x, 0) / anchors.length;
+      const cy = anchors.reduce((a, p) => a + p.y, 0) / anchors.length;
+      const earSpan =
+        lEar && rEar && (lEar.visibility ?? 1) >= 0.2 && (rEar.visibility ?? 1) >= 0.2
+          ? Math.hypot(rEar.x - lEar.x, rEar.y - lEar.y)
+          : 0;
+      const shoulderSpan =
+        lShoulder && rShoulder && (lShoulder.visibility ?? 1) >= 0.2 && (rShoulder.visibility ?? 1) >= 0.2
+          ? Math.hypot(rShoulder.x - lShoulder.x, rShoulder.y - lShoulder.y)
+          : 0;
+      const size = Math.max(0.18, Math.min(0.65, Math.max(earSpan * 3.4, shoulderSpan * 0.9, 0.22)));
+      const x = Math.max(0, Math.min(1 - size, cx - size / 2));
+      const y = Math.max(0, Math.min(1 - size, cy - size / 2));
+      return { x, y, width: Math.min(size, 1 - x), height: Math.min(size, 1 - y) };
+    }
+  }
+  return { x: 0.26, y: 0.05, width: 0.48, height: 0.56 };
+}
+
+/**
+ * Upscales the selected head/face ROI from full-res video onto a 256x256 canvas with mild
+ * brightness + contrast boost so distant eye/brow/jaw features lock reliably.
+ */
+export function renderUpscaledRoi256(
+  source: HTMLVideoElement | HTMLCanvasElement,
+  roiNorm: NormalizedRoiRect,
+  targetCanvas?: HTMLCanvasElement | null,
+  outSize: number = 256,
+): { canvas: HTMLCanvasElement; cropPx: RoiCropMetrics } | null {
+  const srcW = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
+  const srcH = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
+  if (!srcW || !srcH) return null;
+
+  const sx = Math.max(0, Math.floor(roiNorm.x * srcW));
+  const sy = Math.max(0, Math.floor(roiNorm.y * srcH));
+  const sw = Math.max(24, Math.min(srcW - sx, Math.round(roiNorm.width * srcW)));
+  const sh = Math.max(24, Math.min(srcH - sy, Math.round(roiNorm.height * srcH)));
+
+  const canvas = targetCanvas ?? (typeof document !== 'undefined' ? document.createElement('canvas') : null);
+  if (!canvas) return null;
+  canvas.width = outSize;
+  canvas.height = outSize;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  try {
+    ctx.filter = 'contrast(1.16) brightness(1.06)';
+  } catch {
+    // Ignore filter in constrained contexts
+  }
+  ctx.drawImage(source, sx, sy, sw, sh, 0, 0, outSize, outSize);
+  try {
+    ctx.filter = 'none';
+  } catch {
+    // Ignore filter reset errors
+  }
+
+  return { canvas, cropPx: { sx, sy, sw, sh, srcW, srcH } };
+}
+
+/**
+ * Projects landmarks detected on a zoomed ROI crop cleanly back to full-frame normalized coordinates.
+ */
+export function remapRoiLandmarksToFrame<T extends { x: number; y: number; z?: number }>(
+  landmarks: readonly T[],
+  cropPx: RoiCropMetrics,
+): T[] {
+  const scaleX = cropPx.sw / Math.max(1, cropPx.srcW);
+  const scaleY = cropPx.sh / Math.max(1, cropPx.srcH);
+  const offsetX = cropPx.sx / Math.max(1, cropPx.srcW);
+  const offsetY = cropPx.sy / Math.max(1, cropPx.srcH);
+  return landmarks.map((lm) => ({
+    ...lm,
+    x: offsetX + lm.x * scaleX,
+    y: offsetY + lm.y * scaleY,
+    z: lm.z !== undefined ? lm.z * scaleX : lm.z,
+  }));
 }
 
 /**

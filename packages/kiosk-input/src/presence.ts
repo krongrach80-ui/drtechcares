@@ -1,6 +1,7 @@
 export const PRESENCE_WAKE_MS = 1000;
 export const PRESENCE_SLEEP_HYSTERESIS_MS = 2000;
-export const MIN_FACE_SIZE_RATIO = 0.1;
+// Supports long-range clinic presence up to ~4.5m (~28px+ face width on 1080p)
+export const MIN_FACE_SIZE_RATIO = 0.025;
 
 export interface PresenceObservation {
   facePresent: boolean;

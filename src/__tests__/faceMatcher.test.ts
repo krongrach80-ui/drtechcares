@@ -690,4 +690,69 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     expect(finalRes.livenessPassed).toBe(true);
     expect(finalRes.candidate?.patientId).toBe('pat-b');
   });
+
+  it('supports Ultra-Long-Range (faceHeightRatio < 0.20) distance-adaptive threshold (>= 0.62) with >= 0.05 margin across 3 frames', () => {
+    const owner = makeEnrolledPatient('pat-lr', 'HN-LR-01', 'คุณมานะ เดินไกล', 919191);
+    const other = makeEnrolledPatient('pat-other', 'HN-LR-02', 'คนไข้ท่านอื่น', 333333);
+
+    // Distant probe retains ~0.70 similarity to enrolled template (mixed appearance attenuation + craniofacial core)
+    const slightDiff = makeRealisticFaceVector(777777, 1);
+    const farProbe = l2Normalize(
+      owner.angleEmbeddings.center.map((v, idx) => v * 0.68 + slightDiff[idx] * 0.32),
+    );
+    const farFaceLandmarks = Array.from({ length: 478 }, () => ({ x: 0.5, y: 0.4, z: 0 }));
+    farFaceLandmarks[10] = { x: 0.5, y: 0.37, z: 0 };
+    farFaceLandmarks[152] = { x: 0.5, y: 0.43, z: 0 };
+    farFaceLandmarks[33] = { x: 0.485, y: 0.39, z: 0 };
+    farFaceLandmarks[263] = { x: 0.515, y: 0.39, z: 0 };
+    farFaceLandmarks[1] = { x: 0.5, y: 0.405, z: -0.02 };
+    farFaceLandmarks[61] = { x: 0.49, y: 0.415, z: 0 };
+    farFaceLandmarks[291] = { x: 0.51, y: 0.415, z: 0 };
+    farFaceLandmarks[234] = { x: 0.478, y: 0.4, z: 0 };
+    farFaceLandmarks[454] = { x: 0.522, y: 0.4, z: 0 };
+
+    expect(
+      isFullFrontalFaceReadyForLogin(
+        farFaceLandmarks,
+        { yawDeg: 2, pitchDeg: 1, depthScore: 0.42 },
+        { scan_status: 'PASS', error_code: 'NONE' },
+      ),
+    ).toBe(true);
+
+    const lrMatcher = new TemporalBiometricMatcher(3, 0.72);
+    let out = lrMatcher.evaluateFrame(
+      {
+        probeVector: farProbe,
+        depthScore: 0.45,
+        yawDeg: 0,
+        pitchDeg: 0,
+        microMotion: 0.001,
+        biologicalVerified: true,
+        spoofDetected: false,
+        faceHeightRatio: 0.08,
+      },
+      [owner, other],
+    );
+    expect(out.confirmed).toBe(false);
+    expect(out.streakCount).toBe(1);
+
+    for (let i = 1; i < 3; i += 1) {
+      out = lrMatcher.evaluateFrame(
+        {
+          probeVector: farProbe,
+          depthScore: 0.46,
+          yawDeg: i * 1.4,
+          pitchDeg: 0.5,
+          microMotion: 0.0012,
+          biologicalVerified: true,
+          spoofDetected: false,
+          faceHeightRatio: 0.08,
+        },
+        [owner, other],
+      );
+    }
+    expect(out.confirmed).toBe(true);
+    expect(out.candidate?.patientId).toBe('pat-lr');
+    expect(out.confidencePercent).toBeGreaterThanOrEqual(84);
+  });
 });

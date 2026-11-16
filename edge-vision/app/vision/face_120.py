@@ -164,7 +164,10 @@ class InsightFace120Manager:
             try:
                 app = FaceAnalysis(name=self.settings.INSIGHTFACE_MODEL_NAME, providers=prov_list)
                 ctx_id = 0 if "CUDAExecutionProvider" in prov_list else -1
-                app.prepare(ctx_id=ctx_id, det_size=(640, 640), det_thresh=0.5)
+                try:
+                    app.prepare(ctx_id=ctx_id, det_size=(1280, 1280), det_thresh=0.45)
+                except Exception:
+                    app.prepare(ctx_id=ctx_id, det_size=(960, 960), det_thresh=0.45)
                 self._face_app = app
                 self._backend_name = f"InsightFace {self.settings.INSIGHTFACE_MODEL_NAME} ArcFace 512-D ({prov_list[0]})"
                 logger.info("Initialized %s", self._backend_name)

@@ -34,9 +34,13 @@ import {
   alignFaceTo112,
   BiologicalLivenessTracker,
   captureDownscaledContextFrame,
+  computeHeadZoneRoiFromFaceBox,
+  computeHeadZoneRoiFromPose,
   evaluateLivenessAndPose,
   extractFaceEmbeddingWithFallback,
   inspectBiometricFrame3D,
+  remapRoiLandmarksToFrame,
+  renderUpscaledRoi256,
   selectClinicalCameraDeviceId,
   selectPrimaryFace,
   SingleScanLoginController,
@@ -383,7 +387,8 @@ export function isFullFrontalFaceReadyForLogin(
   }
 
   const box = computeBoundingBoxFromLandmarks(landmarks);
-  if (!box || box.height < 0.13 || box.width < 0.09) {
+  // Supports ultra-long-range clinical distance (0.4m - 4.5m, down to ~4% frame height)
+  if (!box || box.height < 0.035 || box.width < 0.025) {
     return false;
   }
 
@@ -406,6 +411,9 @@ const COPY: Record<
     callStaff: string;
     staffLogin: string;
     checkingLiveness: string;
+    longRangePrompt: string;
+    distancePrefix: string;
+    distanceUnit: string;
     liveVerified: string;
     spoofBlocked: string;
     alignFace: string;
@@ -450,6 +458,9 @@ const COPY: Record<
     callStaff: 'เรียกเจ้าหน้าที่ช่วยเหลือ',
     staffLogin: 'เข้าสู่ระบบเจ้าหน้าที่',
     checkingLiveness: '👁️ กรุณากะพริบตาหรือขยับศีรษะเล็กน้อยเพื่อยืนยันตัวตน',
+    longRangePrompt: '🎯 ตรวจพบใบหน้าระยะไกล • มองตรงหรือพยักหน้าเบาๆ เพื่อเข้าสู่ระบบ',
+    distancePrefix: 'ระยะห่าง',
+    distanceUnit: 'ม.',
     liveVerified: '✓ ยืนยันบุคคลจริง (Liveness Verified)',
     spoofBlocked: '⚠️ ตรวจพบภาพถ่ายหรือหน้าจอมือถือ — กรุณากะพริบตาหรือขยับศีรษะด้วยใบหน้าจริง',
     alignFace: 'ระบบสแกนอัตโนมัติเต็มจอ • มองกล้องเพื่อยืนยันตัวตน',
@@ -494,6 +505,9 @@ const COPY: Record<
     callStaff: 'Call Staff',
     staffLogin: 'Staff Login',
     checkingLiveness: '👁️ Please blink or gently move your head to verify',
+    longRangePrompt: '🎯 Long-Range Face Locked • Look ahead or nod gently to sign in',
+    distancePrefix: 'Distance',
+    distanceUnit: 'm',
     liveVerified: '✓ Live Person Verified (Liveness Verified)',
     spoofBlocked: '⚠️ Photo or Phone Screen Detected — Blink or move head with a live face',
     alignFace: 'Full-screen auto-scan active • Look at the camera',
@@ -538,6 +552,9 @@ const COPY: Record<
     callStaff: '呼叫医护人员',
     staffLogin: '医护系统登录',
     checkingLiveness: '👁️ 请轻眨眼或微转头部以验证真人身份',
+    longRangePrompt: '🎯 远距离人脸已锁定 • 请直视镜头或轻点头以登录',
+    distancePrefix: '距离',
+    distanceUnit: '米',
     liveVerified: '✓ 真人活体已验证 (Liveness Verified)',
     spoofBlocked: '⚠️ 检测到照片或手机屏幕 — 请使用真人眨眼或轻转头部',
     alignFace: '全屏自动扫描已开启 • 请注视摄像头',
@@ -778,6 +795,7 @@ export function KioskBiometricLoginView({
   const confirmBtnLabelRef = useRef<HTMLSpanElement | null>(null);
   const alignCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const contextCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const roiCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const bioLivenessRef = useRef(new BiologicalLivenessTracker());
   const bioReportRef = useRef<BiologicalLivenessReport | null>(null);
   bioReportRef.current = bioReport;
@@ -841,7 +859,7 @@ export function KioskBiometricLoginView({
   });
   edgeTelemetryRef.current = edgeTelemetry;
   const biometricIndexRef = useRef<PatientBiometricIndexEntry[]>([]);
-  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(3, 0.78));
+  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(3, 0.72));
   const mirroredRef = useRef(mirrored);
   mirroredRef.current = mirrored;
 
@@ -940,6 +958,7 @@ export function KioskBiometricLoginView({
     let stream: MediaStream | null = null;
     let rafId = 0;
     let landmarker: FaceLandmarker | null = null;
+    let roiLandmarker: FaceLandmarker | null = null;
     let handLandmarker: HandLandmarker | null = null;
     let poseLandmarker: PoseLandmarker | null = null;
     let gestureOffscreenCanvas: HTMLCanvasElement | null = null;
@@ -947,6 +966,7 @@ export function KioskBiometricLoginView({
     let wasEyeClosed = false;
     let burstStarted = false;
     let lastDetectTs = 0;
+    let lastPoseDetectTs = 0;
     let lastProcessedVideoTime = -1;
     let lastFaceDetectWallMs = 0;
     let unreadyFrameStreak = 0;
@@ -967,6 +987,8 @@ export function KioskBiometricLoginView({
       cancelAnimationFrame(rafId);
       landmarker?.close();
       landmarker = null;
+      roiLandmarker?.close();
+      roiLandmarker = null;
       handLandmarker?.close();
       handLandmarker = null;
       poseLandmarker?.close();
@@ -1065,8 +1087,8 @@ export function KioskBiometricLoginView({
         if (!active) return;
         stream = await navigator.mediaDevices.getUserMedia({
           video: deviceId
-            ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }
-            : { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+            ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: 'user' }
+            : { width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: 'user' },
           audio: false,
         });
         if (!active || !videoRef.current) {
@@ -1102,15 +1124,34 @@ export function KioskBiometricLoginView({
           runningMode: 'VIDEO',
           numFaces: 2,
           outputFaceBlendshapes: true,
-          minFaceDetectionConfidence: 0.55,
-          minFacePresenceConfidence: 0.55,
-          minTrackingConfidence: 0.55,
+          minFaceDetectionConfidence: 0.45,
+          minFacePresenceConfidence: 0.45,
+          minTrackingConfidence: 0.45,
         });
         if (!active) {
           createdLandmarker.close();
           return;
         }
         landmarker = createdLandmarker;
+
+        // Stage-2 Smart ROI Landmarker (IMAGE mode on 256x256 upscaled head zone for 1.5-4.5m range)
+        try {
+          const createdRoiLandmarker = await FaceLandmarker.createFromOptions(vision, {
+            baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
+            runningMode: 'IMAGE',
+            numFaces: 1,
+            outputFaceBlendshapes: true,
+            minFaceDetectionConfidence: 0.45,
+            minFacePresenceConfidence: 0.45,
+          });
+          if (!active) {
+            createdRoiLandmarker.close();
+            return;
+          }
+          roiLandmarker = createdRoiLandmarker;
+        } catch {
+          roiLandmarker = null;
+        }
 
         let lastEmbedCheckAt = 0;
         const KEY_MESH_LANDMARK_INDICES = [
@@ -1203,8 +1244,9 @@ export function KioskBiometricLoginView({
                   ) {
                     lastPoseFallbackAt = now;
                     try {
-                      const poseTs = Math.max(lastDetectTs + 1, Math.round(now));
-                      lastDetectTs = poseTs;
+                      const poseTs = Math.max(lastPoseDetectTs + 1, lastDetectTs + 1, Math.round(now));
+                      lastPoseDetectTs = poseTs;
+                      lastDetectTs = Math.max(lastDetectTs, poseTs);
                       const poseRes = poseLandmarker.detectForVideo(inferenceSource, poseTs);
                       detectedPose = poseRes.landmarks?.[0] ?? null;
                     } catch {
@@ -1331,8 +1373,64 @@ export function KioskBiometricLoginView({
 
               const detectTs = Math.max(lastDetectTs + 1, Math.round(now));
               lastDetectTs = detectTs;
+              if (!roiCanvasRef.current) {
+                roiCanvasRef.current = document.createElement('canvas');
+              }
+
               const res = landmarker.detectForVideo(videoRef.current, detectTs);
-              const selection = selectPrimaryFace(res.faceLandmarks ?? []);
+              let selection = selectPrimaryFace(res.faceLandmarks ?? []);
+              let activeBlendshapes = res.faceBlendshapes?.[0]?.categories;
+
+              // Stage-1 & Stage-2 Two-Stage Smart ROI Zoom: when no face found at full-frame or face < 22% height,
+              // locate Head-Zone via PoseLandmarker/coarse box -> upscale 256x256 with contrast boost -> refine FaceLandmarker
+              const coarseHeight = selection.primaryBox?.height ?? 0;
+              if (roiLandmarker && (!selection.primaryFace || coarseHeight < 0.22)) {
+                let targetRoi = selection.primaryFace && selection.primaryBox
+                  ? computeHeadZoneRoiFromFaceBox(
+                      {
+                        x: Math.max(0, (selection.primaryCenter?.x ?? 0.5) - selection.primaryBox.width / 2),
+                        y: Math.max(0, (selection.primaryCenter?.y ?? 0.5) - selection.primaryBox.height / 2),
+                        width: selection.primaryBox.width,
+                        height: selection.primaryBox.height,
+                      },
+                      2.25,
+                    )
+                  : null;
+
+                if (!targetRoi && poseLandmarker) {
+                  try {
+                    const poseTs = Math.max(lastPoseDetectTs + 1, detectTs);
+                    lastPoseDetectTs = poseTs;
+                    const poseRes = poseLandmarker.detectForVideo(videoRef.current, poseTs);
+                    const poseLms = poseRes.landmarks?.[0];
+                    if (poseLms && poseLms.length >= 13) {
+                      targetRoi = computeHeadZoneRoiFromPose(poseLms);
+                    }
+                  } catch {
+                    // Pose fallback optional
+                  }
+                }
+                if (!targetRoi) {
+                  targetRoi = computeHeadZoneRoiFromPose(null);
+                }
+
+                const upscaledRoi = renderUpscaledRoi256(videoRef.current, targetRoi, roiCanvasRef.current, 256);
+                if (upscaledRoi) {
+                  const roiRes = roiLandmarker.detect(upscaledRoi.canvas);
+                  const roiSelection = selectPrimaryFace(roiRes.faceLandmarks ?? []);
+                  if (roiSelection.primaryFace && roiSelection.primaryFace.length >= 300) {
+                    const remapped = remapRoiLandmarksToFrame(roiSelection.primaryFace, upscaledRoi.cropPx);
+                    const remappedSelection = selectPrimaryFace([remapped]);
+                    if (remappedSelection.primaryFace) {
+                      selection = remappedSelection;
+                      if (roiRes.faceBlendshapes?.[0]?.categories) {
+                        activeBlendshapes = roiRes.faceBlendshapes[0].categories;
+                      }
+                    }
+                  }
+                }
+              }
+
               const faceCount = selection.effectiveFaceCount;
               const landmarks = selection.primaryFace ? [...selection.primaryFace] : [];
 
@@ -1373,7 +1471,7 @@ export function KioskBiometricLoginView({
               }
               const crop =
                 landmarks.length >= 300
-                  ? alignFaceTo112(videoRef.current, landmarks, alignCanvasRef.current)
+                  ? alignFaceTo112(videoRef.current, landmarks, alignCanvasRef.current, roiCanvasRef.current)
                   : null;
               const contextFrame =
                 landmarks.length >= 300
@@ -1387,11 +1485,13 @@ export function KioskBiometricLoginView({
                 faceCount === 1 && landmarks.length >= 300
                   ? bioLivenessRef.current.update({
                       landmarks3D: landmarks,
-                      blendshapes: res.faceBlendshapes?.[0]?.categories,
+                      blendshapes: activeBlendshapes,
                       earLeft: liveness.earLeft,
                       earRight: liveness.earRight,
                       yawDeg: liveness.yawDeg,
                       pitchDeg: liveness.pitchDeg,
+                      frameWidth: videoRef.current.videoWidth || 1920,
+                      frameHeight: videoRef.current.videoHeight || 1080,
                       faceCrop: crop,
                       contextFrame,
                       faceBox: rawBoxForBio,
@@ -1411,14 +1511,16 @@ export function KioskBiometricLoginView({
                 contextImage: contextFrame,
                 faceBox: rawBoxForBio,
                 biologicalVerified: bio?.biologicalVerified,
+                allowLongRange: true,
                 requestedPose: 'CENTER',
                 metrics: bio
                   ? {
+                      allowLongRange: true,
                       biologicalVerified: bio.biologicalVerified,
                       planarRigidSpoof: bio.planarSpoofDetected,
                       moireOrBezelDetected: bio.screenSpoofDetected,
                     }
-                  : undefined,
+                  : { allowLongRange: true },
               });
               prevLandmarks = landmarks;
               setInspectionInfo(inspection);
@@ -1488,12 +1590,14 @@ export function KioskBiometricLoginView({
                       return;
                     }
 
+                    const currentFaceHeightRatio = rawBox?.height ?? bio.faceScale;
                     const livenessEvidence = {
                       biologicalVerified: bio.biologicalVerified,
                       blinkCount: bio.blinkCount,
                       spoofRisk: bio.spoofScore,
                       nonRigidScore: bio.nonRigidScore,
                       rppgScore: bio.rppgScore,
+                      faceHeightRatio: currentFaceHeightRatio,
                     };
 
                     if (!verifyingLockRef.current && biometricIndexRef.current.length > 0) {
@@ -1508,11 +1612,13 @@ export function KioskBiometricLoginView({
                             liveness.blinkDetected ||
                             bio.blinkVerified ||
                             bio.headPoseVerified ||
-                            bio.lipMotionVerified,
+                            bio.lipMotionVerified ||
+                            bio.longRangeMotionVerified,
                           nonRigidMotion: bio.nonRigidMotion,
                           biologicalVerified: bio.biologicalVerified,
                           spoofDetected: isFrameSpoof,
                           rppgScore: bio.rppgScore,
+                          faceHeightRatio: currentFaceHeightRatio,
                         },
                         biometricIndexRef.current,
                       );
@@ -2046,16 +2152,14 @@ export function KioskBiometricLoginView({
                         className={`absolute h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full ${
                           isSpoof
                             ? 'bg-rose-400 shadow-[0_0_6px_#fb7185]'
-                            : isBioVerified
-                              ? 'bg-[#10B981] shadow-[0_0_6px_#10B981]'
-                              : 'bg-cyan-300/90 shadow-[0_0_6px_#22d3ee]'
+                            : 'bg-[#10B981] shadow-[0_0_6px_#10B981]'
                         }`}
                       />
                     ))}
                   </div>
                 )}
 
-                {/* Full-Frame Dynamic Face Tracking Bounding Box & Single Primary Elderly-Friendly Status Banner */}
+                {/* Full-Frame Dynamic Long-Range Face Target Lock (#10B981) & Single Primary Banner */}
                 {hudBox && (
                   <div
                     className="pointer-events-none absolute z-25 transition-all duration-100"
@@ -2070,17 +2174,15 @@ export function KioskBiometricLoginView({
                       className={`relative h-full w-full overflow-hidden rounded-2xl border-[3px] transition-colors ${
                         isSpoof
                           ? 'border-rose-500 shadow-[0_0_28px_rgba(244,63,94,0.85)]'
-                          : isBioVerified
-                            ? 'border-[#10B981] shadow-[0_0_28px_rgba(16,185,129,0.8)]'
-                            : 'border-sky-400 shadow-[0_0_22px_rgba(56,189,248,0.45)]'
+                          : 'border-[#10B981] shadow-[0_0_28px_rgba(16,185,129,0.78)]'
                       }`}
                     >
-                      <span className={`absolute top-0 left-0 h-4 w-4 rounded-tl-lg border-t-[3px] border-l-[3px] ${isSpoof ? 'border-rose-400' : isBioVerified ? 'border-[#10B981]' : 'border-sky-300'}`} />
-                      <span className={`absolute top-0 right-0 h-4 w-4 rounded-tr-lg border-t-[3px] border-r-[3px] ${isSpoof ? 'border-rose-400' : isBioVerified ? 'border-[#10B981]' : 'border-sky-300'}`} />
-                      <span className={`absolute bottom-0 left-0 h-4 w-4 rounded-bl-lg border-b-[3px] border-l-[3px] ${isSpoof ? 'border-rose-400' : isBioVerified ? 'border-[#10B981]' : 'border-sky-300'}`} />
-                      <span className={`absolute bottom-0 right-0 h-4 w-4 rounded-br-lg border-b-[3px] border-r-[3px] ${isSpoof ? 'border-rose-400' : isBioVerified ? 'border-[#10B981]' : 'border-sky-300'}`} />
+                      <span className={`absolute top-0 left-0 h-4 w-4 rounded-tl-lg border-t-[3px] border-l-[3px] ${isSpoof ? 'border-rose-400' : 'border-[#10B981]'}`} />
+                      <span className={`absolute top-0 right-0 h-4 w-4 rounded-tr-lg border-t-[3px] border-r-[3px] ${isSpoof ? 'border-rose-400' : 'border-[#10B981]'}`} />
+                      <span className={`absolute bottom-0 left-0 h-4 w-4 rounded-bl-lg border-b-[3px] border-l-[3px] ${isSpoof ? 'border-rose-400' : 'border-[#10B981]'}`} />
+                      <span className={`absolute bottom-0 right-0 h-4 w-4 rounded-br-lg border-b-[3px] border-r-[3px] ${isSpoof ? 'border-rose-400' : 'border-[#10B981]'}`} />
                       {!isBioVerified && (
-                        <div className={`absolute inset-x-2 top-1/2 h-[2px] -translate-y-1/2 bg-gradient-to-r from-transparent ${isSpoof ? 'via-rose-400 shadow-[0_0_12px_#fb7185]' : 'via-sky-300 shadow-[0_0_12px_#38bdf8]'} to-transparent`} />
+                        <div className={`absolute inset-x-2 top-1/2 h-[2px] -translate-y-1/2 bg-gradient-to-r from-transparent ${isSpoof ? 'via-rose-400 shadow-[0_0_12px_#fb7185]' : 'via-[#10B981] shadow-[0_0_12px_#10B981]'} to-transparent`} />
                       )}
                     </div>
 
@@ -2089,28 +2191,30 @@ export function KioskBiometricLoginView({
                         <div className="text-sm font-black text-rose-700 leading-snug">{c.spoofBlocked}</div>
                       </div>
                     ) : !isBioVerified ? (
-                      <div className="absolute left-1/2 top-full mt-2.5 w-max max-w-[360px] -translate-x-1/2 rounded-2xl border-2 border-sky-300 bg-white/95 px-4 py-2.5 text-center backdrop-blur-md shadow-xl">
-                        <div className="text-sm font-black text-[#0F4C81] leading-snug">{c.checkingLiveness}</div>
-                        <div className="mt-0.5 text-[11px] font-semibold text-[#0284C7]">
-                          {c.comparingAccountsPrefix} {dbAccountCount} {c.comparingAccountsSuffix}
+                      <div className="absolute left-1/2 top-full mt-2.5 w-max max-w-[390px] -translate-x-1/2 rounded-2xl border-2 border-[#10B981] bg-white/95 px-4 py-2.5 text-center backdrop-blur-md shadow-xl">
+                        <div className="text-sm font-black text-[#0F4C81] leading-snug">
+                          {bioReport?.livenessMode === 'LONG_RANGE' ? c.longRangePrompt : c.checkingLiveness}
+                        </div>
+                        <div className="mt-0.5 text-xs font-bold text-[#059669]">
+                          {c.distancePrefix}: {(bioReport?.estimatedDistanceM ?? 2.2).toFixed(1)} {c.distanceUnit} • {c.verifying}
                         </div>
                       </div>
                     ) : liveMatchHud?.candidate ? (
-                      <div className="absolute left-1/2 top-full mt-2.5 w-max max-w-[340px] -translate-x-1/2 rounded-2xl border-2 border-[#10B981] bg-emerald-50/95 px-4 py-2.5 text-center backdrop-blur-md shadow-2xl">
+                      <div className="absolute left-1/2 top-full mt-2.5 w-max max-w-[360px] -translate-x-1/2 rounded-2xl border-2 border-[#10B981] bg-emerald-50/95 px-4 py-2.5 text-center backdrop-blur-md shadow-2xl">
                         <div className="text-sm font-black text-emerald-800">
                           {c.liveMatchVerified}: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
                         </div>
                         <div className="mt-0.5 text-xs font-bold text-[#0F4C81]">
-                          Liveness Verified • {c.liveMatchAccuracy}: {liveMatchHud.confidencePercent.toFixed(1)}% ({liveMatchHud.streak}/4 {c.framesUnit})
+                          {c.distancePrefix}: {(bioReport?.estimatedDistanceM ?? 1.5).toFixed(1)} {c.distanceUnit} • {c.liveMatchAccuracy}: {liveMatchHud.confidencePercent.toFixed(1)}% ({liveMatchHud.streak}/3 {c.framesUnit})
                         </div>
                       </div>
                     ) : (
-                      <div className="absolute left-1/2 top-full mt-2.5 w-max max-w-[340px] -translate-x-1/2 rounded-2xl border-2 border-[#10B981] bg-emerald-50/95 px-4 py-2 text-center backdrop-blur-md shadow-xl">
+                      <div className="absolute left-1/2 top-full mt-2.5 w-max max-w-[360px] -translate-x-1/2 rounded-2xl border-2 border-[#10B981] bg-emerald-50/95 px-4 py-2 text-center backdrop-blur-md shadow-xl">
                         <div className="text-sm font-black text-emerald-800">
-                          {c.liveVerified} • {burstCount}/{BURST_FRAME_COUNT}
+                          {c.distancePrefix}: {(bioReport?.estimatedDistanceM ?? 1.8).toFixed(1)} {c.distanceUnit} • {c.verifying} ({burstCount}/{BURST_FRAME_COUNT})
                         </div>
                         <div className="mt-0.5 text-[11px] font-semibold text-[#0284C7]">
-                          {c.scanningDbTitle}
+                          {c.liveVerified}
                         </div>
                       </div>
                     )}

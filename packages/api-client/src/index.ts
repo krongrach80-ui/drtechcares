@@ -741,6 +741,7 @@ export class DrTechCaresApiClient {
       spoofRisk: number;
       nonRigidScore: number;
       rppgScore?: number;
+      faceHeightRatio?: number;
     },
   ): Promise<KioskFaceVerifyResponse> {
     if (

@@ -132,6 +132,7 @@ export interface BiometricTelemetryOverrides {
   moireOrBezelDetected?: boolean;
   planarRigidSpoof?: boolean;
   biologicalVerified?: boolean;
+  allowLongRange?: boolean;
   isLive?: boolean;
   depthScore?: number;
   microMotion?: number;
@@ -148,6 +149,7 @@ export interface BiometricAssistantInput {
   contextImage?: SimpleImageBuffer | null;
   faceBox?: NormalizedFaceBox | null;
   biologicalVerified?: boolean;
+  allowLongRange?: boolean;
   requestedPose?: Detected3DPose;
   metrics?: BiometricTelemetryOverrides;
 }
@@ -299,7 +301,8 @@ export function inspectBiometricFrame3D(input: BiometricAssistantInput): Biometr
   croppedEdge ??= false;
 
   // Checkpoint 1: Framing & Alignment
-  if (faceCount === 0 || faceHeightRatio < 0.30) {
+  const minFaceHeightThreshold = (input.allowLongRange ?? m.allowLongRange) ? 0.035 : 0.3;
+  if (faceCount === 0 || faceHeightRatio < minFaceHeightThreshold) {
     return {
       scan_status: 'RETRY',
       confidence_score: 0.15,

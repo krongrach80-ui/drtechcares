@@ -1431,6 +1431,29 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(liveRes.status).toBe(200);
     const liveJson = (await liveRes.json()) as { matched: boolean };
     expect(liveJson.matched).toBe(true);
+
+    // Long-range verified scan (faceHeightRatio = 0.09, ~0.68 attenuated similarity with >= 0.05 margin) passes
+    const slightDiff = makeHybridEmbedding(12.5);
+    const longRangeProbe = l2Normalize(
+      ownerVec.map((v, i) => v * 0.72 + slightDiff[i] * 0.28),
+    );
+    const lrRes = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: {
+        probeVector: longRangeProbe,
+        livenessEvidence: {
+          biologicalVerified: true,
+          blinkCount: 0,
+          spoofRisk: 0,
+          nonRigidScore: 0.08,
+          faceHeightRatio: 0.09,
+        },
+      },
+    });
+    expect(lrRes.status).toBe(200);
+    const lrJson = (await lrRes.json()) as { matched: boolean; patient?: { hn: string } };
+    expect(lrJson.matched).toBe(true);
+    expect(lrJson.patient?.hn).toBe('HN-BIOSPOOF-01');
   });
 });
 

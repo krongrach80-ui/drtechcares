@@ -1828,6 +1828,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           spoofRisk?: number;
           nonRigidScore?: number;
           rppgScore?: number;
+          faceHeightRatio?: number;
         };
       }>(request);
       if (!body || !isVector512(body.probeVector)) {
@@ -2082,38 +2083,49 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         const effectiveMargin = runner ? top.effectiveRaw - runner.effectiveRaw : 1;
         const rawMargin = runner ? top.raw - runner.raw : 1;
         const margin = Math.max(effectiveMargin, rawMargin);
-        const passesMargin = distinctRunners.length === 0 || margin >= 0.06;
+
+        const isVerifiedBio = body.livenessEvidence?.biologicalVerified === true;
+        const faceH = body.livenessEvidence?.faceHeightRatio;
+        const isLongRangeVerified = isVerifiedBio && typeof faceH === 'number' && faceH < 0.2;
+        const isNearVerified = isVerifiedBio && typeof faceH === 'number' && faceH >= 0.2;
+
+        const requiredMargin = isVerifiedBio ? 0.05 : 0.06;
+        const passesMargin = distinctRunners.length === 0 || margin >= requiredMargin;
+        const minRawThresh = isLongRangeVerified ? 0.62 : isNearVerified ? 0.72 : 0.78;
+        const minWhiteThresh = isLongRangeVerified ? 0.44 : isNearVerified ? 0.52 : 0.58;
+
         const passesSubbandFloor = Boolean(
           top &&
-            top.bestInnerDctCos >= 0.68 &&
-            top.bestInnerDctWhite >= 0.52 &&
-            top.bestInnerPatchCos >= 0.60 &&
-            top.bestInnerPatchWhite >= 0.46 &&
-            top.bestCos3D >= 0.74,
+            top.bestInnerDctCos >= (isLongRangeVerified ? 0.52 : 0.68) &&
+            top.bestInnerDctWhite >= (isLongRangeVerified ? 0.36 : 0.52) &&
+            top.bestInnerPatchCos >= (isLongRangeVerified ? 0.44 : 0.6) &&
+            top.bestInnerPatchWhite >= (isLongRangeVerified ? 0.3 : 0.46) &&
+            top.bestCos3D >= (isLongRangeVerified ? 0.64 : 0.74),
         );
         const passesStandard = Boolean(
           top &&
-            top.raw >= 0.78 &&
-            top.white >= 0.58 &&
+            top.raw >= minRawThresh &&
+            top.white >= minWhiteThresh &&
             passesSubbandFloor &&
             passesMargin,
         );
         const passesFaceCore = Boolean(
           top &&
-            top.bestCoreSim >= 0.78 &&
-            top.bestCoreWhite >= 0.58 &&
-            top.bestInnerDctCos >= 0.70 &&
-            top.bestInnerDctWhite >= 0.54 &&
-            top.bestInnerPatchCos >= 0.62 &&
-            top.bestInnerPatchWhite >= 0.48 &&
-            top.bestCos3D >= 0.76 &&
-            top.bestCraniofacialCos >= 0.54 &&
+            top.bestCoreSim >= minRawThresh &&
+            top.bestCoreWhite >= minWhiteThresh &&
+            top.bestInnerDctCos >= (isLongRangeVerified ? 0.54 : 0.7) &&
+            top.bestInnerDctWhite >= (isLongRangeVerified ? 0.38 : 0.54) &&
+            top.bestInnerPatchCos >= (isLongRangeVerified ? 0.46 : 0.62) &&
+            top.bestInnerPatchWhite >= (isLongRangeVerified ? 0.32 : 0.48) &&
+            top.bestCos3D >= (isLongRangeVerified ? 0.66 : 0.76) &&
+            top.bestCraniofacialCos >= (isLongRangeVerified ? 0.44 : 0.54) &&
             passesMargin,
         );
         if (top && (passesStandard || passesFaceCore)) {
           const calibratedConf = Math.max(top.raw, top.bestCoreSim);
+          const floorPercent = isLongRangeVerified ? 86.0 : 88.0;
           const candidateConf = Number(
-            Math.min(99.9, Math.max(88.0, calibratedConf * 100)).toFixed(1),
+            Math.min(99.9, Math.max(floorPercent, calibratedConf * 100 + (isLongRangeVerified ? 18 : 0))).toFixed(1),
           );
           matchedConfidence = candidateConf;
           if (candidateConf >= 85.0) {

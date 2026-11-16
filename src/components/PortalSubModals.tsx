@@ -333,6 +333,7 @@ export function WelcomeFaceScanModal({
     let lastProcessedVideoTime = -1;
     let lastFaceDetectWallMs = 0;
     const alignCanvas = document.createElement('canvas');
+    const roiCanvas = document.createElement('canvas');
     const contextCanvas = document.createElement('canvas');
 
     bioLivenessRef.current.reset();
@@ -340,6 +341,7 @@ export function WelcomeFaceScanModal({
     setBioStatus(null);
     setSpoofDetectedNow(false);
     confirmedLockRef.current = false;
+    temporalMatcherRef.current = new TemporalBiometricMatcher(3, 0.72);
     temporalMatcherRef.current.reset();
     setMatchResult(null);
     setCameraError(null);
@@ -351,7 +353,9 @@ export function WelcomeFaceScanModal({
       try {
         const deviceId = await selectClinicalCameraDeviceId();
         stream = await navigator.mediaDevices.getUserMedia({
-          video: deviceId ? { deviceId: { exact: deviceId }, width: 640, height: 480 } : { width: 640, height: 480 },
+          video: deviceId
+            ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: 'user' }
+            : { width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: 'user' },
           audio: false,
         });
         if (!active || !videoRef.current) return;
@@ -365,9 +369,9 @@ export function WelcomeFaceScanModal({
           runningMode: 'VIDEO',
           numFaces: 2,
           outputFaceBlendshapes: true,
-          minFaceDetectionConfidence: 0.55,
-          minFacePresenceConfidence: 0.55,
-          minTrackingConfidence: 0.55,
+          minFaceDetectionConfidence: 0.45,
+          minFacePresenceConfidence: 0.45,
+          minTrackingConfidence: 0.45,
         });
 
         const loop = async () => {
@@ -413,7 +417,7 @@ export function WelcomeFaceScanModal({
                   });
                 }
                 const liveness = evaluateLivenessAndPose(lms, prevLandmarks, faceCount, false);
-                const crop = alignFaceTo112(videoRef.current, lms, alignCanvas);
+                const crop = alignFaceTo112(videoRef.current, lms, alignCanvas, roiCanvas);
                 const contextFrame = captureDownscaledContextFrame(videoRef.current, contextCanvas, 160);
                 const bio = bioLivenessRef.current.update({
                   landmarks3D: lms,
@@ -422,6 +426,8 @@ export function WelcomeFaceScanModal({
                   earRight: liveness.earRight,
                   yawDeg: liveness.yawDeg,
                   pitchDeg: liveness.pitchDeg,
+                  frameWidth: videoRef.current.videoWidth || 1920,
+                  frameHeight: videoRef.current.videoHeight || 1080,
                   faceCrop: crop,
                   contextFrame,
                   faceBox: rawBox,
@@ -437,7 +443,9 @@ export function WelcomeFaceScanModal({
                   contextImage: contextFrame,
                   faceBox: rawBox,
                   biologicalVerified: bio.biologicalVerified,
+                  allowLongRange: true,
                   metrics: {
+                    allowLongRange: true,
                     biologicalVerified: bio.biologicalVerified,
                     planarRigidSpoof: bio.planarSpoofDetected,
                     moireOrBezelDetected: bio.screenSpoofDetected,
@@ -461,12 +469,14 @@ export function WelcomeFaceScanModal({
                       return;
                     }
 
+                    const portalFaceH = rawBox?.height ?? bio.faceScale;
                     const livenessEvidence = {
                       biologicalVerified: bio.biologicalVerified,
                       blinkCount: bio.blinkCount,
                       spoofRisk: bio.spoofScore,
                       nonRigidScore: bio.nonRigidScore,
                       rppgScore: bio.rppgScore,
+                      faceHeightRatio: portalFaceH,
                     };
 
                     if (!confirmedLockRef.current && biometricIndexRef.current.length > 0) {
@@ -481,11 +491,13 @@ export function WelcomeFaceScanModal({
                             liveness.blinkDetected ||
                             bio.blinkVerified ||
                             bio.headPoseVerified ||
-                            bio.lipMotionVerified,
+                            bio.lipMotionVerified ||
+                            bio.longRangeMotionVerified,
                           nonRigidMotion: bio.nonRigidMotion,
                           biologicalVerified: bio.biologicalVerified,
                           spoofDetected: isSpoofFrame,
                           rppgScore: bio.rppgScore,
+                          faceHeightRatio: portalFaceH,
                         },
                         biometricIndexRef.current,
                       );

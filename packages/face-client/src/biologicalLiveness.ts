@@ -1,5 +1,6 @@
 import type { SimpleImageBuffer } from '@drtechcares/smart-biometric-core';
 import type { Landmark3D } from './embed';
+import { estimateCameraDistanceMeters } from './liveness';
 import {
   analyzeScreenAndBezelArtifacts,
   type NormalizedFaceBox,
@@ -11,6 +12,8 @@ export interface BlendshapeCategory {
   score: number;
 }
 
+export type BiologicalLivenessMode = 'NEAR_RANGE' | 'LONG_RANGE';
+
 export interface BiologicalUpdateInput {
   landmarks3D: readonly Landmark3D[];
   blendshapes?: readonly BlendshapeCategory[] | null;
@@ -18,6 +21,8 @@ export interface BiologicalUpdateInput {
   earRight: number;
   yawDeg?: number;
   pitchDeg?: number;
+  frameWidth?: number;
+  frameHeight?: number;
   faceCrop?: SimpleImageBuffer | null;
   contextFrame?: SimpleImageBuffer | null;
   faceBox?: NormalizedFaceBox | null;
@@ -33,6 +38,10 @@ export type BiologicalSpoofReason =
 export interface BiologicalLivenessReport {
   biologicalVerified: boolean;
   livenessPassed: boolean;
+  livenessMode: BiologicalLivenessMode;
+  estimatedDistanceM: number;
+  centerShiftPx: number;
+  longRangeMotionVerified: boolean;
   blinkVerified: boolean;
   blinkDetectedNow: boolean;
   headPoseVerified: boolean;
@@ -332,9 +341,10 @@ export class BiologicalLivenessTracker {
   private liveVerifiedUntilMs = 0;
   private headPoseVerified = false;
   private lipMotionVerified = false;
+  private longRangeMotionVerified = false;
 
   private prevAnatomy: AnatomicalState | null = null;
-  private poseHistory: PoseHistorySample[] = [];
+  private poseHistory: (PoseHistorySample & { cxPx: number; cyPx: number })[] = [];
   private cumulativeNonRigid = 0;
   private rigidMovingStreak = 0;
   private planarSpoofDetected = false;
@@ -365,6 +375,7 @@ export class BiologicalLivenessTracker {
     this.liveVerifiedUntilMs = 0;
     this.headPoseVerified = false;
     this.lipMotionVerified = false;
+    this.longRangeMotionVerified = false;
     this.prevAnatomy = null;
     this.poseHistory = [];
     this.cumulativeNonRigid = 0;
@@ -395,14 +406,19 @@ export class BiologicalLivenessTracker {
     this.frameCount += 1;
     const observationDurationMs = Math.max(0, now - this.firstSeenAtMs);
 
-    const landmarksFaceHeight =
+    const rawLandmarkSpan =
       input.landmarks3D[152] && input.landmarks3D[10]
         ? Math.abs(input.landmarks3D[152].y - input.landmarks3D[10].y)
-        : 0.4;
+        : 0;
+    const landmarksFaceHeight = rawLandmarkSpan > 0.01 ? rawLandmarkSpan : 0.4;
     const faceScale = Number(
       clamp01(input.faceBox?.height ?? landmarksFaceHeight).toFixed(3),
     );
+    const livenessMode: BiologicalLivenessMode = faceScale < 0.22 ? 'LONG_RANGE' : 'NEAR_RANGE';
+    const estimatedDistanceM = estimateCameraDistanceMeters(faceScale);
     const isDistantFace = faceScale < 0.35;
+    const nominalW = input.frameWidth && input.frameWidth >= 320 ? input.frameWidth : 1920;
+    const nominalH = input.frameHeight && input.frameHeight >= 240 ? input.frameHeight : 1080;
 
     // 1. Distance-Adaptive Dynamic Eye Baseline & Blink Detection
     const blinkL = readBlendshapeScore(input.blendshapes, 'eyeBlinkLeft');
@@ -482,7 +498,7 @@ export class BiologicalLivenessTracker {
       this.eyeClosedSinceMs = null;
     }
 
-    // 2. Non-Rigid Biological Deformation & Multi-Cue 3D Head Pose / Lip Motion
+    // 2. Non-Rigid Biological Deformation & Multi-Cue 3D Head Pose / Lip Motion / Long-Range Motion
     let globalMotion = 0;
     let nonRigidMotion = 0;
     const anatomy = extractAnatomicalState(input.landmarks3D, input.yawDeg, input.pitchDeg);
@@ -492,6 +508,8 @@ export class BiologicalLivenessTracker {
         yawDeg: anatomy.yawDeg,
         pitchDeg: anatomy.pitchDeg,
         mouthOpen: anatomy.mouthOpen,
+        cxPx: anatomy.centerX * nominalW,
+        cyPx: anatomy.centerY * nominalH,
       });
       while (this.poseHistory.length > 0 && now - this.poseHistory[0].tMs > this.staticSpoofWindowMs) {
         this.poseHistory.shift();
@@ -515,10 +533,13 @@ export class BiologicalLivenessTracker {
     }
     this.prevAnatomy = anatomy;
 
-    // Recent 2.5s window for active living cues: yaw/pitch rotation >= 2.5 deg OR lip movement
+    // Recent 2.5s window + 0.6s rapid long-range sway window
     let deltaYawDeg = 0;
     let deltaPitchDeg = 0;
     let deltaLip = 0;
+    let centerShiftPx = 0;
+    let fastDeltaYaw = 0;
+    let fastDeltaPitch = 0;
     const recentSamples = this.poseHistory.filter((s) => now - s.tMs <= 2500);
     if (recentSamples.length >= 2) {
       const yaws = recentSamples.map((s) => s.yawDeg);
@@ -528,6 +549,16 @@ export class BiologicalLivenessTracker {
       deltaPitchDeg = Math.max(...pitches) - Math.min(...pitches);
       deltaLip = Math.max(...lips) - Math.min(...lips);
     }
+    const rapidSamples = this.poseHistory.filter((s) => now - s.tMs <= 700);
+    if (rapidSamples.length >= 2) {
+      const rCx = rapidSamples.map((s) => s.cxPx);
+      const rCy = rapidSamples.map((s) => s.cyPx);
+      const rYaw = rapidSamples.map((s) => s.yawDeg);
+      const rPitch = rapidSamples.map((s) => s.pitchDeg);
+      centerShiftPx = Math.hypot(Math.max(...rCx) - Math.min(...rCx), Math.max(...rCy) - Math.min(...rCy));
+      fastDeltaYaw = Math.max(...rYaw) - Math.min(...rYaw);
+      fastDeltaPitch = Math.max(...rPitch) - Math.min(...rPitch);
+    }
 
     if (deltaYawDeg >= 2.5 || deltaPitchDeg >= 2.5) {
       this.headPoseVerified = true;
@@ -535,6 +566,18 @@ export class BiologicalLivenessTracker {
     }
     if (deltaLip >= 0.045 || nonRigidMotion >= 0.022) {
       this.lipMotionVerified = true;
+      this.clearSpoofStateImmediately(now);
+    }
+    // Distance-Aware Multi-Mode Liveness: at 1.5-4.5m (< 0.22 faceHeight), do NOT require blinking;
+    // pass within 0.6s on natural body/head sway (> 1.5px shift or > 1.2° tilt) or non-frozen posture
+    if (
+      livenessMode === 'LONG_RANGE' &&
+      (centerShiftPx > 1.5 ||
+        fastDeltaYaw > 1.2 ||
+        fastDeltaPitch > 1.2 ||
+        (this.frameCount >= 12 && (centerShiftPx > 0.4 || nonRigidMotion >= 0.002)))
+    ) {
+      this.longRangeMotionVerified = true;
       this.clearSpoofStateImmediately(now);
     }
 
@@ -584,7 +627,8 @@ export class BiologicalLivenessTracker {
       yawVariance < 0.15 &&
       pitchVariance < 0.15 &&
       !this.headPoseVerified &&
-      !this.lipMotionVerified
+      !this.lipMotionVerified &&
+      !this.longRangeMotionVerified
     ) {
       this.planarSpoofDetected = true;
     } else if (liveVerifiedNow) {
@@ -667,6 +711,10 @@ export class BiologicalLivenessTracker {
     return {
       biologicalVerified,
       livenessPassed: biologicalVerified,
+      livenessMode,
+      estimatedDistanceM,
+      centerShiftPx: Number(centerShiftPx.toFixed(2)),
+      longRangeMotionVerified: this.longRangeMotionVerified,
       blinkVerified,
       blinkDetectedNow,
       headPoseVerified: this.headPoseVerified,

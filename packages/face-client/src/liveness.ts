@@ -90,7 +90,8 @@ export function selectPrimaryFace(
     const width = maxX - minX;
     const height = maxY - minY;
     const area = width * height;
-    if (width < 0.10 || height < 0.10 || area < 0.014) continue;
+    // Allow ultra-long-range faces (>= ~3.5-4% frame height / ~28x28px at 1080p)
+    if (width < 0.025 || height < 0.035 || area < 0.0009) continue;
 
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
@@ -236,5 +237,14 @@ export function evaluateLivenessAndPose(
     rollDeg: Number(rollDeg.toFixed(1)),
     reasons,
   };
+}
+
+/**
+ * Estimates patient distance in meters (0.4m - 4.8m) from normalized vertical face height ratio.
+ */
+export function estimateCameraDistanceMeters(faceHeightRatio: number): number {
+  if (!Number.isFinite(faceHeightRatio) || faceHeightRatio <= 0) return 2.5;
+  const raw = 0.46 / Math.max(0.055, faceHeightRatio);
+  return Number(Math.max(0.4, Math.min(4.8, raw)).toFixed(1));
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BiologicalLivenessTracker } from '../biologicalLiveness';
+import { estimateCameraDistanceMeters, selectPrimaryFace } from '../liveness';
 import { analyzeScreenAndBezelArtifacts } from '../screenAntiSpoof';
 import {
   FACE_ID_SCREEN_PROMPTS,
@@ -420,6 +421,76 @@ describe('3D Biometric Verification Assistant & Face ID Prompts', () => {
     expect(liveAfterBlink.blinkVerified).toBe(true);
     expect(liveAfterBlink.biologicalVerified).toBe(true);
     expect(liveAfterBlink.spoofDetected).toBe(false);
+  });
+
+  it('supports Ultra-Long-Range detection (28px+ / 4% height at 1.5-4.5m) and quick swaying liveness without requiring blink', () => {
+    // 1. selectPrimaryFace accepts distant small face (~0.032 width x ~0.048 height at ~4m)
+    const farLandmarks = Array.from({ length: 478 }, () => ({ x: 0.5, y: 0.4, z: 0 }));
+    farLandmarks[10] = { x: 0.5, y: 0.376, z: 0 };
+    farLandmarks[152] = { x: 0.5, y: 0.424, z: 0 };
+    farLandmarks[234] = { x: 0.484, y: 0.4, z: 0 };
+    farLandmarks[454] = { x: 0.516, y: 0.4, z: 0 };
+    farLandmarks[33] = { x: 0.49, y: 0.395, z: 0 };
+    farLandmarks[263] = { x: 0.51, y: 0.395, z: 0 };
+    farLandmarks[1] = { x: 0.5, y: 0.405, z: -0.015 };
+    farLandmarks[61] = { x: 0.493, y: 0.415, z: 0 };
+    farLandmarks[291] = { x: 0.507, y: 0.415, z: 0 };
+    farLandmarks[13] = { x: 0.5, y: 0.414, z: 0 };
+    farLandmarks[14] = { x: 0.5, y: 0.416, z: 0 };
+    farLandmarks[159] = { x: 0.49, y: 0.394, z: 0 };
+    farLandmarks[145] = { x: 0.49, y: 0.396, z: 0 };
+    farLandmarks[386] = { x: 0.51, y: 0.394, z: 0 };
+    farLandmarks[374] = { x: 0.51, y: 0.396, z: 0 };
+    farLandmarks[105] = { x: 0.49, y: 0.388, z: 0 };
+    farLandmarks[334] = { x: 0.51, y: 0.388, z: 0 };
+
+    const picked = selectPrimaryFace([farLandmarks]);
+    expect(picked.effectiveFaceCount).toBe(1);
+    expect(picked.primaryFace).not.toBeNull();
+    expect(estimateCameraDistanceMeters(0.11)).toBeGreaterThanOrEqual(4.0);
+
+    // 2. inspectBiometricFrame3D accepts long-range framing when allowLongRange: true
+    const farInspect = inspectBiometricFrame3D({
+      faceCount: 1,
+      allowLongRange: true,
+      metrics: {
+        faceHeightRatio: 0.06,
+        brightness: 120,
+        sharpness: 6,
+        eyesVisible: true,
+        mouthVisible: true,
+        depthScore: 0.5,
+      },
+    });
+    expect(farInspect.scan_status).toBe('PASS');
+
+    // 3. Long-Range Liveness passes within 0.6s on subtle >1.5px body sway with ZERO eye blink required
+    const lrTracker = new BiologicalLivenessTracker();
+    const shiftLm = (dx: number) => farLandmarks.map((pt) => ({ ...pt, x: pt.x + dx }));
+    lrTracker.update({
+      landmarks3D: shiftLm(0),
+      earLeft: 0.25,
+      earRight: 0.25,
+      frameWidth: 1920,
+      frameHeight: 1080,
+      faceBox: { x: 0.48, y: 0.37, width: 0.04, height: 0.08 },
+      timestampMs: 5000,
+    });
+    const lrPass = lrTracker.update({
+      landmarks3D: shiftLm(0.002), // ~3.8px shift on 1920px HD frame
+      earLeft: 0.25,
+      earRight: 0.25,
+      frameWidth: 1920,
+      frameHeight: 1080,
+      faceBox: { x: 0.482, y: 0.37, width: 0.04, height: 0.08 },
+      timestampMs: 5250,
+    });
+    expect(lrPass.livenessMode).toBe('LONG_RANGE');
+    expect(lrPass.centerShiftPx).toBeGreaterThan(1.5);
+    expect(lrPass.longRangeMotionVerified).toBe(true);
+    expect(lrPass.biologicalVerified).toBe(true);
+    expect(lrPass.livenessPassed).toBe(true);
+    expect(lrPass.spoofDetected).toBe(false);
   });
 });
 
