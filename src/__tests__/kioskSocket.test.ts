@@ -36,6 +36,7 @@ import {
   computeContainRect,
   drawMediaPipe33OnCanvas,
   drawWholeBody133OnCanvas,
+  isUpperBodyVisibleInFrame,
   type Keypoint3DPoint,
 } from '../hooks/useEdgeVisionSocket';
 
@@ -1395,16 +1396,17 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     mp33[24] = { index: 24, x: 0.44, y: 0.65, z: 0, score: 0.99 };
     mp33[31] = { index: 31, x: 0.56, y: 0.92, z: 0, score: 0.99 };
 
-    // Container 1000x500 with 640x480 video + mirrorX=true:
+    // Container 1000x500 with 640x480 video + mirrorX=true + isPrivacyMode=true:
     // offsetX = 166.67, renderW = 666.67 -> mirrored x=0.2 maps to 166.67 + 0.8 * 666.67 = 700
     drawMediaPipe33OnCanvas(mockCtx, 1000, 500, mp33, {
       mirrorX: true,
       videoWidth: 640,
       videoHeight: 480,
       highlightColor: 'GREEN',
+      isPrivacyMode: true,
     });
 
-    // Head circle rendered at mirrored nose (500, 100) with radius >= 14
+    // Head circle rendered at mirrored nose (500, 100) with radius >= 14 in Privacy Mode
     expect(
       arcCalls.some((c) => Math.abs(c.x - 500) < 1 && Math.abs(c.y - 100) < 1 && c.r >= 14),
     ).toBe(true);
@@ -1416,6 +1418,94 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(
       arcCalls.some((c) => Math.abs(c.x - 700) < 1 && Math.abs(c.y - 250) < 1),
     ).toBe(true);
+
+    // Live real-camera mode (isPrivacyMode=false) omits the Stickman head circle over the real face
+    arcCalls.length = 0;
+    drawMediaPipe33OnCanvas(mockCtx, 1000, 500, mp33, {
+      mirrorX: true,
+      videoWidth: 640,
+      videoHeight: 480,
+      highlightColor: 'GREEN',
+      isPrivacyMode: false,
+    });
+    expect(
+      arcCalls.filter((c) => Math.abs(c.x - 500) < 1 && Math.abs(c.y - 100) < 1 && c.r >= 14),
+    ).toHaveLength(0);
+    expect(
+      arcCalls.some((c) => Math.abs(c.x - 700) < 1 && Math.abs(c.y - 250) < 1),
+    ).toBe(true);
+
+    // Toggling showSkeleton=false clears and draws nothing
+    arcCalls.length = 0;
+    drawMediaPipe33OnCanvas(mockCtx, 1000, 500, mp33, {
+      mirrorX: true,
+      videoWidth: 640,
+      videoHeight: 480,
+      showSkeleton: false,
+    });
+    expect(arcCalls).toHaveLength(0);
+  });
+
+  it('validates upper-body framing and suppresses close-up partial skeletons', () => {
+    const arcCalls: Array<{ x: number; y: number; r: number }> = [];
+    const mockCtx = {
+      clearRect: () => {},
+      save: () => {},
+      restore: () => {},
+      setLineDash: () => {},
+      beginPath: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      stroke: () => {},
+      fill: () => {},
+      strokeRect: () => {},
+      fillRect: () => {},
+      fillText: () => {},
+      arc: (x: number, y: number, r: number) => {
+        arcCalls.push({ x, y, r });
+      },
+      lineCap: 'round',
+      lineJoin: 'round',
+      lineWidth: 2,
+      strokeStyle: '#10B981',
+      fillStyle: '#6EE7B7',
+      shadowBlur: 0,
+      shadowColor: 'transparent',
+    } as unknown as CanvasRenderingContext2D;
+
+    // Close-up headshot: shoulders at very bottom edge (y=0.88), no visible elbows or hips
+    const closeUpMp33: Keypoint3DPoint[] = Array.from({ length: 33 }, (_, index) => ({
+      index,
+      x: 0.5,
+      y: 0.99,
+      z: 0,
+      score: 0.1,
+    }));
+    closeUpMp33[0] = { index: 0, x: 0.5, y: 0.55, z: 0, score: 0.99 };
+    closeUpMp33[11] = { index: 11, x: 0.72, y: 0.88, z: 0, score: 0.9 };
+    closeUpMp33[12] = { index: 12, x: 0.28, y: 0.88, z: 0, score: 0.9 };
+
+    expect(isUpperBodyVisibleInFrame(closeUpMp33)).toBe(false);
+    drawMediaPipe33OnCanvas(mockCtx, 800, 600, closeUpMp33, {
+      mirrorX: true,
+      isPrivacyMode: false,
+    });
+    expect(arcCalls).toHaveLength(0);
+
+    // Properly framed upper body returns true
+    const framedMp33: Keypoint3DPoint[] = Array.from({ length: 33 }, (_, index) => ({
+      index,
+      x: 0.5,
+      y: 0.5,
+      z: 0,
+      score: 0.95,
+    }));
+    framedMp33[11] = { index: 11, x: 0.6, y: 0.42, z: 0, score: 0.98 };
+    framedMp33[12] = { index: 12, x: 0.4, y: 0.42, z: 0, score: 0.98 };
+    framedMp33[13] = { index: 13, x: 0.64, y: 0.62, z: 0, score: 0.95 };
+    framedMp33[23] = { index: 23, x: 0.57, y: 0.78, z: 0, score: 0.95 };
+    framedMp33[24] = { index: 24, x: 0.43, y: 0.78, z: 0, score: 0.95 };
+    expect(isUpperBodyVisibleInFrame(framedMp33)).toBe(true);
   });
 });
 

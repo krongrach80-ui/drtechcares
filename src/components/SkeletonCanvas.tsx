@@ -11,6 +11,7 @@ import {
 import {
   drawMediaPipe33OnCanvas,
   drawWholeBody133OnCanvas,
+  isUpperBodyVisibleInFrame,
   type Keypoint3DPoint,
 } from '../hooks/useEdgeVisionSocket';
 
@@ -22,6 +23,8 @@ interface SkeletonCanvasProps {
   trunkTiltDeg: number;
   hasLiveCamera?: boolean;
   isPrivacyMode?: boolean;
+  showSkeletonOverlay?: boolean;
+  framingHintTh?: string | null;
   liveVideoOverlay?: React.ReactNode;
   children?: React.ReactNode;
 }
@@ -70,6 +73,8 @@ export function SkeletonCanvas({
   trunkTiltDeg,
   hasLiveCamera = false,
   isPrivacyMode = false,
+  showSkeletonOverlay = true,
+  framingHintTh = null,
   liveVideoOverlay,
   children,
 }: SkeletonCanvasProps) {
@@ -96,17 +101,22 @@ export function SkeletonCanvas({
     return undefined;
   };
 
+  const hasValidMp33 = Boolean(
+    payload.pose_landmarks &&
+      payload.pose_landmarks.length >= 33 &&
+      isUpperBodyVisibleInFrame(payload.pose_landmarks),
+  );
   const hasEdgePose = Boolean(
     !isDemoMode &&
+      showSkeletonOverlay &&
       !payload.error_code &&
-      ((payload.pose_landmarks && payload.pose_landmarks.length >= 33) ||
-        resolveEdgeKeypoints(payload)),
+      (hasValidMp33 || resolveEdgeKeypoints(payload)),
   );
   const hasEdge3D = hasEdgePose;
 
   useEffect(() => {
     const canvas = edgeCanvasRef.current;
-    if (isDemoMode) {
+    if (isDemoMode || !showSkeletonOverlay) {
       if (canvas) {
         const ctx = canvas.getContext('2d');
         ctx?.clearRect(0, 0, canvas.width, canvas.height);
@@ -140,11 +150,17 @@ export function SkeletonCanvas({
               mirrorX: Boolean(cur.frame_base64),
               videoWidth,
               videoHeight,
+              isPrivacyMode,
+              showSkeleton: showSkeletonOverlay,
               detectedBoxes: cur.identity_guard?.detected_boxes,
               guardStatus: cur.identity_guard?.status,
             };
             if (cur.pose_landmarks && cur.pose_landmarks.length >= 33) {
-              drawMediaPipe33OnCanvas(ctx, w, h, cur.pose_landmarks, drawOpts);
+              if (isUpperBodyVisibleInFrame(cur.pose_landmarks)) {
+                drawMediaPipe33OnCanvas(ctx, w, h, cur.pose_landmarks, drawOpts);
+              } else {
+                ctx.clearRect(0, 0, w, h);
+              }
             } else {
               const keypointsToDraw = resolveEdgeKeypoints(cur);
               if (keypointsToDraw && keypointsToDraw.length >= 17) {
@@ -160,7 +176,7 @@ export function SkeletonCanvas({
     };
     rafId = requestAnimationFrame(renderFrame);
     return () => cancelAnimationFrame(rafId);
-  }, [isDemoMode, isPrivacyMode, hasEdge3D]);
+  }, [isDemoMode, isPrivacyMode, showSkeletonOverlay, hasEdge3D]);
 
   const currentRom = telemetry_analysis.current_rom_deg;
   const targetRom = telemetry_analysis.target_rom_deg || exercise.target_rom_deg;
@@ -339,7 +355,7 @@ export function SkeletonCanvas({
           </div>
         )}
 
-        {!isDemoMode && !(hasLiveCamera && liveVideoOverlay) && (
+        {!isDemoMode && showSkeletonOverlay && !(hasLiveCamera && liveVideoOverlay) && (
           <canvas
             ref={edgeCanvasRef}
             aria-label="MediaPipe 33-Keypoints 1:1 Skeleton Overlay"
@@ -538,13 +554,22 @@ export function SkeletonCanvas({
           </div>
         )}
 
-        {!isDemoMode && payload.error_code === 'NO_POSE_DETECTED' && (
-          <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full border border-amber-300/80 bg-slate-900/85 px-4 py-1.5 text-xs font-bold text-amber-200 shadow-lg backdrop-blur-md">
-            {payload.error_message || 'กำลังค้นหาร่างกายผู้ป่วยในเฟรมกล้อง (กรุณายืนให้อยู่ในมุมกล้อง)'}
-          </div>
-        )}
+        {!isDemoMode &&
+          payload.error_code !== 'CAMERA_DISCONNECTED' &&
+          payload.error_code !== 'AI_MODEL_ERROR' &&
+          (framingHintTh ||
+            payload.error_code === 'NO_POSE_DETECTED' ||
+            (Boolean(payload.frame_base64) && !hasValidMp33)) && (
+            <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full border border-amber-300/80 bg-slate-900/85 px-4 py-1.5 text-xs font-bold text-amber-200 shadow-lg backdrop-blur-md">
+              {framingHintTh || 'กรุณาถอยห่างให้เห็นช่วงไหล่และลำตัว'}
+            </div>
+          )}
 
-        {!isDemoMode && !payload.error_code && payload.calibration && !payload.calibration.is_calibrated && (
+        {!isDemoMode &&
+          !framingHintTh &&
+          !payload.error_code &&
+          payload.calibration &&
+          !payload.calibration.is_calibrated && (
           <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-2xl border border-sky-300 bg-white/95 px-5 py-2.5 text-center text-[#0F4C81] shadow-xl backdrop-blur-md">
             <div className="text-xs font-extrabold text-[#0284C7]">
               {payload.calibration.message_th}
@@ -558,7 +583,7 @@ export function SkeletonCanvas({
           </div>
         )}
 
-        {isDemoMode && (
+        {isDemoMode && isPrivacyMode && !hasLiveCamera && !payload.frame_base64 && showSkeletonOverlay && (
           <svg
             viewBox="0 0 800 540"
             className="h-full max-h-[500px] w-full select-none overflow-visible"

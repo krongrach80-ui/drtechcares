@@ -40,6 +40,9 @@ import {
   type ExpectedMovementPlane,
   type PatientSummary,
 } from '../hooks/useKioskSocket';
+import { isUpperBodyVisibleInFrame } from '../hooks/useEdgeVisionSocket';
+
+export { isUpperBodyVisibleInFrame };
 
 interface SmartRehabKioskUIProps {
   patient?: PatientSummary | null;
@@ -53,6 +56,7 @@ interface SmartRehabKioskUIProps {
 }
 
 const PRIVACY_MODE_STORAGE_KEY = 'drtechcares_kiosk_privacy_v2';
+const SKELETON_OVERLAY_STORAGE_KEY = 'drtechcares_kiosk_show_skeleton_v1';
 
 const DEMO_PRESETS: { id: DemoPresetId; label: string; shortLabel: string }[] = [
   { id: 'FACE_SCAN', label: 'Face Scan Login', shortLabel: '1. Face Scan' },
@@ -1080,6 +1084,8 @@ function drawLivePoseOverlayOnCanvas(
     videoWidth?: number;
     videoHeight?: number;
     smoothingStatusText?: string;
+    showSkeleton?: boolean;
+    isPrivacyMode?: boolean;
   },
 ): void {
   if (!canvas) return;
@@ -1095,7 +1101,13 @@ function drawLivePoseOverlayOnCanvas(
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  if (landmarksList.length === 0) return;
+  if (
+    opts.showSkeleton === false ||
+    landmarksList.length === 0 ||
+    !isUpperBodyVisibleInFrame(landmarksList[0])
+  ) {
+    return;
+  }
 
   // Match CSS object-contain wide-angle framing so mirrored landmarks align 1:1 over the uncropped video feed
   const vw = opts.videoWidth && opts.videoWidth > 0 ? opts.videoWidth : w;
@@ -1296,78 +1308,80 @@ function drawLivePoseOverlayOnCanvas(
     ctx.stroke();
   }
 
-  // Clean Stickman head circle & neck stem (omits raw nose/eye/ear dots above/inside head circle)
-  const noseLm = primary[POSE_INDEX.NOSE];
-  const lEarLm = primary[POSE_INDEX.LEFT_EAR];
-  const rEarLm = primary[POSE_INDEX.RIGHT_EAR];
-  const headLm =
-    noseLm && (noseLm.visibility ?? 0) >= 0.18
-      ? noseLm
-      : lEarLm && rEarLm && (lEarLm.visibility ?? 0) >= 0.18 && (rEarLm.visibility ?? 0) >= 0.18
-        ? {
-            x: (lEarLm.x + rEarLm.x) / 2,
-            y: (lEarLm.y + rEarLm.y) / 2,
-            z: ((lEarLm.z ?? 0) + (rEarLm.z ?? 0)) / 2,
-          }
-        : null;
-  let shoulderSpanPx = renderW * 0.18;
-  let neckPt: { x: number; y: number } | null = null;
-  if (
-    lShLm &&
-    rShLm &&
-    (lShLm.visibility ?? 0) >= 0.18 &&
-    (rShLm.visibility ?? 0) >= 0.18
-  ) {
-    const lShPt = toCanvasPt(POSE_INDEX.LEFT_SHOULDER, lShLm);
-    const rShPt = toCanvasPt(POSE_INDEX.RIGHT_SHOULDER, rShLm);
-    shoulderSpanPx = Math.max(44, Math.hypot(lShPt.x - rShPt.x, lShPt.y - rShPt.y));
-    neckPt = { x: (lShPt.x + rShPt.x) / 2, y: (lShPt.y + rShPt.y) / 2 };
+  // Draw Stickman head circle & neck stem only in Privacy Mode (avoid covering user's real face in live camera)
+  if (opts.isPrivacyMode) {
+    const noseLm = primary[POSE_INDEX.NOSE];
+    const lEarLm = primary[POSE_INDEX.LEFT_EAR];
+    const rEarLm = primary[POSE_INDEX.RIGHT_EAR];
+    const headLm =
+      noseLm && (noseLm.visibility ?? 0) >= 0.18
+        ? noseLm
+        : lEarLm && rEarLm && (lEarLm.visibility ?? 0) >= 0.18 && (rEarLm.visibility ?? 0) >= 0.18
+          ? {
+              x: (lEarLm.x + rEarLm.x) / 2,
+              y: (lEarLm.y + rEarLm.y) / 2,
+              z: ((lEarLm.z ?? 0) + (rEarLm.z ?? 0)) / 2,
+            }
+          : null;
+    let shoulderSpanPx = renderW * 0.18;
+    let neckPt: { x: number; y: number } | null = null;
+    if (
+      lShLm &&
+      rShLm &&
+      (lShLm.visibility ?? 0) >= 0.18 &&
+      (rShLm.visibility ?? 0) >= 0.18
+    ) {
+      const lShPt = toCanvasPt(POSE_INDEX.LEFT_SHOULDER, lShLm);
+      const rShPt = toCanvasPt(POSE_INDEX.RIGHT_SHOULDER, rShLm);
+      shoulderSpanPx = Math.max(44, Math.hypot(lShPt.x - rShPt.x, lShPt.y - rShPt.y));
+      neckPt = { x: (lShPt.x + rShPt.x) / 2, y: (lShPt.y + rShPt.y) / 2 };
 
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = 'rgba(13, 148, 136, 0.85)';
-    ctx.lineWidth = 3.2;
-    ctx.beginPath();
-    ctx.moveTo(lShPt.x, lShPt.y);
-    ctx.lineTo(neckPt.x, neckPt.y);
-    ctx.lineTo(rShPt.x, rShPt.y);
-    ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = 'rgba(13, 148, 136, 0.85)';
+      ctx.lineWidth = 3.2;
+      ctx.beginPath();
+      ctx.moveTo(lShPt.x, lShPt.y);
+      ctx.lineTo(neckPt.x, neckPt.y);
+      ctx.lineTo(rShPt.x, rShPt.y);
+      ctx.stroke();
 
-    ctx.beginPath();
-    ctx.arc(neckPt.x, neckPt.y, 4.5, 0, Math.PI * 2);
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fill();
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = activeColor;
-    ctx.stroke();
-  }
-
-  if (headLm) {
-    const headPt = toCanvasPt(POSE_INDEX.NOSE, headLm as NormalizedLandmark);
-    const headRadius = Math.max(18, Math.min(44, shoulderSpanPx * 0.28));
-
-    if (neckPt) {
-      const dx = headPt.x - neckPt.x;
-      const dy = headPt.y - neckPt.y;
-      const dist = Math.hypot(dx, dy);
-      if (dist > headRadius + 2) {
-        const edgeX = headPt.x - (dx / dist) * headRadius;
-        const edgeY = headPt.y - (dy / dist) * headRadius;
-        ctx.beginPath();
-        ctx.moveTo(neckPt.x, neckPt.y);
-        ctx.lineTo(edgeX, edgeY);
-        ctx.lineWidth = 3.2;
-        ctx.strokeStyle = 'rgba(13, 148, 136, 0.9)';
-        ctx.stroke();
-      }
+      ctx.beginPath();
+      ctx.arc(neckPt.x, neckPt.y, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = activeColor;
+      ctx.stroke();
     }
 
-    ctx.beginPath();
-    ctx.arc(headPt.x, headPt.y, headRadius, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.55)';
-    ctx.fill();
-    ctx.lineWidth = 3.2;
-    ctx.strokeStyle = activeColor;
-    ctx.stroke();
+    if (headLm) {
+      const headPt = toCanvasPt(POSE_INDEX.NOSE, headLm as NormalizedLandmark);
+      const headRadius = Math.max(18, Math.min(44, shoulderSpanPx * 0.28));
+
+      if (neckPt) {
+        const dx = headPt.x - neckPt.x;
+        const dy = headPt.y - neckPt.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > headRadius + 2) {
+          const edgeX = headPt.x - (dx / dist) * headRadius;
+          const edgeY = headPt.y - (dy / dist) * headRadius;
+          ctx.beginPath();
+          ctx.moveTo(neckPt.x, neckPt.y);
+          ctx.lineTo(edgeX, edgeY);
+          ctx.lineWidth = 3.2;
+          ctx.strokeStyle = 'rgba(13, 148, 136, 0.9)';
+          ctx.stroke();
+        }
+      }
+
+      ctx.beginPath();
+      ctx.arc(headPt.x, headPt.y, headRadius, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.55)';
+      ctx.fill();
+      ctx.lineWidth = 3.2;
+      ctx.strokeStyle = activeColor;
+      ctx.stroke();
+    }
   }
   ctx.shadowBlur = 0;
 
@@ -1808,6 +1822,25 @@ export function SmartRehabKioskUI({
     }
     return false;
   });
+  const [showSkeletonOverlay, setShowSkeletonOverlay] = useState<boolean>(() => {
+    try {
+      const saved =
+        typeof window !== 'undefined'
+          ? window.localStorage.getItem(SKELETON_OVERLAY_STORAGE_KEY)
+          : null;
+      if (saved === 'false') return false;
+      if (saved === 'true') return true;
+    } catch {
+      // Ignore storage read errors
+    }
+    return true;
+  });
+  const [liveFramingHintTh, setLiveFramingHintTh] = useState<string | null>(null);
+
+  const isPrivacyModeRef = useRef(isPrivacyMode);
+  isPrivacyModeRef.current = isPrivacyMode;
+  const showSkeletonOverlayRef = useRef(showSkeletonOverlay);
+  showSkeletonOverlayRef.current = showSkeletonOverlay;
 
   const canShowManualRepButton = useMemo(() => {
     if (isDemoMode || isStaffAuthorized) return true;
@@ -1817,23 +1850,40 @@ export function SmartRehabKioskUI({
   }, [isDemoMode, isStaffAuthorized]);
 
   const handleTogglePrivacyMode = () => {
-    setIsPrivacyMode((prev) => {
-      const next = !prev;
-      try {
-        window.localStorage.setItem(PRIVACY_MODE_STORAGE_KEY, String(next));
-      } catch {
-        // Ignore storage write errors
-      }
-      return next;
-    });
+    const next = !isPrivacyMode;
+    setIsPrivacyMode(next);
+    try {
+      window.localStorage.setItem(PRIVACY_MODE_STORAGE_KEY, String(next));
+    } catch {
+      // Ignore storage write errors
+    }
+    if (!next && isDemoMode) {
+      setAutoCycleDemo(false);
+      setLivePoseActive(true);
+      toggleDemoMode(false);
+    }
+  };
+
+  const handleToggleSkeletonOverlay = () => {
+    const next = !showSkeletonOverlay;
+    setShowSkeletonOverlay(next);
+    try {
+      window.localStorage.setItem(SKELETON_OVERLAY_STORAGE_KEY, String(next));
+    } catch {
+      // Ignore storage write errors
+    }
   };
 
   const handleToggleDemoMode = () => {
     if (isDemoMode) {
       setAutoCycleDemo(false);
       setLivePoseActive(true);
+      toggleDemoMode(false);
+    } else {
+      setLivePoseActive(false);
+      setLiveFramingHintTh(null);
+      toggleDemoMode(true);
     }
-    toggleDemoMode();
   };
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -2100,9 +2150,12 @@ export function SmartRehabKioskUI({
     let lastEmittedRom = -999;
     let lastEmittedTilt = -999;
     let lastEmittedHold = -999;
+    let lastEmittedDistanceM = -1;
+    let lastEmittedFramingHint: string | null = null;
     let lastRomEmitAt = 0;
     let lastTiltEmitAt = 0;
     let lastHoldEmitAt = 0;
+    let lastDistEmitAt = 0;
     let lastEdgeBridgeSentAt = 0;
 
     const cleanup = () => {
@@ -2110,6 +2163,7 @@ export function SmartRehabKioskUI({
       landmarkSmoother.reset();
       pose2dOneEuroFilter.reset();
       worldOneEuroFilter.reset();
+      setLiveFramingHintTh(null);
       if (rafId) {
         cancelAnimationFrame(rafId);
         rafId = 0;
@@ -2349,7 +2403,14 @@ export function SmartRehabKioskUI({
                 worldOneEuroFilter.reset();
               } else if (demoPresetRef.current !== 'IMPOSTOR' || !stepACheckIdentity) {
                 const rawLandmarks = allLandmarks[0] ?? null;
-                if (rawLandmarks) {
+                const upperBodyVisible = Boolean(
+                  rawLandmarks && isUpperBodyVisibleInFrame(rawLandmarks),
+                );
+                if (rawLandmarks && upperBodyVisible) {
+                  if (lastEmittedFramingHint !== null) {
+                    lastEmittedFramingHint = null;
+                    setLiveFramingHintTh(null);
+                  }
                   const stabilizedResult = sanitizeAndStabilizePoseLandmarks(
                     rawLandmarks,
                     torsoAnchor,
@@ -2383,6 +2444,24 @@ export function SmartRehabKioskUI({
                   latestLandmarks = landmarks;
                   latestAllLandmarks = [landmarks, ...allLandmarks.slice(1)];
                   lastValidPoseAt = now;
+
+                  const lShPt = landmarks[POSE_INDEX.LEFT_SHOULDER];
+                  const rShPt = landmarks[POSE_INDEX.RIGHT_SHOULDER];
+                  if (lShPt && rShPt) {
+                    const spanX = Math.abs(lShPt.x - rShPt.x);
+                    const estDistM = Number(
+                      Math.max(0.6, Math.min(3.5, 0.42 / Math.max(0.1, spanX))).toFixed(1),
+                    );
+                    if (
+                      estDistM !== lastEmittedDistanceM &&
+                      (lastEmittedDistanceM <= 0 || now - lastDistEmitAt >= 150)
+                    ) {
+                      lastEmittedDistanceM = estDistM;
+                      lastDistEmitAt = now;
+                      setDemoDistanceM(estDistM);
+                    }
+                  }
+
                   if (demoPresetRef.current === 'MULTI_PERSON') {
                     singlePersonRecoveryFrames += 1;
                     if (singlePersonRecoveryFrames < 3) {
@@ -2424,20 +2503,46 @@ export function SmartRehabKioskUI({
                   latestPostureCompensated = Boolean(measured.postureCompensated);
                   latestPostureBannerTh = measured.postureBannerTh ?? null;
                   latestRawPrimaryRomDeg = measured.rawPrimaryRomDeg ?? measured.romDeg;
-                } else if (now - lastValidPoseAt > 220 || !latestLandmarks) {
+                } else {
                   wrongSideStreak = 0;
                   wrongPlaneStreak = 0;
+                  occludedFrames = 0;
                   latestWrongSideRaised = false;
                   latestWrongPlaneRaised = false;
                   latestLowVisibilityAlertTh = null;
                   latestPostureCompensated = false;
                   latestPostureBannerTh = null;
                   latestRawPrimaryRomDeg = null;
+                  targetRomDeg = null;
+                  smoothedRom = 0;
+                  smoothedTilt = 0;
                   latestLandmarks = null;
+                  latestAllLandmarks = [];
                   renderPrimaryLandmarks = null;
+                  torsoAnchor = null;
                   landmarkSmoother.reset();
                   pose2dOneEuroFilter.reset();
                   worldOneEuroFilter.reset();
+                  if (lastEmittedRom !== 0) {
+                    lastEmittedRom = 0;
+                    lastRomEmitAt = now;
+                    setDemoRomDeg(0);
+                  }
+                  if (lastEmittedTilt !== 0) {
+                    lastEmittedTilt = 0;
+                    lastTiltEmitAt = now;
+                    setDemoTrunkTiltDeg(0);
+                  }
+                  if (lastEmittedDistanceM !== 0) {
+                    lastEmittedDistanceM = 0;
+                    lastDistEmitAt = now;
+                    setDemoDistanceM(0);
+                  }
+                  const hintMsg = 'กรุณาถอยห่างให้เห็นช่วงไหล่และลำตัว';
+                  if (lastEmittedFramingHint !== hintMsg) {
+                    lastEmittedFramingHint = hintMsg;
+                    setLiveFramingHintTh(hintMsg);
+                  }
                 }
               }
             } catch {
@@ -2472,6 +2577,8 @@ export function SmartRehabKioskUI({
               isImpostorOrEmergency: false,
               videoWidth: v.videoWidth,
               videoHeight: v.videoHeight,
+              showSkeleton: showSkeletonOverlayRef.current,
+              isPrivacyMode: isPrivacyModeRef.current,
             });
           } else if (demoPresetRef.current === 'IMPOSTOR' && checkIdentity) {
             holdAccumMs = 0;
@@ -2486,6 +2593,8 @@ export function SmartRehabKioskUI({
               isImpostorOrEmergency: true,
               videoWidth: v.videoWidth,
               videoHeight: v.videoHeight,
+              showSkeleton: showSkeletonOverlayRef.current,
+              isPrivacyMode: isPrivacyModeRef.current,
             });
           } else if (latestLandmarks) {
             renderPrimaryLandmarks = interpolatePoseLandmarks(
@@ -2675,6 +2784,8 @@ export function SmartRehabKioskUI({
               videoWidth: v.videoWidth,
               videoHeight: v.videoHeight,
               smoothingStatusText: formatSmoothingHud(),
+              showSkeleton: showSkeletonOverlayRef.current,
+              isPrivacyMode: isPrivacyModeRef.current,
             });
           } else {
             renderPrimaryLandmarks = null;
@@ -2687,6 +2798,8 @@ export function SmartRehabKioskUI({
               trunkTiltDeg: 0,
               isMultiPerson: false,
               isImpostorOrEmergency: false,
+              showSkeleton: showSkeletonOverlayRef.current,
+              isPrivacyMode: isPrivacyModeRef.current,
             });
           }
 
@@ -2713,6 +2826,7 @@ export function SmartRehabKioskUI({
     autoCycleDemo,
     isEmergency,
     isEdgeDirectCamera,
+    setDemoDistanceM,
     setDemoHoldRemainingSec,
     setDemoPresetState,
     setDemoRomDeg,
@@ -2919,11 +3033,18 @@ export function SmartRehabKioskUI({
             )}
           </AnimatePresence>
 
-          {/* Right: Live Camera Toggle + Privacy Mode Switch + Demo Mode Switch + Portal Switch + Emergency Stop */}
+          {/* Right: Live Camera Toggle + Privacy Mode Switch + Skeleton Overlay Switch + Demo Mode Switch + Portal Switch + Emergency Stop */}
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => setLivePoseActive((v) => !v)}
+              onClick={() => {
+                const nextLive = !livePoseActive;
+                setLivePoseActive(nextLive);
+                if (nextLive && isDemoMode) {
+                  setAutoCycleDemo(false);
+                  toggleDemoMode(false);
+                }
+              }}
               className={`inline-flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-bold transition-all sm:text-sm ${
                 livePoseActive
                   ? 'border-emerald-300 bg-emerald-50 text-[#0D9488]'
@@ -2950,6 +3071,25 @@ export function SmartRehabKioskUI({
                 {isPrivacyMode
                   ? 'โหมดความเป็นส่วนตัว (พื้นหลังดำ)'
                   : 'โหมดแสดงภาพกล้องจริง'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleToggleSkeletonOverlay}
+              aria-pressed={showSkeletonOverlay}
+              title="สลับการแสดงหรือซ่อนเส้นโครงกระดูกและมุมข้อต่อบนหน้าจอ"
+              className={`inline-flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-bold transition-all cursor-pointer sm:text-sm ${
+                showSkeletonOverlay
+                  ? 'border-teal-300 bg-teal-50 text-[#0D9488] hover:bg-teal-100'
+                  : 'border-slate-200 bg-white/80 text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              <Activity className="h-4 w-4" />
+              <span>
+                {showSkeletonOverlay
+                  ? 'แสดง/ซ่อนเส้นโครงกระดูก: ON'
+                  : 'แสดง/ซ่อนเส้นโครงกระดูก: OFF'}
               </span>
             </button>
 
@@ -3079,6 +3219,8 @@ export function SmartRehabKioskUI({
               }
               hasLiveCamera={!isEdgeDirectCamera && livePoseActive && !cameraError}
               isPrivacyMode={isPrivacyMode}
+              showSkeletonOverlay={showSkeletonOverlay}
+              framingHintTh={liveFramingHintTh}
               liveVideoOverlay={
                 !isEdgeDirectCamera && livePoseActive && !cameraError ? (
                   <div className={`relative h-full w-full ${isPrivacyMode ? 'bg-[#050811]' : 'bg-[#0B192C]'}`}>

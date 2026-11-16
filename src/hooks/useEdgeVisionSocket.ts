@@ -315,8 +315,67 @@ export interface PoseCanvasDrawOptions {
   videoWidth?: number;
   videoHeight?: number;
   minVisibility?: number;
+  isPrivacyMode?: boolean;
+  showSkeleton?: boolean;
   detectedBoxes?: IdentityDetectedBox[];
   guardStatus?: IdentityGuardState['status'];
+}
+
+/**
+ * Verifies that shoulders and at least one elbow or hip pair are cleanly framed
+ * inside the camera viewport so close-up headshots never draw phantom skeletons.
+ */
+export function isUpperBodyVisibleInFrame(
+  landmarks:
+    | ReadonlyArray<{ x: number; y: number; visibility?: number; score?: number }>
+    | null
+    | undefined,
+): boolean {
+  if (!landmarks || landmarks.length < 25) return false;
+  const lSh = landmarks[11];
+  const rSh = landmarks[12];
+  if (!lSh || !rSh) return false;
+
+  const getConf = (pt: { visibility?: number; score?: number } | undefined) =>
+    pt ? (pt.visibility ?? pt.score ?? 1) : 0;
+
+  if (getConf(lSh) < 0.45 || getConf(rSh) < 0.45) return false;
+
+  const shouldersInBounds =
+    lSh.x >= 0.03 &&
+    lSh.x <= 0.97 &&
+    rSh.x >= 0.03 &&
+    rSh.x <= 0.97 &&
+    lSh.y >= 0.04 &&
+    lSh.y <= 0.78 &&
+    rSh.y >= 0.04 &&
+    rSh.y <= 0.78;
+  if (!shouldersInBounds) return false;
+
+  const shoulderSpanX = Math.abs(lSh.x - rSh.x);
+  if (shoulderSpanX < 0.09 || shoulderSpanX > 0.65) return false;
+
+  const minShoulderY = Math.min(lSh.y, rSh.y);
+  const isInFrame = (idx: number, minConf = 0.4) => {
+    const pt = landmarks[idx];
+    if (!pt) return false;
+    return (
+      getConf(pt) >= minConf &&
+      pt.x >= 0.02 &&
+      pt.x <= 0.98 &&
+      pt.y >= 0.02 &&
+      pt.y <= 0.96
+    );
+  };
+
+  const hasVisibleElbow = isInFrame(13, 0.4) || isInFrame(14, 0.4);
+  const hasVisibleHips =
+    isInFrame(23, 0.4) &&
+    isInFrame(24, 0.4) &&
+    landmarks[23]!.y > minShoulderY + 0.1 &&
+    landmarks[24]!.y > minShoulderY + 0.1;
+
+  return hasVisibleElbow || hasVisibleHips;
 }
 
 export function computeContainRect(
@@ -476,7 +535,14 @@ export function drawMediaPipe33OnCanvas(
   opts?: PoseCanvasDrawOptions,
 ): void {
   ctx.clearRect(0, 0, width, height);
-  if (!landmarks || landmarks.length < 33) return;
+  if (
+    opts?.showSkeleton === false ||
+    !landmarks ||
+    landmarks.length < 33 ||
+    !isUpperBodyVisibleInFrame(landmarks)
+  ) {
+    return;
+  }
 
   const mirror = opts?.mirrorX ?? false;
   const minVis = opts?.minVisibility ?? 0.15;
@@ -522,13 +588,13 @@ export function drawMediaPipe33OnCanvas(
     ctx.stroke();
   }
 
-  // Clean Stickman neck & head circle (omitting 5 face dots 0..10 for clinical clarity)
+  // Clean Stickman neck & head circle in privacy mode only (avoid covering real patient face in live video)
   const shL = pts[11];
   const shR = pts[12];
   const nose = pts[0];
   const earL = pts[7];
   const earR = pts[8];
-  if (shL && shR && shL.score >= minVis && shR.score >= minVis) {
+  if (opts?.isPrivacyMode && shL && shR && shL.score >= minVis && shR.score >= minVis) {
     const neckX = (shL.px + shR.px) / 2;
     const neckY = (shL.py + shR.py) / 2;
     const shoulderSpan = Math.hypot(shL.px - shR.px, shL.py - shR.py);

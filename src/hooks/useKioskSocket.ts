@@ -797,14 +797,14 @@ export function useKioskSocket(
   // Interactive Demo Simulator state
   const [demoPreset, setRawDemoPresetState] = useState<DemoPresetId>('ACTIVE_REP');
   const [manualHoldCountdown, setManualHoldCountdown] = useState<boolean>(false);
-  const [demoRomDeg, setDemoRomDeg] = useState<number>(() => (hasExplicitContext ? 15 : 112));
+  const [demoRomDeg, setDemoRomDeg] = useState<number>(0);
 
   const setDemoPresetState = useCallback((next: DemoPresetId) => {
     setManualHoldCountdown(false);
     setRawDemoPresetState(next);
   }, []);
-  const [demoTrunkTiltDeg, setDemoTrunkTiltDeg] = useState<number>(2.4);
-  const [demoDistanceM, setDemoDistanceM] = useState<number>(2.0);
+  const [demoTrunkTiltDeg, setDemoTrunkTiltDeg] = useState<number>(0);
+  const [demoDistanceM, setDemoDistanceM] = useState<number>(0);
   const [demoValidReps, setDemoValidReps] = useState<number>(() => (hasExplicitContext ? 0 : 4));
   const [demoInvalidReps, setDemoInvalidReps] = useState<number>(0);
   const [demoHoldRemainingSec, setDemoHoldRemainingSec] = useState<number>(
@@ -934,18 +934,12 @@ export function useKioskSocket(
           if (disposed) return;
           wsRef.current = null;
           setConnectionStatus('offline');
-          if (!userToggledModeRef.current) {
-            setIsDemoMode(true);
-          }
           const delayMs = Math.min(10000, 1500 * Math.pow(1.6, attempt));
           attempt += 1;
           reconnectTimer = window.setTimeout(connect, delayMs);
         };
       } catch {
         setConnectionStatus('offline');
-        if (!userToggledModeRef.current) {
-          setIsDemoMode(true);
-        }
         const delayMs = Math.min(10000, 1500 * Math.pow(1.6, attempt));
         attempt += 1;
         reconnectTimer = window.setTimeout(connect, delayMs);
@@ -1167,10 +1161,23 @@ export function useKioskSocket(
     [selectedExercise],
   );
 
-  const toggleDemoMode = useCallback((next?: boolean) => {
-    userToggledModeRef.current = true;
-    setIsDemoMode((prev) => (typeof next === 'boolean' ? next : !prev));
-  }, []);
+  const toggleDemoMode = useCallback(
+    (next?: boolean) => {
+      userToggledModeRef.current = true;
+      const targetNext = typeof next === 'boolean' ? next : !isDemoMode;
+      setIsDemoMode(targetNext);
+      if (!targetNext) {
+        setDemoRomDeg(0);
+        setDemoTrunkTiltDeg(0);
+        setDemoDistanceM(0);
+      } else {
+        setDemoRomDeg(15);
+        setDemoTrunkTiltDeg(2.0);
+        setDemoDistanceM(2.0);
+      }
+    },
+    [isDemoMode],
+  );
 
   const triggerEmergencyStop = useCallback(() => {
     setAutoCycleDemo(false);
