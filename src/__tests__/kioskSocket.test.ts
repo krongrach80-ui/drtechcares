@@ -34,8 +34,11 @@ import {
   HAND_GLITCH_GRACE_MS,
   HAND_SWITCH_GRACE_MS,
   VERIFIED_HAND_HOLD_MS,
+  VERIFIED_MODAL_SPEECH_RATE,
+  computeWelcomeSpeechFallbackMs,
   evaluateStrictTwoHandsForStartModal,
   getKioskVerifiedModalCopy,
+  isVerifiedModalSpeechBlocked,
   stepVerifiedHandHold,
 } from '../components/KioskBiometricLoginView';
 import { getKioskOverviewVoiceNarration } from '../App';
@@ -574,6 +577,113 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     }
     expect(holdMs).toBe(4000);
     expect(finalConfirmed).toBe(true);
+  });
+
+  it('enforces the Speech-First Relay Lock until welcome speech completes and resets hold timer if interrupted', () => {
+    expect(VERIFIED_MODAL_SPEECH_RATE).toBeGreaterThanOrEqual(1.1);
+    expect(computeWelcomeSpeechFallbackMs('short')).toBe(3500);
+    expect(computeWelcomeSpeechFallbackMs('x'.repeat(120))).toBe(9000);
+
+    // Gate stays locked while speechDone=false OR browserSpeaking=true
+    expect(isVerifiedModalSpeechBlocked({ speechDone: false, browserSpeaking: false })).toBe(true);
+    expect(isVerifiedModalSpeechBlocked({ speechDone: true, browserSpeaking: true })).toBe(true);
+    expect(isVerifiedModalSpeechBlocked({ speechDone: true, browserSpeaking: false })).toBe(false);
+
+    // Localized speech lock strings across Thai, English, Chinese
+    const sample = {
+      fullName: 'พัทธดนย์ ผ่องอารมย์',
+      hn: 'HN-78975',
+      nextAppointmentDate: '-',
+      confidencePercent: 88,
+      twoHandProgressPct: 0,
+    };
+    const thCopy = getKioskVerifiedModalCopy('th', sample);
+    expect(thCopy.speechCornerBadge).toContain('กำลังพูดแนะนำ');
+    expect(thCopy.speechListenBanner).toContain('ฟังเสียงแนะนำให้จบ');
+    expect(thCopy.speechEarlyRaiseBanner).toContain('รอให้เสียงพูดจบก่อนนะครับ');
+    expect(thCopy.gestureReadyPill).toContain('เสียงพูดจบแล้ว');
+
+    const enCopy = getKioskVerifiedModalCopy('en', sample);
+    expect(enCopy.speechCornerBadge).toContain('Speaking');
+    expect(enCopy.gestureReadyPill).toContain('Guide finished');
+
+    const cnCopy = getKioskVerifiedModalCopy('cn', sample);
+    expect(cnCopy.speechCornerBadge).toContain('语音引导');
+    expect(cnCopy.gestureReadyPill).toContain('语音引导已结束');
+
+    // Holding BOTH hands for 6 full seconds while speechBlocked=true MUST keep progress strictly at 0
+    let holdMs = 0;
+    let lastRaisedAtMs = -Infinity;
+    let nowMs = 5000;
+    for (let i = 0; i < 120; i += 1) {
+      nowMs += 50;
+      const step = stepVerifiedHandHold({
+        bothHandsNow: true,
+        speechBlocked: isVerifiedModalSpeechBlocked({ speechDone: false, browserSpeaking: true }),
+        nowMs,
+        dtMs: 50,
+        lastRaisedAtMs,
+        holdMs,
+      });
+      holdMs = step.holdMs;
+      lastRaisedAtMs = step.lastRaisedAtMs;
+      expect(step.detected).toBe(false);
+      expect(step.progress).toBe(0);
+      expect(step.confirmed).toBe(false);
+    }
+    expect(holdMs).toBe(0);
+
+    // Once speech finishes, hold accumulates 0 -> 2.0s over 2000ms
+    for (let i = 0; i < 40; i += 1) {
+      nowMs += 50;
+      const step = stepVerifiedHandHold({
+        bothHandsNow: true,
+        speechBlocked: isVerifiedModalSpeechBlocked({ speechDone: true, browserSpeaking: false }),
+        nowMs,
+        dtMs: 50,
+        lastRaisedAtMs,
+        holdMs,
+      });
+      holdMs = step.holdMs;
+      lastRaisedAtMs = step.lastRaisedAtMs;
+      expect(step.confirmed).toBe(false);
+    }
+    expect(holdMs).toBe(2000);
+
+    // Switching language mid-hold re-locks speechBlocked=true -> resets progress immediately to 0%
+    nowMs += 50;
+    const relockStep = stepVerifiedHandHold({
+      bothHandsNow: true,
+      speechBlocked: true,
+      nowMs,
+      dtMs: 50,
+      lastRaisedAtMs,
+      holdMs,
+    });
+    expect(relockStep.holdMs).toBe(0);
+    expect(relockStep.progress).toBe(0);
+    expect(relockStep.confirmed).toBe(false);
+
+    // Re-holding full 4.0s after second speech finishes confirms cleanly
+    holdMs = relockStep.holdMs;
+    lastRaisedAtMs = relockStep.lastRaisedAtMs;
+    let confirmedAfterRelock = false;
+    for (let i = 0; i < 80; i += 1) {
+      nowMs += 50;
+      const step = stepVerifiedHandHold({
+        bothHandsNow: true,
+        speechBlocked: false,
+        nowMs,
+        dtMs: 50,
+        lastRaisedAtMs,
+        holdMs,
+      });
+      holdMs = step.holdMs;
+      lastRaisedAtMs = step.lastRaisedAtMs;
+      confirmedAfterRelock = step.confirmed;
+    }
+    expect(holdMs).toBe(4000);
+    expect(confirmedAfterRelock).toBe(true);
   });
 
   it('enforces movement plane strictly: forward flexion rejects side abduction and side abduction rejects forward flexion', () => {

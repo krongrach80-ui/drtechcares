@@ -177,6 +177,10 @@ export interface KioskVerifiedModalCopy {
   confidenceBadge: string;
   hnAndNextAppointment: string;
   openingCamera: string;
+  speechCornerBadge: string;
+  speechListenBanner: string;
+  speechEarlyRaiseBanner: string;
+  speechBarHeader: string;
   gestureDetectedPill: string;
   gestureSingleHandPill: string;
   gestureLoadingPill: string;
@@ -191,6 +195,18 @@ export interface KioskVerifiedModalCopy {
 export const VERIFIED_HAND_HOLD_MS = 4000;
 export const HAND_SWITCH_GRACE_MS = 600;
 export const HAND_GLITCH_GRACE_MS = 220;
+export const VERIFIED_MODAL_SPEECH_RATE = 1.12;
+
+export function computeWelcomeSpeechFallbackMs(greetingText: string): number {
+  return Math.max(3500, greetingText.trim().length * 75);
+}
+
+export function isVerifiedModalSpeechBlocked(params: {
+  speechDone: boolean;
+  browserSpeaking?: boolean;
+}): boolean {
+  return !params.speechDone || Boolean(params.browserSpeaking);
+}
 
 export function evaluateStrictTwoHandsForStartModal(
   hands: ReadonlyArray<ReadonlyArray<{ x: number; y: number }>>,
@@ -256,6 +272,7 @@ export function evaluateStrictTwoHandsForStartModal(
 export function stepVerifiedHandHold(input: {
   bothHandsNow?: boolean;
   anyHandNow?: boolean;
+  speechBlocked?: boolean;
   nowMs: number;
   dtMs: number;
   lastRaisedAtMs: number;
@@ -267,13 +284,23 @@ export function stepVerifiedHandHold(input: {
   progress: number;
   confirmed: boolean;
 } {
+  if (input.speechBlocked) {
+    return {
+      detected: false,
+      lastRaisedAtMs: -Infinity,
+      holdMs: 0,
+      progress: 0,
+      confirmed: false,
+    };
+  }
+
   const activeBoth = input.bothHandsNow ?? input.anyHandNow ?? false;
   const nextLastRaised = activeBoth ? input.nowMs : input.lastRaisedAtMs;
   const withinMicroGlitch =
     !activeBoth && Number.isFinite(nextLastRaised) && input.nowMs - nextLastRaised <= HAND_GLITCH_GRACE_MS;
 
-  // Genuine 4.0s hold timer: only increments while BOTH hands are held up simultaneously;
-  // freezes briefly on micro-frame jitter and decays cleanly when dropped.
+  // Genuine 4.0s hold timer: only increments while BOTH hands are held up simultaneously
+  // AND after the welcome speech relay lock has released.
   const nextHoldMs = activeBoth
     ? Math.min(VERIFIED_HAND_HOLD_MS, input.holdMs + input.dtMs)
     : withinMicroGlitch
@@ -310,10 +337,14 @@ export function getKioskVerifiedModalCopy(
       confidenceBadge: `Biometric Confidence ${params.confidencePercent}% (Verified)`,
       hnAndNextAppointment: `HN: ${params.hn} • Next Appointment: ${nextAppt}`,
       openingCamera: 'Opening camera for 2-hand detection...',
+      speechCornerBadge: '🔊 Speaking guide...',
+      speechListenBanner: '🔊 Please listen until the guide finishes before raising both hands...',
+      speechEarlyRaiseBanner: '⏳ Please wait for the voice guide to finish before holding hands up',
+      speechBarHeader: '🔊 Waiting for voice guide to finish before starting...',
       gestureDetectedPill: `🙌 Both hands detected! Hold steady ${heldSec}/${totalSec.toFixed(0)}.0s (${params.twoHandProgressPct}%)`,
       gestureSingleHandPill: '⚠️ 1 hand only does not count — raise BOTH hands together',
       gestureLoadingPill: '⏳ Preparing AI 2-hand detector...',
-      gestureReadyPill: `🙌 Raise BOTH hands together & hold ${totalSec.toFixed(0)}s to start`,
+      gestureReadyPill: `🙌 Guide finished! Raise BOTH hands & hold ${totalSec.toFixed(0)}s to start`,
       startBtnHolding: `🙌 Holding BOTH hands... ${heldSec}/${totalSec.toFixed(0)}.0s (${remainSec}s left)`,
       startBtnIdle: `🙌 Raise BOTH Hands ${totalSec.toFixed(0)}s (Both Required) or Tap to Start ➔`,
       telemetryBtn: 'Open Biomechanics Telemetry (Smart Rehab Telemetry)',
@@ -326,10 +357,14 @@ export function getKioskVerifiedModalCopy(
       confidenceBadge: `生物识别准确度 ${params.confidencePercent}%（验证通过）`,
       hnAndNextAppointment: `病历号 HN: ${params.hn} • 下次预约: ${nextAppt}`,
       openingCamera: '正在开启双手举起识别摄像头...',
+      speechCornerBadge: '🔊 语音引导中...',
+      speechListenBanner: '🔊 请先听完语音引导后再举起双手...',
+      speechEarlyRaiseBanner: '⏳ 请等语音引导结束后再举手保持',
+      speechBarHeader: '🔊 等待语音引导结束后开始双手检测...',
       gestureDetectedPill: `🙌 已检测到双手举起！请保持 ${heldSec}/${totalSec.toFixed(0)}.0 秒 (${params.twoHandProgressPct}%)`,
       gestureSingleHandPill: '⚠️ 单手不计入 — 请同时举起双手',
       gestureLoadingPill: '⏳ 正在准备 AI 双手识别模块...',
-      gestureReadyPill: `🙌 请同时举起双手保持 ${totalSec.toFixed(0)} 秒以进入训练（单手无效）`,
+      gestureReadyPill: `🙌 语音引导已结束！请双手举起保持 ${totalSec.toFixed(0)} 秒开始训练`,
       startBtnHolding: `🙌 正在加载确认... ${heldSec}/${totalSec.toFixed(0)}.0 秒（剩余 ${remainSec} 秒）`,
       startBtnIdle: `🙌 同时举起双手保持 ${totalSec.toFixed(0)} 秒 或 点击此处开始训练 ➔`,
       telemetryBtn: '打开生物力学分析界面 (Smart Rehab Telemetry)',
@@ -341,10 +376,14 @@ export function getKioskVerifiedModalCopy(
     confidenceBadge: `ความแม่นยำชีวมาตร ${params.confidencePercent}% (ผ่านเกณฑ์)`,
     hnAndNextAppointment: `HN: ${params.hn} • นัดถัดไป: ${nextAppt}`,
     openingCamera: 'กำลังเปิดกล้องตรวจจับการยกมือทั้ง 2 ข้าง...',
+    speechCornerBadge: '🔊 กำลังพูดแนะนำ...',
+    speechListenBanner: '🔊 กรุณาฟังเสียงแนะนำให้จบก่อนยกมือทั้ง 2 ข้าง...',
+    speechEarlyRaiseBanner: '⏳ รอให้เสียงพูดจบก่อนนะครับ แล้วค่อยยกมือค้างไว้',
+    speechBarHeader: '🔊 กำลังรอเสียงแนะนำพูดจบก่อนเริ่มตรวจจับ (ล็อก 0%)',
     gestureDetectedPill: `🙌 ตรวจพบยกครบ 2 ข้าง! ค้างไว้ ${heldSec}/${totalSec.toFixed(0)}.0 วิ (${params.twoHandProgressPct}%)`,
     gestureSingleHandPill: '⚠️ ยกมือเดียวไม่นับ • กรุณายกขึ้นทั้ง 2 ข้างพร้อมกัน',
     gestureLoadingPill: '⏳ กำลังเตรียม AI ตรวจจับการยกมือ 2 ข้าง...',
-    gestureReadyPill: `🙌 ยกมือทั้ง 2 ข้างพร้อมกันค้างไว้ ${totalSec.toFixed(0)} วิ (ยกมือเดียวไม่นับ)`,
+    gestureReadyPill: `🙌 เสียงพูดจบแล้ว! ยกมือทั้ง 2 ข้างค้างไว้ ${totalSec.toFixed(0)} วิ เพื่อเริ่มฝึก`,
     startBtnHolding: `🙌 กำลังโหลด 2 ข้าง... ${heldSec}/${totalSec.toFixed(0)}.0 วิ (เหลือ ${remainSec} วิ)`,
     startBtnIdle: `🙌 ยกมือทั้ง 2 ข้างค้าง ${totalSec.toFixed(0)} วิ (ต้อง 2 ข้างเท่านั้น) หรือ กดที่นี่ ➔`,
     telemetryBtn: 'เปิดหน้าจอวิเคราะห์ชีวกลศาสตร์ (Smart Rehab Telemetry)',
@@ -606,8 +645,28 @@ export function KioskBiometricLoginView({
   const { lang, setLang } = useClinicalI18n();
   const c = COPY[lang];
 
+  const [verifiedModalPayload, setVerifiedModalPayload] = useState<KioskLoginSuccessPayload | null>(null);
+  const [twoHandProgress, setTwoHandProgress] = useState(0);
+  const [twoHandDetected, setTwoHandDetected] = useState(false);
+  const [leftHandUpState, setLeftHandUpState] = useState(false);
+  const [rightHandUpState, setRightHandUpState] = useState(false);
+  const [twoHandCameraReady, setTwoHandCameraReady] = useState(false);
+  const [twoHandDetectorReady, setTwoHandDetectorReady] = useState(false);
+  const [isWelcomeSpeechDone, setIsWelcomeSpeechDone] = useState(false);
+  const [raisedDuringSpeech, setRaisedDuringSpeech] = useState(false);
+  const isSpeechDoneRef = useRef<boolean>(false);
+  const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
   const handleSelectLang = useCallback(
     (nextLang: ClinicalLang) => {
+      // Re-lock Speech-First Relay synchronously when patient switches modal language
+      isSpeechDoneRef.current = false;
+      setIsWelcomeSpeechDone(false);
+      setRaisedDuringSpeech(false);
+      setTwoHandProgress(0);
+      setTwoHandDetected(false);
+      setLeftHandUpState(false);
+      setRightHandUpState(false);
       setLang(nextLang);
       if (typeof window !== 'undefined') {
         try {
@@ -649,13 +708,6 @@ export function KioskBiometricLoginView({
   const [bioReport, setBioReport] = useState<BiologicalLivenessReport | null>(null);
   const [inspectionInfo, setInspectionInfo] = useState<BiometricVerificationJson | null>(null);
   const [lastVerifyResult, setLastVerifyResult] = useState<KioskFaceVerifyResponse | null>(null);
-  const [verifiedModalPayload, setVerifiedModalPayload] = useState<KioskLoginSuccessPayload | null>(null);
-  const [twoHandProgress, setTwoHandProgress] = useState(0);
-  const [twoHandDetected, setTwoHandDetected] = useState(false);
-  const [leftHandUpState, setLeftHandUpState] = useState(false);
-  const [rightHandUpState, setRightHandUpState] = useState(false);
-  const [twoHandCameraReady, setTwoHandCameraReady] = useState(false);
-  const [twoHandDetectorReady, setTwoHandDetectorReady] = useState(false);
 
   const modalCopy = verifiedModalPayload
     ? getKioskVerifiedModalCopy(lang, {
@@ -672,19 +724,61 @@ export function KioskBiometricLoginView({
   useEffect(() => {
     const greeting = modalCopy?.voiceGreeting;
     if (!verifiedModalPayload || !greeting || typeof window === 'undefined') {
+      isSpeechDoneRef.current = false;
+      setIsWelcomeSpeechDone(false);
+      setRaisedDuringSpeech(false);
       return;
     }
+
     const seq = ++modalSpeakSeqRef.current;
     const langOpt = LANG_OPTIONS.find((item) => item.code === lang) ?? LANG_OPTIONS[0];
 
-    let webFallbackTimer: number | null = null;
+    // Lock two-hand confirmation strictly at 0% until welcome voice guidance completes
+    isSpeechDoneRef.current = false;
+    setIsWelcomeSpeechDone(false);
+    setRaisedDuringSpeech(false);
+    setTwoHandProgress(0);
+    setTwoHandDetected(false);
+    setLeftHandUpState(false);
+    setRightHandUpState(false);
 
-    const stopSpeech = () => {
-      modalSpeakSeqRef.current += 1;
+    let finished = false;
+    let webFallbackTimer: number | null = null;
+    let safetyTimer: number | null = null;
+    let speakingPollTimer: number | null = null;
+    const fallbackMs = computeWelcomeSpeechFallbackMs(greeting);
+    const hardDeadlineAt = Date.now() + fallbackMs + 5000;
+
+    const clearTimers = () => {
       if (webFallbackTimer !== null) {
         window.clearTimeout(webFallbackTimer);
         webFallbackTimer = null;
       }
+      if (safetyTimer !== null) {
+        window.clearTimeout(safetyTimer);
+        safetyTimer = null;
+      }
+      if (speakingPollTimer !== null) {
+        window.clearInterval(speakingPollTimer);
+        speakingPollTimer = null;
+      }
+    };
+
+    const markSpeechDone = () => {
+      if (finished || modalSpeakSeqRef.current !== seq) return;
+      finished = true;
+      clearTimers();
+      activeUtteranceRef.current = null;
+      isSpeechDoneRef.current = true;
+      setIsWelcomeSpeechDone(true);
+      setRaisedDuringSpeech(false);
+    };
+
+    const stopSpeech = () => {
+      modalSpeakSeqRef.current += 1;
+      finished = true;
+      clearTimers();
+      activeUtteranceRef.current = null;
       const audio = modalAudioRef.current;
       if (audio) {
         try {
@@ -703,23 +797,68 @@ export function KioskBiometricLoginView({
           // Ignore synthesis cancel errors
         }
       }
+      isSpeechDoneRef.current = false;
+      setIsWelcomeSpeechDone(false);
+      setRaisedDuringSpeech(false);
     };
 
+    // Cancel any residual utterance before speaking the welcome instructions
+    if ('speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // Ignore synthesis cancel errors
+      }
+    }
+
+    const startSafetyMonitor = () => {
+      safetyTimer = window.setTimeout(() => {
+        safetyTimer = null;
+        if (finished || modalSpeakSeqRef.current !== seq) return;
+        const checkAndUnlock = () => {
+          if (finished || modalSpeakSeqRef.current !== seq) return;
+          const synthSpeaking =
+            'speechSynthesis' in window &&
+            Boolean(window.speechSynthesis.speaking || window.speechSynthesis.pending);
+          const audioEl = modalAudioRef.current;
+          const audioPlaying = Boolean(
+            audioEl && !audioEl.paused && !audioEl.ended && audioEl.currentTime > 0,
+          );
+          if ((!synthSpeaking && !audioPlaying) || Date.now() >= hardDeadlineAt) {
+            markSpeechDone();
+          }
+        };
+        checkAndUnlock();
+        if (!finished && modalSpeakSeqRef.current === seq) {
+          speakingPollTimer = window.setInterval(checkAndUnlock, 250);
+        }
+      }, fallbackMs);
+    };
+    startSafetyMonitor();
+
     const speakWebFallback = () => {
-      if (modalSpeakSeqRef.current !== seq) return;
-      if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') return;
+      if (finished || modalSpeakSeqRef.current !== seq) return;
+      if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') {
+        return;
+      }
       try {
         const synth = window.speechSynthesis;
         const wasBusy = synth.speaking || synth.pending;
         if (wasBusy) synth.cancel();
         const startUtterance = () => {
-          if (modalSpeakSeqRef.current !== seq) return;
+          if (finished || modalSpeakSeqRef.current !== seq) return;
           const voices = synth.getVoices();
           const matchedVoice = pickSpeechVoice(voices, langOpt.bcp47);
           const utterance = new SpeechSynthesisUtterance(greeting);
           utterance.lang = matchedVoice?.lang || langOpt.bcp47;
           if (matchedVoice) utterance.voice = matchedVoice;
-          utterance.rate = lang === 'th' ? 0.96 : lang === 'cn' ? 0.98 : 1.0;
+          utterance.rate = VERIFIED_MODAL_SPEECH_RATE;
+          utterance.onend = () => markSpeechDone();
+          utterance.onerror = () => {
+            // Keep locked until fallback timer if speech engine errors/is muted
+            activeUtteranceRef.current = null;
+          };
+          activeUtteranceRef.current = utterance;
           synth.speak(utterance);
         };
         if (wasBusy) {
@@ -731,7 +870,7 @@ export function KioskBiometricLoginView({
           startUtterance();
         }
       } catch {
-        // Ignore browser TTS restriction
+        // Ignore browser TTS restriction; safety timer will unlock cleanly
       }
     };
 
@@ -743,9 +882,11 @@ export function KioskBiometricLoginView({
           audio.preload = 'auto';
           modalAudioRef.current = audio;
         }
-        audio.playbackRate = lang === 'th' ? 1.0 : lang === 'cn' ? 0.98 : 1.0;
+        audio.onended = () => markSpeechDone();
         audio.onerror = () => speakWebFallback();
+        audio.defaultPlaybackRate = VERIFIED_MODAL_SPEECH_RATE;
         audio.src = buildTtsProxyUrl(greeting, langOpt.ttsLang);
+        audio.playbackRate = VERIFIED_MODAL_SPEECH_RATE;
         const p = audio.play();
         if (p && typeof p.catch === 'function') {
           p.catch((err: unknown) => {
@@ -801,6 +942,23 @@ export function KioskBiometricLoginView({
   bioReportRef.current = bioReport;
   const verifiedModalPayloadRef = useRef<KioskLoginSuccessPayload | null>(null);
   verifiedModalPayloadRef.current = verifiedModalPayload;
+  const openVerifiedModal = useCallback((payload: KioskLoginSuccessPayload) => {
+    isSpeechDoneRef.current = false;
+    setIsWelcomeSpeechDone(false);
+    setRaisedDuringSpeech(false);
+    setTwoHandProgress(0);
+    setTwoHandDetected(false);
+    setLeftHandUpState(false);
+    setRightHandUpState(false);
+    if (confirmProgressFillRef.current) {
+      confirmProgressFillRef.current.style.transform = 'scaleX(0)';
+    }
+    if (confirmBtnFillRef.current) {
+      confirmBtnFillRef.current.style.transform = 'scaleX(0)';
+    }
+    verifiedModalPayloadRef.current = payload;
+    setVerifiedModalPayload(payload);
+  }, []);
   const onPatientAuthenticatedRef = useRef(onPatientAuthenticated);
   onPatientAuthenticatedRef.current = onPatientAuthenticated;
   const presenceRef = useRef(new FacePresenceTracker());
@@ -829,8 +987,7 @@ export function KioskBiometricLoginView({
           confidencePercent: Math.round((edgeMatch.similarity || 0.92) * 100),
           indexEntry: entry,
         });
-        verifiedModalPayloadRef.current = nextPayload;
-        setVerifiedModalPayload(nextPayload);
+        openVerifiedModal(nextPayload);
         return;
       }
       void apiClient
@@ -851,8 +1008,7 @@ export function KioskBiometricLoginView({
             confidencePercent: Math.round((edgeMatch.similarity || 0.92) * 100),
             rehabSchedules: found.rehabSchedules,
           });
-          verifiedModalPayloadRef.current = nextPayload;
-          setVerifiedModalPayload(nextPayload);
+          openVerifiedModal(nextPayload);
         })
         .catch(() => {});
     },
@@ -900,6 +1056,16 @@ export function KioskBiometricLoginView({
     setHudBox(null);
     setHudLandmarks([]);
     setLiveMatchHud(null);
+    isSpeechDoneRef.current = false;
+    setIsWelcomeSpeechDone(false);
+    setRaisedDuringSpeech(false);
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // Ignore synthesis cancel errors
+      }
+    }
     verifiedModalPayloadRef.current = null;
     setVerifiedModalPayload(null);
     setTwoHandProgress(0);
@@ -1189,6 +1355,106 @@ export function KioskBiometricLoginView({
               lastGestureFrameAt = now;
               const v = videoRef.current;
 
+              const browserSpeaking =
+                typeof window !== 'undefined' &&
+                'speechSynthesis' in window &&
+                Boolean(window.speechSynthesis.speaking);
+              const speechBlocked = isVerifiedModalSpeechBlocked({
+                speechDone: isSpeechDoneRef.current,
+                browserSpeaking,
+              });
+
+              if (speechBlocked) {
+                // Strict Speech-First Relay Lock: freeze 4.0s hold timer at 0%, reset all hand ready states,
+                // clear hand overlay dots, and NEVER advance until welcome voice completes 100%.
+                gestureHoldMs = 0;
+                lastAnyHandRaisedAt = -Infinity;
+                latestAnyHandUp = false;
+                if (lastReportedHolding) {
+                  lastReportedHolding = false;
+                  setTwoHandProgress(0);
+                }
+                if (lastReportedDetected) {
+                  lastReportedDetected = false;
+                  setTwoHandDetected(false);
+                }
+                setLeftHandUpState((prev) => (prev ? false : prev));
+                setRightHandUpState((prev) => (prev ? false : prev));
+
+                const zeroSecStr = `0.0 / ${(VERIFIED_HAND_HOLD_MS / 1000).toFixed(0)}.0 วิ (0%)`;
+                if (confirmProgressFillRef.current) {
+                  confirmProgressFillRef.current.style.transform = 'scaleX(0)';
+                }
+                if (confirmBtnFillRef.current) {
+                  confirmBtnFillRef.current.style.transform = 'scaleX(0)';
+                }
+                if (
+                  confirmProgressTextRef.current &&
+                  confirmProgressTextRef.current.textContent !== zeroSecStr
+                ) {
+                  confirmProgressTextRef.current.textContent = zeroSecStr;
+                }
+                if (confirmCanvasRef.current) {
+                  const cCtx = confirmCanvasRef.current.getContext('2d');
+                  if (cCtx) {
+                    cCtx.clearRect(0, 0, confirmCanvasRef.current.width, confirmCanvasRef.current.height);
+                  }
+                }
+
+                // Lightly sense early hand raises (~8Hz) purely to warn user to wait for speech to finish
+                if (
+                  v.readyState >= 2 &&
+                  v.videoWidth > 0 &&
+                  (handLandmarker || Boolean(edgeTelemetryRef.current?.hand_status)) &&
+                  now - lastGestureInferenceAt >= 120
+                ) {
+                  lastGestureInferenceAt = now;
+                  const edgeHands = edgeTelemetryRef.current?.hand_status;
+                  let detectedEarlyHands: NormalizedLandmark[][] = [];
+                  if (handLandmarker) {
+                    try {
+                      if (!gestureOffscreenCanvas) {
+                        gestureOffscreenCanvas = document.createElement('canvas');
+                      }
+                      const offW = 192;
+                      const offH = Math.max(
+                        108,
+                        Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))),
+                      );
+                      if (
+                        gestureOffscreenCanvas.width !== offW ||
+                        gestureOffscreenCanvas.height !== offH
+                      ) {
+                        gestureOffscreenCanvas.width = offW;
+                        gestureOffscreenCanvas.height = offH;
+                      }
+                      const offCtx = gestureOffscreenCanvas.getContext('2d', { alpha: false });
+                      if (offCtx) {
+                        offCtx.drawImage(v, 0, 0, offW, offH);
+                      }
+                      const handTs = Math.max(lastDetectTs + 1, Math.round(now));
+                      lastDetectTs = handTs;
+                      const handRes = handLandmarker.detectForVideo(
+                        offCtx ? gestureOffscreenCanvas : v,
+                        handTs,
+                      );
+                      detectedEarlyHands = handRes.landmarks ?? [];
+                    } catch {
+                      // Ignore transient MediaPipe frame errors while locked for speech
+                    }
+                  }
+                  const earlyStrict = evaluateStrictTwoHandsForStartModal(detectedEarlyHands, null);
+                  const earlyRaised = Boolean(
+                    edgeHands?.left_raised ||
+                      edgeHands?.right_raised ||
+                      earlyStrict.leftUp ||
+                      earlyStrict.rightUp,
+                  );
+                  setRaisedDuringSpeech((prev) => (prev === earlyRaised ? prev : earlyRaised));
+                }
+                return;
+              }
+
               if (
                 v.readyState >= 2 &&
                 v.videoWidth > 0 &&
@@ -1298,6 +1564,7 @@ export function KioskBiometricLoginView({
 
                 const holdStep = stepVerifiedHandHold({
                   bothHandsNow: latestAnyHandUp,
+                  speechBlocked,
                   nowMs: now,
                   dtMs: dt,
                   lastRaisedAtMs: lastAnyHandRaisedAt,
@@ -1671,8 +1938,7 @@ export function KioskBiometricLoginView({
                               serverCompletedToday: verifyRes.completedToday,
                               indexEntry: matchedEntry,
                             });
-                            verifiedModalPayloadRef.current = nextPayload;
-                            setVerifiedModalPayload(nextPayload);
+                            openVerifiedModal(nextPayload);
                             return;
                           }
                         } catch {
@@ -1702,8 +1968,7 @@ export function KioskBiometricLoginView({
                               serverCompletedToday: cand.completedToday,
                               indexEntry: cand,
                             });
-                            verifiedModalPayloadRef.current = nextPayload;
-                            setVerifiedModalPayload(nextPayload);
+                            openVerifiedModal(nextPayload);
                             return;
                           }
                         } finally {
@@ -1778,8 +2043,7 @@ export function KioskBiometricLoginView({
                                 serverCompletedToday: verifyRes.completedToday,
                                 indexEntry: matchedEntry,
                               });
-                              verifiedModalPayloadRef.current = nextPayload;
-                              setVerifiedModalPayload(nextPayload);
+                              openVerifiedModal(nextPayload);
                               return;
                             }
                           } catch {
@@ -1876,8 +2140,7 @@ export function KioskBiometricLoginView({
         setShowPinModal(false);
         setCameraPaused(false);
         setPinDigits('');
-        verifiedModalPayloadRef.current = pinPayload;
-        setVerifiedModalPayload(pinPayload);
+        openVerifiedModal(pinPayload);
         return;
       }
       setPinError(c.pinNotFoundError);
@@ -2505,58 +2768,114 @@ export function KioskBiometricLoginView({
                 </div>
               )}
               <div className="absolute top-2 inset-x-2 flex items-center justify-between gap-2 pointer-events-none">
-                <span
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-black shadow ${
-                    leftHandUpState
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-slate-900/75 text-slate-200 border border-white/25'
-                  }`}
-                >
-                  {leftHandUpState ? '✓ มือซ้ายพร้อม' : '○ รอมือซ้าย'}
-                </span>
-                <span
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-black shadow ${
-                    rightHandUpState
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-slate-900/75 text-slate-200 border border-white/25'
-                  }`}
-                >
-                  {rightHandUpState ? '✓ มือขวาพร้อม' : '○ รอมือขวา'}
-                </span>
+                {!isWelcomeSpeechDone ? (
+                  <>
+                    <span className="px-2.5 py-1 rounded-full text-[11px] font-black shadow bg-sky-600/90 text-white border border-sky-200/70">
+                      {modalCopy.speechCornerBadge}
+                    </span>
+                    <span className="px-2.5 py-1 rounded-full text-[11px] font-black shadow bg-sky-600/90 text-white border border-sky-200/70">
+                      {modalCopy.speechCornerBadge}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span
+                      className={`px-2.5 py-1 rounded-full text-[11px] font-black shadow ${
+                        leftHandUpState
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-slate-900/75 text-slate-200 border border-white/25'
+                      }`}
+                    >
+                      {leftHandUpState ? '✓ มือซ้ายพร้อม' : '○ รอมือซ้าย'}
+                    </span>
+                    <span
+                      className={`px-2.5 py-1 rounded-full text-[11px] font-black shadow ${
+                        rightHandUpState
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-slate-900/75 text-slate-200 border border-white/25'
+                      }`}
+                    >
+                      {rightHandUpState ? '✓ มือขวาพร้อม' : '○ รอมือขวา'}
+                    </span>
+                  </>
+                )}
               </div>
               <div className="absolute inset-x-2 bottom-2 flex items-center justify-center pointer-events-none">
-                <span
-                  ref={confirmPillLabelRef}
-                  className={`px-3 py-1 rounded-full text-[11px] font-extrabold border shadow ${
-                    twoHandDetected
-                      ? 'bg-emerald-600/95 text-white border-emerald-200'
-                      : leftHandUpState !== rightHandUpState
+                {!isWelcomeSpeechDone ? (
+                  <span
+                    key="pill-speech"
+                    className={`px-3 py-1 rounded-full text-[11px] font-extrabold border shadow ${
+                      raisedDuringSpeech
                         ? 'bg-amber-500/95 text-white border-amber-200'
-                        : 'bg-white/95 text-[#0F4C81] border-emerald-300'
-                  }`}
-                >
-                  {twoHandDetected
-                    ? modalCopy.gestureDetectedPill
-                    : leftHandUpState !== rightHandUpState
+                        : 'bg-sky-600/95 text-white border-sky-200'
+                    }`}
+                  >
+                    {raisedDuringSpeech ? modalCopy.speechEarlyRaiseBanner : modalCopy.speechListenBanner}
+                  </span>
+                ) : twoHandDetected ? (
+                  <span
+                    key="pill-holding"
+                    ref={confirmPillLabelRef}
+                    className="px-3 py-1 rounded-full text-[11px] font-extrabold border shadow bg-emerald-600/95 text-white border-emerald-200"
+                  >
+                    {modalCopy.gestureDetectedPill}
+                  </span>
+                ) : (
+                  <span
+                    key="pill-ready"
+                    className={`px-3 py-1 rounded-full text-[11px] font-extrabold border shadow ${
+                      leftHandUpState !== rightHandUpState
+                        ? 'bg-amber-500/95 text-white border-amber-200'
+                        : !twoHandDetectorReady
+                          ? 'bg-white/95 text-[#0F4C81] border-emerald-300'
+                          : 'bg-emerald-600/95 text-white border-emerald-200'
+                    }`}
+                  >
+                    {leftHandUpState !== rightHandUpState
                       ? modalCopy.gestureSingleHandPill
                       : !twoHandDetectorReady
                         ? modalCopy.gestureLoadingPill
                         : modalCopy.gestureReadyPill}
-                </span>
+                  </span>
+                )}
               </div>
             </div>
 
-            {/* Dedicated 4-Second Loading Bar (GPU scaleX 60fps smooth fill ONLY when BOTH hands raised) */}
-            <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3 text-left">
-              <div className="flex items-center justify-between text-[11px] font-extrabold text-emerald-950 mb-1.5">
+            {/* Dedicated 4-Second Loading Bar (locked strictly at 0% until welcome voice completes) */}
+            <div
+              className={`mt-3 rounded-2xl border p-3 text-left ${
+                !isWelcomeSpeechDone
+                  ? raisedDuringSpeech
+                    ? 'border-amber-200 bg-amber-50/75'
+                    : 'border-slate-200 bg-slate-50/90'
+                  : 'border-emerald-200 bg-emerald-50/70'
+              }`}
+            >
+              <div
+                className={`flex items-center justify-between text-[11px] font-extrabold mb-1.5 ${
+                  !isWelcomeSpeechDone
+                    ? raisedDuringSpeech
+                      ? 'text-amber-900'
+                      : 'text-slate-700'
+                    : 'text-emerald-950'
+                }`}
+              >
                 <span>
-                  {twoHandDetected
-                    ? '⏳ กำลังโหลดยืนยัน 2 มือค้าง 4 วินาที...'
-                    : leftHandUpState !== rightHandUpState
-                      ? '⚠️ ยกมือเดียวไม่นับ กรุณายกขึ้นทั้ง 2 ข้าง'
-                      : 'หลอดโหลดเริ่มฝึก (ยก 2 ข้างค้าง 4 วิ)'}
+                  {!isWelcomeSpeechDone
+                    ? raisedDuringSpeech
+                      ? modalCopy.speechEarlyRaiseBanner
+                      : modalCopy.speechBarHeader
+                    : twoHandDetected
+                      ? '⏳ กำลังโหลดยืนยัน 2 มือค้าง 4 วินาที...'
+                      : leftHandUpState !== rightHandUpState
+                        ? '⚠️ ยกมือเดียวไม่นับ กรุณายกขึ้นทั้ง 2 ข้าง'
+                        : 'หลอดโหลดเริ่มฝึก (ยก 2 ข้างค้าง 4 วิ)'}
                 </span>
-                <span ref={confirmProgressTextRef} className="font-mono text-emerald-700">
+                <span
+                  key={isWelcomeSpeechDone ? lang : 'locked'}
+                  ref={confirmProgressTextRef}
+                  className={`font-mono ${!isWelcomeSpeechDone ? 'text-slate-500' : 'text-emerald-700'}`}
+                >
                   0.0 / {(VERIFIED_HAND_HOLD_MS / 1000).toFixed(0)}.0 วิ (0%)
                 </span>
               </div>
@@ -2564,11 +2883,13 @@ export function KioskBiometricLoginView({
                 <div
                   ref={confirmProgressFillRef}
                   className={`h-full w-full origin-left rounded-full ${
-                    twoHandDetected
-                      ? 'bg-gradient-to-r from-emerald-500 via-teal-400 to-sky-500'
-                      : leftHandUpState !== rightHandUpState
-                        ? 'bg-amber-400'
-                        : 'bg-emerald-500'
+                    !isWelcomeSpeechDone
+                      ? 'bg-slate-400'
+                      : twoHandDetected
+                        ? 'bg-gradient-to-r from-emerald-500 via-teal-400 to-sky-500'
+                        : leftHandUpState !== rightHandUpState
+                          ? 'bg-amber-400'
+                          : 'bg-emerald-500'
                   }`}
                   style={{ transform: 'scaleX(0)', willChange: 'transform' }}
                 />
@@ -2587,11 +2908,15 @@ export function KioskBiometricLoginView({
                   style={{ transform: 'scaleX(0)', willChange: 'transform' }}
                 />
                 <span className="relative z-10 flex items-center justify-center gap-2">
-                  <span ref={confirmBtnLabelRef}>
-                    {twoHandProgress > 0
-                      ? modalCopy.startBtnHolding
-                      : modalCopy.startBtnIdle}
-                  </span>
+                  {isWelcomeSpeechDone && twoHandProgress > 0 ? (
+                    <span key="btn-holding" ref={confirmBtnLabelRef}>
+                      {modalCopy.startBtnHolding}
+                    </span>
+                  ) : (
+                    <span key="btn-idle">
+                      {modalCopy.startBtnIdle}
+                    </span>
+                  )}
                 </span>
               </button>
               {onOpenTelemetrySimulator && (
