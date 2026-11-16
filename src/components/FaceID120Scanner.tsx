@@ -1169,8 +1169,12 @@ export default function FaceID120Scanner({
         snapCanvas.height = 480;
         snapshotCanvasRef.current = snapCanvas;
 
+        // Always prefer Browser MediaPipe 478-point + extractHybrid512Descriptor (Path B)
+        // so enrollment embeddings stay 100% compatible with Kiosk login & /api/biometric/verify
+        // even when local edge-vision runs without InsightFace (ArcFace Fallback).
+        const useEdgeFaceEnrollment = false;
         // Path A: Edge Vision InsightFace (buffalo_l ArcFace 512-D)
-        if (edgeHealth) {
+        if (edgeHealth && useEdgeFaceEnrollment) {
           try {
             const edgeSess = await edgeFaceEnrollStart({
               hn,

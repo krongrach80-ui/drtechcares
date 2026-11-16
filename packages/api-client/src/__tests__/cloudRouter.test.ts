@@ -1186,5 +1186,71 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(healed?.faceImageUrls).toHaveLength(6);
     expect(updatedPayloads.some((u) => u.id === 'pat-heal-120' && u.payload.face_frames_count === 120)).toBe(true);
   });
+
+  it('resolves duplicate same-person enrollments without margin self-collision during POST /api/biometric/verify', async () => {
+    const router = createCloudDelegatedRouter({});
+    const ptLogin = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const { token: ptToken } = (await ptLogin.json()) as { token: string };
+
+    const olderVec = makeHybridEmbedding(5.25);
+    const newerVec = l2Normalize(
+      olderVec.map((v, i) => v * 0.85 + makeHybridEmbedding(6.15)[i] * 0.15),
+    );
+    const buildFrames = (vec: number[]) => [
+      ...Array.from({ length: 4 }, () => ({ pose: 'front', vector: vec, qualityScore: 0.96 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'left', vector: vec, qualityScore: 0.94 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'right', vector: vec, qualityScore: 0.95 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'nod', vector: vec, qualityScore: 0.94 })),
+    ];
+
+    const oldEnroll = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-40683',
+        fullName: 'พัทธดนย์ ผ่องอารมย์',
+        age: 28,
+        diagnosis: 'ฟื้นฟูข้อไหล่',
+        frontalCentroid: olderVec,
+        overallCentroid: olderVec,
+        rawFrames: buildFrames(olderVec),
+      },
+    });
+    expect(oldEnroll.status).toBe(201);
+
+    const newEnroll = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-54720',
+        fullName: 'พัทธดนย์ ผ่องอารมย์',
+        age: 28,
+        diagnosis: 'ฟื้นฟูข้อไหล่',
+        frontalCentroid: newerVec,
+        overallCentroid: newerVec,
+        rawFrames: buildFrames(newerVec),
+      },
+    });
+    expect(newEnroll.status).toBe(201);
+
+    // Probe near both duplicate enrollments (~0.83-0.96 similarity) must match the newer HN rather than colliding on margin
+    const liveProbe = l2Normalize(olderVec.map((v, i) => v * 0.45 + newerVec[i] * 0.55));
+    const verifyRes = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: { probeVector: liveProbe },
+    });
+    expect(verifyRes.status).toBe(200);
+    const verifyJson = (await verifyRes.json()) as {
+      matched: boolean;
+      confidencePercent: number;
+      patient?: { hn: string };
+    };
+    expect(verifyJson.matched).toBe(true);
+    expect(verifyJson.confidencePercent).toBeGreaterThanOrEqual(85);
+    expect(verifyJson.patient?.hn).toBe('HN-54720');
+  });
 });
 

@@ -20,6 +20,7 @@ import {
   getFaceId120TargetGuidance,
 } from '../components/FaceID120Scanner';
 import { evaluateRandomHandChallenge } from '../components/RandomHandStartPrompt';
+import { isFullFrontalFaceReadyForLogin } from '../components/KioskBiometricLoginView';
 
 function makeRealisticFaceVector(seed: number, angleBias = 0): number[] {
   const raw = new Array<number>(FACE_EMBEDDING_DIM);
@@ -537,5 +538,85 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     const validOwnerRes = matchMultiAngleEmbedding(enrolledOwner.angleEmbeddings.center, [enrolledOwner]);
     expect(validOwnerRes.matched).toBe(true);
     expect(validOwnerRes.confidencePercent).toBeGreaterThanOrEqual(85);
+  });
+
+  it('prevents duplicate enrollments of the same patient from failing the margin gate and prefers newer HN', () => {
+    const olderFace = makeRealisticFaceVector(314159, 0);
+    const newerFace = l2Normalize(
+      olderFace.map((v, idx) => v * 0.84 + makeRealisticFaceVector(271828, 1)[idx] * 0.16),
+    );
+    const olderPatient: PatientBiometricIndexEntry = {
+      ...makeEnrolledPatient('pat-dup-old', 'HN-40683', 'พัทธดนย์ ผ่องอารมย์', 314159),
+      masterEmbedding: olderFace,
+      angleEmbeddings: {
+        center: olderFace,
+        left: olderFace,
+        right: olderFace,
+        up: olderFace,
+        down: olderFace,
+      },
+    };
+    const newerPatient: PatientBiometricIndexEntry = {
+      ...makeEnrolledPatient('pat-dup-new', 'HN-54720', 'พัทธดนย์ ผ่องอารมย์', 271828),
+      masterEmbedding: newerFace,
+      angleEmbeddings: {
+        center: newerFace,
+        left: newerFace,
+        right: newerFace,
+        up: newerFace,
+        down: newerFace,
+      },
+    };
+    const unrelated = makeEnrolledPatient('pat-other', 'HN-94856', 'ศิรสิทธิ์ เฉลิมเสนาะ', 123456);
+
+    // Probe sits closely between older and newer registration of the same patient
+    const liveProbe = l2Normalize(
+      olderFace.map((v, idx) => v * 0.52 + newerFace[idx] * 0.48),
+    );
+    const res = matchMultiAngleEmbedding(liveProbe, [olderPatient, unrelated, newerPatient], {
+      similarityThreshold: 0.78,
+    });
+    expect(res.matched).toBe(true);
+    expect(res.bestCandidate?.hn).toBe('HN-54720');
+    expect(res.margin).toBeGreaterThanOrEqual(0.06);
+  });
+
+  it('allows normal desk sitting distance and slight head angle in isFullFrontalFaceReadyForLogin', () => {
+    // 16:9 webcam seated patient: height ~ 0.16, width ~ 0.11, yaw = 12, pitch = 14, depth = 0.35
+    const landmarks = Array.from({ length: 478 }, () => ({ x: 0.5, y: 0.5, z: 0 }));
+    landmarks[10] = { x: 0.50, y: 0.42, z: 0 };
+    landmarks[152] = { x: 0.50, y: 0.58, z: 0 };
+    landmarks[33] = { x: 0.46, y: 0.48, z: 0 };
+    landmarks[263] = { x: 0.54, y: 0.48, z: 0 };
+    landmarks[1] = { x: 0.50, y: 0.51, z: -0.04 };
+    landmarks[61] = { x: 0.47, y: 0.55, z: 0 };
+    landmarks[291] = { x: 0.53, y: 0.55, z: 0 };
+    landmarks[234] = { x: 0.445, y: 0.50, z: 0 };
+    landmarks[454] = { x: 0.555, y: 0.50, z: 0 };
+
+    // Should pass even if single-frame static micro-motion triggered SPOOF_DETECTED while 3D depth >= 0.22
+    expect(
+      isFullFrontalFaceReadyForLogin(
+        landmarks,
+        { yawDeg: 12, pitchDeg: 14, depthScore: 0.35 },
+        { scan_status: 'SPOOF_DETECTED', error_code: 'SPOOF_ATTEMPT' },
+      ),
+    ).toBe(true);
+
+    // Should still reject flat low-depth spoof or obstructed eyes
+    expect(
+      isFullFrontalFaceReadyForLogin(
+        landmarks,
+        { yawDeg: 0, pitchDeg: 0, depthScore: 0.12 },
+        { scan_status: 'SPOOF_DETECTED', error_code: 'SPOOF_ATTEMPT' },
+      ),
+    ).toBe(false);
+    expect(
+      isFullFrontalFaceReadyForLogin(
+        landmarks,
+        { yawDeg: 0, pitchDeg: 0, depthScore: 0.45 },
+        { scan_status: 'RETRY', error_code: 'OBSTRUCTED_EYES' },
+      ),
+    ).toBe(false);
   });
 });

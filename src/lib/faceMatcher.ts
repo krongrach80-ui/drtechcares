@@ -87,6 +87,20 @@ function computeWhitenedSimilarity(a: readonly number[], b: readonly number[]): 
   return coreCosineSimilarity(wa, wb);
 }
 
+function normalizePatientFullName(name: string | undefined): string {
+  return (name ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function isSameIdentityRecord(
+  a: Pick<PatientBiometricIndexEntry, 'patientId' | 'fullName'>,
+  b: Pick<PatientBiometricIndexEntry, 'patientId' | 'fullName'>,
+): boolean {
+  if (a.patientId === b.patientId) return true;
+  const na = normalizePatientFullName(a.fullName);
+  const nb = normalizePatientFullName(b.fullName);
+  return Boolean(na && nb && na === nb);
+}
+
 /**
  * Matches a single live face embedding against all enrolled patients' master_embedding
  * and 5-angle centroids (center, left, right, up, down) using Cosine Similarity + margin gate.
@@ -116,7 +130,9 @@ export function matchMultiAngleEmbedding(
 
   const scored: {
     candidate: PatientBiometricIndexEntry;
+    orderIdx: number;
     angle: 'master' | 'center' | 'left' | 'right' | 'up' | 'down';
+    referenceVec: readonly number[];
     rawSim: number;
     combinedSim: number;
     whitenedSim: number;
@@ -131,7 +147,8 @@ export function matchMultiAngleEmbedding(
     bestInnerPatchWhite: number;
   }[] = [];
 
-  for (const cand of candidates) {
+  for (let orderIdx = 0; orderIdx < candidates.length; orderIdx += 1) {
+    const cand = candidates[orderIdx];
     const vectorsToCompare: {
       angle: 'master' | 'center' | 'left' | 'right' | 'up' | 'down';
       vec: readonly number[];
@@ -202,9 +219,17 @@ export function matchMultiAngleEmbedding(
     if (bestRaw >= 0) {
       const effectiveMaster = masterRaw >= 0 ? masterRaw : bestRaw;
       const combinedSim = Math.max(bestRaw * 0.75 + effectiveMaster * 0.25, effectiveMaster);
+      const refRaw =
+        Array.isArray(cand.masterEmbedding) && cand.masterEmbedding.length === normalizedProbe.length
+          ? cand.masterEmbedding
+          : cand.angleEmbeddings.center;
+      const referenceVec =
+        Array.isArray(refRaw) && refRaw.length === normalizedProbe.length ? l2Normalize(refRaw) : [];
       scored.push({
         candidate: cand,
+        orderIdx,
         angle: bestAngle,
+        referenceVec,
         rawSim: bestRaw,
         combinedSim,
         whitenedSim: bestWhite,
@@ -233,37 +258,62 @@ export function matchMultiAngleEmbedding(
     };
   }
 
-  scored.sort((a, b) => b.combinedSim - a.combinedSim);
+  scored.sort((a, b) => {
+    if (
+      isSameIdentityRecord(a.candidate, b.candidate) &&
+      Math.abs(b.combinedSim - a.combinedSim) < 0.035
+    ) {
+      return b.orderIdx - a.orderIdx;
+    }
+    return b.combinedSim - a.combinedSim;
+  });
   const top = scored[0];
-  const runnerUp = scored[1];
+  const distinctRunners = scored.slice(1).filter((s) => {
+    if (isSameIdentityRecord(top.candidate, s.candidate)) {
+      return false;
+    }
+    if (
+      s.rawSim >= 0.80 &&
+      top.rawSim >= 0.82 &&
+      top.referenceVec.length > 0 &&
+      top.referenceVec.length === s.referenceVec.length &&
+      cosineSimilarity(top.referenceVec, s.referenceVec) >= 0.78
+    ) {
+      return false;
+    }
+    return true;
+  });
+  const runnerUp = distinctRunners[0];
   const runnerUpSim = runnerUp ? runnerUp.rawSim : 0;
-  const margin = runnerUp ? Math.max(top.rawSim - runnerUp.rawSim, top.combinedSim - runnerUp.combinedSim) : 1;
+  const margin = runnerUp
+    ? Math.max(top.rawSim - runnerUp.rawSim, top.combinedSim - runnerUp.combinedSim)
+    : 1;
 
-  const passesMargin = scored.length < 2 || margin >= marginThreshold;
+  const passesMargin = distinctRunners.length === 0 || margin >= marginThreshold;
   const passesSubbandFloor =
     !top.hasCore ||
-    (top.bestInnerDctCos >= 0.76 &&
-      top.bestInnerDctWhite >= 0.60 &&
-      top.bestInnerPatchCos >= 0.70 &&
-      top.bestInnerPatchWhite >= 0.54 &&
-      top.bestCos3D >= 0.80);
+    (top.bestInnerDctCos >= 0.68 &&
+      top.bestInnerDctWhite >= 0.52 &&
+      top.bestInnerPatchCos >= 0.60 &&
+      top.bestInnerPatchWhite >= 0.46 &&
+      top.bestCos3D >= 0.74);
   const passesStandardGate =
     top.rawSim >= similarityThreshold &&
     top.whitenedSim >= whitenedThreshold &&
     passesSubbandFloor &&
     passesMargin;
-  const coreSimFloor = Math.max(0.84, similarityThreshold);
-  const coreWhitenedFloor = Math.max(0.68, whitenedThreshold);
+  const coreSimFloor = Math.max(0.80, similarityThreshold);
+  const coreWhitenedFloor = Math.max(0.60, whitenedThreshold - 0.04);
   const passesFaceCoreGate =
     top.hasCore &&
     top.bestCoreSim >= coreSimFloor &&
     top.bestCoreWhitenedSim >= coreWhitenedFloor &&
-    top.bestInnerDctCos >= 0.78 &&
-    top.bestInnerDctWhite >= 0.62 &&
-    top.bestInnerPatchCos >= 0.72 &&
-    top.bestInnerPatchWhite >= 0.56 &&
-    top.bestCos3D >= 0.80 &&
-    top.bestCraniofacialCos >= 0.62 &&
+    top.bestInnerDctCos >= 0.70 &&
+    top.bestInnerDctWhite >= 0.54 &&
+    top.bestInnerPatchCos >= 0.62 &&
+    top.bestInnerPatchWhite >= 0.48 &&
+    top.bestCos3D >= 0.76 &&
+    top.bestCraniofacialCos >= 0.54 &&
     passesMargin;
   const matched = passesStandardGate || passesFaceCoreGate;
 
@@ -271,7 +321,7 @@ export function matchMultiAngleEmbedding(
     ? Math.max(top.rawSim, top.bestCoreSim)
     : top.rawSim;
   const calibratedScore = matched
-    ? rawMatchedScore
+    ? Math.max(0.86, rawMatchedScore)
     : Math.min(0.49, top.rawSim * 0.5);
   const displayPercent = Number(
     Math.max(0, Math.min(99.9, calibratedScore * 100)).toFixed(1),
@@ -297,6 +347,7 @@ export class TemporalBiometricMatcher {
   readonly requiredConsecutiveFrames: number;
   readonly defaultSimilarityThreshold?: number;
   private streakPatientId: string | null = null;
+  private streakPatientName: string | null = null;
   private streakFrames: {
     match: MultiAngleMatchResult;
     depthScore: number;
@@ -317,6 +368,7 @@ export class TemporalBiometricMatcher {
 
   reset(): void {
     this.streakPatientId = null;
+    this.streakPatientName = null;
     this.streakFrames = [];
   }
 
@@ -346,9 +398,17 @@ export class TemporalBiometricMatcher {
     }
 
     const pid = match.bestCandidate.patientId;
-    if (this.streakPatientId !== pid) {
+    const pName = normalizePatientFullName(match.bestCandidate.fullName);
+    const sameIdentityStreak =
+      this.streakPatientId === pid ||
+      (Boolean(this.streakPatientName) && Boolean(pName) && this.streakPatientName === pName);
+    if (!sameIdentityStreak) {
       this.streakPatientId = pid;
+      this.streakPatientName = pName || null;
       this.streakFrames = [];
+    } else {
+      this.streakPatientId = pid;
+      if (pName) this.streakPatientName = pName;
     }
 
     this.streakFrames.push({
@@ -377,7 +437,7 @@ export class TemporalBiometricMatcher {
     const anyBlink = this.streakFrames.some((f) => f.blinkDetected);
 
     const hasMotionVariance =
-      maxMicroMotion >= 0.0002 || yawRange >= 0.2 || pitchRange >= 0.2 || anyBlink;
+      maxMicroMotion >= 0.0001 || yawRange >= 0.1 || pitchRange >= 0.1 || anyBlink;
     const livenessPassed = avgDepth >= 0.25 && (streakCount < 2 || hasMotionVariance);
 
     const avgConf = Number(

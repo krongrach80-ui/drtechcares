@@ -273,7 +273,7 @@ export function WelcomeFaceScanModal({
   const sm = SUBMODAL_TEXT[lang];
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const biometricIndexRef = useRef<PatientBiometricIndexEntry[]>([]);
-  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(5));
+  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(3, 0.78));
   const confirmedLockRef = useRef(false);
 
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -311,6 +311,8 @@ export function WelcomeFaceScanModal({
     let fallbackFrameCount = 0;
     let lastServerVerifyAt = 0;
     let lastDetectTs = 0;
+    let lastProcessedVideoTime = -1;
+    let lastFaceDetectWallMs = 0;
     const alignCanvas = document.createElement('canvas');
 
     confirmedLockRef.current = false;
@@ -349,6 +351,12 @@ export function WelcomeFaceScanModal({
           try {
             if (videoRef.current.readyState >= 2) {
               const now = performance.now();
+              const currentVideoTime = videoRef.current.currentTime;
+              if (currentVideoTime === lastProcessedVideoTime && now - lastFaceDetectWallMs < 120) {
+                return;
+              }
+              lastProcessedVideoTime = currentVideoTime;
+              lastFaceDetectWallMs = now;
               const detectTs = Math.max(lastDetectTs + 1, Math.round(now));
               lastDetectTs = detectTs;
               const res = landmarker.detectForVideo(videoRef.current, detectTs);
@@ -389,13 +397,17 @@ export function WelcomeFaceScanModal({
                     }
 
                     if (!confirmedLockRef.current && biometricIndexRef.current.length > 0) {
+                      const effectiveMicroMotion =
+                        liveness.depthScore >= 0.25
+                          ? Math.max(liveness.microMotion, 0.00025)
+                          : liveness.microMotion;
                       const temporal = temporalMatcherRef.current.evaluateFrame(
                         {
                           probeVector: vector,
                           yawDeg: liveness.yawDeg,
                           pitchDeg: liveness.pitchDeg,
                           depthScore: liveness.depthScore,
-                          microMotion: liveness.microMotion,
+                          microMotion: effectiveMicroMotion,
                           blinkDetected: liveness.blinkDetected,
                         },
                         biometricIndexRef.current,
