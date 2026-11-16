@@ -6,7 +6,9 @@ import {
 } from '../PhysicalCardGameData';
 import {
   evaluateTwoHandCardSelection,
+  isValidStrict21HandLandmarks,
   MINIGAME_HAND_RAISE_THRESHOLD_Y,
+  MINIGAME_MIN_HAND_CONFIDENCE,
   MINIGAME_THAI_SPEECH_RATE,
   MINIGAME_VOICE_LANG_OPTIONS,
   buildMinigameTtsUrl,
@@ -151,7 +153,51 @@ describe('PhysicalCardGame Trilingual AI Voiceover Helpers', () => {
     expect(bothRaised.bothHandsBlocked).toBe(true);
     expect(bothRaised.leftRaised).toBe(true);
     expect(bothRaised.rightRaised).toBe(true);
+    expect(bothRaised.raisedCount).toBe(2);
     expect(bothRaised.activeSide).toBeNull();
+
+    // Even if two raised hands appear in the same horizontal side, raisedCount >= 2 MUST block
+    const sameSideTwoHands = evaluateTwoHandCardSelection([
+      { zone: 'RIGHT', screenY: 0.40, wristY: 0.44 },
+      { zone: 'RIGHT', screenY: 0.43, wristY: 0.47 },
+    ]);
+    expect(sameSideTwoHands.bothHandsBlocked).toBe(true);
+    expect(sameSideTwoHands.raisedCount).toBe(2);
+    expect(sameSideTwoHands.activeSide).toBeNull();
+
+    // One hand raised (< 0.58) while second hand stays resting below (>= 0.58) MUST succeed cleanly
+    const oneUpOneReady = evaluateTwoHandCardSelection([
+      { zone: 'LEFT', screenY: 0.72, wristY: 0.76 },
+      { zone: 'RIGHT', screenY: 0.42, wristY: 0.46 },
+    ]);
+    expect(oneUpOneReady.bothHandsBlocked).toBe(false);
+    expect(oneUpOneReady.activeSide).toBe('RIGHT');
+  });
+
+  it('enforces Pure Hand-Only 21-point anatomical validation (confidence >= 0.55) to reject face/noise', () => {
+    expect(MINIGAME_MIN_HAND_CONFIDENCE).toBe(0.55);
+
+    const valid21Hand = Array.from({ length: 21 }, (_, idx) => {
+      if (idx === 0) return { x: 0.72, y: 0.65 }; // wrist
+      if (idx === 5) return { x: 0.68, y: 0.55 }; // index mcp
+      if (idx === 8) return { x: 0.66, y: 0.42 }; // index tip
+      if (idx === 9) return { x: 0.72, y: 0.54 }; // middle mcp
+      if (idx === 12) return { x: 0.72, y: 0.39 }; // middle tip
+      if (idx === 13) return { x: 0.76, y: 0.55 }; // ring mcp
+      if (idx === 16) return { x: 0.77, y: 0.42 }; // ring tip
+      if (idx === 17) return { x: 0.79, y: 0.57 }; // pinky mcp
+      if (idx === 20) return { x: 0.81, y: 0.46 }; // pinky tip
+      return { x: 0.72, y: 0.56 };
+    });
+
+    expect(isValidStrict21HandLandmarks(valid21Hand, 0.78)).toBe(true);
+    // Reject low score (< 0.55)
+    expect(isValidStrict21HandLandmarks(valid21Hand, 0.48)).toBe(false);
+    // Reject incomplete landmark list (< 21)
+    expect(isValidStrict21HandLandmarks(valid21Hand.slice(0, 12), 0.9)).toBe(false);
+    // Reject collapsed/noise cluster
+    const collapsed = Array.from({ length: 21 }, () => ({ x: 0.5, y: 0.3 }));
+    expect(isValidStrict21HandLandmarks(collapsed, 0.9)).toBe(false);
   });
 });
 

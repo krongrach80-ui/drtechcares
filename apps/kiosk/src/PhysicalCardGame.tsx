@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { FilesetResolver, HandLandmarker, PoseLandmarker, type NormalizedLandmark } from '@mediapipe/tasks-vision';
+import { FilesetResolver, HandLandmarker, type NormalizedLandmark } from '@mediapipe/tasks-vision';
 import { useClinicalI18n } from '@drtechcares/clinical-i18n';
 import {
   AudioChimeSynthesizer,
@@ -191,7 +191,8 @@ const HOLD_DURATION_SEC = 0.8;
 const HAND_RELEASE_DECAY_RATE = 2.5;
 const HAND_SWITCH_DECAY_RATE = 4.0;
 const LANDMARK_SMOOTH_SPEED = 38;
-const OFF_CANVAS_WIDTH = 256;
+const OFF_CANVAS_WIDTH = 512;
+export const MINIGAME_MIN_HAND_CONFIDENCE = 0.55;
 
 const HAND_CONNECTIONS: ReadonlyArray<[number, number]> = [
   [0, 1],
@@ -217,24 +218,6 @@ const HAND_CONNECTIONS: ReadonlyArray<[number, number]> = [
   [0, 17],
 ];
 
-const POSE_HAND_CONNECTIONS_A: ReadonlyArray<[number, number]> = [
-  [11, 13],
-  [13, 15],
-  [15, 17],
-  [15, 19],
-  [15, 21],
-  [17, 19],
-];
-
-const POSE_HAND_CONNECTIONS_B: ReadonlyArray<[number, number]> = [
-  [12, 14],
-  [14, 16],
-  [16, 18],
-  [16, 20],
-  [16, 22],
-  [18, 20],
-];
-
 type ActiveHandSide = 'LEFT' | 'RIGHT' | null;
 
 export const MINIGAME_HAND_RAISE_THRESHOLD_Y = 0.58;
@@ -243,12 +226,71 @@ export type QuestionAnswerPhase = 'READING_QUESTION' | 'READY_TO_ANSWER';
 
 export interface DetectedCardHandSample {
   zone: 'LEFT' | 'RIGHT';
+  screenX: number;
   screenY: number;
   wristY?: number;
   minTipY?: number;
-  px?: number;
-  py?: number;
-  landmarks?: NormalizedLandmark[];
+  px: number;
+  py: number;
+  topPx: number;
+  landmarks: NormalizedLandmark[];
+}
+
+/**
+ * Strictly validates that detected landmarks represent an anatomical 21-point human hand
+ * (wrist + MCP knuckles + fingertips with coherent scale) so faces/shoulders/background are rejected.
+ */
+export function isValidStrict21HandLandmarks(
+  landmarks: ReadonlyArray<{ x: number; y: number; z?: number }> | null | undefined,
+  confidence?: number,
+): boolean {
+  if (!landmarks || landmarks.length < 21) return false;
+  if (typeof confidence === 'number' && confidence < MINIGAME_MIN_HAND_CONFIDENCE) return false;
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < 21; i += 1) {
+    const pt = landmarks[i];
+    if (
+      !pt ||
+      !Number.isFinite(pt.x) ||
+      !Number.isFinite(pt.y) ||
+      pt.x < -0.05 ||
+      pt.x > 1.05 ||
+      pt.y < -0.05 ||
+      pt.y > 1.05
+    ) {
+      return false;
+    }
+    if (pt.x < minX) minX = pt.x;
+    if (pt.x > maxX) maxX = pt.x;
+    if (pt.y < minY) minY = pt.y;
+    if (pt.y > maxY) maxY = pt.y;
+  }
+
+  const boxW = maxX - minX;
+  const boxH = maxY - minY;
+  if (boxW < 0.025 || boxH < 0.03 || boxW > 0.85 || boxH > 0.9) return false;
+
+  // Require real wrist -> middle-MCP span and recognizable finger landmarks
+  const wrist = landmarks[0];
+  const midMcp = landmarks[9];
+  const palmSpan = Math.hypot(midMcp.x - wrist.x, midMcp.y - wrist.y);
+  if (palmSpan < 0.018) return false;
+
+  let distinctFingers = 0;
+  for (const [mcpIdx, tipIdx] of [
+    [5, 8],
+    [9, 12],
+    [13, 16],
+    [17, 20],
+  ] as const) {
+    const d = Math.hypot(landmarks[tipIdx].x - landmarks[mcpIdx].x, landmarks[tipIdx].y - landmarks[mcpIdx].y);
+    if (d >= 0.012) distinctFingers += 1;
+  }
+  return distinctFingers >= 2;
 }
 
 export function evaluateTwoHandCardSelection(
@@ -258,27 +300,36 @@ export function evaluateTwoHandCardSelection(
   activeSide: 'LEFT' | 'RIGHT' | null;
   leftRaised: boolean;
   rightRaised: boolean;
+  raisedCount: number;
   bothHandsBlocked: boolean;
 } {
   let leftRaised = false;
   let rightRaised = false;
+  let raisedCount = 0;
   for (const hand of hands) {
     const effectiveY = Math.min(hand.screenY, hand.wristY ?? hand.screenY);
     if (effectiveY < thresholdY) {
+      raisedCount += 1;
       if (hand.zone === 'LEFT') leftRaised = true;
       if (hand.zone === 'RIGHT') rightRaised = true;
     }
   }
-  if (leftRaised && rightRaised) {
-    return { activeSide: null, leftRaised: true, rightRaised: true, bothHandsBlocked: true };
+  if (raisedCount >= 2 || (leftRaised && rightRaised)) {
+    return {
+      activeSide: null,
+      leftRaised: true,
+      rightRaised: true,
+      raisedCount,
+      bothHandsBlocked: true,
+    };
   }
   if (leftRaised) {
-    return { activeSide: 'LEFT', leftRaised: true, rightRaised: false, bothHandsBlocked: false };
+    return { activeSide: 'LEFT', leftRaised: true, rightRaised: false, raisedCount: 1, bothHandsBlocked: false };
   }
   if (rightRaised) {
-    return { activeSide: 'RIGHT', leftRaised: false, rightRaised: true, bothHandsBlocked: false };
+    return { activeSide: 'RIGHT', leftRaised: false, rightRaised: true, raisedCount: 1, bothHandsBlocked: false };
   }
-  return { activeSide: null, leftRaised: false, rightRaised: false, bothHandsBlocked: false };
+  return { activeSide: null, leftRaised: false, rightRaised: false, raisedCount: 0, bothHandsBlocked: false };
 }
 
 export interface PhysicalCardGameSummary {
@@ -337,9 +388,8 @@ function mapMirroredLandmarkToScreen(
   };
 }
 
-function classifyMirroredHandZone(screenX: number, lockedHand: ActiveHandSide): 'LEFT' | 'RIGHT' {
-  const splitThreshold = lockedHand === 'LEFT' ? 0.52 : lockedHand === 'RIGHT' ? 0.48 : 0.5;
-  return screenX < splitThreshold ? 'LEFT' : 'RIGHT';
+function classifyMirroredHandZone(screenX: number): 'LEFT' | 'RIGHT' {
+  return screenX < 0.5 ? 'LEFT' : 'RIGHT';
 }
 
 function lerpLandmarks(
@@ -409,10 +459,11 @@ function drawCenterZoneDivider(ctx: CanvasRenderingContext2D, cw: number, ch: nu
   ctx.restore();
 }
 
-function drawAmberHandWarningBox(
+function drawHandAlertBox(
   ctx: CanvasRenderingContext2D,
   landmarks: NormalizedLandmark[],
   tf: CoverTransform,
+  color: string = '#ef4444',
 ) {
   const pts = landmarks.map((lm) => mapMirroredLandmarkToScreen(lm, tf));
   if (pts.length === 0) return;
@@ -427,9 +478,54 @@ function drawAmberHandWarningBox(
     maxY = Math.max(maxY, p.py);
   }
   ctx.save();
-  ctx.strokeStyle = '#f59e0b';
+  ctx.strokeStyle = color;
   ctx.lineWidth = 4;
-  ctx.strokeRect(minX - 18, minY - 18, Math.max(48, maxX - minX + 36), Math.max(48, maxY - minY + 36));
+  ctx.beginPath();
+  ctx.roundRect(minX - 18, minY - 18, Math.max(48, maxX - minX + 36), Math.max(48, maxY - minY + 36), 14);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawHandPillLabel(
+  ctx: CanvasRenderingContext2D,
+  px: number,
+  topPy: number,
+  label: string,
+  bgColor: string,
+  textColor: string = '#ffffff',
+) {
+  ctx.save();
+  ctx.font = '800 13px "Sarabun", sans-serif';
+  const tw = ctx.measureText(label).width;
+  const pillW = tw + 20;
+  const pillH = 26;
+  const pillX = Math.max(8, Math.min(ctx.canvas.width - pillW - 8, px - pillW / 2));
+  const pillY = Math.max(8, topPy - pillH - 12);
+  ctx.fillStyle = bgColor;
+  ctx.beginPath();
+  ctx.roundRect(pillX, pillY, pillW, pillH, 13);
+  ctx.fill();
+  ctx.fillStyle = textColor;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, pillX + pillW / 2, pillY + pillH / 2);
+  ctx.restore();
+}
+
+function drawDualHandRedBridge(
+  ctx: CanvasRenderingContext2D,
+  palmA: { px: number; py: number },
+  palmB: { px: number; py: number },
+) {
+  ctx.save();
+  ctx.strokeStyle = '#ef4444';
+  ctx.lineWidth = 5;
+  ctx.setLineDash([12, 8]);
+  ctx.beginPath();
+  ctx.moveTo(palmA.px, palmA.py);
+  ctx.lineTo(palmB.px, palmB.py);
+  ctx.stroke();
+  ctx.setLineDash([]);
   ctx.restore();
 }
 
@@ -466,46 +562,6 @@ function drawHandSkeletonOnCanvas(
     ctx.strokeStyle = '#0f172a';
     ctx.lineWidth = 2;
     ctx.stroke();
-  }
-  ctx.restore();
-}
-
-function drawPoseArmSkeletonOnCanvas(
-  ctx: CanvasRenderingContext2D,
-  landmarks: NormalizedLandmark[],
-  connections: ReadonlyArray<[number, number]>,
-  tf: CoverTransform,
-  color: string,
-) {
-  ctx.save();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 6;
-  ctx.lineCap = 'round';
-  const drawnPoints = new Set<number>();
-
-  for (const [a, b] of connections) {
-    const start = landmarks[a];
-    const end = landmarks[b];
-    if (!start || !end) continue;
-    if ((start.visibility ?? 1) < 0.25 || (end.visibility ?? 1) < 0.25) continue;
-    const pA = mapMirroredLandmarkToScreen(start, tf);
-    const pB = mapMirroredLandmarkToScreen(end, tf);
-    ctx.beginPath();
-    ctx.moveTo(pA.px, pA.py);
-    ctx.lineTo(pB.px, pB.py);
-    ctx.stroke();
-    drawnPoints.add(a);
-    drawnPoints.add(b);
-  }
-
-  for (const idx of drawnPoints) {
-    const lm = landmarks[idx];
-    if (!lm) continue;
-    const pt = mapMirroredLandmarkToScreen(lm, tf);
-    ctx.fillStyle = idx === 15 || idx === 16 ? '#ffffff' : color;
-    ctx.beginPath();
-    ctx.arc(pt.px, pt.py, 8, 0, Math.PI * 2);
-    ctx.fill();
   }
   ctx.restore();
 }
@@ -700,7 +756,8 @@ export function PhysicalCardGame({
   const questionPhaseRef = useRef<QuestionAnswerPhase>('READING_QUESTION');
   questionPhaseRef.current = questionPhase;
   const bothHandsWarnSpeechTsRef = useRef<number>(0);
-  const allHandsLandmarksRef = useRef<NormalizedLandmark[][]>([]);
+  const detectedHandsRef = useRef<DetectedCardHandSample[]>([]);
+  const smoothedHandsRef = useRef<NormalizedLandmark[][]>([]);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -737,7 +794,6 @@ export function PhysicalCardGame({
   const lastInferenceTsRef = useRef(0);
   const targetLandmarksRef = useRef<NormalizedLandmark[] | null>(null);
   const smoothedLandmarksRef = useRef<NormalizedLandmark[] | null>(null);
-  const poseLandmarksRef = useRef<NormalizedLandmark[] | null>(null);
   const palmPxRef = useRef<{ px: number; py: number } | null>(null);
   const pendingChoiceRef = useRef<'yes' | 'no' | null>(null);
   const cropWarnRef = useRef(false);
@@ -1112,8 +1168,8 @@ export function PhysicalCardGame({
     holdProgressRef.current = 0;
     targetLandmarksRef.current = null;
     smoothedLandmarksRef.current = null;
-    poseLandmarksRef.current = null;
-    allHandsLandmarksRef.current = [];
+    detectedHandsRef.current = [];
+    smoothedHandsRef.current = [];
     palmPxRef.current = null;
     pendingChoiceRef.current = null;
     bothHandsWarnRef.current = false;
@@ -1315,14 +1371,8 @@ export function PhysicalCardGame({
     let active = true;
     let rafId = 0;
     let handLandmarker: HandLandmarker | null = null;
-    let poseLandmarker: PoseLandmarker | null = null;
     let edgeWs: WebSocket | null = null;
     type EdgeHandTelemetry = {
-      left_raised?: boolean;
-      right_raised?: boolean;
-      active_card_zone?: 'LEFT' | 'RIGHT' | 'BOTH' | 'NONE';
-      left_palm_2d?: [number, number] | null;
-      right_palm_2d?: [number, number] | null;
       left_hand_landmarks?: Array<{ x: number; y: number; z?: number }>;
       right_hand_landmarks?: Array<{ x: number; y: number; z?: number }>;
     };
@@ -1332,7 +1382,7 @@ export function PhysicalCardGame({
     setDetectorReady(false);
     resetTrackingRefs();
 
-    // Optional Edge Vision WS (RTMW3D-l 133-point Wholebody) with automatic MediaPipe fallback
+    // Optional Edge Vision WS accepting ONLY strict 21-point hand landmarks
     try {
       const wsUrl = (import.meta.env.VITE_EDGE_VISION_WS as string | undefined)?.trim() || 'ws://localhost:8000/ws/kiosk';
       edgeWs = new WebSocket(wsUrl);
@@ -1340,8 +1390,12 @@ export function PhysicalCardGame({
         if (!active) return;
         try {
           const msg = JSON.parse(evt.data) as { hand_status?: EdgeHandTelemetry };
-          if (msg?.hand_status) {
-            edgeHandStatus = msg.hand_status;
+          const hs = msg?.hand_status;
+          const hasStrictHand =
+            (hs?.left_hand_landmarks && isValidStrict21HandLandmarks(hs.left_hand_landmarks)) ||
+            (hs?.right_hand_landmarks && isValidStrict21HandLandmarks(hs.right_hand_landmarks));
+          if (hs && hasStrictHand) {
+            edgeHandStatus = hs;
             edgeHandTs = Date.now();
             setDetectorReady(true);
           }
@@ -1356,49 +1410,30 @@ export function PhysicalCardGame({
       edgeWs = null;
     }
 
-    async function createHandOrPoseDetector() {
+    async function createPureHandDetector() {
       const vision = await resolveVisionTasks();
       const handUrls = [
         '/models/hand_landmarker.task',
         'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
       ];
+      // Pure Hand-Only Mode (numHands=2, minConfidence=0.55): NO face, pose, body, or object models
       for (const modelAssetPath of handUrls) {
-        for (const delegate of ['CPU', 'GPU'] as const) {
+        for (const delegate of ['GPU', 'CPU'] as const) {
           try {
             handLandmarker = await HandLandmarker.createFromOptions(vision, {
               baseOptions: { modelAssetPath, delegate },
               runningMode: 'VIDEO',
               numHands: 2,
-              minHandDetectionConfidence: 0.4,
-              minHandPresenceConfidence: 0.4,
-              minTrackingConfidence: 0.4,
+              minHandDetectionConfidence: MINIGAME_MIN_HAND_CONFIDENCE,
+              minHandPresenceConfidence: MINIGAME_MIN_HAND_CONFIDENCE,
+              minTrackingConfidence: MINIGAME_MIN_HAND_CONFIDENCE,
             });
             return 'hand' as const;
           } catch {
-            // try GPU delegate or next model path
+            // try CPU delegate or next model path
           }
         }
       }
-
-      const poseUrls = ['/models/pose_landmarker.task', '/models/pose_landmarker_full.task'];
-      for (const modelAssetPath of poseUrls) {
-        for (const delegate of ['CPU', 'GPU'] as const) {
-          try {
-            poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-              baseOptions: { modelAssetPath, delegate },
-              runningMode: 'VIDEO',
-              numPoses: 1,
-              minPoseDetectionConfidence: 0.45,
-              minPosePresenceConfidence: 0.45,
-              minTrackingConfidence: 0.45,
-            });
-            return 'pose' as const;
-          } catch {
-            // try GPU delegate or next pose model path
-          }
-        }
-      }
-
       return 'none' as const;
     }
 
@@ -1442,12 +1477,12 @@ export function PhysicalCardGame({
         // video play settles shortly after metadata loads
       }
 
-      const mode = await createHandOrPoseDetector();
+      const mode = await createPureHandDetector();
       if (!active) return;
 
       const edgeAlive = () => Boolean(edgeHandStatus && Date.now() - edgeHandTs < 450);
       if (mode === 'none' && !edgeAlive()) {
-        setCameraError('ระบบตรวจจับมือไม่พร้อมใช้งาน กรุณาคลิกเลือกคำตอบด้านล่างแทน');
+        setCameraError('ระบบตรวจจับมือ (21 จุด) ไม่พร้อมใช้งาน กรุณาคลิกเลือกคำตอบด้านล่างแทน');
         return;
       }
 
@@ -1457,6 +1492,36 @@ export function PhysicalCardGame({
       lastFrameTimeRef.current = performance.now();
       lastVideoTimeRef.current = -1;
       lastInferenceTsRef.current = 0;
+
+      const buildHandSample = (rawLms: NormalizedLandmark[]): DetectedCardHandSample => {
+        const wrist = rawLms[0];
+        const indexMcp = rawLms[5];
+        const middleMcp = rawLms[9];
+        const pinkyMcp = rawLms[17];
+        const middleTip = rawLms[12];
+        const palmRaw = {
+          x: (wrist.x + indexMcp.x + middleMcp.x + pinkyMcp.x + middleTip.x) / 5,
+          y: (wrist.y + indexMcp.y + middleMcp.y + pinkyMcp.y + middleTip.y) / 5,
+        };
+        const mappedPalm = mapMirroredLandmarkToScreen(palmRaw, tfFromLast);
+        const mappedWrist = mapMirroredLandmarkToScreen(wrist, tfFromLast);
+        let minPy = Infinity;
+        for (const pt of rawLms) {
+          const mapped = mapMirroredLandmarkToScreen(pt, tfFromLast);
+          if (mapped.py < minPy) minPy = mapped.py;
+        }
+        return {
+          zone: classifyMirroredHandZone(mappedPalm.screenX),
+          screenX: mappedPalm.screenX,
+          screenY: mappedPalm.screenY,
+          wristY: mappedWrist.screenY,
+          px: mappedPalm.px,
+          py: mappedPalm.py,
+          topPx: Number.isFinite(minPy) ? minPy : mappedPalm.py - 30,
+          landmarks: rawLms,
+        };
+      };
+      let tfFromLast: CoverTransform = computeMirroredCoverTransform(640, 480, 640, 480);
 
       const loop = (now: number) => {
         if (!active || !videoRef.current) return;
@@ -1482,6 +1547,7 @@ export function PhysicalCardGame({
         }
 
         const tf = computeMirroredCoverTransform(cw, ch, vw, vh);
+        tfFromLast = tf;
         const ctx = canvas?.getContext('2d', { desynchronized: true }) ?? null;
         if (ctx) {
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1490,15 +1556,14 @@ export function PhysicalCardGame({
         }
 
         const isSpeechLocked = questionPhaseRef.current === 'READING_QUESTION';
-        const isTrackingPaused = Boolean(feedbackRef.current) || submittingRef.current || isSpeechLocked;
+        const isAnswerPaused = Boolean(feedbackRef.current) || submittingRef.current;
         const isEdgeFresh = Boolean(edgeHandStatus && Date.now() - edgeHandTs < 350);
 
-        if (isSpeechLocked) {
+        if (isSpeechLocked || isAnswerPaused) {
           holdProgressRef.current = 0;
           activeHandRef.current = null;
           lockedHandRef.current = null;
           palmPxRef.current = null;
-          allHandsLandmarksRef.current = [];
           if (pendingChoiceRef.current !== null) {
             pendingChoiceRef.current = null;
             setPendingChoice(null);
@@ -1508,106 +1573,109 @@ export function PhysicalCardGame({
           if (badgePctRef.current) badgePctRef.current.textContent = '0%';
         }
 
-        if (!isTrackingPaused && isEdgeFresh && edgeHandStatus) {
-          const eh = edgeHandStatus;
-          const nextBothWarn = eh.active_card_zone === 'BOTH';
-          if (bothHandsWarnRef.current !== nextBothWarn) {
-            bothHandsWarnRef.current = nextBothWarn;
-            setBothHandsWarn(nextBothWarn);
-          }
-          if (nextBothWarn) {
-            holdProgressRef.current = 0;
-            activeHandRef.current = null;
-            lockedHandRef.current = null;
-            palmPxRef.current = null;
-            targetLandmarksRef.current = null;
-          } else if (eh.active_card_zone === 'LEFT' || eh.active_card_zone === 'RIGHT') {
-            activeHandRef.current = eh.active_card_zone;
-            const rawLms = eh.active_card_zone === 'LEFT' ? eh.left_hand_landmarks : eh.right_hand_landmarks;
-            targetLandmarksRef.current =
-              rawLms && rawLms.length >= 21
-                ? rawLms.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0, visibility: 1 }))
-                : null;
-            const palmRaw = eh.active_card_zone === 'LEFT' ? eh.left_palm_2d : eh.right_palm_2d;
-            if (palmRaw) {
-              const mapped = mapMirroredLandmarkToScreen({ x: palmRaw[0], y: palmRaw[1] }, tf);
-              palmPxRef.current = { px: mapped.px, py: mapped.py };
+        if (!isAnswerPaused) {
+          if (isEdgeFresh && edgeHandStatus) {
+            const eh = edgeHandStatus;
+            const rawEdgeHands: NormalizedLandmark[][] = [];
+            if (eh.left_hand_landmarks && isValidStrict21HandLandmarks(eh.left_hand_landmarks)) {
+              rawEdgeHands.push(
+                eh.left_hand_landmarks.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0, visibility: 1 })),
+              );
             }
-          } else {
-            activeHandRef.current = null;
-            palmPxRef.current = null;
-            targetLandmarksRef.current = null;
-            smoothedLandmarksRef.current = null;
-          }
-        } else if (!isTrackingPaused && video.readyState >= 2) {
-          const isNewVideoFrame = video.currentTime !== lastVideoTimeRef.current;
-          if (isNewVideoFrame) {
-            lastVideoTimeRef.current = video.currentTime;
+            if (eh.right_hand_landmarks && isValidStrict21HandLandmarks(eh.right_hand_landmarks)) {
+              rawEdgeHands.push(
+                eh.right_hand_landmarks.map((p) => ({ x: p.x, y: p.y, z: p.z ?? 0, visibility: 1 })),
+              );
+            }
+            const samples = rawEdgeHands.slice(0, 2).map(buildHandSample);
+            detectedHandsRef.current = samples;
+            const twoHandResult = evaluateTwoHandCardSelection(samples, MINIGAME_HAND_RAISE_THRESHOLD_Y);
 
-            let offscreen = offscreenCanvasRef.current;
-            if (!offscreen) {
-              offscreen = document.createElement('canvas');
-              offscreenCanvasRef.current = offscreen;
+            if (twoHandResult.bothHandsBlocked) {
+              holdProgressRef.current = 0;
+              lockedHandRef.current = null;
+              activeHandRef.current = null;
+              palmPxRef.current = null;
+              if (!bothHandsWarnRef.current) {
+                bothHandsWarnRef.current = true;
+                setBothHandsWarn(true);
+              }
+            } else {
+              if (bothHandsWarnRef.current) {
+                bothHandsWarnRef.current = false;
+                setBothHandsWarn(false);
+              }
+              if (!isSpeechLocked) {
+                activeHandRef.current = twoHandResult.activeSide;
+                const raisedSample = twoHandResult.activeSide
+                  ? samples.find(
+                      (s) =>
+                        s.zone === twoHandResult.activeSide &&
+                        Math.min(s.screenY, s.wristY ?? s.screenY) < MINIGAME_HAND_RAISE_THRESHOLD_Y,
+                    )
+                  : undefined;
+                palmPxRef.current = raisedSample ? { px: raisedSample.px, py: raisedSample.py } : null;
+              }
             }
-            const offH = Math.max(144, Math.round(OFF_CANVAS_WIDTH * (vh / vw)));
-            if (offscreen.width !== OFF_CANVAS_WIDTH || offscreen.height !== offH) {
-              offscreen.width = OFF_CANVAS_WIDTH;
-              offscreen.height = offH;
-            }
-            const offCtx = offscreen.getContext('2d', { alpha: false });
-            if (offCtx) {
-              offCtx.drawImage(video, 0, 0, offscreen.width, offscreen.height);
-            }
-            const inferenceSource = offCtx ? offscreen : video;
-            const inferenceTs = Math.max(lastInferenceTsRef.current + 1, Math.round(now));
-            lastInferenceTsRef.current = inferenceTs;
-            const isPortrait = typeof window !== 'undefined' && window.innerHeight > window.innerWidth;
+          } else if (video.readyState >= 2 && mode === 'hand' && handLandmarker) {
+            const isNewVideoFrame = video.currentTime !== lastVideoTimeRef.current;
+            if (isNewVideoFrame) {
+              lastVideoTimeRef.current = video.currentTime;
 
-            if (mode === 'hand' && handLandmarker) {
+              let offscreen = offscreenCanvasRef.current;
+              if (!offscreen) {
+                offscreen = document.createElement('canvas');
+                offscreenCanvasRef.current = offscreen;
+              }
+              const offH = Math.max(144, Math.round(OFF_CANVAS_WIDTH * (vh / vw)));
+              if (offscreen.width !== OFF_CANVAS_WIDTH || offscreen.height !== offH) {
+                offscreen.width = OFF_CANVAS_WIDTH;
+                offscreen.height = offH;
+              }
+              const offCtx = offscreen.getContext('2d', { alpha: false });
+              if (offCtx) {
+                offCtx.drawImage(video, 0, 0, offscreen.width, offscreen.height);
+              }
+              const inferenceSource = offCtx ? offscreen : video;
+              const inferenceTs = Math.max(lastInferenceTsRef.current + 1, Math.round(now));
+              lastInferenceTsRef.current = inferenceTs;
+              const isPortrait = typeof window !== 'undefined' && window.innerHeight > window.innerWidth;
+
               const res = handLandmarker.detectForVideo(inferenceSource, inferenceTs);
-              const detectedHandsList = (res.landmarks ?? []).filter((lms) => lms.length >= 21);
-              allHandsLandmarksRef.current = detectedHandsList;
-              if (detectedHandsList.length > 0) {
-                const samples: DetectedCardHandSample[] = detectedHandsList.map((handLms) => {
-                  const wrist = handLms[0];
-                  const indexMcp = handLms[5];
-                  const middleMcp = handLms[9];
-                  const pinkyMcp = handLms[17];
-                  const middleTip = handLms[12];
-                  const palmRaw = {
-                    x: (wrist.x + indexMcp.x + middleMcp.x + pinkyMcp.x + middleTip.x) / 5,
-                    y: (wrist.y + indexMcp.y + middleMcp.y + pinkyMcp.y + middleTip.y) / 5,
-                  };
-                  const mappedPalm = mapMirroredLandmarkToScreen(palmRaw, tf);
-                  const mappedWrist = mapMirroredLandmarkToScreen(wrist, tf);
-                  const zone = classifyMirroredHandZone(mappedPalm.screenX, lockedHandRef.current);
-                  return {
-                    zone,
-                    screenY: mappedPalm.screenY,
-                    wristY: mappedWrist.screenY,
-                    px: mappedPalm.px,
-                    py: mappedPalm.py,
-                    landmarks: handLms,
-                  };
+              // Strictly validate 21-point hand skeleton (NEVER treat face/head/shoulders as hands)
+              const validHands = (res.landmarks ?? [])
+                .slice(0, 2)
+                .filter((lms, idx) => {
+                  const score = res.handedness?.[idx]?.[0]?.score;
+                  return isValidStrict21HandLandmarks(lms, score);
                 });
 
-                const twoHandResult = evaluateTwoHandCardSelection(samples, MINIGAME_HAND_RAISE_THRESHOLD_Y);
-                const nextCropWarn = isPortrait && samples.some((s) => {
-                  const wristScreen = s.landmarks?.[0] ? mapMirroredLandmarkToScreen(s.landmarks[0], tf).screenX : 0.5;
-                  return wristScreen < 0.08 || wristScreen > 0.92;
-                });
+              const samples = validHands.map(buildHandSample);
+              detectedHandsRef.current = samples;
+
+              if (samples.length > 0) {
+                const nextCropWarn =
+                  isPortrait && samples.some((s) => s.screenX < 0.08 || s.screenX > 0.92);
                 if (cropWarnRef.current !== nextCropWarn) {
                   cropWarnRef.current = nextCropWarn;
                   setCropWarn(nextCropWarn);
                 }
 
+                const twoHandResult = evaluateTwoHandCardSelection(
+                  samples,
+                  MINIGAME_HAND_RAISE_THRESHOLD_Y,
+                );
+
                 if (twoHandResult.bothHandsBlocked) {
-                  // Mutual Exclusion Rule: immediate hold reset & amber two-hand alert + brief voice warning
+                  // Strict Anti-Dual-Raise Lock: immediately halt holdProgress = 0 and alert red
                   holdProgressRef.current = 0;
                   lockedHandRef.current = null;
                   activeHandRef.current = null;
                   palmPxRef.current = null;
-                  targetLandmarksRef.current = null;
+                  if (pendingChoiceRef.current !== null) {
+                    pendingChoiceRef.current = null;
+                    setPendingChoice(null);
+                  }
                   if (progressBarFillRef.current) progressBarFillRef.current.style.width = '0%';
                   if (progressPctRef.current) progressPctRef.current.textContent = '0%';
                   if (badgePctRef.current) badgePctRef.current.textContent = '0%';
@@ -1618,30 +1686,31 @@ export function PhysicalCardGame({
                   const nowMs = Date.now();
                   if (!voiceMutedRef.current && nowMs - bothHandsWarnSpeechTsRef.current >= 3600) {
                     bothHandsWarnSpeechTsRef.current = nowMs;
-                    speakMinigameText('กรุณายกมือเพียงข้างเดียว', voiceLangRef.current, { forceInterrupt: true });
+                    speakMinigameText('ห้ามยก 2 มือพร้อมกัน กรุณาลดมือลง 1 ข้างเพื่อตอบ', voiceLangRef.current, {
+                      forceInterrupt: true,
+                    });
                   }
                 } else {
                   if (bothHandsWarnRef.current) {
                     bothHandsWarnRef.current = false;
                     setBothHandsWarn(false);
                   }
-                  const selectedSample = twoHandResult.activeSide
-                    ? samples.find(
-                        (s) =>
-                          s.zone === twoHandResult.activeSide &&
-                          Math.min(s.screenY, s.wristY ?? s.screenY) < MINIGAME_HAND_RAISE_THRESHOLD_Y,
-                      ) ?? samples[0]
-                    : samples[0];
-                  targetLandmarksRef.current = selectedSample.landmarks ?? null;
-                  palmPxRef.current =
-                    selectedSample.px !== undefined && selectedSample.py !== undefined
-                      ? { px: selectedSample.px, py: selectedSample.py }
+                  if (!isSpeechLocked) {
+                    activeHandRef.current = twoHandResult.activeSide;
+                    const raisedSample = twoHandResult.activeSide
+                      ? samples.find(
+                          (s) =>
+                            s.zone === twoHandResult.activeSide &&
+                            Math.min(s.screenY, s.wristY ?? s.screenY) < MINIGAME_HAND_RAISE_THRESHOLD_Y,
+                        )
+                      : undefined;
+                    palmPxRef.current = raisedSample
+                      ? { px: raisedSample.px, py: raisedSample.py }
                       : null;
-                  activeHandRef.current = twoHandResult.activeSide;
+                  }
                 }
               } else {
-                targetLandmarksRef.current = null;
-                smoothedLandmarksRef.current = null;
+                smoothedHandsRef.current = [];
                 palmPxRef.current = null;
                 activeHandRef.current = null;
                 if (bothHandsWarnRef.current) {
@@ -1653,82 +1722,11 @@ export function PhysicalCardGame({
                   setCropWarn(false);
                 }
               }
-            } else if (mode === 'pose' && poseLandmarker) {
-              const res = poseLandmarker.detectForVideo(inferenceSource, inferenceTs);
-              const pose = res.landmarks?.[0] ?? null;
-              poseLandmarksRef.current = pose;
-              const poseSamples: DetectedCardHandSample[] = [];
-              let nextCropWarn = false;
-
-              if (pose) {
-                const groups = [
-                  { shoulder: pose[11], wrist: pose[15], index: pose[19] },
-                  { shoulder: pose[12], wrist: pose[16], index: pose[20] },
-                ];
-                for (const g of groups) {
-                  if (!g.wrist || (g.wrist.visibility ?? 1) < 0.35) continue;
-                  const palmRaw = {
-                    x: g.index && (g.index.visibility ?? 1) > 0.3 ? (g.wrist.x + g.index.x) / 2 : g.wrist.x,
-                    y: g.index && (g.index.visibility ?? 1) > 0.3 ? (g.wrist.y + g.index.y) / 2 : g.wrist.y,
-                  };
-                  const mappedPalm = mapMirroredLandmarkToScreen(palmRaw, tf);
-                  const mappedWrist = mapMirroredLandmarkToScreen(g.wrist, tf);
-                  if (isPortrait && (mappedPalm.screenX < 0.08 || mappedPalm.screenX > 0.92)) {
-                    nextCropWarn = true;
-                  }
-                  const zone = classifyMirroredHandZone(mappedPalm.screenX, lockedHandRef.current);
-                  poseSamples.push({
-                    zone,
-                    screenY: mappedPalm.screenY,
-                    wristY: mappedWrist.screenY,
-                    px: mappedPalm.px,
-                    py: mappedPalm.py,
-                  });
-                }
-              }
-
-              const poseEval = evaluateTwoHandCardSelection(poseSamples, MINIGAME_HAND_RAISE_THRESHOLD_Y);
-              if (bothHandsWarnRef.current !== poseEval.bothHandsBlocked) {
-                bothHandsWarnRef.current = poseEval.bothHandsBlocked;
-                setBothHandsWarn(poseEval.bothHandsBlocked);
-              }
-              if (cropWarnRef.current !== nextCropWarn) {
-                cropWarnRef.current = nextCropWarn;
-                setCropWarn(nextCropWarn);
-              }
-
-              if (poseEval.bothHandsBlocked) {
-                holdProgressRef.current = 0;
-                lockedHandRef.current = null;
-                activeHandRef.current = null;
-                palmPxRef.current = null;
-                if (progressBarFillRef.current) progressBarFillRef.current.style.width = '0%';
-                if (progressPctRef.current) progressPctRef.current.textContent = '0%';
-                if (badgePctRef.current) badgePctRef.current.textContent = '0%';
-                const nowMs = Date.now();
-                if (!voiceMutedRef.current && nowMs - bothHandsWarnSpeechTsRef.current >= 3600) {
-                  bothHandsWarnSpeechTsRef.current = nowMs;
-                  speakMinigameText('กรุณายกมือเพียงข้างเดียว', voiceLangRef.current, { forceInterrupt: true });
-                }
-              } else {
-                activeHandRef.current = poseEval.activeSide;
-                const matchedSample = poseEval.activeSide
-                  ? poseSamples.find(
-                      (s) =>
-                        s.zone === poseEval.activeSide &&
-                        Math.min(s.screenY, s.wristY ?? s.screenY) < MINIGAME_HAND_RAISE_THRESHOLD_Y,
-                    )
-                  : undefined;
-                palmPxRef.current =
-                  matchedSample?.px !== undefined && matchedSample?.py !== undefined
-                    ? { px: matchedSample.px, py: matchedSample.py }
-                    : null;
-              }
             }
           }
 
-          // Smooth 60fps delta-time hold progress (0.8s confirmation, smooth decay)
-          const activeHand = activeHandRef.current;
+          // Smooth 60fps delta-time hold progress only when READY_TO_ANSWER & no dual-hand violation
+          const activeHand = isSpeechLocked || bothHandsWarnRef.current ? null : activeHandRef.current;
           if (activeHand) {
             if (!lockedHandRef.current || holdProgressRef.current <= 0.05) {
               lockedHandRef.current = activeHand;
@@ -1749,14 +1747,21 @@ export function PhysicalCardGame({
           }
 
           const nextPendingChoice: 'yes' | 'no' | null =
-            lockedHandRef.current === 'RIGHT' ? 'yes' : lockedHandRef.current === 'LEFT' ? 'no' : null;
+            bothHandsWarnRef.current || isSpeechLocked
+              ? null
+              : lockedHandRef.current === 'RIGHT'
+                ? 'yes'
+                : lockedHandRef.current === 'LEFT'
+                  ? 'no'
+                  : null;
           if (pendingChoiceRef.current !== nextPendingChoice) {
             pendingChoiceRef.current = nextPendingChoice;
             setPendingChoice(nextPendingChoice);
           }
 
-          // Update progress width and percentage directly on DOM at 60fps without React re-renders
-          const pctFloat = Math.min(100, Math.max(0, holdProgressRef.current * 100));
+          const pctFloat = bothHandsWarnRef.current
+            ? 0
+            : Math.min(100, Math.max(0, holdProgressRef.current * 100));
           const pctRounded = `${Math.round(pctFloat)}%`;
           if (progressBarFillRef.current) {
             progressBarFillRef.current.style.width = `${pctFloat.toFixed(1)}%`;
@@ -1768,34 +1773,74 @@ export function PhysicalCardGame({
             badgePctRef.current.textContent = pctRounded;
           }
 
-          // Render interpolated 120fps hand or pose skeleton + amber dual-hand boxes + progress halo directly on canvas
+          // Render Dual-Hand 21-Point Visualization on canvas (both hands simultaneously)
           if (ctx) {
             const smoothAlpha = 1 - Math.exp(-LANDMARK_SMOOTH_SPEED * dt);
-            if (bothHandsWarnRef.current && allHandsLandmarksRef.current.length >= 2) {
-              for (const handSet of allHandsLandmarksRef.current) {
-                drawHandSkeletonOnCanvas(ctx, handSet, tf, '#f59e0b');
-                drawAmberHandWarningBox(ctx, handSet, tf);
-              }
-            } else if ((mode === 'hand' || isEdgeFresh) && targetLandmarksRef.current) {
-              smoothedLandmarksRef.current = lerpLandmarks(
-                smoothedLandmarksRef.current,
-                targetLandmarksRef.current,
-                smoothAlpha,
+            const currentHands = detectedHandsRef.current.slice(0, 2);
+
+            if (bothHandsWarnRef.current && currentHands.length >= 2) {
+              drawDualHandRedBridge(
+                ctx,
+                { px: currentHands[0].px, py: currentHands[0].py },
+                { px: currentHands[1].px, py: currentHands[1].py },
               );
-              const skelColor =
-                (activeHand ?? lockedHandRef.current) === 'RIGHT'
-                  ? '#10b981'
-                  : (activeHand ?? lockedHandRef.current) === 'LEFT'
-                    ? '#f43f5e'
-                    : '#38bdf8';
-              drawHandSkeletonOnCanvas(ctx, smoothedLandmarksRef.current, tf, skelColor);
-            } else if (mode === 'pose' && poseLandmarksRef.current && activeHand) {
-              const skelColor = activeHand === 'RIGHT' ? '#10b981' : '#f43f5e';
-              drawPoseArmSkeletonOnCanvas(ctx, poseLandmarksRef.current, POSE_HAND_CONNECTIONS_A, tf, skelColor);
-              drawPoseArmSkeletonOnCanvas(ctx, poseLandmarksRef.current, POSE_HAND_CONNECTIONS_B, tf, skelColor);
             }
 
-            if (palmPxRef.current && holdProgressRef.current > 0.01 && lockedHandRef.current) {
+            currentHands.forEach((handSample, handIdx) => {
+              const smoothed = lerpLandmarks(
+                smoothedHandsRef.current[handIdx] ?? null,
+                handSample.landmarks,
+                smoothAlpha,
+              );
+              smoothedHandsRef.current[handIdx] = smoothed;
+
+              const isRaised =
+                Math.min(handSample.screenY, handSample.wristY ?? handSample.screenY) <
+                MINIGAME_HAND_RAISE_THRESHOLD_Y;
+
+              if (bothHandsWarnRef.current) {
+                drawHandSkeletonOnCanvas(ctx, smoothed, tf, '#ef4444');
+                drawHandAlertBox(ctx, smoothed, tf, '#ef4444');
+                drawHandPillLabel(
+                  ctx,
+                  handSample.px,
+                  handSample.topPx,
+                  '⚠️ ยก 2 มือพร้อมกัน!',
+                  'rgba(220, 38, 38, 0.94)',
+                );
+              } else if (isRaised && !isSpeechLocked) {
+                const raisedColor = handSample.zone === 'RIGHT' ? '#10b981' : '#f43f5e';
+                drawHandSkeletonOnCanvas(ctx, smoothed, tf, raisedColor);
+                drawHandPillLabel(
+                  ctx,
+                  handSample.px,
+                  handSample.topPx,
+                  handSample.zone === 'RIGHT' ? 'มือขวา (ใช่ / YES)' : 'มือซ้าย (ไม่ใช่ / NO)',
+                  handSample.zone === 'RIGHT' ? 'rgba(5, 150, 105, 0.92)' : 'rgba(225, 29, 72, 0.92)',
+                );
+              } else {
+                drawHandSkeletonOnCanvas(ctx, smoothed, tf, '#38bdf8');
+                drawHandPillLabel(
+                  ctx,
+                  handSample.px,
+                  handSample.topPx,
+                  handSample.zone === 'LEFT' ? 'มือซ้าย (เตรียมพร้อม)' : 'มือขวา (เตรียมพร้อม)',
+                  'rgba(2, 132, 199, 0.88)',
+                );
+              }
+            });
+
+            if (currentHands.length < smoothedHandsRef.current.length) {
+              smoothedHandsRef.current.length = currentHands.length;
+            }
+
+            if (
+              !bothHandsWarnRef.current &&
+              !isSpeechLocked &&
+              palmPxRef.current &&
+              holdProgressRef.current > 0.01 &&
+              lockedHandRef.current
+            ) {
               drawDwellHalo(
                 ctx,
                 palmPxRef.current.px,
@@ -1806,7 +1851,7 @@ export function PhysicalCardGame({
             }
           }
 
-          if (holdProgressRef.current >= 1 && lockedHandRef.current) {
+          if (!bothHandsWarnRef.current && !isSpeechLocked && holdProgressRef.current >= 1 && lockedHandRef.current) {
             const confirmed: 'yes' | 'no' = lockedHandRef.current === 'RIGHT' ? 'yes' : 'no';
             submitAnswerRef.current(confirmed);
           }
@@ -1823,7 +1868,6 @@ export function PhysicalCardGame({
       cancelAnimationFrame(rafId);
       edgeWs?.close();
       handLandmarker?.close();
-      poseLandmarker?.close();
       stopCameraTracks();
       stopMinigameSpeech();
     };
@@ -1995,23 +2039,27 @@ export function PhysicalCardGame({
             <div className="pointer-events-none absolute top-4 inset-x-4 z-10 flex flex-wrap items-center justify-between gap-2">
               <span
                 className={`mg-cam-status inline-flex items-center gap-2 rounded-full px-5 py-2.5 font-black shadow-xl backdrop-blur border-2 ${
-                  questionPhase === 'READING_QUESTION'
-                    ? 'border-indigo-300 bg-indigo-600/95 text-white'
-                    : 'border-emerald-300 bg-emerald-600/95 text-white'
+                  bothHandsWarn
+                    ? 'border-red-200 bg-red-600/95 text-white animate-pulse'
+                    : questionPhase === 'READING_QUESTION'
+                      ? 'border-indigo-300 bg-indigo-600/95 text-white'
+                      : 'border-emerald-300 bg-emerald-600/95 text-white'
                 }`}
               >
-                {questionPhase === 'READING_QUESTION'
-                  ? '🔊 กรุณาฟังคำถามให้จบก่อนยกมือตอบ...'
-                  : '✋ ยกมือข้างเดียวเพื่อตอบได้เลย!'}
+                {bothHandsWarn
+                  ? '⚠️ ห้ามยก 2 มือพร้อมกัน! กรุณาลดมือลง 1 ข้างเพื่อตอบ'
+                  : questionPhase === 'READING_QUESTION'
+                    ? '🔊 กรุณาฟังคำถามให้จบก่อนยกมือตอบ...'
+                    : '✋ ยกมือข้างเดียวเพื่อตอบได้เลย!'}
               </span>
 
-              {questionPhase === 'READY_TO_ANSWER' && pendingChoice === 'yes' ? (
+              {questionPhase === 'READY_TO_ANSWER' && pendingChoice === 'yes' && !bothHandsWarn ? (
                 <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-emerald-600/95 px-6 py-3 font-black text-white shadow-xl backdrop-blur">
                   <span className="h-4 w-4 rounded-full bg-white animate-pulse shrink-0" />
                   <span>ตรวจพบมือขวา (ใช่)... </span>
                   <span ref={badgePctRef}>0%</span>
                 </span>
-              ) : questionPhase === 'READY_TO_ANSWER' && pendingChoice === 'no' ? (
+              ) : questionPhase === 'READY_TO_ANSWER' && pendingChoice === 'no' && !bothHandsWarn ? (
                 <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-rose-600/95 px-6 py-3 font-black text-white shadow-xl backdrop-blur">
                   <span className="h-4 w-4 rounded-full bg-white animate-pulse shrink-0" />
                   <span>ตรวจพบมือซ้าย (ไม่ใช่)... </span>
@@ -2020,7 +2068,7 @@ export function PhysicalCardGame({
               ) : (
                 <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-white/95 px-5 py-2.5 font-black text-[#0F4C81] shadow-xl backdrop-blur border-2 border-emerald-300">
                   <span className={`h-4 w-4 rounded-full shrink-0 ${detectorReady ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'}`} />
-                  {detectorReady ? 'ตรวจจับ 2 มือ 120Hz (เกณฑ์ y < 0.58)' : 'กำลังเตรียมระบบตรวจจับมือ...'}
+                  {detectorReady ? 'ตรวจจับมือ 21 จุด 2 ข้าง (เกณฑ์ y < 0.58)' : 'กำลังเตรียมระบบตรวจจับมือ...'}
                 </span>
               )}
             </div>
@@ -2034,9 +2082,9 @@ export function PhysicalCardGame({
           )}
 
           {bothHandsWarn && (
-            <div className="mg-cam-status absolute top-20 inset-x-4 z-10 flex items-center gap-3 rounded-2xl bg-amber-500/95 px-6 py-3.5 font-black text-white shadow-xl">
-              <AlertTriangle className="h-8 w-8 shrink-0" />
-              <span>⚠️ ห้ามยกมือพร้อมกัน 2 ข้าง กรุณายกมือเพียงข้างเดียวเพื่อตอบ</span>
+            <div className="pointer-events-none mg-cam-status absolute inset-x-6 top-1/2 -translate-y-1/2 z-20 flex items-center justify-center gap-3 rounded-3xl bg-red-600/95 border-2 border-white px-7 py-5 font-black text-white shadow-2xl text-center">
+              <AlertTriangle className="h-10 w-10 shrink-0" />
+              <span className="text-lg sm:text-xl">⚠️ ห้ามยก 2 มือพร้อมกัน! กรุณาลดมือลง 1 ข้างเพื่อตอบ</span>
             </div>
           )}
 
