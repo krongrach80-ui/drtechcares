@@ -449,9 +449,9 @@ const COPY: Record<
     registerNewPatient: 'ลงทะเบียนคนไข้ใหม่',
     callStaff: 'เรียกเจ้าหน้าที่ช่วยเหลือ',
     staffLogin: 'เข้าสู่ระบบเจ้าหน้าที่',
-    checkingLiveness: '👁️ กรุณากะพริบตา 1 ครั้ง เพื่อยืนยันสิ่งมีชีวิต',
-    liveVerified: '✓ ยืนยันชีววิทยาบุคคลจริง (Biological Live)',
-    spoofBlocked: '⚠️ ตรวจพบภาพถ่ายหรือหน้าจอมือถือ — ห้ามสแกนเข้าด้วยรูปภาพ',
+    checkingLiveness: '👁️ กรุณากะพริบตาหรือขยับศีรษะเล็กน้อยเพื่อยืนยันตัวตน',
+    liveVerified: '✓ ยืนยันบุคคลจริง (Liveness Verified)',
+    spoofBlocked: '⚠️ ตรวจพบภาพถ่ายหรือหน้าจอมือถือ — กรุณากะพริบตาหรือขยับศีรษะด้วยใบหน้าจริง',
     alignFace: 'ระบบสแกนอัตโนมัติเต็มจอ • มองกล้องเพื่อยืนยันตัวตน',
     verifying: 'กำลังสแกนและเปรียบเทียบกับฐานข้อมูลใบหน้า...',
     rescanBtn: 'เริ่มสแกนใบหน้าใหม่อีกครั้ง',
@@ -493,9 +493,9 @@ const COPY: Record<
     registerNewPatient: 'Register Patient',
     callStaff: 'Call Staff',
     staffLogin: 'Staff Login',
-    checkingLiveness: '👁️ Please blink naturally once to verify live presence',
-    liveVerified: '✓ Biological Liveness Verified',
-    spoofBlocked: '⚠️ Photo or Phone Screen Detected — Biological face required',
+    checkingLiveness: '👁️ Please blink or gently move your head to verify',
+    liveVerified: '✓ Live Person Verified (Liveness Verified)',
+    spoofBlocked: '⚠️ Photo or Phone Screen Detected — Blink or move head with a live face',
     alignFace: 'Full-screen auto-scan active • Look at the camera',
     verifying: 'Scanning & matching face against database...',
     rescanBtn: 'Restart Face Scan',
@@ -537,9 +537,9 @@ const COPY: Record<
     registerNewPatient: '注册新患者',
     callStaff: '呼叫医护人员',
     staffLogin: '医护系统登录',
-    checkingLiveness: '👁️ 请自然眨眼 1 次以确认生物活体',
-    liveVerified: '✓ 生物活体真人验证通过',
-    spoofBlocked: '⚠️ 检测到照片或手机屏幕 — 请使用真人面部扫描',
+    checkingLiveness: '👁️ 请轻眨眼或微转头部以验证真人身份',
+    liveVerified: '✓ 真人活体已验证 (Liveness Verified)',
+    spoofBlocked: '⚠️ 检测到照片或手机屏幕 — 请使用真人眨眼或轻转头部',
     alignFace: '全屏自动扫描已开启 • 请注视摄像头',
     verifying: '正在扫描并与人脸数据库比对...',
     rescanBtn: '重新开始人脸扫描',
@@ -1390,6 +1390,8 @@ export function KioskBiometricLoginView({
                       blendshapes: res.faceBlendshapes?.[0]?.categories,
                       earLeft: liveness.earLeft,
                       earRight: liveness.earRight,
+                      yawDeg: liveness.yawDeg,
+                      pitchDeg: liveness.pitchDeg,
                       faceCrop: crop,
                       contextFrame,
                       faceBox: rawBoxForBio,
@@ -1408,18 +1410,22 @@ export function KioskBiometricLoginView({
                 image: crop,
                 contextImage: contextFrame,
                 faceBox: rawBoxForBio,
+                biologicalVerified: bio?.biologicalVerified,
                 requestedPose: 'CENTER',
                 metrics: bio
                   ? {
+                      biologicalVerified: bio.biologicalVerified,
                       planarRigidSpoof: bio.planarSpoofDetected,
-                      moireOrBezelDetected: bio.screenSpoofDetected || undefined,
+                      moireOrBezelDetected: bio.screenSpoofDetected,
                     }
                   : undefined,
               });
               prevLandmarks = landmarks;
               setInspectionInfo(inspection);
-              const isFrameSpoof =
-                inspection.scan_status === 'SPOOF_DETECTED' || Boolean(bio?.spoofDetected);
+              // Single source of truth: immediate state clear removes spoof whenever biologicalVerified passes
+              const isFrameSpoof = bio
+                ? bio.spoofDetected && !bio.biologicalVerified
+                : inspection.scan_status === 'SPOOF_DETECTED';
 
               // Real-time 1:N 3D Multi-Angle Recognition & Fine Landmark HUD Tracking
               if (faceCount === 1 && landmarks.length >= 300 && crop && bio) {
@@ -1485,7 +1491,7 @@ export function KioskBiometricLoginView({
                     const livenessEvidence = {
                       biologicalVerified: bio.biologicalVerified,
                       blinkCount: bio.blinkCount,
-                      spoofRisk: bio.screenReport.combinedSpoofRisk,
+                      spoofRisk: bio.spoofScore,
                       nonRigidScore: bio.nonRigidScore,
                       rppgScore: bio.rppgScore,
                     };
@@ -1498,7 +1504,11 @@ export function KioskBiometricLoginView({
                           pitchDeg: liveness.pitchDeg,
                           depthScore: liveness.depthScore,
                           microMotion: liveness.microMotion,
-                          blinkDetected: liveness.blinkDetected || bio.blinkVerified,
+                          blinkDetected:
+                            liveness.blinkDetected ||
+                            bio.blinkVerified ||
+                            bio.headPoseVerified ||
+                            bio.lipMotionVerified,
                           nonRigidMotion: bio.nonRigidMotion,
                           biologicalVerified: bio.biologicalVerified,
                           spoofDetected: isFrameSpoof,
@@ -1784,26 +1794,14 @@ export function KioskBiometricLoginView({
     }
   };
 
-  const isSpoof = inspectionInfo?.scan_status === 'SPOOF_DETECTED' || Boolean(bioReport?.spoofDetected);
+  const isBioVerified = Boolean(bioReport?.biologicalVerified);
+  const isSpoof = !isBioVerified && (Boolean(bioReport?.spoofDetected) || inspectionInfo?.scan_status === 'SPOOF_DETECTED');
   const isFaceDetected = Boolean(hudBox);
-  const isBioVerified = Boolean(bioReport?.biologicalVerified) && !isSpoof;
-  const isAlignedPass = isFaceDetected && isBioVerified;
 
-  const topPillText = isSpoof
-    ? c.spoofBlocked
-    : isAlignedPass
-      ? c.liveVerified
-      : c.checkingLiveness;
-
-  const bottomPillText = isSpoof
-    ? c.spoofBlocked
-    : scanStage === 'verifying'
+  const bottomPillText =
+    scanStage === 'verifying'
       ? c.verifying
-      : isFaceDetected && !isBioVerified
-        ? c.checkingLiveness
-        : isFaceDetected
-          ? `${c.verifying} (${burstCount}/${BURST_FRAME_COUNT})`
-          : c.alignFace;
+      : c.alignFace;
 
   return (
     <div className="min-h-screen flex flex-col bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-white text-[#0F4C81] font-sans select-none overflow-x-hidden">
@@ -1994,30 +1992,6 @@ export function KioskBiometricLoginView({
                   </button>
                 </div>
 
-                {/* Top-Center Liveness Status Pill */}
-                <div className="pointer-events-none absolute top-3 inset-x-0 flex justify-center z-20 px-28">
-                  <div
-                    className={`px-3.5 py-1 rounded-full backdrop-blur-md border text-[11px] sm:text-xs font-bold flex items-center gap-2 shadow-lg max-w-full truncate ${
-                      isSpoof
-                        ? 'bg-rose-50/95 border-rose-300 text-rose-700'
-                        : isAlignedPass
-                          ? 'bg-emerald-50/95 border-emerald-400 text-emerald-800'
-                          : 'bg-white/95 border-sky-300 text-[#0F4C81]'
-                    }`}
-                  >
-                    <span
-                      className={`w-2 h-2 rounded-full shrink-0 ${
-                        isSpoof
-                          ? 'bg-rose-500'
-                          : isAlignedPass
-                            ? 'bg-emerald-500 animate-pulse'
-                            : 'bg-[#0284C7]'
-                      }`}
-                    />
-                    <span className="truncate">{topPillText}</span>
-                  </div>
-                </div>
-
                 {/* Top-Right Close/Pause Camera */}
                 <button
                   type="button"
@@ -2045,8 +2019,11 @@ export function KioskBiometricLoginView({
                     <div className="grid grid-cols-3 gap-1 pt-1">
                       <div>3D Depth: {livenessInfo?.depthScore.toFixed(2) ?? '0.00'}</div>
                       <div>EAR: {livenessInfo?.earLeft.toFixed(2) ?? '0.00'}</div>
+                      <div>BaseEAR: {bioReport?.openEyeBaseline.toFixed(2) ?? '0.00'}</div>
+                      <div>Scale: {bioReport?.faceScale.toFixed(2) ?? '0.00'}</div>
                       <div>Blink: {bioReport?.blinkCount ?? 0}</div>
-                      <div>Spoof: {Math.round((bioReport?.screenReport.combinedSpoofRisk ?? 0) * 100)}%</div>
+                      <div>YawΔ: {bioReport?.deltaYawDeg.toFixed(1) ?? '0.0'}°</div>
+                      <div>Spoof: {Math.round((bioReport?.spoofScore ?? 0) * 100)}%</div>
                       <div>rPPG: {Math.round((bioReport?.rppgScore ?? 0) * 100)}%</div>
                       <div>Burst: {burstCount}/{BURST_FRAME_COUNT}</div>
                     </div>
@@ -2069,8 +2046,8 @@ export function KioskBiometricLoginView({
                         className={`absolute h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full ${
                           isSpoof
                             ? 'bg-rose-400 shadow-[0_0_6px_#fb7185]'
-                            : liveMatchHud?.candidate && isBioVerified
-                              ? 'bg-emerald-300 shadow-[0_0_6px_#34d399]'
+                            : isBioVerified
+                              ? 'bg-[#10B981] shadow-[0_0_6px_#10B981]'
                               : 'bg-cyan-300/90 shadow-[0_0_6px_#22d3ee]'
                         }`}
                       />
@@ -2078,7 +2055,7 @@ export function KioskBiometricLoginView({
                   </div>
                 )}
 
-                {/* Full-Frame Dynamic Face Tracking Bounding Box & Live Verification Badge */}
+                {/* Full-Frame Dynamic Face Tracking Bounding Box & Single Primary Elderly-Friendly Status Banner */}
                 {hudBox && (
                   <div
                     className="pointer-events-none absolute z-25 transition-all duration-100"
@@ -2090,66 +2067,65 @@ export function KioskBiometricLoginView({
                     }}
                   >
                     <div
-                      className={`relative h-full w-full overflow-hidden rounded-2xl border-2 transition-colors ${
+                      className={`relative h-full w-full overflow-hidden rounded-2xl border-[3px] transition-colors ${
                         isSpoof
                           ? 'border-rose-500 shadow-[0_0_28px_rgba(244,63,94,0.85)]'
-                          : liveMatchHud?.candidate && isBioVerified
-                            ? liveMatchHud.confirmed
-                              ? 'border-emerald-400 shadow-[0_0_28px_rgba(16,185,129,0.75)]'
-                              : 'border-emerald-400/75 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
-                            : 'border-cyan-400/85 shadow-[0_0_22px_rgba(34,211,238,0.45)]'
+                          : isBioVerified
+                            ? 'border-[#10B981] shadow-[0_0_28px_rgba(16,185,129,0.8)]'
+                            : 'border-sky-400 shadow-[0_0_22px_rgba(56,189,248,0.45)]'
                       }`}
                     >
-                      <span className={`absolute top-0 left-0 h-4 w-4 rounded-tl-lg border-t-[3px] border-l-[3px] ${isSpoof ? 'border-rose-400' : 'border-emerald-300'}`} />
-                      <span className={`absolute top-0 right-0 h-4 w-4 rounded-tr-lg border-t-[3px] border-r-[3px] ${isSpoof ? 'border-rose-400' : 'border-emerald-300'}`} />
-                      <span className={`absolute bottom-0 left-0 h-4 w-4 rounded-bl-lg border-b-[3px] border-l-[3px] ${isSpoof ? 'border-rose-400' : 'border-emerald-300'}`} />
-                      <span className={`absolute bottom-0 right-0 h-4 w-4 rounded-br-lg border-b-[3px] border-r-[3px] ${isSpoof ? 'border-rose-400' : 'border-emerald-300'}`} />
-                      {(!liveMatchHud?.candidate || !isBioVerified || isSpoof) && (
-                        <div className={`absolute inset-x-2 top-1/2 h-[2px] -translate-y-1/2 bg-gradient-to-r from-transparent ${isSpoof ? 'via-rose-400 shadow-[0_0_12px_#fb7185]' : 'via-cyan-300 shadow-[0_0_12px_#22d3ee]'} to-transparent`} />
+                      <span className={`absolute top-0 left-0 h-4 w-4 rounded-tl-lg border-t-[3px] border-l-[3px] ${isSpoof ? 'border-rose-400' : isBioVerified ? 'border-[#10B981]' : 'border-sky-300'}`} />
+                      <span className={`absolute top-0 right-0 h-4 w-4 rounded-tr-lg border-t-[3px] border-r-[3px] ${isSpoof ? 'border-rose-400' : isBioVerified ? 'border-[#10B981]' : 'border-sky-300'}`} />
+                      <span className={`absolute bottom-0 left-0 h-4 w-4 rounded-bl-lg border-b-[3px] border-l-[3px] ${isSpoof ? 'border-rose-400' : isBioVerified ? 'border-[#10B981]' : 'border-sky-300'}`} />
+                      <span className={`absolute bottom-0 right-0 h-4 w-4 rounded-br-lg border-b-[3px] border-r-[3px] ${isSpoof ? 'border-rose-400' : isBioVerified ? 'border-[#10B981]' : 'border-sky-300'}`} />
+                      {!isBioVerified && (
+                        <div className={`absolute inset-x-2 top-1/2 h-[2px] -translate-y-1/2 bg-gradient-to-r from-transparent ${isSpoof ? 'via-rose-400 shadow-[0_0_12px_#fb7185]' : 'via-sky-300 shadow-[0_0_12px_#38bdf8]'} to-transparent`} />
                       )}
                     </div>
 
                     {isSpoof ? (
-                      <div className="absolute left-1/2 top-full mt-2 w-max max-w-[330px] -translate-x-1/2 rounded-xl border border-rose-400 bg-rose-50/95 px-3.5 py-2 text-center backdrop-blur-md shadow-2xl">
-                        <div className="text-xs font-black text-rose-700">{c.spoofBlocked}</div>
+                      <div className="absolute left-1/2 top-full mt-2.5 w-max max-w-[360px] -translate-x-1/2 rounded-2xl border-2 border-rose-400 bg-rose-50/95 px-4 py-2.5 text-center backdrop-blur-md shadow-2xl">
+                        <div className="text-sm font-black text-rose-700 leading-snug">{c.spoofBlocked}</div>
                       </div>
                     ) : !isBioVerified ? (
-                      <div className="absolute left-1/2 top-full mt-2 w-max max-w-[330px] -translate-x-1/2 rounded-xl border border-amber-300 bg-white/95 px-3.5 py-2 text-center backdrop-blur-md shadow-xl">
-                        <div className="text-[11px] font-black text-[#0F4C81]">{c.checkingLiveness}</div>
-                        <div className="mt-0.5 text-[10px] font-semibold text-[#0284C7]">
+                      <div className="absolute left-1/2 top-full mt-2.5 w-max max-w-[360px] -translate-x-1/2 rounded-2xl border-2 border-sky-300 bg-white/95 px-4 py-2.5 text-center backdrop-blur-md shadow-xl">
+                        <div className="text-sm font-black text-[#0F4C81] leading-snug">{c.checkingLiveness}</div>
+                        <div className="mt-0.5 text-[11px] font-semibold text-[#0284C7]">
                           {c.comparingAccountsPrefix} {dbAccountCount} {c.comparingAccountsSuffix}
                         </div>
                       </div>
                     ) : liveMatchHud?.candidate ? (
-                      <div className="absolute left-1/2 top-full mt-2 w-max max-w-[310px] -translate-x-1/2 rounded-xl border border-emerald-400 bg-white/95 px-3.5 py-2 text-center backdrop-blur-md shadow-2xl">
-                        <div className="text-xs font-black text-emerald-700">
+                      <div className="absolute left-1/2 top-full mt-2.5 w-max max-w-[340px] -translate-x-1/2 rounded-2xl border-2 border-[#10B981] bg-emerald-50/95 px-4 py-2.5 text-center backdrop-blur-md shadow-2xl">
+                        <div className="text-sm font-black text-emerald-800">
                           {c.liveMatchVerified}: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
                         </div>
-                        <div className="mt-0.5 text-[11px] font-bold text-[#0F4C81]">
-                          {c.liveMatchAccuracy}: {liveMatchHud.confidencePercent.toFixed(1)}% (3D Multi-Angle Match •{' '}
-                          {liveMatchHud.streak}/4 {c.framesUnit})
+                        <div className="mt-0.5 text-xs font-bold text-[#0F4C81]">
+                          Liveness Verified • {c.liveMatchAccuracy}: {liveMatchHud.confidencePercent.toFixed(1)}% ({liveMatchHud.streak}/4 {c.framesUnit})
                         </div>
                       </div>
                     ) : (
-                      <div className="absolute left-1/2 top-full mt-2 w-max max-w-[320px] -translate-x-1/2 rounded-xl border border-sky-300 bg-white/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
-                        <div className="text-[11px] font-extrabold text-[#0F4C81]">
-                          {c.scanningDbTitle} {burstCount}/{BURST_FRAME_COUNT}
+                      <div className="absolute left-1/2 top-full mt-2.5 w-max max-w-[340px] -translate-x-1/2 rounded-2xl border-2 border-[#10B981] bg-emerald-50/95 px-4 py-2 text-center backdrop-blur-md shadow-xl">
+                        <div className="text-sm font-black text-emerald-800">
+                          {c.liveVerified} • {burstCount}/{BURST_FRAME_COUNT}
                         </div>
-                        <div className="mt-0.5 text-[10px] font-semibold text-[#0284C7]">
-                          {c.comparingAccountsPrefix} {dbAccountCount} {c.comparingAccountsSuffix}
+                        <div className="mt-0.5 text-[11px] font-semibold text-[#0284C7]">
+                          {c.scanningDbTitle}
                         </div>
                       </div>
                     )}
                   </div>
                 )}
 
-                {/* Bottom-Center Face Alignment Pill */}
-                <div className="pointer-events-none absolute bottom-4 inset-x-0 flex justify-center z-20 px-4">
-                  <div className="px-4 py-1.5 rounded-full bg-white/95 border border-emerald-300 text-[#0F4C81] text-[11px] sm:text-xs font-bold flex items-center gap-2 shadow-lg max-w-full truncate">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
-                    <span className="truncate">{bottomPillText}</span>
+                {/* Single Idle Alignment Pill (shown only when no face box is present yet) */}
+                {!isFaceDetected && (
+                  <div className="pointer-events-none absolute bottom-4 inset-x-0 flex justify-center z-20 px-4">
+                    <div className="px-4 py-2 rounded-full bg-white/95 border border-sky-300 text-[#0F4C81] text-xs sm:text-sm font-bold flex items-center gap-2 shadow-lg max-w-full truncate">
+                      <span className="w-2.5 h-2.5 rounded-full bg-[#0284C7] shrink-0" />
+                      <span className="truncate">{bottomPillText}</span>
+                    </div>
                   </div>
-                </div>
+                )}
               </>
             ) : (
               /* Camera Paused / Fallback Overlay inside Viewport */

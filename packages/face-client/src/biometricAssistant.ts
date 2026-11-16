@@ -131,6 +131,7 @@ export interface BiometricTelemetryOverrides {
   sunglassesDetected?: boolean;
   moireOrBezelDetected?: boolean;
   planarRigidSpoof?: boolean;
+  biologicalVerified?: boolean;
   isLive?: boolean;
   depthScore?: number;
   microMotion?: number;
@@ -146,6 +147,7 @@ export interface BiometricAssistantInput {
   image?: SimpleImageBuffer | null;
   contextImage?: SimpleImageBuffer | null;
   faceBox?: NormalizedFaceBox | null;
+  biologicalVerified?: boolean;
   requestedPose?: Detected3DPose;
   metrics?: BiometricTelemetryOverrides;
 }
@@ -380,7 +382,10 @@ export function inspectBiometricFrame3D(input: BiometricAssistantInput): Biometr
     };
   }
 
-  if (sharpness < MIN_SHARPNESS_LAPLACIAN) {
+  const faceScale = input.faceBox?.height ?? faceHeightRatio;
+  const effectiveMinSharpness = faceScale < 0.35 ? 1.0 : MIN_SHARPNESS_LAPLACIAN;
+
+  if (sharpness < effectiveMinSharpness) {
     return {
       scan_status: 'RETRY',
       confidence_score: 0.48,
@@ -461,21 +466,25 @@ export function inspectBiometricFrame3D(input: BiometricAssistantInput): Biometr
         }
       : null);
 
+  const biologicalPassed = Boolean(input.biologicalVerified ?? m.biologicalVerified);
   const screenArtifacts =
-    input.image || input.contextImage
+    !biologicalPassed && (input.image || input.contextImage)
       ? analyzeScreenAndBezelArtifacts({
           faceCrop: input.image,
           contextFrame: input.contextImage,
           faceBox: inferredFaceBox,
+          faceScale,
         })
       : null;
 
   const depthScore = m.depthScore ?? liveness?.depthScore ?? 0.52;
-  const isLive = m.isLive ?? depthScore >= MIN_DEPTH_SCORE;
-  const moireOrBezelDetected = m.moireOrBezelDetected ?? screenArtifacts?.spoofDetected ?? false;
-  const planarRigidSpoof = m.planarRigidSpoof ?? false;
+  const isLive = biologicalPassed ? true : (m.isLive ?? depthScore >= MIN_DEPTH_SCORE);
+  const moireOrBezelDetected = biologicalPassed
+    ? false
+    : (m.moireOrBezelDetected ?? screenArtifacts?.spoofDetected ?? false);
+  const planarRigidSpoof = biologicalPassed ? false : (m.planarRigidSpoof ?? false);
 
-  if (moireOrBezelDetected || planarRigidSpoof || !isLive || depthScore < MIN_DEPTH_SCORE) {
+  if (!biologicalPassed && (moireOrBezelDetected || planarRigidSpoof || !isLive || depthScore < MIN_DEPTH_SCORE)) {
     return {
       scan_status: 'SPOOF_DETECTED',
       confidence_score: Number(Math.max(0.05, Math.min(0.39, depthScore)).toFixed(2)),

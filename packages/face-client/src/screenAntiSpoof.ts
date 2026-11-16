@@ -28,6 +28,7 @@ export interface AnalyzeScreenAntiSpoofInput {
   faceCrop?: SimpleImageBuffer | null;
   contextFrame?: SimpleImageBuffer | null;
   faceBox?: NormalizedFaceBox | null;
+  faceScale?: number;
 }
 
 function clamp01(v: number): number {
@@ -50,8 +51,12 @@ function rgDiffAt(data: Uint8ClampedArray | Uint8Array, width: number, x: number
  * - LCD/OLED subpixel moire & 1-px periodic checkerboard lattice ripples
  * - Screen glass specular glare spots
  * - Narrow-band cool LED screen backlight color shift (B > R on skin)
+ * Distance-adaptive: dampens high-frequency upscaling/sharpening noise when standing 1.2-2.5m away.
  */
-export function analyzeFaceCropScreenSignals(image: SimpleImageBuffer | null | undefined): {
+export function analyzeFaceCropScreenSignals(
+  image: SimpleImageBuffer | null | undefined,
+  faceScale: number = 0.4,
+): {
   moireScore: number;
   specularScore: number;
   screenCastScore: number;
@@ -61,7 +66,6 @@ export function analyzeFaceCropScreenSignals(image: SimpleImageBuffer | null | u
   }
 
   const { width, height, data } = image;
-  // Forehead + malar cheek skin patches where real human skin has smooth local gradients
   const patches = [
     {
       x0: Math.max(2, Math.floor(width * 0.28)),
@@ -73,13 +77,13 @@ export function analyzeFaceCropScreenSignals(image: SimpleImageBuffer | null | u
       x0: Math.max(2, Math.floor(width * 0.16)),
       x1: Math.min(width - 3, Math.floor(width * 0.34)),
       y0: Math.max(2, Math.floor(height * 0.52)),
-      y1: Math.min(height - 3, Math.floor(height * 0.70)),
+      y1: Math.min(height - 3, Math.floor(height * 0.7)),
     },
     {
       x0: Math.max(2, Math.floor(width * 0.66)),
       x1: Math.min(width - 3, Math.floor(width * 0.84)),
       y0: Math.max(2, Math.floor(height * 0.52)),
-      y1: Math.min(height - 3, Math.floor(height * 0.70)),
+      y1: Math.min(height - 3, Math.floor(height * 0.7)),
     },
   ];
 
@@ -111,7 +115,7 @@ export function analyzeFaceCropScreenSignals(image: SimpleImageBuffer | null | u
 
         const maxC = Math.max(r, g, b);
         const minC = Math.min(r, g, b);
-        if (luma >= 238 && maxC - minC <= 22) {
+        if (luma >= 242 && maxC - minC <= 18) {
           specularCount += 1;
         }
 
@@ -125,22 +129,21 @@ export function analyzeFaceCropScreenSignals(image: SimpleImageBuffer | null | u
         const d1y = luma - lUp;
         const d2y = lDown - luma;
 
-        // Opposite consecutive 1-px finite differences indicate high-frequency pixel grid aliasing
-        if ((d1x * d2x < -12) || (d1y * d2y < -12)) {
+        if (d1x * d2x < -16 || d1y * d2y < -16) {
           alternatingHighFreqCount += 1;
         }
 
         const rgL = rgDiffAt(data, width, x - 1, y);
         const rgC = r - g;
         const rgR = rgDiffAt(data, width, x + 1, y);
-        if ((rgC - rgL) * (rgR - rgC) < -10) {
+        if ((rgC - rgL) * (rgR - rgC) < -14) {
           subpixelJitterCount += 1;
         }
 
         const lap1 = Math.abs(lLeft - 2 * luma + lRight) + Math.abs(lUp - 2 * luma + lDown);
         const smooth2 = Math.abs(lRight - lLeft) + Math.abs(lDown - lUp);
         highFreqLapSum += lap1;
-        smoothGradSum += smooth2 + 1.5;
+        smoothGradSum += smooth2 + 2.0;
         totalTripleSamples += 1;
       }
     }
@@ -154,22 +157,24 @@ export function analyzeFaceCropScreenSignals(image: SimpleImageBuffer | null | u
   const subpixelRatio = subpixelJitterCount / totalTripleSamples;
   const freqRatio = highFreqLapSum / Math.max(1, smoothGradSum);
 
-  // Real camera noise sits ~0.04-0.14 altRatio; moire / subpixel grid spikes >= 0.28+
-  const moireFromAlt = clamp01((altRatio - 0.17) / 0.22);
-  const moireFromSubpixel = clamp01((subpixelRatio - 0.14) / 0.22);
-  const moireFromFreq = clamp01((freqRatio - 1.28) / 0.9);
-  const moireScore = clamp01(moireFromAlt * 0.48 + moireFromSubpixel * 0.34 + moireFromFreq * 0.28);
+  // Dampen moire/sharpening score at far distances (< 0.35 faceScale) where webcam digital zoom sharpens noise
+  const distanceDampen = faceScale < 0.35 ? Math.max(0.35, faceScale / 0.35) : 1;
+  const moireFromAlt = clamp01((altRatio - 0.24) / 0.24);
+  const moireFromSubpixel = clamp01((subpixelRatio - 0.2) / 0.24);
+  const moireFromFreq = clamp01((freqRatio - 1.45) / 0.95);
+  const moireScore = clamp01(
+    (moireFromAlt * 0.45 + moireFromSubpixel * 0.35 + moireFromFreq * 0.28) * distanceDampen,
+  );
 
   const specRatio = specularCount / pixelCount;
-  const specularScore = clamp01((specRatio - 0.035) / 0.12);
+  const specularScore = clamp01((specRatio - 0.05) / 0.14);
 
   const meanR = sumR / pixelCount;
   const meanG = sumG / pixelCount;
   const meanB = sumB / pixelCount;
-  const blueToRedRatio = meanB / Math.max(12, meanR);
-  // Living human skin exhibits hemoglobin R >= B; digital LCD/OLED screens shift cool blue-white
-  const coolBlueCast = clamp01((blueToRedRatio - 1.03) / 0.22);
-  const flatGreenCast = meanB > meanG * 1.06 ? clamp01((meanB / Math.max(12, meanG) - 1.04) / 0.18) : 0;
+  const blueToRedRatio = meanB / Math.max(14, meanR);
+  const coolBlueCast = clamp01((blueToRedRatio - 1.07) / 0.22);
+  const flatGreenCast = meanB > meanG * 1.08 ? clamp01((meanB / Math.max(14, meanG) - 1.06) / 0.18) : 0;
   const screenCastScore = clamp01(coolBlueCast * 0.72 + flatGreenCast * 0.28);
 
   return {
@@ -181,11 +186,13 @@ export function analyzeFaceCropScreenSignals(image: SimpleImageBuffer | null | u
 
 /**
  * Inspects uncropped camera frame around the detected face bounding box for
- * straight rectangular smartphone/tablet bezels and abrupt screen-vs-room luminance steps.
+ * enclosed 4-sided smartphone/tablet bezels + screen luminance jumps while ignoring
+ * ordinary room walls, air conditioners, or window frames behind a distant live person.
  */
 export function analyzeContextBezelAndStep(
   contextFrame: SimpleImageBuffer | null | undefined,
   faceBox?: NormalizedFaceBox | null,
+  faceScale?: number,
 ): number {
   if (
     !contextFrame ||
@@ -201,16 +208,17 @@ export function analyzeContextBezelAndStep(
   const by = faceBox ? clamp01(faceBox.y) : 0.2;
   const bw = faceBox ? clamp01(faceBox.width) : 0.44;
   const bh = faceBox ? clamp01(faceBox.height) : 0.6;
+  const scale = clamp01(faceScale ?? bh);
 
-  const yStart = Math.max(3, Math.floor((by - bh * 0.18) * height));
-  const yEnd = Math.min(height - 4, Math.floor((by + bh * 1.15) * height));
-  const xStart = Math.max(3, Math.floor((bx - bw * 0.25) * width));
-  const xEnd = Math.min(width - 4, Math.floor((bx + bw * 1.25) * width));
+  const yStart = Math.max(3, Math.floor((by - bh * 0.14) * height));
+  const yEnd = Math.min(height - 4, Math.floor((by + bh * 1.12) * height));
+  const xStart = Math.max(3, Math.floor((bx - bw * 0.22) * width));
+  const xEnd = Math.min(width - 4, Math.floor((bx + bw * 1.22) * width));
 
-  const leftMinX = Math.max(2, Math.floor((bx - bw * 0.34) * width));
-  const leftMaxX = Math.max(leftMinX + 2, Math.floor((bx + bw * 0.04) * width));
-  const rightMinX = Math.min(width - 4, Math.floor((bx + bw * 0.96) * width));
-  const rightMaxX = Math.min(width - 3, Math.floor((bx + bw * 1.34) * width));
+  const leftMinX = Math.max(2, Math.floor((bx - bw * 0.3) * width));
+  const leftMaxX = Math.max(leftMinX + 2, Math.floor((bx + bw * 0.03) * width));
+  const rightMinX = Math.min(width - 4, Math.floor((bx + bw * 0.97) * width));
+  const rightMaxX = Math.min(width - 3, Math.floor((bx + bw * 1.3) * width));
 
   let bestLeftEdge = 0;
   let bestLeftX = -1;
@@ -219,7 +227,7 @@ export function analyzeContextBezelAndStep(
     let strongRows = 0;
     for (let y = yStart; y <= yEnd; y += 2) {
       const gx = Math.abs(lumaAt(data, width, x + 1, y) - lumaAt(data, width, x - 1, y));
-      if (gx >= 18) strongRows += 1;
+      if (gx >= 24) strongRows += 1;
     }
     const frac = strongRows / Math.max(1, Math.ceil(rowSpan / 2));
     if (frac > bestLeftEdge) {
@@ -234,7 +242,7 @@ export function analyzeContextBezelAndStep(
     let strongRows = 0;
     for (let y = yStart; y <= yEnd; y += 2) {
       const gx = Math.abs(lumaAt(data, width, x + 1, y) - lumaAt(data, width, x - 1, y));
-      if (gx >= 18) strongRows += 1;
+      if (gx >= 24) strongRows += 1;
     }
     const frac = strongRows / Math.max(1, Math.ceil(rowSpan / 2));
     if (frac > bestRightEdge) {
@@ -243,10 +251,10 @@ export function analyzeContextBezelAndStep(
     }
   }
 
-  const topMinY = Math.max(2, Math.floor((by - bh * 0.36) * height));
-  const topMaxY = Math.max(topMinY + 2, Math.floor((by + bh * 0.06) * height));
-  const botMinY = Math.min(height - 4, Math.floor((by + bh * 0.94) * height));
-  const botMaxY = Math.min(height - 3, Math.floor((by + bh * 1.34) * height));
+  const topMinY = Math.max(2, Math.floor((by - bh * 0.28) * height));
+  const topMaxY = Math.max(topMinY + 2, Math.floor((by + bh * 0.05) * height));
+  const botMinY = Math.min(height - 4, Math.floor((by + bh * 0.95) * height));
+  const botMaxY = Math.min(height - 3, Math.floor((by + bh * 1.28) * height));
 
   let bestTopEdge = 0;
   const colSpan = Math.max(1, xEnd - xStart);
@@ -254,7 +262,7 @@ export function analyzeContextBezelAndStep(
     let strongCols = 0;
     for (let x = xStart; x <= xEnd; x += 2) {
       const gy = Math.abs(lumaAt(data, width, x, y + 1) - lumaAt(data, width, x, y - 1));
-      if (gy >= 18) strongCols += 1;
+      if (gy >= 24) strongCols += 1;
     }
     const frac = strongCols / Math.max(1, Math.ceil(colSpan / 2));
     if (frac > bestTopEdge) bestTopEdge = frac;
@@ -265,85 +273,98 @@ export function analyzeContextBezelAndStep(
     let strongCols = 0;
     for (let x = xStart; x <= xEnd; x += 2) {
       const gy = Math.abs(lumaAt(data, width, x, y + 1) - lumaAt(data, width, x, y - 1));
-      if (gy >= 18) strongCols += 1;
+      if (gy >= 24) strongCols += 1;
     }
     const frac = strongCols / Math.max(1, Math.ceil(colSpan / 2));
     if (frac > bestBottomEdge) bestBottomEdge = frac;
   }
 
-  // Require multiple straight orthogonal edges simultaneously (rectangles have both vertical & horizontal straight edges)
-  const verticalPair = (bestLeftEdge + bestRightEdge) / 2;
-  const horizontalBest = Math.max(bestTopEdge, bestBottomEdge);
-  const hasRectangularFrame =
-    bestLeftEdge >= 0.45 && bestRightEdge >= 0.45 && horizontalBest >= 0.42;
+  // Real phone/paper screens form an enclosed 4-sided rectangle (ceiling/wall corners only have 1-2 partial lines)
+  const hasEnclosedFourSidedRect =
+    bestLeftEdge >= 0.56 &&
+    bestRightEdge >= 0.56 &&
+    bestTopEdge >= 0.5 &&
+    bestBottomEdge >= 0.48;
 
   let luminanceStepBoost = 0;
-  if (bestLeftX > 3 && bestRightX > bestLeftX + 10 && bestRightX < width - 4) {
+  if (bestLeftX > 3 && bestRightX > bestLeftX + 16 && bestRightX < width - 4) {
+    const innerInset = Math.max(5, Math.min(12, Math.floor((bestRightX - bestLeftX) * 0.12)));
+    const outerInset = 5;
     let insideSum = 0;
     let insideN = 0;
     let outsideSum = 0;
     let outsideN = 0;
-    for (let y = yStart; y <= yEnd; y += 3) {
-      insideSum += lumaAt(data, width, Math.min(width - 2, bestLeftX + 3), y);
-      insideSum += lumaAt(data, width, Math.max(1, bestRightX - 3), y);
+    const innerYStart = Math.min(yEnd, yStart + 6);
+    const innerYEnd = Math.max(innerYStart, yEnd - 6);
+    for (let y = innerYStart; y <= innerYEnd; y += 3) {
+      insideSum += lumaAt(data, width, Math.min(width - 2, bestLeftX + innerInset), y);
+      insideSum += lumaAt(data, width, Math.max(1, bestRightX - innerInset), y);
       insideN += 2;
-      outsideSum += lumaAt(data, width, Math.max(0, bestLeftX - 4), y);
-      outsideSum += lumaAt(data, width, Math.min(width - 1, bestRightX + 4), y);
+      outsideSum += lumaAt(data, width, Math.max(0, bestLeftX - outerInset), y);
+      outsideSum += lumaAt(data, width, Math.min(width - 1, bestRightX + outerInset), y);
       outsideN += 2;
     }
     if (insideN > 0 && outsideN > 0) {
       const diff = Math.abs(insideSum / insideN - outsideSum / outsideN);
-      luminanceStepBoost = clamp01((diff - 22) / 55);
+      luminanceStepBoost = clamp01((diff - 26) / 55);
     }
   }
 
-  const rawRectScore =
-    verticalPair * 0.46 +
-    horizontalBest * 0.34 +
-    luminanceStepBoost * 0.28;
-  const bezelScore = hasRectangularFrame
-    ? clamp01(rawRectScore * 1.15)
-    : clamp01(rawRectScore * 0.55);
+  if (!hasEnclosedFourSidedRect) {
+    return 0;
+  }
 
-  return Number(bezelScore.toFixed(3));
+  const verticalPair = (bestLeftEdge + bestRightEdge) / 2;
+  const horizontalPair = (bestTopEdge + bestBottomEdge) / 2;
+  const rawRectScore =
+    verticalPair * 0.42 +
+    horizontalPair * 0.34 +
+    luminanceStepBoost * 0.3;
+  // Require a distinct inside-vs-outside luminance jump around the enclosed rectangle
+  const stepGate = luminanceStepBoost >= 0.2 ? 1.12 : 0.6;
+  // Distant room boxes (< 0.32 scale) require extra-strong contrast step
+  const distanceWeight = scale < 0.32 ? 0.8 : 1.0;
+
+  return Number(clamp01(rawRectScore * stepGate * distanceWeight).toFixed(3));
 }
 
 /**
- * Combines aligned face-crop subpixel/glare/color-cast metrics and full-context rectangular
+ * Combines aligned face-crop subpixel/glare/color-cast metrics and enclosed 4-sided
  * phone bezel inspection into an anti-spoof presentation attack score.
  */
 export function analyzeScreenAndBezelArtifacts(
   input: AnalyzeScreenAntiSpoofInput,
 ): ScreenAntiSpoofReport {
-  const cropSignals = analyzeFaceCropScreenSignals(input.faceCrop);
-  const bezelScore = analyzeContextBezelAndStep(input.contextFrame, input.faceBox);
+  const effectiveScale = clamp01(input.faceScale ?? input.faceBox?.height ?? 0.4);
+  const cropSignals = analyzeFaceCropScreenSignals(input.faceCrop, effectiveScale);
+  const bezelScore = analyzeContextBezelAndStep(input.contextFrame, input.faceBox, effectiveScale);
 
   const combinedSpoofRisk = Number(
     clamp01(
-      bezelScore * 0.52 +
-        cropSignals.moireScore * 0.44 +
-        cropSignals.screenCastScore * 0.24 +
-        cropSignals.specularScore * 0.22,
+      bezelScore * 0.56 +
+        cropSignals.moireScore * 0.42 +
+        cropSignals.screenCastScore * 0.22 +
+        cropSignals.specularScore * 0.2,
     ).toFixed(3),
   );
 
   let reason: ScreenSpoofReason = 'NONE';
-  if (bezelScore >= 0.68) {
+  if (bezelScore >= 0.7) {
     reason = 'PHONE_BEZEL';
-  } else if (cropSignals.moireScore >= 0.66) {
+  } else if (cropSignals.moireScore >= 0.72) {
     reason = 'MOIRE_GRID';
-  } else if (cropSignals.screenCastScore >= 0.62 && cropSignals.moireScore >= 0.35) {
+  } else if (cropSignals.screenCastScore >= 0.65 && cropSignals.moireScore >= 0.4) {
     reason = 'SCREEN_BACKLIGHT_CAST';
-  } else if (cropSignals.specularScore >= 0.68 && (cropSignals.moireScore >= 0.35 || bezelScore >= 0.4)) {
+  } else if (cropSignals.specularScore >= 0.7 && (cropSignals.moireScore >= 0.4 || bezelScore >= 0.45)) {
     reason = 'GLASS_SPECULAR';
   }
 
   const spoofDetected =
-    bezelScore >= 0.68 ||
-    cropSignals.moireScore >= 0.72 ||
-    (cropSignals.moireScore >= 0.48 &&
-      (cropSignals.screenCastScore >= 0.42 || cropSignals.specularScore >= 0.45)) ||
-    combinedSpoofRisk >= 0.62;
+    bezelScore >= 0.7 ||
+    cropSignals.moireScore >= 0.76 ||
+    (cropSignals.moireScore >= 0.54 &&
+      (cropSignals.screenCastScore >= 0.45 || cropSignals.specularScore >= 0.5)) ||
+    combinedSpoofRisk >= 0.68;
 
   if (spoofDetected && reason === 'NONE') {
     if (bezelScore >= cropSignals.moireScore) {
@@ -365,4 +386,3 @@ export function analyzeScreenAndBezelArtifacts(
     reason,
   };
 }
-

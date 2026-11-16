@@ -16,6 +16,8 @@ export interface BiologicalUpdateInput {
   blendshapes?: readonly BlendshapeCategory[] | null;
   earLeft: number;
   earRight: number;
+  yawDeg?: number;
+  pitchDeg?: number;
   faceCrop?: SimpleImageBuffer | null;
   contextFrame?: SimpleImageBuffer | null;
   faceBox?: NormalizedFaceBox | null;
@@ -30,10 +32,21 @@ export type BiologicalSpoofReason =
 
 export interface BiologicalLivenessReport {
   biologicalVerified: boolean;
+  livenessPassed: boolean;
   blinkVerified: boolean;
+  blinkDetectedNow: boolean;
+  headPoseVerified: boolean;
+  lipMotionVerified: boolean;
   blinkCount: number;
   eyesClosedNow: boolean;
+  openEyeBaseline: number;
   baselineEar: number;
+  faceScale: number;
+  deltaYawDeg: number;
+  deltaPitchDeg: number;
+  yawVariance: number;
+  pitchVariance: number;
+  observationDurationMs: number;
   blendshapeBlinkMax: number;
   nonRigidScore: number;
   nonRigidMotion: number;
@@ -41,6 +54,7 @@ export interface BiologicalLivenessReport {
   planarSpoofDetected: boolean;
   screenSpoofDetected: boolean;
   spoofDetected: boolean;
+  spoofScore: number;
   spoofReason: BiologicalSpoofReason;
   rppgScore: number;
   rppgPulseAlive: boolean;
@@ -57,6 +71,15 @@ interface AnatomicalState {
   mouthOpen: number;
   browLiftL: number;
   browLiftR: number;
+  yawDeg: number;
+  pitchDeg: number;
+}
+
+interface PoseHistorySample {
+  tMs: number;
+  yawDeg: number;
+  pitchDeg: number;
+  mouthOpen: number;
 }
 
 interface RppgSample {
@@ -84,6 +107,17 @@ function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }
 
+function stdDev(values: readonly number[]): number {
+  if (values.length < 2) return 0;
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  let variance = 0;
+  for (const v of values) {
+    const d = v - mean;
+    variance += d * d;
+  }
+  return Math.sqrt(variance / values.length);
+}
+
 function readBlendshapeScore(
   categories: readonly BlendshapeCategory[] | null | undefined,
   name: string,
@@ -95,7 +129,11 @@ function readBlendshapeScore(
   return 0;
 }
 
-function extractAnatomicalState(landmarks: readonly Landmark3D[]): AnatomicalState | null {
+function extractAnatomicalState(
+  landmarks: readonly Landmark3D[],
+  overrideYaw?: number,
+  overridePitch?: number,
+): AnatomicalState | null {
   if (landmarks.length < 390) return null;
   const p33 = landmarks[33];
   const p263 = landmarks[263];
@@ -127,8 +165,34 @@ function extractAnatomicalState(landmarks: readonly Landmark3D[]): AnatomicalSta
   ) {
     return null;
   }
+
   const iod = Math.max(1e-4, dist2D(p33, p263));
   const mouthW = Math.max(1e-4, dist2D(p61, p291));
+
+  // Derive stable head pose angles from facial geometry if not provided explicitly
+  let yawDeg = overrideYaw ?? 0;
+  let pitchDeg = overridePitch ?? 0;
+  if (overrideYaw === undefined || overridePitch === undefined) {
+    const lCheek = landmarks[234] ?? p33;
+    const rCheek = landmarks[454] ?? p263;
+    const forehead = landmarks[10] ?? p105;
+    const chin = landmarks[152] ?? p14;
+    const fw = Math.max(1e-4, dist2D(lCheek, rCheek));
+    const fh = Math.max(1e-4, dist2D(forehead, chin));
+    if (overrideYaw === undefined) {
+      const midX = (lCheek.x + rCheek.x) / 2;
+      const yaw2D = ((nose.x - midX) / fw) * 90;
+      const yawZ = (Math.atan2((rCheek.z ?? 0) - (lCheek.z ?? 0), fw) * 180) / Math.PI;
+      yawDeg = yaw2D * 0.6 + yawZ * 0.4;
+    }
+    if (overridePitch === undefined) {
+      const neutralY = forehead.y + fh * 0.55;
+      const pitch2D = ((nose.y - neutralY) / fh) * 90;
+      const pitchZ = (Math.atan2((chin.z ?? 0) - (forehead.z ?? 0), fh) * 180) / Math.PI;
+      pitchDeg = pitch2D * 0.55 + pitchZ * 0.45;
+    }
+  }
+
   return {
     iod,
     centerX: (p33.x + p263.x + nose.x) / 3,
@@ -139,7 +203,46 @@ function extractAnatomicalState(landmarks: readonly Landmark3D[]): AnatomicalSta
     mouthOpen: dist2D(p13, p14) / mouthW,
     browLiftL: (p159.y - p105.y) / iod,
     browLiftR: (p386.y - p334.y) / iod,
+    yawDeg,
+    pitchDeg,
   };
+}
+
+/**
+ * Samples upper-eye strip mean brightness in the aligned 112x112 face crop to detect
+ * rapid 100-400ms eyelid closure/opening intensity shifts at far camera distances (1.2-2.5m).
+ */
+function sampleEyePatchLuma(faceCrop: SimpleImageBuffer | null | undefined): number | null {
+  if (!faceCrop || faceCrop.width < 48 || faceCrop.height < 48 || faceCrop.data.length < faceCrop.width * faceCrop.height * 4) {
+    return null;
+  }
+  const { width, height, data } = faceCrop;
+  const boxes = [
+    {
+      x0: Math.floor(width * 0.25),
+      x1: Math.floor(width * 0.43),
+      y0: Math.floor(height * 0.41),
+      y1: Math.floor(height * 0.52),
+    },
+    {
+      x0: Math.floor(width * 0.57),
+      x1: Math.floor(width * 0.75),
+      y0: Math.floor(height * 0.41),
+      y1: Math.floor(height * 0.52),
+    },
+  ];
+  let sum = 0;
+  let n = 0;
+  for (const b of boxes) {
+    for (let y = b.y0; y <= b.y1; y += 2) {
+      for (let x = b.x0; x <= b.x1; x += 2) {
+        const p = (y * width + x) * 4;
+        sum += 0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2];
+        n += 1;
+      }
+    }
+  }
+  return n > 0 ? sum / n : null;
 }
 
 /**
@@ -195,7 +298,6 @@ function sampleSkinChrominance(
   const luma = 0.299 * meanR + 0.587 * meanG + 0.114 * meanB;
   if (luma < 12) return null;
 
-  // Normalized De Haan & Jeanne CHROM signal (Xs = 3R - 2G normalized by DC)
   const rn = meanR / Math.max(20, luma);
   const gn = meanG / Math.max(20, luma);
   const chrom = 3 * rn - 2 * gn;
@@ -204,28 +306,40 @@ function sampleSkinChrominance(
 }
 
 /**
- * Stateful multi-factor biological liveness & presentation-attack detector.
- * Combines:
- * 1. Physiological eye-blink cycle (neural blendshapes + adaptive baseline EAR, supports unilateral blink)
- * 2. 2D planar rigid motion vs non-rigid facial biological articulation
- * 3. Pixel-level screen moire / rectangular bezel / glass glare inspection
- * 4. Contactless skin hemoglobin CHROM rPPG variance & frozen-stream detection
+ * Distance-Adaptive Multi-Cue Biological Liveness & Anti-Spoof Tracker.
+ * Features:
+ * 1. Distance-adaptive openEyeBaseline moving average (EAR < openEyeBaseline * ratio, plus eyelid pixel delta)
+ * 2. Multi-cue biological proof: eye blink OR 3D head rotation (>2.5 deg Yaw/Pitch) OR lip articulation
+ * 3. Immediate State Clear: any genuine biological cue clears spoofScore=0 & spoofDetected=false immediately
+ * 4. 4.5-second (120+ frame) patience window before static-planar warning unless enclosed phone bezel confirmed
  */
 export class BiologicalLivenessTracker {
   private readonly blinkExpiryMs: number;
-  private baselineEar = 0.29;
+  private readonly staticSpoofWindowMs: number;
+
+  private firstSeenAtMs: number | null = null;
+  private frameCount = 0;
+
+  private openEyeBaseline = 0.28;
   private hasBaseline = false;
   private eyeClosedSinceMs: number | null = null;
   private blinkCount = 0;
   private lastBlinkAtMs: number | null = null;
 
+  private eyePatchBaseline: number | null = null;
+  private eyePatchPulseAtMs: number | null = null;
+
+  private liveVerifiedUntilMs = 0;
+  private headPoseVerified = false;
+  private lipMotionVerified = false;
+
   private prevAnatomy: AnatomicalState | null = null;
+  private poseHistory: PoseHistorySample[] = [];
   private cumulativeNonRigid = 0;
   private rigidMovingStreak = 0;
   private planarSpoofDetected = false;
 
   private screenSpoofStreak = 0;
-  private screenSpoofLatchedUntilMs = 0;
   private latestScreenReport: ScreenAntiSpoofReport = DEFAULT_SCREEN_REPORT;
 
   private rppgSamples: RppgSample[] = [];
@@ -233,22 +347,30 @@ export class BiologicalLivenessTracker {
   private latestRppgScore = 0;
   private rppgPulseAlive = false;
 
-  constructor(options?: { blinkExpiryMs?: number }) {
+  constructor(options?: { blinkExpiryMs?: number; staticSpoofWindowMs?: number }) {
     this.blinkExpiryMs = options?.blinkExpiryMs ?? 15_000;
+    this.staticSpoofWindowMs = options?.staticSpoofWindowMs ?? 4_500;
   }
 
   reset(): void {
-    this.baselineEar = 0.29;
+    this.firstSeenAtMs = null;
+    this.frameCount = 0;
+    this.openEyeBaseline = 0.28;
     this.hasBaseline = false;
     this.eyeClosedSinceMs = null;
     this.blinkCount = 0;
     this.lastBlinkAtMs = null;
+    this.eyePatchBaseline = null;
+    this.eyePatchPulseAtMs = null;
+    this.liveVerifiedUntilMs = 0;
+    this.headPoseVerified = false;
+    this.lipMotionVerified = false;
     this.prevAnatomy = null;
+    this.poseHistory = [];
     this.cumulativeNonRigid = 0;
     this.rigidMovingStreak = 0;
     this.planarSpoofDetected = false;
     this.screenSpoofStreak = 0;
-    this.screenSpoofLatchedUntilMs = 0;
     this.latestScreenReport = DEFAULT_SCREEN_REPORT;
     this.rppgSamples = [];
     this.staticInjectionDetected = false;
@@ -256,38 +378,93 @@ export class BiologicalLivenessTracker {
     this.rppgPulseAlive = false;
   }
 
+  private clearSpoofStateImmediately(now: number): void {
+    this.planarSpoofDetected = false;
+    this.staticInjectionDetected = false;
+    this.screenSpoofStreak = 0;
+    this.rigidMovingStreak = 0;
+    this.latestScreenReport = DEFAULT_SCREEN_REPORT;
+    this.liveVerifiedUntilMs = Math.max(this.liveVerifiedUntilMs, now + this.blinkExpiryMs);
+  }
+
   update(input: BiologicalUpdateInput): BiologicalLivenessReport {
     const now = input.timestampMs;
+    if (this.firstSeenAtMs === null) {
+      this.firstSeenAtMs = now;
+    }
+    this.frameCount += 1;
+    const observationDurationMs = Math.max(0, now - this.firstSeenAtMs);
 
-    // 1. Update Eye Blink Detection (supports unilateral blink for stroke / Bell's palsy safety)
+    const landmarksFaceHeight =
+      input.landmarks3D[152] && input.landmarks3D[10]
+        ? Math.abs(input.landmarks3D[152].y - input.landmarks3D[10].y)
+        : 0.4;
+    const faceScale = Number(
+      clamp01(input.faceBox?.height ?? landmarksFaceHeight).toFixed(3),
+    );
+    const isDistantFace = faceScale < 0.35;
+
+    // 1. Distance-Adaptive Dynamic Eye Baseline & Blink Detection
     const blinkL = readBlendshapeScore(input.blendshapes, 'eyeBlinkLeft');
     const blinkR = readBlendshapeScore(input.blendshapes, 'eyeBlinkRight');
     const blendshapeBlinkMax = Math.max(blinkL, blinkR);
 
-    const validEarL = Number.isFinite(input.earLeft) ? input.earLeft : 0.3;
-    const validEarR = Number.isFinite(input.earRight) ? input.earRight : 0.3;
+    const validEarL = Number.isFinite(input.earLeft) ? input.earLeft : 0.29;
+    const validEarR = Number.isFinite(input.earRight) ? input.earRight : 0.29;
     const minEar = Math.min(validEarL, validEarR);
     const meanEar = (validEarL + validEarR) / 2;
 
-    if (!this.hasBaseline && meanEar >= 0.21) {
-      this.baselineEar = meanEar;
+    if (!this.hasBaseline && meanEar >= 0.19) {
+      this.openEyeBaseline = meanEar;
       this.hasBaseline = true;
     }
 
-    const isEyeClosedByBlendshape = blendshapeBlinkMax >= 0.38;
-    const isEyeClosedByEar =
-      minEar < 0.205 || (this.hasBaseline && this.baselineEar >= 0.23 && this.baselineEar - minEar >= 0.052);
-    const eyesClosedNow = isEyeClosedByBlendshape || isEyeClosedByEar;
+    // Distant faces (< 0.35 height) allow gentler 0.80-0.83 relative drop; standard 0.78
+    const earCloseRatio = faceScale < 0.24 ? 0.83 : isDistantFace ? 0.8 : 0.78;
+    const earThreshold = this.openEyeBaseline * earCloseRatio;
+    const blendshapeThreshold = isDistantFace ? 0.26 : 0.36;
 
-    const isEyeReopened =
-      blendshapeBlinkMax <= 0.24 &&
-      meanEar >= Math.min(0.225, Math.max(0.205, this.baselineEar * 0.87));
-
-    if (!eyesClosedNow && this.eyeClosedSinceMs === null && meanEar >= 0.215) {
-      // Track slow resting baseline while clearly open
-      this.baselineEar = this.baselineEar * 0.9 + meanEar * 0.1;
+    // Also track sudden 100-400ms eye-patch brightness jump (brighter closed upper skin vs dark iris)
+    const eyeLuma = sampleEyePatchLuma(input.faceCrop);
+    let eyePatchClosing = false;
+    let eyePatchReopening = false;
+    if (eyeLuma !== null) {
+      if (this.eyePatchBaseline === null) {
+        this.eyePatchBaseline = eyeLuma;
+      } else {
+        const diff = eyeLuma - this.eyePatchBaseline;
+        if (Math.abs(diff) >= 9.5) {
+          eyePatchClosing = true;
+          this.eyePatchPulseAtMs = now;
+        } else if (this.eyePatchPulseAtMs !== null && Math.abs(diff) <= 4.0) {
+          const dt = now - this.eyePatchPulseAtMs;
+          if (dt >= 70 && dt <= 550) {
+            eyePatchReopening = true;
+          }
+          this.eyePatchPulseAtMs = null;
+        } else if (Math.abs(diff) < 5.0) {
+          this.eyePatchBaseline = this.eyePatchBaseline * 0.92 + eyeLuma * 0.08;
+        }
+      }
     }
 
+    const isEyeClosedByBlendshape = blendshapeBlinkMax >= blendshapeThreshold;
+    const isEyeClosedByEar =
+      minEar < 0.195 ||
+      (this.hasBaseline && (meanEar < earThreshold || minEar < earThreshold));
+    const eyesClosedNow = isEyeClosedByBlendshape || isEyeClosedByEar || eyePatchClosing;
+
+    const isEyeReopened =
+      eyePatchReopening ||
+      (blendshapeBlinkMax <= 0.24 &&
+        meanEar >= Math.max(0.2, this.openEyeBaseline * 0.89));
+
+    if (!eyesClosedNow && this.eyeClosedSinceMs === null && meanEar >= 0.195) {
+      // Smooth moving average ONLY when eyes are open
+      this.openEyeBaseline = this.openEyeBaseline * 0.9 + meanEar * 0.1;
+    }
+
+    let blinkDetectedNow = false;
     if (eyesClosedNow) {
       if (this.eyeClosedSinceMs === null) {
         this.eyeClosedSinceMs = now;
@@ -297,18 +474,30 @@ export class BiologicalLivenessTracker {
       if (closedDurationMs >= 30 && closedDurationMs <= 1800) {
         this.blinkCount += 1;
         this.lastBlinkAtMs = now;
-        this.rigidMovingStreak = 0;
-        this.planarSpoofDetected = false;
+        blinkDetectedNow = true;
+        this.clearSpoofStateImmediately(now);
       }
       this.eyeClosedSinceMs = null;
     } else if (this.eyeClosedSinceMs !== null && now - this.eyeClosedSinceMs > 2200) {
       this.eyeClosedSinceMs = null;
     }
 
-    // 2. Non-rigid biological deformation vs 2D rigid planar motion
+    // 2. Non-Rigid Biological Deformation & Multi-Cue 3D Head Pose / Lip Motion
     let globalMotion = 0;
     let nonRigidMotion = 0;
-    const anatomy = extractAnatomicalState(input.landmarks3D);
+    const anatomy = extractAnatomicalState(input.landmarks3D, input.yawDeg, input.pitchDeg);
+    if (anatomy) {
+      this.poseHistory.push({
+        tMs: now,
+        yawDeg: anatomy.yawDeg,
+        pitchDeg: anatomy.pitchDeg,
+        mouthOpen: anatomy.mouthOpen,
+      });
+      while (this.poseHistory.length > 0 && now - this.poseHistory[0].tMs > this.staticSpoofWindowMs) {
+        this.poseHistory.shift();
+      }
+    }
+
     if (anatomy && this.prevAnatomy) {
       globalMotion =
         Math.hypot(anatomy.centerX - this.prevAnatomy.centerX, anatomy.centerY - this.prevAnatomy.centerY) +
@@ -318,48 +507,91 @@ export class BiologicalLivenessTracker {
       nonRigidMotion =
         Math.abs(anatomy.leftEyeOpen - this.prevAnatomy.leftEyeOpen) +
         Math.abs(anatomy.rightEyeOpen - this.prevAnatomy.rightEyeOpen) +
-        Math.abs(anatomy.mouthOpen - this.prevAnatomy.mouthOpen) * 0.7 +
+        Math.abs(anatomy.mouthOpen - this.prevAnatomy.mouthOpen) * 0.75 +
         Math.abs(anatomy.browLiftL - this.prevAnatomy.browLiftL) * 0.6 +
         Math.abs(anatomy.browLiftR - this.prevAnatomy.browLiftR) * 0.6;
 
       this.cumulativeNonRigid = Math.min(1, this.cumulativeNonRigid * 0.92 + nonRigidMotion * 2.5);
-
-      if (globalMotion >= 0.0045 && nonRigidMotion < 0.004 && this.blinkCount === 0) {
-        this.rigidMovingStreak += 1;
-      } else if (nonRigidMotion >= 0.009) {
-        this.rigidMovingStreak = Math.max(0, this.rigidMovingStreak - 2);
-      }
-
-      if (this.rigidMovingStreak >= 12 && this.blinkCount === 0) {
-        this.planarSpoofDetected = true;
-      }
     }
     this.prevAnatomy = anatomy;
 
-    // 3. Pixel-level Screen Bezel / Moire / Specular Anti-Spoof
-    if (input.faceCrop || input.contextFrame) {
+    // Recent 2.5s window for active living cues: yaw/pitch rotation >= 2.5 deg OR lip movement
+    let deltaYawDeg = 0;
+    let deltaPitchDeg = 0;
+    let deltaLip = 0;
+    const recentSamples = this.poseHistory.filter((s) => now - s.tMs <= 2500);
+    if (recentSamples.length >= 2) {
+      const yaws = recentSamples.map((s) => s.yawDeg);
+      const pitches = recentSamples.map((s) => s.pitchDeg);
+      const lips = recentSamples.map((s) => s.mouthOpen);
+      deltaYawDeg = Math.max(...yaws) - Math.min(...yaws);
+      deltaPitchDeg = Math.max(...pitches) - Math.min(...pitches);
+      deltaLip = Math.max(...lips) - Math.min(...lips);
+    }
+
+    if (deltaYawDeg >= 2.5 || deltaPitchDeg >= 2.5) {
+      this.headPoseVerified = true;
+      this.clearSpoofStateImmediately(now);
+    }
+    if (deltaLip >= 0.045 || nonRigidMotion >= 0.022) {
+      this.lipMotionVerified = true;
+      this.clearSpoofStateImmediately(now);
+    }
+
+    // 4.5s window variance for static 2D planar check
+    const yawVariance = Number(stdDev(this.poseHistory.map((s) => s.yawDeg)).toFixed(3));
+    const pitchVariance = Number(stdDev(this.poseHistory.map((s) => s.pitchDeg)).toFixed(3));
+
+    const blinkVerified =
+      this.blinkCount >= 1 &&
+      this.lastBlinkAtMs !== null &&
+      now - this.lastBlinkAtMs <= this.blinkExpiryMs;
+
+    const liveVerifiedNow = blinkVerified || now <= this.liveVerifiedUntilMs;
+
+    // 3. Enclosed Phone Bezel Check + Strict 4.5s Static Planar Rule
+    let clearBezelSpoof = false;
+    if ((input.faceCrop || input.contextFrame) && !liveVerifiedNow) {
       const screenReport = analyzeScreenAndBezelArtifacts({
         faceCrop: input.faceCrop,
         contextFrame: input.contextFrame,
         faceBox: input.faceBox,
+        faceScale,
       });
       this.latestScreenReport = screenReport;
-      if (screenReport.spoofDetected) {
+      const unmistakableScreen =
+        screenReport.bezelScore >= 0.72 && screenReport.combinedSpoofRisk >= 0.68;
+      if (unmistakableScreen) {
         this.screenSpoofStreak += 1;
-        // Require 2 consecutive screen-spoof detections OR high confidence bezel/moire to reject cleanly
-        if (
-          this.screenSpoofStreak >= 2 ||
-          screenReport.bezelScore >= 0.72 ||
-          screenReport.combinedSpoofRisk >= 0.72
-        ) {
-          this.screenSpoofLatchedUntilMs = Math.max(this.screenSpoofLatchedUntilMs, now + 1800);
+        if (this.screenSpoofStreak >= 4) {
+          clearBezelSpoof = true;
         }
       } else {
         this.screenSpoofStreak = Math.max(0, this.screenSpoofStreak - 1);
       }
+    } else if (liveVerifiedNow) {
+      this.latestScreenReport = DEFAULT_SCREEN_REPORT;
+      this.screenSpoofStreak = 0;
     }
 
-    // 4. Micro-vascular CHROM rPPG & Frozen-Frame Injection Guard
+    // Only flag 2D flat rigid spoof AFTER >= 4.5s (120+ frames or 4500ms) with practically zero 3D yaw/pitch variance & zero blink
+    const observedLongEnoughForStaticCheck =
+      observationDurationMs >= this.staticSpoofWindowMs && this.frameCount >= 35;
+
+    if (
+      !liveVerifiedNow &&
+      observedLongEnoughForStaticCheck &&
+      yawVariance < 0.15 &&
+      pitchVariance < 0.15 &&
+      !this.headPoseVerified &&
+      !this.lipMotionVerified
+    ) {
+      this.planarSpoofDetected = true;
+    } else if (liveVerifiedNow) {
+      this.planarSpoofDetected = false;
+    }
+
+    // 4. Micro-vascular CHROM rPPG & Bit-Identical Frozen Injection Guard (post-4.5s only if unverified)
     const rppgSample = sampleSkinChrominance(input.faceCrop);
     if (rppgSample) {
       this.rppgSamples.push({ tMs: now, chrom: rppgSample.chrom, luma: rppgSample.luma });
@@ -389,11 +621,12 @@ export class BiologicalLivenessTracker {
         const chromStd = Math.sqrt(chromVar / this.rppgSamples.length);
         const lumaStd = Math.sqrt(lumaVar / this.rppgSamples.length);
 
-        if (chromStd < 1e-5 && lumaStd < 1e-4) {
+        if (!liveVerifiedNow && observedLongEnoughForStaticCheck && chromStd < 1e-5 && lumaStd < 1e-4) {
           this.staticInjectionDetected = true;
         } else {
           this.staticInjectionDetected = false;
-          const acScore = clamp01(chromStd / 0.028) * clamp01(1 - Math.max(0, chromStd - 0.12) / 0.15);
+          const acScore =
+            clamp01(chromStd / 0.028) * clamp01(1 - Math.max(0, chromStd - 0.12) / 0.15);
           const oscillationScore = clamp01(signChanges / (this.rppgSamples.length * 0.45));
           const warmthBoost = clamp01((rppgSample.warmSkinRatio - 0.92) / 0.35);
           this.latestRppgScore = Number(
@@ -405,39 +638,57 @@ export class BiologicalLivenessTracker {
       }
     }
 
-    const screenSpoofDetected = now <= this.screenSpoofLatchedUntilMs;
+    const screenSpoofDetected = !liveVerifiedNow && clearBezelSpoof;
     const spoofDetected =
-      screenSpoofDetected || this.planarSpoofDetected || this.staticInjectionDetected;
+      !liveVerifiedNow &&
+      (screenSpoofDetected || this.planarSpoofDetected || this.staticInjectionDetected);
+
+    const spoofScore = spoofDetected
+      ? Number(
+          Math.max(
+            0.75,
+            this.latestScreenReport.combinedSpoofRisk,
+            this.planarSpoofDetected ? 0.85 : 0,
+          ).toFixed(3),
+        )
+      : 0;
 
     let spoofReason: BiologicalSpoofReason = 'NONE';
     if (screenSpoofDetected) {
       spoofReason = 'SCREEN_DETECTED';
-    } else if (this.planarSpoofDetected) {
+    } else if (spoofDetected && this.planarSpoofDetected) {
       spoofReason = 'PLANAR_RIGID_MOTION';
-    } else if (this.staticInjectionDetected) {
+    } else if (spoofDetected && this.staticInjectionDetected) {
       spoofReason = 'STATIC_FRAME_INJECTION';
     }
 
-    const blinkVerified =
-      this.blinkCount >= 1 &&
-      this.lastBlinkAtMs !== null &&
-      now - this.lastBlinkAtMs <= this.blinkExpiryMs;
-
-    const biologicalVerified = blinkVerified && !spoofDetected;
+    const biologicalVerified = liveVerifiedNow && !spoofDetected;
 
     return {
       biologicalVerified,
+      livenessPassed: biologicalVerified,
       blinkVerified,
+      blinkDetectedNow,
+      headPoseVerified: this.headPoseVerified,
+      lipMotionVerified: this.lipMotionVerified,
       blinkCount: this.blinkCount,
       eyesClosedNow,
-      baselineEar: Number(this.baselineEar.toFixed(3)),
+      openEyeBaseline: Number(this.openEyeBaseline.toFixed(3)),
+      baselineEar: Number(this.openEyeBaseline.toFixed(3)),
+      faceScale,
+      deltaYawDeg: Number(deltaYawDeg.toFixed(2)),
+      deltaPitchDeg: Number(deltaPitchDeg.toFixed(2)),
+      yawVariance,
+      pitchVariance,
+      observationDurationMs,
       blendshapeBlinkMax: Number(blendshapeBlinkMax.toFixed(3)),
       nonRigidScore: Number(this.cumulativeNonRigid.toFixed(3)),
       nonRigidMotion: Number(nonRigidMotion.toFixed(5)),
       globalMotion: Number(globalMotion.toFixed(5)),
-      planarSpoofDetected: this.planarSpoofDetected,
+      planarSpoofDetected: spoofDetected && this.planarSpoofDetected,
       screenSpoofDetected,
       spoofDetected,
+      spoofScore,
       spoofReason,
       rppgScore: this.latestRppgScore,
       rppgPulseAlive: this.rppgPulseAlive,
@@ -445,4 +696,3 @@ export class BiologicalLivenessTracker {
     };
   }
 }
-

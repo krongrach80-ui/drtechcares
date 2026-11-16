@@ -420,6 +420,8 @@ export function WelcomeFaceScanModal({
                   blendshapes: res.faceBlendshapes?.[0]?.categories,
                   earLeft: liveness.earLeft,
                   earRight: liveness.earRight,
+                  yawDeg: liveness.yawDeg,
+                  pitchDeg: liveness.pitchDeg,
                   faceCrop: crop,
                   contextFrame,
                   faceBox: rawBox,
@@ -434,12 +436,14 @@ export function WelcomeFaceScanModal({
                   image: crop,
                   contextImage: contextFrame,
                   faceBox: rawBox,
+                  biologicalVerified: bio.biologicalVerified,
                   metrics: {
+                    biologicalVerified: bio.biologicalVerified,
                     planarRigidSpoof: bio.planarSpoofDetected,
-                    moireOrBezelDetected: bio.screenSpoofDetected || undefined,
+                    moireOrBezelDetected: bio.screenSpoofDetected,
                   },
                 });
-                const isSpoofFrame = inspection.scan_status === 'SPOOF_DETECTED' || bio.spoofDetected;
+                const isSpoofFrame = bio.spoofDetected && !bio.biologicalVerified;
                 setSpoofDetectedNow(isSpoofFrame);
                 prevLandmarks = lms;
 
@@ -460,7 +464,7 @@ export function WelcomeFaceScanModal({
                     const livenessEvidence = {
                       biologicalVerified: bio.biologicalVerified,
                       blinkCount: bio.blinkCount,
-                      spoofRisk: bio.screenReport.combinedSpoofRisk,
+                      spoofRisk: bio.spoofScore,
                       nonRigidScore: bio.nonRigidScore,
                       rppgScore: bio.rppgScore,
                     };
@@ -473,7 +477,11 @@ export function WelcomeFaceScanModal({
                           pitchDeg: liveness.pitchDeg,
                           depthScore: liveness.depthScore,
                           microMotion: liveness.microMotion,
-                          blinkDetected: liveness.blinkDetected || bio.blinkVerified,
+                          blinkDetected:
+                            liveness.blinkDetected ||
+                            bio.blinkVerified ||
+                            bio.headPoseVerified ||
+                            bio.lipMotionVerified,
                           nonRigidMotion: bio.nonRigidMotion,
                           biologicalVerified: bio.biologicalVerified,
                           spoofDetected: isSpoofFrame,
@@ -666,7 +674,7 @@ export function WelcomeFaceScanModal({
       const verified = await apiClient.verifyFaceLogin(probeVector, {
         biologicalVerified: bioNow.biologicalVerified,
         blinkCount: bioNow.blinkCount,
-        spoofRisk: bioNow.screenReport.combinedSpoofRisk,
+        spoofRisk: bioNow.spoofScore,
         nonRigidScore: bioNow.nonRigidScore,
         rppgScore: bioNow.rppgScore,
       });
@@ -737,15 +745,15 @@ export function WelcomeFaceScanModal({
               </div>
 
               {spoofDetectedNow ? (
-                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[280px] -translate-x-1/2 rounded-lg border border-rose-400 bg-rose-50/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
+                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[290px] -translate-x-1/2 rounded-lg border border-rose-400 bg-rose-50/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
                   <div className="text-[11px] font-black text-rose-700">
-                    ⚠️ ตรวจพบภาพถ่ายหรือหน้าจอมือถือ
+                    ⚠️ ตรวจพบภาพถ่ายหรือหน้าจอมือถือ — กรุณากะพริบตาหรือขยับศีรษะด้วยใบหน้าจริง
                   </div>
                 </div>
               ) : !bioStatus?.biologicalVerified ? (
-                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[280px] -translate-x-1/2 rounded-lg border border-amber-300 bg-white/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
+                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[290px] -translate-x-1/2 rounded-lg border border-sky-300 bg-white/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
                   <div className="text-[10px] font-extrabold text-[#0F4C81]">
-                    👁️ กรุณากะพริบตา 1 ครั้ง เพื่อยืนยันสิ่งมีชีวิต
+                    👁️ กรุณากะพริบตาหรือขยับศีรษะเล็กน้อยเพื่อยืนยันตัวตน
                   </div>
                 </div>
               ) : liveMatchHud?.candidate ? (

@@ -296,28 +296,95 @@ describe('3D Biometric Verification Assistant & Face ID Prompts', () => {
       return lms;
     };
 
-    // Moving a flat phone photo rigidly across 15 frames with zero blink must fail & flag PLANAR_RIGID_MOTION
+    // First 4.5s window avoids false-alarming stationary human before blink/head-turn
     const spoofTracker = new BiologicalLivenessTracker();
     let spoofOut = spoofTracker.update({
       landmarks3D: makeFace(0, 0),
       earLeft: 0.31,
       earRight: 0.31,
+      yawDeg: 0,
+      pitchDeg: 0,
       timestampMs: 1000,
     });
     for (let i = 1; i <= 15; i += 1) {
       spoofOut = spoofTracker.update({
-        landmarks3D: makeFace(i * 0.01, (i % 3) * 0.004),
+        landmarks3D: makeFace(i * 0.002, 0),
         earLeft: 0.31,
         earRight: 0.31,
+        yawDeg: 0.05,
+        pitchDeg: 0.05,
         timestampMs: 1000 + i * 80,
+      });
+    }
+    expect(spoofOut.biologicalVerified).toBe(false);
+    expect(spoofOut.spoofDetected).toBe(false);
+    expect(spoofOut.spoofScore).toBe(0);
+
+    // Rigid 2D planar face (yaw/pitch variance < 0.15° and zero blink) sustained > 4.5s triggers PLANAR_RIGID_MOTION
+    for (let i = 16; i <= 60; i += 1) {
+      spoofOut = spoofTracker.update({
+        landmarks3D: makeFace(i * 0.002, 0),
+        earLeft: 0.31,
+        earRight: 0.31,
+        yawDeg: (i % 2) * 0.05,
+        pitchDeg: (i % 2) * 0.05,
+        timestampMs: 1000 + i * 100,
       });
     }
     expect(spoofOut.biologicalVerified).toBe(false);
     expect(spoofOut.planarSpoofDetected).toBe(true);
     expect(spoofOut.spoofDetected).toBe(true);
+    expect(spoofOut.spoofScore).toBeGreaterThan(0);
     expect(spoofOut.spoofReason).toBe('PLANAR_RIGID_MOTION');
 
-    // Genuine live person performing one natural blink passes (including unilateral stroke-safe blink)
+    // Immediate State Clear: turning head > 2.5° immediately clears spoofScore=0 & sets livenessPassed=true
+    const clearedByHeadTurn = spoofTracker.update({
+      landmarks3D: makeFace(0.12, 0),
+      earLeft: 0.31,
+      earRight: 0.31,
+      yawDeg: 3.4,
+      pitchDeg: 0.4,
+      timestampMs: 7100,
+    });
+    expect(clearedByHeadTurn.headPoseVerified).toBe(true);
+    expect(clearedByHeadTurn.biologicalVerified).toBe(true);
+    expect(clearedByHeadTurn.livenessPassed).toBe(true);
+    expect(clearedByHeadTurn.spoofDetected).toBe(false);
+    expect(clearedByHeadTurn.spoofScore).toBe(0);
+
+    // Distance-adaptive blink detection at far range (faceScale=0.22): relative drop <= openEyeBaseline * 0.83 triggers blink
+    const distantTracker = new BiologicalLivenessTracker();
+    for (let i = 0; i < 4; i += 1) {
+      distantTracker.update({
+        landmarks3D: makeFace(0, 0, 0.025),
+        earLeft: 0.27,
+        earRight: 0.27,
+        faceBox: { x: 0.4, y: 0.35, width: 0.16, height: 0.22 },
+        timestampMs: 3000 + i * 80,
+      });
+    }
+    // Subtle distant EAR dip to 0.21 (< 0.27 * 0.83 = 0.224) then reopen to 0.27
+    distantTracker.update({
+      landmarks3D: makeFace(0, 0, 0.012),
+      earLeft: 0.21,
+      earRight: 0.21,
+      faceBox: { x: 0.4, y: 0.35, width: 0.16, height: 0.22 },
+      timestampMs: 3400,
+    });
+    const distantReopen = distantTracker.update({
+      landmarks3D: makeFace(0, 0, 0.025),
+      earLeft: 0.27,
+      earRight: 0.27,
+      faceBox: { x: 0.4, y: 0.35, width: 0.16, height: 0.22 },
+      timestampMs: 3520,
+    });
+    expect(distantReopen.faceScale).toBeLessThan(0.35);
+    expect(distantReopen.blinkCount).toBe(1);
+    expect(distantReopen.blinkVerified).toBe(true);
+    expect(distantReopen.biologicalVerified).toBe(true);
+    expect(distantReopen.spoofDetected).toBe(false);
+
+    // Genuine live person performing one natural blendshape blink passes (including unilateral stroke-safe blink)
     const liveTracker = new BiologicalLivenessTracker();
     liveTracker.update({
       landmarks3D: makeFace(0, 0, 0.03),
