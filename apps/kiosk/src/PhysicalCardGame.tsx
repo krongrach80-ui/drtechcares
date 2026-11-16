@@ -237,6 +237,50 @@ const POSE_HAND_CONNECTIONS_B: ReadonlyArray<[number, number]> = [
 
 type ActiveHandSide = 'LEFT' | 'RIGHT' | null;
 
+export const MINIGAME_HAND_RAISE_THRESHOLD_Y = 0.58;
+export const MINIGAME_THAI_SPEECH_RATE = 1.18;
+export type QuestionAnswerPhase = 'READING_QUESTION' | 'READY_TO_ANSWER';
+
+export interface DetectedCardHandSample {
+  zone: 'LEFT' | 'RIGHT';
+  screenY: number;
+  wristY?: number;
+  minTipY?: number;
+  px?: number;
+  py?: number;
+  landmarks?: NormalizedLandmark[];
+}
+
+export function evaluateTwoHandCardSelection(
+  hands: ReadonlyArray<Pick<DetectedCardHandSample, 'zone' | 'screenY' | 'wristY' | 'minTipY'>>,
+  thresholdY: number = MINIGAME_HAND_RAISE_THRESHOLD_Y,
+): {
+  activeSide: 'LEFT' | 'RIGHT' | null;
+  leftRaised: boolean;
+  rightRaised: boolean;
+  bothHandsBlocked: boolean;
+} {
+  let leftRaised = false;
+  let rightRaised = false;
+  for (const hand of hands) {
+    const effectiveY = Math.min(hand.screenY, hand.wristY ?? hand.screenY);
+    if (effectiveY < thresholdY) {
+      if (hand.zone === 'LEFT') leftRaised = true;
+      if (hand.zone === 'RIGHT') rightRaised = true;
+    }
+  }
+  if (leftRaised && rightRaised) {
+    return { activeSide: null, leftRaised: true, rightRaised: true, bothHandsBlocked: true };
+  }
+  if (leftRaised) {
+    return { activeSide: 'LEFT', leftRaised: true, rightRaised: false, bothHandsBlocked: false };
+  }
+  if (rightRaised) {
+    return { activeSide: 'RIGHT', leftRaised: false, rightRaised: true, bothHandsBlocked: false };
+  }
+  return { activeSide: null, leftRaised: false, rightRaised: false, bothHandsBlocked: false };
+}
+
 export interface PhysicalCardGameSummary {
   correct: number;
   total: number;
@@ -335,6 +379,57 @@ function drawCenterZoneDivider(ctx: CanvasRenderingContext2D, cw: number, ch: nu
   ctx.moveTo(cw / 2, 16);
   ctx.lineTo(cw / 2, ch - 16);
   ctx.stroke();
+
+  // Horizontal True Arm Elevation Gate Guide Line ("เส้นเกณฑ์ยกมือตอบ")
+  const thresholdY = ch * MINIGAME_HAND_RAISE_THRESHOLD_Y;
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.62)';
+  ctx.lineWidth = 2.5;
+  ctx.setLineDash([8, 8]);
+  ctx.beginPath();
+  ctx.moveTo(16, thresholdY);
+  ctx.lineTo(cw - 16, thresholdY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  const label = '▲ เส้นเกณฑ์ยกมือตอบ (ยกสูงกว่าเส้นนี้)';
+  ctx.font = '800 13px "Sarabun", sans-serif';
+  const tw = ctx.measureText(label).width;
+  const pillW = Math.min(cw - 40, tw + 24);
+  const pillH = 24;
+  const pillX = (cw - pillW) / 2;
+  const pillY = Math.max(8, thresholdY - pillH - 6);
+  ctx.fillStyle = 'rgba(15, 76, 129, 0.72)';
+  ctx.beginPath();
+  ctx.roundRect(pillX, pillY, pillW, pillH, 12);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, cw / 2, pillY + pillH / 2);
+  ctx.restore();
+}
+
+function drawAmberHandWarningBox(
+  ctx: CanvasRenderingContext2D,
+  landmarks: NormalizedLandmark[],
+  tf: CoverTransform,
+) {
+  const pts = landmarks.map((lm) => mapMirroredLandmarkToScreen(lm, tf));
+  if (pts.length === 0) return;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const p of pts) {
+    minX = Math.min(minX, p.px);
+    maxX = Math.max(maxX, p.px);
+    minY = Math.min(minY, p.py);
+    maxY = Math.max(maxY, p.py);
+  }
+  ctx.save();
+  ctx.strokeStyle = '#f59e0b';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(minX - 18, minY - 18, Math.max(48, maxX - minX + 36), Math.max(48, maxY - minY + 36));
   ctx.restore();
 }
 
@@ -601,6 +696,11 @@ export function PhysicalCardGame({
   );
   const [voiceMuted, setVoiceMuted] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [questionPhase, setQuestionPhase] = useState<QuestionAnswerPhase>('READING_QUESTION');
+  const questionPhaseRef = useRef<QuestionAnswerPhase>('READING_QUESTION');
+  questionPhaseRef.current = questionPhase;
+  const bothHandsWarnSpeechTsRef = useRef<number>(0);
+  const allHandsLandmarksRef = useRef<NormalizedLandmark[][]>([]);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -747,7 +847,7 @@ export function PhysicalCardGame({
           if (matchedVoice) {
             utterance.voice = matchedVoice;
           }
-          utterance.rate = targetLang === 'th' ? 0.96 : targetLang === 'zh' ? 0.98 : 1.0;
+          utterance.rate = targetLang === 'th' ? MINIGAME_THAI_SPEECH_RATE : targetLang === 'zh' ? 0.98 : 1.0;
           utterance.pitch = 1.0;
           utterance.volume = 1.0;
           activeUtteranceRef.current = utterance;
@@ -774,6 +874,8 @@ export function PhysicalCardGame({
                 blockedByAutoplayRef.current = true;
                 isSpeakingRef.current = false;
                 setIsSpeaking(false);
+                questionPhaseRef.current = 'READY_TO_ANSWER';
+                setQuestionPhase('READY_TO_ANSWER');
               }
               return;
             }
@@ -783,10 +885,11 @@ export function PhysicalCardGame({
           isSpeakingRef.current = true;
           setIsSpeaking(true);
           clearSpeakingWatchdog();
+          const watchdogMs = Math.min(7500, Math.max(2200, clean.length * 80));
           speakingWatchdogRef.current = window.setTimeout(() => {
             speakingWatchdogRef.current = null;
             onMinigameSpeechEndedRef.current(seq);
-          }, 11000);
+          }, watchdogMs);
           synth.speak(utterance);
         };
 
@@ -835,7 +938,7 @@ export function PhysicalCardGame({
             audio.preload = 'auto';
             ttsAudioRef.current = audio;
           }
-          audio.playbackRate = targetLang === 'zh' ? 0.98 : 1.0;
+          audio.playbackRate = targetLang === 'th' ? MINIGAME_THAI_SPEECH_RATE : targetLang === 'zh' ? 0.98 : 1.0;
 
           audio.onplay = () => {
             if (speakSeqRef.current !== seq) return;
@@ -859,10 +962,11 @@ export function PhysicalCardGame({
           isSpeakingRef.current = true;
           setIsSpeaking(true);
           clearSpeakingWatchdog();
+          const audioWatchdogMs = Math.min(7500, Math.max(2200, clean.length * 80));
           speakingWatchdogRef.current = window.setTimeout(() => {
             speakingWatchdogRef.current = null;
             onMinigameSpeechEndedRef.current(seq);
-          }, 11000);
+          }, audioWatchdogMs);
 
           if (playPromise && typeof playPromise.catch === 'function') {
             playPromise.catch((err: unknown) => {
@@ -876,6 +980,8 @@ export function PhysicalCardGame({
                   : '';
               if (errName === 'NotAllowedError') {
                 blockedByAutoplayRef.current = true;
+                questionPhaseRef.current = 'READY_TO_ANSWER';
+                setQuestionPhase('READY_TO_ANSWER');
                 return;
               }
               if (errName === 'AbortError') {
@@ -900,6 +1006,11 @@ export function PhysicalCardGame({
     clearSpeakingWatchdog();
     isSpeakingRef.current = false;
     setIsSpeaking(false);
+
+    if (!activeFeedbackMetaRef.current && !completedSummaryRef.current) {
+      questionPhaseRef.current = 'READY_TO_ANSWER';
+      setQuestionPhase('READY_TO_ANSWER');
+    }
 
     if (voiceMutedRef.current) {
       queuedSpeechRef.current = null;
@@ -1002,6 +1113,7 @@ export function PhysicalCardGame({
     targetLandmarksRef.current = null;
     smoothedLandmarksRef.current = null;
     poseLandmarksRef.current = null;
+    allHandsLandmarksRef.current = [];
     palmPxRef.current = null;
     pendingChoiceRef.current = null;
     bothHandsWarnRef.current = false;
@@ -1013,14 +1125,27 @@ export function PhysicalCardGame({
 
   const currentCard = cards[index];
 
-  // Auto-speak active card question when card changes or game resets
+  // Auto-speak active card question when card changes or game resets (Speech-First Relay Gate)
   useEffect(() => {
     if (completedSummary || !currentCard || feedbackRef.current) return;
+    resetTrackingRefs();
+    setPendingChoice(null);
+    setBothHandsWarn(false);
+
     const text = pickCardTextByVoiceLang(currentCard.question, voiceLangRef.current);
-    if (!voiceMutedRef.current && text.trim()) {
-      speakMinigameText(text, voiceLangRef.current);
+    const hasSpeechEngine =
+      typeof window !== 'undefined' &&
+      (('speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined') ||
+        typeof Audio !== 'undefined');
+    if (!voiceMutedRef.current && text.trim() && hasSpeechEngine) {
+      questionPhaseRef.current = 'READING_QUESTION';
+      setQuestionPhase('READING_QUESTION');
+      speakMinigameText(text, voiceLangRef.current, { forceInterrupt: true });
+    } else {
+      questionPhaseRef.current = 'READY_TO_ANSWER';
+      setQuestionPhase('READY_TO_ANSWER');
     }
-  }, [completedSummary, currentCard?.id, sessionKey, speakMinigameText]);
+  }, [completedSummary, currentCard?.id, sessionKey, resetTrackingRefs, speakMinigameText]);
 
   // Auto-speak final summary when all 10 cards are finished
   useEffect(() => {
@@ -1070,9 +1195,14 @@ export function PhysicalCardGame({
   const handleReplayVoice = useCallback(() => {
     const text = getActiveVoiceText(voiceLangRef.current);
     if (text && !voiceMutedRef.current) {
+      if (!activeFeedbackMetaRef.current && !completedSummaryRef.current) {
+        questionPhaseRef.current = 'READING_QUESTION';
+        setQuestionPhase('READING_QUESTION');
+        resetTrackingRefs();
+      }
       speakMinigameText(text, voiceLangRef.current, { forceInterrupt: true });
     }
-  }, [getActiveVoiceText, speakMinigameText]);
+  }, [getActiveVoiceText, resetTrackingRefs, speakMinigameText]);
 
   const handleToggleVoiceMute = useCallback(() => {
     const nextMuted = !voiceMutedRef.current;
@@ -1080,6 +1210,8 @@ export function PhysicalCardGame({
     setVoiceMuted(nextMuted);
     if (nextMuted) {
       stopMinigameSpeech(true);
+      questionPhaseRef.current = 'READY_TO_ANSWER';
+      setQuestionPhase('READY_TO_ANSWER');
       return;
     }
     const text = getActiveVoiceText(voiceLangRef.current);
@@ -1091,7 +1223,14 @@ export function PhysicalCardGame({
   const submitAnswer = useCallback(
     (choice: 'yes' | 'no') => {
       const card = cardsRef.current[indexRef.current];
-      if (!card || feedbackRef.current || submittingRef.current) return;
+      if (
+        !card ||
+        feedbackRef.current ||
+        submittingRef.current ||
+        questionPhaseRef.current === 'READING_QUESTION'
+      ) {
+        return;
+      }
       submittingRef.current = true;
       resetTrackingRefs();
       setPendingChoice(null);
@@ -1229,7 +1368,7 @@ export function PhysicalCardGame({
             handLandmarker = await HandLandmarker.createFromOptions(vision, {
               baseOptions: { modelAssetPath, delegate },
               runningMode: 'VIDEO',
-              numHands: 1,
+              numHands: 2,
               minHandDetectionConfidence: 0.4,
               minHandPresenceConfidence: 0.4,
               minTrackingConfidence: 0.4,
@@ -1343,15 +1482,31 @@ export function PhysicalCardGame({
         }
 
         const tf = computeMirroredCoverTransform(cw, ch, vw, vh);
-        const ctx = canvas?.getContext('2d') ?? null;
+        const ctx = canvas?.getContext('2d', { desynchronized: true }) ?? null;
         if (ctx) {
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
           ctx.clearRect(0, 0, cw, ch);
           drawCenterZoneDivider(ctx, cw, ch);
         }
 
-        const isTrackingPaused = Boolean(feedbackRef.current) || submittingRef.current;
+        const isSpeechLocked = questionPhaseRef.current === 'READING_QUESTION';
+        const isTrackingPaused = Boolean(feedbackRef.current) || submittingRef.current || isSpeechLocked;
         const isEdgeFresh = Boolean(edgeHandStatus && Date.now() - edgeHandTs < 350);
+
+        if (isSpeechLocked) {
+          holdProgressRef.current = 0;
+          activeHandRef.current = null;
+          lockedHandRef.current = null;
+          palmPxRef.current = null;
+          allHandsLandmarksRef.current = [];
+          if (pendingChoiceRef.current !== null) {
+            pendingChoiceRef.current = null;
+            setPendingChoice(null);
+          }
+          if (progressBarFillRef.current) progressBarFillRef.current.style.width = '0%';
+          if (progressPctRef.current) progressPctRef.current.textContent = '0%';
+          if (badgePctRef.current) badgePctRef.current.textContent = '0%';
+        }
 
         if (!isTrackingPaused && isEdgeFresh && edgeHandStatus) {
           const eh = edgeHandStatus;
@@ -1361,7 +1516,9 @@ export function PhysicalCardGame({
             setBothHandsWarn(nextBothWarn);
           }
           if (nextBothWarn) {
+            holdProgressRef.current = 0;
             activeHandRef.current = null;
+            lockedHandRef.current = null;
             palmPxRef.current = null;
             targetLandmarksRef.current = null;
           } else if (eh.active_card_zone === 'LEFT' || eh.active_card_zone === 'RIGHT') {
@@ -1408,44 +1565,89 @@ export function PhysicalCardGame({
 
             if (mode === 'hand' && handLandmarker) {
               const res = handLandmarker.detectForVideo(inferenceSource, inferenceTs);
-              const handLms = res.landmarks?.[0];
-              if (handLms && handLms.length >= 21) {
-                targetLandmarksRef.current = handLms;
-                const wrist = handLms[0];
-                const indexMcp = handLms[5];
-                const middleMcp = handLms[9];
-                const pinkyMcp = handLms[17];
-                const middleTip = handLms[12];
-                const palmRaw = {
-                  x: (wrist.x + indexMcp.x + middleMcp.x + pinkyMcp.x + middleTip.x) / 5,
-                  y: (wrist.y + indexMcp.y + middleMcp.y + pinkyMcp.y + middleTip.y) / 5,
-                };
-                const mappedPalm = mapMirroredLandmarkToScreen(palmRaw, tf);
-                let minTipY = 1;
-                for (const tipIdx of [4, 8, 12, 16, 20]) {
-                  const tip = handLms[tipIdx];
-                  if (tip) {
-                    const mappedTip = mapMirroredLandmarkToScreen(tip, tf);
-                    if (mappedTip.screenY < minTipY) minTipY = mappedTip.screenY;
-                  }
-                }
-                const isRaised = mappedPalm.screenY < 0.78 || minTipY < 0.65;
-                palmPxRef.current = { px: mappedPalm.px, py: mappedPalm.py };
-                activeHandRef.current = isRaised
-                  ? classifyMirroredHandZone(mappedPalm.screenX, lockedHandRef.current)
-                  : null;
-                bothHandsWarnRef.current = false;
+              const detectedHandsList = (res.landmarks ?? []).filter((lms) => lms.length >= 21);
+              allHandsLandmarksRef.current = detectedHandsList;
+              if (detectedHandsList.length > 0) {
+                const samples: DetectedCardHandSample[] = detectedHandsList.map((handLms) => {
+                  const wrist = handLms[0];
+                  const indexMcp = handLms[5];
+                  const middleMcp = handLms[9];
+                  const pinkyMcp = handLms[17];
+                  const middleTip = handLms[12];
+                  const palmRaw = {
+                    x: (wrist.x + indexMcp.x + middleMcp.x + pinkyMcp.x + middleTip.x) / 5,
+                    y: (wrist.y + indexMcp.y + middleMcp.y + pinkyMcp.y + middleTip.y) / 5,
+                  };
+                  const mappedPalm = mapMirroredLandmarkToScreen(palmRaw, tf);
+                  const mappedWrist = mapMirroredLandmarkToScreen(wrist, tf);
+                  const zone = classifyMirroredHandZone(mappedPalm.screenX, lockedHandRef.current);
+                  return {
+                    zone,
+                    screenY: mappedPalm.screenY,
+                    wristY: mappedWrist.screenY,
+                    px: mappedPalm.px,
+                    py: mappedPalm.py,
+                    landmarks: handLms,
+                  };
+                });
 
-                const nextCropWarn = isPortrait && (mappedPalm.screenX < 0.08 || mappedPalm.screenX > 0.92);
+                const twoHandResult = evaluateTwoHandCardSelection(samples, MINIGAME_HAND_RAISE_THRESHOLD_Y);
+                const nextCropWarn = isPortrait && samples.some((s) => {
+                  const wristScreen = s.landmarks?.[0] ? mapMirroredLandmarkToScreen(s.landmarks[0], tf).screenX : 0.5;
+                  return wristScreen < 0.08 || wristScreen > 0.92;
+                });
                 if (cropWarnRef.current !== nextCropWarn) {
                   cropWarnRef.current = nextCropWarn;
                   setCropWarn(nextCropWarn);
+                }
+
+                if (twoHandResult.bothHandsBlocked) {
+                  // Mutual Exclusion Rule: immediate hold reset & amber two-hand alert + brief voice warning
+                  holdProgressRef.current = 0;
+                  lockedHandRef.current = null;
+                  activeHandRef.current = null;
+                  palmPxRef.current = null;
+                  targetLandmarksRef.current = null;
+                  if (progressBarFillRef.current) progressBarFillRef.current.style.width = '0%';
+                  if (progressPctRef.current) progressPctRef.current.textContent = '0%';
+                  if (badgePctRef.current) badgePctRef.current.textContent = '0%';
+                  if (!bothHandsWarnRef.current) {
+                    bothHandsWarnRef.current = true;
+                    setBothHandsWarn(true);
+                  }
+                  const nowMs = Date.now();
+                  if (!voiceMutedRef.current && nowMs - bothHandsWarnSpeechTsRef.current >= 3600) {
+                    bothHandsWarnSpeechTsRef.current = nowMs;
+                    speakMinigameText('กรุณายกมือเพียงข้างเดียว', voiceLangRef.current, { forceInterrupt: true });
+                  }
+                } else {
+                  if (bothHandsWarnRef.current) {
+                    bothHandsWarnRef.current = false;
+                    setBothHandsWarn(false);
+                  }
+                  const selectedSample = twoHandResult.activeSide
+                    ? samples.find(
+                        (s) =>
+                          s.zone === twoHandResult.activeSide &&
+                          Math.min(s.screenY, s.wristY ?? s.screenY) < MINIGAME_HAND_RAISE_THRESHOLD_Y,
+                      ) ?? samples[0]
+                    : samples[0];
+                  targetLandmarksRef.current = selectedSample.landmarks ?? null;
+                  palmPxRef.current =
+                    selectedSample.px !== undefined && selectedSample.py !== undefined
+                      ? { px: selectedSample.px, py: selectedSample.py }
+                      : null;
+                  activeHandRef.current = twoHandResult.activeSide;
                 }
               } else {
                 targetLandmarksRef.current = null;
                 smoothedLandmarksRef.current = null;
                 palmPxRef.current = null;
                 activeHandRef.current = null;
+                if (bothHandsWarnRef.current) {
+                  bothHandsWarnRef.current = false;
+                  setBothHandsWarn(false);
+                }
                 if (cropWarnRef.current) {
                   cropWarnRef.current = false;
                   setCropWarn(false);
@@ -1455,9 +1657,7 @@ export function PhysicalCardGame({
               const res = poseLandmarker.detectForVideo(inferenceSource, inferenceTs);
               const pose = res.landmarks?.[0] ?? null;
               poseLandmarksRef.current = pose;
-              let detectedLeft = false;
-              let detectedRight = false;
-              let detectedPalmPx: { px: number; py: number } | null = null;
+              const poseSamples: DetectedCardHandSample[] = [];
               let nextCropWarn = false;
 
               if (pose) {
@@ -1472,36 +1672,57 @@ export function PhysicalCardGame({
                     y: g.index && (g.index.visibility ?? 1) > 0.3 ? (g.wrist.y + g.index.y) / 2 : g.wrist.y,
                   };
                   const mappedPalm = mapMirroredLandmarkToScreen(palmRaw, tf);
-                  const shoulderY = g.shoulder ? mapMirroredLandmarkToScreen(g.shoulder, tf).screenY : 0.72;
-                  const isRaised = mappedPalm.screenY < Math.min(0.78, shoulderY + 0.08) || mappedPalm.screenY < 0.65;
+                  const mappedWrist = mapMirroredLandmarkToScreen(g.wrist, tf);
                   if (isPortrait && (mappedPalm.screenX < 0.08 || mappedPalm.screenX > 0.92)) {
                     nextCropWarn = true;
                   }
-                  if (isRaised) {
-                    const side = classifyMirroredHandZone(mappedPalm.screenX, lockedHandRef.current);
-                    if (side === 'LEFT') detectedLeft = true;
-                    if (side === 'RIGHT') detectedRight = true;
-                    detectedPalmPx = { px: mappedPalm.px, py: mappedPalm.py };
-                  }
+                  const zone = classifyMirroredHandZone(mappedPalm.screenX, lockedHandRef.current);
+                  poseSamples.push({
+                    zone,
+                    screenY: mappedPalm.screenY,
+                    wristY: mappedWrist.screenY,
+                    px: mappedPalm.px,
+                    py: mappedPalm.py,
+                  });
                 }
               }
 
-              const nextBothWarn = detectedLeft && detectedRight;
-              if (bothHandsWarnRef.current !== nextBothWarn) {
-                bothHandsWarnRef.current = nextBothWarn;
-                setBothHandsWarn(nextBothWarn);
+              const poseEval = evaluateTwoHandCardSelection(poseSamples, MINIGAME_HAND_RAISE_THRESHOLD_Y);
+              if (bothHandsWarnRef.current !== poseEval.bothHandsBlocked) {
+                bothHandsWarnRef.current = poseEval.bothHandsBlocked;
+                setBothHandsWarn(poseEval.bothHandsBlocked);
               }
               if (cropWarnRef.current !== nextCropWarn) {
                 cropWarnRef.current = nextCropWarn;
                 setCropWarn(nextCropWarn);
               }
 
-              if (nextBothWarn) {
+              if (poseEval.bothHandsBlocked) {
+                holdProgressRef.current = 0;
+                lockedHandRef.current = null;
                 activeHandRef.current = null;
                 palmPxRef.current = null;
+                if (progressBarFillRef.current) progressBarFillRef.current.style.width = '0%';
+                if (progressPctRef.current) progressPctRef.current.textContent = '0%';
+                if (badgePctRef.current) badgePctRef.current.textContent = '0%';
+                const nowMs = Date.now();
+                if (!voiceMutedRef.current && nowMs - bothHandsWarnSpeechTsRef.current >= 3600) {
+                  bothHandsWarnSpeechTsRef.current = nowMs;
+                  speakMinigameText('กรุณายกมือเพียงข้างเดียว', voiceLangRef.current, { forceInterrupt: true });
+                }
               } else {
-                activeHandRef.current = detectedLeft ? 'LEFT' : detectedRight ? 'RIGHT' : null;
-                palmPxRef.current = detectedPalmPx;
+                activeHandRef.current = poseEval.activeSide;
+                const matchedSample = poseEval.activeSide
+                  ? poseSamples.find(
+                      (s) =>
+                        s.zone === poseEval.activeSide &&
+                        Math.min(s.screenY, s.wristY ?? s.screenY) < MINIGAME_HAND_RAISE_THRESHOLD_Y,
+                    )
+                  : undefined;
+                palmPxRef.current =
+                  matchedSample?.px !== undefined && matchedSample?.py !== undefined
+                    ? { px: matchedSample.px, py: matchedSample.py }
+                    : null;
               }
             }
           }
@@ -1547,10 +1768,15 @@ export function PhysicalCardGame({
             badgePctRef.current.textContent = pctRounded;
           }
 
-          // Render interpolated 120fps hand or pose skeleton + progress halo directly on canvas
+          // Render interpolated 120fps hand or pose skeleton + amber dual-hand boxes + progress halo directly on canvas
           if (ctx) {
             const smoothAlpha = 1 - Math.exp(-LANDMARK_SMOOTH_SPEED * dt);
-            if ((mode === 'hand' || isEdgeFresh) && targetLandmarksRef.current) {
+            if (bothHandsWarnRef.current && allHandsLandmarksRef.current.length >= 2) {
+              for (const handSet of allHandsLandmarksRef.current) {
+                drawHandSkeletonOnCanvas(ctx, handSet, tf, '#f59e0b');
+                drawAmberHandWarningBox(ctx, handSet, tf);
+              }
+            } else if ((mode === 'hand' || isEdgeFresh) && targetLandmarksRef.current) {
               smoothedLandmarksRef.current = lerpLandmarks(
                 smoothedLandmarksRef.current,
                 targetLandmarksRef.current,
@@ -1735,55 +1961,66 @@ export function PhysicalCardGame({
         />
       </div>
 
-      {/* Main Full-Size Vertical Stack: Top Grid (Question & Camera Side-by-Side on Desktop), Bottom = Answer Buttons */}
+      {/* Main Full-Size Vertical Stack: Top = Question & Illustration, Middle = Camera, Bottom = Answer Buttons */}
       <div className="flex-1 flex flex-col justify-between gap-4 sm:gap-5 min-h-0">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5 items-stretch">
-          {/* Question & Illustration Card */}
-          <div className="h-[340px] sm:h-[400px] lg:h-[440px] overflow-hidden rounded-3xl bg-gradient-to-br from-indigo-50 via-white to-sky-50 p-4 sm:p-6 border-2 border-indigo-200 text-center flex flex-col items-center justify-center shadow-sm">
-            <span className="mg-category-pill inline-block rounded-full bg-white px-7 py-2 font-black uppercase tracking-wider text-indigo-700 shadow-sm border-2 border-indigo-100">
-              {currentCard.category.replace('_', ' ')}
-            </span>
-            <div className="my-2 sm:my-3 flex items-center justify-center w-full">
-              <img
-                src={currentCard.imageUrl}
-                alt={localizedSubject}
-                className="h-40 w-64 sm:h-48 sm:w-80 lg:h-52 lg:w-96 max-w-full rounded-3xl object-contain shadow-lg border-4 border-indigo-200 bg-white p-2"
-                draggable={false}
-              />
-            </div>
-            <h2 className="mg-question-title font-black text-[#0F4C81] max-w-5xl">
-              {localizedQuestion}
-            </h2>
-            {voiceLang !== 'th' && (
-              <p className="mt-1.5 text-base sm:text-lg font-bold text-slate-500 max-w-4xl">
-                ไทย: {currentCard.question.th}
-              </p>
-            )}
+        {/* Top Card: Question & Illustration */}
+        <div className="flex-[1] min-h-[360px] sm:min-h-[450px] rounded-3xl bg-gradient-to-br from-indigo-50 via-white to-sky-50 p-6 sm:p-8 border-2 border-indigo-200 text-center flex flex-col items-center justify-center shadow-sm">
+          <span className="mg-category-pill inline-block rounded-full bg-white px-7 py-2.5 font-black uppercase tracking-wider text-indigo-700 shadow-sm border-2 border-indigo-100">
+            {currentCard.category.replace('_', ' ')}
+          </span>
+          <div className="my-3 sm:my-5 flex items-center justify-center w-full">
+            <img
+              src={currentCard.imageUrl}
+              alt={localizedSubject}
+              className="h-64 w-[26rem] sm:h-80 sm:w-[34rem] lg:h-[22rem] lg:w-[38rem] max-w-full rounded-3xl object-contain shadow-lg border-4 border-indigo-200 bg-white p-2"
+              draggable={false}
+            />
           </div>
+          <h2 className="mg-question-title font-black text-[#0F4C81] max-w-5xl">
+            {localizedQuestion}
+          </h2>
+          {voiceLang !== 'th' && (
+            <p className="mt-2 text-lg sm:text-xl font-bold text-slate-500 max-w-4xl">
+              ไทย: {currentCard.question.th}
+            </p>
+          )}
+        </div>
 
-          {/* Live Camera Viewport (120Hz Hand Tracking) */}
-          <div className="h-[340px] sm:h-[400px] lg:h-[440px] relative w-full overflow-hidden rounded-3xl bg-gradient-to-br from-sky-100 via-emerald-50 to-white border-4 border-sky-200 shadow-inner">
-            <video ref={videoRef} playsInline muted className="absolute inset-0 h-full w-full object-cover -scale-x-100" />
-            <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
+        {/* Middle Card: Full-Size Live Camera Viewport (120Hz Hand Tracking) */}
+        <div className="flex-[1.4] min-h-[360px] sm:min-h-[480px] relative w-full overflow-hidden rounded-3xl bg-gradient-to-br from-sky-100 via-emerald-50 to-white border-4 border-sky-200 shadow-inner">
+          <video ref={videoRef} playsInline muted className="h-full w-full object-cover -scale-x-100" />
+          <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
 
           {!cameraError && (
-            <div className="pointer-events-none absolute top-4 right-4 z-10">
-              {pendingChoice === 'yes' ? (
+            <div className="pointer-events-none absolute top-4 inset-x-4 z-10 flex flex-wrap items-center justify-between gap-2">
+              <span
+                className={`mg-cam-status inline-flex items-center gap-2 rounded-full px-5 py-2.5 font-black shadow-xl backdrop-blur border-2 ${
+                  questionPhase === 'READING_QUESTION'
+                    ? 'border-indigo-300 bg-indigo-600/95 text-white'
+                    : 'border-emerald-300 bg-emerald-600/95 text-white'
+                }`}
+              >
+                {questionPhase === 'READING_QUESTION'
+                  ? '🔊 กรุณาฟังคำถามให้จบก่อนยกมือตอบ...'
+                  : '✋ ยกมือข้างเดียวเพื่อตอบได้เลย!'}
+              </span>
+
+              {questionPhase === 'READY_TO_ANSWER' && pendingChoice === 'yes' ? (
                 <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-emerald-600/95 px-6 py-3 font-black text-white shadow-xl backdrop-blur">
                   <span className="h-4 w-4 rounded-full bg-white animate-pulse shrink-0" />
                   <span>ตรวจพบมือขวา (ใช่)... </span>
                   <span ref={badgePctRef}>0%</span>
                 </span>
-              ) : pendingChoice === 'no' ? (
+              ) : questionPhase === 'READY_TO_ANSWER' && pendingChoice === 'no' ? (
                 <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-rose-600/95 px-6 py-3 font-black text-white shadow-xl backdrop-blur">
                   <span className="h-4 w-4 rounded-full bg-white animate-pulse shrink-0" />
                   <span>ตรวจพบมือซ้าย (ไม่ใช่)... </span>
                   <span ref={badgePctRef}>0%</span>
                 </span>
               ) : (
-                <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-white/95 px-6 py-3 font-black text-[#0F4C81] shadow-xl backdrop-blur border-2 border-emerald-300">
+                <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-white/95 px-5 py-2.5 font-black text-[#0F4C81] shadow-xl backdrop-blur border-2 border-emerald-300">
                   <span className={`h-4 w-4 rounded-full shrink-0 ${detectorReady ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'}`} />
-                  {detectorReady ? 'พร้อมตรวจจับมือ 120Hz' : 'กำลังเตรียมระบบตรวจจับมือ...'}
+                  {detectorReady ? 'ตรวจจับ 2 มือ 120Hz (เกณฑ์ y < 0.58)' : 'กำลังเตรียมระบบตรวจจับมือ...'}
                 </span>
               )}
             </div>
@@ -1799,7 +2036,7 @@ export function PhysicalCardGame({
           {bothHandsWarn && (
             <div className="mg-cam-status absolute top-20 inset-x-4 z-10 flex items-center gap-3 rounded-2xl bg-amber-500/95 px-6 py-3.5 font-black text-white shadow-xl">
               <AlertTriangle className="h-8 w-8 shrink-0" />
-              <span>{t('bothHandsWarning')}</span>
+              <span>⚠️ ห้ามยกมือพร้อมกัน 2 ข้าง กรุณายกมือเพียงข้างเดียวเพื่อตอบ</span>
             </div>
           )}
 
@@ -1838,7 +2075,6 @@ export function PhysicalCardGame({
               </div>
             </div>
           )}
-          </div>
         </div>
 
         {/* Bottom Controls: Feedback Banner or Giant YES/NO Answer Buttons */}
@@ -1862,11 +2098,14 @@ export function PhysicalCardGame({
             <div className="grid grid-cols-2 gap-4 sm:gap-6 text-center">
               <button
                 type="button"
+                disabled={questionPhase === 'READING_QUESTION'}
                 onClick={() => submitAnswer('no')}
-                className={`min-h-[108px] sm:min-h-[132px] rounded-3xl border-4 p-5 sm:p-7 flex items-center justify-center active:scale-95 transition cursor-pointer ${
-                  pendingChoice === 'no'
-                    ? 'border-rose-500 bg-rose-100 ring-4 ring-rose-300 shadow-lg'
-                    : 'border-rose-300 bg-rose-50 hover:bg-rose-100'
+                className={`min-h-[108px] sm:min-h-[132px] rounded-3xl border-4 p-5 sm:p-7 flex items-center justify-center transition ${
+                  questionPhase === 'READING_QUESTION'
+                    ? 'border-slate-200 bg-slate-100 opacity-60 cursor-not-allowed'
+                    : pendingChoice === 'no'
+                      ? 'border-rose-500 bg-rose-100 ring-4 ring-rose-300 shadow-lg active:scale-95 cursor-pointer'
+                      : 'border-rose-300 bg-rose-50 hover:bg-rose-100 active:scale-95 cursor-pointer'
                 }`}
               >
                 <p className="mg-answer-btn font-black text-rose-700">
@@ -1875,11 +2114,14 @@ export function PhysicalCardGame({
               </button>
               <button
                 type="button"
+                disabled={questionPhase === 'READING_QUESTION'}
                 onClick={() => submitAnswer('yes')}
-                className={`min-h-[108px] sm:min-h-[132px] rounded-3xl border-4 p-5 sm:p-7 flex items-center justify-center active:scale-95 transition cursor-pointer ${
-                  pendingChoice === 'yes'
-                    ? 'border-emerald-500 bg-emerald-100 ring-4 ring-emerald-300 shadow-lg'
-                    : 'border-emerald-300 bg-emerald-50 hover:bg-emerald-100'
+                className={`min-h-[108px] sm:min-h-[132px] rounded-3xl border-4 p-5 sm:p-7 flex items-center justify-center transition ${
+                  questionPhase === 'READING_QUESTION'
+                    ? 'border-slate-200 bg-slate-100 opacity-60 cursor-not-allowed'
+                    : pendingChoice === 'yes'
+                      ? 'border-emerald-500 bg-emerald-100 ring-4 ring-emerald-300 shadow-lg active:scale-95 cursor-pointer'
+                      : 'border-emerald-300 bg-emerald-50 hover:bg-emerald-100 active:scale-95 cursor-pointer'
                 }`}
               >
                 <p className="mg-answer-btn font-black text-emerald-700">

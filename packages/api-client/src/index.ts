@@ -81,6 +81,110 @@ export interface PatientBiometricIndexEntry {
   completedToday?: boolean;
 }
 
+export type StrokeType = 'ISCHEMIC' | 'HEMORRHAGIC' | 'ELDERLY_GENERAL' | 'ORTHOPEDIC' | 'NEURO';
+export type AffectedSide = 'LEFT' | 'RIGHT' | 'BOTH' | 'NONE';
+
+export interface MahidolMotorScaleLevel {
+  score: number;
+  titleTh: string;
+  titleEn: string;
+  descTh: string;
+  recommendedMaxRomDeg: number;
+}
+
+export const MAHIDOL_MOTOR_SCALE: MahidolMotorScaleLevel[] = [
+  {
+    score: 0,
+    titleTh: 'ระดับ 0 — อ่อนแรงสมบูรณ์',
+    titleEn: 'Grade 0 — No Movement',
+    descTh: 'ไม่สามารถขยับกล้ามเนื้อได้เองเลย ต้องฝึกแบบประคองข้อต่อและกระตุ้นประสาทสัมผัส',
+    recommendedMaxRomDeg: 60,
+  },
+  {
+    score: 1,
+    titleTh: 'ระดับ 1 — ขยับเกร็งเล็กน้อย',
+    titleEn: 'Grade 1 — Trace / Flicker',
+    descTh: 'มีการกระตุกหรือเกร็งของกล้ามเนื้อเล็กน้อย แต่ยังไม่เกิดการเคลื่อนไหวข้อต่อ',
+    recommendedMaxRomDeg: 75,
+  },
+  {
+    score: 2,
+    titleTh: 'ระดับ 2 — ขยับแนวราบได้ (ตัดแรงโน้มถ่วง)',
+    titleEn: 'Grade 2 — Gravity-Eliminated Movement',
+    descTh: 'ขยับแขนหรือข้อต่อบนพื้นราบได้ แต่ยังไม่สามารถยกต้านแรงโน้มถ่วง',
+    recommendedMaxRomDeg: 95,
+  },
+  {
+    score: 3,
+    titleTh: 'ระดับ 3 — ยกต้านแรงโน้มถ่วงได้',
+    titleEn: 'Grade 3 — Full Range Against Gravity',
+    descTh: 'ยกแขนหรือข้อต่อขึ้นต้านแรงโน้มถ่วงได้ด้วยตนเอง เหมาะกับการฝึก ADL พื้นฐาน',
+    recommendedMaxRomDeg: 120,
+  },
+  {
+    score: 4,
+    titleTh: 'ระดับ 4 — ต้านแรงและเอื้อมหยิบได้ดีพอควร',
+    titleEn: 'Grade 4 — Movement Against Mild Resistance',
+    descTh: 'ยกแขนต้านแรงกดเบาๆ ได้ สามารถฝึกท่าใส่เสื้อและเอื้อมหยิบของได้',
+    recommendedMaxRomDeg: 140,
+  },
+  {
+    score: 5,
+    titleTh: 'ระดับ 5 — ทำกิจวัตรประจำวัน (ADL) ได้เกือบสมบูรณ์',
+    titleEn: 'Grade 5 — Near-Normal Functional Control',
+    descTh: 'ควบคุมการเคลื่อนไหวและประสานงานกล้ามเนื้อได้มั่นคง ใส่เสื้อผ้าได้เองเกือบทั้งหมด',
+    recommendedMaxRomDeg: 160,
+  },
+  {
+    score: 6,
+    titleTh: 'ระดับ 6 — กำลังกล้ามเนื้อปกติสมบูรณ์',
+    titleEn: 'Grade 6 — Normal Full Strength & Agility',
+    descTh: 'กำลังกล้ามเนื้อและความคล่องแคล่วปกติ เคลื่อนไหวเต็มช่วงองศาได้ปลอดภัย',
+    recommendedMaxRomDeg: 175,
+  },
+];
+
+export interface RehabSessionHistoryEntry {
+  id: string;
+  patientId: string;
+  hn: string;
+  sessionDate: string;
+  exerciseCode: string;
+  exerciseName: string;
+  jointName: string;
+  bodySide: AffectedSide;
+  baselineRomDeg: number;
+  achievedMaxRomDeg: number;
+  romDeltaDeg: number;
+  motorScoreAtSession?: number | null;
+  validReps: number;
+  compensationsCount: number;
+  facilityName: string;
+  recordedByPtId?: string | null;
+  recordedByPtName?: string | null;
+  clinicalNotes?: string | null;
+}
+
+export interface UniversalEhrPackage {
+  version: '1.0';
+  exportedAt: string;
+  universalHealthLinkCode: string;
+  facilityName: string;
+  patientProfile: {
+    hn: string;
+    fullName: string;
+    age: number;
+    gender?: string;
+    diagnosis: string;
+    strokeType?: StrokeType;
+    affectedSide?: AffectedSide;
+    motorAssessmentScore?: number;
+    adlDressingScore?: number;
+    maxSafeRomDeg?: number;
+  };
+  sessionHistory: RehabSessionHistoryEntry[];
+}
+
 export interface PatientRecord {
   id: string;
   hn: string;
@@ -89,6 +193,13 @@ export interface PatientRecord {
   gender?: string;
   phone: string;
   diagnosis: string;
+  strokeType?: StrokeType;
+  affectedSide?: AffectedSide;
+  motorAssessmentScore?: number;
+  adlDressingScore?: number;
+  maxSafeRomDeg?: number;
+  universalHealthLinkCode?: string;
+  rehabSessionHistory?: RehabSessionHistoryEntry[];
   assignedPtId: string;
   delegatedToPtId: string | null;
   delegationNote: string | null;
@@ -156,10 +267,18 @@ export interface RehabSessionRecord {
   activityType: ActivityType;
   exerciseId: string;
   exerciseName: string;
+  jointName?: string;
+  bodySide?: AffectedSide;
   completedSets: number;
   completedReps: number;
   accuracyPercent: number;
   maxRomDeg: number;
+  baselineRomDeg?: number;
+  romDeltaDeg?: number;
+  motorScoreAtSession?: number | null;
+  compensationsCount?: number;
+  facilityName?: string;
+  recordedByPtName?: string | null;
   painStopTriggered: boolean;
   aiFeedback: string;
   kinematicsReplay: { tMs: number; angleDeg: number }[];
@@ -255,6 +374,12 @@ export interface KioskFaceVerifyResponse extends BiometricVerificationResult {
     hn: string;
     fullName: string;
     nextAppointmentDate: string;
+    strokeType?: StrokeType;
+    affectedSide?: AffectedSide;
+    motorAssessmentScore?: number;
+    adlDressingScore?: number;
+    maxSafeRomDeg?: number;
+    universalHealthLinkCode?: string;
   } | null;
   todayRoutine?: DailyScheduleDay | null;
   rehabSchedules?: RehabScheduleItem[];
@@ -653,6 +778,12 @@ export class DrTechCaresApiClient {
     gender?: string;
     phone?: string;
     diagnosis: string;
+    strokeType?: StrokeType;
+    affectedSide?: AffectedSide;
+    motorAssessmentScore?: number;
+    adlDressingScore?: number;
+    maxSafeRomDeg?: number;
+    universalHealthLinkCode?: string;
     assignedPtId?: string;
     nextAppointmentDate?: string;
     rehabSchedules?: RehabScheduleItem[];
@@ -838,6 +969,7 @@ export class DrTechCaresApiClient {
     session: Omit<RehabSessionRecord, 'id' | 'createdAt'> & {
       scheduledDate?: string;
       markDailyCompleted?: boolean;
+      clinicalNotes?: string;
     },
   ): Promise<RehabSessionRecord> {
     const res = await this.request<{ session: RehabSessionRecord }>('/api/sessions', {
@@ -845,6 +977,33 @@ export class DrTechCaresApiClient {
       body: JSON.stringify(session),
     });
     return res.session;
+  }
+
+  async listRehabSessionHistory(patientId: string): Promise<RehabSessionHistoryEntry[]> {
+    const res = await this.request<{ history: RehabSessionHistoryEntry[] }>(
+      `/api/patients/${encodeURIComponent(patientId)}/session-history`,
+    );
+    return res.history;
+  }
+
+  async lookupUniversalEhr(codeOrHn: string): Promise<UniversalEhrPackage | null> {
+    const res = await this.request<{ ehrPackage: UniversalEhrPackage | null }>(
+      `/api/ehr/lookup?code=${encodeURIComponent(codeOrHn.trim())}`,
+    );
+    return res.ehrPackage;
+  }
+
+  async linkExternalEhrRecord(
+    patientId: string,
+    payload: { linkCode?: string; ehrPackage?: UniversalEhrPackage },
+  ): Promise<{ patient: PatientRecord; importedCount: number; history: RehabSessionHistoryEntry[] }> {
+    return this.request<{ patient: PatientRecord; importedCount: number; history: RehabSessionHistoryEntry[] }>(
+      `/api/patients/${encodeURIComponent(patientId)}/link-ehr`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    );
   }
 
   async listTreatmentReports(): Promise<TreatmentReportRecord[]> {
@@ -1079,6 +1238,7 @@ export class DrTechCaresApiClient {
 const JOINT_GROUP_LABELS: Record<ExerciseConfig['detection']['jointGroup'], string> = {
   shoulder: 'ข้อไหล่ (Shoulder)',
   elbow: 'ข้อศอก (Elbow)',
+  wrist: 'ข้อมือและนิ้ว (Wrist & Fingers)',
   knee: 'ข้อเข่า (Knee)',
   hip: 'ข้อสะโพก (Hip)',
   ankle: 'ข้อเท้า (Ankle)',

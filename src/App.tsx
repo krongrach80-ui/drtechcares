@@ -1181,6 +1181,10 @@ export function App() {
               patient={{
                 id: authenticatedPatient.patient.hn,
                 name: authenticatedPatient.patient.fullName,
+                max_safe_rom_deg: authenticatedPatient.patient.maxSafeRomDeg,
+                affected_side: authenticatedPatient.patient.affectedSide,
+                stroke_type: authenticatedPatient.patient.strokeType,
+                motor_assessment_score: authenticatedPatient.patient.motorAssessmentScore,
               }}
               prescribedExercises={prescribedOptions}
               isStaffAuthorized={Boolean(
@@ -1295,6 +1299,10 @@ export function App() {
                 ? {
                     id: authenticatedPatient.patient.hn,
                     name: authenticatedPatient.patient.fullName,
+                    max_safe_rom_deg: authenticatedPatient.patient.maxSafeRomDeg,
+                    affected_side: authenticatedPatient.patient.affectedSide,
+                    stroke_type: authenticatedPatient.patient.strokeType,
+                    motor_assessment_score: authenticatedPatient.patient.motorAssessmentScore,
                   }
                 : undefined
             }

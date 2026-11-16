@@ -46,6 +46,10 @@ export interface PatientSummary {
   hn?: string | null;
   similarity?: number;
   latency_ms?: number;
+  max_safe_rom_deg?: number;
+  affected_side?: 'LEFT' | 'RIGHT' | 'BOTH' | 'NONE';
+  stroke_type?: string;
+  motor_assessment_score?: number;
 }
 
 export interface TelemetryAnalysis {
@@ -60,6 +64,14 @@ export interface TelemetryAnalysis {
   is_form_valid: boolean;
   compensation_detected: CompensationCode[];
   pain_alert: boolean;
+  safety_guard_alert?: string | null;
+  safety_guard_banner_th?: string | null;
+  spasticity_warning?: boolean;
+  contraindication_clamped?: boolean;
+  consecutive_compensations?: number;
+  fatigue_rest_recommended?: boolean;
+  fatigue_rest_remaining_sec?: number;
+  suggested_reduced_rom_deg?: number | null;
 }
 
 export interface RepCounter {
@@ -97,7 +109,14 @@ export interface KioskDecisionPayload {
   frame_base64: string | null;
 }
 
-export type ExpectedMovementPlane = 'flexion' | 'abduction' | 'any';
+export type ExpectedMovementPlane =
+  | 'flexion'
+  | 'abduction'
+  | 'rotation'
+  | 'wrist_finger'
+  | 'shrug_roll'
+  | 'bilateral'
+  | 'any';
 
 export interface ExercisePrescriptionOption {
   exercise_id: string;
@@ -137,12 +156,13 @@ export function resolveExpectedPlaneForExercise(item: {
   if (
     item.expected_plane === 'flexion' ||
     item.expected_plane === 'abduction' ||
+    item.expected_plane === 'rotation' ||
+    item.expected_plane === 'wrist_finger' ||
+    item.expected_plane === 'shrug_roll' ||
+    item.expected_plane === 'bilateral' ||
     item.expected_plane === 'any'
   ) {
     return item.expected_plane;
-  }
-  if (item.target_joint && item.target_joint !== 'left_shoulder' && item.target_joint !== 'right_shoulder') {
-    return 'any';
   }
   const found = CLINICAL_EXERCISES.find(
     (c) =>
@@ -154,7 +174,22 @@ export function resolveExpectedPlaneForExercise(item: {
   if (found?.detection.expectedPlane) {
     return found.detection.expectedPlane;
   }
+  if (item.target_joint && item.target_joint !== 'left_shoulder' && item.target_joint !== 'right_shoulder') {
+    return 'any';
+  }
   const combined = `${item.name_th ?? ''} ${item.name_en ?? ''} ${item.exercise_id ?? ''}`.toLowerCase();
+  if (combined.includes('rotation') || combined.includes('หมุนข้อไหล่')) {
+    return 'rotation';
+  }
+  if (combined.includes('wrist') || combined.includes('finger') || combined.includes('กระดกข้อมือ')) {
+    return 'wrist_finger';
+  }
+  if (combined.includes('shrug') || combined.includes('ยักไหล่')) {
+    return 'shrug_roll';
+  }
+  if (combined.includes('bilateral') || combined.includes('ประสานมือ') || combined.includes('2 ข้าง')) {
+    return 'bilateral';
+  }
   if (
     !combined.includes('elbow') &&
     !combined.includes('ข้อศอก') &&
@@ -329,11 +364,19 @@ export function mapTodayExercisesToPrescriptions(
       (c) => c.id === item.exerciseId || c.code === item.exerciseId,
     );
     const target_joint = resolveTargetJointForTodayExercise(item, found);
+    const isLowRangeUpper =
+      found &&
+      (found.detection.jointGroup === 'neck' ||
+        found.detection.jointGroup === 'wrist' ||
+        found.detection.expectedPlane === 'rotation' ||
+        found.detection.expectedPlane === 'shrug_roll');
     const target_rom_deg = found
-      ? Math.min(
-          160,
-          Math.max(90, Math.round((found.detection.targetMinDeg + found.detection.targetMaxDeg) / 2)),
-        )
+      ? isLowRangeUpper
+        ? Math.max(15, Math.round((found.detection.targetMinDeg + found.detection.targetMaxDeg) / 2))
+        : Math.min(
+            160,
+            Math.max(85, Math.round((found.detection.targetMinDeg + found.detection.targetMaxDeg) / 2)),
+          )
       : target_joint.includes('knee')
         ? 100
         : 150;
@@ -834,14 +877,23 @@ export function useKioskSocket(
             exercise_id: rx.catalog_exercise_id ?? rx.exercise_id,
             exercise_name: `${rx.name_en} (${rx.name_th})`,
             target_joint: rx.target_joint,
-            target_rom_deg: rx.target_rom_deg,
+            target_rom_deg:
+              typeof options?.patientOverride?.max_safe_rom_deg === 'number' &&
+              options.patientOverride.max_safe_rom_deg > 0 &&
+              !rx.target_joint.includes('knee')
+                ? Math.min(rx.target_rom_deg, options.patientOverride.max_safe_rom_deg)
+                : rx.target_rom_deg,
             hold_sec: rx.hold_sec,
             target_reps: rx.target_reps,
+            max_safe_rom_deg: options?.patientOverride?.max_safe_rom_deg ?? undefined,
+            affected_side: options?.patientOverride?.affected_side ?? undefined,
+            stroke_type: options?.patientOverride?.stroke_type ?? undefined,
+            motor_assessment_score: options?.patientOverride?.motor_assessment_score ?? undefined,
           },
         }),
       );
     }
-  }, []);
+  }, [options?.patientOverride]);
 
   useEffect(() => {
     if (!exerciseOptions.some((opt) => opt.exercise_id === selectedExercise.exercise_id)) {

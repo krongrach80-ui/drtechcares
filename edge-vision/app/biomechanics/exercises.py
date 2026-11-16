@@ -12,6 +12,10 @@ import numpy as np
 MetricKind = Literal[
     "shoulder_elevation",
     "elbow_flexion",
+    "shoulder_rotation",
+    "wrist_finger_extension",
+    "shoulder_shrug_roll",
+    "bilateral_arm_raise",
     "knee_extension",
     "hip_flexion",
     "heel_raise",
@@ -94,15 +98,31 @@ class ClinicalExerciseRule:
     def required_landmark_indices(self) -> Tuple[int, ...]:
         """Return 133-topology body indices needed for reliable ROM and compensation tracking."""
         # Upper-body exercises only require shoulders + active arm/head so seated users (hips out of frame) track smoothly.
-        if self.metric_kind in ("shoulder_elevation", "elbow_flexion", "neck_lateral_tilt"):
+        if self.metric_kind in (
+            "shoulder_elevation",
+            "elbow_flexion",
+            "shoulder_rotation",
+            "wrist_finger_extension",
+            "shoulder_shrug_roll",
+            "bilateral_arm_raise",
+            "neck_lateral_tilt",
+        ):
             base = [5, 6]
         else:
             base = [5, 6, 11, 12]
-        if self.metric_kind in ("shoulder_elevation", "elbow_flexion"):
+        if self.metric_kind in (
+            "shoulder_elevation",
+            "elbow_flexion",
+            "shoulder_rotation",
+            "wrist_finger_extension",
+            "bilateral_arm_raise",
+        ):
             if self.side in ("left", "both"):
                 base.extend([7, 9])
             if self.side in ("right", "both"):
                 base.extend([8, 10])
+        elif self.metric_kind == "shoulder_shrug_roll":
+            base.extend([3, 4])
         elif self.metric_kind in ("knee_extension", "hip_flexion", "heel_raise", "balance_trunk_sway"):
             if self.side in ("left", "both"):
                 base.extend([13, 15])
@@ -674,10 +694,267 @@ ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
     ),
 ]
 
-EXERCISE_BY_ID: Dict[str, ClinicalExerciseRule] = {rule.id: rule for rule in ALL_26_EXERCISES}
-EXERCISE_BY_CODE: Dict[str, ClinicalExerciseRule] = {rule.code: rule for rule in ALL_26_EXERCISES}
+STROKE_AND_MOPH_EXERCISES: List[ClinicalExerciseRule] = [
+    ClinicalExerciseRule(
+        id="ex-27",
+        code="STROKE_SH_FLEX_R",
+        name_th="[Stroke ADL] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อมหยิบ/สอดแขนเสื้อ)",
+        name_en="Stroke ADL: Right Shoulder Forward Flexion",
+        category="shoulder",
+        side="right",
+        pattern="shoulder",
+        metric_kind="shoulder_elevation",
+        target_joint="right_shoulder",
+        min_angle_deg=90.0,
+        max_angle_deg=165.0,
+        rest_angle_deg=30.0,
+        default_hold_sec=3.0,
+        default_sets=2,
+        default_reps=6,
+        anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
+    ),
+    ClinicalExerciseRule(
+        id="ex-28",
+        code="STROKE_SH_FLEX_L",
+        name_th="[Stroke ADL] ยกแขนซ้ายไปด้านหน้า (ฝึกเอื้อมหยิบ/สอดแขนเสื้อ)",
+        name_en="Stroke ADL: Left Shoulder Forward Flexion",
+        category="shoulder",
+        side="left",
+        pattern="shoulder",
+        metric_kind="shoulder_elevation",
+        target_joint="left_shoulder",
+        min_angle_deg=90.0,
+        max_angle_deg=165.0,
+        rest_angle_deg=30.0,
+        default_hold_sec=3.0,
+        default_sets=2,
+        default_reps=6,
+        anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
+    ),
+    ClinicalExerciseRule(
+        id="ex-29",
+        code="STROKE_SH_ABD_R",
+        name_th="[Stroke ADL] กางแขนขวาด้านข้าง (ฝึกกางแขนสวมเสื้อ/ปลดตะขอ)",
+        name_en="Stroke ADL: Right Shoulder Abduction",
+        category="shoulder",
+        side="right",
+        pattern="shoulder",
+        metric_kind="shoulder_elevation",
+        target_joint="right_shoulder",
+        min_angle_deg=85.0,
+        max_angle_deg=160.0,
+        rest_angle_deg=30.0,
+        default_hold_sec=3.0,
+        default_sets=2,
+        default_reps=6,
+        anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
+    ),
+    ClinicalExerciseRule(
+        id="ex-30",
+        code="STROKE_SH_ABD_L",
+        name_th="[Stroke ADL] กางแขนซ้ายด้านข้าง (ฝึกกางแขนสวมเสื้อ/ปลดตะขอ)",
+        name_en="Stroke ADL: Left Shoulder Abduction",
+        category="shoulder",
+        side="left",
+        pattern="shoulder",
+        metric_kind="shoulder_elevation",
+        target_joint="left_shoulder",
+        min_angle_deg=85.0,
+        max_angle_deg=160.0,
+        rest_angle_deg=30.0,
+        default_hold_sec=3.0,
+        default_sets=2,
+        default_reps=6,
+        anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
+    ),
+    ClinicalExerciseRule(
+        id="ex-31",
+        code="STROKE_ELB_FLEX_EXT_R",
+        name_th="[Stroke ADL] งอและเหยียดข้อศอกขวา (ฝึกดึงแขนเสื้อ/พับแขน)",
+        name_en="Stroke ADL: Right Elbow Flexion & Extension",
+        category="arm",
+        side="right",
+        pattern="elbow",
+        metric_kind="elbow_flexion",
+        target_joint="right_shoulder",
+        min_angle_deg=55.0,
+        max_angle_deg=165.0,
+        rest_angle_deg=145.0,
+        default_hold_sec=2.5,
+        default_sets=2,
+        default_reps=8,
+        anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
+    ),
+    ClinicalExerciseRule(
+        id="ex-32",
+        code="STROKE_ELB_FLEX_EXT_L",
+        name_th="[Stroke ADL] งอและเหยียดข้อศอกซ้าย (ฝึกดึงแขนเสื้อ/พับแขน)",
+        name_en="Stroke ADL: Left Elbow Flexion & Extension",
+        category="arm",
+        side="left",
+        pattern="elbow",
+        metric_kind="elbow_flexion",
+        target_joint="left_shoulder",
+        min_angle_deg=55.0,
+        max_angle_deg=165.0,
+        rest_angle_deg=145.0,
+        default_hold_sec=2.5,
+        default_sets=2,
+        default_reps=8,
+        anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
+    ),
+    ClinicalExerciseRule(
+        id="ex-33",
+        code="STROKE_SH_ROT_R",
+        name_th="[Stroke ADL] หมุนข้อไหล่ขวาเข้า-ออก (ฝึกอ้อมใส่เสื้อ/ติดกระดุม)",
+        name_en="Stroke ADL: Right Shoulder Internal/External Rotation",
+        category="shoulder",
+        side="right",
+        pattern="shoulder",
+        metric_kind="shoulder_rotation",
+        target_joint="right_shoulder",
+        min_angle_deg=45.0,
+        max_angle_deg=90.0,
+        rest_angle_deg=12.0,
+        default_hold_sec=3.0,
+        default_sets=2,
+        default_reps=6,
+        anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
+    ),
+    ClinicalExerciseRule(
+        id="ex-34",
+        code="STROKE_SH_ROT_L",
+        name_th="[Stroke ADL] หมุนข้อไหล่ซ้ายเข้า-ออก (ฝึกอ้อมใส่เสื้อ/ติดกระดุม)",
+        name_en="Stroke ADL: Left Shoulder Internal/External Rotation",
+        category="shoulder",
+        side="left",
+        pattern="shoulder",
+        metric_kind="shoulder_rotation",
+        target_joint="left_shoulder",
+        min_angle_deg=45.0,
+        max_angle_deg=90.0,
+        rest_angle_deg=12.0,
+        default_hold_sec=3.0,
+        default_sets=2,
+        default_reps=6,
+        anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
+    ),
+    ClinicalExerciseRule(
+        id="ex-35",
+        code="STROKE_WRIST_FINGER_R",
+        name_th="[Stroke ADL] กระดกข้อมือและกาง-กำนิ้วมือขวา (RTMW3D 133-pt Hand)",
+        name_en="Stroke ADL: Right Wrist Dorsiflexion & Finger Extension",
+        category="arm",
+        side="right",
+        pattern="hand",
+        metric_kind="wrist_finger_extension",
+        target_joint="right_shoulder",
+        min_angle_deg=42.0,
+        max_angle_deg=85.0,
+        rest_angle_deg=12.0,
+        default_hold_sec=2.5,
+        default_sets=2,
+        default_reps=8,
+        anti_cheat_checks=("TRUNK_LEAN", "TOO_FAST"),
+    ),
+    ClinicalExerciseRule(
+        id="ex-36",
+        code="STROKE_WRIST_FINGER_L",
+        name_th="[Stroke ADL] กระดกข้อมือและกาง-กำนิ้วมือซ้าย (RTMW3D 133-pt Hand)",
+        name_en="Stroke ADL: Left Wrist Dorsiflexion & Finger Extension",
+        category="arm",
+        side="left",
+        pattern="hand",
+        metric_kind="wrist_finger_extension",
+        target_joint="left_shoulder",
+        min_angle_deg=42.0,
+        max_angle_deg=85.0,
+        rest_angle_deg=12.0,
+        default_hold_sec=2.5,
+        default_sets=2,
+        default_reps=8,
+        anti_cheat_checks=("TRUNK_LEAN", "TOO_FAST"),
+    ),
+    ClinicalExerciseRule(
+        id="ex-37",
+        code="MOPH_NECK_TILT_R",
+        name_th="[สธ. ผู้สูงอายุ] ยืดกล้ามเนื้อคอและบ่า เอียงคอขวาช้าๆ",
+        name_en="MOPH Elderly: Gentle Right Neck & Shoulder Stretch",
+        category="neck",
+        side="right",
+        pattern="neck",
+        metric_kind="neck_lateral_tilt",
+        target_joint="neck",
+        min_angle_deg=18.0,
+        max_angle_deg=40.0,
+        rest_angle_deg=8.0,
+        default_hold_sec=3.0,
+        default_sets=2,
+        default_reps=5,
+        anti_cheat_checks=("SHOULDER_HIKE", "TOO_FAST"),
+    ),
+    ClinicalExerciseRule(
+        id="ex-38",
+        code="MOPH_NECK_TILT_L",
+        name_th="[สธ. ผู้สูงอายุ] ยืดกล้ามเนื้อคอและบ่า เอียงคอซ้ายช้าๆ",
+        name_en="MOPH Elderly: Gentle Left Neck & Shoulder Stretch",
+        category="neck",
+        side="left",
+        pattern="neck",
+        metric_kind="neck_lateral_tilt",
+        target_joint="neck",
+        min_angle_deg=18.0,
+        max_angle_deg=40.0,
+        rest_angle_deg=8.0,
+        default_hold_sec=3.0,
+        default_sets=2,
+        default_reps=5,
+        anti_cheat_checks=("SHOULDER_HIKE", "TOO_FAST"),
+    ),
+    ClinicalExerciseRule(
+        id="ex-39",
+        code="MOPH_SHOULDER_SHRUG_ROLL",
+        name_th="[สธ. ผู้สูงอายุ] ท่ายักไหล่และหมุนหัวไหล่ผ่อนคลายบ่า",
+        name_en="MOPH Elderly: Shoulder Shrug & Scapular Roll",
+        category="shoulder",
+        side="both",
+        pattern="shoulder",
+        metric_kind="shoulder_shrug_roll",
+        target_joint="right_shoulder",
+        min_angle_deg=32.0,
+        max_angle_deg=60.0,
+        rest_angle_deg=10.0,
+        default_hold_sec=2.0,
+        default_sets=2,
+        default_reps=8,
+        anti_cheat_checks=("TRUNK_LEAN", "TOO_FAST"),
+    ),
+    ClinicalExerciseRule(
+        id="ex-40",
+        code="MOPH_BILATERAL_ARM_RAISE",
+        name_th="[สธ. ผู้สูงอายุ] ยกแขนประสานมือชูเหนือศีรษะพร้อมกัน 2 ข้าง",
+        name_en="MOPH Elderly: Bilateral Clasped Overhead Arm Raise",
+        category="shoulder",
+        side="both",
+        pattern="shoulder",
+        metric_kind="bilateral_arm_raise",
+        target_joint="right_shoulder",
+        min_angle_deg=115.0,
+        max_angle_deg=175.0,
+        rest_angle_deg=35.0,
+        default_hold_sec=3.0,
+        default_sets=2,
+        default_reps=6,
+        anti_cheat_checks=("TRUNK_LEAN", "TOO_FAST"),
+    ),
+]
 
-# Kiosk slug aliases used in useKioskSocket & PhysicalTherapy views
+ALL_CLINICAL_EXERCISES: List[ClinicalExerciseRule] = [*ALL_26_EXERCISES, *STROKE_AND_MOPH_EXERCISES]
+
+EXERCISE_BY_ID: Dict[str, ClinicalExerciseRule] = {rule.id: rule for rule in ALL_CLINICAL_EXERCISES}
+EXERCISE_BY_CODE: Dict[str, ClinicalExerciseRule] = {rule.code: rule for rule in ALL_CLINICAL_EXERCISES}
+
+# Kiosk & Stroke/MOPH slug aliases used in useKioskSocket & PhysicalTherapy views
 EXERCISE_ALIASES: Dict[str, str] = {
     "right_shoulder_abduction": "ex-03",
     "left_shoulder_abduction": "ex-04",
@@ -689,11 +966,19 @@ EXERCISE_ALIASES: Dict[str, str] = {
     "knee_extension_left": "ex-14",
     "chair_squat": "ex-26",
     "sit_to_stand": "ex-26",
+    "stroke_sh_flex": "ex-27",
+    "stroke_sh_abd": "ex-29",
+    "stroke_elb_flex_ext": "ex-31",
+    "stroke_sh_rot": "ex-33",
+    "stroke_wrist_finger": "ex-35",
+    "moph_neck_tilt": "ex-37",
+    "moph_shoulder_shrug_roll": "ex-39",
+    "moph_bilateral_arm_raise": "ex-40",
 }
 
 
 def resolve_exercise_rule(identifier: str) -> ClinicalExerciseRule:
-    """Resolve exercise by id ('ex-03'), code ('SH_ABD_R'), or frontend alias."""
+    """Resolve exercise by id ('ex-03', 'ex-27'), code ('STROKE_SH_FLEX_R'), or frontend alias."""
     norm = (identifier or "").strip()
     if norm in EXERCISE_BY_ID:
         return EXERCISE_BY_ID[norm]
@@ -705,8 +990,9 @@ def resolve_exercise_rule(identifier: str) -> ClinicalExerciseRule:
     return EXERCISE_BY_ID["ex-03"]
 
 
-def list_all_exercises() -> List[Dict[str, object]]:
-    """Return serializable metadata for all 26 exercises."""
+def list_all_exercises(include_stroke_moph: bool = False) -> List[Dict[str, object]]:
+    """Return serializable metadata for exercises (core 26 by default or full 40 including Stroke & MOPH)."""
+    source = ALL_CLINICAL_EXERCISES if include_stroke_moph else ALL_26_EXERCISES
     return [
         {
             "id": r.id,
@@ -715,6 +1001,7 @@ def list_all_exercises() -> List[Dict[str, object]]:
             "name_en": r.name_en,
             "category": r.category,
             "side": r.side,
+            "metric_kind": r.metric_kind,
             "target_joint": r.target_joint,
             "min_angle_deg": r.min_angle_deg,
             "max_angle_deg": r.max_angle_deg,
@@ -725,6 +1012,6 @@ def list_all_exercises() -> List[Dict[str, object]]:
             "hysteresis_enter_margin_deg": r.hysteresis_enter_margin_deg,
             "hysteresis_exit_margin_deg": r.hysteresis_exit_margin_deg,
         }
-        for r in ALL_26_EXERCISES
+        for r in source
     ]
 

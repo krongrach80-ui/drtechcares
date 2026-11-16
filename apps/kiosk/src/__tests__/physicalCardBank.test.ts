@@ -5,6 +5,9 @@ import {
   sampleTenCognitiveCards,
 } from '../PhysicalCardGameData';
 import {
+  evaluateTwoHandCardSelection,
+  MINIGAME_HAND_RAISE_THRESHOLD_Y,
+  MINIGAME_THAI_SPEECH_RATE,
   MINIGAME_VOICE_LANG_OPTIONS,
   buildMinigameTtsUrl,
   formatMinigameAnswerSpeech,
@@ -112,6 +115,43 @@ describe('PhysicalCardGame Trilingual AI Voiceover Helpers', () => {
     const clampedUrl = buildMinigameTtsUrl(longText, 'th');
     const parsedClamped = new URL(`https://example.com${clampedUrl}`);
     expect((parsedClamped.searchParams.get('text') ?? '').length).toBeLessThanOrEqual(190);
+  });
+
+  it('enforces Thai rate=1.18, strict y<0.58 arm elevation gate, and mutual exclusion when both hands raise', () => {
+    expect(MINIGAME_THAI_SPEECH_RATE).toBe(1.18);
+    expect(MINIGAME_HAND_RAISE_THRESHOLD_Y).toBe(0.58);
+
+    // Hands resting low in lap (normalizedY >= 0.58) must NEVER register as raised
+    const lapLow = evaluateTwoHandCardSelection([
+      { zone: 'LEFT', screenY: 0.72, wristY: 0.76 },
+      { zone: 'RIGHT', screenY: 0.65, wristY: 0.70 },
+    ]);
+    expect(lapLow.activeSide).toBeNull();
+    expect(lapLow.bothHandsBlocked).toBe(false);
+
+    // Single left hand clearly raised above shoulder threshold (< 0.58)
+    const leftOnly = evaluateTwoHandCardSelection([
+      { zone: 'LEFT', screenY: 0.42, wristY: 0.46 },
+    ]);
+    expect(leftOnly.activeSide).toBe('LEFT');
+    expect(leftOnly.bothHandsBlocked).toBe(false);
+
+    // Single right hand clearly raised above shoulder threshold (< 0.58)
+    const rightOnly = evaluateTwoHandCardSelection([
+      { zone: 'RIGHT', screenY: 0.39, wristY: 0.43 },
+    ]);
+    expect(rightOnly.activeSide).toBe('RIGHT');
+    expect(rightOnly.bothHandsBlocked).toBe(false);
+
+    // Simultaneous two-hand raise above threshold MUST trigger mutual exclusion block
+    const bothRaised = evaluateTwoHandCardSelection([
+      { zone: 'LEFT', screenY: 0.41, wristY: 0.45 },
+      { zone: 'RIGHT', screenY: 0.44, wristY: 0.48 },
+    ]);
+    expect(bothRaised.bothHandsBlocked).toBe(true);
+    expect(bothRaised.leftRaised).toBe(true);
+    expect(bothRaised.rightRaised).toBe(true);
+    expect(bothRaised.activeSide).toBeNull();
   });
 });
 

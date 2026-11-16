@@ -114,7 +114,10 @@ export class RehabExercisePipeline {
               elbowAngleDeg: armRes.elbowAngleDeg,
               requireStraightElbow: det.requireStraightElbow,
               minElbowDeg: det.minElbowDeg,
-              expectedPlane: det.expectedPlane,
+              expectedPlane:
+                det.expectedPlane === 'flexion' || det.expectedPlane === 'abduction'
+                  ? det.expectedPlane
+                  : 'any',
             })
           : [];
 

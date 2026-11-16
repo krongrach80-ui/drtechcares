@@ -15,6 +15,8 @@ import {
   type PatientBiometricIndexEntry,
   type PatientRecord,
   type RehabScheduleItem,
+  type StrokeType,
+  type AffectedSide,
   type TodayPrescribedExerciseItem,
 } from '@drtechcares/api-client';
 import {
@@ -71,6 +73,12 @@ export interface KioskLoginSuccessPayload {
     hn: string;
     fullName: string;
     nextAppointmentDate: string;
+    strokeType?: StrokeType;
+    affectedSide?: AffectedSide;
+    motorAssessmentScore?: number;
+    adlDressingScore?: number;
+    maxSafeRomDeg?: number;
+    universalHealthLinkCode?: string;
   };
   todayRoutine: DailyScheduleDay | null;
   confidencePercent: number;
@@ -86,6 +94,12 @@ function buildKioskLoginSuccessPayload(params: {
     hn: string;
     fullName: string;
     nextAppointmentDate: string;
+    strokeType?: StrokeType;
+    affectedSide?: AffectedSide;
+    motorAssessmentScore?: number;
+    adlDressingScore?: number;
+    maxSafeRomDeg?: number;
+    universalHealthLinkCode?: string;
   };
   confidencePercent: number;
   todayRoutine?: DailyScheduleDay | null;

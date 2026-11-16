@@ -1,9 +1,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { CLINICAL_EXERCISES } from '@drtechcares/pose-engine';
 import type { EnrolledTemplateCandidate, BiometricPose } from '@drtechcares/smart-biometric-core';
 import {
   resolveTodayPatientSchedule,
   sanitizeAccidentalDefaultKneePrefix,
   type ActiveSessionRecord,
+  type AffectedSide,
   AngleEmbeddings5D,
   AuditLogRecord,
   BannedTargetRecord,
@@ -15,8 +17,10 @@ import {
   PatientCourseRecord,
   PatientRecord,
   RehabScheduleItem,
+  RehabSessionHistoryEntry,
   RehabSessionRecord,
   StaffCallRecord,
+  type StrokeType,
   SystemSettingsRecord,
   TreatmentReportRecord,
   UserAccount,
@@ -54,6 +58,7 @@ export interface CloudRouterState {
   medical_notes: MedicalNoteRecord[];
   patient_courses: PatientCourseRecord[];
   rehab_sessions: RehabSessionRecord[];
+  rehab_session_history?: RehabSessionHistoryEntry[];
   treatment_reports: TreatmentReportRecord[];
   exercises: ManagedExerciseRecord[];
   modpacks: ModpackRecord[];
@@ -103,6 +108,7 @@ export async function hydrateStateFromSupabase(
     settingsRes,
     kiosksRes,
     biometrics120Res,
+    sessionHistoryRes,
   ] = await Promise.allSettled([
     supabase.from('staff_users').select('*'),
     supabase.from('patients').select('*'),
@@ -120,6 +126,7 @@ export async function hydrateStateFromSupabase(
     supabase.from('system_settings').select('*').eq('id', 1).maybeSingle(),
     supabase.from('kiosks').select('*'),
     supabase.from('patient_biometrics').select('*'),
+    supabase.from('rehab_session_history').select('*').order('session_date', { ascending: false }),
   ]);
 
   if (usersRes.status === 'fulfilled' && !usersRes.value.error && Array.isArray(usersRes.value.data)) {
@@ -408,6 +415,42 @@ export async function hydrateStateFromSupabase(
           : parsedColNote ?? historyDelegationNote ?? prevPatient?.delegationNote ?? null
         : null;
 
+      const hydratedStrokeType = (
+        (typeof r.stroke_type === 'string' && r.stroke_type) ||
+        (typeof history.strokeType === 'string' && history.strokeType) ||
+        prevPatient?.strokeType ||
+        'ELDERLY_GENERAL'
+      ) as StrokeType;
+      const hydratedAffectedSide = (
+        (typeof r.affected_side === 'string' && r.affected_side) ||
+        (typeof history.affectedSide === 'string' && history.affectedSide) ||
+        prevPatient?.affectedSide ||
+        'NONE'
+      ) as AffectedSide;
+      const hydratedMotorScore =
+        typeof r.motor_assessment_score === 'number'
+          ? r.motor_assessment_score
+          : typeof history.motorAssessmentScore === 'number'
+            ? history.motorAssessmentScore
+            : prevPatient?.motorAssessmentScore ?? 3;
+      const hydratedAdlScore =
+        typeof r.adl_dressing_score === 'number'
+          ? r.adl_dressing_score
+          : typeof history.adlDressingScore === 'number'
+            ? history.adlDressingScore
+            : prevPatient?.adlDressingScore ?? 3;
+      const hydratedMaxSafeRom =
+        typeof r.max_safe_rom_deg === 'number'
+          ? r.max_safe_rom_deg
+          : typeof history.maxSafeRomDeg === 'number'
+            ? history.maxSafeRomDeg
+            : prevPatient?.maxSafeRomDeg ?? 150;
+      const hydratedLinkCode =
+        (typeof r.universal_health_link_code === 'string' && r.universal_health_link_code.trim()) ||
+        (typeof history.universalHealthLinkCode === 'string' && history.universalHealthLinkCode.trim()) ||
+        prevPatient?.universalHealthLinkCode ||
+        `DTC-EHR-${pid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase()}`;
+
       return {
         id: pid,
         hn: String(r.hn),
@@ -416,6 +459,15 @@ export async function hydrateStateFromSupabase(
         gender: typeof r.gender === 'string' ? r.gender : typeof history.gender === 'string' ? history.gender : 'ชาย',
         phone: String(r.phone ?? ''),
         diagnosis: String(r.diagnosis ?? ''),
+        strokeType: hydratedStrokeType,
+        affectedSide: hydratedAffectedSide,
+        motorAssessmentScore: hydratedMotorScore,
+        adlDressingScore: hydratedAdlScore,
+        maxSafeRomDeg: hydratedMaxSafeRom,
+        universalHealthLinkCode: hydratedLinkCode,
+        rehabSessionHistory: Array.isArray(history.rehabSessionHistory)
+          ? (history.rehabSessionHistory as RehabSessionHistoryEntry[])
+          : prevPatient?.rehabSessionHistory,
         assignedPtId: String(r.assigned_pt_id ?? ''),
         delegatedToPtId: resolvedDelegatedToPtId,
         delegationNote: resolvedDelegationNote,
@@ -562,6 +614,51 @@ export async function hydrateStateFromSupabase(
     }));
   }
 
+  const mergedHistoryMap = new Map<string, RehabSessionHistoryEntry>();
+  for (const h of state.rehab_session_history ?? []) {
+    mergedHistoryMap.set(h.id, h);
+  }
+  for (const p of state.patients) {
+    for (const h of p.rehabSessionHistory ?? []) {
+      mergedHistoryMap.set(h.id, h);
+    }
+  }
+  if (
+    sessionHistoryRes.status === 'fulfilled' &&
+    !sessionHistoryRes.value.error &&
+    Array.isArray(sessionHistoryRes.value.data)
+  ) {
+    for (const r of sessionHistoryRes.value.data as Record<string, unknown>[]) {
+      const pid = String(r.patient_id ?? '');
+      if (!pid || deletedPatientSet.has(pid)) continue;
+      const entry: RehabSessionHistoryEntry = {
+        id: String(r.id),
+        patientId: pid,
+        hn: String(r.hn ?? ''),
+        sessionDate: String(r.session_date ?? r.created_at ?? new Date().toISOString()),
+        exerciseCode: String(r.exercise_code ?? ''),
+        exerciseName: String(r.exercise_name ?? r.exercise_code ?? ''),
+        jointName: String(r.joint_name ?? 'upper_limb'),
+        bodySide: (typeof r.body_side === 'string' ? r.body_side : 'BOTH') as AffectedSide,
+        baselineRomDeg: Number(r.baseline_rom_deg ?? 0),
+        achievedMaxRomDeg: Number(r.achieved_max_rom_deg ?? 0),
+        romDeltaDeg: Number(r.rom_delta_deg ?? 0),
+        motorScoreAtSession:
+          typeof r.motor_score_at_session === 'number' ? r.motor_score_at_session : null,
+        validReps: Number(r.valid_reps ?? 0),
+        compensationsCount: Number(r.compensations_count ?? 0),
+        facilityName: String(r.facility_name ?? 'Dr.Tech.Care Clinic'),
+        recordedByPtId: r.recorded_by_pt_id ? String(r.recorded_by_pt_id) : null,
+        recordedByPtName: r.recorded_by_pt_name ? String(r.recorded_by_pt_name) : null,
+        clinicalNotes: r.clinical_notes ? String(r.clinical_notes) : null,
+      };
+      mergedHistoryMap.set(entry.id, entry);
+    }
+  }
+  state.rehab_session_history = Array.from(mergedHistoryMap.values()).sort(
+    (a, b) => new Date(b.sessionDate).getTime() - new Date(a.sessionDate).getTime(),
+  );
+
   for (const patient of state.patients) {
     if ((patient.rehabSchedules ?? []).length > 0) {
       const course = state.patient_courses.find((c) => c.patientId === patient.id);
@@ -590,34 +687,39 @@ export async function hydrateStateFromSupabase(
   }
 
   if (exercisesRes.status === 'fulfilled' && Array.isArray(exercisesRes.value.data) && exercisesRes.value.data.length > 0) {
+    const builtinFocusMap = new Map(CLINICAL_EXERCISES.map((c) => [c.id, c.clinicalFocus]));
     const dbExIds = new Set(exercisesRes.value.data.map((r: Record<string, unknown>) => String(r.id)));
-    const dbExercises: ManagedExerciseRecord[] = exercisesRes.value.data.map((r: Record<string, unknown>) => ({
-      id: String(r.id),
-      code: String(r.code),
-      category: (r.category as ManagedExerciseRecord['category']) ?? 'upper_limb',
-      name: (r.name_i18n as ManagedExerciseRecord['name']) ?? {
-        th: String(r.name_th ?? r.code),
-        en: String(r.name_th ?? r.code),
-        cn: String(r.name_th ?? r.code),
-      },
-      instruction: (r.instruction_i18n as ManagedExerciseRecord['instruction']) ?? {
-        th: String(r.instructions_th ?? ''),
-        en: String(r.instructions_th ?? ''),
-        cn: String(r.instructions_th ?? ''),
-      },
-      detection: (r.detection_config as ManagedExerciseRecord['detection']) ?? {
-        mode: 'angle_rep_hold',
-        jointGroup: 'shoulder',
-        side: 'right',
-        targetMinDeg: 30,
-        targetMaxDeg: 135,
-        startRestMaxDeg: 25,
-        holdSec: 2,
-        defaultSets: 2,
-        defaultReps: 8,
-      },
-      createdBy: 'system',
-    }));
+    const dbExercises: ManagedExerciseRecord[] = exercisesRes.value.data.map((r: Record<string, unknown>) => {
+      const id = String(r.id);
+      return {
+        id,
+        code: String(r.code),
+        category: (r.category as ManagedExerciseRecord['category']) ?? 'upper_limb',
+        clinicalFocus: builtinFocusMap.get(id),
+        name: (r.name_i18n as ManagedExerciseRecord['name']) ?? {
+          th: String(r.name_th ?? r.code),
+          en: String(r.name_th ?? r.code),
+          cn: String(r.name_th ?? r.code),
+        },
+        instruction: (r.instruction_i18n as ManagedExerciseRecord['instruction']) ?? {
+          th: String(r.instructions_th ?? ''),
+          en: String(r.instructions_th ?? ''),
+          cn: String(r.instructions_th ?? ''),
+        },
+        detection: (r.detection_config as ManagedExerciseRecord['detection']) ?? {
+          mode: 'angle_rep_hold',
+          jointGroup: 'shoulder',
+          side: 'right',
+          targetMinDeg: 30,
+          targetMaxDeg: 135,
+          startRestMaxDeg: 25,
+          holdSec: 2,
+          defaultSets: 2,
+          defaultReps: 8,
+        },
+        createdBy: 'system',
+      };
+    });
     const defaultsOnly = state.exercises.filter((e) => !dbExIds.has(e.id));
     state.exercises = [...defaultsOnly, ...dbExercises];
   }

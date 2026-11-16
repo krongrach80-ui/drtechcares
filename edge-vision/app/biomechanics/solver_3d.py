@@ -36,6 +36,7 @@ COMPENSATION_WARNINGS_TH: Dict[str, str] = {
     "KNEE_VALGUS": "หัวเข่าบิดเข้าด้านใน โปรดจัดแนวเข่าให้ตรง",
     "HEEL_LIFT": "ส้นเท้าลอยจากพื้น โปรดวางส้นเท้าให้แนบสนิท",
     "TOO_FAST": "เคลื่อนไหวเร็วเกินไป กรุณาผ่อนจังหวะลงให้ช้าและสม่ำเสมอ",
+    "SPASTICITY_GUARD": "ช้าลงนิดนึงครับ ไม่ต้องฝืนยกสูงเกินไปนะครับ",
     "LOW_VISIBILITY": "มองเห็นข้อต่อไม่ชัดเจน กรุณาขยับให้อยู่กลางกล้องในที่แสงสว่างเพียงพอ",
 }
 
@@ -137,15 +138,23 @@ class Biomechanics3DSolver:
         self.settings = settings
         self._prev_rom_deg: Optional[float] = None
         self._prev_hip_y: Optional[float] = None
+        self._prev_head_y: Optional[float] = None
+        self._prev_shoulder_y: Optional[float] = None
         self._prev_ts: Optional[float] = None
         self._emergency_sent_for_episode = False
+        self._sustained_sway_frames: int = 0
+        self._consecutive_compensation_events: int = 0
         self._rom_window: Deque[float] = deque(maxlen=max(5, int(settings.STABILITY_WINDOW_FRAMES)))
 
     def reset(self) -> None:
         self._prev_rom_deg = None
         self._prev_hip_y = None
+        self._prev_head_y = None
+        self._prev_shoulder_y = None
         self._prev_ts = None
         self._emergency_sent_for_episode = False
+        self._sustained_sway_frames = 0
+        self._consecutive_compensation_events = 0
         self._rom_window.clear()
 
     def _compute_primary_rom(
@@ -206,6 +215,55 @@ class Biomechanics3DSolver:
             head_axis = pts[0] - mid_shoulder
             return angle_between_vectors_3d(head_axis, spine_vertical_unit)
 
+        if kind == "shoulder_rotation":
+            # Measure forearm sweep away from anterior midline around elbow-shoulder axis
+            forearm = pts[wr_idx] - pts[el_idx]
+            lateral_plane = np.array([forearm[0], 0.0, forearm[2]], dtype=np.float64)
+            anterior_ref = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+            rot_deg = angle_between_vectors_3d(lateral_plane, anterior_ref)
+            return float(np.clip(rot_deg, 0.0, 95.0))
+
+        if kind == "wrist_finger_extension":
+            # Support RTMW3D 133-pt hand keypoints: left 91..111, right 112..132
+            hand_root_idx = 91 if side == "left" else 112
+            mid_tip_idx = 103 if side == "left" else 124
+            if (
+                pts.shape[0] > mid_tip_idx
+                and float(np.linalg.norm(pts[mid_tip_idx] - pts[hand_root_idx])) > 1e-4
+            ):
+                forearm_dir = pts[wr_idx] - pts[el_idx]
+                hand_dir = pts[mid_tip_idx] - pts[hand_root_idx]
+                ext_deg = angle_between_vectors_3d(forearm_dir, hand_dir)
+                return float(np.clip(ext_deg, 0.0, 95.0))
+            wrist_vec = pts[wr_idx] - pts[el_idx]
+            horiz = np.array([wrist_vec[0], 0.0, wrist_vec[2]], dtype=np.float64)
+            return float(np.clip(angle_between_vectors_3d(wrist_vec, horiz), 0.0, 90.0))
+
+        if kind == "shoulder_shrug_roll":
+            sh_width = max(0.08, float(np.linalg.norm(pts[5] - pts[6])))
+            ear_l_dist = float(np.linalg.norm(pts[3] - pts[5]))
+            ear_r_dist = float(np.linalg.norm(pts[4] - pts[6]))
+            avg_ratio = (0.5 * (ear_l_dist + ear_r_dist)) / sh_width
+            shrug_deg = max(0.0, (0.42 - avg_ratio) * 220.0)
+            return float(np.clip(shrug_deg, 0.0, 65.0))
+
+        if kind == "bilateral_arm_raise":
+            left_rom = compute_shoulder_elevation_with_vertical_fallback(
+                pts_3d=pts,
+                side="left",
+                scores=scores,
+                min_visibility=float(self.settings.MIN_LANDMARK_VISIBILITY),
+                pts_2d=pts_2d,
+            )
+            right_rom = compute_shoulder_elevation_with_vertical_fallback(
+                pts_3d=pts,
+                side="right",
+                scores=scores,
+                min_visibility=float(self.settings.MIN_LANDMARK_VISIBILITY),
+                pts_2d=pts_2d,
+            )
+            return round(0.5 * (left_rom + right_rom), 2)
+
         # balance_trunk_sway / trunk_flexion
         live_spine = mid_shoulder - mid_hip
         return angle_between_vectors_3d(live_spine, spine_vertical_unit)
@@ -242,6 +300,7 @@ class Biomechanics3DSolver:
         target_rom_override: Optional[float] = None,
         world_pts: Optional[np.ndarray] = None,
         scores: Optional[np.ndarray] = None,
+        max_safe_rom_deg: Optional[float] = None,
     ) -> Tuple[TelemetryAnalysisSchema, Optional[str]]:
         """
         Compute full 3D biomechanics from `pose_world_landmarks` (when available) or `(133, 3)` `pts`,
@@ -302,7 +361,17 @@ class Biomechanics3DSolver:
             scores=scores_wb,
             pts_2d=pts_wb,
         )
-        target_rom = float(target_rom_override) if target_rom_override is not None else rule.min_angle_deg
+        requested_target = float(target_rom_override) if target_rom_override is not None else rule.min_angle_deg
+        contraindication_clamped = False
+        if (
+            max_safe_rom_deg is not None
+            and not rule.is_descending_target
+            and requested_target > float(max_safe_rom_deg)
+        ):
+            target_rom = max(float(rule.rest_angle_deg) + 10.0, float(max_safe_rom_deg))
+            contraindication_clamped = True
+        else:
+            target_rom = requested_target
         if rule.is_descending_target:
             denom = max(rule.rest_angle_deg - target_rom, 1e-3)
             pct = float(np.clip(((rule.rest_angle_deg - rom_deg) / denom) * 100.0, 0.0, 100.0))
@@ -310,19 +379,29 @@ class Biomechanics3DSolver:
             denom = max(target_rom - rule.rest_angle_deg, 1e-3)
             pct = float(np.clip(((rom_deg - rule.rest_angle_deg) / denom) * 100.0, 0.0, 100.0))
 
-        # Angular velocity (deg/s) + hip drop velocity (units/s from image coords)
+        # Angular velocity (deg/s) + head/shoulder/hip sudden drop velocity (units/s)
         hip_y = float(0.5 * (pts_wb[11, 1] + pts_wb[12, 1]))
+        head_y = float(pts_wb[0, 1])
+        shoulder_y = float(0.5 * (pts_wb[5, 1] + pts_wb[6, 1]))
         ang_vel = 0.0
         hip_drop_vel = 0.0
+        head_drop_vel = 0.0
+        sh_drop_vel = 0.0
         if self._prev_ts is not None and timestamp_sec > self._prev_ts:
             dt = max(timestamp_sec - self._prev_ts, 1e-3)
             if self._prev_rom_deg is not None:
                 ang_vel = abs(rom_deg - self._prev_rom_deg) / dt
             if hips_visible and self._prev_hip_y is not None:
                 hip_drop_vel = (hip_y - self._prev_hip_y) / dt
+            if self._prev_head_y is not None and visibility_ok:
+                head_drop_vel = (head_y - self._prev_head_y) / dt
+            if self._prev_shoulder_y is not None and visibility_ok:
+                sh_drop_vel = (shoulder_y - self._prev_shoulder_y) / dt
 
         self._prev_rom_deg = rom_deg
         self._prev_hip_y = hip_y if hips_visible else None
+        self._prev_head_y = head_y if visibility_ok else None
+        self._prev_shoulder_y = shoulder_y if visibility_ok else None
         self._prev_ts = float(timestamp_sec)
 
         # 1. Shoulder Coronal Tilt, Torso Plane & TRUNK_LEAN > 10°
@@ -407,6 +486,36 @@ class Biomechanics3DSolver:
         if "TOO_FAST" in checks and ang_vel > self.settings.MAX_ANGULAR_VELOCITY_DEG_S:
             compensations.append("TOO_FAST")
 
+        spasticity_warning = bool(
+            (ang_vel > self.settings.STROKE_SPASTICITY_VELOCITY_DEG_S)
+            or (
+                max_safe_rom_deg is not None
+                and not rule.is_descending_target
+                and rom_deg > float(max_safe_rom_deg) + 8.0
+            )
+        )
+        if spasticity_warning:
+            compensations.append("SPASTICITY_GUARD")
+
+        # 5. Stroke Fatigue & Compensation Guard (3+ consecutive shoulder hike / trunk / tilt compensations)
+        fatigue_faults = {"SHOULDER_HIKE", "TRUNK_LEAN", "SHOULDER_TILT"}
+        if any(c in fatigue_faults for c in compensations):
+            self._consecutive_compensation_events += 1
+        elif visibility_ok and not compensations:
+            self._consecutive_compensation_events = 0
+
+        fatigue_rest_recommended = (
+            self._consecutive_compensation_events >= int(self.settings.STROKE_FATIGUE_COMPENSATION_LIMIT)
+        )
+        fatigue_rest_remaining_sec = (
+            float(self.settings.STROKE_FATIGUE_REST_SEC) if fatigue_rest_recommended else 0.0
+        )
+        suggested_reduced_rom_deg = (
+            round(max(30.0, target_rom - 15.0), 1)
+            if fatigue_rest_recommended and not rule.is_descending_target
+            else None
+        )
+
         is_form_valid = len(compensations) == 0
         warnings_th = [COMPENSATION_WARNINGS_TH[c] for c in compensations if c in COMPENSATION_WARNINGS_TH]
         if not compensations:
@@ -419,15 +528,40 @@ class Biomechanics3DSolver:
             min_vis=min_vis,
         )
 
-        # Safety / Fall override: sudden downward hip/head drop or hip collapsing near floor
-        emergency_reason: Optional[str] = None
-        if hips_visible and (
+        # 6. POSTURAL_SWAY_AND_FALL_GUARD: trunk_tilt > 18° sustained, sudden head/shoulder/hip drop, or floor collapse
+        if trunk_tilt_deg > float(self.settings.STROKE_TRUNK_EMERGENCY_TILT_DEG):
+            self._sustained_sway_frames += 1
+        else:
+            self._sustained_sway_frames = 0
+
+        sudden_upper_drop = (
+            head_drop_vel > float(self.settings.STROKE_SUDDEN_DROP_VELOCITY_THRESHOLD)
+            or sh_drop_vel > float(self.settings.STROKE_SUDDEN_DROP_VELOCITY_THRESHOLD)
+        )
+        hips_collapse = hips_visible and (
             (hip_y > 0.80 and trunk_tilt_deg > 28.0)
             or (hip_drop_vel > self.settings.FALL_DROP_VELOCITY_THRESHOLD)
-        ):
+        )
+
+        emergency_reason: Optional[str] = None
+        safety_guard_alert: Optional[str] = None
+        safety_guard_banner_th: Optional[str] = None
+
+        if self._sustained_sway_frames >= 3 or sudden_upper_drop or hips_collapse:
+            safety_guard_alert = "POSTURAL_SWAY_AND_FALL_GUARD"
+            safety_guard_banner_th = "ตรวจพบการเสียสมดุล กรุณานั่งพักและจับราวจับ"
             emergency_reason = (
-                f"Fall/Collapse Safety Alert on {rule.code} "
-                f"(hip_y={hip_y:.2f}, drop_vel={hip_drop_vel:.2f}, tilt={trunk_tilt_deg:.1f}°)"
+                f"POSTURAL_SWAY_AND_FALL_GUARD on {rule.code} "
+                f"(tilt={trunk_tilt_deg:.1f}°, sway_frames={self._sustained_sway_frames}, "
+                f"head_drop={head_drop_vel:.2f}, sh_drop={sh_drop_vel:.2f}, hip_drop={hip_drop_vel:.2f})"
+            )
+        elif spasticity_warning:
+            safety_guard_alert = "CONTRAINDICATION_ROM_LIMIT"
+            safety_guard_banner_th = "ช้าลงนิดนึงครับ ไม่ต้องฝืนยกสูงเกินไปนะครับ"
+        elif fatigue_rest_recommended:
+            safety_guard_alert = "FATIGUE_AND_COMPENSATION_GUARD"
+            safety_guard_banner_th = (
+                "พบอาการล้าและชดเชยท่าต่อเนื่อง แนะนำลดเป้าหมายมุมองศาลงชั่วคราวหรือพัก 15 วินาที"
             )
 
         schema = TelemetryAnalysisSchema(
@@ -450,6 +584,14 @@ class Biomechanics3DSolver:
             compensation_detected=compensations,
             compensation_warnings=warnings_th,
             pain_alert=emergency_reason is not None,
+            safety_guard_alert=safety_guard_alert,
+            safety_guard_banner_th=safety_guard_banner_th,
+            spasticity_warning=spasticity_warning,
+            contraindication_clamped=contraindication_clamped,
+            consecutive_compensations=self._consecutive_compensation_events,
+            fatigue_rest_recommended=fatigue_rest_recommended,
+            fatigue_rest_remaining_sec=fatigue_rest_remaining_sec,
+            suggested_reduced_rom_deg=suggested_reduced_rom_deg,
         )
         return schema, emergency_reason
 

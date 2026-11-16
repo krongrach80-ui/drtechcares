@@ -123,6 +123,8 @@ export interface LiveJointMeasurement {
   postureBannerTh?: string | null;
   elbowAngleDeg?: number | null;
   shoulderTiltDeg?: number;
+  headY?: number | null;
+  shoulderMidY?: number | null;
 }
 
 export interface TorsoAnchorState {
@@ -265,7 +267,15 @@ export function sanitizeAndStabilizePoseLandmarks(
   return { landmarks: stabilized, anchor: nextAnchor, occludedFallback };
 }
 
-export type ExerciseJointMode = 'elbow' | 'neck' | 'hip_march' | 'default';
+export type ExerciseJointMode =
+  | 'elbow'
+  | 'neck'
+  | 'hip_march'
+  | 'shoulder_rotation'
+  | 'wrist_finger'
+  | 'shoulder_shrug'
+  | 'bilateral_raise'
+  | 'default';
 
 export interface ExerciseMetaHint {
   exercise_id?: string;
@@ -288,6 +298,34 @@ export function classifyExerciseJointMode(
     name.includes('elbow')
   ) {
     return 'elbow';
+  }
+  if (
+    id.includes('sh_rot') ||
+    name.includes('หมุนข้อไหล่') ||
+    name.includes('shoulder rotation')
+  ) {
+    return 'shoulder_rotation';
+  }
+  if (
+    id.includes('wrist_finger') ||
+    name.includes('กระดกข้อมือ') ||
+    name.includes('wrist & finger')
+  ) {
+    return 'wrist_finger';
+  }
+  if (
+    id.includes('shrug_roll') ||
+    name.includes('ยักไหล่') ||
+    name.includes('shoulder shrug')
+  ) {
+    return 'shoulder_shrug';
+  }
+  if (
+    id.includes('bilateral_arm_raise') ||
+    name.includes('ประสานมือ') ||
+    name.includes('bilateral')
+  ) {
+    return 'bilateral_raise';
   }
   if (
     id === 'ex-19' ||
@@ -586,7 +624,69 @@ export function measureLiveJointAngleAndTilt(
         )
       : 0;
 
-  if (jointMode === 'elbow' && (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder')) {
+  if (jointMode === 'shoulder_rotation' && (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder')) {
+    const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
+    const elIdx = primarySide === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW;
+    const wrIdx = primarySide === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST;
+    const elbow = landmarks[elIdx];
+    const wrist = landmarks[wrIdx];
+    if (elbow && wrist && (elbow.visibility ?? 0) >= UPPER_MIN_VIS && (wrist.visibility ?? 0) >= UPPER_MIN_VIS) {
+      const fDx = Math.abs(wrist.x - elbow.x);
+      const fDz = Math.max(0.03, Math.abs((wrist.z ?? 0) - (elbow.z ?? 0)));
+      const rotDeg = Math.min(90, Math.max(0, (Math.atan2(fDx, fDz) * 180) / Math.PI * 1.1));
+      rawPrimaryRomDeg = Number(rotDeg.toFixed(1));
+      romDeg = rawPrimaryRomDeg;
+    } else {
+      lowVisibilityAlertTh = 'กรุณาให้เห็นข้อศอกและข้อมือชัดเจนในกรอบกล้อง';
+    }
+  } else if (jointMode === 'wrist_finger' && (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder')) {
+    const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
+    const elIdx = primarySide === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW;
+    const wrIdx = primarySide === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST;
+    const idxIdx = primarySide === 'left' ? POSE_INDEX.LEFT_INDEX : POSE_INDEX.RIGHT_INDEX;
+    const pnkIdx = primarySide === 'left' ? POSE_INDEX.LEFT_PINKY : POSE_INDEX.RIGHT_PINKY;
+    const elbow = landmarks[elIdx];
+    const wrist = landmarks[wrIdx];
+    const indexTip = landmarks[idxIdx];
+    const pinkyTip = landmarks[pnkIdx];
+    if (wrist && (wrist.visibility ?? 0) >= UPPER_MIN_VIS && indexTip) {
+      const spreadSpan = pinkyTip ? Math.hypot(indexTip.x - pinkyTip.x, indexTip.y - pinkyTip.y) : 0;
+      const liftY = Math.max(0, wrist.y - indexTip.y);
+      const elSlope = elbow ? Math.max(0, elbow.y - indexTip.y) * 0.4 : 0;
+      const wristFingerDeg = Math.min(
+        85,
+        Math.max(0, (liftY * 520 + spreadSpan * 360 + elSlope * 180)),
+      );
+      rawPrimaryRomDeg = Number(wristFingerDeg.toFixed(1));
+      romDeg = rawPrimaryRomDeg;
+    } else {
+      lowVisibilityAlertTh = 'กรุณายกมือและข้อมือเข้ามาให้กล้องมองเห็นนิ้วชัดเจน';
+    }
+  } else if (jointMode === 'shoulder_shrug') {
+    const lEar = landmarks[POSE_INDEX.LEFT_EAR];
+    const rEar = landmarks[POSE_INDEX.RIGHT_EAR];
+    if (lSh && rSh && (lEar || rEar)) {
+      const lGap = lEar ? Math.max(0, lSh.y - lEar.y) : 0.12;
+      const rGap = rEar ? Math.max(0, rSh.y - rEar.y) : 0.12;
+      const ratio = ((lGap + rGap) / 2) / Math.max(0.1, shoulderSpanX);
+      const shrugDeg = Math.min(65, Math.max(0, (0.52 - ratio) * 200));
+      rawPrimaryRomDeg = Number(shrugDeg.toFixed(1));
+      romDeg = rawPrimaryRomDeg;
+    }
+  } else if (jointMode === 'bilateral_raise') {
+    const lRes = computeArmElevationDeg('left');
+    const rRes = computeArmElevationDeg('right');
+    if (lRes.angleDeg !== null && rRes.angleDeg !== null) {
+      rawPrimaryRomDeg = Number(((lRes.angleDeg + rRes.angleDeg) / 2).toFixed(1));
+      romDeg = rawPrimaryRomDeg;
+      xyzVector = rRes.xyzVector ?? lRes.xyzVector;
+    } else if (lRes.angleDeg !== null || rRes.angleDeg !== null) {
+      rawPrimaryRomDeg = Number(((lRes.angleDeg ?? rRes.angleDeg) ?? 0).toFixed(1));
+      romDeg = rawPrimaryRomDeg;
+    } else {
+      lowVisibilityAlertTh = 'กรุณายืน/นั่งให้กล้องเห็นแขนทั้ง 2 ข้างชัดเจน';
+    }
+  } else if (jointMode === 'elbow' && (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder')) {
     const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
     const oppositeSide: 'left' | 'right' = primarySide === 'left' ? 'right' : 'left';
     const primaryElbow = computeElbowFlexionDeg(primarySide);
@@ -825,6 +925,13 @@ export function measureLiveJointAngleAndTilt(
     romDeg = Number(Math.max(0, 15 - trunkTiltDeg).toFixed(1));
   }
 
+  const nosePt = landmarks[POSE_INDEX.NOSE];
+  const headY = nosePt && (nosePt.visibility ?? 0) >= 0.35 ? nosePt.y : null;
+  const shoulderMidY =
+    lSh && rSh && (lSh.visibility ?? 0) >= 0.35 && (rSh.visibility ?? 0) >= 0.35
+      ? (lSh.y + rSh.y) / 2
+      : null;
+
   return {
     romDeg,
     rawPrimaryRomDeg,
@@ -840,6 +947,8 @@ export function measureLiveJointAngleAndTilt(
     postureBannerTh,
     elbowAngleDeg,
     shoulderTiltDeg,
+    headY,
+    shoulderMidY,
   };
 }
 
@@ -1836,6 +1945,57 @@ export function SmartRehabKioskUI({
     return true;
   });
   const [liveFramingHintTh, setLiveFramingHintTh] = useState<string | null>(null);
+  const [strokeSafetyAlert, setStrokeSafetyAlert] = useState<{
+    type: 'emergency' | 'spasticity' | 'fatigue';
+    messageTh: string;
+    suggestedRom?: number;
+  } | null>(null);
+  const [fatigueRestSec, setFatigueRestSec] = useState<number>(0);
+  const [reducedRomOverrideDeg, setReducedRomOverrideDeg] = useState<number | null>(null);
+
+  const effectiveTargetRomDeg = useMemo(() => {
+    const isLowerLimb = selectedExercise.target_joint.includes('knee');
+    const safeLimit =
+      typeof patientProp?.max_safe_rom_deg === 'number' &&
+      patientProp.max_safe_rom_deg > 0 &&
+      !isLowerLimb
+        ? patientProp.max_safe_rom_deg
+        : 180;
+    const manualReduction = reducedRomOverrideDeg ?? 180;
+    return Math.max(25, Math.min(selectedExercise.target_rom_deg, safeLimit, manualReduction));
+  }, [selectedExercise.target_rom_deg, selectedExercise.target_joint, patientProp?.max_safe_rom_deg, reducedRomOverrideDeg]);
+
+  const effectiveTargetRomRef = useRef(effectiveTargetRomDeg);
+  effectiveTargetRomRef.current = effectiveTargetRomDeg;
+  const maxSafeRomRef = useRef<number | null>(
+    typeof patientProp?.max_safe_rom_deg === 'number' && patientProp.max_safe_rom_deg > 0
+      ? patientProp.max_safe_rom_deg
+      : null,
+  );
+  maxSafeRomRef.current =
+    typeof patientProp?.max_safe_rom_deg === 'number' && patientProp.max_safe_rom_deg > 0
+      ? patientProp.max_safe_rom_deg
+      : null;
+
+  useEffect(() => {
+    setReducedRomOverrideDeg(null);
+    setStrokeSafetyAlert(null);
+    setFatigueRestSec(0);
+  }, [selectedExercise.exercise_id]);
+
+  useEffect(() => {
+    if (fatigueRestSec <= 0) return;
+    const timer = window.setInterval(() => {
+      setFatigueRestSec((prev) => {
+        if (prev <= 1) {
+          setStrokeSafetyAlert((cur) => (cur?.type === 'fatigue' ? null : cur));
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [fatigueRestSec]);
 
   const isPrivacyModeRef = useRef(isPrivacyMode);
   isPrivacyModeRef.current = isPrivacyMode;
@@ -1968,14 +2128,26 @@ export function SmartRehabKioskUI({
   const isRepCelebration = kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED';
   const isEmergency = kiosk_state === 'EMERGENCY_HALT';
 
-  const handleEmergencyStopClick = () => {
+  const handleEmergencyStopClick = (customReason?: string) => {
+    const reasonMsg =
+      typeof customReason === 'string' && customReason.trim().length > 0
+        ? customReason.trim()
+        : `กดปุ่มหยุดฉุกเฉินระหว่างฝึกท่า ${selectedExercise.name_th}`;
+    if (reasonMsg.includes('เสียสมดุล')) {
+      setStrokeSafetyAlert({
+        type: 'emergency',
+        messageTh: 'ตรวจพบการเสียสมดุล กรุณานั่งพักและจับราวจับ',
+      });
+    }
     triggerEmergencyStop();
     onEmergencyStop?.({
-      reason: `กดปุ่มหยุดฉุกเฉินระหว่างฝึกท่า ${selectedExercise.name_th}`,
+      reason: reasonMsg,
       patientId: patient?.id ?? patientProp?.id ?? undefined,
       exerciseNameTh: selectedExercise.name_th,
     });
   };
+  const triggerBalanceEmergencyRef = useRef(handleEmergencyStopClick);
+  triggerBalanceEmergencyRef.current = handleEmergencyStopClick;
 
   const markCurrentExerciseCompleted = () => {
     completeCurrentExercise();
@@ -2132,6 +2304,14 @@ export function SmartRehabKioskUI({
     let lastDetectWallMs = 0;
     let wrongSideStreak = 0;
     let wrongPlaneStreak = 0;
+    let sustainedSwayFrames = 0;
+    let consecutiveCompEvents = 0;
+    let prevHeadY: number | null = null;
+    let prevShoulderMidY: number | null = null;
+    let prevSafetySampleAt = 0;
+    let prevVelocityRom: number | null = null;
+    let lastSpasticityAt = 0;
+    let lastFatigueTriggerAt = 0;
     let latestRawPrimaryRomDeg: number | null = null;
     let targetRomDeg: number | null = null;
     let latestLandmarks: NormalizedLandmark[] | null = null;
@@ -2308,6 +2488,12 @@ export function SmartRehabKioskUI({
             occludedFrames = 0;
             wrongSideStreak = 0;
             wrongPlaneStreak = 0;
+            sustainedSwayFrames = 0;
+            consecutiveCompEvents = 0;
+            prevHeadY = null;
+            prevShoulderMidY = null;
+            prevSafetySampleAt = 0;
+            prevVelocityRom = null;
             latestRawPrimaryRomDeg = null;
             smoothedRom = 0;
             smoothedTilt = 0;
@@ -2503,6 +2689,78 @@ export function SmartRehabKioskUI({
                   latestPostureCompensated = Boolean(measured.postureCompensated);
                   latestPostureBannerTh = measured.postureBannerTh ?? null;
                   latestRawPrimaryRomDeg = measured.rawPrimaryRomDeg ?? measured.romDeg;
+
+                  // Stroke Safety Guards in Browser AI Mode
+                  const safetyDtSec = prevSafetySampleAt > 0 ? Math.max(0.03, (now - prevSafetySampleAt) / 1000) : 0.1;
+                  const headDropVel =
+                    prevHeadY !== null && measured.headY !== null && measured.headY !== undefined
+                      ? (measured.headY - prevHeadY) / safetyDtSec
+                      : 0;
+                  const shDropVel =
+                    prevShoulderMidY !== null && measured.shoulderMidY !== null && measured.shoulderMidY !== undefined
+                      ? (measured.shoulderMidY - prevShoulderMidY) / safetyDtSec
+                      : 0;
+                  const angVel =
+                    prevVelocityRom !== null && latestRawPrimaryRomDeg !== null
+                      ? Math.abs(latestRawPrimaryRomDeg - prevVelocityRom) / safetyDtSec
+                      : 0;
+
+                  if (measured.headY !== null && measured.headY !== undefined) prevHeadY = measured.headY;
+                  if (measured.shoulderMidY !== null && measured.shoulderMidY !== undefined) prevShoulderMidY = measured.shoulderMidY;
+                  if (latestRawPrimaryRomDeg !== null) prevVelocityRom = latestRawPrimaryRomDeg;
+                  prevSafetySampleAt = now;
+
+                  // 1. POSTURAL_SWAY_AND_FALL_GUARD (>18° trunk sway sustained >=3 frames or sudden vertical drop >0.65/s)
+                  if (measured.trunkTiltDeg > 18) {
+                    sustainedSwayFrames += 1;
+                  } else {
+                    sustainedSwayFrames = 0;
+                  }
+                  if (sustainedSwayFrames >= 3 || headDropVel > 0.65 || shDropVel > 0.65) {
+                    triggerBalanceEmergencyRef.current('POSTURAL_SWAY_AND_FALL_GUARD: ตรวจพบการเสียสมดุล กรุณานั่งพักและจับราวจับ');
+                    return;
+                  }
+
+                  // 2. CONTRAINDICATION_ROM_LIMIT & Spasticity Velocity Guard
+                  const maxSafeDeg = maxSafeRomRef.current;
+                  const overSafeLimit =
+                    maxSafeDeg !== null &&
+                    !curEx.target_joint.includes('knee') &&
+                    latestRawPrimaryRomDeg !== null &&
+                    latestRawPrimaryRomDeg > maxSafeDeg + 8;
+                  if (angVel > 195 || overSafeLimit) {
+                    if (now - lastSpasticityAt > 2500) {
+                      lastSpasticityAt = now;
+                      setStrokeSafetyAlert({
+                        type: 'spasticity',
+                        messageTh: 'ช้าลงนิดนึงครับ ไม่ต้องฝืนยกสูงเกินไปนะครับ',
+                      });
+                    }
+                  } else if (now - lastSpasticityAt > 3500) {
+                    setStrokeSafetyAlert((cur) => (cur?.type === 'spasticity' ? null : cur));
+                  }
+
+                  // 3. FATIGUE_AND_COMPENSATION_GUARD (>= 3 consecutive shoulder hike / trunk tilt events)
+                  const hasStrokeCompensation =
+                    (measured.shoulderTiltDeg ?? 0) > 13.5 || measured.trunkTiltDeg > 12;
+                  if (hasStrokeCompensation && !measured.wrongSideRaised) {
+                    if (now - lastFatigueTriggerAt > 450) {
+                      consecutiveCompEvents += 1;
+                      lastFatigueTriggerAt = now;
+                      if (consecutiveCompEvents >= 3) {
+                        const nextSuggested = Math.max(30, Math.round(effectiveTargetRomRef.current - 15));
+                        setStrokeSafetyAlert({
+                          type: 'fatigue',
+                          messageTh: `พบการยักไหล่/เอียงลำตัวช่วยต่อเนื่อง (${consecutiveCompEvents} ครั้ง) แนะนำลดเป้าหมายเป็น ${nextSuggested}° หรือพัก 15 วินาที`,
+                          suggestedRom: nextSuggested,
+                        });
+                        setFatigueRestSec((cur) => (cur > 0 ? cur : 15));
+                        consecutiveCompEvents = 0;
+                      }
+                    }
+                  } else if (!hasStrokeCompensation && (latestRawPrimaryRomDeg ?? 0) >= 25) {
+                    consecutiveCompEvents = 0;
+                  }
                 } else {
                   wrongSideStreak = 0;
                   wrongPlaneStreak = 0;
@@ -2643,19 +2901,20 @@ export function SmartRehabKioskUI({
                 setDemoRomDeg(nextEmitRom);
               }
 
+              const activeTargetDeg = effectiveTargetRomRef.current;
               const isKneeExercise = curEx.target_joint.includes('knee');
-              const isKneeExtension = isKneeExercise && curEx.target_rom_deg >= 140;
-              const isKneeFlexion = isKneeExercise && curEx.target_rom_deg < 140;
+              const isKneeExtension = isKneeExercise && activeTargetDeg >= 140;
+              const isKneeFlexion = isKneeExercise && activeTargetDeg < 140;
               const targetThreshold = isKneeFlexion
-                ? curEx.target_rom_deg + 15
+                ? activeTargetDeg + 15
                 : isKneeExtension
-                  ? curEx.target_rom_deg * 0.92
-                  : curEx.target_rom_deg * 0.82;
+                  ? activeTargetDeg * 0.92
+                  : activeTargetDeg * 0.82;
               const holdMaintainThreshold = isKneeFlexion
-                ? curEx.target_rom_deg + 22
+                ? activeTargetDeg + 22
                 : isKneeExtension
-                  ? curEx.target_rom_deg * 0.85
-                  : curEx.target_rom_deg * 0.75;
+                  ? activeTargetDeg * 0.85
+                  : activeTargetDeg * 0.75;
               const atTarget = isKneeFlexion
                 ? smoothedRom <= targetThreshold
                 : smoothedRom >= targetThreshold;
@@ -2666,7 +2925,7 @@ export function SmartRehabKioskUI({
                 ? smoothedRom >= 145
                 : isKneeExtension
                   ? smoothedRom <= 125
-                  : smoothedRom <= Math.min(55, curEx.target_rom_deg * 0.45);
+                  : smoothedRom <= Math.min(55, activeTargetDeg * 0.45);
 
               if (atRest && now - lastRepCompletedAt >= 1200) {
                 awaitingReturn = false;
@@ -3134,7 +3393,7 @@ export function SmartRehabKioskUI({
 
             <button
               type="button"
-              onClick={handleEmergencyStopClick}
+              onClick={() => handleEmergencyStopClick()}
               className="inline-flex items-center gap-2 rounded-2xl bg-[#EF4444] px-4 py-2 text-xs font-extrabold text-white shadow-md transition-transform hover:bg-red-600 active:scale-95 sm:text-sm"
             >
               <AlertOctagon className="h-4 w-4" />
@@ -3173,6 +3432,59 @@ export function SmartRehabKioskUI({
         )}
 
         {/* Completion Banner when all prescribed exercises are finished */}
+        {(strokeSafetyAlert && strokeSafetyAlert.type !== 'emergency') ||
+        (telemetry_analysis.safety_guard_banner_th && !isEmergency) ||
+        fatigueRestSec > 0 ? (
+          <div className="glass-card flex flex-wrap items-center justify-between gap-3 rounded-3xl border-2 border-amber-400 bg-amber-50/95 px-5 py-3.5 text-amber-950 shadow-md">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-amber-500 text-white shadow">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-extrabold">
+                  {strokeSafetyAlert?.messageTh ??
+                    telemetry_analysis.safety_guard_banner_th ??
+                    'โหมดพักความปลอดภัยสำหรับผู้ป่วย Stroke (Auto Rest)'}
+                </p>
+                {fatigueRestSec > 0 && (
+                  <p className="text-xs font-bold text-amber-800">
+                    พักผ่อนคลายกล้ามเนื้อ {fatigueRestSec} วินาที — จับราวจับหรือนั่งพักก่อนฝึกต่อได้ครับ
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {(strokeSafetyAlert?.suggestedRom ?? telemetry_analysis.suggested_reduced_rom_deg) ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextDeg =
+                      strokeSafetyAlert?.suggestedRom ??
+                      telemetry_analysis.suggested_reduced_rom_deg ??
+                      90;
+                    setReducedRomOverrideDeg(nextDeg);
+                    setStrokeSafetyAlert(null);
+                  }}
+                  className="rounded-xl bg-amber-600 px-3.5 py-2 text-xs font-extrabold text-white shadow-sm hover:bg-amber-500 cursor-pointer"
+                >
+                  ลดเป้าหมายเป็น{' '}
+                  {strokeSafetyAlert?.suggestedRom ?? telemetry_analysis.suggested_reduced_rom_deg}°
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => {
+                  setStrokeSafetyAlert(null);
+                  setFatigueRestSec(0);
+                }}
+                className="rounded-xl border border-amber-300 bg-white px-3.5 py-2 text-xs font-extrabold text-amber-900 hover:bg-amber-100 cursor-pointer"
+              >
+                {fatigueRestSec > 0 ? 'พร้อมฝึกต่อ' : 'รับทราบ'}
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         {allExercisesCompleted && onAllExercisesCompleted && (
           <div className="glass-card flex flex-wrap items-center justify-between gap-3 rounded-3xl border-2 border-emerald-400 bg-emerald-50/95 px-5 py-3.5 shadow-lg">
             <div className="flex items-center gap-3">
@@ -3263,17 +3575,24 @@ export function SmartRehabKioskUI({
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-rose-950/75 p-6 text-center text-white backdrop-blur-sm"
+                  className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-rose-950/85 p-6 text-center text-white backdrop-blur-sm"
                 >
                   <AlertOctagon className="h-20 w-20 text-rose-400" />
                   <h2 className="mt-4 text-3xl font-extrabold">หยุดพักฉุกเฉิน (EMERGENCY HALT)</h2>
-                  <p className="mt-2 max-w-md text-base text-rose-100">
-                    ระบบตรวจพบสัญญาณหยุดพักฉุกเฉินและได้แจ้งเตือนเจ้าหน้าที่พยาบาลเรียบร้อยแล้ว
+                  <p className="mt-2 max-w-md text-lg font-extrabold text-rose-100">
+                    {strokeSafetyAlert?.type === 'emergency'
+                      ? strokeSafetyAlert.messageTh
+                      : telemetry_analysis.safety_guard_banner_th ||
+                        'ตรวจพบการเสียสมดุล กรุณานั่งพักและจับราวจับ • ระบบแจ้งเตือนเจ้าหน้าที่แล้ว'}
                   </p>
                   <button
                     type="button"
-                    onClick={resetDemoSession}
-                    className="mt-6 inline-flex items-center gap-2 rounded-2xl bg-white px-6 py-3 text-sm font-bold text-rose-700 shadow-lg hover:bg-rose-50"
+                    onClick={() => {
+                      setStrokeSafetyAlert(null);
+                      setFatigueRestSec(0);
+                      resetDemoSession();
+                    }}
+                    className="mt-6 inline-flex items-center gap-2 rounded-2xl bg-white px-6 py-3 text-sm font-bold text-rose-700 shadow-lg hover:bg-rose-50 cursor-pointer"
                   >
                     <RotateCcw className="h-4 w-4" />
                     รีเซ็ตสถานะเพื่อฝึกต่อ
@@ -3376,8 +3695,12 @@ export function SmartRehabKioskUI({
             {/* Card 2: Hero ROM Angle Gauge */}
             <RomGauge
               currentRomDeg={telemetry_analysis.current_rom_deg}
-              targetRomDeg={telemetry_analysis.target_rom_deg}
-              completionPct={telemetry_analysis.rom_completion_pct}
+              targetRomDeg={effectiveTargetRomDeg}
+              completionPct={
+                effectiveTargetRomDeg > 0
+                  ? Math.min(100, Math.round((telemetry_analysis.current_rom_deg / effectiveTargetRomDeg) * 100))
+                  : telemetry_analysis.rom_completion_pct
+              }
               kioskState={kiosk_state}
               highlightColor={ui_directives.highlight_color}
               holdRemainingSec={rep_counter.hold_remaining_sec}
@@ -3693,7 +4016,11 @@ export function SmartRehabKioskUI({
         {/* 4. Bottom Floating Dock: Thai AI Coach + Demo Simulator Drawer */}
         <footer className="space-y-3">
           <VoiceCoachBanner
-            textTh={tts_voice_th}
+            textTh={
+              strokeSafetyAlert?.messageTh ??
+              telemetry_analysis.safety_guard_banner_th ??
+              tts_voice_th
+            }
             kioskState={kiosk_state}
             highlightColor={ui_directives.highlight_color}
             muted={voiceMuted}

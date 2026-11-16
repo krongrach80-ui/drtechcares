@@ -19,7 +19,7 @@ import type {
   UserRole,
 } from '@drtechcares/api-client';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
-import type { BodySide, ExerciseConfig } from '@drtechcares/pose-engine';
+import { sortExercisesStrokeUpperFirst, type BodySide, type ExerciseConfig } from '@drtechcares/pose-engine';
 import {
   Activity,
   Award,
@@ -35,6 +35,7 @@ import {
   Gamepad2,
   HeartHandshake,
   KeyRound,
+  Link2,
   LogOut,
   Monitor,
   PauseCircle,
@@ -65,6 +66,7 @@ import {
   PatientProfileAndHistoryModal,
   ResetPasswordModal,
   ScheduleCreatorAndDayModal,
+  UniversalEhrLinkModal,
   WelcomeFaceScanModal,
 } from './PortalSubModals';
 
@@ -1265,6 +1267,7 @@ export function ClinicalStaffPortalShell({
     patient: PatientRecord | null;
     tab: 'profile' | 'history';
   }>({ patient: null, tab: 'profile' });
+  const [ehrLinkPatient, setEhrLinkPatient] = useState<PatientRecord | null>(null);
   const [selectedPtDetailModal, setSelectedPtDetailModal] = useState<UserAccount | null>(null);
   const [assignPatientIdForPt, setAssignPatientIdForPt] = useState('');
   const [scheduleModalMode, setScheduleModalMode] = useState<'create' | 'day_detail' | null>(null);
@@ -2657,6 +2660,16 @@ export function ClinicalStaffPortalShell({
                           <td className="px-4 py-3.5">
                             <div className="font-bold text-slate-900 truncate">{p.fullName}</div>
                             <div className="text-[11px] text-slate-400 truncate">{p.diagnosis}</div>
+                            <div className="mt-1 flex flex-wrap items-center gap-1">
+                              <span className="rounded bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 text-[10px] font-extrabold text-emerald-700">
+                                Mahidol {p.motorAssessmentScore ?? 3}/6
+                              </span>
+                              {p.affectedSide && p.affectedSide !== 'NONE' && (
+                                <span className="rounded bg-amber-50 border border-amber-200 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
+                                  เน้น: {p.affectedSide}
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="px-4 py-3.5 font-medium text-slate-700 whitespace-nowrap">
                             {p.age} {locale.patients.ageUnit} / {p.gender || 'ชาย'}
@@ -2710,6 +2723,15 @@ export function ClinicalStaffPortalShell({
                                 className="whitespace-nowrap rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
                               >
                                 {locale.patients.historyBtn}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEhrLinkPatient(p)}
+                                title="เชื่อมโยง/ส่งต่อประวัติการรักษา (Universal EHR)"
+                                className="whitespace-nowrap inline-flex items-center gap-1 rounded-xl border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-[11px] font-bold text-indigo-700 hover:bg-indigo-100 cursor-pointer"
+                              >
+                                <Link2 className="h-3 w-3 shrink-0" />
+                                <span>EHR</span>
                               </button>
                               {isAdmin && (
                                 <button
@@ -3071,7 +3093,7 @@ export function ClinicalStaffPortalShell({
                     {locale.exercises.exerciseHeader} ({exercises.length})
                   </h3>
                   <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
-                    {exercises.map((ex) => (
+                    {sortExercisesStrokeUpperFirst(exercises).map((ex) => (
                       <div
                         key={ex.id}
                         className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs"
@@ -5038,6 +5060,18 @@ export function ClinicalStaffPortalShell({
           setEnrollTargetPatient(p);
           setEnrollModalOpen(true);
         }}
+        onOpenLinkEhr={(p) => {
+          setPatientModalState({ patient: null, tab: 'profile' });
+          setEhrLinkPatient(p);
+        }}
+        onFlash={flashBanner}
+      />
+
+      <UniversalEhrLinkModal
+        patient={ehrLinkPatient}
+        apiClient={apiClient}
+        onClose={() => setEhrLinkPatient(null)}
+        onLinked={refreshAll}
         onFlash={flashBanner}
       />
 

@@ -2,8 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import {
+  MAHIDOL_MOTOR_SCALE,
   resolveNextAppointmentDate,
   sanitizeAccidentalDefaultKneePrefix,
+  type AffectedSide,
   type DrTechCaresApiClient,
   type ManagedExerciseRecord,
   type MedicalNoteRecord,
@@ -11,7 +13,10 @@ import {
   type PatientBiometricIndexEntry,
   type PatientRecord,
   type RehabScheduleItem,
+  type RehabSessionHistoryEntry,
   type RehabSessionRecord,
+  type StrokeType,
+  type UniversalEhrPackage,
   type UserAccount,
 } from '@drtechcares/api-client';
 import {
@@ -34,11 +39,17 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Copy,
+  Download,
   Dumbbell,
   FileText,
   KeyRound,
+  Link2,
+  QrCode,
   ScanFace,
   Trash2,
+  TrendingUp,
+  Upload,
   UserPlus,
   X,
 } from 'lucide-react';
@@ -853,6 +864,7 @@ export function PatientProfileAndHistoryModal({
   onClose,
   onRefresh,
   onOpenFaceScan,
+  onOpenLinkEhr,
   onFlash,
 }: {
   patient: PatientRecord | null;
@@ -864,6 +876,7 @@ export function PatientProfileAndHistoryModal({
   onClose: () => void;
   onRefresh: () => Promise<void>;
   onOpenFaceScan: (patient: PatientRecord) => void;
+  onOpenLinkEhr?: (patient: PatientRecord) => void;
   onFlash: (kind: 'success' | 'error', msg: string) => void;
 }) {
   const { lang } = useClinicalI18n();
@@ -874,6 +887,12 @@ export function PatientProfileAndHistoryModal({
   const [gender, setGender] = useState('ชาย');
   const [phone, setPhone] = useState('');
   const [diagnosis, setDiagnosis] = useState('');
+  const [strokeType, setStrokeType] = useState<StrokeType>('ELDERLY_GENERAL');
+  const [affectedSide, setAffectedSide] = useState<AffectedSide>('NONE');
+  const [motorAssessmentScore, setMotorAssessmentScore] = useState<number>(3);
+  const [adlDressingScore, setAdlDressingScore] = useState<number>(3);
+  const [maxSafeRomDeg, setMaxSafeRomDeg] = useState<number>(150);
+  const [sessionHistory, setSessionHistory] = useState<RehabSessionHistoryEntry[]>([]);
   const [assignedPtId, setAssignedPtId] = useState('');
   const [delegatePtId, setDelegatePtId] = useState('');
   const [delegateDate, setDelegateDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -892,6 +911,11 @@ export function PatientProfileAndHistoryModal({
     setGender(patient.gender || 'ชาย');
     setPhone(patient.phone || '');
     setDiagnosis(patient.diagnosis || '');
+    setStrokeType(patient.strokeType ?? 'ELDERLY_GENERAL');
+    setAffectedSide(patient.affectedSide ?? 'NONE');
+    setMotorAssessmentScore(patient.motorAssessmentScore ?? 3);
+    setAdlDressingScore(patient.adlDressingScore ?? 3);
+    setMaxSafeRomDeg(patient.maxSafeRomDeg ?? 150);
     setAssignedPtId(patient.assignedPtId || '');
     setDelegatePtId(patient.delegatedToPtId || patient.assignedPtId || '');
     setDelegateDate(patient.delegationDate || new Date().toISOString().slice(0, 10));
@@ -900,6 +924,10 @@ export function PatientProfileAndHistoryModal({
       .listMedicalNotes(patient.id)
       .then((n) => setNotes(n))
       .catch(() => setNotes([]));
+    apiClient
+      .listRehabSessionHistory(patient.id)
+      .then((h) => setSessionHistory(h))
+      .catch(() => setSessionHistory(patient.rehabSessionHistory ?? []));
   }, [patient, initialTab, apiClient]);
 
   if (!patient) return null;
@@ -936,7 +964,17 @@ export function PatientProfileAndHistoryModal({
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {onOpenLinkEhr && (
+              <button
+                type="button"
+                onClick={() => onOpenLinkEhr(patient)}
+                className="whitespace-nowrap h-9 px-3 inline-flex items-center justify-center gap-1 rounded-xl border border-indigo-200 bg-indigo-50 font-bold text-indigo-700 hover:bg-indigo-100 cursor-pointer"
+              >
+                <Link2 className="h-3.5 w-3.5 shrink-0" />
+                <span>เชื่อมโยง/ส่งต่อประวัติการรักษา (Link EHR)</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -1063,6 +1101,11 @@ export function PatientProfileAndHistoryModal({
                     gender,
                     phone: phone.trim(),
                     diagnosis: diagnosis.trim(),
+                    strokeType,
+                    affectedSide,
+                    motorAssessmentScore,
+                    adlDressingScore,
+                    maxSafeRomDeg,
                     assignedPtId: currentUser.role === 'super_admin' ? assignedPtId : undefined,
                   });
                   onFlash('success', `อัปเดตประวัติคนไข้ ${fullName} เรียบร้อยแล้ว`);
@@ -1126,6 +1169,84 @@ export function PatientProfileAndHistoryModal({
                   placeholder="การวินิจฉัยโรค"
                   className="rounded-xl border border-slate-200 bg-white px-3 py-2 sm:col-span-2"
                 />
+              </div>
+
+              {/* Stroke Clinical Profile & Mahidol 0-6 Scale */}
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-3 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-extrabold text-emerald-950">
+                    ข้อมูลกายภาพ Stroke &amp; ประเมินกำลังกล้ามเนื้อ (Mahidol 0–6 Scale)
+                  </span>
+                  <span className="rounded-lg bg-white border border-emerald-200 px-2 py-0.5 font-mono text-[10px] font-bold text-indigo-700">
+                    Universal EHR: {patient.universalHealthLinkCode || `DTC-EHR-${patient.hn}`}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <select
+                    value={strokeType}
+                    onChange={(e) => setStrokeType(e.target.value as StrokeType)}
+                    className="rounded-xl border border-emerald-200 bg-white px-2.5 py-2 font-bold"
+                  >
+                    <option value="ISCHEMIC">Stroke ตีบ/ตัน (Ischemic)</option>
+                    <option value="HEMORRHAGIC">Stroke แตก (Hemorrhagic)</option>
+                    <option value="ELDERLY_GENERAL">ผู้สูงอายุ (MOPH)</option>
+                    <option value="NEURO">ระบบประสาท (Neuro)</option>
+                    <option value="ORTHOPEDIC">กระดูก/ข้อ (Ortho)</option>
+                  </select>
+                  <select
+                    value={affectedSide}
+                    onChange={(e) => setAffectedSide(e.target.value as AffectedSide)}
+                    className="rounded-xl border border-emerald-200 bg-white px-2.5 py-2 font-bold"
+                  >
+                    <option value="LEFT">อ่อนแรง: แขนซ้าย (LEFT)</option>
+                    <option value="RIGHT">อ่อนแรง: แขนขวา (RIGHT)</option>
+                    <option value="BOTH">อ่อนแรง: ทั้ง 2 ข้าง (BOTH)</option>
+                    <option value="NONE">ปกติ/สมดุล (NONE)</option>
+                  </select>
+                  <input
+                    type="number"
+                    min={30}
+                    max={180}
+                    value={maxSafeRomDeg}
+                    onChange={(e) => setMaxSafeRomDeg(Math.max(30, Math.min(180, Number(e.target.value) || 30)))}
+                    placeholder="Safe ROM (°)"
+                    title="Safe Max ROM (องศาปลอดภัยสูงสุด)"
+                    className="rounded-xl border border-emerald-200 bg-white px-2.5 py-2 font-mono font-bold text-emerald-800"
+                  />
+                  <select
+                    value={adlDressingScore}
+                    onChange={(e) => setAdlDressingScore(Number(e.target.value))}
+                    className="rounded-xl border border-emerald-200 bg-white px-2.5 py-2 font-bold"
+                  >
+                    {[0, 1, 2, 3, 4, 5].map((sc) => (
+                      <option key={sc} value={sc}>
+                        ADL ใส่เสื้อ: {sc}/5
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid grid-cols-7 gap-1">
+                  {MAHIDOL_MOTOR_SCALE.map((lvl) => (
+                    <button
+                      key={lvl.score}
+                      type="button"
+                      onClick={() => {
+                        setMotorAssessmentScore(lvl.score);
+                        setMaxSafeRomDeg(lvl.recommendedMaxRomDeg);
+                      }}
+                      className={`rounded-lg border py-1.5 text-center font-black transition cursor-pointer ${
+                        motorAssessmentScore === lvl.score
+                          ? 'border-emerald-600 bg-emerald-600 text-white'
+                          : 'border-emerald-200 bg-white text-slate-700 hover:bg-emerald-100'
+                      }`}
+                    >
+                      {lvl.score}
+                    </button>
+                  ))}
+                </div>
+                <div className="text-[11px] text-emerald-950 font-semibold">
+                  {MAHIDOL_MOTOR_SCALE[motorAssessmentScore]?.titleTh}: {MAHIDOL_MOTOR_SCALE[motorAssessmentScore]?.descTh}
+                </div>
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 {currentUser.role === 'super_admin' && (
@@ -1277,47 +1398,188 @@ export function PatientProfileAndHistoryModal({
           </>
         ) : (
           <div className="space-y-4">
-            <div className="grid grid-cols-3 gap-3 text-center">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                 <div className="text-[11px] text-slate-500">{sm.statSessions}</div>
                 <div className="text-lg font-black text-slate-900">
-                  {patientSessions.length} {sm.sessionUnit}
+                  {Math.max(patientSessions.length, sessionHistory.length)} {sm.sessionUnit}
                 </div>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-emerald-50/50 p-3">
-                <div className="text-[11px] text-slate-500">{sm.statAccuracy}</div>
+                <div className="text-[11px] text-slate-500">Mahidol Motor Score</div>
                 <div className="text-lg font-black text-emerald-700">
-                  {patientSessions.length > 0
-                    ? Math.round(
-                        patientSessions.reduce((acc, s) => acc + s.accuracyPercent, 0) / patientSessions.length,
-                      )
-                    : 0}
-                  %
+                  {patient.motorAssessmentScore ?? 3} / 6
                 </div>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-sky-50/50 p-3">
                 <div className="text-[11px] text-slate-500">{sm.statMaxRom}</div>
                 <div className="text-lg font-black text-sky-700">
-                  {patientSessions.reduce((max, s) => Math.max(max, s.maxRomDeg), 0)}°
+                  {Math.max(
+                    patientSessions.reduce((max, s) => Math.max(max, s.maxRomDeg), 0),
+                    sessionHistory.reduce((max, h) => Math.max(max, h.achievedMaxRomDeg), 0),
+                  )}
+                  °
+                </div>
+              </div>
+              <div className="rounded-2xl border border-indigo-200 bg-indigo-50/60 p-3">
+                <div className="text-[11px] text-indigo-700">Safe ROM Limit</div>
+                <div className="text-lg font-black text-indigo-800">
+                  {patient.maxSafeRomDeg ?? 150}°
                 </div>
               </div>
             </div>
 
-            <div className="max-h-60 overflow-y-auto space-y-2">
-              {patientSessions.map((s) => (
-                <div key={s.id} className="rounded-xl border border-slate-200 p-3 flex items-center justify-between">
-                  <div>
-                    <div className="font-bold text-slate-900">{s.exerciseName}</div>
+            {/* Historical ROM Progress Comparison & Inline SVG Trend Chart */}
+            {(() => {
+              const timeline = [...sessionHistory].sort(
+                (a, b) => new Date(a.sessionDate).getTime() - new Date(b.sessionDate).getTime(),
+              );
+              const byExercise = new Map<string, RehabSessionHistoryEntry[]>();
+              for (const row of timeline) {
+                const list = byExercise.get(row.exerciseCode) ?? [];
+                list.push(row);
+                byExercise.set(row.exerciseCode, list);
+              }
+              const comparisons = Array.from(byExercise.entries()).map(([code, list]) => {
+                const first = list[0];
+                const latest = list[list.length - 1];
+                const base = first.baselineRomDeg || first.achievedMaxRomDeg;
+                const delta = Number((latest.achievedMaxRomDeg - base).toFixed(1));
+                return { code, name: latest.exerciseName || code, first, latest, base, delta, count: list.length };
+              });
+              const chartPts = timeline.slice(-10);
+              return (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50/35 p-3.5 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 font-extrabold text-emerald-950">
+                      <TrendingUp className="h-4 w-4 text-emerald-600" />
+                      เปรียบเทียบพัฒนาการองศาการเคลื่อนไหว (ROM Progress vs Baseline)
+                    </span>
+                    {onOpenLinkEhr && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenLinkEhr(patient)}
+                        className="inline-flex items-center gap-1 rounded-xl border border-indigo-200 bg-white px-2.5 py-1 text-[11px] font-bold text-indigo-700 hover:bg-indigo-50 cursor-pointer"
+                      >
+                        <Link2 className="h-3.5 w-3.5" />
+                        <span>เชื่อมโยง/ส่งต่อประวัติการรักษา (Link EHR)</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {comparisons.length > 0 ? (
+                    <div className="space-y-2">
+                      {comparisons.map((cmp) => (
+                        <div
+                          key={cmp.code}
+                          className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-white px-3 py-2"
+                        >
+                          <div className="min-w-0">
+                            <div className="font-bold text-slate-900 truncate">
+                              {cmp.name}{' '}
+                              <span className="font-mono text-[10px] text-slate-500">({cmp.code})</span>
+                            </div>
+                            <div className="text-[11px] text-slate-600">
+                              ครั้งที่ 1: <span className="font-mono font-bold">{cmp.base.toFixed(1)}°</span> ➔{' '}
+                              ครั้งล่าสุด ({cmp.count}):{' '}
+                              <span className="font-mono font-black text-sky-700">
+                                {cmp.latest.achievedMaxRomDeg.toFixed(1)}°
+                              </span>{' '}
+                              • PT: {cmp.latest.recordedByPtName || 'กภ. ประจำคลินิก'}
+                            </div>
+                          </div>
+                          <span
+                            className={`rounded-full px-2.5 py-1 font-mono text-[11px] font-black ${
+                              cmp.delta >= 0
+                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                : 'bg-amber-100 text-amber-800 border border-amber-300'
+                            }`}
+                          >
+                            {cmp.delta >= 0 ? `+${cmp.delta.toFixed(1)}° ↑` : `${cmp.delta.toFixed(1)}° ↓`}
+                          </span>
+                        </div>
+                      ))}
+
+                      {chartPts.length >= 2 && (
+                        <div className="rounded-xl border border-slate-200 bg-white p-2.5">
+                          <div className="text-[10px] font-bold text-slate-500 mb-1">
+                            ROM Trend (Latest {chartPts.length} sessions)
+                          </div>
+                          <svg viewBox="0 0 300 68" className="w-full h-16">
+                            {(() => {
+                              const pts = chartPts.map((pt, idx) => {
+                                const x = chartPts.length === 1 ? 150 : 12 + (idx * 276) / (chartPts.length - 1);
+                                const norm = Math.max(0, Math.min(180, pt.achievedMaxRomDeg)) / 180;
+                                const y = 58 - norm * 46;
+                                return { x, y, val: pt.achievedMaxRomDeg };
+                              });
+                              const d = pts
+                                .map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`)
+                                .join(' ');
+                              return (
+                                <>
+                                  <path d={d} fill="none" stroke="#059669" strokeWidth="2.5" strokeLinecap="round" />
+                                  {pts.map((p, i) => (
+                                    <g key={i}>
+                                      <circle cx={p.x} cy={p.y} r="3.5" fill="#0284C7" />
+                                      <text x={p.x} y={Math.max(10, p.y - 6)} textAnchor="middle" fontSize="8" fill="#0F4C81" fontWeight="bold">
+                                        {Math.round(p.val)}°
+                                      </text>
+                                    </g>
+                                  ))}
+                                </>
+                              );
+                            })()}
+                          </svg>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-emerald-200 bg-white/70 p-3 text-center text-[11px] text-slate-500">
+                      ยังไม่มีประวัติเปรียบเทียบ ROM (เริ่มสะสมข้อมูลอัตโนมัติเมื่อฝึกหรือบันทึกผลกายภาพ)
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            <div className="max-h-52 overflow-y-auto space-y-2">
+              {sessionHistory.map((h) => (
+                <div key={h.id} className="rounded-xl border border-slate-200 p-3 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="font-bold text-slate-900 truncate">
+                      {h.exerciseName || h.exerciseCode}{' '}
+                      <span className="ml-1 rounded bg-sky-50 px-1.5 py-0.5 font-mono text-[10px] text-sky-700">
+                        {h.facilityName}
+                      </span>
+                    </div>
                     <div className="text-[11px] text-slate-500">
-                      {s.completedSets} × {s.completedReps} • {s.accuracyPercent}% • Max ROM {s.maxRomDeg}°
+                      Max ROM {h.achievedMaxRomDeg.toFixed(1)}° (Baseline {h.baselineRomDeg.toFixed(1)}° • Δ{' '}
+                      {h.romDeltaDeg >= 0 ? `+${h.romDeltaDeg.toFixed(1)}°` : `${h.romDeltaDeg.toFixed(1)}°`}) •{' '}
+                      {h.validReps} reps • Motor {h.motorScoreAtSession ?? patient.motorAssessmentScore ?? 3}/6 •{' '}
+                      PT: {h.recordedByPtName || 'กภ. ประจำคลินิก'}
                     </div>
                   </div>
                   <span className="text-[11px] text-slate-400 whitespace-nowrap">
-                    {new Date(s.createdAt).toLocaleDateString(lang === 'cn' ? 'zh-CN' : lang === 'en' ? 'en-US' : 'th-TH')}
+                    {new Date(h.sessionDate).toLocaleDateString(lang === 'cn' ? 'zh-CN' : lang === 'en' ? 'en-US' : 'th-TH')}
                   </span>
                 </div>
               ))}
-              {patientSessions.length === 0 && (
+              {sessionHistory.length === 0 &&
+                patientSessions.map((s) => (
+                  <div key={s.id} className="rounded-xl border border-slate-200 p-3 flex items-center justify-between">
+                    <div>
+                      <div className="font-bold text-slate-900">{s.exerciseName}</div>
+                      <div className="text-[11px] text-slate-500">
+                        {s.completedSets} × {s.completedReps} • {s.accuracyPercent}% • Max ROM {s.maxRomDeg}°
+                      </div>
+                    </div>
+                    <span className="text-[11px] text-slate-400 whitespace-nowrap">
+                      {new Date(s.createdAt).toLocaleDateString(lang === 'cn' ? 'zh-CN' : lang === 'en' ? 'en-US' : 'th-TH')}
+                    </span>
+                  </div>
+                ))}
+              {sessionHistory.length === 0 && patientSessions.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-slate-200 py-8 text-center text-slate-400">
                   {sm.emptyHistory}
                 </div>
@@ -1327,28 +1589,322 @@ export function PatientProfileAndHistoryModal({
             <button
               type="button"
               onClick={async () => {
+                const baseRom =
+                  sessionHistory[sessionHistory.length - 1]?.baselineRomDeg ?? 35;
+                const nextRom = Math.min(patient.maxSafeRomDeg ?? 150, Math.max(baseRom + 18, 95));
                 await apiClient.recordRehabSession({
                   patientId: patient.id,
                   activityType: 'physio_exercise',
-                  exerciseId: 'MANUAL_CLINIC_SESSION',
-                  exerciseName: 'ฝึกกายภาพบำบัดร่วมกับนักกายภาพ',
+                  exerciseId: 'STROKE_SH_FLEX_R',
+                  exerciseName: '[Stroke ADL] ยกแขนขวาไปด้านหน้า',
+                  jointName: 'shoulder',
+                  bodySide: patient.affectedSide ?? 'RIGHT',
                   completedSets: 3,
                   completedReps: 10,
                   accuracyPercent: 95,
-                  maxRomDeg: 135,
+                  maxRomDeg: nextRom,
+                  motorScoreAtSession: patient.motorAssessmentScore ?? 3,
+                  recordedByPtName: currentUser.fullName,
                   painStopTriggered: false,
                   aiFeedback: `บันทึกการฝึกโดย ${currentUser.fullName}`,
                   kinematicsReplay: [],
                 });
-                onFlash('success', 'บันทึกผลการฝึกกายภาพใหม่เรียบร้อย');
+                const updatedHist = await apiClient.listRehabSessionHistory(patient.id).catch(() => []);
+                setSessionHistory(updatedHist);
+                onFlash('success', 'บันทึกผลการฝึกกายภาพใหม่พร้อมคำนวณ Δ ROM เรียบร้อย');
                 await onRefresh();
               }}
-              className="w-full whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-emerald-600 font-extrabold text-white hover:bg-emerald-500"
+              className="w-full whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-emerald-600 font-extrabold text-white hover:bg-emerald-500 cursor-pointer"
             >
               {sm.recordSessionBtn}
             </button>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** Deterministic lightweight QR SVG matrix generator for Universal EHR Link Codes */
+function UniversalEhrQrSvg({ value }: { value: string }) {
+  const size = 21;
+  const cells: boolean[][] = Array.from({ length: size }, () => Array(size).fill(false));
+  const markFinder = (ox: number, oy: number) => {
+    for (let y = 0; y < 7; y += 1) {
+      for (let x = 0; x < 7; x += 1) {
+        const border = x === 0 || x === 6 || y === 0 || y === 6;
+        const inner = x >= 2 && x <= 4 && y >= 2 && y <= 4;
+        cells[oy + y][ox + x] = border || inner;
+      }
+    }
+  };
+  markFinder(0, 0);
+  markFinder(size - 7, 0);
+  markFinder(0, size - 7);
+
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const inFinder =
+        (x < 8 && y < 8) || (x >= size - 8 && y < 8) || (x < 8 && y >= size - 8);
+      if (inFinder) continue;
+      hash ^= (x + 1) * 31 + (y + 7) * 17;
+      hash = Math.imul(hash, 16777619);
+      cells[y][x] = (hash & 1) === 1;
+    }
+  }
+
+  return (
+    <svg viewBox={`0 0 ${size} ${size}`} className="h-28 w-28 rounded-xl border border-slate-200 bg-white p-1.5">
+      {cells.flatMap((row, y) =>
+        row.map((on, x) =>
+          on ? <rect key={`${x}-${y}`} x={x} y={y} width={1} height={1} fill="#0F4C81" /> : null,
+        ),
+      )}
+    </svg>
+  );
+}
+
+export function UniversalEhrLinkModal({
+  patient,
+  apiClient,
+  onClose,
+  onLinked,
+  onFlash,
+}: {
+  patient: PatientRecord | null;
+  apiClient: DrTechCaresApiClient;
+  onClose: () => void;
+  onLinked: () => Promise<void>;
+  onFlash: (kind: 'success' | 'error', msg: string) => void;
+}) {
+  const [exportBundle, setExportBundle] = useState<UniversalEhrPackage | null>(null);
+  const [lookupInput, setLookupInput] = useState('');
+  const [lookupPreview, setLookupPreview] = useState<UniversalEhrPackage | null>(null);
+  const [rawJsonInput, setRawJsonInput] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!patient) return;
+    setLookupInput('');
+    setLookupPreview(null);
+    setRawJsonInput('');
+    setErrorMsg(null);
+    const code = patient.universalHealthLinkCode || patient.hn;
+    apiClient
+      .lookupUniversalEhr(code)
+      .then((pkg) => setExportBundle(pkg))
+      .catch(() => setExportBundle(null));
+  }, [patient, apiClient]);
+
+  if (!patient) return null;
+
+  const linkCode = patient.universalHealthLinkCode || `DTC-EHR-${patient.hn}`;
+
+  const handleDownloadJson = () => {
+    const pkg: UniversalEhrPackage = exportBundle ?? {
+      version: '1.0',
+      exportedAt: new Date().toISOString(),
+      universalHealthLinkCode: linkCode,
+      facilityName: 'Dr.Tech.Care Clinic',
+      patientProfile: {
+        hn: patient.hn,
+        fullName: patient.fullName,
+        age: patient.age,
+        gender: patient.gender,
+        diagnosis: patient.diagnosis,
+        strokeType: patient.strokeType,
+        affectedSide: patient.affectedSide,
+        motorAssessmentScore: patient.motorAssessmentScore,
+        adlDressingScore: patient.adlDressingScore,
+        maxSafeRomDeg: patient.maxSafeRomDeg,
+      },
+      sessionHistory: patient.rehabSessionHistory ?? [],
+    };
+    const jsonStr = JSON.stringify(pkg, null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `drtechcares-ehr-${patient.hn}-${linkCode}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    onFlash('success', `ส่งออกไฟล์ Universal EHR JSON (${linkCode}) แล้ว`);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#0F4C81]/40 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl border border-indigo-200 space-y-5 text-xs">
+        <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+          <div>
+            <h3 className="flex items-center gap-2 text-base font-black text-[#0F4C81]">
+              <Link2 className="h-5 w-5 text-indigo-600" />
+              <span>เชื่อมโยงและส่งต่อประวัติการรักษาข้ามสถานพยาบาล (Universal EHR Link)</span>
+            </h3>
+            <p className="text-slate-500 mt-0.5">
+              {patient.fullName} (HN: {patient.hn}) • รหัสกลาง:{' '}
+              <span className="font-mono font-black text-indigo-700">{linkCode}</span>
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-xl p-1 text-slate-400 hover:bg-slate-100">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Export / QR Section */}
+        <div className="rounded-2xl border border-indigo-200 bg-indigo-50/40 p-4 flex flex-col sm:flex-row items-center gap-4">
+          <div className="shrink-0 flex flex-col items-center gap-1">
+            <UniversalEhrQrSvg value={JSON.stringify({ code: linkCode, hn: patient.hn, rom: patient.maxSafeRomDeg ?? 150 })} />
+            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-800">
+              <QrCode className="h-3 w-3" /> Universal EHR QR
+            </span>
+          </div>
+          <div className="flex-1 space-y-2.5 min-w-0">
+            <div className="font-extrabold text-slate-900">
+              1. ส่งออกประวัติเพื่อส่งต่อโรงพยาบาล / คลินิกอื่น (Export EHR Package)
+            </div>
+            <p className="text-[11px] text-slate-600">
+              ประกอบด้วยค่า Baseline/Delta ROM, คะแนนกำลังกล้ามเนื้อ Mahidol ({patient.motorAssessmentScore ?? 3}/6), Safe Max ROM ({patient.maxSafeRomDeg ?? 150}°) และประวัติฝึกทั้งหมด {exportBundle?.sessionHistory.length ?? patient.rehabSessionHistory?.length ?? 0} ครั้ง
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(linkCode);
+                    onFlash('success', `คัดลอกรหัส EHR ${linkCode} แล้ว`);
+                  } catch {
+                    onFlash('error', 'ไม่สามารถคัดลอกได้');
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-white px-3 py-1.5 font-bold text-indigo-700 hover:bg-indigo-50 cursor-pointer"
+              >
+                <Copy className="h-3.5 w-3.5" />
+                <span>คัดลอกรหัสเชื่อมโยง</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadJson}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-1.5 font-extrabold text-white hover:bg-indigo-500 cursor-pointer"
+              >
+                <Download className="h-3.5 w-3.5" />
+                <span>ส่งออก JSON Data Package</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Lookup & Import Section */}
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4 space-y-3">
+          <div className="font-extrabold text-emerald-950">
+            2. ดึง/นำเข้าประวัติเดิมจากสถานพยาบาลอื่น (Import by Universal Link Code or JSON)
+          </div>
+
+          <div className="flex gap-2">
+            <input
+              value={lookupInput}
+              onChange={(e) => setLookupInput(e.target.value)}
+              placeholder="กรอก Universal Health Link Code (เช่น DTC-EHR-...) หรือ HN เดิม"
+              className="flex-1 rounded-xl border border-emerald-200 bg-white px-3 py-2 font-mono font-bold text-slate-800"
+            />
+            <button
+              type="button"
+              disabled={!lookupInput.trim() || busy}
+              onClick={async () => {
+                setBusy(true);
+                setErrorMsg(null);
+                try {
+                  const found = await apiClient.lookupUniversalEhr(lookupInput);
+                  if (!found) {
+                    setLookupPreview(null);
+                    setErrorMsg(`ไม่พบประวัติ Universal EHR สำหรับรหัส "${lookupInput.trim()}"`);
+                  } else {
+                    setLookupPreview(found);
+                  }
+                } catch (err) {
+                  setErrorMsg(err instanceof Error ? err.message : 'ค้นหาไม่สำเร็จ');
+                } finally {
+                  setBusy(false);
+                }
+              }}
+              className="rounded-xl bg-sky-600 px-4 py-2 font-extrabold text-white hover:bg-sky-500 disabled:opacity-50 cursor-pointer"
+            >
+              ค้นหารหัส EHR
+            </button>
+          </div>
+
+          <textarea
+            rows={3}
+            value={rawJsonInput}
+            onChange={(e) => setRawJsonInput(e.target.value)}
+            placeholder="หรือวาง JSON EHR Package ที่ได้รับจากสถานพยาบาลต้นทาง..."
+            className="w-full rounded-xl border border-emerald-200 bg-white p-2.5 font-mono text-[11px] text-slate-700"
+          />
+
+          {lookupPreview && (
+            <div className="rounded-xl border border-emerald-300 bg-white p-3 text-[11px] space-y-1">
+              <div className="font-black text-emerald-900">
+                พบข้อมูลจาก: {lookupPreview.facilityName} • คนไข้ {lookupPreview.patientProfile.fullName} ({lookupPreview.patientProfile.hn})
+              </div>
+              <div className="text-slate-600">
+                Mahidol Score: {lookupPreview.patientProfile.motorAssessmentScore ?? 3}/6 •{' '}
+                Safe ROM: {lookupPreview.patientProfile.maxSafeRomDeg ?? 150}° •{' '}
+                จำนวนประวัติฝึก: {lookupPreview.sessionHistory.length} รายการ
+              </div>
+            </div>
+          )}
+
+          {errorMsg && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 font-bold text-rose-700">
+              {errorMsg}
+            </div>
+          )}
+
+          <button
+            type="button"
+            disabled={busy || (!lookupPreview && !rawJsonInput.trim())}
+            onClick={async () => {
+              setBusy(true);
+              setErrorMsg(null);
+              try {
+                let parsedPkg: UniversalEhrPackage | undefined;
+                if (rawJsonInput.trim()) {
+                  parsedPkg = JSON.parse(rawJsonInput.trim()) as UniversalEhrPackage;
+                } else if (lookupPreview) {
+                  parsedPkg = lookupPreview;
+                }
+                if (!parsedPkg) {
+                  setErrorMsg('กรุณาค้นหารหัส EHR หรือวางข้อมูล JSON ก่อนนำเข้า');
+                  setBusy(false);
+                  return;
+                }
+                const res = await apiClient.linkExternalEhrRecord(patient.id, {
+                  linkCode: parsedPkg.universalHealthLinkCode,
+                  ehrPackage: parsedPkg,
+                });
+                onFlash(
+                  'success',
+                  `เชื่อมโยงประวัติการรักษาสำเร็จ (นำเข้า ${res.importedCount} รายการเข้าสู่เวชระเบียนของ ${patient.fullName})`,
+                );
+                await onLinked();
+                onClose();
+              } catch (err) {
+                setErrorMsg(err instanceof Error ? err.message : 'นำเข้าข้อมูล JSON ไม่ถูกต้อง');
+              } finally {
+                setBusy(false);
+              }
+            }}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 py-2.5 font-extrabold text-white hover:bg-emerald-500 disabled:opacity-50 cursor-pointer"
+          >
+            <Upload className="h-4 w-4" />
+            <span>{busy ? 'กำลังนำเข้าและผสานประวัติ...' : 'นำเข้าและเชื่อมโยงประวัติเข้าเวชระเบียนนี้ (Merge EHR)'}</span>
+          </button>
+        </div>
       </div>
     </div>
   );

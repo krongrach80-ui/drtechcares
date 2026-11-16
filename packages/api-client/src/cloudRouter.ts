@@ -27,6 +27,7 @@ import {
   formatLocalIsoDate,
   resolveNextAppointmentDate,
   resolveTodayPatientSchedule,
+  type AffectedSide,
   type AngleEmbeddings5D,
   type AuditLogRecord,
   type BannedTargetRecord,
@@ -39,10 +40,13 @@ import {
   type PatientCourseRecord,
   type PatientRecord,
   type RehabScheduleItem,
+  type RehabSessionHistoryEntry,
   type RehabSessionRecord,
   type StaffCallRecord,
+  type StrokeType,
   type SystemSettingsRecord,
   type TreatmentReportRecord,
+  type UniversalEhrPackage,
   type UserAccount,
   type UserRole,
 } from './index';
@@ -261,6 +265,7 @@ function createInitialState(useUuidIds = false): CloudRouterState {
     medical_notes: [],
     patient_courses: [],
     rehab_sessions: [],
+    rehab_session_history: [],
     treatment_reports: [],
     exercises: CLINICAL_EXERCISES.map((ex) => ({ ...ex, createdBy: 'system' })),
     modpacks: [
@@ -395,9 +400,27 @@ function normalizeAngleUrlMap(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+function generateUniversalLinkCode(patientId: string): string {
+  const cleaned = patientId.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+  const suffix = (cleaned.slice(-8) || randomHex(4).toUpperCase()).padStart(8, '0');
+  return `DTC-EHR-${suffix}`;
+}
+
+function clampScore(val: unknown, min: number, max: number, fallback: number): number {
+  const num = typeof val === 'number' && Number.isFinite(val) ? val : fallback;
+  return Math.max(min, Math.min(max, Math.round(num)));
+}
+
 function buildPatientHistoryPayload(patient: PatientRecord): Record<string, unknown> {
   return {
     gender: patient.gender ?? 'ชาย',
+    strokeType: patient.strokeType ?? 'ELDERLY_GENERAL',
+    affectedSide: patient.affectedSide ?? 'NONE',
+    motorAssessmentScore: patient.motorAssessmentScore ?? 3,
+    adlDressingScore: patient.adlDressingScore ?? 3,
+    maxSafeRomDeg: patient.maxSafeRomDeg ?? 150,
+    universalHealthLinkCode: patient.universalHealthLinkCode ?? generateUniversalLinkCode(patient.id),
+    rehabSessionHistory: patient.rehabSessionHistory ?? [],
     faceBiometricStatus: patient.faceBiometricStatus ?? 'PENDING',
     faceFramesCount: patient.faceFramesCount ?? 0,
     faceImageUrl: patient.faceImageUrl ?? null,
@@ -412,7 +435,7 @@ function buildPatientHistoryPayload(patient: PatientRecord): Record<string, unkn
   };
 }
 
-/** Writes a `patients` row and omits `face_frames_count` only when the schema rejects that column. */
+/** Writes a `patients` row and gracefully falls back if optional extended columns are not yet migrated. */
 async function writePatientRowWithFramesFallback(
   db: SupabaseClient,
   mode: 'insert' | 'update',
@@ -427,9 +450,19 @@ async function writePatientRowWithFramesFallback(
       | undefined;
 
   const res = await exec(fields);
-  if (res?.error && 'face_frames_count' in fields) {
+  if (res?.error) {
     const fallbackPayload = { ...fields };
-    delete fallbackPayload.face_frames_count;
+    for (const optCol of [
+      'face_frames_count',
+      'stroke_type',
+      'affected_side',
+      'motor_assessment_score',
+      'adl_dressing_score',
+      'max_safe_rom_deg',
+      'universal_health_link_code',
+    ]) {
+      delete fallbackPayload[optCol];
+    }
     await exec(fallbackPayload);
   }
 }
@@ -1359,6 +1392,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         gender?: string;
         phone?: string;
         diagnosis?: string;
+        strokeType?: StrokeType;
+        affectedSide?: AffectedSide;
+        motorAssessmentScore?: number;
+        adlDressingScore?: number;
+        maxSafeRomDeg?: number;
+        universalHealthLinkCode?: string;
         assignedPtId?: string;
         nextAppointmentDate?: string;
         username?: string;
@@ -1480,6 +1519,18 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         gender,
         phone: body.phone ?? '',
         diagnosis: body.diagnosis ?? 'General Rehabilitation',
+        strokeType: (body.strokeType ?? 'ELDERLY_GENERAL') as StrokeType,
+        affectedSide: (body.affectedSide ?? 'NONE') as AffectedSide,
+        motorAssessmentScore: clampScore(body.motorAssessmentScore, 0, 6, 3),
+        adlDressingScore: clampScore(body.adlDressingScore, 0, 5, 3),
+        maxSafeRomDeg:
+          typeof body.maxSafeRomDeg === 'number' && Number.isFinite(body.maxSafeRomDeg)
+            ? Math.max(30, Math.min(180, body.maxSafeRomDeg))
+            : 150,
+        universalHealthLinkCode:
+          typeof body.universalHealthLinkCode === 'string' && body.universalHealthLinkCode.trim()
+            ? body.universalHealthLinkCode.trim().toUpperCase()
+            : generateUniversalLinkCode(patientId),
         assignedPtId,
         delegatedToPtId: null,
         delegationNote: null,
@@ -1514,6 +1565,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           age: patient.age,
           phone: patient.phone,
           diagnosis: patient.diagnosis,
+          stroke_type: patient.strokeType,
+          affected_side: patient.affectedSide,
+          motor_assessment_score: patient.motorAssessmentScore,
+          adl_dressing_score: patient.adlDressingScore,
+          max_safe_rom_deg: patient.maxSafeRomDeg,
+          universal_health_link_code: patient.universalHealthLinkCode,
           assigned_pt_id: patient.assignedPtId,
           next_appointment_date: patient.nextAppointmentDate || null,
           registration_status: 'active',
@@ -2094,6 +2151,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           hn: patient.hn,
           fullName: patient.fullName,
           nextAppointmentDate: todaySchedule.nextAppointmentDate,
+          strokeType: patient.strokeType,
+          affectedSide: patient.affectedSide,
+          motorAssessmentScore: patient.motorAssessmentScore,
+          adlDressingScore: patient.adlDressingScore,
+          maxSafeRomDeg: patient.maxSafeRomDeg,
+          universalHealthLinkCode: patient.universalHealthLinkCode,
         },
         todayRoutine,
         rehabSchedules: patient.rehabSchedules ?? [],
@@ -2580,6 +2643,20 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         if (body.gender !== undefined) patient.gender = body.gender;
         if (body.phone !== undefined) patient.phone = body.phone;
         if (body.diagnosis !== undefined) patient.diagnosis = body.diagnosis;
+        if (body.strokeType !== undefined) patient.strokeType = body.strokeType;
+        if (body.affectedSide !== undefined) patient.affectedSide = body.affectedSide;
+        if (body.motorAssessmentScore !== undefined) {
+          patient.motorAssessmentScore = clampScore(body.motorAssessmentScore, 0, 6, patient.motorAssessmentScore ?? 3);
+        }
+        if (body.adlDressingScore !== undefined) {
+          patient.adlDressingScore = clampScore(body.adlDressingScore, 0, 5, patient.adlDressingScore ?? 3);
+        }
+        if (body.maxSafeRomDeg !== undefined && Number.isFinite(body.maxSafeRomDeg)) {
+          patient.maxSafeRomDeg = Math.max(30, Math.min(180, body.maxSafeRomDeg));
+        }
+        if (body.universalHealthLinkCode !== undefined && body.universalHealthLinkCode.trim()) {
+          patient.universalHealthLinkCode = body.universalHealthLinkCode.trim().toUpperCase();
+        }
         if (body.nextAppointmentDate !== undefined) {
           patient.nextAppointmentDate = body.nextAppointmentDate;
         }
@@ -2631,6 +2708,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             age: patient.age,
             phone: patient.phone,
             diagnosis: patient.diagnosis,
+            stroke_type: patient.strokeType ?? 'ELDERLY_GENERAL',
+            affected_side: patient.affectedSide ?? 'NONE',
+            motor_assessment_score: patient.motorAssessmentScore ?? 3,
+            adl_dressing_score: patient.adlDressingScore ?? 3,
+            max_safe_rom_deg: patient.maxSafeRomDeg ?? 150,
+            universal_health_link_code:
+              patient.universalHealthLinkCode ?? generateUniversalLinkCode(patient.id),
             assigned_pt_id: patient.assignedPtId,
             next_appointment_date: patient.nextAppointmentDate || null,
             face_biometric_status: patient.faceBiometricStatus ?? 'PENDING',
@@ -2850,16 +2934,58 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         (p) => p.id === body.patientId || p.hn === body.patientId,
       );
       const resolvedPatientId = matchedPatient?.id ?? body.patientId;
+      const bodyWithNotes = body as Partial<RehabSessionRecord> & { clinicalNotes?: string };
+      const catalogMatch = state.exercises.find(
+        (ex) => ex.id === body.exerciseId || ex.code === body.exerciseId,
+      );
+      const exCode = catalogMatch?.code || body.exerciseId;
+      const priorSameExercise = (state.rehab_session_history ?? [])
+        .filter((h) => h.patientId === resolvedPatientId && h.exerciseCode === exCode && h.achievedMaxRomDeg > 0)
+        .sort((a, b) => new Date(a.sessionDate).getTime() - new Date(b.sessionDate).getTime());
+      const achievedMaxRom = Number((body.maxRomDeg ?? 0).toFixed(1));
+      const baselineRom =
+        typeof body.baselineRomDeg === 'number' && Number.isFinite(body.baselineRomDeg)
+          ? body.baselineRomDeg
+          : priorSameExercise[0]?.baselineRomDeg ?? achievedMaxRom;
+      const romDelta =
+        typeof body.romDeltaDeg === 'number' && Number.isFinite(body.romDeltaDeg)
+          ? body.romDeltaDeg
+          : Number((achievedMaxRom - baselineRom).toFixed(1));
+      const ptUser = matchedPatient
+        ? state.users.find((u) => u.id === (matchedPatient.delegatedToPtId || matchedPatient.assignedPtId))
+        : undefined;
+      const recordedPtId = authUser?.role === 'pt' ? authUser.id : ptUser?.id ?? authUser?.id ?? null;
+      const recordedPtName =
+        body.recordedByPtName ??
+        (authUser && (authUser.role === 'pt' || authUser.role === 'super_admin')
+          ? authUser.fullName
+          : ptUser?.fullName ?? 'กภ. ประจำคลินิก');
+      const motorScoreSnap =
+        typeof body.motorScoreAtSession === 'number'
+          ? body.motorScoreAtSession
+          : matchedPatient?.motorAssessmentScore ?? null;
+      const facilityName = body.facilityName || 'Dr.Tech.Care Main Clinic';
+
       const session: RehabSessionRecord = {
         id: `sess-${Date.now()}-${randomHex(2)}`,
         patientId: resolvedPatientId,
         activityType: body.activityType ?? 'minigame',
         exerciseId: body.exerciseId,
         exerciseName: body.exerciseName,
+        jointName: body.jointName || catalogMatch?.detection.jointGroup || 'upper_limb',
+        bodySide: (body.bodySide ||
+          (catalogMatch?.detection.side ? catalogMatch.detection.side.toUpperCase() : matchedPatient?.affectedSide) ||
+          'BOTH') as AffectedSide,
         completedSets: body.completedSets ?? 0,
         completedReps: body.completedReps ?? 0,
         accuracyPercent: body.accuracyPercent ?? 100,
-        maxRomDeg: body.maxRomDeg ?? 0,
+        maxRomDeg: achievedMaxRom,
+        baselineRomDeg: baselineRom,
+        romDeltaDeg: romDelta,
+        motorScoreAtSession: motorScoreSnap,
+        compensationsCount: body.compensationsCount ?? 0,
+        facilityName,
+        recordedByPtName: recordedPtName,
         painStopTriggered: body.painStopTriggered ?? false,
         aiFeedback: body.aiFeedback ?? 'Good posture stability observed.',
         kinematicsReplay: body.kinematicsReplay ?? [],
@@ -2867,6 +2993,38 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         createdAt: new Date().toISOString(),
       };
       state.rehab_sessions.unshift(session);
+
+      let historyEntry: RehabSessionHistoryEntry | null = null;
+      if (session.activityType === 'physio_exercise' && session.exerciseId !== 'CLINIC_CHECKIN') {
+        historyEntry = {
+          id: newRecordId(Boolean(supabase), 'hist'),
+          patientId: resolvedPatientId,
+          hn: matchedPatient?.hn ?? '',
+          sessionDate: session.createdAt,
+          exerciseCode: exCode,
+          exerciseName: session.exerciseName,
+          jointName: session.jointName ?? 'upper_limb',
+          bodySide: session.bodySide ?? 'BOTH',
+          baselineRomDeg: baselineRom,
+          achievedMaxRomDeg: achievedMaxRom,
+          romDeltaDeg: romDelta,
+          motorScoreAtSession: motorScoreSnap,
+          validReps: session.completedReps,
+          compensationsCount: session.compensationsCount ?? 0,
+          facilityName,
+          recordedByPtId: recordedPtId,
+          recordedByPtName: recordedPtName,
+          clinicalNotes: bodyWithNotes.clinicalNotes || session.aiFeedback,
+        };
+        state.rehab_session_history = state.rehab_session_history ?? [];
+        state.rehab_session_history.unshift(historyEntry);
+        if (matchedPatient) {
+          matchedPatient.rehabSessionHistory = [
+            historyEntry,
+            ...(matchedPatient.rehabSessionHistory ?? []),
+          ].slice(0, 120);
+        }
+      }
 
       if (matchedPatient && session.exerciseId !== 'CLINIC_CHECKIN') {
         const utcIso = new Date().toISOString().slice(0, 10);
@@ -2937,6 +3095,32 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           kinematics_replay: session.kinematicsReplay,
           minigame_score: session.minigameScore ?? null,
         });
+        if (historyEntry) {
+          try {
+            await db.from('rehab_session_history').insert({
+              id: historyEntry.id,
+              patient_id: historyEntry.patientId,
+              hn: historyEntry.hn,
+              session_date: historyEntry.sessionDate,
+              exercise_code: historyEntry.exerciseCode,
+              exercise_name: historyEntry.exerciseName,
+              joint_name: historyEntry.jointName,
+              body_side: historyEntry.bodySide,
+              baseline_rom_deg: historyEntry.baselineRomDeg,
+              achieved_max_rom_deg: historyEntry.achievedMaxRomDeg,
+              rom_delta_deg: historyEntry.romDeltaDeg,
+              motor_score_at_session: historyEntry.motorScoreAtSession ?? null,
+              valid_reps: historyEntry.validReps,
+              compensations_count: historyEntry.compensationsCount,
+              facility_name: historyEntry.facilityName,
+              recorded_by_pt_id: historyEntry.recordedByPtId ?? null,
+              recorded_by_pt_name: historyEntry.recordedByPtName ?? null,
+              clinical_notes: historyEntry.clinicalNotes ?? null,
+            });
+          } catch {
+            // Best-effort if table 004 is not yet migrated; patient.history JSONB already preserves it.
+          }
+        }
         if (matchedPatient && session.exerciseId !== 'CLINIC_CHECKIN') {
           await writePatientRowWithFramesFallback(
             db,
@@ -2952,6 +3136,266 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         }
       });
       return jsonResponse({ session }, 201);
+    }
+
+    const sessionHistoryMatch = pathname.match(/^\/api\/patients\/([^/]+)\/session-history$/);
+    if (sessionHistoryMatch && method === 'GET') {
+      const err = requireAuth(authUser);
+      if (err) return err;
+      const pid = sessionHistoryMatch[1];
+      const patient = state.patients.find((p) => p.id === pid || p.hn === pid);
+      const targetId = patient?.id ?? pid;
+      if (authUser!.role === 'patient' && authUser!.patientId !== targetId) {
+        return jsonResponse({ error: 'FORBIDDEN' }, 403);
+      }
+
+      const explicitHistory = (state.rehab_session_history ?? []).filter(
+        (h) => h.patientId === targetId,
+      );
+      const patientHistoryEmbedded = (patient?.rehabSessionHistory ?? []).filter(Boolean);
+      const byId = new Map<string, RehabSessionHistoryEntry>();
+      for (const h of [...patientHistoryEmbedded, ...explicitHistory]) {
+        byId.set(h.id, h);
+      }
+
+      // Derive longitudinal timeline entries from any older physio sessions lacking an explicit history row
+      const existingDates = new Set(Array.from(byId.values()).map((h) => `${h.exerciseCode}|${h.sessionDate}`));
+      const baselineByCode = new Map<string, number>();
+      const orderedSessions = state.rehab_sessions
+        .filter((s) => s.patientId === targetId && s.activityType === 'physio_exercise' && s.exerciseId !== 'CLINIC_CHECKIN')
+        .slice()
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      for (const s of orderedSessions) {
+        const cat = state.exercises.find((e) => e.id === s.exerciseId || e.code === s.exerciseId);
+        const code = cat?.code || s.exerciseId;
+        const base = s.baselineRomDeg ?? baselineByCode.get(code) ?? s.maxRomDeg;
+        if (!baselineByCode.has(code) && base > 0) baselineByCode.set(code, base);
+        const effBase = baselineByCode.get(code) ?? base;
+        if (!existingDates.has(`${code}|${s.createdAt}`) && !byId.has(s.id)) {
+          byId.set(s.id, {
+            id: s.id,
+            patientId: targetId,
+            hn: patient?.hn ?? '',
+            sessionDate: s.createdAt,
+            exerciseCode: code,
+            exerciseName: s.exerciseName || cat?.name.th || code,
+            jointName: s.jointName || cat?.detection.jointGroup || 'upper_limb',
+            bodySide: (s.bodySide || patient?.affectedSide || 'BOTH') as AffectedSide,
+            baselineRomDeg: effBase,
+            achievedMaxRomDeg: s.maxRomDeg,
+            romDeltaDeg: s.romDeltaDeg ?? Number((s.maxRomDeg - effBase).toFixed(1)),
+            motorScoreAtSession: s.motorScoreAtSession ?? patient?.motorAssessmentScore ?? null,
+            validReps: s.completedReps,
+            compensationsCount: s.compensationsCount ?? 0,
+            facilityName: s.facilityName || 'Dr.Tech.Care Clinic',
+            recordedByPtName: s.recordedByPtName || 'กภ. ประจำคลินิก',
+            clinicalNotes: s.aiFeedback,
+          });
+        }
+      }
+
+      const history = Array.from(byId.values()).sort(
+        (a, b) => new Date(b.sessionDate).getTime() - new Date(a.sessionDate).getTime(),
+      );
+      return jsonResponse({ history });
+    }
+
+    if (pathname === '/api/ehr/lookup' && method === 'GET') {
+      const err = requireAuth(authUser, ['super_admin', 'pt']);
+      if (err) return err;
+      const code = (reqUrl.searchParams.get('code') ?? '').trim().toUpperCase();
+      if (!code) return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
+      const matched = state.patients.find(
+        (p) =>
+          (p.universalHealthLinkCode ?? '').toUpperCase() === code ||
+          p.hn.toUpperCase() === code ||
+          p.id.toUpperCase() === code,
+      );
+      if (!matched) {
+        return jsonResponse({ ehrPackage: null }, 200);
+      }
+      const hist = (state.rehab_session_history ?? [])
+        .filter((h) => h.patientId === matched.id)
+        .sort((a, b) => new Date(b.sessionDate).getTime() - new Date(a.sessionDate).getTime());
+      const ehrPackage: UniversalEhrPackage = {
+        version: '1.0',
+        exportedAt: new Date().toISOString(),
+        universalHealthLinkCode: matched.universalHealthLinkCode ?? generateUniversalLinkCode(matched.id),
+        facilityName: 'Dr.Tech.Care Main Clinic',
+        patientProfile: {
+          hn: matched.hn,
+          fullName: matched.fullName,
+          age: matched.age,
+          gender: matched.gender,
+          diagnosis: matched.diagnosis,
+          strokeType: matched.strokeType,
+          affectedSide: matched.affectedSide,
+          motorAssessmentScore: matched.motorAssessmentScore,
+          adlDressingScore: matched.adlDressingScore,
+          maxSafeRomDeg: matched.maxSafeRomDeg,
+        },
+        sessionHistory: hist,
+      };
+      return jsonResponse({ ehrPackage });
+    }
+
+    const linkEhrMatch = pathname.match(/^\/api\/patients\/([^/]+)\/link-ehr$/);
+    if (linkEhrMatch && method === 'POST') {
+      const err = requireAuth(authUser, ['super_admin', 'pt']);
+      if (err) return err;
+      const patient = state.patients.find((p) => p.id === linkEhrMatch[1]);
+      if (!patient) return jsonResponse({ error: 'PATIENT_NOT_FOUND' }, 404);
+      const body = await readJsonBody<{ linkCode?: string; ehrPackage?: UniversalEhrPackage }>(request);
+      if (!body?.linkCode && !body?.ehrPackage) {
+        return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
+      }
+
+      let pkg: UniversalEhrPackage | null = body.ehrPackage ?? null;
+      if (!pkg && body.linkCode) {
+        const cleanCode = body.linkCode.trim().toUpperCase();
+        const sourcePatient = state.patients.find(
+          (p) =>
+            (p.universalHealthLinkCode ?? '').toUpperCase() === cleanCode ||
+            p.hn.toUpperCase() === cleanCode,
+        );
+        if (!sourcePatient) {
+          return jsonResponse({ error: 'EHR_LINK_CODE_NOT_FOUND' }, 404);
+        }
+        const sourceHistory = (state.rehab_session_history ?? []).filter(
+          (h) => h.patientId === sourcePatient.id,
+        );
+        pkg = {
+          version: '1.0',
+          exportedAt: new Date().toISOString(),
+          universalHealthLinkCode:
+            sourcePatient.universalHealthLinkCode ?? generateUniversalLinkCode(sourcePatient.id),
+          facilityName: 'External Partner Facility',
+          patientProfile: {
+            hn: sourcePatient.hn,
+            fullName: sourcePatient.fullName,
+            age: sourcePatient.age,
+            gender: sourcePatient.gender,
+            diagnosis: sourcePatient.diagnosis,
+            strokeType: sourcePatient.strokeType,
+            affectedSide: sourcePatient.affectedSide,
+            motorAssessmentScore: sourcePatient.motorAssessmentScore,
+            adlDressingScore: sourcePatient.adlDressingScore,
+            maxSafeRomDeg: sourcePatient.maxSafeRomDeg,
+          },
+          sessionHistory: sourceHistory,
+        };
+      }
+
+      if (!pkg) return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
+
+      // Update Stroke clinical profile defaults if missing or provided externally
+      if (pkg.patientProfile.strokeType && (!patient.strokeType || patient.strokeType === 'ELDERLY_GENERAL')) {
+        patient.strokeType = pkg.patientProfile.strokeType;
+      }
+      if (pkg.patientProfile.affectedSide && (!patient.affectedSide || patient.affectedSide === 'NONE')) {
+        patient.affectedSide = pkg.patientProfile.affectedSide;
+      }
+      if (typeof pkg.patientProfile.motorAssessmentScore === 'number') {
+        patient.motorAssessmentScore = pkg.patientProfile.motorAssessmentScore;
+      }
+      if (typeof pkg.patientProfile.maxSafeRomDeg === 'number') {
+        patient.maxSafeRomDeg = pkg.patientProfile.maxSafeRomDeg;
+      }
+      if (!patient.universalHealthLinkCode) {
+        patient.universalHealthLinkCode = generateUniversalLinkCode(patient.id);
+      }
+
+      const existingIds = new Set(
+        (state.rehab_session_history ?? [])
+          .filter((h) => h.patientId === patient.id)
+          .map((h) => `${h.exerciseCode}|${h.sessionDate}|${h.achievedMaxRomDeg}`),
+      );
+      const importedRows: RehabSessionHistoryEntry[] = [];
+      for (const item of pkg.sessionHistory ?? []) {
+        const sig = `${item.exerciseCode}|${item.sessionDate}|${item.achievedMaxRomDeg}`;
+        if (existingIds.has(sig)) continue;
+        existingIds.add(sig);
+        const imported: RehabSessionHistoryEntry = {
+          ...item,
+          id: newRecordId(Boolean(supabase), 'hist'),
+          patientId: patient.id,
+          hn: patient.hn,
+          facilityName: item.facilityName || pkg.facilityName || 'External Linked Clinic',
+          clinicalNotes: item.clinicalNotes
+            ? `[Linked from ${pkg.universalHealthLinkCode}] ${item.clinicalNotes}`
+            : `[Linked from ${pkg.universalHealthLinkCode}]`,
+        };
+        importedRows.push(imported);
+      }
+
+      state.rehab_session_history = state.rehab_session_history ?? [];
+      state.rehab_session_history.unshift(...importedRows);
+      patient.rehabSessionHistory = [
+        ...importedRows,
+        ...(patient.rehabSessionHistory ?? []),
+      ].slice(0, 150);
+
+      await persistToSupabase(supabase, async (db) => {
+        if (importedRows.length > 0) {
+          try {
+            await db.from('rehab_session_history').insert(
+              importedRows.map((h) => ({
+                id: h.id,
+                patient_id: h.patientId,
+                hn: h.hn,
+                session_date: h.sessionDate,
+                exercise_code: h.exerciseCode,
+                exercise_name: h.exerciseName,
+                joint_name: h.jointName,
+                body_side: h.bodySide,
+                baseline_rom_deg: h.baselineRomDeg,
+                achieved_max_rom_deg: h.achievedMaxRomDeg,
+                rom_delta_deg: h.romDeltaDeg,
+                motor_score_at_session: h.motorScoreAtSession ?? null,
+                valid_reps: h.validReps,
+                compensations_count: h.compensationsCount,
+                facility_name: h.facilityName,
+                recorded_by_pt_id: h.recordedByPtId ?? null,
+                recorded_by_pt_name: h.recordedByPtName ?? null,
+                clinical_notes: h.clinicalNotes ?? null,
+              })),
+            );
+          } catch {
+            // Fallback already stored inside patient.history JSONB
+          }
+        }
+        await writePatientRowWithFramesFallback(
+          db,
+          'update',
+          {
+            stroke_type: patient.strokeType ?? 'ELDERLY_GENERAL',
+            affected_side: patient.affectedSide ?? 'NONE',
+            motor_assessment_score: patient.motorAssessmentScore ?? 3,
+            max_safe_rom_deg: patient.maxSafeRomDeg ?? 150,
+            universal_health_link_code: patient.universalHealthLinkCode,
+            face_frames_count: patient.faceFramesCount ?? 0,
+            history: buildPatientHistoryPayload(patient),
+            updated_at: new Date().toISOString(),
+          },
+          patient.id,
+        );
+      });
+
+      recordAudit({
+        eventType: 'PATIENT_EHR_LINKED',
+        actorRole: authUser!.role,
+        actorId: authUser!.id,
+        actorName: authUser!.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: patient.id,
+        detail: `Linked EHR (${pkg.universalHealthLinkCode}) importing ${importedRows.length} session history entries`,
+      });
+
+      const mergedForPatient = (state.rehab_session_history ?? [])
+        .filter((h) => h.patientId === patient.id)
+        .sort((a, b) => new Date(b.sessionDate).getTime() - new Date(a.sessionDate).getTime());
+      return jsonResponse({ patient, importedCount: importedRows.length, history: mergedForPatient });
     }
 
     if (pathname === '/api/biomechanics/evaluate' && method === 'POST') {
@@ -3068,7 +3512,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     // 6. EXERCISES & MODPACKS
     // ========================
     if (pathname === '/api/exercises' && method === 'GET') {
-      return jsonResponse({ exercises: state.exercises });
+      const existingIds = new Set(state.exercises.map((e) => e.id));
+      const builtinExtras = CLINICAL_EXERCISES.filter((ex) => !existingIds.has(ex.id)).map((ex) => ({
+        ...ex,
+        createdBy: 'system',
+      }));
+      const combined = builtinExtras.length > 0 ? [...state.exercises, ...builtinExtras] : state.exercises;
+      return jsonResponse({ exercises: combined });
     }
 
     if (pathname === '/api/exercises' && method === 'POST') {

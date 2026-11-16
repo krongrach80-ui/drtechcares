@@ -38,6 +38,7 @@ THAI_COMPENSATION_PROMPTS = {
     "KNEE_VALGUS": "จัดแนวหัวเข่าให้ตรง อย่าให้เข่าบิดเข้าด้านใน",
     "HEEL_LIFT": "กรุณาวางส้นเท้าทั้งสองข้างให้ติดพื้น",
     "TOO_FAST": "เคลื่อนไหวเร็วเกินไป กรุณาค่อยๆ ทำช้าๆ เพื่อความปลอดภัย",
+    "SPASTICITY_GUARD": "ช้าลงนิดนึงครับ ไม่ต้องฝืนยกสูงเกินไปนะครับ",
     "LOW_VISIBILITY": "มองเห็นข้อต่อไม่ชัดเจน กรุณาจัดตำแหน่งหน้ากล้องให้เหมาะสม",
 }
 
@@ -178,7 +179,11 @@ class ClinicalRehabFSM:
         return mapping.get(self.fsm_state, "ACTIVE_REP")
 
     def _target_rom_deg(self) -> float:
-        return float(self.prescription.target_rom_deg or self.rule.min_angle_deg)
+        requested = float(self.prescription.target_rom_deg or self.rule.min_angle_deg)
+        safe_max = self.prescription.max_safe_rom_deg
+        if safe_max is not None and not self.rule.is_descending_target:
+            return min(requested, max(float(self.rule.rest_angle_deg) + 10.0, float(safe_max)))
+        return requested
 
     def _reached_target(self, rom_deg: float) -> bool:
         """Hysteresis-aware entry check (ACTIVE -> HOLD)."""
@@ -387,12 +392,18 @@ class ClinicalRehabFSM:
             target_rom_override=target_rom,
             world_pts=world_pts,
             scores=scores,
+            max_safe_rom_deg=self.prescription.max_safe_rom_deg,
         )
 
         # Safety fall override (active once exercising or calibrating)
         if emergency_reason and self.fsm_state not in ("FACE_AUTH", "EMERGENCY"):
             self.trigger_emergency(emergency_reason)
             analysis.pain_alert = True
+            self._last_tts = analysis.safety_guard_banner_th or "ตรวจพบการเสียสมดุล กรุณานั่งพักและจับราวจับ"
+            self.solver.dispatch_emergency_alert_supabase(
+                self.patient.id if self.patient else None,
+                emergency_reason,
+            )
 
         # State transitions
         if self.fsm_state == "FACE_AUTH":
@@ -485,6 +496,12 @@ class ClinicalRehabFSM:
 
         elif self.fsm_state == "SET_FINISHED":
             self.movement_phase = "REP_COMPLETE"
+
+        if self.fsm_state != "EMERGENCY":
+            if analysis.spasticity_warning:
+                self._last_tts = "ช้าลงนิดนึงครับ ไม่ต้องฝืนยกสูงเกินไปนะครับ"
+            elif analysis.fatigue_rest_recommended:
+                self._last_tts = "แนะนำพักผ่อน 15 วินาที หรือลดมุมเป้าหมายลงเล็กน้อยนะครับ"
 
         self._prev_rom_deg = analysis.current_rom_deg
 

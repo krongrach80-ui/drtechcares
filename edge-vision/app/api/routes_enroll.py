@@ -23,9 +23,9 @@ router = APIRouter(prefix="/api", tags=["edge-vision"])
 
 
 @router.get("/exercises")
-async def get_exercises() -> Dict[str, Any]:
-    """List all 26 clinical rehabilitation exercises supported by RTMW3D 3D Solver."""
-    items = list_all_exercises()
+async def get_exercises(scope: str = "core") -> Dict[str, Any]:
+    """List clinical rehabilitation exercises (pass ?scope=all to include Stroke ADL & MOPH Elderly modules)."""
+    items = list_all_exercises(include_stroke_moph=(scope.strip().lower() == "all"))
     return {"count": len(items), "exercises": items}
 
 

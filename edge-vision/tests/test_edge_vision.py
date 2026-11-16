@@ -1001,6 +1001,88 @@ class TestClinicalEdgeVision(unittest.TestCase):
         finally:
             coordinator.pose_estimator.close()
 
+    def test_18_stroke_moph_exercises_and_safety_guards(self) -> None:
+        """Stroke ADL & MOPH Elderly exercises, 3D ROM calculation, and Safety Guards work accurately."""
+        from app.biomechanics.exercises import STROKE_AND_MOPH_EXERCISES, list_all_exercises
+
+        self.assertGreaterEqual(len(STROKE_AND_MOPH_EXERCISES), 14)
+        self.assertEqual(len(list_all_exercises(include_stroke_moph=False)), 26)
+        self.assertEqual(len(list_all_exercises(include_stroke_moph=True)), 40)
+
+        for code in (
+            "STROKE_SH_FLEX",
+            "STROKE_SH_ABD",
+            "STROKE_ELB_FLEX_EXT",
+            "STROKE_SH_ROT",
+            "STROKE_WRIST_FINGER",
+            "MOPH_NECK_TILT",
+            "MOPH_SHOULDER_SHRUG_ROLL",
+            "MOPH_BILATERAL_ARM_RAISE",
+        ):
+            resolved = resolve_exercise_rule(code)
+            self.assertIsNotNone(resolved)
+
+        solver = Biomechanics3DSolver(self.settings)
+        cal = StandingCalibrator(duration_sec=0.2)
+        stand_pts, scores = generate_synthetic_133_pose(0.0, is_calibrating=True)
+        cal.force_calibrate_from_pose(stand_pts)
+
+        # 1. Verify RTMW3D 133-pt hand landmarks drive STROKE_WRIST_FINGER_R
+        wrist_rule = resolve_exercise_rule("STROKE_WRIST_FINGER")
+        hand_pts = stand_pts.copy()
+        hand_pts[10] = np.array([0.36, 0.48, -0.25], dtype=np.float64)
+        hand_pts[112] = np.array([0.36, 0.48, -0.25], dtype=np.float64)
+        hand_pts[124] = np.array([0.36, 0.36, -0.28], dtype=np.float64)
+        wrist_res, wrist_emerg = solver.analyze(hand_pts, wrist_rule, cal, timestamp_sec=1.0)
+        self.assertIsNone(wrist_emerg)
+        self.assertGreater(wrist_res.current_rom_deg, 20.0)
+
+        # 2. Verify CONTRAINDICATION_ROM_LIMIT + soft spasticity prompt
+        solver.reset()
+        flex_rule = resolve_exercise_rule("STROKE_SH_FLEX_R")
+        over_pts, _ = generate_synthetic_133_pose(0.0, "ex-03", mock_pose_override="raise_right")
+        safe_res, safe_emerg = solver.analyze(
+            over_pts,
+            flex_rule,
+            cal,
+            timestamp_sec=2.0,
+            target_rom_override=150.0,
+            max_safe_rom_deg=95.0,
+        )
+        self.assertIsNone(safe_emerg)
+        self.assertTrue(safe_res.contraindication_clamped)
+        self.assertLessEqual(safe_res.target_rom_deg, 95.0)
+        self.assertTrue(safe_res.spasticity_warning)
+        self.assertIn("ช้าลงนิดนึงครับ", safe_res.safety_guard_banner_th or "")
+
+        # 3. Verify POSTURAL_SWAY_AND_FALL_GUARD triggers EMERGENCY_HALT on trunk sway > 18 deg sustained 3 frames
+        solver.reset()
+        fsm = ClinicalRehabFSM(self.settings)
+        fsm.set_prescription(
+            ExercisePrescriptionSchema(
+                exercise_id="STROKE_SH_FLEX_R",
+                target_rom_deg=95.0,
+                max_safe_rom_deg=95.0,
+                hold_sec=2.0,
+                target_reps=5,
+            ),
+            start_calibration=False,
+        )
+        fsm.calibrator.force_calibrate_from_pose(stand_pts)
+        fsm.fsm_state = "ACTIVE"
+        sway_pts = stand_pts.copy()
+        sway_pts[5, 0] += 0.16
+        sway_pts[6, 0] += 0.16
+        hand_empty = HandRaiseTelemetry()
+        p_sway = None
+        for idx in range(3):
+            p_sway = fsm.step(sway_pts, scores, 3.0 + idx * 0.25, 30.0, "synthetic_mock", hand_empty, [])
+        self.assertIsNotNone(p_sway)
+        self.assertEqual(p_sway.fsm_state, "EMERGENCY")
+        self.assertTrue(p_sway.telemetry_analysis.pain_alert)
+        self.assertEqual(p_sway.telemetry_analysis.safety_guard_alert, "POSTURAL_SWAY_AND_FALL_GUARD")
+        self.assertIn("ตรวจพบการเสียสมดุล", p_sway.tts_voice_th)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

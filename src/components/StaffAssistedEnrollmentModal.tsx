@@ -1,16 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   formatLocalIsoDate,
+  MAHIDOL_MOTOR_SCALE,
   resolveNextAppointmentDate,
+  type AffectedSide,
   type DrTechCaresApiClient,
   type ManagedExerciseRecord,
   type ModpackRecord,
   type PatientRecord,
   type RehabScheduleItem,
+  type StrokeType,
   type UserAccount,
 } from '@drtechcares/api-client';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
-import { CLINICAL_EXERCISES } from '@drtechcares/pose-engine';
+import { CLINICAL_EXERCISES, sortExercisesStrokeUpperFirst } from '@drtechcares/pose-engine';
 import {
   Activity,
   CalendarDays,
@@ -87,17 +90,19 @@ function getRecommendedExerciseIdsForJoint(
   catalog: readonly ManagedExerciseRecord[],
 ): string[] {
   const preferredByJoint: Record<string, string[]> = {
+    'ข้อไหล่และแขน Stroke ADL (Shoulder & Arm)': ['ex-27', 'ex-29', 'ex-31', 'ex-33', 'ex-35'],
+    'คอ บ่า และแขน สธ. ผู้สูงอายุ (MOPH Upper Body)': ['ex-37', 'ex-38', 'ex-39', 'ex-40'],
+    'ข้อไหล่ (Shoulder)': ['ex-27', 'ex-29', 'ex-01', 'ex-02'],
+    'ข้อศอกและแขน (Elbow & Arm)': ['ex-31', 'ex-32', 'ex-35', 'ex-05', 'ex-06'],
+    'หลังส่วนล่าง (Lower Back)': ['ex-23', 'ex-39', 'ex-15', 'ex-16'],
     'เข่า (Knee)': ['ex-13', 'ex-14', 'ex-26'],
-    'ข้อไหล่ (Shoulder)': ['ex-01', 'ex-02', 'ex-03', 'ex-04'],
-    'หลังส่วนล่าง (Lower Back)': ['ex-23', 'ex-15', 'ex-16'],
-    'ข้อศอกและแขน (Elbow & Arm)': ['ex-05', 'ex-06', 'ex-01', 'ex-02'],
-    'การทรงตัวและสมอง (Neuro & Cognitive)': ['ex-21', 'ex-22', 'ex-15', 'ex-16'],
+    'การทรงตัวและสมอง (Neuro & Cognitive)': ['ex-21', 'ex-22', 'ex-39', 'ex-40'],
   };
-  const preferred = preferredByJoint[jointLabel] ?? ['ex-01', 'ex-02'];
+  const preferred = preferredByJoint[jointLabel] ?? ['ex-27', 'ex-29', 'ex-37', 'ex-39'];
   const validSet = new Set(catalog.map((e) => e.id));
   const filtered = preferred.filter((id) => validSet.has(id));
   if (filtered.length > 0) return filtered;
-  return catalog.slice(0, 2).map((e) => e.id);
+  return catalog.slice(0, 3).map((e) => e.id);
 }
 
 export function StaffAssistedEnrollmentModal({
@@ -116,7 +121,10 @@ export function StaffAssistedEnrollmentModal({
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const todayIso = useMemo(() => formatLocalIsoDate(), []);
   const catalogExercises = useMemo(
-    () => (exercises.length > 0 ? exercises : FALLBACK_MANAGED_EXERCISES),
+    () =>
+      sortExercisesStrokeUpperFirst(
+        exercises.length > 0 ? exercises : FALLBACK_MANAGED_EXERCISES,
+      ),
     [exercises],
   );
 
@@ -131,8 +139,13 @@ export function StaffAssistedEnrollmentModal({
     currentUser.role === 'pt' ? currentUser.id : ptList[0]?.id ?? '',
   );
 
-  // Section 2: Clinical & Rehab
-  const [targetJoint, setTargetJoint] = useState('เข่า (Knee)');
+  // Section 2: Clinical & Rehab (Stroke & Elderly Upper-Body Focus + Mahidol 0-6 Scale)
+  const [targetJoint, setTargetJoint] = useState('ข้อไหล่และแขน Stroke ADL (Shoulder & Arm)');
+  const [strokeType, setStrokeType] = useState<StrokeType>('ISCHEMIC');
+  const [affectedSide, setAffectedSide] = useState<AffectedSide>('RIGHT');
+  const [motorAssessmentScore, setMotorAssessmentScore] = useState<number>(3);
+  const [adlDressingScore, setAdlDressingScore] = useState<number>(3);
+  const [maxSafeRomDeg, setMaxSafeRomDeg] = useState<number>(120);
   const [clinicalDiagnosis, setClinicalDiagnosis] = useState('');
   const [contraindications, setContraindications] = useState('');
   const [underlyingDiseases, setUnderlyingDiseases] = useState('');
@@ -238,7 +251,12 @@ export function StaffAssistedEnrollmentModal({
     setAge(45);
     setGender('ชาย');
     setPhone('');
-    setTargetJoint('เข่า (Knee)');
+    setTargetJoint('ข้อไหล่และแขน Stroke ADL (Shoulder & Arm)');
+    setStrokeType('ISCHEMIC');
+    setAffectedSide('RIGHT');
+    setMotorAssessmentScore(3);
+    setAdlDressingScore(3);
+    setMaxSafeRomDeg(120);
     setClinicalDiagnosis('');
     setContraindications('');
     setUnderlyingDiseases('');
@@ -443,6 +461,11 @@ export function StaffAssistedEnrollmentModal({
         gender,
         phone: phone.trim(),
         diagnosis: cleanedDiagnosis,
+        strokeType,
+        affectedSide,
+        motorAssessmentScore,
+        adlDressingScore,
+        maxSafeRomDeg,
         assignedPtId: assignedPtId || undefined,
         nextAppointmentDate: effectiveNextAppointmentDate,
         rehabSchedules: customSchedules,
@@ -480,7 +503,8 @@ export function StaffAssistedEnrollmentModal({
       ).size;
 
       const structuredSummary = [
-        `[เปิดเวชระเบียน Staff-Assisted] ข้อต่อเป้าหมาย: ${targetJoint}`,
+        `[เปิดเวชระเบียน Staff-Assisted Stroke & Elderly Rehab] ข้อต่อเป้าหมาย: ${targetJoint}`,
+        `กลุ่มโรค: ${strokeType} | ข้างที่อ่อนแรง/เน้น: ${affectedSide} | Mahidol Motor Score: ${motorAssessmentScore}/6 | ADL ใส่เสื้อผ้า: ${adlDressingScore}/5 | Max Safe ROM: ${maxSafeRomDeg}°`,
         `เพศกำเนิด: ${gender}${birthDate ? ` | วันเกิด: ${birthDate}` : ''} | อายุ ${age} ปี`,
         clinicalDiagnosis.trim() ? `การวินิจฉัย: ${clinicalDiagnosis.trim()}` : '',
         contraindications.trim() ? `ข้อห้ามกายภาพ: ${contraindications.trim()}` : '',
@@ -806,10 +830,16 @@ export function StaffAssistedEnrollmentModal({
                       onChange={(e) => setTargetJoint(e.target.value)}
                       className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm font-semibold text-slate-800 focus:border-teal-500 focus:bg-white focus:outline-none"
                     >
-                      <option value="เข่า (Knee)">เข่า (Knee)</option>
+                      <option value="ข้อไหล่และแขน Stroke ADL (Shoulder & Arm)">
+                        ข้อไหล่และแขน Stroke ADL (Shoulder &amp; Arm — แนะนำหลัก)
+                      </option>
+                      <option value="คอ บ่า และแขน สธ. ผู้สูงอายุ (MOPH Upper Body)">
+                        คอ บ่า และแขน สธ. ผู้สูงอายุ (MOPH Upper Body)
+                      </option>
                       <option value="ข้อไหล่ (Shoulder)">ข้อไหล่ (Shoulder)</option>
-                      <option value="หลังส่วนล่าง (Lower Back)">หลังส่วนล่าง (Lower Back)</option>
                       <option value="ข้อศอกและแขน (Elbow & Arm)">ข้อศอกและแขน (Elbow &amp; Arm)</option>
+                      <option value="เข่า (Knee)">เข่า (Knee)</option>
+                      <option value="หลังส่วนล่าง (Lower Back)">หลังส่วนล่าง (Lower Back)</option>
                       <option value="การทรงตัวและสมอง (Neuro & Cognitive)">
                         การทรงตัวและสมอง (Neuro &amp; Cognitive)
                       </option>
@@ -822,9 +852,131 @@ export function StaffAssistedEnrollmentModal({
                     <input
                       value={clinicalDiagnosis}
                       onChange={(e) => setClinicalDiagnosis(e.target.value)}
-                      placeholder="เช่น ข้อเข่าเสื่อมระยะที่ 2, ปวดหลังส่วนล่างเรื้อรัง"
+                      placeholder="เช่น Ischemic Stroke แขนขวาอ่อนแรง, ไหล่ติดผู้สูงอายุ"
                       className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
                     />
+                  </div>
+                </div>
+
+                {/* Stroke Classification, Affected Side, Mahidol 0-6 Motor Assessment Scale & Safe ROM */}
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3.5 space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-extrabold text-emerald-950 mb-1">
+                        ประเภทกลุ่มผู้ป่วย (Stroke / Elderly Classification)
+                      </label>
+                      <select
+                        value={strokeType}
+                        onChange={(e) => setStrokeType(e.target.value as StrokeType)}
+                        className="w-full rounded-xl border border-emerald-200 bg-white px-3 py-2 text-xs font-bold text-slate-800"
+                      >
+                        <option value="ISCHEMIC">Stroke เส้นเลือดตีบ/ตัน (Ischemic)</option>
+                        <option value="HEMORRHAGIC">Stroke เส้นเลือดแตก (Hemorrhagic)</option>
+                        <option value="ELDERLY_GENERAL">ผู้สูงอายุทั่วไป (MOPH / Active Aging)</option>
+                        <option value="NEURO">ระบบประสาท (Neuro Rehab)</option>
+                        <option value="ORTHOPEDIC">กระดูกและข้อ (Orthopedic)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-extrabold text-emerald-950 mb-1">
+                        จุดอ่อนแรงที่ต้องเน้น (Focus Weak Side)
+                      </label>
+                      <div className="grid grid-cols-4 gap-1">
+                        {(
+                          [
+                            ['LEFT', 'ซ้าย'],
+                            ['RIGHT', 'ขวา'],
+                            ['BOTH', '2 ข้าง'],
+                            ['NONE', 'ปกติ'],
+                          ] as const
+                        ).map(([val, lbl]) => (
+                          <button
+                            key={val}
+                            type="button"
+                            onClick={() => setAffectedSide(val)}
+                            className={`rounded-lg py-2 text-[11px] font-extrabold border transition cursor-pointer ${
+                              affectedSide === val
+                                ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs'
+                                : 'border-emerald-200 bg-white text-slate-700 hover:bg-emerald-100'
+                            }`}
+                          >
+                            {lbl}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[11px] font-extrabold text-emerald-950 mb-1">
+                          Safe Max ROM (°)
+                        </label>
+                        <input
+                          type="number"
+                          min={30}
+                          max={180}
+                          value={maxSafeRomDeg}
+                          onChange={(e) => setMaxSafeRomDeg(Math.max(30, Math.min(180, Number(e.target.value) || 30)))}
+                          className="w-full rounded-xl border border-emerald-200 bg-white px-2.5 py-1.5 text-center font-mono text-sm font-black text-emerald-800"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-extrabold text-emerald-950 mb-1">
+                          ADL ใส่เสื้อ (0–5)
+                        </label>
+                        <select
+                          value={adlDressingScore}
+                          onChange={(e) => setAdlDressingScore(Number(e.target.value))}
+                          className="w-full rounded-xl border border-emerald-200 bg-white px-2 py-2 text-xs font-bold text-slate-800"
+                        >
+                          <option value={0}>0: ช่วยตัวเองไม่ได้</option>
+                          <option value={1}>1: ช่วยมาก (พึ่งพาสูง)</option>
+                          <option value={2}>2: สอดแขนได้บ้าง</option>
+                          <option value={3}>3: ทำได้เมื่อมีผู้ช่วย</option>
+                          <option value={4}>4: ใส่เองได้ช้าๆ</option>
+                          <option value={5}>5: ใส่เสื้อผ้าเองได้คล่อง</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-[11px] font-extrabold text-emerald-950">
+                        Motor Assessment Scale (กำลังกล้ามเนื้อ แนวทางมหิดล 0–6 คะแนน)
+                      </label>
+                      <span className="rounded-full bg-emerald-700 px-2.5 py-0.5 text-[10px] font-black text-white">
+                        Grade {motorAssessmentScore} / 6
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-7 gap-1.5">
+                      {MAHIDOL_MOTOR_SCALE.map((lvl) => {
+                        const active = motorAssessmentScore === lvl.score;
+                        return (
+                          <button
+                            key={lvl.score}
+                            type="button"
+                            onClick={() => {
+                              setMotorAssessmentScore(lvl.score);
+                              setMaxSafeRomDeg(lvl.recommendedMaxRomDeg);
+                            }}
+                            className={`rounded-xl border py-2 text-center transition cursor-pointer ${
+                              active
+                                ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm'
+                                : 'border-emerald-200 bg-white text-slate-700 hover:bg-emerald-100'
+                            }`}
+                          >
+                            <div className="text-sm font-black">{lvl.score}</div>
+                            <div className="text-[9px] font-bold opacity-85">{lvl.recommendedMaxRomDeg}°</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="mt-1.5 rounded-xl border border-emerald-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-emerald-950">
+                      <span className="font-black">
+                        {MAHIDOL_MOTOR_SCALE[motorAssessmentScore]?.titleTh}:
+                      </span>{' '}
+                      {MAHIDOL_MOTOR_SCALE[motorAssessmentScore]?.descTh}
+                    </p>
                   </div>
                 </div>
 

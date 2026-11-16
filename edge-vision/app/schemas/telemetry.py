@@ -121,6 +121,14 @@ class TelemetryAnalysisSchema(BaseModel):
     compensation_detected: List[str] = Field(default_factory=lambda: ["NONE"])
     compensation_warnings: List[str] = Field(default_factory=list)
     pain_alert: bool = False
+    safety_guard_alert: Optional[str] = None
+    safety_guard_banner_th: Optional[str] = None
+    spasticity_warning: bool = False
+    contraindication_clamped: bool = False
+    consecutive_compensations: int = 0
+    fatigue_rest_recommended: bool = False
+    fatigue_rest_remaining_sec: float = 0.0
+    suggested_reduced_rom_deg: Optional[float] = None
 
 
 class RepCounterSchema(BaseModel):
@@ -164,6 +172,10 @@ class ExercisePrescriptionSchema(BaseModel):
     target_rom_deg: float = 150.0
     hold_sec: float = 3.0
     target_reps: int = 10
+    max_safe_rom_deg: Optional[float] = None
+    affected_side: Optional[str] = None
+    stroke_type: Optional[str] = None
+    motor_assessment_score: Optional[int] = None
 
 
 class IdentityDetectedBoxSchema(BaseModel):

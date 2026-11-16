@@ -12,7 +12,10 @@ export type ExerciseEvaluationMode =
   | 'timer'
   | 'hold_balance'
   | 'heel_raise'
-  | 'neck_tilt';
+  | 'neck_tilt'
+  | 'wrist_finger'
+  | 'shrug_roll'
+  | 'bilateral_raise';
 
 export interface TrilingualText {
   th: string;
@@ -22,7 +25,7 @@ export interface TrilingualText {
 
 export interface ExerciseDetectionConfig {
   mode: ExerciseEvaluationMode;
-  jointGroup: 'shoulder' | 'elbow' | 'knee' | 'hip' | 'ankle' | 'neck' | 'trunk' | 'balance';
+  jointGroup: 'shoulder' | 'elbow' | 'wrist' | 'knee' | 'hip' | 'ankle' | 'neck' | 'trunk' | 'balance';
   side: BodySide | 'both';
   targetMinDeg: number;
   targetMaxDeg: number;
@@ -32,13 +35,14 @@ export interface ExerciseDetectionConfig {
   defaultReps: number;
   requireStraightElbow?: boolean;
   minElbowDeg?: number;
-  expectedPlane?: 'flexion' | 'abduction' | 'any';
+  expectedPlane?: 'flexion' | 'abduction' | 'rotation' | 'wrist_finger' | 'shrug_roll' | 'bilateral' | 'any';
 }
 
 export interface ExerciseConfig {
   id: string;
   code: string;
   category: 'upper_limb' | 'lower_limb' | 'neck_trunk' | 'balance';
+  clinicalFocus?: 'stroke_adl' | 'moph_elderly' | 'upper_body' | 'general';
   name: TrilingualText;
   instruction: TrilingualText;
   detection: ExerciseDetectionConfig;

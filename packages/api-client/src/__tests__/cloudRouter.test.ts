@@ -1252,5 +1252,118 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(verifyJson.confidencePercent).toBeGreaterThanOrEqual(85);
     expect(verifyJson.patient?.hn).toBe('HN-54720');
   });
+
+  it('persists Stroke Mahidol 0-6 score, computes ROM baseline deltas, and links Universal EHR records', async () => {
+    const router = createCloudDelegatedRouter({});
+    const loginRes = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const ptToken = ((await loginRes.json()) as { token: string }).token;
+
+    // 1. Enroll Stroke patient with Mahidol Grade 3 & safe max ROM 115 deg
+    const enrollRes = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-STROKE-01',
+        fullName: 'คุณวิชัย ฟื้นฟูสโตรก',
+        age: 67,
+        diagnosis: 'Ischemic Stroke แขนขวาอ่อนแรง',
+        strokeType: 'ISCHEMIC',
+        affectedSide: 'RIGHT',
+        motorAssessmentScore: 3,
+        adlDressingScore: 2,
+        maxSafeRomDeg: 115,
+        skipFaceScan: true,
+      },
+    });
+    expect(enrollRes.status).toBe(201);
+    const enrolledPatient = ((await enrollRes.json()) as {
+      patient: { id: string; universalHealthLinkCode: string; motorAssessmentScore: number; maxSafeRomDeg: number };
+    }).patient;
+    expect(enrolledPatient.motorAssessmentScore).toBe(3);
+    expect(enrolledPatient.maxSafeRomDeg).toBe(115);
+    expect(enrolledPatient.universalHealthLinkCode.startsWith('DTC-EHR-')).toBe(true);
+
+    // 2. Record Session 1 (Baseline 35°) then Session 2 (58° -> delta +23°)
+    const s1 = await callRouter(router, '/api/sessions', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        patientId: enrolledPatient.id,
+        activityType: 'physio_exercise',
+        exerciseId: 'STROKE_SH_FLEX_R',
+        exerciseName: '[Stroke ADL] ยกแขนขวาไปด้านหน้า',
+        completedSets: 2,
+        completedReps: 6,
+        accuracyPercent: 88,
+        maxRomDeg: 35,
+      },
+    });
+    expect(s1.status).toBe(201);
+
+    const s2 = await callRouter(router, '/api/sessions', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        patientId: enrolledPatient.id,
+        activityType: 'physio_exercise',
+        exerciseId: 'STROKE_SH_FLEX_R',
+        exerciseName: '[Stroke ADL] ยกแขนขวาไปด้านหน้า',
+        completedSets: 2,
+        completedReps: 8,
+        accuracyPercent: 94,
+        maxRomDeg: 58,
+      },
+    });
+    expect(s2.status).toBe(201);
+
+    const histRes = await callRouter(router, `/api/patients/${enrolledPatient.id}/session-history`, {
+      method: 'GET',
+      token: ptToken,
+    });
+    expect(histRes.status).toBe(200);
+    const histList = ((await histRes.json()) as {
+      history: { baselineRomDeg: number; achievedMaxRomDeg: number; romDeltaDeg: number }[];
+    }).history;
+    expect(histList.length).toBeGreaterThanOrEqual(2);
+    expect(histList[0].baselineRomDeg).toBe(35);
+    expect(histList[0].achievedMaxRomDeg).toBe(58);
+    expect(histList[0].romDeltaDeg).toBe(23);
+
+    // 3. Universal EHR lookup + external cross-clinic merge into second clinic patient
+    const targetEnroll = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-EXT-99',
+        fullName: 'คุณวิชัย ฟื้นฟูสโตรก',
+        age: 67,
+        diagnosis: 'Refer from Hub Clinic',
+        skipFaceScan: true,
+      },
+    });
+    const targetId = ((await targetEnroll.json()) as { patient: { id: string } }).patient.id;
+
+    const lookupRes = await callRouter(
+      router,
+      `/api/ehr/lookup?code=${encodeURIComponent(enrolledPatient.universalHealthLinkCode)}`,
+      { method: 'GET', token: ptToken },
+    );
+    expect(lookupRes.status).toBe(200);
+    const lookupJson = (await lookupRes.json()) as { ehrPackage: { sessionHistory: unknown[] } | null };
+    expect(lookupJson.ehrPackage?.sessionHistory.length).toBeGreaterThanOrEqual(2);
+
+    const linkRes = await callRouter(router, `/api/patients/${targetId}/link-ehr`, {
+      method: 'POST',
+      token: ptToken,
+      body: { linkCode: enrolledPatient.universalHealthLinkCode },
+    });
+    expect(linkRes.status).toBe(200);
+    const linkJson = (await linkRes.json()) as { importedCount: number; patient: { strokeType: string } };
+    expect(linkJson.importedCount).toBeGreaterThanOrEqual(2);
+    expect(linkJson.patient.strokeType).toBe('ISCHEMIC');
+  });
 });
 
