@@ -30,7 +30,12 @@ import {
   pickSpeechVoice,
   translateVoiceCoachText,
 } from '../components/VoiceCoachBanner';
-import { getKioskVerifiedModalCopy } from '../components/KioskBiometricLoginView';
+import {
+  HAND_SWITCH_GRACE_MS,
+  VERIFIED_HAND_HOLD_MS,
+  getKioskVerifiedModalCopy,
+  stepVerifiedHandHold,
+} from '../components/KioskBiometricLoginView';
 import { getKioskOverviewVoiceNarration } from '../App';
 import {
   computeContainRect,
@@ -461,14 +466,17 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     const th = getKioskVerifiedModalCopy('th', sampleParams);
     expect(th.confidenceBadge).toContain('ความแม่นยำชีวมาตร 77%');
     expect(th.hnAndNextAppointment).toContain('นัดถัดไป: 2026-11-20');
-    expect(th.startBtnIdle).toContain('ยก 2 มือขึ้น');
+    expect(th.startBtnIdle).toContain('4 วิ');
+    expect(th.startBtnIdle).toContain('มือเดียว/สลับข้างได้');
+    expect(th.gestureDetectedPill).toContain('50%');
+    expect(th.gestureDetectedPill).toContain('2.0/4.0');
     expect(th.notMeBtn).toContain('ไม่ใช่ฉัน');
     expect(th.voiceGreeting).toContain('Pdasdwa');
 
     const en = getKioskVerifiedModalCopy('en', sampleParams);
     expect(en.confidenceBadge).toContain('Biometric Confidence 77%');
     expect(en.hnAndNextAppointment).toContain('Next Appointment: 2026-11-20');
-    expect(en.startBtnIdle).toContain('Raise Both Hands');
+    expect(en.startBtnIdle).toContain('Hold Hand Up 4s');
     expect(en.gestureDetectedPill).toContain('50%');
     expect(en.notMeBtn).toContain('Not me');
     expect(en.voiceGreeting).toContain('Welcome, Pdasdwa');
@@ -476,10 +484,70 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     const cn = getKioskVerifiedModalCopy('cn', sampleParams);
     expect(cn.confidenceBadge).toContain('生物识别准确度 77%');
     expect(cn.hnAndNextAppointment).toContain('下次预约: 2026-11-20');
-    expect(cn.startBtnIdle).toContain('举起双手');
+    expect(cn.startBtnIdle).toContain('4 秒');
     expect(cn.gestureDetectedPill).toContain('50%');
     expect(cn.notMeBtn).toContain('不是我本人');
     expect(cn.voiceGreeting).toContain('Pdasdwa');
+  });
+
+  it('requires 4s hand hold and supports single or alternating hands across switch gaps', () => {
+    expect(VERIFIED_HAND_HOLD_MS).toBe(4000);
+    expect(HAND_SWITCH_GRACE_MS).toBeGreaterThanOrEqual(500);
+
+    let holdMs = 0;
+    let lastRaisedAtMs = -Infinity;
+    let nowMs = 1000;
+
+    // 1. Raise left hand for 2.0s (40 ticks * 50ms) -> 50%, not confirmed yet
+    for (let i = 0; i < 40; i += 1) {
+      nowMs += 50;
+      const step = stepVerifiedHandHold({
+        anyHandNow: true,
+        nowMs,
+        dtMs: 50,
+        lastRaisedAtMs,
+        holdMs,
+      });
+      holdMs = step.holdMs;
+      lastRaisedAtMs = step.lastRaisedAtMs;
+      expect(step.detected).toBe(true);
+      expect(step.confirmed).toBe(false);
+    }
+    expect(holdMs).toBe(2000);
+
+    // 2. Brief 400ms transition gap while switching from left hand to right hand
+    for (let i = 0; i < 8; i += 1) {
+      nowMs += 50;
+      const step = stepVerifiedHandHold({
+        anyHandNow: false,
+        nowMs,
+        dtMs: 50,
+        lastRaisedAtMs,
+        holdMs,
+      });
+      holdMs = step.holdMs;
+      lastRaisedAtMs = step.lastRaisedAtMs;
+      expect(step.detected).toBe(true);
+    }
+    expect(holdMs).toBe(2400);
+
+    // 3. Hold right hand for remaining 1.6s -> completes 4.0s and confirms
+    let finalConfirmed = false;
+    for (let i = 0; i < 32; i += 1) {
+      nowMs += 50;
+      const step = stepVerifiedHandHold({
+        anyHandNow: true,
+        nowMs,
+        dtMs: 50,
+        lastRaisedAtMs,
+        holdMs,
+      });
+      holdMs = step.holdMs;
+      lastRaisedAtMs = step.lastRaisedAtMs;
+      finalConfirmed = step.confirmed;
+    }
+    expect(holdMs).toBe(4000);
+    expect(finalConfirmed).toBe(true);
   });
 
   it('enforces movement plane strictly: forward flexion rejects side abduction and side abduction rejects forward flexion', () => {
