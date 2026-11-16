@@ -41,7 +41,8 @@ import {
   type BiometricVerificationJson,
   type LivenessAndPoseReport,
 } from '@drtechcares/face-client';
-import { extractRaisedHandSides, FacePresenceTracker } from '@drtechcares/kiosk-input';
+import { FacePresenceTracker } from '@drtechcares/kiosk-input';
+import { POSE_INDEX } from '@drtechcares/pose-engine';
 import {
   BURST_FRAME_COUNT,
   purgeLegacyBiometricCache,
@@ -170,6 +171,7 @@ export interface KioskVerifiedModalCopy {
   hnAndNextAppointment: string;
   openingCamera: string;
   gestureDetectedPill: string;
+  gestureSingleHandPill: string;
   gestureLoadingPill: string;
   gestureReadyPill: string;
   startBtnHolding: string;
@@ -181,9 +183,72 @@ export interface KioskVerifiedModalCopy {
 
 export const VERIFIED_HAND_HOLD_MS = 4000;
 export const HAND_SWITCH_GRACE_MS = 600;
+export const HAND_GLITCH_GRACE_MS = 220;
+
+export function evaluateStrictTwoHandsForStartModal(
+  hands: ReadonlyArray<ReadonlyArray<{ x: number; y: number }>>,
+  pose?: ReadonlyArray<{ x: number; y: number; visibility?: number }> | null,
+): {
+  leftUp: boolean;
+  rightUp: boolean;
+  bothUp: boolean;
+  singleOnly: boolean;
+} {
+  const raisedHands = hands.filter((h) => h.length >= 21 && (h[0]?.y ?? 1) <= 0.88);
+  let leftUp = false;
+  let rightUp = false;
+
+  if (raisedHands.length >= 2) {
+    for (let i = 0; i < raisedHands.length; i += 1) {
+      for (let j = i + 1; j < raisedHands.length; j += 1) {
+        const a = raisedHands[i][9] ?? raisedHands[i][0];
+        const b = raisedHands[j][9] ?? raisedHands[j][0];
+        if (Math.hypot(a.x - b.x, a.y - b.y) >= 0.05) {
+          leftUp = true;
+          rightUp = true;
+        }
+      }
+    }
+  }
+
+  if (!leftUp || !rightUp) {
+    for (const h of raisedHands) {
+      const anchor = h[9] ?? h[0];
+      const mirroredX = 1 - anchor.x;
+      if (mirroredX < 0.5) leftUp = true;
+      else rightUp = true;
+    }
+  }
+
+  if (pose && pose.length >= 21) {
+    const lSh = pose[POSE_INDEX.LEFT_SHOULDER];
+    const rSh = pose[POSE_INDEX.RIGHT_SHOULDER];
+    const lWr = pose[POSE_INDEX.LEFT_WRIST];
+    const rWr = pose[POSE_INDEX.RIGHT_WRIST];
+    const lShY = lSh && (lSh.visibility ?? 1) >= 0.3 ? lSh.y : 0.72;
+    const rShY = rSh && (rSh.visibility ?? 1) >= 0.3 ? rSh.y : 0.72;
+    if (lWr && (lWr.visibility ?? 0) >= 0.45 && lWr.y <= Math.min(0.82, lShY + 0.08)) {
+      if (1 - lWr.x < 0.5) leftUp = true;
+      else rightUp = true;
+    }
+    if (rWr && (rWr.visibility ?? 0) >= 0.45 && rWr.y <= Math.min(0.82, rShY + 0.08)) {
+      if (1 - rWr.x < 0.5) leftUp = true;
+      else rightUp = true;
+    }
+  }
+
+  const bothUp = leftUp && rightUp;
+  return {
+    leftUp,
+    rightUp,
+    bothUp,
+    singleOnly: (leftUp || rightUp) && !bothUp,
+  };
+}
 
 export function stepVerifiedHandHold(input: {
-  anyHandNow: boolean;
+  bothHandsNow?: boolean;
+  anyHandNow?: boolean;
   nowMs: number;
   dtMs: number;
   lastRaisedAtMs: number;
@@ -195,16 +260,21 @@ export function stepVerifiedHandHold(input: {
   progress: number;
   confirmed: boolean;
 } {
-  const nextLastRaised = input.anyHandNow ? input.nowMs : input.lastRaisedAtMs;
-  const detected =
-    input.anyHandNow ||
-    (Number.isFinite(nextLastRaised) && input.nowMs - nextLastRaised <= HAND_SWITCH_GRACE_MS);
-  const nextHoldMs = detected
+  const activeBoth = input.bothHandsNow ?? input.anyHandNow ?? false;
+  const nextLastRaised = activeBoth ? input.nowMs : input.lastRaisedAtMs;
+  const withinMicroGlitch =
+    !activeBoth && Number.isFinite(nextLastRaised) && input.nowMs - nextLastRaised <= HAND_GLITCH_GRACE_MS;
+
+  // Genuine 4.0s hold timer: only increments while BOTH hands are held up simultaneously;
+  // freezes briefly on micro-frame jitter and decays cleanly when dropped.
+  const nextHoldMs = activeBoth
     ? Math.min(VERIFIED_HAND_HOLD_MS, input.holdMs + input.dtMs)
-    : Math.max(0, input.holdMs - input.dtMs * 0.9);
+    : withinMicroGlitch
+      ? input.holdMs
+      : Math.max(0, input.holdMs - input.dtMs * 1.5);
   const progress = Math.min(1, nextHoldMs / VERIFIED_HAND_HOLD_MS);
   return {
-    detected,
+    detected: activeBoth,
     lastRaisedAtMs: nextLastRaised,
     holdMs: nextHoldMs,
     progress,
@@ -232,44 +302,47 @@ export function getKioskVerifiedModalCopy(
     return {
       confidenceBadge: `Biometric Confidence ${params.confidencePercent}% (Verified)`,
       hnAndNextAppointment: `HN: ${params.hn} • Next Appointment: ${nextAppt}`,
-      openingCamera: 'Opening camera for hand-raise detection...',
-      gestureDetectedPill: `🖐️ Hand raised! Hold steady ${heldSec}/${totalSec.toFixed(0)}.0s (${params.twoHandProgressPct}%)`,
-      gestureLoadingPill: '⏳ Preparing AI hand gesture detector...',
-      gestureReadyPill: `📷 Raise & hold either hand (or switch hands) for ${totalSec.toFixed(0)}s to start automatically`,
-      startBtnHolding: `🖐️ Holding hand steady... ${heldSec}/${totalSec.toFixed(0)}.0s (${remainSec}s left)`,
-      startBtnIdle: `🖐️ Hold Hand Up ${totalSec.toFixed(0)}s (1 Hand / Alternate / Both) or Tap to Start ➔`,
+      openingCamera: 'Opening camera for 2-hand detection...',
+      gestureDetectedPill: `🙌 Both hands detected! Hold steady ${heldSec}/${totalSec.toFixed(0)}.0s (${params.twoHandProgressPct}%)`,
+      gestureSingleHandPill: '⚠️ 1 hand only does not count — raise BOTH hands together',
+      gestureLoadingPill: '⏳ Preparing AI 2-hand detector...',
+      gestureReadyPill: `🙌 Raise BOTH hands together & hold ${totalSec.toFixed(0)}s to start`,
+      startBtnHolding: `🙌 Holding BOTH hands... ${heldSec}/${totalSec.toFixed(0)}.0s (${remainSec}s left)`,
+      startBtnIdle: `🙌 Raise BOTH Hands ${totalSec.toFixed(0)}s (Both Required) or Tap to Start ➔`,
       telemetryBtn: 'Open Biomechanics Telemetry (Smart Rehab Telemetry)',
       notMeBtn: 'Not me (Scan again)',
-      voiceGreeting: `Identity verified. Welcome, ${params.fullName}. Please raise and hold either hand for ${totalSec.toFixed(0)} seconds, or tap the button to start.`,
+      voiceGreeting: `Identity verified. Welcome, ${params.fullName}. Please raise both hands together and hold for ${totalSec.toFixed(0)} seconds, or tap the button to start.`,
     };
   }
   if (lang === 'cn') {
     return {
       confidenceBadge: `生物识别准确度 ${params.confidencePercent}%（验证通过）`,
       hnAndNextAppointment: `病历号 HN: ${params.hn} • 下次预约: ${nextAppt}`,
-      openingCamera: '正在开启举手识别摄像头...',
-      gestureDetectedPill: `🖐️ 已检测到举手！请保持 ${heldSec}/${totalSec.toFixed(0)}.0 秒 (${params.twoHandProgressPct}%)`,
-      gestureLoadingPill: '⏳ 正在准备 AI 举手识别模块...',
-      gestureReadyPill: `📷 请单手举起（可左右交替）或双手保持 ${totalSec.toFixed(0)} 秒以自动进入训练`,
-      startBtnHolding: `🖐️ 正在保持举手... ${heldSec}/${totalSec.toFixed(0)}.0 秒（剩余 ${remainSec} 秒）`,
-      startBtnIdle: `🖐️ 举手保持 ${totalSec.toFixed(0)} 秒（单手/交替均可）或 点击此处开始训练 ➔`,
+      openingCamera: '正在开启双手举起识别摄像头...',
+      gestureDetectedPill: `🙌 已检测到双手举起！请保持 ${heldSec}/${totalSec.toFixed(0)}.0 秒 (${params.twoHandProgressPct}%)`,
+      gestureSingleHandPill: '⚠️ 单手不计入 — 请同时举起双手',
+      gestureLoadingPill: '⏳ 正在准备 AI 双手识别模块...',
+      gestureReadyPill: `🙌 请同时举起双手保持 ${totalSec.toFixed(0)} 秒以进入训练（单手无效）`,
+      startBtnHolding: `🙌 正在加载确认... ${heldSec}/${totalSec.toFixed(0)}.0 秒（剩余 ${remainSec} 秒）`,
+      startBtnIdle: `🙌 同时举起双手保持 ${totalSec.toFixed(0)} 秒 或 点击此处开始训练 ➔`,
       telemetryBtn: '打开生物力学分析界面 (Smart Rehab Telemetry)',
       notMeBtn: '不是我本人（重新扫描）',
-      voiceGreeting: `身份验证成功，欢迎您，${params.fullName}。请举起单手或双手保持 ${totalSec.toFixed(0)} 秒，或点击按钮开始训练。`,
+      voiceGreeting: `身份验证成功，欢迎您，${params.fullName}。请同时举起双手保持 ${totalSec.toFixed(0)} 秒，或点击按钮开始训练。`,
     };
   }
   return {
     confidenceBadge: `ความแม่นยำชีวมาตร ${params.confidencePercent}% (ผ่านเกณฑ์)`,
     hnAndNextAppointment: `HN: ${params.hn} • นัดถัดไป: ${nextAppt}`,
-    openingCamera: 'กำลังเปิดกล้องตรวจจับการยกมือ...',
-    gestureDetectedPill: `🖐️ ตรวจพบการยกมือแล้ว! ค้างไว้ ${heldSec}/${totalSec.toFixed(0)}.0 วิ (${params.twoHandProgressPct}%)`,
-    gestureLoadingPill: '⏳ กำลังเตรียม AI ตรวจจับการยกมือ...',
-    gestureReadyPill: `📷 ยกมือข้างเดียว (สลับซ้าย-ขวาได้) หรือ 2 มือ ค้างไว้ ${totalSec.toFixed(0)} วิ เพื่อเข้าระบบ`,
-    startBtnHolding: `🖐️ ยกมือค้างไว้... ${heldSec}/${totalSec.toFixed(0)}.0 วิ (เหลือ ${remainSec} วิ)`,
-    startBtnIdle: `🖐️ ยกมือค้าง ${totalSec.toFixed(0)} วิ (มือเดียว/สลับข้างได้) หรือ กดที่นี่เพื่อเริ่มฝึก ➔`,
+    openingCamera: 'กำลังเปิดกล้องตรวจจับการยกมือทั้ง 2 ข้าง...',
+    gestureDetectedPill: `🙌 ตรวจพบยกครบ 2 ข้าง! ค้างไว้ ${heldSec}/${totalSec.toFixed(0)}.0 วิ (${params.twoHandProgressPct}%)`,
+    gestureSingleHandPill: '⚠️ ยกมือเดียวไม่นับ • กรุณายกขึ้นทั้ง 2 ข้างพร้อมกัน',
+    gestureLoadingPill: '⏳ กำลังเตรียม AI ตรวจจับการยกมือ 2 ข้าง...',
+    gestureReadyPill: `🙌 ยกมือทั้ง 2 ข้างพร้อมกันค้างไว้ ${totalSec.toFixed(0)} วิ (ยกมือเดียวไม่นับ)`,
+    startBtnHolding: `🙌 กำลังโหลด 2 ข้าง... ${heldSec}/${totalSec.toFixed(0)}.0 วิ (เหลือ ${remainSec} วิ)`,
+    startBtnIdle: `🙌 ยกมือทั้ง 2 ข้างค้าง ${totalSec.toFixed(0)} วิ (ต้อง 2 ข้างเท่านั้น) หรือ กดที่นี่ ➔`,
     telemetryBtn: 'เปิดหน้าจอวิเคราะห์ชีวกลศาสตร์ (Smart Rehab Telemetry)',
     notMeBtn: 'ไม่ใช่ฉัน (สแกนใหม่)',
-    voiceGreeting: `ยืนยันตัวตนสำเร็จ ยินดีต้อนรับคุณ ${params.fullName} กรุณายกมือข้างใดก็ได้ค้างไว้ ${totalSec.toFixed(0)} วินาที หรือสลับข้างได้เลย หรือกดปุ่มเพื่อเริ่มฝึกครับ`,
+    voiceGreeting: `ยืนยันตัวตนสำเร็จ ยินดีต้อนรับคุณ ${params.fullName} กรุณายกมือทั้งสองข้างพร้อมกันค้างไว้ ${totalSec.toFixed(0)} วินาที หรือกดปุ่มเพื่อเริ่มฝึกครับ`,
   };
 }
 
@@ -559,6 +632,8 @@ export function KioskBiometricLoginView({
   const [verifiedModalPayload, setVerifiedModalPayload] = useState<KioskLoginSuccessPayload | null>(null);
   const [twoHandProgress, setTwoHandProgress] = useState(0);
   const [twoHandDetected, setTwoHandDetected] = useState(false);
+  const [leftHandUpState, setLeftHandUpState] = useState(false);
+  const [rightHandUpState, setRightHandUpState] = useState(false);
   const [twoHandCameraReady, setTwoHandCameraReady] = useState(false);
   const [twoHandDetectorReady, setTwoHandDetectorReady] = useState(false);
 
@@ -692,6 +767,10 @@ export function KioskBiometricLoginView({
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const confirmVideoRef = useRef<HTMLVideoElement | null>(null);
+  const confirmCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const confirmProgressFillRef = useRef<HTMLDivElement | null>(null);
+  const confirmProgressTextRef = useRef<HTMLSpanElement | null>(null);
+  const confirmBtnFillRef = useRef<HTMLSpanElement | null>(null);
   const alignCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const verifiedModalPayloadRef = useRef<KioskLoginSuccessPayload | null>(null);
   verifiedModalPayloadRef.current = verifiedModalPayload;
@@ -795,6 +874,8 @@ export function KioskBiometricLoginView({
     setVerifiedModalPayload(null);
     setTwoHandProgress(0);
     setTwoHandDetected(false);
+    setLeftHandUpState(false);
+    setRightHandUpState(false);
     setTwoHandCameraReady(false);
     setCameraError(null);
     setCameraPaused(false);
@@ -1058,15 +1139,13 @@ export function KioskBiometricLoginView({
                 (handLandmarker || poseLandmarker || Boolean(edgeTelemetryRef.current?.hand_status))
               ) {
                 const edgeHands = edgeTelemetryRef.current?.hand_status;
-                const edgeAnyNow = Boolean(
-                  edgeHands &&
-                    (edgeHands.left_raised ||
-                      edgeHands.right_raised ||
-                      edgeHands.active_card_zone !== 'NONE'),
+                const edgeLeftUp = Boolean(edgeHands?.left_raised);
+                const edgeRightUp = Boolean(edgeHands?.right_raised);
+                const edgeBothUpNow = Boolean(
+                  edgeHands && (edgeHands.active_card_zone === 'BOTH' || (edgeLeftUp && edgeRightUp)),
                 );
-                if (edgeAnyNow) {
-                  latestAnyHandUp = true;
-                }
+                let latestLeftUp = edgeLeftUp;
+                let latestRightUp = edgeRightUp;
 
                 if (v.currentTime !== lastGestureVideoTime || now - lastGestureInferenceAt >= 33) {
                   lastGestureVideoTime = v.currentTime;
@@ -1109,14 +1188,48 @@ export function KioskBiometricLoginView({
                     }
                   }
 
-                  const sides = extractRaisedHandSides(detectedHands, detectedPose);
-                  const singleOrBothFromMediaPipe =
-                    sides.leftRaised || sides.rightRaised || sides.bothRaised;
-                  latestAnyHandUp = edgeAnyNow || singleOrBothFromMediaPipe;
+                  const strictHands = evaluateStrictTwoHandsForStartModal(detectedHands, detectedPose);
+                  latestLeftUp = edgeLeftUp || strictHands.leftUp;
+                  latestRightUp = edgeRightUp || strictHands.rightUp;
+                  latestAnyHandUp = edgeBothUpNow || strictHands.bothUp;
+
+                  setLeftHandUpState((prev) => (prev === latestLeftUp ? prev : latestLeftUp));
+                  setRightHandUpState((prev) => (prev === latestRightUp ? prev : latestRightUp));
+
+                  // Draw mirrored live hand dots on preview canvas so user sees both hands detected clearly
+                  const cCanvas = confirmCanvasRef.current;
+                  if (cCanvas) {
+                    const cw = cCanvas.clientWidth || 320;
+                    const ch = cCanvas.clientHeight || 192;
+                    if (cCanvas.width !== cw || cCanvas.height !== ch) {
+                      cCanvas.width = cw;
+                      cCanvas.height = ch;
+                    }
+                    const cCtx = cCanvas.getContext('2d');
+                    if (cCtx) {
+                      cCtx.clearRect(0, 0, cw, ch);
+                      const dotColor = latestAnyHandUp ? '#10b981' : '#f59e0b';
+                      for (const h of detectedHands) {
+                        const center = h[9] ?? h[0];
+                        if (!center) continue;
+                        const px = (1 - center.x) * cw;
+                        const py = center.y * ch;
+                        cCtx.beginPath();
+                        cCtx.arc(px, py, 16, 0, Math.PI * 2);
+                        cCtx.fillStyle = latestAnyHandUp ? 'rgba(16,185,129,0.28)' : 'rgba(245,158,11,0.28)';
+                        cCtx.fill();
+                        cCtx.lineWidth = 3;
+                        cCtx.strokeStyle = dotColor;
+                        cCtx.stroke();
+                      }
+                    }
+                  }
+                } else if (edgeBothUpNow) {
+                  latestAnyHandUp = true;
                 }
 
                 const holdStep = stepVerifiedHandHold({
-                  anyHandNow: latestAnyHandUp,
+                  bothHandsNow: latestAnyHandUp,
                   nowMs: now,
                   dtMs: dt,
                   lastRaisedAtMs: lastAnyHandRaisedAt,
@@ -1126,12 +1239,25 @@ export function KioskBiometricLoginView({
                 gestureHoldMs = holdStep.holdMs;
                 const nextProgress = holdStep.progress;
 
+                // Update 60fps progress bar DOM refs immediately without waiting for throttled React updates
+                const pctCss = `${(nextProgress * 100).toFixed(1)}%`;
+                const heldSecStr = ((gestureHoldMs / 1000)).toFixed(1);
+                if (confirmProgressFillRef.current) {
+                  confirmProgressFillRef.current.style.width = pctCss;
+                }
+                if (confirmBtnFillRef.current) {
+                  confirmBtnFillRef.current.style.width = pctCss;
+                }
+                if (confirmProgressTextRef.current) {
+                  confirmProgressTextRef.current.textContent = `${heldSecStr} / ${(VERIFIED_HAND_HOLD_MS / 1000).toFixed(0)}.0 วิ (${Math.round(nextProgress * 100)}%)`;
+                }
+
                 if (holdStep.detected !== lastReportedDetected) {
                   lastReportedDetected = holdStep.detected;
                   setTwoHandDetected(holdStep.detected);
                 }
                 if (
-                  Math.abs(nextProgress - lastReportedProgress) >= 0.015 ||
+                  Math.abs(nextProgress - lastReportedProgress) >= 0.01 ||
                   (nextProgress === 0 && lastReportedProgress !== 0) ||
                   nextProgress >= 1
                 ) {
@@ -2152,44 +2278,93 @@ export function KioskBiometricLoginView({
               {modalCopy.hnAndNextAppointment}
             </p>
 
-            {/* Compact Live Camera Preview for 2-Hand Start Gesture */}
-            <div className="mt-4 relative mx-auto w-full h-36 rounded-2xl overflow-hidden bg-gradient-to-br from-sky-100 via-emerald-50 to-white border-2 border-emerald-300 shadow-inner">
+            {/* Full-Frame Live Camera Preview for STRICT 2-Hand Start Gesture */}
+            <div className="mt-4 relative mx-auto w-full h-44 sm:h-48 rounded-2xl overflow-hidden bg-slate-950 border-2 border-emerald-300 shadow-inner">
               <video
                 ref={confirmVideoRef}
                 autoPlay
                 playsInline
                 muted
-                className="w-full h-full object-cover"
+                className="w-full h-full object-contain"
                 style={{ transform: 'scaleX(-1)' }}
+              />
+              <canvas
+                ref={confirmCanvasRef}
+                className="pointer-events-none absolute inset-0 w-full h-full"
               />
               {!twoHandCameraReady && (
                 <div className="absolute inset-0 flex items-center justify-center bg-white/90 text-xs font-bold text-[#0F4C81]">
                   {modalCopy.openingCamera}
                 </div>
               )}
-              <div className="absolute inset-x-2 bottom-2 flex items-center justify-center">
+              <div className="absolute top-2 inset-x-2 flex items-center justify-between gap-2 pointer-events-none">
+                <span
+                  className={`px-2.5 py-1 rounded-full text-[11px] font-black shadow ${
+                    leftHandUpState
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-slate-900/75 text-slate-200 border border-white/25'
+                  }`}
+                >
+                  {leftHandUpState ? '✓ มือซ้ายพร้อม' : '○ รอมือซ้าย'}
+                </span>
+                <span
+                  className={`px-2.5 py-1 rounded-full text-[11px] font-black shadow ${
+                    rightHandUpState
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-slate-900/75 text-slate-200 border border-white/25'
+                  }`}
+                >
+                  {rightHandUpState ? '✓ มือขวาพร้อม' : '○ รอมือขวา'}
+                </span>
+              </div>
+              <div className="absolute inset-x-2 bottom-2 flex items-center justify-center pointer-events-none">
                 <span
                   className={`px-3 py-1 rounded-full text-[11px] font-extrabold backdrop-blur border shadow ${
                     twoHandDetected
                       ? 'bg-emerald-600/95 text-white border-emerald-200 animate-pulse'
-                      : 'bg-white/95 text-[#0F4C81] border-emerald-300'
+                      : leftHandUpState !== rightHandUpState
+                        ? 'bg-amber-500/95 text-white border-amber-200'
+                        : 'bg-white/95 text-[#0F4C81] border-emerald-300'
                   }`}
                 >
                   {twoHandDetected
                     ? modalCopy.gestureDetectedPill
-                    : !twoHandDetectorReady
-                      ? modalCopy.gestureLoadingPill
-                      : modalCopy.gestureReadyPill}
+                    : leftHandUpState !== rightHandUpState
+                      ? modalCopy.gestureSingleHandPill
+                      : !twoHandDetectorReady
+                        ? modalCopy.gestureLoadingPill
+                        : modalCopy.gestureReadyPill}
                 </span>
               </div>
-              {twoHandProgress > 0 && (
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1.5 bg-white/40">
-                  <div
-                    className="h-full bg-emerald-500 transition-[width] duration-75"
-                    style={{ width: `${Math.round(twoHandProgress * 100)}%` }}
-                  />
-                </div>
-              )}
+            </div>
+
+            {/* Dedicated 4-Second Loading Bar (fills 0 -> 4.0s ONLY when BOTH hands are raised) */}
+            <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3 text-left">
+              <div className="flex items-center justify-between text-[11px] font-extrabold text-emerald-950 mb-1.5">
+                <span>
+                  {twoHandDetected
+                    ? '⏳ กำลังโหลดยืนยัน 2 มือค้าง 4 วินาที...'
+                    : leftHandUpState !== rightHandUpState
+                      ? '⚠️ ยกมือเดียวไม่นับ กรุณายกขึ้นทั้ง 2 ข้าง'
+                      : 'หลอดโหลดเริ่มฝึก (ยก 2 ข้างค้าง 4 วิ)'}
+                </span>
+                <span ref={confirmProgressTextRef} className="font-mono text-emerald-700">
+                  {((twoHandProgress * VERIFIED_HAND_HOLD_MS) / 1000).toFixed(1)} / {(VERIFIED_HAND_HOLD_MS / 1000).toFixed(0)}.0 วิ ({Math.round(twoHandProgress * 100)}%)
+                </span>
+              </div>
+              <div className="h-4 w-full overflow-hidden rounded-full bg-slate-200 border border-slate-300 shadow-inner">
+                <div
+                  ref={confirmProgressFillRef}
+                  className={`h-full rounded-full transition-[background-color] duration-150 ${
+                    twoHandDetected
+                      ? 'bg-gradient-to-r from-emerald-500 via-teal-400 to-sky-500'
+                      : leftHandUpState !== rightHandUpState
+                        ? 'bg-amber-400'
+                        : 'bg-emerald-500'
+                  }`}
+                  style={{ width: `${Math.round(twoHandProgress * 100)}%` }}
+                />
+              </div>
             </div>
 
             <div className="mt-4 flex flex-col gap-2.5">
@@ -2198,12 +2373,11 @@ export function KioskBiometricLoginView({
                 onClick={() => onPatientAuthenticated(verifiedModalPayload)}
                 className="relative overflow-hidden w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg cursor-pointer"
               >
-                {twoHandProgress > 0 && (
-                  <span
-                    className="pointer-events-none absolute inset-y-0 left-0 bg-emerald-300/35 transition-[width] duration-75"
-                    style={{ width: `${Math.round(twoHandProgress * 100)}%` }}
-                  />
-                )}
+                <span
+                  ref={confirmBtnFillRef}
+                  className="pointer-events-none absolute inset-y-0 left-0 bg-white/25"
+                  style={{ width: `${Math.round(twoHandProgress * 100)}%` }}
+                />
                 <span className="relative z-10 flex items-center justify-center gap-2">
                   <span>
                     {twoHandProgress > 0
