@@ -24,6 +24,10 @@ export default defineConfig({
   resolve: {
     alias: workspaceAliases,
   },
+  esbuild: {
+    legalComments: 'none',
+    drop: ['debugger'],
+  },
   server: {
     port: 5173,
     proxy: {
@@ -36,6 +40,8 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    sourcemap: false,
+    minify: 'esbuild',
     chunkSizeWarningLimit: 1500,
   },
 });

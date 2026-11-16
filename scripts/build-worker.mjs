@@ -16,6 +16,9 @@ await build({
   platform: 'neutral',
   target: 'es2022',
   mainFields: ['module', 'main'],
+  sourcemap: false,
+  minify: true,
+  legalComments: 'none',
   alias: {
     '@drtechcares/smart-biometric-core': path.join(root, 'packages/smart-biometric-core/src/index.ts'),
     '@drtechcares/api-client': path.join(root, 'packages/api-client/src/index.ts'),

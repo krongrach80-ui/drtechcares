@@ -861,7 +861,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
         # Verify PNA middleware header is present for cross-origin HTTPS -> localhost connections
         app = create_app()
         with TestClient(app) as client:
-            resp = client.get("/health", headers={"Origin": "https://drtechcares-platform.krongrach80.workers.dev"})
+            resp = client.get("/health", headers={"Origin": "https://kiosk.example.workers.dev"})
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.headers.get("access-control-allow-private-network"), "true")
 

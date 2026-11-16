@@ -23,6 +23,37 @@ function getOrCreateRouter(env) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    const pathnameLower = url.pathname.toLowerCase();
+
+    // Explicitly block probing of source, config, env, git, and sourcemap paths with 404
+    const blockedPrefixes = [
+      '/src',
+      '/packages',
+      '/apps',
+      '/scripts',
+      '/edge-vision',
+      '/supabase',
+      '/.git',
+      '/.env',
+      '/.agents',
+    ];
+    if (
+      blockedPrefixes.some((p) => pathnameLower === p || pathnameLower.startsWith(`${p}/`)) ||
+      pathnameLower.endsWith('.map') ||
+      pathnameLower.endsWith('.ts') ||
+      pathnameLower.endsWith('.tsx') ||
+      pathnameLower.endsWith('.jsonc') ||
+      pathnameLower.endsWith('.py')
+    ) {
+      return new Response('404 Not Found', {
+        status: 404,
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'X-Robots-Tag': 'noindex, nofollow',
+        },
+      });
+    }
 
     // Delegate /api/* directly to cached cloud router (with Supabase PostgreSQL persistence)
     if (url.pathname.startsWith('/api/')) {
@@ -82,16 +113,31 @@ export default {
 
       const assetRes = await env.ASSETS.fetch(request);
       if (assetRes.status !== 404) {
-        return assetRes;
+        const headers = new Headers(assetRes.headers);
+        headers.set('X-Robots-Tag', 'noindex, nofollow');
+        headers.set('X-Content-Type-Options', 'nosniff');
+        return new Response(assetRes.body, {
+          status: assetRes.status,
+          statusText: assetRes.statusText,
+          headers,
+        });
       }
 
       // SPA fallback for /, /kiosk, /login, /pt, /admin, /patient
       const spaRoutes = ['/', '/kiosk', '/login', '/pt', '/admin', '/patient'];
       if (spaRoutes.some((prefix) => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`))) {
         const indexUrl = new URL('/index.html', url.origin);
-        return env.ASSETS.fetch(new Request(indexUrl.toString(), request));
+        const spaRes = await env.ASSETS.fetch(new Request(indexUrl.toString(), request));
+        const headers = new Headers(spaRes.headers);
+        headers.set('X-Robots-Tag', 'noindex, nofollow');
+        headers.set('X-Content-Type-Options', 'nosniff');
+        return new Response(spaRes.body, {
+          status: spaRes.status,
+          statusText: spaRes.statusText,
+          headers,
+        });
       }
-      return assetRes;
+      return new Response('404 Not Found', { status: 404 });
     }
 
     return new Response('DRTECHCARES Worker Online', { status: 200 });
