@@ -4,6 +4,7 @@ import { KioskPortalApp, PhysicalCardGame, type PhysicalCardGameSummary } from '
 import { PtPortalApp } from '@apps/pt';
 import {
   DrTechCaresApiClient,
+  clearPatientCompletedTodayInStorage,
   isPatientCompletedTodayInStorage,
   markPatientCompletedTodayInStorage,
   resolveNextAppointmentDate,
@@ -284,6 +285,22 @@ const KIOSK_TRAINING_COPY: Record<
   },
 };
 
+export function getRetestPostureButtonLabel(lang: ClinicalLang): string {
+  return lang === 'th'
+    ? 'ทดสอบท่าทางกายภาพอีกครั้ง'
+    : lang === 'cn'
+      ? '再次测试康复动作'
+      : 'Retest Rehab Posture';
+}
+
+export function shouldShowCompletedTodayScreen(params: {
+  hasCompletedRehabToday: boolean;
+  bypassDailyLimit: boolean;
+  trainingStage: 'overview' | 'rehab_exercises' | 'minigame';
+}): boolean {
+  return params.hasCompletedRehabToday && !params.bypassDailyLimit && params.trainingStage === 'overview';
+}
+
 export function App() {
   const { lang, setLang } = useClinicalI18n();
   const kc = KIOSK_TRAINING_COPY[lang];
@@ -475,6 +492,7 @@ export function App() {
   const [pendingAutoOpenEnroll, setPendingAutoOpenEnroll] = useState(false);
   const [authenticatedPatient, setAuthenticatedPatient] = useState<KioskLoginSuccessPayload | null>(null);
   const [allowRestDayPractice, setAllowRestDayPractice] = useState(false);
+  const [bypassDailyLimit, setBypassDailyLimit] = useState(false);
   const [trainingStage, setTrainingStage] = useState<'overview' | 'rehab_exercises' | 'minigame'>('overview');
   const [randomHandSide, setRandomHandSide] = useState<HandChallengeSide>(() => pickRandomHandSide());
   const [completedTodaySession, setCompletedTodaySession] = useState(false);
@@ -482,6 +500,7 @@ export function App() {
 
   useEffect(() => {
     setAllowRestDayPractice(false);
+    setBypassDailyLimit(false);
     setTrainingStage('overview');
     setRandomHandSide(pickRandomHandSide());
     setCompletedTodaySession(false);
@@ -499,7 +518,7 @@ export function App() {
       fallbackNextAppointmentDate: authenticatedPatient.patient.nextAppointmentDate,
       serverTodayExercises: authenticatedPatient.todayExercises,
       completedTodayOverride: Boolean(
-        completedTodaySession || authenticatedPatient.completedToday,
+        !bypassDailyLimit && (completedTodaySession || authenticatedPatient.completedToday),
       ),
     });
     const hasAppointmentToday =
@@ -514,11 +533,12 @@ export function App() {
     const effectiveKioskExercises =
       todayExercises.length > 0 ? todayExercises : prescribedFromSchedules;
     const hasCompletedRehabToday = Boolean(
-      completedTodaySession ||
-        authenticatedPatient.completedToday ||
-        todaySchedule.completedToday ||
-        isPatientCompletedTodayInStorage(authenticatedPatient.patient.id, todaySchedule.todayIso) ||
-        isPatientCompletedTodayInStorage(authenticatedPatient.patient.hn, todaySchedule.todayIso),
+      !bypassDailyLimit &&
+        (completedTodaySession ||
+          authenticatedPatient.completedToday ||
+          todaySchedule.completedToday ||
+          isPatientCompletedTodayInStorage(authenticatedPatient.patient.id, todaySchedule.todayIso) ||
+          isPatientCompletedTodayInStorage(authenticatedPatient.patient.hn, todaySchedule.todayIso)),
     );
     return {
       todaySchedule,
@@ -527,13 +547,13 @@ export function App() {
       effectiveKioskExercises,
       hasCompletedRehabToday,
     };
-  }, [route, authenticatedPatient, completedTodaySession]);
+  }, [route, authenticatedPatient, completedTodaySession, bypassDailyLimit]);
 
   const activeOverviewStatus: KioskOverviewStatus | null =
     overviewScheduleState && trainingStage === 'overview'
-      ? overviewScheduleState.hasCompletedRehabToday
+      ? overviewScheduleState.hasCompletedRehabToday && !bypassDailyLimit
         ? 'completed_today'
-        : !overviewScheduleState.hasAppointmentToday && !allowRestDayPractice
+        : !overviewScheduleState.hasAppointmentToday && !allowRestDayPractice && !bypassDailyLimit
           ? 'rest_day'
           : 'scheduled_today'
       : null;
@@ -732,11 +752,34 @@ export function App() {
 
     const handleExitToLogin = () => {
       setAllowRestDayPractice(false);
+      setBypassDailyLimit(false);
       setTrainingStage('overview');
       setCompletedTodaySession(false);
       setCompletedTodayExerciseIds([]);
       setAuthenticatedPatient(null);
       setKioskMode('login');
+    };
+
+    const handleRetestPosture = () => {
+      if (!authenticatedPatient || !overviewScheduleState) return;
+      stopKioskOverviewSpeech();
+      setBypassDailyLimit(true);
+      setAllowRestDayPractice(true);
+      setCompletedTodaySession(false);
+      setCompletedTodayExerciseIds([]);
+      clearPatientCompletedTodayInStorage(
+        [authenticatedPatient.patient.id, authenticatedPatient.patient.hn],
+        overviewScheduleState.todaySchedule.todayIso,
+      );
+      setAuthenticatedPatient((prev) =>
+        prev
+          ? {
+              ...prev,
+              completedToday: false,
+            }
+          : prev,
+      );
+      setTrainingStage('rehab_exercises');
     };
 
     const handleExerciseCompleted = async (ex: ExercisePrescriptionOption) => {
@@ -824,7 +867,13 @@ export function App() {
         }
       };
 
-      if (hasCompletedRehabToday && trainingStage === 'overview') {
+      if (
+        shouldShowCompletedTodayScreen({
+          hasCompletedRehabToday,
+          bypassDailyLimit,
+          trainingStage,
+        })
+      ) {
         return (
           <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
             <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm border-b border-white/20">
@@ -912,11 +961,22 @@ export function App() {
                 </div>
               </div>
             </div>
+
+            <button
+              type="button"
+              onClick={handleRetestPosture}
+              data-testid="completed-today-retest-btn"
+              className="fixed bottom-4 right-4 z-50 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-teal-900/85 hover:bg-teal-800 text-emerald-100 border border-emerald-400/40 shadow-lg backdrop-blur-sm text-xs md:text-sm font-semibold transition-all active:scale-95 whitespace-nowrap cursor-pointer"
+              title="ข้ามการจำกัด 1 ครั้ง/วัน เพื่อทดสอบระบบตรวจจับท่าทางกายภาพอีกครั้ง"
+            >
+              <span>🔄</span>
+              <span>{getRetestPostureButtonLabel(lang)}</span>
+            </button>
           </div>
         );
       }
 
-      if (!hasAppointmentToday && !allowRestDayPractice) {
+      if (!hasAppointmentToday && !allowRestDayPractice && !bypassDailyLimit) {
         return (
           <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
             <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm border-b border-white/20">

@@ -1499,6 +1499,34 @@ export function markPatientCompletedTodayInStorage(
   }
 }
 
+export function clearPatientCompletedTodayInStorage(
+  patientKeys: readonly string[],
+  todayIso?: string,
+): void {
+  if (typeof globalThis.window === 'undefined') return;
+  try {
+    const map = readDailyRehabDoneMap();
+    let changed = false;
+    for (const key of patientKeys) {
+      const trimmed = key.trim();
+      if (!trimmed) continue;
+      if (trimmed in map && (!todayIso || map[trimmed] === todayIso)) {
+        delete map[trimmed];
+        changed = true;
+      }
+    }
+    if (changed) {
+      if (Object.keys(map).length === 0) {
+        globalThis.window.localStorage.removeItem(DAILY_REHAB_DONE_STORAGE_KEY);
+      } else {
+        globalThis.window.localStorage.setItem(DAILY_REHAB_DONE_STORAGE_KEY, JSON.stringify(map));
+      }
+    }
+  } catch {
+    // Ignore storage quota or private mode restrictions
+  }
+}
+
 function isSameCalendarDate(isoOrTimestamp: string | undefined, targetIso: string): boolean {
   if (!isoOrTimestamp) return false;
   if (isoOrTimestamp.slice(0, 10) === targetIso) return true;

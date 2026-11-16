@@ -41,7 +41,11 @@ import {
   isVerifiedModalSpeechBlocked,
   stepVerifiedHandHold,
 } from '../components/KioskBiometricLoginView';
-import { getKioskOverviewVoiceNarration } from '../App';
+import {
+  getKioskOverviewVoiceNarration,
+  getRetestPostureButtonLabel,
+  shouldShowCompletedTodayScreen,
+} from '../App';
 import { resolveExercisePostureSpec } from '../components/ExercisePostureGuide';
 import {
   computeContainRect,
@@ -1898,6 +1902,37 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
         expect(spec.bodyRegionLabel.trim().length).toBeGreaterThan(2);
       }
     }
+  });
+
+  it('bypasses Completed Today lock cleanly via Retest Rehab Posture trigger across 3 languages', () => {
+    expect(getRetestPostureButtonLabel('th')).toBe('ทดสอบท่าทางกายภาพอีกครั้ง');
+    expect(getRetestPostureButtonLabel('en')).toBe('Retest Rehab Posture');
+    expect(getRetestPostureButtonLabel('cn')).toBe('再次测试康复动作');
+
+    // Completed Today gate blocks overview entry normally
+    expect(
+      shouldShowCompletedTodayScreen({
+        hasCompletedRehabToday: true,
+        bypassDailyLimit: false,
+        trainingStage: 'overview',
+      }),
+    ).toBe(true);
+
+    // Once Retest sets bypassDailyLimit=true & enters rehab_exercises, it never snaps back to Completed Today
+    expect(
+      shouldShowCompletedTodayScreen({
+        hasCompletedRehabToday: true,
+        bypassDailyLimit: true,
+        trainingStage: 'rehab_exercises',
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowCompletedTodayScreen({
+        hasCompletedRehabToday: true,
+        bypassDailyLimit: true,
+        trainingStage: 'overview',
+      }),
+    ).toBe(false);
   });
 });
 
