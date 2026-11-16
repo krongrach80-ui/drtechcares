@@ -8,6 +8,7 @@ import {
 } from '@drtechcares/smart-biometric-core';
 import type { Landmark3D } from './embed';
 import { MIN_DEPTH_SCORE, evaluateLivenessAndPose } from './liveness';
+import { analyzeScreenAndBezelArtifacts, type NormalizedFaceBox } from './screenAntiSpoof';
 
 export type BiometricScanStatus = 'PASS' | 'RETRY' | 'SPOOF_DETECTED';
 
@@ -129,6 +130,7 @@ export interface BiometricTelemetryOverrides {
   eyeGlareRatio?: number;
   sunglassesDetected?: boolean;
   moireOrBezelDetected?: boolean;
+  planarRigidSpoof?: boolean;
   isLive?: boolean;
   depthScore?: number;
   microMotion?: number;
@@ -142,6 +144,8 @@ export interface BiometricAssistantInput {
   faceCount?: number;
   wasEyeClosed?: boolean;
   image?: SimpleImageBuffer | null;
+  contextImage?: SimpleImageBuffer | null;
+  faceBox?: NormalizedFaceBox | null;
   requestedPose?: Detected3DPose;
   metrics?: BiometricTelemetryOverrides;
 }
@@ -446,11 +450,32 @@ export function inspectBiometricFrame3D(input: BiometricAssistantInput): Biometr
   }
 
   // Checkpoint 4: Liveness & Spoof Detection
-  const depthScore = m.depthScore ?? liveness?.depthScore ?? 0.52;
-  const isLive = m.isLive ?? (liveness ? liveness.isLive : depthScore >= MIN_DEPTH_SCORE);
-  const moireOrBezelDetected = m.moireOrBezelDetected ?? false;
+  const inferredFaceBox: NormalizedFaceBox | null =
+    input.faceBox ??
+    (landmarks.length >= 455
+      ? {
+          x: Math.max(0, Math.min(landmarks[234].x, landmarks[454].x) - 0.04),
+          y: Math.max(0, landmarks[10].y - 0.04),
+          width: Math.max(0.08, Math.abs(landmarks[454].x - landmarks[234].x) + 0.08),
+          height: Math.max(0.1, Math.abs(landmarks[152].y - landmarks[10].y) + 0.08),
+        }
+      : null);
 
-  if (moireOrBezelDetected || !isLive || depthScore < MIN_DEPTH_SCORE) {
+  const screenArtifacts =
+    input.image || input.contextImage
+      ? analyzeScreenAndBezelArtifacts({
+          faceCrop: input.image,
+          contextFrame: input.contextImage,
+          faceBox: inferredFaceBox,
+        })
+      : null;
+
+  const depthScore = m.depthScore ?? liveness?.depthScore ?? 0.52;
+  const isLive = m.isLive ?? depthScore >= MIN_DEPTH_SCORE;
+  const moireOrBezelDetected = m.moireOrBezelDetected ?? screenArtifacts?.spoofDetected ?? false;
+  const planarRigidSpoof = m.planarRigidSpoof ?? false;
+
+  if (moireOrBezelDetected || planarRigidSpoof || !isLive || depthScore < MIN_DEPTH_SCORE) {
     return {
       scan_status: 'SPOOF_DETECTED',
       confidence_score: Number(Math.max(0.05, Math.min(0.39, depthScore)).toFixed(2)),
@@ -462,7 +487,7 @@ export function inspectBiometricFrame3D(input: BiometricAssistantInput): Biometr
         liveness_ok: false,
       },
       error_code: 'SPOOF_ATTEMPT',
-      user_instruction_th: 'ตรวจพบภาพถ่ายหรือหน้าจอ กรุณาใช้ใบหน้าจริง',
+      user_instruction_th: 'ตรวจพบภาพถ่ายหรือหน้าจอมือถือ กรุณาใช้ใบหน้าจริง',
     };
   }
 

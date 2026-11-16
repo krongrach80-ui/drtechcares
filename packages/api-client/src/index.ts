@@ -733,12 +733,38 @@ export class DrTechCaresApiClient {
   }
 
   // Biometric Kiosk Login & 10-Shot Enrollment
-  async verifyFaceLogin(probeVector: readonly number[]): Promise<KioskFaceVerifyResponse> {
+  async verifyFaceLogin(
+    probeVector: readonly number[],
+    livenessEvidence?: {
+      biologicalVerified: boolean;
+      blinkCount: number;
+      spoofRisk: number;
+      nonRigidScore: number;
+      rppgScore?: number;
+    },
+  ): Promise<KioskFaceVerifyResponse> {
+    if (
+      livenessEvidence &&
+      (!livenessEvidence.biologicalVerified || livenessEvidence.spoofRisk >= 0.62)
+    ) {
+      return {
+        matched: false,
+        patientId: null,
+        patientName: null,
+        confidencePercent: 0,
+        rawMargin: 0,
+        whitenedMargin: 0,
+        topCandidate: null,
+        runnerUp: null,
+        failureReasons: ['BIOLOGICAL_SPOOF_BLOCKED'],
+        patient: null,
+      };
+    }
     try {
       const res = await fetch(`${this.baseUrl}/api/biometric/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-device-id': this.deviceId },
-        body: JSON.stringify({ probeVector }),
+        body: JSON.stringify(livenessEvidence ? { probeVector, livenessEvidence } : { probeVector }),
       });
       const body = (await res.json()) as KioskFaceVerifyResponse;
       return body;

@@ -32,12 +32,15 @@ import {
 } from './VoiceCoachBanner';
 import {
   alignFaceTo112,
+  BiologicalLivenessTracker,
+  captureDownscaledContextFrame,
   evaluateLivenessAndPose,
   extractFaceEmbeddingWithFallback,
   inspectBiometricFrame3D,
   selectClinicalCameraDeviceId,
   selectPrimaryFace,
   SingleScanLoginController,
+  type BiologicalLivenessReport,
   type BiometricVerificationJson,
   type LivenessAndPoseReport,
 } from '@drtechcares/face-client';
@@ -354,8 +357,7 @@ export function isFullFrontalFaceReadyForLogin(
   inspection: Pick<BiometricVerificationJson, 'scan_status' | 'error_code'>,
 ): boolean {
   if (landmarks.length < 300) return false;
-  // Allow static-micro-motion frames when genuine 3D landmark depth is present
-  if (inspection.scan_status === 'SPOOF_DETECTED' && liveness.depthScore < 0.22) {
+  if (inspection.scan_status === 'SPOOF_DETECTED' || inspection.error_code === 'SPOOF_ATTEMPT') {
     return false;
   }
   if (
@@ -447,9 +449,9 @@ const COPY: Record<
     registerNewPatient: 'ลงทะเบียนคนไข้ใหม่',
     callStaff: 'เรียกเจ้าหน้าที่ช่วยเหลือ',
     staffLogin: 'เข้าสู่ระบบเจ้าหน้าที่',
-    checkingLiveness: 'กำลังตรวจสอบความมีชีวิต (Checking Liveness...)',
-    liveVerified: 'บุคคลจริง (Live Verified)',
-    spoofBlocked: 'ตรวจพบภาพไม่เป็นธรรมชาติ กรุณามองกล้องด้วยใบหน้าจริง',
+    checkingLiveness: '👁️ กรุณากะพริบตา 1 ครั้ง เพื่อยืนยันสิ่งมีชีวิต',
+    liveVerified: '✓ ยืนยันชีววิทยาบุคคลจริง (Biological Live)',
+    spoofBlocked: '⚠️ ตรวจพบภาพถ่ายหรือหน้าจอมือถือ — ห้ามสแกนเข้าด้วยรูปภาพ',
     alignFace: 'ระบบสแกนอัตโนมัติเต็มจอ • มองกล้องเพื่อยืนยันตัวตน',
     verifying: 'กำลังสแกนและเปรียบเทียบกับฐานข้อมูลใบหน้า...',
     rescanBtn: 'เริ่มสแกนใบหน้าใหม่อีกครั้ง',
@@ -491,9 +493,9 @@ const COPY: Record<
     registerNewPatient: 'Register Patient',
     callStaff: 'Call Staff',
     staffLogin: 'Staff Login',
-    checkingLiveness: 'Checking Liveness (3D Anti-Spoof)...',
-    liveVerified: 'Live Human Verified',
-    spoofBlocked: 'Spoof suspected — please look directly at the camera',
+    checkingLiveness: '👁️ Please blink naturally once to verify live presence',
+    liveVerified: '✓ Biological Liveness Verified',
+    spoofBlocked: '⚠️ Photo or Phone Screen Detected — Biological face required',
     alignFace: 'Full-screen auto-scan active • Look at the camera',
     verifying: 'Scanning & matching face against database...',
     rescanBtn: 'Restart Face Scan',
@@ -535,9 +537,9 @@ const COPY: Record<
     registerNewPatient: '注册新患者',
     callStaff: '呼叫医护人员',
     staffLogin: '医护系统登录',
-    checkingLiveness: '正在检测活体特征 (Checking Liveness...)',
-    liveVerified: '活体真人验证通过',
-    spoofBlocked: '检测到异常影像，请使用真人面部直视镜头',
+    checkingLiveness: '👁️ 请自然眨眼 1 次以确认生物活体',
+    liveVerified: '✓ 生物活体真人验证通过',
+    spoofBlocked: '⚠️ 检测到照片或手机屏幕 — 请使用真人面部扫描',
     alignFace: '全屏自动扫描已开启 • 请注视摄像头',
     verifying: '正在扫描并与人脸数据库比对...',
     rescanBtn: '重新开始人脸扫描',
@@ -627,6 +629,7 @@ export function KioskBiometricLoginView({
   const [scanStage, setScanStage] = useState<'scanning' | 'burst' | 'verifying' | 'not_found'>('scanning');
   const [burstCount, setBurstCount] = useState(0);
   const [livenessInfo, setLivenessInfo] = useState<LivenessAndPoseReport | null>(null);
+  const [bioReport, setBioReport] = useState<BiologicalLivenessReport | null>(null);
   const [inspectionInfo, setInspectionInfo] = useState<BiometricVerificationJson | null>(null);
   const [lastVerifyResult, setLastVerifyResult] = useState<KioskFaceVerifyResponse | null>(null);
   const [verifiedModalPayload, setVerifiedModalPayload] = useState<KioskLoginSuccessPayload | null>(null);
@@ -774,6 +777,10 @@ export function KioskBiometricLoginView({
   const confirmBtnFillRef = useRef<HTMLSpanElement | null>(null);
   const confirmBtnLabelRef = useRef<HTMLSpanElement | null>(null);
   const alignCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const contextCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const bioLivenessRef = useRef(new BiologicalLivenessTracker());
+  const bioReportRef = useRef<BiologicalLivenessReport | null>(null);
+  bioReportRef.current = bioReport;
   const verifiedModalPayloadRef = useRef<KioskLoginSuccessPayload | null>(null);
   verifiedModalPayloadRef.current = verifiedModalPayload;
   const onPatientAuthenticatedRef = useRef(onPatientAuthenticated);
@@ -787,6 +794,7 @@ export function KioskBiometricLoginView({
     enabled: !cameraPaused && !staffModalOpen && !showPinModal,
     onPatientMatch: (edgeMatch) => {
       if (verifiedModalPayloadRef.current || verifyingLockRef.current || !edgeMatch.id) return;
+      if (!bioReportRef.current?.biologicalVerified || bioReportRef.current?.spoofDetected) return;
       if (typeof edgeMatch.similarity === 'number' && edgeMatch.similarity < 0.85) return;
       const entry = biometricIndexRef.current.find(
         (e) => e.patientId === edgeMatch.id || (edgeMatch.hn && e.hn === edgeMatch.hn),
@@ -866,9 +874,11 @@ export function KioskBiometricLoginView({
     presenceRef.current.reset();
     loginCtrlRef.current.reset();
     temporalMatcherRef.current.reset();
+    bioLivenessRef.current.reset();
     setBurstCount(0);
     setInspectionInfo(null);
     setLivenessInfo(null);
+    setBioReport(null);
     setHudBox(null);
     setHudLandmarks([]);
     setLiveMatchHud(null);
@@ -907,6 +917,7 @@ export function KioskBiometricLoginView({
       presenceRef.current.reset();
       loginCtrlRef.current.reset();
       temporalMatcherRef.current.reset();
+      bioLivenessRef.current.reset();
       setScanStage('scanning');
       setHudBox(null);
       setHudLandmarks([]);
@@ -1090,6 +1101,7 @@ export function KioskBiometricLoginView({
           baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
           runningMode: 'VIDEO',
           numFaces: 2,
+          outputFaceBlendshapes: true,
           minFaceDetectionConfidence: 0.55,
           minFacePresenceConfidence: 0.55,
           minTrackingConfidence: 0.55,
@@ -1345,6 +1357,8 @@ export function KioskBiometricLoginView({
                   setLiveMatchHud(null);
                   temporalMatcherRef.current.reset();
                   loginCtrlRef.current.reset();
+                  bioLivenessRef.current.reset();
+                  setBioReport(null);
                   burstStarted = false;
                   setBurstCount(0);
                   setScanStage('scanning');
@@ -1354,10 +1368,37 @@ export function KioskBiometricLoginView({
               if (!alignCanvasRef.current) {
                 alignCanvasRef.current = document.createElement('canvas');
               }
+              if (!contextCanvasRef.current) {
+                contextCanvasRef.current = document.createElement('canvas');
+              }
               const crop =
                 landmarks.length >= 300
                   ? alignFaceTo112(videoRef.current, landmarks, alignCanvasRef.current)
                   : null;
+              const contextFrame =
+                landmarks.length >= 300
+                  ? captureDownscaledContextFrame(videoRef.current, contextCanvasRef.current, 160)
+                  : null;
+              const rawBoxForBio =
+                faceCount === 1 && landmarks.length >= 300
+                  ? computeBoundingBoxFromLandmarks(landmarks)
+                  : null;
+              const bio =
+                faceCount === 1 && landmarks.length >= 300
+                  ? bioLivenessRef.current.update({
+                      landmarks3D: landmarks,
+                      blendshapes: res.faceBlendshapes?.[0]?.categories,
+                      earLeft: liveness.earLeft,
+                      earRight: liveness.earRight,
+                      faceCrop: crop,
+                      contextFrame,
+                      faceBox: rawBoxForBio,
+                      timestampMs: now,
+                    })
+                  : null;
+              if (bio) {
+                setBioReport(bio);
+              }
 
               const inspection = inspectBiometricFrame3D({
                 landmarks3D: landmarks,
@@ -1365,14 +1406,24 @@ export function KioskBiometricLoginView({
                 faceCount,
                 wasEyeClosed,
                 image: crop,
+                contextImage: contextFrame,
+                faceBox: rawBoxForBio,
                 requestedPose: 'CENTER',
+                metrics: bio
+                  ? {
+                      planarRigidSpoof: bio.planarSpoofDetected,
+                      moireOrBezelDetected: bio.screenSpoofDetected || undefined,
+                    }
+                  : undefined,
               });
               prevLandmarks = landmarks;
               setInspectionInfo(inspection);
+              const isFrameSpoof =
+                inspection.scan_status === 'SPOOF_DETECTED' || Boolean(bio?.spoofDetected);
 
               // Real-time 1:N 3D Multi-Angle Recognition & Fine Landmark HUD Tracking
-              if (faceCount === 1 && landmarks.length >= 300 && crop) {
-                const rawBox = computeBoundingBoxFromLandmarks(landmarks);
+              if (faceCount === 1 && landmarks.length >= 300 && crop && bio) {
+                const rawBox = rawBoxForBio ?? computeBoundingBoxFromLandmarks(landmarks);
                 if (rawBox && videoRef.current) {
                   const vw = videoRef.current.videoWidth || 1280;
                   const vh = videoRef.current.videoHeight || 720;
@@ -1409,14 +1460,11 @@ export function KioskBiometricLoginView({
                   setHudLandmarks(mappedPoints);
                 }
 
-                const faceReadyForLogin = isFullFrontalFaceReadyForLogin(
-                  landmarks,
-                  liveness,
-                  inspection,
-                );
+                const faceReadyForLogin =
+                  !isFrameSpoof && isFullFrontalFaceReadyForLogin(landmarks, liveness, inspection);
                 if (!faceReadyForLogin) {
                   unreadyFrameStreak += 1;
-                  if (unreadyFrameStreak >= 8 && !verifyingLockRef.current) {
+                  if ((isFrameSpoof || unreadyFrameStreak >= 8) && !verifyingLockRef.current) {
                     temporalMatcherRef.current.reset();
                     loginCtrlRef.current.reset();
                     burstStarted = false;
@@ -1434,19 +1482,27 @@ export function KioskBiometricLoginView({
                       return;
                     }
 
+                    const livenessEvidence = {
+                      biologicalVerified: bio.biologicalVerified,
+                      blinkCount: bio.blinkCount,
+                      spoofRisk: bio.screenReport.combinedSpoofRisk,
+                      nonRigidScore: bio.nonRigidScore,
+                      rppgScore: bio.rppgScore,
+                    };
+
                     if (!verifyingLockRef.current && biometricIndexRef.current.length > 0) {
-                      const effectiveMicroMotion =
-                        liveness.depthScore >= 0.25
-                          ? Math.max(liveness.microMotion, 0.00025)
-                          : liveness.microMotion;
                       const temporal = temporalMatcherRef.current.evaluateFrame(
                         {
                           probeVector: vector,
                           yawDeg: liveness.yawDeg,
                           pitchDeg: liveness.pitchDeg,
                           depthScore: liveness.depthScore,
-                          microMotion: effectiveMicroMotion,
-                          blinkDetected: liveness.blinkDetected,
+                          microMotion: liveness.microMotion,
+                          blinkDetected: liveness.blinkDetected || bio.blinkVerified,
+                          nonRigidMotion: bio.nonRigidMotion,
+                          biologicalVerified: bio.biologicalVerified,
+                          spoofDetected: isFrameSpoof,
+                          rppgScore: bio.rppgScore,
                         },
                         biometricIndexRef.current,
                       );
@@ -1463,13 +1519,19 @@ export function KioskBiometricLoginView({
                           : null,
                       );
 
-                      if (temporal.confirmed && temporal.candidate && !verifyingLockRef.current) {
+                      if (
+                        temporal.confirmed &&
+                        temporal.candidate &&
+                        bio.biologicalVerified &&
+                        !isFrameSpoof &&
+                        !verifyingLockRef.current
+                      ) {
                         verifyingLockRef.current = true;
                         setScanStage('verifying');
                         const matchedConf = Math.round(temporal.confidencePercent);
                         let didAuthenticate = false;
                         try {
-                          const verifyRes = await apiClient.verifyFaceLogin(vector);
+                          const verifyRes = await apiClient.verifyFaceLogin(vector, livenessEvidence);
                           if (!active) {
                             shouldContinueLoop = false;
                             return;
@@ -1502,7 +1564,12 @@ export function KioskBiometricLoginView({
                             shouldContinueLoop = false;
                             return;
                           }
-                          if (temporal.confidencePercent >= 88 && temporal.streakCount >= 3) {
+                          if (
+                            bio.biologicalVerified &&
+                            !isFrameSpoof &&
+                            temporal.confidencePercent >= 88 &&
+                            temporal.streakCount >= 3
+                          ) {
                             didAuthenticate = true;
                             const cand = temporal.candidate;
                             const nextPayload = buildKioskLoginSuccessPayload({
@@ -1545,72 +1612,80 @@ export function KioskBiometricLoginView({
                     }
 
                     if (!verifyingLockRef.current) {
-                      if (!burstStarted) {
-                        loginCtrlRef.current.startCountdownComplete();
-                        burstStarted = true;
-                      }
-                      setScanStage('burst');
-                      const push = loginCtrlRef.current.pushFrame({
-                        vector,
-                        qualityScore: 0.95,
-                        capturedAfterCountdown: true,
-                        pose: 'front',
-                        sharpness: 85,
-                        yaw: liveness.yawDeg,
-                        pitch: liveness.pitchDeg,
-                      });
-                      setBurstCount(push.collected);
-
-                      if (push.readyToVerify) {
-                        verifyingLockRef.current = true;
-                        setScanStage('verifying');
-                        const probe = loginCtrlRef.current.buildProbeCentroid();
-                        let didFinishRound = false;
-                        try {
-                          const verifyRes = await apiClient.verifyFaceLogin(probe);
-                          if (!active) {
-                            shouldContinueLoop = false;
-                            return;
-                          }
-                          setLastVerifyResult(verifyRes);
-                          if (verifyRes.matched && verifyRes.patient && verifyRes.confidencePercent >= 80) {
-                            const verifiedPatientId = verifyRes.patient.id;
-                            const matchedEntry = biometricIndexRef.current.find(
-                              (e) => e.patientId === verifiedPatientId,
-                            );
-                            didFinishRound = true;
-                            const nextPayload = buildKioskLoginSuccessPayload({
-                              patient: verifyRes.patient,
-                              todayRoutine: verifyRes.todayRoutine ?? null,
-                              confidencePercent: verifyRes.confidencePercent,
-                              rehabSchedules: verifyRes.rehabSchedules,
-                              serverTodayExercises: verifyRes.todayExercises,
-                              serverCompletedToday: verifyRes.completedToday,
-                              indexEntry: matchedEntry,
-                            });
-                            verifiedModalPayloadRef.current = nextPayload;
-                            setVerifiedModalPayload(nextPayload);
-                            return;
-                          }
-                        } catch {
-                          if (!active) {
-                            shouldContinueLoop = false;
-                            return;
-                          }
-                        } finally {
-                          if (!didFinishRound) {
-                            verifyingLockRef.current = false;
-                          }
-                        }
-                        const roundResult = loginCtrlRef.current.recordUnmatchedRound();
+                      if (!bio.biologicalVerified || isFrameSpoof) {
+                        // Hold cleanly on biological blink challenge; NEVER advance authentication on a static image/phone
+                        loginCtrlRef.current.reset();
                         burstStarted = false;
                         setBurstCount(0);
-                        if (roundResult.rounds < 3) {
-                          setScanStage('burst');
-                        } else {
-                          shouldContinueLoop = false;
-                          setScanStage('not_found');
-                          return;
+                        setScanStage('scanning');
+                      } else {
+                        if (!burstStarted) {
+                          loginCtrlRef.current.startCountdownComplete();
+                          burstStarted = true;
+                        }
+                        setScanStage('burst');
+                        const push = loginCtrlRef.current.pushFrame({
+                          vector,
+                          qualityScore: 0.95,
+                          capturedAfterCountdown: true,
+                          pose: 'front',
+                          sharpness: 85,
+                          yaw: liveness.yawDeg,
+                          pitch: liveness.pitchDeg,
+                        });
+                        setBurstCount(push.collected);
+
+                        if (push.readyToVerify) {
+                          verifyingLockRef.current = true;
+                          setScanStage('verifying');
+                          const probe = loginCtrlRef.current.buildProbeCentroid();
+                          let didFinishRound = false;
+                          try {
+                            const verifyRes = await apiClient.verifyFaceLogin(probe, livenessEvidence);
+                            if (!active) {
+                              shouldContinueLoop = false;
+                              return;
+                            }
+                            setLastVerifyResult(verifyRes);
+                            if (verifyRes.matched && verifyRes.patient && verifyRes.confidencePercent >= 80) {
+                              const verifiedPatientId = verifyRes.patient.id;
+                              const matchedEntry = biometricIndexRef.current.find(
+                                (e) => e.patientId === verifiedPatientId,
+                              );
+                              didFinishRound = true;
+                              const nextPayload = buildKioskLoginSuccessPayload({
+                                patient: verifyRes.patient,
+                                todayRoutine: verifyRes.todayRoutine ?? null,
+                                confidencePercent: verifyRes.confidencePercent,
+                                rehabSchedules: verifyRes.rehabSchedules,
+                                serverTodayExercises: verifyRes.todayExercises,
+                                serverCompletedToday: verifyRes.completedToday,
+                                indexEntry: matchedEntry,
+                              });
+                              verifiedModalPayloadRef.current = nextPayload;
+                              setVerifiedModalPayload(nextPayload);
+                              return;
+                            }
+                          } catch {
+                            if (!active) {
+                              shouldContinueLoop = false;
+                              return;
+                            }
+                          } finally {
+                            if (!didFinishRound) {
+                              verifyingLockRef.current = false;
+                            }
+                          }
+                          const roundResult = loginCtrlRef.current.recordUnmatchedRound();
+                          burstStarted = false;
+                          setBurstCount(0);
+                          if (roundResult.rounds < 3) {
+                            setScanStage('burst');
+                          } else {
+                            shouldContinueLoop = false;
+                            setScanStage('not_found');
+                            return;
+                          }
                         }
                       }
                     }
@@ -1709,22 +1784,26 @@ export function KioskBiometricLoginView({
     }
   };
 
-  const isSpoof = inspectionInfo?.scan_status === 'SPOOF_DETECTED';
+  const isSpoof = inspectionInfo?.scan_status === 'SPOOF_DETECTED' || Boolean(bioReport?.spoofDetected);
   const isFaceDetected = Boolean(hudBox);
-  const isAlignedPass = isFaceDetected && !isSpoof;
+  const isBioVerified = Boolean(bioReport?.biologicalVerified) && !isSpoof;
+  const isAlignedPass = isFaceDetected && isBioVerified;
 
   const topPillText = isSpoof
     ? c.spoofBlocked
-    : isFaceDetected
+    : isAlignedPass
       ? c.liveVerified
       : c.checkingLiveness;
 
-  const bottomPillText =
-    scanStage === 'verifying'
+  const bottomPillText = isSpoof
+    ? c.spoofBlocked
+    : scanStage === 'verifying'
       ? c.verifying
-      : isFaceDetected
-        ? `${c.verifying} (${burstCount}/${BURST_FRAME_COUNT})`
-        : c.alignFace;
+      : isFaceDetected && !isBioVerified
+        ? c.checkingLiveness
+        : isFaceDetected
+          ? `${c.verifying} (${burstCount}/${BURST_FRAME_COUNT})`
+          : c.alignFace;
 
   return (
     <div className="min-h-screen flex flex-col bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-white text-[#0F4C81] font-sans select-none overflow-x-hidden">
@@ -1966,6 +2045,9 @@ export function KioskBiometricLoginView({
                     <div className="grid grid-cols-3 gap-1 pt-1">
                       <div>3D Depth: {livenessInfo?.depthScore.toFixed(2) ?? '0.00'}</div>
                       <div>EAR: {livenessInfo?.earLeft.toFixed(2) ?? '0.00'}</div>
+                      <div>Blink: {bioReport?.blinkCount ?? 0}</div>
+                      <div>Spoof: {Math.round((bioReport?.screenReport.combinedSpoofRisk ?? 0) * 100)}%</div>
+                      <div>rPPG: {Math.round((bioReport?.rppgScore ?? 0) * 100)}%</div>
                       <div>Burst: {burstCount}/{BURST_FRAME_COUNT}</div>
                     </div>
                     {lastVerifyResult?.topCandidate && (
@@ -1985,9 +2067,11 @@ export function KioskBiometricLoginView({
                         key={idx}
                         style={{ left: `${pt.xPct}%`, top: `${pt.yPct}%` }}
                         className={`absolute h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full ${
-                          liveMatchHud?.candidate
-                            ? 'bg-emerald-300 shadow-[0_0_6px_#34d399]'
-                            : 'bg-cyan-300/90 shadow-[0_0_6px_#22d3ee]'
+                          isSpoof
+                            ? 'bg-rose-400 shadow-[0_0_6px_#fb7185]'
+                            : liveMatchHud?.candidate && isBioVerified
+                              ? 'bg-emerald-300 shadow-[0_0_6px_#34d399]'
+                              : 'bg-cyan-300/90 shadow-[0_0_6px_#22d3ee]'
                         }`}
                       />
                     ))}
@@ -2007,23 +2091,36 @@ export function KioskBiometricLoginView({
                   >
                     <div
                       className={`relative h-full w-full overflow-hidden rounded-2xl border-2 transition-colors ${
-                        liveMatchHud?.candidate
-                          ? liveMatchHud.confirmed
-                            ? 'border-emerald-400 shadow-[0_0_28px_rgba(16,185,129,0.75)]'
-                            : 'border-emerald-400/75 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
-                          : 'border-cyan-400/85 shadow-[0_0_22px_rgba(34,211,238,0.45)]'
+                        isSpoof
+                          ? 'border-rose-500 shadow-[0_0_28px_rgba(244,63,94,0.85)]'
+                          : liveMatchHud?.candidate && isBioVerified
+                            ? liveMatchHud.confirmed
+                              ? 'border-emerald-400 shadow-[0_0_28px_rgba(16,185,129,0.75)]'
+                              : 'border-emerald-400/75 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
+                            : 'border-cyan-400/85 shadow-[0_0_22px_rgba(34,211,238,0.45)]'
                       }`}
                     >
-                      <span className="absolute top-0 left-0 h-4 w-4 rounded-tl-lg border-t-[3px] border-l-[3px] border-emerald-300" />
-                      <span className="absolute top-0 right-0 h-4 w-4 rounded-tr-lg border-t-[3px] border-r-[3px] border-emerald-300" />
-                      <span className="absolute bottom-0 left-0 h-4 w-4 rounded-bl-lg border-b-[3px] border-l-[3px] border-emerald-300" />
-                      <span className="absolute bottom-0 right-0 h-4 w-4 rounded-br-lg border-b-[3px] border-r-[3px] border-emerald-300" />
-                      {!liveMatchHud?.candidate && (
-                        <div className="absolute inset-x-2 top-1/2 h-[2px] -translate-y-1/2 bg-gradient-to-r from-transparent via-cyan-300 to-transparent shadow-[0_0_12px_#22d3ee]" />
+                      <span className={`absolute top-0 left-0 h-4 w-4 rounded-tl-lg border-t-[3px] border-l-[3px] ${isSpoof ? 'border-rose-400' : 'border-emerald-300'}`} />
+                      <span className={`absolute top-0 right-0 h-4 w-4 rounded-tr-lg border-t-[3px] border-r-[3px] ${isSpoof ? 'border-rose-400' : 'border-emerald-300'}`} />
+                      <span className={`absolute bottom-0 left-0 h-4 w-4 rounded-bl-lg border-b-[3px] border-l-[3px] ${isSpoof ? 'border-rose-400' : 'border-emerald-300'}`} />
+                      <span className={`absolute bottom-0 right-0 h-4 w-4 rounded-br-lg border-b-[3px] border-r-[3px] ${isSpoof ? 'border-rose-400' : 'border-emerald-300'}`} />
+                      {(!liveMatchHud?.candidate || !isBioVerified || isSpoof) && (
+                        <div className={`absolute inset-x-2 top-1/2 h-[2px] -translate-y-1/2 bg-gradient-to-r from-transparent ${isSpoof ? 'via-rose-400 shadow-[0_0_12px_#fb7185]' : 'via-cyan-300 shadow-[0_0_12px_#22d3ee]'} to-transparent`} />
                       )}
                     </div>
 
-                    {liveMatchHud?.candidate ? (
+                    {isSpoof ? (
+                      <div className="absolute left-1/2 top-full mt-2 w-max max-w-[330px] -translate-x-1/2 rounded-xl border border-rose-400 bg-rose-50/95 px-3.5 py-2 text-center backdrop-blur-md shadow-2xl">
+                        <div className="text-xs font-black text-rose-700">{c.spoofBlocked}</div>
+                      </div>
+                    ) : !isBioVerified ? (
+                      <div className="absolute left-1/2 top-full mt-2 w-max max-w-[330px] -translate-x-1/2 rounded-xl border border-amber-300 bg-white/95 px-3.5 py-2 text-center backdrop-blur-md shadow-xl">
+                        <div className="text-[11px] font-black text-[#0F4C81]">{c.checkingLiveness}</div>
+                        <div className="mt-0.5 text-[10px] font-semibold text-[#0284C7]">
+                          {c.comparingAccountsPrefix} {dbAccountCount} {c.comparingAccountsSuffix}
+                        </div>
+                      </div>
+                    ) : liveMatchHud?.candidate ? (
                       <div className="absolute left-1/2 top-full mt-2 w-max max-w-[310px] -translate-x-1/2 rounded-xl border border-emerald-400 bg-white/95 px-3.5 py-2 text-center backdrop-blur-md shadow-2xl">
                         <div className="text-xs font-black text-emerald-700">
                           {c.liveMatchVerified}: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})

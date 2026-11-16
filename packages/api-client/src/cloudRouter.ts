@@ -1820,9 +1820,44 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           503,
         );
       }
-      const body = await readJsonBody<{ probeVector?: unknown }>(request);
+      const body = await readJsonBody<{
+        probeVector?: unknown;
+        livenessEvidence?: {
+          biologicalVerified?: boolean;
+          blinkCount?: number;
+          spoofRisk?: number;
+          nonRigidScore?: number;
+          rppgScore?: number;
+        };
+      }>(request);
       if (!body || !isVector512(body.probeVector)) {
         return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
+      }
+      if (
+        body.livenessEvidence &&
+        (body.livenessEvidence.biologicalVerified !== true ||
+          (typeof body.livenessEvidence.spoofRisk === 'number' &&
+            body.livenessEvidence.spoofRisk >= 0.62))
+      ) {
+        recordAudit({
+          eventType: 'BIOMETRIC_SPOOF_DETECTED',
+          actorRole: authUser?.role ?? 'patient_kiosk',
+          actorId: authUser?.id ?? clientDeviceId,
+          actorName: authUser?.fullName ?? 'Kiosk Face Sensor',
+          ipAddress: clientIp,
+          deviceId: clientDeviceId,
+          detail: `Blocked face login without valid biological liveness (blinkCount=${body.livenessEvidence.blinkCount ?? 0}, spoofRisk=${body.livenessEvidence.spoofRisk ?? 0})`,
+        });
+        return jsonResponse(
+          {
+            matched: false,
+            confidencePercent: 0,
+            error: 'BIOMETRIC_SPOOF_DETECTED',
+            failureReasons: ['BIOLOGICAL_SPOOF_BLOCKED'],
+            message: 'ตรวจพบภาพถ่าย/หน้าจอ หรือยังไม่ผ่านการยืนยันชีววิทยา (กรุณากะพริบตา)',
+          },
+          403,
+        );
       }
 
       const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);

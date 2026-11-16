@@ -21,10 +21,14 @@ import {
 } from '@drtechcares/api-client';
 import {
   alignFaceTo112,
+  BiologicalLivenessTracker,
+  captureDownscaledContextFrame,
   evaluateLivenessAndPose,
   extractFaceEmbeddingWithFallback,
+  inspectBiometricFrame3D,
   selectClinicalCameraDeviceId,
   selectPrimaryFace,
+  type BiologicalLivenessReport,
 } from '@drtechcares/face-client';
 import {
   TemporalBiometricMatcher,
@@ -285,11 +289,15 @@ export function WelcomeFaceScanModal({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const biometricIndexRef = useRef<PatientBiometricIndexEntry[]>([]);
   const temporalMatcherRef = useRef(new TemporalBiometricMatcher(3, 0.78));
+  const bioLivenessRef = useRef(new BiologicalLivenessTracker());
+  const bioReportRef = useRef<BiologicalLivenessReport | null>(null);
   const confirmedLockRef = useRef(false);
 
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [autoScanCount, setAutoScanCount] = useState(0);
+  const [bioStatus, setBioStatus] = useState<BiologicalLivenessReport | null>(null);
+  const [spoofDetectedNow, setSpoofDetectedNow] = useState(false);
   const [hudBox, setHudBox] = useState<{ xPct: number; yPct: number; wPct: number; hPct: number } | null>(null);
   const [liveMatchHud, setLiveMatchHud] = useState<{
     candidate: PatientBiometricIndexEntry;
@@ -325,7 +333,12 @@ export function WelcomeFaceScanModal({
     let lastProcessedVideoTime = -1;
     let lastFaceDetectWallMs = 0;
     const alignCanvas = document.createElement('canvas');
+    const contextCanvas = document.createElement('canvas');
 
+    bioLivenessRef.current.reset();
+    bioReportRef.current = null;
+    setBioStatus(null);
+    setSpoofDetectedNow(false);
     confirmedLockRef.current = false;
     temporalMatcherRef.current.reset();
     setMatchResult(null);
@@ -351,6 +364,7 @@ export function WelcomeFaceScanModal({
           baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
           runningMode: 'VIDEO',
           numFaces: 2,
+          outputFaceBlendshapes: true,
           minFaceDetectionConfidence: 0.55,
           minFacePresenceConfidence: 0.55,
           minTrackingConfidence: 0.55,
@@ -382,6 +396,10 @@ export function WelcomeFaceScanModal({
                   setLiveMatchHud(null);
                   setAutoScanCount(0);
                   temporalMatcherRef.current.reset();
+                  bioLivenessRef.current.reset();
+                  bioReportRef.current = null;
+                  setBioStatus(null);
+                  setSpoofDetectedNow(false);
                 }
                 prevLandmarks = null;
               } else {
@@ -395,11 +413,43 @@ export function WelcomeFaceScanModal({
                   });
                 }
                 const liveness = evaluateLivenessAndPose(lms, prevLandmarks, faceCount, false);
+                const crop = alignFaceTo112(videoRef.current, lms, alignCanvas);
+                const contextFrame = captureDownscaledContextFrame(videoRef.current, contextCanvas, 160);
+                const bio = bioLivenessRef.current.update({
+                  landmarks3D: lms,
+                  blendshapes: res.faceBlendshapes?.[0]?.categories,
+                  earLeft: liveness.earLeft,
+                  earRight: liveness.earRight,
+                  faceCrop: crop,
+                  contextFrame,
+                  faceBox: rawBox,
+                  timestampMs: now,
+                });
+                bioReportRef.current = bio;
+                setBioStatus(bio);
+                const inspection = inspectBiometricFrame3D({
+                  landmarks3D: lms,
+                  prevLandmarks3D: prevLandmarks,
+                  faceCount,
+                  image: crop,
+                  contextImage: contextFrame,
+                  faceBox: rawBox,
+                  metrics: {
+                    planarRigidSpoof: bio.planarSpoofDetected,
+                    moireOrBezelDetected: bio.screenSpoofDetected || undefined,
+                  },
+                });
+                const isSpoofFrame = inspection.scan_status === 'SPOOF_DETECTED' || bio.spoofDetected;
+                setSpoofDetectedNow(isSpoofFrame);
                 prevLandmarks = lms;
 
-                if (!confirmedLockRef.current && now - lastEmbedAt >= 120) {
+                if (isSpoofFrame) {
+                  temporalMatcherRef.current.reset();
+                  fallbackFrameCount = 0;
+                  setAutoScanCount(0);
+                  setLiveMatchHud(null);
+                } else if (!confirmedLockRef.current && now - lastEmbedAt >= 120) {
                   lastEmbedAt = now;
-                  const crop = alignFaceTo112(videoRef.current, lms, alignCanvas);
                   if (crop) {
                     const { vector } = await extractFaceEmbeddingWithFallback(crop, lms);
                     if (!active) {
@@ -407,19 +457,27 @@ export function WelcomeFaceScanModal({
                       return;
                     }
 
+                    const livenessEvidence = {
+                      biologicalVerified: bio.biologicalVerified,
+                      blinkCount: bio.blinkCount,
+                      spoofRisk: bio.screenReport.combinedSpoofRisk,
+                      nonRigidScore: bio.nonRigidScore,
+                      rppgScore: bio.rppgScore,
+                    };
+
                     if (!confirmedLockRef.current && biometricIndexRef.current.length > 0) {
-                      const effectiveMicroMotion =
-                        liveness.depthScore >= 0.25
-                          ? Math.max(liveness.microMotion, 0.00025)
-                          : liveness.microMotion;
                       const temporal = temporalMatcherRef.current.evaluateFrame(
                         {
                           probeVector: vector,
                           yawDeg: liveness.yawDeg,
                           pitchDeg: liveness.pitchDeg,
                           depthScore: liveness.depthScore,
-                          microMotion: effectiveMicroMotion,
-                          blinkDetected: liveness.blinkDetected,
+                          microMotion: liveness.microMotion,
+                          blinkDetected: liveness.blinkDetected || bio.blinkVerified,
+                          nonRigidMotion: bio.nonRigidMotion,
+                          biologicalVerified: bio.biologicalVerified,
+                          spoofDetected: isSpoofFrame,
+                          rppgScore: bio.rppgScore,
                         },
                         biometricIndexRef.current,
                       );
@@ -436,12 +494,17 @@ export function WelcomeFaceScanModal({
                           : null,
                       );
 
-                      if (temporal.confirmed && temporal.candidate && !confirmedLockRef.current) {
+                      if (
+                        temporal.confirmed &&
+                        temporal.candidate &&
+                        bio.biologicalVerified &&
+                        !confirmedLockRef.current
+                      ) {
                         confirmedLockRef.current = true;
                         const matchedConf = Math.round(temporal.confidencePercent);
                         let matchedNow = false;
                         try {
-                          const verified = await apiClient.verifyFaceLogin(vector);
+                          const verified = await apiClient.verifyFaceLogin(vector, livenessEvidence);
                           if (!active) {
                             shouldContinueLoop = false;
                             return;
@@ -477,14 +540,14 @@ export function WelcomeFaceScanModal({
                       }
                     }
 
-                    if (!confirmedLockRef.current && now - lastServerVerifyAt >= 2500) {
+                    if (!confirmedLockRef.current && bio.biologicalVerified && now - lastServerVerifyAt >= 2500) {
                       fallbackFrameCount = Math.min(5, fallbackFrameCount + 1);
                       setAutoScanCount(fallbackFrameCount);
                       if (fallbackFrameCount >= 5) {
                         confirmedLockRef.current = true;
                         let matchedFallback = false;
                         try {
-                          const verified = await apiClient.verifyFaceLogin(vector);
+                          const verified = await apiClient.verifyFaceLogin(vector, livenessEvidence);
                           if (!active) {
                             shouldContinueLoop = false;
                             return;
@@ -552,6 +615,17 @@ export function WelcomeFaceScanModal({
   if (!open) return null;
 
   const handleScanFrame = async () => {
+    const bioNow = bioReportRef.current;
+    if (!bioNow?.biologicalVerified || bioNow.spoofDetected) {
+      setMatchResult({
+        matched: false,
+        confidencePercent: 0,
+        reason: bioNow?.spoofDetected
+          ? 'ตรวจพบภาพถ่ายหรือหน้าจอมือถือ — ระบบปฏิเสธการสแกนด้วยรูปภาพ'
+          : 'กรุณากะพริบตา 1 ครั้ง หน้ากล้องเพื่อยืนยันสิ่งมีชีวิตก่อนกดสแกน',
+      });
+      return;
+    }
     setScanning(true);
     setMatchResult(null);
     confirmedLockRef.current = false;
@@ -578,25 +652,24 @@ export function WelcomeFaceScanModal({
           }
           landmarker.close();
         } catch {
-          canvas.width = 112;
-          canvas.height = 112;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(videoRef.current, 0, 0, 112, 112);
-            const extracted = await extractFaceEmbeddingWithFallback(ctx.getImageData(0, 0, 112, 112), []);
-            probeVector = extracted.vector;
-          }
+          probeVector = null;
         }
       }
       if (!probeVector) {
         setMatchResult({
           matched: false,
           confidencePercent: 0,
-          reason: 'ไม่พบสัญญาณภาพจากกล้อง กรุณาเปิดกล้องหรือลงทะเบียนคนไข้ใหม่',
+          reason: 'ไม่พบสัญญาณใบหน้าจริงจากกล้อง กรุณามองกล้องและกะพริบตา',
         });
         return;
       }
-      const verified = await apiClient.verifyFaceLogin(probeVector);
+      const verified = await apiClient.verifyFaceLogin(probeVector, {
+        biologicalVerified: bioNow.biologicalVerified,
+        blinkCount: bioNow.blinkCount,
+        spoofRisk: bioNow.screenReport.combinedSpoofRisk,
+        nonRigidScore: bioNow.nonRigidScore,
+        rppgScore: bioNow.rppgScore,
+      });
       setMatchResult({
         matched: verified.matched,
         confidencePercent: verified.confidencePercent,
@@ -645,11 +718,13 @@ export function WelcomeFaceScanModal({
             >
               <div
                 className={`relative h-full w-full overflow-hidden rounded-xl border-2 ${
-                  liveMatchHud?.candidate
-                    ? liveMatchHud.confirmed
-                      ? 'border-emerald-400 shadow-[0_0_24px_rgba(16,185,129,0.7)]'
-                      : 'border-emerald-400/75 shadow-[0_0_12px_rgba(16,185,129,0.4)]'
-                    : 'border-cyan-400/85 shadow-[0_0_18px_rgba(34,211,238,0.45)]'
+                  spoofDetectedNow
+                    ? 'border-rose-500 shadow-[0_0_24px_rgba(244,63,94,0.85)]'
+                    : liveMatchHud?.candidate && bioStatus?.biologicalVerified
+                      ? liveMatchHud.confirmed
+                        ? 'border-emerald-400 shadow-[0_0_24px_rgba(16,185,129,0.7)]'
+                        : 'border-emerald-400/75 shadow-[0_0_12px_rgba(16,185,129,0.4)]'
+                      : 'border-cyan-400/85 shadow-[0_0_18px_rgba(34,211,238,0.45)]'
                 }`}
               >
                 <span className="absolute top-0 left-0 h-3.5 w-3.5 border-t-[3px] border-l-[3px] border-emerald-300 rounded-tl" />
@@ -661,7 +736,19 @@ export function WelcomeFaceScanModal({
                 )}
               </div>
 
-              {liveMatchHud?.candidate ? (
+              {spoofDetectedNow ? (
+                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[280px] -translate-x-1/2 rounded-lg border border-rose-400 bg-rose-50/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
+                  <div className="text-[11px] font-black text-rose-700">
+                    ⚠️ ตรวจพบภาพถ่ายหรือหน้าจอมือถือ
+                  </div>
+                </div>
+              ) : !bioStatus?.biologicalVerified ? (
+                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[280px] -translate-x-1/2 rounded-lg border border-amber-300 bg-white/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
+                  <div className="text-[10px] font-extrabold text-[#0F4C81]">
+                    👁️ กรุณากะพริบตา 1 ครั้ง เพื่อยืนยันสิ่งมีชีวิต
+                  </div>
+                </div>
+              ) : liveMatchHud?.candidate ? (
                 <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-emerald-400 bg-white/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
                   <div className="text-[11px] font-black text-emerald-700">
                     ✓ {sm.matchedOk}: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})

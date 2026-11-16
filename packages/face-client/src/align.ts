@@ -134,3 +134,33 @@ export function alignFaceTo112(
   return ctx.getImageData(0, 0, ARCFACE_INPUT_SIZE, ARCFACE_INPUT_SIZE);
 }
 
+/**
+ * Captures a lightweight downscaled full camera frame (default width 160px)
+ * so rectangular smartphone/tablet bezels and screen luminance boundaries around
+ * the detected face box can be analyzed without blocking the UI thread.
+ */
+export function captureDownscaledContextFrame(
+  source: HTMLVideoElement | HTMLCanvasElement,
+  targetCanvas?: HTMLCanvasElement | null,
+  maxWidth = 160,
+): ImageData | null {
+  const srcWidth = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
+  const srcHeight = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
+  if (!srcWidth || !srcHeight) return null;
+
+  const targetW = Math.max(48, Math.min(srcWidth, maxWidth));
+  const targetH = Math.max(48, Math.round((srcHeight / srcWidth) * targetW));
+  const canvas = targetCanvas ?? (typeof document !== 'undefined' ? document.createElement('canvas') : null);
+  if (!canvas) return null;
+
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(source, 0, 0, targetW, targetH);
+  return ctx.getImageData(0, 0, targetW, targetH);
+}
+
+

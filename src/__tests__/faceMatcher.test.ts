@@ -594,16 +594,25 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     landmarks[234] = { x: 0.445, y: 0.50, z: 0 };
     landmarks[454] = { x: 0.555, y: 0.50, z: 0 };
 
-    // Should pass even if single-frame static micro-motion triggered SPOOF_DETECTED while 3D depth >= 0.22
+    // Must strictly reject SPOOF_DETECTED regardless of canonical 3D mesh depth
     expect(
       isFullFrontalFaceReadyForLogin(
         landmarks,
         { yawDeg: 12, pitchDeg: 14, depthScore: 0.35 },
         { scan_status: 'SPOOF_DETECTED', error_code: 'SPOOF_ATTEMPT' },
       ),
+    ).toBe(false);
+
+    // Genuine PASS frame at normal desk distance still passes cleanly
+    expect(
+      isFullFrontalFaceReadyForLogin(
+        landmarks,
+        { yawDeg: 12, pitchDeg: 14, depthScore: 0.35 },
+        { scan_status: 'PASS', error_code: 'NONE' },
+      ),
     ).toBe(true);
 
-    // Should still reject flat low-depth spoof or obstructed eyes
+    // Reject flat low-depth spoof or obstructed eyes
     expect(
       isFullFrontalFaceReadyForLogin(
         landmarks,
@@ -618,5 +627,67 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
         { scan_status: 'RETRY', error_code: 'OBSTRUCTED_EYES' },
       ),
     ).toBe(false);
+  });
+
+  it('blocks login in TemporalBiometricMatcher when biologicalVerified is false or spoofDetected is true', () => {
+    const bioMatcher = new TemporalBiometricMatcher(3);
+    const probe = patientB.angleEmbeddings.center;
+
+    // 4 consecutive matching frames WITHOUT biological verification must NOT confirm
+    for (let i = 0; i < 4; i += 1) {
+      const r = bioMatcher.evaluateFrame(
+        {
+          probeVector: probe,
+          depthScore: 0.55,
+          yawDeg: i * 0.4,
+          pitchDeg: 0,
+          microMotion: 0.002,
+          biologicalVerified: false,
+          spoofDetected: false,
+        },
+        index,
+      );
+      expect(r.confirmed).toBe(false);
+      expect(r.livenessPassed).toBe(false);
+      expect(r.livenessReason).toBe('BIOLOGICAL_BLINK_REQUIRED');
+    }
+
+    // Immediate spoof detection resets streak & blocks
+    const spoofed = bioMatcher.evaluateFrame(
+      {
+        probeVector: probe,
+        depthScore: 0.55,
+        yawDeg: 1,
+        pitchDeg: 0,
+        microMotion: 0.002,
+        biologicalVerified: false,
+        spoofDetected: true,
+      },
+      index,
+    );
+    expect(spoofed.confirmed).toBe(false);
+    expect(spoofed.streakCount).toBe(0);
+    expect(spoofed.livenessReason).toBe('SPOOF_ATTEMPT_BLOCKED');
+
+    // Once biological blink + clean frames arrive, streak builds and confirms
+    let finalRes = spoofed;
+    for (let i = 0; i < 3; i += 1) {
+      finalRes = bioMatcher.evaluateFrame(
+        {
+          probeVector: probe,
+          depthScore: 0.55,
+          yawDeg: i * 0.4,
+          pitchDeg: 0,
+          microMotion: 0.002,
+          blinkDetected: i === 0,
+          biologicalVerified: true,
+          spoofDetected: false,
+        },
+        index,
+      );
+    }
+    expect(finalRes.confirmed).toBe(true);
+    expect(finalRes.livenessPassed).toBe(true);
+    expect(finalRes.candidate?.patientId).toBe('pat-b');
   });
 });

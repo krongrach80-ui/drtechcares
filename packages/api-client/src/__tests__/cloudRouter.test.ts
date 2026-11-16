@@ -1365,5 +1365,72 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(linkJson.importedCount).toBeGreaterThanOrEqual(2);
     expect(linkJson.patient.strokeType).toBe('ISCHEMIC');
   });
+
+  it('rejects /api/biometric/verify with 403 BIOMETRIC_SPOOF_DETECTED when biological liveness fails', async () => {
+    const router = createCloudDelegatedRouter({});
+    const loginRes = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const ptToken = ((await loginRes.json()) as { token: string }).token;
+
+    const ownerVec = makeHybridEmbedding(6.15);
+    const rawFrames = [
+      ...Array.from({ length: 4 }, () => ({ pose: 'front', vector: ownerVec, qualityScore: 0.97 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'left', vector: ownerVec, qualityScore: 0.93 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'right', vector: ownerVec, qualityScore: 0.94 })),
+      ...Array.from({ length: 2 }, () => ({ pose: 'nod', vector: ownerVec, qualityScore: 0.95 })),
+    ];
+    const enrollRes = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-BIOSPOOF-01',
+        fullName: 'คุณสมชาย ทดสอบชีววิทยา',
+        age: 61,
+        diagnosis: 'Stroke recovery',
+        frontalCentroid: ownerVec,
+        overallCentroid: ownerVec,
+        rawFrames,
+      },
+    });
+    expect(enrollRes.status).toBe(201);
+
+    // Even with a 100% matching owner face vector, missing blink / phone screen spoof risk is blocked with 403
+    const phoneSpoofRes = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: {
+        probeVector: ownerVec,
+        livenessEvidence: {
+          biologicalVerified: false,
+          blinkCount: 0,
+          spoofRisk: 0.78,
+          nonRigidScore: 0.001,
+        },
+      },
+    });
+    expect(phoneSpoofRes.status).toBe(403);
+    const phoneSpoofJson = (await phoneSpoofRes.json()) as { matched: boolean; error: string };
+    expect(phoneSpoofJson.matched).toBe(false);
+    expect(phoneSpoofJson.error).toBe('BIOMETRIC_SPOOF_DETECTED');
+
+    // Genuine biological blink + clean risk passes normally
+    const liveRes = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: {
+        probeVector: ownerVec,
+        livenessEvidence: {
+          biologicalVerified: true,
+          blinkCount: 1,
+          spoofRisk: 0.08,
+          nonRigidScore: 0.14,
+          rppgScore: 0.62,
+        },
+      },
+    });
+    expect(liveRes.status).toBe(200);
+    const liveJson = (await liveRes.json()) as { matched: boolean };
+    expect(liveJson.matched).toBe(true);
+  });
 });
 

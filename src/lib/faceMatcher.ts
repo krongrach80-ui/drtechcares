@@ -45,6 +45,10 @@ export interface LiveFrameObservation {
   pitchDeg: number;
   microMotion: number;
   blinkDetected?: boolean;
+  nonRigidMotion?: number;
+  biologicalVerified?: boolean;
+  spoofDetected?: boolean;
+  rppgScore?: number;
 }
 
 export interface TemporalMatchResult {
@@ -377,6 +381,20 @@ export class TemporalBiometricMatcher {
     candidates: readonly PatientBiometricIndexEntry[],
     options?: MultiAngleMatchOptions,
   ): TemporalMatchResult {
+    if (observation.spoofDetected) {
+      this.reset();
+      return {
+        confirmed: false,
+        streakCount: 0,
+        requiredStreak: this.requiredConsecutiveFrames,
+        candidate: null,
+        confidencePercent: 0,
+        bestAngle: 'none',
+        livenessPassed: false,
+        livenessReason: 'SPOOF_ATTEMPT_BLOCKED',
+      };
+    }
+
     const mergedOptions: MultiAngleMatchOptions | undefined =
       this.defaultSimilarityThreshold !== undefined
         ? { similarityThreshold: this.defaultSimilarityThreshold, ...options }
@@ -392,7 +410,8 @@ export class TemporalBiometricMatcher {
         candidate: match.bestCandidate,
         confidencePercent: match.confidencePercent,
         bestAngle: match.bestAngle,
-        livenessPassed: observation.depthScore >= 0.25,
+        livenessPassed:
+          observation.depthScore >= 0.25 && observation.biologicalVerified !== false,
         livenessReason: match.bestCandidate ? 'LOW_CONFIDENCE_OR_MARGIN' : 'NO_MATCH',
       };
     }
@@ -438,7 +457,11 @@ export class TemporalBiometricMatcher {
 
     const hasMotionVariance =
       maxMicroMotion >= 0.0001 || yawRange >= 0.1 || pitchRange >= 0.1 || anyBlink;
-    const livenessPassed = avgDepth >= 0.25 && (streakCount < 2 || hasMotionVariance);
+    const basePhysicalLiveness =
+      avgDepth >= 0.25 && (streakCount < 2 || hasMotionVariance);
+    const bioVerifiedOk =
+      observation.biologicalVerified === undefined ? true : observation.biologicalVerified === true;
+    const livenessPassed = basePhysicalLiveness && bioVerifiedOk;
 
     const avgConf = Number(
       (
@@ -458,9 +481,11 @@ export class TemporalBiometricMatcher {
       bestAngle: match.bestAngle,
       livenessPassed,
       livenessReason: !livenessPassed
-        ? avgDepth < 0.25
-          ? 'FLAT_SPOOF_SUSPECTED'
-          : 'STATIC_PHOTO_SUSPECTED'
+        ? !bioVerifiedOk
+          ? 'BIOLOGICAL_BLINK_REQUIRED'
+          : avgDepth < 0.25
+            ? 'FLAT_SPOOF_SUSPECTED'
+            : 'STATIC_PHOTO_SUSPECTED'
         : undefined,
     };
   }
