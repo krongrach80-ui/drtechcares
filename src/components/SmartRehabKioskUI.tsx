@@ -26,6 +26,7 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
+import { ExercisePostureGuide, ExercisePostureSvg } from './ExercisePostureGuide';
 import { FaceScanOverlay } from './FaceScanOverlay';
 import { RomGauge } from './RomGauge';
 import { SkeletonCanvas } from './SkeletonCanvas';
@@ -3513,8 +3514,8 @@ export function SmartRehabKioskUI({
 
         {/* 3. Main Clinical Workspace: 16:9 Landscape (~65% Left / ~35% Right), 9:16 Portrait Responsive */}
         <main className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-12">
-          {/* Left Stage (~65% width) */}
-          <section className="lg:col-span-8 lg:sticky lg:top-4 lg:self-start">
+          {/* Left Stage (~65% width): Live AI Camera + Exercise Posture Guide Below Camera */}
+          <section className="flex flex-col gap-4 lg:col-span-8 lg:self-start">
             <SkeletonCanvas
               payload={payload}
               exercise={selectedExercise}
@@ -3600,6 +3601,14 @@ export function SmartRehabKioskUI({
                 </motion.div>
               )}
             </SkeletonCanvas>
+
+            {/* Exercise-Specific Animated Posture Guide directly below Camera */}
+            <ExercisePostureGuide
+              exercise={selectedExercise}
+              currentRomDeg={telemetry_analysis.current_rom_deg}
+              targetRomDeg={effectiveTargetRomDeg}
+              kioskState={kiosk_state}
+            />
           </section>
 
           {/* Right Telemetry Panel (~35% width) */}
@@ -3645,25 +3654,9 @@ export function SmartRehabKioskUI({
                   )}
                 </div>
 
-                {/* Animated Miniature Guide Illustration */}
+                {/* Animated Miniature Guide Illustration (synced to selected exercise) */}
                 <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border border-sky-100 bg-gradient-to-br from-sky-50 to-emerald-50">
-                  <svg viewBox="0 0 64 64" className="h-12 w-12">
-                    <circle cx="32" cy="14" r="5" fill="#0F4C81" />
-                    <line x1="32" y1="19" x2="32" y2="40" stroke="#0F4C81" strokeWidth="3.5" strokeLinecap="round" />
-                    <line x1="32" y1="40" x2="24" y2="56" stroke="#0284C7" strokeWidth="3" strokeLinecap="round" />
-                    <line x1="32" y1="40" x2="40" y2="56" stroke="#0284C7" strokeWidth="3" strokeLinecap="round" />
-                    <motion.line
-                      x1="32"
-                      y1="24"
-                      x2="14"
-                      y2="34"
-                      stroke="#10B981"
-                      strokeWidth="3.5"
-                      strokeLinecap="round"
-                      animate={{ x2: [18, 12, 18], y2: [38, 10, 38] }}
-                      transition={{ repeat: Infinity, duration: 3, ease: 'easeInOut' }}
-                    />
-                  </svg>
+                  <ExercisePostureSvg exercise={selectedExercise} compact />
                 </div>
               </div>
 

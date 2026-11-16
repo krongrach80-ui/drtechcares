@@ -42,6 +42,7 @@ import {
   stepVerifiedHandHold,
 } from '../components/KioskBiometricLoginView';
 import { getKioskOverviewVoiceNarration } from '../App';
+import { resolveExercisePostureSpec } from '../components/ExercisePostureGuide';
 import {
   computeContainRect,
   drawMediaPipe33OnCanvas,
@@ -1710,6 +1711,193 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     framedMp33[23] = { index: 23, x: 0.57, y: 0.78, z: 0, score: 0.95 };
     framedMp33[24] = { index: 24, x: 0.43, y: 0.78, z: 0, score: 0.95 };
     expect(isUpperBodyVisibleInFrame(framedMp33)).toBe(true);
+  });
+
+  it('resolves distinct anatomical posture guides and trilingual 3-step cues for every rehabilitation exercise', () => {
+    const cases: Array<{
+      id: string;
+      name_th: string;
+      name_en: string;
+      target_joint: 'right_shoulder' | 'left_shoulder' | 'right_knee' | 'left_knee' | 'spine';
+      expected_plane?: 'flexion' | 'abduction' | 'rotation' | 'wrist_finger' | 'shrug_roll' | 'bilateral' | 'any';
+      expectedKind: string;
+      expectedSide: 'right' | 'left' | 'both';
+    }> = [
+      {
+        id: 'ex-27',
+        name_th: '[Stroke ADL] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)',
+        name_en: 'Stroke ADL: Right Shoulder Flexion',
+        target_joint: 'right_shoulder',
+        expected_plane: 'flexion',
+        expectedKind: 'shoulder_flexion',
+        expectedSide: 'right',
+      },
+      {
+        id: 'ex-30',
+        name_th: '[Stroke ADL] กางแขนซ้ายด้านข้าง',
+        name_en: 'Stroke ADL: Left Shoulder Abduction',
+        target_joint: 'left_shoulder',
+        expected_plane: 'abduction',
+        expectedKind: 'shoulder_abduction',
+        expectedSide: 'left',
+      },
+      {
+        id: 'ex-09',
+        name_th: 'ยกแขนมุมทแยง 45° (ขวา)',
+        name_en: 'Right Scaption Raise',
+        target_joint: 'right_shoulder',
+        expectedKind: 'shoulder_scaption',
+        expectedSide: 'right',
+      },
+      {
+        id: 'ex-11',
+        name_th: 'ชูแขนเหนือศีรษะ (ขวา)',
+        name_en: 'Right Overhead Reach',
+        target_joint: 'right_shoulder',
+        expectedKind: 'shoulder_overhead',
+        expectedSide: 'right',
+      },
+      {
+        id: 'ex-25',
+        name_th: 'สไลด์แขนไต่ผนัง (ซ้าย)',
+        name_en: 'Left Wall Slide Elevation',
+        target_joint: 'left_shoulder',
+        expectedKind: 'shoulder_wall_slide',
+        expectedSide: 'left',
+      },
+      {
+        id: 'ex-07',
+        name_th: 'แกว่งแขนคอดแมน (ขวา)',
+        name_en: 'Codman Pendulum (Right)',
+        target_joint: 'right_shoulder',
+        expectedKind: 'shoulder_pendulum',
+        expectedSide: 'right',
+      },
+      {
+        id: 'ex-33',
+        name_th: '[Stroke ADL] หมุนข้อไหล่ขวาเข้า-ออก',
+        name_en: 'Stroke ADL: Right Shoulder Rotation',
+        target_joint: 'right_shoulder',
+        expected_plane: 'rotation',
+        expectedKind: 'shoulder_rotation',
+        expectedSide: 'right',
+      },
+      {
+        id: 'ex-39',
+        name_th: '[สธ. ผู้สูงอายุ] ท่ายักไหล่และหมุนหัวไหล่ผ่อนคลายบ่า',
+        name_en: 'MOPH Elderly: Shoulder Shrug & Scapular Roll',
+        target_joint: 'right_shoulder',
+        expected_plane: 'shrug_roll',
+        expectedKind: 'shoulder_shrug_roll',
+        expectedSide: 'both',
+      },
+      {
+        id: 'ex-40',
+        name_th: '[สธ. ผู้สูงอายุ] ยกแขนประสานมือชูเหนือศีรษะพร้อมกัน 2 ข้าง',
+        name_en: 'MOPH Elderly: Bilateral Overhead Arm Raise',
+        target_joint: 'right_shoulder',
+        expected_plane: 'bilateral',
+        expectedKind: 'bilateral_arm_raise',
+        expectedSide: 'both',
+      },
+      {
+        id: 'ex-32',
+        name_th: '[Stroke ADL] งอ-เหยียดข้อศอกซ้าย',
+        name_en: 'Stroke ADL: Left Elbow Flexion & Extension',
+        target_joint: 'left_shoulder',
+        expectedKind: 'elbow_flexion',
+        expectedSide: 'left',
+      },
+      {
+        id: 'ex-35',
+        name_th: '[Stroke ADL] กระดกข้อมือ & กาง-กำนิ้วมือขวา',
+        name_en: 'Stroke ADL: Right Wrist & Finger Extension',
+        target_joint: 'right_shoulder',
+        expected_plane: 'wrist_finger',
+        expectedKind: 'wrist_finger',
+        expectedSide: 'right',
+      },
+      {
+        id: 'ex-38',
+        name_th: '[สธ. ผู้สูงอายุ] ยืดกล้ามเนื้อคอและบ่า เอียงคอซ้ายช้าๆ',
+        name_en: 'MOPH Elderly: Gentle Left Neck Stretch',
+        target_joint: 'spine',
+        expectedKind: 'neck_tilt',
+        expectedSide: 'left',
+      },
+      {
+        id: 'ex-23',
+        name_th: 'ยืดเหยียดลำตัวตรง (ท่านั่ง)',
+        name_en: 'Seated Posture Alignment Hold',
+        target_joint: 'spine',
+        expectedKind: 'trunk_align',
+        expectedSide: 'both',
+      },
+      {
+        id: 'chair_squat',
+        name_th: 'ลุกนั่งฝึกกล้ามเนื้อขา',
+        name_en: 'Chair Squat Rehabilitation',
+        target_joint: 'right_knee',
+        expectedKind: 'chair_squat',
+        expectedSide: 'both',
+      },
+      {
+        id: 'ex-13',
+        name_th: 'เหยียดเข่านั่งเก้าอี้ (ขวา)',
+        name_en: 'Right Seated Knee Extension',
+        target_joint: 'right_knee',
+        expectedKind: 'knee_extension',
+        expectedSide: 'right',
+      },
+      {
+        id: 'ex-16',
+        name_th: 'ยกเข่าสูงยืนทรงตัว (ซ้าย)',
+        name_en: 'Left Standing Knee March',
+        target_joint: 'left_knee',
+        expectedKind: 'hip_march',
+        expectedSide: 'left',
+      },
+      {
+        id: 'ex-17',
+        name_th: 'เขย่งส้นเท้า (ขวา)',
+        name_en: 'Right Heel Raise',
+        target_joint: 'right_knee',
+        expectedKind: 'heel_raise',
+        expectedSide: 'right',
+      },
+      {
+        id: 'ex-22',
+        name_th: 'ยืนทรงตัวขาเดียว (ซ้าย)',
+        name_en: 'Single-Leg Balance (Left)',
+        target_joint: 'left_knee',
+        expectedKind: 'single_leg_balance',
+        expectedSide: 'left',
+      },
+    ];
+
+    for (const tc of cases) {
+      for (const lang of ['th', 'en', 'cn'] as const) {
+        const spec = resolveExercisePostureSpec(
+          {
+            exercise_id: tc.id,
+            catalog_exercise_id: tc.id,
+            name_th: tc.name_th,
+            name_en: tc.name_en,
+            target_joint: tc.target_joint,
+            expected_plane: tc.expected_plane,
+            target_rom_deg: 128,
+            hold_sec: 3,
+            target_reps: 10,
+          },
+          lang,
+        );
+        expect(spec.kind).toBe(tc.expectedKind);
+        expect(spec.side).toBe(tc.expectedSide);
+        expect(spec.steps).toHaveLength(3);
+        expect(spec.steps.every((s) => s.trim().length > 5)).toBe(true);
+        expect(spec.bodyRegionLabel.trim().length).toBeGreaterThan(2);
+      }
+    }
   });
 });
 
