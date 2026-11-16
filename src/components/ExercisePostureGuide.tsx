@@ -1,5 +1,4 @@
-import React, { useMemo, useState } from 'react';
-import { motion } from 'framer-motion';
+import React, { useEffect, useMemo, useState } from 'react';
 import { CLINICAL_EXERCISES, type ExerciseConfig } from '@drtechcares/pose-engine';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import { CheckCircle2, Pause, Play, ShieldCheck, Sparkles, Target } from 'lucide-react';
@@ -62,9 +61,9 @@ const REGION_COPY: Record<
       cn: '肩部前侧 • 上臂',
     },
     view: {
-      th: 'มุมมองด้านข้าง (ยกแขนตรงไปด้านหน้า)',
-      en: 'Side view (Raise straight forward)',
-      cn: '侧面视角（向前平举上抬）',
+      th: 'มุมมองด้านข้าง (Sagittal • ยกไปด้านหน้า)',
+      en: 'Side profile (Sagittal • Forward raise)',
+      cn: '侧面视角（矢状面 • 向前平举）',
     },
     muscle: {
       th: 'ฝึกแรงยกข้อไหล่ด้านหน้า เพื่อการเอื้อมหยิบและสอดแขนเสื้อ',
@@ -87,18 +86,18 @@ const REGION_COPY: Record<
       const sCn = side === 'left' ? '左' : '右';
       return {
         th: [
-          `ยืนหรือนั่งตัวตรง ปล่อยแขน${sTh}ข้างลำตัว ผ่อนคลายหัวไหล่`,
-          `ยกแขน${sTh}ตรงไปด้านหน้าช้าๆ จนถึงมุมประมาณ ${rom}°`,
+          `ยืนหรือนั่งตัวตรง ปล่อยแขน${sTh}ห้อยลงแนวดิ่งข้างลำตัว (0°)`,
+          `ยกแขน${sTh}ตรงไปด้านหน้าขึ้นเหนือระดับไหล่จนถึง ${rom}°`,
           `ค้างท่าเป้าหมายไว้ ${holdSec} วินาที แล้วค่อยๆ ลดแขนลง`,
         ],
         en: [
-          `Stand or sit upright with ${sEn} arm relaxed by your side`,
-          `Slowly raise your ${sEn} arm straight forward toward ${rom}°`,
+          `Stand or sit upright with ${sEn} arm hanging down vertically (0°)`,
+          `Raise your ${sEn} arm smoothly forward and upward toward ${rom}°`,
           `Hold steady at peak for ${holdSec}s, then lower gently`,
         ],
         cn: [
-          `挺直站立或坐姿，${sCn}臂自然垂放体侧，放松双肩`,
-          `缓慢将${sCn}臂向前平举上抬至约 ${rom}°`,
+          `挺直站立或坐姿，${sCn}臂自然垂放体侧（0°）`,
+          `缓慢将${sCn}臂向前上方平举至约 ${rom}°`,
           `在目标角度保持 ${holdSec} 秒，然后缓慢放下`,
         ],
       };
@@ -111,9 +110,9 @@ const REGION_COPY: Record<
       cn: '肩部外侧 • 三角肌',
     },
     view: {
-      th: 'มุมมองหน้าตรง (กางออกด้านข้างแบบกระจกเงา)',
-      en: 'Front mirror view (Outward to the side)',
-      cn: '正面镜像视角（向体侧外展）',
+      th: 'มุมมองหน้าตรง (Coronal • กางออกด้านข้าง)',
+      en: 'Front coronal view (Outward to side)',
+      cn: '正面冠状位视角（向体侧外展）',
     },
     muscle: {
       th: 'ฝึกกางแขนออกด้านข้าง เพื่อใส่เสื้อคลุมและหวีผม',
@@ -136,17 +135,17 @@ const REGION_COPY: Record<
       const sCn = side === 'left' ? '左' : '右';
       return {
         th: [
-          `ยืนตรงหน้ากล้อง ปล่อยแขน${sTh}แนบข้างลำตัว`,
+          `ยืนตรงหน้ากล้อง ปล่อยแขน${sTh}ห้อยข้างลำตัว (0°)`,
           `ค่อยๆ กางแขน${sTh}ออกด้านข้างขึ้นเป็นวงโค้งถึง ${rom}°`,
           `ค้างไว้ด้านข้าง ${holdSec} วินาที แล้วลดแขนลงอย่างนุ่มนวล`,
         ],
         en: [
-          `Face the camera upright with ${sEn} arm resting at your side`,
-          `Smoothly abduct your ${sEn} arm outward toward ${rom}°`,
+          `Face camera upright with ${sEn} arm hanging at your side (0°)`,
+          `Smoothly abduct your ${sEn} arm outward along arc toward ${rom}°`,
           `Hold steady for ${holdSec}s, then return smoothly`,
         ],
         cn: [
-          `正对摄像头站直，${sCn}臂放松贴于体侧`,
+          `正对摄像头站直，${sCn}臂自然垂放体侧（0°）`,
           `缓慢将${sCn}臂向体侧外展抬升至约 ${rom}°`,
           `保持 ${holdSec} 秒后平缓收回体侧`,
         ],
@@ -180,17 +179,17 @@ const REGION_COPY: Record<
       const sCn = side === 'left' ? '左' : '右';
       return {
         th: [
-          `ตั้งลำตัวตรง เหยียดข้อศอก${sTh}ตรงข้างลำตัว`,
+          `ตั้งลำตัวตรง ปล่อยแขน${sTh}ลงข้างลำตัว (0°)`,
           `ยกแขน${sTh}เฉียงออกด้านหน้าข้าง 45° ถึงมุม ${rom}°`,
           `ค้างท่าที่มุมเป้าหมาย ${holdSec} วินาที แล้วค่อยๆ วางลง`,
         ],
         en: [
-          `Stand tall with ${sEn} elbow straight by your side`,
+          `Stand tall with ${sEn} elbow straight by your side (0°)`,
           `Lift ${sEn} arm diagonally 45° forward-outward to ${rom}°`,
           `Hold for ${holdSec}s at top, then lower with control`,
         ],
         cn: [
-          `身体挺直，${sCn}肘自然伸直`,
+          `身体挺直，${sCn}臂自然垂放体侧（0°）`,
           `沿斜前方 45° 角抬起${sCn}臂至 ${rom}°`,
           `保持 ${holdSec} 秒后缓慢放下`,
         ],
@@ -224,17 +223,17 @@ const REGION_COPY: Record<
       const sCn = side === 'left' ? '左' : '右';
       return {
         th: [
-          `ยืนหลังตรง เตรียมยกแขน${sTh}จากข้างลำตัว`,
-          `เหยียดแขน${sTh}ชูขึ้นเหนือศีรษะชิดข้างใบหู (${rom}°)`,
+          `ยืนหลังตรง ปล่อยแขน${sTh}ข้างลำตัว (0°)`,
+          `ยกแขน${sTh}ชูขึ้นเหนือศีรษะชิดข้างใบหู (${rom}°)`,
           `ค้างไว้ด้านบน ${holdSec} วินาที พร้อมหายใจเข้าลึกๆ`,
         ],
         en: [
-          `Stand upright preparing to lift your ${sEn} arm`,
+          `Stand upright with ${sEn} arm resting downward (0°)`,
           `Reach ${sEn} arm overhead beside ear toward ${rom}°`,
           `Hold overhead for ${holdSec}s while breathing evenly`,
         ],
         cn: [
-          `站直准备抬起${sCn}臂`,
+          `站直准备抬起${sCn}臂（0°）`,
           `伸直${sCn}臂向上高举过头靠近耳侧（${rom}°）`,
           `上方保持 ${holdSec} 秒并保持自然呼吸`,
         ],
@@ -273,7 +272,7 @@ const REGION_COPY: Record<
           `ค้างที่จุดสูงสุด ${holdSec} วินาที แล้วสไลด์กลับลงช้าๆ`,
         ],
         en: [
-          `Stand facing/near wall with ${sEn} hand lightly on wall`,
+          `Stand near wall with ${sEn} palm lightly touching wall`,
           `Slide ${sEn} hand smoothly upward along wall toward ${rom}°`,
           `Hold at peak for ${holdSec}s, then slide back down slowly`,
         ],
@@ -315,17 +314,17 @@ const REGION_COPY: Record<
         th: [
           `โน้มลำตัวไปด้านหน้าเล็กน้อย ใช้มือ${otherTh}ยันเก้าอี้ประคอง`,
           `ปล่อยแขน${sTh}ห้อยตรงตามแรงโน้มถ่วง อย่าเกร็งหัวไหล่`,
-          `แกว่งเป็นวงกลมเล็กๆ ต่อเนื่องสม่ำเสมอ ${holdSec} วินาที`,
+          `แกว่งเบาๆ ต่อเนื่องสม่ำเสมอ ${holdSec} วินาที`,
         ],
         en: [
           `Lean forward gently resting opposite hand on support`,
           `Let your ${sEn} arm hang completely loose like a pendulum`,
-          `Trace small gentle circles smoothly for ${holdSec}s`,
+          `Swing gently in small controlled arcs for ${holdSec}s`,
         ],
         cn: [
           `身体微前倾，健侧手轻扶椅子支撑稳定`,
           `让${sCn}臂如钟摆般完全放松垂下`,
-          `轻柔划小圈摆动，持续 ${holdSec} 秒`,
+          `轻柔摆动放松肩关节，持续 ${holdSec} 秒`,
         ],
       };
     },
@@ -386,9 +385,9 @@ const REGION_COPY: Record<
       cn: '双肩及上斜方肌 • 肩胛环绕',
     },
     view: {
-      th: 'มุมมองหน้าตรงช่วงบน (ยกหัวไหล่ขึ้น & หมุนลง)',
-      en: 'Upper-torso view (Elevate up & roll back)',
-      cn: '上身正面视角（双肩向上耸起并向后绕环）',
+      th: 'มุมมองหน้าตรง (ยกหัวไหล่ขึ้น & หมุนลง)',
+      en: 'Front view (Elevate shoulders & roll back)',
+      cn: '正面视角（双肩向上耸起并向后绕环）',
     },
     muscle: {
       th: 'ลดอาการไหล่ห่อ ไหล่ติด และกระตุ้นระบบไหลเวียนช่วงบ่าตามมาตรฐาน สธ.',
@@ -408,7 +407,7 @@ const REGION_COPY: Record<
     steps: (_side, _rom, holdSec) => ({
       th: [
         'นั่งหรือยืนตัวตรง ปล่อยแขนทั้งสองข้างทิ้งตัวสบายๆ',
-        'ยกหัวไหล่ทั้ง 2 ข้างขึ้นหาใบหูช้าๆ แล้วค้างไว้ ' + holdSec + ' วินาที',
+        `ยกหัวไหล่ทั้ง 2 ข้างขึ้นหาใบหูช้าๆ แล้วค้างไว้ ${holdSec} วินาที`,
         'หมุนหัวไหล่ไปด้านหลังแล้วกดลงผ่อนคลายเต็มที่',
       ],
       en: [
@@ -431,7 +430,7 @@ const REGION_COPY: Record<
     },
     view: {
       th: 'มุมมองหน้าตรง (ชูแขนทั้ง 2 ข้างขึ้นพร้อมกัน)',
-      en: 'Front view (Both arms rising together symmetrically)',
+      en: 'Front view (Both arms rising symmetrically)',
       cn: '正面视角（双手同步向上举过头顶）',
     },
     muscle: {
@@ -451,17 +450,17 @@ const REGION_COPY: Record<
     },
     steps: (_side, rom, holdSec) => ({
       th: [
-        'ประสานมือทั้ง 2 ข้างไว้ด้านหน้าลำตัว เหยียดแขนให้สบาย',
+        'ปล่อยแขนทั้ง 2 ข้างลงสบายๆ เตรียมยกพร้อมกัน (0°)',
         `ค่อยๆ ยกแขนทั้งสองข้างชูขึ้นเหนือศีรษะพร้อมกันถึง ~${rom}°`,
         `ค้างไว้ด้านบน ${holdSec} วินาที พร้อมหายใจลึก แล้วลดลงช้าๆ`,
       ],
       en: [
-        'Clasp both hands together comfortably in front of torso',
+        'Start upright with both arms relaxed down at sides (0°)',
         `Raise both arms smoothly overhead together toward ~${rom}°`,
         `Hold at top for ${holdSec}s breathing deeply, then lower slowly`,
       ],
       cn: [
-        '双手十指相扣置于腹前，放松双肩',
+        '双臂自然垂放准备同时抬起（0°）',
         `双臂同时缓慢向上举过头顶约 ${rom}°`,
         `在上方保持 ${holdSec} 秒并深呼吸，随后缓慢放下`,
       ],
@@ -1014,11 +1013,251 @@ export function resolveExercisePostureSpec(
   };
 }
 
-function getPhaseKeyframe<T>(phase: PosturePreviewPhase, values: [T, T, T, T]): T | T[] {
-  if (phase === 'prepare') return values[0];
-  if (phase === 'move') return values[1];
-  if (phase === 'hold') return values[2];
-  return values;
+export interface UpperLimbFkInput {
+  shoulderX: number;
+  shoulderY: number;
+  upperArmLen: number;
+  forearmLen: number;
+  handLen?: number;
+  angleDeg: number;
+  elbowBendDeg?: number;
+  dirSign?: 1 | -1;
+}
+
+export interface UpperLimbFkJoints {
+  shoulder: { x: number; y: number };
+  elbow: { x: number; y: number };
+  wrist: { x: number; y: number };
+  hand: { x: number; y: number };
+}
+
+/**
+ * Hierarchical Forward Kinematics for Clinical Upper-Limb Joint Visualization:
+ * 0° = resting vertically straight down beside torso (6 o'clock: sin=0, cos=1).
+ * Positive angleDeg sweeps forward (Side-Profile dirSign=+1) or outward (Coronal dirSign=±1) and upward.
+ */
+export function computeUpperLimbFkJoints(input: UpperLimbFkInput): UpperLimbFkJoints {
+  const dir = input.dirSign ?? 1;
+  const rad = (input.angleDeg * Math.PI) / 180;
+  const elbowBend = input.elbowBendDeg ?? 0;
+  const forearmRad = ((input.angleDeg + elbowBend) * Math.PI) / 180;
+  const handLen = input.handLen ?? 9;
+
+  const elbowX = input.shoulderX + dir * Math.sin(rad) * input.upperArmLen;
+  const elbowY = input.shoulderY + Math.cos(rad) * input.upperArmLen;
+
+  const wristX = elbowX + dir * Math.sin(forearmRad) * input.forearmLen;
+  const wristY = elbowY + Math.cos(forearmRad) * input.forearmLen;
+
+  const handX = wristX + dir * Math.sin(forearmRad) * handLen;
+  const handY = wristY + Math.cos(forearmRad) * handLen;
+
+  return {
+    shoulder: { x: input.shoulderX, y: input.shoulderY },
+    elbow: { x: elbowX, y: elbowY },
+    wrist: { x: wristX, y: wristY },
+    hand: { x: handX, y: handY },
+  };
+}
+
+function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+}
+
+export interface PostureCycleState {
+  progress: number;
+  stage: 'prepare' | 'move' | 'hold' | 'lower';
+}
+
+/**
+ * Deterministic 4-phase anatomical exercise timing:
+ * 1. Prepare (0° rest) -> 2. Smooth Move (0 -> targetRom) -> 3. Peak Hold (holdSec) -> 4. Smooth Lower.
+ */
+export function computePostureCycleState(
+  phase: PosturePreviewPhase,
+  elapsedMs: number,
+  holdSec = 3,
+): PostureCycleState {
+  if (phase === 'prepare') return { progress: 0, stage: 'prepare' };
+  if (phase === 'move') return { progress: 0.62, stage: 'move' };
+  if (phase === 'hold') return { progress: 1, stage: 'hold' };
+
+  const prepMs = 700;
+  const liftMs = 1350;
+  const holdMs = Math.max(1200, Math.min(3500, holdSec * 1000));
+  const lowerMs = 1150;
+  const totalMs = prepMs + liftMs + holdMs + lowerMs;
+  const t = ((elapsedMs % totalMs) + totalMs) % totalMs;
+
+  if (t < prepMs) {
+    return { progress: 0, stage: 'prepare' };
+  }
+  if (t < prepMs + liftMs) {
+    const u = (t - prepMs) / liftMs;
+    return { progress: easeInOutCubic(u), stage: 'move' };
+  }
+  if (t < prepMs + liftMs + holdMs) {
+    return { progress: 1, stage: 'hold' };
+  }
+  const d = (t - (prepMs + liftMs + holdMs)) / lowerMs;
+  return { progress: 1 - easeInOutCubic(d), stage: 'lower' };
+}
+
+function buildRomGuideArc(
+  cx: number,
+  cy: number,
+  radius: number,
+  targetDeg: number,
+  dirSign: 1 | -1,
+): { d: string; endX: number; endY: number; tipDx: number; tipDy: number } {
+  const clamped = Math.max(8, Math.min(176, targetDeg));
+  const rad = (clamped * Math.PI) / 180;
+  const startX = cx;
+  const startY = cy + radius;
+  const endX = cx + dirSign * Math.sin(rad) * radius;
+  const endY = cy + Math.cos(rad) * radius;
+  const sweepFlag = dirSign === 1 ? 0 : 1;
+  // Tangent unit vector at arc end toward increasing angleDeg
+  const tanX = dirSign * Math.cos(rad);
+  const tanY = -Math.sin(rad);
+  return {
+    d: `M ${startX.toFixed(1)} ${startY.toFixed(1)} A ${radius} ${radius} 0 0 ${sweepFlag} ${endX.toFixed(1)} ${endY.toFixed(1)}`,
+    endX,
+    endY,
+    tipDx: tanX,
+    tipDy: tanY,
+  };
+}
+
+function CapsuleArmLimb({
+  joints,
+  color,
+  isActive,
+  isGhost = false,
+  compact = false,
+  wristWidth = 10,
+}: {
+  joints: UpperLimbFkJoints;
+  color: string;
+  isActive: boolean;
+  isGhost?: boolean;
+  compact?: boolean;
+  wristWidth?: number;
+}) {
+  const upperW = compact ? 14 : 12;
+  const foreW = compact ? 12 : wristWidth;
+  if (isGhost) {
+    return (
+      <g opacity={0.34}>
+        <line
+          x1={joints.shoulder.x}
+          y1={joints.shoulder.y}
+          x2={joints.elbow.x}
+          y2={joints.elbow.y}
+          stroke={color}
+          strokeWidth={upperW}
+          strokeLinecap="round"
+          strokeDasharray="4 4"
+        />
+        <line
+          x1={joints.elbow.x}
+          y1={joints.elbow.y}
+          x2={joints.wrist.x}
+          y2={joints.wrist.y}
+          stroke={color}
+          strokeWidth={foreW}
+          strokeLinecap="round"
+          strokeDasharray="4 4"
+        />
+        <circle cx={joints.wrist.x} cy={joints.wrist.y} r={5} fill="none" stroke={color} strokeWidth={2} strokeDasharray="3 2" />
+      </g>
+    );
+  }
+
+  return (
+    <g opacity={isActive ? 1 : 0.72}>
+      {/* Upper Arm Capsule */}
+      <line
+        x1={joints.shoulder.x}
+        y1={joints.shoulder.y}
+        x2={joints.elbow.x}
+        y2={joints.elbow.y}
+        stroke={color}
+        strokeWidth={upperW}
+        strokeLinecap="round"
+      />
+      {/* Forearm Capsule */}
+      <line
+        x1={joints.elbow.x}
+        y1={joints.elbow.y}
+        x2={joints.wrist.x}
+        y2={joints.wrist.y}
+        stroke={color}
+        strokeWidth={foreW}
+        strokeLinecap="round"
+      />
+      {/* Thin White Skeletal Core Lines */}
+      {isActive && !compact && (
+        <>
+          <line
+            x1={joints.shoulder.x}
+            y1={joints.shoulder.y}
+            x2={joints.elbow.x}
+            y2={joints.elbow.y}
+            stroke="#FFFFFF"
+            strokeWidth={2.2}
+            strokeLinecap="round"
+            opacity={0.9}
+          />
+          <line
+            x1={joints.elbow.x}
+            y1={joints.elbow.y}
+            x2={joints.wrist.x}
+            y2={joints.wrist.y}
+            stroke="#FFFFFF"
+            strokeWidth={2}
+            strokeLinecap="round"
+            opacity={0.9}
+          />
+        </>
+      )}
+      {/* Articulated Palm */}
+      <line
+        x1={joints.wrist.x}
+        y1={joints.wrist.y}
+        x2={joints.hand.x}
+        y2={joints.hand.y}
+        stroke={color}
+        strokeWidth={isActive ? 7.5 : 6}
+        strokeLinecap="round"
+      />
+      {/* Clinical Joint Pivot Circles: Shoulder, Elbow, Wrist */}
+      <circle
+        cx={joints.shoulder.x}
+        cy={joints.shoulder.y}
+        r={isActive ? 5.5 : 4}
+        fill="#FFFFFF"
+        stroke={color}
+        strokeWidth={2.5}
+      />
+      <circle
+        cx={joints.elbow.x}
+        cy={joints.elbow.y}
+        r={isActive ? 4.5 : 3.2}
+        fill="#FFFFFF"
+        stroke={color}
+        strokeWidth={2.2}
+      />
+      <circle
+        cx={joints.hand.x}
+        cy={joints.hand.y}
+        r={isActive ? 4.2 : 3}
+        fill={isActive ? color : '#94A3B8'}
+        stroke="#FFFFFF"
+        strokeWidth={1.5}
+      />
+    </g>
+  );
 }
 
 export function ExercisePostureSvg({
@@ -1034,521 +1273,638 @@ export function ExercisePostureSvg({
   const spec = useMemo(() => resolveExercisePostureSpec(exercise, lang), [exercise, lang]);
   const accent = spec.primaryColor;
   const mutedBody = '#0F4C81';
-  const mutedLimb = '#94A3B8';
+  const mutedLimb = '#CBD5E1';
   const activeIsLeft = spec.side === 'left';
-  const targetRom = Math.min(170, Math.max(20, Math.round(exercise.target_rom_deg || 120)));
+  const targetRom = Math.min(172, Math.max(20, Math.round(exercise.target_rom_deg || 128)));
+  const holdSec = Math.max(1, Number(exercise.hold_sec || 3));
 
-  const transition =
-    phase === 'auto'
-      ? { repeat: Infinity, duration: 3.6, times: [0, 0.35, 0.72, 1], ease: 'easeInOut' as const }
-      : { duration: 0.45, ease: 'easeOut' as const };
+  const [cycle, setCycle] = useState<PostureCycleState>(() =>
+    computePostureCycleState(phase, 0, holdSec),
+  );
 
-  // Mirror screen convention (R on right side of viewer, L on left side of viewer)
-  const rightPivotX = 110;
-  const leftPivotX = 70;
-  const shoulderY = 62;
+  useEffect(() => {
+    if (phase !== 'auto') {
+      setCycle(computePostureCycleState(phase, 0, holdSec));
+      return;
+    }
+    let rafId = 0;
+    const startAt = performance.now();
+    let lastRenderAt = 0;
+    const minIntervalMs = compact ? 50 : 16;
 
-  const renderHandCloseUp = () => {
-    const wristRotate = getPhaseKeyframe(phase, [18, -14, -26, 18]);
-    const fingerSpread = getPhaseKeyframe(phase, [0, 12, 18, 0]);
-    const fingerCurl = getPhaseKeyframe(phase, [28, 6, 0, 28]);
-    const flipX = activeIsLeft ? -1 : 1;
+    const tick = (now: number) => {
+      if (now - lastRenderAt >= minIntervalMs) {
+        lastRenderAt = now;
+        setCycle(computePostureCycleState('auto', now - startAt, holdSec));
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [phase, holdSec, compact]);
 
-    return (
-      <g transform={`translate(90, 96) scale(${flipX}, 1)`}>
-        {/* Forearm base */}
-        <line x1="-58" y1="24" x2="-10" y2="10" stroke={mutedBody} strokeWidth="14" strokeLinecap="round" />
-        <line x1="-58" y1="24" x2="-10" y2="10" stroke="#BAE6FD" strokeWidth="8" strokeLinecap="round" />
-        {/* Wrist joint halo */}
-        <circle cx="-10" cy="10" r="8" fill={accent} fillOpacity="0.22" stroke={accent} strokeWidth="2.5" />
-        {/* Articulated Palm + 5 Fingers */}
-        <motion.g animate={{ rotate: wristRotate }} transition={transition}>
-          <rect x="-8" y="-12" width="32" height="30" rx="10" fill={accent} fillOpacity="0.18" stroke={accent} strokeWidth="3" />
-          {/* Thumb + 4 Fingers (separate static translate wrapper so Framer Motion rotate preserves origin) */}
-          {[-34, -14, -3, 8, 20].map((baseDeg, i) => {
-            const tx = i === 0 ? 6 : 22;
-            const ty = i === 0 ? -10 : -8 + (i - 1) * 7;
-            return (
-              <g key={i} transform={`translate(${tx}, ${ty})`}>
-                <motion.g
-                  animate={{
-                    rotate: Array.isArray(fingerSpread)
-                      ? fingerSpread.map(
-                          (sp, idx) =>
-                            baseDeg * (1 + sp / 30) +
-                            (Array.isArray(fingerCurl) ? fingerCurl[idx] : fingerCurl),
-                        )
-                      : baseDeg * (1 + (fingerSpread as number) / 30) + (fingerCurl as number),
-                  }}
-                  transition={transition}
-                >
-                  <line
-                    x1="0"
-                    y1="0"
-                    x2={i === 0 ? 18 : i === 4 ? 22 : 28}
-                    y2="0"
-                    stroke={accent}
-                    strokeWidth="5"
-                    strokeLinecap="round"
-                  />
-                </motion.g>
-              </g>
-            );
-          })}
-        </motion.g>
-        {!compact && (
-          <path d="M 10 -32 Q 30 -36 38 -18" fill="none" stroke={accent} strokeWidth="2.5" strokeDasharray="4 3" />
-        )}
-      </g>
-    );
-  };
+  const p = cycle.progress;
 
-  const renderNeckTilt = () => {
-    const tiltDeg = activeIsLeft ? getPhaseKeyframe(phase, [0, -18, -26, 0]) : getPhaseKeyframe(phase, [0, 18, 26, 0]);
+  const renderSideSagittalView = (mode: 'flexion' | 'pendulum') => {
+    const faceDir: 1 | -1 = activeIsLeft ? -1 : 1;
+    const shoulderX = 88;
+    const shoulderY = 82;
+    const currentAngleDeg =
+      mode === 'pendulum'
+        ? (Math.sin(p * Math.PI * 2) * 18)
+        : p * targetRom;
+    const activeElbowBend = mode === 'pendulum' ? 3 : 8;
+
+    const activeJoints = computeUpperLimbFkJoints({
+      shoulderX,
+      shoulderY,
+      upperArmLen: 38,
+      forearmLen: 34,
+      handLen: 9,
+      angleDeg: currentAngleDeg,
+      elbowBendDeg: activeElbowBend,
+      dirSign: 1,
+    });
+    const ghostJoints = computeUpperLimbFkJoints({
+      shoulderX,
+      shoulderY,
+      upperArmLen: 38,
+      forearmLen: 34,
+      handLen: 9,
+      angleDeg: targetRom,
+      elbowBendDeg: activeElbowBend,
+      dirSign: 1,
+    });
+    const arc = buildRomGuideArc(shoulderX, shoulderY, 50, targetRom, 1);
+
+    const leanAngle = mode === 'pendulum' ? 18 : 0;
+
     return (
       <g>
-        {/* Reference vertical plumb */}
-        {!compact && (
-          <line x1="90" y1="22" x2="90" y2="148" stroke="#CBD5E1" strokeWidth="2" strokeDasharray="4 4" />
-        )}
-        {/* Level flat shoulders bar */}
-        <line x1="48" y1="92" x2="132" y2="92" stroke={mutedBody} strokeWidth="9" strokeLinecap="round" />
-        <path d="M 64 92 L 66 154 L 114 154 L 116 92 Z" fill="#E0F2FE" stroke={mutedBody} strokeWidth="3.5" strokeLinejoin="round" />
-        <circle cx="52" cy="92" r="5" fill="#64748B" />
-        <circle cx="128" cy="92" r="5" fill="#64748B" />
-        {/* Tilting Neck + Head */}
-        <g transform="translate(90, 90)">
-          <motion.g animate={{ rotate: tiltDeg }} transition={transition}>
-            <line x1="0" y1="0" x2="0" y2="-22" stroke={accent} strokeWidth="10" strokeLinecap="round" />
-            <circle cx="0" cy="-38" r="18" fill="#FFFFFF" stroke={accent} strokeWidth="4" />
-            {/* Face orientation cues */}
-            <circle cx="-6" cy="-40" r="2.2" fill={mutedBody} />
-            <circle cx="6" cy="-40" r="2.2" fill={mutedBody} />
-            <path d="M -5 -32 Q 0 -29 5 -32" fill="none" stroke={mutedBody} strokeWidth="2" strokeLinecap="round" />
-          </motion.g>
-        </g>
-        {!compact && (
-          <path
-            d={activeIsLeft ? 'M 84 26 Q 60 28 50 48' : 'M 96 26 Q 120 28 130 48'}
-            fill="none"
-            stroke={accent}
-            strokeWidth="3"
-            strokeDasharray="4 3"
-          />
-        )}
-      </g>
-    );
-  };
+        <g transform={faceDir === -1 ? 'translate(200, 0) scale(-1, 1)' : undefined}>
+          {/* Ground floor baseline */}
+          <line x1="28" y1="186" x2="174" y2="186" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
 
-  const renderSideProfileRaise = (mode: 'flexion' | 'pendulum') => {
-    const faceDir = activeIsLeft ? -1 : 1;
-    const armAngles =
-      mode === 'pendulum'
-        ? getPhaseKeyframe(phase, [-16, 16, -14, -16])
-        : getPhaseKeyframe(phase, [0, -Math.min(130, targetRom) * 0.65, -Math.min(145, targetRom), 0]);
-    const leanDeg = mode === 'pendulum' ? 20 : 0;
-    const targetPeakRad = ((-Math.min(145, targetRom) + 90) * Math.PI) / 180;
-
-    return (
-      <g transform={`translate(90, 0) scale(${faceDir}, 1) translate(-90, 0)`}>
-        {/* Floor baseline */}
-        <line x1="34" y1="158" x2="146" y2="158" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
-        {/* Support table/chair for Codman Pendulum */}
-        {mode === 'pendulum' && (
-          <path d="M 118 158 L 118 108 L 144 108" fill="none" stroke="#94A3B8" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-        )}
-        {/* Standing legs */}
-        <line x1="84" y1="108" x2="88" y2="156" stroke={mutedBody} strokeWidth="6" strokeLinecap="round" />
-        <line x1="84" y1="108" x2="76" y2="156" stroke={mutedLimb} strokeWidth="5" strokeLinecap="round" />
-        {/* Torso & Head */}
-        <g transform={`translate(84, 108) rotate(${leanDeg})`}>
-          {/* Vertical 0° spine reference */}
-          {!compact && mode === 'flexion' && (
-            <line x1="0" y1="10" x2="0" y2="-68" stroke="#CBD5E1" strokeWidth="2" strokeDasharray="4 4" />
-          )}
-          <line x1="0" y1="0" x2="0" y2="-48" stroke={mutedBody} strokeWidth="7" strokeLinecap="round" />
-          <circle cx="2" cy="-64" r="12" fill={mutedBody} />
-          {/* Profile nose cue showing forward direction */}
-          <path d="M 12 -66 L 17 -62 L 12 -59" fill={mutedBody} />
-
-          {/* Opposite support arm */}
+          {/* Support Table/Chair for Codman Pendulum */}
           {mode === 'pendulum' && (
-            <line x1="0" y1="-44" x2="36" y2="-10" stroke={mutedLimb} strokeWidth="5" strokeLinecap="round" />
-          )}
-
-          {/* Peak Target Ghost Line */}
-          {!compact && mode === 'flexion' && (
-            <line
-              x1="0"
-              y1="-44"
-              x2={Math.cos(targetPeakRad) * 44}
-              y2={-44 + Math.sin(targetPeakRad) * 44}
-              stroke={accent}
-              strokeWidth="2.5"
-              strokeDasharray="4 4"
-              opacity="0.55"
+            <path
+              d="M 134 186 L 134 126 L 166 126"
+              fill="none"
+              stroke="#94A3B8"
+              strokeWidth="5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
             />
           )}
 
-          {/* Prescribed Moving Arm from Shoulder (0, -44) */}
-          <g transform="translate(0, -44)">
-            <motion.g animate={{ rotate: armAngles }} transition={transition}>
-              <line x1="0" y1="0" x2="0" y2="44" stroke={accent} strokeWidth="7" strokeLinecap="round" />
-              <circle cx="0" cy="44" r="5" fill={accent} />
-            </motion.g>
-            <circle cx="0" cy="0" r="6" fill="#FFFFFF" stroke={accent} strokeWidth="3" />
+          {/* Standing Side-Profile Legs (Natural Parallel Profile, NO splayed sticks) */}
+          <g>
+            <line x1="82" y1="132" x2="77" y2="182" stroke={mutedLimb} strokeWidth="11" strokeLinecap="round" />
+            <line x1="77" y1="182" x2="86" y2="182" stroke={mutedLimb} strokeWidth="7" strokeLinecap="round" />
+            <line x1="86" y1="132" x2="88" y2="158" stroke="#1E3A5F" strokeWidth="12" strokeLinecap="round" />
+            <line x1="88" y1="158" x2="87" y2="182" stroke="#1E3A5F" strokeWidth="10.5" strokeLinecap="round" />
+            <line x1="85" y1="182" x2="98" y2="182" stroke="#1E3A5F" strokeWidth="7.5" strokeLinecap="round" />
           </g>
 
-          {/* Pendulum circular sweep cue */}
-          {!compact && mode === 'pendulum' && (
-            <ellipse cx="0" cy="4" rx="18" ry="6" fill="none" stroke={accent} strokeWidth="2.5" strokeDasharray="4 3" />
-          )}
+          {/* Torso + Neck + Clear Side-Profile Head (nose & chin facing forward) */}
+          <g transform={leanAngle ? `rotate(${leanAngle}, 84, 132)` : undefined}>
+            {!compact && mode === 'flexion' && (
+              <line x1="82" y1="36" x2="82" y2="136" stroke="#CBD5E1" strokeWidth="1.8" strokeDasharray="4 4" />
+            )}
+
+            {mode === 'pendulum' ? (
+              <line x1="88" y1="84" x2="136" y2="124" stroke="#94A3B8" strokeWidth="8.5" strokeLinecap="round" />
+            ) : (
+              <line x1="83" y1="84" x2="81" y2="140" stroke={mutedLimb} strokeWidth="9" strokeLinecap="round" opacity={0.55} />
+            )}
+
+            {/* Side-Profile Anatomical Torso Capsule (rounded back + natural chest contour) */}
+            <path
+              d="M 74 78 C 72 95, 73 118, 76 134 C 82 138, 92 138, 95 132 C 98 116, 102 96, 98 76 C 94 69, 78 69, 74 78 Z"
+              fill="#DBEAFE"
+              stroke={mutedBody}
+              strokeWidth="2.8"
+              strokeLinejoin="round"
+            />
+
+            {/* Side Neck Capsule */}
+            <line x1="85" y1="62" x2="86" y2="75" stroke="#BAE6FD" strokeWidth="11" strokeLinecap="round" />
+            <line x1="85" y1="62" x2="86" y2="75" stroke={mutedBody} strokeWidth="2.6" strokeLinecap="round" opacity={0.4} />
+
+            {/* Clear Side-Profile Head with Forehead, Nose, Chin */}
+            <path
+              d="M 73 46 C 72 34, 82 28, 92 30 C 98 32, 100 38, 100 42 L 105 47 C 106 49, 103 50, 100 50 L 99 54 C 99 58, 94 61, 86 61 C 78 61, 73 54, 73 46 Z"
+              fill="#FFFFFF"
+              stroke={mutedBody}
+              strokeWidth="2.8"
+              strokeLinejoin="round"
+            />
+            <circle cx="93" cy="41" r="2" fill={mutedBody} />
+            <path d="M 81 44 C 83 44, 83 50, 81 50" fill="none" stroke="#94A3B8" strokeWidth="1.8" strokeLinecap="round" />
+
+            {/* ROM Guide Arc + Ghost Target Arm */}
+            {!compact && mode === 'flexion' && (
+              <>
+                <CapsuleArmLimb
+                  joints={ghostJoints}
+                  color={accent}
+                  isActive
+                  isGhost
+                />
+                <path
+                  d={arc.d}
+                  fill="none"
+                  stroke={accent}
+                  strokeWidth="2.6"
+                  strokeDasharray="5 4"
+                  opacity="0.88"
+                />
+                <circle cx={arc.endX} cy={arc.endY} r="3.5" fill={accent} />
+              </>
+            )}
+
+            {/* Active Capsule Limb driven cleanly by Hierarchical Forward Kinematics */}
+            <CapsuleArmLimb
+              joints={activeJoints}
+              color={accent}
+              isActive
+              compact={compact}
+            />
+
+            {!compact && mode === 'pendulum' && (
+              <ellipse
+                cx={shoulderX}
+                cy={shoulderY + 72}
+                rx="22"
+                ry="7"
+                fill="none"
+                stroke={accent}
+                strokeWidth="2.4"
+                strokeDasharray="4 3"
+              />
+            )}
+          </g>
         </g>
+
+        {/* Upright Non-Mirrored Live Angle Pill */}
+        {!compact && mode === 'flexion' && (
+          <g>
+            <rect
+              x={faceDir === -1 ? 16 : 136}
+              y="14"
+              width="48"
+              height="22"
+              rx="11"
+              fill="#FFFFFF"
+              stroke={accent}
+              strokeWidth="1.8"
+            />
+            <text
+              x={faceDir === -1 ? 40 : 160}
+              y="29"
+              textAnchor="middle"
+              fontSize="11"
+              fontWeight="800"
+              fill={mutedBody}
+            >
+              {Math.round(currentAngleDeg)}°
+            </text>
+          </g>
+        )}
       </g>
     );
   };
 
-  const renderSquatOrKnee = () => {
-    if (spec.kind === 'chair_squat') {
-      const hipDropY = getPhaseKeyframe(phase, [34, 16, 0, 34]);
-      const kneeForwardX = getPhaseKeyframe(phase, [28, 16, 2, 28]);
-      return (
-        <g>
-          <line x1="28" y1="158" x2="152" y2="158" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
-          {/* Chair silhouette */}
-          <path d="M 48 158 L 48 112 L 80 112 L 80 158 M 48 112 L 48 74" fill="none" stroke="#94A3B8" strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round" />
-          {/* Animated Sit-to-Stand figure facing right */}
-          <motion.g
-            animate={{
-              y: hipDropY,
-            }}
-            transition={transition}
-          >
-            <line x1="72" y1="74" x2="76" y2="108" stroke={mutedBody} strokeWidth="7.5" strokeLinecap="round" />
-            <circle cx="75" cy="56" r="11" fill={mutedBody} />
-            <line x1="74" y1="80" x2="106" y2="96" stroke={accent} strokeWidth="5.5" strokeLinecap="round" />
-          </motion.g>
-          {/* Dynamic Thigh + Shin */}
-          <motion.line
-            animate={{
-              x1: 76,
-              y1: Array.isArray(hipDropY) ? hipDropY.map((d) => 108 + d) : 108 + (hipDropY as number),
-              x2: Array.isArray(kneeForwardX) ? kneeForwardX.map((k) => 86 + k) : 86 + (kneeForwardX as number),
-              y2: Array.isArray(hipDropY) ? hipDropY.map((d) => 128 + d * 0.2) : 128 + (hipDropY as number) * 0.2,
-            }}
-            transition={transition}
-            stroke={accent}
-            strokeWidth="7.5"
-            strokeLinecap="round"
-          />
-          <motion.line
-            animate={{
-              x1: Array.isArray(kneeForwardX) ? kneeForwardX.map((k) => 86 + k) : 86 + (kneeForwardX as number),
-              y1: Array.isArray(hipDropY) ? hipDropY.map((d) => 128 + d * 0.2) : 128 + (hipDropY as number) * 0.2,
-              x2: 96,
-              y2: 156,
-            }}
-            transition={transition}
-            stroke={accent}
-            strokeWidth="7"
-            strokeLinecap="round"
-          />
-        </g>
-      );
-    }
+  const renderCoronalFrontUpperBody = () => {
+    const leftShX = 72;
+    const rightShX = 128;
+    const shoulderY = 82;
 
-    if (spec.kind === 'knee_extension') {
-      const shinAngles = getPhaseKeyframe(phase, [0, -52, -84, 0]);
-      return (
-        <g transform={`translate(90, 0) scale(${activeIsLeft ? -1 : 1}, 1) translate(-90, 0)`}>
-          <line x1="28" y1="158" x2="152" y2="158" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
-          {/* Chair */}
-          <path d="M 48 158 L 48 114 L 88 114 L 88 158 M 48 114 L 48 70" fill="none" stroke="#94A3B8" strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round" />
-          {/* Seated Upright Body */}
-          <line x1="66" y1="68" x2="66" y2="112" stroke={mutedBody} strokeWidth="7.5" strokeLinecap="round" />
-          <circle cx="66" cy="50" r="11" fill={mutedBody} />
-          {/* Thigh */}
-          <line x1="66" y1="112" x2="100" y2="112" stroke={mutedBody} strokeWidth="7.5" strokeLinecap="round" />
-          {/* Hinged Lower Leg at Knee (100, 112) */}
-          <g transform="translate(100, 112)">
-            <motion.g animate={{ rotate: shinAngles }} transition={transition}>
-              <line x1="0" y1="0" x2="0" y2="42" stroke={accent} strokeWidth="7.5" strokeLinecap="round" />
-              <circle cx="4" cy="42" r="4.5" fill={accent} />
-            </motion.g>
-            <circle cx="0" cy="0" r="6" fill="#FFFFFF" stroke={accent} strokeWidth="3" />
-          </g>
-        </g>
-      );
-    }
-
-    if (spec.kind === 'heel_raise') {
-      const heelLiftY = getPhaseKeyframe(phase, [0, -9, -15, 0]);
-      return (
-        <g>
-          <line x1="28" y1="158" x2="152" y2="158" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
-          {/* Chair support */}
-          <path d="M 42 158 L 42 96 L 62 96" fill="none" stroke="#94A3B8" strokeWidth="4" strokeLinecap="round" />
-          <motion.g animate={{ y: heelLiftY }} transition={transition}>
-            <circle cx="90" cy="36" r="11" fill={mutedBody} />
-            <line x1="90" y1="48" x2="90" y2="92" stroke={mutedBody} strokeWidth="7" strokeLinecap="round" />
-            <line x1="90" y1="60" x2="62" y2="94" stroke={mutedLimb} strokeWidth="5" strokeLinecap="round" />
-            <line x1="84" y1="92" x2="84" y2="152" stroke={activeIsLeft ? accent : mutedLimb} strokeWidth="6.5" strokeLinecap="round" />
-            <line x1="98" y1="92" x2="98" y2="152" stroke={activeIsLeft ? mutedLimb : accent} strokeWidth="6.5" strokeLinecap="round" />
-          </motion.g>
-          {!compact && (
-            <path d="M 122 146 L 122 126 M 117 132 L 122 126 L 127 132" fill="none" stroke={accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-          )}
-        </g>
-      );
-    }
-
-    // hip_march & single_leg_balance (Front view)
-    const raiseLeg = spec.kind === 'hip_march';
-    const liftedY = raiseLeg ? getPhaseKeyframe(phase, [156, 130, 114, 156]) : 128;
-    const isLeftActive = activeIsLeft;
-
-    return (
-      <g>
-        <line x1="34" y1="158" x2="146" y2="158" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
-        {!compact && <line x1="90" y1="22" x2="90" y2="158" stroke="#E2E8F0" strokeWidth="2" strokeDasharray="4 4" />}
-        <circle cx="90" cy="34" r="11" fill={mutedBody} />
-        <line x1="90" y1="46" x2="90" y2="96" stroke={mutedBody} strokeWidth="7" strokeLinecap="round" />
-        <line x1="70" y1="60" x2="110" y2="60" stroke={mutedBody} strokeWidth="6" strokeLinecap="round" />
-        <line x1="70" y1="60" x2="58" y2="96" stroke={mutedLimb} strokeWidth="5" strokeLinecap="round" />
-        <line x1="110" y1="60" x2="122" y2="96" stroke={mutedLimb} strokeWidth="5" strokeLinecap="round" />
-        {/* Left leg (screen left) */}
-        <motion.line
-          x1="82"
-          y1="96"
-          x2="76"
-          animate={{ y2: raiseLeg ? (isLeftActive ? liftedY : 156) : isLeftActive ? 156 : liftedY }}
-          transition={transition}
-          stroke={isLeftActive ? accent : mutedLimb}
-          strokeWidth="6.5"
-          strokeLinecap="round"
-        />
-        {/* Right leg (screen right) */}
-        <motion.line
-          x1="98"
-          y1="96"
-          x2="104"
-          animate={{ y2: raiseLeg ? (isLeftActive ? 156 : liftedY) : isLeftActive ? liftedY : 156 }}
-          transition={transition}
-          stroke={isLeftActive ? mutedLimb : accent}
-          strokeWidth="6.5"
-          strokeLinecap="round"
-        />
-      </g>
-    );
-  };
-
-  const renderFrontUpperBody = () => {
     const isBilateral = spec.kind === 'bilateral_arm_raise';
     const isShrug = spec.kind === 'shoulder_shrug_roll';
     const isElbow = spec.kind === 'elbow_flexion';
     const isRot = spec.kind === 'shoulder_rotation';
     const isTrunk = spec.kind === 'trunk_align';
 
-    const shrugY = isShrug ? getPhaseKeyframe(phase, [0, -7, -10, 0]) : 0;
+    const shrugDropOffset = isShrug ? -9 * p : 0;
+    const curShY = shoulderY + shrugDropOffset;
 
-    // Arm peak degrees from straight down: Right sweeps CCW (-deg), Left sweeps CW (+deg)
-    const peakArmDeg =
+    const resolvedPeakDeg =
       spec.kind === 'shoulder_overhead' || spec.kind === 'shoulder_wall_slide' || isBilateral
-        ? 156
+        ? Math.min(168, Math.max(135, targetRom))
         : spec.kind === 'shoulder_scaption'
-          ? 122
-          : 128;
+          ? Math.min(145, targetRom)
+          : targetRom;
 
-    const rArmRotate = isBilateral
-      ? getPhaseKeyframe(phase, [0, -90, -peakArmDeg, 0])
+    const rAngle = isBilateral
+      ? p * resolvedPeakDeg
       : !activeIsLeft && !isShrug && !isElbow && !isRot && !isTrunk
-        ? getPhaseKeyframe(phase, [0, -peakArmDeg * 0.65, -peakArmDeg, 0])
-        : 0;
-
-    const lArmRotate = isBilateral
-      ? getPhaseKeyframe(phase, [0, 90, peakArmDeg, 0])
+        ? p * resolvedPeakDeg
+        : 6;
+    const lAngle = isBilateral
+      ? p * resolvedPeakDeg
       : activeIsLeft && !isShrug && !isElbow && !isRot && !isTrunk
-        ? getPhaseKeyframe(phase, [0, peakArmDeg * 0.65, peakArmDeg, 0])
-        : 0;
+        ? p * resolvedPeakDeg
+        : 6;
 
-    const forearmBendDeg = isElbow
-      ? getPhaseKeyframe(phase, [0, 82, 132, 0])
+    const rElbowBend = isElbow && !activeIsLeft ? -p * 145 : !activeIsLeft ? 6 : 4;
+    const lElbowBend = isElbow && activeIsLeft ? -p * 145 : activeIsLeft ? 6 : 4;
+
+    const rightJoints = computeUpperLimbFkJoints({
+      shoulderX: rightShX,
+      shoulderY: curShY,
+      upperArmLen: 36,
+      forearmLen: 32,
+      handLen: 9,
+      angleDeg: isRot && !activeIsLeft ? 5 : rAngle,
+      elbowBendDeg: isRot && !activeIsLeft ? 88 * (1 - p * 0.45) : rElbowBend,
+      dirSign: 1,
+    });
+    const leftJoints = computeUpperLimbFkJoints({
+      shoulderX: leftShX,
+      shoulderY: curShY,
+      upperArmLen: 36,
+      forearmLen: 32,
+      handLen: 9,
+      angleDeg: isRot && activeIsLeft ? 5 : lAngle,
+      elbowBendDeg: isRot && activeIsLeft ? 88 * (1 - p * 0.45) : lElbowBend,
+      dirSign: -1,
+    });
+
+    // Override horizontal forearm sweep for shoulder external rotation
+    if (isRot) {
+      if (!activeIsLeft) {
+        rightJoints.elbow = { x: rightShX + 2, y: shoulderY + 34 };
+        rightJoints.wrist = { x: rightShX + 2 + p * 32, y: shoulderY + 36 };
+        rightJoints.hand = { x: rightJoints.wrist.x + 8, y: rightJoints.wrist.y };
+      } else {
+        leftJoints.elbow = { x: leftShX - 2, y: shoulderY + 34 };
+        leftJoints.wrist = { x: leftShX - 2 - p * 32, y: shoulderY + 36 };
+        leftJoints.hand = { x: leftJoints.wrist.x - 8, y: leftJoints.wrist.y };
+      }
+    }
+
+    const rGhostJoints = computeUpperLimbFkJoints({
+      shoulderX: rightShX,
+      shoulderY,
+      upperArmLen: 36,
+      forearmLen: 32,
+      handLen: 9,
+      angleDeg: resolvedPeakDeg,
+      elbowBendDeg: 6,
+      dirSign: 1,
+    });
+    const lGhostJoints = computeUpperLimbFkJoints({
+      shoulderX: leftShX,
+      shoulderY,
+      upperArmLen: 36,
+      forearmLen: 32,
+      handLen: 9,
+      angleDeg: resolvedPeakDeg,
+      elbowBendDeg: 6,
+      dirSign: -1,
+    });
+
+    const showRightGhost = (!activeIsLeft || isBilateral) && !isShrug && !isElbow && !isRot && !isTrunk;
+    const showLeftGhost = (activeIsLeft || isBilateral) && !isShrug && !isElbow && !isRot && !isTrunk;
+    const rightArc = buildRomGuideArc(rightShX, shoulderY, 46, resolvedPeakDeg, 1);
+    const leftArc = buildRomGuideArc(leftShX, shoulderY, 46, resolvedPeakDeg, -1);
+
+    const activeReadoutDeg = isElbow
+      ? Math.round(165 - p * 120)
       : isRot
-        ? getPhaseKeyframe(phase, [0, 46, 78, 0])
-        : 0;
+        ? Math.round(p * Math.min(90, targetRom))
+        : Math.round(p * resolvedPeakDeg);
 
     return (
       <g>
-        <line x1="34" y1="158" x2="146" y2="158" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
-        {/* Wall guide for wall slide */}
+        <line x1="28" y1="186" x2="172" y2="186" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
+
+        {/* Wall reference line for wall-slide */}
         {spec.kind === 'shoulder_wall_slide' && !compact && (
           <line
-            x1={activeIsLeft ? 34 : 146}
-            y1="20"
-            x2={activeIsLeft ? 34 : 146}
-            y2="156"
+            x1={activeIsLeft ? 32 : 168}
+            y1="16"
+            x2={activeIsLeft ? 32 : 168}
+            y2="184"
             stroke="#94A3B8"
-            strokeWidth="4"
+            strokeWidth="4.5"
             strokeDasharray="6 4"
           />
         )}
-        {/* Spine axis for trunk align */}
+
+        {/* Spine Alignment Axis */}
         {isTrunk && !compact && (
-          <line x1="90" y1="16" x2="90" y2="156" stroke={accent} strokeWidth="3" strokeDasharray="5 4" />
+          <line x1="100" y1="18" x2="100" y2="184" stroke={accent} strokeWidth="2.5" strokeDasharray="5 4" />
         )}
-        {/* Standing legs */}
-        <line x1="84" y1="110" x2="78" y2="156" stroke={mutedBody} strokeWidth="6" strokeLinecap="round" />
-        <line x1="96" y1="110" x2="102" y2="156" stroke={mutedBody} strokeWidth="6" strokeLinecap="round" />
-        {/* Pelvis & Torso */}
-        <path d="M 74 62 L 106 62 L 100 110 L 80 110 Z" fill="#E0F2FE" stroke={mutedBody} strokeWidth="3.5" strokeLinejoin="round" />
-        <circle cx="90" cy="36" r="12" fill={mutedBody} />
 
-        {/* Shoulder Bar (elevates in Shrug) */}
-        <motion.g animate={{ y: shrugY }} transition={transition}>
-          <line x1={leftPivotX} y1={shoulderY} x2={rightPivotX} y2={shoulderY} stroke={mutedBody} strokeWidth="7" strokeLinecap="round" />
+        {/* Symmetrical Parallel Capsule Legs */}
+        <line x1="89" y1="132" x2="88" y2="181" stroke="#1E3A5F" strokeWidth="11.5" strokeLinecap="round" />
+        <line x1="82" y1="182" x2="91" y2="182" stroke="#1E3A5F" strokeWidth="7" strokeLinecap="round" />
+        <line x1="111" y1="132" x2="112" y2="181" stroke="#1E3A5F" strokeWidth="11.5" strokeLinecap="round" />
+        <line x1="109" y1="182" x2="118" y2="182" stroke="#1E3A5F" strokeWidth="7" strokeLinecap="round" />
 
-          {/* Left Arm (Screen Left) */}
-          <g transform={`translate(${leftPivotX}, ${shoulderY})`}>
-            {isElbow && activeIsLeft ? (
-              <g>
-                <line x1="0" y1="0" x2="-4" y2="24" stroke={accent} strokeWidth="6.5" strokeLinecap="round" />
-                <g transform="translate(-4, 24)">
-                  <motion.g animate={{ rotate: forearmBendDeg }} transition={transition}>
-                    <line x1="0" y1="0" x2="-4" y2="24" stroke={accent} strokeWidth="6.5" strokeLinecap="round" />
-                    <circle cx="-4" cy="24" r="4.5" fill={accent} />
-                  </motion.g>
-                  <circle cx="0" cy="0" r="5" fill="#FFFFFF" stroke={accent} strokeWidth="2.5" />
-                </g>
-              </g>
-            ) : isRot && activeIsLeft ? (
-              <g>
-                <line x1="0" y1="0" x2="-2" y2="24" stroke={accent} strokeWidth="6" strokeLinecap="round" />
-                <motion.line
-                  x1="-2"
-                  y1="24"
-                  animate={{
-                    x2: Array.isArray(forearmBendDeg) ? forearmBendDeg.map((d) => -2 - (d / 78) * 28) : -2 - ((forearmBendDeg as number) / 78) * 28,
-                    y2: 28,
-                  }}
-                  transition={transition}
-                  stroke={accent}
-                  strokeWidth="6"
-                  strokeLinecap="round"
-                />
-              </g>
-            ) : (
-              <motion.g animate={{ rotate: lArmRotate }} transition={transition}>
-                <line
-                  x1="0"
-                  y1="0"
-                  x2="-4"
-                  y2="46"
-                  stroke={activeIsLeft || isBilateral || isShrug ? accent : mutedLimb}
-                  strokeWidth={activeIsLeft || isBilateral ? '7' : '5.5'}
-                  strokeLinecap="round"
-                />
-                <circle cx="-4" cy="46" r="4.5" fill={activeIsLeft || isBilateral || isShrug ? accent : mutedLimb} />
-              </motion.g>
-            )}
-            <circle
-              cx="0"
-              cy="0"
-              r="5.5"
-              fill="#FFFFFF"
-              stroke={activeIsLeft || isBilateral || isShrug ? accent : mutedLimb}
-              strokeWidth="2.5"
-            />
-          </g>
+        {/* Symmetrical Anatomical Torso Capsule */}
+        <path
+          d="M 72 78 C 72 72, 128 72, 128 78 L 120 132 C 118 136, 82 136, 80 132 Z"
+          fill="#DBEAFE"
+          stroke={mutedBody}
+          strokeWidth="2.8"
+          strokeLinejoin="round"
+        />
+        {/* Neck + Symmetrical Head */}
+        <line x1="100" y1="60" x2="100" y2="75" stroke="#BAE6FD" strokeWidth="11" strokeLinecap="round" />
+        <circle cx="100" cy="44" r="15" fill="#FFFFFF" stroke={mutedBody} strokeWidth="2.8" />
+        <circle cx="94" cy="42" r="1.8" fill={mutedBody} />
+        <circle cx="106" cy="42" r="1.8" fill={mutedBody} />
+        <path d="M 95 49 Q 100 52 105 49" fill="none" stroke={mutedBody} strokeWidth="1.8" strokeLinecap="round" />
 
-          {/* Right Arm (Screen Right) */}
-          <g transform={`translate(${rightPivotX}, ${shoulderY})`}>
-            {isElbow && !activeIsLeft ? (
-              <g>
-                <line x1="0" y1="0" x2="4" y2="24" stroke={accent} strokeWidth="6.5" strokeLinecap="round" />
-                <g transform="translate(4, 24)">
-                  <motion.g
-                    animate={{
-                      rotate: Array.isArray(forearmBendDeg) ? forearmBendDeg.map((d) => -d) : -(forearmBendDeg as number),
-                    }}
-                    transition={transition}
-                  >
-                    <line x1="0" y1="0" x2="4" y2="24" stroke={accent} strokeWidth="6.5" strokeLinecap="round" />
-                    <circle cx="4" cy="24" r="4.5" fill={accent} />
-                  </motion.g>
-                  <circle cx="0" cy="0" r="5" fill="#FFFFFF" stroke={accent} strokeWidth="2.5" />
-                </g>
-              </g>
-            ) : isRot && !activeIsLeft ? (
-              <g>
-                <line x1="0" y1="0" x2="2" y2="24" stroke={accent} strokeWidth="6" strokeLinecap="round" />
-                <motion.line
-                  x1="2"
-                  y1="24"
-                  animate={{
-                    x2: Array.isArray(forearmBendDeg) ? forearmBendDeg.map((d) => 2 + (d / 78) * 28) : 2 + ((forearmBendDeg as number) / 78) * 28,
-                    y2: 28,
-                  }}
-                  transition={transition}
-                  stroke={accent}
-                  strokeWidth="6"
-                  strokeLinecap="round"
-                />
-              </g>
-            ) : (
-              <motion.g animate={{ rotate: rArmRotate }} transition={transition}>
-                <line
-                  x1="0"
-                  y1="0"
-                  x2="4"
-                  y2="46"
-                  stroke={!activeIsLeft || isBilateral || isShrug ? accent : mutedLimb}
-                  strokeWidth={!activeIsLeft || isBilateral ? '7' : '5.5'}
-                  strokeLinecap="round"
-                />
-                <circle cx="4" cy="46" r="4.5" fill={!activeIsLeft || isBilateral || isShrug ? accent : mutedLimb} />
-              </motion.g>
-            )}
-            <circle
-              cx="0"
-              cy="0"
-              r="5.5"
-              fill="#FFFFFF"
-              stroke={!activeIsLeft || isBilateral || isShrug ? accent : mutedLimb}
-              strokeWidth="2.5"
-            />
-          </g>
-        </motion.g>
+        {/* Shoulder Clavicle Bridge */}
+        <line
+          x1={leftShX}
+          y1={curShY}
+          x2={rightShX}
+          y2={curShY}
+          stroke={mutedBody}
+          strokeWidth="7"
+          strokeLinecap="round"
+        />
 
-        {/* Directional Dotted Arc */}
-        {!compact && !isElbow && !isRot && !isShrug && !isTrunk && (
+        {/* Ghost Target Arms + ROM Arcs */}
+        {!compact && showRightGhost && (
           <>
-            {(spec.side === 'right' || isBilateral) && (
-              <path d="M 120 104 Q 148 74 128 30" fill="none" stroke={accent} strokeWidth="2.5" strokeDasharray="4 4" opacity="0.7" />
-            )}
-            {(spec.side === 'left' || isBilateral) && (
-              <path d="M 60 104 Q 32 74 52 30" fill="none" stroke={accent} strokeWidth="2.5" strokeDasharray="4 4" opacity="0.7" />
-            )}
+            <CapsuleArmLimb joints={rGhostJoints} color={accent} isActive isGhost />
+            <path d={rightArc.d} fill="none" stroke={accent} strokeWidth="2.4" strokeDasharray="5 4" opacity="0.88" />
+            <circle cx={rightArc.endX} cy={rightArc.endY} r="3.2" fill={accent} />
           </>
         )}
+        {!compact && showLeftGhost && (
+          <>
+            <CapsuleArmLimb joints={lGhostJoints} color={accent} isActive isGhost />
+            <path d={leftArc.d} fill="none" stroke={accent} strokeWidth="2.4" strokeDasharray="5 4" opacity="0.88" />
+            <circle cx={leftArc.endX} cy={leftArc.endY} r="3.2" fill={accent} />
+          </>
+        )}
+
+        {/* Active vs Inactive Arms via Forward Kinematics */}
+        <CapsuleArmLimb
+          joints={leftJoints}
+          color={activeIsLeft || isBilateral || isShrug ? accent : mutedLimb}
+          isActive={activeIsLeft || isBilateral || isShrug}
+          compact={compact}
+        />
+        <CapsuleArmLimb
+          joints={rightJoints}
+          color={!activeIsLeft || isBilateral || isShrug ? accent : mutedLimb}
+          isActive={!activeIsLeft || isBilateral || isShrug}
+          compact={compact}
+        />
+
+        {/* Shrug Vertical Upward Cues */}
         {!compact && isShrug && (
           <>
-            <path d="M 52 58 L 52 38 M 47 44 L 52 38 L 57 44" fill="none" stroke={accent} strokeWidth="2.5" strokeLinecap="round" />
-            <path d="M 128 58 L 128 38 M 123 44 L 128 38 L 133 44" fill="none" stroke={accent} strokeWidth="2.5" strokeLinecap="round" />
+            <path d="M 56 76 L 56 54 M 51 60 L 56 54 L 61 60" fill="none" stroke={accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M 144 76 L 144 54 M 139 60 L 144 54 L 149 60" fill="none" stroke={accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+          </>
+        )}
+
+        {/* Live Angle Pill */}
+        {!compact && !isTrunk && !isShrug && (
+          <g>
+            <rect x="142" y="14" width="46" height="22" rx="11" fill="#FFFFFF" stroke={accent} strokeWidth="1.8" />
+            <text x="165" y="29" textAnchor="middle" fontSize="11" fontWeight="800" fill={mutedBody}>
+              {activeReadoutDeg}°
+            </text>
+          </g>
+        )}
+
+        {/* Mirror Labels ONLY on Coronal Front View */}
+        {!compact && (
+          <>
+            <text
+              x="22"
+              y="174"
+              fontSize="10"
+              fontWeight="800"
+              fill={spec.side === 'left' || spec.side === 'both' ? '#EA580C' : '#94A3B8'}
+            >
+              L (ซ้าย)
+            </text>
+            <text
+              x="140"
+              y="174"
+              fontSize="10"
+              fontWeight="800"
+              fill={spec.side === 'right' || spec.side === 'both' ? '#059669' : '#94A3B8'}
+            >
+              R (ขวา)
+            </text>
           </>
         )}
       </g>
     );
   };
 
+  const renderHandCloseUp = () => {
+    const wristLiftDeg = 16 - p * 42;
+    const spreadRatio = p;
+    const flipX = activeIsLeft ? -1 : 1;
+
+    return (
+      <g transform={`translate(100, 108) scale(${flipX}, 1)`}>
+        <line x1="-66" y1="26" x2="-12" y2="12" stroke="#1E3A5F" strokeWidth="16" strokeLinecap="round" />
+        <line x1="-66" y1="26" x2="-12" y2="12" stroke="#BAE6FD" strokeWidth="8" strokeLinecap="round" />
+        <circle cx="-12" cy="12" r="9" fill={accent} fillOpacity="0.2" stroke={accent} strokeWidth="2.6" />
+        <g transform={`translate(-10, 12) rotate(${wristLiftDeg})`}>
+          <rect x="0" y="-15" width="36" height="34" rx="12" fill={accent} fillOpacity="0.16" stroke={accent} strokeWidth="3" />
+          {[-38, -14, -2, 10, 22].map((openAngle, i) => {
+            const curFingerAngle = openAngle * spreadRatio + (1 - spreadRatio) * 52;
+            const fx = i === 0 ? 12 : 34;
+            const fy = i === 0 ? -12 : -9 + (i - 1) * 7.5;
+            const len = i === 0 ? 22 : i === 4 ? 24 : 32;
+            const fr = (curFingerAngle * Math.PI) / 180;
+            return (
+              <line
+                key={i}
+                x1={fx}
+                y1={fy}
+                x2={fx + Math.cos(fr) * len}
+                y2={fy + Math.sin(fr) * len}
+                stroke={accent}
+                strokeWidth="5.5"
+                strokeLinecap="round"
+              />
+            );
+          })}
+        </g>
+        {!compact && (
+          <path d="M 14 -38 Q 36 -40 46 -20" fill="none" stroke={accent} strokeWidth="2.5" strokeDasharray="4 3" />
+        )}
+      </g>
+    );
+  };
+
+  const renderNeckTilt = () => {
+    const tiltDir = activeIsLeft ? -1 : 1;
+    const tiltDeg = tiltDir * p * Math.min(35, targetRom);
+    return (
+      <g>
+        {!compact && (
+          <line x1="100" y1="18" x2="100" y2="174" stroke="#CBD5E1" strokeWidth="2" strokeDasharray="4 4" />
+        )}
+        <path
+          d="M 56 104 C 56 96, 144 96, 144 104 L 136 176 L 64 176 Z"
+          fill="#DBEAFE"
+          stroke={mutedBody}
+          strokeWidth="2.8"
+          strokeLinejoin="round"
+        />
+        <line x1="56" y1="102" x2="144" y2="102" stroke={mutedBody} strokeWidth="9" strokeLinecap="round" />
+        <circle cx="58" cy="102" r="5" fill="#64748B" />
+        <circle cx="142" cy="102" r="5" fill="#64748B" />
+        <g transform={`translate(100, 98) rotate(${tiltDeg})`}>
+          <line x1="0" y1="0" x2="0" y2="-24" stroke={accent} strokeWidth="11" strokeLinecap="round" />
+          <circle cx="0" cy="-42" r="20" fill="#FFFFFF" stroke={accent} strokeWidth="3.5" />
+          <circle cx="-6" cy="-44" r="2.2" fill={mutedBody} />
+          <circle cx="6" cy="-44" r="2.2" fill={mutedBody} />
+          <path d="M -5 -36 Q 0 -33 5 -36" fill="none" stroke={mutedBody} strokeWidth="2" strokeLinecap="round" />
+        </g>
+        {!compact && (
+          <>
+            <path
+              d={activeIsLeft ? 'M 92 28 Q 66 32 56 54' : 'M 108 28 Q 134 32 144 54'}
+              fill="none"
+              stroke={accent}
+              strokeWidth="2.8"
+              strokeDasharray="4 3"
+            />
+            <text x="22" y="176" fontSize="10" fontWeight="800" fill={activeIsLeft ? '#EA580C' : '#94A3B8'}>
+              L (ซ้าย)
+            </text>
+            <text x="140" y="176" fontSize="10" fontWeight="800" fill={!activeIsLeft ? '#059669' : '#94A3B8'}>
+              R (ขวา)
+            </text>
+          </>
+        )}
+      </g>
+    );
+  };
+
+  const renderLowerBodyView = () => {
+    if (spec.kind === 'chair_squat') {
+      const standRatio = p;
+      const hipY = 128 - standRatio * 24;
+      const shoulderY = hipY - 46;
+      const kneeX = 114 - standRatio * 22;
+      const kneeY = 132 + standRatio * 20;
+      const armJoints = computeUpperLimbFkJoints({
+        shoulderX: 84,
+        shoulderY: shoulderY + 4,
+        upperArmLen: 26,
+        forearmLen: 22,
+        handLen: 7,
+        angleDeg: 35 + (1 - standRatio) * 45,
+        elbowBendDeg: 8,
+        dirSign: 1,
+      });
+
+      return (
+        <g>
+          <line x1="26" y1="186" x2="174" y2="186" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
+          <path d="M 46 186 L 46 130 L 82 130 L 82 186 M 46 130 L 46 84" fill="none" stroke="#94A3B8" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
+          <line x1="82" y1={hipY} x2={kneeX} y2={kneeY} stroke={accent} strokeWidth="12" strokeLinecap="round" />
+          <line x1={kneeX} y1={kneeY} x2="96" y2="182" stroke={accent} strokeWidth="10.5" strokeLinecap="round" />
+          <line x1="94" y1="182" x2="108" y2="182" stroke={accent} strokeWidth="7" strokeLinecap="round" />
+          <line x1="82" y1={hipY} x2="84" y2={shoulderY} stroke={mutedBody} strokeWidth="13" strokeLinecap="round" />
+          <circle cx="86" cy={shoulderY - 18} r="13" fill="#FFFFFF" stroke={mutedBody} strokeWidth="2.8" />
+          <CapsuleArmLimb joints={armJoints} color={accent} isActive compact={compact} wristWidth={8} />
+        </g>
+      );
+    }
+
+    if (spec.kind === 'knee_extension') {
+      const flipDir: 1 | -1 = activeIsLeft ? -1 : 1;
+      const shinDeg = -p * 86;
+      const rad = (shinDeg * Math.PI) / 180;
+      const kneeX = 114;
+      const kneeY = 128;
+      const ankleX = kneeX + Math.sin(-rad) * 48;
+      const ankleY = kneeY + Math.cos(-rad) * 48;
+      return (
+        <g transform={flipDir === -1 ? 'translate(200, 0) scale(-1, 1)' : undefined}>
+          <line x1="26" y1="186" x2="174" y2="186" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
+          <path d="M 46 186 L 46 132 L 96 132 L 96 186 M 46 132 L 46 80" fill="none" stroke="#94A3B8" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
+          <line x1="74" y1="80" x2="74" y2="128" stroke={mutedBody} strokeWidth="13" strokeLinecap="round" />
+          <circle cx="76" cy="60" r="13" fill="#FFFFFF" stroke={mutedBody} strokeWidth="2.8" />
+          <line x1="74" y1="128" x2={kneeX} y2={kneeY} stroke={mutedBody} strokeWidth="12" strokeLinecap="round" />
+          <line x1={kneeX} y1={kneeY} x2={ankleX} y2={ankleY} stroke={accent} strokeWidth="11" strokeLinecap="round" />
+          <circle cx={kneeX} cy={kneeY} r="5.5" fill="#FFFFFF" stroke={accent} strokeWidth="2.5" />
+          <circle cx={ankleX} cy={ankleY} r="4.5" fill={accent} />
+        </g>
+      );
+    }
+
+    if (spec.kind === 'heel_raise') {
+      const liftY = -p * 18;
+      return (
+        <g>
+          <line x1="26" y1="186" x2="174" y2="186" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
+          <path d="M 44 186 L 44 114 L 68 114" fill="none" stroke="#94A3B8" strokeWidth="4.5" strokeLinecap="round" />
+          <g transform={`translate(0, ${liftY})`}>
+            <circle cx="100" cy="48" r="13" fill="#FFFFFF" stroke={mutedBody} strokeWidth="2.8" />
+            <line x1="100" y1="62" x2="100" y2="118" stroke={mutedBody} strokeWidth="13" strokeLinecap="round" />
+            <line x1="100" y1="78" x2="68" y2="112" stroke={mutedLimb} strokeWidth="8" strokeLinecap="round" />
+            <line x1="92" y1="118" x2="92" y2="180" stroke={activeIsLeft ? accent : mutedLimb} strokeWidth="10.5" strokeLinecap="round" />
+            <line x1="110" y1="118" x2="110" y2="180" stroke={activeIsLeft ? mutedLimb : accent} strokeWidth="10.5" strokeLinecap="round" />
+          </g>
+          {!compact && (
+            <path d="M 142 174 L 142 146 M 136 153 L 142 146 L 148 153" fill="none" stroke={accent} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" />
+          )}
+        </g>
+      );
+    }
+
+    const isMarch = spec.kind === 'hip_march';
+    const kneeLift = isMarch ? p * 36 : 26;
+    const isLeftLegActive = activeIsLeft;
+    return (
+      <g>
+        <line x1="28" y1="186" x2="172" y2="186" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
+        {!compact && <line x1="100" y1="20" x2="100" y2="186" stroke="#E2E8F0" strokeWidth="2" strokeDasharray="4 4" />}
+        <path d="M 74 76 L 126 76 L 118 128 L 82 128 Z" fill="#DBEAFE" stroke={mutedBody} strokeWidth="2.8" strokeLinejoin="round" />
+        <circle cx="100" cy="46" r="14" fill="#FFFFFF" stroke={mutedBody} strokeWidth="2.8" />
+        <line x1="74" y1="78" x2="62" y2="118" stroke={mutedLimb} strokeWidth="8" strokeLinecap="round" />
+        <line x1="126" y1="78" x2="138" y2="118" stroke={mutedLimb} strokeWidth="8" strokeLinecap="round" />
+        <line
+          x1="88"
+          y1="128"
+          x2="86"
+          y2={isMarch ? (isLeftLegActive ? 180 - kneeLift : 182) : isLeftLegActive ? 182 : 148}
+          stroke={isLeftLegActive ? accent : '#1E3A5F'}
+          strokeWidth="11"
+          strokeLinecap="round"
+        />
+        <line
+          x1="112"
+          y1="128"
+          x2="114"
+          y2={isMarch ? (isLeftLegActive ? 182 : 180 - kneeLift) : isLeftLegActive ? 148 : 182}
+          stroke={isLeftLegActive ? '#1E3A5F' : accent}
+          strokeWidth="11"
+          strokeLinecap="round"
+        />
+      </g>
+    );
+  };
+
   return (
     <svg
-      viewBox="0 0 180 180"
+      viewBox="0 0 200 200"
       className={compact ? 'h-12 w-12' : 'h-full w-full'}
       aria-label={exercise.name_th}
     >
-      {/* Subtle anatomical grid circle */}
       {!compact && (
-        <circle cx="90" cy="90" r="78" fill="#F8FAFC" stroke="#E2E8F0" strokeWidth="1.5" />
+        <circle cx="100" cy="100" r="90" fill="#F8FAFC" stroke="#E2E8F0" strokeWidth="1.5" />
       )}
 
       {spec.kind === 'wrist_finger'
@@ -1556,40 +1912,16 @@ export function ExercisePostureSvg({
         : spec.kind === 'neck_tilt'
           ? renderNeckTilt()
           : spec.kind === 'shoulder_flexion'
-            ? renderSideProfileRaise('flexion')
+            ? renderSideSagittalView('flexion')
             : spec.kind === 'shoulder_pendulum'
-              ? renderSideProfileRaise('pendulum')
+              ? renderSideSagittalView('pendulum')
               : spec.kind === 'chair_squat' ||
                   spec.kind === 'knee_extension' ||
                   spec.kind === 'hip_march' ||
                   spec.kind === 'heel_raise' ||
                   spec.kind === 'single_leg_balance'
-                ? renderSquatOrKnee()
-                : renderFrontUpperBody()}
-
-      {/* Clear Mirror L/R Hand Indicators */}
-      {!compact && spec.kind !== 'wrist_finger' && spec.kind !== 'chair_squat' && spec.kind !== 'knee_extension' && (
-        <>
-          <text
-            x="22"
-            y="168"
-            fontSize="10"
-            fontWeight="800"
-            fill={spec.side === 'left' || spec.side === 'both' ? '#EA580C' : '#94A3B8'}
-          >
-            L (ซ้าย)
-          </text>
-          <text
-            x="120"
-            y="168"
-            fontSize="10"
-            fontWeight="800"
-            fill={spec.side === 'right' || spec.side === 'both' ? '#059669' : '#94A3B8'}
-          >
-            R (ขวา)
-          </text>
-        </>
-      )}
+                ? renderLowerBodyView()
+                : renderCoronalFrontUpperBody()}
     </svg>
   );
 }
@@ -1688,11 +2020,10 @@ export function ExercisePostureGuide({
         </div>
       </div>
 
-      {/* Main 2-Column Interactive Illustration + Step-by-Step Cues */}
+      {/* Main 2-Column Clinical Anatomic Mannequin + Step-by-Step Cues */}
       <div className="mt-3.5 grid grid-cols-1 items-center gap-4 md:grid-cols-12">
-        {/* Left: Animated Anatomical Vector Stage */}
         <div className="md:col-span-4 flex flex-col items-center">
-          <div className="relative flex h-44 w-44 items-center justify-center rounded-2xl border border-sky-200/80 bg-gradient-to-br from-white via-sky-50/70 to-emerald-50/60 p-2 shadow-inner">
+          <div className="relative flex h-44 w-44 items-center justify-center rounded-2xl border border-sky-200/80 bg-gradient-to-br from-white via-sky-50/70 to-emerald-50/60 p-1.5 shadow-inner">
             <ExercisePostureSvg exercise={exercise} phase={previewPhase} />
             {isHoldingNow && (
               <span className="absolute top-2 right-2 rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-black text-white shadow animate-pulse">
@@ -1705,9 +2036,7 @@ export function ExercisePostureGuide({
           </span>
         </div>
 
-        {/* Right: Interactive Phase Controls + 3 Movement Steps + Clinical Safety */}
         <div className="md:col-span-8 flex flex-col gap-2.5">
-          {/* Interactive Phase Selector Pills */}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="text-sm sm:text-base font-extrabold text-[#0F4C81]">
@@ -1745,7 +2074,6 @@ export function ExercisePostureGuide({
             </div>
           </div>
 
-          {/* 3-Step Sequential Posture Guide Cards */}
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             {spec.steps.map((stepText, idx) => {
               const stepPhase: PosturePreviewPhase = idx === 0 ? 'prepare' : idx === 1 ? 'move' : 'hold';
@@ -1775,7 +2103,6 @@ export function ExercisePostureGuide({
             })}
           </div>
 
-          {/* ADL Badge + Posture Caution Footer */}
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-emerald-200/80 bg-emerald-50/60 px-3 py-2 text-xs">
             <span className="inline-flex items-center gap-1.5 font-bold text-emerald-900">
               <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-600" />

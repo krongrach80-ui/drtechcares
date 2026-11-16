@@ -46,7 +46,11 @@ import {
   getRetestPostureButtonLabel,
   shouldShowCompletedTodayScreen,
 } from '../App';
-import { resolveExercisePostureSpec } from '../components/ExercisePostureGuide';
+import {
+  computePostureCycleState,
+  computeUpperLimbFkJoints,
+  resolveExercisePostureSpec,
+} from '../components/ExercisePostureGuide';
 import {
   computeContainRect,
   drawMediaPipe33OnCanvas,
@@ -1933,6 +1937,64 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
         trainingStage: 'overview',
       }),
     ).toBe(false);
+  });
+
+  it('computes accurate anatomical Forward Kinematics from 0-deg vertical rest to 128-deg overhead lift', () => {
+    // 0° Neutral Rest MUST point straight vertically downward (6 o'clock: elbowX == shoulderX, y > shoulderY)
+    const rest = computeUpperLimbFkJoints({
+      shoulderX: 88,
+      shoulderY: 82,
+      upperArmLen: 38,
+      forearmLen: 34,
+      handLen: 9,
+      angleDeg: 0,
+      elbowBendDeg: 0,
+      dirSign: 1,
+    });
+    expect(rest.elbow.x).toBeCloseTo(88, 4);
+    expect(rest.elbow.y).toBeCloseTo(120, 4);
+    expect(rest.wrist.x).toBeCloseTo(88, 4);
+    expect(rest.wrist.y).toBeCloseTo(154, 4);
+
+    // 90° Straight Forward/Outward horizontal
+    const horiz = computeUpperLimbFkJoints({
+      shoulderX: 88,
+      shoulderY: 82,
+      upperArmLen: 38,
+      forearmLen: 34,
+      handLen: 9,
+      angleDeg: 90,
+      elbowBendDeg: 0,
+      dirSign: 1,
+    });
+    expect(horiz.elbow.x).toBeCloseTo(126, 4);
+    expect(horiz.elbow.y).toBeCloseTo(82, 4);
+    expect(horiz.wrist.x).toBeCloseTo(160, 4);
+
+    // 128° Peak Elevation MUST sweep above shoulder level (y < shoulderY) while preserving bone lengths
+    const peak = computeUpperLimbFkJoints({
+      shoulderX: 88,
+      shoulderY: 82,
+      upperArmLen: 38,
+      forearmLen: 34,
+      handLen: 9,
+      angleDeg: 128,
+      elbowBendDeg: 8,
+      dirSign: 1,
+    });
+    expect(peak.elbow.y).toBeLessThan(82);
+    expect(peak.wrist.y).toBeLessThan(peak.elbow.y);
+    expect(Math.hypot(peak.elbow.x - peak.shoulder.x, peak.elbow.y - peak.shoulder.y)).toBeCloseTo(38, 4);
+    expect(Math.hypot(peak.wrist.x - peak.elbow.x, peak.wrist.y - peak.elbow.y)).toBeCloseTo(34, 4);
+
+    // 4-phase animation cycle checks (prepare=0, move=0.62, hold=1, auto timing)
+    expect(computePostureCycleState('prepare', 0).progress).toBe(0);
+    expect(computePostureCycleState('move', 0).progress).toBeCloseTo(0.62, 2);
+    expect(computePostureCycleState('hold', 0).progress).toBe(1);
+    expect(computePostureCycleState('auto', 200, 3).stage).toBe('prepare');
+    expect(computePostureCycleState('auto', 1400, 3).stage).toBe('move');
+    expect(computePostureCycleState('auto', 2800, 3).stage).toBe('hold');
+    expect(computePostureCycleState('auto', 2800, 3).progress).toBe(1);
   });
 });
 
