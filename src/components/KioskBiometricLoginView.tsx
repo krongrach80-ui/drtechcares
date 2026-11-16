@@ -770,7 +770,9 @@ export function KioskBiometricLoginView({
   const confirmCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const confirmProgressFillRef = useRef<HTMLDivElement | null>(null);
   const confirmProgressTextRef = useRef<HTMLSpanElement | null>(null);
+  const confirmPillLabelRef = useRef<HTMLSpanElement | null>(null);
   const confirmBtnFillRef = useRef<HTMLSpanElement | null>(null);
+  const confirmBtnLabelRef = useRef<HTMLSpanElement | null>(null);
   const alignCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const verifiedModalPayloadRef = useRef<KioskLoginSuccessPayload | null>(null);
   verifiedModalPayloadRef.current = verifiedModalPayload;
@@ -939,11 +941,12 @@ export function KioskBiometricLoginView({
     let unreadyFrameStreak = 0;
     let lastGestureVideoTime = -1;
     let lastGestureInferenceAt = 0;
+    let lastPoseFallbackAt = 0;
     let lastGestureFrameAt = 0;
     let gestureHoldMs = 0;
     let lastAnyHandRaisedAt = -Infinity;
     let latestAnyHandUp = false;
-    let lastReportedProgress = 0;
+    let lastReportedHolding = false;
     let lastReportedDetected = false;
     let twoHandCameraReadySent = false;
     let gestureTriggered = false;
@@ -974,7 +977,7 @@ export function KioskBiometricLoginView({
           '/models/hand_landmarker.task',
           'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
         ]) {
-          for (const delegate of ['CPU', undefined] as const) {
+          for (const delegate of ['GPU', 'CPU', undefined] as const) {
             try {
               const created = await HandLandmarker.createFromOptions(vision, {
                 baseOptions: delegate ? { modelAssetPath, delegate } : { modelAssetPath },
@@ -1000,7 +1003,7 @@ export function KioskBiometricLoginView({
 
       const tryCreatePose = async () => {
         for (const modelAssetPath of ['/models/pose_landmarker.task', '/models/pose_landmarker_full.task']) {
-          for (const delegate of ['CPU', undefined] as const) {
+          for (const delegate of ['GPU', 'CPU', undefined] as const) {
             try {
               const created = await PoseLandmarker.createFromOptions(vision, {
                 baseOptions: delegate ? { modelAssetPath, delegate } : { modelAssetPath },
@@ -1129,7 +1132,7 @@ export function KioskBiometricLoginView({
               }
 
               const now = performance.now();
-              const dt = lastGestureFrameAt > 0 ? Math.min(100, Math.max(1, now - lastGestureFrameAt)) : 16;
+              const dt = lastGestureFrameAt > 0 ? Math.min(250, Math.max(1, now - lastGestureFrameAt)) : 16;
               lastGestureFrameAt = now;
               const v = videoRef.current;
 
@@ -1147,14 +1150,18 @@ export function KioskBiometricLoginView({
                 let latestLeftUp = edgeLeftUp;
                 let latestRightUp = edgeRightUp;
 
-                if (v.currentTime !== lastGestureVideoTime || now - lastGestureInferenceAt >= 33) {
+                // Throttle inference smoothly (~22Hz max, >=45ms apart) so 60-120fps animations never stutter
+                if (
+                  now - lastGestureInferenceAt >= 45 &&
+                  (v.currentTime !== lastGestureVideoTime || now - lastGestureInferenceAt >= 80)
+                ) {
                   lastGestureVideoTime = v.currentTime;
                   lastGestureInferenceAt = now;
                   if (!gestureOffscreenCanvas) {
                     gestureOffscreenCanvas = document.createElement('canvas');
                   }
-                  const offW = 256;
-                  const offH = Math.max(144, Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))));
+                  const offW = 192;
+                  const offH = Math.max(108, Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))));
                   if (gestureOffscreenCanvas.width !== offW || gestureOffscreenCanvas.height !== offH) {
                     gestureOffscreenCanvas.width = offW;
                     gestureOffscreenCanvas.height = offH;
@@ -1177,7 +1184,12 @@ export function KioskBiometricLoginView({
                       // Keep gesture loop running across transient MediaPipe frame errors
                     }
                   }
-                  if (poseLandmarker) {
+                  // Run heavier PoseLandmarker only if HandLandmarker is unavailable OR as sparse 8Hz fallback when exactly 1 hand shows
+                  if (
+                    poseLandmarker &&
+                    (!handLandmarker || (detectedHands.length === 1 && now - lastPoseFallbackAt >= 140))
+                  ) {
+                    lastPoseFallbackAt = now;
                     try {
                       const poseTs = Math.max(lastDetectTs + 1, Math.round(now));
                       lastDetectTs = poseTs;
@@ -1196,7 +1208,7 @@ export function KioskBiometricLoginView({
                   setLeftHandUpState((prev) => (prev === latestLeftUp ? prev : latestLeftUp));
                   setRightHandUpState((prev) => (prev === latestRightUp ? prev : latestRightUp));
 
-                  // Draw mirrored live hand dots on preview canvas so user sees both hands detected clearly
+                  // Lightweight live hand indicator circles on preview canvas
                   const cCanvas = confirmCanvasRef.current;
                   if (cCanvas) {
                     const cw = cCanvas.clientWidth || 320;
@@ -1208,19 +1220,21 @@ export function KioskBiometricLoginView({
                     const cCtx = cCanvas.getContext('2d');
                     if (cCtx) {
                       cCtx.clearRect(0, 0, cw, ch);
-                      const dotColor = latestAnyHandUp ? '#10b981' : '#f59e0b';
-                      for (const h of detectedHands) {
-                        const center = h[9] ?? h[0];
-                        if (!center) continue;
-                        const px = (1 - center.x) * cw;
-                        const py = center.y * ch;
-                        cCtx.beginPath();
-                        cCtx.arc(px, py, 16, 0, Math.PI * 2);
-                        cCtx.fillStyle = latestAnyHandUp ? 'rgba(16,185,129,0.28)' : 'rgba(245,158,11,0.28)';
-                        cCtx.fill();
-                        cCtx.lineWidth = 3;
-                        cCtx.strokeStyle = dotColor;
-                        cCtx.stroke();
+                      if (detectedHands.length > 0) {
+                        const dotColor = latestAnyHandUp ? '#10b981' : '#f59e0b';
+                        for (const h of detectedHands) {
+                          const center = h[9] ?? h[0];
+                          if (!center) continue;
+                          const px = (1 - center.x) * cw;
+                          const py = center.y * ch;
+                          cCtx.beginPath();
+                          cCtx.arc(px, py, 16, 0, Math.PI * 2);
+                          cCtx.fillStyle = latestAnyHandUp ? 'rgba(16,185,129,0.28)' : 'rgba(245,158,11,0.28)';
+                          cCtx.fill();
+                          cCtx.lineWidth = 3;
+                          cCtx.strokeStyle = dotColor;
+                          cCtx.stroke();
+                        }
                       }
                     }
                   }
@@ -1239,30 +1253,46 @@ export function KioskBiometricLoginView({
                 gestureHoldMs = holdStep.holdMs;
                 const nextProgress = holdStep.progress;
 
-                // Update 60fps progress bar DOM refs immediately without waiting for throttled React updates
-                const pctCss = `${(nextProgress * 100).toFixed(1)}%`;
-                const heldSecStr = ((gestureHoldMs / 1000)).toFixed(1);
+                // Zero-reflow 60-120Hz GPU compositor updates (scaleX + synchronized text labels, NO continuous React re-renders)
+                const scaleCss = `scaleX(${nextProgress.toFixed(4)})`;
+                const heldSecStr = (gestureHoldMs / 1000).toFixed(1);
+                const remainSecStr = Math.max(0, (VERIFIED_HAND_HOLD_MS - gestureHoldMs) / 1000).toFixed(1);
+                const pctInt = Math.round(nextProgress * 100);
+
                 if (confirmProgressFillRef.current) {
-                  confirmProgressFillRef.current.style.width = pctCss;
+                  confirmProgressFillRef.current.style.transform = scaleCss;
                 }
                 if (confirmBtnFillRef.current) {
-                  confirmBtnFillRef.current.style.width = pctCss;
+                  confirmBtnFillRef.current.style.transform = scaleCss;
                 }
                 if (confirmProgressTextRef.current) {
-                  confirmProgressTextRef.current.textContent = `${heldSecStr} / ${(VERIFIED_HAND_HOLD_MS / 1000).toFixed(0)}.0 วิ (${Math.round(nextProgress * 100)}%)`;
+                  confirmProgressTextRef.current.textContent = `${heldSecStr} / ${(VERIFIED_HAND_HOLD_MS / 1000).toFixed(0)}.0 วิ (${pctInt}%)`;
+                }
+                if (holdStep.detected && confirmPillLabelRef.current) {
+                  confirmPillLabelRef.current.textContent =
+                    lang === 'en'
+                      ? `🙌 Both hands detected! Hold ${heldSecStr}/4.0s (${pctInt}%)`
+                      : lang === 'cn'
+                        ? `🙌 已检测到双手举起！保持 ${heldSecStr}/4.0 秒 (${pctInt}%)`
+                        : `🙌 ยกครบ 2 ข้าง! ค้างไว้ ${heldSecStr}/4.0 วิ (${pctInt}%)`;
+                }
+                if (nextProgress > 0 && confirmBtnLabelRef.current) {
+                  confirmBtnLabelRef.current.textContent =
+                    lang === 'en'
+                      ? `🙌 Holding BOTH hands... ${heldSecStr}/4.0s (${remainSecStr}s left)`
+                      : lang === 'cn'
+                        ? `🙌 正在加载确认... ${heldSecStr}/4.0 秒（剩余 ${remainSecStr} 秒）`
+                        : `🙌 กำลังโหลด 2 ข้าง... ${heldSecStr}/4.0 วิ (เหลือ ${remainSecStr} วิ)`;
                 }
 
                 if (holdStep.detected !== lastReportedDetected) {
                   lastReportedDetected = holdStep.detected;
                   setTwoHandDetected(holdStep.detected);
                 }
-                if (
-                  Math.abs(nextProgress - lastReportedProgress) >= 0.01 ||
-                  (nextProgress === 0 && lastReportedProgress !== 0) ||
-                  nextProgress >= 1
-                ) {
-                  lastReportedProgress = nextProgress;
-                  setTwoHandProgress(nextProgress);
+                const nowHolding = nextProgress > 0;
+                if (nowHolding !== lastReportedHolding) {
+                  lastReportedHolding = nowHolding;
+                  setTwoHandProgress(nowHolding ? 0.01 : 0);
                 }
 
                 if (holdStep.confirmed && !gestureTriggered) {
@@ -2319,9 +2349,10 @@ export function KioskBiometricLoginView({
               </div>
               <div className="absolute inset-x-2 bottom-2 flex items-center justify-center pointer-events-none">
                 <span
-                  className={`px-3 py-1 rounded-full text-[11px] font-extrabold backdrop-blur border shadow ${
+                  ref={confirmPillLabelRef}
+                  className={`px-3 py-1 rounded-full text-[11px] font-extrabold border shadow ${
                     twoHandDetected
-                      ? 'bg-emerald-600/95 text-white border-emerald-200 animate-pulse'
+                      ? 'bg-emerald-600/95 text-white border-emerald-200'
                       : leftHandUpState !== rightHandUpState
                         ? 'bg-amber-500/95 text-white border-amber-200'
                         : 'bg-white/95 text-[#0F4C81] border-emerald-300'
@@ -2338,7 +2369,7 @@ export function KioskBiometricLoginView({
               </div>
             </div>
 
-            {/* Dedicated 4-Second Loading Bar (fills 0 -> 4.0s ONLY when BOTH hands are raised) */}
+            {/* Dedicated 4-Second Loading Bar (GPU scaleX 60fps smooth fill ONLY when BOTH hands raised) */}
             <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3 text-left">
               <div className="flex items-center justify-between text-[11px] font-extrabold text-emerald-950 mb-1.5">
                 <span>
@@ -2349,20 +2380,20 @@ export function KioskBiometricLoginView({
                       : 'หลอดโหลดเริ่มฝึก (ยก 2 ข้างค้าง 4 วิ)'}
                 </span>
                 <span ref={confirmProgressTextRef} className="font-mono text-emerald-700">
-                  {((twoHandProgress * VERIFIED_HAND_HOLD_MS) / 1000).toFixed(1)} / {(VERIFIED_HAND_HOLD_MS / 1000).toFixed(0)}.0 วิ ({Math.round(twoHandProgress * 100)}%)
+                  0.0 / {(VERIFIED_HAND_HOLD_MS / 1000).toFixed(0)}.0 วิ (0%)
                 </span>
               </div>
               <div className="h-4 w-full overflow-hidden rounded-full bg-slate-200 border border-slate-300 shadow-inner">
                 <div
                   ref={confirmProgressFillRef}
-                  className={`h-full rounded-full transition-[background-color] duration-150 ${
+                  className={`h-full w-full origin-left rounded-full ${
                     twoHandDetected
                       ? 'bg-gradient-to-r from-emerald-500 via-teal-400 to-sky-500'
                       : leftHandUpState !== rightHandUpState
                         ? 'bg-amber-400'
                         : 'bg-emerald-500'
                   }`}
-                  style={{ width: `${Math.round(twoHandProgress * 100)}%` }}
+                  style={{ transform: 'scaleX(0)', willChange: 'transform' }}
                 />
               </div>
             </div>
@@ -2375,11 +2406,11 @@ export function KioskBiometricLoginView({
               >
                 <span
                   ref={confirmBtnFillRef}
-                  className="pointer-events-none absolute inset-y-0 left-0 bg-white/25"
-                  style={{ width: `${Math.round(twoHandProgress * 100)}%` }}
+                  className="pointer-events-none absolute inset-0 w-full origin-left bg-white/25"
+                  style={{ transform: 'scaleX(0)', willChange: 'transform' }}
                 />
                 <span className="relative z-10 flex items-center justify-center gap-2">
-                  <span>
+                  <span ref={confirmBtnLabelRef}>
                     {twoHandProgress > 0
                       ? modalCopy.startBtnHolding
                       : modalCopy.startBtnIdle}
