@@ -327,8 +327,8 @@ export async function hydrateStateFromSupabase(
         masterEmbedding: parsedMaster,
         angleEmbeddings: parsedAngles,
         exemplarEmbeddings: parsedExemplars.length > 0 ? parsedExemplars : undefined,
-        biometricEngine: normalizeEngineTag(row.biometric_engine, parsedMaster),
-        framesCaptured: Number(row.frames_captured ?? 120),
+        biometricEngine: normalizeEngineTag(row.model_version ?? row.biometric_engine, parsedMaster),
+        framesCaptured: Number(row.frame_count ?? row.frames_captured ?? 120),
         avatarUrl: typeof row.avatar_url === 'string' ? row.avatar_url : undefined,
       });
     }
@@ -1009,5 +1009,20 @@ export async function persistToSupabase(
     await task(supabase);
   } catch {
     // Non-fatal fallback for offline / missing column edge cases
+  }
+}
+
+/**
+ * Strict persistence wrapper for biometric & critical patient mutations:
+ * never swallows PostgREST `{ error }` responses or exceptions.
+ */
+export async function persistBiometricStrictToSupabase(
+  supabase: SupabaseClient | null,
+  task: (client: SupabaseClient) => PromiseLike<unknown>,
+): Promise<void> {
+  if (!supabase) return;
+  const result = (await task(supabase)) as { error?: { message?: string } | null } | undefined;
+  if (result && typeof result === 'object' && 'error' in result && result.error) {
+    throw new Error(result.error.message || 'Supabase biometric write failed');
   }
 }

@@ -14,13 +14,16 @@ import type {
 import {
   alignFaceTo112,
   evaluateLivenessAndPose,
-  extractFaceEmbeddingWithFallback,
   inspectBiometricFrame3D,
   resolveFaceIdScreenPrompt,
   selectClinicalCameraDeviceId,
   SingleScanLoginController,
   type BiometricVerificationJson,
 } from '@drtechcares/face-client';
+import {
+  captureCanonicalFaceSnapshot,
+  extractCanonicalFaceDescriptor,
+} from '../../../src/lib/biometricEngine';
 import {
   extractRaisedHandSides,
   FacePresenceTracker,
@@ -192,7 +195,18 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
                 });
                 if (q.acceptable) {
                   loginCtrlRef.current.startCountdownComplete();
-                  const { vector } = await extractFaceEmbeddingWithFallback(crop, landmarks);
+                  const snap = captureCanonicalFaceSnapshot(
+                    videoRef.current,
+                    null,
+                    undefined,
+                    landmarks,
+                  );
+                  const extracted = snap ? await extractCanonicalFaceDescriptor(snap) : null;
+                  if (!extracted?.embedding) {
+                    rafId = requestAnimationFrame(loop);
+                    return;
+                  }
+                  const vector = extracted.embedding;
                   const push = loginCtrlRef.current.pushFrame({
                     vector,
                     qualityScore: q.sharpness,

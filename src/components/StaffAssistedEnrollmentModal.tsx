@@ -478,8 +478,9 @@ export function StaffAssistedEnrollmentModal({
           geometricRatios: bio.geometricRatios,
           framesCaptured: bio.framesCaptured,
           qualityScore: bio.qualityScore,
+          requireSupabase: Boolean(apiClient.getSupabaseClient()),
         });
-        setToastMsg('ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ!');
+        setToastMsg('✅ บันทึกใบหน้าลงฐานข้อมูล Supabase ถาวรสำเร็จ (Read-After-Write Verified)!');
         setCreatedPatient(updated);
         setCapturing(false);
         setStep(4);
@@ -537,6 +538,7 @@ export function StaffAssistedEnrollmentModal({
         geometricRatios: bio.geometricRatios,
         framesCaptured: bio.framesCaptured,
         qualityScore: bio.qualityScore,
+        requireSupabase: Boolean(apiClient.getSupabaseClient()),
       });
 
       if (customSchedules.length > 0 && (enrolled.rehabSchedules ?? []).length === 0) {
@@ -585,8 +587,8 @@ export function StaffAssistedEnrollmentModal({
 
       setToastMsg(
         customSchedules.length > 0
-          ? `ลงทะเบียนคนไข้ บันทึก Face ID 120 เฟรม และกำหนดท่ากายภาพ ${prescribedUniqueCount} ท่าสำเร็จ!`
-          : 'ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ!',
+          ? `✅ บันทึกใบหน้าลงฐานข้อมูล Supabase ถาวรสำเร็จ และกำหนดท่ากายภาพ ${prescribedUniqueCount} ท่าเรียบร้อย!`
+          : '✅ บันทึกใบหน้าลงฐานข้อมูล Supabase ถาวรสำเร็จ (Read-After-Write Verified)!',
       );
       setCreatedPatient(enrolled);
       setCapturing(false);

@@ -134,7 +134,7 @@ export function SmartEnrollmentView({
               if (poseOk && crop) {
                 const q = evaluateFrameQuality(crop, liveness, 35, 35);
                 if (q.sharpness >= 4.0) {
-                  const snap = captureCanonicalFaceSnapshot(videoRef.current);
+                  const snap = captureCanonicalFaceSnapshot(videoRef.current, null, undefined, landmarks);
                   const extracted = snap ? await extractCanonicalFaceDescriptor(snap) : null;
                   if (
                     extracted?.embedding &&
@@ -225,6 +225,7 @@ export function SmartEnrollmentView({
         exemplarEmbeddings,
         framesCaptured: payload.raw_frames.length,
         qualityScore: 0.95,
+        requireSupabase: Boolean(apiClient.getSupabaseClient()),
       });
       enrollRef.current.reset();
       setShotsCount(0);

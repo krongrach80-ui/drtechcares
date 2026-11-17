@@ -27,6 +27,11 @@ import {
   isLegacyV1HybridVector,
 } from '@drtechcares/smart-biometric-core';
 import {
+  BIOMETRIC_ENGINE_ID,
+  captureCanonicalFaceSnapshot,
+  extractCanonicalFaceDescriptor,
+} from '../lib/biometricEngine';
+import {
   computeObjectCoverLayout,
   computeOwnerFaceBoxMetrics,
   isPoseSkeletonLinkedToOwnerFace,
@@ -2759,7 +2764,31 @@ export function SmartRehabKioskUI({
                         }
                       };
 
-                      if (ownerEngine === 'arcface-onnx' && isArcFaceSessionReady()) {
+                      if (ownerEngine === 'human-faceres-1024d') {
+                        const humanSnap = captureCanonicalFaceSnapshot(
+                          v,
+                          undefined,
+                          faceRoiCanvas,
+                          primaryFaceLm,
+                        );
+                        if (humanSnap) {
+                          void extractCanonicalFaceDescriptor(humanSnap)
+                            .then((extracted) => {
+                              if (!active || !extracted.embedding) return;
+                              const ownerRes = verifyOwnerFace1to1({
+                                probeVector: extracted.embedding,
+                                probeEngine: BIOMETRIC_ENGINE_ID,
+                                yawDeg: -livePose.yawDeg,
+                                pitchDeg: livePose.pitchDeg,
+                                rollDeg,
+                                probeRatios,
+                                ownerTemplate: activeOwnerBio,
+                              });
+                              applyOwnerResult(ownerRes.matched, ownerRes.hasTemplate);
+                            })
+                            .catch(() => {});
+                        }
+                      } else if (ownerEngine === 'arcface-onnx' && isArcFaceSessionReady()) {
                         const cropCopy = {
                           width: crop.width,
                           height: crop.height,

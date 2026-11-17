@@ -369,7 +369,10 @@ class InsightFace120Manager:
                 "avatar_url": avatar_url,
             }
 
-        # Deterministic offline fallback when InsightFace weights are absent (e.g. mock testing)
+        # Only allow synthetic mock vectors inside explicit MOCK_VIDEO_PATH=SYNTHETIC unit-test runs
+        if str(self.settings.MOCK_VIDEO_PATH or "").upper() != "SYNTHETIC":
+            return None
+
         return {
             "embedding": self._deterministic_fallback_embedding(frame_bgr),
             "yaw_deg": 0.0,
@@ -739,6 +742,9 @@ class InsightFace120Manager:
                     "pitch_deg": 0.0,
                 }
             ]
+
+        if str(self.settings.MOCK_VIDEO_PATH or "").upper() != "SYNTHETIC":
+            return []
 
         if (
             self.active_patient is not None

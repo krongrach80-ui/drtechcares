@@ -114,7 +114,12 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
                   if (q.acceptable) {
                     setStatus('burst');
                     loginCtrlRef.current.startCountdownComplete();
-                    const snap = captureCanonicalFaceSnapshot(videoRef.current);
+                    const snap = captureCanonicalFaceSnapshot(
+                      videoRef.current,
+                      null,
+                      undefined,
+                      landmarks,
+                    );
                     const extracted = snap ? await extractCanonicalFaceDescriptor(snap) : null;
                     if (!extracted?.embedding) {
                       rafId = requestAnimationFrame(tick);

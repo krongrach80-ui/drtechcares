@@ -35,11 +35,14 @@ import {
 } from '../lib/faceMatcher';
 import {
   BIOMETRIC_ENGINE_ID,
+  BIOMETRIC_FINAL_SCORE_THRESHOLD,
+  BIOMETRIC_MATCH_THRESHOLD,
+  BIOMETRIC_REQUIRED_STREAK,
   LiveIdentityStreakTracker,
   captureCanonicalFaceSnapshot,
   evaluateLiveMatch1toN,
   extractCanonicalFaceDescriptor,
-  loadEnrolledPatientsWithBiometrics,
+  fetchLiveBiometricsFromSupabase,
   warmupBiometricEngine,
   type EnrolledBiometricCandidate,
 } from '../lib/biometricEngine';
@@ -324,7 +327,7 @@ export function WelcomeFaceScanModal({
     if (!open) return;
     let mounted = true;
     const syncVault = () => {
-      void loadEnrolledPatientsWithBiometrics(apiClient)
+      void fetchLiveBiometricsFromSupabase(apiClient)
         .then((res) => {
           if (mounted) biometricCandidatesRef.current = res.compatibleCandidates;
         })
@@ -348,14 +351,13 @@ export function WelcomeFaceScanModal({
     let rafId = 0;
     let prevLandmarks: Array<{ x: number; y: number; z?: number }> | null = null;
     let lastEmbedAt = 0;
-    let fallbackFrameCount = 0;
-    let lastServerVerifyAt = 0;
     let lastDetectTs = 0;
     let lastProcessedVideoTime = -1;
     let lastFaceDetectWallMs = 0;
     const alignCanvas = document.createElement('canvas');
     const roiCanvas = document.createElement('canvas');
     const contextCanvas = document.createElement('canvas');
+    const neuralSnapCanvas = document.createElement('canvas');
 
     void warmupBiometricEngine();
     bioLivenessRef.current.reset();
@@ -363,7 +365,7 @@ export function WelcomeFaceScanModal({
     setBioStatus(null);
     setSpoofDetectedNow(false);
     confirmedLockRef.current = false;
-    streakTrackerRef.current = new LiveIdentityStreakTracker(3);
+    streakTrackerRef.current = new LiveIdentityStreakTracker(BIOMETRIC_REQUIRED_STREAK);
     streakTrackerRef.current.reset();
     setMatchResult(null);
     setCameraError(null);
@@ -417,7 +419,6 @@ export function WelcomeFaceScanModal({
 
                 if (faceCount !== 1 || lms.length < 300) {
                 setHudBox(null);
-                fallbackFrameCount = 0;
                 if (!confirmedLockRef.current) {
                   setLiveMatchHud(null);
                   setAutoScanCount(0);
@@ -479,12 +480,16 @@ export function WelcomeFaceScanModal({
 
                 if (isSpoofFrame) {
                   streakTrackerRef.current.reset();
-                  fallbackFrameCount = 0;
                   setAutoScanCount(0);
                   setLiveMatchHud(null);
                 } else if (!confirmedLockRef.current && now - lastEmbedAt >= 25) {
                   lastEmbedAt = now;
-                  const snap = captureCanonicalFaceSnapshot(videoRef.current, rawBox);
+                  const snap = captureCanonicalFaceSnapshot(
+                    videoRef.current,
+                    rawBox,
+                    neuralSnapCanvas,
+                    lms,
+                  );
                   const extracted = snap ? await extractCanonicalFaceDescriptor(snap) : null;
                   if (!active) {
                     shouldContinueLoop = false;
@@ -509,6 +514,7 @@ export function WelcomeFaceScanModal({
                         spoofDetected: isSpoofFrame,
                         biologicalVerified: bio.biologicalVerified,
                       });
+                      setAutoScanCount(streakRes.streak);
 
                       const isHudMatch = Boolean(streakRes.candidate && streakRes.streak > 0);
                       setLiveMatchHud(
@@ -532,13 +538,17 @@ export function WelcomeFaceScanModal({
                         const matchedConf = Math.round(streakRes.confidencePercent);
                         const localCand = streakRes.candidate;
                         let matchedNow = false;
+                        let serverNetworkFailed = false;
+                        let serverNoTemplate = false;
                         try {
                           const verified = await apiClient.verifyFaceLogin(vector, livenessEvidence);
                           if (!active) {
                             shouldContinueLoop = false;
                             return;
                           }
-                          if (verified.matched && verified.patient) {
+                          if (verified.error === 'NO_ENROLLED_BIOMETRICS') {
+                            serverNoTemplate = true;
+                          } else if (verified.matched && verified.patient) {
                             matchedNow = true;
                             shouldContinueLoop = false;
                             setMatchResult({
@@ -549,6 +559,7 @@ export function WelcomeFaceScanModal({
                             return;
                           }
                         } catch {
+                          serverNetworkFailed = true;
                           if (!active) {
                             shouldContinueLoop = false;
                             return;
@@ -558,7 +569,15 @@ export function WelcomeFaceScanModal({
                             confirmedLockRef.current = false;
                           }
                         }
-                        if (!matchedNow && localCand && streakRes.similarity >= 0.6) {
+
+                        if (
+                          !matchedNow &&
+                          (serverNetworkFailed || serverNoTemplate) &&
+                          localCand &&
+                          evalRes.topSimilarity >= BIOMETRIC_MATCH_THRESHOLD &&
+                          evalRes.topFinalScore >= BIOMETRIC_FINAL_SCORE_THRESHOLD &&
+                          streakRes.streak >= BIOMETRIC_REQUIRED_STREAK
+                        ) {
                           confirmedLockRef.current = true;
                           shouldContinueLoop = false;
                           setMatchResult({
@@ -573,56 +592,20 @@ export function WelcomeFaceScanModal({
                           });
                           return;
                         }
+
                         streakTrackerRef.current.reset();
+                        setAutoScanCount(0);
                         setLiveMatchHud(null);
-                        void loadEnrolledPatientsWithBiometrics(apiClient)
+                        setMatchResult({
+                          matched: false,
+                          confidencePercent: Math.round(evalRes.confidencePercent),
+                          reason: '❌ ไม่พบบัญชีที่ตรงกับใบหน้านี้ในฐานข้อมูล Supabase',
+                        });
+                        void fetchLiveBiometricsFromSupabase(apiClient)
                           .then((loaded) => {
                             if (active) biometricCandidatesRef.current = loaded.compatibleCandidates;
                           })
                           .catch(() => {});
-                      }
-                    }
-
-                    if (!confirmedLockRef.current && bio.biologicalVerified && now - lastServerVerifyAt >= 2500) {
-                      fallbackFrameCount = Math.min(3, fallbackFrameCount + 1);
-                      setAutoScanCount(fallbackFrameCount);
-                      if (fallbackFrameCount >= 3) {
-                        confirmedLockRef.current = true;
-                        let matchedFallback = false;
-                        try {
-                          const verified = await apiClient.verifyFaceLogin(vector, livenessEvidence);
-                          if (!active) {
-                            shouldContinueLoop = false;
-                            return;
-                          }
-                          if (verified.matched && verified.patient) {
-                            matchedFallback = true;
-                            shouldContinueLoop = false;
-                            setMatchResult({
-                              matched: true,
-                              confidencePercent: verified.confidencePercent,
-                              patient: verified.patient,
-                            });
-                            return;
-                          }
-                          setMatchResult({
-                            matched: false,
-                            confidencePercent: verified.confidencePercent,
-                            reason: verified.failureReasons?.[0],
-                          });
-                        } catch {
-                          if (!active) {
-                            shouldContinueLoop = false;
-                            return;
-                          }
-                        } finally {
-                          if (!matchedFallback) {
-                            confirmedLockRef.current = false;
-                          }
-                        }
-                        fallbackFrameCount = 0;
-                        setAutoScanCount(0);
-                        lastServerVerifyAt = performance.now();
                       }
                     }
                   }
@@ -795,13 +778,13 @@ export function WelcomeFaceScanModal({
                   </div>
                   <div className="text-[10px] font-bold text-[#0F4C81]">
                     {liveMatchHud.confidencePercent.toFixed(1)}% (3D Multi-Angle Match •{' '}
-                    {liveMatchHud.streak}/5)
+                    {liveMatchHud.streak}/{BIOMETRIC_REQUIRED_STREAK})
                   </div>
                 </div>
               ) : (
                 <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-sky-300 bg-white/95 px-3 py-1 text-center backdrop-blur-md shadow-xl">
                   <div className="text-[10px] font-extrabold text-[#0F4C81]">
-                    กำลังสแกนใบหน้าเทียบฐานข้อมูล... {autoScanCount}/5
+                    กำลังสแกนใบหน้าเทียบฐานข้อมูล... {autoScanCount}/{BIOMETRIC_REQUIRED_STREAK}
                   </div>
                 </div>
               )}
@@ -850,7 +833,7 @@ export function WelcomeFaceScanModal({
             ) : (
               <div className="flex items-center justify-between gap-2">
                 <span>
-                  ไม่พบข้อมูลใบหน้าในระบบ ({matchResult.confidencePercent}%) — {matchResult.reason || 'กรุณาลงทะเบียนใหม่'}
+                  ❌ ไม่พบบัญชีที่ตรงกับใบหน้านี้ในฐานข้อมูล Supabase ({matchResult.confidencePercent}%) — {matchResult.reason || 'กรุณาลงทะเบียนใหม่'}
                 </span>
                 <button
                   type="button"

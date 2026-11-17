@@ -3,7 +3,9 @@ import type { DrTechCaresApiClient, PatientBiometricIndexEntry } from '@drtechca
 import {
   BIOMETRIC_ENGINE_ID,
   BIOMETRIC_EXPECTED_DIM,
+  BIOMETRIC_FINAL_SCORE_THRESHOLD,
   BIOMETRIC_HUMAN_SIM_THRESHOLD,
+  BIOMETRIC_MARGIN_THRESHOLD,
   BIOMETRIC_MATCH_THRESHOLD,
   BIOMETRIC_REQUIRED_STREAK,
   BIOMETRIC_VAULT_STORAGE_KEY,
@@ -14,12 +16,15 @@ import {
   computePatientMatchScore,
   cosineSimilarityNormalized,
   evaluateLiveMatch1toN,
+  fetchLiveBiometricsFromSupabase,
   isValidNeuralEmbedding,
   loadEnrolledPatientsWithBiometrics,
+  normalizeImageDataLuminance,
   normalizeVector,
   readLocalBiometricVault,
   removeProfileFromLocalBiometricVault,
   saveProfileToLocalBiometricVault,
+  syncPatientBiometricEverywhere,
   type EnrolledBiometricCandidate,
   type NeuralSampleInput,
 } from '../lib/biometricEngine';
@@ -154,7 +159,7 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     expect(computeHumanDescriptorSimilarity(a, unrelated)).toBeLessThan(0.5);
   });
 
-  it('builds 5-angle profile and Top-10 sharp exemplars cleanly without fallbacks', () => {
+  it('builds 5-angle profile and 15 sharp exemplars distributed across all 5 angles cleanly without fallbacks', () => {
     const base = makeDeterministicUnitVector(5);
     const buckets: NeuralSampleInput['bucket'][] = ['center', 'left', 'right', 'up', 'down'];
     const samples: NeuralSampleInput[] = [];
@@ -180,8 +185,7 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     expect(profile).not.toBeNull();
     expect(profile?.engine).toBe(BIOMETRIC_ENGINE_ID);
     expect(profile?.dimension).toBe(1024);
-    expect(profile?.exemplar_embeddings.length).toBeGreaterThanOrEqual(5);
-    expect(profile?.exemplar_embeddings.length).toBeLessThanOrEqual(10);
+    expect(profile?.exemplar_embeddings.length).toBe(15);
     expect(cosineSimilarityNormalized(profile!.master_embedding, base)).toBeGreaterThan(0.97);
     expect(profile?.angle_embeddings.left).toHaveLength(1024);
     expect(profile?.angle_embeddings.right).toHaveLength(1024);
@@ -214,13 +218,13 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     );
     const scoreA = computePatientMatchScore(tieProbe, patA);
     const scoreB = computePatientMatchScore(tieProbe, patB);
-    expect(Math.abs(scoreA.bestSim - scoreB.bestSim)).toBeLessThan(0.06);
+    expect(Math.abs(scoreA.finalScore - scoreB.finalScore)).toBeLessThan(BIOMETRIC_MARGIN_THRESHOLD);
     const resTie = evaluateLiveMatch1toN(tieProbe, [patA, patB]);
     expect(resTie.matched).toBe(false);
     expect(resTie.reason).toBe('AMBIGUOUS_CLOSE_CANDIDATES');
   });
 
-  it('requires 3/3 consecutive matching live frames and resets on spoof or flip', () => {
+  it('requires 4/4 consecutive matching live frames and resets on spoof or flip', () => {
     const patA = makeCandidate('pat-a', 'HN-101', 'Patient Alpha', 1);
     const patB = makeCandidate('pat-b', 'HN-102', 'Patient Beta', 2);
     const tracker = new LiveIdentityStreakTracker(BIOMETRIC_REQUIRED_STREAK);
@@ -243,13 +247,14 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     expect(spoofed.confirmed).toBe(false);
     expect(spoofed.streak).toBe(0);
 
-    // 3/3 clean frames -> confirmed
+    // 4/4 clean frames -> confirmed
     expect(tracker.step(evalA, { biologicalVerified: true }).confirmed).toBe(false);
     expect(tracker.step(evalA, { biologicalVerified: true }).confirmed).toBe(false);
-    const third = tracker.step(evalA, { biologicalVerified: true });
-    expect(third.confirmed).toBe(true);
-    expect(third.streak).toBe(3);
-    expect(third.candidate?.patientId).toBe('pat-a');
+    expect(tracker.step(evalA, { biologicalVerified: true }).confirmed).toBe(false);
+    const fourth = tracker.step(evalA, { biologicalVerified: true });
+    expect(fourth.confirmed).toBe(true);
+    expect(fourth.streak).toBe(4);
+    expect(fourth.candidate?.patientId).toBe('pat-a');
   });
 
   it('persists, merges, and filters legacy vs 1024-D accounts in drtech_biometric_vault_v3', async () => {
@@ -298,6 +303,169 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     expect(HUMAN_BIOMETRIC_CONFIG.face?.mesh?.enabled).toBe(true);
     expect(HUMAN_BIOMETRIC_CONFIG.face?.iris?.enabled).toBe(false);
     expect(HUMAN_BIOMETRIC_CONFIG.face?.description?.enabled).toBe(true);
+  });
+
+  it('normalizes dim vs backlit images to target Mean Luminance = 128', () => {
+    const mkSyntheticImage = (offset: number, scale: number): ImageData => {
+      const w = 16;
+      const h = 16;
+      const data = new Uint8ClampedArray(w * h * 4);
+      for (let i = 0; i < w * h; i += 1) {
+        const base = ((i % w) / w) * 50 + (Math.floor(i / w) / h) * 30;
+        const v = Math.max(0, Math.min(255, Math.round(offset + base * scale)));
+        const idx = i * 4;
+        data[idx] = v;
+        data[idx + 1] = v;
+        data[idx + 2] = v;
+        data[idx + 3] = 255;
+      }
+      return { data, width: w, height: h, colorSpace: 'srgb' } as ImageData;
+    };
+
+    const dimImg = normalizeImageDataLuminance(mkSyntheticImage(18, 0.7), 128);
+    const brightImg = normalizeImageDataLuminance(mkSyntheticImage(120, 1.3), 128);
+
+    const meanLuma = (img: ImageData) => {
+      let sum = 0;
+      const n = img.width * img.height;
+      for (let i = 0; i < img.data.length; i += 4) {
+        sum += 0.299 * img.data[i] + 0.587 * img.data[i + 1] + 0.114 * img.data[i + 2];
+      }
+      return sum / n;
+    };
+
+    expect(Math.abs(meanLuma(dimImg) - 128)).toBeLessThan(3);
+    expect(Math.abs(meanLuma(brightImg) - 128)).toBeLessThan(3);
+  });
+
+  it('enforces Read-After-Write verification on Supabase persistence and loads cross-day when localStorage is empty', async () => {
+    const dbPatients = new Map<string, Record<string, unknown>>();
+    const dbBiometrics = new Map<string, Record<string, unknown>>();
+
+    const makeMockSupabase = (corruptReadAfterWrite = false) => ({
+      from: (table: string) => {
+        if (table === 'patients') {
+          return {
+            select: () => ({
+              eq: (_col: string, val: string) => ({
+                maybeSingle: async () => ({
+                  data: corruptReadAfterWrite ? null : dbPatients.get(val) ?? null,
+                  error: null,
+                }),
+              }),
+              then: (res: (v: { data: Record<string, unknown>[]; error: null }) => void) =>
+                Promise.resolve({
+                  data: Array.from(dbPatients.values()).map((r) => ({
+                    ...r,
+                    patient_biometrics: dbBiometrics.get(String(r.id)) ?? null,
+                  })),
+                  error: null,
+                }).then(res),
+            }),
+            upsert: (payload: Record<string, unknown>) => ({
+              select: () => {
+                dbPatients.set(String(payload.id), payload);
+                return Promise.resolve({ data: [{ id: payload.id }], error: null });
+              },
+            }),
+            update: (payload: Record<string, unknown>) => ({
+              eq: (_c: string, id: string) => ({
+                select: () => {
+                  const prev = dbPatients.get(id) ?? { id };
+                  dbPatients.set(id, { ...prev, ...payload });
+                  return Promise.resolve({ data: [{ id }], error: null });
+                },
+              }),
+            }),
+          };
+        }
+        return {
+          select: () => ({
+            eq: (_col: string, val: string) => ({
+              maybeSingle: async () => ({
+                data: corruptReadAfterWrite
+                  ? { patient_id: val, master_embedding: [], embedding_dim: 0 }
+                  : dbBiometrics.get(val) ?? null,
+                error: null,
+              }),
+            }),
+          }),
+          upsert: async (payload: Record<string, unknown>) => {
+            dbBiometrics.set(String(payload.patient_id), payload);
+            return { data: payload, error: null };
+          },
+        };
+      },
+    });
+
+    const masterVec = makeDeterministicUnitVector(101);
+    const patientStub = {
+      id: 'pat-sb-persist-1',
+      hn: 'HN-88001',
+      fullName: 'คุณวิชัย สุขภาพดี',
+      age: 62,
+      phone: '0811112222',
+      diagnosis: 'Stroke',
+      registrationStatus: 'active' as const,
+      assignedPtId: 'pt-01',
+      delegatedToPtId: null,
+      delegationNote: null,
+      nextAppointmentDate: '2026-12-01',
+      enrolledAt: '2026-12-01T00:00:00.000Z',
+    };
+    const angles = {
+      center: masterVec,
+      left: blendWithNoise(masterVec, 201, 0.08),
+      right: blendWithNoise(masterVec, 202, 0.08),
+      up: blendWithNoise(masterVec, 203, 0.08),
+      down: blendWithNoise(masterVec, 204, 0.08),
+    };
+
+    // 1. Failing Read-After-Write MUST throw instead of silently succeeding
+    const failApiClient = {
+      getSupabaseClient: () => makeMockSupabase(true),
+      getBiometricIndex: async () => [],
+    } as unknown as DrTechCaresApiClient;
+    await expect(
+      syncPatientBiometricEverywhere({
+        apiClient: failApiClient,
+        patient: patientStub,
+        masterEmbedding: masterVec,
+        angleEmbeddings: angles,
+        exemplarEmbeddings: [masterVec],
+        requireSupabase: true,
+      }),
+    ).rejects.toThrow(/Read-After-Write/i);
+
+    // 2. Successful Supabase enrollment writes & verifies permanently
+    const okApiClient = {
+      getSupabaseClient: () => makeMockSupabase(false),
+      getBiometricIndex: async () => [],
+    } as unknown as DrTechCaresApiClient;
+    const saved = await syncPatientBiometricEverywhere({
+      apiClient: okApiClient,
+      patient: patientStub,
+      masterEmbedding: masterVec,
+      angleEmbeddings: angles,
+      exemplarEmbeddings: [masterVec, angles.left, angles.right],
+      requireSupabase: true,
+    });
+    expect(saved?.dimension).toBe(1024);
+
+    // 3. Simulate next-day reload / new Kiosk device: wipe localStorage completely
+    storageMap.clear();
+    expect(readLocalBiometricVault()).toHaveLength(0);
+
+    const liveSynced = await fetchLiveBiometricsFromSupabase(okApiClient);
+    expect(liveSynced.syncedFromSupabase).toBe(true);
+    expect(liveSynced.validAccounts).toBe(1);
+    expect(liveSynced.compatibleCandidates[0]?.patientId).toBe('pat-sb-persist-1');
+    const matchRes = evaluateLiveMatch1toN(
+      blendWithNoise(masterVec, 555, 0.12),
+      liveSynced.compatibleCandidates,
+    );
+    expect(matchRes.matched).toBe(true);
+    expect(matchRes.topFinalScore).toBeGreaterThanOrEqual(BIOMETRIC_FINAL_SCORE_THRESHOLD);
   });
 });
 

@@ -1,8 +1,8 @@
 import type Human from '@vladmandic/human';
 import type { Config, FaceResult } from '@vladmandic/human';
 import {
+  DrTechCaresApiClient,
   type AngleEmbeddings5D,
-  type DrTechCaresApiClient,
   type PatientBiometricIndexEntry,
   type PatientRecord,
 } from '@drtechcares/api-client';
@@ -13,10 +13,12 @@ export const BIOMETRIC_VAULT_STORAGE_KEY = 'drtech_biometric_vault_v3';
 export const BIOMETRIC_ENGINE_ID = 'human-faceres-1024d' as const;
 export const BIOMETRIC_MIN_EMBEDDING_DIM = 128;
 export const BIOMETRIC_EXPECTED_DIM = 1024;
-export const BIOMETRIC_MATCH_THRESHOLD = 0.6;
+export const BIOMETRIC_MATCH_THRESHOLD = 0.62;
+export const BIOMETRIC_FINAL_SCORE_THRESHOLD = 0.68;
 export const BIOMETRIC_HUMAN_SIM_THRESHOLD = 0.65;
-export const BIOMETRIC_MARGIN_THRESHOLD = 0.06;
-export const BIOMETRIC_REQUIRED_STREAK = 3;
+export const BIOMETRIC_MARGIN_THRESHOLD = 0.07;
+export const BIOMETRIC_REQUIRED_STREAK = 4;
+export const BIOMETRIC_EXEMPLAR_TARGET_COUNT = 15;
 
 export const HUMAN_BIOMETRIC_CONFIG: Partial<Config> = {
   modelBasePath: '/models/human/',
@@ -107,6 +109,9 @@ export interface LoadedBiometricVaultResult {
   totalAccounts: number;
   validAccounts: number;
   legacyAccountsCount: number;
+  syncedFromSupabase: boolean;
+  supabaseSyncedAccounts: number;
+  syncError?: string;
 }
 
 export interface CanonicalFaceExtraction {
@@ -134,7 +139,10 @@ export interface NeuralSampleInput {
 export interface PatientMatchScoreResult {
   candidate: EnrolledBiometricCandidate;
   bestSim: number;
+  centroidSim: number;
+  exemplarSim: number;
   humanSim: number;
+  finalScore: number;
   bestSource: string;
 }
 
@@ -143,8 +151,12 @@ export interface Live1toNMatchEvaluation {
   topCandidate: EnrolledBiometricCandidate | null;
   runnerUpCandidate: EnrolledBiometricCandidate | null;
   topSimilarity: number;
+  topCentroidSimilarity: number;
+  topExemplarSimilarity: number;
   topHumanSimilarity: number;
+  topFinalScore: number;
   runnerUpSimilarity: number;
+  runnerUpFinalScore: number;
   margin: number;
   confidencePercent: number;
   bestSource: string;
@@ -160,6 +172,7 @@ export interface LiveStreakEvaluation {
   candidate: EnrolledBiometricCandidate | null;
   runnerUp: EnrolledBiometricCandidate | null;
   similarity: number;
+  finalScore: number;
   runnerUpSimilarity: number;
   margin: number;
   confidencePercent: number;
@@ -381,15 +394,76 @@ export async function extractCanonicalFaceDescriptor(
   };
 }
 
+export const TARGET_CANONICAL_CROP_SIZE = 224;
+export const TARGET_MEAN_LUMINANCE = 128;
+
 /**
- * Captures a race-free canvas snapshot from `<video>`, tight-cropping and scaling the head region
- * (`240x240`) whenever a face box is known so `@vladmandic/human` extracts sharp `1024-D` embeddings
- * across 0.25m–5.0m at 3–4x faster WebGL throughput.
+ * Illumination-Invariant Luminance Normalization (`Mean = 128`, contrast-stabilized)
+ * so dark/backlit/clinic lighting produce consistent pixel distributions for deep neural extraction.
+ */
+export function normalizeImageDataLuminance(
+  imageData: ImageData,
+  targetMean: number = TARGET_MEAN_LUMINANCE,
+  targetStd: number = 42,
+): ImageData {
+  const { data } = imageData;
+  const pixelCount = data.length >>> 2;
+  if (pixelCount === 0) return imageData;
+
+  let sumY = 0;
+  let validPixels = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] === 0) continue;
+    const y = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    sumY += y;
+    validPixels += 1;
+  }
+  if (validPixels === 0) return imageData;
+  const meanY = sumY / validPixels;
+
+  let varY = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] === 0) continue;
+    const y = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    const d = y - meanY;
+    varY += d * d;
+  }
+  const stdY = Math.sqrt(varY / validPixels);
+  const gain = stdY > 4 ? Math.max(0.55, Math.min(2.3, targetStd / stdY)) : 1;
+
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] === 0) continue;
+    data[i] = Math.max(0, Math.min(255, Math.round(targetMean + (data[i] - meanY) * gain)));
+    data[i + 1] = Math.max(0, Math.min(255, Math.round(targetMean + (data[i + 1] - meanY) * gain)));
+    data[i + 2] = Math.max(0, Math.min(255, Math.round(targetMean + (data[i + 2] - meanY) * gain)));
+  }
+  return imageData;
+}
+
+function applyCanonicalLuminanceToCanvas(canvas: HTMLCanvasElement): void {
+  const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
+  if (!ctx) return;
+  try {
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    normalizeImageDataLuminance(img, TARGET_MEAN_LUMINANCE);
+    ctx.putImageData(img, 0, 0);
+  } catch {
+    // Ignore tainted canvas edge cases gracefully
+  }
+}
+
+/**
+ * Captures a race-free, illumination-invariant inner-face snapshot (`224x224`, Mean Luminance `128`):
+ * - When `landmarks` (FaceMesh/Human) are provided: levels eye-roll to 0 deg and tightly crops
+ *   eyebrows-to-chin and cheekbone-to-cheekbone without wall/background noise.
+ * - When only `faceBox` is provided: tightens onto inner face at `224x224` with Mean Luminance `128`.
+ * - Falls back to full scaled frame (`448px`) only when neither box nor landmarks are known yet.
  */
 export function captureCanonicalFaceSnapshot(
   video: HTMLVideoElement,
   faceBox?: { x: number; y: number; width: number; height: number } | null,
   targetCanvas?: HTMLCanvasElement | null,
+  landmarks?: readonly { x: number; y: number; z?: number }[] | null,
 ): HTMLCanvasElement | null {
   if (typeof document === 'undefined' || !video || video.videoWidth <= 0 || video.videoHeight <= 0) {
     return null;
@@ -398,10 +472,63 @@ export function captureCanonicalFaceSnapshot(
   const vh = video.videoHeight;
   const canvas = targetCanvas || document.createElement('canvas');
 
+  if (landmarks && landmarks.length >= 264) {
+    const lEyeOuter = landmarks[33];
+    const lEyeInner = landmarks[133];
+    const rEyeInner = landmarks[362];
+    const rEyeOuter = landmarks[263];
+    const browForehead = landmarks[10];
+    const chin = landmarks[152];
+    const leftCheek = landmarks[234];
+    const rightCheek = landmarks[454];
+    if (lEyeOuter && lEyeInner && rEyeInner && rEyeOuter && browForehead && chin && leftCheek && rightCheek) {
+      const lx = ((lEyeOuter.x + lEyeInner.x) * 0.5) * vw;
+      const ly = ((lEyeOuter.y + lEyeInner.y) * 0.5) * vh;
+      const rx = ((rEyeInner.x + rEyeOuter.x) * 0.5) * vw;
+      const ry = ((rEyeInner.y + rEyeOuter.y) * 0.5) * vh;
+      const eyeDist = Math.hypot(rx - lx, ry - ly);
+
+      if (eyeDist >= 12) {
+        const rollRad = Math.atan2(ry - ly, rx - lx);
+        const xs = [leftCheek.x * vw, rightCheek.x * vw, lx, rx];
+        const ys = [browForehead.y * vh, chin.y * vh, ly, ry];
+        const minX = Math.min(...xs);
+        const maxX = Math.max(...xs);
+        const minY = Math.min(...ys);
+        const maxY = Math.max(...ys);
+        const faceSpan = Math.max(36, Math.max((maxX - minX) * 1.18, (maxY - minY) * 1.15));
+        const cx = (minX + maxX) * 0.5;
+        const cy = minY + (maxY - minY) * 0.48;
+
+        if (canvas.width !== TARGET_CANONICAL_CROP_SIZE || canvas.height !== TARGET_CANONICAL_CROP_SIZE) {
+          canvas.width = TARGET_CANONICAL_CROP_SIZE;
+          canvas.height = TARGET_CANONICAL_CROP_SIZE;
+        }
+        const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
+        if (!ctx) return null;
+        const scale = TARGET_CANONICAL_CROP_SIZE / faceSpan;
+        ctx.save();
+        ctx.fillStyle = '#808080';
+        ctx.fillRect(0, 0, TARGET_CANONICAL_CROP_SIZE, TARGET_CANONICAL_CROP_SIZE);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.translate(TARGET_CANONICAL_CROP_SIZE * 0.5, TARGET_CANONICAL_CROP_SIZE * 0.5);
+        ctx.rotate(-rollRad);
+        ctx.scale(scale, scale);
+        ctx.translate(-cx, -cy);
+        ctx.drawImage(video, 0, 0, vw, vh);
+        ctx.restore();
+        applyCanonicalLuminanceToCanvas(canvas);
+        return canvas;
+      }
+    }
+  }
+
   if (faceBox && faceBox.height > 0 && faceBox.width > 0) {
     const cx = faceBox.x + faceBox.width * 0.5;
-    const cy = faceBox.y + faceBox.height * 0.5;
-    const padScale = faceBox.height < 0.22 ? 2.35 : 1.9;
+    const cy = faceBox.y + faceBox.height * 0.48;
+    // Tight inner-face crop (brows to chin, cheekbones) eliminating background wall/lights
+    const padScale = faceBox.height < 0.18 ? 1.45 : 1.18;
     const sideNorm = Math.min(1, Math.max(faceBox.width, faceBox.height) * padScale);
     const halfNorm = sideNorm * 0.5;
     const rx = Math.max(0, Math.min(1 - halfNorm * 2, cx - halfNorm));
@@ -413,15 +540,16 @@ export function captureCanonicalFaceSnapshot(
     const sw = Math.max(32, Math.min(vw - sx, Math.ceil(rw * vw)));
     const sh = Math.max(32, Math.min(vh - sy, Math.ceil(rh * vh)));
 
-    if (canvas.width !== 240 || canvas.height !== 240) {
-      canvas.width = 240;
-      canvas.height = 240;
+    if (canvas.width !== TARGET_CANONICAL_CROP_SIZE || canvas.height !== TARGET_CANONICAL_CROP_SIZE) {
+      canvas.width = TARGET_CANONICAL_CROP_SIZE;
+      canvas.height = TARGET_CANONICAL_CROP_SIZE;
     }
-    const ctx = canvas.getContext('2d', { alpha: false });
+    const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
     if (!ctx) return null;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, 240, 240);
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, TARGET_CANONICAL_CROP_SIZE, TARGET_CANONICAL_CROP_SIZE);
+    applyCanonicalLuminanceToCanvas(canvas);
     return canvas;
   }
 
@@ -433,7 +561,7 @@ export function captureCanonicalFaceSnapshot(
     canvas.width = outW;
     canvas.height = outH;
   }
-  const ctx = canvas.getContext('2d', { alpha: false });
+  const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
   if (!ctx) return null;
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
@@ -505,41 +633,39 @@ export function buildBiometricProfileFromSamples(
     down: bucketCentroid('down'),
   };
 
-  // Top 10 sharpest real frames prioritized from frontal & mild angles for KNN matching
-  const indexed = normalizedSamples.map((s, idx) => ({
-    s,
-    idx,
-    frontalPriority:
-      s.bucket === 'center' || (Math.abs(s.yawDeg) <= 16 && Math.abs(s.pitchDeg) <= 12) ? 1 : 0,
-  }));
-  const rankedFrontal = indexed
-    .filter((item) => item.frontalPriority === 1)
-    .sort((a, b) => b.s.sharpness - a.s.sharpness);
-  const rankedMildSide = indexed
-    .filter((item) => item.frontalPriority === 0)
-    .sort((a, b) => b.s.sharpness - a.s.sharpness);
-
+  // 15 sharpest distinct frames distributed evenly across all 5 pose angles (3 per bucket + sharpest fill)
+  const bucketOrder: (keyof AngleEmbeddings5D)[] = ['center', 'left', 'right', 'up', 'down'];
   const selectedExemplars: number[][] = [];
   const usedVectors = new Set<string>();
-  const pushDistinctExemplar = (vec: number[]) => {
-    const sig = `${vec[0]?.toFixed(4)}|${vec[1]?.toFixed(4)}|${vec[Math.floor(vec.length / 2)]?.toFixed(4)}`;
-    if (usedVectors.has(sig)) return;
+  const pushDistinctExemplar = (vec: number[]): boolean => {
+    const sig = `${vec[0]?.toFixed(4)}|${vec[1]?.toFixed(4)}|${vec[Math.floor(vec.length / 2)]?.toFixed(4)}|${vec[vec.length - 1]?.toFixed(4)}`;
+    if (usedVectors.has(sig)) return false;
     usedVectors.add(sig);
     selectedExemplars.push(vec);
+    return true;
   };
 
-  // Pick up to 7 sharpest frontal/mild-angle frames + up to 3 sharpest side/tilt exemplars (10 total)
-  for (const item of rankedFrontal) {
-    if (selectedExemplars.length >= 7) break;
-    pushDistinctExemplar(item.s.embedding);
+  for (const bucket of bucketOrder) {
+    const rankedBucket = normalizedSamples
+      .filter((s) => s.bucket === bucket)
+      .sort((a, b) => b.sharpness - a.sharpness);
+    let pickedForBucket = 0;
+    for (const s of rankedBucket) {
+      if (pickedForBucket >= 3 || selectedExemplars.length >= BIOMETRIC_EXEMPLAR_TARGET_COUNT) break;
+      if (pushDistinctExemplar(s.embedding)) pickedForBucket += 1;
+    }
   }
-  for (const item of rankedMildSide) {
-    if (selectedExemplars.length >= 10) break;
-    pushDistinctExemplar(item.s.embedding);
-  }
-  for (const item of rankedFrontal) {
-    if (selectedExemplars.length >= 10) break;
-    pushDistinctExemplar(item.s.embedding);
+
+  // Fill remaining slots up to 15 from sharpest frames overall (prioritizing frontal/mild angles)
+  const allRanked = [...normalizedSamples].sort((a, b) => {
+    const aFrontal = a.bucket === 'center' ? 1 : 0;
+    const bFrontal = b.bucket === 'center' ? 1 : 0;
+    if (aFrontal !== bFrontal) return bFrontal - aFrontal;
+    return b.sharpness - a.sharpness;
+  });
+  for (const s of allRanked) {
+    if (selectedExemplars.length >= BIOMETRIC_EXEMPLAR_TARGET_COUNT) break;
+    pushDistinctExemplar(s.embedding);
   }
   if (selectedExemplars.length === 0) {
     selectedExemplars.push(master_embedding);
@@ -604,7 +730,7 @@ export function saveProfileToLocalBiometricVault(profile: BiometricProfile): voi
       exemplar_embeddings: (profile.exemplar_embeddings ?? [])
         .filter((v) => isValidNeuralEmbedding(v) && v.length === dim)
         .map((v) => normalizeVector(v))
-        .slice(0, 12),
+        .slice(0, BIOMETRIC_EXEMPLAR_TARGET_COUNT),
       updatedAt: profile.updatedAt || new Date().toISOString(),
     };
     const existing = readLocalBiometricVault();
@@ -641,10 +767,83 @@ export function removeProfileFromLocalBiometricVault(patientIdOrHn: string): voi
 }
 
 /**
- * Persists a newly enrolled or re-enrolled `BiometricProfile` simultaneously to:
- * 1) Local Shared Biometric Vault (`drtech_biometric_vault_v3`) for instant zero-latency Kiosk recognition
- * 2) Direct Supabase `patient_biometrics` & `patients` tables when client is configured
- * 3) Broadcasts `notifyBiometricIndexChanged()` across views
+ * Replaces the cached local vault strictly from Supabase-verified biometric records
+ * so stale or deleted accounts never persist across sessions as phantom profiles.
+ */
+export function replaceLocalBiometricVaultFromSupabase(
+  candidates: readonly EnrolledBiometricCandidate[],
+): void {
+  if (typeof globalThis.localStorage === 'undefined') return;
+  try {
+    const cleanProfiles: BiometricProfile[] = [];
+    for (const c of candidates) {
+      if (!isValidNeuralEmbedding(c.master_embedding)) continue;
+      cleanProfiles.push({
+        patientId: c.patientId,
+        hn: c.hn,
+        fullName: c.fullName,
+        diagnosis: c.diagnosis,
+        assignedPtId: c.assignedPtId,
+        nextAppointmentDate: c.nextAppointmentDate,
+        avatarUrl: c.avatarUrl,
+        engine: BIOMETRIC_ENGINE_ID,
+        dimension: c.dimension,
+        master_embedding: c.master_embedding,
+        angle_embeddings: c.angle_embeddings,
+        exemplar_embeddings: c.exemplar_embeddings.slice(0, BIOMETRIC_EXEMPLAR_TARGET_COUNT),
+        ...(c.geometricRatios ? { geometricRatios: c.geometricRatios } : {}),
+        framesCaptured: c.framesCaptured,
+        qualityScore: c.qualityScore,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    globalThis.localStorage.setItem(
+      BIOMETRIC_VAULT_STORAGE_KEY,
+      JSON.stringify(cleanProfiles.slice(0, 150)),
+    );
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function extractMissingPostgrestColumn(err: { code?: string; message?: string } | null | undefined): string | null {
+  if (!err?.message) return null;
+  const msg = err.message;
+  const m =
+    msg.match(/Could not find the ['"]?([a-zA-Z0-9_]+)['"]? column/i) ||
+    msg.match(/column\s+["']?([a-zA-Z0-9_]+)["']?\s+(?:of relation|does not exist)/i);
+  return m?.[1] ?? null;
+}
+
+const PROTECTED_VECTOR_COLUMNS = new Set([
+  'biometric_data',
+  'master_embedding',
+  'angle_embeddings',
+  'exemplar_embeddings',
+  'embedding_dim',
+]);
+
+async function executeSupabaseWriteWithSchemaCompat(
+  run: (payload: Record<string, unknown>) => PromiseLike<{ data?: unknown; error: { code?: string; message?: string } | null }>,
+  initialPayload: Record<string, unknown>,
+): Promise<{ data?: unknown; error: { code?: string; message?: string } | null }> {
+  const payload = { ...initialPayload };
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const res = await run(payload);
+    if (!res.error) return res;
+    const missingCol = extractMissingPostgrestColumn(res.error);
+    if (!missingCol || PROTECTED_VECTOR_COLUMNS.has(missingCol) || !(missingCol in payload)) {
+      return res;
+    }
+    delete payload[missingCol];
+  }
+  return run(payload);
+}
+
+/**
+ * Persists a newly enrolled or re-enrolled `BiometricProfile` to Supabase Cloud (`patients` + `patient_biometrics`)
+ * with strict **Read-After-Write `SELECT` Verification (`embedding_dim >= 128`)**.
+ * Never swallows Supabase errors or writes fake vectors.
  */
 export async function syncPatientBiometricEverywhere(input: {
   apiClient: DrTechCaresApiClient;
@@ -655,8 +854,11 @@ export async function syncPatientBiometricEverywhere(input: {
   geometricRatios?: GeometricAnthropometricRatios;
   framesCaptured?: number;
   qualityScore?: number;
+  requireSupabase?: boolean;
 }): Promise<BiometricProfile | null> {
-  if (!isValidNeuralEmbedding(input.masterEmbedding)) return null;
+  if (!isValidNeuralEmbedding(input.masterEmbedding)) {
+    throw new Error('ไม่พบเวกเตอร์ใบหน้าจริง (Neural Embedding >= 128 มิติ) ปฏิเสธการบันทึกข้อมูลจำลอง');
+  }
   const masterNorm = normalizeVector(input.masterEmbedding);
   const dim = masterNorm.length;
   const normAngle = (v: unknown): number[] =>
@@ -670,7 +872,8 @@ export async function syncPatientBiometricEverywhere(input: {
   };
   const exemplars = (input.exemplarEmbeddings ?? [])
     .filter((v) => isValidNeuralEmbedding(v) && v.length === dim)
-    .map((v) => normalizeVector(v));
+    .map((v) => normalizeVector(v))
+    .slice(0, BIOMETRIC_EXEMPLAR_TARGET_COUNT);
 
   const profile: BiometricProfile = {
     patientId: input.patient.id,
@@ -691,70 +894,146 @@ export async function syncPatientBiometricEverywhere(input: {
     updatedAt: new Date().toISOString(),
   };
 
-  saveProfileToLocalBiometricVault(profile);
-
-  // Best-effort direct Supabase reinforcement alongside backend worker persistence
   const supabase = input.apiClient.getSupabaseClient();
-  if (supabase) {
-    try {
-      const bioPayload: Record<string, unknown> = {
-        patient_id: input.patient.id,
-        hn: input.patient.hn,
-        master_embedding: masterNorm,
-        angle_embeddings: angleNorm,
-        exemplar_embeddings: exemplars,
-        biometric_engine: BIOMETRIC_ENGINE_ID,
-        embedding_dim: dim,
-        frames_captured: profile.framesCaptured,
-        quality_score: profile.qualityScore,
-        avatar_url: input.patient.faceImageUrl ?? null,
-        updated_at: profile.updatedAt,
-      };
-      const upRes = await supabase
-        .from('patient_biometrics')
-        .upsert(bioPayload, { onConflict: 'patient_id' });
-      if (upRes.error) {
-        const compatPayload = { ...bioPayload };
-        delete compatPayload.exemplar_embeddings;
-        delete compatPayload.biometric_engine;
-        delete compatPayload.embedding_dim;
-        await supabase
-          .from('patient_biometrics')
-          .upsert(compatPayload, { onConflict: 'patient_id' });
-      }
+  if (!supabase && input.requireSupabase) {
+    throw new Error('ไม่ได้เชื่อมต่อฐานข้อมูล Supabase กรุณาตรวจสอบ VITE_SUPABASE_URL และ VITE_SUPABASE_ANON_KEY');
+  }
 
-      const blob = {
-        engine: BIOMETRIC_ENGINE_ID,
-        dimension: dim,
-        master_embedding: masterNorm,
-        angle_embeddings: angleNorm,
-        exemplar_embeddings: exemplars,
-      };
-      const patRes = await supabase
-        .from('patients')
-        .update({
-          face_biometric_status: 'VERIFIED',
-          face_frames_count: profile.framesCaptured,
-          face_embedding: blob,
-          biometric_data: blob,
-          updated_at: profile.updatedAt,
-        })
-        .eq('id', input.patient.id);
+  if (supabase) {
+    const blob = {
+      engine: BIOMETRIC_ENGINE_ID,
+      dimension: dim,
+      master_embedding: masterNorm,
+      angle_embeddings: angleNorm,
+      exemplar_embeddings: profile.exemplar_embeddings,
+      frames_captured: profile.framesCaptured,
+      updated_at: profile.updatedAt,
+    };
+
+    const existingPat = await supabase
+      .from('patients')
+      .select('id, history')
+      .eq('id', input.patient.id)
+      .maybeSingle();
+    if (existingPat.error) {
+      throw new Error(`Supabase ตรวจสอบข้อมูลผู้ป่วยไม่สำเร็จ: ${existingPat.error.message}`);
+    }
+
+    const baseHistory =
+      existingPat.data && existingPat.data.history && typeof existingPat.data.history === 'object'
+        ? (existingPat.data.history as Record<string, unknown>)
+        : {};
+    const enrichedHistory = {
+      ...baseHistory,
+      biometricEngine: BIOMETRIC_ENGINE_ID,
+      masterEmbedding: masterNorm,
+      angleEmbeddings: angleNorm,
+      exemplarEmbeddings: profile.exemplar_embeddings,
+      biometricUpdatedAt: profile.updatedAt,
+    };
+
+    const patientBioPatch: Record<string, unknown> = {
+      face_biometric_status: 'VERIFIED',
+      face_frames_count: profile.framesCaptured,
+      face_embedding: blob,
+      biometric_data: blob,
+      biometric_updated_at: profile.updatedAt,
+      history: enrichedHistory,
+      updated_at: profile.updatedAt,
+      ...(input.patient.faceImageUrl ? { face_image_url: input.patient.faceImageUrl } : {}),
+    };
+
+    if (existingPat.data?.id) {
+      const patRes = await executeSupabaseWriteWithSchemaCompat(
+        (payload) => supabase.from('patients').update(payload).eq('id', input.patient.id).select('id'),
+        patientBioPatch,
+      );
       if (patRes.error) {
-        await supabase
-          .from('patients')
-          .update({
-            face_biometric_status: 'VERIFIED',
-            face_embedding: blob,
-            updated_at: profile.updatedAt,
-          })
-          .eq('id', input.patient.id);
+        throw new Error(`Supabase บันทึก patients ไม่สำเร็จ: ${patRes.error.message}`);
       }
-    } catch {
-      // Worker API has already persisted authoritative server record; ignore direct RLS edge cases
+    } else {
+      const patInsertRes = await executeSupabaseWriteWithSchemaCompat(
+        (payload) => supabase.from('patients').upsert(payload, { onConflict: 'id' }).select('id'),
+        {
+          id: input.patient.id,
+          hn: input.patient.hn,
+          full_name: input.patient.fullName,
+          age:
+            typeof input.patient.age === 'number' && Number.isFinite(input.patient.age)
+              ? input.patient.age
+              : 45,
+          phone: input.patient.phone ?? '',
+          diagnosis: input.patient.diagnosis || 'กำลังประเมินอาการ',
+          registration_status: input.patient.registrationStatus || 'active',
+          assigned_pt_id: input.patient.assignedPtId || null,
+          next_appointment_date: input.patient.nextAppointmentDate || null,
+          ...patientBioPatch,
+        },
+      );
+      if (patInsertRes.error) {
+        throw new Error(`Supabase สร้างระเบียน patients ไม่สำเร็จ: ${patInsertRes.error.message}`);
+      }
+    }
+
+    const bioPayload: Record<string, unknown> = {
+      patient_id: input.patient.id,
+      hn: input.patient.hn,
+      master_embedding: masterNorm,
+      angle_embeddings: angleNorm,
+      exemplar_embeddings: profile.exemplar_embeddings,
+      biometric_engine: BIOMETRIC_ENGINE_ID,
+      model_version: BIOMETRIC_ENGINE_ID,
+      embedding_dim: dim,
+      frame_count: profile.framesCaptured,
+      frames_captured: profile.framesCaptured,
+      quality_score: profile.qualityScore,
+      avatar_url: input.patient.faceImageUrl ?? null,
+      updated_at: profile.updatedAt,
+    };
+
+    const upRes = await executeSupabaseWriteWithSchemaCompat(
+      (payload) => supabase.from('patient_biometrics').upsert(payload, { onConflict: 'patient_id' }),
+      bioPayload,
+    );
+    if (upRes.error) {
+      throw new Error(`Supabase บันทึก patient_biometrics ไม่สำเร็จ: ${upRes.error.message}`);
+    }
+
+    // Strict Read-After-Write Verification
+    const [verifyPat, verifyBio] = await Promise.all([
+      supabase.from('patients').select('*').eq('id', input.patient.id).maybeSingle(),
+      supabase.from('patient_biometrics').select('*').eq('patient_id', input.patient.id).maybeSingle(),
+    ]);
+    if (verifyPat.error && verifyBio.error) {
+      throw new Error(
+        `Read-After-Write Verification ล้มเหลว: ${verifyBio.error.message || verifyPat.error.message}`,
+      );
+    }
+
+    const bioRow = (verifyBio.data ?? null) as Record<string, unknown> | null;
+    const patRow = (verifyPat.data ?? null) as Record<string, unknown> | null;
+    const verifiedBioVec = parseVectorLoose(bioRow?.master_embedding);
+    const verifiedPatVec =
+      parseVectorLoose(patRow?.biometric_data) ?? parseVectorLoose(patRow?.face_embedding);
+    const reportedDim =
+      typeof bioRow?.embedding_dim === 'number'
+        ? bioRow.embedding_dim
+        : verifiedBioVec?.length ?? verifiedPatVec?.length ?? 0;
+
+    if (
+      reportedDim < BIOMETRIC_MIN_EMBEDDING_DIM ||
+      (!verifiedBioVec && !verifiedPatVec) ||
+      ((verifiedBioVec?.length ?? 0) < BIOMETRIC_MIN_EMBEDDING_DIM &&
+        (verifiedPatVec?.length ?? 0) < BIOMETRIC_MIN_EMBEDDING_DIM)
+    ) {
+      removeProfileFromLocalBiometricVault(input.patient.id);
+      throw new Error(
+        `ไม่สามารถยืนยันข้อมูลใบหน้าใน Supabase หลังการบันทึก (Read-After-Write embedding_dim=${reportedDim})`,
+      );
     }
   }
 
+  saveProfileToLocalBiometricVault(profile);
   notifyBiometricIndexChanged();
   return profile;
 }
@@ -937,99 +1216,209 @@ export async function loadEnrolledPatientsWithBiometrics(
     // Continue cleanly to Supabase + Local Vault
   }
 
-  // 2. Direct Supabase tables (`patients` + `patient_biometrics`) enrichment
+  // 2. Authoritative Live Sync from Supabase Cloud (`patients` + `patient_biometrics`)
+  let syncedFromSupabase = false;
+  let supabaseSyncedAccounts = 0;
+  let syncError: string | undefined;
   const supabase = apiClient.getSupabaseClient();
   if (supabase) {
     try {
-      const [patRes, bioRes] = await Promise.all([
-        supabase
-          .from('patients')
-          .select('id, hn, full_name, diagnosis, assigned_pt_id, next_appointment_date, registration_status, face_embedding, face_image_url, history')
-          .eq('registration_status', 'active'),
-        supabase.from('patient_biometrics').select('*'),
-      ]);
+      let patientRows: Record<string, unknown>[] = [];
       const bioByPid = new Map<string, Record<string, unknown>>();
-      if (!bioRes.error && Array.isArray(bioRes.data)) {
-        for (const row of bioRes.data as Record<string, unknown>[]) {
-          bioByPid.set(String(row.patient_id), row);
+
+      const joinRes = await supabase.from('patients').select('*, patient_biometrics(*)');
+      if (!joinRes.error && Array.isArray(joinRes.data)) {
+        syncedFromSupabase = true;
+        for (const r of joinRes.data as Record<string, unknown>[]) {
+          patientRows.push(r);
+          const embeddedBioRaw = r.patient_biometrics;
+          const embeddedBio = Array.isArray(embeddedBioRaw)
+            ? (embeddedBioRaw[0] as Record<string, unknown> | undefined)
+            : embeddedBioRaw && typeof embeddedBioRaw === 'object'
+              ? (embeddedBioRaw as Record<string, unknown>)
+              : undefined;
+          if (embeddedBio) {
+            bioByPid.set(String(embeddedBio.patient_id ?? r.id), embeddedBio);
+          }
+        }
+      } else {
+        const [patRes, bioRes] = await Promise.all([
+          supabase.from('patients').select('*'),
+          supabase.from('patient_biometrics').select('*'),
+        ]);
+        if (!bioRes.error && Array.isArray(bioRes.data)) {
+          syncedFromSupabase = true;
+          for (const row of bioRes.data as Record<string, unknown>[]) {
+            bioByPid.set(String(row.patient_id), row);
+          }
+        }
+        if (!patRes.error && Array.isArray(patRes.data)) {
+          syncedFromSupabase = true;
+          patientRows = patRes.data as Record<string, unknown>[];
+        } else if (patRes.error) {
+          syncError = patRes.error.message;
         }
       }
-      if (!patRes.error && Array.isArray(patRes.data)) {
-        for (const r of patRes.data as Record<string, unknown>[]) {
+
+      if (syncedFromSupabase) {
+        const supabaseCandidates: EnrolledBiometricCandidate[] = [];
+        const seenSupabasePid = new Set<string>();
+        const prevCloudByPid = new Map(byPatientId.entries());
+        byPatientId.clear();
+
+        for (const r of patientRows) {
+          const status = String(r.registration_status ?? 'active').toLowerCase();
+          if (status === 'deleted' || status === 'rejected' || status === 'inactive') continue;
           const pid = String(r.id);
           const bio = bioByPid.get(pid);
           const history = (r.history && typeof r.history === 'object' ? r.history : {}) as Record<string, unknown>;
+          const bioDataObj = (r.biometric_data && typeof r.biometric_data === 'object' && !Array.isArray(r.biometric_data)
+            ? r.biometric_data
+            : {}) as Record<string, unknown>;
           const faceBlob = (r.face_embedding && typeof r.face_embedding === 'object' && !Array.isArray(r.face_embedding)
             ? r.face_embedding
             : {}) as Record<string, unknown>;
+
           const master =
             parseVectorLoose(bio?.master_embedding) ??
+            parseVectorLoose(r.biometric_data) ??
             parseVectorLoose(r.face_embedding) ??
             parseVectorLoose(history.masterEmbedding);
           if (!master) continue;
+
           const rawAngles =
             (bio?.angle_embeddings as Partial<AngleEmbeddings5D> | undefined) ??
+            (bioDataObj.angle_embeddings as Partial<AngleEmbeddings5D> | undefined) ??
             (faceBlob.angle_embeddings as Partial<AngleEmbeddings5D> | undefined) ??
             (history.angleEmbeddings as Partial<AngleEmbeddings5D> | undefined);
           const rawExemplars = Array.isArray(bio?.exemplar_embeddings)
             ? (bio.exemplar_embeddings as unknown[])
-            : Array.isArray(faceBlob.exemplar_embeddings)
-              ? (faceBlob.exemplar_embeddings as unknown[])
-              : Array.isArray(history.exemplarEmbeddings)
-                ? (history.exemplarEmbeddings as unknown[])
-                : undefined;
-          applyCandidate(
-            buildCandidateFromSource(
-              pid,
-              String(r.hn ?? ''),
-              String(r.full_name ?? ''),
-              master,
-              rawAngles,
-              rawExemplars,
-              {
-                diagnosis: String(r.diagnosis ?? ''),
-                assignedPtId: String(r.assigned_pt_id ?? ''),
-                nextAppointmentDate: String(r.next_appointment_date ?? ''),
-                avatarUrl: typeof r.face_image_url === 'string' ? r.face_image_url : undefined,
-                biometricEngine:
-                  master.length >= 768
-                    ? BIOMETRIC_ENGINE_ID
-                    : (history.biometricEngine as PatientRecord['biometricEngine']),
-              },
-            ),
+            : Array.isArray(bioDataObj.exemplar_embeddings)
+              ? (bioDataObj.exemplar_embeddings as unknown[])
+              : Array.isArray(faceBlob.exemplar_embeddings)
+                ? (faceBlob.exemplar_embeddings as unknown[])
+                : Array.isArray(history.exemplarEmbeddings)
+                  ? (history.exemplarEmbeddings as unknown[])
+                  : undefined;
+
+          const prevCloud = prevCloudByPid.get(pid);
+          const cand = buildCandidateFromSource(
+            pid,
+            String(r.hn ?? bio?.hn ?? ''),
+            String(r.full_name ?? ''),
+            master,
+            rawAngles,
+            rawExemplars,
+            {
+              diagnosis: String(r.diagnosis ?? ''),
+              assignedPtId: String(r.assigned_pt_id ?? ''),
+              nextAppointmentDate: String(r.next_appointment_date ?? ''),
+              avatarUrl:
+                typeof bio?.avatar_url === 'string' && bio.avatar_url
+                  ? bio.avatar_url
+                  : typeof r.face_image_url === 'string'
+                    ? r.face_image_url
+                    : undefined,
+              framesCaptured:
+                typeof bio?.frame_count === 'number'
+                  ? bio.frame_count
+                  : typeof bio?.frames_captured === 'number'
+                    ? bio.frames_captured
+                    : typeof r.face_frames_count === 'number'
+                      ? r.face_frames_count
+                      : 120,
+              qualityScore: typeof bio?.quality_score === 'number' ? bio.quality_score : 0.96,
+              biometricEngine:
+                master.length >= 768
+                  ? BIOMETRIC_ENGINE_ID
+                  : (history.biometricEngine as PatientRecord['biometricEngine']),
+            },
           );
+          if (prevCloud) {
+            cand.sourceEntry = {
+              ...cand.sourceEntry,
+              todayRoutine: prevCloud.sourceEntry.todayRoutine ?? cand.sourceEntry.todayRoutine,
+              todayExercises: prevCloud.sourceEntry.todayExercises ?? cand.sourceEntry.todayExercises,
+              rehabSchedules:
+                (prevCloud.sourceEntry.rehabSchedules ?? []).length > 0
+                  ? prevCloud.sourceEntry.rehabSchedules
+                  : cand.sourceEntry.rehabSchedules,
+              completedToday: prevCloud.sourceEntry.completedToday ?? cand.sourceEntry.completedToday,
+              hasAppointmentToday:
+                prevCloud.sourceEntry.hasAppointmentToday ?? cand.sourceEntry.hasAppointmentToday,
+            };
+          }
+          seenSupabasePid.add(pid);
+          supabaseCandidates.push(cand);
+          applyCandidate(cand, true);
+        }
+
+        // Also include orphaned patient_biometrics rows if patients metadata query returned partial subset
+        for (const [pid, bio] of bioByPid.entries()) {
+          if (seenSupabasePid.has(pid)) continue;
+          const master = parseVectorLoose(bio.master_embedding);
+          if (!master) continue;
+          const cand = buildCandidateFromSource(
+            pid,
+            String(bio.hn ?? ''),
+            String(bio.hn ?? pid),
+            master,
+            bio.angle_embeddings as Partial<AngleEmbeddings5D> | undefined,
+            Array.isArray(bio.exemplar_embeddings) ? (bio.exemplar_embeddings as unknown[]) : undefined,
+            {
+              framesCaptured:
+                typeof bio.frame_count === 'number'
+                  ? bio.frame_count
+                  : typeof bio.frames_captured === 'number'
+                    ? bio.frames_captured
+                    : 120,
+              qualityScore: typeof bio.quality_score === 'number' ? bio.quality_score : 0.96,
+              biometricEngine: master.length >= 768 ? BIOMETRIC_ENGINE_ID : undefined,
+            },
+          );
+          supabaseCandidates.push(cand);
+          applyCandidate(cand, true);
+        }
+
+        supabaseSyncedAccounts = supabaseCandidates.length;
+        // Authoritatively refresh cache from Supabase Cloud so stale/deleted records don't linger
+        replaceLocalBiometricVaultFromSupabase(supabaseCandidates);
+        if (supabaseCandidates.length === 0) {
+          DrTechCaresApiClient.clearRecentEnrolledEntries?.();
         }
       }
-    } catch {
-      // Offline or RLS fallback -> local vault still loads cleanly
+    } catch (err) {
+      syncError = err instanceof Error ? err.message : String(err);
     }
   }
 
-  // 3. Instant Shared Local Biometric Vault (`drtech_biometric_vault_v3`)
-  const vaultEntries = readLocalBiometricVault();
-  for (const v of vaultEntries) {
-    if (!isValidNeuralEmbedding(v.master_embedding)) continue;
-    applyCandidate(
-      buildCandidateFromSource(
-        v.patientId,
-        v.hn,
-        v.fullName,
-        v.master_embedding,
-        v.angle_embeddings,
-        v.exemplar_embeddings,
-        {
-          diagnosis: v.diagnosis,
-          assignedPtId: v.assignedPtId,
-          nextAppointmentDate: v.nextAppointmentDate,
-          avatarUrl: v.avatarUrl,
-          framesCaptured: v.framesCaptured,
-          qualityScore: v.qualityScore,
-          biometricEngine: BIOMETRIC_ENGINE_ID,
-          geometricRatios: v.geometricRatios,
-        },
-      ),
-      true,
-    );
+  // 3. Read Local Biometric Vault ONLY when Supabase was unavailable / offline / unconfigured
+  if (!syncedFromSupabase) {
+    const vaultEntries = readLocalBiometricVault();
+    for (const v of vaultEntries) {
+      if (!isValidNeuralEmbedding(v.master_embedding)) continue;
+      applyCandidate(
+        buildCandidateFromSource(
+          v.patientId,
+          v.hn,
+          v.fullName,
+          v.master_embedding,
+          v.angle_embeddings,
+          v.exemplar_embeddings,
+          {
+            diagnosis: v.diagnosis,
+            assignedPtId: v.assignedPtId,
+            nextAppointmentDate: v.nextAppointmentDate,
+            avatarUrl: v.avatarUrl,
+            framesCaptured: v.framesCaptured,
+            qualityScore: v.qualityScore,
+            biometricEngine: BIOMETRIC_ENGINE_ID,
+            geometricRatios: v.geometricRatios,
+          },
+        ),
+        true,
+      );
+    }
   }
 
   const allCandidates = Array.from(byPatientId.values());
@@ -1042,59 +1431,108 @@ export async function loadEnrolledPatientsWithBiometrics(
     totalAccounts: allCandidates.length,
     validAccounts: compatibleCandidates.length,
     legacyAccountsCount,
+    syncedFromSupabase,
+    supabaseSyncedAccounts: syncedFromSupabase
+      ? supabaseSyncedAccounts
+      : compatibleCandidates.length,
+    ...(syncError ? { syncError } : {}),
   };
 }
 
 /**
+ * Explicit alias for Kiosk live Supabase synchronization (`fetchLiveBiometricsFromSupabase`).
+ */
+export async function fetchLiveBiometricsFromSupabase(
+  apiClient: DrTechCaresApiClient,
+  expectedDim: number = BIOMETRIC_EXPECTED_DIM,
+): Promise<LoadedBiometricVaultResult> {
+  return loadEnrolledPatientsWithBiometrics(apiClient, expectedDim);
+}
+
+/**
  * Evaluates a live L2-normalized embedding against a single enrolled patient's
- * `master_embedding`, 5 `angle_embeddings`, and Top-10 KNN `exemplar_embeddings`.
+ * `master_embedding`, 5 `angle_embeddings`, and Top-3 KNN Mean over 15 `exemplar_embeddings`.
+ * Computes Hybrid `finalScore = 0.50 * max(centroidSim, exemplarSim) + 0.50 * humanSim`.
  */
 export function computePatientMatchScore(
   liveEmbedding: readonly number[],
   candidate: EnrolledBiometricCandidate,
   humanOverride?: Pick<Human, 'match'> | null,
+  liveBucket?: keyof AngleEmbeddings5D,
 ): PatientMatchScoreResult {
   const liveNorm = normalizeVector(liveEmbedding);
   const expectedDim = liveNorm.length;
 
-  const targets: { label: string; vec: number[] }[] = [];
+  let centroidSim = -1;
+  let bestTargetVec: number[] | null = null;
+  let bestTargetSim = -1;
+  let bestSource = 'none';
+
   if (candidate.master_embedding.length === expectedDim) {
-    targets.push({ label: 'master', vec: candidate.master_embedding });
+    const cos = cosineSimilarityNormalized(liveNorm, candidate.master_embedding);
+    centroidSim = cos;
+    bestTargetVec = candidate.master_embedding;
+    bestTargetSim = cos;
+    bestSource = 'master';
   }
-  const angleKeys: (keyof AngleEmbeddings5D)[] = ['center', 'left', 'right', 'up', 'down'];
+
+  const angleKeys: (keyof AngleEmbeddings5D)[] = liveBucket
+    ? [liveBucket, ...(['center', 'left', 'right', 'up', 'down'] as const).filter((k) => k !== liveBucket)]
+    : ['center', 'left', 'right', 'up', 'down'];
   for (const k of angleKeys) {
     const v = candidate.angle_embeddings?.[k];
     if (v && v.length === expectedDim) {
-      targets.push({ label: k, vec: v });
+      const cos = cosineSimilarityNormalized(liveNorm, v);
+      if (cos > centroidSim) {
+        centroidSim = cos;
+      }
+      if (cos > bestTargetSim) {
+        bestTargetSim = cos;
+        bestTargetVec = v;
+        bestSource = k;
+      }
     }
   }
+
+  // Top-3 KNN Mean over up to 15 enrolled exemplars
+  const exemplarScores: { cos: number; vec: number[]; label: string }[] = [];
   candidate.exemplar_embeddings.forEach((ex, idx) => {
     if (ex.length === expectedDim) {
-      targets.push({ label: `exemplar-${idx + 1}`, vec: ex });
+      const cos = cosineSimilarityNormalized(liveNorm, ex);
+      exemplarScores.push({ cos, vec: ex, label: `exemplar-${idx + 1}` });
+      if (cos > bestTargetSim) {
+        bestTargetSim = cos;
+        bestTargetVec = ex;
+        bestSource = `exemplar-${idx + 1}`;
+      }
     }
   });
+  exemplarScores.sort((a, b) => b.cos - a.cos);
 
-  let bestSim = -1;
-  let bestTargetVec: number[] | null = null;
-  let bestSource = 'none';
-
-  for (const t of targets) {
-    const cos = cosineSimilarityNormalized(liveNorm, t.vec);
-    if (cos > bestSim) {
-      bestSim = cos;
-      bestTargetVec = t.vec;
-      bestSource = t.label;
+  const clampedCentroid = Math.max(0, centroidSim);
+  let exemplarSim = clampedCentroid;
+  if (exemplarScores.length > 0) {
+    const k = Math.min(3, exemplarScores.length);
+    let topSum = 0;
+    for (let i = 0; i < k; i += 1) {
+      topSum += Math.max(0, exemplarScores[i].cos);
     }
+    exemplarSim = topSum / k;
   }
 
+  const combinedCosine = Math.max(clampedCentroid, exemplarSim);
   const humanSim = bestTargetVec
     ? computeHumanDescriptorSimilarity(liveNorm, bestTargetVec, humanOverride)
     : 0;
+  const finalScore = 0.5 * combinedCosine + 0.5 * humanSim;
 
   return {
     candidate,
-    bestSim: Math.max(0, bestSim),
+    bestSim: combinedCosine,
+    centroidSim: clampedCentroid,
+    exemplarSim,
     humanSim,
+    finalScore,
     bestSource,
   };
 }
@@ -1104,15 +1542,16 @@ function normalizeNameForIdentity(name: string): string {
 }
 
 /**
- * 1:N Exemplar + Centroid Matcher:
+ * 1:N Exemplar (Top-3 KNN) + Centroid + Human Similarity Matcher:
  * - Filters strictly by matching embedding dimension (ignoring stale corrupted vectors).
- * - Requires `cosineSim >= 0.60` (`humanSim >= 0.65`) AND runner-up margin `>= 0.06` across >1 patient.
+ * - Requires `finalScore >= 0.68`, `cosineSim >= 0.62`, AND runner-up margin `>= 0.07` across >1 patient.
  */
 export function evaluateLiveMatch1toN(
   liveEmbedding: readonly number[],
   candidates: readonly EnrolledBiometricCandidate[],
   excludedIds: readonly string[] = [],
   humanOverride?: Pick<Human, 'match'> | null,
+  liveBucket?: keyof AngleEmbeddings5D,
 ): Live1toNMatchEvaluation {
   const excludedSet = new Set(excludedIds);
   const dim = liveEmbedding.length;
@@ -1127,8 +1566,12 @@ export function evaluateLiveMatch1toN(
       topCandidate: null,
       runnerUpCandidate: null,
       topSimilarity: 0,
+      topCentroidSimilarity: 0,
+      topExemplarSimilarity: 0,
       topHumanSimilarity: 0,
+      topFinalScore: 0,
       runnerUpSimilarity: 0,
+      runnerUpFinalScore: 0,
       margin: 0,
       confidencePercent: 0,
       bestSource: 'none',
@@ -1144,8 +1587,12 @@ export function evaluateLiveMatch1toN(
       topCandidate: null,
       runnerUpCandidate: null,
       topSimilarity: 0,
+      topCentroidSimilarity: 0,
+      topExemplarSimilarity: 0,
       topHumanSimilarity: 0,
+      topFinalScore: 0,
       runnerUpSimilarity: 0,
+      runnerUpFinalScore: 0,
       margin: 0,
       confidencePercent: 0,
       bestSource: 'none',
@@ -1156,8 +1603,8 @@ export function evaluateLiveMatch1toN(
   }
 
   const scored = eligible
-    .map((c) => computePatientMatchScore(liveEmbedding, c, humanOverride))
-    .sort((a, b) => b.bestSim - a.bestSim);
+    .map((c) => computePatientMatchScore(liveEmbedding, c, humanOverride, liveBucket))
+    .sort((a, b) => b.finalScore - a.finalScore || b.bestSim - a.bestSim);
 
   const top = scored[0];
   const topName = normalizeNameForIdentity(top.candidate.fullName);
@@ -1167,11 +1614,12 @@ export function evaluateLiveMatch1toN(
   const runnerUp = distinctRunners[0] ?? null;
 
   const runnerUpSim = runnerUp ? runnerUp.bestSim : 0;
-  const margin = runnerUp ? top.bestSim - runnerUp.bestSim : 1;
+  const runnerUpFinalScore = runnerUp ? runnerUp.finalScore : 0;
+  const margin = runnerUp ? top.finalScore - runnerUp.finalScore : 1;
 
   const passesThreshold =
-    top.bestSim >= BIOMETRIC_MATCH_THRESHOLD &&
-    top.humanSim >= BIOMETRIC_HUMAN_SIM_THRESHOLD;
+    top.finalScore >= BIOMETRIC_FINAL_SCORE_THRESHOLD &&
+    top.bestSim >= BIOMETRIC_MATCH_THRESHOLD;
   const passesMargin = distinctRunners.length === 0 || margin >= BIOMETRIC_MARGIN_THRESHOLD;
   const matched = passesThreshold && passesMargin;
 
@@ -1187,8 +1635,8 @@ export function evaluateLiveMatch1toN(
       Math.min(
         99.9,
         matched
-          ? Math.max(85.0, 40 + top.bestSim * 66)
-          : top.bestSim * 100,
+          ? Math.max(85.0, 42 + top.finalScore * 64)
+          : top.finalScore * 100,
       ),
     ).toFixed(1),
   );
@@ -1198,8 +1646,12 @@ export function evaluateLiveMatch1toN(
     topCandidate: top.candidate,
     runnerUpCandidate: runnerUp?.candidate ?? null,
     topSimilarity: top.bestSim,
+    topCentroidSimilarity: top.centroidSim,
+    topExemplarSimilarity: top.exemplarSim,
     topHumanSimilarity: top.humanSim,
+    topFinalScore: top.finalScore,
     runnerUpSimilarity: runnerUpSim,
+    runnerUpFinalScore,
     margin,
     confidencePercent,
     bestSource: top.bestSource,
@@ -1210,7 +1662,7 @@ export function evaluateLiveMatch1toN(
 }
 
 /**
- * Enforces 3 consecutive matching frames (`3/3`) for the exact same patient with live anti-spoof verification.
+ * Enforces 4 consecutive matching frames (`4/4`) for the exact same patient with live anti-spoof verification.
  */
 export class LiveIdentityStreakTracker {
   readonly requiredStreak: number;
@@ -1243,6 +1695,7 @@ export class LiveIdentityStreakTracker {
         candidate: evalResult.topCandidate,
         runnerUp: evalResult.runnerUpCandidate,
         similarity: evalResult.topSimilarity,
+        finalScore: evalResult.topFinalScore,
         runnerUpSimilarity: evalResult.runnerUpSimilarity,
         margin: evalResult.margin,
         confidencePercent: evalResult.confidencePercent,
@@ -1260,6 +1713,7 @@ export class LiveIdentityStreakTracker {
         candidate: evalResult.topCandidate,
         runnerUp: evalResult.runnerUpCandidate,
         similarity: evalResult.topSimilarity,
+        finalScore: evalResult.topFinalScore,
         runnerUpSimilarity: evalResult.runnerUpSimilarity,
         margin: evalResult.margin,
         confidencePercent: evalResult.confidencePercent,
@@ -1286,6 +1740,7 @@ export class LiveIdentityStreakTracker {
       candidate: evalResult.topCandidate,
       runnerUp: evalResult.runnerUpCandidate,
       similarity: evalResult.topSimilarity,
+      finalScore: evalResult.topFinalScore,
       runnerUpSimilarity: evalResult.runnerUpSimilarity,
       margin: evalResult.margin,
       confidencePercent: evalResult.confidencePercent,

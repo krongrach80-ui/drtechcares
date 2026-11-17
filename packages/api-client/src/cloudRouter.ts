@@ -66,6 +66,7 @@ import {
   hydrateStateFromSupabase,
   newRecordId,
   normalizeStaffRole,
+  persistBiometricStrictToSupabase,
   persistToSupabase,
   type CloudRouterState,
   type StoredUserAccount,
@@ -428,19 +429,71 @@ function buildPatientBiometricBlob(patient: PatientRecord): Record<string, unkno
   };
 }
 
+function parsePostgrestMissingCol(err: unknown): string | null {
+  if (!err || typeof err !== 'object') return null;
+  const msg = String((err as { message?: unknown }).message ?? '');
+  const m =
+    msg.match(/Could not find the ['"]?([a-zA-Z0-9_]+)['"]? column/i) ||
+    msg.match(/column\s+["']?([a-zA-Z0-9_]+)["']?\s+(?:of relation|does not exist)/i);
+  return m?.[1] ?? null;
+}
+
+const PROTECTED_BIOMETRIC_COLUMNS = new Set([
+  'biometric_data',
+  'master_embedding',
+  'angle_embeddings',
+  'exemplar_embeddings',
+  'embedding_dim',
+  'history',
+]);
+
+async function verifyBiometricReadAfterWrite(
+  db: SupabaseClient,
+  patientId: string,
+): Promise<void> {
+  const [patRes, bioRes] = await Promise.all([
+    db.from('patients').select('*').eq('id', patientId).maybeSingle(),
+    db.from('patient_biometrics').select('*').eq('patient_id', patientId).maybeSingle(),
+  ]);
+  if (patRes.error && bioRes.error) {
+    throw new Error(bioRes.error.message || patRes.error.message || 'Read-After-Write check failed');
+  }
+  const bioRow = (bioRes.data ?? null) as Record<string, unknown> | null;
+  const patRow = (patRes.data ?? null) as Record<string, unknown> | null;
+  const bioVec = parseEmbeddingVector(bioRow?.master_embedding);
+  const patVec =
+    parseEmbeddingVector(patRow?.biometric_data) ?? parseEmbeddingVector(patRow?.face_embedding);
+  const dim = bioVec?.length ?? patVec?.length ?? 0;
+  if (dim < 128) {
+    throw new Error(`Read-After-Write verification failed for patient ${patientId} (dim=${dim})`);
+  }
+}
+
 async function upsertPatientBiometricsCompat(
   db: SupabaseClient,
   payload: Record<string, unknown>,
 ): Promise<void> {
-  const res = (await db
+  const working = { ...payload };
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const res = (await db
+      .from('patient_biometrics')
+      .upsert(working, { onConflict: 'patient_id' })) as
+      | { error?: { message?: string } | null }
+      | undefined;
+    if (!res?.error) return;
+    const missingCol = parsePostgrestMissingCol(res.error);
+    if (!missingCol || PROTECTED_BIOMETRIC_COLUMNS.has(missingCol) || !(missingCol in working)) {
+      throw new Error(`patient_biometrics upsert error: ${res.error.message || JSON.stringify(res.error)}`);
+    }
+    delete working[missingCol];
+  }
+  const finalRes = (await db
     .from('patient_biometrics')
-    .upsert(payload, { onConflict: 'patient_id' })) as { error?: unknown } | undefined;
-  if (res?.error) {
-    const fallback = { ...payload };
-    delete fallback.exemplar_embeddings;
-    delete fallback.biometric_engine;
-    delete fallback.embedding_dim;
-    await db.from('patient_biometrics').upsert(fallback, { onConflict: 'patient_id' });
+    .upsert(working, { onConflict: 'patient_id' })) as
+    | { error?: { message?: string } | null }
+    | undefined;
+  if (finalRes?.error) {
+    throw new Error(`patient_biometrics upsert error: ${finalRes.error.message || JSON.stringify(finalRes.error)}`);
   }
 }
 
@@ -500,37 +553,55 @@ function buildPatientHistoryPayload(patient: PatientRecord): Record<string, unkn
   };
 }
 
-/** Writes a `patients` row and gracefully falls back if optional extended columns are not yet migrated. */
+/** Writes a `patients` row cleanly, stripping ONLY individually missing unmigrated columns (never biometric_data/history). */
 async function writePatientRowWithFramesFallback(
   db: SupabaseClient,
   mode: 'insert' | 'update',
   fields: Record<string, unknown>,
   patientId?: string,
+  strict = false,
 ): Promise<void> {
   const exec = async (payload: Record<string, unknown>) =>
     (mode === 'insert'
       ? await db.from('patients').insert(payload)
       : await db.from('patients').update(payload).eq('id', patientId!)) as
-      | { error?: unknown }
+      | { error?: { message?: string } | null }
       | undefined;
 
-  const res = await exec(fields);
-  if (res?.error) {
-    const fallbackPayload = { ...fields };
-    for (const optCol of [
-      'biometric_data',
-      'face_embedding',
-      'face_frames_count',
-      'stroke_type',
-      'affected_side',
-      'motor_assessment_score',
-      'adl_dressing_score',
-      'max_safe_rom_deg',
-      'universal_health_link_code',
-    ]) {
-      delete fallbackPayload[optCol];
+  const working = { ...fields };
+  const optionalCols = new Set([
+    'biometric_updated_at',
+    'face_embedding',
+    'face_frames_count',
+    'stroke_type',
+    'affected_side',
+    'motor_assessment_score',
+    'adl_dressing_score',
+    'max_safe_rom_deg',
+    'universal_health_link_code',
+  ]);
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const res = await exec(working);
+    if (!res?.error) return;
+    const missingCol = parsePostgrestMissingCol(res.error);
+    if (missingCol && !PROTECTED_BIOMETRIC_COLUMNS.has(missingCol) && missingCol in working) {
+      delete working[missingCol];
+      continue;
     }
-    await exec(fallbackPayload);
+    if (!missingCol && attempt === 0) {
+      let strippedAny = false;
+      for (const optCol of optionalCols) {
+        if (optCol in working) {
+          delete working[optCol];
+          strippedAny = true;
+        }
+      }
+      if (strippedAny) continue;
+    }
+    if (strict) {
+      throw new Error(`patients ${mode} error: ${res.error.message || JSON.stringify(res.error)}`);
+    }
+    return;
   }
 }
 
@@ -1637,31 +1708,74 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       };
 
       const patientBiometricBlob = buildPatientBiometricBlob(patient);
+      const enrolledAtIso = new Date().toISOString();
+      try {
+        await persistBiometricStrictToSupabase(supabase, async (db) => {
+          await writePatientRowWithFramesFallback(
+            db,
+            'insert',
+            {
+              id: patient.id,
+              hn: patient.hn,
+              full_name: patient.fullName,
+              age: patient.age,
+              phone: patient.phone,
+              diagnosis: patient.diagnosis,
+              stroke_type: patient.strokeType,
+              affected_side: patient.affectedSide,
+              motor_assessment_score: patient.motorAssessmentScore,
+              adl_dressing_score: patient.adlDressingScore,
+              max_safe_rom_deg: patient.maxSafeRomDeg,
+              universal_health_link_code: patient.universalHealthLinkCode,
+              assigned_pt_id: patient.assignedPtId,
+              next_appointment_date: patient.nextAppointmentDate || null,
+              registration_status: 'active',
+              face_biometric_status: faceStatus,
+              face_frames_count: framesCaptured,
+              face_image_url: storedFaceImageUrl ?? null,
+              ...(patientBiometricBlob
+                ? {
+                    face_embedding: patientBiometricBlob,
+                    biometric_data: patientBiometricBlob,
+                    biometric_updated_at: enrolledAtIso,
+                  }
+                : {}),
+              history: buildPatientHistoryPayload(patient),
+            },
+            undefined,
+            !isPendingSkip,
+          );
+          if (!isPendingSkip && masterVec && resolvedAngles) {
+            await upsertPatientBiometricsCompat(db, {
+              patient_id: patientId,
+              hn: patient.hn,
+              master_embedding: masterVec,
+              angle_embeddings: resolvedAngles,
+              exemplar_embeddings: exemplarList,
+              biometric_engine: resolvedBiometricEngine ?? null,
+              model_version: resolvedBiometricEngine ?? null,
+              embedding_dim: masterVec.length,
+              frame_count: framesCaptured,
+              frames_captured: framesCaptured,
+              quality_score: qualityScore,
+              avatar_url: storedFaceImageUrl ?? null,
+              updated_at: enrolledAtIso,
+            });
+            await verifyBiometricReadAfterWrite(db, patientId);
+          }
+          return { error: null };
+        });
+      } catch (err) {
+        return jsonResponse(
+          {
+            error: 'SUPABASE_PERSISTENCE_FAILED',
+            detail: err instanceof Error ? err.message : String(err),
+          },
+          500,
+        );
+      }
+
       state.patients.push(patient);
-      await persistToSupabase(supabase, (db) =>
-        writePatientRowWithFramesFallback(db, 'insert', {
-          id: patient.id,
-          hn: patient.hn,
-          full_name: patient.fullName,
-          age: patient.age,
-          phone: patient.phone,
-          diagnosis: patient.diagnosis,
-          stroke_type: patient.strokeType,
-          affected_side: patient.affectedSide,
-          motor_assessment_score: patient.motorAssessmentScore,
-          adl_dressing_score: patient.adlDressingScore,
-          max_safe_rom_deg: patient.maxSafeRomDeg,
-          universal_health_link_code: patient.universalHealthLinkCode,
-          assigned_pt_id: patient.assignedPtId,
-          next_appointment_date: patient.nextAppointmentDate || null,
-          registration_status: 'active',
-          face_biometric_status: faceStatus,
-          face_frames_count: framesCaptured,
-          face_image_url: storedFaceImageUrl ?? null,
-          ...(patientBiometricBlob ? { face_embedding: patientBiometricBlob, biometric_data: patientBiometricBlob } : {}),
-          history: buildPatientHistoryPayload(patient),
-        }),
-      );
       if (!isPendingSkip && frontalVec && masterVec && resolvedAngles) {
         const templateRows =
           rawFrames.length > 0
@@ -1719,19 +1833,6 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               })),
             ]);
           }
-          await upsertPatientBiometricsCompat(db, {
-            patient_id: patientId,
-            hn: patient.hn,
-            master_embedding: masterVec,
-            angle_embeddings: resolvedAngles,
-            exemplar_embeddings: exemplarList,
-            biometric_engine: resolvedBiometricEngine ?? null,
-            embedding_dim: masterVec.length,
-            frames_captured: framesCaptured,
-            quality_score: qualityScore,
-            avatar_url: storedFaceImageUrl ?? null,
-            updated_at: new Date().toISOString(),
-          });
         });
       }
 
@@ -2117,53 +2218,99 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       let matchedConfidence = result.confidencePercent;
       let verifyErrorCode: string | undefined;
 
-      // Primary Single Shared Deep Neural Matcher (human-faceres-1024d Centroid + Top-10 KNN Exemplars)
+      // Primary Single Shared Deep Neural Matcher (human-faceres-1024d Hybrid Centroid + Top-3 KNN Exemplars + HumanSim)
       if (!matchedPatientId && probeEngine === 'human-faceres-1024d') {
         const expectedDim = probeNorm.length;
         const normalizePatientName = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
+        const computeCalibratedHumanSim = (a: readonly number[], b: readonly number[]): number => {
+          let sumSq = 0;
+          for (let i = 0; i < a.length; i += 1) {
+            const diff = a[i] - b[i];
+            sumSq += diff * diff;
+          }
+          const dist = Math.round(100 * 2000 * sumSq) / 100;
+          if (dist === 0) return 1;
+          const root = Math.sqrt(dist);
+          const norm = (1 - root / 100 - 0.2) / 0.6;
+          return Math.round(100 * Math.max(Math.min(norm, 1), 0)) / 100;
+        };
+
         const knnScores: {
           patientId: string;
           fullName: string;
           orderIdx: number;
           bestSim: number;
+          finalScore: number;
         }[] = [];
 
         for (let orderIdx = 0; orderIdx < state.patients.length; orderIdx += 1) {
           const p = state.patients[orderIdx];
           if (!activePatientIds.has(p.id)) continue;
 
-          const targetVectors: number[][] = [];
-          const pushTarget = (raw: unknown) => {
+          const centroidVectors: number[][] = [];
+          const pushCentroid = (raw: unknown) => {
             const parsed = parseEmbeddingVector(raw);
-            if (parsed && parsed.length === expectedDim) {
-              targetVectors.push(parsed);
-            }
+            if (parsed && parsed.length === expectedDim) centroidVectors.push(parsed);
           };
-          pushTarget(p.masterEmbedding);
+          pushCentroid(p.masterEmbedding);
           if (p.angleEmbeddings) {
-            pushTarget(p.angleEmbeddings.center);
-            pushTarget(p.angleEmbeddings.left);
-            pushTarget(p.angleEmbeddings.right);
-            pushTarget(p.angleEmbeddings.up);
-            pushTarget(p.angleEmbeddings.down);
+            pushCentroid(p.angleEmbeddings.center);
+            pushCentroid(p.angleEmbeddings.left);
+            pushCentroid(p.angleEmbeddings.right);
+            pushCentroid(p.angleEmbeddings.up);
+            pushCentroid(p.angleEmbeddings.down);
           }
-          (p.exemplarEmbeddings ?? []).forEach(pushTarget);
-          if (targetVectors.length === 0) continue;
 
-          let bestSim = -1;
-          for (const targetVec of targetVectors) {
-            const sim = cosineSimilarity(probeNorm, targetVec);
-            if (sim > bestSim) bestSim = sim;
+          const exemplarVectors: number[][] = [];
+          (p.exemplarEmbeddings ?? []).forEach((raw) => {
+            const parsed = parseEmbeddingVector(raw);
+            if (parsed && parsed.length === expectedDim) exemplarVectors.push(parsed);
+          });
+
+          if (centroidVectors.length === 0 && exemplarVectors.length === 0) continue;
+
+          let centroidSim = 0;
+          let bestTargetVec: number[] | null = null;
+          let bestTargetSim = -1;
+          for (const v of centroidVectors) {
+            const sim = cosineSimilarity(probeNorm, v);
+            if (sim > centroidSim) centroidSim = sim;
+            if (sim > bestTargetSim) {
+              bestTargetSim = sim;
+              bestTargetVec = v;
+            }
           }
+
+          const exSims: number[] = [];
+          for (const ex of exemplarVectors) {
+            const sim = cosineSimilarity(probeNorm, ex);
+            exSims.push(Math.max(0, sim));
+            if (sim > bestTargetSim) {
+              bestTargetSim = sim;
+              bestTargetVec = ex;
+            }
+          }
+          exSims.sort((a, b) => b - a);
+          const exemplarSim =
+            exSims.length > 0
+              ? exSims.slice(0, Math.min(3, exSims.length)).reduce((s, v) => s + v, 0) /
+                Math.min(3, exSims.length)
+              : centroidSim;
+
+          const combinedCos = Math.max(centroidSim, exemplarSim);
+          const humanSim = bestTargetVec ? computeCalibratedHumanSim(probeNorm, bestTargetVec) : 0;
+          const finalScore = 0.5 * combinedCos + 0.5 * humanSim;
+
           knnScores.push({
             patientId: p.id,
             fullName: p.fullName,
             orderIdx,
-            bestSim,
+            bestSim: combinedCos,
+            finalScore,
           });
         }
 
-        knnScores.sort((a, b) => b.bestSim - a.bestSim || b.orderIdx - a.orderIdx);
+        knnScores.sort((a, b) => b.finalScore - a.finalScore || b.bestSim - a.bestSim || b.orderIdx - a.orderIdx);
         const top = knnScores[0] ?? null;
         const topName = top ? normalizePatientName(top.fullName) : '';
         const distinctRunners = top
@@ -2172,26 +2319,29 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               .filter((s) => !(topName && normalizePatientName(s.fullName) === topName))
           : [];
         const runner = distinctRunners[0] ?? null;
-        const margin = top && runner ? top.bestSim - runner.bestSim : 1;
+        const margin = top && runner ? top.finalScore - runner.finalScore : 1;
 
-        const MATCH_THRESHOLD = 0.6;
-        const MARGIN_THRESHOLD = 0.06;
-        const passesThreshold = Boolean(top && top.bestSim >= MATCH_THRESHOLD);
+        const COSINE_THRESHOLD = 0.62;
+        const FINAL_SCORE_THRESHOLD = 0.68;
+        const MARGIN_THRESHOLD = 0.07;
+        const passesThreshold = Boolean(
+          top && top.bestSim >= COSINE_THRESHOLD && top.finalScore >= FINAL_SCORE_THRESHOLD,
+        );
         const passesMargin = distinctRunners.length === 0 || margin >= MARGIN_THRESHOLD;
 
         if (top && passesThreshold && passesMargin) {
           matchedPatientId = top.patientId;
           matchedPatientName = top.fullName;
           matchedConfidence = Number(
-            Math.min(99.9, Math.max(85.0, 40 + top.bestSim * 66)).toFixed(1),
+            Math.min(99.9, Math.max(85.0, 42 + top.finalScore * 64)).toFixed(1),
           );
         } else if (top && passesThreshold && !passesMargin) {
           verifyErrorCode = 'AMBIGUOUS_CLOSE_CANDIDATES';
-          matchedConfidence = Math.min(48.9, Math.max(0, Number((top.bestSim * 49).toFixed(1))));
+          matchedConfidence = Math.min(48.9, Math.max(0, Number((top.finalScore * 49).toFixed(1))));
         } else if (top) {
           matchedConfidence = Math.min(
             48.9,
-            Math.max(0, Number((Math.max(0, top.bestSim) * 49).toFixed(1))),
+            Math.max(0, Number((Math.max(0, top.finalScore) * 49).toFixed(1))),
           );
         }
       }
@@ -2971,6 +3121,56 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
 
       const patientBiometricBlob = buildPatientBiometricBlob(patient);
+      try {
+        await persistBiometricStrictToSupabase(supabase, async (db) => {
+          await upsertPatientBiometricsCompat(db, {
+            patient_id: patient.id,
+            hn: patient.hn,
+            master_embedding: masterVec,
+            angle_embeddings: resolvedAngles,
+            exemplar_embeddings: exemplarList,
+            biometric_engine: resolvedBiometricEngine ?? null,
+            model_version: resolvedBiometricEngine ?? null,
+            embedding_dim: masterVec.length,
+            frame_count: framesCaptured,
+            frames_captured: framesCaptured,
+            quality_score: qualityScore,
+            avatar_url: patient.faceImageUrl ?? null,
+            updated_at: new Date().toISOString(),
+          });
+          await writePatientRowWithFramesFallback(
+            db,
+            'update',
+            {
+              face_biometric_status: 'VERIFIED',
+              face_frames_count: framesCaptured,
+              face_image_url: patient.faceImageUrl ?? null,
+              ...(patientBiometricBlob
+                ? {
+                    face_embedding: patientBiometricBlob,
+                    biometric_data: patientBiometricBlob,
+                    biometric_updated_at: new Date().toISOString(),
+                  }
+                : {}),
+              history: buildPatientHistoryPayload(patient),
+              updated_at: new Date().toISOString(),
+            },
+            patient.id,
+            true,
+          );
+          await verifyBiometricReadAfterWrite(db, patient.id);
+          return { error: null };
+        });
+      } catch (err) {
+        return jsonResponse(
+          {
+            error: 'SUPABASE_PERSISTENCE_FAILED',
+            detail: err instanceof Error ? err.message : String(err),
+          },
+          500,
+        );
+      }
+
       await persistToSupabase(supabase, async (db) => {
         await db.from('face_templates').delete().eq('patient_id', patient.id);
         await insertFaceEnrollmentWithCompatShotCount(db, {
@@ -2991,32 +3191,6 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             })),
           ]);
         }
-        await upsertPatientBiometricsCompat(db, {
-          patient_id: patient.id,
-          hn: patient.hn,
-          master_embedding: masterVec,
-          angle_embeddings: resolvedAngles,
-          exemplar_embeddings: exemplarList,
-          biometric_engine: resolvedBiometricEngine ?? null,
-          embedding_dim: masterVec.length,
-          frames_captured: framesCaptured,
-          quality_score: qualityScore,
-          avatar_url: patient.faceImageUrl ?? null,
-          updated_at: new Date().toISOString(),
-        });
-        await writePatientRowWithFramesFallback(
-          db,
-          'update',
-          {
-            face_biometric_status: 'VERIFIED',
-            face_frames_count: framesCaptured,
-            face_image_url: patient.faceImageUrl ?? null,
-            ...(patientBiometricBlob ? { face_embedding: patientBiometricBlob, biometric_data: patientBiometricBlob } : {}),
-            history: buildPatientHistoryPayload(patient),
-            updated_at: new Date().toISOString(),
-          },
-          patient.id,
-        );
       });
 
       recordAudit({

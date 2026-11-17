@@ -956,31 +956,25 @@ export class DrTechCaresApiClient {
       const body = (await res.json()) as KioskFaceVerifyResponse;
       return body;
     } catch (err) {
-      if (this.supabase) {
-        const { data, error } = await this.supabase.rpc('match_patient_face', {
-          query_embedding: Array.from(probeVector),
-          match_count: 5,
-        });
-        if (!error && Array.isArray(data) && data.length > 0) {
-          const candidates: EnrolledTemplateCandidate[] = data
-            .filter((row: Record<string, unknown>) => Array.isArray(row.embedding))
-            .map((row: Record<string, unknown>) => ({
-              patientId: String(row.patient_id),
-              patientName: typeof row.full_name === 'string' ? row.full_name : undefined,
-              pose: (row.pose as BiometricPose) || 'frontal_centroid',
-              vector: row.embedding as number[],
-            }));
-          return verifyHybridBiometricIdentity(probeVector, candidates, {
-            totalEnrolledPatients: new Set(candidates.map((c) => c.patientId)).size || 1,
-          });
-        }
-      }
       throw err;
+    }
+  }
+
+  static clearRecentEnrolledEntries(): void {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    try {
+      window.localStorage.removeItem(DrTechCaresApiClient.RECENT_ENROLL_SYNC_KEY);
+    } catch {
+      // Ignore storage errors
     }
   }
 
   async getBiometricIndex(): Promise<PatientBiometricIndexEntry[]> {
     const res = await this.request<{ index: PatientBiometricIndexEntry[] }>('/api/biometrics/index');
+    if (this.supabase && (res.index ?? []).length === 0) {
+      DrTechCaresApiClient.clearRecentEnrolledEntries();
+      return [];
+    }
     return this.mergeRecentEnrolledEntries(res.index ?? []);
   }
 

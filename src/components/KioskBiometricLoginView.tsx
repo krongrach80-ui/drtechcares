@@ -25,12 +25,14 @@ import {
 } from '../lib/faceMatcher';
 import {
   BIOMETRIC_ENGINE_ID,
+  BIOMETRIC_FINAL_SCORE_THRESHOLD,
+  BIOMETRIC_MATCH_THRESHOLD,
   BIOMETRIC_REQUIRED_STREAK,
   LiveIdentityStreakTracker,
   captureCanonicalFaceSnapshot,
   evaluateLiveMatch1toN,
   extractCanonicalFaceDescriptor,
-  loadEnrolledPatientsWithBiometrics,
+  fetchLiveBiometricsFromSupabase,
   warmupBiometricEngine,
   type EnrolledBiometricCandidate,
   type Live1toNMatchEvaluation,
@@ -561,9 +563,9 @@ const COPY: Record<
     resumeCameraBtn: 'เปิดกล้องเริ่มสแกนใหม่',
     usePinFallbackBtn: 'ใช้รหัส PIN 4 หลักแทน',
     staffCalledToast: 'ส่งสัญญาณเรียกเจ้าหน้าที่เรียบร้อยแล้ว กรุณารอสักครู่',
-    notFoundTitle: 'ไม่พบบัญชีในระบบ',
+    notFoundTitle: '❌ ไม่พบบัญชีที่ตรงกับใบหน้านี้ในฐานข้อมูล Supabase',
     notFoundDesc:
-      'ใบหน้านี้ยังไม่ถูกลงทะเบียนในฐานข้อมูล Supabase Cloud กรุณาให้เจ้าหน้าที่ช่วยลงทะเบียน หรือลองสแกนใหม่อีกครั้ง',
+      '❌ ไม่พบบัญชีที่ตรงกับใบหน้านี้ในฐานข้อมูล Supabase Cloud กรุณาให้เจ้าหน้าที่ช่วยลงทะเบียน หรือลองสแกนใหม่อีกครั้ง',
     staffAssistBtn: 'เจ้าหน้าที่ลงทะเบียนให้',
     retryScanBtn: 'ลองสแกนใหม่อีกครั้ง',
     countdownLabel: 'กำลังนับถอยหลัง',
@@ -988,6 +990,8 @@ export function KioskBiometricLoginView({
   const [dbAccountCount, setDbAccountCount] = useState(0);
   const [totalAccountCount, setTotalAccountCount] = useState(0);
   const [legacyAccountCount, setLegacyAccountCount] = useState(0);
+  const [supabaseSyncedFromCloud, setSupabaseSyncedFromCloud] = useState<boolean>(false);
+  const [supabaseSyncError, setSupabaseSyncError] = useState<string | null>(null);
   const [liveMatchHud, setLiveMatchHud] = useState<{
     candidate: PatientBiometricIndexEntry;
     confidencePercent: number;
@@ -999,6 +1003,7 @@ export function KioskBiometricLoginView({
     validAccounts: number;
     totalAccounts: number;
     legacyAccounts: number;
+    syncedFromSupabase?: boolean;
     topName: string | null;
     topPct: number;
     runnerUpName: string | null;
@@ -1079,27 +1084,8 @@ export function KioskBiometricLoginView({
         openVerifiedModal(nextPayload);
         return;
       }
-      void apiClient
-        .listPatients()
-        .then((patients) => {
-          const found = patients.find(
-            (p) => p.id === edgeMatch.id || (edgeMatch.hn && p.hn === edgeMatch.hn),
-          );
-          if (!found || verifiedModalPayloadRef.current) return;
-          const nextPayload = buildKioskLoginSuccessPayload({
-            patient: {
-              id: found.id,
-              hn: found.hn,
-              fullName: found.fullName,
-              nextAppointmentDate: found.nextAppointmentDate,
-            },
-            todayRoutine: null,
-            confidencePercent: Math.round((edgeMatch.similarity || 0.92) * 100),
-            rehabSchedules: found.rehabSchedules,
-          });
-          openVerifiedModal(nextPayload);
-        })
-        .catch(() => {});
+      // Refresh live Supabase biometric index strictly rather than trusting uncached list calls
+      void refreshBiometricCandidates();
     },
   });
   edgeTelemetryRef.current = edgeTelemetry;
@@ -1119,7 +1105,7 @@ export function KioskBiometricLoginView({
 
   const refreshBiometricCandidates = useCallback(async () => {
     try {
-      const loaded = await loadEnrolledPatientsWithBiometrics(apiClient);
+      const loaded = await fetchLiveBiometricsFromSupabase(apiClient);
       biometricCandidatesRef.current = loaded.compatibleCandidates;
       biometricIndexRef.current = loaded.candidates.map((c) => c.sourceEntry);
       accountCountsRef.current = {
@@ -1128,10 +1114,15 @@ export function KioskBiometricLoginView({
         legacy: loaded.legacyAccountsCount,
       };
       setDbAccountCount(loaded.validAccounts);
+      setTotalAccountCount(loaded.totalAccounts);
+      setLegacyAccountCount(loaded.legacyAccountsCount);
+      setSupabaseSyncedFromCloud(loaded.syncedFromSupabase);
+      setSupabaseSyncError(loaded.syncError ?? null);
       setLiveDebugHud((prev) => ({
         validAccounts: loaded.validAccounts,
         totalAccounts: loaded.totalAccounts,
         legacyAccounts: loaded.legacyAccountsCount,
+        syncedFromSupabase: loaded.syncedFromSupabase,
         topName: prev?.topName ?? null,
         topPct: prev?.topPct ?? 0,
         runnerUpName: prev?.runnerUpName ?? null,
@@ -1140,8 +1131,8 @@ export function KioskBiometricLoginView({
         requiredStreak: BIOMETRIC_REQUIRED_STREAK,
         reason: prev?.reason ?? (loaded.validAccounts === 0 ? 'NO_CANDIDATES' : 'READY'),
       }));
-    } catch {
-      // Preserve last loaded vault on transient refresh failure
+    } catch (err) {
+      setSupabaseSyncError(err instanceof Error ? err.message : 'Supabase sync unavailable');
     }
   }, [apiClient]);
 
@@ -1682,7 +1673,7 @@ export function KioskBiometricLoginView({
                   bioVerifiedUnmatchedStartAt = params.snapNow;
                 }
                 setTurningHintPct(
-                  evalRes.topSimilarity >= 0.45 && evalRes.topSimilarity < 0.6
+                  evalRes.topSimilarity >= 0.45 && evalRes.topFinalScore < BIOMETRIC_FINAL_SCORE_THRESHOLD
                     ? Math.round(evalRes.topSimilarity * 100)
                     : null,
                 );
@@ -1757,7 +1748,7 @@ export function KioskBiometricLoginView({
                 }
 
                 // Local-Vault fallback only when server is offline or lacks synced 1024-D vectors yet,
-                // AND local 3/3 Human-faceres consensus passes threshold + margin without spoof/ambiguity
+                // AND local 4/4 Human-faceres consensus passes finalScore >= 0.68 + cosine >= 0.62 + margin >= 0.07
                 if (
                   (verifyNetworkFailed || serverNoTemplate) &&
                   !didAuthenticate &&
@@ -1765,7 +1756,8 @@ export function KioskBiometricLoginView({
                   !isLastVerifyAmbiguous &&
                   params.snapBioVerified &&
                   !params.snapIsSpoof &&
-                  evalRes.topSimilarity >= 0.6 &&
+                  evalRes.topSimilarity >= BIOMETRIC_MATCH_THRESHOLD &&
+                  evalRes.topFinalScore >= BIOMETRIC_FINAL_SCORE_THRESHOLD &&
                   stepRes.streak >= BIOMETRIC_REQUIRED_STREAK &&
                   !excludedPatientIdsRef.current.includes(cand.patientId)
                 ) {
@@ -2010,6 +2002,7 @@ export function KioskBiometricLoginView({
                             v,
                             confirmRawBox,
                             confirmSnapCanvas,
+                            primaryLm,
                           );
                           if (snapCanvas) {
                             const snapLm = primaryLm.map((p) => ({ x: p.x, y: p.y, z: p.z }));
@@ -2549,6 +2542,7 @@ export function KioskBiometricLoginView({
                       videoRef.current,
                       rawBox ?? rawBoxForBio,
                       matchSnapCanvasRef.current,
+                      landmarks,
                     );
                     if (snapCanvas) {
                       lastEmbedCheckAt = now;
@@ -3074,9 +3068,19 @@ export function KioskBiometricLoginView({
             className="mt-2 rounded-xl border border-sky-200/90 bg-slate-900/95 px-3 py-2 text-[11px] sm:text-xs font-mono text-slate-100 shadow-sm flex flex-wrap items-center justify-between gap-x-3 gap-y-1 shrink-0"
           >
             <div className="flex items-center gap-2">
-              <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
-              <span className="font-bold text-emerald-300">
-                คลังใบหน้า: {liveDebugHud?.validAccounts ?? dbAccountCount} บัญชี
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${
+                  supabaseSyncError && !supabaseSyncedFromCloud ? 'bg-amber-400' : 'bg-emerald-400'
+                }`}
+              />
+              <span
+                className={`font-bold ${
+                  supabaseSyncError && !supabaseSyncedFromCloud ? 'text-amber-300' : 'text-emerald-300'
+                }`}
+              >
+                {liveDebugHud?.syncedFromSupabase || supabaseSyncedFromCloud
+                  ? `☁️ ซิงก์ฐานข้อมูลใบหน้าจาก Supabase สำเร็จ: ${liveDebugHud?.validAccounts ?? dbAccountCount} บัญชี`
+                  : `คลังใบหน้า: ${liveDebugHud?.validAccounts ?? dbAccountCount} บัญชี`}
               </span>
               {(liveDebugHud?.legacyAccounts ?? legacyAccountCount) > 0 && (
                 <span className="text-amber-300">

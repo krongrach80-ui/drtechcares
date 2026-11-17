@@ -1452,7 +1452,7 @@ export default function FaceID120Scanner({
           // Capture frames at max real neural throughput across all 5 pose angles without artificial sleeps
           if (captureBucket && meanEar >= minOpenEar && totalSoFar < TOTAL_TICKS) {
             if (!neuralExtractInFlight) {
-              const snapInput = captureCanonicalFaceSnapshot(vid, lastRegRoiBox, neuralExtractCanvas);
+              const snapInput = captureCanonicalFaceSnapshot(vid, lastRegRoiBox, neuralExtractCanvas, landmarks3D);
               if (snapInput) {
                 neuralExtractInFlight = true;
                 lastExtractDispatchedAt = now;
