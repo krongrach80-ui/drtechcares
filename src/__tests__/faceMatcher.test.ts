@@ -13,6 +13,7 @@ import {
 import {
   computeEyeRollAngleDeg,
   extractHybrid512Descriptor,
+  extractLegacyV1Hybrid512Descriptor,
   flipImageDataHorizontally,
   flipLandmarksHorizontally,
   rotateNormalizedLandmarksForRoll,
@@ -26,6 +27,7 @@ import {
 } from '../lib/faceMatcher';
 import {
   computeGeometricAnthropometricRatios,
+  isLegacyV1HybridVector,
   trimOutlierVectorsAndAverage,
 } from '@drtechcares/smart-biometric-core';
 import {
@@ -1054,5 +1056,128 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
       geometricRatios: ratiosB,
     });
     expect(crossRoomAttempt.matched).toBe(false);
+  });
+
+  it('matches V2 across room lighting changes & supports Legacy V1 DB backward compatibility strictly without cross-account impersonation', () => {
+    const mkLitFaceImage = (personFreqShift: number, lightingMul: number, lightBias: number, bgVal: number) => {
+      const data = new Uint8ClampedArray(112 * 112 * 4);
+      for (let y = 0; y < 112; y += 1) {
+        for (let x = 0; x < 112; x += 1) {
+          const idx = (y * 112 + x) * 4;
+          const isInner = x >= 22 && x <= 90 && y >= 22 && y <= 90;
+          const texture = isInner
+            ? 118 * lightingMul +
+              lightBias +
+              42 *
+                lightingMul *
+                (Math.sin((x + personFreqShift * 7) * 0.29) +
+                  0.65 * Math.cos((y - personFreqShift * 5) * 0.26) +
+                  0.35 * Math.sin((x * 0.14 + y * 0.19) * (1 + personFreqShift * 0.08)))
+            : bgVal;
+          const v = Math.max(0, Math.min(255, Math.round(texture)));
+          data[idx] = v;
+          data[idx + 1] = v;
+          data[idx + 2] = v;
+          data[idx + 3] = 255;
+        }
+      }
+      return { width: 112, height: 112, data };
+    };
+    const mkBoneLandmarks = (noseY: number, cheekSpread: number, mouthW: number) => {
+      const lms = Array.from({ length: 478 }, () => ({ x: 0.5, y: 0.5, z: 0 }));
+      lms[10] = { x: 0.5, y: 0.29, z: 0 };
+      lms[168] = { x: 0.5, y: 0.38, z: -0.02 };
+      lms[1] = { x: 0.5, y: noseY, z: -0.05 };
+      lms[33] = { x: 0.42, y: 0.42, z: 0 };
+      lms[263] = { x: 0.58, y: 0.42, z: 0 };
+      lms[234] = { x: 0.5 - cheekSpread, y: 0.51, z: 0.04 };
+      lms[454] = { x: 0.5 + cheekSpread, y: 0.51, z: 0.04 };
+      lms[61] = { x: 0.5 - mouthW, y: 0.63, z: 0 };
+      lms[291] = { x: 0.5 + mouthW, y: 0.63, z: 0 };
+      lms[152] = { x: 0.5, y: 0.74, z: 0.01 };
+      return lms;
+    };
+
+    const lmsOwner = mkBoneLandmarks(0.50, 0.15, 0.055);
+    const lmsStranger = mkBoneLandmarks(0.57, 0.22, 0.085);
+    const ratiosOwner = computeGeometricAnthropometricRatios(lmsOwner);
+    const ratiosStranger = computeGeometricAnthropometricRatios(lmsStranger);
+
+    // 1. V2 illumination-invariant real image extraction: dim home room (0.7x, -15, dark bg 45) -> bright lab room (1.45x, +22, bright wall 230)
+    const imgOwnerHome = mkLitFaceImage(1, 0.75, -15, 45);
+    const imgOwnerLab = mkLitFaceImage(1, 1.35, 20, 230);
+    const imgStrangerLab = mkLitFaceImage(4.7, 1.35, 20, 230);
+
+    const v2Enroll = extractHybrid512Descriptor(imgOwnerHome, lmsOwner);
+    const v2Probe = extractHybrid512Descriptor(imgOwnerLab, lmsOwner);
+    const v2Stranger = extractHybrid512Descriptor(imgStrangerLab, lmsStranger);
+
+    expect(isLegacyV1HybridVector(v2Enroll)).toBe(false);
+    expect(isLegacyV1HybridVector(v2Probe)).toBe(false);
+
+    const v2Candidate: PatientBiometricIndexEntry = {
+      ...makeEnrolledPatient('pat-v2-room', 'HN-V2-01', 'นายทดสอบ แสงเปลี่ยน', 10),
+      masterEmbedding: v2Enroll,
+      angleEmbeddings: {
+        center: v2Enroll,
+        left: v2Enroll,
+        right: v2Enroll,
+        up: v2Enroll,
+        down: v2Enroll,
+      },
+      geometricRatios: ratiosOwner,
+    };
+
+    const v2SelfRes = identifyPatient1toN(v2Probe, [v2Candidate], {
+      yawDeg: 0,
+      pitchDeg: 0,
+      geometricRatios: ratiosOwner,
+    });
+    expect(v2SelfRes.matched).toBe(true);
+    expect(v2SelfRes.bestCandidate?.patientId).toBe('pat-v2-room');
+
+    const v2StrangerRes = identifyPatient1toN(v2Stranger, [v2Candidate], {
+      yawDeg: 0,
+      pitchDeg: 0,
+      geometricRatios: ratiosStranger,
+    });
+    expect(v2StrangerRes.matched).toBe(false);
+
+    // 2. Legacy V1 DB record backward-compatibility bridge
+    const v1Enroll = extractLegacyV1Hybrid512Descriptor(imgOwnerHome, lmsOwner);
+    const v1ProbeOwner = extractLegacyV1Hybrid512Descriptor(imgOwnerLab, lmsOwner);
+    const v1ProbeStranger = extractLegacyV1Hybrid512Descriptor(imgStrangerLab, lmsStranger);
+
+    expect(isLegacyV1HybridVector(v1Enroll)).toBe(true);
+
+    const v1Candidate: PatientBiometricIndexEntry = {
+      ...makeEnrolledPatient('pat-v1-legacy', 'HN-44524', 'Phattadon Phongarrom', 20),
+      masterEmbedding: v1Enroll,
+      angleEmbeddings: {
+        center: v1Enroll,
+        left: v1Enroll,
+        right: v1Enroll,
+        up: v1Enroll,
+        down: v1Enroll,
+      },
+      geometricRatios: ratiosOwner,
+    };
+
+    const v1BridgeMatch = identifyPatient1toN(v2Probe, [v1Candidate], {
+      yawDeg: 0,
+      pitchDeg: 0,
+      legacyV1ProbeVector: v1ProbeOwner,
+      geometricRatios: ratiosOwner,
+    });
+    expect(v1BridgeMatch.matched).toBe(true);
+    expect(v1BridgeMatch.bestCandidate?.hn).toBe('HN-44524');
+
+    const v1BridgeStrangerReject = identifyPatient1toN(v2Stranger, [v1Candidate], {
+      yawDeg: 0,
+      pitchDeg: 0,
+      legacyV1ProbeVector: v1ProbeStranger,
+      geometricRatios: ratiosStranger,
+    });
+    expect(v1BridgeStrangerReject.matched).toBe(false);
   });
 });

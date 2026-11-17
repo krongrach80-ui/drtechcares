@@ -869,6 +869,8 @@ export class DrTechCaresApiClient {
       rollDeg?: number;
       engine?: 'arcface-onnx' | 'hybrid-512d';
       mirroredProbeVector?: readonly number[];
+      legacyV1ProbeVector?: readonly number[];
+      mirroredLegacyV1ProbeVector?: readonly number[];
       geometricRatios?: GeometricAnthropometricRatios;
       excludedPatientIds?: readonly string[];
     },
@@ -900,6 +902,12 @@ export class DrTechCaresApiClient {
                 probeVector,
                 ...(livenessEvidence.mirroredProbeVector
                   ? { mirroredProbeVector: livenessEvidence.mirroredProbeVector }
+                  : {}),
+                ...(livenessEvidence.legacyV1ProbeVector
+                  ? { legacyV1ProbeVector: livenessEvidence.legacyV1ProbeVector }
+                  : {}),
+                ...(livenessEvidence.mirroredLegacyV1ProbeVector
+                  ? { mirroredLegacyV1ProbeVector: livenessEvidence.mirroredLegacyV1ProbeVector }
                   : {}),
                 yawDeg: livenessEvidence.yawDeg,
                 pitchDeg: livenessEvidence.pitchDeg,

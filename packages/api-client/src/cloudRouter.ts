@@ -11,6 +11,7 @@ import {
   computeDualFactorBiometricScore,
   computeFaceCoreMetrics,
   cosineSimilarity,
+  isLegacyV1HybridVector,
   l2Normalize,
   mirrorPoseZone,
   parseEmbeddingVector,
@@ -1852,6 +1853,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const body = await readJsonBody<{
         probeVector?: unknown;
         mirroredProbeVector?: unknown;
+        legacyV1ProbeVector?: unknown;
+        mirroredLegacyV1ProbeVector?: unknown;
         yawDeg?: number;
         pitchDeg?: number;
         rollDeg?: number;
@@ -1869,6 +1872,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           pitchDeg?: number;
           rollDeg?: number;
           engine?: 'arcface-onnx' | 'hybrid-512d';
+          mirroredProbeVector?: unknown;
+          legacyV1ProbeVector?: unknown;
+          mirroredLegacyV1ProbeVector?: unknown;
           geometricRatios?: GeometricAnthropometricRatios;
           excludedPatientIds?: string[];
         };
@@ -2010,6 +2016,22 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           probeVariants.push({ zone: mirroredZone, vec: mirroredProbeNorm });
         }
 
+        const legacyV1Raw =
+          body.legacyV1ProbeVector ?? body.livenessEvidence?.legacyV1ProbeVector;
+        const mirroredLegacyV1Raw =
+          body.mirroredLegacyV1ProbeVector ?? body.livenessEvidence?.mirroredLegacyV1ProbeVector;
+        const legacyV1ProbeNorm = isVector512(legacyV1Raw) ? l2Normalize(legacyV1Raw) : null;
+        const mirroredLegacyV1Norm = isVector512(mirroredLegacyV1Raw)
+          ? l2Normalize(mirroredLegacyV1Raw)
+          : null;
+        const legacyV1Variants: { zone: FacePoseZone5; vec: number[] }[] = [];
+        if (legacyV1ProbeNorm) {
+          legacyV1Variants.push({ zone: livePoseZone, vec: legacyV1ProbeNorm });
+          if (mirroredLegacyV1Norm) {
+            legacyV1Variants.push({ zone: mirroredZone, vec: mirroredLegacyV1Norm });
+          }
+        }
+
         const normalizePatientName = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
         const scoresByPatient: {
           patientId: string;
@@ -2017,6 +2039,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           orderIdx: number;
           masterNorm: number[];
           dualScore: number;
+          isLegacyV1: boolean;
           raw: number;
           meanCentered: number;
           white: number;
@@ -2085,7 +2108,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           let bestInnerPatchCos = 0;
           let bestInnerPatchWhite = 0;
 
-          for (const variant of probeVariants) {
+          const candIsLegacyV1 = isLegacyV1HybridVector(masterNorm);
+          const activeVariants =
+            candIsLegacyV1 && legacyV1Variants.length > 0 ? legacyV1Variants : probeVariants;
+
+          for (const variant of activeVariants) {
             const sameZoneVec = angleMap[variant.zone] ?? masterNorm;
             const sameZoneDual = computeDualFactorBiometricScore(variant.vec, sameZoneVec, {
               probeRatios,
@@ -2123,6 +2150,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               orderIdx,
               masterNorm,
               dualScore: bestDual,
+              isLegacyV1: candIsLegacyV1,
               raw: bestRaw,
               meanCentered: bestMeanCentered,
               white: bestWhite,
@@ -2164,21 +2192,46 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           Math.abs(pitchDegVal) > 6 ||
           Math.abs(rollDegVal) > 10;
 
-        // Iron Rules 1 & 2: >= 0.78 center frontal / >= 0.72 angled, plus strict >= 0.08 margin!
+        // Iron Rules 1 & 2: V2 >= 0.75 (0.70 angled); Legacy V1 strictly >= 0.80 (0.75 angled) + >= 0.08 margin!
         const requiredMargin = 0.08;
         const passesMargin = distinctRunners.length === 0 || margin >= requiredMargin;
-        const minDualThresh = isAngledPose ? 0.72 : 0.78;
-        const minWhiteThresh = isAngledPose ? 0.42 : 0.48;
-        const minMeanCentered = isAngledPose ? 0.55 : 0.65;
+        const topIsLegacyV1 = Boolean(top?.isLegacyV1);
+        const minDualThresh = topIsLegacyV1
+          ? isAngledPose
+            ? 0.75
+            : 0.80
+          : isAngledPose
+            ? 0.70
+            : 0.75;
+        const minWhiteThresh = topIsLegacyV1
+          ? isAngledPose
+            ? 0.36
+            : 0.42
+          : isAngledPose
+            ? 0.32
+            : 0.36;
+        const minMeanCentered = topIsLegacyV1
+          ? isAngledPose
+            ? 0.56
+            : 0.64
+          : isAngledPose
+            ? 0.52
+            : 0.60;
 
         const passesSubbandFloor = Boolean(
           top &&
-            top.bestInnerDctCos >= (isAngledPose ? 0.38 : 0.48) &&
-            top.bestInnerDctWhite >= (isAngledPose ? 0.20 : 0.30) &&
-            top.bestInnerPatchCos >= (isAngledPose ? 0.32 : 0.42) &&
-            top.bestInnerPatchWhite >= (isAngledPose ? 0.18 : 0.26) &&
-            top.bestCos3D >= (isAngledPose ? 0.56 : 0.64) &&
-            top.bestCraniofacialCos >= (isAngledPose ? 0.36 : 0.44),
+            top.bestInnerDctCos >=
+              (topIsLegacyV1 ? (isAngledPose ? 0.32 : 0.40) : isAngledPose ? 0.34 : 0.42) &&
+            top.bestInnerDctWhite >=
+              (topIsLegacyV1 ? (isAngledPose ? 0.14 : 0.20) : isAngledPose ? 0.15 : 0.22) &&
+            top.bestInnerPatchCos >=
+              (topIsLegacyV1 ? (isAngledPose ? 0.26 : 0.34) : isAngledPose ? 0.30 : 0.38) &&
+            top.bestInnerPatchWhite >=
+              (topIsLegacyV1 ? (isAngledPose ? 0.10 : 0.16) : isAngledPose ? 0.12 : 0.18) &&
+            top.bestCos3D >=
+              (topIsLegacyV1 ? (isAngledPose ? 0.60 : 0.68) : isAngledPose ? 0.52 : 0.60) &&
+            top.bestCraniofacialCos >=
+              (topIsLegacyV1 ? (isAngledPose ? 0.28 : 0.36) : isAngledPose ? 0.28 : 0.35),
         );
         const passesDualGate = Boolean(
           top &&

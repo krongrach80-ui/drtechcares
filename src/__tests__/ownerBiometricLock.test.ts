@@ -216,5 +216,52 @@ describe('Continuous 1:1 Owner Lock, Full-Bleed Cover Math & Owner-Bound Hand Fi
     expect(threeHands.intruderHandDetected).toBe(true);
     expect(threeHands.bothUp).toBe(false);
   });
+
+  it('verifies 1:1 Legacy V1 account owners via legacyV1ProbeVector while rejecting V1 impostors', () => {
+    const mkLegacy = (seed: number): number[] => {
+      const out = new Array<number>(FACE_EMBEDDING_DIM);
+      let s = seed >>> 0;
+      for (let i = 0; i < FACE_EMBEDDING_DIM; i += 1) {
+        s = (s * 1664525 + 1013904223 + i * 29) >>> 0;
+        const wave = ((s % 2000) / 1000 - 1) * (i >= 256 ? 0.01 : 0.35);
+        out[i] = CANONICAL_HUMAN_FACE_BASELINE_512[i] * (i >= 256 ? 0.65 : 0.5) + wave;
+      }
+      return l2Normalize(out);
+    };
+    const v1Owner = mkLegacy(111222);
+    const v1Impostor = mkLegacy(999888);
+    const dummyV2Probe = mkPersonVec(444555);
+    const legacyTemplate: OwnerBiometricTemplate = {
+      patientId: 'pat-legacy-owner',
+      hn: 'HN-44524',
+      fullName: 'Phattadon Phongarrom',
+      masterEmbedding: v1Owner,
+      angleEmbeddings: {
+        center: v1Owner,
+        left: v1Owner,
+        right: v1Owner,
+        up: v1Owner,
+        down: v1Owner,
+      },
+    };
+
+    const okOwner = verifyOwnerFace1to1({
+      probeVector: dummyV2Probe,
+      legacyV1ProbeVector: v1Owner,
+      yawDeg: 0,
+      pitchDeg: 0,
+      ownerTemplate: legacyTemplate,
+    });
+    expect(okOwner.matched).toBe(true);
+
+    const blockedImpostor = verifyOwnerFace1to1({
+      probeVector: dummyV2Probe,
+      legacyV1ProbeVector: v1Impostor,
+      yawDeg: 0,
+      pitchDeg: 0,
+      ownerTemplate: legacyTemplate,
+    });
+    expect(blockedImpostor.matched).toBe(false);
+  });
 });
 

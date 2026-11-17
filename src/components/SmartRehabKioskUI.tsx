@@ -12,11 +12,13 @@ import {
   evaluateLivenessAndPose,
   extractGeometricAnthropometricRatios,
   extractHybrid512Descriptor,
+  extractLegacyV1Hybrid512Descriptor,
   flipImageDataHorizontally,
   flipLandmarksHorizontally,
   selectClinicalCameraDeviceId,
   selectPrimaryFace,
 } from '@drtechcares/face-client';
+import { isLegacyV1HybridVector } from '@drtechcares/smart-biometric-core';
 import {
   computeObjectCoverLayout,
   computeOwnerFaceBoxMetrics,
@@ -2815,18 +2817,28 @@ export function SmartRehabKioskUI({
                       if (!faceRoiCanvas) faceRoiCanvas = document.createElement('canvas');
                       const crop = alignFaceTo112(v, primaryFaceLm, faceAlignCanvas, faceRoiCanvas);
                       if (crop) {
+                        const flippedCrop = flipImageDataHorizontally(crop);
+                        const flippedLm = flipLandmarksHorizontally(primaryFaceLm);
                         const probeVec = extractHybrid512Descriptor(crop, primaryFaceLm);
-                        const mirroredVec = extractHybrid512Descriptor(
-                          flipImageDataHorizontally(crop),
-                          flipLandmarksHorizontally(primaryFaceLm),
-                        );
+                        const mirroredVec = extractHybrid512Descriptor(flippedCrop, flippedLm);
+                        const ownerIsLegacyV1 = isLegacyV1HybridVector(activeOwnerBio.masterEmbedding);
+                        const legacyV1ProbeVector = ownerIsLegacyV1
+                          ? extractLegacyV1Hybrid512Descriptor(crop, primaryFaceLm)
+                          : undefined;
+                        const mirroredLegacyV1ProbeVector = ownerIsLegacyV1
+                          ? extractLegacyV1Hybrid512Descriptor(flippedCrop, flippedLm)
+                          : undefined;
                         const livePose = evaluateLivenessAndPose(primaryFaceLm, null, effFaceCount);
                         const rollDeg = computeEyeRollAngleDeg(primaryFaceLm, v.videoWidth, v.videoHeight);
                         const probeRatios = extractGeometricAnthropometricRatios(primaryFaceLm);
                         const ownerRes = verifyOwnerFace1to1({
                           probeVector: probeVec,
                           mirroredProbeVector: mirroredVec,
-                          yawDeg: livePose.yawDeg,
+                          ...(legacyV1ProbeVector ? { legacyV1ProbeVector } : {}),
+                          ...(mirroredLegacyV1ProbeVector
+                            ? { mirroredLegacyV1ProbeVector }
+                            : {}),
+                          yawDeg: -livePose.yawDeg,
                           pitchDeg: livePose.pitchDeg,
                           rollDeg,
                           probeRatios,

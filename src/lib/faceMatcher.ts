@@ -10,6 +10,7 @@ import {
   computeDualFactorBiometricScore,
   computeMeanCenteredVector,
   cosineSimilarity as coreCosineSimilarity,
+  isLegacyV1HybridVector,
   l2Normalize,
   mirrorPoseZone,
   whitenEmbedding,
@@ -27,6 +28,8 @@ export interface MultiAngleMatchOptions {
   rollDeg?: number;
   engine?: 'arcface-onnx' | 'hybrid-512d';
   mirroredProbeVector?: readonly number[];
+  legacyV1ProbeVector?: readonly number[];
+  mirroredLegacyV1ProbeVector?: readonly number[];
   geometricRatios?: GeometricAnthropometricRatios | null;
   excludedPatientIds?: readonly string[];
 }
@@ -56,6 +59,8 @@ export interface FaceBoundingBox {
 export interface LiveFrameObservation {
   probeVector: readonly number[];
   mirroredProbeVector?: readonly number[];
+  legacyV1ProbeVector?: readonly number[];
+  mirroredLegacyV1ProbeVector?: readonly number[];
   depthScore: number;
   yawDeg: number;
   pitchDeg: number;
@@ -148,11 +153,6 @@ export function identifyPatient1toN(
     Math.abs(options.pitchDeg ?? 0) > 6 ||
     Math.abs(options.rollDeg ?? 0) > 10;
 
-  // Iron Rule 1: High Absolute Threshold (>= 0.78 frontal center, >= 0.72 slight turn/tilt)
-  const similarityThreshold =
-    options.similarityThreshold ?? (isAngledPose ? 0.72 : 0.78);
-  const whitenedThreshold =
-    options.whitenedThreshold ?? (isAngledPose ? 0.42 : 0.48);
   // Iron Rule 2: Strict Distinctiveness Margin (>= 0.08 between Rank #1 and Rank #2)
   const marginThreshold = options.marginThreshold ?? 0.08;
 
@@ -193,11 +193,29 @@ export function identifyPatient1toN(
     probeVariants.push({ zone: mirroredZone, vec: l2Normalize(options.mirroredProbeVector) });
   }
 
+  const legacyV1Variants: { zone: FacePoseZone5; vec: number[] }[] = [];
+  if (
+    options.legacyV1ProbeVector &&
+    options.legacyV1ProbeVector.length === normalizedProbe.length
+  ) {
+    legacyV1Variants.push({ zone: livePoseZone, vec: l2Normalize(options.legacyV1ProbeVector) });
+    if (
+      options.mirroredLegacyV1ProbeVector &&
+      options.mirroredLegacyV1ProbeVector.length === normalizedProbe.length
+    ) {
+      legacyV1Variants.push({
+        zone: mirroredZone,
+        vec: l2Normalize(options.mirroredLegacyV1ProbeVector),
+      });
+    }
+  }
+
   const scored: {
     candidate: PatientBiometricIndexEntry;
     orderIdx: number;
     angle: 'master' | 'center' | 'left' | 'right' | 'up' | 'down' | 'extra';
     dualFactorScore: number;
+    isLegacyV1: boolean;
     rawSim: number;
     meanCenteredSim: number;
     whitenedSim: number;
@@ -231,7 +249,11 @@ export function identifyPatient1toN(
     let bestInnerPatchCos = 0;
     let bestInnerPatchWhite = 0;
 
-    for (const variant of probeVariants) {
+    const candIsLegacyV1 = Boolean(masterVec && isLegacyV1HybridVector(masterVec));
+    const activeVariants =
+      candIsLegacyV1 && legacyV1Variants.length > 0 ? legacyV1Variants : probeVariants;
+
+    for (const variant of activeVariants) {
       const targetAngleVecRaw = cand.angleEmbeddings?.[variant.zone];
       const hasSameZone =
         Array.isArray(targetAngleVecRaw) && targetAngleVecRaw.length === normalizedProbe.length;
@@ -301,6 +323,7 @@ export function identifyPatient1toN(
         orderIdx,
         angle: bestAngle,
         dualFactorScore: bestVariantScore,
+        isLegacyV1: candIsLegacyV1,
         rawSim: bestRawSim,
         meanCenteredSim: bestMeanCenteredSim,
         whitenedSim: bestWhitenedSim,
@@ -350,11 +373,39 @@ export function identifyPatient1toN(
   const margin = runnerUp ? top.dualFactorScore - runnerUp.dualFactorScore : 1;
 
   const passesMargin = distinctRunners.length === 0 || margin >= marginThreshold;
-  const subDctCosMin = isAngledPose ? 0.38 : 0.48;
-  const subDctWhiteMin = isAngledPose ? 0.20 : 0.30;
-  const subPatchCosMin = isAngledPose ? 0.32 : 0.42;
-  const subPatchWhiteMin = isAngledPose ? 0.18 : 0.26;
-  const sub3DMin = isAngledPose ? 0.56 : 0.64;
+  const topIsLegacyV1 = top.isLegacyV1;
+  // Iron Rule 1: V2 >= 0.75 (0.70 angled); Legacy V1 bridge strictly >= 0.80 (0.75 angled) + >= 0.42 white + >= 0.08 margin
+  const similarityThreshold =
+    options.similarityThreshold ??
+    (topIsLegacyV1 ? (isAngledPose ? 0.75 : 0.80) : isAngledPose ? 0.70 : 0.75);
+  const whitenedThreshold =
+    options.whitenedThreshold ??
+    (topIsLegacyV1 ? (isAngledPose ? 0.36 : 0.42) : isAngledPose ? 0.32 : 0.36);
+  const meanCenteredMin = topIsLegacyV1
+    ? isAngledPose
+      ? 0.56
+      : 0.64
+    : isAngledPose
+      ? 0.52
+      : 0.60;
+  const subDctCosMin = topIsLegacyV1 ? (isAngledPose ? 0.32 : 0.40) : isAngledPose ? 0.34 : 0.42;
+  const subDctWhiteMin = topIsLegacyV1 ? (isAngledPose ? 0.14 : 0.20) : isAngledPose ? 0.15 : 0.22;
+  const subPatchCosMin = topIsLegacyV1 ? (isAngledPose ? 0.26 : 0.34) : isAngledPose ? 0.30 : 0.38;
+  const subPatchWhiteMin = topIsLegacyV1
+    ? isAngledPose
+      ? 0.10
+      : 0.16
+    : isAngledPose
+      ? 0.12
+      : 0.18;
+  const sub3DMin = topIsLegacyV1 ? (isAngledPose ? 0.60 : 0.68) : isAngledPose ? 0.52 : 0.60;
+  const craniofacialMin = topIsLegacyV1
+    ? isAngledPose
+      ? 0.28
+      : 0.36
+    : isAngledPose
+      ? 0.28
+      : 0.35;
 
   const passesSubbandFloor =
     !top.hasCore ||
@@ -363,12 +414,12 @@ export function identifyPatient1toN(
       top.bestInnerPatchCos >= subPatchCosMin &&
       top.bestInnerPatchWhite >= subPatchWhiteMin &&
       top.bestCos3D >= sub3DMin &&
-      top.bestCraniofacialCos >= (isAngledPose ? 0.36 : 0.44));
+      top.bestCraniofacialCos >= craniofacialMin);
 
   const passesThreshold =
     top.dualFactorScore >= similarityThreshold &&
     top.whitenedSim >= whitenedThreshold &&
-    top.meanCenteredSim >= (isAngledPose ? 0.55 : 0.65) &&
+    top.meanCenteredSim >= meanCenteredMin &&
     top.geometricPenalty <= 0.14 &&
     passesSubbandFloor;
 
@@ -489,6 +540,12 @@ export class TemporalBiometricMatcher {
         : {}),
       ...(observation.mirroredProbeVector
         ? { mirroredProbeVector: observation.mirroredProbeVector }
+        : {}),
+      ...(observation.legacyV1ProbeVector
+        ? { legacyV1ProbeVector: observation.legacyV1ProbeVector }
+        : {}),
+      ...(observation.mirroredLegacyV1ProbeVector
+        ? { mirroredLegacyV1ProbeVector: observation.mirroredLegacyV1ProbeVector }
         : {}),
       ...options,
     };

@@ -862,6 +862,11 @@ export function computeGeometricRatioMatchScore(
  * Dual-Factor Biometric Comparison (80% Mean-Centered Appearance + 20% Craniofacial Geometry),
  * applying immediate Euclidean (L2) distance and geometric ratio divergence penalties.
  */
+export function isLegacyV1HybridVector(vector: readonly number[]): boolean {
+  if (!Array.isArray(vector) || vector.length !== FACE_EMBEDDING_DIM) return false;
+  return sliceCosine(l2Normalize(vector), CANONICAL_HUMAN_FACE_BASELINE_512, 256, 511) >= 0.88;
+}
+
 export function computeDualFactorBiometricScore(
   probe: readonly number[],
   candidate: readonly number[],
@@ -917,13 +922,22 @@ export function computeDualFactorBiometricScore(
     }
   }
 
+  const isLegacyCand =
+    pNorm.length === FACE_EMBEDDING_DIM &&
+    cNorm.length === FACE_EMBEDDING_DIM &&
+    isLegacyV1HybridVector(cNorm);
+
   const effectiveRaw = faceCore ? Math.max(rawCos, faceCore.faceCoreSim) : rawCos;
-  const effectiveWhite = faceCore ? Math.max(whitenedGlobal, faceCore.faceCoreWhitenedSim) : whitenedGlobal;
+  const rawOrCoreWhite = faceCore ? Math.max(whitenedGlobal, faceCore.faceCoreWhitenedSim) : whitenedGlobal;
+  // For balanced zero-mean V2 embeddings (where 256..511 is already zero-centered), blend baseline whitening with mean-centered cosine
+  const effectiveWhite = isLegacyCand
+    ? rawOrCoreWhite
+    : Math.max(rawOrCoreWhite, 0.55 * Math.max(0, rawOrCoreWhite) + 0.45 * Math.max(0, effectiveMeanCenteredCos));
 
   // Penalize wide L2 spread across normalized mean-centered vectors
   const l2Penalty =
-    effectiveMeanCenteredL2Dist > 0.72
-      ? Math.min(0.24, (effectiveMeanCenteredL2Dist - 0.72) * 0.34)
+    effectiveMeanCenteredL2Dist > 0.78
+      ? Math.min(0.22, (effectiveMeanCenteredL2Dist - 0.78) * 0.34)
       : 0;
 
   const appearanceFactorScore = Math.max(

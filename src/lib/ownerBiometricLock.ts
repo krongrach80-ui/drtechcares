@@ -3,6 +3,7 @@ import type { AngleEmbeddings5D } from '@drtechcares/api-client';
 import {
   classifyLivePoseZone,
   computeDualFactorBiometricScore,
+  isLegacyV1HybridVector,
   l2Normalize,
   mirrorPoseZone,
   type FacePoseZone5,
@@ -229,6 +230,8 @@ export function computeOwnerFaceBoxMetrics(
 export function verifyOwnerFace1to1(input: {
   probeVector: readonly number[];
   mirroredProbeVector?: readonly number[];
+  legacyV1ProbeVector?: readonly number[];
+  mirroredLegacyV1ProbeVector?: readonly number[];
   yawDeg?: number;
   pitchDeg?: number;
   rollDeg?: number;
@@ -253,15 +256,33 @@ export function verifyOwnerFace1to1(input: {
   }
 
   const normMaster = l2Normalize(template.masterEmbedding);
+  const ownerIsLegacyV1 = isLegacyV1HybridVector(normMaster);
   const mirroredZone = mirrorPoseZone(livePoseZone);
+  const activePrimaryProbe =
+    ownerIsLegacyV1 &&
+    input.legacyV1ProbeVector &&
+    input.legacyV1ProbeVector.length === template.masterEmbedding.length
+      ? input.legacyV1ProbeVector
+      : input.probeVector;
+  const activeMirroredProbe =
+    ownerIsLegacyV1 &&
+    input.mirroredLegacyV1ProbeVector &&
+    input.mirroredLegacyV1ProbeVector.length === template.masterEmbedding.length
+      ? input.mirroredLegacyV1ProbeVector
+      : !ownerIsLegacyV1
+        ? input.mirroredProbeVector
+        : input.legacyV1ProbeVector
+          ? undefined
+          : input.mirroredProbeVector;
+
   const variants: { zone: FacePoseZone5; vec: number[] }[] = [
-    { zone: livePoseZone, vec: l2Normalize(input.probeVector) },
+    { zone: livePoseZone, vec: l2Normalize(activePrimaryProbe) },
   ];
   if (
-    input.mirroredProbeVector &&
-    input.mirroredProbeVector.length === template.masterEmbedding.length
+    activeMirroredProbe &&
+    activeMirroredProbe.length === template.masterEmbedding.length
   ) {
-    variants.push({ zone: mirroredZone, vec: l2Normalize(input.mirroredProbeVector) });
+    variants.push({ zone: mirroredZone, vec: l2Normalize(activeMirroredProbe) });
   }
 
   let bestScore = -1;
@@ -308,11 +329,17 @@ export function verifyOwnerFace1to1(input: {
     Math.abs(input.pitchDeg ?? 0) > 6 ||
     Math.abs(input.rollDeg ?? 0) > 10;
 
-  const ownerThreshold = isAngled ? 0.72 : 0.76;
+  const ownerThreshold = ownerIsLegacyV1
+    ? isAngled
+      ? 0.74
+      : 0.78
+    : isAngled
+      ? 0.70
+      : 0.75;
   const matched =
     bestScore >= ownerThreshold &&
-    bestMeanCentered >= (isAngled ? 0.52 : 0.60) &&
-    bestWhitened >= (isAngled ? 0.36 : 0.42) &&
+    bestMeanCentered >= (ownerIsLegacyV1 ? (isAngled ? 0.54 : 0.62) : isAngled ? 0.50 : 0.58) &&
+    bestWhitened >= (ownerIsLegacyV1 ? (isAngled ? 0.34 : 0.40) : isAngled ? 0.30 : 0.35) &&
     bestGeomPenalty <= 0.16;
 
   return {

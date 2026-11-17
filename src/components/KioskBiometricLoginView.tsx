@@ -63,6 +63,7 @@ import { FacePresenceTracker } from '@drtechcares/kiosk-input';
 import { POSE_INDEX } from '@drtechcares/pose-engine';
 import {
   BURST_FRAME_COUNT,
+  isLegacyV1HybridVector,
   purgeLegacyBiometricCache,
 } from '@drtechcares/smart-biometric-core';
 import {
@@ -554,7 +555,7 @@ const COPY: Record<
     staffAssistBtn: 'เจ้าหน้าที่ลงทะเบียนให้',
     retryScanBtn: 'ลองสแกนใหม่อีกครั้ง',
     countdownLabel: 'กำลังนับถอยหลัง',
-    liveMatchVerified: '✓ ยืนยันตัวตนสำเร็จ',
+    liveMatchVerified: '✓ พบบัญชีตรงกัน',
     liveMatchAccuracy: 'ความแม่นยำ',
     framesUnit: 'เฟรม',
     scanningDbTitle: 'กำลังสแกนใบหน้าเทียบฐานข้อมูล...',
@@ -605,7 +606,7 @@ const COPY: Record<
     staffAssistBtn: 'Staff Register Patient',
     retryScanBtn: 'Scan Face Again',
     countdownLabel: 'Hold steady',
-    liveMatchVerified: '✓ Identity Verified',
+    liveMatchVerified: '✓ Account Matched',
     liveMatchAccuracy: 'Confidence',
     framesUnit: 'frames',
     scanningDbTitle: 'Scanning face against database...',
@@ -655,7 +656,7 @@ const COPY: Record<
     staffAssistBtn: '医护人员协助建档',
     retryScanBtn: '重新识别人脸',
     countdownLabel: '倒计时准备中',
-    liveMatchVerified: '✓ 身份验证成功',
+    liveMatchVerified: '✓ 已匹配账户',
     liveMatchAccuracy: '匹配准确度',
     framesUnit: '帧',
     scanningDbTitle: '正在扫描并与人脸库比对...',
@@ -1207,7 +1208,8 @@ export function KioskBiometricLoginView({
     let lastProcessedVideoTime = -1;
     let lastFaceDetectWallMs = 0;
     let unreadyFrameStreak = 0;
-    let lowSimBelow035StartAt = 0;
+    let bioVerifiedUnmatchedStartAt = 0;
+    let isLastVerifyAmbiguous = false;
     let lastGestureVideoTime = -1;
     let lastGestureInferenceAt = 0;
     let lastPoseFallbackAt = 0;
@@ -1616,10 +1618,17 @@ export function KioskBiometricLoginView({
                             confirmRoiCanvas,
                           );
                           if (faceCrop) {
-                            const { vector, mirroredVector } = await extractDualFlipFaceEmbedding(
-                              faceCrop,
-                              primaryLm,
+                            const ownerIsLegacyV1 = isLegacyV1HybridVector(
+                              verifiedPayload.biometricTemplate.masterEmbedding,
                             );
+                            const {
+                              vector,
+                              mirroredVector,
+                              legacyV1Vector,
+                              mirroredLegacyV1Vector,
+                            } = await extractDualFlipFaceEmbedding(faceCrop, primaryLm, {
+                              includeLegacyV1: ownerIsLegacyV1,
+                            });
                             if (!active) {
                               shouldContinueLoop = false;
                               return;
@@ -1634,7 +1643,11 @@ export function KioskBiometricLoginView({
                             const ownerCheck = verifyOwnerFace1to1({
                               probeVector: vector,
                               mirroredProbeVector: mirroredVector,
-                              yawDeg: livePose.yawDeg,
+                              ...(legacyV1Vector ? { legacyV1ProbeVector: legacyV1Vector } : {}),
+                              ...(mirroredLegacyV1Vector
+                                ? { mirroredLegacyV1ProbeVector: mirroredLegacyV1Vector }
+                                : {}),
+                              yawDeg: -livePose.yawDeg,
                               pitchDeg: livePose.pitchDeg,
                               rollDeg,
                               probeRatios,
@@ -1943,7 +1956,8 @@ export function KioskBiometricLoginView({
                   temporalMatcherRef.current.reset();
                   loginCtrlRef.current.reset();
                   bioLivenessRef.current.reset();
-                  lowSimBelow035StartAt = 0;
+                  bioVerifiedUnmatchedStartAt = 0;
+                  isLastVerifyAmbiguous = false;
                   setBioReport(null);
                   burstStarted = false;
                   setBurstCount(0);
@@ -2063,7 +2077,8 @@ export function KioskBiometricLoginView({
                   if ((isFrameSpoof || unreadyFrameStreak >= 18) && !verifyingLockRef.current) {
                     temporalMatcherRef.current.reset();
                     loginCtrlRef.current.reset();
-                    lowSimBelow035StartAt = 0;
+                    bioVerifiedUnmatchedStartAt = 0;
+                    isLastVerifyAmbiguous = false;
                     burstStarted = false;
                     setBurstCount(0);
                     setLiveMatchHud(null);
@@ -2075,8 +2090,25 @@ export function KioskBiometricLoginView({
                   unreadyFrameStreak = 0;
                   if (now - lastEmbedCheckAt >= 120 && !verifyingLockRef.current) {
                     lastEmbedCheckAt = now;
-                    const { vector, mirroredVector, engine, geometricRatios } =
-                      await extractDualFlipFaceEmbedding(crop, landmarks);
+                    const hasLegacyV1InIndex =
+                      biometricIndexRef.current.length === 0 ||
+                      biometricIndexRef.current.some(
+                        (e) =>
+                          isLegacyV1HybridVector(e.masterEmbedding) ||
+                          Object.values(e.angleEmbeddings ?? {}).some(
+                            (vec) => Array.isArray(vec) && isLegacyV1HybridVector(vec),
+                          ),
+                      );
+                    const {
+                      vector,
+                      mirroredVector,
+                      legacyV1Vector,
+                      mirroredLegacyV1Vector,
+                      engine,
+                      geometricRatios,
+                    } = await extractDualFlipFaceEmbedding(crop, landmarks, {
+                      includeLegacyV1: hasLegacyV1InIndex,
+                    });
                     if (!active) {
                       shouldContinueLoop = false;
                       return;
@@ -2087,6 +2119,7 @@ export function KioskBiometricLoginView({
                       videoRef.current?.videoWidth || 1280,
                       videoRef.current?.videoHeight || 720,
                     );
+                    const canonicalYawDeg = -liveness.yawDeg;
                     const currentFaceHeightRatio = rawBox?.height ?? bio.faceScale;
                     const livenessEvidence = {
                       biologicalVerified: bio.biologicalVerified,
@@ -2095,11 +2128,15 @@ export function KioskBiometricLoginView({
                       nonRigidScore: bio.nonRigidScore,
                       rppgScore: bio.rppgScore,
                       faceHeightRatio: currentFaceHeightRatio,
-                      yawDeg: liveness.yawDeg,
+                      yawDeg: canonicalYawDeg,
                       pitchDeg: liveness.pitchDeg,
                       rollDeg,
                       engine,
                       mirroredProbeVector: mirroredVector,
+                      ...(legacyV1Vector ? { legacyV1ProbeVector: legacyV1Vector } : {}),
+                      ...(mirroredLegacyV1Vector
+                        ? { mirroredLegacyV1ProbeVector: mirroredLegacyV1Vector }
+                        : {}),
                       ...(geometricRatios ? { geometricRatios } : {}),
                       ...(excludedPatientIdsRef.current.length > 0
                         ? { excludedPatientIds: excludedPatientIdsRef.current }
@@ -2112,7 +2149,11 @@ export function KioskBiometricLoginView({
                         {
                           probeVector: vector,
                           mirroredProbeVector: mirroredVector,
-                          yawDeg: liveness.yawDeg,
+                          ...(legacyV1Vector ? { legacyV1ProbeVector: legacyV1Vector } : {}),
+                          ...(mirroredLegacyV1Vector
+                            ? { mirroredLegacyV1ProbeVector: mirroredLegacyV1Vector }
+                            : {}),
+                          yawDeg: canonicalYawDeg,
                           pitchDeg: liveness.pitchDeg,
                           rollDeg,
                           depthScore: liveness.depthScore,
@@ -2155,19 +2196,22 @@ export function KioskBiometricLoginView({
                       );
 
                       if (isAmbiguous) {
-                        lowSimBelow035StartAt = 0;
+                        bioVerifiedUnmatchedStartAt = 0;
+                        isLastVerifyAmbiguous = true;
                         setTurningHintPct(null);
-                      } else if (latestTemporalSim >= 0.40 && !temporal.confirmed) {
-                        lowSimBelow035StartAt = 0;
+                      } else if (temporal.confirmed || temporal.streakCount > 0) {
+                        bioVerifiedUnmatchedStartAt = 0;
+                        isLastVerifyAmbiguous = false;
+                        setTurningHintPct(null);
+                      } else if (latestTemporalSim >= 0.62) {
+                        if (bioVerifiedUnmatchedStartAt === 0 && bio.biologicalVerified) {
+                          bioVerifiedUnmatchedStartAt = now;
+                        }
                         setTurningHintPct(Math.round(latestTemporalSim * 100));
-                      } else if (temporal.confirmed) {
-                        lowSimBelow035StartAt = 0;
-                        setTurningHintPct(null);
-                      } else if (latestTemporalSim >= 0.35) {
-                        lowSimBelow035StartAt = 0;
-                        setTurningHintPct(null);
-                      } else if (bio.biologicalVerified) {
-                        if (lowSimBelow035StartAt === 0) lowSimBelow035StartAt = now;
+                      } else {
+                        if (bio.biologicalVerified && !isFrameSpoof && bioVerifiedUnmatchedStartAt === 0) {
+                          bioVerifiedUnmatchedStartAt = now;
+                        }
                         setTurningHintPct(null);
                       }
 
@@ -2192,8 +2236,12 @@ export function KioskBiometricLoginView({
                           }
                           setLastVerifyResult(verifyRes);
                           if (verifyRes.error === 'AMBIGUOUS_CLOSE_CANDIDATES') {
+                            isLastVerifyAmbiguous = true;
                             setAmbiguousCloseHint(true);
-                          } else if (verifyRes.failureReasons?.includes('BIOLOGICAL_SPOOF_BLOCKED')) {
+                          } else {
+                            isLastVerifyAmbiguous = false;
+                          }
+                          if (verifyRes.failureReasons?.includes('BIOLOGICAL_SPOOF_BLOCKED')) {
                             blockedBySpoof = true;
                           } else if (
                             verifyRes.matched &&
@@ -2279,12 +2327,19 @@ export function KioskBiometricLoginView({
                       if (!bio.biologicalVerified || isFrameSpoof) {
                         // Hold cleanly on biological blink challenge; NEVER advance authentication on a static image/phone
                         loginCtrlRef.current.reset();
-                        lowSimBelow035StartAt = 0;
+                        bioVerifiedUnmatchedStartAt = 0;
+                        isLastVerifyAmbiguous = false;
                         setTurningHintPct(null);
                         burstStarted = false;
                         setBurstCount(0);
                         setScanStage('scanning');
                       } else {
+                        if (
+                          biometricIndexRef.current.length === 0 &&
+                          bioVerifiedUnmatchedStartAt === 0
+                        ) {
+                          bioVerifiedUnmatchedStartAt = now;
+                        }
                         if (!burstStarted) {
                           loginCtrlRef.current.startCountdownComplete();
                           burstStarted = true;
@@ -2296,7 +2351,7 @@ export function KioskBiometricLoginView({
                           capturedAfterCountdown: true,
                           pose: 'front',
                           sharpness: 85,
-                          yaw: liveness.yawDeg,
+                          yaw: canonicalYawDeg,
                           pitch: liveness.pitchDeg,
                         });
                         setBurstCount(push.collected);
@@ -2314,7 +2369,10 @@ export function KioskBiometricLoginView({
                             }
                             setLastVerifyResult(verifyRes);
                             if (verifyRes.error === 'AMBIGUOUS_CLOSE_CANDIDATES') {
+                              isLastVerifyAmbiguous = true;
                               setAmbiguousCloseHint(true);
+                            } else {
+                              isLastVerifyAmbiguous = false;
                             }
                             if (
                               verifyRes.matched &&
@@ -2349,15 +2407,23 @@ export function KioskBiometricLoginView({
                               verifyingLockRef.current = false;
                             }
                           }
-                          loginCtrlRef.current.recordUnmatchedRound();
+                          const unmatched = loginCtrlRef.current.recordUnmatchedRound();
                           burstStarted = false;
                           setBurstCount(0);
 
-                          // Only show "Account Not Found" when DB is genuinely empty OR similarity stays < 0.35 for >= 8s continuous scanning
+                          // Show "Account Not Found" decisively after unmatched verification rounds (>= 2 rounds / ~2.6-4.5s)
+                          // so unregistered visitors never hang indefinitely at low similarity.
                           const noPatientsInDb = biometricIndexRef.current.length === 0;
-                          const lowSimElapsed =
-                            lowSimBelow035StartAt > 0 ? now - lowSimBelow035StartAt : 0;
-                          if ((noPatientsInDb && lowSimElapsed >= 3000) || lowSimElapsed >= 8000) {
+                          const unmatchedElapsed =
+                            bioVerifiedUnmatchedStartAt > 0 ? now - bioVerifiedUnmatchedStartAt : 0;
+                          const activeStreak = temporalMatcherRef.current.currentStreak;
+                          if (
+                            !isLastVerifyAmbiguous &&
+                            activeStreak === 0 &&
+                            ((noPatientsInDb && unmatchedElapsed >= 2500) ||
+                              (unmatched.rounds >= 2 && unmatchedElapsed >= 2600) ||
+                              unmatchedElapsed >= 4500)
+                          ) {
                             shouldContinueLoop = false;
                             setScanStage('not_found');
                             return;
@@ -2784,12 +2850,12 @@ export function KioskBiometricLoginView({
                         </div>
                       </div>
                     ) : liveMatchHud?.candidate ? (
-                      <div className="absolute left-1/2 top-full mt-2.5 w-max max-w-[360px] -translate-x-1/2 rounded-2xl border-2 border-[#10B981] bg-emerald-50/95 px-4 py-2.5 text-center backdrop-blur-md shadow-2xl">
+                      <div className="absolute left-1/2 top-full mt-2.5 w-max max-w-[380px] -translate-x-1/2 rounded-2xl border-2 border-[#10B981] bg-emerald-50/95 px-4 py-2.5 text-center backdrop-blur-md shadow-2xl">
                         <div className="text-sm font-black text-emerald-800">
                           {c.liveMatchVerified}: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
                         </div>
                         <div className="mt-0.5 text-xs font-bold text-[#0F4C81]">
-                          {c.distancePrefix}: {(bioReport?.estimatedDistanceM ?? 1.5).toFixed(1)} {c.distanceUnit} • {c.liveMatchAccuracy}: {liveMatchHud.confidencePercent.toFixed(1)}% ({liveMatchHud.streak}/5 {c.framesUnit})
+                          {lang === 'en' ? 'Signing in...' : lang === 'cn' ? '正在登录...' : 'กำลังเข้าสู่ระบบ...'} • {c.liveMatchAccuracy}: {liveMatchHud.confidencePercent.toFixed(1)}% ({liveMatchHud.streak}/5 {c.framesUnit})
                         </div>
                       </div>
                     ) : ambiguousCloseHint ? (

@@ -1521,5 +1521,95 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(excludedJson.matched).toBe(true);
     expect(excludedJson.patient?.hn).toBe('HN-BIOSPOOF-01');
   });
+
+  it('matches Legacy V1 enrolled patients via legacyV1ProbeVector bridge while rejecting strangers at 401', async () => {
+    const router = createCloudDelegatedRouter({});
+    const ptLogin = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const { token: ptToken } = (await ptLogin.json()) as { token: string };
+
+    const makeLegacyV1Synthetic = (seed: number): number[] => {
+      const raw = new Array<number>(FACE_EMBEDDING_DIM);
+      for (let i = 0; i < FACE_EMBEDDING_DIM; i += 1) {
+        const dctRipple = i < 128 ? Math.sin((i + 1) * (seed * 0.41)) * 0.25 : 0;
+        const patchRipple = i >= 128 && i < 256 ? Math.cos((i - 127) * (seed * 0.59)) * 0.22 : 0;
+        const ratioRipple = i >= 256 ? Math.sin((i - 255) * (seed * 0.67)) * 0.01 : 0;
+        raw[i] =
+          i >= 256
+            ? CANONICAL_HUMAN_FACE_BASELINE_512[i] * 0.65 + ratioRipple
+            : CANONICAL_HUMAN_FACE_BASELINE_512[i] * 0.5 + dctRipple + patchRipple;
+      }
+      return l2Normalize(raw);
+    };
+
+    const v1Owner = makeLegacyV1Synthetic(3.14);
+    const v1Stranger = makeLegacyV1Synthetic(9.72);
+    const unrelatedV2Probe = l2Normalize(
+      makeHybridEmbedding(77.7).map((v, i) => (i >= 256 ? v * 0.14 : v)),
+    );
+
+    const enrollV1Res = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-LEGACY-V1',
+        fullName: 'Phattadon LegacyV1',
+        age: 29,
+        phone: '0897776655',
+        diagnosis: 'Knee Rehab',
+        frontalCentroid: v1Owner,
+        overallCentroid: v1Owner,
+        rawFrames: [
+          ...Array.from({ length: 4 }, () => ({ pose: 'front', vector: v1Owner, qualityScore: 0.96 })),
+          ...Array.from({ length: 2 }, () => ({ pose: 'left', vector: v1Owner, qualityScore: 0.95 })),
+          ...Array.from({ length: 2 }, () => ({ pose: 'right', vector: v1Owner, qualityScore: 0.95 })),
+          ...Array.from({ length: 2 }, () => ({ pose: 'nod', vector: v1Owner, qualityScore: 0.95 })),
+        ],
+      },
+    });
+    expect(enrollV1Res.status).toBe(201);
+
+    const genuineBridgeRes = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: {
+        probeVector: unrelatedV2Probe,
+        legacyV1ProbeVector: v1Owner,
+        livenessEvidence: {
+          biologicalVerified: true,
+          blinkCount: 1,
+          spoofRisk: 0.05,
+          nonRigidScore: 0.14,
+          legacyV1ProbeVector: v1Owner,
+        },
+      },
+    });
+    expect(genuineBridgeRes.status).toBe(200);
+    const genuineJson = (await genuineBridgeRes.json()) as {
+      matched: boolean;
+      patient?: { hn: string };
+    };
+    expect(genuineJson.matched).toBe(true);
+    expect(genuineJson.patient?.hn).toBe('HN-LEGACY-V1');
+
+    const strangerBridgeRes = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: {
+        probeVector: unrelatedV2Probe,
+        legacyV1ProbeVector: v1Stranger,
+        livenessEvidence: {
+          biologicalVerified: true,
+          blinkCount: 1,
+          spoofRisk: 0.05,
+          nonRigidScore: 0.14,
+          legacyV1ProbeVector: v1Stranger,
+        },
+      },
+    });
+    expect(strangerBridgeRes.status).toBe(401);
+    const strangerJson = (await strangerBridgeRes.json()) as { matched: boolean };
+    expect(strangerJson.matched).toBe(false);
+  });
 });
 
