@@ -222,15 +222,15 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
         return (state % 2000) / 1000 - 1;
       };
 
-      // 0..127 DCT: u=0 or v=0 carries heavy shirt/background gradient; interior u>=1,v>=1 carries face structure
+      // 0..127 DCT: u=0 or v=0 carries shirt/background gradient; interior u>=1,v>=1 carries face structure
       let dctIdx = 0;
       for (let u = 0; u < 12 && dctIdx < 128; u += 1) {
         for (let v = 0; v < 12 && dctIdx < 128; v += 1) {
           if (u === 0 && v === 0) continue;
-          const innerWave = nextRand() * 0.32 * lightingGain;
+          const innerWave = nextRand() * 0.14 * (0.85 + 0.15 * lightingGain);
           vec[dctIdx] =
             u === 0 || v === 0
-              ? shirtBias * (0.85 - u * 0.04) * (v % 2 === 0 ? 1 : -0.7)
+              ? shirtBias * (0.025 - u * 0.001) * (v % 2 === 0 ? 1 : -0.7)
               : CANONICAL_HUMAN_FACE_BASELINE_512[dctIdx] * 0.4 + innerWave;
           dctIdx += 1;
         }
@@ -242,10 +242,10 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
           const offset = 128 + (py * 4 + px) * 8;
           const isInner = py >= 1 && py <= 2 && px >= 1 && px <= 2;
           for (let slot = 0; slot < 8; slot += 1) {
-            const innerWave = nextRand() * 0.25 * lightingGain;
+            const innerWave = nextRand() * 0.14 * (0.85 + 0.15 * lightingGain);
             vec[offset + slot] = isInner && slot <= 2
               ? CANONICAL_HUMAN_FACE_BASELINE_512[offset + slot] * 0.45 + innerWave
-              : shirtBias * ((slot % 3) - 1) * 0.9;
+              : shirtBias * ((slot % 3) - 1) * 0.02;
           }
         }
       }
@@ -710,14 +710,37 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     expect(finalRes.candidate?.patientId).toBe('pat-b');
   });
 
-  it('supports Ultra-Long-Range (faceHeightRatio < 0.20) distance-adaptive threshold (>= 0.62) with >= 0.05 margin across 3 frames', () => {
+  it('enforces strict open-set raw cosine (>= 0.76) even at Ultra-Long-Range across 6/6 frames with zero premature name leak', () => {
     const owner = makeEnrolledPatient('pat-lr', 'HN-LR-01', 'คุณมานะ เดินไกล', 919191);
     const other = makeEnrolledPatient('pat-other', 'HN-LR-02', 'คนไข้ท่านอื่น', 333333);
 
-    // Distant probe retains ~0.70 similarity to enrolled template (mixed appearance attenuation + craniofacial core)
-    const slightDiff = makeRealisticFaceVector(777777, 1);
+    // 1. Sub-0.76 probe (~0.68 cosine) MUST be rejected cleanly at long range (no threshold lowering!)
+    const lowDiff = makeRealisticFaceVector(777777, 1);
+    const rejectedProbe = l2Normalize(
+      owner.angleEmbeddings.center.map((v, idx) => v * 0.68 + lowDiff[idx] * 0.73),
+    );
+    const strictMatcher = new TemporalBiometricMatcher();
+    expect(strictMatcher.requiredConsecutiveFrames).toBe(6);
+    const lowOut = strictMatcher.evaluateFrame(
+      {
+        probeVector: rejectedProbe,
+        depthScore: 0.45,
+        yawDeg: 0,
+        pitchDeg: 0,
+        microMotion: 0.001,
+        biologicalVerified: true,
+        spoofDetected: false,
+        faceHeightRatio: 0.08,
+      },
+      [owner, other],
+    );
+    expect(lowOut.confirmed).toBe(false);
+    expect(lowOut.streakCount).toBe(0);
+    expect(lowOut.candidate).toBeNull();
+
+    // 2. Genuine high-similarity long-range probe confirms only at 6/6 frames with raw similarity >= 0.76
     const farProbe = l2Normalize(
-      owner.angleEmbeddings.center.map((v, idx) => v * 0.68 + slightDiff[idx] * 0.32),
+      owner.angleEmbeddings.center.map((v, idx) => v * 0.92 + lowDiff[idx] * 0.39),
     );
     const farFaceLandmarks = Array.from({ length: 478 }, () => ({ x: 0.5, y: 0.4, z: 0 }));
     farFaceLandmarks[10] = { x: 0.5, y: 0.37, z: 0 };
@@ -738,8 +761,7 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
       ),
     ).toBe(true);
 
-    const lrMatcher = new TemporalBiometricMatcher(3, 0.72);
-    let out = lrMatcher.evaluateFrame(
+    let out = strictMatcher.evaluateFrame(
       {
         probeVector: farProbe,
         depthScore: 0.45,
@@ -754,13 +776,14 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     );
     expect(out.confirmed).toBe(false);
     expect(out.streakCount).toBe(1);
+    expect(out.candidate).toBeNull();
 
-    for (let i = 1; i < 3; i += 1) {
-      out = lrMatcher.evaluateFrame(
+    for (let i = 1; i < 6; i += 1) {
+      out = strictMatcher.evaluateFrame(
         {
           probeVector: farProbe,
           depthScore: 0.46,
-          yawDeg: i * 1.4,
+          yawDeg: i * 1.1,
           pitchDeg: 0.5,
           microMotion: 0.0012,
           biologicalVerified: true,
@@ -769,13 +792,18 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
         },
         [owner, other],
       );
+      if (i < 5) {
+        expect(out.confirmed).toBe(false);
+        expect(out.candidate).toBeNull();
+      }
     }
     expect(out.confirmed).toBe(true);
+    expect(out.streakCount).toBe(6);
     expect(out.candidate?.patientId).toBe('pat-lr');
-    expect(out.confidencePercent).toBeGreaterThanOrEqual(84);
+    expect(out.confidencePercent).toBeGreaterThanOrEqual(76);
   });
 
-  it('parses all embedding formats, handles 20-deg roll tilt & mirror flip, and enforces strict 5/5 unanimous identity lock', () => {
+  it('parses all embedding formats, handles 20-deg roll tilt & mirror flip, and enforces strict 6/6 unanimous identity lock', () => {
     // 1. BURST_FRAME_COUNT stays 3 for post-countdown burst probe centroid
     expect(BURST_FRAME_COUNT).toBe(3);
 
@@ -840,9 +868,9 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
       ),
     ).toBe(true);
 
-    // 7. Strict 5/5 Unanimous Identity Lock: resets immediately to 0 on miss or identity switch
+    // 7. Strict 6/6 Unanimous Identity Lock: resets immediately to 0 on miss or identity switch
     const matcher = new TemporalBiometricMatcher();
-    expect(matcher.requiredConsecutiveFrames).toBe(5);
+    expect(matcher.requiredConsecutiveFrames).toBe(6);
 
     const angledProbe = l2Normalize(
       pureRightOwner.angleEmbeddings.right.map((v, idx) => v * 0.94 + pureRightOwner.masterEmbedding[idx] * 0.06),
@@ -863,6 +891,7 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
       [otherPat, pureRightOwner],
     );
     expect(f1.streakCount).toBe(1);
+    expect(f1.candidate).toBeNull();
 
     const f2 = matcher.evaluateFrame(
       {
@@ -878,6 +907,7 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
       [otherPat, pureRightOwner],
     );
     expect(f2.streakCount).toBe(2);
+    expect(f2.candidate).toBeNull();
 
     // 1 failed/stranger frame resets streak IMMEDIATELY to 0 (no soft decay bypass!)
     const glitchFrame = matcher.evaluateFrame(
@@ -895,9 +925,10 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     );
     expect(glitchFrame.streakCount).toBe(0);
     expect(glitchFrame.confirmed).toBe(false);
+    expect(glitchFrame.candidate).toBeNull();
 
-    // Switching identity after 2 frames of patient A wipes streak back to 1 for patient B and requires 5/5
-    for (let i = 0; i < 4; i += 1) {
+    // Requires full 6/6 consecutive matching frames to confirm & reveal candidate
+    for (let i = 0; i < 5; i += 1) {
       const step = matcher.evaluateFrame(
         {
           probeVector: angledProbe,
@@ -913,8 +944,9 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
       );
       expect(step.confirmed).toBe(false);
       expect(step.streakCount).toBe(i + 1);
+      expect(step.candidate).toBeNull();
     }
-    const fifthConfirm = matcher.evaluateFrame(
+    const sixthConfirm = matcher.evaluateFrame(
       {
         probeVector: angledProbe,
         depthScore: 0.52,
@@ -927,9 +959,9 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
       },
       [otherPat, pureRightOwner],
     );
-    expect(fifthConfirm.confirmed).toBe(true);
-    expect(fifthConfirm.streakCount).toBe(5);
-    expect(fifthConfirm.candidate?.patientId).toBe('pat-5angle');
+    expect(sixthConfirm.confirmed).toBe(true);
+    expect(sixthConfirm.streakCount).toBe(6);
+    expect(sixthConfirm.candidate?.patientId).toBe('pat-5angle');
   });
 
   it('enforces Pose-Synchronized matching, >= 0.08 Distinctiveness Margin, excludedPatientIds ("ไม่ใช่ฉัน"), Bottom-20% outlier trimming, and Two-Person Room Separation', () => {

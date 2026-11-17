@@ -630,75 +630,75 @@ export function flipLandmarksHorizontally(
   return landmarks3D.map((lm) => ({ ...lm, x: 1 - lm.x }));
 }
 
+export const GENUINE_NEURAL_MIN_DIM = 128;
+
 /**
- * Attempts ArcFace ONNX inference first, falling back seamlessly to Hybrid 512-D Descriptor
- * when ONNX weights are stripped (e.g. Cloudflare Workers edge fallback without R2 URL).
+ * Extracts and L2-normalizes a genuine deep neural descriptor (`face.embedding` with length >= 128).
+ * Returns `null` if unavailable/invalid — NEVER synthesizes or falls back to geometric ratios or pixel histograms.
  */
-export async function extractFaceEmbeddingWithFallback(
-  image: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
-  landmarks3D: readonly Landmark3D[],
-): Promise<{ vector: number[]; engine: 'arcface-onnx' | 'hybrid-512d' }> {
-  if (arcfaceUnavailable) {
-    return { vector: extractHybrid512Descriptor(image, landmarks3D), engine: 'hybrid-512d' };
+export function extractGenuineNeuralFaceDescriptor(
+  rawEmbedding: unknown,
+  minDim: number = GENUINE_NEURAL_MIN_DIM,
+): number[] | null {
+  let arr: number[] | null = null;
+  if (Array.isArray(rawEmbedding)) {
+    arr = rawEmbedding.map(Number);
+  } else if (rawEmbedding && typeof (rawEmbedding as ArrayLike<number>).length === 'number') {
+    arr = Array.from(rawEmbedding as ArrayLike<number>, Number);
   }
-  try {
-    const vector = await extractArcFaceOnnxEmbedding(image);
-    return { vector, engine: 'arcface-onnx' };
-  } catch {
-    arcfaceUnavailable = true;
-    const vector = extractHybrid512Descriptor(image, landmarks3D);
-    return { vector, engine: 'hybrid-512d' };
+  if (!arr || arr.length < minDim || !arr.every(Number.isFinite)) {
+    return null;
   }
+  let normSq = 0;
+  for (let i = 0; i < arr.length; i += 1) {
+    normSq += arr[i] * arr[i];
+  }
+  if (normSq <= 1e-8) return null;
+  return l2Normalize(arr);
 }
 
 /**
- * Extracts both raw-camera and horizontally mirrored embeddings so enrollment/login
- * stay 100% invariant regardless of mirror state (scale-x-[-1]).
+ * Strictly runs genuine deep neural ArcFace ONNX inference (`>= 128`-D L2-normalized).
+ * Throws immediately if the neural session is unavailable — NEVER falls back to geometric landmark ratios
+ * or pixel histograms.
+ */
+export async function extractFaceEmbeddingWithFallback(
+  image: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
+  _landmarks3D?: readonly Landmark3D[],
+): Promise<{ vector: number[]; engine: 'arcface-onnx' }> {
+  const vector = await extractArcFaceOnnxEmbedding(image);
+  const validated = extractGenuineNeuralFaceDescriptor(vector, GENUINE_NEURAL_MIN_DIM);
+  if (!validated) {
+    throw new Error('Genuine neural face embedding unavailable or below 128 dimensions.');
+  }
+  return { vector: validated, engine: 'arcface-onnx' };
+}
+
+/**
+ * Extracts genuine deep neural embeddings strictly via ArcFace ONNX without pixel-histogram fallbacks.
  */
 export async function extractDualFlipFaceEmbedding(
   image: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
   landmarks3D: readonly Landmark3D[],
   options?: {
-    includeLegacyV1?: boolean;
-    includeHybridV2?: boolean;
     fastArcFacePrimaryOnly?: boolean;
   },
 ): Promise<{
   vector: number[];
   mirroredVector: number[];
-  hybridV2Vector?: number[];
-  mirroredHybridV2Vector?: number[];
-  legacyV1Vector?: number[];
-  mirroredLegacyV1Vector?: number[];
-  engine: 'arcface-onnx' | 'hybrid-512d';
+  engine: 'arcface-onnx';
   geometricRatios?: GeometricAnthropometricRatios;
 }> {
   const primary = await extractFaceEmbeddingWithFallback(image, landmarks3D);
   const flippedImg = flipImageDataHorizontally(image);
   const flippedLms = flipLandmarksHorizontally(landmarks3D);
-  const mirroredVector =
-    primary.engine === 'arcface-onnx' && options?.fastArcFacePrimaryOnly
-      ? []
-      : (await extractFaceEmbeddingWithFallback(flippedImg, flippedLms)).vector;
+  const mirroredVector = options?.fastArcFacePrimaryOnly
+    ? []
+    : (await extractFaceEmbeddingWithFallback(flippedImg, flippedLms)).vector;
   const geometricRatios = computeGeometricAnthropometricRatios(landmarks3D);
-  const includeLegacy = Boolean(options?.includeLegacyV1);
-  const includeHybridV2 =
-    Boolean(options?.includeHybridV2) && primary.engine === 'arcface-onnx';
   return {
     vector: primary.vector,
     mirroredVector,
-    ...(includeHybridV2
-      ? {
-          hybridV2Vector: extractHybrid512Descriptor(image, landmarks3D),
-          mirroredHybridV2Vector: extractHybrid512Descriptor(flippedImg, flippedLms),
-        }
-      : {}),
-    ...(includeLegacy
-      ? {
-          legacyV1Vector: extractLegacyV1Hybrid512Descriptor(image, landmarks3D),
-          mirroredLegacyV1Vector: extractLegacyV1Hybrid512Descriptor(flippedImg, flippedLms),
-        }
-      : {}),
     engine: primary.engine,
     ...(geometricRatios ? { geometricRatios } : {}),
   };

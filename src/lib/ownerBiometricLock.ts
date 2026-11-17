@@ -297,10 +297,11 @@ export function verifyOwnerFace1to1(input: {
         }
       }
     }
-    const owner1024Threshold = isAngled ? 0.56 : 0.58;
+    const owner1024Threshold = 0.76;
+    const ownerEuclideanDist = Math.sqrt(Math.max(0, 2 - 2 * Math.max(-1, Math.min(1, bestSim))));
     return {
       hasTemplate: true,
-      matched: bestSim >= owner1024Threshold,
+      matched: bestSim >= owner1024Threshold && ownerEuclideanDist <= 0.69,
       similarity: Math.max(0, bestSim),
       livePoseZone,
       bestAngle,
@@ -348,6 +349,7 @@ export function verifyOwnerFace1to1(input: {
   }
 
   let bestScore = -1;
+  let bestRawCos = 0;
   let bestAngle: 'master' | FacePoseZone5 = 'master';
   let bestMeanCentered = 0;
   let bestWhitened = 0;
@@ -371,6 +373,7 @@ export function verifyOwnerFace1to1(input: {
         : masterArc.score;
       if (arcScore > bestScore) {
         bestScore = arcScore;
+        bestRawCos = Math.max(sameZoneArc.rawCos, masterArc.rawCos);
         bestAngle =
           hasAngle && sameZoneArc.score >= masterArc.score - 0.04 ? variant.zone : 'master';
         bestGeomPenalty = Math.max(sameZoneArc.geometricPenalty, masterArc.geometricPenalty);
@@ -399,6 +402,7 @@ export function verifyOwnerFace1to1(input: {
         bestScore = dualScore;
         const dom =
           sameZoneDual.dualFactorScore >= masterDual.dualFactorScore ? sameZoneDual : masterDual;
+        bestRawCos = Math.max(sameZoneDual.rawCos, masterDual.rawCos);
         bestAngle =
           hasAngle && sameZoneDual.dualFactorScore >= masterDual.dualFactorScore - 0.04
             ? variant.zone
@@ -411,8 +415,9 @@ export function verifyOwnerFace1to1(input: {
   }
 
   if (ownerEngine === 'arcface-onnx') {
-    const arcOwnerThreshold = isAngled ? 0.45 : 0.50;
-    const matched = bestScore >= arcOwnerThreshold && bestGeomPenalty <= 0.16;
+    const arcOwnerThreshold = 0.76;
+    const ownerEuclidOk = Math.sqrt(Math.max(0, 2 - 2 * Math.max(-1, Math.min(1, bestRawCos)))) <= 0.69;
+    const matched = bestScore >= arcOwnerThreshold && bestRawCos >= arcOwnerThreshold && ownerEuclidOk && bestGeomPenalty <= 0.16;
     return {
       hasTemplate: true,
       matched,
@@ -422,15 +427,22 @@ export function verifyOwnerFace1to1(input: {
     };
   }
 
-  const ownerThreshold = ownerIsLegacyV1
-    ? isAngled
-      ? 0.74
-      : 0.78
-    : isAngled
-      ? 0.70
-      : 0.75;
+  const ownerThreshold = Math.max(
+    0.76,
+    ownerIsLegacyV1
+      ? isAngled
+        ? 0.76
+        : 0.78
+      : isAngled
+        ? 0.76
+        : 0.76,
+  );
+  const hybridEuclidOk =
+    Math.sqrt(Math.max(0, 2 - 2 * Math.max(-1, Math.min(1, bestRawCos)))) <= 0.69;
   const matched =
     bestScore >= ownerThreshold &&
+    bestRawCos >= 0.76 &&
+    hybridEuclidOk &&
     bestMeanCentered >= (ownerIsLegacyV1 ? (isAngled ? 0.54 : 0.62) : isAngled ? 0.50 : 0.58) &&
     bestWhitened >= (ownerIsLegacyV1 ? (isAngled ? 0.34 : 0.40) : isAngled ? 0.30 : 0.35) &&
     bestGeomPenalty <= 0.16;

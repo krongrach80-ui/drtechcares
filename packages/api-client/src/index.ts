@@ -454,6 +454,20 @@ const DRTECH_DELETED_IDS_STORAGE_KEY = 'drtech_deleted_ids';
 const DRTECH_LOCAL_PATIENTS_KEY = 'drtech_patients';
 const DRTECH_LOCAL_USERS_KEY = 'drtech_staff_users';
 const DRTECH_LOCAL_VAULT_KEY = 'drtech_biometric_vault_v3';
+const DRTECH_LOCAL_FACE_TEMPLATES_KEY = 'drtech_face_templates';
+
+export interface ActivePatientRosterItem {
+  id: string;
+  hn: string;
+  fullName: string;
+  registrationStatus: string;
+}
+
+export interface BiometricIndexWithRosterResponse {
+  index: PatientBiometricIndexEntry[];
+  activePatients: ActivePatientRosterItem[] | null;
+  deletedIds: string[];
+}
 
 interface StoredCaseDelegationEntry {
   delegatedToPtId: string | null;
@@ -709,7 +723,12 @@ export class DrTechCaresApiClient {
         JSON.stringify(Array.from(current).slice(-500)),
       );
       const lowerSet = new Set(clean.map((k) => k.toLowerCase()));
-      for (const storageKey of [DRTECH_LOCAL_PATIENTS_KEY, DRTECH_LOCAL_USERS_KEY, DRTECH_LOCAL_VAULT_KEY]) {
+      for (const storageKey of [
+        DRTECH_LOCAL_PATIENTS_KEY,
+        DRTECH_LOCAL_USERS_KEY,
+        DRTECH_LOCAL_VAULT_KEY,
+        DRTECH_LOCAL_FACE_TEMPLATES_KEY,
+      ]) {
         const raw = globalThis.localStorage.getItem(storageKey);
         if (!raw) continue;
         const parsed = JSON.parse(raw) as unknown;
@@ -987,7 +1006,11 @@ export class DrTechCaresApiClient {
     }
   }
 
-  private mergeRecentEnrolledEntries(cloudEntries: PatientBiometricIndexEntry[]): PatientBiometricIndexEntry[] {
+  private mergeRecentEnrolledEntries(
+    cloudEntries: PatientBiometricIndexEntry[],
+    deletedIds: ReadonlySet<string> = new Set(),
+    activePatients: readonly ActivePatientRosterItem[] | null = null,
+  ): PatientBiometricIndexEntry[] {
     if (typeof window === 'undefined' || !window.localStorage) return cloudEntries;
     try {
       const raw = window.localStorage.getItem(DrTechCaresApiClient.RECENT_ENROLL_SYNC_KEY);
@@ -996,10 +1019,20 @@ export class DrTechCaresApiClient {
       if (!Array.isArray(parsed) || parsed.length === 0) return cloudEntries;
       const cutoff = Date.now() - 15 * 60 * 1000;
       const cloudIds = new Set(cloudEntries.map((e) => e.patientId));
+      const activeIdSet = activePatients ? new Set(activePatients.map((p) => p.id.toLowerCase())) : null;
+      const activeHnSet = activePatients
+        ? new Set(activePatients.map((p) => p.hn.trim().toLowerCase()).filter(Boolean))
+        : null;
       const extras: PatientBiometricIndexEntry[] = [];
       const retained: (PatientBiometricIndexEntry & { syncedAtMs: number })[] = [];
       for (const item of parsed) {
         if (!item || Number(item.syncedAtMs || 0) < cutoff) continue;
+        const pidLo = (item.patientId ?? '').trim().toLowerCase();
+        const hnLo = (item.hn ?? '').trim().toLowerCase();
+        if ((pidLo && deletedIds.has(pidLo)) || (hnLo && deletedIds.has(hnLo))) continue;
+        if (activeIdSet && (!activeIdSet.has(pidLo) || (activeHnSet && hnLo && !activeHnSet.has(hnLo)))) {
+          continue;
+        }
         if (!cloudIds.has(item.patientId)) {
           extras.push(item);
           retained.push(item);
@@ -1111,13 +1144,162 @@ export class DrTechCaresApiClient {
     }
   }
 
-  async getBiometricIndex(): Promise<PatientBiometricIndexEntry[]> {
-    const res = await this.request<{ index: PatientBiometricIndexEntry[] }>('/api/biometrics/index');
-    if (this.supabase && (res.index ?? []).length === 0) {
-      DrTechCaresApiClient.clearRecentEnrolledEntries();
-      return [];
+  /** Returns lowercase set of all locally tombstoned IDs / HNs from `drtech_deleted_ids`. */
+  static readDeletedTombstones(): Set<string> {
+    try {
+      if (typeof globalThis.localStorage === 'undefined') return new Set();
+      const raw = globalThis.localStorage.getItem(DRTECH_DELETED_IDS_STORAGE_KEY);
+      if (!raw) return new Set();
+      const parsed = JSON.parse(raw) as unknown;
+      return Array.isArray(parsed)
+        ? new Set(parsed.map((v) => String(v).trim().toLowerCase()).filter(Boolean))
+        : new Set();
+    } catch {
+      return new Set();
     }
-    return this.mergeRecentEnrolledEntries(res.index ?? []);
+  }
+
+  /**
+   * Immediately garbage-collects deleted or orphaned patient/vector records from `localStorage`
+   * (`drtech_biometric_vault_v3`, `drtech_patients`, `drtech_face_templates`, `drtechcares_recent_enroll_sync_v1`).
+   */
+  static purgeOrphanedLocalStorageRecords(
+    activePatients: readonly ActivePatientRosterItem[] | null,
+    extraDeletedIds: readonly string[] = [],
+  ): number {
+    if (typeof globalThis.localStorage === 'undefined') return 0;
+    let purgedCount = 0;
+    try {
+      const deletedSet = DrTechCaresApiClient.readDeletedTombstones();
+      let tombChanged = false;
+      for (const rawId of extraDeletedIds) {
+        const clean = String(rawId ?? '').trim().toLowerCase();
+        if (clean && !deletedSet.has(clean)) {
+          deletedSet.add(clean);
+          tombChanged = true;
+        }
+      }
+      if (tombChanged) {
+        globalThis.localStorage.setItem(
+          DRTECH_DELETED_IDS_STORAGE_KEY,
+          JSON.stringify(Array.from(deletedSet).slice(-500)),
+        );
+      }
+
+      const activeById = activePatients
+        ? new Map(
+            activePatients
+              .filter((p) => {
+                const status = String(p.registrationStatus ?? 'active').toLowerCase();
+                const pidLo = p.id.trim().toLowerCase();
+                const hnLo = p.hn.trim().toLowerCase();
+                return status === 'active' && !deletedSet.has(pidLo) && (!hnLo || !deletedSet.has(hnLo));
+              })
+              .map((p) => [p.id.trim().toLowerCase(), p.hn.trim().toLowerCase()]),
+          )
+        : null;
+
+      const isRecordPermitted = (rec: Record<string, unknown>): boolean => {
+        const pidLo = String(rec.patientId ?? rec.id ?? '').trim().toLowerCase();
+        const hnLo = String(rec.hn ?? '').trim().toLowerCase();
+        if ((pidLo && deletedSet.has(pidLo)) || (hnLo && deletedSet.has(hnLo))) {
+          return false;
+        }
+        if (activeById) {
+          if (!pidLo || !activeById.has(pidLo)) return false;
+          const expectedHn = activeById.get(pidLo);
+          if (expectedHn && hnLo !== expectedHn) return false;
+        }
+        return true;
+      };
+
+      for (const storageKey of [
+        DRTECH_LOCAL_VAULT_KEY,
+        DRTECH_LOCAL_PATIENTS_KEY,
+        DRTECH_LOCAL_FACE_TEMPLATES_KEY,
+        DrTechCaresApiClient.RECENT_ENROLL_SYNC_KEY,
+      ]) {
+        const raw = globalThis.localStorage.getItem(storageKey);
+        if (!raw) continue;
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          if (!Array.isArray(parsed)) {
+            globalThis.localStorage.removeItem(storageKey);
+            continue;
+          }
+          const filtered = parsed.filter((entry) => {
+            if (!entry || typeof entry !== 'object') return false;
+            const keep = isRecordPermitted(entry as Record<string, unknown>);
+            if (!keep) purgedCount += 1;
+            return keep;
+          });
+          if (filtered.length === 0) {
+            globalThis.localStorage.removeItem(storageKey);
+          } else if (filtered.length !== parsed.length) {
+            globalThis.localStorage.setItem(storageKey, JSON.stringify(filtered));
+          }
+        } catch {
+          globalThis.localStorage.removeItem(storageKey);
+        }
+      }
+    } catch {
+      // Ignore storage errors cleanly
+    }
+    return purgedCount;
+  }
+
+  async getBiometricIndexWithRoster(): Promise<BiometricIndexWithRosterResponse> {
+    const res = await this.request<{
+      index: PatientBiometricIndexEntry[];
+      activePatients?: ActivePatientRosterItem[];
+      deletedIds?: string[];
+    }>('/api/biometrics/index');
+    const serverDeleted = Array.isArray(res.deletedIds) ? res.deletedIds : [];
+    const activePatients = Array.isArray(res.activePatients) ? res.activePatients : null;
+    DrTechCaresApiClient.purgeOrphanedLocalStorageRecords(activePatients, serverDeleted);
+
+    const deletedSet = DrTechCaresApiClient.readDeletedTombstones();
+    for (const id of serverDeleted) {
+      const lo = String(id ?? '').trim().toLowerCase();
+      if (lo) deletedSet.add(lo);
+    }
+
+    const activeById = activePatients
+      ? new Map(
+          activePatients
+            .filter((p) => (p.registrationStatus ?? 'active') === 'active')
+            .map((p) => [p.id.trim().toLowerCase(), p.hn.trim().toLowerCase()]),
+        )
+      : null;
+
+    const rawIndex = Array.isArray(res.index) ? res.index : [];
+    const filteredCloudIndex = rawIndex.filter((entry) => {
+      const pidLo = (entry.patientId ?? '').trim().toLowerCase();
+      const hnLo = (entry.hn ?? '').trim().toLowerCase();
+      if (deletedSet.has(pidLo) || (hnLo && deletedSet.has(hnLo))) return false;
+      if (activeById) {
+        if (!activeById.has(pidLo)) return false;
+        const expectedHn = activeById.get(pidLo);
+        if (expectedHn && hnLo !== expectedHn) return false;
+      }
+      return true;
+    });
+
+    if (this.supabase && filteredCloudIndex.length === 0 && (!activePatients || activePatients.length === 0)) {
+      DrTechCaresApiClient.clearRecentEnrolledEntries();
+      return { index: [], activePatients, deletedIds: serverDeleted };
+    }
+
+    return {
+      index: this.mergeRecentEnrolledEntries(filteredCloudIndex, deletedSet, activePatients),
+      activePatients,
+      deletedIds: serverDeleted,
+    };
+  }
+
+  async getBiometricIndex(): Promise<PatientBiometricIndexEntry[]> {
+    const res = await this.getBiometricIndexWithRoster();
+    return res.index;
   }
 
   async enrollPatient10Shot(input: {

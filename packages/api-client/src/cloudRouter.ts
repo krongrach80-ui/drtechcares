@@ -17,6 +17,7 @@ import {
   computeFaceCoreMetrics,
   cosineSimilarity,
   detectBiometricVectorEngine,
+  euclideanDistance,
   isLegacyV1HybridVector,
   l2Normalize,
   mirrorPoseZone,
@@ -2194,14 +2195,39 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (pathname === '/api/biometrics/index' && method === 'GET') {
       const todayIdx = new Date().getDay();
       const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
+      const deletedPatientLower = new Set(
+        (state.deleted_patient_ids ?? []).map((x) => x.trim().toLowerCase()).filter(Boolean),
+      );
       const inactiveUserPatientIds = new Set(
         state.users.filter((u) => !u.active && u.patientId).map((u) => u.patientId as string),
       );
+      // Purge any orphan templates left from deleted/inactive patients
+      const activePatientIdSet = new Set(
+        state.patients
+          .filter(
+            (p) =>
+              (p.registrationStatus ?? 'active') === 'active' &&
+              !deletedPatientSet.has(p.id) &&
+              !deletedPatientLower.has(p.id.toLowerCase()) &&
+              (!p.hn || !deletedPatientLower.has(p.hn.toLowerCase())) &&
+              !inactiveUserPatientIds.has(p.id),
+          )
+          .map((p) => p.id),
+      );
+      state.face_templates = state.face_templates.filter((t) => activePatientIdSet.has(t.patientId));
+
+      const activePatients: { id: string; hn: string; fullName: string; registrationStatus: string }[] = [];
       const index: PatientBiometricIndexEntry[] = [];
       for (const p of state.patients) {
-        if ((p.registrationStatus ?? 'active') !== 'active' || deletedPatientSet.has(p.id) || inactiveUserPatientIds.has(p.id)) {
+        if (!activePatientIdSet.has(p.id)) {
           continue;
         }
+        activePatients.push({
+          id: p.id,
+          hn: p.hn,
+          fullName: p.fullName,
+          registrationStatus: p.registrationStatus ?? 'active',
+        });
         const tplFront = parseEmbeddingVector(
           state.face_templates.find((t) => t.patientId === p.id && t.pose === 'frontal_centroid')?.vector,
         );
@@ -2284,7 +2310,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           completedToday: todaySchedule.completedToday,
         });
       }
-      return jsonResponse({ index });
+      return jsonResponse({
+        index,
+        activePatients,
+        deletedIds: state.deleted_patient_ids ?? [],
+      });
     }
 
     if (pathname === '/api/biometric/inspect-frame' && method === 'POST') {
@@ -2389,6 +2419,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
 
       const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
+      const deletedPatientLower = new Set(
+        (state.deleted_patient_ids ?? []).map((x) => x.trim().toLowerCase()).filter(Boolean),
+      );
       const excludedPatientList =
         body.excludedPatientIds ?? body.livenessEvidence?.excludedPatientIds ?? [];
       const excludedPatientSet = new Set(
@@ -2403,6 +2436,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             (p) =>
               (p.registrationStatus ?? 'active') === 'active' &&
               !deletedPatientSet.has(p.id) &&
+              !deletedPatientLower.has(p.id.toLowerCase()) &&
+              (!p.hn || !deletedPatientLower.has(p.hn.toLowerCase())) &&
               !excludedPatientSet.has(p.id) &&
               !excludedPatientSet.has(p.hn) &&
               !inactiveUserPatientIds.has(p.id),
@@ -2509,99 +2544,91 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       let matchedConfidence = result.confidencePercent;
       let verifyErrorCode: string | undefined;
 
-      // Primary Single Shared Deep Neural Matcher (human-faceres-1024d Hybrid Centroid + Top-3 KNN Exemplars + HumanSim)
+      // Primary Ultra-Strict Open-Set Deep Neural Matcher (human-faceres-1024d):
+      // True raw L2 cosine >= 0.76, Euclidean <= 0.69, multi-exemplar consensus (>=3 vectors >= 0.73 & top-3 avg >= 0.76),
+      // margin >= 0.08 over rank #2, ZERO artificial score boosting.
       if (!matchedPatientId && probeEngine === 'human-faceres-1024d') {
         const expectedDim = probeNorm.length;
         const normalizePatientName = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
-        const computeCalibratedHumanSim = (a: readonly number[], b: readonly number[]): number => {
-          let sumSq = 0;
-          for (let i = 0; i < a.length; i += 1) {
-            const diff = a[i] - b[i];
-            sumSq += diff * diff;
-          }
-          const dist = Math.round(100 * 2000 * sumSq) / 100;
-          if (dist === 0) return 1;
-          const root = Math.sqrt(dist);
-          const norm = (1 - root / 100 - 0.2) / 0.6;
-          return Math.round(100 * Math.max(Math.min(norm, 1), 0)) / 100;
-        };
+        const RAW_COS_THRESHOLD = 0.76;
+        const MAX_EUCLIDEAN_DIST = 0.69;
+        const EXEMPLAR_FLOOR = 0.73;
+        const MARGIN_THRESHOLD = 0.08;
 
         const knnScores: {
           patientId: string;
           fullName: string;
           orderIdx: number;
-          bestSim: number;
-          finalScore: number;
+          bestRawSim: number;
+          minEuclidDist: number;
+          consensusTop3Avg: number;
+          vectorsAbove073: number;
+          uniqueCount: number;
+          passesMultiExemplar: boolean;
         }[] = [];
 
         for (let orderIdx = 0; orderIdx < state.patients.length; orderIdx += 1) {
           const p = state.patients[orderIdx];
           if (!activePatientIds.has(p.id)) continue;
 
-          const centroidVectors: number[][] = [];
-          const pushCentroid = (raw: unknown) => {
+          const uniqueVecs: number[][] = [];
+          const pushUniqueVec = (raw: unknown) => {
             const parsed = parseEmbeddingVector(raw);
-            if (parsed && parsed.length === expectedDim) centroidVectors.push(parsed);
+            if (!parsed || parsed.length !== expectedDim) return;
+            const normV = l2Normalize(parsed);
+            if (!uniqueVecs.some((existing) => cosineSimilarity(existing, normV) >= 0.9999)) {
+              uniqueVecs.push(normV);
+            }
           };
-          pushCentroid(p.masterEmbedding);
+
+          pushUniqueVec(p.masterEmbedding);
           if (p.angleEmbeddings) {
-            pushCentroid(p.angleEmbeddings.center);
-            pushCentroid(p.angleEmbeddings.left);
-            pushCentroid(p.angleEmbeddings.right);
-            pushCentroid(p.angleEmbeddings.up);
-            pushCentroid(p.angleEmbeddings.down);
+            pushUniqueVec(p.angleEmbeddings.center);
+            pushUniqueVec(p.angleEmbeddings.left);
+            pushUniqueVec(p.angleEmbeddings.right);
+            pushUniqueVec(p.angleEmbeddings.up);
+            pushUniqueVec(p.angleEmbeddings.down);
           }
+          (p.exemplarEmbeddings ?? []).forEach((raw) => pushUniqueVec(raw));
+          if (uniqueVecs.length === 0) continue;
 
-          const exemplarVectors: number[][] = [];
-          (p.exemplarEmbeddings ?? []).forEach((raw) => {
-            const parsed = parseEmbeddingVector(raw);
-            if (parsed && parsed.length === expectedDim) exemplarVectors.push(parsed);
-          });
+          const sims = uniqueVecs
+            .map((v) => ({
+              cos: cosineSimilarity(probeNorm, v),
+              dist: euclideanDistance(probeNorm, v),
+            }))
+            .sort((a, b) => b.cos - a.cos);
 
-          if (centroidVectors.length === 0 && exemplarVectors.length === 0) continue;
+          const bestRawSim = Math.max(0, sims[0].cos);
+          const minEuclidDist = sims[0].dist;
+          const k = Math.min(3, sims.length);
+          const topKSum = sims.slice(0, k).reduce((acc, s) => acc + Math.max(0, s.cos), 0);
+          const consensusTop3Avg = topKSum / k;
+          const vectorsAbove073 = sims.filter((s) => s.cos >= EXEMPLAR_FLOOR).length;
 
-          let centroidSim = 0;
-          let bestTargetVec: number[] | null = null;
-          let bestTargetSim = -1;
-          for (const v of centroidVectors) {
-            const sim = cosineSimilarity(probeNorm, v);
-            if (sim > centroidSim) centroidSim = sim;
-            if (sim > bestTargetSim) {
-              bestTargetSim = sim;
-              bestTargetVec = v;
-            }
-          }
-
-          const exSims: number[] = [];
-          for (const ex of exemplarVectors) {
-            const sim = cosineSimilarity(probeNorm, ex);
-            exSims.push(Math.max(0, sim));
-            if (sim > bestTargetSim) {
-              bestTargetSim = sim;
-              bestTargetVec = ex;
-            }
-          }
-          exSims.sort((a, b) => b - a);
-          const exemplarSim =
-            exSims.length > 0
-              ? exSims.slice(0, Math.min(3, exSims.length)).reduce((s, v) => s + v, 0) /
-                Math.min(3, exSims.length)
-              : centroidSim;
-
-          const combinedCos = Math.max(centroidSim, exemplarSim);
-          const humanSim = bestTargetVec ? computeCalibratedHumanSim(probeNorm, bestTargetVec) : 0;
-          const finalScore = 0.5 * combinedCos + 0.5 * humanSim;
+          const passesMultiExemplar =
+            sims.length >= 3
+              ? vectorsAbove073 >= 3 && consensusTop3Avg >= RAW_COS_THRESHOLD
+              : sims.length === 2
+                ? vectorsAbove073 >= 2 && consensusTop3Avg >= RAW_COS_THRESHOLD
+                : bestRawSim >= RAW_COS_THRESHOLD;
 
           knnScores.push({
             patientId: p.id,
             fullName: p.fullName,
             orderIdx,
-            bestSim: combinedCos,
-            finalScore,
+            bestRawSim,
+            minEuclidDist,
+            consensusTop3Avg,
+            vectorsAbove073,
+            uniqueCount: sims.length,
+            passesMultiExemplar,
           });
         }
 
-        knnScores.sort((a, b) => b.finalScore - a.finalScore || b.bestSim - a.bestSim || b.orderIdx - a.orderIdx);
+        knnScores.sort(
+          (a, b) => b.bestRawSim - a.bestRawSim || b.consensusTop3Avg - a.consensusTop3Avg || b.orderIdx - a.orderIdx,
+        );
         const top = knnScores[0] ?? null;
         const topName = top ? normalizePatientName(top.fullName) : '';
         const distinctRunners = top
@@ -2610,30 +2637,25 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               .filter((s) => !(topName && normalizePatientName(s.fullName) === topName))
           : [];
         const runner = distinctRunners[0] ?? null;
-        const margin = top && runner ? top.finalScore - runner.finalScore : 1;
+        const margin = top && runner ? top.bestRawSim - runner.bestRawSim : 1;
 
-        const COSINE_THRESHOLD = 0.62;
-        const FINAL_SCORE_THRESHOLD = 0.68;
-        const MARGIN_THRESHOLD = 0.07;
         const passesThreshold = Boolean(
-          top && top.bestSim >= COSINE_THRESHOLD && top.finalScore >= FINAL_SCORE_THRESHOLD,
+          top &&
+            top.bestRawSim >= RAW_COS_THRESHOLD &&
+            top.minEuclidDist <= MAX_EUCLIDEAN_DIST &&
+            top.passesMultiExemplar,
         );
         const passesMargin = distinctRunners.length === 0 || margin >= MARGIN_THRESHOLD;
 
         if (top && passesThreshold && passesMargin) {
           matchedPatientId = top.patientId;
           matchedPatientName = top.fullName;
-          matchedConfidence = Number(
-            Math.min(99.9, Math.max(85.0, 42 + top.finalScore * 64)).toFixed(1),
-          );
+          matchedConfidence = Number((Math.max(0, Math.min(1, top.bestRawSim)) * 100).toFixed(1));
         } else if (top && passesThreshold && !passesMargin) {
           verifyErrorCode = 'AMBIGUOUS_CLOSE_CANDIDATES';
-          matchedConfidence = Math.min(48.9, Math.max(0, Number((top.finalScore * 49).toFixed(1))));
+          matchedConfidence = Number((Math.max(0, Math.min(1, top.bestRawSim)) * 100).toFixed(1));
         } else if (top) {
-          matchedConfidence = Math.min(
-            48.9,
-            Math.max(0, Number((Math.max(0, top.finalScore) * 49).toFixed(1))),
-          );
+          matchedConfidence = Number((Math.max(0, Math.min(1, top.bestRawSim)) * 100).toFixed(1));
         }
       }
 
@@ -2902,18 +2924,19 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             return !(arcTopName && sName && sName === arcTopName);
           });
           const arcRunner = arcRunners[0];
-          const arcMargin = arcRunner ? arcTop.dualScore - arcRunner.dualScore : 1;
-          const arcMinThresh = isAngledPose ? 0.48 : 0.54;
+          const arcMargin = arcRunner ? arcTop.raw - arcRunner.raw : 1;
+          const arcMinCos = 0.76;
+          const arcEuclidDist = euclideanDistance(probeNorm, arcTop.masterNorm);
           const arcPassesGate =
-            arcTop.dualScore >= arcMinThresh && arcTop.geometricPenalty <= 0.14;
-          const arcPassesMargin = arcRunners.length === 0 || arcMargin >= 0.1;
+            arcTop.raw >= arcMinCos &&
+            arcEuclidDist <= 0.69 &&
+            arcTop.geometricPenalty <= 0.14;
+          const arcPassesMargin = arcRunners.length === 0 || arcMargin >= 0.08;
 
           if (arcPassesGate && !arcPassesMargin) {
             verifyErrorCode = 'AMBIGUOUS_CLOSE_CANDIDATES';
           } else if (arcPassesGate && arcPassesMargin) {
-            matchedConfidence = Number(
-              Math.min(99.9, Math.max(85.0, 50 + arcTop.dualScore * 58)).toFixed(1),
-            );
+            matchedConfidence = Number((Math.max(0, Math.min(1, arcTop.raw)) * 100).toFixed(1));
             matchedPatientId = arcTop.patientId;
             matchedPatientName = arcTop.fullName;
           }
@@ -2989,25 +3012,25 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           }
 
           if (top && passesDualGate && passesMargin) {
-            matchedConfidence = Number(
-              Math.min(99.9, Math.max(85.0, top.dualScore * 100)).toFixed(1),
-            );
+            matchedConfidence = Number((Math.max(0, Math.min(1, top.raw)) * 100).toFixed(1));
             matchedPatientId = top.patientId;
             matchedPatientName = top.fullName;
           } else if (top || arcTop) {
-            const bestScore = Math.max(top?.dualScore ?? 0, arcTop?.dualScore ?? 0);
-            matchedConfidence = Math.min(48.9, Math.max(0, Number((bestScore * 49).toFixed(1))));
+            const bestScore = Math.max(top?.raw ?? 0, arcTop?.raw ?? 0);
+            matchedConfidence = Number((Math.max(0, Math.min(1, bestScore)) * 100).toFixed(1));
           }
         }
       }
 
-      if (!matchedPatientId || matchedConfidence < 85.0) {
+      if (!matchedPatientId || matchedConfidence < 76.0) {
         return jsonResponse(
           {
             ...result,
             matched: false,
-            patientId: undefined,
-            patientName: undefined,
+            patientId: null,
+            patientName: null,
+            topCandidate: null,
+            runnerUp: null,
             confidencePercent: matchedConfidence,
             ...(verifyErrorCode ? { error: verifyErrorCode, failureReasons: [verifyErrorCode] } : {}),
           },
@@ -3022,8 +3045,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           {
             ...result,
             matched: false,
-            patientId: undefined,
-            patientName: undefined,
+            patientId: null,
+            patientName: null,
+            topCandidate: null,
+            runnerUp: null,
             reason: 'PATIENT_NOT_FOUND_OR_DELETED',
           },
           401,

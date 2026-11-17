@@ -2306,5 +2306,224 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       globalThis.fetch = origFetch;
     }
   });
+
+  it('prevents orphan zombie resurrection in hydrateStateFromSupabase and rejects 0.68 strangers / 1-outlier probes without leaking names', async () => {
+    const mkUnit1024 = (seed: number): number[] => {
+      const vec = Array.from({ length: 1024 }, (_, idx) => Math.sin((idx + 1) * (seed * 0.17 + 0.03)));
+      return l2Normalize(vec);
+    };
+    const liveMaster = mkUnit1024(11);
+    const deadVec = mkUnit1024(22);
+    const ghostVec = mkUnit1024(33);
+    const outlierLeft = mkUnit1024(99);
+    const liveCenter = l2Normalize(liveMaster.map((v, i) => 0.96 * v + 0.28 * outlierLeft[i] * (i % 2 === 0 ? 1 : -1)));
+    const liveRight = l2Normalize(liveMaster.map((v, i) => 0.95 * v + 0.31 * mkUnit1024(44)[i]));
+
+    // 1. Orphaned / soft-deleted records in patient_biometrics & face_templates MUST NOT resurrect into state.patients or state.face_templates
+    const hydrateState = {
+      users: [],
+      deleted_user_ids: [],
+      deleted_patient_ids: [],
+      deleted_ban_ids: [],
+      deleted_staff_call_ids: [],
+      delegation_overrides: {},
+      patients: [],
+      face_templates: [],
+      medical_notes: [],
+      patient_courses: [],
+      rehab_sessions: [],
+      rehab_session_history: [],
+      treatment_reports: [],
+      exercises: [],
+      modpacks: [],
+      staff_calls: [],
+      audit_logs: [],
+      banned_targets: [],
+      active_sessions: [],
+      system_settings: { aiFaceScanEnabled: true, aiFaceThreshold: 0.925, aiPoseDetectionEnabled: false, kioskAutoResetSec: 6 },
+      kiosks: [],
+    } as unknown as CloudRouterState;
+
+    const zombieSupabase = {
+      from: (table: string) => {
+        const q: Record<string, unknown> = {
+          then: (resolve: (val: unknown) => void) => {
+            if (table === 'patients') {
+              resolve({
+                data: [
+                  {
+                    id: 'pat-live-1',
+                    hn: 'HN-LIVE-01',
+                    full_name: 'คุณวิไล ปัจจุบัน',
+                    age: 58,
+                    phone: '0810000001',
+                    diagnosis: 'Stroke',
+                    registration_status: 'active',
+                    face_biometric_status: 'VERIFIED',
+                    history: {},
+                    created_at: new Date().toISOString(),
+                  },
+                  {
+                    id: 'pat-dead-1',
+                    hn: 'HN-DEAD-01',
+                    full_name: 'สมชาย ที่ถูกลบแล้ว',
+                    age: 64,
+                    phone: '0810000002',
+                    diagnosis: 'Stroke',
+                    registration_status: 'deleted',
+                    deleted_at: new Date().toISOString(),
+                    face_biometric_status: 'NONE',
+                    history: {},
+                    created_at: new Date().toISOString(),
+                  },
+                ],
+                error: null,
+              });
+              return;
+            }
+            if (table === 'patient_biometrics') {
+              resolve({
+                data: [
+                  {
+                    patient_id: 'pat-live-1',
+                    patient_hn: 'HN-LIVE-01',
+                    full_name: 'คุณวิไล ปัจจุบัน',
+                    biometric_engine: 'human-faceres-1024d',
+                    dimension: 1024,
+                    master_embedding: liveMaster,
+                    angle_embeddings: { center: liveCenter, left: outlierLeft, right: liveRight },
+                    exemplar_embeddings: [liveMaster, liveCenter, liveRight],
+                  },
+                  {
+                    patient_id: 'pat-dead-1',
+                    patient_hn: 'HN-DEAD-01',
+                    full_name: 'สมชาย ที่ถูกลบแล้ว',
+                    biometric_engine: 'human-faceres-1024d',
+                    dimension: 1024,
+                    master_embedding: deadVec,
+                    angle_embeddings: { center: deadVec },
+                  },
+                  {
+                    patient_id: 'pat-ghost-999',
+                    patient_hn: 'HN-GHOST-999',
+                    full_name: 'ผีที่ไม่มีใน patients',
+                    biometric_engine: 'human-faceres-1024d',
+                    dimension: 1024,
+                    master_embedding: ghostVec,
+                    angle_embeddings: { center: ghostVec },
+                  },
+                ],
+                error: null,
+              });
+              return;
+            }
+            if (table === 'face_templates') {
+              resolve({
+                data: [
+                  {
+                    patient_id: 'pat-ghost-999',
+                    patient_hn: 'HN-GHOST-999',
+                    full_name: 'ผีที่ไม่มีใน patients',
+                    embedding_json: {
+                      masterEmbedding: ghostVec,
+                      angleEmbeddings: { center: ghostVec },
+                      biometricEngine: 'human-faceres-1024d',
+                    },
+                  },
+                ],
+                error: null,
+              });
+              return;
+            }
+            resolve({ data: [], error: null });
+          },
+        };
+        q.select = () => q;
+        q.order = () => q;
+        q.limit = () => q;
+        q.eq = () => q;
+        q.maybeSingle = () => Promise.resolve({ data: null, error: null });
+        return q;
+      },
+    } as unknown as SupabaseClient;
+
+    await hydrateStateFromSupabase(zombieSupabase, hydrateState);
+    expect(hydrateState.patients.map((p) => p.id)).toEqual(['pat-live-1']);
+    expect(Array.from(new Set(hydrateState.face_templates.map((t) => t.patientId)))).toEqual(['pat-live-1']);
+    expect(hydrateState.deleted_patient_ids).toContain('pat-dead-1');
+
+    // 2. Open-set /api/biometric/verify rejects 0.68 stranger and 1-outlier probe without leaking candidate names
+    const router = createCloudDelegatedRouter({});
+    const adminLogin = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin', password: 'Admin@2026' },
+    });
+    const { token } = (await adminLogin.json()) as { token: string };
+    const eRes = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token,
+      body: {
+        hn: 'HN-GATE-1024',
+        fullName: 'นางสาวมัลลิกา เกตแน่น',
+        age: 57,
+        phone: '0897771024',
+        diagnosis: 'Stroke',
+        biometricEngine: 'human-faceres-1024d',
+        masterEmbedding: liveMaster,
+        angleEmbeddings: {
+          center: liveCenter,
+          left: outlierLeft,
+          right: liveRight,
+          up: liveMaster,
+          down: liveCenter,
+        },
+        exemplarEmbeddings: [liveMaster, liveCenter, liveRight],
+        framesCaptured: 120,
+        qualityScore: 0.98,
+      },
+    });
+    expect(eRes.status).toBe(201);
+
+    // 2a. Probe at ~0.68 similarity to liveMaster -> 401 + NO topCandidate name leaked!
+    const rawO = mkUnit1024(77);
+    const dotMO = liveMaster.reduce((acc, v, i) => acc + v * rawO[i], 0);
+    const orthoVec = l2Normalize(rawO.map((v, i) => v - dotMO * liveMaster[i]));
+    const probe068 = l2Normalize(
+      liveMaster.map((v, i) => 0.68 * v + Math.sqrt(1 - 0.68 * 0.68) * orthoVec[i]),
+    );
+    const rej068 = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: {
+        probeVector: probe068,
+        engine: 'human-faceres-1024d',
+        livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.02, nonRigidScore: 0.16, engine: 'human-faceres-1024d' },
+      },
+    });
+    expect(rej068.status).toBe(401);
+    const rej068Json = (await rej068.json()) as {
+      matched: boolean;
+      confidencePercent: number;
+      topCandidate?: unknown;
+      patient?: unknown;
+    };
+    expect(rej068Json.matched).toBe(false);
+    expect(rej068Json.confidencePercent).toBeLessThan(76);
+    expect(rej068Json.topCandidate).toBeNull();
+    expect(rej068Json.patient).toBeUndefined();
+
+    // 2b. Probe matching ONLY 1 outlier vector (outlierLeft at 1.0) while all other stored vectors are < 0.73 -> rejected!
+    const rejOutlier = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: {
+        probeVector: outlierLeft,
+        engine: 'human-faceres-1024d',
+        livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.02, nonRigidScore: 0.16, engine: 'human-faceres-1024d' },
+      },
+    });
+    expect(rejOutlier.status).toBe(401);
+    const rejOutlierJson = (await rejOutlier.json()) as { matched: boolean; topCandidate?: unknown };
+    expect(rejOutlierJson.matched).toBe(false);
+    expect(rejOutlierJson.topCandidate).toBeNull();
+  });
 });
 

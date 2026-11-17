@@ -305,6 +305,36 @@ export async function hydrateStateFromSupabase(
   }
 
   const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
+  const deletedPatientLower = new Set(
+    (state.deleted_patient_ids ?? []).map((x) => x.trim().toLowerCase()).filter(Boolean),
+  );
+  if (patientsRes.status === 'fulfilled' && !patientsRes.value.error && Array.isArray(patientsRes.value.data)) {
+    state.deleted_patient_ids ??= [];
+    for (const r of patientsRes.value.data as Record<string, unknown>[]) {
+      const regStatus = String(r.registration_status ?? 'active').trim().toLowerCase();
+      if (
+        Boolean(r.deleted_at) ||
+        regStatus === 'deleted' ||
+        regStatus === 'rejected' ||
+        regStatus === 'inactive'
+      ) {
+        const pidRaw = String(r.id ?? '').trim();
+        const hnRaw = String(r.hn ?? '').trim();
+        const pidLo = pidRaw.toLowerCase();
+        const hnLo = hnRaw.toLowerCase();
+        if (pidRaw && !deletedPatientSet.has(pidRaw)) {
+          deletedPatientSet.add(pidRaw);
+          state.deleted_patient_ids.push(pidRaw);
+        }
+        if (hnRaw && !deletedPatientSet.has(hnRaw)) {
+          deletedPatientSet.add(hnRaw);
+          state.deleted_patient_ids.push(hnRaw);
+        }
+        if (pidLo) deletedPatientLower.add(pidLo);
+        if (hnLo) deletedPatientLower.add(hnLo);
+      }
+    }
+  }
 
   const parsedTemplatesByPatient = new Map<
     string,
@@ -321,7 +351,7 @@ export async function hydrateStateFromSupabase(
           : null;
       if (!vec) continue;
       const pid = String(row.patient_id);
-      if (deletedPatientSet.has(pid)) continue;
+      if (deletedPatientSet.has(pid) || deletedPatientLower.has(pid.toLowerCase())) continue;
       const pose = (row.pose as BiometricPose) ?? 'frontal_centroid';
       parsedTemplateCandidates.push({
         patientId: pid,
@@ -436,7 +466,14 @@ export async function hydrateStateFromSupabase(
   if (biometrics120Res.status === 'fulfilled' && !biometrics120Res.value.error && Array.isArray(biometrics120Res.value.data)) {
     for (const row of biometrics120Res.value.data as Record<string, unknown>[]) {
       const pid = String(row.patient_id);
-      if (deletedPatientSet.has(pid)) continue;
+      const hnLo = String(row.hn ?? '').trim().toLowerCase();
+      if (
+        deletedPatientSet.has(pid) ||
+        deletedPatientLower.has(pid.toLowerCase()) ||
+        (hnLo && deletedPatientLower.has(hnLo))
+      ) {
+        continue;
+      }
       const parsedAngles = parseAngleObject(row.angle_embeddings ?? row.biometric_data);
       const parsedMaster =
         parseVec(row.master_embedding) ??
@@ -456,12 +493,31 @@ export async function hydrateStateFromSupabase(
   }
 
   if (patientsRes.status === 'fulfilled' && !patientsRes.value.error && Array.isArray(patientsRes.value.data)) {
-    const deletedPatientLower = new Set((state.deleted_patient_ids ?? []).map((x) => x.toLowerCase()));
     const prevPatientsById = new Map(state.patients.map((p) => [p.id, p]));
     state.patients = patientsRes.value.data
       .filter((r: Record<string, unknown>) => {
-        const pidLo = String(r.id ?? '').toLowerCase();
-        const hnLo = String(r.hn ?? '').toLowerCase();
+        const pidRaw = String(r.id ?? '').trim();
+        const hnRaw = String(r.hn ?? '').trim();
+        const pidLo = pidRaw.toLowerCase();
+        const hnLo = hnRaw.toLowerCase();
+        const regStatus = String(r.registration_status ?? 'active').trim().toLowerCase();
+        if (
+          Boolean(r.deleted_at) ||
+          regStatus === 'deleted' ||
+          regStatus === 'rejected' ||
+          regStatus === 'inactive'
+        ) {
+          state.deleted_patient_ids ??= [];
+          if (pidRaw && !deletedPatientLower.has(pidLo)) {
+            deletedPatientLower.add(pidLo);
+            state.deleted_patient_ids.push(pidRaw);
+          }
+          if (hnRaw && !deletedPatientLower.has(hnLo)) {
+            deletedPatientLower.add(hnLo);
+            state.deleted_patient_ids.push(hnRaw);
+          }
+          return false;
+        }
         return !deletedPatientLower.has(pidLo) && (!hnLo || !deletedPatientLower.has(hnLo));
       })
       .map((r: Record<string, unknown>) => {
@@ -729,12 +785,23 @@ export async function hydrateStateFromSupabase(
       };
     });
   } else {
-    state.patients = state.patients.filter((p) => !deletedPatientSet.has(p.id));
+    state.patients = state.patients.filter(
+      (p) =>
+        !deletedPatientSet.has(p.id) &&
+        !deletedPatientLower.has(p.id.toLowerCase()) &&
+        (!p.hn || !deletedPatientLower.has(p.hn.toLowerCase())),
+    );
   }
 
+  // Strictly only retain templates belonging to active, non-deleted rows present in state.patients
   const activePatientMap = new Map<string, string>();
   for (const p of state.patients) {
-    if (p.registrationStatus === 'active' && !deletedPatientSet.has(p.id)) {
+    if (
+      p.registrationStatus === 'active' &&
+      !deletedPatientSet.has(p.id) &&
+      !deletedPatientLower.has(p.id.toLowerCase()) &&
+      (!p.hn || !deletedPatientLower.has(p.hn.toLowerCase()))
+    ) {
       activePatientMap.set(p.id, p.fullName);
     }
   }

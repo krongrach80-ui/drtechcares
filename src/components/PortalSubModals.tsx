@@ -316,7 +316,7 @@ export function WelcomeFaceScanModal({
   const sm = SUBMODAL_TEXT[lang];
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const biometricCandidatesRef = useRef<EnrolledBiometricCandidate[]>([]);
-  const streakTrackerRef = useRef(new LiveIdentityStreakTracker(3));
+  const streakTrackerRef = useRef(new LiveIdentityStreakTracker(BIOMETRIC_REQUIRED_STREAK));
   const bioLivenessRef = useRef(new BiologicalLivenessTracker());
   const bioReportRef = useRef<BiologicalLivenessReport | null>(null);
   const confirmedLockRef = useRef(false);
@@ -324,6 +324,7 @@ export function WelcomeFaceScanModal({
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [autoScanCount, setAutoScanCount] = useState(0);
+  const [lastRawCosine, setLastRawCosine] = useState(0);
   const [bioStatus, setBioStatus] = useState<BiologicalLivenessReport | null>(null);
   const [spoofDetectedNow, setSpoofDetectedNow] = useState(false);
   const [hudBox, setHudBox] = useState<{ xPct: number; yPct: number; wPct: number; hPct: number } | null>(null);
@@ -389,6 +390,7 @@ export function WelcomeFaceScanModal({
     setHudBox(null);
     setLiveMatchHud(null);
     setAutoScanCount(0);
+    setLastRawCosine(0);
 
     async function startLiveVerification() {
       try {
@@ -498,6 +500,7 @@ export function WelcomeFaceScanModal({
                 if (isSpoofFrame) {
                   streakTrackerRef.current.reset();
                   setAutoScanCount(0);
+                  setLastRawCosine(0);
                   setLiveMatchHud(null);
                 } else if (!confirmedLockRef.current && now - lastEmbedAt >= 25) {
                   lastEmbedAt = now;
@@ -532,8 +535,14 @@ export function WelcomeFaceScanModal({
                         biologicalVerified: bio.biologicalVerified,
                       });
                       setAutoScanCount(streakRes.streak);
+                      setLastRawCosine(evalRes.topSimilarity);
 
-                      const isHudMatch = Boolean(streakRes.candidate && streakRes.streak > 0);
+                      const isHudMatch = Boolean(
+                        streakRes.confirmed &&
+                          streakRes.candidate &&
+                          evalRes.topSimilarity >= BIOMETRIC_MATCH_THRESHOLD &&
+                          streakRes.streak >= BIOMETRIC_REQUIRED_STREAK,
+                      );
                       setLiveMatchHud(
                         isHudMatch && streakRes.candidate
                           ? {
@@ -556,24 +565,34 @@ export function WelcomeFaceScanModal({
                         const localCand = streakRes.candidate;
                         let matchedNow = false;
                         let serverNetworkFailed = false;
-                        let serverNoTemplate = false;
+                        let serverRejected = false;
                         try {
                           const verified = await apiClient.verifyFaceLogin(vector, livenessEvidence);
                           if (!active) {
                             shouldContinueLoop = false;
                             return;
                           }
-                          if (verified.error === 'NO_ENROLLED_BIOMETRICS') {
-                            serverNoTemplate = true;
-                          } else if (verified.matched && verified.patient) {
+                          if (
+                            verified.error === 'NO_ENROLLED_BIOMETRICS' ||
+                            verified.error === 'SPOOF_DETECTED' ||
+                            verified.error === 'AMBIGUOUS_CLOSE_CANDIDATES'
+                          ) {
+                            serverRejected = true;
+                          } else if (
+                            verified.matched &&
+                            verified.patient &&
+                            verified.confidencePercent >= 76
+                          ) {
                             matchedNow = true;
                             shouldContinueLoop = false;
                             setMatchResult({
                               matched: true,
-                              confidencePercent: Math.max(verified.confidencePercent, matchedConf),
+                              confidencePercent: verified.confidencePercent,
                               patient: verified.patient,
                             });
                             return;
+                          } else {
+                            serverRejected = true;
                           }
                         } catch {
                           serverNetworkFailed = true;
@@ -589,7 +608,8 @@ export function WelcomeFaceScanModal({
 
                         if (
                           !matchedNow &&
-                          (serverNetworkFailed || serverNoTemplate) &&
+                          serverNetworkFailed &&
+                          !serverRejected &&
                           localCand &&
                           evalRes.topSimilarity >= BIOMETRIC_MATCH_THRESHOLD &&
                           evalRes.topFinalScore >= BIOMETRIC_FINAL_SCORE_THRESHOLD &&
@@ -612,11 +632,12 @@ export function WelcomeFaceScanModal({
 
                         streakTrackerRef.current.reset();
                         setAutoScanCount(0);
+                        setLastRawCosine(0);
                         setLiveMatchHud(null);
                         setMatchResult({
                           matched: false,
                           confidencePercent: Math.round(evalRes.confidencePercent),
-                          reason: '❌ ไม่พบบัญชีที่ตรงกับใบหน้านี้ในฐานข้อมูล Supabase',
+                          reason: '🔍 ไม่พบบัญชีที่ตรงกับใบหน้านี้ (ความคล้ายไม่ถึงเกณฑ์)',
                         });
                         void fetchLiveBiometricsFromSupabase(apiClient)
                           .then((loaded) => {
@@ -760,18 +781,20 @@ export function WelcomeFaceScanModal({
                 className={`relative h-full w-full overflow-hidden rounded-xl border-2 ${
                   spoofDetectedNow
                     ? 'border-rose-500 shadow-[0_0_24px_rgba(244,63,94,0.85)]'
-                    : liveMatchHud?.candidate && bioStatus?.biologicalVerified
-                      ? liveMatchHud.confirmed
-                        ? 'border-emerald-400 shadow-[0_0_24px_rgba(16,185,129,0.7)]'
-                        : 'border-emerald-400/75 shadow-[0_0_12px_rgba(16,185,129,0.4)]'
-                      : 'border-cyan-400/85 shadow-[0_0_18px_rgba(34,211,238,0.45)]'
+                    : liveMatchHud?.confirmed && liveMatchHud?.candidate && bioStatus?.biologicalVerified
+                      ? 'border-emerald-400 shadow-[0_0_24px_rgba(16,185,129,0.7)]'
+                      : bioStatus?.biologicalVerified && lastRawCosine >= BIOMETRIC_MATCH_THRESHOLD && autoScanCount > 0
+                        ? 'border-blue-500 shadow-[0_0_18px_rgba(59,130,246,0.55)]'
+                        : bioStatus?.biologicalVerified
+                          ? 'border-amber-500 shadow-[0_0_18px_rgba(245,158,11,0.55)]'
+                          : 'border-cyan-400/85 shadow-[0_0_18px_rgba(34,211,238,0.45)]'
                 }`}
               >
-                <span className="absolute top-0 left-0 h-3.5 w-3.5 border-t-[3px] border-l-[3px] border-emerald-300 rounded-tl" />
-                <span className="absolute top-0 right-0 h-3.5 w-3.5 border-t-[3px] border-r-[3px] border-emerald-300 rounded-tr" />
-                <span className="absolute bottom-0 left-0 h-3.5 w-3.5 border-b-[3px] border-l-[3px] border-emerald-300 rounded-bl" />
-                <span className="absolute bottom-0 right-0 h-3.5 w-3.5 border-b-[3px] border-r-[3px] border-emerald-300 rounded-br" />
-                {!liveMatchHud?.candidate && (
+                <span className={`absolute top-0 left-0 h-3.5 w-3.5 border-t-[3px] border-l-[3px] rounded-tl ${spoofDetectedNow ? 'border-rose-400' : liveMatchHud?.confirmed ? 'border-emerald-300' : lastRawCosine >= BIOMETRIC_MATCH_THRESHOLD && autoScanCount > 0 ? 'border-blue-400' : 'border-amber-400'}`} />
+                <span className={`absolute top-0 right-0 h-3.5 w-3.5 border-t-[3px] border-r-[3px] rounded-tr ${spoofDetectedNow ? 'border-rose-400' : liveMatchHud?.confirmed ? 'border-emerald-300' : lastRawCosine >= BIOMETRIC_MATCH_THRESHOLD && autoScanCount > 0 ? 'border-blue-400' : 'border-amber-400'}`} />
+                <span className={`absolute bottom-0 left-0 h-3.5 w-3.5 border-b-[3px] border-l-[3px] rounded-bl ${spoofDetectedNow ? 'border-rose-400' : liveMatchHud?.confirmed ? 'border-emerald-300' : lastRawCosine >= BIOMETRIC_MATCH_THRESHOLD && autoScanCount > 0 ? 'border-blue-400' : 'border-amber-400'}`} />
+                <span className={`absolute bottom-0 right-0 h-3.5 w-3.5 border-b-[3px] border-r-[3px] rounded-br ${spoofDetectedNow ? 'border-rose-400' : liveMatchHud?.confirmed ? 'border-emerald-300' : lastRawCosine >= BIOMETRIC_MATCH_THRESHOLD && autoScanCount > 0 ? 'border-blue-400' : 'border-amber-400'}`} />
+                {!(liveMatchHud?.confirmed && liveMatchHud?.candidate) && (
                   <div className="absolute inset-x-1.5 top-1/2 h-[2px] -translate-y-1/2 bg-gradient-to-r from-transparent via-cyan-300 to-transparent shadow-[0_0_10px_#22d3ee]" />
                 )}
               </div>
@@ -788,20 +811,25 @@ export function WelcomeFaceScanModal({
                     👁️ กรุณากะพริบตาหรือขยับศีรษะเล็กน้อยเพื่อยืนยันตัวตน
                   </div>
                 </div>
-              ) : liveMatchHud?.candidate ? (
+              ) : liveMatchHud?.confirmed && liveMatchHud?.candidate ? (
                 <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-emerald-400 bg-white/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
                   <div className="text-[11px] font-black text-emerald-700">
-                    ✓ {sm.matchedOk}: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
+                    ✓ ยืนยันเจ้าของบัญชี: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
                   </div>
                   <div className="text-[10px] font-bold text-[#0F4C81]">
-                    {liveMatchHud.confidencePercent.toFixed(1)}% (3D Multi-Angle Match •{' '}
-                    {liveMatchHud.streak}/{BIOMETRIC_REQUIRED_STREAK})
+                    {liveMatchHud.confidencePercent.toFixed(1)}% ({liveMatchHud.streak}/{BIOMETRIC_REQUIRED_STREAK})
+                  </div>
+                </div>
+              ) : lastRawCosine >= BIOMETRIC_MATCH_THRESHOLD && autoScanCount > 0 ? (
+                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-blue-400 bg-blue-50/95 px-3 py-1 text-center backdrop-blur-md shadow-xl">
+                  <div className="text-[10px] font-extrabold text-blue-800">
+                    ⏳ กำลังยืนยันตัวตน... ({autoScanCount}/{BIOMETRIC_REQUIRED_STREAK})
                   </div>
                 </div>
               ) : (
-                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-sky-300 bg-white/95 px-3 py-1 text-center backdrop-blur-md shadow-xl">
-                  <div className="text-[10px] font-extrabold text-[#0F4C81]">
-                    กำลังสแกนใบหน้าเทียบฐานข้อมูล... {autoScanCount}/{BIOMETRIC_REQUIRED_STREAK}
+                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[290px] -translate-x-1/2 rounded-lg border border-amber-400 bg-amber-50/95 px-3 py-1 text-center backdrop-blur-md shadow-xl">
+                  <div className="text-[10px] font-extrabold text-amber-800">
+                    🔍 ไม่พบบัญชีที่ตรงกับใบหน้านี้ (ความคล้ายไม่ถึงเกณฑ์)
                   </div>
                 </div>
               )}

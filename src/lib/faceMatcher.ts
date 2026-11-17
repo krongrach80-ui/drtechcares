@@ -115,6 +115,96 @@ export function cosineSimilarity(a: readonly number[], b: readonly number[]): nu
   return denom > 0 ? Math.max(-1, Math.min(1, dot / denom)) : 0;
 }
 
+export const FACE_MATCHER_RAW_COSINE_THRESHOLD = 0.76;
+export const FACE_MATCHER_MAX_EUCLIDEAN_DISTANCE = 0.69;
+export const FACE_MATCHER_EXEMPLAR_FLOOR = 0.73;
+export const FACE_MATCHER_MARGIN_THRESHOLD = 0.08;
+export const FACE_MATCHER_REQUIRED_STREAK = 6;
+export const FACE_MATCHER_MIN_STREAK_FRAME_COS = 0.74;
+export const FACE_MATCHER_MAX_SCORE_VARIANCE = 0.025;
+
+export function euclideanDistanceNormalized(
+  a: readonly number[],
+  b: readonly number[],
+): number {
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) return Number.POSITIVE_INFINITY;
+  const na = l2Normalize(a);
+  const nb = l2Normalize(b);
+  let sumSq = 0;
+  for (let i = 0; i < na.length; i += 1) {
+    const diff = na[i] - nb[i];
+    sumSq += diff * diff;
+  }
+  return Math.sqrt(Math.max(0, sumSq));
+}
+
+function areVectorsNearDuplicate(a: readonly number[], b: readonly number[]): boolean {
+  return cosineSimilarity(a, b) >= 0.9999;
+}
+
+function evaluateCandidateExemplarConsensus(
+  probes: readonly (readonly number[])[],
+  candidate: PatientBiometricIndexEntry,
+  expectedLength: number,
+): {
+  uniqueCount: number;
+  floorPassCount: number;
+  requiredCount: number;
+  topAvg: number;
+  passed: boolean;
+} {
+  const uniqueVectors: number[][] = [];
+  const pushUnique = (raw: readonly number[] | undefined) => {
+    if (!Array.isArray(raw) || raw.length !== expectedLength) return;
+    const norm = l2Normalize(raw);
+    if (uniqueVectors.some((existing) => areVectorsNearDuplicate(existing, norm))) return;
+    uniqueVectors.push(norm);
+  };
+
+  pushUnique(candidate.masterEmbedding);
+  if (candidate.angleEmbeddings) {
+    const zones: FacePoseZone5[] = ['center', 'left', 'right', 'up', 'down'];
+    for (const z of zones) {
+      pushUnique(candidate.angleEmbeddings[z]);
+    }
+  }
+  if (Array.isArray(candidate.exemplarEmbeddings)) {
+    for (const ex of candidate.exemplarEmbeddings) {
+      pushUnique(ex);
+    }
+  }
+
+  if (uniqueVectors.length === 0) {
+    return { uniqueCount: 0, floorPassCount: 0, requiredCount: 1, topAvg: 0, passed: false };
+  }
+
+  const sims = uniqueVectors
+    .map((vec) => {
+      let best = -1;
+      for (const p of probes) {
+        const c = cosineSimilarity(p, vec);
+        if (c > best) best = c;
+      }
+      return best;
+    })
+    .sort((a, b) => b - a);
+
+  const requiredCount = uniqueVectors.length >= 3 ? 3 : uniqueVectors.length;
+  const floorPassCount = sims.filter((s) => s >= FACE_MATCHER_EXEMPLAR_FLOOR).length;
+  const topSlice = sims.slice(0, requiredCount);
+  const topAvg = topSlice.reduce((acc, v) => acc + v, 0) / Math.max(1, topSlice.length);
+  const passed =
+    floorPassCount >= requiredCount && topAvg >= FACE_MATCHER_RAW_COSINE_THRESHOLD;
+
+  return {
+    uniqueCount: uniqueVectors.length,
+    floorPassCount,
+    requiredCount,
+    topAvg,
+    passed,
+  };
+}
+
 function normalizePatientFullName(name: string | undefined): string {
   return (name ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
@@ -247,9 +337,12 @@ export function identifyPatient1toN(
     orderIdx: number;
     angle: 'master' | 'center' | 'left' | 'right' | 'up' | 'down' | 'extra';
     dualFactorScore: number;
-    engine: BiometricVectorEngine;
+    engine: BiometricVectorEngine | 'human-faceres-1024d';
     isLegacyV1: boolean;
     rawSim: number;
+    euclidDist: number;
+    consensusPassed: boolean;
+    consensusAvg: number;
     meanCenteredSim: number;
     whitenedSim: number;
     geometricPenalty: number;
@@ -267,33 +360,40 @@ export function identifyPatient1toN(
     const hasMaster =
       Array.isArray(cand.masterEmbedding) && cand.masterEmbedding.length === normalizedProbe.length;
     const masterVec = hasMaster ? l2Normalize(cand.masterEmbedding) : null;
-    const candEngine: BiometricVectorEngine = masterVec
-      ? detectBiometricVectorEngine(masterVec, cand.biometricEngine)
-      : cand.biometricEngine === 'arcface-onnx'
-        ? 'arcface-onnx'
-        : 'hybrid-v2';
+    const isHuman1024 =
+      cand.biometricEngine === 'human-faceres-1024d' || normalizedProbe.length === 1024;
+    const candEngine: BiometricVectorEngine | 'human-faceres-1024d' = isHuman1024
+      ? 'human-faceres-1024d'
+      : masterVec
+        ? detectBiometricVectorEngine(masterVec, cand.biometricEngine)
+        : cand.biometricEngine === 'arcface-onnx'
+          ? 'arcface-onnx'
+          : 'hybrid-v2';
 
     const activeVariants =
-      candEngine === 'arcface-onnx'
-        ? arcFaceVariants
-        : candEngine === 'legacy-v1'
-          ? legacyV1Variants.length > 0
-            ? legacyV1Variants
+      candEngine === 'human-faceres-1024d'
+        ? primaryVariants
+        : candEngine === 'arcface-onnx'
+          ? arcFaceVariants
+          : candEngine === 'legacy-v1'
+            ? legacyV1Variants.length > 0
+              ? legacyV1Variants
+              : hybridV2Variants.length > 0
+                ? hybridV2Variants
+                : probeEngine !== 'arcface-onnx'
+                  ? primaryVariants
+                  : []
             : hybridV2Variants.length > 0
               ? hybridV2Variants
               : probeEngine !== 'arcface-onnx'
                 ? primaryVariants
-                : []
-          : hybridV2Variants.length > 0
-            ? hybridV2Variants
-            : probeEngine !== 'arcface-onnx'
-              ? primaryVariants
-              : [];
+                : [];
     if (activeVariants.length === 0) continue;
 
     let bestVariantScore = -1;
     let bestAngle: 'master' | 'center' | 'left' | 'right' | 'up' | 'down' | 'extra' = 'master';
     let bestRawSim = 0;
+    let bestEuclidDist = Number.POSITIVE_INFINITY;
     let bestMeanCenteredSim = 0;
     let bestWhitenedSim = 0;
     let bestGeomPenalty = 0;
@@ -305,7 +405,34 @@ export function identifyPatient1toN(
     let bestInnerPatchCos = 0;
     let bestInnerPatchWhite = 0;
 
-    if (candEngine === 'arcface-onnx') {
+    if (candEngine === 'human-faceres-1024d') {
+      const checkVec = (
+        vec: readonly number[] | undefined,
+        angleLabel: 'master' | 'center' | 'left' | 'right' | 'up' | 'down' | 'extra',
+      ) => {
+        if (!Array.isArray(vec) || vec.length !== normalizedProbe.length) return;
+        const normVec = l2Normalize(vec);
+        for (const variant of activeVariants) {
+          const sim = cosineSimilarity(variant.vec, normVec);
+          if (sim > bestVariantScore) {
+            bestVariantScore = sim;
+            bestRawSim = sim;
+            bestEuclidDist = euclideanDistanceNormalized(variant.vec, normVec);
+            bestMeanCenteredSim = sim;
+            bestWhitenedSim = sim;
+            bestAngle = angleLabel;
+          }
+        }
+      };
+      checkVec(cand.masterEmbedding, 'master');
+      const zones: FacePoseZone5[] = ['center', 'left', 'right', 'up', 'down'];
+      for (const z of zones) {
+        checkVec(cand.angleEmbeddings?.[z], z);
+      }
+      for (const ex of cand.exemplarEmbeddings ?? []) {
+        checkVec(ex, 'extra');
+      }
+    } else if (candEngine === 'arcface-onnx') {
       for (const variant of activeVariants) {
         const targetAngleVecRaw = cand.angleEmbeddings?.[variant.zone];
         const hasSameZone =
@@ -337,6 +464,13 @@ export function identifyPatient1toN(
           bestVariantScore = arcScore;
           bestAngle = chosenAngle;
           bestRawSim = Math.max(sameZoneArc?.rawCos ?? 0, masterArc?.rawCos ?? 0);
+          const dominantVec =
+            (sameZoneArc?.rawCos ?? -1) >= (masterArc?.rawCos ?? -1)
+              ? sameZoneVec
+              : masterVec;
+          bestEuclidDist = dominantVec
+            ? euclideanDistanceNormalized(variant.vec, dominantVec)
+            : Number.POSITIVE_INFINITY;
           bestMeanCenteredSim = bestRawSim;
           bestWhitenedSim = bestRawSim;
           bestGeomPenalty = Math.max(
@@ -388,6 +522,10 @@ export function identifyPatient1toN(
           bestVariantScore = dualScore;
           bestAngle = chosenAngle;
           bestRawSim = dominantDual.rawCos;
+          const dominantVec = dominantDual === sameZoneDual ? sameZoneVec : masterVec;
+          bestEuclidDist = dominantVec
+            ? euclideanDistanceNormalized(variant.vec, dominantVec)
+            : Number.POSITIVE_INFINITY;
           bestMeanCenteredSim = dominantDual.meanCenteredCos;
           bestWhitenedSim =
             sameZoneDual && masterDual
@@ -411,6 +549,11 @@ export function identifyPatient1toN(
     }
 
     if (bestVariantScore >= 0) {
+      const consensus = evaluateCandidateExemplarConsensus(
+        activeVariants.map((v) => v.vec),
+        cand,
+        normalizedProbe.length,
+      );
       scored.push({
         candidate: cand,
         orderIdx,
@@ -419,6 +562,9 @@ export function identifyPatient1toN(
         engine: candEngine,
         isLegacyV1: candEngine === 'legacy-v1',
         rawSim: bestRawSim,
+        euclidDist: bestEuclidDist,
+        consensusPassed: consensus.passed,
+        consensusAvg: consensus.topAvg,
         meanCenteredSim: bestMeanCenteredSim,
         whitenedSim: bestWhitenedSim,
         geometricPenalty: bestGeomPenalty,
@@ -459,7 +605,36 @@ export function identifyPatient1toN(
     });
 
   const arcPool = sortPool(scored.filter((s) => s.engine === 'arcface-onnx'));
-  const hybridPool = sortPool(scored.filter((s) => s.engine !== 'arcface-onnx'));
+  const humanPool = sortPool(scored.filter((s) => s.engine === 'human-faceres-1024d'));
+  const hybridPool = sortPool(
+    scored.filter((s) => s.engine !== 'arcface-onnx' && s.engine !== 'human-faceres-1024d'),
+  );
+
+  const rawCosineThreshold = options.similarityThreshold ?? FACE_MATCHER_RAW_COSINE_THRESHOLD;
+
+  const evalHumanPool = () => {
+    const top = humanPool[0];
+    if (!top) return null;
+    const distinctRunners = humanPool
+      .slice(1)
+      .filter((s) => !isSameIdentityRecord(top.candidate, s.candidate));
+    const runnerUp = distinctRunners[0];
+    const runnerUpSim = runnerUp ? runnerUp.rawSim : 0;
+    const margin = runnerUp ? top.rawSim - runnerUp.rawSim : 1;
+    const passesThreshold =
+      top.rawSim >= rawCosineThreshold &&
+      top.euclidDist <= FACE_MATCHER_MAX_EUCLIDEAN_DISTANCE &&
+      top.consensusPassed;
+    const passesMargin = distinctRunners.length === 0 || margin >= marginThreshold;
+    const matched = passesThreshold && passesMargin;
+    const reason: MultiAngleMatchResult['reason'] = matched
+      ? 'OK'
+      : passesThreshold && !passesMargin
+        ? 'AMBIGUOUS_CLOSE_CANDIDATES'
+        : 'BELOW_THRESHOLD';
+    const displayPercent = Number(Math.max(0, Math.min(100, top.rawSim * 100)).toFixed(1));
+    return { top, runnerUpSim, margin, matched, reason, displayPercent };
+  };
 
   const evalArcPool = () => {
     const top = arcPool[0];
@@ -468,11 +643,16 @@ export function identifyPatient1toN(
       .slice(1)
       .filter((s) => !isSameIdentityRecord(top.candidate, s.candidate));
     const runnerUp = distinctRunners[0];
-    const runnerUpSim = runnerUp ? runnerUp.dualFactorScore : 0;
-    const margin = runnerUp ? top.dualFactorScore - runnerUp.dualFactorScore : 1;
-    const arcSimThresh = options.similarityThreshold ?? (isAngledPose ? 0.48 : 0.54);
-    const arcMarginThresh = options.marginThreshold ?? 0.1;
-    const passesThreshold = top.dualFactorScore >= arcSimThresh && top.geometricPenalty <= 0.14;
+    const runnerUpSim = runnerUp ? runnerUp.rawSim : 0;
+    const margin = runnerUp ? top.rawSim - runnerUp.rawSim : 1;
+    const arcSimThresh = rawCosineThreshold;
+    const arcMarginThresh = options.marginThreshold ?? FACE_MATCHER_MARGIN_THRESHOLD;
+    const passesThreshold =
+      top.rawSim >= arcSimThresh &&
+      top.dualFactorScore >= arcSimThresh &&
+      top.euclidDist <= FACE_MATCHER_MAX_EUCLIDEAN_DISTANCE &&
+      top.consensusPassed &&
+      top.geometricPenalty <= 0.14;
     const passesMargin = distinctRunners.length === 0 || margin >= arcMarginThresh;
     const matched = passesThreshold && passesMargin;
     const reason: MultiAngleMatchResult['reason'] = matched
@@ -480,17 +660,7 @@ export function identifyPatient1toN(
       : passesThreshold && !passesMargin
         ? 'AMBIGUOUS_CLOSE_CANDIDATES'
         : 'BELOW_THRESHOLD';
-    const displayPercent = Number(
-      Math.max(
-        0,
-        Math.min(
-          99.9,
-          matched
-            ? 50 + top.dualFactorScore * 58
-            : Math.min(79, Math.max(0, 30 + top.dualFactorScore * 65)),
-        ),
-      ).toFixed(1),
-    );
+    const displayPercent = Number(Math.max(0, Math.min(100, top.rawSim * 100)).toFixed(1));
     return { top, runnerUpSim, margin, matched, reason, displayPercent };
   };
 
@@ -501,14 +671,14 @@ export function identifyPatient1toN(
       .slice(1)
       .filter((s) => !isSameIdentityRecord(top.candidate, s.candidate));
     const runnerUp = distinctRunners[0];
-    const runnerUpSim = runnerUp ? runnerUp.dualFactorScore : 0;
-    const margin = runnerUp ? top.dualFactorScore - runnerUp.dualFactorScore : 1;
+    const runnerUpSim = runnerUp ? runnerUp.rawSim : 0;
+    const margin = runnerUp ? top.rawSim - runnerUp.rawSim : 1;
 
     const passesMargin = distinctRunners.length === 0 || margin >= marginThreshold;
     const topIsLegacyV1 = top.isLegacyV1;
     const similarityThreshold =
       options.similarityThreshold ??
-      (topIsLegacyV1 ? (isAngledPose ? 0.75 : 0.80) : isAngledPose ? 0.70 : 0.75);
+      (topIsLegacyV1 ? (isAngledPose ? 0.76 : 0.80) : FACE_MATCHER_RAW_COSINE_THRESHOLD);
     const whitenedThreshold =
       options.whitenedThreshold ??
       (topIsLegacyV1 ? (isAngledPose ? 0.36 : 0.42) : isAngledPose ? 0.32 : 0.36);
@@ -548,6 +718,9 @@ export function identifyPatient1toN(
         top.bestCraniofacialCos >= craniofacialMin);
 
     const passesThreshold =
+      top.rawSim >= rawCosineThreshold &&
+      top.euclidDist <= FACE_MATCHER_MAX_EUCLIDEAN_DISTANCE &&
+      top.consensusPassed &&
       top.dualFactorScore >= similarityThreshold &&
       top.whitenedSim >= whitenedThreshold &&
       top.meanCenteredSim >= meanCenteredMin &&
@@ -561,36 +734,34 @@ export function identifyPatient1toN(
         ? 'AMBIGUOUS_CLOSE_CANDIDATES'
         : 'BELOW_THRESHOLD';
 
-    const displayPercent = Number(
-      Math.max(
-        0,
-        Math.min(
-          99.9,
-          (matched ? Math.max(0.84, top.dualFactorScore) : Math.min(0.79, top.dualFactorScore)) *
-            100,
-        ),
-      ).toFixed(1),
-    );
+    const displayPercent = Number(Math.max(0, Math.min(100, top.rawSim * 100)).toFixed(1));
     return { top, runnerUpSim, margin, matched, reason, displayPercent };
   };
 
-  const arcEval = evalArcPool();
+  const humanEval = evalHumanPool();
+  const arcEval =
+    humanEval && (humanEval.matched || humanEval.reason === 'AMBIGUOUS_CLOSE_CANDIDATES')
+      ? null
+      : evalArcPool();
   const hybridEval =
-    arcEval && (arcEval.matched || arcEval.reason === 'AMBIGUOUS_CLOSE_CANDIDATES')
+    (humanEval && (humanEval.matched || humanEval.reason === 'AMBIGUOUS_CLOSE_CANDIDATES')) ||
+    (arcEval && (arcEval.matched || arcEval.reason === 'AMBIGUOUS_CLOSE_CANDIDATES'))
       ? null
       : evalHybridPool();
   const chosen =
-    arcEval && (arcEval.matched || arcEval.reason === 'AMBIGUOUS_CLOSE_CANDIDATES' || !hybridEval)
-      ? arcEval
-      : hybridEval && (hybridEval.matched || !arcEval || hybridEval.top.dualFactorScore > arcEval.top.dualFactorScore)
-        ? hybridEval
-        : arcEval!;
+    humanEval && (humanEval.matched || humanEval.reason === 'AMBIGUOUS_CLOSE_CANDIDATES' || (!arcEval && !hybridEval))
+      ? humanEval
+      : arcEval && (arcEval.matched || arcEval.reason === 'AMBIGUOUS_CLOSE_CANDIDATES' || !hybridEval)
+        ? arcEval
+        : hybridEval && (hybridEval.matched || (!humanEval && !arcEval) || hybridEval.top.rawSim > (humanEval?.top.rawSim ?? arcEval?.top.rawSim ?? -1))
+          ? hybridEval
+          : (humanEval ?? arcEval)!;
 
   const { top, runnerUpSim, margin, matched, reason, displayPercent } = chosen;
 
   if (typeof window !== 'undefined' && typeof console !== 'undefined' && console.debug) {
     console.debug(
-      `[FaceMatcher] zone=${livePoseZone} top="${top.candidate.fullName}" angle=${top.angle} score=${(top.dualFactorScore * 100).toFixed(1)}% margin=${(margin * 100).toFixed(1)}% matched=${matched} reason=${reason}`,
+      `[FaceMatcher] zone=${livePoseZone} angle=${top.angle} rawCos=${(top.rawSim * 100).toFixed(1)}% euclid=${top.euclidDist.toFixed(3)} margin=${(margin * 100).toFixed(1)}% matched=${matched} reason=${reason}`,
     );
   }
 
@@ -602,10 +773,10 @@ export function identifyPatient1toN(
 
   return {
     matched,
-    bestCandidate: matched || reason === 'AMBIGUOUS_CLOSE_CANDIDATES' ? top.candidate : null,
+    bestCandidate: matched ? top.candidate : null,
     bestAngle: top.angle,
     livePoseZone,
-    similarity: top.dualFactorScore,
+    similarity: top.rawSim,
     confidencePercent: displayPercent,
     margin,
     runnerUpSimilarity: runnerUpSim,
@@ -643,7 +814,10 @@ export class TemporalBiometricMatcher {
     blinkDetected: boolean;
   }[] = [];
 
-  constructor(requiredConsecutiveFrames = 5, defaultSimilarityThreshold?: number) {
+  constructor(
+    requiredConsecutiveFrames = FACE_MATCHER_REQUIRED_STREAK,
+    defaultSimilarityThreshold?: number,
+  ) {
     this.requiredConsecutiveFrames = requiredConsecutiveFrames;
     this.defaultSimilarityThreshold = defaultSimilarityThreshold;
   }
@@ -711,14 +885,18 @@ export class TemporalBiometricMatcher {
     };
     const match = identifyPatient1toN(observation.probeVector, candidates, mergedOptions);
 
-    if (!match.matched || !match.bestCandidate) {
-      // Unanimous lock: ANY failed or ambiguous frame immediately wipes streak back to 0!
+    if (
+      !match.matched ||
+      !match.bestCandidate ||
+      match.similarity < FACE_MATCHER_MIN_STREAK_FRAME_COS
+    ) {
+      // Unanimous lock: ANY failed, <0.74, or ambiguous frame immediately wipes streak back to 0!
       this.reset();
       return {
         confirmed: false,
         streakCount: 0,
         requiredStreak: this.requiredConsecutiveFrames,
-        candidate: match.bestCandidate,
+        candidate: null,
         confidencePercent: match.confidencePercent,
         bestRawSimilarity: match.similarity,
         bestAngle: match.bestAngle,
@@ -727,7 +905,7 @@ export class TemporalBiometricMatcher {
         livenessReason:
           match.reason === 'AMBIGUOUS_CLOSE_CANDIDATES'
             ? 'AMBIGUOUS_CLOSE_CANDIDATES'
-            : match.bestCandidate
+            : match.similarity > 0
               ? 'LOW_CONFIDENCE_OR_MARGIN'
               : 'NO_MATCH',
       };
@@ -762,6 +940,25 @@ export class TemporalBiometricMatcher {
     }
 
     const frameCount = this.streakFrames.length;
+    if (frameCount >= 2) {
+      const sims = this.streakFrames.map((f) => f.match.similarity);
+      const scoreVariance = Math.max(...sims) - Math.min(...sims);
+      if (scoreVariance >= FACE_MATCHER_MAX_SCORE_VARIANCE) {
+        this.reset();
+        return {
+          confirmed: false,
+          streakCount: 0,
+          requiredStreak: this.requiredConsecutiveFrames,
+          candidate: null,
+          confidencePercent: match.confidencePercent,
+          bestRawSimilarity: match.similarity,
+          bestAngle: match.bestAngle,
+          livenessPassed: false,
+          livenessReason: 'SCORE_VARIANCE_TOO_HIGH',
+        };
+      }
+    }
+
     const avgDepth =
       this.streakFrames.reduce((acc, f) => acc + f.depthScore, 0) / Math.max(1, frameCount);
     const maxMicroMotion = Math.max(...this.streakFrames.map((f) => f.microMotion));
@@ -794,7 +991,7 @@ export class TemporalBiometricMatcher {
       confirmed,
       streakCount: frameCount,
       requiredStreak: this.requiredConsecutiveFrames,
-      candidate: match.bestCandidate,
+      candidate: confirmed ? match.bestCandidate : null,
       confidencePercent: avgConf,
       bestRawSimilarity: match.similarity,
       bestAngle: match.bestAngle,

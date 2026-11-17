@@ -13,10 +13,6 @@ import {
   evaluateLivenessAndPose,
   extractArcFaceOnnxEmbedding,
   extractGeometricAnthropometricRatios,
-  extractHybrid512Descriptor,
-  extractLegacyV1Hybrid512Descriptor,
-  flipImageDataHorizontally,
-  flipLandmarksHorizontally,
   isArcFaceSessionReady,
   preloadArcFaceOnnx,
   selectClinicalCameraDeviceId,
@@ -24,7 +20,6 @@ import {
 } from '@drtechcares/face-client';
 import {
   detectBiometricVectorEngine,
-  isLegacyV1HybridVector,
 } from '@drtechcares/smart-biometric-core';
 import {
   BIOMETRIC_ENGINE_ID,
@@ -2800,8 +2795,6 @@ export function SmartRehabKioskUI({
                     if (!faceRoiCanvas) faceRoiCanvas = document.createElement('canvas');
                     const crop = alignFaceTo112(v, primaryFaceLm, faceAlignCanvas, faceRoiCanvas);
                     if (crop) {
-                      const flippedCrop = flipImageDataHorizontally(crop);
-                      const flippedLm = flipLandmarksHorizontally(primaryFaceLm);
                       const ownerEngine = detectBiometricVectorEngine(
                         activeOwnerBio.masterEmbedding,
                         activeOwnerBio.biometricEngine,
@@ -2871,31 +2864,12 @@ export function SmartRehabKioskUI({
                             applyOwnerResult(ownerRes.matched, ownerRes.hasTemplate);
                           })
                           .catch(() => { });
-                      } else if (ownerEngine !== 'arcface-onnx') {
-                        const probeVec = extractHybrid512Descriptor(crop, primaryFaceLm);
-                        const mirroredVec = extractHybrid512Descriptor(flippedCrop, flippedLm);
-                        const ownerIsLegacyV1 = isLegacyV1HybridVector(activeOwnerBio.masterEmbedding);
-                        const legacyV1ProbeVector = ownerIsLegacyV1
-                          ? extractLegacyV1Hybrid512Descriptor(crop, primaryFaceLm)
-                          : undefined;
-                        const mirroredLegacyV1ProbeVector = ownerIsLegacyV1
-                          ? extractLegacyV1Hybrid512Descriptor(flippedCrop, flippedLm)
-                          : undefined;
-                        const ownerRes = verifyOwnerFace1to1({
-                          probeVector: probeVec,
-                          mirroredProbeVector: mirroredVec,
-                          probeEngine: 'hybrid-512d',
-                          ...(legacyV1ProbeVector ? { legacyV1ProbeVector } : {}),
-                          ...(mirroredLegacyV1ProbeVector
-                            ? { mirroredLegacyV1ProbeVector }
-                            : {}),
-                          yawDeg: -livePose.yawDeg,
-                          pitchDeg: livePose.pitchDeg,
-                          rollDeg,
-                          probeRatios,
-                          ownerTemplate: activeOwnerBio,
-                        });
-                        applyOwnerResult(ownerRes.matched, ownerRes.hasTemplate);
+                      } else {
+                        if (ownerEngine === 'arcface-onnx') {
+                          void preloadArcFaceOnnx();
+                        }
+                        // Strict deep-neural policy: NEVER fall back to pixel histograms or geometric ratios
+                        applyOwnerResult(false, true);
                       }
                     }
                   }

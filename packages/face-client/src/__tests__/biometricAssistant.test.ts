@@ -8,6 +8,7 @@ import {
   inspectBiometricFrame3D,
   resolveFaceIdScreenPrompt,
 } from '../biometricAssistant';
+import { extractGenuineNeuralFaceDescriptor } from '../embed';
 
 describe('3D Biometric Verification Assistant & Face ID Prompts', () => {
   it('evaluates checkpoints in strict order: framing -> lighting -> obstruction -> liveness', () => {
@@ -561,6 +562,21 @@ describe('3D Biometric Verification Assistant & Face ID Prompts', () => {
       metrics: { faceHeightRatio: 0.22, brightness: 120, sharpness: 50, eyesVisible: true, mouthVisible: true },
     });
     expect(regFarReject.error_code).toBe('TOO_FAR');
+  });
+
+  it('extractGenuineNeuralFaceDescriptor rejects sub-128D or zero vectors and L2-normalizes valid deep descriptors', () => {
+    expect(extractGenuineNeuralFaceDescriptor(undefined)).toBeNull();
+    expect(extractGenuineNeuralFaceDescriptor([])).toBeNull();
+    expect(extractGenuineNeuralFaceDescriptor(new Array(64).fill(0.5))).toBeNull();
+    expect(extractGenuineNeuralFaceDescriptor(new Array(512).fill(0))).toBeNull();
+    expect(extractGenuineNeuralFaceDescriptor([Number.NaN, ...new Array(127).fill(0.2)])).toBeNull();
+
+    const raw1024 = Array.from({ length: 1024 }, (_, idx) => Math.sin(idx * 0.13) + 0.5);
+    const norm = extractGenuineNeuralFaceDescriptor(raw1024);
+    expect(norm).not.toBeNull();
+    expect(norm!).toHaveLength(1024);
+    const mag = Math.sqrt(norm!.reduce((acc, v) => acc + v * v, 0));
+    expect(mag).toBeCloseTo(1, 5);
   });
 });
 

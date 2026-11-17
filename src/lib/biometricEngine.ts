@@ -2,6 +2,7 @@ import type Human from '@vladmandic/human';
 import type { Config, FaceResult } from '@vladmandic/human';
 import {
   DrTechCaresApiClient,
+  type ActivePatientRosterItem,
   type AngleEmbeddings5D,
   type PatientBiometricIndexEntry,
   type PatientRecord,
@@ -13,11 +14,15 @@ export const BIOMETRIC_VAULT_STORAGE_KEY = 'drtech_biometric_vault_v3';
 export const BIOMETRIC_ENGINE_ID = 'human-faceres-1024d' as const;
 export const BIOMETRIC_MIN_EMBEDDING_DIM = 128;
 export const BIOMETRIC_EXPECTED_DIM = 1024;
-export const BIOMETRIC_MATCH_THRESHOLD = 0.62;
-export const BIOMETRIC_FINAL_SCORE_THRESHOLD = 0.68;
-export const BIOMETRIC_HUMAN_SIM_THRESHOLD = 0.65;
-export const BIOMETRIC_MARGIN_THRESHOLD = 0.07;
-export const BIOMETRIC_REQUIRED_STREAK = 4;
+export const BIOMETRIC_MATCH_THRESHOLD = 0.76;
+export const BIOMETRIC_FINAL_SCORE_THRESHOLD = 0.76;
+export const BIOMETRIC_EXEMPLAR_FLOOR_THRESHOLD = 0.73;
+export const BIOMETRIC_MAX_EUCLIDEAN_DISTANCE = 0.69;
+export const BIOMETRIC_HUMAN_SIM_THRESHOLD = 0.76;
+export const BIOMETRIC_MARGIN_THRESHOLD = 0.08;
+export const BIOMETRIC_REQUIRED_STREAK = 6;
+export const BIOMETRIC_STREAK_MIN_FRAME_COSINE = 0.74;
+export const BIOMETRIC_MAX_SCORE_VARIANCE = 0.025;
 export const BIOMETRIC_EXEMPLAR_TARGET_COUNT = 15;
 
 export const HUMAN_BIOMETRIC_CONFIG: Partial<Config> = {
@@ -143,6 +148,11 @@ export interface PatientMatchScoreResult {
   exemplarSim: number;
   humanSim: number;
   finalScore: number;
+  minEuclideanDist: number;
+  consensusTop3Avg: number;
+  vectorsAbove073: number;
+  uniqueVectorCount: number;
+  passesMultiExemplarGate: boolean;
   bestSource: string;
 }
 
@@ -155,6 +165,8 @@ export interface Live1toNMatchEvaluation {
   topExemplarSimilarity: number;
   topHumanSimilarity: number;
   topFinalScore: number;
+  topEuclideanDistance: number;
+  topConsensusTop3Avg: number;
   runnerUpSimilarity: number;
   runnerUpFinalScore: number;
   margin: number;
@@ -176,8 +188,9 @@ export interface LiveStreakEvaluation {
   runnerUpSimilarity: number;
   margin: number;
   confidencePercent: number;
+  scoreVariance: number;
   bestSource: string;
-  reason: Live1toNMatchEvaluation['reason'] | 'SPOOF_BLOCKED' | 'LIVENESS_PENDING';
+  reason: Live1toNMatchEvaluation['reason'] | 'SPOOF_BLOCKED' | 'LIVENESS_PENDING' | 'HIGH_SCORE_VARIANCE';
 }
 
 export type BiometricEngineLifecycleStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -218,28 +231,28 @@ export function cosineSimilarityNormalized(a: readonly number[], b: readonly num
   return Math.max(-1, Math.min(1, dot));
 }
 
-const HUMAN_MATCH_CALIBRATION = { order: 2, multiplier: 2000, min: 0.2, max: 0.8 } as const;
+export function euclideanDistanceNormalized(a: readonly number[], b: readonly number[]): number {
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) return Number.POSITIVE_INFINITY;
+  let sumSq = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    const d = a[i] - b[i];
+    sumSq += d * d;
+  }
+  return Math.sqrt(sumSq);
+}
 
+/**
+ * Pure raw L2-normalized cosine similarity without any curve inflation or baseline offset boosting.
+ */
 export function computeHumanDescriptorSimilarity(
   a: readonly number[],
   b: readonly number[],
-  humanOverride?: Pick<Human, 'match'> | null,
+  _humanOverride?: Pick<Human, 'match'> | null,
 ): number {
   if (a.length === 0 || b.length === 0 || a.length !== b.length) return 0;
-  const activeHuman = humanOverride ?? sharedHumanInstance;
-  if (activeHuman?.match?.similarity) {
-    return activeHuman.match.similarity([...a], [...b], { ...HUMAN_MATCH_CALIBRATION });
-  }
-  let sumSq = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    const diff = a[i] - b[i];
-    sumSq += diff * diff;
-  }
-  const dist = Math.round(100 * HUMAN_MATCH_CALIBRATION.multiplier * sumSq) / 100;
-  if (dist === 0) return 1;
-  const root = Math.sqrt(dist);
-  const norm = (1 - root / 100 - HUMAN_MATCH_CALIBRATION.min) / (HUMAN_MATCH_CALIBRATION.max - HUMAN_MATCH_CALIBRATION.min);
-  return Math.round(100 * Math.max(Math.min(norm, 1), 0)) / 100;
+  const normA = normalizeVector(a);
+  const normB = normalizeVector(b);
+  return Math.max(0, cosineSimilarityNormalized(normA, normB));
 }
 
 let sharedHumanInstance: Human | null = null;
@@ -1132,16 +1145,28 @@ function buildCandidateFromSource(
 }
 
 /**
- * Loads all enrolled biometric profiles from Cloud API + Supabase + Local Biometric Vault (`drtech_biometric_vault_v3`),
- * merging seamlessly and filtering strictly by compatible neural dimension (`expectedDim`, e.g. 1024-D).
+ * Strictly READ-ONLY Kiosk Biometric Loader:
+ * 1. Fetches live active patients & deleted tombstones (`GET /api/biometrics/index` + `GET /api/patients` when authenticated + Supabase).
+ * 2. Immediately garbage-collects any orphaned/deleted vectors in `localStorage` (`drtech_biometric_vault_v3`, `drtech_patients`, `drtech_face_templates`).
+ * 3. NEVER pushes local vault entries to Supabase, NEVER resurrects orphan `patient_biometrics` rows without an active row in `patients`.
  */
 export async function loadEnrolledPatientsWithBiometrics(
   apiClient: DrTechCaresApiClient,
   expectedDim: number = BIOMETRIC_EXPECTED_DIM,
 ): Promise<LoadedBiometricVaultResult> {
   const byPatientId = new Map<string, EnrolledBiometricCandidate>();
+  const deletedLowerSet = DrTechCaresApiClient.readDeletedTombstones
+    ? DrTechCaresApiClient.readDeletedTombstones()
+    : new Set<string>();
+
+  let authoritativeActivePatients: ActivePatientRosterItem[] | null = null;
+  let serverIndexEntries: PatientBiometricIndexEntry[] = [];
 
   const applyCandidate = (cand: EnrolledBiometricCandidate, preferIfExpectedDim = false) => {
+    const pidLo = cand.patientId.trim().toLowerCase();
+    const hnLo = cand.hn.trim().toLowerCase();
+    if (deletedLowerSet.has(pidLo) || (hnLo && deletedLowerSet.has(hnLo))) return;
+
     const prev = byPatientId.get(cand.patientId);
     if (!prev) {
       byPatientId.set(cand.patientId, cand);
@@ -1149,7 +1174,6 @@ export async function loadEnrolledPatientsWithBiometrics(
     }
     const prevMatches = prev.dimension === expectedDim;
     const nextMatches = cand.dimension === expectedDim;
-    // Always let compatible 1024-D profile win over stale 512-D profile, and enrich missing schedule/exemplar metadata
     if ((!prevMatches && nextMatches) || (preferIfExpectedDim && nextMatches)) {
       byPatientId.set(cand.patientId, {
         ...cand,
@@ -1185,10 +1209,39 @@ export async function loadEnrolledPatientsWithBiometrics(
     }
   };
 
-  // 1. Primary Cloud API biometric index
+  // 1. Primary Cloud API biometric index + authoritative active roster & tombstones
   try {
-    const cloudEntries = await apiClient.getBiometricIndex();
-    for (const entry of cloudEntries) {
+    if (typeof apiClient.getBiometricIndexWithRoster === 'function') {
+      const rosterRes = await apiClient.getBiometricIndexWithRoster();
+      serverIndexEntries = rosterRes.index ?? [];
+      for (const delId of rosterRes.deletedIds ?? []) {
+        const clean = String(delId ?? '').trim().toLowerCase();
+        if (clean) deletedLowerSet.add(clean);
+      }
+      if (Array.isArray(rosterRes.activePatients)) {
+        authoritativeActivePatients = rosterRes.activePatients;
+      }
+    } else {
+      serverIndexEntries = await apiClient.getBiometricIndex();
+    }
+
+    if (typeof apiClient.getAuthToken === 'function' && apiClient.getAuthToken() && typeof apiClient.listPatients === 'function') {
+      try {
+        const liveList = await apiClient.listPatients();
+        if (Array.isArray(liveList)) {
+          authoritativeActivePatients = liveList.map((p) => ({
+            id: p.id,
+            hn: p.hn,
+            fullName: p.fullName,
+            registrationStatus: p.registrationStatus ?? 'active',
+          }));
+        }
+      } catch {
+        // Keep unauthenticated roster from /api/biometrics/index if /api/patients isn't authorized
+      }
+    }
+
+    for (const entry of serverIndexEntries) {
       if (!isValidNeuralEmbedding(entry.masterEmbedding)) continue;
       applyCandidate(
         buildCandidateFromSource(
@@ -1213,10 +1266,10 @@ export async function loadEnrolledPatientsWithBiometrics(
       );
     }
   } catch {
-    // Continue cleanly to Supabase + Local Vault
+    // Continue cleanly to direct Supabase query if Cloud API failed
   }
 
-  // 2. Authoritative Live Sync from Supabase Cloud (`patients` + `patient_biometrics`)
+  // 2. Authoritative Live Sync from Supabase Cloud (`patients` + `patient_biometrics`) — NEVER orphan biometrics
   let syncedFromSupabase = false;
   let supabaseSyncedAccounts = 0;
   let syncError: string | undefined;
@@ -1247,7 +1300,6 @@ export async function loadEnrolledPatientsWithBiometrics(
           supabase.from('patient_biometrics').select('*'),
         ]);
         if (!bioRes.error && Array.isArray(bioRes.data)) {
-          syncedFromSupabase = true;
           for (const row of bioRes.data as Record<string, unknown>[]) {
             bioByPid.set(String(row.patient_id), row);
           }
@@ -1262,14 +1314,35 @@ export async function loadEnrolledPatientsWithBiometrics(
 
       if (syncedFromSupabase) {
         const supabaseCandidates: EnrolledBiometricCandidate[] = [];
-        const seenSupabasePid = new Set<string>();
+        const supabaseActiveRoster: ActivePatientRosterItem[] = [];
         const prevCloudByPid = new Map(byPatientId.entries());
         byPatientId.clear();
 
         for (const r of patientRows) {
-          const status = String(r.registration_status ?? 'active').toLowerCase();
-          if (status === 'deleted' || status === 'rejected' || status === 'inactive') continue;
           const pid = String(r.id);
+          const pidLo = pid.trim().toLowerCase();
+          const hn = String(r.hn ?? '');
+          const hnLo = hn.trim().toLowerCase();
+          const status = String(r.registration_status ?? 'active').toLowerCase();
+          if (
+            status === 'deleted' ||
+            status === 'rejected' ||
+            status === 'inactive' ||
+            deletedLowerSet.has(pidLo) ||
+            (hnLo && deletedLowerSet.has(hnLo))
+          ) {
+            deletedLowerSet.add(pidLo);
+            if (hnLo) deletedLowerSet.add(hnLo);
+            continue;
+          }
+
+          supabaseActiveRoster.push({
+            id: pid,
+            hn,
+            fullName: String(r.full_name ?? ''),
+            registrationStatus: status || 'active',
+          });
+
           const bio = bioByPid.get(pid);
           const history = (r.history && typeof r.history === 'object' ? r.history : {}) as Record<string, unknown>;
           const bioDataObj = (r.biometric_data && typeof r.biometric_data === 'object' && !Array.isArray(r.biometric_data)
@@ -1348,40 +1421,12 @@ export async function loadEnrolledPatientsWithBiometrics(
                 prevCloud.sourceEntry.hasAppointmentToday ?? cand.sourceEntry.hasAppointmentToday,
             };
           }
-          seenSupabasePid.add(pid);
           supabaseCandidates.push(cand);
           applyCandidate(cand, true);
         }
 
-        // Also include orphaned patient_biometrics rows if patients metadata query returned partial subset
-        for (const [pid, bio] of bioByPid.entries()) {
-          if (seenSupabasePid.has(pid)) continue;
-          const master = parseVectorLoose(bio.master_embedding);
-          if (!master) continue;
-          const cand = buildCandidateFromSource(
-            pid,
-            String(bio.hn ?? ''),
-            String(bio.hn ?? pid),
-            master,
-            bio.angle_embeddings as Partial<AngleEmbeddings5D> | undefined,
-            Array.isArray(bio.exemplar_embeddings) ? (bio.exemplar_embeddings as unknown[]) : undefined,
-            {
-              framesCaptured:
-                typeof bio.frame_count === 'number'
-                  ? bio.frame_count
-                  : typeof bio.frames_captured === 'number'
-                    ? bio.frames_captured
-                    : 120,
-              qualityScore: typeof bio.quality_score === 'number' ? bio.quality_score : 0.96,
-              biometricEngine: master.length >= 768 ? BIOMETRIC_ENGINE_ID : undefined,
-            },
-          );
-          supabaseCandidates.push(cand);
-          applyCandidate(cand, true);
-        }
-
+        authoritativeActivePatients = supabaseActiveRoster;
         supabaseSyncedAccounts = supabaseCandidates.length;
-        // Authoritatively refresh cache from Supabase Cloud so stale/deleted records don't linger
         replaceLocalBiometricVaultFromSupabase(supabaseCandidates);
         if (supabaseCandidates.length === 0) {
           DrTechCaresApiClient.clearRecentEnrolledEntries?.();
@@ -1392,10 +1437,44 @@ export async function loadEnrolledPatientsWithBiometrics(
     }
   }
 
-  // 3. Read Local Biometric Vault ONLY when Supabase was unavailable / offline / unconfigured
-  if (!syncedFromSupabase) {
+  // Garbage-collect localStorage caches strictly against the live active patients & tombstones
+  if (typeof DrTechCaresApiClient.purgeOrphanedLocalStorageRecords === 'function') {
+    DrTechCaresApiClient.purgeOrphanedLocalStorageRecords(
+      authoritativeActivePatients,
+      Array.from(deletedLowerSet),
+    );
+  }
+
+  // Enforce strict active-patient whitelist (patientId AND hn MUST be in active roster and NOT in tombstones)
+  if (authoritativeActivePatients !== null) {
+    const activeById = new Map(
+      authoritativeActivePatients
+        .filter((p) => (p.registrationStatus ?? 'active') === 'active')
+        .map((p) => [p.id.trim().toLowerCase(), p.hn.trim().toLowerCase()]),
+    );
+    for (const [pid, cand] of Array.from(byPatientId.entries())) {
+      const pidLo = pid.trim().toLowerCase();
+      const hnLo = cand.hn.trim().toLowerCase();
+      const expectedHn = activeById.get(pidLo);
+      if (
+        deletedLowerSet.has(pidLo) ||
+        (hnLo && deletedLowerSet.has(hnLo)) ||
+        expectedHn === undefined ||
+        !activeById.has(pidLo) ||
+        (expectedHn && hnLo !== expectedHn)
+      ) {
+        byPatientId.delete(pid);
+      }
+    }
+  }
+
+  // Fallback read from Local Vault ONLY when BOTH Cloud API roster & Supabase were unavailable
+  if (!syncedFromSupabase && authoritativeActivePatients === null) {
     const vaultEntries = readLocalBiometricVault();
     for (const v of vaultEntries) {
+      const pidLo = v.patientId.trim().toLowerCase();
+      const hnLo = v.hn.trim().toLowerCase();
+      if (deletedLowerSet.has(pidLo) || (hnLo && deletedLowerSet.has(hnLo))) continue;
       if (!isValidNeuralEmbedding(v.master_embedding)) continue;
       applyCandidate(
         buildCandidateFromSource(
@@ -1450,89 +1529,110 @@ export async function fetchLiveBiometricsFromSupabase(
 }
 
 /**
- * Evaluates a live L2-normalized embedding against a single enrolled patient's
- * `master_embedding`, 5 `angle_embeddings`, and Top-3 KNN Mean over 15 `exemplar_embeddings`.
- * Computes Hybrid `finalScore = 0.50 * max(centroidSim, exemplarSim) + 0.50 * humanSim`.
+ * Evaluates a live L2-normalized embedding strictly using raw L2 Cosine Similarity & Euclidean Distance
+ * across unique stored vectors (`master_embedding`, distinct `angle_embeddings`, and `exemplar_embeddings`)
+ * with ZERO artificial score inflation or non-linear curve boosting.
  */
 export function computePatientMatchScore(
   liveEmbedding: readonly number[],
   candidate: EnrolledBiometricCandidate,
-  humanOverride?: Pick<Human, 'match'> | null,
+  _humanOverride?: Pick<Human, 'match'> | null,
   liveBucket?: keyof AngleEmbeddings5D,
 ): PatientMatchScoreResult {
   const liveNorm = normalizeVector(liveEmbedding);
   const expectedDim = liveNorm.length;
 
-  let centroidSim = -1;
-  let bestTargetVec: number[] | null = null;
-  let bestTargetSim = -1;
-  let bestSource = 'none';
+  const uniqueStored: { vec: number[]; source: string }[] = [];
+  const pushUnique = (raw: unknown, source: string) => {
+    if (!Array.isArray(raw) || raw.length !== expectedDim) return;
+    const normV = normalizeVector(raw);
+    if (!uniqueStored.some((item) => cosineSimilarityNormalized(item.vec, normV) >= 0.9999)) {
+      uniqueStored.push({ vec: normV, source });
+    }
+  };
 
-  if (candidate.master_embedding.length === expectedDim) {
-    const cos = cosineSimilarityNormalized(liveNorm, candidate.master_embedding);
-    centroidSim = cos;
-    bestTargetVec = candidate.master_embedding;
-    bestTargetSim = cos;
-    bestSource = 'master';
-  }
-
+  pushUnique(candidate.master_embedding, 'master');
   const angleKeys: (keyof AngleEmbeddings5D)[] = liveBucket
     ? [liveBucket, ...(['center', 'left', 'right', 'up', 'down'] as const).filter((k) => k !== liveBucket)]
     : ['center', 'left', 'right', 'up', 'down'];
   for (const k of angleKeys) {
-    const v = candidate.angle_embeddings?.[k];
-    if (v && v.length === expectedDim) {
-      const cos = cosineSimilarityNormalized(liveNorm, v);
-      if (cos > centroidSim) {
-        centroidSim = cos;
-      }
-      if (cos > bestTargetSim) {
-        bestTargetSim = cos;
-        bestTargetVec = v;
-        bestSource = k;
-      }
-    }
+    pushUnique(candidate.angle_embeddings?.[k], k);
   }
-
-  // Top-3 KNN Mean over up to 15 enrolled exemplars
-  const exemplarScores: { cos: number; vec: number[]; label: string }[] = [];
   candidate.exemplar_embeddings.forEach((ex, idx) => {
-    if (ex.length === expectedDim) {
-      const cos = cosineSimilarityNormalized(liveNorm, ex);
-      exemplarScores.push({ cos, vec: ex, label: `exemplar-${idx + 1}` });
-      if (cos > bestTargetSim) {
-        bestTargetSim = cos;
-        bestTargetVec = ex;
-        bestSource = `exemplar-${idx + 1}`;
-      }
-    }
+    pushUnique(ex, `exemplar-${idx + 1}`);
   });
-  exemplarScores.sort((a, b) => b.cos - a.cos);
 
-  const clampedCentroid = Math.max(0, centroidSim);
-  let exemplarSim = clampedCentroid;
-  if (exemplarScores.length > 0) {
-    const k = Math.min(3, exemplarScores.length);
-    let topSum = 0;
-    for (let i = 0; i < k; i += 1) {
-      topSum += Math.max(0, exemplarScores[i].cos);
-    }
-    exemplarSim = topSum / k;
+  if (uniqueStored.length === 0) {
+    return {
+      candidate,
+      bestSim: 0,
+      centroidSim: 0,
+      exemplarSim: 0,
+      humanSim: 0,
+      finalScore: 0,
+      minEuclideanDist: Number.POSITIVE_INFINITY,
+      consensusTop3Avg: 0,
+      vectorsAbove073: 0,
+      uniqueVectorCount: 0,
+      passesMultiExemplarGate: false,
+      bestSource: 'none',
+    };
   }
 
-  const combinedCosine = Math.max(clampedCentroid, exemplarSim);
-  const humanSim = bestTargetVec
-    ? computeHumanDescriptorSimilarity(liveNorm, bestTargetVec, humanOverride)
-    : 0;
-  const finalScore = 0.5 * combinedCosine + 0.5 * humanSim;
+  let centroidSim = 0;
+  let bestTargetCos = -1;
+  let bestSource = 'none';
+  const scoredVecs: { cos: number; dist: number; source: string }[] = [];
+
+  for (const item of uniqueStored) {
+    const cos = cosineSimilarityNormalized(liveNorm, item.vec);
+    const dist = euclideanDistanceNormalized(liveNorm, item.vec);
+    scoredVecs.push({ cos, dist, source: item.source });
+    if (
+      item.source === 'master' ||
+      item.source === 'center' ||
+      item.source === 'left' ||
+      item.source === 'right' ||
+      item.source === 'up' ||
+      item.source === 'down'
+    ) {
+      centroidSim = Math.max(centroidSim, cos);
+    }
+    if (cos > bestTargetCos) {
+      bestTargetCos = cos;
+      bestSource = item.source;
+    }
+  }
+
+  scoredVecs.sort((a, b) => b.cos - a.cos);
+  const bestRawCos = Math.max(0, scoredVecs[0].cos);
+  const minEuclideanDist = scoredVecs[0].dist;
+  const k = Math.min(3, scoredVecs.length);
+  let topSum = 0;
+  for (let i = 0; i < k; i += 1) {
+    topSum += Math.max(0, scoredVecs[i].cos);
+  }
+  const consensusTop3Avg = topSum / k;
+  const vectorsAbove073 = scoredVecs.filter((s) => s.cos >= BIOMETRIC_EXEMPLAR_FLOOR_THRESHOLD).length;
+  const passesMultiExemplarGate =
+    scoredVecs.length >= 3
+      ? vectorsAbove073 >= 3 && consensusTop3Avg >= BIOMETRIC_MATCH_THRESHOLD
+      : scoredVecs.length === 2
+        ? vectorsAbove073 >= 2 && consensusTop3Avg >= BIOMETRIC_MATCH_THRESHOLD
+        : bestRawCos >= BIOMETRIC_MATCH_THRESHOLD;
 
   return {
     candidate,
-    bestSim: combinedCosine,
-    centroidSim: clampedCentroid,
-    exemplarSim,
-    humanSim,
-    finalScore,
+    bestSim: bestRawCos,
+    centroidSim: Math.max(0, centroidSim),
+    exemplarSim: consensusTop3Avg,
+    humanSim: bestRawCos,
+    finalScore: bestRawCos,
+    minEuclideanDist,
+    consensusTop3Avg,
+    vectorsAbove073,
+    uniqueVectorCount: scoredVecs.length,
+    passesMultiExemplarGate,
     bestSource,
   };
 }
@@ -1542,9 +1642,11 @@ function normalizeNameForIdentity(name: string): string {
 }
 
 /**
- * 1:N Exemplar (Top-3 KNN) + Centroid + Human Similarity Matcher:
- * - Filters strictly by matching embedding dimension (ignoring stale corrupted vectors).
- * - Requires `finalScore >= 0.68`, `cosineSim >= 0.62`, AND runner-up margin `>= 0.07` across >1 patient.
+ * Ultra-Strict Open-Set 1:N Neural Face Verification:
+ * - Gate 1: Raw L2-normalized Cosine Similarity >= 0.76 AND L2 Euclidean Distance <= 0.69.
+ * - Gate 2: Multi-Exemplar Consensus (>=3 stored vectors >= 0.73 and Top-3 avg >= 0.76, or Master + Angle when 2).
+ * - Gate 3: Margin >= 0.08 over Rank #2 (`bestCosine - secondBestCosine >= 0.08`).
+ * - Pure true raw cosine percentage ONLY (`cosine * 100`), zero curve inflation.
  */
 export function evaluateLiveMatch1toN(
   liveEmbedding: readonly number[],
@@ -1570,6 +1672,8 @@ export function evaluateLiveMatch1toN(
       topExemplarSimilarity: 0,
       topHumanSimilarity: 0,
       topFinalScore: 0,
+      topEuclideanDistance: Number.POSITIVE_INFINITY,
+      topConsensusTop3Avg: 0,
       runnerUpSimilarity: 0,
       runnerUpFinalScore: 0,
       margin: 0,
@@ -1591,6 +1695,8 @@ export function evaluateLiveMatch1toN(
       topExemplarSimilarity: 0,
       topHumanSimilarity: 0,
       topFinalScore: 0,
+      topEuclideanDistance: Number.POSITIVE_INFINITY,
+      topConsensusTop3Avg: 0,
       runnerUpSimilarity: 0,
       runnerUpFinalScore: 0,
       margin: 0,
@@ -1604,7 +1710,7 @@ export function evaluateLiveMatch1toN(
 
   const scored = eligible
     .map((c) => computePatientMatchScore(liveEmbedding, c, humanOverride, liveBucket))
-    .sort((a, b) => b.finalScore - a.finalScore || b.bestSim - a.bestSim);
+    .sort((a, b) => b.bestSim - a.bestSim || b.consensusTop3Avg - a.consensusTop3Avg);
 
   const top = scored[0];
   const topName = normalizeNameForIdentity(top.candidate.fullName);
@@ -1615,11 +1721,12 @@ export function evaluateLiveMatch1toN(
 
   const runnerUpSim = runnerUp ? runnerUp.bestSim : 0;
   const runnerUpFinalScore = runnerUp ? runnerUp.finalScore : 0;
-  const margin = runnerUp ? top.finalScore - runnerUp.finalScore : 1;
+  const margin = runnerUp ? top.bestSim - runnerUp.bestSim : 1;
 
   const passesThreshold =
-    top.finalScore >= BIOMETRIC_FINAL_SCORE_THRESHOLD &&
-    top.bestSim >= BIOMETRIC_MATCH_THRESHOLD;
+    top.bestSim >= BIOMETRIC_MATCH_THRESHOLD &&
+    top.minEuclideanDist <= BIOMETRIC_MAX_EUCLIDEAN_DISTANCE &&
+    top.passesMultiExemplarGate;
   const passesMargin = distinctRunners.length === 0 || margin >= BIOMETRIC_MARGIN_THRESHOLD;
   const matched = passesThreshold && passesMargin;
 
@@ -1629,27 +1736,19 @@ export function evaluateLiveMatch1toN(
       ? 'AMBIGUOUS_CLOSE_CANDIDATES'
       : 'BELOW_THRESHOLD';
 
-  const confidencePercent = Number(
-    Math.max(
-      0,
-      Math.min(
-        99.9,
-        matched
-          ? Math.max(85.0, 42 + top.finalScore * 64)
-          : top.finalScore * 100,
-      ),
-    ).toFixed(1),
-  );
+  const confidencePercent = Number((Math.max(0, Math.min(1, top.bestSim)) * 100).toFixed(1));
 
   return {
     matched,
-    topCandidate: top.candidate,
-    runnerUpCandidate: runnerUp?.candidate ?? null,
+    topCandidate: matched ? top.candidate : null,
+    runnerUpCandidate: matched ? (runnerUp?.candidate ?? null) : null,
     topSimilarity: top.bestSim,
     topCentroidSimilarity: top.centroidSim,
     topExemplarSimilarity: top.exemplarSim,
     topHumanSimilarity: top.humanSim,
     topFinalScore: top.finalScore,
+    topEuclideanDistance: top.minEuclideanDist,
+    topConsensusTop3Avg: top.consensusTop3Avg,
     runnerUpSimilarity: runnerUpSim,
     runnerUpFinalScore,
     margin,
@@ -1662,24 +1761,26 @@ export function evaluateLiveMatch1toN(
 }
 
 /**
- * Enforces 4 consecutive matching frames (`4/4`) for the exact same patient with live anti-spoof verification.
+ * Gate 4: Enforces 6/6 consecutive matching frames for the exact same `patientId`
+ * with low score variance (`< 0.025`). Any frame below `0.74`, failed gate, spoof,
+ * or identity switch immediately resets streak to `0/6`.
  */
 export class LiveIdentityStreakTracker {
   readonly requiredStreak: number;
   private activePatientId: string | null = null;
-  private streak = 0;
+  private streakScores: number[] = [];
 
   constructor(requiredStreak: number = BIOMETRIC_REQUIRED_STREAK) {
     this.requiredStreak = requiredStreak;
   }
 
   get currentStreak(): number {
-    return this.streak;
+    return this.streakScores.length;
   }
 
   reset(): void {
     this.activePatientId = null;
-    this.streak = 0;
+    this.streakScores = [];
   }
 
   step(
@@ -1692,58 +1793,93 @@ export class LiveIdentityStreakTracker {
         confirmed: false,
         streak: 0,
         requiredStreak: this.requiredStreak,
-        candidate: evalResult.topCandidate,
+        candidate: null,
         runnerUp: evalResult.runnerUpCandidate,
         similarity: evalResult.topSimilarity,
         finalScore: evalResult.topFinalScore,
         runnerUpSimilarity: evalResult.runnerUpSimilarity,
         margin: evalResult.margin,
         confidencePercent: evalResult.confidencePercent,
+        scoreVariance: 0,
         bestSource: evalResult.bestSource,
         reason: 'SPOOF_BLOCKED',
       };
     }
 
-    if (!evalResult.matched || !evalResult.topCandidate) {
+    if (
+      !evalResult.matched ||
+      !evalResult.topCandidate ||
+      evalResult.topSimilarity < BIOMETRIC_STREAK_MIN_FRAME_COSINE
+    ) {
       this.reset();
       return {
         confirmed: false,
         streak: 0,
         requiredStreak: this.requiredStreak,
-        candidate: evalResult.topCandidate,
+        candidate: null,
         runnerUp: evalResult.runnerUpCandidate,
         similarity: evalResult.topSimilarity,
         finalScore: evalResult.topFinalScore,
         runnerUpSimilarity: evalResult.runnerUpSimilarity,
         margin: evalResult.margin,
         confidencePercent: evalResult.confidencePercent,
+        scoreVariance: 0,
         bestSource: evalResult.bestSource,
-        reason: evalResult.reason,
+        reason: evalResult.reason === 'OK' ? 'BELOW_THRESHOLD' : evalResult.reason,
       };
     }
 
     const pid = evalResult.topCandidate.patientId;
     if (this.activePatientId !== pid) {
       this.activePatientId = pid;
-      this.streak = 1;
+      this.streakScores = [evalResult.topSimilarity];
     } else {
-      this.streak += 1;
+      this.streakScores.push(evalResult.topSimilarity);
+      if (this.streakScores.length > this.requiredStreak) {
+        this.streakScores.shift();
+      }
     }
 
+    const scoreSpread =
+      this.streakScores.length >= 2
+        ? Math.max(...this.streakScores) - Math.min(...this.streakScores)
+        : 0;
+
+    if (this.streakScores.length >= 2 && scoreSpread >= BIOMETRIC_MAX_SCORE_VARIANCE) {
+      this.reset();
+      return {
+        confirmed: false,
+        streak: 0,
+        requiredStreak: this.requiredStreak,
+        candidate: null,
+        runnerUp: evalResult.runnerUpCandidate,
+        similarity: evalResult.topSimilarity,
+        finalScore: evalResult.topFinalScore,
+        runnerUpSimilarity: evalResult.runnerUpSimilarity,
+        margin: evalResult.margin,
+        confidencePercent: evalResult.confidencePercent,
+        scoreVariance: scoreSpread,
+        bestSource: evalResult.bestSource,
+        reason: 'HIGH_SCORE_VARIANCE',
+      };
+    }
+
+    const streak = this.streakScores.length;
     const livenessOk = options.biologicalVerified !== false;
-    const confirmed = this.streak >= this.requiredStreak && livenessOk;
+    const confirmed = streak >= this.requiredStreak && livenessOk;
 
     return {
       confirmed,
-      streak: this.streak,
+      streak,
       requiredStreak: this.requiredStreak,
-      candidate: evalResult.topCandidate,
+      candidate: confirmed ? evalResult.topCandidate : null,
       runnerUp: evalResult.runnerUpCandidate,
       similarity: evalResult.topSimilarity,
       finalScore: evalResult.topFinalScore,
       runnerUpSimilarity: evalResult.runnerUpSimilarity,
       margin: evalResult.margin,
       confidencePercent: evalResult.confidencePercent,
+      scoreVariance: scoreSpread,
       bestSource: evalResult.bestSource,
       reason: livenessOk ? 'OK' : 'LIVENESS_PENDING',
     };

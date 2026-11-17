@@ -719,15 +719,9 @@ export function verifyHybridBiometricIdentity(
 
   const matched = top1.gatePassed && failureReasons.length === 0;
 
-  // Calibrated confidence: guaranteed < 50% when rejected, >= 92% when strictly matched
-  const rawScore =
-    top1.metrics.whitenedCos * 0.45 +
-    top1.metrics.rawCos * 0.30 +
-    top1.metrics.cosDct * 0.15 +
-    top1.metrics.cos3D * 0.10;
-
+  // True raw cosine similarity percentage when matched; zero artificial floor boost
   const confidencePercent = matched
-    ? Math.min(99.9, Math.max(90.0, Number((rawScore * 100).toFixed(1))))
+    ? Number((Math.max(0, Math.min(1, top1.metrics.rawCos)) * 100).toFixed(1))
     : Math.min(48.9, Math.max(0, Number((Math.max(0, top1.metrics.whitenedCos) * 48.5).toFixed(1))));
 
   return {

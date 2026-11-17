@@ -144,19 +144,25 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     expect(same).toBeCloseTo(1, 5);
     expect(computeHumanDescriptorSimilarity(a, a)).toBeGreaterThanOrEqual(0.99);
 
-    // Construct an exact orthogonal basis vector b so cos(a, probe) is controllable
+    // Raw cosine at 0.62 stays strictly unboosted (~0.62) and MUST NOT clear >= 0.76 threshold
     const rawB = makeDeterministicUnitVector(77);
     const dotAB = cosineSimilarityNormalized(a, rawB);
     const orthoB = normalizeVector(rawB.map((v, i) => v - dotAB * a[i]));
     const probeAt062 = normalizeVector(a.map((v, i) => 0.62 * v + Math.sqrt(1 - 0.62 * 0.62) * orthoB[i]));
     expect(cosineSimilarityNormalized(a, probeAt062)).toBeCloseTo(0.62, 3);
-    expect(computeHumanDescriptorSimilarity(a, probeAt062)).toBeGreaterThanOrEqual(
+    expect(computeHumanDescriptorSimilarity(a, probeAt062)).toBeCloseTo(0.62, 3);
+    expect(computeHumanDescriptorSimilarity(a, probeAt062)).toBeLessThan(BIOMETRIC_HUMAN_SIM_THRESHOLD);
+
+    // Genuine probe at >= 0.78 passes >= 0.76 raw cosine without nonlinear inflation
+    const probeAt078 = normalizeVector(a.map((v, i) => 0.78 * v + Math.sqrt(1 - 0.78 * 0.78) * orthoB[i]));
+    expect(computeHumanDescriptorSimilarity(a, probeAt078)).toBeCloseTo(0.78, 3);
+    expect(computeHumanDescriptorSimilarity(a, probeAt078)).toBeGreaterThanOrEqual(
       BIOMETRIC_HUMAN_SIM_THRESHOLD,
     );
 
     const unrelated = orthoB;
     expect(cosineSimilarityNormalized(a, unrelated)).toBeCloseTo(0, 4);
-    expect(computeHumanDescriptorSimilarity(a, unrelated)).toBeLessThan(0.5);
+    expect(computeHumanDescriptorSimilarity(a, unrelated)).toBeLessThan(0.1);
   });
 
   it('builds 5-angle profile and 15 sharp exemplars distributed across all 5 angles cleanly without fallbacks', () => {
@@ -206,55 +212,102 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     expect(resAlpha.validAccounts).toBe(2); // ignores 512-D candidate automatically
     expect(resAlpha.totalAccounts).toBe(3);
 
-    // Stranger -> zero false acceptance
+    // Stranger -> zero false acceptance and zero candidate name leak
     const stranger = makeDeterministicUnitVector(444);
     const resStranger = evaluateLiveMatch1toN(stranger, pool);
     expect(resStranger.matched).toBe(false);
+    expect(resStranger.topCandidate).toBeNull();
     expect(resStranger.reason).toBe('BELOW_THRESHOLD');
 
-    // Ambiguous mid-point probe close to both distinct patients -> blocked!
+    // Open-set 0.60-0.72 false-positive range -> MUST be rejected cleanly with zero name leak
+    const rawOrthoBase = makeDeterministicUnitVector(555);
+    const dBase = cosineSimilarityNormalized(patA.master_embedding, rawOrthoBase);
+    const orthoUnit = normalizeVector(rawOrthoBase.map((v, i) => v - dBase * patA.master_embedding[i]));
+    const mediumStranger068 = normalizeVector(
+      patA.master_embedding.map((v, i) => 0.68 * v + Math.sqrt(1 - 0.68 * 0.68) * orthoUnit[i]),
+    );
+    const resMedium = evaluateLiveMatch1toN(mediumStranger068, [patA, patB]);
+    expect(resMedium.matched).toBe(false);
+    expect(resMedium.topCandidate).toBeNull();
+    expect(resMedium.confidencePercent).toBeLessThan(76);
+    expect(resMedium.reason).toBe('BELOW_THRESHOLD');
+
+    // Ambiguous mid-point probe clearing >= 0.76 for TWO correlated candidates within 0.08 margin -> blocked!
+    const corrPatBVec = normalizeVector(
+      patA.master_embedding.map((v, i) => 0.6 * v + 0.8 * orthoUnit[i]),
+    );
+    const corrPatB = {
+      ...patB,
+      master_embedding: corrPatBVec,
+      angle_embeddings: { center: corrPatBVec, left: corrPatBVec, right: corrPatBVec, up: corrPatBVec, down: corrPatBVec },
+      exemplar_embeddings: [corrPatBVec, corrPatBVec, corrPatBVec],
+    };
     const tieProbe = normalizeVector(
-      patA.master_embedding.map((v, i) => 0.72 * v + 0.7 * patB.master_embedding[i]),
+      patA.master_embedding.map((v, i) => 0.8944 * v + 0.4472 * orthoUnit[i]),
     );
     const scoreA = computePatientMatchScore(tieProbe, patA);
-    const scoreB = computePatientMatchScore(tieProbe, patB);
+    const scoreB = computePatientMatchScore(tieProbe, corrPatB);
+    expect(scoreA.bestSim).toBeGreaterThanOrEqual(0.76);
+    expect(scoreB.bestSim).toBeGreaterThanOrEqual(0.76);
     expect(Math.abs(scoreA.finalScore - scoreB.finalScore)).toBeLessThan(BIOMETRIC_MARGIN_THRESHOLD);
-    const resTie = evaluateLiveMatch1toN(tieProbe, [patA, patB]);
+    const resTie = evaluateLiveMatch1toN(tieProbe, [patA, corrPatB]);
     expect(resTie.matched).toBe(false);
+    expect(resTie.topCandidate).toBeNull();
     expect(resTie.reason).toBe('AMBIGUOUS_CLOSE_CANDIDATES');
   });
 
-  it('requires 4/4 consecutive matching live frames and resets on spoof or flip', () => {
+  it('requires 6/6 consecutive matching live frames with low variance and resets on spoof, flip, or <0.74 dip', () => {
     const patA = makeCandidate('pat-a', 'HN-101', 'Patient Alpha', 1);
     const patB = makeCandidate('pat-b', 'HN-102', 'Patient Beta', 2);
     const tracker = new LiveIdentityStreakTracker(BIOMETRIC_REQUIRED_STREAK);
+    expect(BIOMETRIC_REQUIRED_STREAK).toBe(6);
 
-    const evalA = evaluateLiveMatch1toN(blendWithNoise(patA.master_embedding, 10, 0.1), [patA, patB]);
-    const evalB = evaluateLiveMatch1toN(blendWithNoise(patB.master_embedding, 20, 0.1), [patA, patB]);
+    const evalA = evaluateLiveMatch1toN(blendWithNoise(patA.master_embedding, 10, 0.05), [patA, patB]);
+    const evalAHigh = evaluateLiveMatch1toN(patA.master_embedding, [patA, patB]);
+    const evalB = evaluateLiveMatch1toN(blendWithNoise(patB.master_embedding, 20, 0.05), [patA, patB]);
 
     const s1 = tracker.step(evalA, { biologicalVerified: true });
     expect(s1.confirmed).toBe(false);
     expect(s1.streak).toBe(1);
+    // Strict zero-leak rule: candidate MUST stay null until 6/6 completes!
+    expect(s1.candidate).toBeNull();
 
-    // Identity flip resets streak immediately
+    // Identity flip resets streak back to 1 (still hiding candidate until 6/6)
     const flip = tracker.step(evalB, { biologicalVerified: true });
     expect(flip.confirmed).toBe(false);
     expect(flip.streak).toBe(1);
-    expect(flip.candidate?.patientId).toBe('pat-b');
+    expect(flip.candidate).toBeNull();
 
     // Spoof clears streak to 0
     const spoofed = tracker.step(evalA, { biologicalVerified: true, spoofDetected: true });
     expect(spoofed.confirmed).toBe(false);
     expect(spoofed.streak).toBe(0);
+    expect(spoofed.candidate).toBeNull();
 
-    // 4/4 clean frames -> confirmed
-    expect(tracker.step(evalA, { biologicalVerified: true }).confirmed).toBe(false);
-    expect(tracker.step(evalA, { biologicalVerified: true }).confirmed).toBe(false);
-    expect(tracker.step(evalA, { biologicalVerified: true }).confirmed).toBe(false);
-    const fourth = tracker.step(evalA, { biologicalVerified: true });
-    expect(fourth.confirmed).toBe(true);
-    expect(fourth.streak).toBe(4);
-    expect(fourth.candidate?.patientId).toBe('pat-a');
+    // Large score variance (>= 0.025) between frame 1 and frame 2 resets streak to 0/6
+    const rawDiffVec = makeDeterministicUnitVector(99);
+    const dotD = cosineSimilarityNormalized(patA.master_embedding, rawDiffVec);
+    const orthoD = normalizeVector(rawDiffVec.map((v, i) => v - dotD * patA.master_embedding[i]));
+    const frameAt078 = evaluateLiveMatch1toN(
+      normalizeVector(patA.master_embedding.map((v, i) => 0.78 * v + Math.sqrt(1 - 0.78 * 0.78) * orthoD[i])),
+      [patA, patB],
+    );
+    expect(tracker.step(frameAt078, { biologicalVerified: true }).streak).toBe(1);
+    const highVarFlip = tracker.step(evalAHigh, { biologicalVerified: true });
+    expect(highVarFlip.confirmed).toBe(false);
+    expect(highVarFlip.streak).toBe(0);
+
+    // 6/6 clean low-variance frames -> confirmed!
+    for (let i = 1; i <= 5; i += 1) {
+      const pending = tracker.step(evalA, { biologicalVerified: true });
+      expect(pending.confirmed).toBe(false);
+      expect(pending.streak).toBe(i);
+      expect(pending.candidate).toBeNull();
+    }
+    const sixth = tracker.step(evalA, { biologicalVerified: true });
+    expect(sixth.confirmed).toBe(true);
+    expect(sixth.streak).toBe(6);
+    expect(sixth.candidate?.patientId).toBe('pat-a');
   });
 
   it('persists, merges, and filters legacy vs 1024-D accounts in drtech_biometric_vault_v3', async () => {
@@ -466,6 +519,100 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     );
     expect(matchRes.matched).toBe(true);
     expect(matchRes.topFinalScore).toBeGreaterThanOrEqual(BIOMETRIC_FINAL_SCORE_THRESHOLD);
+  });
+
+  it('purges deleted zombie vectors from all localStorage keys and ignores orphaned patient_biometrics', async () => {
+    const zombieVec = makeDeterministicUnitVector(707);
+    const activeVec = makeDeterministicUnitVector(808);
+    const zombieProfile = buildBiometricProfileFromSamples(
+      [{ bucket: 'center', sharpness: 120, yawDeg: 0, pitchDeg: 0, embedding: zombieVec }],
+      { patientId: 'pat-zombie-1', hn: 'HN-ZOMBIE-1', fullName: 'Deleted Somchai' },
+    )!;
+    const activeProfile = buildBiometricProfileFromSamples(
+      [{ bucket: 'center', sharpness: 120, yawDeg: 0, pitchDeg: 0, embedding: activeVec }],
+      { patientId: 'pat-active-1', hn: 'HN-ACTIVE-1', fullName: 'Active Waranya' },
+    )!;
+
+    saveProfileToLocalBiometricVault(zombieProfile);
+    saveProfileToLocalBiometricVault(activeProfile);
+    storageMap.set(
+      'drtech_patients',
+      JSON.stringify([
+        { id: 'pat-zombie-1', hn: 'HN-ZOMBIE-1', fullName: 'Deleted Somchai' },
+        { id: 'pat-active-1', hn: 'HN-ACTIVE-1', fullName: 'Active Waranya' },
+      ]),
+    );
+    storageMap.set(
+      'drtech_face_templates',
+      JSON.stringify([
+        { patientId: 'pat-zombie-1', hn: 'HN-ZOMBIE-1', masterEmbedding: zombieVec },
+        { patientId: 'pat-active-1', hn: 'HN-ACTIVE-1', masterEmbedding: activeVec },
+      ]),
+    );
+
+    const mockSupabase = {
+      from: (table: string) => ({
+        select: async (cols = '*') => {
+          if (cols.includes('patient_biometrics')) {
+            return { data: null, error: { message: 'Join skipped in mock to exercise separate query' } };
+          }
+          if (table === 'patients') {
+            return {
+              data: [{ id: 'pat-active-1', hn: 'HN-ACTIVE-1', full_name: 'Active Waranya', registration_status: 'active' }],
+              error: null,
+            };
+          }
+          return {
+            data: [
+              // Orphaned deleted vector still lingering in DB table — MUST NOT resurrect!
+              {
+                patient_id: 'pat-zombie-1',
+                patient_hn: 'HN-ZOMBIE-1',
+                full_name: 'Deleted Somchai',
+                biometric_engine: BIOMETRIC_ENGINE_ID,
+                dimension: 1024,
+                master_embedding: zombieVec,
+                angle_embeddings: { center: zombieVec },
+                exemplar_embeddings: [zombieVec],
+                quality_score: 0.99,
+              },
+              {
+                patient_id: 'pat-active-1',
+                patient_hn: 'HN-ACTIVE-1',
+                full_name: 'Active Waranya',
+                biometric_engine: BIOMETRIC_ENGINE_ID,
+                dimension: 1024,
+                master_embedding: activeVec,
+                angle_embeddings: { center: activeVec },
+                exemplar_embeddings: [activeVec],
+                quality_score: 0.99,
+              },
+            ],
+            error: null,
+          };
+        },
+      }),
+    };
+
+    const strictApiClient = {
+      getSupabaseClient: () => mockSupabase,
+      getBiometricIndexWithRoster: async () => ({
+        index: [],
+        activePatients: [{ id: 'pat-active-1', hn: 'HN-ACTIVE-1', fullName: 'Active Waranya' }],
+        deletedIds: ['pat-zombie-1', 'HN-ZOMBIE-1'],
+      }),
+      getBiometricIndex: async () => [],
+    } as unknown as DrTechCaresApiClient;
+
+    const synced = await loadEnrolledPatientsWithBiometrics(strictApiClient);
+    expect(synced.compatibleCandidates.map((c) => c.patientId)).toEqual(['pat-active-1']);
+
+    // Deleted zombie record MUST be purged from every localStorage key immediately
+    expect(readLocalBiometricVault().map((v) => v.patientId)).toEqual(['pat-active-1']);
+    const remainingPatients = JSON.parse(storageMap.get('drtech_patients') ?? '[]') as { id: string }[];
+    expect(remainingPatients.map((p) => p.id)).toEqual(['pat-active-1']);
+    const remainingTemplates = JSON.parse(storageMap.get('drtech_face_templates') ?? '[]') as { patientId: string }[];
+    expect(remainingTemplates.map((t) => t.patientId)).toEqual(['pat-active-1']);
   });
 });
 
