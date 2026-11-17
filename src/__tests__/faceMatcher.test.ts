@@ -31,8 +31,12 @@ import {
   trimOutlierVectorsAndAverage,
 } from '@drtechcares/smart-biometric-core';
 import {
+  ENROLLMENT_SEQUENCE,
+  buildWrongDirectionCue,
   chooseCaptureBucket,
   classifyDisplayBucket,
+  computeNormalizedMirroredHeadPoseDeg,
+  getActiveEnrollmentStage,
   getFaceId120TargetGuidance,
 } from '../components/FaceID120Scanner';
 import { evaluateRandomHandChallenge } from '../components/RandomHandStartPrompt';
@@ -301,24 +305,89 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     expect(strangerRes.matched).toBe(false);
   });
 
-  it('enforces strict 5-angle pose capture in FaceID120Scanner and blocks frontal-only spillover', () => {
+  it('enforces strict 5-stage sequential pose capture (center -> left -> right -> up -> down) and normalized -45..+45 mirror-aware angles', () => {
+    expect(ENROLLMENT_SEQUENCE.map((s) => [s.step, s.key, s.target])).toEqual([
+      [1, 'center', 40],
+      [2, 'left', 20],
+      [3, 'right', 20],
+      [4, 'up', 20],
+      [5, 'down', 20],
+    ]);
+
     expect(classifyDisplayBucket(3, 0)).toBe('center');
     expect(classifyDisplayBucket(-10, 0)).toBe('left');
     expect(classifyDisplayBucket(11, 0)).toBe('right');
     expect(classifyDisplayBucket(0, -8)).toBe('up');
     expect(classifyDisplayBucket(0, 8)).toBe('down');
 
-    const afterCenterFull = { center: 40, left: 0, right: 0, up: 0, down: 0 };
-    // Staring straight ahead (Yaw 3, Pitch 0) MUST NOT spill into left/right/up/down
-    expect(chooseCaptureBucket(0, 0, { center: 10, left: 0, right: 0, up: 0, down: 0 })).toBe('center');
-    expect(chooseCaptureBucket(3, 0, afterCenterFull)).toBeNull();
-    expect(chooseCaptureBucket(-5, 3, afterCenterFull)).toBeNull();
+    // Step 1 (center 0..39): accepts center ONLY; rejects left/right/up/down!
+    const inStep1 = { center: 10, left: 0, right: 0, up: 0, down: 0 };
+    expect(getActiveEnrollmentStage(inStep1)?.key).toBe('center');
+    expect(chooseCaptureBucket(0, 0, inStep1)).toBe('center');
+    expect(chooseCaptureBucket(-12, 0, inStep1)).toBe('center');
+    expect(chooseCaptureBucket(-20, 0, inStep1)).toBeNull();
+    expect(chooseCaptureBucket(20, 0, inStep1)).toBeNull();
+    expect(chooseCaptureBucket(0, 15, inStep1)).toBeNull();
 
-    // Directional poses only fill their corresponding angle buckets
-    expect(chooseCaptureBucket(-9, 0, afterCenterFull)).toBe('left');
-    expect(chooseCaptureBucket(9, 0, afterCenterFull)).toBe('right');
-    expect(chooseCaptureBucket(0, -7, afterCenterFull)).toBe('up');
-    expect(chooseCaptureBucket(0, 7, afterCenterFull)).toBe('down');
+    // Step 2 (left 0..19): unlocks ONLY left; right, up, down, center are strictly locked (null)!
+    const inStep2 = { center: 40, left: 1, right: 0, up: 0, down: 0 };
+    expect(getActiveEnrollmentStage(inStep2)?.key).toBe('left');
+    expect(chooseCaptureBucket(-9, 0, inStep2)).toBe('left');
+    expect(chooseCaptureBucket(3, 0, inStep2)).toBeNull();
+    expect(chooseCaptureBucket(15, 0, inStep2)).toBeNull();
+    expect(chooseCaptureBucket(0, -10, inStep2)).toBeNull();
+    expect(chooseCaptureBucket(0, 12, inStep2)).toBeNull();
+    expect(buildWrongDirectionCue('left', 14, 0, 'th')).toContain('ซ้าย');
+
+    // Step 3 (right 0..19): unlocks right ONLY after left reaches 20/20
+    const inStep3 = { center: 40, left: 20, right: 0, up: 0, down: 0 };
+    expect(getActiveEnrollmentStage(inStep3)?.key).toBe('right');
+    expect(chooseCaptureBucket(9, 0, inStep3)).toBe('right');
+    expect(chooseCaptureBucket(-15, 0, inStep3)).toBeNull();
+    expect(chooseCaptureBucket(0, -10, inStep3)).toBeNull();
+    expect(chooseCaptureBucket(0, 10, inStep3)).toBeNull();
+
+    // Step 4 (up 0..19): unlocks up ONLY after right reaches 20/20
+    const inStep4 = { center: 40, left: 20, right: 20, up: 0, down: 0 };
+    expect(getActiveEnrollmentStage(inStep4)?.key).toBe('up');
+    expect(chooseCaptureBucket(0, -7, inStep4)).toBe('up');
+    expect(chooseCaptureBucket(0, 8, inStep4)).toBeNull();
+
+    // Step 5 (down 0..19): unlocks down ONLY after up reaches 20/20
+    const inStep5 = { center: 40, left: 20, right: 20, up: 20, down: 0 };
+    expect(getActiveEnrollmentStage(inStep5)?.key).toBe('down');
+    expect(chooseCaptureBucket(0, 7, inStep5)).toBe('down');
+    expect(chooseCaptureBucket(0, -8, inStep5)).toBeNull();
+
+    // Normalized mirror-aware head pose computation (-45° to +45°, no 94° spikes!)
+    const makeFaceMesh468 = (noseX: number, noseY: number) => {
+      const pts = Array.from({ length: 468 }, () => ({ x: 0.5, y: 0.5, z: 0 }));
+      pts[33] = { x: 0.36, y: 0.4, z: 0 };
+      pts[133] = { x: 0.44, y: 0.4, z: 0 };
+      pts[362] = { x: 0.56, y: 0.4, z: 0 };
+      pts[263] = { x: 0.64, y: 0.4, z: 0 }; // eyeMid = (0.5, 0.4), eyeDist = 0.20
+      pts[1] = { x: noseX, y: noseY, z: -0.05 };
+      return pts;
+    };
+    const centerPose = computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.5, 0.504));
+    expect(Math.abs(centerPose.yawDeg)).toBeLessThanOrEqual(1);
+    expect(Math.abs(centerPose.pitchDeg)).toBeLessThanOrEqual(1);
+
+    // Turning LEFT on mirrored screen -> nose shifts +x in raw sensor -> negative yawDeg in [-45, -8]
+    const mirrorLeftPose = computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.54, 0.504));
+    expect(mirrorLeftPose.yawDeg).toBeLessThanOrEqual(-8);
+    expect(mirrorLeftPose.yawDeg).toBeGreaterThanOrEqual(-45);
+
+    // Turning RIGHT on mirrored screen -> nose shifts -x in raw sensor -> positive yawDeg in [8, 45]
+    const mirrorRightPose = computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.46, 0.504));
+    expect(mirrorRightPose.yawDeg).toBeGreaterThanOrEqual(8);
+    expect(mirrorRightPose.yawDeg).toBeLessThanOrEqual(45);
+
+    // Extreme outlier offset NEVER jumps to 94° — strictly clamped to [-45, 45]
+    const extremeYaw = computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.95, 0.504));
+    expect(extremeYaw.yawDeg).toBe(-45);
+    const extremeRight = computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.05, 0.504));
+    expect(extremeRight.yawDeg).toBe(45);
   });
 
   it('resolves today appointment status and exercise list accurately for rest vs scheduled days', () => {
