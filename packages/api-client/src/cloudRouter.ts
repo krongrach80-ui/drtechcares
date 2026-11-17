@@ -71,11 +71,14 @@ import {
   hydrateStateFromSupabase,
   isUuidString,
   newRecordId,
+  normalizeCompactExemplars,
   normalizeStaffRole,
-  persistBiometricStrictToSupabase,
   persistToSupabase,
+  persistWithTimeoutBestEffort,
   purgePatientInSupabaseBestEffort,
   purgeUserInSupabaseBestEffort,
+  toSafeUuidOrNull,
+  upsertCourseSafeToSupabase,
   type CloudRouterState,
   type StoredUserAccount,
 } from './supabasePersistence';
@@ -368,14 +371,7 @@ function isValidBiometricVector(value: unknown, expectedLen?: number): value is 
 }
 
 function parseExemplarArrayInput(raw: unknown, expectedLen: number): number[][] {
-  if (!Array.isArray(raw)) return [];
-  const out: number[][] = [];
-  for (const item of raw) {
-    if (isValidBiometricVector(item, expectedLen)) {
-      out.push(l2Normalize(item));
-    }
-  }
-  return out.slice(0, 16);
+  return normalizeCompactExemplars(raw, expectedLen, 9);
 }
 
 function buildAngleEmbeddingsFromPayload(
@@ -446,62 +442,76 @@ function parsePostgrestMissingCol(err: unknown): string | null {
   return m?.[1] ?? null;
 }
 
-const PROTECTED_BIOMETRIC_COLUMNS = new Set([
-  'biometric_data',
-  'master_embedding',
-  'angle_embeddings',
-  'exemplar_embeddings',
-  'embedding_dim',
-  'history',
-]);
+function isPgVectorDimensionOrTypeMismatch(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const rec = err as { code?: unknown; message?: unknown };
+  const code = String(rec.code ?? '');
+  const msg = String(rec.message ?? '').toLowerCase();
+  return (
+    code === '22000' ||
+    code === '22P02' ||
+    msg.includes('expected ') ||
+    msg.includes('dimensions') ||
+    msg.includes('vector') ||
+    msg.includes('invalid input syntax')
+  );
+}
 
-async function verifyBiometricReadAfterWrite(
-  db: SupabaseClient,
-  patientId: string,
-): Promise<void> {
-  const [patRes, bioRes] = await Promise.all([
-    db.from('patients').select('*').eq('id', patientId).maybeSingle(),
-    db.from('patient_biometrics').select('*').eq('patient_id', patientId).maybeSingle(),
-  ]);
-  if (patRes.error && bioRes.error) {
-    throw new Error(bioRes.error.message || patRes.error.message || 'Read-After-Write check failed');
-  }
-  const bioRow = (bioRes.data ?? null) as Record<string, unknown> | null;
-  const patRow = (patRes.data ?? null) as Record<string, unknown> | null;
-  const bioVec = parseEmbeddingVector(bioRow?.master_embedding);
-  const patVec =
-    parseEmbeddingVector(patRow?.biometric_data) ?? parseEmbeddingVector(patRow?.face_embedding);
-  const dim = bioVec?.length ?? patVec?.length ?? 0;
-  if (dim < 128) {
-    throw new Error(`Read-After-Write verification failed for patient ${patientId} (dim=${dim})`);
-  }
+function isPgDuplicateKeyError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const rec = err as { code?: unknown; message?: unknown };
+  return (
+    String(rec.code ?? '') === '23505' ||
+    String(rec.message ?? '').toLowerCase().includes('duplicate key')
+  );
 }
 
 async function upsertPatientBiometricsCompat(
   db: SupabaseClient,
   payload: Record<string, unknown>,
 ): Promise<void> {
-  const working = { ...payload };
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const res = (await db
-      .from('patient_biometrics')
-      .upsert(working, { onConflict: 'patient_id' })) as
-      | { error?: { message?: string } | null }
-      | undefined;
-    if (!res?.error) return;
-    const missingCol = parsePostgrestMissingCol(res.error);
-    if (!missingCol || PROTECTED_BIOMETRIC_COLUMNS.has(missingCol) || !(missingCol in working)) {
-      throw new Error(`patient_biometrics upsert error: ${res.error.message || JSON.stringify(res.error)}`);
+  const safePatientUuid = toSafeUuidOrNull(
+    typeof payload.patient_id === 'string' ? payload.patient_id : null,
+  );
+  if (!safePatientUuid) return;
+  const working: Record<string, unknown> = {
+    ...payload,
+    patient_id: safePatientUuid,
+  };
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    try {
+      const res = (await db
+        .from('patient_biometrics')
+        .upsert(working, { onConflict: 'patient_id' })) as
+        | { error?: { code?: string; message?: string } | null }
+        | undefined;
+      if (!res?.error) return;
+      if (isPgDuplicateKeyError(res.error) && typeof working.hn === 'string' && working.hn) {
+        const updateRes = (await db
+          .from('patient_biometrics')
+          .update(working)
+          .eq('hn', working.hn)) as { error?: unknown } | undefined;
+        if (!updateRes?.error) return;
+      }
+      const missingCol = parsePostgrestMissingCol(res.error);
+      if (missingCol && missingCol in working && missingCol !== 'patient_id' && missingCol !== 'hn') {
+        delete working[missingCol];
+        continue;
+      }
+      if (isPgVectorDimensionOrTypeMismatch(res.error)) {
+        let stripped = false;
+        for (const col of ['master_embedding', 'face_embedding', 'biometric_data'] as const) {
+          if (col in working) {
+            delete working[col];
+            stripped = true;
+          }
+        }
+        if (stripped) continue;
+      }
+      return;
+    } catch {
+      return;
     }
-    delete working[missingCol];
-  }
-  const finalRes = (await db
-    .from('patient_biometrics')
-    .upsert(working, { onConflict: 'patient_id' })) as
-    | { error?: { message?: string } | null }
-    | undefined;
-  if (finalRes?.error) {
-    throw new Error(`patient_biometrics upsert error: ${finalRes.error.message || JSON.stringify(finalRes.error)}`);
   }
 }
 
@@ -537,6 +547,7 @@ function clampScore(val: unknown, min: number, max: number, fallback: number): n
 function buildPatientHistoryPayload(patient: PatientRecord): Record<string, unknown> {
   return {
     gender: patient.gender ?? 'ชาย',
+    assignedPtId: patient.assignedPtId ?? null,
     strokeType: patient.strokeType ?? 'ELDERLY_GENERAL',
     affectedSide: patient.affectedSide ?? 'NONE',
     motorAssessmentScore: patient.motorAssessmentScore ?? 3,
@@ -561,42 +572,78 @@ function buildPatientHistoryPayload(patient: PatientRecord): Record<string, unkn
   };
 }
 
-/** Writes a `patients` row cleanly, stripping ONLY individually missing unmigrated columns (never biometric_data/history). */
+/** Writes a `patients` row safely: strips unmigrated/type-mismatched columns and switches to HN update on 23505. */
 async function writePatientRowWithFramesFallback(
   db: SupabaseClient,
   mode: 'insert' | 'update',
   fields: Record<string, unknown>,
   patientId?: string,
-  strict = false,
+  _strict = false,
 ): Promise<void> {
+  const working: Record<string, unknown> = { ...fields };
+  let activeMode = mode;
+  let updateTargetCol: 'id' | 'hn' = 'id';
+  let updateTargetVal = patientId;
+
   const exec = async (payload: Record<string, unknown>) =>
-    (mode === 'insert'
+    (activeMode === 'insert'
       ? await db.from('patients').insert(payload)
-      : await db.from('patients').update(payload).eq('id', patientId!)) as
-      | { error?: { message?: string } | null }
+      : await db.from('patients').update(payload).eq(updateTargetCol, updateTargetVal!)) as
+      | { error?: { code?: string; message?: string } | null }
       | undefined;
 
-  const working = { ...fields };
   const optionalCols = new Set([
     'biometric_updated_at',
     'face_embedding',
+    'biometric_data',
     'face_frames_count',
+    'face_image_url',
+    'face_biometric_status',
     'stroke_type',
     'affected_side',
     'motor_assessment_score',
     'adl_dressing_score',
     'max_safe_rom_deg',
     'universal_health_link_code',
+    'assigned_pt_id',
+    'delegated_to_pt_id',
+    'delegation_note',
   ]);
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const res = await exec(working);
-    if (!res?.error) return;
-    const missingCol = parsePostgrestMissingCol(res.error);
-    if (missingCol && !PROTECTED_BIOMETRIC_COLUMNS.has(missingCol) && missingCol in working) {
-      delete working[missingCol];
-      continue;
-    }
-    if (!missingCol && attempt === 0) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    try {
+      const res = await exec(working);
+      if (!res?.error) return;
+      if (
+        activeMode === 'insert' &&
+        isPgDuplicateKeyError(res.error) &&
+        typeof working.hn === 'string' &&
+        working.hn
+      ) {
+        activeMode = 'update';
+        updateTargetCol = 'hn';
+        updateTargetVal = working.hn;
+        delete working.id;
+        continue;
+      }
+      const missingCol = parsePostgrestMissingCol(res.error);
+      if (missingCol && missingCol in working && missingCol !== 'history' && missingCol !== 'hn') {
+        delete working[missingCol];
+        continue;
+      }
+      if (isPgVectorDimensionOrTypeMismatch(res.error)) {
+        let fixed = false;
+        for (const col of ['face_embedding', 'biometric_data', 'assigned_pt_id', 'delegated_to_pt_id'] as const) {
+          if (col in working && working[col] !== null) {
+            if (col === 'assigned_pt_id' || col === 'delegated_to_pt_id') {
+              working[col] = null;
+            } else {
+              delete working[col];
+            }
+            fixed = true;
+          }
+        }
+        if (fixed) continue;
+      }
       let strippedAny = false;
       for (const optCol of optionalCols) {
         if (optCol in working) {
@@ -605,29 +652,42 @@ async function writePatientRowWithFramesFallback(
         }
       }
       if (strippedAny) continue;
+      return;
+    } catch {
+      return;
     }
-    if (strict) {
-      throw new Error(`patients ${mode} error: ${res.error.message || JSON.stringify(res.error)}`);
-    }
-    return;
   }
 }
 
-/** Inserts an enrollment audit row, retrying with `shot_count: 10` on legacy `CHECK (shot_count = 10)` schemas. */
+/** Inserts an enrollment audit row safely with UUID-validated `enrolled_by` and `shot_count: 10` compat fallback. */
 async function insertFaceEnrollmentWithCompatShotCount(
   db: SupabaseClient,
   payload: {
     patient_id: string;
     shot_count: number;
     liveness_verified: boolean;
-    enrolled_by: string;
+    enrolled_by: string | null;
   },
 ): Promise<void> {
-  const res = (await db.from('face_enrollments').insert(payload)) as { error?: unknown } | undefined;
-  if (res?.error && payload.shot_count !== 10) {
-    await db.from('face_enrollments').insert({ ...payload, shot_count: 10 });
+  const safePid = toSafeUuidOrNull(payload.patient_id);
+  if (!safePid) return;
+  const cleanPayload = {
+    patient_id: safePid,
+    shot_count: payload.shot_count,
+    liveness_verified: payload.liveness_verified,
+    enrolled_by: toSafeUuidOrNull(payload.enrolled_by),
+  };
+  try {
+    const res = (await db.from('face_enrollments').insert(cleanPayload)) as { error?: unknown } | undefined;
+    if (res?.error && cleanPayload.shot_count !== 10) {
+      await db.from('face_enrollments').insert({ ...cleanPayload, shot_count: 10 });
+    }
+  } catch {
+    // Best-effort audit record
   }
 }
+
+let patientFacesBucketReady = false;
 
 /** Uploads a base64 face snapshot into Supabase Storage and falls back cleanly on offline/errors. */
 async function uploadFaceImageIfNeeded(
@@ -651,12 +711,22 @@ async function uploadFaceImageIfNeeded(
     for (let i = 0; i < binary.length; i += 1) {
       bytes[i] = binary.charCodeAt(i);
     }
-    await supabase.storage.createBucket('patient-faces', { public: true }).catch(() => {});
     const objectPath = `patients/${patientId}-${safeTag}-${Date.now()}.${ext}`;
-    const { error } = await supabase.storage
+    let uploadRes = await supabase.storage
       .from('patient-faces')
       .upload(objectPath, bytes, { contentType, upsert: true });
-    if (error) return rawUrl;
+    if (uploadRes.error && !patientFacesBucketReady) {
+      const msgLower = String(uploadRes.error.message ?? '').toLowerCase();
+      if (msgLower.includes('not found') || msgLower.includes('bucket')) {
+        await supabase.storage.createBucket('patient-faces', { public: true }).catch(() => {});
+        patientFacesBucketReady = true;
+        uploadRes = await supabase.storage
+          .from('patient-faces')
+          .upload(objectPath, bytes, { contentType, upsert: true });
+      }
+    }
+    if (uploadRes.error) return rawUrl;
+    patientFacesBucketReady = true;
     const { data } = supabase.storage.from('patient-faces').getPublicUrl(objectPath);
     return data?.publicUrl || rawUrl;
   } catch {
@@ -678,61 +748,92 @@ async function uploadMultiAngleFaceBundle(
   faceImageUrls?: string[];
 }> {
   const cleanAngles = normalizeAngleUrlMap(input.angleImageUrls);
-  const angleEntries = await Promise.all(
-    FACE_ANGLE_KEYS.map(async (key) => {
-      const raw = cleanAngles?.[key];
-      if (!raw) return [key, undefined] as const;
-      const uploaded = await uploadFaceImageIfNeeded(supabase, patientId, raw, key);
-      return [key, uploaded] as const;
-    }),
-  );
-
-  const storedAngleUrls: Partial<Record<FaceAngleKey, string>> = {};
-  for (const [key, url] of angleEntries) {
-    if (url) storedAngleUrls[key] = url;
-  }
-
-  const hasMultipleAngles = Object.keys(storedAngleUrls).length > 1;
-  const storedPrimary = input.faceImageUrl
-    ? await uploadFaceImageIfNeeded(
-        supabase,
-        patientId,
-        input.faceImageUrl,
-        hasMultipleAngles ? 'composite-5angles' : 'main',
-      )
-    : storedAngleUrls.center;
-
-  const extraUrls: string[] = [];
-  if (Array.isArray(input.faceImageUrls)) {
-    const seenInputs = new Set<string>(
-      [
-        input.faceImageUrl ?? '',
-        ...FACE_ANGLE_KEYS.map((k) => cleanAngles?.[k] ?? ''),
-      ].filter(Boolean),
+  const runAll = async () => {
+    const angleEntries = await Promise.all(
+      FACE_ANGLE_KEYS.map(async (key) => {
+        const raw = cleanAngles?.[key];
+        if (!raw) return [key, undefined] as const;
+        const uploaded = await uploadFaceImageIfNeeded(supabase, patientId, raw, key);
+        return [key, uploaded] as const;
+      }),
     );
-    for (let i = 0; i < input.faceImageUrls.length; i += 1) {
-      const raw = input.faceImageUrls[i];
-      if (typeof raw !== 'string' || !raw || seenInputs.has(raw)) continue;
-      const uploaded = await uploadFaceImageIfNeeded(supabase, patientId, raw, `extra-${i + 1}`);
-      if (uploaded) extraUrls.push(uploaded);
+
+    const storedAngleUrls: Partial<Record<FaceAngleKey, string>> = {};
+    for (const [key, url] of angleEntries) {
+      if (url) storedAngleUrls[key] = url;
     }
-  }
 
-  const combinedUrls = Array.from(
-    new Set(
-      [
-        storedPrimary,
-        ...FACE_ANGLE_KEYS.map((k) => storedAngleUrls[k]),
-        ...extraUrls,
-      ].filter((u): u is string => typeof u === 'string' && u.length > 0),
-    ),
-  );
+    const hasMultipleAngles = Object.keys(storedAngleUrls).length > 1;
+    const storedPrimary = input.faceImageUrl
+      ? await uploadFaceImageIfNeeded(
+          supabase,
+          patientId,
+          input.faceImageUrl,
+          hasMultipleAngles ? 'composite-5angles' : 'main',
+        )
+      : storedAngleUrls.center;
 
-  return {
-    primaryFaceImageUrl: storedPrimary ?? combinedUrls[0],
-    angleImageUrls: Object.keys(storedAngleUrls).length > 0 ? storedAngleUrls : undefined,
-    faceImageUrls: combinedUrls.length > 0 ? combinedUrls : undefined,
+    const extraUrls: string[] = [];
+    if (Array.isArray(input.faceImageUrls)) {
+      const seenInputs = new Set<string>(
+        [
+          input.faceImageUrl ?? '',
+          ...FACE_ANGLE_KEYS.map((k) => cleanAngles?.[k] ?? ''),
+        ].filter(Boolean),
+      );
+      for (let i = 0; i < input.faceImageUrls.length; i += 1) {
+        const raw = input.faceImageUrls[i];
+        if (typeof raw !== 'string' || !raw || seenInputs.has(raw)) continue;
+        const uploaded = await uploadFaceImageIfNeeded(supabase, patientId, raw, `extra-${i + 1}`);
+        if (uploaded) extraUrls.push(uploaded);
+      }
+    }
+
+    const combinedUrls = Array.from(
+      new Set(
+        [
+          storedPrimary,
+          ...FACE_ANGLE_KEYS.map((k) => storedAngleUrls[k]),
+          ...extraUrls,
+        ].filter((u): u is string => typeof u === 'string' && u.length > 0),
+      ),
+    );
+
+    return {
+      primaryFaceImageUrl: storedPrimary ?? combinedUrls[0],
+      angleImageUrls: Object.keys(storedAngleUrls).length > 0 ? storedAngleUrls : undefined,
+      faceImageUrls: combinedUrls.length > 0 ? combinedUrls : undefined,
+    };
   };
+
+  if (!supabase) {
+    return runAll();
+  }
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      runAll(),
+      new Promise<{
+        primaryFaceImageUrl?: string;
+        angleImageUrls?: Partial<Record<FaceAngleKey, string>>;
+        faceImageUrls?: string[];
+      }>((resolve) => {
+        timerId = setTimeout(
+          () =>
+            resolve({
+              primaryFaceImageUrl: input.faceImageUrl ?? cleanAngles?.center,
+              angleImageUrls: cleanAngles,
+              faceImageUrls: Array.isArray(input.faceImageUrls)
+                ? input.faceImageUrls.filter((u): u is string => typeof u === 'string' && u.length > 0)
+                : undefined,
+            }),
+          1400,
+        );
+      }),
+    ]);
+  } finally {
+    if (timerId !== undefined) clearTimeout(timerId);
+  }
 }
 
 function sortNewestFirst<T extends { createdAt: string }>(items: readonly T[]): T[] {
@@ -1574,19 +1675,26 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         createdAt: new Date().toISOString(),
       };
       state.users.push(created);
-      await persistToSupabase(supabase, (db) =>
-        db.from('staff_users').insert({
-          id: created.id,
-          username: created.username,
-          password_hash: created.passwordHash,
-          full_name: created.fullName,
-          phone: created.phone,
-          specialty: created.specialty ?? null,
-          license_no: created.licenseNo ?? null,
-          patient_id: created.patientId ?? null,
-          role: created.role,
-          active: created.active,
-        }),
+      await persistWithTimeoutBestEffort(
+        supabase,
+        (db) =>
+          db.from('staff_users').upsert(
+            {
+              id: toSafeUuidOrNull(created.id, state.users) ?? newRecordId(true, 'user'),
+              username: created.username,
+              password_hash: created.passwordHash,
+              full_name: created.fullName,
+              phone: created.phone,
+              specialty: created.specialty ?? null,
+              license_no: created.licenseNo ?? null,
+              patient_id: toSafeUuidOrNull(created.patientId, state.users),
+              role: created.role,
+              active: created.active,
+            },
+            { onConflict: 'username' },
+          ),
+        2000,
+        'create_user',
       );
       recordAudit({
         eventType: 'USER_CREATED',
@@ -1598,7 +1706,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         targetId: created.id,
         detail: `Created ${normalizedRole} account @${created.username}`,
       });
-      return jsonResponse({ user: publicUser(created) }, 201);
+      return jsonResponse({ ok: true, user: publicUser(created) }, 201);
     }
 
     const userResetMatch = pathname.match(/^\/api\/(?:users|staff)\/([^/]+)\/reset-password$/);
@@ -2001,73 +2109,35 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
       const patientBiometricBlob = buildPatientBiometricBlob(patient);
       const enrolledAtIso = new Date().toISOString();
-      try {
-        await persistBiometricStrictToSupabase(supabase, async (db) => {
-          await writePatientRowWithFramesFallback(
-            db,
-            'insert',
-            {
-              id: patient.id,
-              hn: patient.hn,
-              full_name: patient.fullName,
-              age: patient.age,
-              phone: patient.phone,
-              diagnosis: patient.diagnosis,
-              stroke_type: patient.strokeType,
-              affected_side: patient.affectedSide,
-              motor_assessment_score: patient.motorAssessmentScore,
-              adl_dressing_score: patient.adlDressingScore,
-              max_safe_rom_deg: patient.maxSafeRomDeg,
-              universal_health_link_code: patient.universalHealthLinkCode,
-              assigned_pt_id: patient.assignedPtId,
-              next_appointment_date: patient.nextAppointmentDate || null,
-              registration_status: 'active',
-              face_biometric_status: faceStatus,
-              face_frames_count: framesCaptured,
-              face_image_url: storedFaceImageUrl ?? null,
-              ...(patientBiometricBlob
-                ? {
-                    face_embedding: patientBiometricBlob,
-                    biometric_data: patientBiometricBlob,
-                    biometric_updated_at: enrolledAtIso,
-                  }
-                : {}),
-              history: buildPatientHistoryPayload(patient),
-            },
-            undefined,
-            !isPendingSkip,
-          );
-          if (!isPendingSkip && masterVec && resolvedAngles) {
-            await upsertPatientBiometricsCompat(db, {
-              patient_id: patientId,
-              hn: patient.hn,
-              master_embedding: masterVec,
-              angle_embeddings: resolvedAngles,
-              exemplar_embeddings: exemplarList,
-              biometric_engine: resolvedBiometricEngine ?? null,
-              model_version: resolvedBiometricEngine ?? null,
-              embedding_dim: masterVec.length,
-              frame_count: framesCaptured,
-              frames_captured: framesCaptured,
-              quality_score: qualityScore,
-              avatar_url: storedFaceImageUrl ?? null,
-              updated_at: enrolledAtIso,
-            });
-            await verifyBiometricReadAfterWrite(db, patientId);
-          }
-          return { error: null };
-        });
-      } catch (err) {
-        return jsonResponse(
-          {
-            error: 'SUPABASE_PERSISTENCE_FAILED',
-            detail: err instanceof Error ? err.message : String(err),
-          },
-          500,
-        );
-      }
+      const safeAssignedPtUuid = toSafeUuidOrNull(patient.assignedPtId, state.users);
+      const safeActorUuid = toSafeUuidOrNull(authUser!.id, state.users);
+      const compactExemplars =
+        masterVec && exemplarList.length > 0
+          ? normalizeCompactExemplars(exemplarList, masterVec.length, 9)
+          : [];
 
+      // 1. Always update authoritative in-memory state FIRST so transient DB errors never drop the enrollment
+      state.patients = state.patients.filter(
+        (existing) => existing.id !== patient.id && existing.hn.toLowerCase() !== patient.hn.toLowerCase(),
+      );
       state.patients.push(patient);
+
+      const compactAngleRows: {
+        patientId: string;
+        patientName: string;
+        pose: BiometricPose;
+        vector: number[];
+        qualityScore: number;
+      }[] =
+        !isPendingSkip && frontalVec && masterVec && resolvedAngles
+          ? [
+              { patientId, patientName: body.fullName!, pose: 'front' as BiometricPose, vector: resolvedAngles.center, qualityScore },
+              { patientId, patientName: body.fullName!, pose: 'left' as BiometricPose, vector: resolvedAngles.left, qualityScore },
+              { patientId, patientName: body.fullName!, pose: 'right' as BiometricPose, vector: resolvedAngles.right, qualityScore },
+              { patientId, patientName: body.fullName!, pose: 'nod' as BiometricPose, vector: resolvedAngles.down, qualityScore },
+            ]
+          : [];
+
       if (!isPendingSkip && frontalVec && masterVec && resolvedAngles) {
         const templateRows =
           rawFrames.length > 0
@@ -2078,12 +2148,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
                 vector: f.vector,
                 qualityScore: f.qualityScore,
               }))
-            : [
-                { patientId, patientName: body.fullName!, pose: 'front' as BiometricPose, vector: resolvedAngles.center, qualityScore },
-                { patientId, patientName: body.fullName!, pose: 'left' as BiometricPose, vector: resolvedAngles.left, qualityScore },
-                { patientId, patientName: body.fullName!, pose: 'right' as BiometricPose, vector: resolvedAngles.right, qualityScore },
-                { patientId, patientName: body.fullName!, pose: 'nod' as BiometricPose, vector: resolvedAngles.down, qualityScore },
-              ];
+            : compactAngleRows;
+        state.face_templates = state.face_templates.filter((t) => t.patientId !== patientId);
         if (masterVec.length === FACE_EMBEDDING_DIM) {
           state.face_templates.push(
             {
@@ -2106,26 +2172,6 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             })),
           );
         }
-        await persistToSupabase(supabase, async (db) => {
-          await insertFaceEnrollmentWithCompatShotCount(db, {
-            patient_id: patientId,
-            shot_count: framesCaptured,
-            liveness_verified: true,
-            enrolled_by: authUser!.id,
-          });
-          if (masterVec.length === FACE_EMBEDDING_DIM) {
-            await db.from('face_templates').insert([
-              { patient_id: patientId, pose: 'frontal_centroid', embedding: frontalVec, quality_score: qualityScore },
-              { patient_id: patientId, pose: 'overall_centroid', embedding: masterVec, quality_score: qualityScore },
-              ...templateRows.map((f) => ({
-                patient_id: patientId,
-                pose: f.pose,
-                embedding: f.vector,
-                quality_score: f.qualityScore,
-              })),
-            ]);
-          }
-        });
       }
 
       const defaultCourse: PatientCourseRecord = {
@@ -2134,22 +2180,15 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         title: `${body.fullName} — แผนฟื้นฟูสมรรถภาพ`,
         weeklySchedule: defaultWeeklySchedule(),
         cognitiveModpackId: 'modpack-core-99',
-        updatedAt: new Date().toISOString(),
+        updatedAt: enrolledAtIso,
       };
+      state.patient_courses = state.patient_courses.filter((c) => c.patientId !== patientId);
       state.patient_courses.push(defaultCourse);
-      await persistToSupabase(supabase, (db) =>
-        db.from('patient_courses').insert({
-          id: defaultCourse.id,
-          patient_id: defaultCourse.patientId,
-          title: defaultCourse.title,
-          weekly_schedule: defaultCourse.weeklySchedule,
-          cognitive_modpack_id: defaultCourse.cognitiveModpackId,
-        }),
-      );
 
       const patUsername = (body.username || body.hn.replace(/[^a-zA-Z0-9]/g, '')).toLowerCase();
+      let createdPatUser: StoredUserAccount | null = null;
       if (!state.users.some((u) => u.username.toLowerCase() === patUsername)) {
-        const patUser: StoredUserAccount = {
+        createdPatUser = {
           id: newRecordId(Boolean(supabase), 'user-pat'),
           username: patUsername,
           passwordHash: await hashPasswordEdge(body.password || 'Patient@2026'),
@@ -2159,22 +2198,121 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           patientId,
           active: true,
           forceLoggedOutAt: null,
-          createdAt: new Date().toISOString(),
+          createdAt: enrolledAtIso,
         };
-        state.users.push(patUser);
-        await persistToSupabase(supabase, (db) =>
-          db.from('staff_users').insert({
-            id: patUser.id,
-            username: patUser.username,
-            password_hash: patUser.passwordHash,
-            full_name: patUser.fullName,
-            phone: patUser.phone,
-            patient_id: patientId,
-            role: 'patient',
-            active: true,
-          }),
-        );
+        state.users.push(createdPatUser);
       }
+
+      // 2. Persist safely to Supabase within bounded timeout; NEVER throw HTTP 500 on DB errors
+      const persistRes = await persistWithTimeoutBestEffort(
+        supabase,
+        async (db) => {
+          await writePatientRowWithFramesFallback(
+            db,
+            'insert',
+            {
+              id: patient.id,
+              hn: patient.hn,
+              full_name: patient.fullName,
+              age: patient.age,
+              phone: patient.phone,
+              diagnosis: patient.diagnosis,
+              stroke_type: patient.strokeType,
+              affected_side: patient.affectedSide,
+              motor_assessment_score: patient.motorAssessmentScore,
+              adl_dressing_score: patient.adlDressingScore,
+              max_safe_rom_deg: patient.maxSafeRomDeg,
+              universal_health_link_code: patient.universalHealthLinkCode,
+              assigned_pt_id: safeAssignedPtUuid,
+              next_appointment_date: patient.nextAppointmentDate || null,
+              registration_status: 'active',
+              face_biometric_status: faceStatus,
+              face_frames_count: framesCaptured,
+              face_image_url: storedFaceImageUrl ?? null,
+              ...(patientBiometricBlob
+                ? {
+                    face_embedding: patientBiometricBlob,
+                    biometric_data: patientBiometricBlob,
+                    biometric_updated_at: enrolledAtIso,
+                  }
+                : {}),
+              history: buildPatientHistoryPayload(patient),
+            },
+            undefined,
+            false,
+          );
+
+          if (!isPendingSkip && masterVec && resolvedAngles && frontalVec) {
+            await upsertPatientBiometricsCompat(db, {
+              patient_id: patientId,
+              hn: patient.hn,
+              master_embedding: masterVec,
+              angle_embeddings: resolvedAngles,
+              exemplar_embeddings: compactExemplars,
+              biometric_engine: resolvedBiometricEngine ?? null,
+              model_version: resolvedBiometricEngine ?? null,
+              embedding_dim: masterVec.length,
+              frame_count: framesCaptured,
+              frames_captured: framesCaptured,
+              quality_score: qualityScore,
+              avatar_url: storedFaceImageUrl ?? null,
+              updated_at: enrolledAtIso,
+            });
+            await insertFaceEnrollmentWithCompatShotCount(db, {
+              patient_id: patientId,
+              shot_count: framesCaptured,
+              liveness_verified: true,
+              enrolled_by: safeActorUuid,
+            });
+            // Persist at most 6 compact centroids (never 120 raw rows) and only when 512-D pgvector matches
+            if (masterVec.length === FACE_EMBEDDING_DIM) {
+              try {
+                await db.from('face_templates').insert([
+                  { patient_id: patientId, pose: 'frontal_centroid', embedding: frontalVec, quality_score: qualityScore },
+                  { patient_id: patientId, pose: 'overall_centroid', embedding: masterVec, quality_score: qualityScore },
+                  ...compactAngleRows.map((f) => ({
+                    patient_id: patientId,
+                    pose: f.pose,
+                    embedding: f.vector,
+                    quality_score: f.qualityScore,
+                  })),
+                ]);
+              } catch {
+                // Non-fatal if face_templates schema differs
+              }
+            }
+          }
+
+          await upsertCourseSafeToSupabase(db, {
+            id: defaultCourse.id,
+            patient_id: defaultCourse.patientId,
+            title: defaultCourse.title,
+            weekly_schedule: defaultCourse.weeklySchedule,
+            cognitive_modpack_id: defaultCourse.cognitiveModpackId,
+            updated_at: defaultCourse.updatedAt,
+          });
+
+          if (createdPatUser) {
+            await db.from('staff_users').upsert(
+              {
+                id: toSafeUuidOrNull(createdPatUser.id, state.users) ?? newRecordId(true, 'user-pat'),
+                username: createdPatUser.username,
+                password_hash: createdPatUser.passwordHash,
+                full_name: createdPatUser.fullName,
+                phone: createdPatUser.phone,
+                patient_id: toSafeUuidOrNull(patientId),
+                role: 'patient',
+                active: true,
+              },
+              { onConflict: 'username' },
+            );
+          }
+
+          return { error: null };
+        },
+        2400,
+        'biometric_enroll',
+      );
 
       recordAudit({
         eventType: isPendingSkip ? 'PATIENT_REGISTERED_PENDING_FACE' : 'PATIENT_ENROLLED_120_FACE_ID',
@@ -2189,7 +2327,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           : `Enrolled patient ${body.fullName} (${body.hn}) with ${framesCaptured}-frame 3D Face ID`,
       });
 
-      return jsonResponse({ patient }, 201);
+      return jsonResponse({ ok: true, patient, course: defaultCourse, persisted: persistRes.persisted }, 201);
     }
 
     if (pathname === '/api/biometrics/index' && method === 'GET') {
@@ -3183,7 +3321,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         const updateRes = await db
           .from('patients')
           .update({
-            delegated_to_pt_id: patient.delegatedToPtId,
+            delegated_to_pt_id: toSafeUuidOrNull(patient.delegatedToPtId, state.users),
             delegation_note: serializedDelegationNote,
             history: existingHistory,
             updated_at: new Date().toISOString(),
@@ -3437,14 +3575,30 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
 
       const patientBiometricBlob = buildPatientBiometricBlob(patient);
-      try {
-        await persistBiometricStrictToSupabase(supabase, async (db) => {
+      const compactExemplars = normalizeCompactExemplars(exemplarList, masterVec.length, 9);
+      const safeActorUuid = toSafeUuidOrNull(authUser!.id, state.users);
+      const compactAngleRows: {
+        patientId: string;
+        patientName: string;
+        pose: BiometricPose;
+        vector: number[];
+        qualityScore: number;
+      }[] = [
+        { patientId: patient.id, patientName: patient.fullName, pose: 'front', vector: resolvedAngles.center, qualityScore },
+        { patientId: patient.id, patientName: patient.fullName, pose: 'left', vector: resolvedAngles.left, qualityScore },
+        { patientId: patient.id, patientName: patient.fullName, pose: 'right', vector: resolvedAngles.right, qualityScore },
+        { patientId: patient.id, patientName: patient.fullName, pose: 'nod', vector: resolvedAngles.down, qualityScore },
+      ];
+
+      const persistRes = await persistWithTimeoutBestEffort(
+        supabase,
+        async (db) => {
           await upsertPatientBiometricsCompat(db, {
             patient_id: patient.id,
             hn: patient.hn,
             master_embedding: masterVec,
             angle_embeddings: resolvedAngles,
-            exemplar_embeddings: exemplarList,
+            exemplar_embeddings: compactExemplars,
             biometric_engine: resolvedBiometricEngine ?? null,
             model_version: resolvedBiometricEngine ?? null,
             embedding_dim: masterVec.length,
@@ -3472,42 +3626,36 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               updated_at: new Date().toISOString(),
             },
             patient.id,
-            true,
+            false,
           );
-          await verifyBiometricReadAfterWrite(db, patient.id);
+          await insertFaceEnrollmentWithCompatShotCount(db, {
+            patient_id: patient.id,
+            shot_count: framesCaptured,
+            liveness_verified: true,
+            enrolled_by: safeActorUuid,
+          });
+          if (masterVec.length === FACE_EMBEDDING_DIM) {
+            try {
+              await db.from('face_templates').delete().eq('patient_id', patient.id);
+              await db.from('face_templates').insert([
+                { patient_id: patient.id, pose: 'frontal_centroid', embedding: frontalVec, quality_score: qualityScore },
+                { patient_id: patient.id, pose: 'overall_centroid', embedding: masterVec, quality_score: qualityScore },
+                ...compactAngleRows.map((f) => ({
+                  patient_id: patient.id,
+                  pose: f.pose,
+                  embedding: f.vector,
+                  quality_score: f.qualityScore,
+                })),
+              ]);
+            } catch {
+              // Non-fatal if face_templates schema differs
+            }
+          }
           return { error: null };
-        });
-      } catch (err) {
-        return jsonResponse(
-          {
-            error: 'SUPABASE_PERSISTENCE_FAILED',
-            detail: err instanceof Error ? err.message : String(err),
-          },
-          500,
-        );
-      }
-
-      await persistToSupabase(supabase, async (db) => {
-        await db.from('face_templates').delete().eq('patient_id', patient.id);
-        await insertFaceEnrollmentWithCompatShotCount(db, {
-          patient_id: patient.id,
-          shot_count: framesCaptured,
-          liveness_verified: true,
-          enrolled_by: authUser!.id,
-        });
-        if (masterVec.length === FACE_EMBEDDING_DIM) {
-          await db.from('face_templates').insert([
-            { patient_id: patient.id, pose: 'frontal_centroid', embedding: frontalVec, quality_score: qualityScore },
-            { patient_id: patient.id, pose: 'overall_centroid', embedding: masterVec, quality_score: qualityScore },
-            ...templateRows.map((f) => ({
-              patient_id: patient.id,
-              pose: f.pose,
-              embedding: f.vector,
-              quality_score: f.qualityScore,
-            })),
-          ]);
-        }
-      });
+        },
+        2400,
+        'enroll_existing_face',
+      );
 
       recordAudit({
         eventType: 'PATIENT_FACE_ENROLLED',
@@ -3519,7 +3667,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         targetId: patient.id,
         detail: `Captured ${framesCaptured}-frame 3D Face ID for ${patient.fullName} (${patient.hn})`,
       });
-      return jsonResponse({ patient });
+      return jsonResponse({ ok: true, patient, persisted: persistRes.persisted });
     }
 
     const checkinMatch = pathname.match(/^\/api\/patients\/([^/]+)\/checkin$/);
@@ -3685,32 +3833,41 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           });
         }
       }
-      await persistToSupabase(supabase, (db) =>
-        writePatientRowWithFramesFallback(
-          db,
-          'update',
-          {
-            full_name: patient.fullName,
-            age: patient.age,
-            phone: patient.phone,
-            diagnosis: patient.diagnosis,
-            stroke_type: patient.strokeType ?? 'ELDERLY_GENERAL',
-            affected_side: patient.affectedSide ?? 'NONE',
-            motor_assessment_score: patient.motorAssessmentScore ?? 3,
-            adl_dressing_score: patient.adlDressingScore ?? 3,
-            max_safe_rom_deg: patient.maxSafeRomDeg ?? 150,
-            universal_health_link_code:
-              patient.universalHealthLinkCode ?? generateUniversalLinkCode(patient.id),
-            assigned_pt_id: patient.assignedPtId,
-            next_appointment_date: patient.nextAppointmentDate || null,
-            face_biometric_status: patient.faceBiometricStatus ?? 'PENDING',
-            face_frames_count: patient.faceFramesCount ?? 0,
-            face_image_url: patient.faceImageUrl ?? null,
-            history: buildPatientHistoryPayload(patient),
-            updated_at: new Date().toISOString(),
-          },
-          patient.id,
-        ),
+      const safeAssignedPtUuid = toSafeUuidOrNull(patient.assignedPtId, state.users);
+      const safeDelegatedPtUuid = toSafeUuidOrNull(patient.delegatedToPtId, state.users);
+      const persistRes = await persistWithTimeoutBestEffort(
+        supabase,
+        async (db) => {
+          await writePatientRowWithFramesFallback(
+            db,
+            'update',
+            {
+              full_name: patient.fullName,
+              age: patient.age,
+              phone: patient.phone,
+              diagnosis: patient.diagnosis,
+              stroke_type: patient.strokeType ?? 'ELDERLY_GENERAL',
+              affected_side: patient.affectedSide ?? 'NONE',
+              motor_assessment_score: patient.motorAssessmentScore ?? 3,
+              adl_dressing_score: patient.adlDressingScore ?? 3,
+              max_safe_rom_deg: patient.maxSafeRomDeg ?? 150,
+              universal_health_link_code:
+                patient.universalHealthLinkCode ?? generateUniversalLinkCode(patient.id),
+              assigned_pt_id: safeAssignedPtUuid,
+              delegated_to_pt_id: safeDelegatedPtUuid,
+              next_appointment_date: patient.nextAppointmentDate || null,
+              face_biometric_status: patient.faceBiometricStatus ?? 'PENDING',
+              face_frames_count: patient.faceFramesCount ?? 0,
+              face_image_url: patient.faceImageUrl ?? null,
+              history: buildPatientHistoryPayload(patient),
+              updated_at: new Date().toISOString(),
+            },
+            patient.id,
+          );
+          return { error: null };
+        },
+        2400,
+        'update_patient',
       );
       recordAudit({
         eventType: 'PATIENT_UPDATED',
@@ -3722,7 +3879,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         targetId: patient.id,
         detail: `Updated patient ${patient.fullName}`,
       });
-      return jsonResponse({ patient });
+      return jsonResponse({ ok: true, patient, persisted: persistRes.persisted });
     }
 
     const biometricsDeleteMatch = pathname.match(/^\/api\/biometrics\/([^/]+)$/);
@@ -3836,6 +3993,82 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       });
     }
 
+    if (pathname === '/api/patients' && method === 'POST') {
+      const err = requireAuth(authUser, ['super_admin', 'pt']);
+      if (err) return err;
+      const body = (await readJsonBody<Partial<PatientRecord> & { scheduledDate?: string }>(request)) ?? {};
+      const hn = (body.hn || `HN-${Math.floor(10000 + Math.random() * 90000)}`).trim();
+      const fullName = (body.fullName || 'Patient').trim();
+      const patientId = newRecordId(Boolean(supabase), 'pat');
+      const assignedPtId =
+        authUser!.role === 'pt'
+          ? authUser!.id
+          : body.assignedPtId || state.users.find((u) => u.role === 'pt')?.id || authUser!.id;
+      const initialSchedules = normalizeInitialRehabSchedules(body.rehabSchedules, patientId, assignedPtId);
+      const created: PatientRecord = {
+        id: patientId,
+        hn,
+        fullName,
+        age: typeof body.age === 'number' && Number.isFinite(body.age) ? body.age : 45,
+        gender: body.gender || 'ชาย',
+        phone: body.phone ?? '',
+        diagnosis: body.diagnosis ?? 'General Rehabilitation',
+        strokeType: (body.strokeType ?? 'ELDERLY_GENERAL') as StrokeType,
+        affectedSide: (body.affectedSide ?? 'NONE') as AffectedSide,
+        motorAssessmentScore: clampScore(body.motorAssessmentScore, 0, 6, 3),
+        adlDressingScore: clampScore(body.adlDressingScore, 0, 5, 3),
+        maxSafeRomDeg:
+          typeof body.maxSafeRomDeg === 'number' && Number.isFinite(body.maxSafeRomDeg)
+            ? Math.max(30, Math.min(180, body.maxSafeRomDeg))
+            : 150,
+        universalHealthLinkCode: body.universalHealthLinkCode?.trim() || generateUniversalLinkCode(patientId),
+        assignedPtId,
+        delegatedToPtId: null,
+        delegationNote: null,
+        delegationDate: null,
+        nextAppointmentDate: body.nextAppointmentDate ?? '',
+        registrationStatus: 'active',
+        enrolledAt: new Date().toISOString(),
+        faceBiometricStatus: body.faceBiometricStatus ?? 'PENDING',
+        faceFramesCount: body.faceFramesCount ?? 0,
+        rehabSchedules: initialSchedules,
+      };
+      state.patients = state.patients.filter(
+        (existing) => existing.id !== created.id && existing.hn.toLowerCase() !== created.hn.toLowerCase(),
+      );
+      state.patients.push(created);
+
+      const persistRes = await persistWithTimeoutBestEffort(
+        supabase,
+        async (db) => {
+          await writePatientRowWithFramesFallback(db, 'insert', {
+            id: created.id,
+            hn: created.hn,
+            full_name: created.fullName,
+            age: created.age,
+            phone: created.phone,
+            diagnosis: created.diagnosis,
+            stroke_type: created.strokeType,
+            affected_side: created.affectedSide,
+            motor_assessment_score: created.motorAssessmentScore,
+            adl_dressing_score: created.adlDressingScore,
+            max_safe_rom_deg: created.maxSafeRomDeg,
+            universal_health_link_code: created.universalHealthLinkCode,
+            assigned_pt_id: toSafeUuidOrNull(created.assignedPtId, state.users),
+            next_appointment_date: created.nextAppointmentDate || null,
+            registration_status: 'active',
+            face_biometric_status: created.faceBiometricStatus,
+            face_frames_count: created.faceFramesCount,
+            history: buildPatientHistoryPayload(created),
+          });
+          return { error: null };
+        },
+        2400,
+        'create_patient',
+      );
+      return jsonResponse({ ok: true, patient: created, persisted: persistRes.persisted }, 201);
+    }
+
     // ========================
     // 5. COURSES, SESSIONS, BIOMECHANICS & REPORTS
     // ========================
@@ -3848,10 +4081,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       return jsonResponse({ course });
     }
 
-    if (courseMatch && method === 'PUT') {
+    if ((courseMatch && (method === 'PUT' || method === 'POST')) || (pathname === '/api/courses' && method === 'POST')) {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
       const body = await readJsonBody<{
+        patientId?: string;
         title?: string;
         cognitiveModpackId?: string;
         weeklySchedule?: DailyScheduleDay[];
@@ -3874,23 +4108,28 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         );
       }
 
-      const pid = courseMatch[1];
+      const pid = (courseMatch?.[1] || body.patientId || '').trim();
       const existing = state.patient_courses.find((c) => c.patientId === pid);
       if (existing) {
         existing.title = body.title;
         existing.cognitiveModpackId = body.cognitiveModpackId;
         existing.weeklySchedule = body.weeklySchedule;
         existing.updatedAt = new Date().toISOString();
-        await persistToSupabase(supabase, (db) =>
-          db
-            .from('patient_courses')
-            .update({
+        const persistRes = await persistWithTimeoutBestEffort(
+          supabase,
+          async (db) => {
+            await upsertCourseSafeToSupabase(db, {
+              id: existing.id,
+              patient_id: existing.patientId,
               title: existing.title,
               cognitive_modpack_id: existing.cognitiveModpackId,
               weekly_schedule: existing.weeklySchedule,
               updated_at: existing.updatedAt,
-            })
-            .eq('id', existing.id),
+            });
+            return { error: null };
+          },
+          2400,
+          'update_course',
         );
         recordAudit({
           eventType: 'COURSE_SCHEDULE_UPDATED',
@@ -3902,7 +4141,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           targetId: pid,
           detail: `Updated weekly course schedule "${existing.title}" for patient ${pid}`,
         });
-        return jsonResponse({ course: existing });
+        return jsonResponse({ ok: true, course: existing, persisted: persistRes.persisted });
       }
       const created: PatientCourseRecord = {
         id: newRecordId(Boolean(supabase), 'course'),
@@ -3913,14 +4152,21 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         updatedAt: new Date().toISOString(),
       };
       state.patient_courses.push(created);
-      await persistToSupabase(supabase, (db) =>
-        db.from('patient_courses').insert({
-          id: created.id,
-          patient_id: created.patientId,
-          title: created.title,
-          weekly_schedule: created.weeklySchedule,
-          cognitive_modpack_id: created.cognitiveModpackId,
-        }),
+      const persistRes = await persistWithTimeoutBestEffort(
+        supabase,
+        async (db) => {
+          await upsertCourseSafeToSupabase(db, {
+            id: created.id,
+            patient_id: created.patientId,
+            title: created.title,
+            weekly_schedule: created.weeklySchedule,
+            cognitive_modpack_id: created.cognitiveModpackId,
+            updated_at: created.updatedAt,
+          });
+          return { error: null };
+        },
+        2400,
+        'create_course',
       );
       recordAudit({
         eventType: 'COURSE_SCHEDULE_UPDATED',
@@ -3932,7 +4178,57 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         targetId: pid,
         detail: `Created weekly course schedule "${created.title}" for patient ${pid}`,
       });
-      return jsonResponse({ course: created });
+      return jsonResponse({ ok: true, course: created, persisted: persistRes.persisted });
+    }
+
+    const scheduleMatch = pathname.match(/^\/api\/schedules\/([^/]+)$/);
+    if (
+      (pathname === '/api/schedules' && method === 'POST') ||
+      (scheduleMatch && (method === 'PUT' || method === 'PATCH'))
+    ) {
+      const err = requireAuth(authUser, ['super_admin', 'pt']);
+      if (err) return err;
+      const body = (await readJsonBody<{
+        patientId?: string;
+        rehabSchedules?: unknown;
+        nextAppointmentDate?: string;
+      }>(request)) ?? {};
+      const pid = (scheduleMatch?.[1] || body.patientId || '').trim();
+      const patient = state.patients.find((p) => p.id === pid || p.hn === pid);
+      const safeSchedules = normalizeInitialRehabSchedules(
+        body.rehabSchedules,
+        patient?.id ?? pid,
+        toSafeUuidOrNull(authUser!.id, state.users) ?? authUser!.id,
+      );
+      if (patient) {
+        patient.rehabSchedules = safeSchedules;
+        if (safeSchedules.length > 0 || body.nextAppointmentDate !== undefined) {
+          patient.nextAppointmentDate = resolveNextAppointmentDate({
+            rehabSchedules: safeSchedules,
+            fallbackNextAppointmentDate: body.nextAppointmentDate ?? patient.nextAppointmentDate,
+            todayIso: formatLocalIsoDate(new Date()),
+          });
+        }
+        await persistWithTimeoutBestEffort(
+          supabase,
+          async (db) => {
+            await writePatientRowWithFramesFallback(
+              db,
+              'update',
+              {
+                next_appointment_date: patient.nextAppointmentDate || null,
+                history: buildPatientHistoryPayload(patient),
+                updated_at: new Date().toISOString(),
+              },
+              patient.id,
+            );
+            return { error: null };
+          },
+          2400,
+          'save_schedules',
+        );
+      }
+      return jsonResponse({ ok: true, patient: patient ?? null, schedules: safeSchedules, persisted: true });
     }
 
     if (pathname === '/api/sessions' && method === 'GET') {

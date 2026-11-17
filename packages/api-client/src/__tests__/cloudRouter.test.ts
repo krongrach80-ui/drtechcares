@@ -19,8 +19,10 @@ import {
 import {
   hydrateStaffUsersOnly,
   hydrateStateFromSupabase,
+  normalizeCompactExemplars,
   purgePatientInSupabaseBestEffort,
   purgeUserInSupabaseBestEffort,
+  toSafeUuidOrNull,
   type CloudRouterState,
 } from '../supabasePersistence';
 
@@ -2524,6 +2526,208 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     const rejOutlierJson = (await rejOutlier.json()) as { matched: boolean; topCandidate?: unknown };
     expect(rejOutlierJson.matched).toBe(false);
     expect(rejOutlierJson.topCandidate).toBeNull();
+  });
+
+  it('sanitizes UUID/exemplar payloads and never returns HTTP 500 during enrollment/course saves even when Supabase fails', async () => {
+    expect(toSafeUuidOrNull('user-pt-1')).toBe('00000000-0000-4000-8000-000000000002');
+    expect(toSafeUuidOrNull('non-uuid-pt')).toBeNull();
+    expect(toSafeUuidOrNull('11111111-1111-4111-8111-111111111111')).toBe(
+      '11111111-1111-4111-8111-111111111111',
+    );
+
+    const mk1024 = (seed: number) =>
+      l2Normalize(Array.from({ length: 1024 }, (_, idx) => Math.sin((idx + 1) * seed)));
+    const exemplars18 = Array.from({ length: 18 }, (_, i) => mk1024(i + 1));
+    expect(normalizeCompactExemplars(exemplars18, 1024, 9)).toHaveLength(9);
+
+    const capturedRestCalls: { url: string; method: string; body: unknown }[] = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
+      let parsedBody: unknown = null;
+      const rawBodyText =
+        typeof init?.body === 'string'
+          ? init.body
+          : input instanceof Request && method !== 'GET'
+            ? await input.clone().text().catch(() => '')
+            : '';
+      if (rawBodyText) {
+        try {
+          parsedBody = JSON.parse(rawBodyText);
+        } catch {
+          parsedBody = rawBodyText;
+        }
+      }
+      capturedRestCalls.push({ url, method, body: parsedBody });
+      if (url.includes('/rest/v1/staff_users') && method === 'GET') {
+        return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      // Simulate failing Supabase Postgres RPC / REST writes (400 + 22P02/23503)
+      return new Response(
+        JSON.stringify({
+          code: '22P02',
+          message: 'simulated postgres error on write',
+        }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }) as typeof fetch;
+
+    try {
+      const fakeJwt =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.signaturevaltestsafe1234567890';
+      const resilientRouter = createCloudDelegatedRouter({
+        supabaseUrl: 'https://vyjuwjhbdhknjdzyqctz.supabase.co',
+        supabaseServiceKey: fakeJwt,
+      });
+
+      const adminLogin = await callRouter(resilientRouter, '/api/auth/login', {
+        method: 'POST',
+        body: { username: 'admin', password: 'Admin@2026' },
+      });
+      expect(adminLogin.status).toBe(200);
+      const { token } = (await adminLogin.json()) as { token: string };
+
+      const master1024 = mk1024(3.14);
+      const enrollRes = await callRouter(resilientRouter, '/api/biometric/enroll', {
+        method: 'POST',
+        token,
+        body: {
+          hn: 'HN-43143',
+          fullName: 'Sdas Test',
+          age: 64,
+          phone: '0812345678',
+          diagnosis: 'Stroke Shoulder',
+          assignedPtId: 'arbitrary-non-uuid-pt',
+          nextAppointmentDate: '2026-11-20',
+          rehabSchedules: [
+            {
+              id: 'sched-1',
+              patientId: 'pending',
+              exerciseId: 'STROKE_SH_FLEX_BOTH',
+              scheduledDate: '2026-11-20',
+              sets: 3,
+              reps: 10,
+              status: 'ACTIVE',
+            },
+          ],
+          biometricEngine: 'human-faceres-1024d',
+          masterEmbedding: master1024,
+          angleEmbeddings: {
+            center: master1024,
+            left: mk1024(4.1),
+            right: mk1024(5.2),
+            up: mk1024(6.3),
+            down: mk1024(7.4),
+          },
+          exemplarEmbeddings: exemplars18,
+          rawFrames: Array.from({ length: 120 }, (_, idx) => ({
+            pose: 'front' as const,
+            vector: mk1024(idx + 1),
+            qualityScore: 0.95,
+          })),
+          framesCaptured: 120,
+          qualityScore: 0.96,
+        },
+      });
+      expect(enrollRes.status).toBe(201);
+      const enrollJson = (await enrollRes.json()) as {
+        ok: boolean;
+        patient: { id: string; hn: string };
+      };
+      expect(enrollJson.ok).toBe(true);
+      expect(enrollJson.patient.hn).toBe('HN-43143');
+
+      // Inspect outbound REST payloads sent to Supabase to prove sanitization & compact storage
+      const patientWrite = capturedRestCalls.find(
+        (c) => c.url.includes('/rest/v1/patients') && (c.method === 'POST' || c.method === 'PATCH'),
+      );
+      expect(patientWrite).toBeDefined();
+      const patPayload = Array.isArray(patientWrite?.body)
+        ? (patientWrite?.body[0] as Record<string, unknown>)
+        : (patientWrite?.body as Record<string, unknown>);
+      expect(patPayload.assigned_pt_id ?? null).toBeNull();
+
+      const faceTplWrite = capturedRestCalls.find(
+        (c) => c.url.includes('/rest/v1/face_templates') && c.method === 'POST',
+      );
+      if (faceTplWrite && Array.isArray(faceTplWrite.body)) {
+        expect(faceTplWrite.body.length).toBeLessThanOrEqual(6);
+      }
+
+      // PUT /api/courses/:patientId and POST /api/patients also never return 500
+      const courseRes = await callRouter(resilientRouter, `/api/courses/${enrollJson.patient.id}`, {
+        method: 'PUT',
+        token,
+        body: {
+          title: 'Stroke Shoulder Plan',
+          cognitiveModpackId: 'missing-modpack-id',
+          weeklySchedule: [],
+        },
+      });
+      expect(courseRes.status).toBe(200);
+      const createPatRes = await callRouter(resilientRouter, '/api/patients', {
+        method: 'POST',
+        token,
+        body: {
+          hn: 'HN-POST-500',
+          fullName: 'Fallback Create',
+          age: 58,
+          assignedPtId: 'user-pt-1',
+        },
+      });
+      expect(createPatRes.status).toBe(201);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+
+    // Frontend DrTechCaresApiClient falls back cleanly on HTTP 500 without throwing "Request failed (500)"
+    const prevStorage = globalThis.localStorage;
+    const memStore = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: (k: string) => memStore.get(k) ?? null,
+        setItem: (k: string, v: string) => {
+          memStore.set(k, String(v));
+        },
+        removeItem: (k: string) => {
+          memStore.delete(k);
+        },
+      },
+    });
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ message: 'Upstream 500' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      })) as typeof fetch;
+
+    try {
+      const api = new DrTechCaresApiClient({ apiBaseUrl: 'https://drtechcares.workers.dev' });
+      const enrolledFallback = await api.enrollPatient10Shot({
+        hn: 'HN-OFFLINE-500',
+        fullName: 'Offline Fallback Patient',
+        age: 61,
+        diagnosis: 'Stroke',
+        assignedPtId: 'user-pt-1',
+        masterEmbedding: mk1024(9.1),
+      });
+      expect(enrolledFallback.hn).toBe('HN-OFFLINE-500');
+      expect(memStore.get('drtech_patients')).toContain('HN-OFFLINE-500');
+
+      const courseFallback = await api.upsertPatientCourse({
+        patientId: enrolledFallback.id,
+        title: 'Offline Course',
+        cognitiveModpackId: 'stroke_adl_basic',
+        weeklySchedule: [],
+      });
+      expect(courseFallback.patientId).toBe(enrolledFallback.id);
+      expect(memStore.get('drtech_patient_courses')).toContain(enrolledFallback.id);
+    } finally {
+      globalThis.fetch = prevFetch;
+      Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: prevStorage });
+    }
   });
 });
 

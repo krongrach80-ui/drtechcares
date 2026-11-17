@@ -1200,12 +1200,62 @@ export async function hydrateStateFromSupabase(
 export async function persistToSupabase(
   supabase: SupabaseClient | null,
   task: (client: SupabaseClient) => PromiseLike<unknown>,
-): Promise<void> {
-  if (!supabase) return;
+): Promise<boolean> {
+  if (!supabase) return false;
   try {
     await task(supabase);
+    return true;
   } catch {
-    // Non-fatal fallback for offline / missing column edge cases
+    // Non-fatal fallback for offline / missing column / constraint edge cases
+    return false;
+  }
+}
+
+/**
+ * Bounded best-effort persistence wrapper for write endpoints (`POST`/`PUT`/`PATCH`):
+ * awaits Supabase writes up to `timeoutMs` inside try/catch, logs warnings on errors/timeouts,
+ * and NEVER throws HTTP 500 back to the client.
+ */
+export async function persistWithTimeoutBestEffort(
+  supabase: SupabaseClient | null,
+  task: (client: SupabaseClient) => PromiseLike<unknown>,
+  timeoutMs = 2400,
+  label = 'supabase_write',
+): Promise<{ persisted: boolean; errorMessage?: string }> {
+  if (!supabase) return { persisted: false };
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const outcome = await Promise.race([
+      Promise.resolve(task(supabase)).then(
+        (res) => ({ timedOut: false as const, res }),
+        (err) => ({ timedOut: false as const, err }),
+      ),
+      new Promise<{ timedOut: true }>((resolve) => {
+        timerId = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+      }),
+    ]);
+    if (outcome.timedOut) {
+      console.warn(`[cloudRouter] ${label} timed out after ${timeoutMs}ms (kept in-memory state)`);
+      return { persisted: false, errorMessage: 'timeout' };
+    }
+    if ('err' in outcome && outcome.err) {
+      const msg = outcome.err instanceof Error ? outcome.err.message : String(outcome.err);
+      console.warn(`[cloudRouter] ${label} failed cleanly (non-fatal):`, msg);
+      return { persisted: false, errorMessage: msg };
+    }
+    const rawRes = 'res' in outcome ? (outcome.res as { error?: { message?: string } | null } | null) : null;
+    if (rawRes && typeof rawRes === 'object' && rawRes.error) {
+      const msg = rawRes.error.message || JSON.stringify(rawRes.error);
+      console.warn(`[cloudRouter] ${label} PostgREST warning (non-fatal):`, msg);
+      return { persisted: false, errorMessage: msg };
+    }
+    return { persisted: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[cloudRouter] ${label} unexpected error (non-fatal):`, msg);
+    return { persisted: false, errorMessage: msg };
+  } finally {
+    if (timerId !== undefined) clearTimeout(timerId);
   }
 }
 
@@ -1226,8 +1276,122 @@ export async function persistBiometricStrictToSupabase(
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+const KNOWN_SEEDED_UUID_ALIASES: Record<string, string> = {
+  'user-super-1': '00000000-0000-4000-8000-000000000001',
+  admin: '00000000-0000-4000-8000-000000000001',
+  'user-pt-1': '00000000-0000-4000-8000-000000000002',
+  pt_somchai: '00000000-0000-4000-8000-000000000002',
+  'user-pt-2': '00000000-0000-4000-8000-000000000003',
+  pt_waranya: '00000000-0000-4000-8000-000000000003',
+};
+
 export function isUuidString(value: string | null | undefined): boolean {
   return typeof value === 'string' && UUID_REGEX.test(value.trim());
+}
+
+/**
+ * Resolves any user/entity reference to a valid Postgres UUID or `null` so UUID columns
+ * (`assigned_pt_id`, `delegated_to_pt_id`, `enrolled_by`, `user_id`) NEVER trigger 22P02 errors.
+ */
+export function toSafeUuidOrNull(
+  value: string | null | undefined,
+  staffUsers?: ReadonlyArray<Pick<StoredUserAccount, 'id' | 'username'>>,
+): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (UUID_REGEX.test(trimmed)) return trimmed;
+  const mappedAlias = KNOWN_SEEDED_UUID_ALIASES[trimmed.toLowerCase()];
+  if (mappedAlias) return mappedAlias;
+  if (Array.isArray(staffUsers)) {
+    const lower = trimmed.toLowerCase();
+    const matched = staffUsers.find(
+      (u) =>
+        u.id.toLowerCase() === lower ||
+        u.username.toLowerCase() === lower,
+    );
+    if (matched && UUID_REGEX.test(matched.id)) {
+      return matched.id;
+    }
+  }
+  return null;
+}
+
+/**
+ * Caps biometric exemplar vectors to at most `maxCount` (default 9) L2-normalized anchors
+ * of matching dimension so Postgres payloads stay compact (< 15KB) and fast.
+ */
+export function normalizeCompactExemplars(
+  vectors: unknown,
+  expectedDim: number,
+  maxCount = 9,
+): number[][] {
+  if (!Array.isArray(vectors) || expectedDim < 128) return [];
+  const out: number[][] = [];
+  for (const rawVec of vectors) {
+    if (!Array.isArray(rawVec) || rawVec.length !== expectedDim) continue;
+    let sumSq = 0;
+    let valid = true;
+    for (let i = 0; i < rawVec.length; i += 1) {
+      const n = Number(rawVec[i]);
+      if (!Number.isFinite(n)) {
+        valid = false;
+        break;
+      }
+      sumSq += n * n;
+    }
+    if (!valid || sumSq <= 0) continue;
+    const norm = Math.sqrt(sumSq);
+    out.push(rawVec.map((v) => Number((Number(v) / norm).toFixed(6))));
+    if (out.length >= maxCount) break;
+  }
+  return out;
+}
+
+/** Safely upserts a `patient_courses` row into Postgres, handling missing modpack FKs (23503) and schema drift. */
+export async function upsertCourseSafeToSupabase(
+  db: SupabaseClient,
+  row: {
+    id: string;
+    patient_id: string;
+    title: string;
+    weekly_schedule: unknown;
+    cognitive_modpack_id?: string | null;
+    updated_at?: string;
+  },
+): Promise<void> {
+  const safePatientUuid = toSafeUuidOrNull(row.patient_id);
+  if (!safePatientUuid) return;
+  const safeId = isUuidString(row.id) ? row.id.trim() : newRecordId(true, 'course');
+  const working: Record<string, unknown> = {
+    id: safeId,
+    patient_id: safePatientUuid,
+    title: row.title,
+    weekly_schedule: row.weekly_schedule ?? [],
+    cognitive_modpack_id: row.cognitive_modpack_id || null,
+    updated_at: row.updated_at || new Date().toISOString(),
+  };
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const res = (await db.from('patient_courses').upsert(working, { onConflict: 'id' })) as
+      | { error?: { code?: string; message?: string } | null }
+      | undefined;
+    if (!res?.error) return;
+    const msg = String(res.error.message ?? '');
+    if (
+      res.error.code === '23503' ||
+      msg.toLowerCase().includes('foreign key') ||
+      msg.toLowerCase().includes('modpack')
+    ) {
+      working.cognitive_modpack_id = null;
+      continue;
+    }
+    const missing = msg.match(/Could not find the ['"]?([a-zA-Z0-9_]+)['"]? column/i)?.[1];
+    if (missing && missing in working) {
+      delete working[missing];
+      continue;
+    }
+    return;
+  }
 }
 
 async function settleDeleteWithTimeout(

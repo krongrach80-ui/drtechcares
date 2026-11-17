@@ -912,137 +912,151 @@ export async function syncPatientBiometricEverywhere(input: {
     throw new Error('ไม่ได้เชื่อมต่อฐานข้อมูล Supabase กรุณาตรวจสอบ VITE_SUPABASE_URL และ VITE_SUPABASE_ANON_KEY');
   }
 
+  const UUID_STRICT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const safeAssignedPtId =
+    input.patient.assignedPtId && UUID_STRICT_RE.test(input.patient.assignedPtId.trim())
+      ? input.patient.assignedPtId.trim()
+      : null;
+  const dbExemplars = profile.exemplar_embeddings.slice(0, 9);
+
   if (supabase) {
-    const blob = {
-      engine: BIOMETRIC_ENGINE_ID,
-      dimension: dim,
-      master_embedding: masterNorm,
-      angle_embeddings: angleNorm,
-      exemplar_embeddings: profile.exemplar_embeddings,
-      frames_captured: profile.framesCaptured,
-      updated_at: profile.updatedAt,
-    };
+    try {
+      const blob = {
+        engine: BIOMETRIC_ENGINE_ID,
+        dimension: dim,
+        master_embedding: masterNorm,
+        angle_embeddings: angleNorm,
+        exemplar_embeddings: dbExemplars,
+        frames_captured: profile.framesCaptured,
+        updated_at: profile.updatedAt,
+      };
 
-    const existingPat = await supabase
-      .from('patients')
-      .select('id, history')
-      .eq('id', input.patient.id)
-      .maybeSingle();
-    if (existingPat.error) {
-      throw new Error(`Supabase ตรวจสอบข้อมูลผู้ป่วยไม่สำเร็จ: ${existingPat.error.message}`);
-    }
-
-    const baseHistory =
-      existingPat.data && existingPat.data.history && typeof existingPat.data.history === 'object'
-        ? (existingPat.data.history as Record<string, unknown>)
-        : {};
-    const enrichedHistory = {
-      ...baseHistory,
-      biometricEngine: BIOMETRIC_ENGINE_ID,
-      masterEmbedding: masterNorm,
-      angleEmbeddings: angleNorm,
-      exemplarEmbeddings: profile.exemplar_embeddings,
-      biometricUpdatedAt: profile.updatedAt,
-    };
-
-    const patientBioPatch: Record<string, unknown> = {
-      face_biometric_status: 'VERIFIED',
-      face_frames_count: profile.framesCaptured,
-      face_embedding: blob,
-      biometric_data: blob,
-      biometric_updated_at: profile.updatedAt,
-      history: enrichedHistory,
-      updated_at: profile.updatedAt,
-      ...(input.patient.faceImageUrl ? { face_image_url: input.patient.faceImageUrl } : {}),
-    };
-
-    if (existingPat.data?.id) {
-      const patRes = await executeSupabaseWriteWithSchemaCompat(
-        (payload) => supabase.from('patients').update(payload).eq('id', input.patient.id).select('id'),
-        patientBioPatch,
-      );
-      if (patRes.error) {
-        throw new Error(`Supabase บันทึก patients ไม่สำเร็จ: ${patRes.error.message}`);
+      const existingPat = await supabase
+        .from('patients')
+        .select('id, history')
+        .eq('id', input.patient.id)
+        .maybeSingle();
+      if (existingPat.error) {
+        throw new Error(`Supabase ตรวจสอบข้อมูลผู้ป่วยไม่สำเร็จ: ${existingPat.error.message}`);
       }
-    } else {
-      const patInsertRes = await executeSupabaseWriteWithSchemaCompat(
-        (payload) => supabase.from('patients').upsert(payload, { onConflict: 'id' }).select('id'),
-        {
-          id: input.patient.id,
-          hn: input.patient.hn,
-          full_name: input.patient.fullName,
-          age:
-            typeof input.patient.age === 'number' && Number.isFinite(input.patient.age)
-              ? input.patient.age
-              : 45,
-          phone: input.patient.phone ?? '',
-          diagnosis: input.patient.diagnosis || 'กำลังประเมินอาการ',
-          registration_status: input.patient.registrationStatus || 'active',
-          assigned_pt_id: input.patient.assignedPtId || null,
-          next_appointment_date: input.patient.nextAppointmentDate || null,
-          ...patientBioPatch,
-        },
-      );
-      if (patInsertRes.error) {
-        throw new Error(`Supabase สร้างระเบียน patients ไม่สำเร็จ: ${patInsertRes.error.message}`);
+
+      const baseHistory =
+        existingPat.data && existingPat.data.history && typeof existingPat.data.history === 'object'
+          ? (existingPat.data.history as Record<string, unknown>)
+          : {};
+      const enrichedHistory = {
+        ...baseHistory,
+        biometricEngine: BIOMETRIC_ENGINE_ID,
+        masterEmbedding: masterNorm,
+        angleEmbeddings: angleNorm,
+        exemplarEmbeddings: dbExemplars,
+        biometricUpdatedAt: profile.updatedAt,
+      };
+
+      const patientBioPatch: Record<string, unknown> = {
+        face_biometric_status: 'VERIFIED',
+        face_frames_count: profile.framesCaptured,
+        face_embedding: blob,
+        biometric_data: blob,
+        biometric_updated_at: profile.updatedAt,
+        history: enrichedHistory,
+        updated_at: profile.updatedAt,
+        ...(input.patient.faceImageUrl ? { face_image_url: input.patient.faceImageUrl } : {}),
+      };
+
+      if (existingPat.data?.id) {
+        const patRes = await executeSupabaseWriteWithSchemaCompat(
+          (payload) => supabase.from('patients').update(payload).eq('id', input.patient.id).select('id'),
+          patientBioPatch,
+        );
+        if (patRes.error) {
+          throw new Error(`Supabase บันทึก patients ไม่สำเร็จ: ${patRes.error.message}`);
+        }
+      } else {
+        const patInsertRes = await executeSupabaseWriteWithSchemaCompat(
+          (payload) => supabase.from('patients').upsert(payload, { onConflict: 'id' }).select('id'),
+          {
+            id: input.patient.id,
+            hn: input.patient.hn,
+            full_name: input.patient.fullName,
+            age:
+              typeof input.patient.age === 'number' && Number.isFinite(input.patient.age)
+                ? input.patient.age
+                : 45,
+            phone: input.patient.phone ?? '',
+            diagnosis: input.patient.diagnosis || 'กำลังประเมินอาการ',
+            registration_status: input.patient.registrationStatus || 'active',
+            assigned_pt_id: safeAssignedPtId,
+            next_appointment_date: input.patient.nextAppointmentDate || null,
+            ...patientBioPatch,
+          },
+        );
+        if (patInsertRes.error) {
+          throw new Error(`Supabase สร้างระเบียน patients ไม่สำเร็จ: ${patInsertRes.error.message}`);
+        }
       }
-    }
 
-    const bioPayload: Record<string, unknown> = {
-      patient_id: input.patient.id,
-      hn: input.patient.hn,
-      master_embedding: masterNorm,
-      angle_embeddings: angleNorm,
-      exemplar_embeddings: profile.exemplar_embeddings,
-      biometric_engine: BIOMETRIC_ENGINE_ID,
-      model_version: BIOMETRIC_ENGINE_ID,
-      embedding_dim: dim,
-      frame_count: profile.framesCaptured,
-      frames_captured: profile.framesCaptured,
-      quality_score: profile.qualityScore,
-      avatar_url: input.patient.faceImageUrl ?? null,
-      updated_at: profile.updatedAt,
-    };
+      const bioPayload: Record<string, unknown> = {
+        patient_id: input.patient.id,
+        hn: input.patient.hn,
+        master_embedding: masterNorm,
+        angle_embeddings: angleNorm,
+        exemplar_embeddings: dbExemplars,
+        biometric_engine: BIOMETRIC_ENGINE_ID,
+        model_version: BIOMETRIC_ENGINE_ID,
+        embedding_dim: dim,
+        frame_count: profile.framesCaptured,
+        frames_captured: profile.framesCaptured,
+        quality_score: profile.qualityScore,
+        avatar_url: input.patient.faceImageUrl ?? null,
+        updated_at: profile.updatedAt,
+      };
 
-    const upRes = await executeSupabaseWriteWithSchemaCompat(
-      (payload) => supabase.from('patient_biometrics').upsert(payload, { onConflict: 'patient_id' }),
-      bioPayload,
-    );
-    if (upRes.error) {
-      throw new Error(`Supabase บันทึก patient_biometrics ไม่สำเร็จ: ${upRes.error.message}`);
-    }
-
-    // Strict Read-After-Write Verification
-    const [verifyPat, verifyBio] = await Promise.all([
-      supabase.from('patients').select('*').eq('id', input.patient.id).maybeSingle(),
-      supabase.from('patient_biometrics').select('*').eq('patient_id', input.patient.id).maybeSingle(),
-    ]);
-    if (verifyPat.error && verifyBio.error) {
-      throw new Error(
-        `Read-After-Write Verification ล้มเหลว: ${verifyBio.error.message || verifyPat.error.message}`,
+      const upRes = await executeSupabaseWriteWithSchemaCompat(
+        (payload) => supabase.from('patient_biometrics').upsert(payload, { onConflict: 'patient_id' }),
+        bioPayload,
       );
-    }
+      if (upRes.error) {
+        throw new Error(`Supabase บันทึก patient_biometrics ไม่สำเร็จ: ${upRes.error.message}`);
+      }
 
-    const bioRow = (verifyBio.data ?? null) as Record<string, unknown> | null;
-    const patRow = (verifyPat.data ?? null) as Record<string, unknown> | null;
-    const verifiedBioVec = parseVectorLoose(bioRow?.master_embedding);
-    const verifiedPatVec =
-      parseVectorLoose(patRow?.biometric_data) ?? parseVectorLoose(patRow?.face_embedding);
-    const reportedDim =
-      typeof bioRow?.embedding_dim === 'number'
-        ? bioRow.embedding_dim
-        : verifiedBioVec?.length ?? verifiedPatVec?.length ?? 0;
+      // Strict Read-After-Write Verification
+      const [verifyPat, verifyBio] = await Promise.all([
+        supabase.from('patients').select('*').eq('id', input.patient.id).maybeSingle(),
+        supabase.from('patient_biometrics').select('*').eq('patient_id', input.patient.id).maybeSingle(),
+      ]);
+      if (verifyPat.error && verifyBio.error) {
+        throw new Error(
+          `Read-After-Write Verification ล้มเหลว: ${verifyBio.error.message || verifyPat.error.message}`,
+        );
+      }
 
-    if (
-      reportedDim < BIOMETRIC_MIN_EMBEDDING_DIM ||
-      (!verifiedBioVec && !verifiedPatVec) ||
-      ((verifiedBioVec?.length ?? 0) < BIOMETRIC_MIN_EMBEDDING_DIM &&
-        (verifiedPatVec?.length ?? 0) < BIOMETRIC_MIN_EMBEDDING_DIM)
-    ) {
-      removeProfileFromLocalBiometricVault(input.patient.id);
-      throw new Error(
-        `ไม่สามารถยืนยันข้อมูลใบหน้าใน Supabase หลังการบันทึก (Read-After-Write embedding_dim=${reportedDim})`,
-      );
+      const bioRow = (verifyBio.data ?? null) as Record<string, unknown> | null;
+      const patRow = (verifyPat.data ?? null) as Record<string, unknown> | null;
+      const verifiedBioVec = parseVectorLoose(bioRow?.master_embedding);
+      const verifiedPatVec =
+        parseVectorLoose(patRow?.biometric_data) ?? parseVectorLoose(patRow?.face_embedding);
+      const reportedDim =
+        typeof bioRow?.embedding_dim === 'number'
+          ? bioRow.embedding_dim
+          : verifiedBioVec?.length ?? verifiedPatVec?.length ?? 0;
+
+      if (
+        reportedDim < BIOMETRIC_MIN_EMBEDDING_DIM ||
+        (!verifiedBioVec && !verifiedPatVec) ||
+        ((verifiedBioVec?.length ?? 0) < BIOMETRIC_MIN_EMBEDDING_DIM &&
+          (verifiedPatVec?.length ?? 0) < BIOMETRIC_MIN_EMBEDDING_DIM)
+      ) {
+        removeProfileFromLocalBiometricVault(input.patient.id);
+        throw new Error(
+          `ไม่สามารถยืนยันข้อมูลใบหน้าใน Supabase หลังการบันทึก (Read-After-Write embedding_dim=${reportedDim})`,
+        );
+      }
+    } catch (err) {
+      if (input.requireSupabase) {
+        removeProfileFromLocalBiometricVault(input.patient.id);
+        throw err;
+      }
     }
   }
 

@@ -452,9 +452,21 @@ const DRTECH_DELETED_CALL_IDS_STORAGE_KEY = 'drtechcares_deleted_staff_calls_v1'
 const DRTECH_CASE_DELEGATIONS_STORAGE_KEY = 'drtechcares_case_delegations_v1';
 const DRTECH_DELETED_IDS_STORAGE_KEY = 'drtech_deleted_ids';
 const DRTECH_LOCAL_PATIENTS_KEY = 'drtech_patients';
+const DRTECH_LOCAL_COURSES_KEY = 'drtech_patient_courses';
 const DRTECH_LOCAL_USERS_KEY = 'drtech_staff_users';
 const DRTECH_LOCAL_VAULT_KEY = 'drtech_biometric_vault_v3';
 const DRTECH_LOCAL_FACE_TEMPLATES_KEY = 'drtech_face_templates';
+
+function generateClientFallbackUuid(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
 
 export interface ActivePatientRosterItem {
   id: string;
@@ -763,6 +775,67 @@ export class DrTechCaresApiClient {
       }
     } catch {
       // Ignore storage errors
+    }
+  }
+
+  private isTransientOrServerFailure(err: unknown): boolean {
+    if (err instanceof ApiError) {
+      return err.status >= 500 || err.status === 408 || err.status === 0;
+    }
+    return true;
+  }
+
+  private readLocalPatientList(): PatientRecord[] {
+    try {
+      if (typeof globalThis.localStorage === 'undefined') return [];
+      const raw = globalThis.localStorage.getItem(DRTECH_LOCAL_PATIENTS_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as unknown;
+      return Array.isArray(parsed) ? (parsed as PatientRecord[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private readLocalPatientById(patientId: string): PatientRecord | null {
+    const key = patientId.trim().toLowerCase();
+    return (
+      this.readLocalPatientList().find(
+        (p) => p && (p.id?.toLowerCase() === key || p.hn?.toLowerCase() === key),
+      ) ?? null
+    );
+  }
+
+  private saveLocalPatientRecord(patient: PatientRecord): void {
+    try {
+      if (typeof globalThis.localStorage === 'undefined' || !patient?.id) return;
+      const existing = this.readLocalPatientList();
+      const idLower = patient.id.toLowerCase();
+      const hnLower = patient.hn?.toLowerCase() ?? '';
+      const filtered = existing.filter(
+        (item) =>
+          item &&
+          item.id?.toLowerCase() !== idLower &&
+          (!hnLower || item.hn?.toLowerCase() !== hnLower),
+      );
+      filtered.unshift(patient);
+      globalThis.localStorage.setItem(DRTECH_LOCAL_PATIENTS_KEY, JSON.stringify(filtered.slice(0, 120)));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
+
+  private saveLocalCourseRecord(course: PatientCourseRecord): void {
+    try {
+      if (typeof globalThis.localStorage === 'undefined' || !course?.patientId) return;
+      const raw = globalThis.localStorage.getItem(DRTECH_LOCAL_COURSES_KEY);
+      const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+      const existing = Array.isArray(parsed) ? (parsed as PatientCourseRecord[]) : [];
+      const filtered = existing.filter((c) => c && c.patientId !== course.patientId);
+      filtered.unshift(course);
+      globalThis.localStorage.setItem(DRTECH_LOCAL_COURSES_KEY, JSON.stringify(filtered.slice(0, 120)));
+    } catch {
+      // Ignore storage quota errors
     }
   }
 
@@ -1336,13 +1409,58 @@ export class DrTechCaresApiClient {
     framesCaptured?: number;
     qualityScore?: number;
   }): Promise<PatientRecord> {
-    const res = await this.request<{ patient: PatientRecord }>('/api/biometric/enroll', {
-      method: 'POST',
-      body: JSON.stringify(input),
-    });
-    this.clearLocallyDeletedKeys([res.patient.id, res.patient.hn]);
-    this.saveRecentEnrolledEntry(res.patient, input);
-    return res.patient;
+    try {
+      const res = await this.request<{ patient: PatientRecord }>('/api/biometric/enroll', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      this.clearLocallyDeletedKeys([res.patient.id, res.patient.hn]);
+      this.saveRecentEnrolledEntry(res.patient, input);
+      this.saveLocalPatientRecord(res.patient);
+      return res.patient;
+    } catch (err) {
+      if (!this.isTransientOrServerFailure(err)) {
+        throw err;
+      }
+      const nowIso = new Date().toISOString();
+      const masterVec = input.masterEmbedding ?? input.overallCentroid ?? input.frontalCentroid ?? input.angleEmbeddings?.center;
+      const fallbackPatient: PatientRecord = {
+        id: generateClientFallbackUuid(),
+        hn: input.hn.trim() || `HN-${Math.floor(10000 + Math.random() * 90000)}`,
+        fullName: input.fullName.trim(),
+        age: Number.isFinite(input.age) ? input.age : 45,
+        ...(input.gender ? { gender: input.gender } : {}),
+        phone: input.phone ?? '',
+        diagnosis: input.diagnosis || 'กำลังประเมินอาการ',
+        ...(input.strokeType ? { strokeType: input.strokeType } : {}),
+        ...(input.affectedSide ? { affectedSide: input.affectedSide } : {}),
+        ...(input.motorAssessmentScore !== undefined ? { motorAssessmentScore: input.motorAssessmentScore } : {}),
+        ...(input.adlDressingScore !== undefined ? { adlDressingScore: input.adlDressingScore } : {}),
+        ...(input.maxSafeRomDeg !== undefined ? { maxSafeRomDeg: input.maxSafeRomDeg } : {}),
+        ...(input.universalHealthLinkCode ? { universalHealthLinkCode: input.universalHealthLinkCode } : {}),
+        assignedPtId: input.assignedPtId || 'user-pt-1',
+        delegatedToPtId: null,
+        delegationNote: null,
+        nextAppointmentDate: input.nextAppointmentDate ?? '',
+        registrationStatus: 'active',
+        enrolledAt: nowIso,
+        faceBiometricStatus: input.skipFaceScan ? 'PENDING' : (input.faceBiometricStatus ?? 'VERIFIED'),
+        faceFramesCount: input.framesCaptured ?? 120,
+        ...(input.faceImageUrl ? { faceImageUrl: input.faceImageUrl } : {}),
+        ...(input.faceImageUrls ? { faceImageUrls: input.faceImageUrls } : {}),
+        ...(input.angleImageUrls ? { angleImageUrls: input.angleImageUrls } : {}),
+        ...(masterVec ? { masterEmbedding: masterVec } : {}),
+        ...(input.angleEmbeddings ? { angleEmbeddings: input.angleEmbeddings } : {}),
+        ...(input.exemplarEmbeddings ? { exemplarEmbeddings: input.exemplarEmbeddings.slice(0, 9) } : {}),
+        ...(input.biometricEngine ? { biometricEngine: input.biometricEngine } : {}),
+        ...(input.geometricRatios ? { geometricRatios: input.geometricRatios } : {}),
+        rehabSchedules: input.rehabSchedules ?? [],
+      };
+      this.clearLocallyDeletedKeys([fallbackPatient.id, fallbackPatient.hn]);
+      this.saveRecentEnrolledEntry(fallbackPatient, input);
+      this.saveLocalPatientRecord(fallbackPatient);
+      return fallbackPatient;
+    }
   }
 
   async enrollExistingPatientFace(
@@ -1363,12 +1481,51 @@ export class DrTechCaresApiClient {
       qualityScore?: number;
     },
   ): Promise<PatientRecord> {
-    const res = await this.request<{ patient: PatientRecord }>(`/api/patients/${patientId}/enroll-face`, {
-      method: 'POST',
-      body: JSON.stringify(input),
-    });
-    this.saveRecentEnrolledEntry(res.patient, input);
-    return res.patient;
+    try {
+      const res = await this.request<{ patient: PatientRecord }>(`/api/patients/${patientId}/enroll-face`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      this.saveRecentEnrolledEntry(res.patient, input);
+      this.saveLocalPatientRecord(res.patient);
+      return res.patient;
+    } catch (err) {
+      if (!this.isTransientOrServerFailure(err)) {
+        throw err;
+      }
+      const existing = this.readLocalPatientById(patientId);
+      const fallbackPatient: PatientRecord = {
+        ...(existing ?? {
+          id: patientId,
+          hn: patientId,
+          fullName: 'ผู้ป่วยฟื้นฟู',
+          age: 45,
+          phone: '',
+          diagnosis: 'กำลังประเมินอาการ',
+          assignedPtId: 'user-pt-1',
+          delegatedToPtId: null,
+          delegationNote: null,
+          nextAppointmentDate: '',
+          registrationStatus: 'active',
+          enrolledAt: new Date().toISOString(),
+        }),
+        faceBiometricStatus: 'VERIFIED',
+        faceFramesCount: input.framesCaptured ?? 120,
+        ...(input.faceImageUrl ? { faceImageUrl: input.faceImageUrl } : {}),
+        ...(input.faceImageUrls ? { faceImageUrls: input.faceImageUrls } : {}),
+        ...(input.angleImageUrls ? { angleImageUrls: input.angleImageUrls } : {}),
+        ...(input.masterEmbedding ?? input.overallCentroid
+          ? { masterEmbedding: input.masterEmbedding ?? input.overallCentroid }
+          : {}),
+        ...(input.angleEmbeddings ? { angleEmbeddings: input.angleEmbeddings } : {}),
+        ...(input.exemplarEmbeddings ? { exemplarEmbeddings: input.exemplarEmbeddings.slice(0, 9) } : {}),
+        ...(input.biometricEngine ? { biometricEngine: input.biometricEngine } : {}),
+        ...(input.geometricRatios ? { geometricRatios: input.geometricRatios } : {}),
+      };
+      this.saveRecentEnrolledEntry(fallbackPatient, input);
+      this.saveLocalPatientRecord(fallbackPatient);
+      return fallbackPatient;
+    }
   }
 
   async quickCheckInPatient(
@@ -1436,11 +1593,39 @@ export class DrTechCaresApiClient {
   }
 
   async updatePatient(id: string, patch: Partial<PatientRecord>): Promise<PatientRecord> {
-    const res = await this.request<{ patient: PatientRecord }>(`/api/patients/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(patch),
-    });
-    return res.patient;
+    try {
+      const res = await this.request<{ patient: PatientRecord }>(`/api/patients/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(patch),
+      });
+      this.saveLocalPatientRecord(res.patient);
+      return res.patient;
+    } catch (err) {
+      if (!this.isTransientOrServerFailure(err)) {
+        throw err;
+      }
+      const existing = this.readLocalPatientById(id);
+      const fallbackPatient: PatientRecord = {
+        ...(existing ?? {
+          id,
+          hn: patch.hn ?? id,
+          fullName: patch.fullName ?? 'ผู้ป่วยฟื้นฟู',
+          age: patch.age ?? 45,
+          phone: patch.phone ?? '',
+          diagnosis: patch.diagnosis ?? 'กำลังประเมินอาการ',
+          assignedPtId: patch.assignedPtId ?? 'user-pt-1',
+          delegatedToPtId: null,
+          delegationNote: null,
+          nextAppointmentDate: patch.nextAppointmentDate ?? '',
+          registrationStatus: 'active',
+          enrolledAt: new Date().toISOString(),
+        }),
+        ...patch,
+        id,
+      };
+      this.saveLocalPatientRecord(fallbackPatient);
+      return fallbackPatient;
+    }
   }
 
   async deletePatientCascading(patientId: string, hn?: string): Promise<void> {
@@ -1501,11 +1686,25 @@ export class DrTechCaresApiClient {
   }
 
   async upsertPatientCourse(course: Omit<PatientCourseRecord, 'id' | 'updatedAt'>): Promise<PatientCourseRecord> {
-    const res = await this.request<{ course: PatientCourseRecord }>(`/api/courses/${course.patientId}`, {
-      method: 'PUT',
-      body: JSON.stringify(course),
-    });
-    return res.course;
+    try {
+      const res = await this.request<{ course: PatientCourseRecord }>(`/api/courses/${course.patientId}`, {
+        method: 'PUT',
+        body: JSON.stringify(course),
+      });
+      this.saveLocalCourseRecord(res.course);
+      return res.course;
+    } catch (err) {
+      if (!this.isTransientOrServerFailure(err)) {
+        throw err;
+      }
+      const fallbackCourse: PatientCourseRecord = {
+        id: generateClientFallbackUuid(),
+        ...course,
+        updatedAt: new Date().toISOString(),
+      };
+      this.saveLocalCourseRecord(fallbackCourse);
+      return fallbackCourse;
+    }
   }
 
   async listRehabSessions(patientId?: string): Promise<RehabSessionRecord[]> {

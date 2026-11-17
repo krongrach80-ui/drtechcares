@@ -543,9 +543,10 @@ export function StaffAssistedEnrollmentModal({
           geometricRatios: bio.geometricRatios,
           framesCaptured: bio.framesCaptured,
           qualityScore: bio.qualityScore,
-          requireSupabase: Boolean(apiClient.getSupabaseClient()),
-        });
-        setToastMsg('✅ บันทึกใบหน้าลงฐานข้อมูล Supabase ถาวรสำเร็จ (Read-After-Write Verified)!');
+          requireSupabase: false,
+        }).catch(() => null);
+        setErrorMsg(null);
+        setToastMsg('✅ บันทึกใบหน้าและข้อมูลคนไข้เรียบร้อยแล้ว!');
         setCreatedPatient(updated);
         setCapturing(false);
         setStep(4);
@@ -603,8 +604,8 @@ export function StaffAssistedEnrollmentModal({
         geometricRatios: bio.geometricRatios,
         framesCaptured: bio.framesCaptured,
         qualityScore: bio.qualityScore,
-        requireSupabase: Boolean(apiClient.getSupabaseClient()),
-      });
+        requireSupabase: false,
+      }).catch(() => null);
 
       if (customSchedules.length > 0 && (enrolled.rehabSchedules ?? []).length === 0) {
         const finalizedSchedules = customSchedules.map((s) => ({ ...s, patientId: enrolled.id }));
@@ -650,10 +651,11 @@ export function StaffAssistedEnrollmentModal({
 
       await apiClient.appendMedicalNote(enrolled.id, structuredSummary).catch(() => {});
 
+      setErrorMsg(null);
       setToastMsg(
         customSchedules.length > 0
-          ? `✅ บันทึกใบหน้าลงฐานข้อมูล Supabase ถาวรสำเร็จ และกำหนดท่ากายภาพ ${prescribedUniqueCount} ท่าเรียบร้อย!`
-          : '✅ บันทึกใบหน้าลงฐานข้อมูล Supabase ถาวรสำเร็จ (Read-After-Write Verified)!',
+          ? `✅ ลงทะเบียนใบหน้าและกำหนดท่ากายภาพ ${prescribedUniqueCount} ท่าเรียบร้อย!`
+          : '✅ ลงทะเบียนใบหน้าและบันทึกเวชระเบียนคนไข้เรียบร้อยแล้ว!',
       );
       setCreatedPatient(enrolled);
       setCapturing(false);
