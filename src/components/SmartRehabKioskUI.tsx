@@ -692,15 +692,12 @@ export function resolveUnifiedKioskCoachingBanner(params: {
       ? 'BOTH'
       : undefined);
 
-  if (params.ownerRehabGuardAlert) {
-    const isCritical =
-      params.ownerRehabGuardAlert.status === 'IMPOSTOR_FACE' ||
-      params.ownerRehabGuardAlert.status === 'INTRUDER_HAND';
+  if (params.ownerRehabGuardAlert && params.ownerRehabGuardAlert.status === 'MULTI_PERSON') {
     return {
-      tone: isCritical ? 'rose' : 'amber',
+      tone: 'amber',
       titleTh: params.ownerRehabGuardAlert.text,
       subtitleTh: 'กรุณาให้ผู้ป่วยเจ้าของบัญชีฝึกเพียงลำพังหน้ากล้องครับ',
-      badgeTh: '0 REPS ADDED',
+      badgeTh: 'PAUSED',
     };
   }
 
@@ -752,6 +749,49 @@ export function resolveUnifiedKioskCoachingBanner(params: {
     };
   }
 
+  if (params.repSuccessToastTh && params.repSuccessToastTh.includes('ได้ +1 แต้มแล้ว')) {
+    return {
+      tone: 'emerald',
+      titleTh: params.repSuccessToastTh,
+      subtitleTh: 'ค้างครบเวลาแล้ว! ลดแขนลงข้างลำตัวเพื่อเริ่มนับรอบถัดไป',
+      badgeTh: `${params.validReps}/${params.targetReps} REPS • ✅ ครบ!`,
+    };
+  }
+
+  const waitLowerRequested = Boolean(
+    params.repSuccessToastTh &&
+      (params.repSuccessToastTh.includes('เอาแขนลง') || params.repSuccessToastTh.includes('ค้างครบ')),
+  );
+  if (waitLowerRequested || (params.kioskState === 'HOLD_PHASE' && params.holdRemainingSec <= 0)) {
+    return {
+      tone: 'sky',
+      titleTh: '✅ ค้างครบเวลาแล้ว! ค่อยๆ เอาแขนลงข้างลำตัวเพื่อนับ +1 ครั้ง',
+      subtitleTh: 'ลดแขนลงกลับสู่ท่าพักช้าๆ เพื่อเตรียมพร้อมรอบถัดไป',
+      badgeTh: 'WAIT LOWER',
+    };
+  }
+
+  if (params.repSuccessToastTh || params.kioskState === 'REP_COMPLETED' || params.kioskState === 'SET_FINISHED') {
+    return {
+      tone: 'emerald',
+      titleTh:
+        params.repSuccessToastTh ??
+        `🎉 ได้ +1 แต้มแล้ว! (รวม ${params.validReps}/${params.targetReps} ครั้ง) • กรุณาเอาแขนลงข้างลำตัวเพื่อเริ่มนับรอบถัดไป`,
+      subtitleTh: 'ลดแขนลงกลับสู่ท่าพักเพื่อเริ่มนับรอบถัดไปครับ',
+      badgeTh: `${params.validReps}/${params.targetReps} REPS`,
+    };
+  }
+
+  if (params.kioskState === 'HOLD_PHASE') {
+    const elapsedSec = Math.max(0, params.holdTargetSec - params.holdRemainingSec);
+    return {
+      tone: 'emerald',
+      titleTh: `⏳ กำลังค้างท่าเป้าหมาย — ${elapsedSec.toFixed(1)} / ${params.holdTargetSec.toFixed(1)} วินาที`,
+      subtitleTh: 'ค้างไว้ให้นิ่งที่สุดครับ ถึงเป้าแล้วจะบวก +1 ครั้งทันที',
+      badgeTh: `${params.holdRemainingSec.toFixed(1)}s LEFT`,
+    };
+  }
+
   if (
     params.trunkLeanAlert ||
     params.shoulderHikeAlert ||
@@ -764,14 +804,11 @@ export function resolveUnifiedKioskCoachingBanner(params: {
       params.strokeSafetyAlert?.messageTh ??
       params.safetyGuardBannerTh ??
       (params.trunkLeanAlert
-        ? '⚠️ ตรวจพบการเอียงลำตัวช่วย — กรุณารักษาลำตัวให้ตรงครับ'
+        ? '⚠️ ลำตัวเอียงมากกว่า 18° — กรุณาค่อยๆ ปรับลำตัวให้ตรงครับ'
         : params.shoulderHikeAlert
-          ? '⚠️ ผ่อนคลายหัวไหล่ลง อย่ายักไหล่ช่วยยกนะครับ'
-          : '⚠️ ช้าลงนิดนึงครับ ไม่ต้องฝืนยกสูงเกินไปนะครับ');
-    const subtitleTh =
-      (params.fatigueRestSec ?? 0) > 0
-        ? `พักผ่อนคลายกล้ามเนื้อ ${params.fatigueRestSec} วินาที — จับราวจับหรือนั่งพักก่อนฝึกต่อได้ครับ`
-        : 'เคลื่อนไหวช้าๆ มั่นคง ตามช่วงองศาที่ปลอดภัยครับ';
+          ? '⚠️ ผ่อนคลายหัวไหล่ลงเล็กน้อยครับ'
+          : '⚠️ เคลื่อนไหวช้าลงนิดนึงครับ ไม่ต้องฝืนยกสูงเกินไปนะครับ');
+    const subtitleTh = 'ตัวนับเวลายังคงทำงานต่อตามปกติครับ';
     return {
       tone: 'amber',
       titleTh,
@@ -779,37 +816,6 @@ export function resolveUnifiedKioskCoachingBanner(params: {
       suggestedRomDeg: params.strokeSafetyAlert?.suggestedRom ?? null,
       fatigueRestSec: params.fatigueRestSec ?? 0,
       showSafetyAcknowledge: Boolean(params.strokeSafetyAlert || (params.fatigueRestSec ?? 0) > 0),
-    };
-  }
-
-  const waitLowerRequested = Boolean(
-    params.repSuccessToastTh &&
-      (params.repSuccessToastTh.includes('เอาแขนลง') || params.repSuccessToastTh.includes('ค้างครบ')),
-  );
-  if (waitLowerRequested || (params.kioskState === 'HOLD_PHASE' && params.holdRemainingSec <= 0)) {
-    return {
-      tone: 'sky',
-      titleTh: '✅ ค้างครบเวลาแล้ว! ค่อยๆ เอาแขนลงข้างลำตัวเพื่อนับ +1 ครั้ง',
-      subtitleTh: 'ลดแขนลงกลับสู่ท่าพักช้าๆ ระบบจะบันทึก +1 ครั้งให้อัตโนมัติ',
-      badgeTh: 'WAIT LOWER',
-    };
-  }
-
-  if (params.repSuccessToastTh || params.kioskState === 'REP_COMPLETED' || params.kioskState === 'SET_FINISHED') {
-    return {
-      tone: 'emerald',
-      titleTh: params.repSuccessToastTh ?? `🎉 ยอดเยี่ยม! ได้ +1 ครั้งแล้ว (${params.validReps}/${params.targetReps})`,
-      subtitleTh: 'ค่อยๆ เตรียมพร้อมสำหรับรอบถัดไปตามจังหวะที่สบายครับ',
-      badgeTh: `${params.validReps}/${params.targetReps} REPS`,
-    };
-  }
-
-  if (params.kioskState === 'HOLD_PHASE') {
-    return {
-      tone: 'emerald',
-      titleTh: `⏳ กำลังค้างท่าเป้าหมาย — ค้างต่ออีก ${params.holdRemainingSec.toFixed(1)} วินาที`,
-      subtitleTh: 'ค้างไว้ให้นิ่งที่สุดครับ ครบเวลาแล้วค่อยๆ ลดแขนลงเพื่อนับรอบ',
-      badgeTh: `${params.holdRemainingSec.toFixed(1)}s LEFT`,
     };
   }
 
@@ -1262,7 +1268,7 @@ export function drawLivePoseOverlayOnCanvas(
   const activeColor =
     opts.isImpostorOrEmergency || opts.wrongSideRaised
       ? '#EF4444'
-      : opts.postureBannerTh || opts.wrongPlaneRaised || opts.isMultiPerson || opts.trunkTiltDeg > 12 || opts.lowVisibilityAlertTh
+      : opts.postureBannerTh || opts.wrongPlaneRaised || opts.isMultiPerson || opts.trunkTiltDeg > 18 || opts.lowVisibilityAlertTh
         ? '#F59E0B'
         : '#10B981';
 
@@ -2204,10 +2210,13 @@ export function SmartRehabKioskUI({
   const repPhaseRef = useRef<StrokeHoldRepState['phase']>('PHASE_1_HOLDING');
   const loweredFrameStreakRef = useRef<number>(0);
   const readyBannerUntilRef = useRef<number>(0);
+  const waitLowerStartedAtRef = useRef<number>(0);
   const cooldownStartedAtRef = useRef<number>(0);
   const repCelebrateUntilRef = useRef<number>(0);
   const lastFrameTimeRef = useRef<number>(0);
   const repSuccessToastRef = useRef<string | null>(null);
+  const [holdElapsedUiSec, setHoldElapsedUiSec] = useState<number>(0);
+  const [isWaitLowerArmUi, setIsWaitLowerArmUi] = useState<boolean>(false);
 
   useEffect(() => {
     completedRepsRef.current = 0;
@@ -2215,18 +2224,21 @@ export function SmartRehabKioskUI({
     repPhaseRef.current = 'PHASE_1_HOLDING';
     loweredFrameStreakRef.current = 0;
     readyBannerUntilRef.current = 0;
+    waitLowerStartedAtRef.current = 0;
     cooldownStartedAtRef.current = 0;
     repCelebrateUntilRef.current = 0;
     rawKeypointsRef.current = null;
     smoothedRenderKeypointsRef.current = null;
     allRawKeypointsRef.current = [];
     repSuccessToastRef.current = null;
+    setHoldElapsedUiSec(0);
+    setIsWaitLowerArmUi(false);
     setRepSuccessToastTh(null);
     if (holdProgressBarRef.current) {
       holdProgressBarRef.current.style.width = '0%';
     }
     if (holdTimerTextRef.current) {
-      holdTimerTextRef.current.textContent = `${selectedExercise.hold_sec.toFixed(1)}s`;
+      holdTimerTextRef.current.textContent = '0.0s';
     }
   }, [selectedExercise.exercise_id, selectedExercise.hold_sec]);
 
@@ -2234,13 +2246,15 @@ export function SmartRehabKioskUI({
     if (
       demoValidReps === 0 &&
       completedRepsRef.current > 0 &&
-      repPhaseRef.current !== 'PHASE_2_WAIT_LOWER_TO_SCORE'
+      repPhaseRef.current === 'PHASE_1_HOLDING' &&
+      holdElapsedSecRef.current === 0
     ) {
       completedRepsRef.current = 0;
       holdElapsedSecRef.current = 0;
       repPhaseRef.current = 'PHASE_1_HOLDING';
       loweredFrameStreakRef.current = 0;
       readyBannerUntilRef.current = 0;
+      waitLowerStartedAtRef.current = 0;
     } else if (demoValidReps > completedRepsRef.current) {
       completedRepsRef.current = demoValidReps;
     }
@@ -2341,9 +2355,13 @@ export function SmartRehabKioskUI({
 
   const { kiosk_state, patient, telemetry_analysis, rep_counter, ui_directives, tts_voice_th } = payload;
   const compensations = telemetry_analysis.compensation_detected;
-  const trunkLeanAlert = isFormRuleActive(formRules, 'trunk') && compensations.includes('TRUNK_LEAN');
-  const shoulderHikeAlert = isFormRuleActive(formRules, 'posture') && compensations.includes('SHOULDER_HIKE');
-  const tooFastAlert = isFormRuleActive(formRules, 'velocity') && compensations.includes('TOO_FAST');
+  // Strictly passive trunk lean indicator (> 18 deg) in live mode; shoulder hike never blocks or penalizes live timer.
+  const trunkLeanAlert =
+    isFormRuleActive(formRules, 'trunk') &&
+    (isDemoMode ? compensations.includes('TRUNK_LEAN') : (telemetry_analysis.trunk_tilt_deg ?? 0) > 18);
+  const shoulderHikeAlert =
+    isFormRuleActive(formRules, 'posture') && isDemoMode && compensations.includes('SHOULDER_HIKE');
+  const tooFastAlert = isFormRuleActive(formRules, 'velocity') && isDemoMode && compensations.includes('TOO_FAST');
   const wrongLimbAlert = isFormRuleActive(formRules, 'limb') && compensations.includes('WRONG_LIMB');
   const wrongPlaneAlert = isFormRuleActive(formRules, 'plane') && compensations.includes('WRONG_PLANE');
   const activeExpectedPlane = resolveExpectedPlaneForExercise(selectedExercise);
@@ -2582,7 +2600,7 @@ export function SmartRehabKioskUI({
     let prevSafetySampleAt = 0;
     let prevVelocityRom: number | null = null;
     let lastSpasticityAt = 0;
-    let lastFatigueTriggerAt = 0;
+    let multiPersonStartAtMs = 0;
     let latestRawPrimaryRomDeg: number | null = null;
     let latestLeftArmRom: number | null = null;
     let latestRightArmRom: number | null = null;
@@ -2878,14 +2896,18 @@ export function SmartRehabKioskUI({
           lastRomEmitAt = 0;
           lastTiltEmitAt = 0;
           lastHoldEmitAt = 0;
+          multiPersonStartAtMs = 0;
           holdElapsedSecRef.current = 0;
           completedRepsRef.current = 0;
           repPhaseRef.current = 'PHASE_1_HOLDING';
           loweredFrameStreakRef.current = 0;
           readyBannerUntilRef.current = 0;
+          waitLowerStartedAtRef.current = 0;
           cooldownStartedAtRef.current = 0;
           repCelebrateUntilRef.current = 0;
           repSuccessToastRef.current = null;
+          setHoldElapsedUiSec(0);
+          setIsWaitLowerArmUi(false);
           setRepSuccessToastTh(null);
         };
 
@@ -2947,12 +2969,11 @@ export function SmartRehabKioskUI({
             const stepARules = formRulesRef.current;
             const stepACheckIdentity = isFormRuleActive(stepARules, 'identity');
 
-            // Continuous 1:1 Account Owner Face Lock every 8 pose cycles (~250ms)
+            // Active Single-Person Exercise Lock:
+            // Once logged in, ALWAYS treat single-person frames (personCount <= 1) as verified owner so
+            // low-res 1.5m-3.0m distance crops NEVER lock out reps or flash "ไม่ใช่เจ้าของบัญชี".
+            // Only pause for multi-person intrusion when >= 2 distinct people are continuously present > 1.5s.
             ownerFaceCycle += 1;
-            const activeOwnerBio = ownerBiometricsRef.current;
-            if (activeOwnerBio?.biometricEngine === 'arcface-onnx' && !isArcFaceSessionReady()) {
-              void preloadArcFaceOnnx();
-            }
             if (faceLandmarker && stepACheckIdentity && (ownerFaceCycle === 1 || ownerFaceCycle % 8 === 0)) {
               try {
                 const fTs = Math.max(lastFaceTs + 1, lastDetectTs + 1, Math.round(now));
@@ -2970,14 +2991,6 @@ export function SmartRehabKioskUI({
                   cachedOwnerMissingStreak += 1;
                   cachedOwnerFaceBox = null;
                   cachedOwnerExtraBoxes = [];
-                  // Do NOT stall rep counting when a single patient stands at 1.8-2.2m exercise distance
-                  if (latestPoseCount === 1) {
-                    cachedOwnerVerified = true;
-                    if (lastOwnerRehabKey === 'NO_OWNER_FACE') {
-                      lastOwnerRehabKey = '';
-                      setOwnerRehabGuardAlert(null);
-                    }
-                  }
                 } else {
                   cachedOwnerMissingStreak = 0;
                   cachedOwnerFaceBox = computeOwnerFaceBoxMetrics(
@@ -2991,130 +3004,41 @@ export function SmartRehabKioskUI({
                     .filter((lm) => lm !== primaryFaceLm)
                     .map((lm) => computeOwnerFaceBoxMetrics(lm, v.videoWidth, v.videoHeight, cw, ch))
                     .filter((b): b is OwnerFaceBoxMetrics => b !== null);
-
-                  if (effFaceCount > 1) {
-                    cachedOwnerVerified = false;
-                    const key = 'MULTI_PERSON';
-                    if (lastOwnerRehabKey !== key) {
-                      lastOwnerRehabKey = key;
-                      setOwnerRehabGuardAlert({
-                        status: 'MULTI_PERSON',
-                        text: '⚠️ พบผู้อื่นอยู่ในเฟรม กรุณาให้เจ้าของบัญชีอยู่หน้ากล้องเพียงคนเดียว',
-                      });
-                    }
-                  } else if (!activeOwnerBio || activeOwnerBio.masterEmbedding.length === 0) {
-                    cachedOwnerVerified = true;
-                    if (lastOwnerRehabKey !== '') {
-                      lastOwnerRehabKey = '';
-                      setOwnerRehabGuardAlert(null);
-                    }
-                  } else {
-                    if (!faceAlignCanvas) faceAlignCanvas = document.createElement('canvas');
-                    if (!faceRoiCanvas) faceRoiCanvas = document.createElement('canvas');
-                    const crop = alignFaceTo112(v, primaryFaceLm, faceAlignCanvas, faceRoiCanvas);
-                    if (crop) {
-                      const ownerEngine = detectBiometricVectorEngine(
-                        activeOwnerBio.masterEmbedding,
-                        activeOwnerBio.biometricEngine,
-                      );
-                      const livePose = evaluateLivenessAndPose(primaryFaceLm, null, effFaceCount);
-                      const rollDeg = computeEyeRollAngleDeg(primaryFaceLm, v.videoWidth, v.videoHeight);
-                      const probeRatios = extractGeometricAnthropometricRatios(primaryFaceLm);
-
-                      const applyOwnerResult = (matched: boolean, hasTemplate: boolean) => {
-                        cachedOwnerVerified = !hasTemplate || matched;
-                        if (!cachedOwnerVerified) {
-                          const key = `IMPOSTOR:${activeOwnerBio.fullName}`;
-                          if (lastOwnerRehabKey !== key) {
-                            lastOwnerRehabKey = key;
-                            setOwnerRehabGuardAlert({
-                              status: 'IMPOSTOR_FACE',
-                              text: `⛔ คุณไม่ใช่เจ้าของบัญชี (${activeOwnerBio.fullName}) ไม่สามารถทำรายการแทนกันได้`,
-                            });
-                          }
-                        } else if (lastOwnerRehabKey !== '') {
-                          lastOwnerRehabKey = '';
-                          setOwnerRehabGuardAlert(null);
-                        }
-                      };
-
-                      if (ownerEngine === 'human-faceres-1024d') {
-                        const humanSnap = captureCanonicalFaceSnapshot(
-                          v,
-                          undefined,
-                          faceRoiCanvas,
-                          primaryFaceLm,
-                        );
-                        if (humanSnap) {
-                          void extractCanonicalFaceDescriptor(humanSnap)
-                            .then((extracted) => {
-                              if (!active || !extracted.embedding) return;
-                              const ownerRes = verifyOwnerFace1to1({
-                                probeVector: extracted.embedding,
-                                probeEngine: BIOMETRIC_ENGINE_ID,
-                                yawDeg: -livePose.yawDeg,
-                                pitchDeg: livePose.pitchDeg,
-                                rollDeg,
-                                probeRatios,
-                                ownerTemplate: activeOwnerBio,
-                              });
-                              applyOwnerResult(ownerRes.matched, ownerRes.hasTemplate);
-                            })
-                            .catch(() => {});
-                        }
-                      } else if (ownerEngine === 'arcface-onnx' && isArcFaceSessionReady()) {
-                        const cropCopy = {
-                          width: crop.width,
-                          height: crop.height,
-                          data: new Uint8ClampedArray(crop.data),
-                        };
-                        void extractArcFaceOnnxEmbedding(cropCopy)
-                          .then((arcVec) => {
-                            const ownerRes = verifyOwnerFace1to1({
-                              probeVector: arcVec,
-                              probeEngine: 'arcface-onnx',
-                              yawDeg: -livePose.yawDeg,
-                              pitchDeg: livePose.pitchDeg,
-                              rollDeg,
-                              probeRatios,
-                              ownerTemplate: activeOwnerBio,
-                            });
-                            applyOwnerResult(ownerRes.matched, ownerRes.hasTemplate);
-                          })
-                          .catch(() => { });
-                      } else {
-                        if (ownerEngine === 'arcface-onnx') {
-                          void preloadArcFaceOnnx();
-                        }
-                        // Strict deep-neural policy: NEVER fall back to pixel histograms or geometric ratios
-                        applyOwnerResult(false, true);
-                      }
-                    }
-                  }
                 }
               } catch {
                 // keep loop resilient across transient face detection frames
               }
             }
 
-            let ownerPoseLinked = true;
-            if (stepACheckIdentity && cachedOwnerFaceBox && allLandmarks[0]) {
-              const { w: cwPose, h: chPose } = canvasSizeRef.current;
-              const covPose = computeObjectCoverLayout(v.videoWidth, v.videoHeight, cwPose, chPose);
-              ownerPoseLinked = isPoseSkeletonLinkedToOwnerFace(allLandmarks[0], cachedOwnerFaceBox, covPose);
-              if (!ownerPoseLinked && lastOwnerRehabKey === '') {
-                lastOwnerRehabKey = 'INTRUDER_HAND';
-                setOwnerRehabGuardAlert({
-                  status: 'INTRUDER_HAND',
-                  text: '⚠️ ตรวจพบท่าทางจากบุคคลอื่น กรุณาให้เจ้าของบัญชีทำกายภาพด้วยตนเองเท่านั้น',
-                });
-              } else if (ownerPoseLinked && lastOwnerRehabKey === 'INTRUDER_HAND' && cachedOwnerVerified) {
+            const personCountInFrame = Math.max(latestPoseCount, cachedOwnerFaceCount);
+            if (personCountInFrame >= 2 && stepACheckIdentity) {
+              if (multiPersonStartAtMs === 0) {
+                multiPersonStartAtMs = now;
+              }
+              if (now - multiPersonStartAtMs >= 1500) {
+                cachedOwnerVerified = false;
+                if (lastOwnerRehabKey !== 'MULTI_PERSON') {
+                  lastOwnerRehabKey = 'MULTI_PERSON';
+                  setOwnerRehabGuardAlert({
+                    status: 'MULTI_PERSON',
+                    text: '⚠️ พบมากกว่า 1 คนในเฟรม กรุณาให้เจ้าของบัญชีฝึกเพียงลำพัง',
+                  });
+                }
+              }
+            } else {
+              multiPersonStartAtMs = 0;
+              cachedOwnerVerified = true;
+              if (lastOwnerRehabKey !== '') {
                 lastOwnerRehabKey = '';
                 setOwnerRehabGuardAlert(null);
               }
             }
 
-            if (latestPoseCount > 1 && stepACheckIdentity) {
+            const multiPersonSustained =
+              personCountInFrame >= 2 &&
+              multiPersonStartAtMs > 0 &&
+              now - multiPersonStartAtMs >= 1500;
+            if (multiPersonSustained && stepACheckIdentity) {
               singlePersonRecoveryFrames = 0;
               rawKeypointsRef.current = null;
               smoothedRenderKeypointsRef.current = null;
@@ -3333,12 +3257,12 @@ export function SmartRehabKioskUI({
                 if (latestRawPrimaryRomDeg !== null) prevVelocityRom = latestRawPrimaryRomDeg;
                 prevSafetySampleAt = now;
 
-                if (measured.trunkTiltDeg > 18) {
+                if (measured.trunkTiltDeg > 28) {
                   sustainedSwayFrames += 1;
                 } else {
                   sustainedSwayFrames = 0;
                 }
-                if (sustainedSwayFrames >= 3 || headDropVel > 0.65 || shDropVel > 0.65) {
+                if (sustainedSwayFrames >= 4 || headDropVel > 0.72 || shDropVel > 0.72) {
                   triggerBalanceEmergencyRef.current('POSTURAL_SWAY_AND_FALL_GUARD: ตรวจพบการเสียสมดุล กรุณานั่งพักและจับราวจับ');
                   return;
                 }
@@ -3360,27 +3284,8 @@ export function SmartRehabKioskUI({
                 } else if (now - lastSpasticityAt > 3500) {
                   setStrokeSafetyAlert((cur) => (cur?.type === 'spasticity' ? null : cur));
                 }
-
-                const hasStrokeCompensation =
-                  (measured.shoulderTiltDeg ?? 0) > 13.5 || measured.trunkTiltDeg > 12;
-                if (hasStrokeCompensation && !measured.wrongSideRaised) {
-                  if (now - lastFatigueTriggerAt > 450) {
-                    consecutiveCompEvents += 1;
-                    lastFatigueTriggerAt = now;
-                    if (consecutiveCompEvents >= 3) {
-                      const nextSuggested = Math.max(30, Math.round(effectiveTargetRomRef.current - 15));
-                      setStrokeSafetyAlert({
-                        type: 'fatigue',
-                        messageTh: `พบการยักไหล่/เอียงลำตัวช่วยต่อเนื่อง (${consecutiveCompEvents} ครั้ง) แนะนำลดเป้าหมายเป็น ${nextSuggested}° หรือพัก 15 วินาที`,
-                        suggestedRom: nextSuggested,
-                      });
-                      setFatigueRestSec((cur) => (cur > 0 ? cur : 15));
-                      consecutiveCompEvents = 0;
-                    }
-                  }
-                } else if (!hasStrokeCompensation && (latestRawPrimaryRomDeg ?? 0) >= 25) {
-                  consecutiveCompEvents = 0;
-                }
+                // Passive trunk lean indicator only (> 18 deg): never reset hold timer or trigger fatigue rest interruption!
+                consecutiveCompEvents = 0;
               } else {
                 wrongSideStreak = 0;
                 wrongPlaneStreak = 0;
@@ -3451,20 +3356,16 @@ export function SmartRehabKioskUI({
           const checkLimb = isFormRuleActive(activeRules, 'limb');
           const checkPlane = isFormRuleActive(activeRules, 'plane');
           const checkTrunk = isFormRuleActive(activeRules, 'trunk');
-          const checkPosture = isFormRuleActive(activeRules, 'posture');
           const checkIdentity = isFormRuleActive(activeRules, 'identity');
           const holdTargetSec = Math.max(0.5, curEx.hold_sec);
           const { w: canvasW, h: canvasH } = canvasSizeRef.current;
+          const multiPersonConfirmed =
+            checkIdentity &&
+            (latestPoseCount > 1 || cachedOwnerFaceCount > 1) &&
+            multiPersonStartAtMs > 0 &&
+            now - multiPersonStartAtMs >= 1500;
 
-          if (latestPoseCount > 1 && checkIdentity) {
-            holdElapsedSecRef.current = 0;
-            if (holdProgressBarRef.current) holdProgressBarRef.current.style.width = '0%';
-            if (holdTimerTextRef.current) holdTimerTextRef.current.textContent = `${holdTargetSec.toFixed(1)}s`;
-            if (lastEmittedHold !== curEx.hold_sec) {
-              lastEmittedHold = curEx.hold_sec;
-              lastHoldEmitAt = now;
-              setDemoHoldRemainingSec(curEx.hold_sec);
-            }
+          if (multiPersonConfirmed) {
             emitPresetState('MULTI_PERSON');
             drawLivePoseOverlayOnCanvas(poseCanvasRef.current, allRawKeypointsRef.current, {
               targetJoint: curEx.target_joint,
@@ -3472,7 +3373,7 @@ export function SmartRehabKioskUI({
               exerciseMeta: curEx,
               romDeg: targetRomDeg !== null ? smoothedRom : null,
               targetRomDeg: curEx.target_rom_deg,
-              holdRatio: 0,
+              holdRatio: holdElapsedSecRef.current / holdTargetSec,
               trunkTiltDeg: 0,
               isMultiPerson: true,
               isImpostorOrEmergency: false,
@@ -3484,9 +3385,6 @@ export function SmartRehabKioskUI({
               isPrivacyMode: isPrivacyModeRef.current,
             });
           } else if (demoPresetRef.current === 'IMPOSTOR' && checkIdentity) {
-            holdElapsedSecRef.current = 0;
-            if (holdProgressBarRef.current) holdProgressBarRef.current.style.width = '0%';
-            if (holdTimerTextRef.current) holdTimerTextRef.current.textContent = `${holdTargetSec.toFixed(1)}s`;
             drawLivePoseOverlayOnCanvas(poseCanvasRef.current, allRawKeypointsRef.current, {
               targetJoint: curEx.target_joint,
               expectedPlane: curExpectedPlane,
@@ -3522,8 +3420,12 @@ export function SmartRehabKioskUI({
             const effWrongSideBannerTh = checkLimb ? latestWrongSideBannerTh : null;
             const effWrongPlaneRaised = checkPlane ? latestWrongPlaneRaised : false;
             const effWrongPlaneBannerTh = checkPlane ? latestWrongPlaneBannerTh : null;
-            const effPostureCompensated = checkPosture ? latestPostureCompensated : false;
-            const effPostureBannerTh = checkPosture ? latestPostureBannerTh : null;
+            // Trunk lean (> 18 deg) & posture are strictly passive visual indicators; NEVER reduce, pause, or reset holdElapsedSec!
+            const effPostureCompensated = false;
+            const effPostureBannerTh =
+              checkTrunk && latestRawTiltDeg > 18
+                ? '⚠️ ลำตัวเอียงมากกว่า 18° กรุณาค่อยๆ ปรับลำตัวให้ตรง'
+                : null;
             targetRomDeg =
               effWrongPlaneRaised ||
               (effWrongSideRaised && effSideViolation !== 'SINGLE_ARM_IN_BOTH_MODE')
@@ -3565,14 +3467,9 @@ export function SmartRehabKioskUI({
             }
 
             const blockCounting =
+              multiPersonConfirmed ||
               (demoPresetRef.current === 'MULTI_PERSON' && checkIdentity) ||
-              countingLockedRef.current ||
-              (checkIdentity &&
-                lastOwnerRehabKey !== '' &&
-                lastOwnerRehabKey !== 'NO_OWNER_FACE');
-
-            const isCompensatedNow =
-              (checkTrunk && latestTrunkTiltDeg > 12) || effPostureCompensated;
+              countingLockedRef.current;
 
             const curLoopJointMode = classifyExerciseJointMode(curEx);
             const curExSide = resolveExerciseSideFromMeta(curEx, curEx.target_joint, curExpectedPlane);
@@ -3583,14 +3480,43 @@ export function SmartRehabKioskUI({
               curLoopJointMode === 'wrist_finger' ||
               curLoopJointMode === 'forearm_turn' ||
               curLoopJointMode === 'thumb_pinch';
+            const activeLms = smoothedRenderKeypointsRef.current ?? rawKeypointsRef.current;
             const armWristLowered = evaluateActiveWristsLowered({
-              landmarks: smoothedRenderKeypointsRef.current ?? rawKeypointsRef.current,
+              landmarks: activeLms,
               exerciseSide: curExSide,
               targetJoint: curEx.target_joint,
               isSmallRomOrKnee: isSmallRomEx || curEx.target_joint.includes('knee'),
             });
 
-            // Step Ref-Driven 3-Phase State Machine (Hold to 100% -> Lower Arm -> THEN Count +1 Rep)
+            // Detect raised arm whose wrist temporarily clipped above/outside camera frame edge ("มืออยู่นอกกรอบกล้อง")
+            const isSideWristClippedRaised = (side: 'left' | 'right'): boolean => {
+              const sh = activeLms[side === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
+              const el = activeLms[side === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
+              const wr = activeLms[side === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
+              if (!sh || (sh.visibility ?? 0) < 0.3) return false;
+              const armElevated =
+                Boolean(el && (el.visibility ?? 0) >= 0.3 && el.y <= sh.y + 0.14) ||
+                (targetRomDeg ?? 0) >= effectiveTargetRomRef.current * 0.55;
+              const wristOutOrHigh =
+                !wr ||
+                (wr.visibility ?? 0) < 0.45 ||
+                wr.y <= 0.06 ||
+                wr.x <= 0.04 ||
+                wr.x >= 0.96;
+              return armElevated && wristOutOrHigh;
+            };
+            const handsOutOfFrameRaised =
+              !curEx.target_joint.includes('knee') &&
+              curEx.target_joint !== 'spine' &&
+              (curExSide === 'LEFT'
+                ? isSideWristClippedRaised('left')
+                : curExSide === 'RIGHT'
+                  ? isSideWristClippedRaised('right')
+                  : curExSide === 'BOTH'
+                    ? isSideWristClippedRaised('left') || isSideWristClippedRaised('right')
+                    : false);
+
+            // Step Option A Rep Engine: Hold -> Immediately +1 Rep & Lock 100% -> Lower Arm -> Ready for Next Rep
             const repStep = stepStrokeHoldAndRepStateMachine({
               state: {
                 phase: repPhaseRef.current,
@@ -3600,10 +3526,12 @@ export function SmartRehabKioskUI({
                 repCelebrateUntilMs: repCelebrateUntilRef.current,
                 loweredFrameStreak: loweredFrameStreakRef.current,
                 readyBannerUntilMs: readyBannerUntilRef.current,
+                waitLowerStartedAtMs: waitLowerStartedAtRef.current,
               },
               activeRomDeg: targetRomDeg !== null ? smoothedRom : null,
               leftArmRomDeg: latestLeftArmRom,
               rightArmRomDeg: latestRightArmRom,
+              exerciseCode: curEx.exercise_id,
               exerciseSide: curExSide,
               targetRomDeg: effectiveTargetRomRef.current,
               targetHoldSec: holdTargetSec,
@@ -3613,11 +3541,12 @@ export function SmartRehabKioskUI({
               isKneeExercise: curEx.target_joint.includes('knee'),
               isSmallRomExercise: isSmallRomEx,
               armWristLowered,
+              handsOutOfFrameRaised,
               sideViolation: effSideViolation,
               wrongSideBannerTh: effWrongSideBannerTh,
               wrongPlaneRaised: effWrongPlaneRaised,
               wrongPlaneBannerTh: effWrongPlaneBannerTh,
-              isCompensatedNow,
+              isCompensatedNow: effPostureCompensated,
               postureBannerTh: effPostureBannerTh,
               blockCounting,
             });
@@ -3627,21 +3556,28 @@ export function SmartRehabKioskUI({
             completedRepsRef.current = repStep.nextState.completedReps;
             loweredFrameStreakRef.current = repStep.nextState.loweredFrameStreak ?? 0;
             readyBannerUntilRef.current = repStep.nextState.readyBannerUntilMs ?? 0;
+            waitLowerStartedAtRef.current = repStep.nextState.waitLowerStartedAtMs ?? 0;
             cooldownStartedAtRef.current = repStep.nextState.cooldownStartedAtMs;
             repCelebrateUntilRef.current = repStep.nextState.repCelebrateUntilMs;
 
-            // Direct 60FPS DOM updates for jitter-free Hold Progress Bar & Countdown Text
+            const isWaitingLower = repPhaseRef.current === 'PHASE_2_WAIT_LOWER_TO_SCORE';
+
+            // Direct 60FPS DOM updates for jitter-free Hold Progress Bar & Elapsed Timer Text
             if (holdProgressBarRef.current) {
               holdProgressBarRef.current.style.width = `${repStep.holdProgressPct}%`;
             }
             if (holdTimerTextRef.current) {
-              holdTimerTextRef.current.textContent = `${repStep.holdRemainingSec.toFixed(1)}s`;
+              holdTimerTextRef.current.textContent = isWaitingLower
+                ? `${holdTargetSec.toFixed(1)}s (ครบ!)`
+                : `${repStep.nextState.holdElapsedSec.toFixed(1)}s`;
             }
 
             if (repStep.justCompletedRep) {
               lastEmittedHold = repStep.holdRemainingSec;
               lastHoldEmitAt = now;
               setDemoHoldRemainingSec(repStep.holdRemainingSec);
+              setHoldElapsedUiSec(Number(repStep.nextState.holdElapsedSec.toFixed(1)));
+              setIsWaitLowerArmUi(isWaitingLower);
               setDemoValidReps(repStep.nextState.completedReps);
               const scoredMsg =
                 repStep.bannerTh ??
@@ -3653,69 +3589,57 @@ export function SmartRehabKioskUI({
               emitPresetState(
                 repStep.nextState.completedReps >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED',
               );
-            } else if (repStep.holdCompleteWaitLower) {
-              lastEmittedHold = 0;
+            } else if (repStep.unlockedToReady) {
+              lastEmittedHold = repStep.holdRemainingSec;
               lastHoldEmitAt = now;
-              setDemoHoldRemainingSec(0);
-              const waitMsg = repStep.bannerTh ?? HOLD_COMPLETED_WAIT_LOWER_BANNER_TH;
+              setDemoHoldRemainingSec(repStep.holdRemainingSec);
+              setHoldElapsedUiSec(0);
+              setIsWaitLowerArmUi(false);
+              repSuccessToastRef.current = null;
+              setRepSuccessToastTh(null);
+              emitPresetState('ACTIVE_REP');
+            } else if (repStep.holdCompleteWaitLower || isWaitingLower) {
+              lastEmittedHold = 0;
+              if (now - lastHoldEmitAt >= 90) {
+                lastHoldEmitAt = now;
+                setDemoHoldRemainingSec(0);
+                setHoldElapsedUiSec(holdTargetSec);
+                setIsWaitLowerArmUi(true);
+              }
+              const waitMsg =
+                repStep.bannerTh ??
+                formatRepScoredBannerTh(repStep.nextState.completedReps, curEx.target_reps);
               if (repSuccessToastRef.current !== waitMsg) {
                 repSuccessToastRef.current = waitMsg;
                 setRepSuccessToastTh(waitMsg);
               }
               emitPresetState('HOLD_PHASE');
             } else {
-              const phaseBanner =
-                repPhaseRef.current === 'PHASE_2_WAIT_LOWER_TO_SCORE'
-                  ? (repSuccessToastRef.current === HOLD_COMPLETED_WAIT_LOWER_BANNER_TH
-                      ? HOLD_COMPLETED_WAIT_LOWER_BANNER_TH
-                      : PHASE_2_LOWER_ARM_PROMPT_BANNER_TH)
-                  : repPhaseRef.current === 'PHASE_3_SCORED_READY' &&
-                      now <= repCelebrateUntilRef.current
-                    ? (repStep.bannerTh ??
-                        formatRepScoredBannerTh(repStep.nextState.completedReps, curEx.target_reps))
-                    : repPhaseRef.current === 'PHASE_1_HOLDING' &&
-                        holdElapsedSecRef.current > 0 &&
-                        repStep.statusKind === 'HOLD_PHASE'
-                      ? repStep.bannerTh
-                      : null;
-
-              if (phaseBanner !== null) {
-                if (repSuccessToastRef.current !== phaseBanner) {
-                  repSuccessToastRef.current = phaseBanner;
-                  setRepSuccessToastTh(phaseBanner);
-                }
-              } else if (repSuccessToastRef.current !== null && now > repCelebrateUntilRef.current) {
+              if (repSuccessToastRef.current !== null) {
                 repSuccessToastRef.current = null;
                 setRepSuccessToastTh(null);
               }
 
               if (
-                now - lastHoldEmitAt >= 90 &&
-                repStep.holdRemainingSec !== lastEmittedHold
+                now - lastHoldEmitAt >= 80 &&
+                (repStep.holdRemainingSec !== lastEmittedHold ||
+                  Math.abs(repStep.nextState.holdElapsedSec - (holdTargetSec - lastEmittedHold)) >= 0.05)
               ) {
                 lastEmittedHold = repStep.holdRemainingSec;
                 lastHoldEmitAt = now;
                 setDemoHoldRemainingSec(repStep.holdRemainingSec);
+                setHoldElapsedUiSec(Number(repStep.nextState.holdElapsedSec.toFixed(1)));
+                setIsWaitLowerArmUi(false);
               }
 
               if (repStep.statusKind === 'WRONG_LIMB') {
                 emitPresetState('WRONG_LIMB');
               } else if (repStep.statusKind === 'WRONG_PLANE') {
                 emitPresetState('WRONG_PLANE');
-              } else if (repStep.statusKind === 'POSTURE_COMPENSATED') {
-                emitPresetState('TRUNK_LEAN');
-              } else if (
-                repPhaseRef.current === 'PHASE_2_WAIT_LOWER_TO_SCORE' ||
-                repStep.statusKind === 'HOLD_PHASE'
-              ) {
+              } else if (repStep.statusKind === 'HOLD_PHASE') {
                 emitPresetState('HOLD_PHASE');
               } else if (repStep.statusKind === 'SET_FINISHED') {
                 emitPresetState('SET_FINISHED');
-              } else if (
-                repPhaseRef.current === 'PHASE_3_SCORED_READY' &&
-                now <= repCelebrateUntilRef.current
-              ) {
-                emitPresetState('REP_COMPLETED');
               } else {
                 emitPresetState('ACTIVE_REP');
               }
@@ -3729,8 +3653,8 @@ export function SmartRehabKioskUI({
               targetRomDeg: curEx.target_rom_deg,
               holdRatio: repStep.holdProgressPct / 100,
               trunkTiltDeg: latestTrunkTiltDeg,
-              isMultiPerson: demoPresetRef.current === 'MULTI_PERSON' && checkIdentity,
-              isImpostorOrEmergency: countingLockedRef.current || (checkIdentity && !cachedOwnerVerified),
+              isMultiPerson: (multiPersonConfirmed || demoPresetRef.current === 'MULTI_PERSON') && checkIdentity,
+              isImpostorOrEmergency: countingLockedRef.current,
               sideViolation: effSideViolation,
               wrongSideRaised: effWrongSideRaised,
               wrongSideBannerTh: effWrongSideBannerTh,
@@ -3758,25 +3682,31 @@ export function SmartRehabKioskUI({
                   ownerName: ownerBiometricsRef.current?.fullName ?? payload.patient?.name ?? 'ผู้ป่วย',
                   faceBox: cachedOwnerFaceBox,
                   extraFaceBoxes: cachedOwnerExtraBoxes,
-                  ownerFaceVerified: cachedOwnerVerified,
-                  faceCount: cachedOwnerFaceCount,
+                  ownerFaceVerified: !multiPersonConfirmed,
+                  faceCount: multiPersonConfirmed ? Math.max(2, cachedOwnerFaceCount) : 1,
                 }
                 : undefined,
             });
           } else {
             smoothedRenderKeypointsRef.current = null;
-            if (holdProgressBarRef.current) holdProgressBarRef.current.style.width = '0%';
-            if (holdTimerTextRef.current) holdTimerTextRef.current.textContent = `${holdTargetSec.toFixed(1)}s`;
+            const holdPctKeep = Math.min(100, (holdElapsedSecRef.current / holdTargetSec) * 100);
+            if (holdProgressBarRef.current) holdProgressBarRef.current.style.width = `${holdPctKeep}%`;
+            if (holdTimerTextRef.current) {
+              holdTimerTextRef.current.textContent =
+                repPhaseRef.current === 'PHASE_2_WAIT_LOWER_TO_SCORE'
+                  ? `${holdTargetSec.toFixed(1)}s (ครบ!)`
+                  : `${holdElapsedSecRef.current.toFixed(1)}s`;
+            }
             drawLivePoseOverlayOnCanvas(poseCanvasRef.current, [], {
               targetJoint: curEx.target_joint,
               expectedPlane: curExpectedPlane,
               exerciseMeta: curEx,
               romDeg: null,
               targetRomDeg: curEx.target_rom_deg,
-              holdRatio: 0,
+              holdRatio: holdPctKeep / 100,
               trunkTiltDeg: 0,
               isMultiPerson: false,
-              isImpostorOrEmergency: checkIdentity && !cachedOwnerVerified,
+              isImpostorOrEmergency: countingLockedRef.current,
               videoWidth: v.videoWidth,
               videoHeight: v.videoHeight,
               canvasWidth: canvasW,
@@ -3788,8 +3718,8 @@ export function SmartRehabKioskUI({
                   ownerName: ownerBiometricsRef.current?.fullName ?? payload.patient?.name ?? 'ผู้ป่วย',
                   faceBox: cachedOwnerFaceBox,
                   extraFaceBoxes: cachedOwnerExtraBoxes,
-                  ownerFaceVerified: cachedOwnerVerified,
-                  faceCount: cachedOwnerFaceCount,
+                  ownerFaceVerified: !multiPersonConfirmed,
+                  faceCount: multiPersonConfirmed ? Math.max(2, cachedOwnerFaceCount) : 1,
                 }
                 : undefined,
             });
@@ -4286,89 +4216,130 @@ export function SmartRehabKioskUI({
             </SkeletonCanvas>
 
             {/* Single Unified Live Coaching & Status Bar OUTSIDE Video (Zero Obstruction Inside Camera) */}
-            <div
-              role="status"
-              data-testid="kiosk-unified-coaching-banner"
-              className={`min-h-[64px] rounded-2xl px-5 py-3 flex flex-wrap items-center justify-between gap-4 shadow-sm border-2 transition-colors ${
-                unifiedCoachingBanner.tone === 'rose'
-                  ? 'border-rose-400 bg-rose-50 text-rose-950'
-                  : unifiedCoachingBanner.tone === 'amber'
-                    ? 'border-amber-400 bg-amber-50 text-amber-950'
-                    : unifiedCoachingBanner.tone === 'sky'
-                      ? 'border-sky-400 bg-sky-50 text-[#0F4C81]'
-                      : 'border-emerald-400 bg-emerald-50/95 text-emerald-950'
-              }`}
-            >
-              <div className="flex min-w-0 flex-1 items-center gap-3">
+            {(() => {
+              const bannerHoldTarget = Math.max(0.5, selectedExercise.hold_sec);
+              const bannerHoldElapsed = isWaitLowerArmUi
+                ? bannerHoldTarget
+                : holdElapsedUiSec > 0
+                  ? holdElapsedUiSec
+                  : Math.max(0, bannerHoldTarget - rep_counter.hold_remaining_sec);
+              const bannerHoldPct = isWaitLowerArmUi || kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED'
+                ? 100
+                : Math.max(0, Math.min(100, (bannerHoldElapsed / bannerHoldTarget) * 100));
+              const showHoldBarInBanner = isHoldPhase || isWaitLowerArmUi || bannerHoldElapsed > 0;
+              return (
                 <div
-                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white shadow-xs ${
+                  role="status"
+                  data-testid="kiosk-unified-coaching-banner"
+                  className={`min-h-[64px] rounded-2xl px-5 py-3 flex flex-col gap-2.5 shadow-sm border-2 transition-colors ${
                     unifiedCoachingBanner.tone === 'rose'
-                      ? 'bg-rose-600'
+                      ? 'border-rose-400 bg-rose-50 text-rose-950'
                       : unifiedCoachingBanner.tone === 'amber'
-                        ? 'bg-amber-500'
+                        ? 'border-amber-400 bg-amber-50 text-amber-950'
                         : unifiedCoachingBanner.tone === 'sky'
-                          ? 'bg-sky-600'
-                          : 'bg-emerald-600'
+                          ? 'border-sky-400 bg-sky-50 text-[#0F4C81]'
+                          : 'border-emerald-400 bg-emerald-50/95 text-emerald-950'
                   }`}
                 >
-                  {unifiedCoachingBanner.tone === 'rose' || unifiedCoachingBanner.tone === 'amber' ? (
-                    <AlertTriangle className="h-5 w-5" />
-                  ) : (
-                    <CheckCircle2 className="h-5 w-5" />
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                      <div
+                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white shadow-xs ${
+                          unifiedCoachingBanner.tone === 'rose'
+                            ? 'bg-rose-600'
+                            : unifiedCoachingBanner.tone === 'amber'
+                              ? 'bg-amber-500'
+                              : unifiedCoachingBanner.tone === 'sky'
+                                ? 'bg-sky-600'
+                                : 'bg-emerald-600'
+                        }`}
+                      >
+                        {unifiedCoachingBanner.tone === 'rose' || unifiedCoachingBanner.tone === 'amber' ? (
+                          <AlertTriangle className="h-5 w-5" />
+                        ) : (
+                          <CheckCircle2 className="h-5 w-5" />
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm sm:text-base font-black leading-tight">
+                          {unifiedCoachingBanner.titleTh}
+                        </p>
+                        <p className="mt-0.5 text-xs sm:text-sm font-bold opacity-85">
+                          {unifiedCoachingBanner.subtitleTh}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      {unifiedCoachingBanner.suggestedRomDeg ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nextDeg = unifiedCoachingBanner.suggestedRomDeg ?? 90;
+                            setReducedRomOverrideDeg(nextDeg);
+                            setStrokeSafetyAlert(null);
+                          }}
+                          className="rounded-xl bg-amber-600 px-3 py-1.5 text-xs font-extrabold text-white shadow-xs hover:bg-amber-500 cursor-pointer"
+                        >
+                          ลดเป้าหมายเป็น {unifiedCoachingBanner.suggestedRomDeg}°
+                        </button>
+                      ) : null}
+                      {unifiedCoachingBanner.showSafetyAcknowledge ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setStrokeSafetyAlert(null);
+                            setFatigueRestSec(0);
+                          }}
+                          className="rounded-xl border border-amber-300 bg-white px-3 py-1.5 text-xs font-extrabold text-amber-900 hover:bg-amber-100 cursor-pointer"
+                        >
+                          {(unifiedCoachingBanner.fatigueRestSec ?? 0) > 0 ? 'พร้อมฝึกต่อ' : 'รับทราบ'}
+                        </button>
+                      ) : unifiedCoachingBanner.badgeTh ? (
+                        <span
+                          className={`rounded-full px-3 py-1 text-xs font-black tracking-wide whitespace-nowrap ${
+                            unifiedCoachingBanner.tone === 'rose'
+                              ? 'bg-rose-600 text-white'
+                              : unifiedCoachingBanner.tone === 'amber'
+                                ? 'bg-amber-200 text-amber-950'
+                                : unifiedCoachingBanner.tone === 'sky'
+                                  ? 'bg-sky-200 text-[#0F4C81]'
+                                  : 'bg-emerald-200 text-emerald-950'
+                          }`}
+                        >
+                          {unifiedCoachingBanner.badgeTh}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                  {showHoldBarInBanner && (
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[11px] font-extrabold">
+                        <span className={isWaitLowerArmUi || bannerHoldPct >= 100 ? 'text-emerald-700' : 'text-[#0F4C81]'}>
+                          {isWaitLowerArmUi || bannerHoldPct >= 100
+                            ? '✅ ค้างครบเวลา! +1 ครั้ง (เอาแขนลงเพื่อเริ่มรอบต่อไป)'
+                            : `⏱ กำลังค้างท่า ${bannerHoldElapsed.toFixed(1)}s / ${bannerHoldTarget.toFixed(1)}s`}
+                        </span>
+                        <span className="tabular-mono font-black text-emerald-700">
+                          {Math.round(bannerHoldPct)}%
+                        </span>
+                      </div>
+                      <div className="h-2.5 w-full overflow-hidden rounded-full bg-white/80 ring-1 ring-emerald-200">
+                        <div
+                          data-testid="kiosk-coaching-hold-progress-bar"
+                          className={`h-full rounded-full transition-[width] duration-75 ${
+                            isWaitLowerArmUi || bannerHoldPct >= 100
+                              ? 'bg-emerald-500 animate-pulse'
+                              : 'bg-gradient-to-r from-[#0284C7] to-[#10B981]'
+                          }`}
+                          style={{ width: `${bannerHoldPct}%` }}
+                        />
+                      </div>
+                    </div>
                   )}
                 </div>
-                <div className="min-w-0">
-                  <p className="text-sm sm:text-base font-black leading-tight">
-                    {unifiedCoachingBanner.titleTh}
-                  </p>
-                  <p className="mt-0.5 text-xs sm:text-sm font-bold opacity-85">
-                    {unifiedCoachingBanner.subtitleTh}
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
-                {unifiedCoachingBanner.suggestedRomDeg ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const nextDeg = unifiedCoachingBanner.suggestedRomDeg ?? 90;
-                      setReducedRomOverrideDeg(nextDeg);
-                      setStrokeSafetyAlert(null);
-                    }}
-                    className="rounded-xl bg-amber-600 px-3 py-1.5 text-xs font-extrabold text-white shadow-xs hover:bg-amber-500 cursor-pointer"
-                  >
-                    ลดเป้าหมายเป็น {unifiedCoachingBanner.suggestedRomDeg}°
-                  </button>
-                ) : null}
-                {unifiedCoachingBanner.showSafetyAcknowledge ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setStrokeSafetyAlert(null);
-                      setFatigueRestSec(0);
-                    }}
-                    className="rounded-xl border border-amber-300 bg-white px-3 py-1.5 text-xs font-extrabold text-amber-900 hover:bg-amber-100 cursor-pointer"
-                  >
-                    {(unifiedCoachingBanner.fatigueRestSec ?? 0) > 0 ? 'พร้อมฝึกต่อ' : 'รับทราบ'}
-                  </button>
-                ) : unifiedCoachingBanner.badgeTh ? (
-                  <span
-                    className={`rounded-full px-3 py-1 text-xs font-black tracking-wide whitespace-nowrap ${
-                      unifiedCoachingBanner.tone === 'rose'
-                        ? 'bg-rose-600 text-white'
-                        : unifiedCoachingBanner.tone === 'amber'
-                          ? 'bg-amber-200 text-amber-950'
-                          : unifiedCoachingBanner.tone === 'sky'
-                            ? 'bg-sky-200 text-[#0F4C81]'
-                            : 'bg-emerald-200 text-emerald-950'
-                    }`}
-                  >
-                    {unifiedCoachingBanner.badgeTh}
-                  </span>
-                ) : null}
-              </div>
-            </div>
+              );
+            })()}
 
             {/* Exercise-Specific Animated Posture Guide filling remaining height */}
             <ExercisePostureGuide
@@ -4517,51 +4488,73 @@ export function SmartRehabKioskUI({
                 </div>
 
                 {/* Live Hold Timer */}
-                <div
-                  className={`rounded-2xl border p-3.5 transition-colors ${isHoldPhase
-                      ? 'border-emerald-300 bg-emerald-500 text-white'
-                      : 'border-sky-100 bg-gradient-to-br from-white to-sky-50/70 text-[#0F4C81]'
-                    }`}
-                >
-                  <p className={`flex items-center gap-1 text-xs font-bold ${isHoldPhase ? 'text-emerald-50' : 'text-[#0284C7]'}`}>
-                    <Timer className="h-3.5 w-3.5" />
-                    ค้างท่าเป้าหมาย
-                  </p>
-                  <div
-                    ref={holdTimerTextRef}
-                    className="tabular-mono mt-1 text-3xl sm:text-4xl font-extrabold"
-                  >
-                    {rep_counter.hold_remaining_sec.toFixed(1)}s
-                  </div>
-                  {(() => {
-                    const holdTargetSec = Math.max(0.5, selectedExercise.hold_sec);
-                    const holdPct =
-                      kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED'
-                        ? 100
-                        : isHoldPhase || rep_counter.hold_remaining_sec < holdTargetSec
-                          ? Math.max(
-                            0,
-                            Math.min(100, ((holdTargetSec - rep_counter.hold_remaining_sec) / holdTargetSec) * 100),
-                          )
-                          : 0;
-                    return (
+                {(() => {
+                  const holdTargetSec = Math.max(0.5, selectedExercise.hold_sec);
+                  const liveHoldElapsed = isWaitLowerArmUi
+                    ? holdTargetSec
+                    : holdElapsedUiSec > 0
+                      ? holdElapsedUiSec
+                      : Math.max(0, holdTargetSec - rep_counter.hold_remaining_sec);
+                  const holdPct = isWaitLowerArmUi || kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED'
+                    ? 100
+                    : Math.max(0, Math.min(100, (liveHoldElapsed / holdTargetSec) * 100));
+                  const activeHoldStyle = isWaitLowerArmUi || isHoldPhase || holdPct >= 100;
+                  return (
+                    <div
+                      className={`rounded-2xl border p-3.5 transition-colors ${
+                        isWaitLowerArmUi || holdPct >= 100
+                          ? 'border-emerald-400 bg-emerald-600 text-white shadow-md shadow-emerald-500/25'
+                          : activeHoldStyle
+                            ? 'border-emerald-300 bg-emerald-500 text-white'
+                            : 'border-sky-100 bg-gradient-to-br from-white to-sky-50/70 text-[#0F4C81]'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <p className={`flex items-center gap-1 text-xs font-bold ${activeHoldStyle ? 'text-emerald-50' : 'text-[#0284C7]'}`}>
+                          <Timer className="h-3.5 w-3.5" />
+                          ค้างท่าเป้าหมาย
+                        </p>
+                        <span className={`text-[11px] font-extrabold tabular-mono ${activeHoldStyle ? 'text-emerald-50' : 'text-slate-500'}`}>
+                          / {holdTargetSec.toFixed(1)}s
+                        </span>
+                      </div>
                       <div
-                        className={`mt-2 h-2 w-full overflow-hidden rounded-full ${isHoldPhase ? 'bg-white/30' : 'bg-sky-100'
-                          }`}
+                        ref={holdTimerTextRef}
+                        data-testid="kiosk-hold-timer-display"
+                        className="tabular-mono mt-1 text-2xl sm:text-3xl font-extrabold"
+                      >
+                        {isWaitLowerArmUi || holdPct >= 100
+                          ? `${holdTargetSec.toFixed(1)}s (ครบ!)`
+                          : `${liveHoldElapsed.toFixed(1)}s`}
+                      </div>
+                      <div
+                        className={`mt-2 h-2.5 w-full overflow-hidden rounded-full ${
+                          activeHoldStyle ? 'bg-white/30' : 'bg-sky-100'
+                        }`}
                       >
                         <div
                           ref={holdProgressBarRef}
-                          className={`h-full rounded-full ${isHoldPhase ? 'bg-white' : 'bg-gradient-to-r from-[#0284C7] to-[#10B981]'
-                            }`}
+                          className={`h-full rounded-full transition-[width] duration-75 ${
+                            isWaitLowerArmUi || holdPct >= 100
+                              ? 'bg-emerald-200 animate-pulse'
+                              : activeHoldStyle
+                                ? 'bg-white'
+                                : 'bg-gradient-to-r from-[#0284C7] to-[#10B981]'
+                          }`}
                           style={{
                             width: `${holdPct}%`,
                             willChange: 'width',
                           }}
                         />
                       </div>
-                    );
-                  })()}
-                </div>
+                      {(isWaitLowerArmUi || holdPct >= 100) && (
+                        <p className="mt-1.5 text-[11px] font-extrabold leading-tight text-emerald-50">
+                          ✅ ค้างครบเวลา! +1 ครั้ง (เอาแขนลงเพื่อเริ่มรอบต่อไป)
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Rep Visual Dots */}

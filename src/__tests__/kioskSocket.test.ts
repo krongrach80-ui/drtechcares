@@ -2465,7 +2465,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(strokes).toContain('#EF4444');
   });
 
-  it('enforces 3-phase hold-then-lower scoring (hold to 100% -> PHASE_2_WAIT_LOWER_TO_SCORE -> lower arms 3 frames -> THEN count +1 rep)', () => {
+  it('enforces Option A immediate rep bank + mandatory arm-lower gate without compensation/owner resets', () => {
     let state: StrokeHoldRepState = {
       phase: 'PHASE_1_HOLDING',
       holdElapsedSec: 0,
@@ -2476,17 +2476,22 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     };
 
     const stepTick = (
-      romDeg: number,
+      romDeg: number | null,
       dtSec: number,
       nowMs: number,
       opts?: {
         sideViolation?: 'NONE' | 'LEFT_ARM_RAISED_IN_RIGHT_MODE' | 'SINGLE_ARM_IN_BOTH_MODE';
+        exerciseCode?: string;
         exerciseSide?: 'LEFT' | 'RIGHT' | 'BOTH';
+        targetRomDeg?: number;
+        targetHoldSec?: number;
         leftArmRomDeg?: number | null;
         rightArmRomDeg?: number | null;
         isCompensatedNow?: boolean;
         postureBannerTh?: string | null;
         armWristLowered?: boolean;
+        handsOutOfFrameRaised?: boolean;
+        blockCounting?: boolean;
       },
     ) => {
       const sideViolation = opts?.sideViolation ?? 'NONE';
@@ -2495,98 +2500,138 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
         activeRomDeg: romDeg,
         leftArmRomDeg: opts?.leftArmRomDeg,
         rightArmRomDeg: opts?.rightArmRomDeg,
+        exerciseCode: opts?.exerciseCode,
         exerciseSide: opts?.exerciseSide ?? 'RIGHT',
-        targetRomDeg: 115,
-        targetHoldSec: 3.0,
+        targetRomDeg: opts?.targetRomDeg ?? 115,
+        targetHoldSec: opts?.targetHoldSec ?? 3.0,
         targetReps: 10,
         dtSec,
         nowMs,
         armWristLowered: opts?.armWristLowered,
+        handsOutOfFrameRaised: opts?.handsOutOfFrameRaised,
         sideViolation,
         wrongSideBannerTh: sideViolation === 'NONE' ? null : '⚠️ wrong side',
         wrongPlaneRaised: false,
         wrongPlaneBannerTh: null,
         isCompensatedNow: opts?.isCompensatedNow ?? false,
         postureBannerTh: opts?.postureBannerTh ?? null,
+        blockCounting: opts?.blockCounting ?? false,
       });
       state = res.nextState;
       return res;
     };
 
-    // 1. Entry at >= 0.75 * 115 = 86.25 deg -> accumulates in PHASE_1_HOLDING (completedReps stays 0)
+    // 1. Entry >= 0.65 * 115 = 74.75 deg accumulates smoothly even with 6-deg trunk tilt & no face match at 2.1m
     let nowCursor = 0;
-    let lastRes = stepTick(90, 0.1, (nowCursor += 100));
+    let lastRes = stepTick(78, 0.1, (nowCursor += 100), { blockCounting: false });
     expect(state.phase).toBe('PHASE_1_HOLDING');
     expect(state.holdElapsedSec).toBeCloseTo(0.1, 2);
     expect(state.completedReps).toBe(0);
     expect(lastRes.bannerTh).toContain('⏳ ค้างท่าไว้ในองศาที่ถูกต้อง');
 
-    // 2. Continue holding >= 0.75 * 115 with advisory posture warning (still accumulates smoothly!)
+    // 2. Continue holding with posture compensation flag -> NEVER resets or stalls timer!
     for (let i = 0; i < 10; i += 1) {
       lastRes = stepTick(92, 0.1, (nowCursor += 100), {
         isCompensatedNow: true,
-        postureBannerTh: '⚠️ อย่ายักไหล่ช่วยครับ ผ่อนคลายหัวไหล่ลง',
+        postureBannerTh: '⚠️ อย่ายักไหล่ช่วยครับ',
       });
     }
     expect(state.holdElapsedSec).toBeCloseTo(1.1, 2);
-    expect(lastRes.bannerTh).toContain('อย่ายักไหล่ช่วย');
+    expect(lastRes.bannerTh).toContain('⏳ ค้างท่าไว้ในองศาที่ถูกต้อง');
 
-    // 3. Premature drop below 0.55 * 115 (< 63.25 deg) decays gently at dt * 0.5
+    // 3. Brief dip < 0.65 * 115 decays gently at dt * 0.15 (NEVER warps to 0.0s!)
     lastRes = stepTick(50, 0.2, (nowCursor += 200));
-    expect(state.holdElapsedSec).toBeCloseTo(1.1 - 0.2 * 0.5, 2);
+    expect(state.holdElapsedSec).toBeCloseTo(1.1 - 0.2 * 0.15, 2);
 
-    // 4. Reach 100% hold (3.0s) -> transitions to PHASE_2_WAIT_LOWER_TO_SCORE with completedReps STILL 0!
+    // 4. Moment hold reaches 100% (3.0s) -> IMMEDIATELY increments completedReps 0 -> 1 & locks WAIT_LOWER_ARM at 100%!
     for (let i = 0; i < 25; i += 1) {
       lastRes = stepTick(118, 0.1, (nowCursor += 100));
-      if (lastRes.holdCompleteWaitLower) break;
+      if (lastRes.justCompletedRep) break;
     }
+    expect(lastRes.justCompletedRep).toBe(true);
     expect(lastRes.holdCompleteWaitLower).toBe(true);
-    expect(lastRes.justCompletedRep).toBe(false);
-    expect(state.completedReps).toBe(0);
+    expect(state.completedReps).toBe(1);
     expect(state.phase).toBe('PHASE_2_WAIT_LOWER_TO_SCORE');
+    expect(state.holdElapsedSec).toBeCloseTo(3.0, 2);
     expect(lastRes.holdProgressPct).toBe(100);
     expect(lastRes.holdRemainingSec).toBe(0);
-    expect(lastRes.bannerTh).toBe(HOLD_COMPLETED_WAIT_LOWER_BANNER_TH);
+    expect(lastRes.bannerTh).toContain('🎉 ได้ +1 แต้มแล้ว! (รวม 1/10 ครั้ง)');
+    expect(lastRes.bannerTh).toContain('กรุณาเอาแขนลงข้างลำตัวเพื่อเริ่มนับรอบถัดไป');
 
-    // 5. CRITICAL CHECK: Keep holding peak 118 deg for 10 full seconds!
-    // MUST stay at completedReps === 0 and frozen at 100% in PHASE_2_WAIT_LOWER_TO_SCORE!
+    // 5. CRITICAL CHECK: Keeping arm held up at 118 deg for 10 full seconds MUST stay locked at 1 rep (no spam!)
     for (let i = 0; i < 100; i += 1) {
       lastRes = stepTick(118, 0.1, (nowCursor += 100), { armWristLowered: false });
       expect(lastRes.justCompletedRep).toBe(false);
     }
-    expect(state.completedReps).toBe(0);
-    expect(state.phase).toBe('PHASE_2_WAIT_LOWER_TO_SCORE');
-    expect(lastRes.holdProgressPct).toBe(100);
-    expect(lastRes.bannerTh).toBe(PHASE_2_LOWER_ARM_PROMPT_BANNER_TH);
-
-    // 6. Lowering ROM partially (> 45 deg) or lowering ROM while wrist still up MUST NOT score!
-    expect(stepTick(60, 0.1, (nowCursor += 100), { armWristLowered: true }).nextState.completedReps).toBe(0);
-    expect(stepTick(35, 0.1, (nowCursor += 100), { armWristLowered: false }).nextState.completedReps).toBe(0);
-
-    // 7. Lower activeRom <= 45 AND wrist dropped for 2 frames -> still waiting; 3rd frame counts +1 rep!
-    for (let f = 1; f <= 2; f += 1) {
-      const preScore = stepTick(35, 0.033, (nowCursor += 33), { armWristLowered: true });
-      expect(preScore.nextState.phase).toBe('PHASE_2_WAIT_LOWER_TO_SCORE');
-      expect(preScore.nextState.completedReps).toBe(0);
-    }
-    const scoredRep1 = stepTick(35, 0.033, (nowCursor += 33), { armWristLowered: true });
     expect(state.completedReps).toBe(1);
-    expect(state.phase).toBe('PHASE_3_SCORED_READY');
-    expect(state.holdElapsedSec).toBe(0);
-    expect(scoredRep1.holdProgressPct).toBe(0);
-    expect(scoredRep1.justCompletedRep).toBe(true);
-    expect(scoredRep1.bannerTh).toBe(formatRepScoredBannerTh(1, 10));
+    expect(state.phase).toBe('PHASE_2_WAIT_LOWER_TO_SCORE');
+    expect(state.holdElapsedSec).toBeCloseTo(3.0, 2);
+    expect(lastRes.holdProgressPct).toBe(100);
 
-    // 8. Wrong-side raise resets PHASE_1_HOLDING timer and never increments reps
-    stepTick(108, 0.1, (nowCursor += 100));
-    const blockedRes = stepTick(108, 0.1, (nowCursor += 100), {
+    // 6. Lowering arm (<= max(48, 115 * 0.62) = 71.3 deg, or wrist dropped) for 3 frames unlocks timer back to 0.0s for rep #2!
+    for (let f = 1; f <= 2; f += 1) {
+      const preUnlock = stepTick(45, 0.033, (nowCursor += 33), { armWristLowered: true });
+      expect(preUnlock.unlockedToReady).toBeUndefined();
+      expect(preUnlock.nextState.phase).toBe('PHASE_2_WAIT_LOWER_TO_SCORE');
+    }
+    const unlocked = stepTick(45, 0.033, (nowCursor += 33), { armWristLowered: true });
+    expect(unlocked.unlockedToReady).toBe(true);
+    expect(state.completedReps).toBe(1);
+    expect(state.phase).toBe('PHASE_1_HOLDING');
+    expect(state.holdElapsedSec).toBe(0);
+    expect(unlocked.holdProgressPct).toBe(0);
+
+    // 7. Temporary wrong-side glitch decays gently (0.15x), NEVER warps accumulated hold to 0.0s!
+    stepTick(108, 0.2, (nowCursor += 200));
+    stepTick(108, 0.2, (nowCursor += 200));
+    expect(state.holdElapsedSec).toBeCloseTo(0.4, 2);
+    const blockedRes = stepTick(108, 0.2, (nowCursor += 200), {
       sideViolation: 'LEFT_ARM_RAISED_IN_RIGHT_MODE',
     });
     expect(blockedRes.statusKind).toBe('WRONG_LIMB');
-    expect(state.holdElapsedSec).toBe(0);
+    expect(state.holdElapsedSec).toBeCloseTo(0.4 - 0.2 * 0.15, 2);
     expect(state.completedReps).toBe(1);
 
-    // 9. BOTH mode bilateral hold-then-lower: MUST hold BOTH then lower BOTH arms <= restThreshold before +1!
+    // 8. Fine-motor STROKE_WRIST_FINGER at 2.5s hold + "hands out of frame while arm raised":
+    // accumulates smoothly -> scores +1 at 2.5s -> unlocks after 1.2s wait!
+    state = {
+      phase: 'PHASE_1_HOLDING',
+      holdElapsedSec: 0,
+      completedReps: 0,
+      cooldownStartedAtMs: 0,
+      repCelebrateUntilMs: 0,
+      loweredFrameStreak: 0,
+    };
+    let wristScored = false;
+    for (let i = 0; i < 30; i += 1) {
+      const r = stepTick(null, 0.1, (nowCursor += 100), {
+        exerciseCode: 'STROKE_WRIST_FINGER',
+        targetRomDeg: 70,
+        targetHoldSec: 2.5,
+        handsOutOfFrameRaised: true,
+      });
+      if (r.justCompletedRep) {
+        wristScored = true;
+        break;
+      }
+    }
+    expect(wristScored).toBe(true);
+    expect(state.completedReps).toBe(1);
+    expect(state.phase).toBe('PHASE_2_WAIT_LOWER_TO_SCORE');
+
+    // After 1.2s in Wait-Lower for fine-motor wrist exercise, unlocks ready for rep #2
+    const unlockFine = stepTick(84, 0.1, (nowCursor += 1300), {
+      exerciseCode: 'STROKE_WRIST_FINGER',
+      targetRomDeg: 70,
+      targetHoldSec: 2.5,
+      handsOutOfFrameRaised: false,
+      armWristLowered: false,
+    });
+    expect(unlockFine.unlockedToReady).toBe(true);
+    expect(state.holdElapsedSec).toBe(0);
+    expect(state.phase).toBe('PHASE_1_HOLDING');
+
+    // 9. BOTH mode bilateral Option A rep bank: holds BOTH to 3.0s -> scores +1 immediately -> keeps locked until BOTH lowered!
     let bothState: StrokeHoldRepState = {
       phase: 'PHASE_1_HOLDING',
       holdElapsedSec: 0,
@@ -2622,22 +2667,23 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       stepBoth(117.9, 117.0, 118.8, 0.1, false);
     }
     expect(bothState.phase).toBe('PHASE_2_WAIT_LOWER_TO_SCORE');
-    expect(bothState.completedReps).toBe(0);
+    expect(bothState.completedReps).toBe(1);
 
-    // Lowering only left arm while right arm stays at 90 deg keeps completedReps === 0!
+    // Lowering only left arm while right arm stays at 90 deg keeps locked in Wait-Lower without starting rep #2!
     for (let i = 0; i < 5; i += 1) {
       const partialLower = stepBoth(55, 20, 90, 0.033, false);
-      expect(partialLower.justCompletedRep).toBe(false);
-      expect(bothState.completedReps).toBe(0);
+      expect(partialLower.unlockedToReady).toBeUndefined();
+      expect(bothState.phase).toBe('PHASE_2_WAIT_LOWER_TO_SCORE');
     }
 
-    // Lowering BOTH arms <= 45 deg for 3 consecutive frames scores +1 rep!
+    // Lowering BOTH arms <= 71.3 deg for 3 consecutive frames unlocks for rep #2 while keeping completedReps === 1!
     stepBoth(22, 20, 24, 0.033, true);
     stepBoth(22, 20, 24, 0.033, true);
-    const bothScored = stepBoth(22, 20, 24, 0.033, true);
-    expect(bothScored.justCompletedRep).toBe(true);
+    const bothUnlocked = stepBoth(22, 20, 24, 0.033, true);
+    expect(bothUnlocked.unlockedToReady).toBe(true);
     expect(bothState.completedReps).toBe(1);
-    expect(bothState.phase).toBe('PHASE_3_SCORED_READY');
+    expect(bothState.phase).toBe('PHASE_1_HOLDING');
+    expect(bothState.holdElapsedSec).toBe(0);
 
     // Check anatomical wrist height evaluator directly
     const raisedPose = createNeutralLandmarks({
