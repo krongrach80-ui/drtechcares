@@ -280,6 +280,9 @@ export function alignFaceTo112(
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return null;
 
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, ARCFACE_INPUT_SIZE, ARCFACE_INPUT_SIZE);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
   ctx.setTransform(mat.a, mat.b, -mat.b, mat.a, mat.tx, mat.ty);

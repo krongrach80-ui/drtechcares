@@ -1611,5 +1611,104 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     const strangerJson = (await strangerBridgeRes.json()) as { matched: boolean };
     expect(strangerJson.matched).toBe(false);
   });
+
+  it('enforces engine-isolated ArcFace ResNet-50 1:N verification with zero hybrid cross-matching on POST /api/biometric/verify', async () => {
+    const router = createCloudDelegatedRouter({});
+    const ptLogin = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const { token: ptToken } = (await ptLogin.json()) as { token: string };
+
+    const mkArcVec = (seed: number): number[] => {
+      const vec = new Array<number>(FACE_EMBEDDING_DIM);
+      let s = seed >>> 0;
+      for (let i = 0; i < FACE_EMBEDDING_DIM; i += 1) {
+        s = (s * 1664525 + 1013904223 + i * 71) >>> 0;
+        vec[i] = ((s % 2000) / 1000 - 1) * (i >= 256 ? 1.4 : 1.0);
+      }
+      return l2Normalize(vec);
+    };
+
+    const arcOwner = mkArcVec(9001);
+    const arcOther = mkArcVec(9002);
+
+    const enrollArcRes = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-ARC-API-01',
+        fullName: 'คุณวิชัย อาร์คเฟซ',
+        age: 34,
+        phone: '0891230001',
+        diagnosis: 'Shoulder Rehab',
+        biometricEngine: 'arcface-onnx',
+        masterEmbedding: arcOwner,
+        angleEmbeddings: {
+          center: arcOwner,
+          left: arcOwner,
+          right: arcOwner,
+          up: arcOwner,
+          down: arcOwner,
+        },
+        framesCaptured: 120,
+        qualityScore: 0.96,
+      },
+    });
+    expect(enrollArcRes.status).toBe(201);
+
+    const arcVerifyOk = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: {
+        probeVector: l2Normalize(arcOwner.map((v, i) => v * 0.72 + mkArcVec(42)[i] * 0.36)),
+        engine: 'arcface-onnx',
+        livenessEvidence: {
+          biologicalVerified: true,
+          blinkCount: 1,
+          spoofRisk: 0.04,
+          nonRigidScore: 0.14,
+          engine: 'arcface-onnx',
+        },
+      },
+    });
+    expect(arcVerifyOk.status).toBe(200);
+    const okJson = (await arcVerifyOk.json()) as { matched: boolean; patient?: { hn: string } };
+    expect(okJson.matched).toBe(true);
+    expect(okJson.patient?.hn).toBe('HN-ARC-API-01');
+
+    // Different person in ArcFace space rejected cleanly at 401
+    const arcVerifyDiff = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: {
+        probeVector: arcOther,
+        engine: 'arcface-onnx',
+        livenessEvidence: {
+          biologicalVerified: true,
+          blinkCount: 1,
+          spoofRisk: 0.04,
+          nonRigidScore: 0.14,
+          engine: 'arcface-onnx',
+        },
+      },
+    });
+    expect(arcVerifyDiff.status).toBe(401);
+
+    // Hybrid probe MUST NEVER cross-match an ArcFace account
+    const hybridCrossReject = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: {
+        probeVector: arcOwner,
+        engine: 'hybrid-512d',
+        livenessEvidence: {
+          biologicalVerified: true,
+          blinkCount: 1,
+          spoofRisk: 0.04,
+          nonRigidScore: 0.14,
+          engine: 'hybrid-512d',
+        },
+      },
+    });
+    expect(hybridCrossReject.status).toBe(401);
+  });
 });
 

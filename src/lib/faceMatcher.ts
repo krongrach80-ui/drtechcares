@@ -7,13 +7,16 @@ import {
   COMMON_MODE_ALPHA,
   FACE_EMBEDDING_DIM,
   classifyLivePoseZone,
+  computeArcFaceBiometricScore,
   computeDualFactorBiometricScore,
   computeMeanCenteredVector,
   cosineSimilarity as coreCosineSimilarity,
+  detectBiometricVectorEngine,
   isLegacyV1HybridVector,
   l2Normalize,
   mirrorPoseZone,
   whitenEmbedding,
+  type BiometricVectorEngine,
   type FacePoseZone5,
   type GeometricAnthropometricRatios,
 } from '@drtechcares/smart-biometric-core';
@@ -28,6 +31,8 @@ export interface MultiAngleMatchOptions {
   rollDeg?: number;
   engine?: 'arcface-onnx' | 'hybrid-512d';
   mirroredProbeVector?: readonly number[];
+  hybridV2ProbeVector?: readonly number[];
+  mirroredHybridV2ProbeVector?: readonly number[];
   legacyV1ProbeVector?: readonly number[];
   mirroredLegacyV1ProbeVector?: readonly number[];
   geometricRatios?: GeometricAnthropometricRatios | null;
@@ -59,6 +64,8 @@ export interface FaceBoundingBox {
 export interface LiveFrameObservation {
   probeVector: readonly number[];
   mirroredProbeVector?: readonly number[];
+  hybridV2ProbeVector?: readonly number[];
+  mirroredHybridV2ProbeVector?: readonly number[];
   legacyV1ProbeVector?: readonly number[];
   mirroredLegacyV1ProbeVector?: readonly number[];
   depthScore: number;
@@ -185,12 +192,32 @@ export function identifyPatient1toN(
   }
 
   const normalizedProbe = l2Normalize(probeVector);
+  const probeEngine = detectBiometricVectorEngine(normalizedProbe, options.engine);
   const mirroredZone = mirrorPoseZone(livePoseZone);
-  const probeVariants: { zone: FacePoseZone5; vec: number[] }[] = [
+  const primaryVariants: { zone: FacePoseZone5; vec: number[] }[] = [
     { zone: livePoseZone, vec: normalizedProbe },
   ];
   if (options.mirroredProbeVector && options.mirroredProbeVector.length === normalizedProbe.length) {
-    probeVariants.push({ zone: mirroredZone, vec: l2Normalize(options.mirroredProbeVector) });
+    primaryVariants.push({ zone: mirroredZone, vec: l2Normalize(options.mirroredProbeVector) });
+  }
+
+  const hybridV2Variants: { zone: FacePoseZone5; vec: number[] }[] = [];
+  if (
+    options.hybridV2ProbeVector &&
+    options.hybridV2ProbeVector.length === normalizedProbe.length
+  ) {
+    hybridV2Variants.push({ zone: livePoseZone, vec: l2Normalize(options.hybridV2ProbeVector) });
+    if (
+      options.mirroredHybridV2ProbeVector &&
+      options.mirroredHybridV2ProbeVector.length === normalizedProbe.length
+    ) {
+      hybridV2Variants.push({
+        zone: mirroredZone,
+        vec: l2Normalize(options.mirroredHybridV2ProbeVector),
+      });
+    }
+  } else if (probeEngine === 'hybrid-v2') {
+    hybridV2Variants.push(...primaryVariants);
   }
 
   const legacyV1Variants: { zone: FacePoseZone5; vec: number[] }[] = [];
@@ -208,13 +235,19 @@ export function identifyPatient1toN(
         vec: l2Normalize(options.mirroredLegacyV1ProbeVector),
       });
     }
+  } else if (probeEngine === 'legacy-v1') {
+    legacyV1Variants.push(...primaryVariants);
   }
+
+  const arcFaceVariants: { zone: FacePoseZone5; vec: number[] }[] =
+    probeEngine === 'arcface-onnx' ? primaryVariants : [];
 
   const scored: {
     candidate: PatientBiometricIndexEntry;
     orderIdx: number;
     angle: 'master' | 'center' | 'left' | 'right' | 'up' | 'down' | 'extra';
     dualFactorScore: number;
+    engine: BiometricVectorEngine;
     isLegacyV1: boolean;
     rawSim: number;
     meanCenteredSim: number;
@@ -234,6 +267,29 @@ export function identifyPatient1toN(
     const hasMaster =
       Array.isArray(cand.masterEmbedding) && cand.masterEmbedding.length === normalizedProbe.length;
     const masterVec = hasMaster ? l2Normalize(cand.masterEmbedding) : null;
+    const candEngine: BiometricVectorEngine = masterVec
+      ? detectBiometricVectorEngine(masterVec, cand.biometricEngine)
+      : cand.biometricEngine === 'arcface-onnx'
+        ? 'arcface-onnx'
+        : 'hybrid-v2';
+
+    const activeVariants =
+      candEngine === 'arcface-onnx'
+        ? arcFaceVariants
+        : candEngine === 'legacy-v1'
+          ? legacyV1Variants.length > 0
+            ? legacyV1Variants
+            : hybridV2Variants.length > 0
+              ? hybridV2Variants
+              : probeEngine !== 'arcface-onnx'
+                ? primaryVariants
+                : []
+          : hybridV2Variants.length > 0
+            ? hybridV2Variants
+            : probeEngine !== 'arcface-onnx'
+              ? primaryVariants
+              : [];
+    if (activeVariants.length === 0) continue;
 
     let bestVariantScore = -1;
     let bestAngle: 'master' | 'center' | 'left' | 'right' | 'up' | 'down' | 'extra' = 'master';
@@ -249,70 +305,107 @@ export function identifyPatient1toN(
     let bestInnerPatchCos = 0;
     let bestInnerPatchWhite = 0;
 
-    const candIsLegacyV1 = Boolean(masterVec && isLegacyV1HybridVector(masterVec));
-    const activeVariants =
-      candIsLegacyV1 && legacyV1Variants.length > 0 ? legacyV1Variants : probeVariants;
+    if (candEngine === 'arcface-onnx') {
+      for (const variant of activeVariants) {
+        const targetAngleVecRaw = cand.angleEmbeddings?.[variant.zone];
+        const hasSameZone =
+          Array.isArray(targetAngleVecRaw) && targetAngleVecRaw.length === normalizedProbe.length;
+        const sameZoneVec = hasSameZone ? l2Normalize(targetAngleVecRaw) : masterVec;
+        if (!sameZoneVec && !masterVec) continue;
 
-    for (const variant of activeVariants) {
-      const targetAngleVecRaw = cand.angleEmbeddings?.[variant.zone];
-      const hasSameZone =
-        Array.isArray(targetAngleVecRaw) && targetAngleVecRaw.length === normalizedProbe.length;
-      const sameZoneVec = hasSameZone ? l2Normalize(targetAngleVecRaw) : masterVec;
-      if (!sameZoneVec && !masterVec) continue;
-
-      const sameZoneDual = sameZoneVec
-        ? computeDualFactorBiometricScore(variant.vec, sameZoneVec, {
-            probeRatios: options.geometricRatios,
-            candidateRatios: cand.geometricRatios,
-          })
-        : null;
-      const masterDual = masterVec
-        ? computeDualFactorBiometricScore(variant.vec, masterVec, {
-            probeRatios: options.geometricRatios,
-            candidateRatios: cand.geometricRatios,
-          })
-        : null;
-
-      let dualScore = 0;
-      let dominantDual = sameZoneDual ?? masterDual!;
-      let chosenAngle: 'master' | 'center' | 'left' | 'right' | 'up' | 'down' = hasSameZone
-        ? variant.zone
-        : 'master';
-
-      if (sameZoneDual && masterDual) {
-        // Pose-Synchronized fusion: 55% same-pose angle centroid + 45% master centroid
-        dualScore = 0.55 * sameZoneDual.dualFactorScore + 0.45 * masterDual.dualFactorScore;
-        dominantDual =
-          sameZoneDual.dualFactorScore >= masterDual.dualFactorScore ? sameZoneDual : masterDual;
-        if (masterDual.dualFactorScore > sameZoneDual.dualFactorScore + 0.06) {
-          chosenAngle = 'master';
+        const sameZoneArc = sameZoneVec
+          ? computeArcFaceBiometricScore(variant.vec, sameZoneVec, {
+              probeRatios: options.geometricRatios,
+              candidateRatios: cand.geometricRatios,
+            })
+          : null;
+        const masterArc = masterVec
+          ? computeArcFaceBiometricScore(variant.vec, masterVec, {
+              probeRatios: options.geometricRatios,
+              candidateRatios: cand.geometricRatios,
+            })
+          : null;
+        const arcScore =
+          sameZoneArc && masterArc
+            ? 0.55 * sameZoneArc.score + 0.45 * masterArc.score
+            : (sameZoneArc ?? masterArc)!.score;
+        const chosenAngle: 'master' | 'center' | 'left' | 'right' | 'up' | 'down' =
+          hasSameZone && (!masterArc || !sameZoneArc || masterArc.score <= sameZoneArc.score + 0.06)
+            ? variant.zone
+            : 'master';
+        if (arcScore > bestVariantScore) {
+          bestVariantScore = arcScore;
+          bestAngle = chosenAngle;
+          bestRawSim = Math.max(sameZoneArc?.rawCos ?? 0, masterArc?.rawCos ?? 0);
+          bestMeanCenteredSim = bestRawSim;
+          bestWhitenedSim = bestRawSim;
+          bestGeomPenalty = Math.max(
+            sameZoneArc?.geometricPenalty ?? 0,
+            masterArc?.geometricPenalty ?? 0,
+          );
         }
-      } else {
-        dualScore = dominantDual.dualFactorScore;
       }
+    } else {
+      for (const variant of activeVariants) {
+        const targetAngleVecRaw = cand.angleEmbeddings?.[variant.zone];
+        const hasSameZone =
+          Array.isArray(targetAngleVecRaw) && targetAngleVecRaw.length === normalizedProbe.length;
+        const sameZoneVec = hasSameZone ? l2Normalize(targetAngleVecRaw) : masterVec;
+        if (!sameZoneVec && !masterVec) continue;
 
-      // Apply whitened confirmation boost cleanly only for identical centered baseline vectors while keeping L2 & geom penalties
-      if (dualScore > bestVariantScore) {
-        bestVariantScore = dualScore;
-        bestAngle = chosenAngle;
-        bestRawSim = dominantDual.rawCos;
-        bestMeanCenteredSim = dominantDual.meanCenteredCos;
-        bestWhitenedSim =
-          sameZoneDual && masterDual
-            ? Math.max(sameZoneDual.whitenedCos, masterDual.whitenedCos)
-            : dominantDual.whitenedCos;
-        bestGeomPenalty = Math.max(
-          sameZoneDual?.geometricPenalty ?? 0,
-          masterDual?.geometricPenalty ?? 0,
-        );
-        if (dominantDual.faceCore) {
-          hasCore = true;
-          bestCos3D = dominantDual.faceCore.cos3DNormalized;
-          bestCraniofacialCos = dominantDual.faceCore.craniofacialCos;
-          bestInnerDctCos = dominantDual.faceCore.innerDctCos;
-          bestInnerDctWhite = dominantDual.faceCore.innerDctWhitenedCos;
-          bestInnerPatchCos = dominantDual.faceCore.innerPatchCos;
-          bestInnerPatchWhite = dominantDual.faceCore.innerPatchWhitenedCos;
+        const sameZoneDual = sameZoneVec
+          ? computeDualFactorBiometricScore(variant.vec, sameZoneVec, {
+              probeRatios: options.geometricRatios,
+              candidateRatios: cand.geometricRatios,
+            })
+          : null;
+        const masterDual = masterVec
+          ? computeDualFactorBiometricScore(variant.vec, masterVec, {
+              probeRatios: options.geometricRatios,
+              candidateRatios: cand.geometricRatios,
+            })
+          : null;
+
+        let dualScore = 0;
+        let dominantDual = sameZoneDual ?? masterDual!;
+        let chosenAngle: 'master' | 'center' | 'left' | 'right' | 'up' | 'down' = hasSameZone
+          ? variant.zone
+          : 'master';
+
+        if (sameZoneDual && masterDual) {
+          // Pose-Synchronized fusion: 55% same-pose angle centroid + 45% master centroid
+          dualScore = 0.55 * sameZoneDual.dualFactorScore + 0.45 * masterDual.dualFactorScore;
+          dominantDual =
+            sameZoneDual.dualFactorScore >= masterDual.dualFactorScore ? sameZoneDual : masterDual;
+          if (masterDual.dualFactorScore > sameZoneDual.dualFactorScore + 0.06) {
+            chosenAngle = 'master';
+          }
+        } else {
+          dualScore = dominantDual.dualFactorScore;
+        }
+
+        if (dualScore > bestVariantScore) {
+          bestVariantScore = dualScore;
+          bestAngle = chosenAngle;
+          bestRawSim = dominantDual.rawCos;
+          bestMeanCenteredSim = dominantDual.meanCenteredCos;
+          bestWhitenedSim =
+            sameZoneDual && masterDual
+              ? Math.max(sameZoneDual.whitenedCos, masterDual.whitenedCos)
+              : dominantDual.whitenedCos;
+          bestGeomPenalty = Math.max(
+            sameZoneDual?.geometricPenalty ?? 0,
+            masterDual?.geometricPenalty ?? 0,
+          );
+          if (dominantDual.faceCore) {
+            hasCore = true;
+            bestCos3D = dominantDual.faceCore.cos3DNormalized;
+            bestCraniofacialCos = dominantDual.faceCore.craniofacialCos;
+            bestInnerDctCos = dominantDual.faceCore.innerDctCos;
+            bestInnerDctWhite = dominantDual.faceCore.innerDctWhitenedCos;
+            bestInnerPatchCos = dominantDual.faceCore.innerPatchCos;
+            bestInnerPatchWhite = dominantDual.faceCore.innerPatchWhitenedCos;
+          }
         }
       }
     }
@@ -323,7 +416,8 @@ export function identifyPatient1toN(
         orderIdx,
         angle: bestAngle,
         dualFactorScore: bestVariantScore,
-        isLegacyV1: candIsLegacyV1,
+        engine: candEngine,
+        isLegacyV1: candEngine === 'legacy-v1',
         rawSim: bestRawSim,
         meanCenteredSim: bestMeanCenteredSim,
         whitenedSim: bestWhitenedSim,
@@ -353,86 +447,146 @@ export function identifyPatient1toN(
     };
   }
 
-  scored.sort((a, b) => {
-    if (
-      isSameIdentityRecord(a.candidate, b.candidate) &&
-      Math.abs(b.dualFactorScore - a.dualFactorScore) < 0.035
-    ) {
-      return b.orderIdx - a.orderIdx;
-    }
-    return b.dualFactorScore - a.dualFactorScore;
-  });
+  const sortPool = (items: typeof scored) =>
+    [...items].sort((a, b) => {
+      if (
+        isSameIdentityRecord(a.candidate, b.candidate) &&
+        Math.abs(b.dualFactorScore - a.dualFactorScore) < 0.035
+      ) {
+        return b.orderIdx - a.orderIdx;
+      }
+      return b.dualFactorScore - a.dualFactorScore;
+    });
 
-  const top = scored[0];
-  // Deduplicate ONLY true same-person duplicate HN records; NEVER ignore distinct patients!
-  const distinctRunners = scored
-    .slice(1)
-    .filter((s) => !isSameIdentityRecord(top.candidate, s.candidate));
-  const runnerUp = distinctRunners[0];
-  const runnerUpSim = runnerUp ? runnerUp.dualFactorScore : 0;
-  const margin = runnerUp ? top.dualFactorScore - runnerUp.dualFactorScore : 1;
+  const arcPool = sortPool(scored.filter((s) => s.engine === 'arcface-onnx'));
+  const hybridPool = sortPool(scored.filter((s) => s.engine !== 'arcface-onnx'));
 
-  const passesMargin = distinctRunners.length === 0 || margin >= marginThreshold;
-  const topIsLegacyV1 = top.isLegacyV1;
-  // Iron Rule 1: V2 >= 0.75 (0.70 angled); Legacy V1 bridge strictly >= 0.80 (0.75 angled) + >= 0.42 white + >= 0.08 margin
-  const similarityThreshold =
-    options.similarityThreshold ??
-    (topIsLegacyV1 ? (isAngledPose ? 0.75 : 0.80) : isAngledPose ? 0.70 : 0.75);
-  const whitenedThreshold =
-    options.whitenedThreshold ??
-    (topIsLegacyV1 ? (isAngledPose ? 0.36 : 0.42) : isAngledPose ? 0.32 : 0.36);
-  const meanCenteredMin = topIsLegacyV1
-    ? isAngledPose
-      ? 0.56
-      : 0.64
-    : isAngledPose
-      ? 0.52
-      : 0.60;
-  const subDctCosMin = topIsLegacyV1 ? (isAngledPose ? 0.32 : 0.40) : isAngledPose ? 0.34 : 0.42;
-  const subDctWhiteMin = topIsLegacyV1 ? (isAngledPose ? 0.14 : 0.20) : isAngledPose ? 0.15 : 0.22;
-  const subPatchCosMin = topIsLegacyV1 ? (isAngledPose ? 0.26 : 0.34) : isAngledPose ? 0.30 : 0.38;
-  const subPatchWhiteMin = topIsLegacyV1
-    ? isAngledPose
-      ? 0.10
-      : 0.16
-    : isAngledPose
-      ? 0.12
-      : 0.18;
-  const sub3DMin = topIsLegacyV1 ? (isAngledPose ? 0.60 : 0.68) : isAngledPose ? 0.52 : 0.60;
-  const craniofacialMin = topIsLegacyV1
-    ? isAngledPose
-      ? 0.28
-      : 0.36
-    : isAngledPose
-      ? 0.28
-      : 0.35;
+  const evalArcPool = () => {
+    const top = arcPool[0];
+    if (!top) return null;
+    const distinctRunners = arcPool
+      .slice(1)
+      .filter((s) => !isSameIdentityRecord(top.candidate, s.candidate));
+    const runnerUp = distinctRunners[0];
+    const runnerUpSim = runnerUp ? runnerUp.dualFactorScore : 0;
+    const margin = runnerUp ? top.dualFactorScore - runnerUp.dualFactorScore : 1;
+    const arcSimThresh = options.similarityThreshold ?? (isAngledPose ? 0.48 : 0.54);
+    const arcMarginThresh = options.marginThreshold ?? 0.1;
+    const passesThreshold = top.dualFactorScore >= arcSimThresh && top.geometricPenalty <= 0.14;
+    const passesMargin = distinctRunners.length === 0 || margin >= arcMarginThresh;
+    const matched = passesThreshold && passesMargin;
+    const reason: MultiAngleMatchResult['reason'] = matched
+      ? 'OK'
+      : passesThreshold && !passesMargin
+        ? 'AMBIGUOUS_CLOSE_CANDIDATES'
+        : 'BELOW_THRESHOLD';
+    const displayPercent = Number(
+      Math.max(
+        0,
+        Math.min(
+          99.9,
+          matched
+            ? 50 + top.dualFactorScore * 58
+            : Math.min(79, Math.max(0, 30 + top.dualFactorScore * 65)),
+        ),
+      ).toFixed(1),
+    );
+    return { top, runnerUpSim, margin, matched, reason, displayPercent };
+  };
 
-  const passesSubbandFloor =
-    !top.hasCore ||
-    (top.bestInnerDctCos >= subDctCosMin &&
-      top.bestInnerDctWhite >= subDctWhiteMin &&
-      top.bestInnerPatchCos >= subPatchCosMin &&
-      top.bestInnerPatchWhite >= subPatchWhiteMin &&
-      top.bestCos3D >= sub3DMin &&
-      top.bestCraniofacialCos >= craniofacialMin);
+  const evalHybridPool = () => {
+    const top = hybridPool[0];
+    if (!top) return null;
+    const distinctRunners = hybridPool
+      .slice(1)
+      .filter((s) => !isSameIdentityRecord(top.candidate, s.candidate));
+    const runnerUp = distinctRunners[0];
+    const runnerUpSim = runnerUp ? runnerUp.dualFactorScore : 0;
+    const margin = runnerUp ? top.dualFactorScore - runnerUp.dualFactorScore : 1;
 
-  const passesThreshold =
-    top.dualFactorScore >= similarityThreshold &&
-    top.whitenedSim >= whitenedThreshold &&
-    top.meanCenteredSim >= meanCenteredMin &&
-    top.geometricPenalty <= 0.14 &&
-    passesSubbandFloor;
+    const passesMargin = distinctRunners.length === 0 || margin >= marginThreshold;
+    const topIsLegacyV1 = top.isLegacyV1;
+    const similarityThreshold =
+      options.similarityThreshold ??
+      (topIsLegacyV1 ? (isAngledPose ? 0.75 : 0.80) : isAngledPose ? 0.70 : 0.75);
+    const whitenedThreshold =
+      options.whitenedThreshold ??
+      (topIsLegacyV1 ? (isAngledPose ? 0.36 : 0.42) : isAngledPose ? 0.32 : 0.36);
+    const meanCenteredMin = topIsLegacyV1
+      ? isAngledPose
+        ? 0.56
+        : 0.64
+      : isAngledPose
+        ? 0.52
+        : 0.60;
+    const subDctCosMin = topIsLegacyV1 ? (isAngledPose ? 0.32 : 0.40) : isAngledPose ? 0.34 : 0.42;
+    const subDctWhiteMin = topIsLegacyV1 ? (isAngledPose ? 0.14 : 0.20) : isAngledPose ? 0.15 : 0.22;
+    const subPatchCosMin = topIsLegacyV1 ? (isAngledPose ? 0.26 : 0.34) : isAngledPose ? 0.30 : 0.38;
+    const subPatchWhiteMin = topIsLegacyV1
+      ? isAngledPose
+        ? 0.10
+        : 0.16
+      : isAngledPose
+        ? 0.12
+        : 0.18;
+    const sub3DMin = topIsLegacyV1 ? (isAngledPose ? 0.60 : 0.68) : isAngledPose ? 0.52 : 0.60;
+    const craniofacialMin = topIsLegacyV1
+      ? isAngledPose
+        ? 0.28
+        : 0.36
+      : isAngledPose
+        ? 0.28
+        : 0.35;
 
-  const matched = passesThreshold && passesMargin;
-  const reason: MultiAngleMatchResult['reason'] = matched
-    ? 'OK'
-    : passesThreshold && !passesMargin
-      ? 'AMBIGUOUS_CLOSE_CANDIDATES'
-      : 'BELOW_THRESHOLD';
+    const passesSubbandFloor =
+      !top.hasCore ||
+      (top.bestInnerDctCos >= subDctCosMin &&
+        top.bestInnerDctWhite >= subDctWhiteMin &&
+        top.bestInnerPatchCos >= subPatchCosMin &&
+        top.bestInnerPatchWhite >= subPatchWhiteMin &&
+        top.bestCos3D >= sub3DMin &&
+        top.bestCraniofacialCos >= craniofacialMin);
 
-  const displayPercent = Number(
-    Math.max(0, Math.min(99.9, (matched ? Math.max(0.84, top.dualFactorScore) : Math.min(0.79, top.dualFactorScore)) * 100)).toFixed(1),
-  );
+    const passesThreshold =
+      top.dualFactorScore >= similarityThreshold &&
+      top.whitenedSim >= whitenedThreshold &&
+      top.meanCenteredSim >= meanCenteredMin &&
+      top.geometricPenalty <= 0.14 &&
+      passesSubbandFloor;
+
+    const matched = passesThreshold && passesMargin;
+    const reason: MultiAngleMatchResult['reason'] = matched
+      ? 'OK'
+      : passesThreshold && !passesMargin
+        ? 'AMBIGUOUS_CLOSE_CANDIDATES'
+        : 'BELOW_THRESHOLD';
+
+    const displayPercent = Number(
+      Math.max(
+        0,
+        Math.min(
+          99.9,
+          (matched ? Math.max(0.84, top.dualFactorScore) : Math.min(0.79, top.dualFactorScore)) *
+            100,
+        ),
+      ).toFixed(1),
+    );
+    return { top, runnerUpSim, margin, matched, reason, displayPercent };
+  };
+
+  const arcEval = evalArcPool();
+  const hybridEval =
+    arcEval && (arcEval.matched || arcEval.reason === 'AMBIGUOUS_CLOSE_CANDIDATES')
+      ? null
+      : evalHybridPool();
+  const chosen =
+    arcEval && (arcEval.matched || arcEval.reason === 'AMBIGUOUS_CLOSE_CANDIDATES' || !hybridEval)
+      ? arcEval
+      : hybridEval && (hybridEval.matched || !arcEval || hybridEval.top.dualFactorScore > arcEval.top.dualFactorScore)
+        ? hybridEval
+        : arcEval!;
+
+  const { top, runnerUpSim, margin, matched, reason, displayPercent } = chosen;
 
   if (typeof window !== 'undefined' && typeof console !== 'undefined' && console.debug) {
     console.debug(
@@ -540,6 +694,12 @@ export class TemporalBiometricMatcher {
         : {}),
       ...(observation.mirroredProbeVector
         ? { mirroredProbeVector: observation.mirroredProbeVector }
+        : {}),
+      ...(observation.hybridV2ProbeVector
+        ? { hybridV2ProbeVector: observation.hybridV2ProbeVector }
+        : {}),
+      ...(observation.mirroredHybridV2ProbeVector
+        ? { mirroredHybridV2ProbeVector: observation.mirroredHybridV2ProbeVector }
         : {}),
       ...(observation.legacyV1ProbeVector
         ? { legacyV1ProbeVector: observation.legacyV1ProbeVector }

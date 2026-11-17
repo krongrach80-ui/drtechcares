@@ -27,19 +27,71 @@ export const ARCFACE_MODEL_URL: string =
     ? configuredUrl
     : '/models/w600k_r50.onnx';
 
+const envArcFaceFlag: unknown =
+  typeof import.meta !== 'undefined' && import.meta.env
+    ? import.meta.env.VITE_ENABLE_HEAVY_ARCFACE_ONNX
+    : undefined;
+
+const isBrowserRuntime =
+  typeof window !== 'undefined' && typeof fetch === 'function' && !Boolean((globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node);
+
 const heavyOnnxEnabled: boolean =
-  typeof import.meta !== 'undefined' &&
-  Boolean(import.meta.env) &&
-  import.meta.env.VITE_ENABLE_HEAVY_ARCFACE_ONNX === 'true';
+  envArcFaceFlag === 'true' ||
+  (envArcFaceFlag !== 'false' && isBrowserRuntime);
+
+ort.env.wasm.simd = true;
+ort.env.wasm.numThreads =
+  typeof globalThis !== 'undefined' &&
+  (globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated
+    ? 2
+    : 1;
 
 let arcfaceSessionPromise: Promise<ort.InferenceSession> | null = null;
+let arcfaceReadySession: ort.InferenceSession | null = null;
 let arcfaceUnavailable = !heavyOnnxEnabled;
+let arcfaceStatus: 'disabled' | 'idle' | 'loading' | 'ready' | 'unavailable' = heavyOnnxEnabled
+  ? 'idle'
+  : 'disabled';
+let arcfaceRunQueue: Promise<unknown> = Promise.resolve();
+
+export function getArcFaceEngineStatus():
+  | 'disabled'
+  | 'idle'
+  | 'loading'
+  | 'ready'
+  | 'unavailable' {
+  return arcfaceStatus;
+}
+
+export function isArcFaceSessionReady(): boolean {
+  return arcfaceReadySession !== null && !arcfaceUnavailable;
+}
+
+export async function preloadArcFaceOnnx(): Promise<boolean> {
+  if (!heavyOnnxEnabled) return false;
+  if (arcfaceReadySession) return true;
+  if (arcfaceUnavailable) {
+    // Allow clean retry when model cache/network recovers
+    arcfaceUnavailable = false;
+    arcfaceStatus = 'idle';
+  }
+  try {
+    await getArcFaceSession();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function getArcFaceSession(): Promise<ort.InferenceSession> {
+  if (arcfaceReadySession) {
+    return Promise.resolve(arcfaceReadySession);
+  }
   if (arcfaceUnavailable) {
     return Promise.reject(new Error(`ArcFace model unavailable at ${ARCFACE_MODEL_URL}`));
   }
   if (!arcfaceSessionPromise) {
+    arcfaceStatus = 'loading';
     arcfaceSessionPromise = (async () => {
       if (typeof window !== 'undefined' && typeof fetch === 'function') {
         try {
@@ -47,6 +99,7 @@ export function getArcFaceSession(): Promise<ort.InferenceSession> {
           const contentType = headRes.headers.get('content-type') ?? '';
           if (headRes.status !== 405 && (!headRes.ok || contentType.includes('text/html'))) {
             arcfaceUnavailable = true;
+            arcfaceStatus = 'unavailable';
             throw new Error(
               `ArcFace model unavailable at ${ARCFACE_MODEL_URL} (status=${headRes.status}, content-type=${contentType || 'unknown'})`,
             );
@@ -57,11 +110,23 @@ export function getArcFaceSession(): Promise<ort.InferenceSession> {
           }
         }
       }
-      return ort.InferenceSession.create(ARCFACE_MODEL_URL, {
-        executionProviders: ['wasm'],
-      });
+      // Prefer WebGPU hardware acceleration when available, cleanly falling back to SIMD WASM
+      for (const eps of [['webgpu', 'wasm'], ['wasm']] as const) {
+        try {
+          const sess = await ort.InferenceSession.create(ARCFACE_MODEL_URL, {
+            executionProviders: [...eps],
+          });
+          arcfaceReadySession = sess;
+          arcfaceStatus = 'ready';
+          return sess;
+        } catch (err) {
+          if (eps.length === 1) throw err;
+        }
+      }
+      throw new Error(`Failed to initialize ArcFace ONNX session at ${ARCFACE_MODEL_URL}`);
     })().catch((err: unknown) => {
       arcfaceUnavailable = true;
+      arcfaceStatus = 'unavailable';
       arcfaceSessionPromise = null;
       throw err;
     });
@@ -75,9 +140,9 @@ export function toArcFaceNchwTensor(image: { width: number; height: number; data
   const out = new Float32Array(3 * plane);
   for (let i = 0; i < plane; i += 1) {
     const p = i * 4;
-    out[i] = (data[p] - 127.5) / 128.0;
-    out[plane + i] = (data[p + 1] - 127.5) / 128.0;
-    out[2 * plane + i] = (data[p + 2] - 127.5) / 128.0;
+    out[i] = (data[p] - 127.5) / 127.5;
+    out[plane + i] = (data[p + 1] - 127.5) / 127.5;
+    out[2 * plane + i] = (data[p + 2] - 127.5) / 127.5;
   }
   return out;
 }
@@ -104,7 +169,10 @@ export async function extractArcFaceOnnxEmbedding(
     ARCFACE_INPUT_SIZE,
     ARCFACE_INPUT_SIZE,
   ]);
-  const results = await session.run({ [inputName]: tensor });
+  // Serialize inference calls so concurrent frames never collide inside ORT session
+  const runTask = arcfaceRunQueue.then(() => session.run({ [inputName]: tensor }));
+  arcfaceRunQueue = runTask.catch(() => {});
+  const results = await runTask;
   const output = results[outputName] as ort.Tensor | undefined;
   if (!output) {
     throw new Error('ArcFace ONNX inference returned empty output');
@@ -590,10 +658,16 @@ export async function extractFaceEmbeddingWithFallback(
 export async function extractDualFlipFaceEmbedding(
   image: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
   landmarks3D: readonly Landmark3D[],
-  options?: { includeLegacyV1?: boolean },
+  options?: {
+    includeLegacyV1?: boolean;
+    includeHybridV2?: boolean;
+    fastArcFacePrimaryOnly?: boolean;
+  },
 ): Promise<{
   vector: number[];
   mirroredVector: number[];
+  hybridV2Vector?: number[];
+  mirroredHybridV2Vector?: number[];
   legacyV1Vector?: number[];
   mirroredLegacyV1Vector?: number[];
   engine: 'arcface-onnx' | 'hybrid-512d';
@@ -602,12 +676,23 @@ export async function extractDualFlipFaceEmbedding(
   const primary = await extractFaceEmbeddingWithFallback(image, landmarks3D);
   const flippedImg = flipImageDataHorizontally(image);
   const flippedLms = flipLandmarksHorizontally(landmarks3D);
-  const mirrored = await extractFaceEmbeddingWithFallback(flippedImg, flippedLms);
+  const mirroredVector =
+    primary.engine === 'arcface-onnx' && options?.fastArcFacePrimaryOnly
+      ? []
+      : (await extractFaceEmbeddingWithFallback(flippedImg, flippedLms)).vector;
   const geometricRatios = computeGeometricAnthropometricRatios(landmarks3D);
   const includeLegacy = Boolean(options?.includeLegacyV1);
+  const includeHybridV2 =
+    Boolean(options?.includeHybridV2) && primary.engine === 'arcface-onnx';
   return {
     vector: primary.vector,
-    mirroredVector: mirrored.vector,
+    mirroredVector,
+    ...(includeHybridV2
+      ? {
+          hybridV2Vector: extractHybrid512Descriptor(image, landmarks3D),
+          mirroredHybridV2Vector: extractHybrid512Descriptor(flippedImg, flippedLms),
+        }
+      : {}),
     ...(includeLegacy
       ? {
           legacyV1Vector: extractLegacyV1Hybrid512Descriptor(image, landmarks3D),

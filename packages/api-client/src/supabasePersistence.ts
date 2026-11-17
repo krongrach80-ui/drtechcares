@@ -504,6 +504,10 @@ export async function hydrateStateFromSupabase(
         angleImageUrls: hydratedAngleImageUrls,
         masterEmbedding: fallbackMaster,
         angleEmbeddings: fallbackAngles,
+        biometricEngine:
+          history.biometricEngine === 'arcface-onnx' || history.biometricEngine === 'hybrid-512d'
+            ? history.biometricEngine
+            : prevPatient?.biometricEngine,
         geometricRatios:
           history.geometricRatios && typeof history.geometricRatios === 'object'
             ? (history.geometricRatios as GeometricAnthropometricRatios)

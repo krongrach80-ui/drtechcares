@@ -263,5 +263,58 @@ describe('Continuous 1:1 Owner Lock, Full-Bleed Cover Math & Owner-Bound Hand Fi
     });
     expect(blockedImpostor.matched).toBe(false);
   });
+
+  it('verifies 1:1 ArcFace ResNet-50 owners strictly with engine isolation', () => {
+    const mkArc = (seed: number): number[] => {
+      const out = new Array<number>(FACE_EMBEDDING_DIM);
+      let s = seed >>> 0;
+      for (let i = 0; i < FACE_EMBEDDING_DIM; i += 1) {
+        s = (s * 1664525 + 1013904223 + i * 41) >>> 0;
+        out[i] = ((s % 2000) / 1000 - 1) * (i >= 256 ? 1.4 : 1.0);
+      }
+      return l2Normalize(out);
+    };
+    const arcOwner = mkArc(7001);
+    const arcImpostor = mkArc(7002);
+    const arcTemplate: OwnerBiometricTemplate = {
+      patientId: 'pat-arc-owner',
+      hn: 'HN-ARC-LOCK',
+      fullName: 'คุณวิชัย อาร์คเฟซ',
+      biometricEngine: 'arcface-onnx',
+      masterEmbedding: arcOwner,
+      angleEmbeddings: {
+        center: arcOwner,
+        left: arcOwner,
+        right: arcOwner,
+        up: arcOwner,
+        down: arcOwner,
+      },
+    };
+
+    expect(
+      verifyOwnerFace1to1({
+        probeVector: l2Normalize(arcOwner.map((v, i) => v * 0.72 + mkArc(5)[i] * 0.35)),
+        probeEngine: 'arcface-onnx',
+        ownerTemplate: arcTemplate,
+      }).matched,
+    ).toBe(true);
+
+    expect(
+      verifyOwnerFace1to1({
+        probeVector: arcImpostor,
+        probeEngine: 'arcface-onnx',
+        ownerTemplate: arcTemplate,
+      }).matched,
+    ).toBe(false);
+
+    // Hybrid probe cannot spoof an ArcFace owner lock
+    expect(
+      verifyOwnerFace1to1({
+        probeVector: arcOwner,
+        probeEngine: 'hybrid-512d',
+        ownerTemplate: arcTemplate,
+      }).matched,
+    ).toBe(false);
+  });
 });
 

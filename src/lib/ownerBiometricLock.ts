@@ -2,7 +2,9 @@ import { POSE_INDEX } from '@drtechcares/pose-engine';
 import type { AngleEmbeddings5D } from '@drtechcares/api-client';
 import {
   classifyLivePoseZone,
+  computeArcFaceBiometricScore,
   computeDualFactorBiometricScore,
+  detectBiometricVectorEngine,
   isLegacyV1HybridVector,
   l2Normalize,
   mirrorPoseZone,
@@ -16,6 +18,7 @@ export interface OwnerBiometricTemplate {
   fullName: string;
   masterEmbedding: number[];
   angleEmbeddings?: Partial<AngleEmbeddings5D>;
+  biometricEngine?: 'arcface-onnx' | 'hybrid-512d';
   geometricRatios?: GeometricAnthropometricRatios;
 }
 
@@ -230,8 +233,11 @@ export function computeOwnerFaceBoxMetrics(
 export function verifyOwnerFace1to1(input: {
   probeVector: readonly number[];
   mirroredProbeVector?: readonly number[];
+  hybridV2ProbeVector?: readonly number[];
+  mirroredHybridV2ProbeVector?: readonly number[];
   legacyV1ProbeVector?: readonly number[];
   mirroredLegacyV1ProbeVector?: readonly number[];
+  probeEngine?: 'arcface-onnx' | 'hybrid-512d';
   yawDeg?: number;
   pitchDeg?: number;
   rollDeg?: number;
@@ -256,24 +262,38 @@ export function verifyOwnerFace1to1(input: {
   }
 
   const normMaster = l2Normalize(template.masterEmbedding);
-  const ownerIsLegacyV1 = isLegacyV1HybridVector(normMaster);
+  const ownerEngine = detectBiometricVectorEngine(normMaster, template.biometricEngine);
+  const probeEngine = detectBiometricVectorEngine(input.probeVector, input.probeEngine);
+  const ownerIsLegacyV1 = ownerEngine === 'legacy-v1' || isLegacyV1HybridVector(normMaster);
   const mirroredZone = mirrorPoseZone(livePoseZone);
-  const activePrimaryProbe =
-    ownerIsLegacyV1 &&
-    input.legacyV1ProbeVector &&
-    input.legacyV1ProbeVector.length === template.masterEmbedding.length
-      ? input.legacyV1ProbeVector
-      : input.probeVector;
-  const activeMirroredProbe =
-    ownerIsLegacyV1 &&
-    input.mirroredLegacyV1ProbeVector &&
-    input.mirroredLegacyV1ProbeVector.length === template.masterEmbedding.length
-      ? input.mirroredLegacyV1ProbeVector
-      : !ownerIsLegacyV1
-        ? input.mirroredProbeVector
-        : input.legacyV1ProbeVector
-          ? undefined
-          : input.mirroredProbeVector;
+
+  let activePrimaryProbe: readonly number[] | undefined = input.probeVector;
+  let activeMirroredProbe: readonly number[] | undefined = input.mirroredProbeVector;
+  if (ownerEngine === 'arcface-onnx') {
+    if (probeEngine !== 'arcface-onnx') {
+      return {
+        hasTemplate: true,
+        matched: false,
+        similarity: 0,
+        livePoseZone,
+        bestAngle: 'none',
+      };
+    }
+  } else if (ownerIsLegacyV1) {
+    if (
+      input.legacyV1ProbeVector &&
+      input.legacyV1ProbeVector.length === template.masterEmbedding.length
+    ) {
+      activePrimaryProbe = input.legacyV1ProbeVector;
+      activeMirroredProbe = input.mirroredLegacyV1ProbeVector;
+    }
+  } else if (
+    input.hybridV2ProbeVector &&
+    input.hybridV2ProbeVector.length === template.masterEmbedding.length
+  ) {
+    activePrimaryProbe = input.hybridV2ProbeVector;
+    activeMirroredProbe = input.mirroredHybridV2ProbeVector;
+  }
 
   const variants: { zone: FacePoseZone5; vec: number[] }[] = [
     { zone: livePoseZone, vec: l2Normalize(activePrimaryProbe) },
@@ -291,35 +311,60 @@ export function verifyOwnerFace1to1(input: {
   let bestWhitened = 0;
   let bestGeomPenalty = 0;
 
-  for (const variant of variants) {
-    const rawAngle = template.angleEmbeddings?.[variant.zone];
-    const hasAngle = Array.isArray(rawAngle) && rawAngle.length === normMaster.length;
-    const sameZoneVec = hasAngle ? l2Normalize(rawAngle) : normMaster;
+  if (ownerEngine === 'arcface-onnx') {
+    for (const variant of variants) {
+      const rawAngle = template.angleEmbeddings?.[variant.zone];
+      const hasAngle = Array.isArray(rawAngle) && rawAngle.length === normMaster.length;
+      const sameZoneVec = hasAngle ? l2Normalize(rawAngle) : normMaster;
+      const sameZoneArc = computeArcFaceBiometricScore(variant.vec, sameZoneVec, {
+        probeRatios: input.probeRatios ?? null,
+        candidateRatios: template.geometricRatios ?? null,
+      });
+      const masterArc = computeArcFaceBiometricScore(variant.vec, normMaster, {
+        probeRatios: input.probeRatios ?? null,
+        candidateRatios: template.geometricRatios ?? null,
+      });
+      const arcScore = hasAngle
+        ? 0.55 * sameZoneArc.score + 0.45 * masterArc.score
+        : masterArc.score;
+      if (arcScore > bestScore) {
+        bestScore = arcScore;
+        bestAngle =
+          hasAngle && sameZoneArc.score >= masterArc.score - 0.04 ? variant.zone : 'master';
+        bestGeomPenalty = Math.max(sameZoneArc.geometricPenalty, masterArc.geometricPenalty);
+      }
+    }
+  } else {
+    for (const variant of variants) {
+      const rawAngle = template.angleEmbeddings?.[variant.zone];
+      const hasAngle = Array.isArray(rawAngle) && rawAngle.length === normMaster.length;
+      const sameZoneVec = hasAngle ? l2Normalize(rawAngle) : normMaster;
 
-    const sameZoneDual = computeDualFactorBiometricScore(variant.vec, sameZoneVec, {
-      probeRatios: input.probeRatios ?? null,
-      candidateRatios: template.geometricRatios ?? null,
-    });
-    const masterDual = computeDualFactorBiometricScore(variant.vec, normMaster, {
-      probeRatios: input.probeRatios ?? null,
-      candidateRatios: template.geometricRatios ?? null,
-    });
+      const sameZoneDual = computeDualFactorBiometricScore(variant.vec, sameZoneVec, {
+        probeRatios: input.probeRatios ?? null,
+        candidateRatios: template.geometricRatios ?? null,
+      });
+      const masterDual = computeDualFactorBiometricScore(variant.vec, normMaster, {
+        probeRatios: input.probeRatios ?? null,
+        candidateRatios: template.geometricRatios ?? null,
+      });
 
-    const dualScore = hasAngle
-      ? 0.55 * sameZoneDual.dualFactorScore + 0.45 * masterDual.dualFactorScore
-      : masterDual.dualFactorScore;
+      const dualScore = hasAngle
+        ? 0.55 * sameZoneDual.dualFactorScore + 0.45 * masterDual.dualFactorScore
+        : masterDual.dualFactorScore;
 
-    if (dualScore > bestScore) {
-      bestScore = dualScore;
-      const dom =
-        sameZoneDual.dualFactorScore >= masterDual.dualFactorScore ? sameZoneDual : masterDual;
-      bestAngle =
-        hasAngle && sameZoneDual.dualFactorScore >= masterDual.dualFactorScore - 0.04
-          ? variant.zone
-          : 'master';
-      bestMeanCentered = dom.meanCenteredCos;
-      bestWhitened = Math.max(sameZoneDual.whitenedCos, masterDual.whitenedCos);
-      bestGeomPenalty = Math.max(sameZoneDual.geometricPenalty, masterDual.geometricPenalty);
+      if (dualScore > bestScore) {
+        bestScore = dualScore;
+        const dom =
+          sameZoneDual.dualFactorScore >= masterDual.dualFactorScore ? sameZoneDual : masterDual;
+        bestAngle =
+          hasAngle && sameZoneDual.dualFactorScore >= masterDual.dualFactorScore - 0.04
+            ? variant.zone
+            : 'master';
+        bestMeanCentered = dom.meanCenteredCos;
+        bestWhitened = Math.max(sameZoneDual.whitenedCos, masterDual.whitenedCos);
+        bestGeomPenalty = Math.max(sameZoneDual.geometricPenalty, masterDual.geometricPenalty);
+      }
     }
   }
 
@@ -328,6 +373,18 @@ export function verifyOwnerFace1to1(input: {
     Math.abs(input.yawDeg ?? 0) > 8 ||
     Math.abs(input.pitchDeg ?? 0) > 6 ||
     Math.abs(input.rollDeg ?? 0) > 10;
+
+  if (ownerEngine === 'arcface-onnx') {
+    const arcOwnerThreshold = isAngled ? 0.45 : 0.50;
+    const matched = bestScore >= arcOwnerThreshold && bestGeomPenalty <= 0.16;
+    return {
+      hasTemplate: true,
+      matched,
+      similarity: Math.max(0, bestScore),
+      livePoseZone,
+      bestAngle,
+    };
+  }
 
   const ownerThreshold = ownerIsLegacyV1
     ? isAngled

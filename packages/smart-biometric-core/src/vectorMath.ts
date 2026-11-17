@@ -862,9 +862,64 @@ export function computeGeometricRatioMatchScore(
  * Dual-Factor Biometric Comparison (80% Mean-Centered Appearance + 20% Craniofacial Geometry),
  * applying immediate Euclidean (L2) distance and geometric ratio divergence penalties.
  */
+export type BiometricVectorEngine = 'arcface-onnx' | 'hybrid-v2' | 'legacy-v1';
+
+export interface ArcFaceBiometricScore {
+  score: number;
+  rawCos: number;
+  l2Dist: number;
+  geometricScore: number;
+  geometricPenalty: number;
+}
+
 export function isLegacyV1HybridVector(vector: readonly number[]): boolean {
   if (!Array.isArray(vector) || vector.length !== FACE_EMBEDDING_DIM) return false;
-  return sliceCosine(l2Normalize(vector), CANONICAL_HUMAN_FACE_BASELINE_512, 256, 511) >= 0.88;
+  return sliceCosine(l2Normalize(vector), CANONICAL_HUMAN_FACE_BASELINE_512, 256, 511) >= 0.95;
+}
+
+export function detectBiometricVectorEngine(
+  vector: readonly number[],
+  explicitEngine?: 'arcface-onnx' | 'hybrid-512d',
+): BiometricVectorEngine {
+  if (!Array.isArray(vector) || vector.length !== FACE_EMBEDDING_DIM) {
+    return 'hybrid-v2';
+  }
+  if (isLegacyV1HybridVector(vector)) {
+    return 'legacy-v1';
+  }
+  if (explicitEngine === 'arcface-onnx') {
+    return 'arcface-onnx';
+  }
+  return 'hybrid-v2';
+}
+
+export function computeArcFaceBiometricScore(
+  probe: readonly number[],
+  candidate: readonly number[],
+  options: {
+    probeRatios?: GeometricAnthropometricRatios | null;
+    candidateRatios?: GeometricAnthropometricRatios | null;
+  } = {},
+): ArcFaceBiometricScore {
+  const pNorm = l2Normalize(probe);
+  const cNorm = l2Normalize(candidate);
+  const rawCos = cosineSimilarity(pNorm, cNorm);
+  const l2Dist = euclideanDistance(pNorm, cNorm);
+  const ratioRes = computeGeometricRatioMatchScore(options.probeRatios, options.candidateRatios);
+  // ArcFace ResNet-50 already encodes holistic 3D facial identity; apply geometric penalty ONLY on strong craniofacial mismatch
+  const geometricPenalty =
+    ratioRes.available && ratioRes.maxRelativeDiff > 0.22
+      ? Math.min(0.18, (ratioRes.maxRelativeDiff - 0.22) * 0.8)
+      : 0;
+  const geometricScore = ratioRes.available ? ratioRes.score : Math.max(0, rawCos);
+  const score = Math.max(0, Math.min(1, rawCos - geometricPenalty));
+  return {
+    score,
+    rawCos,
+    l2Dist,
+    geometricScore,
+    geometricPenalty,
+  };
 }
 
 export function computeDualFactorBiometricScore(
@@ -959,10 +1014,14 @@ export function computeDualFactorBiometricScore(
     geometricFactorScore = ratioRes.score;
     geometricPenalty = ratioRes.penalty;
   } else if (faceCore) {
-    geometricFactorScore = Math.max(
-      0,
-      Math.min(1, 0.55 * Math.max(0, faceCore.cos3DNormalized) + 0.45 * Math.max(0, faceCore.craniofacialCos)),
-    );
+    // Legacy V1 carries canonical baseline in 256..511 (`cos3DNormalized ~ 0.9998` for everyone),
+    // so never award a free 0.20 boost from raw cos3D on V1 templates lacking stored geometricRatios.
+    geometricFactorScore = isLegacyCand
+      ? Math.max(0, Math.min(appearanceFactorScore, Math.max(0, faceCore.craniofacialCos)))
+      : Math.max(
+          0,
+          Math.min(1, 0.55 * Math.max(0, faceCore.cos3DNormalized) + 0.45 * Math.max(0, faceCore.craniofacialCos)),
+        );
     if (faceCore.craniofacialCos < 0.25) {
       geometricPenalty = Math.min(0.2, (0.25 - Math.max(0, faceCore.craniofacialCos)) * 0.55);
     }

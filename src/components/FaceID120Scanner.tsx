@@ -13,8 +13,12 @@ import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import {
   alignFaceTo112,
   evaluateLivenessAndPose,
+  extractArcFaceOnnxEmbedding,
   extractGeometricAnthropometricRatios,
   extractHybrid512Descriptor,
+  flipImageDataHorizontally,
+  isArcFaceSessionReady,
+  preloadArcFaceOnnx,
   selectClinicalCameraDeviceId,
   selectPrimaryFace,
 } from '@drtechcares/face-client';
@@ -47,6 +51,7 @@ export type AngleSnapshots5D = Record<Bucket5Key, string>;
 export interface FaceID120Result {
   masterEmbedding: number[];
   angleEmbeddings: AngleEmbeddings5D;
+  biometricEngine?: 'arcface-onnx' | 'hybrid-512d';
   geometricRatios?: GeometricAnthropometricRatios;
   framesCaptured: number;
   qualityScore: number;
@@ -601,6 +606,18 @@ export default function FaceID120Scanner({
 
   const edgeSessionIdRef = useRef<string | null>(null);
   const samplesRef = useRef<CapturedSample[]>([]);
+  const keyframesRef = useRef<
+    Record<
+      Bucket5Key,
+      { image: { width: number; height: number; data: Uint8ClampedArray }; sharpness: number }[]
+    >
+  >({
+    center: [],
+    left: [],
+    right: [],
+    up: [],
+    down: [],
+  });
   const bucketCountsRef = useRef<Record<Bucket5Key, number>>({ ...bucketCounts });
   const prevLandmarksRef = useRef<Array<{ x: number; y: number; z?: number }> | null>(null);
   const lastCaptureAtRef = useRef(0);
@@ -1028,17 +1045,128 @@ export default function FaceID120Scanner({
       const samples = [...samplesRef.current];
       if (unmountedRef.current) return null;
 
-      const withEmbeddings = samples.filter((s) => s.embedding.length === 512);
-      const allItems = withEmbeddings.map((s) => ({ vec: s.embedding, quality: s.sharpness }));
-      // Outlier-Rejected Centroid: drops bottom 20% low-quality / outlier frames per bucket & overall
-      const masterEmbedding = trimOutlierVectorsAndAverage(allItems, 0.2);
+      // Wait briefly if ArcFace ONNX model (w600k_r50.onnx) is finishing background initialization
+      let arcReady = isArcFaceSessionReady();
+      if (!arcReady) {
+        arcReady = await Promise.race([
+          preloadArcFaceOnnx(),
+          new Promise<boolean>((resolve) => globalThis.setTimeout(() => resolve(false), 3500)),
+        ]);
+      }
+      if (unmountedRef.current) return null;
 
-      const byBucket = (b: Bucket5Key) => {
-        const items = withEmbeddings
-          .filter((s) => s.bucket === b)
-          .map((s) => ({ vec: s.embedding, quality: s.sharpness }));
-        return items.length > 0 ? trimOutlierVectorsAndAverage(items, 0.2) : masterEmbedding;
-      };
+      let biometricEngine: 'arcface-onnx' | 'hybrid-512d' = 'hybrid-512d';
+      let masterEmbedding: number[];
+      let angleEmbeddings: AngleEmbeddings5D;
+
+      const keyframesByBucket = keyframesRef.current;
+      const totalKeyframes = (Object.keys(BUCKET_TARGETS) as Bucket5Key[]).reduce(
+        (acc, b) => acc + (keyframesByBucket[b]?.length ?? 0),
+        0,
+      );
+
+      if (arcReady && totalKeyframes > 0) {
+        setSubCueText(
+          currentLang === 'en'
+            ? 'Extracting Deep ArcFace ResNet-50 (512-D) Facial Signature...'
+            : currentLang === 'cn'
+              ? '正在提取深度 ArcFace ResNet-50 (512 维) 面部特征...'
+              : 'กำลังสกัดอัตลักษณ์ใบหน้าลึก ArcFace ResNet-50 (512-D)...',
+        );
+        const arcByBucket: Record<Bucket5Key, { vec: number[]; quality: number }[]> = {
+          center: [],
+          left: [],
+          right: [],
+          up: [],
+          down: [],
+        };
+        const allArcItems: { vec: number[]; quality: number }[] = [];
+        try {
+          for (const b of Object.keys(BUCKET_TARGETS) as Bucket5Key[]) {
+            const kList = [...(keyframesByBucket[b] ?? [])]
+              .sort((x, y) => y.sharpness - x.sharpness)
+              .slice(0, b === 'center' ? 4 : 2);
+            for (const kf of kList) {
+              if (unmountedRef.current) return null;
+              const rawEmb = await extractArcFaceOnnxEmbedding(kf.image);
+              const flipEmb = await extractArcFaceOnnxEmbedding(
+                flipImageDataHorizontally(kf.image),
+              );
+              const avgEmb = l2Normalize(rawEmb.map((v, idx) => v + flipEmb[idx]));
+              const item = { vec: avgEmb, quality: kf.sharpness };
+              arcByBucket[b].push(item);
+              allArcItems.push(item);
+            }
+          }
+          if (allArcItems.length >= 3) {
+            biometricEngine = 'arcface-onnx';
+            masterEmbedding = trimOutlierVectorsAndAverage(allArcItems, 0.2);
+            angleEmbeddings = {
+              center:
+                arcByBucket.center.length > 0
+                  ? trimOutlierVectorsAndAverage(arcByBucket.center, 0.2)
+                  : masterEmbedding,
+              left:
+                arcByBucket.left.length > 0
+                  ? trimOutlierVectorsAndAverage(arcByBucket.left, 0.2)
+                  : masterEmbedding,
+              right:
+                arcByBucket.right.length > 0
+                  ? trimOutlierVectorsAndAverage(arcByBucket.right, 0.2)
+                  : masterEmbedding,
+              up:
+                arcByBucket.up.length > 0
+                  ? trimOutlierVectorsAndAverage(arcByBucket.up, 0.2)
+                  : masterEmbedding,
+              down:
+                arcByBucket.down.length > 0
+                  ? trimOutlierVectorsAndAverage(arcByBucket.down, 0.2)
+                  : masterEmbedding,
+            };
+          } else {
+            throw new Error('Insufficient ArcFace keyframes');
+          }
+        } catch {
+          biometricEngine = 'hybrid-512d';
+          const withEmbeddings = samples.filter((s) => s.embedding.length === 512);
+          const allItems = withEmbeddings.map((s) => ({ vec: s.embedding, quality: s.sharpness }));
+          masterEmbedding = trimOutlierVectorsAndAverage(allItems, 0.2);
+          const byBucket = (b: Bucket5Key) => {
+            const items = withEmbeddings
+              .filter((s) => s.bucket === b)
+              .map((s) => ({ vec: s.embedding, quality: s.sharpness }));
+            return items.length > 0 ? trimOutlierVectorsAndAverage(items, 0.2) : masterEmbedding;
+          };
+          angleEmbeddings = {
+            center: byBucket('center'),
+            left: byBucket('left'),
+            right: byBucket('right'),
+            up: byBucket('up'),
+            down: byBucket('down'),
+          };
+        }
+      } else {
+        const withEmbeddings = samples.filter((s) => s.embedding.length === 512);
+        const allItems = withEmbeddings.map((s) => ({ vec: s.embedding, quality: s.sharpness }));
+        // Outlier-Rejected Centroid: drops bottom 20% low-quality / outlier frames per bucket & overall
+        masterEmbedding = trimOutlierVectorsAndAverage(allItems, 0.2);
+
+        const byBucket = (b: Bucket5Key) => {
+          const items = withEmbeddings
+            .filter((s) => s.bucket === b)
+            .map((s) => ({ vec: s.embedding, quality: s.sharpness }));
+          return items.length > 0 ? trimOutlierVectorsAndAverage(items, 0.2) : masterEmbedding;
+        };
+        angleEmbeddings = {
+          center: byBucket('center'),
+          left: byBucket('left'),
+          right: byBucket('right'),
+          up: byBucket('up'),
+          down: byBucket('down'),
+        };
+      }
+
+      const withEmbeddings = samples.filter((s) => s.embedding.length === 512);
 
       const centerRatios = withEmbeddings
         .filter((s) => s.bucket === 'center' && s.geometricRatios)
@@ -1065,14 +1193,6 @@ export default function FaceID120Scanner({
             }
           : undefined;
 
-      const angleEmbeddings: AngleEmbeddings5D = {
-        center: byBucket('center'),
-        left: byBucket('left'),
-        right: byBucket('right'),
-        up: byBucket('up'),
-        down: byBucket('down'),
-      };
-
       const meanSharpness =
         samples.length > 0
           ? samples.reduce((acc, s) => acc + s.sharpness, 0) / samples.length
@@ -1093,6 +1213,7 @@ export default function FaceID120Scanner({
       const resultPayload: FaceID120Result = {
         masterEmbedding,
         angleEmbeddings,
+        biometricEngine,
         ...(geometricRatios ? { geometricRatios } : {}),
         framesCaptured: samples.length,
         qualityScore,
@@ -1129,6 +1250,7 @@ export default function FaceID120Scanner({
     edgeSessionIdRef.current = null;
     setEdgeBackendActive(false);
     samplesRef.current = [];
+    keyframesRef.current = { center: [], left: [], right: [], up: [], down: [] };
     const emptyBucket: Record<Bucket5Key, number> = {
       center: 0,
       left: 0,
@@ -1175,6 +1297,8 @@ export default function FaceID120Scanner({
         setModelStatus('loading');
         setCameraError(null);
         setModelProgressMsg(initCopy.checkingEdge);
+        // Eagerly begin downloading & compiling Deep ArcFace ResNet-50 (w600k_r50.onnx) in parallel
+        void preloadArcFaceOnnx();
 
         const edgeHealth = await probeEdgeVisionHealth(450);
         if (cancelled) return;
@@ -1490,6 +1614,24 @@ export default function FaceID120Scanner({
             lastCaptureAtRef.current = now;
             const embedding = extractHybrid512Descriptor(crop, landmarks3D);
             const geometricRatios = extractGeometricAnthropometricRatios(landmarks3D);
+            const meanEar = (liveness.earLeft + liveness.earRight) / 2;
+            const maxKf = captureBucket === 'center' ? 6 : 3;
+            const kfArr = keyframesRef.current[captureBucket];
+            if (
+              meanEar >= 0.19 &&
+              (kfArr.length < maxKf || quality.sharpness > (kfArr[kfArr.length - 1]?.sharpness ?? 0))
+            ) {
+              kfArr.push({
+                image: {
+                  width: crop.width,
+                  height: crop.height,
+                  data: new Uint8ClampedArray(crop.data),
+                },
+                sharpness: quality.sharpness,
+              });
+              kfArr.sort((a, b) => b.sharpness - a.sharpness);
+              if (kfArr.length > maxKf) kfArr.length = maxKf;
+            }
             samplesRef.current.push({
               yawDeg,
               pitchDeg,

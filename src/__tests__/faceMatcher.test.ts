@@ -1180,4 +1180,61 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     });
     expect(v1BridgeStrangerReject.matched).toBe(false);
   });
+
+  it('isolates arcface-onnx vs hybrid-512d engines and avoids +0.20 cos3D inflation on Legacy V1 strangers', () => {
+    const mkArcFaceUnit = (seed: number): number[] => {
+      const vec = new Array<number>(FACE_EMBEDDING_DIM);
+      let s = seed >>> 0;
+      for (let i = 0; i < FACE_EMBEDDING_DIM; i += 1) {
+        s = (s * 1664525 + 1013904223 + i * 53) >>> 0;
+        vec[i] = ((s % 2000) / 1000 - 1) * (i < 256 ? 1.0 : 1.35);
+      }
+      return l2Normalize(vec);
+    };
+
+    const arcOwnerVec = mkArcFaceUnit(10101);
+    const arcStrangerVec = mkArcFaceUnit(20202);
+    const arcOwnerCandidate: PatientBiometricIndexEntry = {
+      ...makeEnrolledPatient('pat-arc-1', 'HN-ARC-01', 'นายอาร์คเฟซ ตรงรุ่น', 1),
+      biometricEngine: 'arcface-onnx',
+      masterEmbedding: arcOwnerVec,
+      angleEmbeddings: {
+        center: arcOwnerVec,
+        left: arcOwnerVec,
+        right: arcOwnerVec,
+        up: arcOwnerVec,
+        down: arcOwnerVec,
+      },
+    };
+    const hybridCandidate: PatientBiometricIndexEntry = {
+      ...makeEnrolledPatient('pat-hyb-1', 'HN-HYB-01', 'นายไฮบริด คนละระบบ', 2),
+      biometricEngine: 'hybrid-512d',
+    };
+
+    // 1. ArcFace probe with >= 0.54 neural cosine (even if ~0.62 — below hybrid's 0.75!) matches ArcFace account cleanly!
+    const litArcProbe = l2Normalize(arcOwnerVec.map((v, i) => v * 0.65 + mkArcFaceUnit(777)[i] * 0.42));
+    const arcMatch = identifyPatient1toN(litArcProbe, [hybridCandidate, arcOwnerCandidate], {
+      engine: 'arcface-onnx',
+      yawDeg: 0,
+      pitchDeg: 0,
+    });
+    expect(arcMatch.matched).toBe(true);
+    expect(arcMatch.bestCandidate?.patientId).toBe('pat-arc-1');
+
+    // 2. Hybrid probe MUST NEVER match an arcface-onnx enrolled account even if same vector passed cleanly without arcface engine tag!
+    const crossEngineReject = identifyPatient1toN(arcOwnerVec, [arcOwnerCandidate], {
+      engine: 'hybrid-512d',
+      yawDeg: 0,
+      pitchDeg: 0,
+    });
+    expect(crossEngineReject.matched).toBe(false);
+
+    // 3. ArcFace stranger must reject cleanly
+    const arcStrangerReject = identifyPatient1toN(arcStrangerVec, [arcOwnerCandidate], {
+      engine: 'arcface-onnx',
+      yawDeg: 0,
+      pitchDeg: 0,
+    });
+    expect(arcStrangerReject.matched).toBe(false);
+  });
 });

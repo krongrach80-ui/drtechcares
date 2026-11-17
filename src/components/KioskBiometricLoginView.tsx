@@ -50,6 +50,7 @@ import {
   extractDualFlipFaceEmbedding,
   extractGeometricAnthropometricRatios,
   inspectBiometricFrame3D,
+  preloadArcFaceOnnx,
   remapRoiLandmarksToFrame,
   renderUpscaledRoi256,
   selectClinicalCameraDeviceId,
@@ -63,6 +64,7 @@ import { FacePresenceTracker } from '@drtechcares/kiosk-input';
 import { POSE_INDEX } from '@drtechcares/pose-engine';
 import {
   BURST_FRAME_COUNT,
+  detectBiometricVectorEngine,
   isLegacyV1HybridVector,
   purgeLegacyBiometricCache,
 } from '@drtechcares/smart-biometric-core';
@@ -157,6 +159,9 @@ function buildKioskLoginSuccessPayload(params: {
           fullName: params.patient.fullName,
           masterEmbedding: params.indexEntry.masterEmbedding,
           angleEmbeddings: params.indexEntry.angleEmbeddings,
+          ...(params.indexEntry.biometricEngine
+            ? { biometricEngine: params.indexEntry.biometricEngine }
+            : {}),
           geometricRatios: params.indexEntry.geometricRatios,
         }
       : undefined;
@@ -1210,6 +1215,7 @@ export function KioskBiometricLoginView({
     let unreadyFrameStreak = 0;
     let bioVerifiedUnmatchedStartAt = 0;
     let isLastVerifyAmbiguous = false;
+    let lastBurstEngine = '';
     let lastGestureVideoTime = -1;
     let lastGestureInferenceAt = 0;
     let lastPoseFallbackAt = 0;
@@ -1316,6 +1322,8 @@ export function KioskBiometricLoginView({
         setTwoHandProgress(0);
         setTwoHandDetected(false);
         setTwoHandCameraReady(false);
+        // Eagerly preload real InsightFace ArcFace ResNet-50 (w600k_r50.onnx) in parallel
+        void preloadArcFaceOnnx();
 
         void apiClient
           .getBiometricIndex()
@@ -1618,16 +1626,24 @@ export function KioskBiometricLoginView({
                             confirmRoiCanvas,
                           );
                           if (faceCrop) {
-                            const ownerIsLegacyV1 = isLegacyV1HybridVector(
+                            const ownerEngine = detectBiometricVectorEngine(
                               verifiedPayload.biometricTemplate.masterEmbedding,
+                              verifiedPayload.biometricTemplate.biometricEngine,
                             );
+                            const ownerIsLegacyV1 = ownerEngine === 'legacy-v1';
+                            const ownerIsHybridV2 = ownerEngine === 'hybrid-v2';
                             const {
                               vector,
                               mirroredVector,
+                              hybridV2Vector,
+                              mirroredHybridV2Vector,
                               legacyV1Vector,
                               mirroredLegacyV1Vector,
+                              engine: probeEngine,
                             } = await extractDualFlipFaceEmbedding(faceCrop, primaryLm, {
                               includeLegacyV1: ownerIsLegacyV1,
+                              includeHybridV2: ownerIsHybridV2,
+                              fastArcFacePrimaryOnly: true,
                             });
                             if (!active) {
                               shouldContinueLoop = false;
@@ -1643,6 +1659,11 @@ export function KioskBiometricLoginView({
                             const ownerCheck = verifyOwnerFace1to1({
                               probeVector: vector,
                               mirroredProbeVector: mirroredVector,
+                              probeEngine,
+                              ...(hybridV2Vector ? { hybridV2ProbeVector: hybridV2Vector } : {}),
+                              ...(mirroredHybridV2Vector
+                                ? { mirroredHybridV2ProbeVector: mirroredHybridV2Vector }
+                                : {}),
                               ...(legacyV1Vector ? { legacyV1ProbeVector: legacyV1Vector } : {}),
                               ...(mirroredLegacyV1Vector
                                 ? { mirroredLegacyV1ProbeVector: mirroredLegacyV1Vector }
@@ -2088,7 +2109,8 @@ export function KioskBiometricLoginView({
                   }
                 } else {
                   unreadyFrameStreak = 0;
-                  if (now - lastEmbedCheckAt >= 120 && !verifyingLockRef.current) {
+                  // Skip mid-blink blurry frames when extracting facial biometric embeddings
+                  if (now - lastEmbedCheckAt >= 120 && !verifyingLockRef.current && meanEar >= 0.19) {
                     lastEmbedCheckAt = now;
                     const hasLegacyV1InIndex =
                       biometricIndexRef.current.length === 0 ||
@@ -2099,15 +2121,24 @@ export function KioskBiometricLoginView({
                             (vec) => Array.isArray(vec) && isLegacyV1HybridVector(vec),
                           ),
                       );
+                    const hasHybridV2InIndex = biometricIndexRef.current.some(
+                      (e) =>
+                        detectBiometricVectorEngine(e.masterEmbedding, e.biometricEngine) ===
+                        'hybrid-v2',
+                    );
                     const {
                       vector,
                       mirroredVector,
+                      hybridV2Vector,
+                      mirroredHybridV2Vector,
                       legacyV1Vector,
                       mirroredLegacyV1Vector,
                       engine,
                       geometricRatios,
                     } = await extractDualFlipFaceEmbedding(crop, landmarks, {
                       includeLegacyV1: hasLegacyV1InIndex,
+                      includeHybridV2: hasHybridV2InIndex,
+                      fastArcFacePrimaryOnly: true,
                     });
                     if (!active) {
                       shouldContinueLoop = false;
@@ -2132,7 +2163,11 @@ export function KioskBiometricLoginView({
                       pitchDeg: liveness.pitchDeg,
                       rollDeg,
                       engine,
-                      mirroredProbeVector: mirroredVector,
+                      ...(mirroredVector.length > 0 ? { mirroredProbeVector: mirroredVector } : {}),
+                      ...(hybridV2Vector ? { hybridV2ProbeVector: hybridV2Vector } : {}),
+                      ...(mirroredHybridV2Vector
+                        ? { mirroredHybridV2ProbeVector: mirroredHybridV2Vector }
+                        : {}),
                       ...(legacyV1Vector ? { legacyV1ProbeVector: legacyV1Vector } : {}),
                       ...(mirroredLegacyV1Vector
                         ? { mirroredLegacyV1ProbeVector: mirroredLegacyV1Vector }
@@ -2148,7 +2183,11 @@ export function KioskBiometricLoginView({
                       const temporal = temporalMatcherRef.current.evaluateFrame(
                         {
                           probeVector: vector,
-                          mirroredProbeVector: mirroredVector,
+                          ...(mirroredVector.length > 0 ? { mirroredProbeVector: mirroredVector } : {}),
+                          ...(hybridV2Vector ? { hybridV2ProbeVector: hybridV2Vector } : {}),
+                          ...(mirroredHybridV2Vector
+                            ? { mirroredHybridV2ProbeVector: mirroredHybridV2Vector }
+                            : {}),
                           ...(legacyV1Vector ? { legacyV1ProbeVector: legacyV1Vector } : {}),
                           ...(mirroredLegacyV1Vector
                             ? { mirroredLegacyV1ProbeVector: mirroredLegacyV1Vector }
@@ -2329,6 +2368,7 @@ export function KioskBiometricLoginView({
                         loginCtrlRef.current.reset();
                         bioVerifiedUnmatchedStartAt = 0;
                         isLastVerifyAmbiguous = false;
+                        lastBurstEngine = '';
                         setTurningHintPct(null);
                         burstStarted = false;
                         setBurstCount(0);
@@ -2340,10 +2380,12 @@ export function KioskBiometricLoginView({
                         ) {
                           bioVerifiedUnmatchedStartAt = now;
                         }
-                        if (!burstStarted) {
+                        if (!burstStarted || (lastBurstEngine !== '' && lastBurstEngine !== engine)) {
+                          loginCtrlRef.current.reset();
                           loginCtrlRef.current.startCountdownComplete();
                           burstStarted = true;
                         }
+                        lastBurstEngine = engine;
                         setScanStage('burst');
                         const push = loginCtrlRef.current.pushFrame({
                           vector,

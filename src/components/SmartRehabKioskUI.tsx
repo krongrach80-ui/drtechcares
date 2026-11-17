@@ -10,15 +10,21 @@ import {
   alignFaceTo112,
   computeEyeRollAngleDeg,
   evaluateLivenessAndPose,
+  extractArcFaceOnnxEmbedding,
   extractGeometricAnthropometricRatios,
   extractHybrid512Descriptor,
   extractLegacyV1Hybrid512Descriptor,
   flipImageDataHorizontally,
   flipLandmarksHorizontally,
+  isArcFaceSessionReady,
+  preloadArcFaceOnnx,
   selectClinicalCameraDeviceId,
   selectPrimaryFace,
 } from '@drtechcares/face-client';
-import { isLegacyV1HybridVector } from '@drtechcares/smart-biometric-core';
+import {
+  detectBiometricVectorEngine,
+  isLegacyV1HybridVector,
+} from '@drtechcares/smart-biometric-core';
 import {
   computeObjectCoverLayout,
   computeOwnerFaceBoxMetrics,
@@ -2753,6 +2759,9 @@ export function SmartRehabKioskUI({
               // Continuous 1:1 Account Owner Face Lock (every 5 frames)
               ownerFaceCycle += 1;
               const activeOwnerBio = ownerBiometricsRef.current;
+              if (activeOwnerBio?.biometricEngine === 'arcface-onnx' && !isArcFaceSessionReady()) {
+                void preloadArcFaceOnnx();
+              }
               if (faceLandmarker && stepACheckIdentity && (ownerFaceCycle === 1 || ownerFaceCycle % 5 === 0)) {
                 try {
                   const fTs = Math.max(lastFaceTs + 1, lastDetectTs + 1, Math.round(now));
@@ -2819,44 +2828,76 @@ export function SmartRehabKioskUI({
                       if (crop) {
                         const flippedCrop = flipImageDataHorizontally(crop);
                         const flippedLm = flipLandmarksHorizontally(primaryFaceLm);
-                        const probeVec = extractHybrid512Descriptor(crop, primaryFaceLm);
-                        const mirroredVec = extractHybrid512Descriptor(flippedCrop, flippedLm);
-                        const ownerIsLegacyV1 = isLegacyV1HybridVector(activeOwnerBio.masterEmbedding);
-                        const legacyV1ProbeVector = ownerIsLegacyV1
-                          ? extractLegacyV1Hybrid512Descriptor(crop, primaryFaceLm)
-                          : undefined;
-                        const mirroredLegacyV1ProbeVector = ownerIsLegacyV1
-                          ? extractLegacyV1Hybrid512Descriptor(flippedCrop, flippedLm)
-                          : undefined;
+                        const ownerEngine = detectBiometricVectorEngine(
+                          activeOwnerBio.masterEmbedding,
+                          activeOwnerBio.biometricEngine,
+                        );
                         const livePose = evaluateLivenessAndPose(primaryFaceLm, null, effFaceCount);
                         const rollDeg = computeEyeRollAngleDeg(primaryFaceLm, v.videoWidth, v.videoHeight);
                         const probeRatios = extractGeometricAnthropometricRatios(primaryFaceLm);
-                        const ownerRes = verifyOwnerFace1to1({
-                          probeVector: probeVec,
-                          mirroredProbeVector: mirroredVec,
-                          ...(legacyV1ProbeVector ? { legacyV1ProbeVector } : {}),
-                          ...(mirroredLegacyV1ProbeVector
-                            ? { mirroredLegacyV1ProbeVector }
-                            : {}),
-                          yawDeg: -livePose.yawDeg,
-                          pitchDeg: livePose.pitchDeg,
-                          rollDeg,
-                          probeRatios,
-                          ownerTemplate: activeOwnerBio,
-                        });
-                        cachedOwnerVerified = !ownerRes.hasTemplate || ownerRes.matched;
-                        if (!cachedOwnerVerified) {
-                          const key = `IMPOSTOR:${activeOwnerBio.fullName}`;
-                          if (lastOwnerRehabKey !== key) {
-                            lastOwnerRehabKey = key;
-                            setOwnerRehabGuardAlert({
-                              status: 'IMPOSTOR_FACE',
-                              text: `⛔ คุณไม่ใช่เจ้าของบัญชี (${activeOwnerBio.fullName}) ไม่สามารถทำรายการแทนกันได้`,
-                            });
+
+                        const applyOwnerResult = (matched: boolean, hasTemplate: boolean) => {
+                          cachedOwnerVerified = !hasTemplate || matched;
+                          if (!cachedOwnerVerified) {
+                            const key = `IMPOSTOR:${activeOwnerBio.fullName}`;
+                            if (lastOwnerRehabKey !== key) {
+                              lastOwnerRehabKey = key;
+                              setOwnerRehabGuardAlert({
+                                status: 'IMPOSTOR_FACE',
+                                text: `⛔ คุณไม่ใช่เจ้าของบัญชี (${activeOwnerBio.fullName}) ไม่สามารถทำรายการแทนกันได้`,
+                              });
+                            }
+                          } else if (lastOwnerRehabKey !== '') {
+                            lastOwnerRehabKey = '';
+                            setOwnerRehabGuardAlert(null);
                           }
-                        } else if (lastOwnerRehabKey !== '') {
-                          lastOwnerRehabKey = '';
-                          setOwnerRehabGuardAlert(null);
+                        };
+
+                        if (ownerEngine === 'arcface-onnx' && isArcFaceSessionReady()) {
+                          const cropCopy = {
+                            width: crop.width,
+                            height: crop.height,
+                            data: new Uint8ClampedArray(crop.data),
+                          };
+                          void extractArcFaceOnnxEmbedding(cropCopy)
+                            .then((arcVec) => {
+                              const ownerRes = verifyOwnerFace1to1({
+                                probeVector: arcVec,
+                                probeEngine: 'arcface-onnx',
+                                yawDeg: -livePose.yawDeg,
+                                pitchDeg: livePose.pitchDeg,
+                                rollDeg,
+                                probeRatios,
+                                ownerTemplate: activeOwnerBio,
+                              });
+                              applyOwnerResult(ownerRes.matched, ownerRes.hasTemplate);
+                            })
+                            .catch(() => {});
+                        } else if (ownerEngine !== 'arcface-onnx') {
+                          const probeVec = extractHybrid512Descriptor(crop, primaryFaceLm);
+                          const mirroredVec = extractHybrid512Descriptor(flippedCrop, flippedLm);
+                          const ownerIsLegacyV1 = isLegacyV1HybridVector(activeOwnerBio.masterEmbedding);
+                          const legacyV1ProbeVector = ownerIsLegacyV1
+                            ? extractLegacyV1Hybrid512Descriptor(crop, primaryFaceLm)
+                            : undefined;
+                          const mirroredLegacyV1ProbeVector = ownerIsLegacyV1
+                            ? extractLegacyV1Hybrid512Descriptor(flippedCrop, flippedLm)
+                            : undefined;
+                          const ownerRes = verifyOwnerFace1to1({
+                            probeVector: probeVec,
+                            mirroredProbeVector: mirroredVec,
+                            probeEngine: 'hybrid-512d',
+                            ...(legacyV1ProbeVector ? { legacyV1ProbeVector } : {}),
+                            ...(mirroredLegacyV1ProbeVector
+                              ? { mirroredLegacyV1ProbeVector }
+                              : {}),
+                            yawDeg: -livePose.yawDeg,
+                            pitchDeg: livePose.pitchDeg,
+                            rollDeg,
+                            probeRatios,
+                            ownerTemplate: activeOwnerBio,
+                          });
+                          applyOwnerResult(ownerRes.matched, ownerRes.hasTemplate);
                         }
                       }
                     }
