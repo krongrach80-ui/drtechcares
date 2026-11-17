@@ -168,6 +168,7 @@ interface PortalSectionCopy {
     pendingBadge: string;
     emrBtn: string;
     scanFaceBtn: string;
+    updateFaceBtn: string;
     historyBtn: string;
     deleteTitle: string;
     emptyPatients: string;
@@ -385,6 +386,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       pendingBadge: 'ยังไม่สแกนใบหน้า',
       emrBtn: 'เวชระเบียน',
       scanFaceBtn: 'ส่งตัวสแกนหน้า',
+      updateFaceBtn: 'อัปเดตใบหน้า',
       historyBtn: 'ดูประวัติการฝึก',
       deleteTitle: 'ลบประวัติ (เฉพาะ Admin)',
       emptyPatients: 'ไม่พบข้อมูลคนไข้ กด "+ ลงทะเบียนคนไข้ใหม่" เพื่อเพิ่มผู้ป่วย',
@@ -600,6 +602,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       pendingBadge: 'Scan Pending',
       emrBtn: 'EMR',
       scanFaceBtn: 'Face Scan',
+      updateFaceBtn: 'Update Face',
       historyBtn: 'History',
       deleteTitle: 'Delete Record (Admin Only)',
       emptyPatients: 'No patients found. Click "+ Enroll New Patient" to register.',
@@ -815,6 +818,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       pendingBadge: '待扫描人脸',
       emrBtn: '电子病历',
       scanFaceBtn: '人脸采集',
+      updateFaceBtn: '更新人脸',
       historyBtn: '训练记录',
       deleteTitle: '删除病历 (仅管理员)',
       emptyPatients: '暂无患者记录，请点击“+ 注册新患者”新增档案',
@@ -2713,9 +2717,14 @@ export function ClinicalStaffPortalShell({
                                   setEnrollTargetPatient(p);
                                   setEnrollModalOpen(true);
                                 }}
-                                className="whitespace-nowrap rounded-xl border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer"
+                                title={verified ? 'สแกนอัปเดตแม่แบบใบหน้า 120 เฟรมใหม่' : 'สแกนลงทะเบียนใบหน้า 120 เฟรม'}
+                                className={`whitespace-nowrap rounded-xl border px-2.5 py-1.5 text-[11px] font-bold cursor-pointer ${
+                                  verified
+                                    ? 'border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100'
+                                    : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                                }`}
                               >
-                                {locale.patients.scanFaceBtn}
+                                {verified ? locale.patients.updateFaceBtn : locale.patients.scanFaceBtn}
                               </button>
                               <button
                                 type="button"

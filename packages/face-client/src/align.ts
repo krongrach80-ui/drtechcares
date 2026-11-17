@@ -17,6 +17,18 @@ export const ARCFACE_REFERENCE_5PT: readonly Point2D[] = [
   { x: 70.7299, y: 92.2041 },
 ];
 
+/**
+ * Tighter inner-face 5-point reference (eyebrows to chin, cheekbone to cheekbone inside 112x112)
+ * used to minimize background/hair/collar intrusion on tight crop inspection.
+ */
+export const INNER_FACE_REFERENCE_5PT: readonly Point2D[] = [
+  { x: 34.0, y: 40.0 },
+  { x: 78.0, y: 40.0 },
+  { x: 56.0, y: 66.0 },
+  { x: 39.0, y: 89.0 },
+  { x: 73.0, y: 89.0 },
+];
+
 export interface SimilarityMatrix2D {
   a: number;
   b: number;
@@ -197,9 +209,9 @@ export function alignFaceTo112(
     }
   }
 
-  // Explicit Roll Tilt Compensation when |rollAngle| > 5°: level eyes horizontally before 5-pt warp
+  // Explicit Roll Tilt Compensation when |rollAngle| > 2.5°: level eyes horizontally before 5-pt warp
   const rawRollDeg = computeEyeRollAngleDeg(mappedLandmarks, srcW, srcH);
-  if (Math.abs(rawRollDeg) > 5 && typeof document !== 'undefined') {
+  if (Math.abs(rawRollDeg) > 2.5 && typeof document !== 'undefined') {
     const eyes = resolveEyeCentersFromLandmarks(mappedLandmarks);
     if (eyes) {
       const eyeMidNormX = (eyes.leftEye.x + eyes.rightEye.x) / 2;
@@ -274,6 +286,37 @@ export function alignFaceTo112(
   ctx.drawImage(warpSource, 0, 0);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   return ctx.getImageData(0, 0, ARCFACE_INPUT_SIZE, ARCFACE_INPUT_SIZE);
+}
+
+/**
+ * Tight Inner-Face 112x112 alignment helper focusing strictly on eyebrows-to-chin & cheekbones,
+ * with neutral mid-gray elliptical border masking to suppress wall/ceiling/shirt interference.
+ */
+export function alignInnerFaceTo112(
+  source: HTMLVideoElement | HTMLCanvasElement,
+  landmarksNormalized: readonly { x: number; y: number }[],
+  targetCanvas?: HTMLCanvasElement,
+  roiWorkCanvas?: HTMLCanvasElement | null,
+): ImageData | null {
+  const aligned = alignFaceTo112(source, landmarksNormalized, targetCanvas, roiWorkCanvas);
+  if (!aligned) return null;
+  const { width, height, data } = aligned;
+  const cx = width * 0.5;
+  const cy = height * 0.56;
+  const rx = width * 0.34;
+  const ry = height * 0.40;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const ellip = ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2;
+      if (ellip > 1.0) {
+        const idx = (y * width + x) * 4;
+        data[idx] = 128;
+        data[idx + 1] = 128;
+        data[idx + 2] = 128;
+      }
+    }
+  }
+  return aligned;
 }
 
 export interface NormalizedRoiRect {

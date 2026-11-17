@@ -129,7 +129,9 @@ class EdgeVisionSettings(BaseModel):
 
     # InsightFace (buffalo_l / ArcFace 512-D) 120-Frame 5-Angle Enrollment & Matcher
     INSIGHTFACE_MODEL_NAME: str = "buffalo_l"
-    FACE_MATCH_THRESHOLD: float = 0.62
+    FACE_MATCH_THRESHOLD: float = 0.78
+    FACE_MATCH_ANGLED_THRESHOLD: float = 0.72
+    FACE_MATCH_MARGIN_MIN: float = 0.08
     FACE_TOTAL_FRAMES: int = 120
     FACE_BUCKET_TARGETS: Dict[str, int] = Field(
         default_factory=lambda: {
@@ -273,7 +275,9 @@ class EdgeVisionSettings(BaseModel):
             FALL_DROP_VELOCITY_THRESHOLD=float(os.getenv("FALL_DROP_VELOCITY_THRESHOLD", "0.85")),
             HYSTERESIS_ENTER_MARGIN_DEG=float(os.getenv("HYSTERESIS_ENTER_MARGIN_DEG", "6.0")),
             HYSTERESIS_EXIT_MARGIN_DEG=float(os.getenv("HYSTERESIS_EXIT_MARGIN_DEG", "14.0")),
-            FACE_MATCH_THRESHOLD=float(os.getenv("FACE_MATCH_THRESHOLD", "0.62")),
+            FACE_MATCH_THRESHOLD=float(os.getenv("FACE_MATCH_THRESHOLD", "0.78")),
+            FACE_MATCH_ANGLED_THRESHOLD=float(os.getenv("FACE_MATCH_ANGLED_THRESHOLD", "0.72")),
+            FACE_MATCH_MARGIN_MIN=float(os.getenv("FACE_MATCH_MARGIN_MIN", "0.08")),
             SUPABASE_URL=os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL") or "",
             SUPABASE_ANON_KEY=os.getenv("SUPABASE_ANON_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY") or "",
             SUPABASE_SERVICE_ROLE_KEY=os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "",

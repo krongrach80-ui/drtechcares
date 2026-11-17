@@ -8,6 +8,38 @@ export const NOT_FOUND_CONFIRM_ROUNDS = 1;
 export const BURST_FRAME_COUNT = 3;
 
 export type BiometricPose = 'frontal_centroid' | 'overall_centroid' | 'front' | 'left' | 'right' | 'nod';
+export type FacePoseZone5 = 'center' | 'left' | 'right' | 'up' | 'down';
+
+export interface GeometricAnthropometricRatios {
+  /** Inter-ocular distance divided by bridge-to-nose-tip length */
+  eyeToNoseRatio: number;
+  /** Cheekbone width divided by upper face height (glabella/brow to nose tip) */
+  faceWidthToUpperHeight: number;
+  /** Mouth corner width divided by inter-ocular distance */
+  mouthToEyeRatio: number;
+  /** Nose-tip to chin height divided by eye-midpoint to mouth-midpoint height */
+  noseToChinRatio: number;
+}
+
+export interface GeometricRatioMatchResult {
+  available: boolean;
+  score: number;
+  maxRelativeDiff: number;
+  penalty: number;
+}
+
+export interface DualFactorBiometricScore {
+  dualFactorScore: number;
+  appearanceFactorScore: number;
+  geometricFactorScore: number;
+  rawCos: number;
+  meanCenteredCos: number;
+  meanCenteredL2Dist: number;
+  whitenedCos: number;
+  l2Penalty: number;
+  geometricPenalty: number;
+  faceCore: FaceCoreMetrics | null;
+}
 
 export interface BiometricBurstFrame {
   vector: readonly number[];
@@ -83,6 +115,8 @@ export interface VerifyBiometricOptions {
   thresholds?: Partial<VerificationThresholds>;
   baseline?: readonly number[];
   alpha?: number;
+  excludedPatientIds?: readonly string[];
+  geometricRatios?: GeometricAnthropometricRatios | null;
 }
 
 export interface CandidateEvaluation {
@@ -556,8 +590,15 @@ export function verifyHybridBiometricIdentity(
   }
 
   // Frontal-only login invariant: exclude 'left', 'right', 'nod', and 'overall_centroid'
+  const excludedSet =
+    options.excludedPatientIds && options.excludedPatientIds.length > 0
+      ? new Set(options.excludedPatientIds)
+      : null;
   const frontalCandidates = enrolledCandidates.filter(
-    (c) => (c.pose === 'frontal_centroid' || c.pose === 'front') && c.vector.length === FACE_EMBEDDING_DIM,
+    (c) =>
+      (!excludedSet || !excludedSet.has(c.patientId)) &&
+      (c.pose === 'frontal_centroid' || c.pose === 'front') &&
+      c.vector.length === FACE_EMBEDDING_DIM,
   );
 
   if (frontalCandidates.length === 0) {
@@ -700,4 +741,283 @@ export function verifyHybridBiometricIdentity(
     runnerUp: top2,
     failureReasons,
   };
+}
+
+/**
+ * Maps yaw/pitch angles to the 5 discrete enrollment/verification buckets so
+ * frontal frames never blindly match skewed up/down/left/right templates.
+ */
+export function classifyLivePoseZone(yawDeg = 0, pitchDeg = 0): FacePoseZone5 {
+  if (Math.abs(yawDeg) >= Math.abs(pitchDeg) * 1.15) {
+    if (yawDeg < -8) return 'left';
+    if (yawDeg > 8) return 'right';
+  }
+  if (pitchDeg < -6) return 'up';
+  if (pitchDeg > 6) return 'down';
+  if (yawDeg < -8) return 'left';
+  if (yawDeg > 8) return 'right';
+  return 'center';
+}
+
+export function mirrorPoseZone(zone: FacePoseZone5): FacePoseZone5 {
+  if (zone === 'left') return 'right';
+  if (zone === 'right') return 'left';
+  return zone;
+}
+
+/**
+ * Zero-mean centering + L2 normalization: subtracts scalar mean across vector dimensions
+ * before L2 normalization to neutralize global luminance / room bias.
+ */
+export function computeMeanCenteredVector(vector: readonly number[]): number[] {
+  if (vector.length === 0) return [];
+  let sum = 0;
+  for (let i = 0; i < vector.length; i += 1) {
+    sum += vector[i];
+  }
+  const mean = sum / vector.length;
+  const centered = new Array<number>(vector.length);
+  for (let i = 0; i < vector.length; i += 1) {
+    centered[i] = vector[i] - mean;
+  }
+  const normalized = l2Normalize(centered);
+  let zeroCount = 0;
+  for (let i = 0; i < normalized.length; i += 1) {
+    if (normalized[i] === 0) zeroCount += 1;
+  }
+  return zeroCount === normalized.length ? l2Normalize(vector) : normalized;
+}
+
+/**
+ * Extracts normalized Craniofacial Geometric Anthropometric Ratios from 468/478-pt
+ * MediaPipe face landmarks, scaled invariantly by Inter-Ocular Distance (IOD).
+ */
+export function computeGeometricAnthropometricRatios(
+  landmarks3D: readonly { x: number; y: number; z?: number }[],
+): GeometricAnthropometricRatios | undefined {
+  if (!landmarks3D || landmarks3D.length < 455) return undefined;
+  const lEye = landmarks3D[33] ?? landmarks3D[0];
+  const rEye = landmarks3D[263] ?? landmarks3D[1];
+  const brow = landmarks3D[168] ?? landmarks3D[10] ?? landmarks3D[6];
+  const topHead = landmarks3D[10] ?? brow;
+  const nose = landmarks3D[1] ?? landmarks3D[4];
+  const lCheek = landmarks3D[234];
+  const rCheek = landmarks3D[454];
+  const lMouth = landmarks3D[61];
+  const rMouth = landmarks3D[291];
+  const chin = landmarks3D[152];
+  if (!lEye || !rEye || !nose || !lCheek || !rCheek || !lMouth || !rMouth || !chin) {
+    return undefined;
+  }
+
+  const dist2d = (a: { x: number; y: number }, b: { x: number; y: number }): number =>
+    Math.hypot(a.x - b.x, a.y - b.y);
+
+  const eyeDist = Math.max(1e-4, dist2d(lEye, rEye));
+  const noseLen = Math.max(1e-4, dist2d(brow, nose));
+  const faceWidth = Math.max(1e-4, dist2d(lCheek, rCheek));
+  const upperFaceHeight = Math.max(1e-4, dist2d(topHead, nose));
+  const mouthWidth = Math.max(1e-4, dist2d(lMouth, rMouth));
+  const eyeMid = { x: (lEye.x + rEye.x) / 2, y: (lEye.y + rEye.y) / 2 };
+  const mouthMid = { x: (lMouth.x + rMouth.x) / 2, y: (lMouth.y + rMouth.y) / 2 };
+  const eyeToMouth = Math.max(1e-4, dist2d(eyeMid, mouthMid));
+  const noseToChin = Math.max(1e-4, dist2d(nose, chin));
+
+  return {
+    eyeToNoseRatio: Number(Math.min(5, Math.max(0.2, eyeDist / noseLen)).toFixed(4)),
+    faceWidthToUpperHeight: Number(Math.min(5, Math.max(0.2, faceWidth / upperFaceHeight)).toFixed(4)),
+    mouthToEyeRatio: Number(Math.min(3, Math.max(0.15, mouthWidth / eyeDist)).toFixed(4)),
+    noseToChinRatio: Number(Math.min(3, Math.max(0.15, noseToChin / eyeToMouth)).toFixed(4)),
+  };
+}
+
+export function computeGeometricRatioMatchScore(
+  probe?: GeometricAnthropometricRatios | null,
+  candidate?: GeometricAnthropometricRatios | null,
+): GeometricRatioMatchResult {
+  if (!probe || !candidate) {
+    return { available: false, score: 1, maxRelativeDiff: 0, penalty: 0 };
+  }
+  const pairs: [number, number][] = [
+    [probe.eyeToNoseRatio, candidate.eyeToNoseRatio],
+    [probe.faceWidthToUpperHeight, candidate.faceWidthToUpperHeight],
+    [probe.mouthToEyeRatio, candidate.mouthToEyeRatio],
+    [probe.noseToChinRatio, candidate.noseToChinRatio],
+  ];
+  let sumDiff = 0;
+  let maxDiff = 0;
+  for (const [a, b] of pairs) {
+    if (!Number.isFinite(a) || !Number.isFinite(b) || Math.max(a, b) <= 0) continue;
+    const rel = Math.abs(a - b) / Math.max(0.05, b);
+    sumDiff += rel;
+    if (rel > maxDiff) maxDiff = rel;
+  }
+  const meanDiff = sumDiff / pairs.length;
+  const score = Math.max(0, Math.min(1, 1 - meanDiff * 3.0));
+  const penalty = maxDiff > 0.14 ? Math.min(0.28, (maxDiff - 0.14) * 1.15) : 0;
+  return { available: true, score, maxRelativeDiff: maxDiff, penalty };
+}
+
+/**
+ * Dual-Factor Biometric Comparison (80% Mean-Centered Appearance + 20% Craniofacial Geometry),
+ * applying immediate Euclidean (L2) distance and geometric ratio divergence penalties.
+ */
+export function computeDualFactorBiometricScore(
+  probe: readonly number[],
+  candidate: readonly number[],
+  options: {
+    baseline?: readonly number[];
+    alpha?: number;
+    probeRatios?: GeometricAnthropometricRatios | null;
+    candidateRatios?: GeometricAnthropometricRatios | null;
+  } = {},
+): DualFactorBiometricScore {
+  const baseline = options.baseline ?? CANONICAL_HUMAN_FACE_BASELINE_512;
+  const alpha = options.alpha ?? COMMON_MODE_ALPHA;
+  const pNorm = l2Normalize(probe);
+  const cNorm = l2Normalize(candidate);
+  const pCentered = computeMeanCenteredVector(pNorm);
+  const cCentered = computeMeanCenteredVector(cNorm);
+
+  const rawCos = cosineSimilarity(pNorm, cNorm);
+  const meanCenteredCos = cosineSimilarity(pCentered, cCentered);
+  const meanCenteredL2Dist = euclideanDistance(pCentered, cCentered);
+
+  const pWhite = whitenEmbedding(pNorm, baseline, alpha);
+  const cWhite = whitenEmbedding(cNorm, baseline, alpha);
+  const whitenedGlobal = cosineSimilarity(pWhite, cWhite);
+
+  const faceCore =
+    pNorm.length === FACE_EMBEDDING_DIM && cNorm.length === FACE_EMBEDDING_DIM
+      ? computeFaceCoreMetrics(pNorm, cNorm, baseline)
+      : null;
+
+  // Compute zero-mean cosine & L2 over the strict inner face subvector (inner DCT + inner patches + 3D skull)
+  // when 512-D so synthetic/real outer border/shirt noise cannot skew similarity.
+  let effectiveMeanCenteredCos = meanCenteredCos;
+  let effectiveMeanCenteredL2Dist = meanCenteredL2Dist;
+  if (faceCore && pNorm.length === FACE_EMBEDDING_DIM && cNorm.length === FACE_EMBEDDING_DIM) {
+    const pInner = l2Normalize([
+      ...INNER_DCT_INDICES.map((idx) => pNorm[idx] ?? 0),
+      ...INNER_PATCH_INDICES.map((idx) => pNorm[idx] ?? 0),
+      ...pNorm.slice(256, 512),
+    ]);
+    const cInner = l2Normalize([
+      ...INNER_DCT_INDICES.map((idx) => cNorm[idx] ?? 0),
+      ...INNER_PATCH_INDICES.map((idx) => cNorm[idx] ?? 0),
+      ...cNorm.slice(256, 512),
+    ]);
+    const pInnerMean = computeMeanCenteredVector(pInner);
+    const cInnerMean = computeMeanCenteredVector(cInner);
+    const innerMeanCos = cosineSimilarity(pInnerMean, cInnerMean);
+    const innerMeanL2 = euclideanDistance(pInnerMean, cInnerMean);
+    if (innerMeanCos > effectiveMeanCenteredCos) {
+      effectiveMeanCenteredCos = innerMeanCos;
+      effectiveMeanCenteredL2Dist = innerMeanL2;
+    }
+  }
+
+  const effectiveRaw = faceCore ? Math.max(rawCos, faceCore.faceCoreSim) : rawCos;
+  const effectiveWhite = faceCore ? Math.max(whitenedGlobal, faceCore.faceCoreWhitenedSim) : whitenedGlobal;
+
+  // Penalize wide L2 spread across normalized mean-centered vectors
+  const l2Penalty =
+    effectiveMeanCenteredL2Dist > 0.72
+      ? Math.min(0.24, (effectiveMeanCenteredL2Dist - 0.72) * 0.34)
+      : 0;
+
+  const appearanceFactorScore = Math.max(
+    0,
+    Math.min(
+      1,
+      0.42 * Math.max(0, effectiveMeanCenteredCos) +
+        0.38 * Math.max(0, effectiveRaw) +
+        0.20 * Math.max(0, effectiveWhite) -
+        l2Penalty,
+    ),
+  );
+
+  const ratioRes = computeGeometricRatioMatchScore(options.probeRatios, options.candidateRatios);
+  let geometricFactorScore = 0;
+  let geometricPenalty = 0;
+
+  if (ratioRes.available) {
+    geometricFactorScore = ratioRes.score;
+    geometricPenalty = ratioRes.penalty;
+  } else if (faceCore) {
+    geometricFactorScore = Math.max(
+      0,
+      Math.min(1, 0.55 * Math.max(0, faceCore.cos3DNormalized) + 0.45 * Math.max(0, faceCore.craniofacialCos)),
+    );
+    if (faceCore.craniofacialCos < 0.25) {
+      geometricPenalty = Math.min(0.2, (0.25 - Math.max(0, faceCore.craniofacialCos)) * 0.55);
+    }
+  } else {
+    geometricFactorScore = appearanceFactorScore;
+  }
+
+  const dualFactorScore = Math.max(
+    0,
+    Math.min(1, 0.8 * appearanceFactorScore + 0.2 * geometricFactorScore - geometricPenalty),
+  );
+
+  return {
+    dualFactorScore,
+    appearanceFactorScore,
+    geometricFactorScore,
+    rawCos: effectiveRaw,
+    meanCenteredCos: effectiveMeanCenteredCos,
+    meanCenteredL2Dist: effectiveMeanCenteredL2Dist,
+    whitenedCos: effectiveWhite,
+    l2Penalty,
+    geometricPenalty,
+    faceCore,
+  };
+}
+
+/**
+ * Outlier-Rejected Centroid Builder for 120-frame enrollment:
+ * computes median anchor similarity and drops the bottom 20% noisy/blurry outlier frames
+ * before computing the final L2-normalized centroid.
+ */
+export function trimOutlierVectorsAndAverage(
+  items: readonly { vec: readonly number[]; quality?: number }[],
+  dropBottomFraction: number = 0.2,
+): number[] {
+  const valid = items
+    .filter((it) => Array.isArray(it.vec) && it.vec.length > 0)
+    .map((it) => ({
+      vec: l2Normalize(it.vec),
+      quality: Number.isFinite(it.quality) ? Math.max(0.1, Number(it.quality)) : 60,
+    }));
+  if (valid.length === 0) return [];
+  if (valid.length === 1) return valid[0].vec;
+
+  const dim = valid[0].vec.length;
+  const anchorSum = new Array<number>(dim).fill(0);
+  for (const item of valid) {
+    for (let i = 0; i < dim; i += 1) anchorSum[i] += item.vec[i] ?? 0;
+  }
+  const anchor = l2Normalize(anchorSum);
+
+  let keepItems = valid;
+  if (valid.length >= 5 && dropBottomFraction > 0 && dropBottomFraction < 0.5) {
+    const ranked = valid.map((item) => {
+      const sim = cosineSimilarity(item.vec, anchor);
+      const qBoost = Math.min(0.08, item.quality / 1500);
+      return { item, score: sim + qBoost };
+    });
+    ranked.sort((a, b) => a.score - b.score);
+    const dropCount = Math.floor(valid.length * dropBottomFraction);
+    keepItems = ranked.slice(dropCount).map((r) => r.item);
+  }
+
+  const weighted = new Array<number>(dim).fill(0);
+  for (const item of keepItems) {
+    const w = 1 + Math.min(0.5, item.quality / 200);
+    for (let i = 0; i < dim; i += 1) {
+      weighted[i] += (item.vec[i] ?? 0) * w;
+    }
+  }
+  return l2Normalize(weighted);
 }

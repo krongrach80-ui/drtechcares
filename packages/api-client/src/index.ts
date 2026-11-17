@@ -6,6 +6,7 @@ import {
   type BiometricPose,
   type BiometricVerificationResult,
   type EnrolledTemplateCandidate,
+  type GeometricAnthropometricRatios,
 } from '@drtechcares/smart-biometric-core';
 import { CLINICAL_EXERCISES, type BodySide, type ExerciseConfig } from '@drtechcares/pose-engine';
 
@@ -75,6 +76,7 @@ export interface PatientBiometricIndexEntry {
   qualityScore: number;
   masterEmbedding: number[];
   angleEmbeddings: AngleEmbeddings5D;
+  geometricRatios?: GeometricAnthropometricRatios;
   extraEmbeddings?: number[][];
   todayRoutine?: DailyScheduleDay | null;
   rehabSchedules?: RehabScheduleItem[];
@@ -216,6 +218,7 @@ export interface PatientRecord {
   angleImageUrls?: Partial<Record<keyof AngleEmbeddings5D, string>>;
   masterEmbedding?: number[];
   angleEmbeddings?: AngleEmbeddings5D;
+  geometricRatios?: GeometricAnthropometricRatios;
   rehabSchedules?: RehabScheduleItem[];
   biometricHistory?: {
     frontal_centroid: number[];
@@ -371,6 +374,9 @@ export interface KioskStatusRecord {
 }
 
 export interface KioskFaceVerifyResponse extends BiometricVerificationResult {
+  error?: string;
+  reason?: string;
+  message?: string;
   patient?: {
     id: string;
     hn: string;
@@ -744,6 +750,7 @@ export class DrTechCaresApiClient {
       overallCentroid?: number[];
       frontalCentroid?: number[];
       angleEmbeddings?: AngleEmbeddings5D;
+      geometricRatios?: GeometricAnthropometricRatios;
       framesCaptured?: number;
       qualityScore?: number;
     },
@@ -780,6 +787,7 @@ export class DrTechCaresApiClient {
       qualityScore: vectors.qualityScore ?? 0.95,
       masterEmbedding: master,
       angleEmbeddings: angles,
+      ...(vectors.geometricRatios ? { geometricRatios: vectors.geometricRatios } : {}),
       todayRoutine: null,
       rehabSchedules: patient.rehabSchedules ?? [],
       syncedAtMs: Date.now(),
@@ -857,9 +865,12 @@ export class DrTechCaresApiClient {
       rppgScore?: number;
       faceHeightRatio?: number;
       yawDeg?: number;
+      pitchDeg?: number;
       rollDeg?: number;
       engine?: 'arcface-onnx' | 'hybrid-512d';
       mirroredProbeVector?: readonly number[];
+      geometricRatios?: GeometricAnthropometricRatios;
+      excludedPatientIds?: readonly string[];
     },
   ): Promise<KioskFaceVerifyResponse> {
     if (
@@ -891,8 +902,15 @@ export class DrTechCaresApiClient {
                   ? { mirroredProbeVector: livenessEvidence.mirroredProbeVector }
                   : {}),
                 yawDeg: livenessEvidence.yawDeg,
+                pitchDeg: livenessEvidence.pitchDeg,
                 rollDeg: livenessEvidence.rollDeg,
                 engine: livenessEvidence.engine,
+                ...(livenessEvidence.geometricRatios
+                  ? { geometricRatios: livenessEvidence.geometricRatios }
+                  : {}),
+                ...(livenessEvidence.excludedPatientIds && livenessEvidence.excludedPatientIds.length > 0
+                  ? { excludedPatientIds: livenessEvidence.excludedPatientIds }
+                  : {}),
                 livenessEvidence,
               }
             : { probeVector },
@@ -957,6 +975,7 @@ export class DrTechCaresApiClient {
     rawFrames?: { pose: 'front' | 'left' | 'right' | 'nod'; vector: number[]; qualityScore: number }[];
     masterEmbedding?: number[];
     angleEmbeddings?: AngleEmbeddings5D;
+    geometricRatios?: GeometricAnthropometricRatios;
     framesCaptured?: number;
     qualityScore?: number;
   }): Promise<PatientRecord> {
@@ -979,6 +998,7 @@ export class DrTechCaresApiClient {
       angleImageUrls?: Partial<Record<keyof AngleEmbeddings5D, string>>;
       masterEmbedding?: number[];
       angleEmbeddings?: AngleEmbeddings5D;
+      geometricRatios?: GeometricAnthropometricRatios;
       framesCaptured?: number;
       qualityScore?: number;
     },

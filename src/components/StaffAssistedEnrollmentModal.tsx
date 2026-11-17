@@ -431,6 +431,7 @@ export function StaffAssistedEnrollmentModal({
           rawFrames: compatRawFrames,
           masterEmbedding: bio.masterEmbedding,
           angleEmbeddings: bio.angleEmbeddings,
+          ...(bio.geometricRatios ? { geometricRatios: bio.geometricRatios } : {}),
           framesCaptured: bio.framesCaptured,
           qualityScore: bio.qualityScore,
           faceImageUrl: finalSnapshot,
@@ -479,6 +480,7 @@ export function StaffAssistedEnrollmentModal({
         overallCentroid: !isPending && bio ? bio.masterEmbedding : undefined,
         masterEmbedding: !isPending && bio ? bio.masterEmbedding : undefined,
         angleEmbeddings: !isPending && bio ? bio.angleEmbeddings : undefined,
+        ...( !isPending && bio?.geometricRatios ? { geometricRatios: bio.geometricRatios } : {} ),
         framesCaptured: !isPending && bio ? bio.framesCaptured : 0,
         qualityScore: !isPending && bio ? bio.qualityScore : undefined,
       });

@@ -58,6 +58,29 @@ def l2_normalize(vec: np.ndarray) -> np.ndarray:
     return arr / norm
 
 
+def mean_center_l2_normalize(vec: np.ndarray) -> np.ndarray:
+    """Zero-mean center before L2-normalization to neutralize global lighting/luminance offset."""
+    arr = np.asarray(vec, dtype=np.float64).reshape(-1)
+    if arr.size == 0:
+        return arr
+    centered = arr - float(np.mean(arr))
+    return l2_normalize(centered) if float(np.linalg.norm(centered)) >= 1e-9 else l2_normalize(arr)
+
+
+def trimmed_outlier_centroid(vecs: List[np.ndarray], drop_bottom_fraction: float = 0.20) -> np.ndarray:
+    """Drop bottom 20% lowest-similarity outlier frames before computing normalized centroid."""
+    if not vecs:
+        raise ValueError("Cannot compute centroid of empty vector list")
+    mat = np.vstack([l2_normalize(v) for v in vecs])
+    if mat.shape[0] < 5 or drop_bottom_fraction <= 0.0:
+        return l2_normalize(np.mean(mat, axis=0))
+    anchor = l2_normalize(np.mean(mat, axis=0))
+    sims = mat @ anchor
+    drop_n = max(1, int(math.floor(mat.shape[0] * drop_bottom_fraction)))
+    keep_indices = np.argsort(sims)[drop_n:]
+    return l2_normalize(np.mean(mat[keep_indices], axis=0))
+
+
 def classify_face_bucket(yaw_deg: float, pitch_deg: float) -> str:
     if abs(yaw_deg) >= abs(pitch_deg) * 1.15:
         if yaw_deg <= -8.0:
@@ -362,39 +385,89 @@ class InsightFace120Manager:
         yaw_deg: float = 0.0,
         pitch_deg: float = 0.0,
         roll_deg: float = 0.0,
+        excluded_patient_ids: Optional[List[str]] = None,
     ) -> PatientMatchSchema:
         """
-        Match a 512-D query embedding against all enrolled patients in RAM in < 100ms
-        via Multi-Angle Bank Max-Pooling (master + center/left/right/up/down).
+        Pose-Synchronized 1:N matcher (< 100ms in RAM):
+        1. Zero-mean centers probe and candidates + applies Euclidean L2 spread penalty.
+        2. Compares ONLY matching pose bucket (center/left/right/up/down) weighted 55% + master 45%.
+        3. Enforces BOTH high threshold (>= 0.78 frontal, >= 0.72 angled) AND strict >= 0.08 Rank1-Rank2 margin.
         """
         start_ns = time.perf_counter_ns()
         if not self._patients or self._matrix is None:
             return PatientMatchSchema(similarity=0.0, latency_ms=0.0)
 
-        q = l2_normalize(query_embedding)
-        master_sims = self._matrix @ q
+        excluded_set = set(excluded_patient_ids or [])
+        q_raw = l2_normalize(query_embedding)
+        q_mc = mean_center_l2_normalize(q_raw)
 
-        best_score = -1.0
-        best_patient: Optional[CachedPatientBiometric] = None
+        # Vectorized mean-centered + raw similarity over all enrolled master embeddings
+        mat_mc = self._matrix - np.mean(self._matrix, axis=1, keepdims=True)
+        norms = np.linalg.norm(mat_mc, axis=1, keepdims=True)
+        mat_mc = np.where(norms > 1e-9, mat_mc / np.maximum(norms, 1e-9), self._matrix)
+        master_mc_sims = mat_mc @ q_mc
+        master_raw_sims = self._matrix @ q_raw
+
+        live_zone = classify_face_bucket(yaw_deg, pitch_deg)
+        candidate_scores: List[Tuple[float, CachedPatientBiometric]] = []
+
         for idx, pat in enumerate(self._patients):
-            pat_best = float(master_sims[idx])
-            if pat.angle_embeddings:
-                for angle_vec in pat.angle_embeddings.values():
-                    a_score = float(np.dot(angle_vec, q))
-                    if a_score > pat_best:
-                        pat_best = a_score
-            if pat_best > best_score:
-                best_score = pat_best
-                best_patient = pat
+            if pat.patient_id in excluded_set or (pat.hn and pat.hn in excluded_set):
+                continue
+            m_cos = 0.65 * float(master_mc_sims[idx]) + 0.35 * float(master_raw_sims[idx])
+            m_l2 = math.sqrt(max(0.0, 2.0 - 2.0 * float(master_mc_sims[idx])))
+            m_penalty = max(0.0, (m_l2 - 0.72) * 0.30)
+            master_score = max(0.0, m_cos - m_penalty)
+
+            zone_vec = pat.angle_embeddings.get(live_zone) if pat.angle_embeddings else None
+            if zone_vec is not None:
+                z_raw = l2_normalize(zone_vec)
+                z_mc = mean_center_l2_normalize(z_raw)
+                z_mc_cos = float(np.dot(z_mc, q_mc))
+                z_cos = 0.65 * z_mc_cos + 0.35 * float(np.dot(z_raw, q_raw))
+                z_l2 = math.sqrt(max(0.0, 2.0 - 2.0 * z_mc_cos))
+                z_penalty = max(0.0, (z_l2 - 0.72) * 0.30)
+                zone_score = max(0.0, z_cos - z_penalty)
+                pat_score = 0.55 * zone_score + 0.45 * master_score
+            else:
+                pat_score = master_score
+
+            candidate_scores.append((pat_score, pat))
 
         elapsed_ms = round((time.perf_counter_ns() - start_ns) / 1_000_000.0, 3)
-        is_angled = abs(yaw_deg) > 12.0 or abs(pitch_deg) > 12.0 or abs(roll_deg) > 10.0
+        if not candidate_scores:
+            return PatientMatchSchema(similarity=0.0, latency_ms=elapsed_ms)
+
+        candidate_scores.sort(key=lambda item: item[0], reverse=True)
+        best_score, best_patient = candidate_scores[0]
+
+        runner_up_score = 0.0
+        has_distinct_runner = False
+        best_norm_name = best_patient.full_name.strip().lower()
+        for sc, pat in candidate_scores[1:]:
+            if pat.patient_id == best_patient.patient_id:
+                continue
+            if best_norm_name and pat.full_name.strip().lower() == best_norm_name:
+                continue
+            runner_up_score = sc
+            has_distinct_runner = True
+            break
+
+        margin = (best_score - runner_up_score) if has_distinct_runner else 1.0
+        is_angled = (
+            live_zone != "center"
+            or abs(yaw_deg) > 8.0
+            or abs(pitch_deg) > 6.0
+            or abs(roll_deg) > 10.0
+        )
         effective_thresh = (
-            min(float(self.settings.FACE_MATCH_THRESHOLD), 0.50)
+            float(getattr(self.settings, "FACE_MATCH_ANGLED_THRESHOLD", 0.72))
             if is_angled
             else float(self.settings.FACE_MATCH_THRESHOLD)
         )
-        if best_patient is None or best_score < effective_thresh:
+        min_margin = float(getattr(self.settings, "FACE_MATCH_MARGIN_MIN", 0.08))
+
+        if best_score < effective_thresh or (has_distinct_runner and margin < min_margin):
             return PatientMatchSchema(similarity=round(max(0.0, best_score), 4), latency_ms=elapsed_ms)
 
         self.lock_active_patient(
@@ -985,11 +1058,11 @@ class InsightFace120Manager:
         if not all_vecs:
             raise ValueError("No valid face frames captured in enrollment session.")
 
-        master_vec = l2_normalize(np.mean(np.vstack(all_vecs), axis=0))
+        master_vec = trimmed_outlier_centroid(all_vecs, drop_bottom_fraction=0.20)
         angle_embeddings: Dict[str, List[float]] = {}
         for bucket in BUCKET_ORDER:
             vecs = session.bucket_samples[bucket]
-            centroid = l2_normalize(np.mean(np.vstack(vecs), axis=0)) if vecs else master_vec
+            centroid = trimmed_outlier_centroid(vecs, drop_bottom_fraction=0.20) if vecs else master_vec
             angle_embeddings[bucket] = [round(float(v), 6) for v in centroid.tolist()]
 
         master_list = [round(float(v), 6) for v in master_vec.tolist()]

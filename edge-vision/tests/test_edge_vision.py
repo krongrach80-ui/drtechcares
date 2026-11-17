@@ -1083,6 +1083,39 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertEqual(p_sway.telemetry_analysis.safety_guard_alert, "POSTURAL_SWAY_AND_FALL_GUARD")
         self.assertIn("ตรวจพบการเสียสมดุล", p_sway.tts_voice_th)
 
+    def test_19_face_matcher_strict_margin_pose_sync_and_exclusion(self) -> None:
+        """Verify Edge Face 1:N matcher enforces >= 0.08 margin, pose-synchronized matching, and excluded IDs."""
+        rng = np.random.default_rng(777)
+        mgr = InsightFace120Manager(self.settings)
+        base_a = l2_normalize(rng.normal(size=512))
+        close_b = l2_normalize(0.96 * base_a + 0.04 * l2_normalize(rng.normal(size=512)))
+
+        mgr._patients = [
+            CachedPatientBiometric(
+                patient_id="p-edge-a",
+                hn="HN-E1",
+                full_name="Patient Edge A",
+                master_embedding=base_a,
+                angle_embeddings={"center": base_a},
+            ),
+            CachedPatientBiometric(
+                patient_id="p-edge-b",
+                hn="HN-E2",
+                full_name="Patient Edge B",
+                master_embedding=close_b,
+                angle_embeddings={"center": close_b},
+            ),
+        ]
+        mgr._matrix = np.vstack([p.master_embedding for p in mgr._patients])
+
+        # Close candidates within < 0.08 margin must be rejected (id is None)
+        amb_match = mgr.match_1_to_n(base_a, yaw_deg=0.0, pitch_deg=0.0)
+        self.assertIsNone(amb_match.id)
+
+        # Excluding p-edge-b restores unambiguous match to p-edge-a
+        clean_match = mgr.match_1_to_n(base_a, yaw_deg=0.0, pitch_deg=0.0, excluded_patient_ids=["p-edge-b"])
+        self.assertEqual(clean_match.id, "p-edge-a")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

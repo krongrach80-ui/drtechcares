@@ -4,6 +4,7 @@ import {
   parseEmbeddingVector,
   type BiometricPose,
   type EnrolledTemplateCandidate,
+  type GeometricAnthropometricRatios,
 } from '@drtechcares/smart-biometric-core';
 import {
   resolveTodayPatientSchedule,
@@ -503,6 +504,10 @@ export async function hydrateStateFromSupabase(
         angleImageUrls: hydratedAngleImageUrls,
         masterEmbedding: fallbackMaster,
         angleEmbeddings: fallbackAngles,
+        geometricRatios:
+          history.geometricRatios && typeof history.geometricRatios === 'object'
+            ? (history.geometricRatios as GeometricAnthropometricRatios)
+            : prevPatient?.geometricRatios,
         rehabSchedules: Array.isArray(history.rehabSchedules)
           ? sanitizeAccidentalDefaultKneePrefix(history.rehabSchedules as RehabScheduleItem[])
           : [],

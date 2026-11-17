@@ -2,6 +2,8 @@ import * as ort from 'onnxruntime-web';
 import {
   CANONICAL_HUMAN_FACE_BASELINE_512,
   FACE_EMBEDDING_DIM,
+  type GeometricAnthropometricRatios,
+  computeGeometricAnthropometricRatios,
   l2Normalize,
 } from '@drtechcares/smart-biometric-core';
 import { ARCFACE_INPUT_SIZE } from './align';
@@ -133,15 +135,15 @@ export function extractHybrid512Descriptor(
   const { width, height, data } = image;
   const vec = new Array<number>(FACE_EMBEDDING_DIM).fill(0);
 
-  // Downsample inner-face elliptical ROI (excluding shirt collar/neck/background borders)
-  // to 16x16 grid with z-score illumination normalization for clothing- & lighting-invariant DCT (0..127)
+  // Tight Inner-Face elliptical ROI (eyebrows y=28 to chin y=96, cheekbones x=24 to 88)
+  // Excludes room background walls, hair, and shirt collars 100%, with inner-face histogram CDF equalization.
   const grid = 16;
   const rawGrid = new Float32Array(grid * grid);
   const gray16 = new Float32Array(grid * grid);
-  const roiX0 = width * (18 / 112);
-  const roiW = Math.max(1, width * (76 / 112));
-  const roiY0 = height * (20 / 112);
-  const roiH = Math.max(1, height * (72 / 112));
+  const roiX0 = width * (24 / 112);
+  const roiW = Math.max(1, width * (64 / 112));
+  const roiY0 = height * (28 / 112);
+  const roiH = Math.max(1, height * (66 / 112));
   const cellW = Math.max(1, roiW / grid);
   const cellH = Math.max(1, roiH / grid);
   const sampleLum = (px: number, py: number): number => {
@@ -149,6 +151,44 @@ export function extractHybrid512Descriptor(
     const cy = Math.min(height - 1, Math.max(0, py));
     const idx = (cy * width + cx) * 4;
     return 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+  };
+
+  // Gentle histogram equalization (CDF) strictly inside inner elliptical mask so lighting intensity never dominates
+  const hist = new Uint32Array(256);
+  let histTotal = 0;
+  let minLum = 255;
+  let maxLum = 0;
+  for (let py = Math.floor(roiY0); py < Math.min(height, Math.ceil(roiY0 + roiH)); py += 1) {
+    for (let px = Math.floor(roiX0); px < Math.min(width, Math.ceil(roiX0 + roiW)); px += 1) {
+      const nx = (px - (roiX0 + roiW * 0.5)) / Math.max(1, roiW * 0.5);
+      const ny = (py - (roiY0 + roiH * 0.5)) / Math.max(1, roiH * 0.5);
+      if (nx * nx + ny * ny <= 1.0) {
+        const lumVal = Math.min(255, Math.max(0, Math.round(sampleLum(px, py))));
+        hist[lumVal] += 1;
+        histTotal += 1;
+        if (lumVal < minLum) minLum = lumVal;
+        if (lumVal > maxLum) maxLum = lumVal;
+      }
+    }
+  }
+  const cdfLut = new Float32Array(256);
+  const hasContrastSpan = histTotal > 0 && maxLum - minLum >= 6;
+  if (hasContrastSpan) {
+    let acc = 0;
+    for (let b = 0; b < 256; b += 1) {
+      acc += hist[b];
+      cdfLut[b] = (acc / histTotal) * 255;
+    }
+  } else {
+    for (let b = 0; b < 256; b += 1) cdfLut[b] = b;
+  }
+
+  const sampleNormLum = (px: number, py: number): number => {
+    const raw = sampleLum(px, py);
+    if (!hasContrastSpan) return raw;
+    const bin = Math.min(255, Math.max(0, Math.round(raw)));
+    // Blend 65% histogram-equalized contrast with 35% local raw luminance
+    return 0.65 * cdfLut[bin] + 0.35 * raw;
   };
 
   let ellipSum = 0;
@@ -160,7 +200,7 @@ export function extractHybrid512Descriptor(
       const y0 = Math.floor(roiY0 + (gy + 0.25) * cellH);
       const y1 = Math.floor(roiY0 + (gy + 0.75) * cellH);
       const cellAvg =
-        (sampleLum(x0, y0) + sampleLum(x1, y0) + sampleLum(x0, y1) + sampleLum(x1, y1)) / 4;
+        (sampleNormLum(x0, y0) + sampleNormLum(x1, y0) + sampleNormLum(x0, y1) + sampleNormLum(x1, y1)) / 4;
       rawGrid[gy * grid + gx] = cellAvg;
       const ellipDistSq = ((gx - 7.5) / 8.0) ** 2 + ((gy - 7.5) / 8.0) ** 2;
       if (ellipDistSq <= 1.0) {
@@ -181,7 +221,7 @@ export function extractHybrid512Descriptor(
       }
     }
   }
-  const faceStd = Math.max(12.0, ellipCount > 0 ? Math.sqrt(varSum / ellipCount) : 32.0);
+  const faceStd = Math.max(10.0, ellipCount > 0 ? Math.sqrt(varSum / ellipCount) : 28.0);
 
   for (let gy = 0; gy < grid; gy += 1) {
     for (let gx = 0; gx < grid; gx += 1) {
@@ -212,40 +252,44 @@ export function extractHybrid512Descriptor(
     }
   }
 
-  // 128..255: Inner-face 16-Patch (4x4 patches within [24..87]x[26..86] using 3x3 illumination-normalized blocks)
+  // 128..255: Tight Inner-Face 16-Patch (4x4 patches within [28..84]x[32..92], zero border/background/shirt)
   const scaleX = width / 112;
   const scaleY = height / 112;
   const blockLum = (bx: number, by: number): number => {
     let total = 0;
     for (let dy = -1; dy <= 1; dy += 1) {
       for (let dx = -1; dx <= 1; dx += 1) {
-        total += sampleLum(bx + dx, by + dy);
+        total += sampleNormLum(bx + dx, by + dy);
       }
     }
     return total / 9;
   };
-  const invPatchScale = 1 / (faceStd * 4.0);
+  const invPatchScale = 1 / (faceStd * 3.6);
   for (let py = 0; py < 4; py += 1) {
     for (let px = 0; px < 4; px += 1) {
       const patchOffset = 128 + (py * 4 + px) * 8;
-      const cx = Math.min(width - 2, Math.max(1, Math.round((24 + px * 21) * scaleX)));
-      const cy = Math.min(height - 2, Math.max(1, Math.round((26 + py * 20) * scaleY)));
+      const cx = Math.min(width - 2, Math.max(1, Math.round((28 + px * 18.6) * scaleX)));
+      const cy = Math.min(height - 2, Math.max(1, Math.round((32 + py * 19.6) * scaleY)));
 
       const center = blockLum(cx, cy);
       const gxVal = (blockLum(cx + 1, cy) - blockLum(cx - 1, cy)) * invPatchScale;
       const gyVal = (blockLum(cx, cy + 1) - blockLum(cx, cy - 1)) * invPatchScale;
+      // Local Laplacian contrast (edge sharpness vs surround) — completely free of global room luminance scalar
+      const surroundMean =
+        (blockLum(cx - 2, cy) + blockLum(cx + 2, cy) + blockLum(cx, cy - 2) + blockLum(cx, cy + 2)) * 0.25;
+      const localContrast = Math.max(-0.5, Math.min(0.5, (center - surroundMean) * invPatchScale));
       vec[patchOffset] = gxVal;
       vec[patchOffset + 1] = gyVal;
       vec[patchOffset + 2] = Math.hypot(gxVal, gyVal);
-      vec[patchOffset + 3] = blockLum(cx - 1, cy - 1) > center ? 0.05 : -0.05;
-      vec[patchOffset + 4] = blockLum(cx + 1, cy - 1) > center ? 0.05 : -0.05;
-      vec[patchOffset + 5] = blockLum(cx + 1, cy + 1) > center ? 0.05 : -0.05;
-      vec[patchOffset + 6] = blockLum(cx - 1, cy + 1) > center ? 0.05 : -0.05;
-      vec[patchOffset + 7] = Math.max(-0.5, Math.min(0.5, (center - faceMean) * invPatchScale));
+      vec[patchOffset + 3] = blockLum(cx - 1, cy - 1) > center ? 0.06 : -0.06;
+      vec[patchOffset + 4] = blockLum(cx + 1, cy - 1) > center ? 0.06 : -0.06;
+      vec[patchOffset + 5] = blockLum(cx + 1, cy + 1) > center ? 0.06 : -0.06;
+      vec[patchOffset + 6] = blockLum(cx - 1, cy + 1) > center ? 0.06 : -0.06;
+      vec[patchOffset + 7] = localContrast;
     }
   }
 
-  // 256..511: High-detail Roll-Invariant 3D Craniofacial geometric ratios anchored by inter-ocular eye axis
+  // 256..511: High-detail Roll-Invariant 3D Craniofacial geometric bone ratios anchored by inter-ocular eye axis
   if (landmarks3D.length >= 10) {
     const pLeft = landmarks3D[33] ?? landmarks3D[0];
     const pRight = landmarks3D[263] ?? landmarks3D[1];
@@ -273,8 +317,9 @@ export function extractHybrid512Descriptor(
       landmarks3D[454] ?? nose,
     ];
 
-    const anchorPairs = 256;
-    for (let k = 0; k < anchorPairs; k += 1) {
+    const raw3D = new Float32Array(256);
+    let mean3D = 0;
+    for (let k = 0; k < 256; k += 1) {
       const lmIdx = (k * 7) % landmarks3D.length;
       const lm = landmarks3D[lmIdx];
       const ref = keyAnchors[k % keyAnchors.length];
@@ -285,10 +330,14 @@ export function extractHybrid512Descriptor(
       const dz = ((lm.z ?? 0) - (nose.z ?? 0)) / iod;
       const dist = Math.hypot(dx, dy, dz);
       const refDist = Math.hypot(lm.x - ref.x, lm.y - ref.y, (lm.z ?? 0) - (ref.z ?? 0)) / iod;
-      // Combine with common-mode canonical baseline structure so whitening highlights true deviation
-      vec[256 + k] =
-        0.65 * CANONICAL_HUMAN_FACE_BASELINE_512[256 + k] +
-        0.35 * (dist * 0.04 + refDist * 0.03 + (dx - dy) * 0.02);
+      const val = dist * 0.08 + refDist * 0.06 + (dx - dy) * 0.04;
+      raw3D[k] = val;
+      mean3D += val;
+    }
+    mean3D /= 256;
+    // Mean-centered individual bone geometry with minimal canonical anchor (0.14) so different people separate strongly
+    for (let k = 0; k < 256; k += 1) {
+      vec[256 + k] = 0.14 * CANONICAL_HUMAN_FACE_BASELINE_512[256 + k] + 0.86 * (raw3D[k] - mean3D);
     }
   } else {
     for (let k = 256; k < FACE_EMBEDDING_DIM; k += 1) {
@@ -297,6 +346,12 @@ export function extractHybrid512Descriptor(
   }
 
   return l2Normalize(vec);
+}
+
+export function extractGeometricAnthropometricRatios(
+  landmarks3D: readonly Landmark3D[],
+): GeometricAnthropometricRatios | undefined {
+  return computeGeometricAnthropometricRatios(landmarks3D);
 }
 
 /**
@@ -360,14 +415,21 @@ export async function extractFaceEmbeddingWithFallback(
 export async function extractDualFlipFaceEmbedding(
   image: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
   landmarks3D: readonly Landmark3D[],
-): Promise<{ vector: number[]; mirroredVector: number[]; engine: 'arcface-onnx' | 'hybrid-512d' }> {
+): Promise<{
+  vector: number[];
+  mirroredVector: number[];
+  engine: 'arcface-onnx' | 'hybrid-512d';
+  geometricRatios?: GeometricAnthropometricRatios;
+}> {
   const primary = await extractFaceEmbeddingWithFallback(image, landmarks3D);
   const flippedImg = flipImageDataHorizontally(image);
   const flippedLms = flipLandmarksHorizontally(landmarks3D);
   const mirrored = await extractFaceEmbeddingWithFallback(flippedImg, flippedLms);
+  const geometricRatios = computeGeometricAnthropometricRatios(landmarks3D);
   return {
     vector: primary.vector,
     mirroredVector: mirrored.vector,
     engine: primary.engine,
+    ...(geometricRatios ? { geometricRatios } : {}),
   };
 }

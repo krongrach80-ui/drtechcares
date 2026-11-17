@@ -13,11 +13,17 @@ import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import {
   alignFaceTo112,
   evaluateLivenessAndPose,
+  extractGeometricAnthropometricRatios,
   extractHybrid512Descriptor,
   selectClinicalCameraDeviceId,
   selectPrimaryFace,
 } from '@drtechcares/face-client';
-import { evaluateFrameQuality, l2Normalize } from '@drtechcares/smart-biometric-core';
+import {
+  evaluateFrameQuality,
+  l2Normalize,
+  trimOutlierVectorsAndAverage,
+  type GeometricAnthropometricRatios,
+} from '@drtechcares/smart-biometric-core';
 import type { AngleEmbeddings5D } from '@drtechcares/api-client';
 import {
   useClinicalI18n,
@@ -41,6 +47,7 @@ export type AngleSnapshots5D = Record<Bucket5Key, string>;
 export interface FaceID120Result {
   masterEmbedding: number[];
   angleEmbeddings: AngleEmbeddings5D;
+  geometricRatios?: GeometricAnthropometricRatios;
   framesCaptured: number;
   qualityScore: number;
   avatarDataUrl: string;
@@ -363,6 +370,7 @@ interface CapturedSample {
   sharpness: number;
   bucket: Bucket5Key;
   embedding: number[];
+  geometricRatios?: GeometricAnthropometricRatios;
 }
 
 export function classifyDisplayBucket(yawDeg: number, pitchDeg: number): Bucket5Key {
@@ -1021,13 +1029,41 @@ export default function FaceID120Scanner({
       if (unmountedRef.current) return null;
 
       const withEmbeddings = samples.filter((s) => s.embedding.length === 512);
-      const allVectors = withEmbeddings.map((s) => s.embedding);
-      const masterEmbedding = averageNormalizedEmbeddings(allVectors);
+      const allItems = withEmbeddings.map((s) => ({ vec: s.embedding, quality: s.sharpness }));
+      // Outlier-Rejected Centroid: drops bottom 20% low-quality / outlier frames per bucket & overall
+      const masterEmbedding = trimOutlierVectorsAndAverage(allItems, 0.2);
 
       const byBucket = (b: Bucket5Key) => {
-        const vecs = withEmbeddings.filter((s) => s.bucket === b).map((s) => s.embedding);
-        return vecs.length > 0 ? averageNormalizedEmbeddings(vecs) : masterEmbedding;
+        const items = withEmbeddings
+          .filter((s) => s.bucket === b)
+          .map((s) => ({ vec: s.embedding, quality: s.sharpness }));
+        return items.length > 0 ? trimOutlierVectorsAndAverage(items, 0.2) : masterEmbedding;
       };
+
+      const centerRatios = withEmbeddings
+        .filter((s) => s.bucket === 'center' && s.geometricRatios)
+        .map((s) => s.geometricRatios!);
+      const fallbackRatios = withEmbeddings
+        .filter((s) => s.geometricRatios)
+        .map((s) => s.geometricRatios!);
+      const ratioPool = centerRatios.length >= 3 ? centerRatios : fallbackRatios;
+      const geometricRatios: GeometricAnthropometricRatios | undefined =
+        ratioPool.length > 0
+          ? {
+              eyeToNoseRatio: Number(
+                (ratioPool.reduce((acc, r) => acc + r.eyeToNoseRatio, 0) / ratioPool.length).toFixed(4),
+              ),
+              faceWidthToUpperHeight: Number(
+                (ratioPool.reduce((acc, r) => acc + r.faceWidthToUpperHeight, 0) / ratioPool.length).toFixed(4),
+              ),
+              mouthToEyeRatio: Number(
+                (ratioPool.reduce((acc, r) => acc + r.mouthToEyeRatio, 0) / ratioPool.length).toFixed(4),
+              ),
+              noseToChinRatio: Number(
+                (ratioPool.reduce((acc, r) => acc + r.noseToChinRatio, 0) / ratioPool.length).toFixed(4),
+              ),
+            }
+          : undefined;
 
       const angleEmbeddings: AngleEmbeddings5D = {
         center: byBucket('center'),
@@ -1057,6 +1093,7 @@ export default function FaceID120Scanner({
       const resultPayload: FaceID120Result = {
         masterEmbedding,
         angleEmbeddings,
+        ...(geometricRatios ? { geometricRatios } : {}),
         framesCaptured: samples.length,
         qualityScore,
         avatarDataUrl: visualBundle.avatarDataUrl,
@@ -1452,12 +1489,14 @@ export default function FaceID120Scanner({
           if (captureBucket && totalSoFar < TOTAL_TICKS && now - lastCaptureAtRef.current >= 28) {
             lastCaptureAtRef.current = now;
             const embedding = extractHybrid512Descriptor(crop, landmarks3D);
+            const geometricRatios = extractGeometricAnthropometricRatios(landmarks3D);
             samplesRef.current.push({
               yawDeg,
               pitchDeg,
               sharpness: quality.sharpness,
               bucket: captureBucket,
               embedding,
+              geometricRatios,
             });
             bucketCountsRef.current = {
               ...bucketCountsRef.current,

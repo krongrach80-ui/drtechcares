@@ -7,14 +7,19 @@ import {
   COMMON_MODE_ALPHA,
   FACE_EMBEDDING_DIM,
   CANONICAL_HUMAN_FACE_BASELINE_512,
+  classifyLivePoseZone,
+  computeDualFactorBiometricScore,
   computeFaceCoreMetrics,
   cosineSimilarity,
   l2Normalize,
+  mirrorPoseZone,
   parseEmbeddingVector,
   verifyHybridBiometricIdentity,
   whitenEmbedding,
   type BiometricPose,
   type EnrolledTemplateCandidate,
+  type FacePoseZone5,
+  type GeometricAnthropometricRatios,
 } from '@drtechcares/smart-biometric-core';
 import {
   inspectBiometricFrame3D,
@@ -433,6 +438,7 @@ function buildPatientHistoryPayload(patient: PatientRecord): Record<string, unkn
     delegationNote: patient.delegationNote ?? null,
     masterEmbedding: patient.masterEmbedding ?? null,
     angleEmbeddings: patient.angleEmbeddings ?? null,
+    geometricRatios: patient.geometricRatios ?? null,
   };
 }
 
@@ -1413,6 +1419,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         rawFrames?: { pose?: string; vector?: unknown; qualityScore?: number }[];
         masterEmbedding?: unknown;
         angleEmbeddings?: unknown;
+        geometricRatios?: GeometricAnthropometricRatios;
         framesCaptured?: number;
         qualityScore?: number;
         rehabSchedules?: unknown;
@@ -1546,6 +1553,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         angleImageUrls: faceBundle.angleImageUrls,
         masterEmbedding: masterVec,
         angleEmbeddings: resolvedAngles,
+        ...(body.geometricRatios ? { geometricRatios: body.geometricRatios } : {}),
         rehabSchedules: initialSchedules,
         biometricHistory:
           !isPendingSkip && frontalVec && masterVec
@@ -1791,6 +1799,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           qualityScore: 0.96,
           masterEmbedding: masterNorm,
           angleEmbeddings,
+          ...(p.geometricRatios ? { geometricRatios: p.geometricRatios } : {}),
           ...(extraEmbeddings.length > 0 ? { extraEmbeddings } : {}),
           todayRoutine,
           rehabSchedules: p.rehabSchedules ?? [],
@@ -1844,8 +1853,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         probeVector?: unknown;
         mirroredProbeVector?: unknown;
         yawDeg?: number;
+        pitchDeg?: number;
         rollDeg?: number;
         engine?: 'arcface-onnx' | 'hybrid-512d';
+        geometricRatios?: GeometricAnthropometricRatios;
+        excludedPatientIds?: string[];
         livenessEvidence?: {
           biologicalVerified?: boolean;
           blinkCount?: number;
@@ -1854,8 +1866,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           rppgScore?: number;
           faceHeightRatio?: number;
           yawDeg?: number;
+          pitchDeg?: number;
           rollDeg?: number;
           engine?: 'arcface-onnx' | 'hybrid-512d';
+          geometricRatios?: GeometricAnthropometricRatios;
+          excludedPatientIds?: string[];
         };
       }>(request);
       if (!body || !isVector512(body.probeVector)) {
@@ -1889,6 +1904,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
 
       const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
+      const excludedPatientList =
+        body.excludedPatientIds ?? body.livenessEvidence?.excludedPatientIds ?? [];
+      const excludedPatientSet = new Set(
+        Array.isArray(excludedPatientList) ? excludedPatientList.map(String) : [],
+      );
       const inactiveUserPatientIds = new Set(
         state.users.filter((u) => !u.active && u.patientId).map((u) => u.patientId as string),
       );
@@ -1898,6 +1918,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             (p) =>
               (p.registrationStatus ?? 'active') === 'active' &&
               !deletedPatientSet.has(p.id) &&
+              !excludedPatientSet.has(p.id) &&
+              !excludedPatientSet.has(p.hn) &&
               !inactiveUserPatientIds.has(p.id),
           )
           .map((p) => p.id),
@@ -1955,6 +1977,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
       const result = verifyHybridBiometricIdentity(probeNorm, candidates, {
         totalEnrolledPatients: totalPatients,
+        excludedPatientIds: Array.from(excludedPatientSet),
         thresholds: {
           minRawCosMulti: state.system_settings.aiFaceThreshold,
         },
@@ -1966,24 +1989,38 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           : null;
       let matchedPatientName = matchedPatientId ? result.patientName : null;
       let matchedConfidence = result.confidencePercent;
+      let verifyErrorCode: string | undefined;
 
-      // Multi-angle Max-Pooling + Tilt/Mirror-Invariant matching across ALL enrolled database vectors
+      // Pose-Synchronized Dual-Factor Multi-Angle Matching (NO blind cross-angle Max-Pooling)
       if (!matchedPatientId) {
+        const yawDegVal = body.yawDeg ?? body.livenessEvidence?.yawDeg ?? 0;
+        const pitchDegVal = body.pitchDeg ?? body.livenessEvidence?.pitchDeg ?? 0;
+        const rollDegVal = body.rollDeg ?? body.livenessEvidence?.rollDeg ?? 0;
+        const probeRatios = body.geometricRatios ?? body.livenessEvidence?.geometricRatios ?? null;
+        const livePoseZone = classifyLivePoseZone(yawDegVal, pitchDegVal);
+        const mirroredZone = mirrorPoseZone(livePoseZone);
+
         const mirroredProbeNorm = isVector512(body.mirroredProbeVector)
           ? l2Normalize(body.mirroredProbeVector)
           : null;
-        const probes = mirroredProbeNorm ? [probeNorm, mirroredProbeNorm] : [probeNorm];
+        const probeVariants: { zone: FacePoseZone5; vec: number[] }[] = [
+          { zone: livePoseZone, vec: probeNorm },
+        ];
+        if (mirroredProbeNorm) {
+          probeVariants.push({ zone: mirroredZone, vec: mirroredProbeNorm });
+        }
+
         const normalizePatientName = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
         const scoresByPatient: {
           patientId: string;
           fullName: string;
           orderIdx: number;
           masterNorm: number[];
+          dualScore: number;
           raw: number;
-          effectiveRaw: number;
+          meanCentered: number;
           white: number;
-          bestCoreSim: number;
-          bestCoreWhite: number;
+          geometricPenalty: number;
           bestCos3D: number;
           bestCraniofacialCos: number;
           bestInnerDctCos: number;
@@ -1992,109 +2029,115 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           bestInnerPatchWhite: number;
           rankScore: number;
         }[] = [];
+
         for (let orderIdx = 0; orderIdx < state.patients.length; orderIdx += 1) {
           const p = state.patients[orderIdx];
           if (!activePatientIds.has(p.id)) continue;
-          const rawVecs: (readonly number[])[] = [];
-          const parsedMaster = parseEmbeddingVector(p.masterEmbedding);
-          if (parsedMaster?.length) rawVecs.push(parsedMaster);
-          if (p.angleEmbeddings) {
-            for (const angleVec of [
-              p.angleEmbeddings.center,
-              p.angleEmbeddings.left,
-              p.angleEmbeddings.right,
-              p.angleEmbeddings.up,
-              p.angleEmbeddings.down,
-            ]) {
-              const parsed = parseEmbeddingVector(angleVec);
-              if (parsed?.length) rawVecs.push(parsed);
-            }
-          }
-          if (p.biometricHistory) {
-            const fCent = parseEmbeddingVector(p.biometricHistory.frontal_centroid);
-            const oCent = parseEmbeddingVector(p.biometricHistory.overall_centroid);
-            if (fCent?.length) rawVecs.push(fCent);
-            if (oCent?.length) rawVecs.push(oCent);
-            for (const rf of p.biometricHistory.raw_frames ?? []) {
-              const rfVec = parseEmbeddingVector(rf.vector);
-              if (rfVec?.length) rawVecs.push(rfVec);
-            }
-          }
-          for (const tpl of state.face_templates) {
-            if (tpl.patientId === p.id && tpl.vector.length) {
-              const tVec = parseEmbeddingVector(tpl.vector);
-              if (tVec?.length) rawVecs.push(tVec);
-            }
-          }
-          if (rawVecs.length === 0) continue;
 
-          const masterNorm = l2Normalize(parsedMaster ?? p.biometricHistory?.overall_centroid ?? rawVecs[0]);
+          const tplFront = parseEmbeddingVector(
+            state.face_templates.find((t) => t.patientId === p.id && t.pose === 'frontal_centroid')?.vector,
+          );
+          const tplOverall = parseEmbeddingVector(
+            state.face_templates.find((t) => t.patientId === p.id && t.pose === 'overall_centroid')?.vector,
+          );
+          const parsedMaster =
+            parseEmbeddingVector(p.masterEmbedding) ??
+            tplOverall ??
+            tplFront ??
+            parseEmbeddingVector(p.biometricHistory?.overall_centroid) ??
+            parseEmbeddingVector(p.biometricHistory?.frontal_centroid);
+          if (!parsedMaster || parsedMaster.length !== FACE_EMBEDDING_DIM) continue;
+          const masterNorm = l2Normalize(parsedMaster);
 
-          let bestRaw = -1;
-          let bestWhite = -1;
-          let bestCoreSim = 0;
-          let bestCoreWhite = 0;
+          const angleMap: Record<FacePoseZone5, number[] | undefined> = {
+            center:
+              parseEmbeddingVector(p.angleEmbeddings?.center) ??
+              tplFront ??
+              parseEmbeddingVector(p.biometricHistory?.frontal_centroid) ??
+              masterNorm,
+            left:
+              parseEmbeddingVector(p.angleEmbeddings?.left) ??
+              parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'left')?.vector) ??
+              masterNorm,
+            right:
+              parseEmbeddingVector(p.angleEmbeddings?.right) ??
+              parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'right')?.vector) ??
+              masterNorm,
+            up:
+              parseEmbeddingVector(p.angleEmbeddings?.up) ??
+              parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'nod')?.vector) ??
+              masterNorm,
+            down:
+              parseEmbeddingVector(p.angleEmbeddings?.down) ??
+              parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'nod')?.vector) ??
+              masterNorm,
+          };
+
+          let bestDual = -1;
+          let bestRaw = 0;
+          let bestMeanCentered = 0;
+          let bestWhite = 0;
+          let bestGeomPenalty = 0;
           let bestCos3D = 0;
           let bestCraniofacialCos = 0;
           let bestInnerDctCos = 0;
           let bestInnerDctWhite = 0;
           let bestInnerPatchCos = 0;
           let bestInnerPatchWhite = 0;
-          let bestCoreCombined = -1;
-          for (const curProbe of probes) {
-            const curProbeWhite = whitenEmbedding(
-              curProbe,
-              CANONICAL_HUMAN_FACE_BASELINE_512,
-              COMMON_MODE_ALPHA,
-            );
-            for (const v of rawVecs) {
-              if (v.length !== FACE_EMBEDDING_DIM) continue;
-              const vNorm = l2Normalize(v);
-              const core = computeFaceCoreMetrics(curProbe, vNorm);
-              const raw = Math.max(cosineSimilarity(curProbe, vNorm), core.faceCoreSim);
-              const vWhite = whitenEmbedding(vNorm, CANONICAL_HUMAN_FACE_BASELINE_512, COMMON_MODE_ALPHA);
-              const wCos = Math.max(cosineSimilarity(curProbeWhite, vWhite), core.faceCoreWhitenedSim);
-              if (raw > bestRaw) {
-                bestRaw = raw;
-              }
-              if (wCos > bestWhite) {
-                bestWhite = wCos;
-              }
-              const coreCombined = core.faceCoreSim + core.faceCoreWhitenedSim;
-              if (coreCombined > bestCoreCombined) {
-                bestCoreCombined = coreCombined;
-                bestCoreSim = core.faceCoreSim;
-                bestCoreWhite = core.faceCoreWhitenedSim;
-                bestCos3D = core.cos3DNormalized;
-                bestCraniofacialCos = core.craniofacialCos;
-                bestInnerDctCos = core.innerDctCos;
-                bestInnerDctWhite = core.innerDctWhitenedCos;
-                bestInnerPatchCos = core.innerPatchCos;
-                bestInnerPatchWhite = core.innerPatchWhitenedCos;
+
+          for (const variant of probeVariants) {
+            const sameZoneVec = angleMap[variant.zone] ?? masterNorm;
+            const sameZoneDual = computeDualFactorBiometricScore(variant.vec, sameZoneVec, {
+              probeRatios,
+              candidateRatios: p.geometricRatios ?? null,
+            });
+            const masterDual = computeDualFactorBiometricScore(variant.vec, masterNorm, {
+              probeRatios,
+              candidateRatios: p.geometricRatios ?? null,
+            });
+            const dualScore =
+              0.55 * sameZoneDual.dualFactorScore + 0.45 * masterDual.dualFactorScore;
+            if (dualScore > bestDual) {
+              bestDual = dualScore;
+              const dom =
+                sameZoneDual.dualFactorScore >= masterDual.dualFactorScore ? sameZoneDual : masterDual;
+              bestRaw = dom.rawCos;
+              bestMeanCentered = dom.meanCenteredCos;
+              bestWhite = Math.max(sameZoneDual.whitenedCos, masterDual.whitenedCos);
+              bestGeomPenalty = Math.max(sameZoneDual.geometricPenalty, masterDual.geometricPenalty);
+              if (dom.faceCore) {
+                bestCos3D = dom.faceCore.cos3DNormalized;
+                bestCraniofacialCos = dom.faceCore.craniofacialCos;
+                bestInnerDctCos = dom.faceCore.innerDctCos;
+                bestInnerDctWhite = dom.faceCore.innerDctWhitenedCos;
+                bestInnerPatchCos = dom.faceCore.innerPatchCos;
+                bestInnerPatchWhite = dom.faceCore.innerPatchWhitenedCos;
               }
             }
           }
-          // Pure Multi-Angle Bank Max-Pooling across master + all 5 pose angles
-          const effectiveRaw = bestRaw;
-          scoresByPatient.push({
-            patientId: p.id,
-            fullName: p.fullName,
-            orderIdx,
-            masterNorm,
-            raw: bestRaw,
-            effectiveRaw,
-            white: bestWhite,
-            bestCoreSim,
-            bestCoreWhite,
-            bestCos3D,
-            bestCraniofacialCos,
-            bestInnerDctCos,
-            bestInnerDctWhite,
-            bestInnerPatchCos,
-            bestInnerPatchWhite,
-            rankScore: effectiveRaw * 0.72 + bestWhite * 0.28,
-          });
+
+          if (bestDual >= 0) {
+            scoresByPatient.push({
+              patientId: p.id,
+              fullName: p.fullName,
+              orderIdx,
+              masterNorm,
+              dualScore: bestDual,
+              raw: bestRaw,
+              meanCentered: bestMeanCentered,
+              white: bestWhite,
+              geometricPenalty: bestGeomPenalty,
+              bestCos3D,
+              bestCraniofacialCos,
+              bestInnerDctCos,
+              bestInnerDctWhite,
+              bestInnerPatchCos,
+              bestInnerPatchWhite,
+              rankScore: bestDual,
+            });
+          }
         }
+
         scoresByPatient.sort((a, b) => {
           const nameA = normalizePatientName(a.fullName);
           const nameB = normalizePatientName(b.fullName);
@@ -2105,87 +2148,60 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         });
         const top = scoresByPatient[0];
         const topName = top ? normalizePatientName(top.fullName) : '';
+        // Deduplicate ONLY same-person records by exact normalized name; distinct people MUST pass 0.08 margin!
         const distinctRunners = top
           ? scoresByPatient.slice(1).filter((s) => {
               const sName = normalizePatientName(s.fullName);
-              if (topName && sName && sName === topName) {
-                return false;
-              }
-              if (
-                s.raw >= 0.78 &&
-                top.raw >= 0.80 &&
-                cosineSimilarity(top.masterNorm, s.masterNorm) >= 0.76
-              ) {
-                return false;
-              }
-              return true;
+              return !(topName && sName && sName === topName);
             })
           : [];
         const runner = distinctRunners[0];
-        const effectiveMargin = runner ? top.effectiveRaw - runner.effectiveRaw : 1;
-        const rawMargin = runner ? top.raw - runner.raw : 1;
-        const margin = Math.max(effectiveMargin, rawMargin);
+        const margin = runner ? top.dualScore - runner.dualScore : 1;
 
-        const isVerifiedBio = body.livenessEvidence?.biologicalVerified === true;
-        const faceH = body.livenessEvidence?.faceHeightRatio;
-        const yawDegVal = body.yawDeg ?? body.livenessEvidence?.yawDeg ?? 0;
-        const rollDegVal = body.rollDeg ?? body.livenessEvidence?.rollDeg ?? 0;
-        const engineVal = body.engine ?? body.livenessEvidence?.engine;
-        const isAngledPose = Math.abs(yawDegVal) > 12 || Math.abs(rollDegVal) > 10;
-        const isLongRangeVerified = isVerifiedBio && typeof faceH === 'number' && faceH < 0.2;
+        const isAngledPose =
+          livePoseZone !== 'center' ||
+          Math.abs(yawDegVal) > 8 ||
+          Math.abs(pitchDegVal) > 6 ||
+          Math.abs(rollDegVal) > 10;
 
-        const requiredMargin = isVerifiedBio ? 0.04 : 0.06;
+        // Iron Rules 1 & 2: >= 0.78 center frontal / >= 0.72 angled, plus strict >= 0.08 margin!
+        const requiredMargin = 0.08;
         const passesMargin = distinctRunners.length === 0 || margin >= requiredMargin;
-        const minRawThresh = isVerifiedBio
-          ? isAngledPose
-            ? 0.50
-            : isLongRangeVerified
-              ? 0.56
-              : engineVal === 'arcface-onnx'
-                ? 0.65
-                : 0.58
-          : 0.72;
-        const minWhiteThresh = isVerifiedBio
-          ? isAngledPose
-            ? 0.26
-            : isLongRangeVerified
-              ? 0.34
-              : 0.36
-          : 0.50;
+        const minDualThresh = isAngledPose ? 0.72 : 0.78;
+        const minWhiteThresh = isAngledPose ? 0.42 : 0.48;
+        const minMeanCentered = isAngledPose ? 0.55 : 0.65;
 
         const passesSubbandFloor = Boolean(
           top &&
-            top.bestInnerDctCos >= (isAngledPose ? 0.34 : isLongRangeVerified ? 0.42 : 0.46) &&
-            top.bestInnerDctWhite >= (isAngledPose ? 0.16 : isLongRangeVerified ? 0.24 : 0.28) &&
-            top.bestInnerPatchCos >= (isAngledPose ? 0.28 : isLongRangeVerified ? 0.34 : 0.38) &&
-            top.bestInnerPatchWhite >= (isAngledPose ? 0.14 : isLongRangeVerified ? 0.20 : 0.24) &&
-            top.bestCos3D >= (isAngledPose ? 0.50 : isLongRangeVerified ? 0.58 : 0.60),
+            top.bestInnerDctCos >= (isAngledPose ? 0.38 : 0.48) &&
+            top.bestInnerDctWhite >= (isAngledPose ? 0.20 : 0.30) &&
+            top.bestInnerPatchCos >= (isAngledPose ? 0.32 : 0.42) &&
+            top.bestInnerPatchWhite >= (isAngledPose ? 0.18 : 0.26) &&
+            top.bestCos3D >= (isAngledPose ? 0.56 : 0.64) &&
+            top.bestCraniofacialCos >= (isAngledPose ? 0.36 : 0.44),
         );
-        const passesStandard = Boolean(
+        const passesDualGate = Boolean(
           top &&
-            top.raw >= minRawThresh &&
+            top.dualScore >= minDualThresh &&
             top.white >= minWhiteThresh &&
-            passesSubbandFloor &&
-            passesMargin,
+            top.meanCentered >= minMeanCentered &&
+            top.geometricPenalty <= 0.14 &&
+            passesSubbandFloor,
         );
-        const passesFaceCore = Boolean(
-          top &&
-            top.bestCoreSim >= minRawThresh &&
-            top.bestCoreWhite >= minWhiteThresh &&
-            passesSubbandFloor &&
-            top.bestCraniofacialCos >= (isAngledPose ? 0.36 : 0.44) &&
-            passesMargin,
-        );
-        if (top && (passesStandard || passesFaceCore)) {
-          const calibratedConf = Math.max(top.raw, top.bestCoreSim);
+
+        if (top && passesDualGate && !passesMargin) {
+          verifyErrorCode = 'AMBIGUOUS_CLOSE_CANDIDATES';
+        }
+
+        if (top && passesDualGate && passesMargin) {
           const candidateConf = Number(
-            Math.min(99.9, Math.max(86.0, calibratedConf * 100 + (isAngledPose || isLongRangeVerified ? 24 : 18))).toFixed(1),
+            Math.min(99.9, Math.max(85.0, top.dualScore * 100)).toFixed(1),
           );
           matchedConfidence = candidateConf;
-          if (candidateConf >= 85.0) {
-            matchedPatientId = top.patientId;
-            matchedPatientName = top.fullName;
-          }
+          matchedPatientId = top.patientId;
+          matchedPatientName = top.fullName;
+        } else if (top) {
+          matchedConfidence = Math.min(48.9, Math.max(0, Number((top.dualScore * 49).toFixed(1))));
         }
       }
 
@@ -2197,6 +2213,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             patientId: undefined,
             patientName: undefined,
             confidencePercent: matchedConfidence,
+            ...(verifyErrorCode ? { error: verifyErrorCode, failureReasons: [verifyErrorCode] } : {}),
           },
           401,
         );
@@ -2477,6 +2494,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         angleImageUrls?: unknown;
         masterEmbedding?: unknown;
         angleEmbeddings?: unknown;
+        geometricRatios?: GeometricAnthropometricRatios;
         framesCaptured?: number;
         qualityScore?: number;
       }>(request);
@@ -2525,6 +2543,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       patient.faceFramesCount = framesCaptured;
       patient.masterEmbedding = masterVec;
       patient.angleEmbeddings = resolvedAngles;
+      if (body.geometricRatios) {
+        patient.geometricRatios = body.geometricRatios;
+      }
       if (body.faceImageUrl || body.angleImageUrls || body.faceImageUrls) {
         const faceBundle = await uploadMultiAngleFaceBundle(supabase, patient.id, {
           faceImageUrl: body.faceImageUrl,

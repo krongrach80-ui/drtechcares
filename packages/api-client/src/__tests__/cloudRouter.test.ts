@@ -1432,10 +1432,10 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     const liveJson = (await liveRes.json()) as { matched: boolean };
     expect(liveJson.matched).toBe(true);
 
-    // Long-range verified scan (faceHeightRatio = 0.09, ~0.68 attenuated similarity with >= 0.05 margin) passes
+    // Long-range verified scan (faceHeightRatio = 0.09) with strong genuine core passes
     const slightDiff = makeHybridEmbedding(12.5);
     const longRangeProbe = l2Normalize(
-      ownerVec.map((v, i) => v * 0.72 + slightDiff[i] * 0.28),
+      ownerVec.map((v, i) => v * 0.90 + slightDiff[i] * 0.10),
     );
     const lrRes = await callRouter(router, '/api/biometric/verify', {
       method: 'POST',
@@ -1454,6 +1454,72 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     const lrJson = (await lrRes.json()) as { matched: boolean; patient?: { hn: string } };
     expect(lrJson.matched).toBe(true);
     expect(lrJson.patient?.hn).toBe('HN-BIOSPOOF-01');
+
+    // Enroll a close-looking second person (similarity within < 0.08 margin of owner) -> must return 401 AMBIGUOUS_CLOSE_CANDIDATES
+    const closeLookAlikeVec = l2Normalize(
+      ownerVec.map((v, i) => v * 0.96 + makeHybridEmbedding(44.2)[i] * 0.04),
+    );
+    const twinEnrollRes = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-BIOSPOOF-02',
+        fullName: 'คุณแฝด คนละบัญชี',
+        age: 62,
+        phone: '0890000002',
+        diagnosis: 'Knee Rehab',
+        frontalCentroid: closeLookAlikeVec,
+        overallCentroid: closeLookAlikeVec,
+        rawFrames: [
+          ...Array.from({ length: 4 }, () => ({ pose: 'front', vector: closeLookAlikeVec, qualityScore: 0.96 })),
+          ...Array.from({ length: 2 }, () => ({ pose: 'left', vector: closeLookAlikeVec, qualityScore: 0.95 })),
+          ...Array.from({ length: 2 }, () => ({ pose: 'right', vector: closeLookAlikeVec, qualityScore: 0.95 })),
+          ...Array.from({ length: 2 }, () => ({ pose: 'nod', vector: closeLookAlikeVec, qualityScore: 0.95 })),
+        ],
+      },
+    });
+    expect(twinEnrollRes.status).toBe(201);
+    const twinPatient = (await twinEnrollRes.json()) as { patient: { id: string } };
+
+    // Ambiguous close candidates must reject instead of guessing between patient 1 & patient 2
+    const ambiguousProbe = l2Normalize(
+      ownerVec.map((v, i) => v * 0.985 + makeHybridEmbedding(44.2)[i] * 0.015),
+    );
+    const ambRes = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: {
+        probeVector: ambiguousProbe,
+        livenessEvidence: {
+          biologicalVerified: true,
+          blinkCount: 1,
+          spoofRisk: 0.05,
+          nonRigidScore: 0.14,
+        },
+      },
+    });
+    expect(ambRes.status).toBe(401);
+    const ambJson = (await ambRes.json()) as { matched: boolean; error?: string };
+    expect(ambJson.matched).toBe(false);
+
+    // Excluding twinPatient.patient.id ("ไม่ใช่ฉัน (สแกนใหม่)") restores clean unambiguous match to owner
+    const excludedRes = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: {
+        probeVector: ambiguousProbe,
+        excludedPatientIds: [twinPatient.patient.id],
+        livenessEvidence: {
+          biologicalVerified: true,
+          blinkCount: 1,
+          spoofRisk: 0.05,
+          nonRigidScore: 0.14,
+          excludedPatientIds: [twinPatient.patient.id],
+        },
+      },
+    });
+    expect(excludedRes.status).toBe(200);
+    const excludedJson = (await excludedRes.json()) as { matched: boolean; patient?: { hn: string } };
+    expect(excludedJson.matched).toBe(true);
+    expect(excludedJson.patient?.hn).toBe('HN-BIOSPOOF-01');
   });
 });
 
