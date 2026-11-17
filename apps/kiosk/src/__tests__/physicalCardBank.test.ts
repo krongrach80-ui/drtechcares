@@ -6,6 +6,7 @@ import {
 } from '../PhysicalCardGameData';
 import {
   evaluateTwoHandCardSelection,
+  formatCognitiveCardBadge,
   isValidStrict21HandLandmarks,
   MINIGAME_HAND_RAISE_THRESHOLD_Y,
   MINIGAME_MIN_HAND_CONFIDENCE,
@@ -16,7 +17,10 @@ import {
   formatMinigameSummarySpeech,
   normalizeClinicalLangToMinigameVoice,
   pickCardTextByVoiceLang,
+  resolveCognitiveCardVisualKind,
+  resolveMinigameQuestionSizeClass,
 } from '../PhysicalCardGame';
+import { getCardArtworkInnerSvg } from '../PhysicalCardGameIllustrations';
 
 describe('PhysicalCardGame Cognitive Card Bank (100 Question-Matched SVG Cards)', () => {
   it('contains 100 unique cards with distinct art keys and valid SVG illustrations', () => {
@@ -198,6 +202,54 @@ describe('PhysicalCardGame Trilingual AI Voiceover Helpers', () => {
     // Reject collapsed/noise cluster
     const collapsed = Array.from({ length: 21 }, () => ({ x: 0.5, y: 0.3 }));
     expect(isValidStrict21HandLandmarks(collapsed, 0.9)).toBe(false);
+  });
+
+  it('scales question typography adaptively for short/medium/long TH/EN/CN prompts and supports SVG/IMG/Emoji visuals uniformly', () => {
+    expect(resolveMinigameQuestionSizeClass('แครอทในภาพนี้มีสีฟ้าใช่ไหม?')).toBe(
+      'text-3xl sm:text-4xl md:text-5xl leading-tight',
+    );
+    expect(resolveMinigameQuestionSizeClass('图中的胡萝卜是蓝色的吗？')).toBe(
+      'text-3xl sm:text-4xl md:text-5xl leading-tight',
+    );
+    expect(resolveMinigameQuestionSizeClass('Is the carrot in this picture colored blue?')).toBe(
+      'text-3xl sm:text-4xl md:text-[2.65rem] leading-tight',
+    );
+    expect(
+      resolveMinigameQuestionSizeClass(
+        'Should older adults hold onto the sturdy staircase handrail before walking upstairs safely?',
+      ),
+    ).toBe('text-2xl sm:text-3xl md:text-4xl leading-snug');
+
+    expect(formatCognitiveCardBadge('card-006', 5)).toBe('#006');
+    expect(formatCognitiveCardBadge(undefined, 9)).toBe('#010');
+
+    expect(
+      resolveCognitiveCardVisualKind({
+        artKey: 'carrot',
+        imageUrl: 'data:image/svg+xml;utf8,%3Csvg%3E%3C/svg%3E',
+        icon: '🥕',
+      }),
+    ).toBe('svg_art');
+    expect(
+      resolveCognitiveCardVisualKind({
+        artKey: undefined as unknown as 'carrot',
+        imageUrl: 'https://example.com/custom-card.png',
+        icon: '🍎',
+      }),
+    ).toBe('image_url');
+    expect(
+      resolveCognitiveCardVisualKind({
+        artKey: undefined as unknown as 'carrot',
+        imageUrl: '',
+        icon: '🍌',
+      }),
+    ).toBe('emoji_icon');
+
+    for (const card of COGNITIVE_CARD_BANK_100) {
+      const inner = getCardArtworkInnerSvg(card.artKey);
+      expect(inner).toContain('<g transform="translate(200,142)');
+      expect(inner.length).toBeGreaterThan(40);
+    }
   });
 });
 

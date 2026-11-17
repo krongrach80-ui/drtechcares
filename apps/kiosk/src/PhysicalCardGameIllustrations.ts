@@ -996,6 +996,13 @@ function renderArtwork(key: CardArtKey): string {
   }
 }
 
+/**
+ * Returns crisp vector SVG artwork markup centered at `(200, 142)` for oversized inline card display.
+ */
+export function getCardArtworkInnerSvg(artKey: CardArtKey): string {
+  return `<g transform="translate(200,142) scale(1.24) translate(-200,-142)">${renderArtwork(artKey)}</g>`;
+}
+
 export function buildCardIllustrationDataUri(spec: CardIllustrationSpec): string {
   const theme = CATEGORY_THEME[spec.category];
   const gid = `bg-${spec.cardNumber}`;
@@ -1014,7 +1021,7 @@ export function buildCardIllustrationDataUri(spec: CardIllustrationSpec): string
     <circle cx="356" cy="222" r="64" fill="${theme.pillBg}" opacity="0.35"/>
     <rect x="318" y="12" width="68" height="28" rx="14" fill="${theme.pillBg}"/>
     <text x="352" y="31" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="900" fill="${theme.accent}">${badge}</text>
-    <g transform="translate(200,142) scale(1.26) translate(-200,-142)">
+    <g transform="translate(200,142) scale(1.38) translate(-200,-142)">
       ${art}
     </g>
   </svg>`;

@@ -34,81 +34,56 @@
 
 /* 2-Meter Kiosk Minigame Giant Typography (Full-Size Viewport) */
 .mg-modal-title {
-  font-size: clamp(1.65rem, 2.6vmin, 2.4rem) !important;
-  line-height: 1.25 !important;
+  font-size: clamp(1.5rem, 2.3vmin, 2.2rem);
+  line-height: 1.25;
 }
 
 .mg-badge-top {
-  font-size: clamp(1.35rem, 2.1vmin, 1.9rem) !important;
-  line-height: 1.3 !important;
-}
-
-.mg-sub-instruction {
-  font-size: clamp(1.3rem, 2vmin, 1.8rem) !important;
-  line-height: 1.35 !important;
+  font-size: clamp(1.25rem, 1.9vmin, 1.7rem);
+  line-height: 1.3;
 }
 
 .mg-score-pill {
-  font-size: clamp(1.65rem, 2.6vmin, 2.4rem) !important;
-  line-height: 1.2 !important;
-}
-
-.mg-category-pill {
-  font-size: clamp(1.35rem, 2.1vmin, 1.9rem) !important;
-  line-height: 1.2 !important;
+  font-size: clamp(1.45rem, 2.2vmin, 2.1rem);
+  line-height: 1.2;
 }
 
 .mg-icon-hero {
-  font-size: clamp(6.75rem, 12vmin, 10.5rem) !important;
-  line-height: 1.05 !important;
-}
-
-.mg-question-title {
-  font-size: clamp(2.4rem, 4.2vmin, 3.8rem) !important;
-  line-height: 1.22 !important;
+  font-size: clamp(6.75rem, 12vmin, 10.5rem);
+  line-height: 1.05;
 }
 
 .mg-cam-status {
-  font-size: clamp(1.35rem, 2.1vmin, 1.9rem) !important;
-  line-height: 1.3 !important;
-}
-
-.mg-cam-zone {
-  font-size: clamp(1.45rem, 2.3vmin, 2.1rem) !important;
-  line-height: 1.25 !important;
+  font-size: clamp(1.15rem, 1.9vmin, 1.65rem);
+  line-height: 1.3;
 }
 
 .mg-hold-label {
-  font-size: clamp(1.6rem, 2.5vmin, 2.25rem) !important;
-  line-height: 1.25 !important;
-}
-
-.mg-answer-btn {
-  font-size: clamp(1.8rem, 3vmin, 2.75rem) !important;
-  line-height: 1.2 !important;
+  font-size: clamp(1.4rem, 2.2vmin, 2rem);
+  line-height: 1.25;
 }
 
 .mg-feedback-banner {
-  font-size: clamp(1.7rem, 2.8vmin, 2.5rem) !important;
-  line-height: 1.25 !important;
+  font-size: clamp(1.6rem, 2.6vmin, 2.4rem);
+  line-height: 1.25;
 }
 
 .mg-summary-title {
-  font-size: clamp(2.3rem, 3.8vmin, 3.4rem) !important;
-  line-height: 1.22 !important;
+  font-size: clamp(2.1rem, 3.4vmin, 3.1rem);
+  line-height: 1.22;
 }
 
 .mg-summary-stat-label {
-  font-size: clamp(1.45rem, 2.2vmin, 2rem) !important;
-  line-height: 1.25 !important;
+  font-size: clamp(1.35rem, 2vmin, 1.85rem);
+  line-height: 1.25;
 }
 
 .mg-summary-stat-val {
-  font-size: clamp(2.8rem, 4.6vmin, 4.2rem) !important;
-  line-height: 1.1 !important;
+  font-size: clamp(2.5rem, 4.2vmin, 3.8rem);
+  line-height: 1.1;
 }
 
 .mg-summary-btn {
-  font-size: clamp(1.6rem, 2.5vmin, 2.2rem) !important;
-  line-height: 1.25 !important;
+  font-size: clamp(1.45rem, 2.2vmin, 2rem);
+  line-height: 1.25;
 }

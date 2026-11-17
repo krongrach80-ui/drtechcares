@@ -24,6 +24,42 @@ import {
   XCircle,
 } from 'lucide-react';
 import { sampleTenCognitiveCards, type CognitiveCardQuestion } from './PhysicalCardGameData';
+import { getCardArtworkInnerSvg } from './PhysicalCardGameIllustrations';
+
+/**
+ * Resolves adaptive Tailwind typography classes for minigame questions across TH / EN / CN
+ * so short prompts render ultra-large for 1-4m visibility while long sentences stay inside bounds.
+ */
+export function resolveMinigameQuestionSizeClass(questionText: string | undefined): string {
+  const questionLen = questionText?.trim().length || 0;
+  if (questionLen > 55) {
+    return 'text-2xl sm:text-3xl md:text-4xl leading-snug';
+  }
+  if (questionLen > 32) {
+    return 'text-3xl sm:text-4xl md:text-[2.65rem] leading-tight';
+  }
+  return 'text-3xl sm:text-4xl md:text-5xl leading-tight';
+}
+
+export function formatCognitiveCardBadge(cardId: string | undefined, fallbackIndex: number): string {
+  const digits = String(cardId ?? '').replace(/\D+/g, '');
+  const num = digits ? Number.parseInt(digits, 10) : fallbackIndex + 1;
+  return `#${String(Number.isFinite(num) && num > 0 ? num : fallbackIndex + 1).padStart(3, '0')}`;
+}
+
+export type CognitiveCardVisualKind = 'svg_art' | 'image_url' | 'emoji_icon';
+
+export function resolveCognitiveCardVisualKind(
+  card: Pick<CognitiveCardQuestion, 'artKey' | 'imageUrl' | 'icon'> & { svgMarkup?: string },
+): CognitiveCardVisualKind {
+  if (card.svgMarkup || (card.artKey && (!card.imageUrl || card.imageUrl.startsWith('data:image/svg+xml')))) {
+    return 'svg_art';
+  }
+  if (card.imageUrl) {
+    return 'image_url';
+  }
+  return 'emoji_icon';
+}
 
 export type MinigameVoiceLang = 'th' | 'en' | 'zh';
 
@@ -663,7 +699,7 @@ function MinigameVoiceBar({
                   : activeOption.statusReady}
             </span>
           </div>
-          <p className="mt-0.5 line-clamp-2 text-base sm:text-lg font-extrabold text-[#0F4C81]">
+          <p className="mt-0.5 line-clamp-2 text-base md:text-lg font-extrabold text-emerald-950">
             “{spokenText}”
           </p>
         </div>
@@ -1996,20 +2032,23 @@ export function PhysicalCardGame({
   const localizedQuestion = pickCardTextByVoiceLang(currentCard.question, voiceLang);
   const localizedSubject = pickCardTextByVoiceLang(currentCard.subject, voiceLang);
   const activeVoiceQuote = feedback ? feedback.message : localizedQuestion;
+  const questionSizeClass = resolveMinigameQuestionSizeClass(localizedQuestion);
+  const cardNumberBadge = formatCognitiveCardBadge(currentCard.id, index);
+  const visualKind = resolveCognitiveCardVisualKind(currentCard);
 
   return (
-    <div className="w-full flex-1 flex flex-col justify-between rounded-3xl bg-white p-4 sm:p-7 shadow-xl border-2 border-slate-200 gap-4 sm:gap-5">
+    <div className="w-full flex-1 flex flex-col justify-between rounded-3xl bg-white p-3.5 sm:p-6 shadow-xl border-2 border-slate-200 gap-3 sm:gap-4">
       {/* Header Section */}
-      <div className="shrink-0 flex flex-col gap-3 border-b-2 border-slate-100 pb-4">
+      <div className="shrink-0 flex flex-col gap-2.5 border-b-2 border-slate-100 pb-3.5">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <span className="mg-badge-top inline-flex items-center gap-2.5 rounded-full bg-indigo-50 px-5 py-2.5 font-black text-indigo-700">
+          <span className="mg-badge-top inline-flex items-center gap-2.5 rounded-full bg-indigo-50 px-5 py-2 font-black text-indigo-700">
             <Sparkles className="h-6 w-6 shrink-0" /> {t('startCognitiveGameBtn')} • {patientName}
           </span>
-          <span className="mg-score-pill rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#10B981] px-7 py-3.5 font-black text-white shadow-md whitespace-nowrap">
+          <span className="mg-score-pill rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#10B981] px-6 py-3 font-black text-white shadow-md whitespace-nowrap">
             ข้อที่ {index + 1} / {cards.length} • คะแนน {score}
           </span>
         </div>
-        <p className="mg-sub-instruction font-extrabold text-slate-700">
+        <p className="text-base sm:text-lg md:text-xl font-bold text-slate-800">
           ยกมือค้าง 0.8 วินาทีเพื่อตอบ (ซ้าย = ไม่ใช่ / ขวา = ใช่) หรือคลิกปุ่มคำตอบได้ทันที
         </p>
         <MinigameVoiceBar
@@ -2023,33 +2062,64 @@ export function PhysicalCardGame({
         />
       </div>
 
-      {/* Main Full-Size Vertical Stack: Top = Question & Illustration, Middle = Camera, Bottom = Answer Buttons */}
-      <div className="flex-1 flex flex-col justify-between gap-4 sm:gap-5 min-h-0">
-        {/* Top Card: Question & Illustration */}
-        <div className="flex-[1] min-h-[360px] sm:min-h-[450px] rounded-3xl bg-gradient-to-br from-indigo-50 via-white to-sky-50 p-6 sm:p-8 border-2 border-indigo-200 text-center flex flex-col items-center justify-center shadow-sm">
-          <span className="mg-category-pill inline-block rounded-full bg-white px-7 py-2.5 font-black uppercase tracking-wider text-indigo-700 shadow-sm border-2 border-indigo-100">
-            {currentCard.category.replace('_', ' ')}
-          </span>
-          <div className="my-3 sm:my-5 flex items-center justify-center w-full">
-            <img
-              src={currentCard.imageUrl}
-              alt={localizedSubject}
-              className="h-64 w-[26rem] sm:h-80 sm:w-[34rem] lg:h-[22rem] lg:w-[38rem] max-w-full rounded-3xl object-contain shadow-lg border-4 border-indigo-200 bg-white p-2"
-              draggable={false}
-            />
+      {/* Main Full-Size Vertical Stack: Top = Compact Oversized Card, Middle = Camera, Bottom = Answer Buttons */}
+      <div className="flex-1 flex flex-col justify-between gap-3 sm:gap-4 min-h-0">
+        {/* Top Card: Full-Space Layout + Oversized Visual + Adaptive Giant Typography */}
+        <div className="w-full shrink-0 px-5 py-4 md:px-8 md:py-6 flex flex-col items-center justify-center gap-3 md:gap-4 rounded-3xl bg-gradient-to-b from-white to-emerald-50/30 border-2 border-indigo-200 text-center shadow-sm">
+          <div className="flex flex-wrap items-center justify-center gap-2.5">
+            <span className="text-sm md:text-base font-extrabold tracking-wider uppercase px-5 py-1.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 shadow-sm">
+              {currentCard.category.replace(/_/g, ' ')}
+            </span>
+            <span className="text-sm md:text-base font-extrabold px-3.5 py-1 rounded-full bg-amber-100 text-amber-900 border border-amber-300 shadow-xs">
+              {cardNumberBadge}
+            </span>
           </div>
-          <h2 className="mg-question-title font-black text-[#0F4C81] max-w-5xl">
+
+          <div
+            data-testid="minigame-card-visual-frame"
+            className="relative w-full max-w-[520px] md:max-w-[640px] h-[220px] sm:h-[250px] md:h-[280px] rounded-3xl flex items-center justify-center p-4 md:p-6 shadow-md border-2 border-indigo-200 bg-gradient-to-br from-amber-50/60 via-white to-sky-50/60 overflow-hidden"
+          >
+            {visualKind === 'svg_art' && currentCard.artKey ? (
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="28 16 344 224"
+                role="img"
+                aria-label={localizedSubject}
+                className="w-44 h-44 sm:w-52 sm:h-52 md:w-60 md:h-60 max-w-full max-h-full object-contain drop-shadow-md transition-transform duration-300"
+                dangerouslySetInnerHTML={{ __html: getCardArtworkInnerSvg(currentCard.artKey) }}
+              />
+            ) : visualKind === 'image_url' && currentCard.imageUrl ? (
+              <img
+                src={currentCard.imageUrl}
+                alt={localizedSubject}
+                className="w-full h-full max-h-[230px] object-contain drop-shadow-md"
+                draggable={false}
+              />
+            ) : (
+              <span
+                aria-label={localizedSubject}
+                className="text-[6.5rem] sm:text-[7.5rem] md:text-[8.5rem] leading-none select-none drop-shadow"
+              >
+                {currentCard.icon}
+              </span>
+            )}
+          </div>
+
+          <h2
+            data-testid="minigame-question-title"
+            className={`${questionSizeClass} font-black text-[#0F4C81] max-w-5xl w-full break-words`}
+          >
             {localizedQuestion}
           </h2>
           {voiceLang !== 'th' && (
-            <p className="mt-2 text-lg sm:text-xl font-bold text-slate-500 max-w-4xl">
+            <p className="text-base sm:text-lg font-bold text-slate-600 max-w-4xl">
               ไทย: {currentCard.question.th}
             </p>
           )}
         </div>
 
         {/* Middle Card: Full-Size Live Camera Viewport (120Hz Hand Tracking) */}
-        <div className="flex-[1.4] min-h-[360px] sm:min-h-[480px] relative w-full overflow-hidden rounded-3xl bg-gradient-to-br from-sky-100 via-emerald-50 to-white border-4 border-sky-200 shadow-inner">
+        <div className="flex-1 min-h-[280px] sm:min-h-[360px] relative w-full overflow-hidden rounded-3xl bg-gradient-to-br from-sky-100 via-emerald-50 to-white border-4 border-sky-200 shadow-inner">
           <video ref={videoRef} playsInline muted className="h-full w-full object-cover -scale-x-100" />
           <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
 
@@ -2115,10 +2185,10 @@ export function PhysicalCardGame({
 
           {!cameraError && !pendingChoice && (
             <div className="pointer-events-none absolute bottom-4 inset-x-4 flex items-center justify-between gap-3">
-              <span className="mg-cam-zone rounded-2xl bg-rose-50/95 px-6 py-3 font-black text-rose-700 border-2 border-rose-300 shadow-lg">
+              <span className="rounded-2xl bg-rose-50/95 px-5 py-2.5 text-base md:text-xl font-extrabold text-rose-700 border-2 border-rose-300 shadow-lg">
                 ← ซ้าย: ไม่ใช่ (NO)
               </span>
-              <span className="mg-cam-zone rounded-2xl bg-emerald-50/95 px-6 py-3 font-black text-emerald-800 border-2 border-emerald-300 shadow-lg">
+              <span className="rounded-2xl bg-emerald-50/95 px-5 py-2.5 text-base md:text-xl font-extrabold text-emerald-800 border-2 border-emerald-300 shadow-lg">
                 ขวา: ใช่ (YES) →
               </span>
             </div>
@@ -2166,7 +2236,7 @@ export function PhysicalCardGame({
                 type="button"
                 disabled={questionPhase === 'READING_QUESTION'}
                 onClick={() => submitAnswer('no')}
-                className={`min-h-[108px] sm:min-h-[132px] rounded-3xl border-4 p-5 sm:p-7 flex items-center justify-center transition ${
+                className={`rounded-2xl border-4 py-4 md:py-5 px-5 sm:px-7 text-xl sm:text-2xl md:text-3xl font-extrabold text-rose-700 shadow-sm flex items-center justify-center transition ${
                   questionPhase === 'READING_QUESTION'
                     ? 'border-slate-200 bg-slate-100 opacity-60 cursor-not-allowed'
                     : pendingChoice === 'no'
@@ -2174,15 +2244,13 @@ export function PhysicalCardGame({
                       : 'border-rose-300 bg-rose-50 hover:bg-rose-100 active:scale-95 cursor-pointer'
                 }`}
               >
-                <p className="mg-answer-btn font-black text-rose-700">
-                  {t('minigameLeftNo')}
-                </p>
+                <span>{t('minigameLeftNo')}</span>
               </button>
               <button
                 type="button"
                 disabled={questionPhase === 'READING_QUESTION'}
                 onClick={() => submitAnswer('yes')}
-                className={`min-h-[108px] sm:min-h-[132px] rounded-3xl border-4 p-5 sm:p-7 flex items-center justify-center transition ${
+                className={`rounded-2xl border-4 py-4 md:py-5 px-5 sm:px-7 text-xl sm:text-2xl md:text-3xl font-extrabold text-emerald-700 shadow-sm flex items-center justify-center transition ${
                   questionPhase === 'READING_QUESTION'
                     ? 'border-slate-200 bg-slate-100 opacity-60 cursor-not-allowed'
                     : pendingChoice === 'yes'
@@ -2190,9 +2258,7 @@ export function PhysicalCardGame({
                       : 'border-emerald-300 bg-emerald-50 hover:bg-emerald-100 active:scale-95 cursor-pointer'
                 }`}
               >
-                <p className="mg-answer-btn font-black text-emerald-700">
-                  {t('minigameRightYes')}
-                </p>
+                <span>{t('minigameRightYes')}</span>
               </button>
             </div>
           )}
