@@ -1000,7 +1000,7 @@ function renderArtwork(key: CardArtKey): string {
  * Returns crisp vector SVG artwork markup centered at `(200, 142)` for oversized inline card display.
  */
 export function getCardArtworkInnerSvg(artKey: CardArtKey): string {
-  return `<g transform="translate(200,142) scale(1.24) translate(-200,-142)">${renderArtwork(artKey)}</g>`;
+  return `<g transform="translate(200,142) scale(1.32) translate(-200,-142)">${renderArtwork(artKey)}</g>`;
 }
 
 export function buildCardIllustrationDataUri(spec: CardIllustrationSpec): string {

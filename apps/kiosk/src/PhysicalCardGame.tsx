@@ -2022,40 +2022,40 @@ export function PhysicalCardGame({
       {/* Main Vertical Stack: Top = Artwork + Giant Question Spotlight, Middle = Camera, Bottom = Answer Buttons */}
       <div className="flex-1 flex flex-col justify-between gap-2.5 sm:gap-3 min-h-0">
         {/* Question Card + Giant Elderly-First Question Spotlight Banner */}
-        <div className="w-full shrink-0 px-3 py-2.5 md:px-5 md:py-3 flex flex-col items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-b from-white to-emerald-50/30 border border-indigo-200 text-center shadow-xs">
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <span className="text-xs font-extrabold tracking-wider uppercase px-3 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
-              {currentCard.category.replace(/_/g, ' ')}
-            </span>
-            <span className="text-xs font-extrabold px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
-              {cardNumberBadge}
-            </span>
-          </div>
-
+        <div className="w-full shrink-0 p-2.5 sm:p-3.5 flex flex-col items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-b from-white to-emerald-50/30 border border-indigo-200 text-center shadow-xs">
           <div
             data-testid="minigame-card-visual-frame"
-            className="relative w-full max-w-[460px] md:max-w-[540px] h-[180px] sm:h-[210px] md:h-[230px] rounded-2xl flex items-center justify-center p-3 shadow-sm border border-indigo-200 bg-gradient-to-br from-amber-50/60 via-white to-sky-50/60 overflow-hidden"
+            className="relative w-full h-[230px] sm:h-[270px] md:h-[310px] rounded-2xl flex items-center justify-center p-2 sm:p-3 overflow-hidden border-2 border-indigo-200 bg-gradient-to-br from-amber-50/60 via-white to-sky-50/60 shadow-inner"
           >
+            <span className="absolute top-2.5 left-3 z-10 text-xs font-extrabold tracking-wider uppercase px-3 py-0.5 rounded-full bg-indigo-50/95 text-indigo-700 border border-indigo-200 shadow-xs backdrop-blur-xs">
+              {currentCard.category.replace(/_/g, ' ')}
+            </span>
+            <span className="absolute top-2.5 right-3 z-10 text-xs font-extrabold px-2.5 py-0.5 rounded-full bg-amber-100/95 text-amber-900 border border-amber-300 shadow-xs backdrop-blur-xs">
+              {cardNumberBadge}
+            </span>
+
             {visualKind === 'svg_art' && currentCard.artKey ? (
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="28 16 344 224"
-                role="img"
-                aria-label={localizedSubject}
-                className="w-40 h-40 sm:w-48 sm:h-48 md:w-52 md:h-52 max-w-full max-h-full object-contain drop-shadow-md transition-transform duration-300"
-                dangerouslySetInnerHTML={{ __html: getCardArtworkInnerSvg(currentCard.artKey) }}
-              />
+              <div className="w-full h-full flex items-center justify-center [&_svg]:w-[200px] [&_svg]:h-[200px] sm:[&_svg]:w-[240px] sm:[&_svg]:h-[240px] md:[&_svg]:w-[280px] md:[&_svg]:h-[280px] [&_svg]:max-w-full [&_svg]:max-h-full [&_svg]:object-contain drop-shadow-md">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="46 28 308 224"
+                  role="img"
+                  aria-label={localizedSubject}
+                  className="w-full h-full transition-transform duration-300"
+                  dangerouslySetInnerHTML={{ __html: getCardArtworkInnerSvg(currentCard.artKey) }}
+                />
+              </div>
             ) : visualKind === 'image_url' && currentCard.imageUrl ? (
               <img
                 src={currentCard.imageUrl}
                 alt={localizedSubject}
-                className="w-full h-full max-h-[210px] object-contain drop-shadow-md"
+                className="w-full h-full max-h-[290px] object-contain drop-shadow-md scale-105"
                 draggable={false}
               />
             ) : (
               <span
                 aria-label={localizedSubject}
-                className="text-[5.5rem] sm:text-[6.5rem] md:text-[7.5rem] leading-none select-none drop-shadow"
+                className="text-[9.5rem] sm:text-[11.5rem] md:text-[13.5rem] leading-none select-none drop-shadow-md transform scale-110"
               >
                 {currentCard.icon}
               </span>
