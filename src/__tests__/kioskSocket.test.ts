@@ -5,12 +5,15 @@ import {
   sanitizeAccidentalDefaultKneePrefix,
 } from '@drtechcares/api-client';
 import {
+  ARM_LOWERED_READY_NEXT_REP_BANNER_TH,
   AutoBoneBaselineCalibrator,
   CLINICAL_EXERCISES,
   ClinicalHandOneEuroFilter,
   ClinicalOneEuroLandmarkFilter,
   HAND21_INDEX,
   POSE_INDEX,
+  REP_COMPLETED_LOWER_ARM_BANNER_TH,
+  evaluateActiveWristsLowered,
   mergeDuplicateSideExercises,
   solveStrokeClinicalJointBiomechanics,
   stepStrokeHoldAndRepStateMachine,
@@ -27,15 +30,19 @@ import {
 } from '../hooks/useKioskSocket';
 import {
   DEFAULT_FORM_ASSESSMENT_RULES,
+  HAND_OUT_OF_FRAME_BADGE_TH,
   LandmarkSmoother,
+  applyKinematicSkeletonLock,
   drawLivePoseOverlayOnCanvas,
   interpolatePoseLandmarks,
   isFormRuleActive,
+  isJointValidInFrame,
   lerpPoseLandmarksAlpha,
   mapVideoPointToCoverCanvas,
   measureLiveJointAngleAndTilt,
   sanitizeAndStabilizePoseLandmarks,
   stepSmoothRomAngle,
+  validateTetheredHandLandmarks21,
 } from '../components/SmartRehabKioskUI';
 import {
   KIOSK_VOICE_MUTED_STORAGE_KEY,
@@ -2455,13 +2462,14 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(strokes).toContain('#EF4444');
   });
 
-  it('guarantees forgiving clinical hold entry (68%), keep (55%), 1.25x boost (85%), slow progressive decay, advisory compensation, wrong-side halt, and 0.7s / 72% cooldown unlock', () => {
+  it('enforces strict 3-state rep hysteresis (WAIT_LOWER_ARM blocks continuous holding for 10s until arm physically lowers 4 frames)', () => {
     let state: StrokeHoldRepState = {
-      phase: 'WAIT_RAISE',
+      phase: 'READY_TO_RAISE',
       holdElapsedSec: 0,
       completedReps: 0,
       cooldownStartedAtMs: 0,
       repCelebrateUntilMs: 0,
+      loweredFrameStreak: 0,
     };
 
     const stepTick = (
@@ -2472,6 +2480,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
         sideViolation?: 'NONE' | 'LEFT_ARM_RAISED_IN_RIGHT_MODE';
         isCompensatedNow?: boolean;
         postureBannerTh?: string | null;
+        armWristLowered?: boolean;
       },
     ) => {
       const sideViolation = opts?.sideViolation ?? 'NONE';
@@ -2483,6 +2492,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
         targetReps: 10,
         dtSec,
         nowMs,
+        armWristLowered: opts?.armWristLowered,
         sideViolation,
         wrongSideBannerTh: sideViolation === 'NONE' ? null : '⚠️ wrong side',
         wrongPlaneRaised: false,
@@ -2494,13 +2504,13 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       return res;
     };
 
-    // 1. Easy Hold Entry at >= 0.68 * 120 = 81.6 deg (84 deg) -> enters HOLDING immediately at 1.0x speed
+    // 1. Hold Entry at >= 0.68 * 120 = 81.6 deg -> enters HOLDING immediately
     let nowCursor = 0;
     let lastRes = stepTick(84, 0.1, (nowCursor += 100));
     expect(state.phase).toBe('HOLDING');
     expect(state.holdElapsedSec).toBeCloseTo(0.1, 2);
 
-    // 2. Keep Holding at >= 0.55 * 120 = 66 deg (70 deg) for 10 frames -> +1.0s (total 1.1s), advisory compensation does NOT block!
+    // 2. Keep Holding >= 66 deg with advisory posture warning (never blocks current rep!)
     for (let i = 0; i < 10; i += 1) {
       lastRes = stepTick(70, 0.1, (nowCursor += 100), {
         isCompensatedNow: true,
@@ -2510,32 +2520,49 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(state.holdElapsedSec).toBeCloseTo(1.1, 2);
     expect(lastRes.bannerTh).toContain('อย่ายักไหล่ช่วย');
 
-    // 3. Progressive Hold Accumulation: dip below 0.55 (50 deg) for 0.2s -> ultra-slow dt*0.15 decay (never resets to 0!)
+    // 3. Dip below 0.55 decays slowly (dt*0.15)
     lastRes = stepTick(50, 0.2, (nowCursor += 200));
     expect(state.holdElapsedSec).toBeCloseTo(1.1 - 0.2 * 0.15, 2);
-    expect(state.phase).toBe('HOLDING');
 
-    // 4. Accelerated 1.25x hold above >= 0.85 * 120 = 102 deg (106 deg) -> completes remaining ~1.93s cleanly within 1.6s!
+    // 4. Complete Rep 1 -> transitions strictly to WAIT_LOWER_ARM at 100% progress bar
     for (let i = 0; i < 16; i += 1) {
-      lastRes = stepTick(106, 0.1, (nowCursor += 100));
+      lastRes = stepTick(110, 0.1, (nowCursor += 100));
       if (lastRes.justCompletedRep) break;
     }
     expect(lastRes.justCompletedRep).toBe(true);
     expect(state.completedReps).toBe(1);
-    expect(state.phase).toBe('COOLDOWN');
+    expect(state.phase).toBe('WAIT_LOWER_ARM');
     expect(lastRes.holdProgressPct).toBe(100);
-    expect(lastRes.bannerTh).toBe('✓ นับสำเร็จ +1 ครั้ง! ค่อยๆ ลดแขนลง');
+    expect(lastRes.bannerTh).toBe(REP_COMPLETED_LOWER_ARM_BANNER_TH);
 
-    // 5. Lower below 0.72 * 120 = 86.4 deg (80 deg) after >= 150ms -> unlocks cleanly to WAIT_RAISE
-    lastRes = stepTick(80, 0.1, (nowCursor += 200));
-    expect(state.phase).toBe('WAIT_RAISE');
-    expect(state.holdElapsedSec).toBe(0);
-
-    // 6. Wrong-side raise mid-hold resets timer and never increments reps
-    for (let i = 0; i < 12; i += 1) {
-      stepTick(108, 0.1, (nowCursor += 100));
+    // 5. CRITICAL CHECK: Keep holding arm up at 115 deg >= targetRom continuously for 10 full seconds!
+    // MUST award ONLY +1 rep total and stay frozen in WAIT_LOWER_ARM with ZERO auto-unlock!
+    for (let i = 0; i < 100; i += 1) {
+      lastRes = stepTick(115, 0.1, (nowCursor += 100), { armWristLowered: false });
+      expect(lastRes.justCompletedRep).toBe(false);
     }
-    expect(state.holdElapsedSec).toBeCloseTo(1.5, 1);
+    expect(state.completedReps).toBe(1);
+    expect(state.phase).toBe('WAIT_LOWER_ARM');
+    expect(lastRes.holdProgressPct).toBe(100);
+
+    // 6. Lowering ROM slightly to 60 deg (> restRomThreshold = 42) or lowering ROM while wrist still up MUST NOT unlock!
+    expect(stepTick(60, 0.1, (nowCursor += 100), { armWristLowered: true }).nextState.phase).toBe('WAIT_LOWER_ARM');
+    expect(stepTick(35, 0.1, (nowCursor += 100), { armWristLowered: false }).nextState.phase).toBe('WAIT_LOWER_ARM');
+
+    // 7. Lower activeRom <= 42 AND wrist dropped below chest/shoulder for 3 frames -> still locked; 4th frame unlocks cleanly!
+    for (let f = 1; f <= 3; f += 1) {
+      const preUnlock = stepTick(35, 0.033, (nowCursor += 33), { armWristLowered: true });
+      expect(preUnlock.nextState.phase).toBe('WAIT_LOWER_ARM');
+    }
+    const unlocked = stepTick(35, 0.033, (nowCursor += 33), { armWristLowered: true });
+    expect(state.phase).toBe('READY_TO_RAISE');
+    expect(state.holdElapsedSec).toBe(0);
+    expect(unlocked.holdProgressPct).toBe(0);
+    expect(unlocked.unlockedToReady).toBe(true);
+    expect(unlocked.bannerTh).toBe(ARM_LOWERED_READY_NEXT_REP_BANNER_TH);
+
+    // 8. Wrong-side raise resets READY_TO_RAISE/HOLDING timer and never increments reps
+    stepTick(108, 0.1, (nowCursor += 100));
     const blockedRes = stepTick(108, 0.1, (nowCursor += 100), {
       sideViolation: 'LEFT_ARM_RAISED_IN_RIGHT_MODE',
     });
@@ -2543,19 +2570,32 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(state.holdElapsedSec).toBe(0);
     expect(state.completedReps).toBe(1);
 
-    // 7. Fast auto-unlock COOLDOWN after 0.7s (700ms) even if arm stays slightly raised
-    state = {
-      phase: 'COOLDOWN',
-      holdElapsedSec: 3.0,
-      completedReps: 1,
-      cooldownStartedAtMs: 8000,
-      repCelebrateUntilMs: 9200,
-    };
-    const autoUnlocked = stepTick(95, 0.1, 8750);
-    expect(state.phase).toBe('WAIT_RAISE');
-    expect(autoUnlocked.holdProgressPct).toBe(0);
-    expect(autoUnlocked.holdRemainingSec).toBe(3.0);
-    expect(state.holdElapsedSec).toBe(0);
+    // 9. Raise arm again cleanly and hold 3s -> increments completedReps to 2!
+    for (let i = 0; i < 25; i += 1) {
+      lastRes = stepTick(115, 0.1, (nowCursor += 100), { armWristLowered: false });
+      if (lastRes.justCompletedRep) break;
+    }
+    expect(state.completedReps).toBe(2);
+    expect(state.phase).toBe('WAIT_LOWER_ARM');
+
+    // Check anatomical wrist height evaluator directly
+    const raisedPose = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.39, y: 0.25, z: 0, visibility: 0.99 },
+    });
+    expect(
+      evaluateActiveWristsLowered({
+        landmarks: raisedPose,
+        exerciseSide: 'RIGHT',
+        targetJoint: 'right_shoulder',
+      }),
+    ).toBe(false);
+    expect(
+      evaluateActiveWristsLowered({
+        landmarks: createNeutralLandmarks(),
+        exerciseSide: 'RIGHT',
+        targetJoint: 'right_shoulder',
+      }),
+    ).toBe(true);
   });
 
   it('unifies catalog to 15 master exercises and enforces LEFT, RIGHT, and BOTH prescriptions end-to-end', () => {
@@ -2801,6 +2841,192 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(verifiedState.boxColor).toBe('emerald');
     expect(verifiedState.displayName).toBe('สมชาย ใจดี');
     expect(verifiedState.label).toContain('✓ ยืนยันเจ้าของบัญชี: สมชาย ใจดี');
+  });
+
+  it('rejects out-of-frame / teleported limb joints, suppresses glitching bone lines, and strictly tethers 21-pt hand mesh to valid wrist', () => {
+    // 1. Border (3%) & confidence (>= 0.52) gate
+    expect(
+      isJointValidInFrame({
+        lm: { x: 0.5, y: 0.02, z: 0, visibility: 0.95 },
+        canvasPt: { x: 320, y: 9.6 },
+        canvasW: 640,
+        canvasH: 480,
+      }),
+    ).toBe(false);
+    expect(
+      isJointValidInFrame({
+        lm: { x: 0.5, y: 0.5, z: 0, visibility: 0.45 },
+        canvasPt: { x: 320, y: 240 },
+        canvasW: 640,
+        canvasH: 480,
+      }),
+    ).toBe(false);
+    expect(
+      isJointValidInFrame({
+        lm: { x: 0.5, y: 0.5, z: 0, visibility: 0.92 },
+        canvasPt: { x: 637, y: 240 },
+        canvasW: 640,
+        canvasH: 480,
+      }),
+    ).toBe(false);
+
+    // 2. Kinematic anti-teleportation & border spike rejection
+    const basePose = createNeutralLandmarks();
+    const teleportedPose = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.39, y: 0.015, z: 0, visibility: 0.9 },
+      [POSE_INDEX.LEFT_WRIST]: { x: 0.61, y: 0.15, z: 0, visibility: 0.95 }, // sudden jump > 0.38 * shoulderWidth
+    });
+    const locked = applyKinematicSkeletonLock({
+      prevSmoothed: basePose,
+      rawLandmarks: teleportedPose,
+      videoW: 640,
+      videoH: 480,
+      canvasW: 640,
+      canvasH: 480,
+    });
+    expect(locked.landmarks[POSE_INDEX.RIGHT_WRIST].visibility).toBe(0);
+    // Clamped left wrist step must NOT jump full 0.53 -> stays <= 0.12 * shoulderWidth from prev (0.61, 0.68)
+    const clampDistPx = Math.hypot(
+      (locked.landmarks[POSE_INDEX.LEFT_WRIST].x - 0.61) * 640,
+      (locked.landmarks[POSE_INDEX.LEFT_WRIST].y - 0.68) * 480,
+    );
+    expect(clampDistPx).toBeLessThanOrEqual(0.12 * (0.16 * 640) + 1.5);
+
+    // 3. Draw gate: out-of-frame wrist (normY < 0.03) OR stretched forearm (> 1.3 * shoulderWidth) NEVER draws glitch line + shows badge
+    for (const badWristPose of [
+      createNeutralLandmarks({ [POSE_INDEX.RIGHT_WRIST]: { x: 0.40, y: 0.015, z: 0, visibility: 0.95 } }),
+      createNeutralLandmarks({ [POSE_INDEX.RIGHT_WRIST]: { x: 0.12, y: 0.85, z: 0, visibility: 0.95 } }),
+    ]) {
+      const drawnLines: { x1: number; y1: number; x2: number; y2: number }[] = [];
+      const fillTexts: string[] = [];
+      let lastMove = { x: 0, y: 0 };
+      const mockCtx = {
+        save: () => {},
+        restore: () => {},
+        setTransform: () => {},
+        clearRect: () => {},
+        beginPath: () => {},
+        closePath: () => {},
+        moveTo: (x: number, y: number) => {
+          lastMove = { x, y };
+        },
+        lineTo: (x: number, y: number) => {
+          drawnLines.push({ x1: lastMove.x, y1: lastMove.y, x2: x, y2: y });
+        },
+        setLineDash: () => {},
+        roundRect: () => {},
+        arc: () => {},
+        stroke: () => {},
+        fill: () => {},
+        fillText: (text: string) => {
+          fillTexts.push(text);
+        },
+        measureText: (t: string) => ({ width: t.length * 7 }),
+        strokeStyle: '#000',
+        fillStyle: '#000',
+        lineWidth: 1,
+        lineCap: 'round',
+        lineJoin: 'round',
+        shadowColor: 'transparent',
+        shadowBlur: 0,
+        globalAlpha: 1,
+        font: 'sans-serif',
+        textAlign: 'center',
+        textBaseline: 'middle',
+      };
+      const canvas = {
+        clientWidth: 640,
+        clientHeight: 480,
+        width: 640,
+        height: 480,
+        getContext: () => mockCtx,
+      } as unknown as HTMLCanvasElement;
+
+      drawLivePoseOverlayOnCanvas(canvas, [badWristPose], {
+        targetJoint: 'right_shoulder',
+        romDeg: null,
+        targetRomDeg: 110,
+        holdRatio: 0,
+        trunkTiltDeg: 0,
+        isMultiPerson: false,
+        isImpostorOrEmergency: false,
+        canvasWidth: 640,
+        canvasHeight: 480,
+      });
+
+      const badPt = mapVideoPointToCoverCanvas(
+        badWristPose[POSE_INDEX.RIGHT_WRIST].x,
+        badWristPose[POSE_INDEX.RIGHT_WRIST].y,
+        640,
+        480,
+        640,
+        480,
+        true,
+      );
+      const drewToGlitchedWrist = drawnLines.some(
+        (seg) =>
+          (Math.hypot(seg.x1 - badPt.x, seg.y1 - badPt.y) < 4 ||
+            Math.hypot(seg.x2 - badPt.x, seg.y2 - badPt.y) < 4),
+      );
+      expect(drewToGlitchedWrist).toBe(false);
+      expect(fillTexts).toContain(HAND_OUT_OF_FRAME_BADGE_TH);
+    }
+
+    // 4. 21-point hand skeleton hides when detached (> 0.40 * shoulderWidth) or edge-clipped, and renders only when tethered
+    const validPose = createNeutralLandmarks();
+    const detachedHand21 = Array.from({ length: 21 }, (_, idx) => ({
+      x: 0.75 + (idx % 5) * 0.01,
+      y: 0.30 - Math.floor(idx / 5) * 0.015,
+      z: 0,
+      visibility: 0.99,
+    }));
+    expect(
+      validateTetheredHandLandmarks21({
+        handLandmarks21: detachedHand21,
+        poseLandmarks: validPose,
+        wristSide: 'right',
+        videoW: 640,
+        videoH: 480,
+        canvasW: 640,
+        canvasH: 480,
+      }).valid,
+    ).toBe(false);
+
+    const stretchedFingerHand21 = Array.from({ length: 21 }, (_, idx) => ({
+      x: idx === 8 ? 0.65 : 0.39 + (idx % 5) * 0.008,
+      y: idx === 8 ? 0.40 : 0.68 - Math.floor(idx / 5) * 0.012,
+      z: 0,
+      visibility: 0.99,
+    }));
+    expect(
+      validateTetheredHandLandmarks21({
+        handLandmarks21: stretchedFingerHand21,
+        poseLandmarks: validPose,
+        wristSide: 'right',
+        videoW: 640,
+        videoH: 480,
+        canvasW: 640,
+        canvasH: 480,
+      }).valid,
+    ).toBe(false);
+
+    const tetheredHand21 = Array.from({ length: 21 }, (_, idx) => ({
+      x: 0.39 + (idx % 5) * 0.006,
+      y: 0.68 - Math.floor(idx / 5) * 0.01,
+      z: 0,
+      visibility: 0.99,
+    }));
+    expect(
+      validateTetheredHandLandmarks21({
+        handLandmarks21: tetheredHand21,
+        poseLandmarks: validPose,
+        wristSide: 'right',
+        videoW: 640,
+        videoH: 480,
+        canvasW: 640,
+        canvasH: 480,
+      }).valid,
+    ).toBe(true);
   });
 });
 

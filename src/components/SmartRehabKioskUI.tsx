@@ -37,11 +37,14 @@ import {
 } from '../lib/ownerBiometricLock';
 import {
   AutoBoneBaselineCalibrator,
+  ARM_LOWERED_READY_NEXT_REP_BANNER_TH,
   ClinicalHandOneEuroFilter,
   ClinicalOneEuroLandmarkFilter,
   HAND21_CONNECTIONS,
   POSE_INDEX,
+  REP_COMPLETED_LOWER_ARM_BANNER_TH,
   computeJointAngle3D,
+  evaluateActiveWristsLowered,
   parseExerciseCodeAndSide,
   solveStrokeClinicalJointBiomechanics,
   stepStrokeHoldAndRepStateMachine,
@@ -51,6 +54,16 @@ import {
   type StrokeSideViolationCode,
   type StrokeTargetOverlayHint,
 } from '@drtechcares/pose-engine';
+import {
+  HAND_OUT_OF_FRAME_BADGE_TH,
+  SKELETON_JOINT_MIN_SCORE,
+  applyKinematicSkeletonLock,
+  computeCanvasShoulderWidth,
+  evaluatePoseCanvasSkeletonSafety,
+  isJointValidInFrame,
+  mapVideoPointToCoverCanvas,
+  validateTetheredHandLandmarks21,
+} from '../lib/poseSkeletonSafety';
 import {
   Activity,
   AlertOctagon,
@@ -100,7 +113,15 @@ import {
 } from '../hooks/useKioskSocket';
 import { isUpperBodyVisibleInFrame } from '../hooks/useEdgeVisionSocket';
 
-export { isUpperBodyVisibleInFrame };
+export {
+  isUpperBodyVisibleInFrame,
+  mapVideoPointToCoverCanvas,
+  isJointValidInFrame,
+  applyKinematicSkeletonLock,
+  validateTetheredHandLandmarks21,
+  evaluatePoseCanvasSkeletonSafety,
+  HAND_OUT_OF_FRAME_BADGE_TH,
+};
 
 interface SmartRehabKioskUIProps {
   patient?: PatientSummary | null;
@@ -789,7 +810,7 @@ export function lerpPoseLandmarksAlpha(
   const safeAlpha = Math.max(0.05, Math.min(1, alpha));
   return targetList.map((target, idx) => {
     const cur = prev[idx];
-    if (!cur) return { ...target };
+    if (!cur || (cur.visibility ?? 0) < 0.35) return { ...target };
     return {
       x: cur.x + (target.x - cur.x) * safeAlpha,
       y: cur.y + (target.y - cur.y) * safeAlpha,
@@ -797,36 +818,6 @@ export function lerpPoseLandmarksAlpha(
       visibility: target.visibility ?? cur.visibility,
     };
   });
-}
-
-/**
- * Exact `object-cover` + `scale-x-[-1]` coordinate projection from raw camera resolution / normalized
- * coords onto the synced `<canvas>` element without black bars or lateral drift.
- */
-export function mapVideoPointToCoverCanvas(
-  vx: number,
-  vy: number,
-  videoW: number,
-  videoH: number,
-  canvasW: number,
-  canvasH: number,
-  isMirrored = true,
-): { x: number; y: number } {
-  const cw = canvasW > 0 ? canvasW : 640;
-  const ch = canvasH > 0 ? canvasH : 480;
-  const vw = videoW > 0 ? videoW : cw;
-  const vh = videoH > 0 ? videoH : ch;
-  const px = vx <= 1.05 ? vx * vw : vx;
-  const py = vy <= 1.05 ? vy * vh : vy;
-  const scale = Math.max(cw / vw, ch / vh);
-  const scaledW = vw * scale;
-  const scaledH = vh * scale;
-  const offsetX = (cw - scaledW) / 2;
-  const offsetY = (ch - scaledH) / 2;
-  const rawCanvasX = px * scale + offsetX;
-  const canvasY = py * scale + offsetY;
-  const canvasX = isMirrored ? cw - rawCanvasX : rawCanvasX;
-  return { x: canvasX, y: canvasY };
 }
 
 const LIVE_BODY_BONELINE_PAIRS: readonly [number, number][] = [
@@ -1030,9 +1021,12 @@ export function drawLivePoseOverlayOnCanvas(
         [POSE_INDEX.RIGHT_WRIST, fAnchorRX],
       ] as const) {
         const wLm = p0[wIdx];
-        if (!wLm || (wLm.visibility ?? 0) < 0.35) continue;
+        if (!wLm) continue;
         const wx = covT.offsetX + (1 - wLm.x) * covT.renderW;
         const wy = covT.offsetY + wLm.y * covT.renderH;
+        if (!isJointValidInFrame({ lm: wLm, canvasPt: { x: wx, y: wy }, canvasW: w, canvasH: h, minScore: SKELETON_JOINT_MIN_SCORE })) {
+          continue;
+        }
         ctx.save();
         ctx.strokeStyle = '#10B981';
         ctx.lineWidth = 2.2;
@@ -1063,7 +1057,23 @@ export function drawLivePoseOverlayOnCanvas(
   const rawCanvasY = (normY: number) => mapVideoPointToCoverCanvas(0, normY, vw, vh, w, h, true).y;
   const toCanvasPt = (_idx: number, lm: NormalizedLandmark) =>
     mapVideoPointToCoverCanvas(lm.x, lm.y, vw, vh, w, h, true);
-  const minVisFor = (idx: number) => (UPPER_BODY_KEYPOINTS.has(idx) ? 0.35 : 0.55);
+  const minVisFor = (idx: number) => {
+    if (
+      idx === POSE_INDEX.LEFT_ELBOW ||
+      idx === POSE_INDEX.RIGHT_ELBOW ||
+      idx === POSE_INDEX.LEFT_WRIST ||
+      idx === POSE_INDEX.RIGHT_WRIST ||
+      idx === POSE_INDEX.LEFT_PINKY ||
+      idx === POSE_INDEX.RIGHT_PINKY ||
+      idx === POSE_INDEX.LEFT_INDEX ||
+      idx === POSE_INDEX.RIGHT_INDEX ||
+      idx === POSE_INDEX.LEFT_THUMB ||
+      idx === POSE_INDEX.RIGHT_THUMB
+    ) {
+      return SKELETON_JOINT_MIN_SCORE;
+    }
+    return UPPER_BODY_KEYPOINTS.has(idx) ? 0.35 : 0.55;
+  };
 
   const activeColor =
     opts.isImpostorOrEmergency || opts.wrongSideRaised
@@ -1134,9 +1144,20 @@ export function drawLivePoseOverlayOnCanvas(
     return false;
   };
 
+  const skeletonSafety = evaluatePoseCanvasSkeletonSafety({
+    landmarks: primary,
+    videoW: vw,
+    videoH: vh,
+    canvasW: w,
+    canvasH: h,
+    isMirrored: true,
+    minScoreForIdx: (idx) => (isOppositeArmIdx(idx) ? SKELETON_JOINT_MIN_SCORE : minVisFor(idx)),
+  });
+
   const isPointDrawable = (idx: number): boolean => {
     const lm = primary[idx];
     if (!lm) return false;
+    if (!skeletonSafety.validMask[idx]) return false;
     const isKnee = idx === POSE_INDEX.LEFT_KNEE || idx === POSE_INDEX.RIGHT_KNEE;
     const isFootOrAnkle =
       idx === POSE_INDEX.LEFT_ANKLE ||
@@ -1147,23 +1168,17 @@ export function drawLivePoseOverlayOnCanvas(
       idx === POSE_INDEX.RIGHT_FOOT_INDEX;
     const isHip = idx === POSE_INDEX.LEFT_HIP || idx === POSE_INDEX.RIGHT_HIP;
     if (isUpperLimbOrSpine) {
-      // Never draw hallucinated off-screen knee/ankle lines during seated upper-body camera exercises,
-      // while preserving genuinely visible in-frame feet for full-body stance verification.
       if (isKnee) return false;
-      if (isFootOrAnkle) {
-        const inFrame = lm.x >= 0.02 && lm.x <= 0.98 && lm.y >= 0.02 && lm.y <= 0.98;
-        if (!inFrame || (lm.visibility ?? 0) < 0.55) return false;
-      }
+      if (isFootOrAnkle && (lm.visibility ?? 0) < 0.55) return false;
       if (isHip && !hipsCleanlyBelowShoulders) return false;
     }
-    const minV = isOppositeArmIdx(idx) ? 0.28 : minVisFor(idx);
+    const minV = minVisFor(idx);
     if ((lm.visibility ?? 0) < minV) return false;
-    // Prevent phantom opposite elbow/wrist keypoints collapsed onto the reaching hand
     if (
       isOppositeArmIdx(idx) &&
       !opts.wrongSideRaised &&
       activeWristLm &&
-      (activeWristLm.visibility ?? 0) >= 0.28 &&
+      (activeWristLm.visibility ?? 0) >= SKELETON_JOINT_MIN_SCORE &&
       Math.hypot(lm.x - activeWristLm.x, lm.y - activeWristLm.y) < 0.08
     ) {
       return false;
@@ -1226,7 +1241,7 @@ export function drawLivePoseOverlayOnCanvas(
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   for (const [aIdx, bIdx] of LIVE_BODY_BONELINE_PAIRS) {
-    if (!isPointDrawable(aIdx) || !isPointDrawable(bIdx)) {
+    if (!isPointDrawable(aIdx) || !isPointDrawable(bIdx) || !skeletonSafety.shouldDrawBone(aIdx, bIdx)) {
       continue;
     }
     const a = primary[aIdx]!;
@@ -1355,15 +1370,9 @@ export function drawLivePoseOverlayOnCanvas(
   ) => {
     ctx.lineWidth = 2.2;
     for (const [aIdx, bIdx] of pairs) {
-      if (!isPointDrawable(aIdx) || !isPointDrawable(bIdx)) continue;
+      if (!isPointDrawable(aIdx) || !isPointDrawable(bIdx) || !skeletonSafety.shouldDrawBone(aIdx, bIdx)) continue;
       const aLm = primary[aIdx]!;
       const bLm = primary[bIdx]!;
-      if (
-        aLm.x < -0.02 || aLm.x > 1.02 || aLm.y < -0.02 || aLm.y > 1.02 ||
-        bLm.x < -0.02 || bLm.x > 1.02 || bLm.y < -0.02 || bLm.y > 1.02
-      ) {
-        continue;
-      }
       const aPt = toCanvasPt(aIdx, aLm);
       const bPt = toCanvasPt(bIdx, bLm);
       ctx.beginPath();
@@ -1433,40 +1442,113 @@ export function drawLivePoseOverlayOnCanvas(
     ctx.stroke();
   }
 
-  // High-precision 21-point HandLandmarker skeleton overlay for wrist / forearm / finger exercises
+  // High-precision 21-point HandLandmarker skeleton overlay strictly tethered to validated body wrist
+  let hand21OutOfFrame = false;
   if (opts.handLandmarks21 && opts.handLandmarks21.length >= 21) {
+    const chosenWristSide: 'left' | 'right' = (() => {
+      if (resolvedDrawSide === 'LEFT' || opts.targetJoint === 'left_shoulder') return 'left';
+      if (resolvedDrawSide === 'RIGHT' || opts.targetJoint === 'right_shoulder') return 'right';
+      const r0 = mapVideoPointToCoverCanvas(
+        opts.handLandmarks21[0].x,
+        opts.handLandmarks21[0].y,
+        vw,
+        vh,
+        w,
+        h,
+        true,
+      );
+      const lWrPt = skeletonSafety.points[POSE_INDEX.LEFT_WRIST];
+      const rWrPt = skeletonSafety.points[POSE_INDEX.RIGHT_WRIST];
+      const dL = skeletonSafety.validMask[POSE_INDEX.LEFT_WRIST] && lWrPt
+        ? Math.hypot(r0.x - lWrPt.x, r0.y - lWrPt.y)
+        : Number.POSITIVE_INFINITY;
+      const dR = skeletonSafety.validMask[POSE_INDEX.RIGHT_WRIST] && rWrPt
+        ? Math.hypot(r0.x - rWrPt.x, r0.y - rWrPt.y)
+        : Number.POSITIVE_INFINITY;
+      return dL <= dR ? 'left' : 'right';
+    })();
+
+    const handTether = validateTetheredHandLandmarks21({
+      handLandmarks21: opts.handLandmarks21,
+      poseLandmarks: primary,
+      wristSide: chosenWristSide,
+      videoW: vw,
+      videoH: vh,
+      canvasW: w,
+      canvasH: h,
+      isMirrored: true,
+      armSafety: skeletonSafety,
+    });
+    if (handTether.valid) {
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = activeColor;
+      ctx.lineWidth = 3;
+      ctx.shadowColor = activeColor;
+      ctx.shadowBlur = 8;
+      for (const [a, b] of HAND21_CONNECTIONS) {
+        const ptA = handTether.canvasPoints[a];
+        const ptB = handTether.canvasPoints[b];
+        if (!ptA || !ptB) continue;
+        ctx.beginPath();
+        ctx.moveTo(ptA.x, ptA.y);
+        ctx.lineTo(ptB.x, ptB.y);
+        ctx.stroke();
+      }
+      ctx.shadowBlur = 0;
+      for (let i = 0; i < 21; i += 1) {
+        const pt = handTether.canvasPoints[i];
+        if (!pt) continue;
+        const isFingertip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, isFingertip ? 4.5 : 3, 0, Math.PI * 2);
+        ctx.fillStyle = isFingertip ? activeColor : '#FFFFFF';
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = isFingertip ? '#FFFFFF' : activeColor;
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else if (handTether.outOfFrame) {
+      hand21OutOfFrame = true;
+    }
+  }
+
+  // Show compact badge if active wrist/hand left camera frame while elbow remains inside frame
+  const activeHandOutOfFrame =
+    hand21OutOfFrame ||
+    (isBilateralMode
+      ? skeletonSafety.leftWristOutOfFrame || skeletonSafety.rightWristOutOfFrame
+      : resolvedDrawSide === 'LEFT' || opts.targetJoint === 'left_shoulder'
+        ? skeletonSafety.leftWristOutOfFrame
+        : resolvedDrawSide === 'RIGHT' || opts.targetJoint === 'right_shoulder'
+          ? skeletonSafety.rightWristOutOfFrame
+          : false);
+  if (activeHandOutOfFrame) {
+    const anchorElbowIdx =
+      resolvedDrawSide === 'LEFT' || opts.targetJoint === 'left_shoulder'
+        ? POSE_INDEX.LEFT_ELBOW
+        : POSE_INDEX.RIGHT_ELBOW;
+    const elbowOk = skeletonSafety.validMask[anchorElbowIdx];
+    const elbowPt = elbowOk ? skeletonSafety.points[anchorElbowIdx] : null;
     ctx.save();
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.strokeStyle = activeColor;
-    ctx.lineWidth = 3;
-    ctx.shadowColor = activeColor;
-    ctx.shadowBlur = 8;
-    for (const [a, b] of HAND21_CONNECTIONS) {
-      const lmA = opts.handLandmarks21[a];
-      const lmB = opts.handLandmarks21[b];
-      if (!lmA || !lmB) continue;
-      const ptA = { x: rawCanvasX(lmA.x), y: rawCanvasY(lmA.y) };
-      const ptB = { x: rawCanvasX(lmB.x), y: rawCanvasY(lmB.y) };
-      ctx.beginPath();
-      ctx.moveTo(ptA.x, ptA.y);
-      ctx.lineTo(ptB.x, ptB.y);
-      ctx.stroke();
-    }
-    ctx.shadowBlur = 0;
-    for (let i = 0; i < 21; i += 1) {
-      const lm = opts.handLandmarks21[i];
-      if (!lm) continue;
-      const pt = { x: rawCanvasX(lm.x), y: rawCanvasY(lm.y) };
-      const isFingertip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20;
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, isFingertip ? 4.5 : 3, 0, Math.PI * 2);
-      ctx.fillStyle = isFingertip ? activeColor : '#FFFFFF';
-      ctx.fill();
-      ctx.lineWidth = 1.5;
-      ctx.strokeStyle = isFingertip ? '#FFFFFF' : activeColor;
-      ctx.stroke();
-    }
+    ctx.font = '800 12px "Sarabun", sans-serif';
+    const bw = Math.min(w - 24, ctx.measureText(HAND_OUT_OF_FRAME_BADGE_TH).width + 20);
+    const bh = 26;
+    const bx = elbowPt ? Math.max(bw / 2 + 10, Math.min(w - bw / 2 - 10, elbowPt.x)) : w / 2;
+    const by = elbowPt ? Math.max(24, Math.min(h - 24, elbowPt.y - 26)) : 52;
+    ctx.fillStyle = 'rgba(217, 119, 6, 0.94)';
+    ctx.strokeStyle = '#FDE68A';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.roundRect(bx - bw / 2, by - bh / 2, bw, bh, 13);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#FFFFFF';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(HAND_OUT_OF_FRAME_BADGE_TH, bx, by, bw - 12);
     ctx.restore();
   }
 
@@ -2033,7 +2115,9 @@ export function SmartRehabKioskUI({
   const latestKinematicsRef = useRef<LiveJointMeasurement | null>(null);
   const holdElapsedSecRef = useRef<number>(0);
   const completedRepsRef = useRef<number>(0);
-  const repPhaseRef = useRef<StrokeHoldRepState['phase']>('WAIT_RAISE');
+  const repPhaseRef = useRef<StrokeHoldRepState['phase']>('READY_TO_RAISE');
+  const loweredFrameStreakRef = useRef<number>(0);
+  const readyBannerUntilRef = useRef<number>(0);
   const cooldownStartedAtRef = useRef<number>(0);
   const repCelebrateUntilRef = useRef<number>(0);
   const lastFrameTimeRef = useRef<number>(0);
@@ -2042,7 +2126,9 @@ export function SmartRehabKioskUI({
   useEffect(() => {
     completedRepsRef.current = 0;
     holdElapsedSecRef.current = 0;
-    repPhaseRef.current = 'WAIT_RAISE';
+    repPhaseRef.current = 'READY_TO_RAISE';
+    loweredFrameStreakRef.current = 0;
+    readyBannerUntilRef.current = 0;
     cooldownStartedAtRef.current = 0;
     repCelebrateUntilRef.current = 0;
     rawKeypointsRef.current = null;
@@ -2059,10 +2145,12 @@ export function SmartRehabKioskUI({
   }, [selectedExercise.exercise_id, selectedExercise.hold_sec]);
 
   useEffect(() => {
-    if (demoValidReps === 0 && completedRepsRef.current > 0 && repPhaseRef.current !== 'COOLDOWN') {
+    if (demoValidReps === 0 && completedRepsRef.current > 0 && repPhaseRef.current !== 'WAIT_LOWER_ARM') {
       completedRepsRef.current = 0;
       holdElapsedSecRef.current = 0;
-      repPhaseRef.current = 'WAIT_RAISE';
+      repPhaseRef.current = 'READY_TO_RAISE';
+      loweredFrameStreakRef.current = 0;
+      readyBannerUntilRef.current = 0;
     } else if (demoValidReps > completedRepsRef.current) {
       completedRepsRef.current = demoValidReps;
     }
@@ -2664,7 +2752,9 @@ export function SmartRehabKioskUI({
           lastHoldEmitAt = 0;
           holdElapsedSecRef.current = 0;
           completedRepsRef.current = 0;
-          repPhaseRef.current = 'WAIT_RAISE';
+          repPhaseRef.current = 'READY_TO_RAISE';
+          loweredFrameStreakRef.current = 0;
+          readyBannerUntilRef.current = 0;
           cooldownStartedAtRef.current = 0;
           repCelebrateUntilRef.current = 0;
           repSuccessToastRef.current = null;
@@ -2935,6 +3025,15 @@ export function SmartRehabKioskUI({
                 } else {
                   occludedFrames = 0;
                 }
+                const { landmarks: kinematicSafeLandmarks } = applyKinematicSkeletonLock({
+                  prevSmoothed: rawKeypointsRef.current,
+                  rawLandmarks: stabilizedResult.landmarks,
+                  videoW: v.videoWidth || 640,
+                  videoH: v.videoHeight || 480,
+                  canvasW: canvasSizeRef.current.w,
+                  canvasH: canvasSizeRef.current.h,
+                  isMirrored: true,
+                });
                 const applyOneEuro = (
                   flt: ClinicalOneEuroLandmarkFilter,
                   src: readonly NormalizedLandmark[],
@@ -2943,13 +3042,17 @@ export function SmartRehabKioskUI({
                     x: lm.x,
                     y: lm.y,
                     z: lm.z ?? src[idx]?.z ?? 0,
-                    visibility: lm.visibility ?? src[idx]?.visibility ?? 0,
+                    // Preserve strict kinematic invalidation (`visibility === 0` when OUT_OF_FRAME / bone violation)
+                    visibility: (src[idx]?.visibility ?? 0) < 0.05 ? 0 : (lm.visibility ?? src[idx]?.visibility ?? 0),
                   }));
                 const landmarks = !enableCustomSmooth
-                  ? stabilizedResult.landmarks
+                  ? kinematicSafeLandmarks
                   : smoothingMode === 'one_euro'
-                    ? applyOneEuro(pose2dOneEuroFilter, stabilizedResult.landmarks)
-                    : landmarkSmoother.apply(stabilizedResult.landmarks);
+                    ? applyOneEuro(pose2dOneEuroFilter, kinematicSafeLandmarks)
+                    : landmarkSmoother.apply(kinematicSafeLandmarks).map((lm, idx) => ({
+                        ...lm,
+                        visibility: (kinematicSafeLandmarks[idx]?.visibility ?? 0) < 0.05 ? 0 : lm.visibility,
+                      }));
                 rawKeypointsRef.current = landmarks;
                 allRawKeypointsRef.current = [landmarks, ...allLandmarks.slice(1)];
                 lastValidPoseAt = now;
@@ -3321,7 +3424,23 @@ export function SmartRehabKioskUI({
             const isCompensatedNow =
               (checkTrunk && latestTrunkTiltDeg > 12) || effPostureCompensated;
 
-            // Step Ref-Driven Clinical 60FPS Hold & Rep State Machine (Zero Stale Closures)
+            const curLoopJointMode = classifyExerciseJointMode(curEx);
+            const curExSide = resolveExerciseSideFromMeta(curEx, curEx.target_joint, curExpectedPlane);
+            const isSmallRomEx =
+              effectiveTargetRomRef.current <= 70 ||
+              curLoopJointMode === 'neck' ||
+              curLoopJointMode === 'neck_turn' ||
+              curLoopJointMode === 'wrist_finger' ||
+              curLoopJointMode === 'forearm_turn' ||
+              curLoopJointMode === 'thumb_pinch';
+            const armWristLowered = evaluateActiveWristsLowered({
+              landmarks: smoothedRenderKeypointsRef.current ?? rawKeypointsRef.current,
+              exerciseSide: curExSide,
+              targetJoint: curEx.target_joint,
+              isSmallRomOrKnee: isSmallRomEx || curEx.target_joint.includes('knee'),
+            });
+
+            // Step Ref-Driven Strict 3-State Hold & Rep State Machine (Mandatory Arm-Lowering Gate)
             const repStep = stepStrokeHoldAndRepStateMachine({
               state: {
                 phase: repPhaseRef.current,
@@ -3329,6 +3448,8 @@ export function SmartRehabKioskUI({
                 completedReps: completedRepsRef.current,
                 cooldownStartedAtMs: cooldownStartedAtRef.current,
                 repCelebrateUntilMs: repCelebrateUntilRef.current,
+                loweredFrameStreak: loweredFrameStreakRef.current,
+                readyBannerUntilMs: readyBannerUntilRef.current,
               },
               activeRomDeg: targetRomDeg !== null ? smoothedRom : null,
               targetRomDeg: effectiveTargetRomRef.current,
@@ -3337,6 +3458,8 @@ export function SmartRehabKioskUI({
               dtSec,
               nowMs: now,
               isKneeExercise: curEx.target_joint.includes('knee'),
+              isSmallRomExercise: isSmallRomEx,
+              armWristLowered,
               sideViolation: effSideViolation,
               wrongSideBannerTh: effWrongSideBannerTh,
               wrongPlaneRaised: effWrongPlaneRaised,
@@ -3349,6 +3472,8 @@ export function SmartRehabKioskUI({
             repPhaseRef.current = repStep.nextState.phase;
             holdElapsedSecRef.current = repStep.nextState.holdElapsedSec;
             completedRepsRef.current = repStep.nextState.completedReps;
+            loweredFrameStreakRef.current = repStep.nextState.loweredFrameStreak ?? 0;
+            readyBannerUntilRef.current = repStep.nextState.readyBannerUntilMs ?? 0;
             cooldownStartedAtRef.current = repStep.nextState.cooldownStartedAtMs;
             repCelebrateUntilRef.current = repStep.nextState.repCelebrateUntilMs;
 
@@ -3360,25 +3485,35 @@ export function SmartRehabKioskUI({
               holdTimerTextRef.current.textContent = `${repStep.holdRemainingSec.toFixed(1)}s`;
             }
 
+            const showPersistentBanner =
+              repPhaseRef.current === 'WAIT_LOWER_ARM'
+                ? REP_COMPLETED_LOWER_ARM_BANNER_TH
+                : repStep.unlockedToReady ||
+                    (repPhaseRef.current === 'READY_TO_RAISE' &&
+                      now <= readyBannerUntilRef.current &&
+                      holdElapsedSecRef.current === 0)
+                  ? ARM_LOWERED_READY_NEXT_REP_BANNER_TH
+                  : null;
+
             if (repStep.justCompletedRep) {
               lastEmittedHold = 0;
               lastHoldEmitAt = now;
               setDemoHoldRemainingSec(0);
               setDemoValidReps(repStep.nextState.completedReps);
-              const toastText = '✓ นับสำเร็จ +1 ครั้ง! ค่อยๆ ลดแขนลง';
-              if (repSuccessToastRef.current !== toastText) {
-                repSuccessToastRef.current = toastText;
-                setRepSuccessToastTh(toastText);
+              if (repSuccessToastRef.current !== REP_COMPLETED_LOWER_ARM_BANNER_TH) {
+                repSuccessToastRef.current = REP_COMPLETED_LOWER_ARM_BANNER_TH;
+                setRepSuccessToastTh(REP_COMPLETED_LOWER_ARM_BANNER_TH);
               }
               emitPresetState(
                 repStep.nextState.completedReps >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED',
               );
             } else {
-              if (
-                repSuccessToastRef.current !== null &&
-                now > repCelebrateUntilRef.current &&
-                repPhaseRef.current !== 'COOLDOWN'
-              ) {
+              if (showPersistentBanner !== null) {
+                if (repSuccessToastRef.current !== showPersistentBanner) {
+                  repSuccessToastRef.current = showPersistentBanner;
+                  setRepSuccessToastTh(showPersistentBanner);
+                }
+              } else if (repSuccessToastRef.current !== null && now > repCelebrateUntilRef.current) {
                 repSuccessToastRef.current = null;
                 setRepSuccessToastTh(null);
               }
@@ -3424,8 +3559,7 @@ export function SmartRehabKioskUI({
               wrongPlaneBannerTh: effWrongPlaneBannerTh,
               lowVisibilityAlertTh: latestLowVisibilityAlertTh,
               postureBannerTh: effPostureBannerTh,
-              repSuccessBannerTh:
-                now <= repCelebrateUntilRef.current ? '✓ นับสำเร็จ +1 ครั้ง! ค่อยๆ ลดแขนลง' : null,
+              repSuccessBannerTh: showPersistentBanner ?? (now <= repCelebrateUntilRef.current ? REP_COMPLETED_LOWER_ARM_BANNER_TH : null),
               overlayHint: latestOverlayHint,
               handLandmarks21: (() => {
                 const activeSide = resolveExerciseSideFromMeta(curEx, curEx.target_joint, curExpectedPlane);

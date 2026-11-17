@@ -1,4 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  FOREARM_MAX_RATIO,
+  FOREARM_MIN_RATIO,
+  SKELETON_JOINT_MIN_SCORE,
+  UPPER_ARM_MAX_RATIO,
+  UPPER_ARM_MIN_RATIO,
+  isJointValidInFrame,
+} from '../lib/poseSkeletonSafety';
 
 export interface Keypoint3DPoint {
   index: number;
@@ -557,6 +565,56 @@ export function drawMediaPipe33OnCanvas(
   });
 
   const pts = landmarks.map(toXY);
+  const shLPt = pts[11];
+  const shRPt = pts[12];
+  const shoulderWidthPx =
+    shLPt && shRPt && shLPt.score >= 0.25 && shRPt.score >= 0.25
+      ? Math.max(20, Math.hypot(shRPt.px - shLPt.px, shRPt.py - shLPt.py))
+      : Math.max(24, width * 0.22);
+
+  const isEdgeJointValid = (idx: number): boolean => {
+    const kp = landmarks[idx];
+    const pt = pts[idx];
+    if (!kp || !pt) return false;
+    const reqScore = idx >= 13 && idx <= 22 ? SKELETON_JOINT_MIN_SCORE : minVis;
+    return isJointValidInFrame({
+      lm: { x: kp.x, y: kp.y, z: kp.z, score: kp.score },
+      canvasPt: { x: pt.px, y: pt.py },
+      canvasW: width,
+      canvasH: height,
+      minScore: reqScore,
+    });
+  };
+
+  const validMask = landmarks.map((_, idx) => isEdgeJointValid(idx));
+  const checkEdgeArmSide = (shIdx: number, elIdx: number, wrIdx: number, handIdxs: readonly number[]) => {
+    const shPt = pts[shIdx];
+    const elPt = pts[elIdx];
+    const wrPt = pts[wrIdx];
+    const uLen = shPt && elPt ? Math.hypot(elPt.px - shPt.px, elPt.py - shPt.py) : 0;
+    if (
+      !validMask[shIdx] ||
+      !validMask[elIdx] ||
+      uLen < UPPER_ARM_MIN_RATIO * shoulderWidthPx ||
+      uLen > UPPER_ARM_MAX_RATIO * shoulderWidthPx
+    ) {
+      validMask[elIdx] = false;
+      validMask[wrIdx] = false;
+      for (const h of handIdxs) validMask[h] = false;
+      return;
+    }
+    const fLen = elPt && wrPt ? Math.hypot(wrPt.px - elPt.px, wrPt.py - elPt.py) : 0;
+    if (
+      !validMask[wrIdx] ||
+      fLen < FOREARM_MIN_RATIO * shoulderWidthPx ||
+      fLen > FOREARM_MAX_RATIO * shoulderWidthPx
+    ) {
+      validMask[wrIdx] = false;
+      for (const h of handIdxs) validMask[h] = false;
+    }
+  };
+  checkEdgeArmSide(11, 13, 15, [17, 19, 21]);
+  checkEdgeArmSide(12, 14, 16, [18, 20, 22]);
 
   // Optional identity guard bounding boxes
   drawIdentityBoxesOnCanvas(ctx, rect, mirror, opts);
@@ -566,9 +624,10 @@ export function drawMediaPipe33OnCanvas(
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   for (const [i, j, lineW] of MEDIAPIPE33_BODY_EDGES) {
+    if (!validMask[i] || !validMask[j]) continue;
     const a = pts[i];
     const b = pts[j];
-    if (!a || !b || a.score < minVis || b.score < minVis) continue;
+    if (!a || !b) continue;
 
     ctx.strokeStyle = 'rgba(15, 23, 42, 0.55)';
     ctx.lineWidth = lineW + 3;
@@ -655,8 +714,9 @@ export function drawMediaPipe33OnCanvas(
 
   // Draw anatomical body, hand & foot joints (11..32) — face landmarks (0..10) intentionally excluded
   for (let idx = 11; idx < 33; idx += 1) {
+    if (!validMask[idx]) continue;
     const p = pts[idx];
-    if (!p || p.score < minVis) continue;
+    if (!p) continue;
     const isMajor = idx >= 11 && idx <= 16 ? true : idx >= 23 && idx <= 28;
     const radius = isMajor ? 5.2 : 3.2;
     ctx.shadowBlur = 0;
