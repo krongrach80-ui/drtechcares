@@ -7,13 +7,18 @@ import {
   TenShotEnrollmentController,
   alignFaceTo112,
   evaluateLivenessAndPose,
-  extractFaceEmbeddingWithFallback,
   inspectBiometricFrame3D,
   resolveFaceIdScreenPrompt,
   selectClinicalCameraDeviceId,
   type BiometricVerificationJson,
 } from '@drtechcares/face-client';
 import { evaluateFrameQuality } from '@drtechcares/smart-biometric-core';
+import {
+  BIOMETRIC_ENGINE_ID,
+  captureCanonicalFaceSnapshot,
+  extractCanonicalFaceDescriptor,
+  syncPatientBiometricEverywhere,
+} from '../../../src/lib/biometricEngine';
 import { Camera, CheckCircle2, UserPlus } from 'lucide-react';
 import { FaceIdCircularOverlay } from '../../../src/components/FaceIdCircularOverlay';
 
@@ -129,8 +134,12 @@ export function SmartEnrollmentView({
               if (poseOk && crop) {
                 const q = evaluateFrameQuality(crop, liveness, 35, 35);
                 if (q.sharpness >= 4.0) {
-                  const { vector } = await extractFaceEmbeddingWithFallback(crop, landmarks);
-                  if (enrollRef.current.acceptShot(poseNeeded, vector, q.sharpness)) {
+                  const snap = captureCanonicalFaceSnapshot(videoRef.current);
+                  const extracted = snap ? await extractCanonicalFaceDescriptor(snap) : null;
+                  if (
+                    extracted?.embedding &&
+                    enrollRef.current.acceptShot(poseNeeded, extracted.embedding, q.sharpness)
+                  ) {
                     lastShotAt = now;
                     setShotsCount(enrollRef.current.currentStepIndex);
                   }
@@ -172,6 +181,8 @@ export function SmartEnrollmentView({
     setErrorMsg(null);
     try {
       const payload = enrollRef.current.buildPayload();
+      const exemplarEmbeddings = payload.raw_frames.map((r) => r.vector);
+      const centerAngle = payload.frontal_centroid;
       const patient = await apiClient.enrollPatient10Shot({
         hn,
         fullName: fullName.trim(),
@@ -184,11 +195,36 @@ export function SmartEnrollmentView({
         password: portalPassword,
         frontalCentroid: payload.frontal_centroid,
         overallCentroid: payload.overall_centroid,
+        masterEmbedding: payload.overall_centroid,
+        angleEmbeddings: {
+          center: centerAngle,
+          left: payload.raw_frames.find((r) => r.pose === 'left')?.vector ?? payload.overall_centroid,
+          right: payload.raw_frames.find((r) => r.pose === 'right')?.vector ?? payload.overall_centroid,
+          up: payload.raw_frames.find((r) => r.pose === 'nod')?.vector ?? payload.overall_centroid,
+          down: payload.raw_frames.find((r) => r.pose === 'nod')?.vector ?? payload.overall_centroid,
+        },
+        exemplarEmbeddings,
+        biometricEngine: BIOMETRIC_ENGINE_ID,
         rawFrames: payload.raw_frames.map((r) => ({
           pose: r.pose,
           vector: r.vector,
           qualityScore: r.qualityScore,
         })),
+      });
+      await syncPatientBiometricEverywhere({
+        apiClient,
+        patient,
+        masterEmbedding: payload.overall_centroid,
+        angleEmbeddings: {
+          center: centerAngle,
+          left: payload.raw_frames.find((r) => r.pose === 'left')?.vector ?? payload.overall_centroid,
+          right: payload.raw_frames.find((r) => r.pose === 'right')?.vector ?? payload.overall_centroid,
+          up: payload.raw_frames.find((r) => r.pose === 'nod')?.vector ?? payload.overall_centroid,
+          down: payload.raw_frames.find((r) => r.pose === 'nod')?.vector ?? payload.overall_centroid,
+        },
+        exemplarEmbeddings,
+        framesCaptured: payload.raw_frames.length,
+        qualityScore: 0.95,
       });
       enrollRef.current.reset();
       setShotsCount(0);

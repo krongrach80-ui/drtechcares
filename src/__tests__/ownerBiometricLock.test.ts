@@ -316,5 +316,49 @@ describe('Continuous 1:1 Owner Lock, Full-Bleed Cover Math & Owner-Bound Hand Fi
       }).matched,
     ).toBe(false);
   });
+
+  it('verifies 1:1 Human faceres (1024-D) owner via exemplarEmbeddings while rejecting impostors', () => {
+    const mk1024 = (seed: number): number[] => {
+      const out = new Array<number>(1024);
+      for (let i = 0; i < 1024; i += 1) {
+        out[i] = Math.sin((i + 1) * (seed * 1.13 + 0.27)) + 0.4 * Math.cos((i + 7) * seed);
+      }
+      return l2Normalize(out);
+    };
+    const ownerMaster = mk1024(1);
+    const ownerSide = l2Normalize(ownerMaster.map((v, i) => v * 0.85 + mk1024(9)[i] * 0.2));
+    const impostor = mk1024(44);
+    const humanTemplate: OwnerBiometricTemplate = {
+      patientId: 'pat-human-1024',
+      hn: 'HN-88001',
+      fullName: 'Human 1024 Owner',
+      biometricEngine: 'human-faceres-1024d',
+      masterEmbedding: ownerMaster,
+      angleEmbeddings: {
+        center: ownerMaster,
+        left: ownerSide,
+        right: ownerSide,
+        up: ownerMaster,
+        down: ownerMaster,
+      },
+      exemplarEmbeddings: [ownerMaster, ownerSide],
+    };
+
+    expect(
+      verifyOwnerFace1to1({
+        probeVector: l2Normalize(ownerSide.map((v, i) => v * 0.78 + mk1024(15)[i] * 0.24)),
+        probeEngine: 'human-faceres-1024d',
+        ownerTemplate: humanTemplate,
+      }).matched,
+    ).toBe(true);
+
+    expect(
+      verifyOwnerFace1to1({
+        probeVector: impostor,
+        probeEngine: 'human-faceres-1024d',
+        ownerTemplate: humanTemplate,
+      }).matched,
+    ).toBe(false);
+  });
 });
 

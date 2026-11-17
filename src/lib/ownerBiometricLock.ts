@@ -4,6 +4,7 @@ import {
   classifyLivePoseZone,
   computeArcFaceBiometricScore,
   computeDualFactorBiometricScore,
+  cosineSimilarity,
   detectBiometricVectorEngine,
   isLegacyV1HybridVector,
   l2Normalize,
@@ -18,7 +19,8 @@ export interface OwnerBiometricTemplate {
   fullName: string;
   masterEmbedding: number[];
   angleEmbeddings?: Partial<AngleEmbeddings5D>;
-  biometricEngine?: 'arcface-onnx' | 'hybrid-512d';
+  exemplarEmbeddings?: number[][];
+  biometricEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
   geometricRatios?: GeometricAnthropometricRatios;
 }
 
@@ -237,7 +239,7 @@ export function verifyOwnerFace1to1(input: {
   mirroredHybridV2ProbeVector?: readonly number[];
   legacyV1ProbeVector?: readonly number[];
   mirroredLegacyV1ProbeVector?: readonly number[];
-  probeEngine?: 'arcface-onnx' | 'hybrid-512d';
+  probeEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
   yawDeg?: number;
   pitchDeg?: number;
   rollDeg?: number;
@@ -264,8 +266,48 @@ export function verifyOwnerFace1to1(input: {
   const normMaster = l2Normalize(template.masterEmbedding);
   const ownerEngine = detectBiometricVectorEngine(normMaster, template.biometricEngine);
   const probeEngine = detectBiometricVectorEngine(input.probeVector, input.probeEngine);
-  const ownerIsLegacyV1 = ownerEngine === 'legacy-v1' || isLegacyV1HybridVector(normMaster);
   const mirroredZone = mirrorPoseZone(livePoseZone);
+  const isAngled =
+    livePoseZone !== 'center' ||
+    Math.abs(input.yawDeg ?? 0) > 8 ||
+    Math.abs(input.pitchDeg ?? 0) > 6 ||
+    Math.abs(input.rollDeg ?? 0) > 10;
+
+  if (ownerEngine === 'human-faceres-1024d') {
+    const probeNorm = l2Normalize(input.probeVector);
+    let bestSim = cosineSimilarity(probeNorm, normMaster);
+    let bestAngle: 'master' | FacePoseZone5 = 'master';
+    const zones: FacePoseZone5[] = ['center', 'left', 'right', 'up', 'down'];
+    for (const z of zones) {
+      const av = template.angleEmbeddings?.[z];
+      if (Array.isArray(av) && av.length === normMaster.length) {
+        const sim = cosineSimilarity(probeNorm, l2Normalize(av));
+        if (sim > bestSim) {
+          bestSim = sim;
+          bestAngle = z;
+        }
+      }
+    }
+    for (const ex of template.exemplarEmbeddings ?? []) {
+      if (Array.isArray(ex) && ex.length === normMaster.length) {
+        const sim = cosineSimilarity(probeNorm, l2Normalize(ex));
+        if (sim > bestSim) {
+          bestSim = sim;
+          bestAngle = 'master';
+        }
+      }
+    }
+    const owner1024Threshold = isAngled ? 0.56 : 0.58;
+    return {
+      hasTemplate: true,
+      matched: bestSim >= owner1024Threshold,
+      similarity: Math.max(0, bestSim),
+      livePoseZone,
+      bestAngle,
+    };
+  }
+
+  const ownerIsLegacyV1 = ownerEngine === 'legacy-v1' || isLegacyV1HybridVector(normMaster);
 
   let activePrimaryProbe: readonly number[] | undefined = input.probeVector;
   let activeMirroredProbe: readonly number[] | undefined = input.mirroredProbeVector;
@@ -367,12 +409,6 @@ export function verifyOwnerFace1to1(input: {
       }
     }
   }
-
-  const isAngled =
-    livePoseZone !== 'center' ||
-    Math.abs(input.yawDeg ?? 0) > 8 ||
-    Math.abs(input.pitchDeg ?? 0) > 6 ||
-    Math.abs(input.rollDeg ?? 0) > 10;
 
   if (ownerEngine === 'arcface-onnx') {
     const arcOwnerThreshold = isAngled ? 0.45 : 0.50;

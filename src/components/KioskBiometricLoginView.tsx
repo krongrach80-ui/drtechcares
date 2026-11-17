@@ -20,10 +20,21 @@ import {
   type TodayPrescribedExerciseItem,
 } from '@drtechcares/api-client';
 import {
-  TemporalBiometricMatcher,
   computeBoundingBoxFromLandmarks,
   subscribeBiometricIndex,
 } from '../lib/faceMatcher';
+import {
+  BIOMETRIC_ENGINE_ID,
+  BIOMETRIC_REQUIRED_STREAK,
+  LiveIdentityStreakTracker,
+  captureCanonicalFaceSnapshot,
+  evaluateLiveMatch1toN,
+  extractCanonicalFaceDescriptor,
+  loadEnrolledPatientsWithBiometrics,
+  warmupBiometricEngine,
+  type EnrolledBiometricCandidate,
+  type Live1toNMatchEvaluation,
+} from '../lib/biometricEngine';
 import {
   computeOwnerFaceBoxMetrics,
   drawOwnerBiometricOverlayOnCanvas,
@@ -47,27 +58,19 @@ import {
   computeHeadZoneRoiFromFaceBox,
   computeHeadZoneRoiFromPose,
   evaluateLivenessAndPose,
-  extractDualFlipFaceEmbedding,
   extractGeometricAnthropometricRatios,
   inspectBiometricFrame3D,
-  preloadArcFaceOnnx,
   remapRoiLandmarksToFrame,
   renderUpscaledRoi256,
   selectClinicalCameraDeviceId,
   selectPrimaryFace,
-  SingleScanLoginController,
   type BiologicalLivenessReport,
   type BiometricVerificationJson,
   type LivenessAndPoseReport,
 } from '@drtechcares/face-client';
 import { FacePresenceTracker } from '@drtechcares/kiosk-input';
 import { POSE_INDEX } from '@drtechcares/pose-engine';
-import {
-  BURST_FRAME_COUNT,
-  detectBiometricVectorEngine,
-  isLegacyV1HybridVector,
-  purgeLegacyBiometricCache,
-} from '@drtechcares/smart-biometric-core';
+import { purgeLegacyBiometricCache } from '@drtechcares/smart-biometric-core';
 import {
   useEdgeVisionSocket,
   type EdgeKioskTelemetryPayload,
@@ -159,6 +162,10 @@ function buildKioskLoginSuccessPayload(params: {
           fullName: params.patient.fullName,
           masterEmbedding: params.indexEntry.masterEmbedding,
           angleEmbeddings: params.indexEntry.angleEmbeddings,
+          ...(Array.isArray(params.indexEntry.exemplarEmbeddings) &&
+          params.indexEntry.exemplarEmbeddings.length > 0
+            ? { exemplarEmbeddings: params.indexEntry.exemplarEmbeddings }
+            : {}),
           ...(params.indexEntry.biometricEngine
             ? { biometricEngine: params.indexEntry.biometricEngine }
             : {}),
@@ -979,12 +986,26 @@ export function KioskBiometricLoginView({
     }
   }, []);
   const [dbAccountCount, setDbAccountCount] = useState(0);
+  const [totalAccountCount, setTotalAccountCount] = useState(0);
+  const [legacyAccountCount, setLegacyAccountCount] = useState(0);
   const [liveMatchHud, setLiveMatchHud] = useState<{
     candidate: PatientBiometricIndexEntry;
     confidencePercent: number;
     bestAngle: string;
     streak: number;
     confirmed: boolean;
+  } | null>(null);
+  const [liveDebugHud, setLiveDebugHud] = useState<{
+    validAccounts: number;
+    totalAccounts: number;
+    legacyAccounts: number;
+    topName: string | null;
+    topPct: number;
+    runnerUpName: string | null;
+    runnerUpPct: number;
+    streak: number;
+    requiredStreak: number;
+    reason: string;
   } | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -998,6 +1019,7 @@ export function KioskBiometricLoginView({
   const alignCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const contextCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const roiCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const matchSnapCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const bioLivenessRef = useRef(new BiologicalLivenessTracker());
   const bioReportRef = useRef<BiologicalLivenessReport | null>(null);
   bioReportRef.current = bioReport;
@@ -1024,7 +1046,6 @@ export function KioskBiometricLoginView({
   const onPatientAuthenticatedRef = useRef(onPatientAuthenticated);
   onPatientAuthenticatedRef.current = onPatientAuthenticated;
   const presenceRef = useRef(new FacePresenceTracker());
-  const loginCtrlRef = useRef(new SingleScanLoginController());
   const verifyingLockRef = useRef(false);
   const edgeTelemetryRef = useRef<EdgeKioskTelemetryPayload | null>(null);
 
@@ -1083,12 +1104,46 @@ export function KioskBiometricLoginView({
   });
   edgeTelemetryRef.current = edgeTelemetry;
   const biometricIndexRef = useRef<PatientBiometricIndexEntry[]>([]);
-  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(5));
+  const biometricCandidatesRef = useRef<EnrolledBiometricCandidate[]>([]);
+  const accountCountsRef = useRef<{ valid: number; total: number; legacy: number }>({
+    valid: 0,
+    total: 0,
+    legacy: 0,
+  });
+  const streakTrackerRef = useRef(new LiveIdentityStreakTracker(BIOMETRIC_REQUIRED_STREAK));
   const excludedPatientIdsRef = useRef<string[]>([]);
   const [turningHintPct, setTurningHintPct] = useState<number | null>(null);
   const [ambiguousCloseHint, setAmbiguousCloseHint] = useState(false);
   const mirroredRef = useRef(mirrored);
   mirroredRef.current = mirrored;
+
+  const refreshBiometricCandidates = useCallback(async () => {
+    try {
+      const loaded = await loadEnrolledPatientsWithBiometrics(apiClient);
+      biometricCandidatesRef.current = loaded.compatibleCandidates;
+      biometricIndexRef.current = loaded.candidates.map((c) => c.sourceEntry);
+      accountCountsRef.current = {
+        valid: loaded.validAccounts,
+        total: loaded.totalAccounts,
+        legacy: loaded.legacyAccountsCount,
+      };
+      setDbAccountCount(loaded.validAccounts);
+      setLiveDebugHud((prev) => ({
+        validAccounts: loaded.validAccounts,
+        totalAccounts: loaded.totalAccounts,
+        legacyAccounts: loaded.legacyAccountsCount,
+        topName: prev?.topName ?? null,
+        topPct: prev?.topPct ?? 0,
+        runnerUpName: prev?.runnerUpName ?? null,
+        runnerUpPct: prev?.runnerUpPct ?? 0,
+        streak: prev?.streak ?? 0,
+        requiredStreak: BIOMETRIC_REQUIRED_STREAK,
+        reason: prev?.reason ?? (loaded.validAccounts === 0 ? 'NO_CANDIDATES' : 'READY'),
+      }));
+    } catch {
+      // Preserve last loaded vault on transient refresh failure
+    }
+  }, [apiClient]);
 
   const supabaseHost = (() => {
     const raw = import.meta.env.VITE_SUPABASE_URL as string | undefined;
@@ -1108,17 +1163,15 @@ export function KioskBiometricLoginView({
   }, []);
 
   useEffect(() => {
-    return subscribeBiometricIndex(apiClient, (entries) => {
-      biometricIndexRef.current = entries;
-      setDbAccountCount(entries.length);
+    return subscribeBiometricIndex(apiClient, () => {
+      void refreshBiometricCandidates();
     });
-  }, [apiClient]);
+  }, [apiClient, refreshBiometricCandidates]);
 
   const handleRestartScan = useCallback(() => {
     verifyingLockRef.current = false;
     presenceRef.current.reset();
-    loginCtrlRef.current.reset();
-    temporalMatcherRef.current.reset();
+    streakTrackerRef.current.reset();
     bioLivenessRef.current.reset();
     setBurstCount(0);
     setInspectionInfo(null);
@@ -1127,6 +1180,18 @@ export function KioskBiometricLoginView({
     setHudBox(null);
     clearFaceMeshCanvas();
     setLiveMatchHud(null);
+    setLiveDebugHud((prev) =>
+      prev
+        ? {
+            ...prev,
+            topName: null,
+            topPct: 0,
+            runnerUpName: null,
+            runnerUpPct: 0,
+            streak: 0,
+          }
+        : null,
+    );
     setTurningHintPct(null);
     setAmbiguousCloseHint(false);
     isSpeechDoneRef.current = false;
@@ -1151,14 +1216,8 @@ export function KioskBiometricLoginView({
     setCameraPaused(false);
     setScanStage('scanning');
     setScanGeneration((g) => g + 1);
-    void apiClient
-      .getBiometricIndex()
-      .then((entries) => {
-        biometricIndexRef.current = entries;
-        setDbAccountCount(entries.length);
-      })
-      .catch(() => {});
-  }, [apiClient]);
+    void refreshBiometricCandidates();
+  }, [refreshBiometricCandidates]);
 
   const handleRejectWrongMatchAndRescan = useCallback(() => {
     const wrong = verifiedModalPayloadRef.current?.patient;
@@ -1184,13 +1243,24 @@ export function KioskBiometricLoginView({
     if (staffModalOpen && !wasOpen) {
       verifyingLockRef.current = false;
       presenceRef.current.reset();
-      loginCtrlRef.current.reset();
-      temporalMatcherRef.current.reset();
+      streakTrackerRef.current.reset();
       bioLivenessRef.current.reset();
       setScanStage('scanning');
       setHudBox(null);
       clearFaceMeshCanvas();
       setLiveMatchHud(null);
+      setLiveDebugHud((prev) =>
+        prev
+          ? {
+              ...prev,
+              topName: null,
+              topPct: 0,
+              runnerUpName: null,
+              runnerUpPct: 0,
+              streak: 0,
+            }
+          : null,
+      );
       setTurningHintPct(null);
       setBurstCount(0);
     } else if (!staffModalOpen && wasOpen) {
@@ -1216,7 +1286,6 @@ export function KioskBiometricLoginView({
     let gestureOffscreenCanvas: HTMLCanvasElement | null = null;
     let prevLandmarks: { x: number; y: number; z?: number }[] | null = null;
     let wasEyeClosed = false;
-    let burstStarted = false;
     let lastDetectTs = 0;
     let lastPoseDetectTs = 0;
     let lastProcessedVideoTime = -1;
@@ -1231,7 +1300,6 @@ export function KioskBiometricLoginView({
     let unreadyFrameStreak = 0;
     let bioVerifiedUnmatchedStartAt = 0;
     let isLastVerifyAmbiguous = false;
-    let lastBurstEngine = '';
     let lastGestureVideoTime = -1;
     let lastGestureInferenceAt = 0;
     let lastPoseFallbackAt = 0;
@@ -1248,8 +1316,7 @@ export function KioskBiometricLoginView({
     let cachedConfirmFaceCount = 0;
     let cachedConfirmFaceBox: OwnerFaceBoxMetrics | null = null;
     let cachedConfirmExtraFaceBoxes: OwnerFaceBoxMetrics[] = [];
-    let confirmAlignCanvas: HTMLCanvasElement | null = null;
-    let confirmRoiCanvas: HTMLCanvasElement | null = null;
+    let confirmSnapCanvas: HTMLCanvasElement | null = null;
     let confirmEmbedInFlight = false;
     let lastOwnerGuardKey = '';
     const videoEl = videoRef.current;
@@ -1339,18 +1406,9 @@ export function KioskBiometricLoginView({
         setTwoHandProgress(0);
         setTwoHandDetected(false);
         setTwoHandCameraReady(false);
-        // Eagerly preload real InsightFace ArcFace ResNet-50 (w600k_r50.onnx) in parallel
-        void preloadArcFaceOnnx();
-
-        void apiClient
-          .getBiometricIndex()
-          .then((entries) => {
-            if (active) {
-              biometricIndexRef.current = entries;
-              setDbAccountCount(entries.length);
-            }
-          })
-          .catch(() => {});
+        // Eagerly warm up shared @vladmandic/human faceres (1024-D) engine & load biometric vault
+        void warmupBiometricEngine();
+        void refreshBiometricCandidates();
         if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
           setCameraError('Browser does not support camera access');
           setCameraPaused(true);
@@ -1465,22 +1523,14 @@ export function KioskBiometricLoginView({
         ] as const;
 
         const runAsyncBiometricMatchStep = async (params: {
-          snapCrop: { width: number; height: number; data: Uint8ClampedArray };
+          snapCanvas: HTMLCanvasElement;
           snapLandmarks: { x: number; y: number; z?: number }[];
           snapVideoW: number;
           snapVideoH: number;
           snapYawDeg: number;
           snapPitchDeg: number;
-          snapDepthScore: number;
-          snapMicroMotion: number;
-          snapBlinkDetected: boolean;
           snapFaceHeightRatio: number;
           snapBioVerified: boolean;
-          snapBioBlinkVerified: boolean;
-          snapBioHeadPoseVerified: boolean;
-          snapBioLipMotionVerified: boolean;
-          snapBioLongRangeMotionVerified: boolean;
-          snapBioNonRigidMotion: number;
           snapBioNonRigidScore: number;
           snapBioRppgScore: number;
           snapBioSpoofScore: number;
@@ -1493,35 +1543,12 @@ export function KioskBiometricLoginView({
           }
           asyncMatchInFlight = true;
           try {
-            const hasLegacyV1InIndex =
-              biometricIndexRef.current.length === 0 ||
-              biometricIndexRef.current.some(
-                (e) =>
-                  isLegacyV1HybridVector(e.masterEmbedding) ||
-                  Object.values(e.angleEmbeddings ?? {}).some(
-                    (vec) => Array.isArray(vec) && isLegacyV1HybridVector(vec),
-                  ),
-              );
-            const hasHybridV2InIndex = biometricIndexRef.current.some(
-              (e) =>
-                detectBiometricVectorEngine(e.masterEmbedding, e.biometricEngine) === 'hybrid-v2',
-            );
-
-            const {
-              vector,
-              mirroredVector,
-              hybridV2Vector,
-              mirroredHybridV2Vector,
-              legacyV1Vector,
-              mirroredLegacyV1Vector,
-              engine,
-              geometricRatios,
-            } = await extractDualFlipFaceEmbedding(params.snapCrop, params.snapLandmarks, {
-              includeLegacyV1: hasLegacyV1InIndex,
-              includeHybridV2: hasHybridV2InIndex,
-              fastArcFacePrimaryOnly: true,
-            });
+            // Single Shared Neural Extractor (@vladmandic/human faceres 1024-D) — ZERO fake geometric/pixel fallbacks
+            const extracted = await extractCanonicalFaceDescriptor(params.snapCanvas);
             if (!active || !shouldContinueLoop || verifiedModalPayloadRef.current) {
+              return;
+            }
+            if (!extracted.embedding) {
               return;
             }
 
@@ -1531,6 +1558,7 @@ export function KioskBiometricLoginView({
               params.snapVideoH,
             );
             const canonicalYawDeg = -params.snapYawDeg;
+            const geometricRatios = extractGeometricAnthropometricRatios(params.snapLandmarks);
             const livenessEvidence = {
               biologicalVerified: params.snapBioVerified,
               blinkCount: params.snapBioBlinkCount,
@@ -1541,113 +1569,146 @@ export function KioskBiometricLoginView({
               yawDeg: canonicalYawDeg,
               pitchDeg: params.snapPitchDeg,
               rollDeg,
-              engine,
-              ...(mirroredVector.length > 0 ? { mirroredProbeVector: mirroredVector } : {}),
-              ...(hybridV2Vector ? { hybridV2ProbeVector: hybridV2Vector } : {}),
-              ...(mirroredHybridV2Vector
-                ? { mirroredHybridV2ProbeVector: mirroredHybridV2Vector }
-                : {}),
-              ...(legacyV1Vector ? { legacyV1ProbeVector: legacyV1Vector } : {}),
-              ...(mirroredLegacyV1Vector
-                ? { mirroredLegacyV1ProbeVector: mirroredLegacyV1Vector }
-                : {}),
+              engine: BIOMETRIC_ENGINE_ID,
               ...(geometricRatios ? { geometricRatios } : {}),
               ...(excludedPatientIdsRef.current.length > 0
                 ? { excludedPatientIds: excludedPatientIdsRef.current }
                 : {}),
             };
 
-            let latestTemporalSim = 0;
-            if (!verifyingLockRef.current && biometricIndexRef.current.length > 0) {
-              const temporal = temporalMatcherRef.current.evaluateFrame(
-                {
-                  probeVector: vector,
-                  ...(mirroredVector.length > 0 ? { mirroredProbeVector: mirroredVector } : {}),
-                  ...(hybridV2Vector ? { hybridV2ProbeVector: hybridV2Vector } : {}),
-                  ...(mirroredHybridV2Vector
-                    ? { mirroredHybridV2ProbeVector: mirroredHybridV2Vector }
-                    : {}),
-                  ...(legacyV1Vector ? { legacyV1ProbeVector: legacyV1Vector } : {}),
-                  ...(mirroredLegacyV1Vector
-                    ? { mirroredLegacyV1ProbeVector: mirroredLegacyV1Vector }
-                    : {}),
-                  yawDeg: canonicalYawDeg,
-                  pitchDeg: params.snapPitchDeg,
-                  rollDeg,
-                  depthScore: params.snapDepthScore,
-                  microMotion: params.snapMicroMotion,
-                  blinkDetected:
-                    params.snapBlinkDetected ||
-                    params.snapBioBlinkVerified ||
-                    params.snapBioHeadPoseVerified ||
-                    params.snapBioLipMotionVerified ||
-                    params.snapBioLongRangeMotionVerified,
-                  nonRigidMotion: params.snapBioNonRigidMotion,
-                  biologicalVerified: params.snapBioVerified,
-                  spoofDetected: params.snapIsSpoof,
-                  rppgScore: params.snapBioRppgScore,
-                  faceHeightRatio: params.snapFaceHeightRatio,
-                  geometricRatios,
-                  engine,
-                },
-                biometricIndexRef.current,
-                excludedPatientIdsRef.current.length > 0
-                  ? { excludedPatientIds: excludedPatientIdsRef.current }
-                  : undefined,
+            const candidates = biometricCandidatesRef.current;
+            const counts = accountCountsRef.current;
+
+            if (!verifyingLockRef.current) {
+              if (candidates.length === 0) {
+                streakTrackerRef.current.reset();
+                setBurstCount(0);
+                setLiveMatchHud(null);
+                setAmbiguousCloseHint(false);
+                setTurningHintPct(null);
+                setLiveDebugHud({
+                  validAccounts: counts.valid,
+                  totalAccounts: counts.total,
+                  legacyAccounts: counts.legacy,
+                  topName: null,
+                  topPct: 0,
+                  runnerUpName: null,
+                  runnerUpPct: 0,
+                  streak: 0,
+                  requiredStreak: BIOMETRIC_REQUIRED_STREAK,
+                  reason: 'NO_CANDIDATES',
+                });
+
+                if (params.snapBioVerified && !params.snapIsSpoof) {
+                  if (bioVerifiedUnmatchedStartAt === 0) {
+                    bioVerifiedUnmatchedStartAt = params.snapNow;
+                  }
+                  const noCandidateElapsed = params.snapNow - bioVerifiedUnmatchedStartAt;
+                  if (noCandidateElapsed >= 3000) {
+                    shouldContinueLoop = false;
+                    setScanStage('not_found');
+                    return;
+                  }
+                  setScanStage('burst');
+                } else {
+                  bioVerifiedUnmatchedStartAt = 0;
+                  setScanStage('scanning');
+                }
+                return;
+              }
+
+              const evalRes: Live1toNMatchEvaluation = evaluateLiveMatch1toN(
+                extracted.embedding,
+                candidates,
+                excludedPatientIdsRef.current,
               );
-              latestTemporalSim = temporal.bestRawSimilarity;
-              const isAmbiguous = temporal.livenessReason === 'AMBIGUOUS_CLOSE_CANDIDATES';
+              const stepRes = streakTrackerRef.current.step(evalRes, {
+                spoofDetected: params.snapIsSpoof,
+                biologicalVerified: params.snapBioVerified,
+              });
+
+              const topPct = Number((evalRes.topSimilarity * 100).toFixed(1));
+              const runnerUpPct = Number((evalRes.runnerUpSimilarity * 100).toFixed(1));
+              const isAmbiguous = evalRes.reason === 'AMBIGUOUS_CLOSE_CANDIDATES';
+              isLastVerifyAmbiguous = isAmbiguous;
+
+              setLiveDebugHud({
+                validAccounts: evalRes.validAccounts,
+                totalAccounts: counts.total,
+                legacyAccounts: counts.legacy,
+                topName: evalRes.topCandidate?.fullName ?? null,
+                topPct,
+                runnerUpName: evalRes.runnerUpCandidate?.fullName ?? null,
+                runnerUpPct,
+                streak: stepRes.streak,
+                requiredStreak: stepRes.requiredStreak,
+                reason: stepRes.reason,
+              });
+              setBurstCount(stepRes.streak);
               setAmbiguousCloseHint(isAmbiguous);
-              const isHudMatch = Boolean(
-                temporal.candidate && temporal.streakCount > 0 && !isAmbiguous,
+
+              const showMatchedBanner = Boolean(
+                stepRes.candidate && stepRes.streak > 0 && !isAmbiguous && evalRes.matched,
               );
               setLiveMatchHud(
-                isHudMatch && temporal.candidate
+                showMatchedBanner && stepRes.candidate
                   ? {
-                      candidate: temporal.candidate,
-                      confidencePercent: temporal.confidencePercent,
-                      bestAngle: temporal.bestAngle,
-                      streak: temporal.streakCount,
-                      confirmed: temporal.confirmed,
+                      candidate: stepRes.candidate.sourceEntry,
+                      confidencePercent: evalRes.confidencePercent,
+                      bestAngle: stepRes.bestSource,
+                      streak: stepRes.streak,
+                      confirmed: stepRes.confirmed,
                     }
                   : null,
               );
 
+              if (!params.snapBioVerified || params.snapIsSpoof) {
+                bioVerifiedUnmatchedStartAt = 0;
+                setTurningHintPct(null);
+                setScanStage('scanning');
+                return;
+              }
+
               if (isAmbiguous) {
                 bioVerifiedUnmatchedStartAt = 0;
-                isLastVerifyAmbiguous = true;
                 setTurningHintPct(null);
-              } else if (temporal.confirmed || temporal.streakCount > 0) {
+                setScanStage('burst');
+              } else if (stepRes.confirmed || stepRes.streak > 0) {
                 bioVerifiedUnmatchedStartAt = 0;
-                isLastVerifyAmbiguous = false;
                 setTurningHintPct(null);
-              } else if (latestTemporalSim >= 0.62) {
-                if (bioVerifiedUnmatchedStartAt === 0 && params.snapBioVerified) {
-                  bioVerifiedUnmatchedStartAt = params.snapNow;
-                }
-                setTurningHintPct(Math.round(latestTemporalSim * 100));
+                setScanStage(stepRes.confirmed ? 'verifying' : 'burst');
               } else {
-                if (params.snapBioVerified && !params.snapIsSpoof && bioVerifiedUnmatchedStartAt === 0) {
+                if (bioVerifiedUnmatchedStartAt === 0) {
                   bioVerifiedUnmatchedStartAt = params.snapNow;
                 }
-                setTurningHintPct(null);
+                setTurningHintPct(
+                  evalRes.topSimilarity >= 0.45 && evalRes.topSimilarity < 0.6
+                    ? Math.round(evalRes.topSimilarity * 100)
+                    : null,
+                );
+                setScanStage('burst');
               }
 
               if (
-                temporal.confirmed &&
-                temporal.candidate &&
+                stepRes.confirmed &&
+                stepRes.candidate &&
                 params.snapBioVerified &&
                 !params.snapIsSpoof &&
                 !verifyingLockRef.current
               ) {
                 verifyingLockRef.current = true;
                 setScanStage('verifying');
-                const matchedConf = Math.round(temporal.confidencePercent);
+                const cand = stepRes.candidate;
+                const matchedConf = Math.round(evalRes.confidencePercent);
                 let didAuthenticate = false;
                 let blockedBySpoof = false;
                 let verifyNetworkFailed = false;
+                let serverNoTemplate = false;
                 try {
-                  const verifyRes = await apiClient.verifyFaceLogin(vector, livenessEvidence);
+                  const verifyRes = await apiClient.verifyFaceLogin(
+                    extracted.embedding,
+                    livenessEvidence,
+                  );
                   if (!active || !shouldContinueLoop || verifiedModalPayloadRef.current) {
                     return;
                   }
@@ -1660,6 +1721,8 @@ export function KioskBiometricLoginView({
                   }
                   if (verifyRes.failureReasons?.includes('BIOLOGICAL_SPOOF_BLOCKED')) {
                     blockedBySpoof = true;
+                  } else if (verifyRes.error === 'NO_ENROLLED_BIOMETRICS') {
+                    serverNoTemplate = true;
                   } else if (
                     verifyRes.matched &&
                     verifyRes.patient &&
@@ -1669,7 +1732,7 @@ export function KioskBiometricLoginView({
                     didAuthenticate = true;
                     const matchedEntry =
                       biometricIndexRef.current.find((e) => e.patientId === verifyRes.patient?.id) ??
-                      temporal.candidate;
+                      cand.sourceEntry;
                     const nextPayload = buildKioskLoginSuccessPayload({
                       patient: verifyRes.patient,
                       todayRoutine: verifyRes.todayRoutine ?? null,
@@ -1693,157 +1756,57 @@ export function KioskBiometricLoginView({
                   }
                 }
 
-                // Offline-only fallback: strictly require network failure AND 5/5 unanimous local consensus >= 88%
+                // Local-Vault fallback only when server is offline or lacks synced 1024-D vectors yet,
+                // AND local 3/3 Human-faceres consensus passes threshold + margin without spoof/ambiguity
                 if (
-                  verifyNetworkFailed &&
+                  (verifyNetworkFailed || serverNoTemplate) &&
                   !didAuthenticate &&
                   !blockedBySpoof &&
+                  !isLastVerifyAmbiguous &&
                   params.snapBioVerified &&
                   !params.snapIsSpoof &&
-                  temporal.confidencePercent >= 88 &&
-                  temporal.streakCount >= 5 &&
-                  !excludedPatientIdsRef.current.includes(temporal.candidate.patientId)
+                  evalRes.topSimilarity >= 0.6 &&
+                  stepRes.streak >= BIOMETRIC_REQUIRED_STREAK &&
+                  !excludedPatientIdsRef.current.includes(cand.patientId)
                 ) {
                   didAuthenticate = true;
-                  const cand = temporal.candidate;
+                  const entry = cand.sourceEntry;
                   const nextPayload = buildKioskLoginSuccessPayload({
                     patient: {
-                      id: cand.patientId,
-                      hn: cand.hn,
-                      fullName: cand.fullName,
-                      nextAppointmentDate: cand.nextAppointmentDate,
+                      id: entry.patientId,
+                      hn: entry.hn,
+                      fullName: entry.fullName,
+                      nextAppointmentDate: entry.nextAppointmentDate,
                     },
-                    todayRoutine: cand.todayRoutine ?? null,
+                    todayRoutine: entry.todayRoutine ?? null,
                     confidencePercent: matchedConf,
-                    rehabSchedules: cand.rehabSchedules,
-                    serverTodayExercises: cand.todayExercises,
-                    serverCompletedToday: cand.completedToday,
-                    indexEntry: cand,
+                    rehabSchedules: entry.rehabSchedules,
+                    serverTodayExercises: entry.todayExercises,
+                    serverCompletedToday: entry.completedToday,
+                    indexEntry: entry,
                   });
                   openVerifiedModal(nextPayload);
                   return;
                 }
 
-                temporalMatcherRef.current.reset();
-                setLiveMatchHud(null);
-                void apiClient
-                  .getBiometricIndex()
-                  .then((entries) => {
-                    if (active) {
-                      biometricIndexRef.current = entries;
-                      setDbAccountCount(entries.length);
-                    }
-                  })
-                  .catch(() => {});
-              }
-            }
-
-            if (!verifyingLockRef.current && !verifiedModalPayloadRef.current) {
-              if (!params.snapBioVerified || params.snapIsSpoof) {
-                loginCtrlRef.current.reset();
-                bioVerifiedUnmatchedStartAt = 0;
-                isLastVerifyAmbiguous = false;
-                lastBurstEngine = '';
-                setTurningHintPct(null);
-                burstStarted = false;
+                streakTrackerRef.current.reset();
                 setBurstCount(0);
-                setScanStage('scanning');
-              } else {
-                if (biometricIndexRef.current.length === 0 && bioVerifiedUnmatchedStartAt === 0) {
-                  bioVerifiedUnmatchedStartAt = params.snapNow;
-                }
-                if (!burstStarted || (lastBurstEngine !== '' && lastBurstEngine !== engine)) {
-                  loginCtrlRef.current.reset();
-                  loginCtrlRef.current.startCountdownComplete();
-                  burstStarted = true;
-                }
-                lastBurstEngine = engine;
+                setLiveMatchHud(null);
+                void refreshBiometricCandidates();
                 setScanStage('burst');
-                const push = loginCtrlRef.current.pushFrame({
-                  vector,
-                  qualityScore: 0.95,
-                  capturedAfterCountdown: true,
-                  pose: 'front',
-                  sharpness: 85,
-                  yaw: canonicalYawDeg,
-                  pitch: params.snapPitchDeg,
-                });
-                setBurstCount(push.collected);
+                return;
+              }
 
-                if (push.readyToVerify) {
-                  verifyingLockRef.current = true;
-                  setScanStage('verifying');
-                  const probe = loginCtrlRef.current.buildProbeCentroid();
-                  let didFinishRound = false;
-                  try {
-                    const verifyRes = await apiClient.verifyFaceLogin(probe, livenessEvidence);
-                    if (!active || !shouldContinueLoop || verifiedModalPayloadRef.current) {
-                      return;
-                    }
-                    setLastVerifyResult(verifyRes);
-                    if (verifyRes.error === 'AMBIGUOUS_CLOSE_CANDIDATES') {
-                      isLastVerifyAmbiguous = true;
-                      setAmbiguousCloseHint(true);
-                    } else {
-                      isLastVerifyAmbiguous = false;
-                    }
-                    if (
-                      verifyRes.matched &&
-                      verifyRes.patient &&
-                      verifyRes.confidencePercent >= 80 &&
-                      !excludedPatientIdsRef.current.includes(verifyRes.patient.id)
-                    ) {
-                      const verifiedPatientId = verifyRes.patient.id;
-                      const matchedEntry = biometricIndexRef.current.find(
-                        (e) => e.patientId === verifiedPatientId,
-                      );
-                      didFinishRound = true;
-                      const nextPayload = buildKioskLoginSuccessPayload({
-                        patient: verifyRes.patient,
-                        todayRoutine: verifyRes.todayRoutine ?? null,
-                        confidencePercent: verifyRes.confidencePercent,
-                        rehabSchedules: verifyRes.rehabSchedules,
-                        serverTodayExercises: verifyRes.todayExercises,
-                        serverCompletedToday: verifyRes.completedToday,
-                        indexEntry: matchedEntry,
-                      });
-                      openVerifiedModal(nextPayload);
-                      return;
-                    }
-                  } catch {
-                    if (!active || !shouldContinueLoop || verifiedModalPayloadRef.current) {
-                      return;
-                    }
-                  } finally {
-                    if (!didFinishRound) {
-                      verifyingLockRef.current = false;
-                    }
-                  }
-                  const unmatched = loginCtrlRef.current.recordUnmatchedRound();
-                  burstStarted = false;
-                  setBurstCount(0);
-
-                  const noPatientsInDb = biometricIndexRef.current.length === 0;
-                  const unmatchedElapsed =
-                    bioVerifiedUnmatchedStartAt > 0 ? params.snapNow - bioVerifiedUnmatchedStartAt : 0;
-                  const activeStreak = temporalMatcherRef.current.currentStreak;
-                  if (
-                    !isLastVerifyAmbiguous &&
-                    activeStreak === 0 &&
-                    ((noPatientsInDb && unmatchedElapsed >= 2500) ||
-                      (unmatched.rounds >= 2 && unmatchedElapsed >= 2600) ||
-                      unmatchedElapsed >= 4500)
-                  ) {
-                    shouldContinueLoop = false;
-                    setScanStage('not_found');
-                    return;
-                  }
-                  setScanStage('burst');
-                }
+              const unmatchedElapsed =
+                bioVerifiedUnmatchedStartAt > 0 ? params.snapNow - bioVerifiedUnmatchedStartAt : 0;
+              if (!isLastVerifyAmbiguous && stepRes.streak === 0 && unmatchedElapsed >= 4500) {
+                shouldContinueLoop = false;
+                setScanStage('not_found');
+                return;
               }
             }
           } catch {
-            // Keep async matcher resilient across transient ONNX / API errors
+            // Keep async matcher resilient across transient detector / API errors
           } finally {
             asyncMatchInFlight = false;
           }
@@ -2039,82 +2002,47 @@ export function KioskBiometricLoginView({
                             confirmFaceCycle % 4 === 0 ||
                             !cachedConfirmOwnerVerified)
                         ) {
-                          if (!confirmAlignCanvas) {
-                            confirmAlignCanvas = document.createElement('canvas');
+                          if (!confirmSnapCanvas) {
+                            confirmSnapCanvas = document.createElement('canvas');
                           }
-                          if (!confirmRoiCanvas) {
-                            confirmRoiCanvas = document.createElement('canvas');
-                          }
-                          const faceCrop = alignFaceTo112(
+                          const confirmRawBox = computeBoundingBoxFromLandmarks(primaryLm);
+                          const snapCanvas = captureCanonicalFaceSnapshot(
                             v,
-                            primaryLm,
-                            confirmAlignCanvas,
-                            confirmRoiCanvas,
+                            confirmRawBox,
+                            confirmSnapCanvas,
                           );
-                          if (faceCrop) {
-                            const clonedCrop = {
-                              width: faceCrop.width,
-                              height: faceCrop.height,
-                              data: new Uint8ClampedArray(faceCrop.data),
-                            };
-                            const ownerEngine = detectBiometricVectorEngine(
-                              verifiedPayload.biometricTemplate.masterEmbedding,
-                              verifiedPayload.biometricTemplate.biometricEngine,
-                            );
-                            const ownerIsLegacyV1 = ownerEngine === 'legacy-v1';
-                            const ownerIsHybridV2 = ownerEngine === 'hybrid-v2';
+                          if (snapCanvas) {
                             const snapLm = primaryLm.map((p) => ({ x: p.x, y: p.y, z: p.z }));
                             const snapEffCount = effCount;
                             const snapW = v.videoWidth || 1280;
                             const snapH = v.videoHeight || 720;
                             const snapTemplate = verifiedPayload.biometricTemplate;
                             confirmEmbedInFlight = true;
-                            void extractDualFlipFaceEmbedding(clonedCrop, snapLm, {
-                              includeLegacyV1: ownerIsLegacyV1,
-                              includeHybridV2: ownerIsHybridV2,
-                              fastArcFacePrimaryOnly: true,
-                            })
-                              .then(
-                                ({
-                                  vector,
-                                  mirroredVector,
-                                  hybridV2Vector,
-                                  mirroredHybridV2Vector,
-                                  legacyV1Vector,
-                                  mirroredLegacyV1Vector,
-                                  engine: probeEngine,
-                                }) => {
-                                  if (!active || !verifiedModalPayloadRef.current) return;
-                                  const livePose = evaluateLivenessAndPose(
-                                    snapLm,
-                                    null,
-                                    snapEffCount,
-                                  );
-                                  const rollDeg = computeEyeRollAngleDeg(snapLm, snapW, snapH);
-                                  const probeRatios = extractGeometricAnthropometricRatios(snapLm);
-                                  const ownerCheck = verifyOwnerFace1to1({
-                                    probeVector: vector,
-                                    mirroredProbeVector: mirroredVector,
-                                    probeEngine,
-                                    ...(hybridV2Vector ? { hybridV2ProbeVector: hybridV2Vector } : {}),
-                                    ...(mirroredHybridV2Vector
-                                      ? { mirroredHybridV2ProbeVector: mirroredHybridV2Vector }
-                                      : {}),
-                                    ...(legacyV1Vector ? { legacyV1ProbeVector: legacyV1Vector } : {}),
-                                    ...(mirroredLegacyV1Vector
-                                      ? { mirroredLegacyV1ProbeVector: mirroredLegacyV1Vector }
-                                      : {}),
-                                    yawDeg: -livePose.yawDeg,
-                                    pitchDeg: livePose.pitchDeg,
-                                    rollDeg,
-                                    probeRatios,
-                                    ownerTemplate: snapTemplate,
-                                  });
-                                  if (ownerCheck.hasTemplate) {
-                                    cachedConfirmOwnerVerified = ownerCheck.matched;
-                                  }
-                                },
-                              )
+                            void extractCanonicalFaceDescriptor(snapCanvas)
+                              .then((extracted) => {
+                                if (!active || !verifiedModalPayloadRef.current || !extracted.embedding) {
+                                  return;
+                                }
+                                const livePose = evaluateLivenessAndPose(
+                                  snapLm,
+                                  null,
+                                  snapEffCount,
+                                );
+                                const rollDeg = computeEyeRollAngleDeg(snapLm, snapW, snapH);
+                                const probeRatios = extractGeometricAnthropometricRatios(snapLm);
+                                const ownerCheck = verifyOwnerFace1to1({
+                                  probeVector: extracted.embedding,
+                                  probeEngine: BIOMETRIC_ENGINE_ID,
+                                  yawDeg: -livePose.yawDeg,
+                                  pitchDeg: livePose.pitchDeg,
+                                  rollDeg,
+                                  probeRatios,
+                                  ownerTemplate: snapTemplate,
+                                });
+                                if (ownerCheck.hasTemplate) {
+                                  cachedConfirmOwnerVerified = ownerCheck.matched;
+                                }
+                              })
                               .catch(() => {})
                               .finally(() => {
                                 confirmEmbedInFlight = false;
@@ -2425,13 +2353,11 @@ export function KioskBiometricLoginView({
                 if (unreadyFrameStreak >= 18 && !verifyingLockRef.current && !asyncMatchInFlight) {
                   setLiveMatchHud(null);
                   setTurningHintPct(null);
-                  temporalMatcherRef.current.reset();
-                  loginCtrlRef.current.reset();
+                  streakTrackerRef.current.reset();
                   bioLivenessRef.current.reset();
                   bioVerifiedUnmatchedStartAt = 0;
                   isLastVerifyAmbiguous = false;
                   setBioReport(null);
-                  burstStarted = false;
                   setBurstCount(0);
                   setScanStage('scanning');
                 }
@@ -2596,11 +2522,9 @@ export function KioskBiometricLoginView({
                     !verifyingLockRef.current &&
                     !asyncMatchInFlight
                   ) {
-                    temporalMatcherRef.current.reset();
-                    loginCtrlRef.current.reset();
+                    streakTrackerRef.current.reset();
                     bioVerifiedUnmatchedStartAt = 0;
                     isLastVerifyAmbiguous = false;
-                    burstStarted = false;
                     setBurstCount(0);
                     setLiveMatchHud(null);
                     setTurningHintPct(null);
@@ -2609,46 +2533,43 @@ export function KioskBiometricLoginView({
                   }
                 } else {
                   unreadyFrameStreak = 0;
-                  // Dispatch ArcFace ONNX embedding + 1:N match asynchronously so 60 FPS face tracking NEVER pauses
+                  // Dispatch single shared @vladmandic/human (1024-D) extraction + 1:N match asynchronously
+                  // so the 60 FPS GPU landmark canvas NEVER pauses or stutters
                   if (
                     !asyncMatchInFlight &&
                     !verifyingLockRef.current &&
-                    crop &&
                     bio &&
                     meanEar >= 0.19 &&
                     now - lastEmbedCheckAt >= 120
                   ) {
-                    lastEmbedCheckAt = now;
-                    const snapCrop = {
-                      width: crop.width,
-                      height: crop.height,
-                      data: new Uint8ClampedArray(crop.data),
-                    };
-                    const snapLandmarks = landmarks.map((p) => ({ x: p.x, y: p.y, z: p.z }));
-                    void runAsyncBiometricMatchStep({
-                      snapCrop,
-                      snapLandmarks,
-                      snapVideoW: videoRef.current.videoWidth || 1280,
-                      snapVideoH: videoRef.current.videoHeight || 720,
-                      snapYawDeg: liveness.yawDeg,
-                      snapPitchDeg: liveness.pitchDeg,
-                      snapDepthScore: liveness.depthScore,
-                      snapMicroMotion: liveness.microMotion,
-                      snapBlinkDetected: liveness.blinkDetected,
-                      snapFaceHeightRatio: rawBox?.height ?? bio.faceScale,
-                      snapBioVerified: bio.biologicalVerified,
-                      snapBioBlinkVerified: bio.blinkVerified,
-                      snapBioHeadPoseVerified: bio.headPoseVerified,
-                      snapBioLipMotionVerified: bio.lipMotionVerified,
-                      snapBioLongRangeMotionVerified: bio.longRangeMotionVerified,
-                      snapBioNonRigidMotion: bio.nonRigidMotion,
-                      snapBioNonRigidScore: bio.nonRigidScore,
-                      snapBioRppgScore: bio.rppgScore,
-                      snapBioSpoofScore: bio.spoofScore,
-                      snapBioBlinkCount: bio.blinkCount,
-                      snapIsSpoof: isFrameSpoof,
-                      snapNow: now,
-                    });
+                    if (!matchSnapCanvasRef.current) {
+                      matchSnapCanvasRef.current = document.createElement('canvas');
+                    }
+                    const snapCanvas = captureCanonicalFaceSnapshot(
+                      videoRef.current,
+                      rawBox ?? rawBoxForBio,
+                      matchSnapCanvasRef.current,
+                    );
+                    if (snapCanvas) {
+                      lastEmbedCheckAt = now;
+                      const snapLandmarks = landmarks.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+                      void runAsyncBiometricMatchStep({
+                        snapCanvas,
+                        snapLandmarks,
+                        snapVideoW: videoRef.current.videoWidth || 1280,
+                        snapVideoH: videoRef.current.videoHeight || 720,
+                        snapYawDeg: liveness.yawDeg,
+                        snapPitchDeg: liveness.pitchDeg,
+                        snapFaceHeightRatio: rawBox?.height ?? bio.faceScale,
+                        snapBioVerified: bio.biologicalVerified,
+                        snapBioNonRigidScore: bio.nonRigidScore,
+                        snapBioRppgScore: bio.rppgScore,
+                        snapBioSpoofScore: bio.spoofScore,
+                        snapBioBlinkCount: bio.blinkCount,
+                        snapIsSpoof: isFrameSpoof,
+                        snapNow: now,
+                      });
+                    }
                   }
                 }
               }
@@ -2676,7 +2597,15 @@ export function KioskBiometricLoginView({
       active = false;
       stopMediaAndDetectors();
     };
-  }, [apiClient, cameraPaused, isNotFoundStage, scanGeneration, showPinModal, staffModalOpen]);
+  }, [
+    apiClient,
+    cameraPaused,
+    isNotFoundStage,
+    refreshBiometricCandidates,
+    scanGeneration,
+    showPinModal,
+    staffModalOpen,
+  ]);
 
   const handleCallStaff = async () => {
     try {
@@ -2997,7 +2926,7 @@ export function KioskBiometricLoginView({
                       <div>YawΔ: {bioReport?.deltaYawDeg.toFixed(1) ?? '0.0'}°</div>
                       <div>Spoof: {Math.round((bioReport?.spoofScore ?? 0) * 100)}%</div>
                       <div>rPPG: {Math.round((bioReport?.rppgScore ?? 0) * 100)}%</div>
-                      <div>Burst: {burstCount}/{BURST_FRAME_COUNT}</div>
+                      <div>Burst: {burstCount}/{BIOMETRIC_REQUIRED_STREAK}</div>
                     </div>
                     {lastVerifyResult?.topCandidate && (
                       <div className="text-[10px] text-emerald-300 pt-1 border-t border-slate-800">
@@ -3061,7 +2990,7 @@ export function KioskBiometricLoginView({
                           {c.liveMatchVerified}: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
                         </div>
                         <div className="mt-0.5 text-xs font-bold text-[#0F4C81]">
-                          {lang === 'en' ? 'Signing in...' : lang === 'cn' ? '正在登录...' : 'กำลังเข้าสู่ระบบ...'} • {c.liveMatchAccuracy}: {liveMatchHud.confidencePercent.toFixed(1)}% ({liveMatchHud.streak}/5 {c.framesUnit})
+                          {lang === 'en' ? 'Signing in...' : lang === 'cn' ? '正在登录...' : 'กำลังเข้าสู่ระบบ...'} • {c.liveMatchAccuracy}: {liveMatchHud.confidencePercent.toFixed(1)}% ({liveMatchHud.streak}/{BIOMETRIC_REQUIRED_STREAK} {c.framesUnit})
                         </div>
                       </div>
                     ) : ambiguousCloseHint ? (
@@ -3079,13 +3008,13 @@ export function KioskBiometricLoginView({
                           {c.turnHeadPrefix} {turningHintPct}{c.turnHeadSuffix}
                         </div>
                         <div className="mt-0.5 text-[11px] font-semibold text-[#0284C7]">
-                          {c.liveVerified} ({burstCount}/{BURST_FRAME_COUNT})
+                          {c.liveVerified} ({burstCount}/{BIOMETRIC_REQUIRED_STREAK})
                         </div>
                       </div>
                     ) : (
                       <div className="absolute left-1/2 top-full mt-2.5 w-max max-w-[360px] -translate-x-1/2 rounded-2xl border-2 border-[#10B981] bg-emerald-50/95 px-4 py-2 text-center backdrop-blur-md shadow-xl">
                         <div className="text-sm font-black text-emerald-800">
-                          {c.distancePrefix}: {(bioReport?.estimatedDistanceM ?? 1.8).toFixed(1)} {c.distanceUnit} • {c.verifying} ({burstCount}/{BURST_FRAME_COUNT})
+                          {c.distancePrefix}: {(bioReport?.estimatedDistanceM ?? 1.8).toFixed(1)} {c.distanceUnit} • {c.verifying} ({burstCount}/{BIOMETRIC_REQUIRED_STREAK})
                         </div>
                         <div className="mt-0.5 text-[11px] font-semibold text-[#0284C7]">
                           {c.liveVerified}
@@ -3137,6 +3066,43 @@ export function KioskBiometricLoginView({
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Live Biometric Debug HUD — displays synced vault accounts & real-time 1:N top/runner-up scores */}
+          <div
+            data-testid="kiosk-biometric-debug-hud"
+            className="mt-2 rounded-xl border border-sky-200/90 bg-slate-900/95 px-3 py-2 text-[11px] sm:text-xs font-mono text-slate-100 shadow-sm flex flex-wrap items-center justify-between gap-x-3 gap-y-1 shrink-0"
+          >
+            <div className="flex items-center gap-2">
+              <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
+              <span className="font-bold text-emerald-300">
+                คลังใบหน้า: {liveDebugHud?.validAccounts ?? dbAccountCount} บัญชี
+              </span>
+              {(liveDebugHud?.legacyAccounts ?? legacyAccountCount) > 0 && (
+                <span className="text-amber-300">
+                  (ทั้งหมด {liveDebugHud?.totalAccounts ?? totalAccountCount} • บัญชีเก่ารออัปเดต{' '}
+                  {liveDebugHud?.legacyAccounts ?? legacyAccountCount})
+                </span>
+              )}
+            </div>
+            <div className="text-sky-200 truncate max-w-full">
+              {liveDebugHud?.topName ? (
+                <>
+                  กำลังเทียบ: <span className="font-bold text-white">{liveDebugHud.topName}</span>{' '}
+                  (ความตรงกัน {liveDebugHud.topPct.toFixed(1)}%
+                  {(liveDebugHud.validAccounts ?? dbAccountCount) > 1
+                    ? ` • อันดับสอง ${liveDebugHud.runnerUpPct.toFixed(1)}%`
+                    : ''}
+                  ) [{liveDebugHud.streak}/{liveDebugHud.requiredStreak}]
+                </>
+              ) : (liveDebugHud?.validAccounts ?? dbAccountCount) === 0 ? (
+                <span className="text-amber-200">
+                  กำลังเทียบ: ยังไม่มีเวกเตอร์ 1024-D ในคลัง (กรุณาลงทะเบียนหรืออัปเดตใบหน้า)
+                </span>
+              ) : (
+                <span className="text-slate-300">กำลังเทียบ: รอตรวจจับใบหน้า 1024-D... [0/{BIOMETRIC_REQUIRED_STREAK}]</span>
+              )}
+            </div>
           </div>
 
           {/* Primary Gradient Scan Button */}

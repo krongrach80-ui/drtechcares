@@ -14,12 +14,7 @@ import {
   alignFaceTo112,
   computeHeadZoneRoiFromFaceBox,
   evaluateLivenessAndPose,
-  extractArcFaceOnnxEmbedding,
   extractGeometricAnthropometricRatios,
-  extractHybrid512Descriptor,
-  flipImageDataHorizontally,
-  isArcFaceSessionReady,
-  preloadArcFaceOnnx,
   remapRoiLandmarksToFrame,
   renderUpscaledRoi256,
   selectClinicalCameraDeviceId,
@@ -27,8 +22,6 @@ import {
 } from '@drtechcares/face-client';
 import {
   evaluateFrameQuality,
-  l2Normalize,
-  trimOutlierVectorsAndAverage,
   type GeometricAnthropometricRatios,
 } from '@drtechcares/smart-biometric-core';
 import type { AngleEmbeddings5D } from '@drtechcares/api-client';
@@ -42,11 +35,13 @@ import {
   type VoiceCoachLanguage,
 } from './VoiceCoachBanner';
 import {
-  edgeFaceEnrollFinalize,
-  edgeFaceEnrollFrame,
-  edgeFaceEnrollStart,
-  probeEdgeVisionHealth,
-} from '../hooks/useEdgeVisionSocket';
+  BIOMETRIC_ENGINE_ID,
+  buildBiometricProfileFromSamples,
+  captureCanonicalFaceSnapshot,
+  extractCanonicalFaceDescriptor,
+  normalizeVector,
+  warmupBiometricEngine,
+} from '../lib/biometricEngine';
 
 export type Bucket5Key = keyof AngleEmbeddings5D; // 'center' | 'left' | 'right' | 'up' | 'down'
 export type AngleSnapshots5D = Record<Bucket5Key, string>;
@@ -54,7 +49,8 @@ export type AngleSnapshots5D = Record<Bucket5Key, string>;
 export interface FaceID120Result {
   masterEmbedding: number[];
   angleEmbeddings: AngleEmbeddings5D;
-  biometricEngine?: 'arcface-onnx' | 'hybrid-512d';
+  exemplarEmbeddings?: number[][];
+  biometricEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
   geometricRatios?: GeometricAnthropometricRatios;
   framesCaptured: number;
   qualityScore: number;
@@ -281,11 +277,11 @@ const FACE_ID_120_UI_COPY: Record<
   }
 > = {
   th: {
-    preparingModel: 'กำลังเตรียมโมเดล Face Landmarker 3D...',
-    checkingEdge: 'กำลังตรวจสอบ Edge InsightFace Server...',
+    preparingModel: 'กำลังเตรียมโมเดล Deep FaceRes 1024-D & 3D Landmarker...',
+    checkingEdge: 'กำลังปลุก Shared Biometric Engine (@vladmandic/human)...',
     loadingWasm: 'กำลังโหลด MediaPipe Face Landmarker & WASM...',
-    readyEdge: 'พร้อมสแกนด้วย Edge InsightFace ArcFace 512-D',
-    readyWeb: 'พร้อมสแกนใบหน้า 3 มิติ (Hybrid 512-D Real-Time)',
+    readyEdge: 'พร้อมสแกนด้วย Shared Deep FaceRes 1024-D',
+    readyWeb: 'พร้อมสแกนใบหน้า 3 มิติ (Deep FaceRes 1024-D Real-Time)',
     placeFaceCircle: 'วางใบหน้าให้อยู่ในกรอบวงกลม',
     detecting3d: 'ระบบกำลังตรวจจับตำแหน่งใบหน้า 3 มิติ...',
     readyStartCue: 'เตรียมพร้อม... มองตรงเข้าหากล้องเพื่อเริ่มต้น',
@@ -428,7 +424,7 @@ function averageNormalizedEmbeddings(vectors: number[][]): number[] {
       sum[i] += vec[i] ?? 0;
     }
   }
-  return l2Normalize(sum);
+  return normalizeVector(sum);
 }
 
 function playSuccessChime() {
@@ -605,23 +601,9 @@ export default function FaceID120Scanner({
   const [targetBucketHint, setTargetBucketHint] = useState<Bucket5Key>('center');
   const [finalQualityPct, setFinalQualityPct] = useState(0);
   const [retryNonce, setRetryNonce] = useState(0);
-  const [edgeBackendActive, setEdgeBackendActive] = useState(false);
   const [completedAngleSnapshots, setCompletedAngleSnapshots] = useState<Partial<AngleSnapshots5D>>({});
 
-  const edgeSessionIdRef = useRef<string | null>(null);
   const samplesRef = useRef<CapturedSample[]>([]);
-  const keyframesRef = useRef<
-    Record<
-      Bucket5Key,
-      { image: { width: number; height: number; data: Uint8ClampedArray }; sharpness: number }[]
-    >
-  >({
-    center: [],
-    left: [],
-    right: [],
-    up: [],
-    down: [],
-  });
   const bucketCountsRef = useRef<Record<Bucket5Key, number>>({ ...bucketCounts });
   const prevLandmarksRef = useRef<Array<{ x: number; y: number; z?: number }> | null>(null);
   const lastCaptureAtRef = useRef(0);
@@ -994,8 +976,7 @@ export default function FaceID120Scanner({
   const finalizeScan = useCallback(async (): Promise<FaceID120Result | null> => {
     if (finalizedResultRef.current) return finalizedResultRef.current;
     if (finalizePromiseRef.current) return finalizePromiseRef.current;
-    const edgeSid = edgeSessionIdRef.current;
-    if (!edgeSid && samplesRef.current.length === 0) return null;
+    if (samplesRef.current.length === 0) return null;
 
     const currentLang = langRef.current;
     const copy = FACE_ID_120_UI_COPY[currentLang] ?? FACE_ID_120_UI_COPY.th;
@@ -1005,185 +986,25 @@ export default function FaceID120Scanner({
     setSubCueText(copy.computingSub);
 
     const run = async (): Promise<FaceID120Result | null> => {
-      if (edgeSid && samplesRef.current.length === 0) {
-        const edgeRes = await edgeFaceEnrollFinalize({
-          session_id: edgeSid,
-          hn,
-          persist_to_supabase: false,
-        });
-        if (unmountedRef.current) return null;
-
-        const visualBundle = await buildFinalAngleBundle(
-          edgeRes.frames_captured,
-          edgeRes.quality_score,
-          edgeRes.avatar_data_url,
-        );
-        if (unmountedRef.current) return null;
-        setCompletedAngleSnapshots(visualBundle.angleSnapshots);
-        const resultPayload: FaceID120Result = {
-          masterEmbedding: edgeRes.master_embedding,
-          angleEmbeddings: {
-            center: edgeRes.angle_embeddings.center ?? edgeRes.master_embedding,
-            left: edgeRes.angle_embeddings.left ?? edgeRes.master_embedding,
-            right: edgeRes.angle_embeddings.right ?? edgeRes.master_embedding,
-            up: edgeRes.angle_embeddings.up ?? edgeRes.master_embedding,
-            down: edgeRes.angle_embeddings.down ?? edgeRes.master_embedding,
-          },
-          framesCaptured: edgeRes.frames_captured,
-          qualityScore: edgeRes.quality_score,
-          avatarDataUrl: visualBundle.avatarDataUrl,
-          compositeSheetDataUrl: visualBundle.compositeSheetDataUrl,
-          angleSnapshots: visualBundle.angleSnapshots,
-          faceImageUrls: visualBundle.faceImageUrls,
-        };
-        finalizedResultRef.current = resultPayload;
-        const pct = Math.round(edgeRes.quality_score * 100);
-        const doneLang = langRef.current;
-        const doneCopy = FACE_ID_120_UI_COPY[doneLang] ?? FACE_ID_120_UI_COPY.th;
-        setFinalQualityPct(pct);
-        setPhase('completed');
-        setGuidanceText(doneCopy.completedHeading(edgeRes.frames_captured));
-        setSubCueText(doneCopy.completedSub(pct));
-        playSuccessChime();
-        speakGuidance(doneCopy.completedVoice, { force: true, speakLang: doneLang });
-        stopCameraHardware();
-        if (!unmountedRef.current) {
-          onCompleteRef.current(resultPayload);
-          onReadyStateChangeRef.current?.(true, async () => resultPayload);
-        }
-        return resultPayload;
-      }
-
       const samples = [...samplesRef.current];
       if (unmountedRef.current) return null;
 
-      // Wait briefly if ArcFace ONNX model (w600k_r50.onnx) is finishing background initialization
-      let arcReady = isArcFaceSessionReady();
-      if (!arcReady) {
-        arcReady = await Promise.race([
-          preloadArcFaceOnnx(),
-          new Promise<boolean>((resolve) => globalThis.setTimeout(() => resolve(false), 3500)),
-        ]);
-      }
-      if (unmountedRef.current) return null;
-
-      let biometricEngine: 'arcface-onnx' | 'hybrid-512d' = 'hybrid-512d';
-      let masterEmbedding: number[];
-      let angleEmbeddings: AngleEmbeddings5D;
-
-      const keyframesByBucket = keyframesRef.current;
-      const totalKeyframes = (Object.keys(BUCKET_TARGETS) as Bucket5Key[]).reduce(
-        (acc, b) => acc + (keyframesByBucket[b]?.length ?? 0),
-        0,
-      );
-
-      if (arcReady && totalKeyframes > 0) {
-        setSubCueText(
-          currentLang === 'en'
-            ? 'Extracting Deep ArcFace ResNet-50 (512-D) Facial Signature...'
-            : currentLang === 'cn'
-              ? '正在提取深度 ArcFace ResNet-50 (512 维) 面部特征...'
-              : 'กำลังสกัดอัตลักษณ์ใบหน้าลึก ArcFace ResNet-50 (512-D)...',
-        );
-        const arcByBucket: Record<Bucket5Key, { vec: number[]; quality: number }[]> = {
-          center: [],
-          left: [],
-          right: [],
-          up: [],
-          down: [],
-        };
-        const allArcItems: { vec: number[]; quality: number }[] = [];
-        try {
-          for (const b of Object.keys(BUCKET_TARGETS) as Bucket5Key[]) {
-            const kList = [...(keyframesByBucket[b] ?? [])]
-              .sort((x, y) => y.sharpness - x.sharpness)
-              .slice(0, b === 'center' ? 4 : 2);
-            for (const kf of kList) {
-              if (unmountedRef.current) return null;
-              const rawEmb = await extractArcFaceOnnxEmbedding(kf.image);
-              const flipEmb = await extractArcFaceOnnxEmbedding(
-                flipImageDataHorizontally(kf.image),
-              );
-              const avgEmb = l2Normalize(rawEmb.map((v, idx) => v + flipEmb[idx]));
-              const item = { vec: avgEmb, quality: kf.sharpness };
-              arcByBucket[b].push(item);
-              allArcItems.push(item);
-            }
-          }
-          if (allArcItems.length >= 3) {
-            biometricEngine = 'arcface-onnx';
-            masterEmbedding = trimOutlierVectorsAndAverage(allArcItems, 0.2);
-            angleEmbeddings = {
-              center:
-                arcByBucket.center.length > 0
-                  ? trimOutlierVectorsAndAverage(arcByBucket.center, 0.2)
-                  : masterEmbedding,
-              left:
-                arcByBucket.left.length > 0
-                  ? trimOutlierVectorsAndAverage(arcByBucket.left, 0.2)
-                  : masterEmbedding,
-              right:
-                arcByBucket.right.length > 0
-                  ? trimOutlierVectorsAndAverage(arcByBucket.right, 0.2)
-                  : masterEmbedding,
-              up:
-                arcByBucket.up.length > 0
-                  ? trimOutlierVectorsAndAverage(arcByBucket.up, 0.2)
-                  : masterEmbedding,
-              down:
-                arcByBucket.down.length > 0
-                  ? trimOutlierVectorsAndAverage(arcByBucket.down, 0.2)
-                  : masterEmbedding,
-            };
-          } else {
-            throw new Error('Insufficient ArcFace keyframes');
-          }
-        } catch {
-          biometricEngine = 'hybrid-512d';
-          const withEmbeddings = samples.filter((s) => s.embedding.length === 512);
-          const allItems = withEmbeddings.map((s) => ({ vec: s.embedding, quality: s.sharpness }));
-          masterEmbedding = trimOutlierVectorsAndAverage(allItems, 0.2);
-          const byBucket = (b: Bucket5Key) => {
-            const items = withEmbeddings
-              .filter((s) => s.bucket === b)
-              .map((s) => ({ vec: s.embedding, quality: s.sharpness }));
-            return items.length > 0 ? trimOutlierVectorsAndAverage(items, 0.2) : masterEmbedding;
-          };
-          angleEmbeddings = {
-            center: byBucket('center'),
-            left: byBucket('left'),
-            right: byBucket('right'),
-            up: byBucket('up'),
-            down: byBucket('down'),
-          };
-        }
-      } else {
-        const withEmbeddings = samples.filter((s) => s.embedding.length === 512);
-        const allItems = withEmbeddings.map((s) => ({ vec: s.embedding, quality: s.sharpness }));
-        // Outlier-Rejected Centroid: drops bottom 20% low-quality / outlier frames per bucket & overall
-        masterEmbedding = trimOutlierVectorsAndAverage(allItems, 0.2);
-
-        const byBucket = (b: Bucket5Key) => {
-          const items = withEmbeddings
-            .filter((s) => s.bucket === b)
-            .map((s) => ({ vec: s.embedding, quality: s.sharpness }));
-          return items.length > 0 ? trimOutlierVectorsAndAverage(items, 0.2) : masterEmbedding;
-        };
-        angleEmbeddings = {
-          center: byBucket('center'),
-          left: byBucket('left'),
-          right: byBucket('right'),
-          up: byBucket('up'),
-          down: byBucket('down'),
-        };
+      const profile = buildBiometricProfileFromSamples(samples, {
+        hn,
+        fullName: patientName,
+      });
+      if (!profile) {
+        return null;
       }
 
-      const withEmbeddings = samples.filter((s) => s.embedding.length === 512);
+      const masterEmbedding = profile.master_embedding;
+      const angleEmbeddings = profile.angle_embeddings;
+      const exemplarEmbeddings = profile.exemplar_embeddings;
 
-      const centerRatios = withEmbeddings
+      const centerRatios = samples
         .filter((s) => s.bucket === 'center' && s.geometricRatios)
         .map((s) => s.geometricRatios!);
-      const fallbackRatios = withEmbeddings
+      const fallbackRatios = samples
         .filter((s) => s.geometricRatios)
         .map((s) => s.geometricRatios!);
       const ratioPool = centerRatios.length >= 3 ? centerRatios : fallbackRatios;
@@ -1225,7 +1046,8 @@ export default function FaceID120Scanner({
       const resultPayload: FaceID120Result = {
         masterEmbedding,
         angleEmbeddings,
-        biometricEngine,
+        exemplarEmbeddings,
+        biometricEngine: BIOMETRIC_ENGINE_ID,
         ...(geometricRatios ? { geometricRatios } : {}),
         framesCaptured: samples.length,
         qualityScore,
@@ -1255,14 +1077,11 @@ export default function FaceID120Scanner({
 
     finalizePromiseRef.current = run();
     return finalizePromiseRef.current;
-  }, [buildFinalAngleBundle, hn, speakGuidance, stopCameraHardware]);
+  }, [buildFinalAngleBundle, hn, patientName, speakGuidance, stopCameraHardware]);
 
   const resetScannerState = useCallback(() => {
     const copy = FACE_ID_120_UI_COPY[langRef.current] ?? FACE_ID_120_UI_COPY.th;
-    edgeSessionIdRef.current = null;
-    setEdgeBackendActive(false);
     samplesRef.current = [];
-    keyframesRef.current = { center: [], left: [], right: [], up: [], down: [] };
     const emptyBucket: Record<Bucket5Key, number> = {
       center: 0,
       left: 0,
@@ -1309,11 +1128,8 @@ export default function FaceID120Scanner({
         setModelStatus('loading');
         setCameraError(null);
         setModelProgressMsg(initCopy.checkingEdge);
-        // Eagerly begin downloading & compiling Deep ArcFace ResNet-50 (w600k_r50.onnx) in parallel
-        void preloadArcFaceOnnx();
-
-        const edgeHealth = await probeEdgeVisionHealth(450);
-        if (cancelled) return;
+        // Warm up the Shared Biometric Engine (@vladmandic/human faceres 1024-D) in parallel with camera access
+        const humanWarmupPromise = warmupBiometricEngine();
 
         const preferredDeviceId = await selectClinicalCameraDeviceId();
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -1342,147 +1158,18 @@ export default function FaceID120Scanner({
         snapCanvas.height = 480;
         snapshotCanvasRef.current = snapCanvas;
 
-        // Always prefer Browser MediaPipe 478-point + extractHybrid512Descriptor (Path B)
-        // so enrollment embeddings stay 100% compatible with Kiosk login & /api/biometric/verify
-        // even when local edge-vision runs without InsightFace (ArcFace Fallback).
-        const useEdgeFaceEnrollment = false;
-        // Path A: Edge Vision InsightFace (buffalo_l ArcFace 512-D)
-        if (edgeHealth && useEdgeFaceEnrollment) {
-          try {
-            const edgeSess = await edgeFaceEnrollStart({
-              hn,
-              full_name: patientName,
-            });
-            if (cancelled) return;
-
-            if (edgeSess?.session_id) {
-              const readyLang = langRef.current;
-              const readyCopy = FACE_ID_120_UI_COPY[readyLang] ?? FACE_ID_120_UI_COPY.th;
-              const firstCue = getFaceId120TargetGuidance(readyLang, 'center');
-              edgeSessionIdRef.current = edgeSess.session_id;
-              setEdgeBackendActive(true);
-              setModelProgressMsg(readyCopy.readyEdge);
-              setModelStatus('ready');
-              setGuidanceText(`${firstCue.stepTitle} (0/120)`);
-              setSubCueText(firstCue.turnCue);
-              lastGuidedTargetRef.current = 'center';
-              speakGuidance(firstCue.voice, { force: true, interrupt: true, speakLang: readyLang });
-
-              const edgeCanvas = workCanvasRef.current || document.createElement('canvas');
-              edgeCanvas.width = 240;
-              edgeCanvas.height = 240;
-              workCanvasRef.current = edgeCanvas;
-
-              while (!cancelled && !completedRef.current) {
-                const vid = videoRef.current;
-                if (!vid || vid.readyState < 2 || vid.videoWidth <= 0) {
-                  await new Promise((r) => window.setTimeout(r, 60));
-                  continue;
-                }
-
-                const ectx = edgeCanvas.getContext('2d');
-                if (!ectx) break;
-                const side = Math.min(vid.videoWidth, vid.videoHeight);
-                const sx = Math.max(0, (vid.videoWidth - side) / 2);
-                const sy = Math.max(0, (vid.videoHeight - side) / 2);
-                ectx.save();
-                ectx.translate(240, 0);
-                ectx.scale(-1, 1);
-                ectx.drawImage(vid, sx, sy, side, side, 0, 0, 240, 240);
-                ectx.restore();
-
-                if (!hasSnapshotFrameRef.current) {
-                  const sctx = snapCanvas.getContext('2d');
-                  if (sctx) {
-                    sctx.save();
-                    sctx.translate(480, 0);
-                    sctx.scale(-1, 1);
-                    sctx.drawImage(vid, sx, sy, side, side, 0, 0, 480, 480);
-                    sctx.restore();
-                    hasSnapshotFrameRef.current = true;
-                  }
-                }
-
-                const image_base64 = edgeCanvas.toDataURL('image/jpeg', 0.78);
-                const state = await edgeFaceEnrollFrame({
-                  session_id: edgeSess.session_id,
-                  image_base64,
-                });
-                if (cancelled || completedRef.current) return;
-
-                const nextCounts: Record<Bucket5Key, number> = {
-                  center: state.bucket_counts.center ?? 0,
-                  left: state.bucket_counts.left ?? 0,
-                  right: state.bucket_counts.right ?? 0,
-                  up: state.bucket_counts.up ?? 0,
-                  down: state.bucket_counts.down ?? 0,
-                };
-                bucketCountsRef.current = nextCounts;
-                setBucketCounts(nextCounts);
-                setCapturedCount(state.frames_captured);
-
-                const poseKey = (['center', 'left', 'right', 'up', 'down'].includes(state.current_pose)
-                  ? state.current_pose
-                  : 'center') as Bucket5Key;
-                setActiveBucket(poseKey);
-                if (state.face_detected) {
-                  captureAngleFrameToCanvas(vid, poseKey, state.sharpness || 1);
-                }
-                const nextMissing = findNextMissingBucket(nextCounts);
-                setTargetBucketHint(nextMissing);
-                setLivePose({
-                  yaw: Math.round(state.yaw_deg),
-                  pitch: Math.round(state.pitch_deg),
-                  roll: Math.round(state.roll_deg),
-                  sharpness: Math.round(state.sharpness),
-                  faceDetected: state.face_detected,
-                });
-
-                const activeLang = langRef.current;
-                const activeCopy = FACE_ID_120_UI_COPY[activeLang] ?? FACE_ID_120_UI_COPY.th;
-                const cue = getFaceId120TargetGuidance(activeLang, nextMissing);
-                if (!state.face_detected) {
-                  setGuidanceText(activeCopy.placeFaceCircle);
-                  setSubCueText(activeCopy.noFaceDetectedSub);
-                } else {
-                  const isCapturingTarget = poseKey === nextMissing;
-                  if (lastGuidedTargetRef.current !== nextMissing) {
-                    lastGuidedTargetRef.current = nextMissing;
-                    speakGuidance(cue.voice, { force: true, speakLang: activeLang });
-                  } else if (!isCapturingTarget) {
-                    speakGuidance(cue.voice, { speakLang: activeLang });
-                  }
-                  setGuidanceText(`${cue.stepTitle} (${state.frames_captured}/120)`);
-                  setSubCueText(
-                    isCapturingTarget
-                      ? `${cue.holdCue} • ${nextCounts[nextMissing]}/${BUCKET_TARGETS[nextMissing]} ${activeCopy.angleFrameUnit}`
-                      : `${cue.turnCue} (${nextCounts[nextMissing]}/${BUCKET_TARGETS[nextMissing]} ${activeCopy.angleFrameUnit})`,
-                  );
-                }
-
-                if (state.frames_captured >= TOTAL_TICKS || state.phase === 'completed') {
-                  readyNotifiedRef.current = true;
-                  await finalizeScan();
-                  return;
-                }
-
-                await new Promise((r) => window.setTimeout(r, 45));
-              }
-              return;
-            }
-          } catch {
-            // Fall through gracefully to browser MediaPipe Web AI
-            edgeSessionIdRef.current = null;
-            setEdgeBackendActive(false);
-          }
-        }
-
-        // Path B: Auto-Fallback to Browser MediaPipe Web AI
+        // Single Shared Deep Neural Face Engine + MediaPipe 478-pt Pose Ring
         const loadCopy = FACE_ID_120_UI_COPY[langRef.current] ?? FACE_ID_120_UI_COPY.th;
         setModelProgressMsg(loadCopy.loadingWasm);
 
-        const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
+        const [humanReady, vision] = await Promise.all([
+          humanWarmupPromise,
+          FilesetResolver.forVisionTasks('/mediapipe/wasm'),
+        ]);
         if (cancelled) return;
+        if (!humanReady) {
+          throw new Error('Failed to load shared deep face biometric engine (@vladmandic/human)');
+        }
 
         let landmarker: FaceLandmarker | null = null;
         for (const delegate of ['GPU', 'CPU'] as const) {
@@ -1557,6 +1244,8 @@ export default function FaceID120Scanner({
         workCanvas.height = 112;
         workCanvasRef.current = workCanvas;
         const roiZoomCanvas = document.createElement('canvas');
+        const neuralExtractCanvas = document.createElement('canvas');
+        let neuralExtractInFlight = false;
         let lastRegRoiBox: { x: number; y: number; width: number; height: number } | null = null;
         let regSweepIdx = 0;
 
@@ -1713,54 +1402,59 @@ export default function FaceID120Scanner({
             captureAngleFrameToCanvas(vid, angleForPhoto, quality.sharpness);
           }
           const totalSoFar = samplesRef.current.length;
+          const meanEar = (liveness.earLeft + liveness.earRight) * 0.5;
+          const minOpenEar = lastRegRoiBox && lastRegRoiBox.height < 0.22 ? 0.14 : 0.19;
 
-          // Capture frames only when the live head pose matches an unfilled target angle
-          if (captureBucket && totalSoFar < TOTAL_TICKS && now - lastCaptureAtRef.current >= 28) {
-            lastCaptureAtRef.current = now;
-            const embedding = extractHybrid512Descriptor(crop, landmarks3D);
-            const geometricRatios = extractGeometricAnthropometricRatios(landmarks3D);
-            const meanEar = (liveness.earLeft + liveness.earRight) / 2;
-            const maxKf = captureBucket === 'center' ? 6 : 3;
-            const kfArr = keyframesRef.current[captureBucket];
-            if (
-              meanEar >= 0.19 &&
-              (kfArr.length < maxKf || quality.sharpness > (kfArr[kfArr.length - 1]?.sharpness ?? 0))
-            ) {
-              kfArr.push({
-                image: {
-                  width: crop.width,
-                  height: crop.height,
-                  data: new Uint8ClampedArray(crop.data),
-                },
-                sharpness: quality.sharpness,
-              });
-              kfArr.sort((a, b) => b.sharpness - a.sharpness);
-              if (kfArr.length > maxKf) kfArr.length = maxKf;
-            }
-            samplesRef.current.push({
-              yawDeg,
-              pitchDeg,
-              sharpness: quality.sharpness,
-              bucket: captureBucket,
-              embedding,
-              geometricRatios,
-            });
-            bucketCountsRef.current = {
-              ...bucketCountsRef.current,
-              [captureBucket]: bucketCountsRef.current[captureBucket] + 1,
-            };
+          // Capture frames only when the live head pose matches an unfilled target angle & real face.embedding is extracted
+          if (
+            !neuralExtractInFlight &&
+            captureBucket &&
+            meanEar >= minOpenEar &&
+            totalSoFar < TOTAL_TICKS &&
+            now - lastCaptureAtRef.current >= 25
+          ) {
+            const snapInput = captureCanonicalFaceSnapshot(vid, lastRegRoiBox, neuralExtractCanvas);
+            if (snapInput) {
+              neuralExtractInFlight = true;
+              const snapYaw = yawDeg;
+              const snapPitch = pitchDeg;
+              const snapSharpness = quality.sharpness;
+              const snapGeom = extractGeometricAnthropometricRatios(landmarks3D);
+              void extractCanonicalFaceDescriptor(snapInput)
+                .then((desc) => {
+                  if (cancelled || completedRef.current || unmountedRef.current) return;
+                  if (!desc.embedding || desc.embedding.length < 128) return;
+                  const targetBkt = chooseCaptureBucket(snapYaw, snapPitch, bucketCountsRef.current);
+                  if (!targetBkt || samplesRef.current.length >= TOTAL_TICKS) return;
+                  lastCaptureAtRef.current = performance.now();
+                  samplesRef.current.push({
+                    yawDeg: snapYaw,
+                    pitchDeg: snapPitch,
+                    sharpness: snapSharpness,
+                    bucket: targetBkt,
+                    embedding: desc.embedding,
+                    geometricRatios: snapGeom,
+                  });
+                  bucketCountsRef.current = {
+                    ...bucketCountsRef.current,
+                    [targetBkt]: bucketCountsRef.current[targetBkt] + 1,
+                  };
+                  const nextTotalCount = samplesRef.current.length;
+                  setCapturedCount(nextTotalCount);
+                  setBucketCounts({ ...bucketCountsRef.current });
 
-            const nextTotal = samplesRef.current.length;
-            setCapturedCount(nextTotal);
-            setBucketCounts({ ...bucketCountsRef.current });
-
-            const allBucketsFilled = (Object.keys(BUCKET_TARGETS) as Bucket5Key[]).every(
-              (k) => bucketCountsRef.current[k] >= BUCKET_TARGETS[k],
-            );
-            if (allBucketsFilled || nextTotal >= TOTAL_TICKS) {
-              readyNotifiedRef.current = true;
-              void finalizeScan();
-              return;
+                  const allFilled = (Object.keys(BUCKET_TARGETS) as Bucket5Key[]).every(
+                    (k) => bucketCountsRef.current[k] >= BUCKET_TARGETS[k],
+                  );
+                  if (allFilled || nextTotalCount >= TOTAL_TICKS) {
+                    readyNotifiedRef.current = true;
+                    void finalizeScan();
+                  }
+                })
+                .catch(() => {})
+                .finally(() => {
+                  neuralExtractInFlight = false;
+                });
             }
           }
 
@@ -1850,9 +1544,7 @@ export default function FaceID120Scanner({
         <div className="flex items-center gap-2">
           <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-gradient-to-r from-emerald-50 to-sky-50 px-3 py-1 text-xs font-extrabold text-emerald-700 shadow-xs">
             <Sparkles className="h-3.5 w-3.5 text-emerald-600" />
-            {edgeBackendActive
-              ? 'Edge InsightFace 512-D • 120 เฟรม'
-              : 'iPhone-Style 3D Face ID • 120 เฟรม'}
+            Deep FaceRes 1024-D • 120 เฟรม
           </span>
           {patientName && (
             <span className="text-xs font-bold text-[#0F4C81]">

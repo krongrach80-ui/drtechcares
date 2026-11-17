@@ -76,7 +76,8 @@ export interface PatientBiometricIndexEntry {
   qualityScore: number;
   masterEmbedding: number[];
   angleEmbeddings: AngleEmbeddings5D;
-  biometricEngine?: 'arcface-onnx' | 'hybrid-512d';
+  exemplarEmbeddings?: number[][];
+  biometricEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
   geometricRatios?: GeometricAnthropometricRatios;
   extraEmbeddings?: number[][];
   todayRoutine?: DailyScheduleDay | null;
@@ -219,7 +220,8 @@ export interface PatientRecord {
   angleImageUrls?: Partial<Record<keyof AngleEmbeddings5D, string>>;
   masterEmbedding?: number[];
   angleEmbeddings?: AngleEmbeddings5D;
-  biometricEngine?: 'arcface-onnx' | 'hybrid-512d';
+  exemplarEmbeddings?: number[][];
+  biometricEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
   geometricRatios?: GeometricAnthropometricRatios;
   rehabSchedules?: RehabScheduleItem[];
   biometricHistory?: {
@@ -752,7 +754,8 @@ export class DrTechCaresApiClient {
       overallCentroid?: number[];
       frontalCentroid?: number[];
       angleEmbeddings?: AngleEmbeddings5D;
-      biometricEngine?: 'arcface-onnx' | 'hybrid-512d';
+      exemplarEmbeddings?: number[][];
+      biometricEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
       geometricRatios?: GeometricAnthropometricRatios;
       framesCaptured?: number;
       qualityScore?: number;
@@ -778,7 +781,13 @@ export class DrTechCaresApiClient {
           up: master,
           down: master,
         };
-    const resolvedEngine = vectors.biometricEngine ?? patient.biometricEngine;
+    const resolvedEngine =
+      vectors.biometricEngine ??
+      patient.biometricEngine ??
+      (master.length >= 768 ? 'human-faceres-1024d' : undefined);
+    const exemplars = (vectors.exemplarEmbeddings ?? patient.exemplarEmbeddings ?? [])
+      .filter((v) => Array.isArray(v) && v.length === master.length)
+      .map((v) => l2Normalize(v));
     const nextItem: PatientBiometricIndexEntry & { syncedAtMs: number } = {
       patientId: patient.id,
       hn: patient.hn,
@@ -791,6 +800,7 @@ export class DrTechCaresApiClient {
       qualityScore: vectors.qualityScore ?? 0.95,
       masterEmbedding: master,
       angleEmbeddings: angles,
+      ...(exemplars.length > 0 ? { exemplarEmbeddings: exemplars } : {}),
       ...(resolvedEngine ? { biometricEngine: resolvedEngine } : {}),
       ...(vectors.geometricRatios ? { geometricRatios: vectors.geometricRatios } : {}),
       todayRoutine: null,
@@ -872,7 +882,7 @@ export class DrTechCaresApiClient {
       yawDeg?: number;
       pitchDeg?: number;
       rollDeg?: number;
-      engine?: 'arcface-onnx' | 'hybrid-512d';
+      engine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
       mirroredProbeVector?: readonly number[];
       hybridV2ProbeVector?: readonly number[];
       mirroredHybridV2ProbeVector?: readonly number[];
@@ -996,7 +1006,8 @@ export class DrTechCaresApiClient {
     rawFrames?: { pose: 'front' | 'left' | 'right' | 'nod'; vector: number[]; qualityScore: number }[];
     masterEmbedding?: number[];
     angleEmbeddings?: AngleEmbeddings5D;
-    biometricEngine?: 'arcface-onnx' | 'hybrid-512d';
+    exemplarEmbeddings?: number[][];
+    biometricEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
     geometricRatios?: GeometricAnthropometricRatios;
     framesCaptured?: number;
     qualityScore?: number;
@@ -1020,7 +1031,8 @@ export class DrTechCaresApiClient {
       angleImageUrls?: Partial<Record<keyof AngleEmbeddings5D, string>>;
       masterEmbedding?: number[];
       angleEmbeddings?: AngleEmbeddings5D;
-      biometricEngine?: 'arcface-onnx' | 'hybrid-512d';
+      exemplarEmbeddings?: number[][];
+      biometricEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
       geometricRatios?: GeometricAnthropometricRatios;
       framesCaptured?: number;
       qualityScore?: number;

@@ -219,20 +219,75 @@ export async function hydrateStateFromSupabase(
     {
       masterEmbedding?: number[];
       angleEmbeddings?: AngleEmbeddings5D;
+      exemplarEmbeddings?: number[][];
+      biometricEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
       framesCaptured?: number;
       avatarUrl?: string;
     }
   >();
   const parseVec = (raw: unknown): number[] | undefined => parseEmbeddingVector(raw);
 
+  const parseExemplarList = (raw: unknown): number[][] => {
+    let source: unknown = raw;
+    if (typeof source === 'string' && source.trim().startsWith('[')) {
+      try {
+        source = JSON.parse(source);
+      } catch {
+        return [];
+      }
+    } else if (typeof source === 'string' && source.trim().startsWith('{')) {
+      try {
+        const obj = JSON.parse(source) as Record<string, unknown>;
+        source = obj.exemplar_embeddings ?? obj.exemplarEmbeddings;
+      } catch {
+        return [];
+      }
+    } else if (source && typeof source === 'object' && !Array.isArray(source)) {
+      const obj = source as Record<string, unknown>;
+      source = obj.exemplar_embeddings ?? obj.exemplarEmbeddings;
+    }
+    if (!Array.isArray(source)) return [];
+    const out: number[][] = [];
+    for (const item of source) {
+      const vec = parseVec(item);
+      if (vec && vec.length >= 128) {
+        out.push(vec);
+      }
+    }
+    return out;
+  };
+
+  const normalizeEngineTag = (
+    raw: unknown,
+    vec?: readonly number[],
+  ): 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d' | undefined => {
+    if (raw === 'human-faceres-1024d' || (vec && vec.length >= 768)) return 'human-faceres-1024d';
+    if (raw === 'arcface-onnx' || raw === 'hybrid-512d') return raw;
+    return undefined;
+  };
+
   const parseAngleObject = (raw: unknown): AngleEmbeddings5D | undefined => {
     let obj: Record<string, unknown> | undefined;
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-      obj = raw as Record<string, unknown>;
+      const rec = raw as Record<string, unknown>;
+      obj =
+        rec.angle_embeddings && typeof rec.angle_embeddings === 'object'
+          ? (rec.angle_embeddings as Record<string, unknown>)
+          : rec.angleEmbeddings && typeof rec.angleEmbeddings === 'object'
+            ? (rec.angleEmbeddings as Record<string, unknown>)
+            : rec;
     } else if (typeof raw === 'string' && raw.trim().startsWith('{')) {
       try {
         const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') obj = parsed as Record<string, unknown>;
+        if (parsed && typeof parsed === 'object') {
+          const rec = parsed as Record<string, unknown>;
+          obj =
+            rec.angle_embeddings && typeof rec.angle_embeddings === 'object'
+              ? (rec.angle_embeddings as Record<string, unknown>)
+              : rec.angleEmbeddings && typeof rec.angleEmbeddings === 'object'
+                ? (rec.angleEmbeddings as Record<string, unknown>)
+                : rec;
+        }
       } catch {
         return undefined;
       }
@@ -264,9 +319,12 @@ export async function hydrateStateFromSupabase(
         parseVec(row.face_embedding) ??
         parseVec(row.biometric_data) ??
         parsedAngles?.center;
+      const parsedExemplars = parseExemplarList(row.exemplar_embeddings ?? row.biometric_data);
       biometrics120ByPatient.set(pid, {
         masterEmbedding: parsedMaster,
         angleEmbeddings: parsedAngles,
+        exemplarEmbeddings: parsedExemplars.length > 0 ? parsedExemplars : undefined,
+        biometricEngine: normalizeEngineTag(row.biometric_engine, parsedMaster),
         framesCaptured: Number(row.frames_captured ?? 120),
         avatarUrl: typeof row.avatar_url === 'string' ? row.avatar_url : undefined,
       });
@@ -302,8 +360,17 @@ export async function hydrateStateFromSupabase(
 
       let fallbackAngles: AngleEmbeddings5D | undefined =
         b120?.angleEmbeddings ??
-        parseAngleObject(r.angle_embeddings ?? r.biometric_data) ??
+        parseAngleObject(r.angle_embeddings ?? r.face_embedding ?? r.biometric_data) ??
         parseAngleObject(history.angleEmbeddings);
+      const fallbackExemplars = (() => {
+        const fromB120 = b120?.exemplarEmbeddings ?? [];
+        const fromRow = parseExemplarList(r.face_embedding ?? r.biometric_data);
+        const fromHist = parseExemplarList(history.exemplarEmbeddings);
+        const chosen = fromB120.length > 0 ? fromB120 : fromRow.length > 0 ? fromRow : fromHist;
+        if (!fallbackMaster || chosen.length === 0) return undefined;
+        const matchedDim = chosen.filter((v) => v.length === fallbackMaster.length);
+        return matchedDim.length > 0 ? matchedDim : undefined;
+      })();
       if (!fallbackAngles && fallbackMaster) {
         const frontVec = tpl?.raw.find((f) => f.pose === 'front')?.vector ?? tpl?.frontal ?? fallbackMaster;
         const leftVec = tpl?.raw.find((f) => f.pose === 'left')?.vector ?? fallbackMaster;
@@ -504,10 +571,11 @@ export async function hydrateStateFromSupabase(
         angleImageUrls: hydratedAngleImageUrls,
         masterEmbedding: fallbackMaster,
         angleEmbeddings: fallbackAngles,
+        ...(fallbackExemplars ? { exemplarEmbeddings: fallbackExemplars } : {}),
         biometricEngine:
-          history.biometricEngine === 'arcface-onnx' || history.biometricEngine === 'hybrid-512d'
-            ? history.biometricEngine
-            : prevPatient?.biometricEngine,
+          normalizeEngineTag(b120?.biometricEngine, fallbackMaster) ??
+          normalizeEngineTag(history.biometricEngine, fallbackMaster) ??
+          normalizeEngineTag(prevPatient?.biometricEngine, fallbackMaster),
         geometricRatios:
           history.geometricRatios && typeof history.geometricRatios === 'object'
             ? (history.geometricRatios as GeometricAnthropometricRatios)

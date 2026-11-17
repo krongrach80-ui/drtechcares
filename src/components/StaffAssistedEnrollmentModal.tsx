@@ -30,6 +30,7 @@ import {
   X,
 } from 'lucide-react';
 import FaceID120Scanner, { type FaceID120Result } from './FaceID120Scanner';
+import { syncPatientBiometricEverywhere } from '../lib/biometricEngine';
 
 interface StaffAssistedEnrollmentModalProps {
   open: boolean;
@@ -431,6 +432,7 @@ export function StaffAssistedEnrollmentModal({
           rawFrames: compatRawFrames,
           masterEmbedding: bio.masterEmbedding,
           angleEmbeddings: bio.angleEmbeddings,
+          ...(bio.exemplarEmbeddings ? { exemplarEmbeddings: bio.exemplarEmbeddings } : {}),
           ...(bio.biometricEngine ? { biometricEngine: bio.biometricEngine } : {}),
           ...(bio.geometricRatios ? { geometricRatios: bio.geometricRatios } : {}),
           framesCaptured: bio.framesCaptured,
@@ -438,6 +440,16 @@ export function StaffAssistedEnrollmentModal({
           faceImageUrl: finalSnapshot,
           faceImageUrls: bio.faceImageUrls,
           angleImageUrls: bio.angleSnapshots,
+        });
+        await syncPatientBiometricEverywhere({
+          apiClient,
+          patient: updated,
+          masterEmbedding: bio.masterEmbedding,
+          angleEmbeddings: bio.angleEmbeddings,
+          exemplarEmbeddings: bio.exemplarEmbeddings,
+          geometricRatios: bio.geometricRatios,
+          framesCaptured: bio.framesCaptured,
+          qualityScore: bio.qualityScore,
         });
         setToastMsg('ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ!');
         setCreatedPatient(updated);
@@ -481,11 +493,25 @@ export function StaffAssistedEnrollmentModal({
         overallCentroid: !isPending && bio ? bio.masterEmbedding : undefined,
         masterEmbedding: !isPending && bio ? bio.masterEmbedding : undefined,
         angleEmbeddings: !isPending && bio ? bio.angleEmbeddings : undefined,
+        ...(!isPending && bio?.exemplarEmbeddings ? { exemplarEmbeddings: bio.exemplarEmbeddings } : {}),
         ...(!isPending && bio?.biometricEngine ? { biometricEngine: bio.biometricEngine } : {}),
-        ...( !isPending && bio?.geometricRatios ? { geometricRatios: bio.geometricRatios } : {} ),
+        ...(!isPending && bio?.geometricRatios ? { geometricRatios: bio.geometricRatios } : {}),
         framesCaptured: !isPending && bio ? bio.framesCaptured : 0,
         qualityScore: !isPending && bio ? bio.qualityScore : undefined,
       });
+
+      if (!isPending && bio) {
+        await syncPatientBiometricEverywhere({
+          apiClient,
+          patient: enrolled,
+          masterEmbedding: bio.masterEmbedding,
+          angleEmbeddings: bio.angleEmbeddings,
+          exemplarEmbeddings: bio.exemplarEmbeddings,
+          geometricRatios: bio.geometricRatios,
+          framesCaptured: bio.framesCaptured,
+          qualityScore: bio.qualityScore,
+        });
+      }
 
       if (customSchedules.length > 0 && (enrolled.rehabSchedules ?? []).length === 0) {
         const finalizedSchedules = customSchedules.map((s) => ({ ...s, patientId: enrolled.id }));

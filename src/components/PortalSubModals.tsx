@@ -24,17 +24,25 @@ import {
   BiologicalLivenessTracker,
   captureDownscaledContextFrame,
   evaluateLivenessAndPose,
-  extractFaceEmbeddingWithFallback,
   inspectBiometricFrame3D,
   selectClinicalCameraDeviceId,
   selectPrimaryFace,
   type BiologicalLivenessReport,
 } from '@drtechcares/face-client';
 import {
-  TemporalBiometricMatcher,
   computeBoundingBoxFromLandmarks,
   subscribeBiometricIndex,
 } from '../lib/faceMatcher';
+import {
+  BIOMETRIC_ENGINE_ID,
+  LiveIdentityStreakTracker,
+  captureCanonicalFaceSnapshot,
+  evaluateLiveMatch1toN,
+  extractCanonicalFaceDescriptor,
+  loadEnrolledPatientsWithBiometrics,
+  warmupBiometricEngine,
+  type EnrolledBiometricCandidate,
+} from '../lib/biometricEngine';
 import {
   Activity,
   CalendarDays,
@@ -287,8 +295,8 @@ export function WelcomeFaceScanModal({
   const { lang } = useClinicalI18n();
   const sm = SUBMODAL_TEXT[lang];
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const biometricIndexRef = useRef<PatientBiometricIndexEntry[]>([]);
-  const temporalMatcherRef = useRef(new TemporalBiometricMatcher(3, 0.78));
+  const biometricCandidatesRef = useRef<EnrolledBiometricCandidate[]>([]);
+  const streakTrackerRef = useRef(new LiveIdentityStreakTracker(3));
   const bioLivenessRef = useRef(new BiologicalLivenessTracker());
   const bioReportRef = useRef<BiologicalLivenessReport | null>(null);
   const confirmedLockRef = useRef(false);
@@ -314,9 +322,22 @@ export function WelcomeFaceScanModal({
 
   useEffect(() => {
     if (!open) return;
-    return subscribeBiometricIndex(apiClient, (entries) => {
-      biometricIndexRef.current = entries;
+    let mounted = true;
+    const syncVault = () => {
+      void loadEnrolledPatientsWithBiometrics(apiClient)
+        .then((res) => {
+          if (mounted) biometricCandidatesRef.current = res.compatibleCandidates;
+        })
+        .catch(() => {});
+    };
+    syncVault();
+    const unsub = subscribeBiometricIndex(apiClient, () => {
+      syncVault();
     });
+    return () => {
+      mounted = false;
+      unsub();
+    };
   }, [open, apiClient]);
 
   useEffect(() => {
@@ -336,13 +357,14 @@ export function WelcomeFaceScanModal({
     const roiCanvas = document.createElement('canvas');
     const contextCanvas = document.createElement('canvas');
 
+    void warmupBiometricEngine();
     bioLivenessRef.current.reset();
     bioReportRef.current = null;
     setBioStatus(null);
     setSpoofDetectedNow(false);
     confirmedLockRef.current = false;
-    temporalMatcherRef.current = new TemporalBiometricMatcher(3, 0.72);
-    temporalMatcherRef.current.reset();
+    streakTrackerRef.current = new LiveIdentityStreakTracker(3);
+    streakTrackerRef.current.reset();
     setMatchResult(null);
     setCameraError(null);
     setHudBox(null);
@@ -393,13 +415,13 @@ export function WelcomeFaceScanModal({
               const faceCount = selection.effectiveFaceCount;
               const lms = selection.primaryFace ? [...selection.primaryFace] : [];
 
-              if (faceCount !== 1 || lms.length < 300) {
+                if (faceCount !== 1 || lms.length < 300) {
                 setHudBox(null);
                 fallbackFrameCount = 0;
                 if (!confirmedLockRef.current) {
                   setLiveMatchHud(null);
                   setAutoScanCount(0);
-                  temporalMatcherRef.current.reset();
+                  streakTrackerRef.current.reset();
                   bioLivenessRef.current.reset();
                   bioReportRef.current = null;
                   setBioStatus(null);
@@ -435,7 +457,7 @@ export function WelcomeFaceScanModal({
                 });
                 bioReportRef.current = bio;
                 setBioStatus(bio);
-                const inspection = inspectBiometricFrame3D({
+                inspectBiometricFrame3D({
                   landmarks3D: lms,
                   prevLandmarks3D: prevLandmarks,
                   faceCount,
@@ -456,19 +478,20 @@ export function WelcomeFaceScanModal({
                 prevLandmarks = lms;
 
                 if (isSpoofFrame) {
-                  temporalMatcherRef.current.reset();
+                  streakTrackerRef.current.reset();
                   fallbackFrameCount = 0;
                   setAutoScanCount(0);
                   setLiveMatchHud(null);
                 } else if (!confirmedLockRef.current && now - lastEmbedAt >= 120) {
                   lastEmbedAt = now;
-                  if (crop) {
-                    const { vector } = await extractFaceEmbeddingWithFallback(crop, lms);
-                    if (!active) {
-                      shouldContinueLoop = false;
-                      return;
-                    }
-
+                  const snap = captureCanonicalFaceSnapshot(videoRef.current, rawBox);
+                  const extracted = snap ? await extractCanonicalFaceDescriptor(snap) : null;
+                  if (!active) {
+                    shouldContinueLoop = false;
+                    return;
+                  }
+                  const vector = extracted?.embedding;
+                  if (vector) {
                     const portalFaceH = rawBox?.height ?? bio.faceScale;
                     const livenessEvidence = {
                       biologicalVerified: bio.biologicalVerified,
@@ -477,51 +500,37 @@ export function WelcomeFaceScanModal({
                       nonRigidScore: bio.nonRigidScore,
                       rppgScore: bio.rppgScore,
                       faceHeightRatio: portalFaceH,
+                      engine: BIOMETRIC_ENGINE_ID,
                     };
 
-                    if (!confirmedLockRef.current && biometricIndexRef.current.length > 0) {
-                      const temporal = temporalMatcherRef.current.evaluateFrame(
-                        {
-                          probeVector: vector,
-                          yawDeg: liveness.yawDeg,
-                          pitchDeg: liveness.pitchDeg,
-                          depthScore: liveness.depthScore,
-                          microMotion: liveness.microMotion,
-                          blinkDetected:
-                            liveness.blinkDetected ||
-                            bio.blinkVerified ||
-                            bio.headPoseVerified ||
-                            bio.lipMotionVerified ||
-                            bio.longRangeMotionVerified,
-                          nonRigidMotion: bio.nonRigidMotion,
-                          biologicalVerified: bio.biologicalVerified,
-                          spoofDetected: isSpoofFrame,
-                          rppgScore: bio.rppgScore,
-                          faceHeightRatio: portalFaceH,
-                        },
-                        biometricIndexRef.current,
-                      );
+                    if (!confirmedLockRef.current && biometricCandidatesRef.current.length > 0) {
+                      const evalRes = evaluateLiveMatch1toN(vector, biometricCandidatesRef.current);
+                      const streakRes = streakTrackerRef.current.step(evalRes, {
+                        spoofDetected: isSpoofFrame,
+                        biologicalVerified: bio.biologicalVerified,
+                      });
 
-                      const isHudMatch = Boolean(temporal.candidate && temporal.streakCount > 0);
+                      const isHudMatch = Boolean(streakRes.candidate && streakRes.streak > 0);
                       setLiveMatchHud(
-                        isHudMatch && temporal.candidate
+                        isHudMatch && streakRes.candidate
                           ? {
-                              candidate: temporal.candidate,
-                              confidencePercent: temporal.confidencePercent,
-                              streak: temporal.streakCount,
-                              confirmed: temporal.confirmed,
+                              candidate: streakRes.candidate.sourceEntry,
+                              confidencePercent: streakRes.confidencePercent,
+                              streak: streakRes.streak,
+                              confirmed: streakRes.confirmed,
                             }
                           : null,
                       );
 
                       if (
-                        temporal.confirmed &&
-                        temporal.candidate &&
+                        streakRes.confirmed &&
+                        streakRes.candidate &&
                         bio.biologicalVerified &&
                         !confirmedLockRef.current
                       ) {
                         confirmedLockRef.current = true;
-                        const matchedConf = Math.round(temporal.confidencePercent);
+                        const matchedConf = Math.round(streakRes.confidencePercent);
+                        const localCand = streakRes.candidate;
                         let matchedNow = false;
                         try {
                           const verified = await apiClient.verifyFaceLogin(vector, livenessEvidence);
@@ -549,21 +558,35 @@ export function WelcomeFaceScanModal({
                             confirmedLockRef.current = false;
                           }
                         }
-                        temporalMatcherRef.current.reset();
+                        if (!matchedNow && localCand && streakRes.similarity >= 0.6) {
+                          confirmedLockRef.current = true;
+                          shouldContinueLoop = false;
+                          setMatchResult({
+                            matched: true,
+                            confidencePercent: matchedConf,
+                            patient: {
+                              id: localCand.patientId,
+                              hn: localCand.hn,
+                              fullName: localCand.fullName,
+                              nextAppointmentDate: localCand.nextAppointmentDate,
+                            },
+                          });
+                          return;
+                        }
+                        streakTrackerRef.current.reset();
                         setLiveMatchHud(null);
-                        void apiClient
-                          .getBiometricIndex()
-                          .then((entries) => {
-                            if (active) biometricIndexRef.current = entries;
+                        void loadEnrolledPatientsWithBiometrics(apiClient)
+                          .then((loaded) => {
+                            if (active) biometricCandidatesRef.current = loaded.compatibleCandidates;
                           })
                           .catch(() => {});
                       }
                     }
 
                     if (!confirmedLockRef.current && bio.biologicalVerified && now - lastServerVerifyAt >= 2500) {
-                      fallbackFrameCount = Math.min(5, fallbackFrameCount + 1);
+                      fallbackFrameCount = Math.min(3, fallbackFrameCount + 1);
                       setAutoScanCount(fallbackFrameCount);
-                      if (fallbackFrameCount >= 5) {
+                      if (fallbackFrameCount >= 3) {
                         confirmedLockRef.current = true;
                         let matchedFallback = false;
                         try {
@@ -649,31 +672,13 @@ export function WelcomeFaceScanModal({
     setScanning(true);
     setMatchResult(null);
     confirmedLockRef.current = false;
-    temporalMatcherRef.current.reset();
+    streakTrackerRef.current.reset();
     try {
       let probeVector: number[] | null = null;
       if (videoRef.current && videoRef.current.readyState >= 2) {
-        const canvas = document.createElement('canvas');
-        try {
-          const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
-          const landmarker = await FaceLandmarker.createFromOptions(vision, {
-            baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
-            runningMode: 'IMAGE',
-            numFaces: 2,
-            minFaceDetectionConfidence: 0.65,
-          });
-          const res = landmarker.detect(videoRef.current);
-          const selection = selectPrimaryFace(res.faceLandmarks ?? []);
-          const lms = selection.primaryFace ? [...selection.primaryFace] : [];
-          const crop = lms.length >= 300 ? alignFaceTo112(videoRef.current, lms, canvas) : null;
-          if (crop) {
-            const extracted = await extractFaceEmbeddingWithFallback(crop, lms);
-            probeVector = extracted.vector;
-          }
-          landmarker.close();
-        } catch {
-          probeVector = null;
-        }
+        const snap = captureCanonicalFaceSnapshot(videoRef.current);
+        const extracted = snap ? await extractCanonicalFaceDescriptor(snap) : null;
+        probeVector = extracted?.embedding ?? null;
       }
       if (!probeVector) {
         setMatchResult({
@@ -683,12 +688,27 @@ export function WelcomeFaceScanModal({
         });
         return;
       }
+      const localEval = evaluateLiveMatch1toN(probeVector, biometricCandidatesRef.current);
+      if (localEval.matched && localEval.topCandidate) {
+        setMatchResult({
+          matched: true,
+          confidencePercent: localEval.confidencePercent,
+          patient: {
+            id: localEval.topCandidate.patientId,
+            hn: localEval.topCandidate.hn,
+            fullName: localEval.topCandidate.fullName,
+            nextAppointmentDate: localEval.topCandidate.nextAppointmentDate,
+          },
+        });
+        return;
+      }
       const verified = await apiClient.verifyFaceLogin(probeVector, {
         biologicalVerified: bioNow.biologicalVerified,
         blinkCount: bioNow.blinkCount,
         spoofRisk: bioNow.spoofScore,
         nonRigidScore: bioNow.nonRigidScore,
         rppgScore: bioNow.rppgScore,
+        engine: BIOMETRIC_ENGINE_ID,
       });
       setMatchResult({
         matched: verified.matched,

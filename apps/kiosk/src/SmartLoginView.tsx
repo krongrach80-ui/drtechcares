@@ -5,10 +5,13 @@ import type { DrTechCaresApiClient, PatientRecord } from '@drtechcares/api-clien
 import {
   alignFaceTo112,
   evaluateLivenessAndPose,
-  extractFaceEmbeddingWithFallback,
   selectClinicalCameraDeviceId,
   SingleScanLoginController,
 } from '@drtechcares/face-client';
+import {
+  captureCanonicalFaceSnapshot,
+  extractCanonicalFaceDescriptor,
+} from '../../../src/lib/biometricEngine';
 import {
   BURST_FRAME_COUNT,
   evaluateFrameQuality,
@@ -111,9 +114,14 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
                   if (q.acceptable) {
                     setStatus('burst');
                     loginCtrlRef.current.startCountdownComplete();
-                    const { vector } = await extractFaceEmbeddingWithFallback(crop, landmarks);
+                    const snap = captureCanonicalFaceSnapshot(videoRef.current);
+                    const extracted = snap ? await extractCanonicalFaceDescriptor(snap) : null;
+                    if (!extracted?.embedding) {
+                      rafId = requestAnimationFrame(tick);
+                      return;
+                    }
                     const push = loginCtrlRef.current.pushFrame({
-                      vector,
+                      vector: extracted.embedding,
                       qualityScore: q.sharpness,
                       capturedAfterCountdown: true,
                       pose: 'front',

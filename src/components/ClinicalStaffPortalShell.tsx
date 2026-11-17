@@ -61,6 +61,7 @@ import {
 } from 'lucide-react';
 import { PhysicalCardGame } from '../../apps/kiosk/src/PhysicalCardGame';
 import { notifyBiometricIndexChanged } from '../lib/faceMatcher';
+import { removeProfileFromLocalBiometricVault } from '../lib/biometricEngine';
 import { StaffAssistedEnrollmentModal } from './StaffAssistedEnrollmentModal';
 import {
   PatientProfileAndHistoryModal,
@@ -386,7 +387,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       pendingBadge: 'ยังไม่สแกนใบหน้า',
       emrBtn: 'เวชระเบียน',
       scanFaceBtn: 'ส่งตัวสแกนหน้า',
-      updateFaceBtn: 'อัปเดตใบหน้า',
+      updateFaceBtn: 'สแกนอัปเดตใบหน้าใหม่',
       historyBtn: 'ดูประวัติการฝึก',
       deleteTitle: 'ลบประวัติ (เฉพาะ Admin)',
       emptyPatients: 'ไม่พบข้อมูลคนไข้ กด "+ ลงทะเบียนคนไข้ใหม่" เพื่อเพิ่มผู้ป่วย',
@@ -602,7 +603,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       pendingBadge: 'Scan Pending',
       emrBtn: 'EMR',
       scanFaceBtn: 'Face Scan',
-      updateFaceBtn: 'Update Face',
+      updateFaceBtn: 'Re-enroll Face',
       historyBtn: 'History',
       deleteTitle: 'Delete Record (Admin Only)',
       emptyPatients: 'No patients found. Click "+ Enroll New Patient" to register.',
@@ -2690,10 +2691,17 @@ export function ClinicalStaffPortalShell({
                           </td>
                           <td className="px-4 py-3.5">
                             {verified ? (
-                              <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-bold text-emerald-700">
-                                <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-                                {locale.patients.verifiedBadge}
-                              </span>
+                              <div className="space-y-1">
+                                <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-bold text-emerald-700">
+                                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                                  {locale.patients.verifiedBadge}
+                                </span>
+                                {(!p.masterEmbedding || p.masterEmbedding.length < 768) && (
+                                  <div className="text-[10px] font-semibold text-amber-700">
+                                    แนะนำอัปเดต 1024-D
+                                  </div>
+                                )}
+                              </div>
                             ) : (
                               <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-bold text-amber-800">
                                 <Clock className="h-3.5 w-3.5 shrink-0" />
@@ -2717,14 +2725,15 @@ export function ClinicalStaffPortalShell({
                                   setEnrollTargetPatient(p);
                                   setEnrollModalOpen(true);
                                 }}
-                                title={verified ? 'สแกนอัปเดตแม่แบบใบหน้า 120 เฟรมใหม่' : 'สแกนลงทะเบียนใบหน้า 120 เฟรม'}
-                                className={`whitespace-nowrap rounded-xl border px-2.5 py-1.5 text-[11px] font-bold cursor-pointer ${
+                                title="สแกนอัปเดตใบหน้าใหม่ (Re-enroll Face)"
+                                className={`whitespace-nowrap inline-flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-[11px] font-bold cursor-pointer ${
                                   verified
                                     ? 'border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100'
                                     : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
                                 }`}
                               >
-                                {verified ? locale.patients.updateFaceBtn : locale.patients.scanFaceBtn}
+                                <ScanFace className="h-3.5 w-3.5 shrink-0" />
+                                <span>{verified ? locale.patients.updateFaceBtn : locale.patients.scanFaceBtn}</span>
                               </button>
                               <button
                                 type="button"
@@ -2748,6 +2757,8 @@ export function ClinicalStaffPortalShell({
                                   onClick={async () => {
                                     if (!window.confirm(`ยืนยันลบข้อมูลคนไข้ ${p.fullName} (รวม Face ID)?`)) return;
                                     await apiClient.deletePatientCascading(p.id);
+                                    removeProfileFromLocalBiometricVault(p.id);
+                                    removeProfileFromLocalBiometricVault(p.hn);
                                     notifyBiometricIndexChanged();
                                     flashBanner('success', `ลบข้อมูลคนไข้ ${p.fullName} แล้ว`);
                                     await refreshAll();

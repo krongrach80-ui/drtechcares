@@ -20,6 +20,7 @@ import {
   verifyHybridBiometricIdentity,
   whitenEmbedding,
   type BiometricPose,
+  type BiometricVectorEngine,
   type EnrolledTemplateCandidate,
   type FacePoseZone5,
   type GeometricAnthropometricRatios,
@@ -345,6 +346,27 @@ function isVector512(value: unknown): value is number[] {
   );
 }
 
+function isValidBiometricVector(value: unknown, expectedLen?: number): value is number[] {
+  return (
+    Array.isArray(value) &&
+    value.length >= 128 &&
+    value.length <= 2048 &&
+    (expectedLen === undefined || value.length === expectedLen) &&
+    value.every((n) => typeof n === 'number' && Number.isFinite(n))
+  );
+}
+
+function parseExemplarArrayInput(raw: unknown, expectedLen: number): number[][] {
+  if (!Array.isArray(raw)) return [];
+  const out: number[][] = [];
+  for (const item of raw) {
+    if (isValidBiometricVector(item, expectedLen)) {
+      out.push(l2Normalize(item));
+    }
+  }
+  return out.slice(0, 16);
+}
+
 function buildAngleEmbeddingsFromPayload(
   rawAngles: unknown,
   fallbackFrontal: number[],
@@ -352,20 +374,20 @@ function buildAngleEmbeddingsFromPayload(
   rawFrames: { pose: string; vector: number[] }[],
 ): AngleEmbeddings5D {
   const rec = (rawAngles && typeof rawAngles === 'object' ? rawAngles : {}) as Record<string, unknown>;
-  const center = isVector512(rec.center)
-    ? rec.center
+  const center = isValidBiometricVector(rec.center)
+    ? l2Normalize(rec.center)
     : rawFrames.find((f) => f.pose === 'front')?.vector ?? fallbackFrontal;
-  const left = isVector512(rec.left)
-    ? rec.left
+  const left = isValidBiometricVector(rec.left)
+    ? l2Normalize(rec.left)
     : rawFrames.find((f) => f.pose === 'left')?.vector ?? fallbackOverall;
-  const right = isVector512(rec.right)
-    ? rec.right
+  const right = isValidBiometricVector(rec.right)
+    ? l2Normalize(rec.right)
     : rawFrames.find((f) => f.pose === 'right')?.vector ?? fallbackOverall;
-  const up = isVector512(rec.up)
-    ? rec.up
+  const up = isValidBiometricVector(rec.up)
+    ? l2Normalize(rec.up)
     : rawFrames.find((f) => f.pose === 'nod')?.vector ?? fallbackOverall;
-  const down = isVector512(rec.down)
-    ? rec.down
+  const down = isValidBiometricVector(rec.down)
+    ? l2Normalize(rec.down)
     : rawFrames.find((f) => f.pose === 'nod')?.vector ?? fallbackOverall;
   return { center, left, right, up, down };
 }
@@ -374,21 +396,50 @@ function normalizeAngleEmbeddingsInput(rawAngles: unknown): AngleEmbeddings5D | 
   if (!rawAngles || typeof rawAngles !== 'object') return null;
   const rec = rawAngles as Record<string, unknown>;
   if (
-    isVector512(rec.center) &&
-    isVector512(rec.left) &&
-    isVector512(rec.right) &&
-    isVector512(rec.up) &&
-    isVector512(rec.down)
+    isValidBiometricVector(rec.center) &&
+    isValidBiometricVector(rec.left, rec.center.length) &&
+    isValidBiometricVector(rec.right, rec.center.length) &&
+    isValidBiometricVector(rec.up, rec.center.length) &&
+    isValidBiometricVector(rec.down, rec.center.length)
   ) {
     return {
-      center: rec.center,
-      left: rec.left,
-      right: rec.right,
-      up: rec.up,
-      down: rec.down,
+      center: l2Normalize(rec.center),
+      left: l2Normalize(rec.left),
+      right: l2Normalize(rec.right),
+      up: l2Normalize(rec.up),
+      down: l2Normalize(rec.down),
     };
   }
   return null;
+}
+
+function buildPatientBiometricBlob(patient: PatientRecord): Record<string, unknown> | null {
+  if (!patient.masterEmbedding || patient.masterEmbedding.length === 0) return null;
+  return {
+    engine:
+      patient.biometricEngine ??
+      (patient.masterEmbedding.length >= 768 ? 'human-faceres-1024d' : 'hybrid-512d'),
+    dimension: patient.masterEmbedding.length,
+    master_embedding: patient.masterEmbedding,
+    angle_embeddings: patient.angleEmbeddings ?? null,
+    exemplar_embeddings: patient.exemplarEmbeddings ?? [],
+  };
+}
+
+async function upsertPatientBiometricsCompat(
+  db: SupabaseClient,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const res = (await db
+    .from('patient_biometrics')
+    .upsert(payload, { onConflict: 'patient_id' })) as { error?: unknown } | undefined;
+  if (res?.error) {
+    const fallback = { ...payload };
+    delete fallback.exemplar_embeddings;
+    delete fallback.biometric_engine;
+    delete fallback.embedding_dim;
+    await db.from('patient_biometrics').upsert(fallback, { onConflict: 'patient_id' });
+  }
 }
 
 type FaceAngleKey = 'center' | 'left' | 'right' | 'up' | 'down';
@@ -441,6 +492,7 @@ function buildPatientHistoryPayload(patient: PatientRecord): Record<string, unkn
     delegationNote: patient.delegationNote ?? null,
     masterEmbedding: patient.masterEmbedding ?? null,
     angleEmbeddings: patient.angleEmbeddings ?? null,
+    exemplarEmbeddings: patient.exemplarEmbeddings ?? null,
     biometricEngine: patient.biometricEngine ?? null,
     geometricRatios: patient.geometricRatios ?? null,
   };
@@ -464,6 +516,8 @@ async function writePatientRowWithFramesFallback(
   if (res?.error) {
     const fallbackPayload = { ...fields };
     for (const optCol of [
+      'biometric_data',
+      'face_embedding',
       'face_frames_count',
       'stroke_type',
       'affected_side',
@@ -1423,7 +1477,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         rawFrames?: { pose?: string; vector?: unknown; qualityScore?: number }[];
         masterEmbedding?: unknown;
         angleEmbeddings?: unknown;
-        biometricEngine?: 'arcface-onnx' | 'hybrid-512d';
+        exemplarEmbeddings?: unknown;
+        biometricEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
         geometricRatios?: GeometricAnthropometricRatios;
         framesCaptured?: number;
         qualityScore?: number;
@@ -1433,18 +1488,18 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const isPendingSkip = Boolean(body?.skipFaceScan);
       const valid120Payload =
         Boolean(body) &&
-        isVector512(body?.masterEmbedding) &&
+        isValidBiometricVector(body?.masterEmbedding) &&
         normalizeAngleEmbeddingsInput(body?.angleEmbeddings) !== null;
       const valid10ShotPayload =
         Boolean(body) &&
-        isVector512(body?.frontalCentroid) &&
-        isVector512(body?.overallCentroid) &&
+        isValidBiometricVector(body?.frontalCentroid) &&
+        isValidBiometricVector(body?.overallCentroid, (body?.frontalCentroid as number[])?.length) &&
         Array.isArray(body?.rawFrames) &&
         body!.rawFrames.length >= 10 &&
         body!.rawFrames.every(
           (f) =>
             (f.pose === 'front' || f.pose === 'left' || f.pose === 'right' || f.pose === 'nod') &&
-            isVector512(f.vector) &&
+            isValidBiometricVector(f.vector, (body?.frontalCentroid as number[])?.length) &&
             typeof f.qualityScore === 'number' &&
             f.qualityScore > 0,
         );
@@ -1489,22 +1544,29 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         ? normalizeAngleEmbeddingsInput(body.angleEmbeddings) ??
           buildAngleEmbeddingsFromPayload(
             body.angleEmbeddings,
-            isVector512(body.frontalCentroid) ? body.frontalCentroid : (body.masterEmbedding as number[]),
-            isVector512(body.overallCentroid) ? body.overallCentroid : (body.masterEmbedding as number[]),
+            isValidBiometricVector(body.frontalCentroid) ? l2Normalize(body.frontalCentroid) : l2Normalize(body.masterEmbedding as number[]),
+            isValidBiometricVector(body.overallCentroid) ? l2Normalize(body.overallCentroid) : l2Normalize(body.masterEmbedding as number[]),
             rawFrames,
           )
         : undefined;
       const masterVec = !isPendingSkip
-        ? isVector512(body.masterEmbedding)
+        ? isValidBiometricVector(body.masterEmbedding)
           ? l2Normalize(body.masterEmbedding)
-          : isVector512(body.overallCentroid)
-            ? body.overallCentroid
+          : isValidBiometricVector(body.overallCentroid)
+            ? l2Normalize(body.overallCentroid)
             : resolvedAngles!.center
         : undefined;
       const frontalVec = !isPendingSkip
-        ? isVector512(body.frontalCentroid)
-          ? body.frontalCentroid
+        ? isValidBiometricVector(body.frontalCentroid)
+          ? l2Normalize(body.frontalCentroid)
           : resolvedAngles!.center
+        : undefined;
+      const exemplarList =
+        !isPendingSkip && masterVec
+          ? parseExemplarArrayInput(body.exemplarEmbeddings, masterVec.length)
+          : [];
+      const resolvedBiometricEngine: PatientRecord['biometricEngine'] = !isPendingSkip && masterVec
+        ? body.biometricEngine ?? (masterVec.length >= 768 ? 'human-faceres-1024d' : undefined)
         : undefined;
       const framesCaptured = isPendingSkip
         ? 0
@@ -1558,7 +1620,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         angleImageUrls: faceBundle.angleImageUrls,
         masterEmbedding: masterVec,
         angleEmbeddings: resolvedAngles,
-        ...(body.biometricEngine ? { biometricEngine: body.biometricEngine } : {}),
+        ...(exemplarList.length > 0 ? { exemplarEmbeddings: exemplarList } : {}),
+        ...(resolvedBiometricEngine ? { biometricEngine: resolvedBiometricEngine } : {}),
         ...(body.geometricRatios ? { geometricRatios: body.geometricRatios } : {}),
         rehabSchedules: initialSchedules,
         biometricHistory:
@@ -1571,6 +1634,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             : undefined,
       };
 
+      const patientBiometricBlob = buildPatientBiometricBlob(patient);
       state.patients.push(patient);
       await persistToSupabase(supabase, (db) =>
         writePatientRowWithFramesFallback(db, 'insert', {
@@ -1592,6 +1656,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           face_biometric_status: faceStatus,
           face_frames_count: framesCaptured,
           face_image_url: storedFaceImageUrl ?? null,
+          ...(patientBiometricBlob ? { face_embedding: patientBiometricBlob, biometric_data: patientBiometricBlob } : {}),
           history: buildPatientHistoryPayload(patient),
         }),
       );
@@ -1611,26 +1676,28 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
                 { patientId, patientName: body.fullName!, pose: 'right' as BiometricPose, vector: resolvedAngles.right, qualityScore },
                 { patientId, patientName: body.fullName!, pose: 'nod' as BiometricPose, vector: resolvedAngles.down, qualityScore },
               ];
-        state.face_templates.push(
-          {
-            patientId,
-            patientName: body.fullName,
-            pose: 'frontal_centroid',
-            vector: frontalVec,
-          },
-          {
-            patientId,
-            patientName: body.fullName,
-            pose: 'overall_centroid',
-            vector: masterVec,
-          },
-          ...templateRows.map((f) => ({
-            patientId,
-            patientName: body.fullName,
-            pose: f.pose,
-            vector: f.vector,
-          })),
-        );
+        if (masterVec.length === FACE_EMBEDDING_DIM) {
+          state.face_templates.push(
+            {
+              patientId,
+              patientName: body.fullName,
+              pose: 'frontal_centroid',
+              vector: frontalVec,
+            },
+            {
+              patientId,
+              patientName: body.fullName,
+              pose: 'overall_centroid',
+              vector: masterVec,
+            },
+            ...templateRows.map((f) => ({
+              patientId,
+              patientName: body.fullName,
+              pose: f.pose,
+              vector: f.vector,
+            })),
+          );
+        }
         await persistToSupabase(supabase, async (db) => {
           await insertFaceEnrollmentWithCompatShotCount(db, {
             patient_id: patientId,
@@ -1638,29 +1705,31 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             liveness_verified: true,
             enrolled_by: authUser!.id,
           });
-          await db.from('face_templates').insert([
-            { patient_id: patientId, pose: 'frontal_centroid', embedding: frontalVec, quality_score: qualityScore },
-            { patient_id: patientId, pose: 'overall_centroid', embedding: masterVec, quality_score: qualityScore },
-            ...templateRows.map((f) => ({
-              patient_id: patientId,
-              pose: f.pose,
-              embedding: f.vector,
-              quality_score: f.qualityScore,
-            })),
-          ]);
-          await db.from('patient_biometrics').upsert(
-            {
-              patient_id: patientId,
-              hn: patient.hn,
-              master_embedding: masterVec,
-              angle_embeddings: resolvedAngles,
-              frames_captured: framesCaptured,
-              quality_score: qualityScore,
-              avatar_url: storedFaceImageUrl ?? null,
-              updated_at: new Date().toISOString(),
-            },
-            { onConflict: 'patient_id' },
-          );
+          if (masterVec.length === FACE_EMBEDDING_DIM) {
+            await db.from('face_templates').insert([
+              { patient_id: patientId, pose: 'frontal_centroid', embedding: frontalVec, quality_score: qualityScore },
+              { patient_id: patientId, pose: 'overall_centroid', embedding: masterVec, quality_score: qualityScore },
+              ...templateRows.map((f) => ({
+                patient_id: patientId,
+                pose: f.pose,
+                embedding: f.vector,
+                quality_score: f.qualityScore,
+              })),
+            ]);
+          }
+          await upsertPatientBiometricsCompat(db, {
+            patient_id: patientId,
+            hn: patient.hn,
+            master_embedding: masterVec,
+            angle_embeddings: resolvedAngles,
+            exemplar_embeddings: exemplarList,
+            biometric_engine: resolvedBiometricEngine ?? null,
+            embedding_dim: masterVec.length,
+            frames_captured: framesCaptured,
+            quality_score: qualityScore,
+            avatar_url: storedFaceImageUrl ?? null,
+            updated_at: new Date().toISOString(),
+          });
         });
       }
 
@@ -1793,6 +1862,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           fallbackNextAppointmentDate: p.nextAppointmentDate,
           exercisesCatalog: state.exercises,
         });
+        const exemplarEmbeddings = (p.exemplarEmbeddings ?? [])
+          .filter((v) => Array.isArray(v) && v.length === rawMaster.length)
+          .map((v) => l2Normalize(v));
+        const resolvedBiometricEngine =
+          p.biometricEngine ?? (rawMaster.length >= 768 ? 'human-faceres-1024d' : undefined);
         index.push({
           patientId: p.id,
           hn: p.hn,
@@ -1805,7 +1879,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           qualityScore: 0.96,
           masterEmbedding: masterNorm,
           angleEmbeddings,
-          ...(p.biometricEngine ? { biometricEngine: p.biometricEngine } : {}),
+          ...(exemplarEmbeddings.length > 0 ? { exemplarEmbeddings } : {}),
+          ...(resolvedBiometricEngine ? { biometricEngine: resolvedBiometricEngine } : {}),
           ...(p.geometricRatios ? { geometricRatios: p.geometricRatios } : {}),
           ...(extraEmbeddings.length > 0 ? { extraEmbeddings } : {}),
           todayRoutine,
@@ -1866,7 +1941,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         yawDeg?: number;
         pitchDeg?: number;
         rollDeg?: number;
-        engine?: 'arcface-onnx' | 'hybrid-512d';
+        engine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
         geometricRatios?: GeometricAnthropometricRatios;
         excludedPatientIds?: string[];
         livenessEvidence?: {
@@ -1879,7 +1954,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           yawDeg?: number;
           pitchDeg?: number;
           rollDeg?: number;
-          engine?: 'arcface-onnx' | 'hybrid-512d';
+          engine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
           mirroredProbeVector?: unknown;
           hybridV2ProbeVector?: unknown;
           mirroredHybridV2ProbeVector?: unknown;
@@ -1889,7 +1964,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           excludedPatientIds?: string[];
         };
       }>(request);
-      if (!body || !isVector512(body.probeVector)) {
+      if (!body || !isValidBiometricVector(body.probeVector)) {
         return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
       }
       if (
@@ -1970,7 +2045,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
       let totalPatients = activePatientIds.size;
 
-      if (supabase && candidates.length === 0 && activePatientIds.size > 0) {
+      if (
+        supabase &&
+        candidates.length === 0 &&
+        activePatientIds.size > 0 &&
+        probeNorm.length === FACE_EMBEDDING_DIM
+      ) {
         const { data, error } = await supabase.rpc('match_patient_face', {
           query_embedding: probeNorm,
           match_count: 5,
@@ -2000,13 +2080,14 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           .filter(
             (p) =>
               activePatientIds.has(p.id) &&
-              p.biometricEngine !== 'arcface-onnx',
+              p.biometricEngine !== 'arcface-onnx' &&
+              p.biometricEngine !== 'human-faceres-1024d',
           )
           .map((p) => p.id),
       );
       const hybridCandidates = candidates.filter((c) => nonArcFacePatientIds.has(c.patientId));
       const result =
-        probeEngine === 'arcface-onnx'
+        probeEngine === 'arcface-onnx' || probeEngine === 'human-faceres-1024d'
           ? {
               matched: false,
               patientId: null,
@@ -2016,7 +2097,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               whitenedMargin: 0,
               topCandidate: null,
               runnerUp: null,
-              failureReasons: ['ARCFACE_PRIMARY_POSE_MATCHER'],
+              failureReasons: ['NEURAL_PRIMARY_MATCHER'],
             }
           : verifyHybridBiometricIdentity(probeNorm, hybridCandidates, {
               totalEnrolledPatients: totalPatients,
@@ -2034,8 +2115,87 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       let matchedConfidence = result.confidencePercent;
       let verifyErrorCode: string | undefined;
 
-      // Engine-Isolated Pose-Synchronized Multi-Angle Matching (ArcFace ResNet-50 + Hybrid/V1 fallback)
-      if (!matchedPatientId) {
+      // Primary Single Shared Deep Neural Matcher (human-faceres-1024d Centroid + Top-10 KNN Exemplars)
+      if (!matchedPatientId && probeEngine === 'human-faceres-1024d') {
+        const expectedDim = probeNorm.length;
+        const normalizePatientName = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
+        const knnScores: {
+          patientId: string;
+          fullName: string;
+          orderIdx: number;
+          bestSim: number;
+        }[] = [];
+
+        for (let orderIdx = 0; orderIdx < state.patients.length; orderIdx += 1) {
+          const p = state.patients[orderIdx];
+          if (!activePatientIds.has(p.id)) continue;
+
+          const targetVectors: number[][] = [];
+          const pushTarget = (raw: unknown) => {
+            const parsed = parseEmbeddingVector(raw);
+            if (parsed && parsed.length === expectedDim) {
+              targetVectors.push(parsed);
+            }
+          };
+          pushTarget(p.masterEmbedding);
+          if (p.angleEmbeddings) {
+            pushTarget(p.angleEmbeddings.center);
+            pushTarget(p.angleEmbeddings.left);
+            pushTarget(p.angleEmbeddings.right);
+            pushTarget(p.angleEmbeddings.up);
+            pushTarget(p.angleEmbeddings.down);
+          }
+          (p.exemplarEmbeddings ?? []).forEach(pushTarget);
+          if (targetVectors.length === 0) continue;
+
+          let bestSim = -1;
+          for (const targetVec of targetVectors) {
+            const sim = cosineSimilarity(probeNorm, targetVec);
+            if (sim > bestSim) bestSim = sim;
+          }
+          knnScores.push({
+            patientId: p.id,
+            fullName: p.fullName,
+            orderIdx,
+            bestSim,
+          });
+        }
+
+        knnScores.sort((a, b) => b.bestSim - a.bestSim || b.orderIdx - a.orderIdx);
+        const top = knnScores[0] ?? null;
+        const topName = top ? normalizePatientName(top.fullName) : '';
+        const distinctRunners = top
+          ? knnScores
+              .slice(1)
+              .filter((s) => !(topName && normalizePatientName(s.fullName) === topName))
+          : [];
+        const runner = distinctRunners[0] ?? null;
+        const margin = top && runner ? top.bestSim - runner.bestSim : 1;
+
+        const MATCH_THRESHOLD = 0.6;
+        const MARGIN_THRESHOLD = 0.06;
+        const passesThreshold = Boolean(top && top.bestSim >= MATCH_THRESHOLD);
+        const passesMargin = distinctRunners.length === 0 || margin >= MARGIN_THRESHOLD;
+
+        if (top && passesThreshold && passesMargin) {
+          matchedPatientId = top.patientId;
+          matchedPatientName = top.fullName;
+          matchedConfidence = Number(
+            Math.min(99.9, Math.max(85.0, 40 + top.bestSim * 66)).toFixed(1),
+          );
+        } else if (top && passesThreshold && !passesMargin) {
+          verifyErrorCode = 'AMBIGUOUS_CLOSE_CANDIDATES';
+          matchedConfidence = Math.min(48.9, Math.max(0, Number((top.bestSim * 49).toFixed(1))));
+        } else if (top) {
+          matchedConfidence = Math.min(
+            48.9,
+            Math.max(0, Number((Math.max(0, top.bestSim) * 49).toFixed(1))),
+          );
+        }
+      }
+
+      // Engine-Isolated Pose-Synchronized Multi-Angle Matching (512-D ArcFace ResNet-50 + Hybrid/V1 fallback)
+      if (!matchedPatientId && probeEngine !== 'human-faceres-1024d') {
         const yawDegVal = body.yawDeg ?? body.livenessEvidence?.yawDeg ?? 0;
         const pitchDegVal = body.pitchDeg ?? body.livenessEvidence?.pitchDeg ?? 0;
         const rollDegVal = body.rollDeg ?? body.livenessEvidence?.rollDeg ?? 0;
@@ -2102,7 +2262,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           orderIdx: number;
           masterNorm: number[];
           dualScore: number;
-          engine: 'arcface-onnx' | 'hybrid-v2' | 'legacy-v1';
+          engine: BiometricVectorEngine;
           isLegacyV1: boolean;
           raw: number;
           meanCentered: number;
@@ -2687,19 +2847,20 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         angleImageUrls?: unknown;
         masterEmbedding?: unknown;
         angleEmbeddings?: unknown;
-        biometricEngine?: 'arcface-onnx' | 'hybrid-512d';
+        exemplarEmbeddings?: unknown;
+        biometricEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
         geometricRatios?: GeometricAnthropometricRatios;
         framesCaptured?: number;
         qualityScore?: number;
       }>(request);
       const valid120 =
         Boolean(body) &&
-        isVector512(body?.masterEmbedding) &&
+        isValidBiometricVector(body?.masterEmbedding) &&
         normalizeAngleEmbeddingsInput(body?.angleEmbeddings) !== null;
       const valid10 =
         Boolean(body) &&
-        isVector512(body?.frontalCentroid) &&
-        isVector512(body?.overallCentroid) &&
+        isValidBiometricVector(body?.frontalCentroid) &&
+        isValidBiometricVector(body?.overallCentroid, (body?.frontalCentroid as number[])?.length) &&
         Array.isArray(body?.rawFrames) &&
         body!.rawFrames.length >= 10;
 
@@ -2717,16 +2878,25 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         normalizeAngleEmbeddingsInput(body.angleEmbeddings) ??
         buildAngleEmbeddingsFromPayload(
           body.angleEmbeddings,
-          isVector512(body.frontalCentroid) ? body.frontalCentroid : (body.masterEmbedding as number[]),
-          isVector512(body.overallCentroid) ? body.overallCentroid : (body.masterEmbedding as number[]),
+          isValidBiometricVector(body.frontalCentroid)
+            ? l2Normalize(body.frontalCentroid)
+            : l2Normalize(body.masterEmbedding as number[]),
+          isValidBiometricVector(body.overallCentroid)
+            ? l2Normalize(body.overallCentroid)
+            : l2Normalize(body.masterEmbedding as number[]),
           rawFrames,
         );
-      const masterVec = isVector512(body.masterEmbedding)
+      const masterVec = isValidBiometricVector(body.masterEmbedding)
         ? l2Normalize(body.masterEmbedding)
-        : isVector512(body.overallCentroid)
-          ? body.overallCentroid
+        : isValidBiometricVector(body.overallCentroid)
+          ? l2Normalize(body.overallCentroid)
           : resolvedAngles.center;
-      const frontalVec = isVector512(body.frontalCentroid) ? body.frontalCentroid : resolvedAngles.center;
+      const frontalVec = isValidBiometricVector(body.frontalCentroid)
+        ? l2Normalize(body.frontalCentroid)
+        : resolvedAngles.center;
+      const exemplarList = parseExemplarArrayInput(body.exemplarEmbeddings, masterVec.length);
+      const resolvedBiometricEngine: PatientRecord['biometricEngine'] =
+        body.biometricEngine ?? (masterVec.length >= 768 ? 'human-faceres-1024d' : undefined);
       const framesCaptured =
         typeof body.framesCaptured === 'number' && body.framesCaptured > 0
           ? body.framesCaptured
@@ -2737,7 +2907,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       patient.faceFramesCount = framesCaptured;
       patient.masterEmbedding = masterVec;
       patient.angleEmbeddings = resolvedAngles;
-      patient.biometricEngine = body.biometricEngine;
+      patient.exemplarEmbeddings = exemplarList.length > 0 ? exemplarList : undefined;
+      patient.biometricEngine = resolvedBiometricEngine;
       if (body.geometricRatios) {
         patient.geometricRatios = body.geometricRatios;
       }
@@ -2774,27 +2945,30 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             ];
 
       state.face_templates = state.face_templates.filter((t) => t.patientId !== patient.id);
-      state.face_templates.push(
-        {
-          patientId: patient.id,
-          patientName: patient.fullName,
-          pose: 'frontal_centroid',
-          vector: frontalVec,
-        },
-        {
-          patientId: patient.id,
-          patientName: patient.fullName,
-          pose: 'overall_centroid',
-          vector: masterVec,
-        },
-        ...templateRows.map((f) => ({
-          patientId: patient.id,
-          patientName: patient.fullName,
-          pose: f.pose as BiometricPose,
-          vector: f.vector,
-        })),
-      );
+      if (masterVec.length === FACE_EMBEDDING_DIM) {
+        state.face_templates.push(
+          {
+            patientId: patient.id,
+            patientName: patient.fullName,
+            pose: 'frontal_centroid',
+            vector: frontalVec,
+          },
+          {
+            patientId: patient.id,
+            patientName: patient.fullName,
+            pose: 'overall_centroid',
+            vector: masterVec,
+          },
+          ...templateRows.map((f) => ({
+            patientId: patient.id,
+            patientName: patient.fullName,
+            pose: f.pose as BiometricPose,
+            vector: f.vector,
+          })),
+        );
+      }
 
+      const patientBiometricBlob = buildPatientBiometricBlob(patient);
       await persistToSupabase(supabase, async (db) => {
         await db.from('face_templates').delete().eq('patient_id', patient.id);
         await insertFaceEnrollmentWithCompatShotCount(db, {
@@ -2803,29 +2977,31 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           liveness_verified: true,
           enrolled_by: authUser!.id,
         });
-        await db.from('face_templates').insert([
-          { patient_id: patient.id, pose: 'frontal_centroid', embedding: frontalVec, quality_score: qualityScore },
-          { patient_id: patient.id, pose: 'overall_centroid', embedding: masterVec, quality_score: qualityScore },
-          ...templateRows.map((f) => ({
-            patient_id: patient.id,
-            pose: f.pose,
-            embedding: f.vector,
-            quality_score: f.qualityScore,
-          })),
-        ]);
-        await db.from('patient_biometrics').upsert(
-          {
-            patient_id: patient.id,
-            hn: patient.hn,
-            master_embedding: masterVec,
-            angle_embeddings: resolvedAngles,
-            frames_captured: framesCaptured,
-            quality_score: qualityScore,
-            avatar_url: patient.faceImageUrl ?? null,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'patient_id' },
-        );
+        if (masterVec.length === FACE_EMBEDDING_DIM) {
+          await db.from('face_templates').insert([
+            { patient_id: patient.id, pose: 'frontal_centroid', embedding: frontalVec, quality_score: qualityScore },
+            { patient_id: patient.id, pose: 'overall_centroid', embedding: masterVec, quality_score: qualityScore },
+            ...templateRows.map((f) => ({
+              patient_id: patient.id,
+              pose: f.pose,
+              embedding: f.vector,
+              quality_score: f.qualityScore,
+            })),
+          ]);
+        }
+        await upsertPatientBiometricsCompat(db, {
+          patient_id: patient.id,
+          hn: patient.hn,
+          master_embedding: masterVec,
+          angle_embeddings: resolvedAngles,
+          exemplar_embeddings: exemplarList,
+          biometric_engine: resolvedBiometricEngine ?? null,
+          embedding_dim: masterVec.length,
+          frames_captured: framesCaptured,
+          quality_score: qualityScore,
+          avatar_url: patient.faceImageUrl ?? null,
+          updated_at: new Date().toISOString(),
+        });
         await writePatientRowWithFramesFallback(
           db,
           'update',
@@ -2833,6 +3009,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             face_biometric_status: 'VERIFIED',
             face_frames_count: framesCaptured,
             face_image_url: patient.faceImageUrl ?? null,
+            ...(patientBiometricBlob ? { face_embedding: patientBiometricBlob, biometric_data: patientBiometricBlob } : {}),
             history: buildPatientHistoryPayload(patient),
             updated_at: new Date().toISOString(),
           },

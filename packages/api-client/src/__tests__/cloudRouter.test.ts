@@ -1710,5 +1710,105 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     });
     expect(hybridCrossReject.status).toBe(401);
   });
+
+  it('enrolls and verifies @vladmandic/human faceres 1024-D KNN exemplar embeddings on /api/biometric/enroll, /api/biometrics/index, and /api/biometric/verify', async () => {
+    const router = createCloudDelegatedRouter({});
+    const ptLogin = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const { token: ptToken } = (await ptLogin.json()) as { token: string };
+
+    const mk1024Vec = (seed: number): number[] => {
+      const vec = new Array<number>(1024);
+      for (let i = 0; i < 1024; i += 1) {
+        vec[i] = Math.sin((i + 1) * (seed * 0.91 + 0.37)) + 0.5 * Math.cos((i + 5) * seed);
+      }
+      return l2Normalize(vec);
+    };
+
+    const ownerMaster = mk1024Vec(12);
+    const ownerExemplarLeft = l2Normalize(
+      ownerMaster.map((v, i) => v * 0.8 + mk1024Vec(24)[i] * 0.25),
+    );
+    const otherUser = mk1024Vec(77);
+
+    const enrollRes = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-HUMAN-1024-01',
+        fullName: 'คุณพิมพ์พร ฮิวแมน',
+        age: 29,
+        phone: '0898881024',
+        diagnosis: 'Upper Limb Rehab',
+        biometricEngine: 'human-faceres-1024d',
+        masterEmbedding: ownerMaster,
+        angleEmbeddings: {
+          center: ownerMaster,
+          left: ownerExemplarLeft,
+          right: ownerMaster,
+          up: ownerMaster,
+          down: ownerMaster,
+        },
+        exemplarEmbeddings: [ownerMaster, ownerExemplarLeft],
+        framesCaptured: 120,
+        qualityScore: 0.98,
+      },
+    });
+    expect(enrollRes.status).toBe(201);
+
+    // Biometric index should expose 1024-D vectors & exemplarEmbeddings
+    const idxRes = await callRouter(router, '/api/biometrics/index', {});
+    expect(idxRes.status).toBe(200);
+    const idxJson = (await idxRes.json()) as {
+      index: { hn: string; biometricEngine?: string; masterEmbedding: number[]; exemplarEmbeddings?: number[][] }[];
+    };
+    const found = idxJson.index.find((item) => item.hn === 'HN-HUMAN-1024-01');
+    expect(found).toBeDefined();
+    expect(found?.biometricEngine).toBe('human-faceres-1024d');
+    expect(found?.masterEmbedding).toHaveLength(1024);
+    expect(found?.exemplarEmbeddings?.length).toBeGreaterThanOrEqual(2);
+
+    // Verify genuine 1024-D probe against left exemplar with noise -> matched!
+    const liveProbe = l2Normalize(
+      ownerExemplarLeft.map((v, i) => v * 0.78 + mk1024Vec(99)[i] * 0.22),
+    );
+    const verifyOk = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: {
+        probeVector: liveProbe,
+        engine: 'human-faceres-1024d',
+        livenessEvidence: {
+          biologicalVerified: true,
+          blinkCount: 1,
+          spoofRisk: 0.03,
+          nonRigidScore: 0.16,
+          engine: 'human-faceres-1024d',
+        },
+      },
+    });
+    expect(verifyOk.status).toBe(200);
+    const okJson = (await verifyOk.json()) as { matched: boolean; patient?: { hn: string } };
+    expect(okJson.matched).toBe(true);
+    expect(okJson.patient?.hn).toBe('HN-HUMAN-1024-01');
+
+    // Stranger 1024-D probe must be rejected at 401
+    const strangerRes = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: {
+        probeVector: otherUser,
+        engine: 'human-faceres-1024d',
+        livenessEvidence: {
+          biologicalVerified: true,
+          blinkCount: 1,
+          spoofRisk: 0.03,
+          nonRigidScore: 0.16,
+          engine: 'human-faceres-1024d',
+        },
+      },
+    });
+    expect(strangerRes.status).toBe(401);
+  });
 });
 

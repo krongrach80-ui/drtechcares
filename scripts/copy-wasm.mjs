@@ -22,6 +22,34 @@ if (existsSync(nodeWasmSrc)) {
   console.warn('[copy-wasm] node_modules/@mediapipe/tasks-vision/wasm not found yet.');
 }
 
+const humanModelsSrc = path.join(root, 'node_modules', '@vladmandic', 'human', 'models');
+const humanModelsDest = path.join(modelsDest, 'human');
+const requiredHumanFiles = [
+  'models.json',
+  'blazeface.json',
+  'blazeface.bin',
+  'facemesh.json',
+  'facemesh.bin',
+  'iris.json',
+  'iris.bin',
+  'faceres.json',
+  'faceres.bin',
+];
+if (existsSync(humanModelsSrc)) {
+  await mkdir(humanModelsDest, { recursive: true });
+  let copiedHuman = 0;
+  for (const fileName of requiredHumanFiles) {
+    const srcFile = path.join(humanModelsSrc, fileName);
+    if (existsSync(srcFile)) {
+      await copyFile(srcFile, path.join(humanModelsDest, fileName));
+      copiedHuman += 1;
+    }
+  }
+  console.log(`[copy-wasm] Copied @vladmandic/human face recognition models (${copiedHuman}/${requiredHumanFiles.length}) to ${humanModelsDest}`);
+} else {
+  console.warn('[copy-wasm] node_modules/@vladmandic/human/models not found yet.');
+}
+
 const envCacheDir = process.env.DRTECH_MODEL_CACHE_DIR?.trim();
 
 const candidateAssets = [

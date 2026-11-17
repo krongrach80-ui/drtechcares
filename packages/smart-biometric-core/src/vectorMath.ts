@@ -862,7 +862,11 @@ export function computeGeometricRatioMatchScore(
  * Dual-Factor Biometric Comparison (80% Mean-Centered Appearance + 20% Craniofacial Geometry),
  * applying immediate Euclidean (L2) distance and geometric ratio divergence penalties.
  */
-export type BiometricVectorEngine = 'arcface-onnx' | 'hybrid-v2' | 'legacy-v1';
+export type BiometricVectorEngine =
+  | 'human-faceres-1024d'
+  | 'arcface-onnx'
+  | 'hybrid-v2'
+  | 'legacy-v1';
 
 export interface ArcFaceBiometricScore {
   score: number;
@@ -879,8 +883,11 @@ export function isLegacyV1HybridVector(vector: readonly number[]): boolean {
 
 export function detectBiometricVectorEngine(
   vector: readonly number[],
-  explicitEngine?: 'arcface-onnx' | 'hybrid-512d',
+  explicitEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d',
 ): BiometricVectorEngine {
+  if (explicitEngine === 'human-faceres-1024d' || (Array.isArray(vector) && vector.length >= 768)) {
+    return 'human-faceres-1024d';
+  }
   if (!Array.isArray(vector) || vector.length !== FACE_EMBEDDING_DIM) {
     return 'hybrid-v2';
   }
