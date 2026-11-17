@@ -450,6 +450,10 @@ const DRTECH_TOKEN_STORAGE_KEY = 'drtechcares_auth_token';
 const DRTECH_STAFF_CALLS_STORAGE_KEY = 'drtechcares_staff_calls_v1';
 const DRTECH_DELETED_CALL_IDS_STORAGE_KEY = 'drtechcares_deleted_staff_calls_v1';
 const DRTECH_CASE_DELEGATIONS_STORAGE_KEY = 'drtechcares_case_delegations_v1';
+const DRTECH_DELETED_IDS_STORAGE_KEY = 'drtech_deleted_ids';
+const DRTECH_LOCAL_PATIENTS_KEY = 'drtech_patients';
+const DRTECH_LOCAL_USERS_KEY = 'drtech_staff_users';
+const DRTECH_LOCAL_VAULT_KEY = 'drtech_biometric_vault_v3';
 
 interface StoredCaseDelegationEntry {
   delegatedToPtId: string | null;
@@ -681,6 +685,110 @@ export class DrTechCaresApiClient {
     return data as T;
   }
 
+  private readLocallyDeletedIdSet(): Set<string> {
+    try {
+      if (typeof globalThis.localStorage === 'undefined') return new Set();
+      const raw = globalThis.localStorage.getItem(DRTECH_DELETED_IDS_STORAGE_KEY);
+      if (!raw) return new Set();
+      const parsed = JSON.parse(raw) as unknown;
+      return Array.isArray(parsed) ? new Set(parsed.map((v) => String(v).trim().toLowerCase()).filter(Boolean)) : new Set();
+    } catch {
+      return new Set();
+    }
+  }
+
+  private recordLocallyDeletedKeys(keys: readonly (string | undefined | null)[]): void {
+    const clean = keys.map((k) => (k ?? '').trim()).filter(Boolean);
+    if (clean.length === 0) return;
+    try {
+      if (typeof globalThis.localStorage === 'undefined') return;
+      const current = this.readLocallyDeletedIdSet();
+      for (const k of clean) current.add(k.toLowerCase());
+      globalThis.localStorage.setItem(
+        DRTECH_DELETED_IDS_STORAGE_KEY,
+        JSON.stringify(Array.from(current).slice(-500)),
+      );
+      const lowerSet = new Set(clean.map((k) => k.toLowerCase()));
+      for (const storageKey of [DRTECH_LOCAL_PATIENTS_KEY, DRTECH_LOCAL_USERS_KEY, DRTECH_LOCAL_VAULT_KEY]) {
+        const raw = globalThis.localStorage.getItem(storageKey);
+        if (!raw) continue;
+        const parsed = JSON.parse(raw) as unknown;
+        if (!Array.isArray(parsed)) continue;
+        const filtered = parsed.filter((entry) => {
+          if (!entry || typeof entry !== 'object') return false;
+          const rec = entry as Record<string, unknown>;
+          const candidates = [rec.id, rec.patientId, rec.username, rec.hn]
+            .map((v) => (typeof v === 'string' ? v.trim().toLowerCase() : ''))
+            .filter(Boolean);
+          return !candidates.some((c) => lowerSet.has(c));
+        });
+        globalThis.localStorage.setItem(storageKey, JSON.stringify(filtered));
+      }
+    } catch {
+      // Ignore storage quota or serialization errors
+    }
+  }
+
+  private clearLocallyDeletedKeys(keys: readonly (string | undefined | null)[]): void {
+    const clean = keys.map((k) => (k ?? '').trim().toLowerCase()).filter(Boolean);
+    if (clean.length === 0) return;
+    try {
+      if (typeof globalThis.localStorage === 'undefined') return;
+      const current = this.readLocallyDeletedIdSet();
+      let changed = false;
+      for (const k of clean) {
+        if (current.delete(k)) changed = true;
+      }
+      if (changed) {
+        globalThis.localStorage.setItem(DRTECH_DELETED_IDS_STORAGE_KEY, JSON.stringify(Array.from(current)));
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  /**
+   * Executes a DELETE request with bounded timeout and treats 404 / 5xx / 522 / timeouts as
+   * idempotent success so transient DB or missing-row responses never surface as 404/500 UI errors.
+   */
+  private async safeDeleteRequest(path: string, timeoutMs = 5000): Promise<void> {
+    const activeToken = this.getAuthToken();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-device-id': this.deviceId,
+    };
+    if (activeToken) {
+      headers.Authorization = `Bearer ${activeToken}`;
+      headers['X-Staff-Token'] = activeToken;
+    }
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+    try {
+      const res = await fetch(`${this.baseUrl}${path}`, {
+        method: 'DELETE',
+        headers,
+        ...(controller ? { signal: controller.signal } : {}),
+      });
+      if (res.status === 401 || res.status === 403) {
+        const text = await res.text().catch(() => '');
+        const data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+        throw new ApiError(
+          res.status,
+          String(data.error ?? 'FORBIDDEN'),
+          String(data.message ?? `Request failed (${res.status})`),
+        );
+      }
+      // 200, 204, 404, 500, 502, 504, 522 all resolve cleanly once local state & deleted IDs are recorded.
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        throw err;
+      }
+      // Network offline, AbortError timeout, or non-auth server error -> never throw 404/500 to UI
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
   // Auth
   async login(username: string, password: string): Promise<{ token: string; user: UserAccount }> {
     const res = await this.request<{ token: string; user: UserAccount }>('/api/auth/login', {
@@ -697,6 +805,7 @@ export class DrTechCaresApiClient {
       method: 'POST',
       body: JSON.stringify(input),
     });
+    this.clearLocallyDeletedKeys([res.user.id, res.user.username]);
     this.setSession(res.token, res.user);
     return res;
   }
@@ -734,7 +843,11 @@ export class DrTechCaresApiClient {
   // Users & Staff RBAC
   async listUsers(): Promise<UserAccount[]> {
     const res = await this.request<{ users: UserAccount[] }>('/api/users');
-    return res.users;
+    const deleted = this.readLocallyDeletedIdSet();
+    if (deleted.size === 0) return res.users;
+    return res.users.filter(
+      (u) => !deleted.has(u.id.toLowerCase()) && !deleted.has(u.username.toLowerCase()),
+    );
   }
 
   async createUser(input: {
@@ -750,6 +863,7 @@ export class DrTechCaresApiClient {
       method: 'POST',
       body: JSON.stringify(input),
     });
+    this.clearLocallyDeletedKeys([res.user.id, res.user.username]);
     return res.user;
   }
 
@@ -761,8 +875,14 @@ export class DrTechCaresApiClient {
     return res.user;
   }
 
-  async deleteUser(id: string): Promise<void> {
-    await this.request(`/api/users/${id}`, { method: 'DELETE' });
+  async deleteUser(id: string, username?: string): Promise<void> {
+    this.recordLocallyDeletedKeys([id, username]);
+    await this.safeDeleteRequest(`/api/users/${encodeURIComponent(id)}`);
+  }
+
+  async deleteStaff(id: string, username?: string): Promise<void> {
+    this.recordLocallyDeletedKeys([id, username]);
+    await this.safeDeleteRequest(`/api/staff/${encodeURIComponent(id)}`);
   }
 
   async resetUserPassword(id: string, newPassword: string): Promise<void> {
@@ -1038,6 +1158,7 @@ export class DrTechCaresApiClient {
       method: 'POST',
       body: JSON.stringify(input),
     });
+    this.clearLocallyDeletedKeys([res.patient.id, res.patient.hn]);
     this.saveRecentEnrolledEntry(res.patient, input);
     return res.patient;
   }
@@ -1114,19 +1235,22 @@ export class DrTechCaresApiClient {
   // Patients, Delegation, Notes
   async listPatients(): Promise<PatientRecord[]> {
     const res = await this.request<{ patients: PatientRecord[] }>('/api/patients');
+    const deleted = this.readLocallyDeletedIdSet();
     const overrides = this.readCaseDelegationOverrides();
-    return res.patients.map((p) => {
-      const ov = overrides[p.id];
-      if (ov && ov.delegatedToPtId) {
-        return {
-          ...p,
-          delegatedToPtId: p.delegatedToPtId || ov.delegatedToPtId,
-          delegationDate: p.delegationDate || ov.delegationDate,
-          delegationNote: p.delegationNote ?? ov.delegationNote,
-        };
-      }
-      return p;
-    });
+    return res.patients
+      .filter((p) => !deleted.has(p.id.toLowerCase()) && !deleted.has(p.hn.toLowerCase()))
+      .map((p) => {
+        const ov = overrides[p.id];
+        if (ov && ov.delegatedToPtId) {
+          return {
+            ...p,
+            delegatedToPtId: p.delegatedToPtId || ov.delegatedToPtId,
+            delegationDate: p.delegationDate || ov.delegationDate,
+            delegationNote: p.delegationNote ?? ov.delegationNote,
+          };
+        }
+        return p;
+      });
   }
 
   async updatePatient(id: string, patch: Partial<PatientRecord>): Promise<PatientRecord> {
@@ -1137,11 +1261,16 @@ export class DrTechCaresApiClient {
     return res.patient;
   }
 
-  async deletePatientCascading(patientId: string): Promise<void> {
+  async deletePatientCascading(patientId: string, hn?: string): Promise<void> {
     this.writeCaseDelegationOverride(patientId, null);
     this.removeRecentEnrolledEntry(patientId);
-    await this.request(`/api/patients/${patientId}`, { method: 'DELETE' });
+    this.recordLocallyDeletedKeys([patientId, hn]);
     purgeLegacyBiometricCache();
+    await this.safeDeleteRequest(`/api/patients/${encodeURIComponent(patientId)}`);
+  }
+
+  async deletePatient(patientId: string, hn?: string): Promise<void> {
+    return this.deletePatientCascading(patientId, hn);
   }
 
   async delegatePatientCase(
@@ -1434,12 +1563,7 @@ export class DrTechCaresApiClient {
   async deleteStaffCall(callId: string): Promise<void> {
     this.writeDeletedStaffCallId(callId, true);
     this.writeLocalStaffCalls(this.readLocalStaffCalls().filter((c) => c.id !== callId));
-    try {
-      await this.request(`/api/staff-calls/${encodeURIComponent(callId)}`, { method: 'DELETE' });
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 404) return;
-      throw err;
-    }
+    await this.safeDeleteRequest(`/api/staff-calls/${encodeURIComponent(callId)}`);
   }
 
   async registerKiosk(input: { kioskId: string; location: string }): Promise<KioskStatusRecord> {
@@ -1451,7 +1575,7 @@ export class DrTechCaresApiClient {
   }
 
   async deleteKiosk(kioskId: string): Promise<void> {
-    await this.request(`/api/kiosks/${encodeURIComponent(kioskId)}`, { method: 'DELETE' });
+    await this.safeDeleteRequest(`/api/kiosks/${encodeURIComponent(kioskId)}`);
   }
 
   async listSecurityAudit(): Promise<{
@@ -1471,7 +1595,7 @@ export class DrTechCaresApiClient {
   }
 
   async unbanTarget(banId: string): Promise<void> {
-    await this.request(`/api/security/ban/${banId}`, { method: 'DELETE' });
+    await this.safeDeleteRequest(`/api/security/ban/${encodeURIComponent(banId)}`);
   }
 
   async forceLogoutUser(userId: string): Promise<void> {

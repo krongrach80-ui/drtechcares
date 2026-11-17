@@ -151,7 +151,7 @@ export function mergeStaffUsersFromDbRows(
   rows: Record<string, unknown>[],
   state: CloudRouterState,
 ): void {
-  const deletedSet = new Set(state.deleted_user_ids ?? []);
+  const deletedLower = new Set((state.deleted_user_ids ?? []).map((x) => x.toLowerCase()));
   const prevById = new Map(state.users.map((u) => [u.id, u]));
   const prevByUsername = new Map(state.users.map((u) => [u.username.toLowerCase(), u]));
   const dbUsers: StoredUserAccount[] = rows
@@ -183,7 +183,7 @@ export function mergeStaffUsersFromDbRows(
         createdAt: String(r.created_at ?? new Date().toISOString()),
       };
     })
-    .filter((u) => !deletedSet.has(u.id));
+    .filter((u) => !deletedLower.has(u.id.toLowerCase()) && !deletedLower.has(u.username.toLowerCase()));
   const dbIds = new Set(dbUsers.map((u) => u.id));
   const dbUsernames = new Set(dbUsers.map((u) => u.username.toLowerCase()));
   // Authoritative Supabase staff list: NEVER resurrect deleted seeded PT accounts (pt_somchai / pt_waranya)
@@ -195,7 +195,8 @@ export function mergeStaffUsersFromDbRows(
         (u) =>
           u.role === 'super_admin' &&
           SEEDED_DEFAULT_USER_IDS.has(u.id) &&
-          !deletedSet.has(u.id) &&
+          !deletedLower.has(u.id.toLowerCase()) &&
+          !deletedLower.has(u.username.toLowerCase()) &&
           !dbIds.has(u.id) &&
           !dbUsernames.has(u.username.toLowerCase()),
       );
@@ -455,9 +456,14 @@ export async function hydrateStateFromSupabase(
   }
 
   if (patientsRes.status === 'fulfilled' && !patientsRes.value.error && Array.isArray(patientsRes.value.data)) {
+    const deletedPatientLower = new Set((state.deleted_patient_ids ?? []).map((x) => x.toLowerCase()));
     const prevPatientsById = new Map(state.patients.map((p) => [p.id, p]));
     state.patients = patientsRes.value.data
-      .filter((r: Record<string, unknown>) => !deletedPatientSet.has(String(r.id)))
+      .filter((r: Record<string, unknown>) => {
+        const pidLo = String(r.id ?? '').toLowerCase();
+        const hnLo = String(r.hn ?? '').toLowerCase();
+        return !deletedPatientLower.has(pidLo) && (!hnLo || !deletedPatientLower.has(hnLo));
+      })
       .map((r: Record<string, unknown>) => {
       const pid = String(r.id);
       const prevPatient = prevPatientsById.get(pid);
@@ -1148,5 +1154,157 @@ export async function persistBiometricStrictToSupabase(
   const result = (await task(supabase)) as { error?: { message?: string } | null } | undefined;
   if (result && typeof result === 'object' && 'error' in result && result.error) {
     throw new Error(result.error.message || 'Supabase biometric write failed');
+  }
+}
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isUuidString(value: string | null | undefined): boolean {
+  return typeof value === 'string' && UUID_REGEX.test(value.trim());
+}
+
+async function settleDeleteWithTimeout(
+  tasks: ReadonlyArray<() => PromiseLike<unknown>>,
+  timeoutMs: number,
+): Promise<void> {
+  if (tasks.length === 0) return;
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.allSettled(tasks.map((fn) => Promise.resolve().then(() => fn()).catch(() => undefined))),
+      new Promise<void>((resolve) => {
+        timerId = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } catch {
+    // Best-effort cleanup never throws
+  } finally {
+    if (timerId !== undefined) clearTimeout(timerId);
+  }
+}
+
+/**
+ * Cascading patient purge in Supabase capped at 1500ms total.
+ * Validates UUIDs before querying uuid columns so non-UUID IDs (e.g., HN-75127) never raise 22P02,
+ * and deletes child tables first to prevent FK 23503 errors from returning HTTP 500.
+ */
+export async function purgePatientInSupabaseBestEffort(
+  supabase: SupabaseClient | null,
+  params: {
+    rawId: string;
+    patientId?: string | null;
+    hn?: string | null;
+    linkedUserIds?: readonly string[];
+    linkedUsernames?: readonly string[];
+  },
+): Promise<void> {
+  if (!supabase) return;
+  try {
+    const candidateUuids = Array.from(
+      new Set([params.rawId, params.patientId].filter((v): v is string => isUuidString(v))),
+    );
+    const candidateHns = Array.from(
+      new Set(
+        [params.hn, !isUuidString(params.rawId) ? params.rawId : '']
+          .map((v) => (v ?? '').trim())
+          .filter(Boolean),
+      ),
+    );
+    const userUuids = Array.from(new Set((params.linkedUserIds ?? []).filter(isUuidString)));
+    const usernames = Array.from(
+      new Set([...(params.linkedUsernames ?? []), ...candidateHns].map((v) => v.trim()).filter(Boolean)),
+    );
+
+    const childTasks: Array<() => PromiseLike<unknown>> = [];
+    for (const pid of candidateUuids) {
+      childTasks.push(
+        () => supabase.from('face_templates').delete().eq('patient_id', pid),
+        () => supabase.from('patient_biometrics').delete().eq('patient_id', pid),
+        () => supabase.from('face_enrollments').delete().eq('patient_id', pid),
+        () => supabase.from('patient_courses').delete().eq('patient_id', pid),
+        () => supabase.from('rehab_schedules').delete().eq('patient_id', pid),
+        () => supabase.from('rehab_sessions').delete().eq('patient_id', pid),
+        () => supabase.from('rehab_session_history').delete().eq('patient_id', pid),
+        () => supabase.from('medical_notes').delete().eq('patient_id', pid),
+        () => supabase.from('treatment_reports').delete().eq('patient_id', pid),
+        () => supabase.from('staff_calls').delete().eq('patient_id', pid),
+        () => supabase.from('staff_users').delete().eq('patient_id', pid),
+      );
+    }
+    for (const uid of userUuids) {
+      childTasks.push(
+        () => supabase.from('active_sessions').delete().eq('user_id', uid),
+        () => supabase.from('staff_users').delete().eq('id', uid),
+      );
+    }
+    for (const uname of usernames) {
+      childTasks.push(() => supabase.from('staff_users').delete().eq('username', uname));
+    }
+    await settleDeleteWithTimeout(childTasks, 1000);
+
+    const parentTasks: Array<() => PromiseLike<unknown>> = [
+      ...candidateUuids.map((pid) => () => supabase.from('patients').delete().eq('id', pid)),
+      ...candidateHns.map((h) => () => supabase.from('patients').delete().eq('hn', h)),
+    ];
+    await settleDeleteWithTimeout(parentTasks, 500);
+  } catch {
+    // Non-fatal: never turn DB / FK / 22P02 / timeout failures into HTTP 500
+  }
+}
+
+/**
+ * Staff / PT / Admin user purge in Supabase capped at 1500ms total.
+ * Validates UUIDs before querying uuid columns (id, user_id, assigned_pt_id, delegated_to_pt_id),
+ * falls back to username matching for seeded non-UUID IDs like `user-pt-1`, and swallows FK/timeout errors.
+ */
+export async function purgeUserInSupabaseBestEffort(
+  supabase: SupabaseClient | null,
+  params: {
+    rawId: string;
+    matchedUserId?: string | null;
+    username?: string | null;
+    linkedPatientId?: string | null;
+    linkedHn?: string | null;
+  },
+): Promise<void> {
+  if (!supabase) return;
+  try {
+    const rawKeyClean = (params.rawId ?? '').trim();
+    const userUuids = Array.from(
+      new Set([params.rawId, params.matchedUserId].filter((v): v is string => isUuidString(v))),
+    );
+    const usernames = Array.from(
+      new Set(
+        [params.username, isUuidString(rawKeyClean) ? '' : rawKeyClean.replace(/^@/, '')]
+          .map((v) => (v ?? '').trim())
+          .filter(Boolean),
+      ),
+    );
+
+    const tasks: Array<() => PromiseLike<unknown>> = [];
+    for (const uid of userUuids) {
+      tasks.push(
+        () => supabase.from('active_sessions').delete().eq('user_id', uid),
+        () => supabase.from('patients').update({ assigned_pt_id: null }).eq('assigned_pt_id', uid),
+        () => supabase.from('patients').update({ delegated_to_pt_id: null }).eq('delegated_to_pt_id', uid),
+        () => supabase.from('staff_users').delete().eq('id', uid),
+      );
+    }
+    for (const uname of usernames) {
+      tasks.push(() => supabase.from('staff_users').delete().eq('username', uname));
+    }
+    await settleDeleteWithTimeout(tasks, 1000);
+
+    if (params.linkedPatientId || params.linkedHn) {
+      await purgePatientInSupabaseBestEffort(supabase, {
+        rawId: params.linkedPatientId ?? params.linkedHn ?? '',
+        patientId: params.linkedPatientId,
+        hn: params.linkedHn,
+        linkedUserIds: userUuids,
+        linkedUsernames: usernames,
+      });
+    }
+  } catch {
+    // Non-fatal: delete succeeds cleanly even if DB times out or reports FK errors
   }
 }

@@ -6,6 +6,7 @@ import {
 } from '@drtechcares/smart-biometric-core';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
+  DrTechCaresApiClient,
   clampTtsText,
   createCloudDelegatedRouter,
   formatLocalIsoDate,
@@ -18,6 +19,8 @@ import {
 import {
   hydrateStaffUsersOnly,
   hydrateStateFromSupabase,
+  purgePatientInSupabaseBestEffort,
+  purgeUserInSupabaseBestEffort,
   type CloudRouterState,
 } from '../supabasePersistence';
 
@@ -2191,6 +2194,117 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(stagedState.patients[0].hn).toBe('HN-75127');
     expect(queryOrder.indexOf('patients')).toBeLessThan(queryOrder.indexOf('patient_biometrics'));
     expect(queryOrder.indexOf('patients')).toBeLessThan(queryOrder.indexOf('face_templates'));
+  });
+
+  it('never returns 404 or 500 when deleting users or patients (UUID, non-UUID, missing, or DB FK failures)', async () => {
+    const router = createCloudDelegatedRouter({});
+    const adminLogin = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin', password: 'Admin@2026' },
+    });
+    const { token: adminToken } = (await adminLogin.json()) as { token: string };
+
+    // Enroll a patient so we have both valid UUID-like/generated ID and HN-75127
+    const enrollRes = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        hn: 'HN-75127',
+        fullName: 'นายพงศกร จิตตเกตุ',
+        age: 61,
+        diagnosis: 'Right Hemiparesis',
+        skipFaceScan: true,
+      },
+    });
+    expect(enrollRes.status).toBe(201);
+    const { patient } = (await enrollRes.json()) as { patient: { id: string; hn: string } };
+
+    // 1. Delete existing non-UUID seeded PT (`user-pt-1`), delete by username via /api/staff/:id, and delete non-existent ID
+    for (const url of [
+      '/api/users/user-pt-1',
+      '/api/staff/pt_waranya',
+      '/api/physiotherapists/non-existent-pt',
+      '/api/users?username=already_gone_user',
+    ]) {
+      const delRes = await callRouter(router, url, { method: 'DELETE', token: adminToken });
+      expect(delRes.status).toBe(200);
+      const delJson = (await delRes.json()) as { ok: boolean; deleted: boolean };
+      expect(delJson.ok).toBe(true);
+      expect(delJson.deleted).toBe(true);
+    }
+
+    // 2. Delete existing patient by id, re-delete by non-UUID HN-75127, delete missing patient, and delete biometrics
+    for (const url of [
+      `/api/patients/${patient.id}`,
+      '/api/patients/HN-75127',
+      '/api/patients?hn=ghost-patient-404',
+      '/api/biometrics/HN-75127',
+    ]) {
+      const delRes = await callRouter(router, url, { method: 'DELETE', token: adminToken });
+      expect(delRes.status).toBe(200);
+      const delJson = (await delRes.json()) as { ok: boolean; deleted: boolean };
+      expect(delJson.ok).toBe(true);
+      expect(delJson.deleted).toBe(true);
+    }
+
+    // 3. Direct Supabase purge helpers validate UUID before querying uuid columns and swallow FK 23503 / 500 errors
+    const eqCalls: { table: string; col: string; val: unknown }[] = [];
+    const failingSupabase = {
+      from: (table: string) => {
+        const builder: Record<string, unknown> = {
+          delete: () => builder,
+          update: () => builder,
+          eq: (col: string, val: unknown) => {
+            eqCalls.push({ table, col, val });
+            return Promise.reject(new Error('23503 foreign key violation / 500 simulated'));
+          },
+        };
+        return builder;
+      },
+    } as unknown as SupabaseClient;
+
+    await expect(
+      purgeUserInSupabaseBestEffort(failingSupabase, {
+        rawId: 'user-pt-1',
+        matchedUserId: 'user-pt-1',
+        username: 'pt_somchai',
+      }),
+    ).resolves.toBeUndefined();
+    // Must NEVER pass non-UUID `user-pt-1` into `.eq('id', ...)` or `.eq('user_id', ...)`
+    expect(eqCalls.some((c) => (c.col === 'id' || c.col === 'user_id') && c.val === 'user-pt-1')).toBe(false);
+    expect(eqCalls.some((c) => c.col === 'username' && c.val === 'pt_somchai')).toBe(true);
+
+    const uuidPid = '11111111-2222-4333-8444-555555555555';
+    await expect(
+      purgePatientInSupabaseBestEffort(failingSupabase, {
+        rawId: uuidPid,
+        patientId: uuidPid,
+        hn: 'HN-75127',
+      }),
+    ).resolves.toBeUndefined();
+    expect(eqCalls.some((c) => c.table === 'face_templates' && c.col === 'patient_id' && c.val === uuidPid)).toBe(true);
+    expect(eqCalls.some((c) => c.table === 'patients' && c.col === 'id' && c.val === uuidPid)).toBe(true);
+
+    // 4. Client deleteUser / deletePatientCascading / deleteStaff NEVER throw on 404, 500, 522, or network rejection
+    const origFetch = globalThis.fetch;
+    try {
+      for (const status of [404, 500, 522]) {
+        globalThis.fetch = (async () =>
+          new Response(JSON.stringify({ error: `HTTP_${status}` }), { status })) as typeof fetch;
+        const client = new DrTechCaresApiClient({});
+        await expect(client.deleteUser('user-pt-1', 'pt_somchai')).resolves.toBeUndefined();
+        await expect(client.deleteStaff('pt_waranya')).resolves.toBeUndefined();
+        await expect(client.deletePatientCascading(uuidPid, 'HN-75127')).resolves.toBeUndefined();
+      }
+      globalThis.fetch = (async () => {
+        throw new TypeError('Network failure');
+      }) as typeof fetch;
+      const offlineClient = new DrTechCaresApiClient({});
+      await expect(offlineClient.deleteUser('user-pt-1')).resolves.toBeUndefined();
+      await expect(offlineClient.deletePatientCascading('HN-75127')).resolves.toBeUndefined();
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 });
 

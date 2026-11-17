@@ -619,12 +619,24 @@ export function createDrTechCaresApiApp(
   });
 
   app.delete('/api/users/:id', requireAuth(['super_admin']), (req: AuthenticatedRequest, res: Response) => {
-    const idx = db.state.users.findIndex((u) => u.id === req.params.id);
-    if (idx === -1) {
-      res.status(404).json({ error: 'USER_NOT_FOUND' });
-      return;
+    const paramId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const rawKey = decodeURIComponent(String(paramId || '')).trim();
+    const keyLower = rawKey.replace(/^@/, '').toLowerCase();
+    const idx = db.state.users.findIndex(
+      (u) => u.id === rawKey || (keyLower.length > 0 && u.username.toLowerCase() === keyLower),
+    );
+    const removed = idx !== -1 ? db.state.users.splice(idx, 1)[0] : undefined;
+    const effectiveId = removed?.id ?? rawKey;
+    for (const p of db.state.patients) {
+      if (p.assignedPtId === effectiveId || (rawKey && p.assignedPtId === rawKey)) {
+        p.assignedPtId = '';
+      }
+      if (p.delegatedToPtId === effectiveId || (rawKey && p.delegatedToPtId === rawKey)) {
+        p.delegatedToPtId = null;
+        p.delegationNote = null;
+        p.delegationDate = null;
+      }
     }
-    const removed = db.state.users.splice(idx, 1)[0];
     db.save();
     db.recordAudit({
       eventType: 'USER_DELETED',
@@ -633,10 +645,10 @@ export function createDrTechCaresApiApp(
       actorName: req.authUser!.fullName,
       ipAddress: req.clientIp ?? 'unknown',
       deviceId: req.clientDeviceId ?? 'unknown',
-      targetId: removed.id,
-      detail: `Deleted user @${removed.username}`,
+      targetId: effectiveId || 'unknown',
+      detail: `Deleted user @${removed?.username ?? rawKey}`,
     });
-    res.json({ deleted: true });
+    res.json({ ok: true, deleted: true, id: effectiveId });
   });
 
   app.post('/api/users/:id/reset-password', requireAuth(['super_admin', 'pt']), (req: AuthenticatedRequest, res: Response) => {
@@ -911,25 +923,41 @@ export function createDrTechCaresApiApp(
   });
 
   app.delete('/api/patients/:id', requireAuth(['super_admin', 'pt']), (req: AuthenticatedRequest, res: Response) => {
-    const patient = db.state.patients.find((p) => p.id === req.params.id);
-    if (!patient) {
-      res.status(404).json({ error: 'PATIENT_NOT_FOUND' });
-      return;
-    }
+    const paramId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const rawPid = decodeURIComponent(String(paramId || '')).trim();
+    const rawLower = rawPid.toLowerCase();
+    const patient = db.state.patients.find(
+      (p) => p.id === rawPid || (rawLower.length > 0 && p.hn.toLowerCase() === rawLower),
+    );
     const actor = req.authUser!;
-    if (actor.role === 'pt' && patient.assignedPtId !== actor.id) {
+    if (actor.role === 'pt' && patient && patient.assignedPtId && patient.assignedPtId !== actor.id) {
       res.status(403).json({ error: 'FORBIDDEN', message: 'PT can only delete own assigned patients' });
       return;
     }
 
-    const pid = patient.id;
-    db.state.patients = db.state.patients.filter((p) => p.id !== pid);
-    db.state.face_templates = db.state.face_templates.filter((t) => t.patientId !== pid);
-    db.state.patient_courses = db.state.patient_courses.filter((c) => c.patientId !== pid);
-    db.state.rehab_sessions = db.state.rehab_sessions.filter((s) => s.patientId !== pid);
-    db.state.medical_notes = db.state.medical_notes.filter((n) => n.patientId !== pid);
-    db.state.treatment_reports = db.state.treatment_reports.filter((r) => r.patientId !== pid);
-    db.state.users = db.state.users.filter((u) => u.patientId !== pid);
+    const pid = patient?.id ?? rawPid;
+    const hnLower = patient?.hn?.toLowerCase() ?? rawLower;
+    db.state.patients = db.state.patients.filter(
+      (p) => p.id !== pid && p.id !== rawPid && (!hnLower || p.hn.toLowerCase() !== hnLower),
+    );
+    db.state.face_templates = db.state.face_templates.filter(
+      (t) => t.patientId !== pid && t.patientId !== rawPid,
+    );
+    db.state.patient_courses = db.state.patient_courses.filter(
+      (c) => c.patientId !== pid && c.patientId !== rawPid,
+    );
+    db.state.rehab_sessions = db.state.rehab_sessions.filter(
+      (s) => s.patientId !== pid && s.patientId !== rawPid,
+    );
+    db.state.medical_notes = db.state.medical_notes.filter(
+      (n) => n.patientId !== pid && n.patientId !== rawPid,
+    );
+    db.state.treatment_reports = db.state.treatment_reports.filter(
+      (r) => r.patientId !== pid && r.patientId !== rawPid,
+    );
+    db.state.users = db.state.users.filter(
+      (u) => u.patientId !== pid && u.patientId !== rawPid && (!hnLower || u.username.toLowerCase() !== hnLower),
+    );
     db.save();
 
     db.recordAudit({
@@ -939,11 +967,13 @@ export function createDrTechCaresApiApp(
       actorName: actor.fullName,
       ipAddress: req.clientIp ?? 'unknown',
       deviceId: req.clientDeviceId ?? 'unknown',
-      targetId: pid,
-      detail: `Cascading purge for patient ${patient.fullName} (${patient.hn})`,
+      targetId: pid || 'unknown',
+      detail: patient
+        ? `Cascading purge for patient ${patient.fullName} (${patient.hn})`
+        : `Cascading purge for patient ${pid || rawPid}`,
     });
 
-    res.json({ deleted: true, patientId: pid, cascadingPurge: true });
+    res.json({ ok: true, deleted: true, id: pid, patientId: pid, cascadingPurge: true });
   });
 
   // PT Special Permission: [ฝากเคสชั่วคราว]

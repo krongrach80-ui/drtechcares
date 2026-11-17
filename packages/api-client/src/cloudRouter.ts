@@ -68,10 +68,13 @@ import {
 import {
   hydrateStaffUsersOnly,
   hydrateStateFromSupabase,
+  isUuidString,
   newRecordId,
   normalizeStaffRole,
   persistBiometricStrictToSupabase,
   persistToSupabase,
+  purgePatientInSupabaseBestEffort,
+  purgeUserInSupabaseBestEffort,
   type CloudRouterState,
   type StoredUserAccount,
 } from './supabasePersistence';
@@ -752,6 +755,40 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function decodePathSegment(raw: string | undefined | null): string {
+  const clean = (raw ?? '').trim();
+  if (!clean) return '';
+  try {
+    return decodeURIComponent(clean).trim();
+  } catch {
+    return clean;
+  }
+}
+
+async function resolveDeleteTargetKey(
+  request: Request,
+  reqUrl: URL,
+  pathSegment?: string,
+  queryKeys: readonly string[] = ['id', 'userId', 'patientId', 'username', 'email', 'hn'],
+): Promise<string> {
+  const fromPath = decodePathSegment(pathSegment);
+  if (fromPath) return fromPath;
+  for (const key of queryKeys) {
+    const val = decodePathSegment(reqUrl.searchParams.get(key));
+    if (val) return val;
+  }
+  const body = await readJsonBody<Record<string, unknown>>(request);
+  if (body && typeof body === 'object') {
+    for (const key of queryKeys) {
+      const val = body[key];
+      if (typeof val === 'string' && val.trim()) {
+        return val.trim();
+      }
+    }
+  }
+  return '';
+}
+
 async function readJsonBody<T = Record<string, unknown>>(request: Request): Promise<T | null> {
   try {
     return (await request.json()) as T;
@@ -1073,6 +1110,71 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     return null;
   };
 
+  const purgePatientInMemory = (rawKey: string, explicitPatient?: PatientRecord | null) => {
+    const cleanKey = decodePathSegment(rawKey);
+    const keyLower = cleanKey.toLowerCase();
+    const patient =
+      explicitPatient ??
+      state.patients.find(
+        (p) => p.id === cleanKey || (keyLower.length > 0 && p.hn.toLowerCase() === keyLower),
+      ) ??
+      null;
+    const pid = patient?.id ?? cleanKey;
+    const hnLower = patient?.hn?.toLowerCase();
+
+    const deletedIds = [pid, patient?.hn, cleanKey].filter(
+      (v): v is string => typeof v === 'string' && v.trim().length > 0,
+    );
+    if (deletedIds.length > 0) {
+      state.deleted_patient_ids = Array.from(
+        new Set([...(state.deleted_patient_ids ?? []), ...deletedIds]),
+      );
+    }
+
+    const linkedUsers = state.users.filter(
+      (u) =>
+        (pid && u.patientId === pid) ||
+        (hnLower && u.username.toLowerCase() === hnLower) ||
+        (keyLower && (u.patientId === cleanKey || u.username.toLowerCase() === keyLower)),
+    );
+    const linkedUserIds = linkedUsers.map((u) => u.id);
+    const linkedUsernames = linkedUsers.map((u) => u.username);
+    if (linkedUserIds.length > 0 || linkedUsernames.length > 0) {
+      state.deleted_user_ids = Array.from(
+        new Set([
+          ...(state.deleted_user_ids ?? []),
+          ...linkedUserIds,
+          ...linkedUsernames.map((u) => u.toLowerCase()),
+        ]),
+      );
+    }
+
+    const matchesTargetPid = (candidatePid?: string | null) =>
+      Boolean(candidatePid && (candidatePid === pid || candidatePid === cleanKey));
+    state.patients = state.patients.filter(
+      (p) => p.id !== pid && p.id !== cleanKey && (!keyLower || p.hn.toLowerCase() !== keyLower),
+    );
+    state.face_templates = state.face_templates.filter((t) => !matchesTargetPid(t.patientId));
+    state.patient_courses = state.patient_courses.filter((c) => !matchesTargetPid(c.patientId));
+    state.rehab_sessions = state.rehab_sessions.filter((s) => !matchesTargetPid(s.patientId));
+    state.medical_notes = state.medical_notes.filter((n) => !matchesTargetPid(n.patientId));
+    state.treatment_reports = state.treatment_reports.filter((r) => !matchesTargetPid(r.patientId));
+    state.staff_calls = state.staff_calls.filter((c) => !matchesTargetPid(c.patientId));
+
+    const linkedUserIdSet = new Set(linkedUserIds);
+    state.users = state.users.filter(
+      (u) =>
+        !linkedUserIdSet.has(u.id) &&
+        (!pid || u.patientId !== pid) &&
+        (!hnLower || u.username.toLowerCase() !== hnLower),
+    );
+    if (linkedUserIdSet.size > 0) {
+      state.active_sessions = state.active_sessions.filter((s) => !linkedUserIdSet.has(s.userId));
+    }
+
+    return { patient, pid, linkedUserIds, linkedUsernames };
+  };
+
   return async function handleApiRequest(request: Request): Promise<Response> {
     if (request.method === 'OPTIONS') {
       return jsonResponse({ ok: true }, 204);
@@ -1248,9 +1350,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       (pathname === '/api/patients' && method === 'GET') ||
       (pathname === '/api/staff-calls' && method === 'GET') ||
       (pathname === '/api/audit-logs' && method === 'GET') ||
-      (pathname.startsWith('/api/courses/') && method === 'GET') ||
-      (pathname.startsWith('/api/patients/') && method === 'DELETE') ||
-      (/^\/api\/(?:users|staff)\/[^/]+$/.test(pathname) && method === 'DELETE');
+      (pathname.startsWith('/api/courses/') && method === 'GET');
 
     await ensureHydrated(
       requiresFreshHydration || (method === 'GET' && pathname !== '/api/exercises' && pathname !== '/api/health'),
@@ -1608,81 +1708,86 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       return jsonResponse({ user: publicUser(target) });
     }
 
-    if (userMatch && method === 'DELETE') {
+    const userDeleteItemMatch = pathname.match(/^\/api\/(?:users|staff|physiotherapists)\/([^/]+)$/);
+    const isUserCollectionDelete =
+      (pathname === '/api/users' || pathname === '/api/staff' || pathname === '/api/physiotherapists') &&
+      method === 'DELETE';
+    if ((userDeleteItemMatch || isUserCollectionDelete) && method === 'DELETE') {
       const err = requireAuth(authUser, ['super_admin']);
       if (err) return err;
-      let idx = state.users.findIndex((u) => u.id === userMatch[1]);
-      if (idx === -1 && supabase) {
-        await ensureHydrated(true, true);
-        idx = state.users.findIndex((u) => u.id === userMatch[1]);
-      }
-      if (idx === -1) return jsonResponse({ error: 'USER_NOT_FOUND' }, 404);
-      const removed = state.users.splice(idx, 1)[0];
-      state.deleted_user_ids = Array.from(new Set([...(state.deleted_user_ids ?? []), removed.id]));
-      state.active_sessions = state.active_sessions.filter((s) => s.userId !== removed.id);
-
-      const linkedPatient = state.patients.find(
-        (p) =>
-          (removed.patientId && p.id === removed.patientId) ||
-          p.hn.toLowerCase() === removed.username.toLowerCase() ||
-          (removed.role === 'patient' && p.fullName.toLowerCase() === removed.fullName.toLowerCase()),
+      const rawTargetKey = await resolveDeleteTargetKey(
+        request,
+        reqUrl,
+        userDeleteItemMatch?.[1],
+        ['id', 'userId', 'username', 'email'],
       );
-      const linkedPatientId = linkedPatient?.id ?? removed.patientId ?? null;
-      if (linkedPatientId) {
-        state.deleted_patient_ids = Array.from(new Set([...(state.deleted_patient_ids ?? []), linkedPatientId]));
-        state.patients = state.patients.filter((p) => p.id !== linkedPatientId);
-        state.face_templates = state.face_templates.filter((t) => t.patientId !== linkedPatientId);
-        state.patient_courses = state.patient_courses.filter((c) => c.patientId !== linkedPatientId);
-        state.rehab_sessions = state.rehab_sessions.filter((s) => s.patientId !== linkedPatientId);
-        state.medical_notes = state.medical_notes.filter((n) => n.patientId !== linkedPatientId);
-        state.treatment_reports = state.treatment_reports.filter((r) => r.patientId !== linkedPatientId);
+      const cleanKeyLower = rawTargetKey.replace(/^@/, '').toLowerCase();
+      let idx = state.users.findIndex(
+        (u) =>
+          u.id === rawTargetKey ||
+          (cleanKeyLower.length > 0 && u.username.toLowerCase() === cleanKeyLower),
+      );
+      const removed = idx !== -1 ? state.users.splice(idx, 1)[0] : undefined;
+      const effectiveId = removed?.id ?? rawTargetKey;
+      const deletedIdentifiers = [
+        rawTargetKey,
+        cleanKeyLower,
+        removed?.id,
+        removed?.username,
+        removed?.username?.toLowerCase(),
+      ].filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+      if (deletedIdentifiers.length > 0) {
+        state.deleted_user_ids = Array.from(
+          new Set([...(state.deleted_user_ids ?? []), ...deletedIdentifiers]),
+        );
       }
 
-      if (supabase) {
-        try {
-          await persistBiometricStrictToSupabase(supabase, async (db) => {
-            await db.from('active_sessions').delete().eq('user_id', removed.id);
-            await db
-              .from('patients')
-              .update({ assigned_pt_id: null })
-              .eq('assigned_pt_id', removed.id);
-            await db
-              .from('patients')
-              .update({ delegated_to_pt_id: null })
-              .eq('delegated_to_pt_id', removed.id);
-            const delById = (await db.from('staff_users').delete().eq('id', removed.id)) as {
-              error?: { message?: string } | null;
-            };
-            if (delById?.error) return delById;
-            const delByUsername = (await db
-              .from('staff_users')
-              .delete()
-              .eq('username', removed.username)) as { error?: { message?: string } | null };
-            if (delByUsername?.error) return delByUsername;
-            if (linkedPatientId) {
-              await db.from('face_templates').delete().eq('patient_id', linkedPatientId);
-              await db.from('patient_biometrics').delete().eq('patient_id', linkedPatientId);
-              await db.from('face_enrollments').delete().eq('patient_id', linkedPatientId);
-              await db.from('patient_courses').delete().eq('patient_id', linkedPatientId);
-              await db.from('rehab_schedules').delete().eq('patient_id', linkedPatientId);
-              await db.from('rehab_sessions').delete().eq('patient_id', linkedPatientId);
-              await db.from('medical_notes').delete().eq('patient_id', linkedPatientId);
-              await db.from('treatment_reports').delete().eq('patient_id', linkedPatientId);
-              await db.from('staff_users').delete().eq('patient_id', linkedPatientId);
-              await db.from('patients').delete().eq('id', linkedPatientId);
-            }
-            return { error: null };
-          });
-        } catch (err) {
-          return jsonResponse(
-            {
-              error: 'USER_DELETE_FAILED',
-              detail: err instanceof Error ? err.message : String(err),
-            },
-            500,
-          );
+      // Unassign patients referencing this staff / PT user so no orphan references remain
+      for (const p of state.patients) {
+        if (
+          p.assignedPtId === effectiveId ||
+          (rawTargetKey && p.assignedPtId === rawTargetKey)
+        ) {
+          p.assignedPtId = '';
+        }
+        if (
+          p.delegatedToPtId === effectiveId ||
+          (rawTargetKey && p.delegatedToPtId === rawTargetKey)
+        ) {
+          p.delegatedToPtId = null;
+          p.delegationNote = null;
+          p.delegationDate = null;
         }
       }
+      state.active_sessions = state.active_sessions.filter(
+        (s) => s.userId !== effectiveId && s.userId !== rawTargetKey,
+      );
+
+      const linkedPatient = removed
+        ? state.patients.find(
+            (p) =>
+              (removed.patientId && p.id === removed.patientId) ||
+              p.hn.toLowerCase() === removed.username.toLowerCase() ||
+              (removed.role === 'patient' && p.fullName.toLowerCase() === removed.fullName.toLowerCase()),
+          )
+        : undefined;
+      const linkedPatientId = linkedPatient?.id ?? removed?.patientId ?? null;
+      if (linkedPatientId) {
+        purgePatientInMemory(linkedPatientId, linkedPatient ?? null);
+      }
+
+      try {
+        await purgeUserInSupabaseBestEffort(supabase, {
+          rawId: rawTargetKey,
+          matchedUserId: removed?.id,
+          username: removed?.username,
+          linkedPatientId,
+          linkedHn: linkedPatient?.hn ?? null,
+        });
+      } catch {
+        // Best-effort purge never fails delete
+      }
+
       recordAudit({
         eventType: 'USER_DELETED',
         actorRole: authUser!.role,
@@ -1690,12 +1795,17 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         actorName: authUser!.fullName,
         ipAddress: clientIp,
         deviceId: clientDeviceId,
-        targetId: removed.id,
+        targetId: effectiveId || 'unknown',
         detail: linkedPatientId
-          ? `Deleted user @${removed.username} and cascaded patient ${linkedPatientId}`
-          : `Deleted user @${removed.username}`,
+          ? `Deleted user @${removed?.username ?? rawTargetKey} and cascaded patient ${linkedPatientId}`
+          : `Deleted user @${removed?.username ?? rawTargetKey}`,
       });
-      return jsonResponse({ deleted: true, cascadedPatientId: linkedPatientId });
+      return jsonResponse({
+        ok: true,
+        deleted: true,
+        id: effectiveId,
+        cascadedPatientId: linkedPatientId,
+      });
     }
 
     // ========================
@@ -3590,63 +3700,95 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       return jsonResponse({ patient });
     }
 
-    if (patientMatch && method === 'DELETE') {
+    const biometricsDeleteMatch = pathname.match(/^\/api\/biometrics\/([^/]+)$/);
+    const isBiometricsCollectionDelete = pathname === '/api/biometrics' && method === 'DELETE';
+    if ((biometricsDeleteMatch || isBiometricsCollectionDelete) && method === 'DELETE') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
-      const pid = patientMatch[1];
-      let patient = state.patients.find((p) => p.id === pid);
-      if (!patient && supabase) {
-        await ensureHydrated(true, true);
-        patient = state.patients.find((p) => p.id === pid);
+      const targetId = await resolveDeleteTargetKey(
+        request,
+        reqUrl,
+        biometricsDeleteMatch?.[1],
+        ['id', 'patientId', 'hn'],
+      );
+      if (targetId) {
+        const lower = targetId.toLowerCase();
+        const matchedPatient = state.patients.find(
+          (p) => p.id === targetId || p.hn.toLowerCase() === lower,
+        );
+        const pid = matchedPatient?.id ?? targetId;
+        state.face_templates = state.face_templates.filter(
+          (t) => t.patientId !== pid && t.patientId !== targetId,
+        );
+        if (matchedPatient) {
+          matchedPatient.faceBiometricStatus = 'PENDING';
+          matchedPatient.faceFramesCount = 0;
+          matchedPatient.masterEmbedding = undefined;
+          matchedPatient.angleEmbeddings = undefined;
+          matchedPatient.exemplarEmbeddings = undefined;
+          matchedPatient.biometricHistory = undefined;
+        }
+        let bioDelTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          if (supabase && isUuidString(pid)) {
+            await Promise.race([
+              Promise.allSettled([
+                supabase.from('face_templates').delete().eq('patient_id', pid),
+                supabase.from('patient_biometrics').delete().eq('patient_id', pid),
+              ]),
+              new Promise<void>((resolve) => {
+                bioDelTimer = setTimeout(resolve, 1500);
+              }),
+            ]);
+          }
+        } catch {
+          // Best-effort biometric cleanup never fails with 500
+        } finally {
+          if (bioDelTimer !== undefined) clearTimeout(bioDelTimer);
+        }
       }
-      if (!patient) return jsonResponse({ error: 'PATIENT_NOT_FOUND' }, 404);
+      return jsonResponse({ ok: true, deleted: true, id: targetId });
+    }
+
+    const isPatientCollectionDelete = pathname === '/api/patients' && method === 'DELETE';
+    if ((patientMatch || isPatientCollectionDelete) && method === 'DELETE') {
+      const err = requireAuth(authUser, ['super_admin', 'pt']);
+      if (err) return err;
+      const rawPid = await resolveDeleteTargetKey(
+        request,
+        reqUrl,
+        patientMatch?.[1],
+        ['id', 'patientId', 'hn'],
+      );
+      const rawLower = rawPid.toLowerCase();
+      const existingPatient = state.patients.find(
+        (p) => p.id === rawPid || (rawLower.length > 0 && p.hn.toLowerCase() === rawLower),
+      );
       const actor = authUser!;
-      if (actor.role === 'pt' && patient.assignedPtId !== actor.id) {
+      if (
+        actor.role === 'pt' &&
+        existingPatient &&
+        existingPatient.assignedPtId &&
+        existingPatient.assignedPtId !== actor.id
+      ) {
         return jsonResponse(
           { error: 'FORBIDDEN', message: 'PT can only delete own assigned patients' },
           403,
         );
       }
 
-      const linkedUsers = state.users.filter(
-        (u) => u.patientId === pid || u.username.toLowerCase() === patient.hn.toLowerCase(),
-      );
-      const linkedUserIds = linkedUsers.map((u) => u.id);
-      state.deleted_patient_ids = Array.from(new Set([...(state.deleted_patient_ids ?? []), pid]));
-      if (linkedUserIds.length > 0) {
-        state.deleted_user_ids = Array.from(new Set([...(state.deleted_user_ids ?? []), ...linkedUserIds]));
+      const purged = purgePatientInMemory(rawPid, existingPatient ?? null);
+      try {
+        await purgePatientInSupabaseBestEffort(supabase, {
+          rawId: rawPid,
+          patientId: purged.patient?.id ?? rawPid,
+          hn: purged.patient?.hn ?? null,
+          linkedUserIds: purged.linkedUserIds,
+          linkedUsernames: purged.linkedUsernames,
+        });
+      } catch {
+        // Best-effort cascading delete never fails with 500
       }
-
-      state.patients = state.patients.filter((p) => p.id !== pid);
-      state.face_templates = state.face_templates.filter((t) => t.patientId !== pid);
-      state.patient_courses = state.patient_courses.filter((c) => c.patientId !== pid);
-      state.rehab_sessions = state.rehab_sessions.filter((s) => s.patientId !== pid);
-      state.medical_notes = state.medical_notes.filter((n) => n.patientId !== pid);
-      state.treatment_reports = state.treatment_reports.filter((r) => r.patientId !== pid);
-      state.users = state.users.filter(
-        (u) => u.patientId !== pid && u.username.toLowerCase() !== patient.hn.toLowerCase(),
-      );
-      if (linkedUserIds.length > 0) {
-        const linkedIdSet = new Set(linkedUserIds);
-        state.active_sessions = state.active_sessions.filter((s) => !linkedIdSet.has(s.userId));
-      }
-
-      await persistToSupabase(supabase, async (db) => {
-        for (const uid of linkedUserIds) {
-          await db.from('active_sessions').delete().eq('user_id', uid);
-        }
-        await db.from('face_templates').delete().eq('patient_id', pid);
-        await db.from('patient_biometrics').delete().eq('patient_id', pid);
-        await db.from('face_enrollments').delete().eq('patient_id', pid);
-        await db.from('patient_courses').delete().eq('patient_id', pid);
-        await db.from('rehab_schedules').delete().eq('patient_id', pid);
-        await db.from('rehab_sessions').delete().eq('patient_id', pid);
-        await db.from('medical_notes').delete().eq('patient_id', pid);
-        await db.from('treatment_reports').delete().eq('patient_id', pid);
-        await db.from('staff_users').delete().eq('patient_id', pid);
-        await db.from('staff_users').delete().eq('username', patient.hn);
-        await db.from('patients').delete().eq('id', pid);
-      });
 
       recordAudit({
         eventType: 'PATIENT_CASCADING_PURGE',
@@ -3655,10 +3797,18 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         actorName: actor.fullName,
         ipAddress: clientIp,
         deviceId: clientDeviceId,
-        targetId: pid,
-        detail: `Cascading purge for patient ${patient.fullName} (${patient.hn})`,
+        targetId: purged.pid || 'unknown',
+        detail: purged.patient
+          ? `Cascading purge for patient ${purged.patient.fullName} (${purged.patient.hn})`
+          : `Cascading purge for patient ${purged.pid || rawPid}`,
       });
-      return jsonResponse({ deleted: true, patientId: pid, cascadingPurge: true });
+      return jsonResponse({
+        ok: true,
+        deleted: true,
+        id: purged.pid,
+        patientId: purged.pid,
+        cascadingPurge: true,
+      });
     }
 
     // ========================
@@ -4699,12 +4849,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (staffCallDeleteMatch && method === 'DELETE') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
-      const callId = decodeURIComponent(staffCallDeleteMatch[1]);
+      const callId = decodePathSegment(staffCallDeleteMatch[1]);
       state.staff_calls = state.staff_calls.filter((c) => c.id !== callId);
       state.deleted_staff_call_ids = Array.from(new Set([...(state.deleted_staff_call_ids ?? []), callId]));
-      await persistToSupabase(supabase, (db) =>
-        db.from('staff_calls').delete().eq('id', callId),
-      );
+      if (isUuidString(callId)) {
+        await persistToSupabase(supabase, (db) => db.from('staff_calls').delete().eq('id', callId));
+      }
       recordAudit({
         eventType: 'STAFF_CALL_DELETED',
         actorRole: authUser!.role,
@@ -4715,7 +4865,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         targetId: callId,
         detail: `Removed staff call record ${callId}`,
       });
-      return jsonResponse({ ok: true });
+      return jsonResponse({ ok: true, deleted: true, id: callId });
     }
 
     if (pathname === '/api/audit-logs' && method === 'GET') {
@@ -4771,12 +4921,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (banDeleteMatch && method === 'DELETE') {
       const err = requireAuth(authUser, ['super_admin']);
       if (err) return err;
-      const banId = decodeURIComponent(banDeleteMatch[1]);
+      const banId = decodePathSegment(banDeleteMatch[1]);
       state.deleted_ban_ids = Array.from(new Set([...(state.deleted_ban_ids ?? []), banId]));
       state.banned_targets = state.banned_targets.filter((b) => b.id !== banId);
-      await persistToSupabase(supabase, (db) =>
-        db.from('banned_targets').delete().eq('id', banId),
-      );
+      if (isUuidString(banId)) {
+        await persistToSupabase(supabase, (db) => db.from('banned_targets').delete().eq('id', banId));
+      }
       recordAudit({
         eventType: 'SECURITY_TARGET_UNBANNED',
         actorRole: authUser!.role,
@@ -4787,7 +4937,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         targetId: banId,
         detail: `Removed ban ${banId}`,
       });
-      return jsonResponse({ ok: true });
+      return jsonResponse({ ok: true, deleted: true, id: banId });
     }
 
     if (pathname === '/api/kiosks' && method === 'POST') {
@@ -4833,7 +4983,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (kioskDeleteMatch && method === 'DELETE') {
       const err = requireAuth(authUser, ['super_admin']);
       if (err) return err;
-      const kid = decodeURIComponent(kioskDeleteMatch[1]);
+      const kid = decodePathSegment(kioskDeleteMatch[1]);
       state.kiosks = state.kiosks.filter((k) => k.kioskId !== kid);
       await persistToSupabase(supabase, (db) => db.from('kiosks').delete().eq('kiosk_id', kid));
       recordAudit({
@@ -4846,7 +4996,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         targetId: kid,
         detail: `Removed Kiosk ${kid}`,
       });
-      return jsonResponse({ deleted: true });
+      return jsonResponse({ ok: true, deleted: true, id: kid });
     }
 
     const forceLogoutMatch = pathname.match(/^\/api\/security\/force-logout\/([^/]+)$/);

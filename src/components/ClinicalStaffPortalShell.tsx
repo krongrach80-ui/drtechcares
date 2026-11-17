@@ -1939,6 +1939,90 @@ export function ClinicalStaffPortalShell({
     }
   };
 
+  const handleDeleteStaffAccount = async (target: UserAccount) => {
+    const deletingSelf = target.id === currentUser.id;
+    const confirmMsg = deletingSelf
+      ? `ยืนยันลบบัญชีแอดมินของตนเอง (${target.fullName})? ระบบจะออกจากระบบอัตโนมัติ`
+      : `ยืนยันลบบัญชี ${target.fullName} (@${target.username})?`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setSubmitting(true);
+    try {
+      await apiClient.deleteUser(target.id, target.username);
+      setUsers((prev) =>
+        prev.filter(
+          (acc) =>
+            acc.id !== target.id &&
+            acc.username.toLowerCase() !== target.username.toLowerCase(),
+        ),
+      );
+      setPatients((prev) =>
+        prev.map((p) =>
+          p.assignedPtId === target.id || p.delegatedToPtId === target.id
+            ? {
+                ...p,
+                assignedPtId: p.assignedPtId === target.id ? '' : p.assignedPtId,
+                delegatedToPtId: p.delegatedToPtId === target.id ? null : p.delegatedToPtId,
+              }
+            : p,
+        ),
+      );
+      const nextOverrides = { ...profileOverrides };
+      delete nextOverrides[target.id];
+      delete nextOverrides[`usr:${target.username.toLowerCase()}`];
+      setProfileOverrides(nextOverrides);
+      saveStaffProfileOverrides(nextOverrides);
+      if (target.patientId) {
+        removeProfileFromLocalBiometricVault(target.patientId);
+      }
+      removeProfileFromLocalBiometricVault(target.username);
+      notifyBiometricIndexChanged();
+      if (deletingSelf) {
+        onLogout();
+        return;
+      }
+      flashBanner('success', `ลบบัญชี @${target.username} เรียบร้อยแล้ว`);
+      await refreshAll();
+    } catch (err) {
+      if (await handleAuthFailureIfExpired(err)) return;
+      flashBanner('error', err instanceof Error ? err.message : 'ไม่สามารถลบบัญชีผู้ใช้ได้');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDeletePatientAccount = async (target: PatientRecord) => {
+    if (!window.confirm(`ยืนยันลบข้อมูลคนไข้ ${target.fullName} (รวม Face ID)?`)) return;
+    setSubmitting(true);
+    try {
+      await apiClient.deletePatientCascading(target.id, target.hn);
+      setPatients((prev) =>
+        prev.filter(
+          (p) =>
+            p.id !== target.id &&
+            p.hn.toLowerCase() !== target.hn.toLowerCase(),
+        ),
+      );
+      setUsers((prev) =>
+        prev.filter(
+          (u) =>
+            u.patientId !== target.id &&
+            u.username.toLowerCase() !== target.hn.toLowerCase(),
+        ),
+      );
+      removeProfileFromLocalBiometricVault(target.id);
+      removeProfileFromLocalBiometricVault(target.hn);
+      notifyBiometricIndexChanged();
+      flashBanner('success', `ลบข้อมูลคนไข้ ${target.fullName} แล้ว`);
+      await refreshAll();
+    } catch (err) {
+      if (await handleAuthFailureIfExpired(err)) return;
+      flashBanner('error', err instanceof Error ? err.message : 'ไม่สามารถลบข้อมูลคนไข้ได้');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleSubmitCaseDelegation = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!delegationPatientId) {
@@ -2718,31 +2802,7 @@ export function ClinicalStaffPortalShell({
                                 <button
                                   type="button"
                                   disabled={submitting}
-                                  onClick={async () => {
-                                    const deletingSelf = u.id === currentUser.id;
-                                    const confirmMsg = deletingSelf
-                                      ? `ยืนยันลบบัญชีแอดมินของตนเอง (${u.fullName})? ระบบจะออกจากระบบอัตโนมัติ`
-                                      : `ยืนยันลบบัญชี ${u.fullName} (@${u.username})?`;
-                                    if (!window.confirm(confirmMsg)) return;
-                                    setSubmitting(true);
-                                    try {
-                                      await apiClient.deleteUser(u.id);
-                                      notifyBiometricIndexChanged();
-                                      if (deletingSelf) {
-                                        onLogout();
-                                        return;
-                                      }
-                                      flashBanner('success', `ลบบัญชี @${u.username} เรียบร้อยแล้ว`);
-                                      await refreshAll();
-                                    } catch (err) {
-                                      flashBanner(
-                                        'error',
-                                        err instanceof Error ? err.message : 'ไม่สามารถลบบัญชีผู้ใช้ได้',
-                                      );
-                                    } finally {
-                                      setSubmitting(false);
-                                    }
-                                  }}
+                                  onClick={() => void handleDeleteStaffAccount(u)}
                                   className="whitespace-nowrap rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-rose-600 hover:bg-rose-100 disabled:opacity-50 cursor-pointer"
                                   title={locale.staff.deleteTitle}
                                 >
@@ -2946,16 +3006,9 @@ export function ClinicalStaffPortalShell({
                               {isAdmin && (
                                 <button
                                   type="button"
-                                  onClick={async () => {
-                                    if (!window.confirm(`ยืนยันลบข้อมูลคนไข้ ${p.fullName} (รวม Face ID)?`)) return;
-                                    await apiClient.deletePatientCascading(p.id);
-                                    removeProfileFromLocalBiometricVault(p.id);
-                                    removeProfileFromLocalBiometricVault(p.hn);
-                                    notifyBiometricIndexChanged();
-                                    flashBanner('success', `ลบข้อมูลคนไข้ ${p.fullName} แล้ว`);
-                                    await refreshAll();
-                                  }}
-                                  className="whitespace-nowrap rounded-xl border border-rose-200 bg-rose-50 p-1.5 text-rose-600 hover:bg-rose-100 cursor-pointer"
+                                  disabled={submitting}
+                                  onClick={() => void handleDeletePatientAccount(p)}
+                                  className="whitespace-nowrap rounded-xl border border-rose-200 bg-rose-50 p-1.5 text-rose-600 hover:bg-rose-100 disabled:opacity-50 cursor-pointer"
                                   title={locale.patients.deleteTitle}
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
@@ -3047,14 +3100,9 @@ export function ClinicalStaffPortalShell({
                             {isAdmin && (
                               <button
                                 type="button"
-                                onClick={async () => {
-                                  if (!window.confirm(`ยืนยันลบบัญชี PT ${pt.fullName}?`)) return;
-                                  await apiClient.deleteUser(pt.id);
-                                  notifyBiometricIndexChanged();
-                                  flashBanner('success', `ลบบัญชี PT ${pt.fullName} แล้ว`);
-                                  await refreshAll();
-                                }}
-                                className="rounded-lg p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer"
+                                disabled={submitting}
+                                onClick={() => void handleDeleteStaffAccount(pt)}
+                                className="rounded-lg p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50 cursor-pointer"
                                 title={locale.staff.deleteTitle}
                               >
                                 <Trash2 className="h-4 w-4" />
