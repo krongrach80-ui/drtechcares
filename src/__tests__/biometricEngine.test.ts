@@ -7,6 +7,7 @@ import {
   BIOMETRIC_MATCH_THRESHOLD,
   BIOMETRIC_REQUIRED_STREAK,
   BIOMETRIC_VAULT_STORAGE_KEY,
+  HUMAN_BIOMETRIC_CONFIG,
   LiveIdentityStreakTracker,
   buildBiometricProfileFromSamples,
   computeHumanDescriptorSimilarity,
@@ -288,6 +289,15 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
 
     removeProfileFromLocalBiometricVault('pat-new-1024');
     expect(readLocalBiometricVault()).toHaveLength(0);
+  });
+
+  it('enables high-speed facial descriptor config without Iris or filter overhead', () => {
+    expect(HUMAN_BIOMETRIC_CONFIG.filter?.enabled).toBe(false);
+    expect(HUMAN_BIOMETRIC_CONFIG.face?.detector?.maxDetected).toBe(1);
+    expect(HUMAN_BIOMETRIC_CONFIG.face?.detector?.rotation).toBe(true);
+    expect(HUMAN_BIOMETRIC_CONFIG.face?.mesh?.enabled).toBe(true);
+    expect(HUMAN_BIOMETRIC_CONFIG.face?.iris?.enabled).toBe(false);
+    expect(HUMAN_BIOMETRIC_CONFIG.face?.description?.enabled).toBe(true);
   });
 });
 

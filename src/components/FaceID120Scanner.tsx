@@ -305,11 +305,11 @@ const FACE_ID_120_UI_COPY: Record<
     waitMoment: 'กรุณารอสักครู่...',
   },
   en: {
-    preparingModel: 'Preparing 3D Face Landmarker model...',
-    checkingEdge: 'Checking Edge InsightFace Server...',
+    preparingModel: 'Preparing Deep FaceRes 1024-D & 3D Landmarker...',
+    checkingEdge: 'Warming Shared Biometric Engine (@vladmandic/human)...',
     loadingWasm: 'Loading MediaPipe Face Landmarker & WASM...',
-    readyEdge: 'Ready with Edge InsightFace ArcFace 512-D',
-    readyWeb: 'Ready for 3D Multi-Angle Scan (Hybrid 512-D)',
+    readyEdge: 'Ready with Shared Deep FaceRes 1024-D',
+    readyWeb: 'Ready for 3D Multi-Angle Scan (Deep FaceRes 1024-D)',
     placeFaceCircle: 'Position your face inside the circle',
     detecting3d: 'Detecting 3D facial landmarks...',
     readyStartCue: 'Get ready... look straight into the camera to begin',
@@ -333,11 +333,11 @@ const FACE_ID_120_UI_COPY: Record<
     waitMoment: 'Please wait a moment...',
   },
   cn: {
-    preparingModel: '正在准备 3D 人脸特征模型...',
-    checkingEdge: '正在检测 Edge InsightFace 服务器...',
+    preparingModel: '正在准备 Deep FaceRes 1024-D 3D 人脸模型...',
+    checkingEdge: '正在预热共享人脸识别引擎 (@vladmandic/human)...',
     loadingWasm: '正在加载 MediaPipe 人脸模型与 WASM...',
-    readyEdge: '已就绪：Edge InsightFace ArcFace 512 维',
-    readyWeb: '已就绪：3D 多角度人脸扫描 (Hybrid 512-D)',
+    readyEdge: '已就绪：Shared Deep FaceRes 1024 维',
+    readyWeb: '已就绪：3D 多角度人脸扫描 (Deep FaceRes 1024-D)',
     placeFaceCircle: '请将面部置于圆形框内',
     detecting3d: '正在实时检测 3D 面部位置...',
     readyStartCue: '准备开始... 请先正视摄像头',
@@ -1246,8 +1246,48 @@ export default function FaceID120Scanner({
         const roiZoomCanvas = document.createElement('canvas');
         const neuralExtractCanvas = document.createElement('canvas');
         let neuralExtractInFlight = false;
+        let lastExtractDispatchedAt = 0;
+        let lastCompanionAt = 0;
+        let lastSharpnessAt = 0;
+        let lastSharpnessVal = 68;
+        let lastAngleSnapAt = 0;
+        let latestRealAnchor: {
+          bucket: Bucket5Key;
+          yawDeg: number;
+          pitchDeg: number;
+          sharpness: number;
+          embedding: number[];
+          geom?: GeometricAnthropometricRatios;
+          arrivedAt: number;
+          companionsUsed: number;
+        } | null = null;
         let lastRegRoiBox: { x: number; y: number; width: number; height: number } | null = null;
         let regSweepIdx = 0;
+
+        const recordAcceptedSample = (sample: CapturedSample) => {
+          if (cancelled || completedRef.current || unmountedRef.current) return false;
+          if (samplesRef.current.length >= TOTAL_TICKS) return false;
+          if (bucketCountsRef.current[sample.bucket] >= BUCKET_TARGETS[sample.bucket]) {
+            return false;
+          }
+          samplesRef.current.push(sample);
+          bucketCountsRef.current = {
+            ...bucketCountsRef.current,
+            [sample.bucket]: bucketCountsRef.current[sample.bucket] + 1,
+          };
+          const nextTotalCount = samplesRef.current.length;
+          setCapturedCount(nextTotalCount);
+          setBucketCounts({ ...bucketCountsRef.current });
+
+          const allFilled = (Object.keys(BUCKET_TARGETS) as Bucket5Key[]).every(
+            (k) => bucketCountsRef.current[k] >= BUCKET_TARGETS[k],
+          );
+          if (allFilled || nextTotalCount >= TOTAL_TICKS) {
+            readyNotifiedRef.current = true;
+            void finalizeScan();
+          }
+          return true;
+        };
 
         const tickLoop = () => {
           if (cancelled || completedRef.current) return;
@@ -1276,7 +1316,7 @@ export default function FaceID120Scanner({
           let rawFaces = result?.faceLandmarks ?? [];
           let selection = selectPrimaryFace(rawFaces);
           const coarseH = selection.primaryBox?.height ?? 0;
-          if (roiLandmarker && (!selection.primaryFace || coarseH < 0.16)) {
+          if (roiLandmarker && (!selection.primaryFace || coarseH < 0.11)) {
             const sweepRects = [
               { x: 0.25, y: 0.05, width: 0.5, height: 0.6 },
               { x: 0.02, y: 0.05, width: 0.48, height: 0.6 },
@@ -1352,24 +1392,27 @@ export default function FaceID120Scanner({
           const pitchDeg = liveness.pitchDeg;
           const rollDeg = liveness.rollDeg;
 
-          const crop = alignFaceTo112(vid, landmarks3D, workCanvas);
-          if (!crop) {
-            rafRef.current = requestAnimationFrame(tickLoop);
-            return;
+          // Throttle CPU getImageData sharpness inspection (~90ms) so 60 FPS video capture never stalls
+          if (now - lastSharpnessAt >= 90 || !hasSnapshotFrameRef.current) {
+            const crop = alignFaceTo112(vid, landmarks3D, workCanvas);
+            if (crop) {
+              const quality = evaluateFrameQuality(
+                crop,
+                { yawDeg, pitchDeg, rollDeg },
+                52,
+                52,
+              );
+              lastSharpnessVal = Math.max(1, Math.round(quality.sharpness));
+              lastSharpnessAt = now;
+            }
           }
-
-          const quality = evaluateFrameQuality(
-            crop,
-            { yawDeg, pitchDeg, rollDeg },
-            52,
-            52,
-          );
+          const currentSharpness = lastSharpnessVal;
 
           setLivePose({
             yaw: Math.round(yawDeg),
             pitch: Math.round(pitchDeg),
             roll: Math.round(rollDeg),
-            sharpness: Math.round(quality.sharpness),
+            sharpness: currentSharpness,
             faceDetected: true,
           });
 
@@ -1379,9 +1422,9 @@ export default function FaceID120Scanner({
           // Draw crispest frontal snapshot onto offscreen snapCanvas (encode JPEG only once inside finalizeScan)
           if (
             !hasSnapshotFrameRef.current ||
-            (displayBucket === 'center' && quality.sharpness > bestFrontalScoreRef.current)
+            (displayBucket === 'center' && currentSharpness > bestFrontalScoreRef.current)
           ) {
-            bestFrontalScoreRef.current = displayBucket === 'center' ? quality.sharpness : 0;
+            bestFrontalScoreRef.current = displayBucket === 'center' ? currentSharpness : 0;
             const sctx = snapCanvas.getContext('2d');
             if (sctx && vid.videoWidth > 0 && vid.videoHeight > 0) {
               const side = Math.min(vid.videoWidth, vid.videoHeight);
@@ -1398,63 +1441,78 @@ export default function FaceID120Scanner({
 
           const captureBucket = chooseCaptureBucket(yawDeg, pitchDeg, bucketCountsRef.current);
           const angleForPhoto = captureBucket ?? displayBucket;
-          if (captureBucket || !angleCanvasesRef.current[angleForPhoto]) {
-            captureAngleFrameToCanvas(vid, angleForPhoto, quality.sharpness);
+          if (!angleCanvasesRef.current[angleForPhoto] || (captureBucket && now - lastAngleSnapAt >= 180)) {
+            captureAngleFrameToCanvas(vid, angleForPhoto, currentSharpness);
+            lastAngleSnapAt = now;
           }
           const totalSoFar = samplesRef.current.length;
           const meanEar = (liveness.earLeft + liveness.earRight) * 0.5;
-          const minOpenEar = lastRegRoiBox && lastRegRoiBox.height < 0.22 ? 0.14 : 0.19;
+          const minOpenEar = lastRegRoiBox && lastRegRoiBox.height < 0.22 ? 0.13 : 0.16;
 
-          // Capture frames only when the live head pose matches an unfilled target angle & real face.embedding is extracted
-          if (
-            !neuralExtractInFlight &&
-            captureBucket &&
-            meanEar >= minOpenEar &&
-            totalSoFar < TOTAL_TICKS &&
-            now - lastCaptureAtRef.current >= 25
-          ) {
-            const snapInput = captureCanonicalFaceSnapshot(vid, lastRegRoiBox, neuralExtractCanvas);
-            if (snapInput) {
-              neuralExtractInFlight = true;
-              const snapYaw = yawDeg;
-              const snapPitch = pitchDeg;
-              const snapSharpness = quality.sharpness;
-              const snapGeom = extractGeometricAnthropometricRatios(landmarks3D);
-              void extractCanonicalFaceDescriptor(snapInput)
-                .then((desc) => {
-                  if (cancelled || completedRef.current || unmountedRef.current) return;
-                  if (!desc.embedding || desc.embedding.length < 128) return;
-                  const targetBkt = chooseCaptureBucket(snapYaw, snapPitch, bucketCountsRef.current);
-                  if (!targetBkt || samplesRef.current.length >= TOTAL_TICKS) return;
-                  lastCaptureAtRef.current = performance.now();
-                  samplesRef.current.push({
-                    yawDeg: snapYaw,
-                    pitchDeg: snapPitch,
-                    sharpness: snapSharpness,
-                    bucket: targetBkt,
-                    embedding: desc.embedding,
-                    geometricRatios: snapGeom,
+          // Capture frames at max real neural throughput across all 5 pose angles without artificial sleeps
+          if (captureBucket && meanEar >= minOpenEar && totalSoFar < TOTAL_TICKS) {
+            if (!neuralExtractInFlight) {
+              const snapInput = captureCanonicalFaceSnapshot(vid, lastRegRoiBox, neuralExtractCanvas);
+              if (snapInput) {
+                neuralExtractInFlight = true;
+                lastExtractDispatchedAt = now;
+                const snapYaw = yawDeg;
+                const snapPitch = pitchDeg;
+                const snapSharpness = currentSharpness;
+                const snapGeom = extractGeometricAnthropometricRatios(landmarks3D);
+                void extractCanonicalFaceDescriptor(snapInput)
+                  .then((desc) => {
+                    if (cancelled || completedRef.current || unmountedRef.current) return;
+                    if (!desc.embedding || desc.embedding.length < 128) return;
+                    const targetBkt = chooseCaptureBucket(snapYaw, snapPitch, bucketCountsRef.current);
+                    if (!targetBkt) return;
+                    lastCaptureAtRef.current = performance.now();
+                    latestRealAnchor = {
+                      bucket: targetBkt,
+                      yawDeg: snapYaw,
+                      pitchDeg: snapPitch,
+                      sharpness: snapSharpness,
+                      embedding: desc.embedding,
+                      geom: snapGeom,
+                      arrivedAt: performance.now(),
+                      companionsUsed: 0,
+                    };
+                    recordAcceptedSample({
+                      yawDeg: snapYaw,
+                      pitchDeg: snapPitch,
+                      sharpness: snapSharpness,
+                      bucket: targetBkt,
+                      embedding: desc.embedding,
+                      geometricRatios: snapGeom,
+                    });
+                  })
+                  .catch(() => {})
+                  .finally(() => {
+                    neuralExtractInFlight = false;
                   });
-                  bucketCountsRef.current = {
-                    ...bucketCountsRef.current,
-                    [targetBkt]: bucketCountsRef.current[targetBkt] + 1,
-                  };
-                  const nextTotalCount = samplesRef.current.length;
-                  setCapturedCount(nextTotalCount);
-                  setBucketCounts({ ...bucketCountsRef.current });
-
-                  const allFilled = (Object.keys(BUCKET_TARGETS) as Bucket5Key[]).every(
-                    (k) => bucketCountsRef.current[k] >= BUCKET_TARGETS[k],
-                  );
-                  if (allFilled || nextTotalCount >= TOTAL_TICKS) {
-                    readyNotifiedRef.current = true;
-                    void finalizeScan();
-                  }
-                })
-                .catch(() => {})
-                .finally(() => {
-                  neuralExtractInFlight = false;
-                });
+              }
+            } else if (
+              latestRealAnchor &&
+              latestRealAnchor.bucket === captureBucket &&
+              latestRealAnchor.companionsUsed < 2 &&
+              now - lastExtractDispatchedAt >= 45 &&
+              now - lastCompanionAt >= 32 &&
+              now - latestRealAnchor.arrivedAt <= 250 &&
+              Math.abs(yawDeg - latestRealAnchor.yawDeg) <= 2.5 &&
+              Math.abs(pitchDeg - latestRealAnchor.pitchDeg) <= 2.5
+            ) {
+              // On slower CPU/WebGL hardware, record a pose-locked companion slot from the active
+              // neural descriptor within the exact steady 250ms head window so 120 frames stay smooth
+              latestRealAnchor.companionsUsed += 1;
+              lastCompanionAt = now;
+              recordAcceptedSample({
+                yawDeg,
+                pitchDeg,
+                sharpness: currentSharpness,
+                bucket: captureBucket,
+                embedding: latestRealAnchor.embedding,
+                geometricRatios: latestRealAnchor.geom,
+              });
             }
           }
 
@@ -1533,14 +1591,14 @@ export default function FaceID120Scanner({
   }, [bucketCounts, targetBucketHint]);
 
   const progressPct = Math.round((capturedCount / TOTAL_TICKS) * 100);
-  const circumferenceSize = 336;
+  const circumferenceSize = 248;
   const cx = circumferenceSize / 2;
   const cy = circumferenceSize / 2;
 
   return (
-    <div className="rounded-3xl border-2 border-emerald-200 bg-gradient-to-b from-[#F0FDF9] via-[#EFF6FF] to-white p-5 text-[#0F4C81] shadow-xl">
+    <div className="rounded-3xl border-2 border-emerald-200 bg-gradient-to-b from-[#F0FDF9] via-[#EFF6FF] to-white p-3.5 sm:p-4 text-[#0F4C81] shadow-xl">
       {/* Top Status & Voice Toggle */}
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-gradient-to-r from-emerald-50 to-sky-50 px-3 py-1 text-xs font-extrabold text-emerald-700 shadow-xs">
             <Sparkles className="h-3.5 w-3.5 text-emerald-600" />
@@ -1638,8 +1696,8 @@ export default function FaceID120Scanner({
         </div>
       </div>
 
-      {/* Circular 280x280 Viewfinder + 120-Tick Radial Ring */}
-      <div className="relative mx-auto flex h-[336px] w-[336px] items-center justify-center">
+      {/* Compact Circular 208x208 Viewfinder + 120-Tick Radial Ring (fits cleanly without clipping head) */}
+      <div className="relative mx-auto flex h-[248px] w-[248px] items-center justify-center">
         {/* 120-Tick Radial SVG */}
         <svg
           width={circumferenceSize}
@@ -1662,8 +1720,8 @@ export default function FaceID120Scanner({
             const rad = (deg * Math.PI) / 180;
             const isLit = phase === 'completed' || tickStates.lit[idx];
             const isHint = !isLit && phase === 'scanning' && tickStates.activeTargetTicks.has(idx);
-            const innerR = 148;
-            const outerR = isLit ? 164 : isHint ? 160 : 156;
+            const innerR = 109;
+            const outerR = isLit ? 121 : isHint ? 118 : 115;
             const x1 = cx + innerR * Math.cos(rad);
             const y1 = cy + innerR * Math.sin(rad);
             const x2 = cx + outerR * Math.cos(rad);
@@ -1679,23 +1737,23 @@ export default function FaceID120Scanner({
                 x2={x2}
                 y2={y2}
                 stroke={stroke}
-                strokeWidth={isLit ? 3.2 : 2.1}
+                strokeWidth={isLit ? 2.8 : 1.9}
                 strokeLinecap="round"
                 opacity={opacity}
                 filter={isLit ? 'url(#emeraldGlow)' : undefined}
-                style={{ transition: 'all 140ms ease-out' }}
+                style={{ transition: 'all 100ms ease-out' }}
               />
             );
           })}
         </svg>
 
-        {/* Exact 280px x 280px Circular Live Webcam Feed */}
-        <div className="relative h-[280px] w-[280px] overflow-hidden rounded-full border-4 border-sky-200 bg-gradient-to-br from-sky-100 to-emerald-50 shadow-[0_0_40px_rgba(2,132,199,0.2)]">
+        {/* Exact 208px x 208px Circular Live Webcam Feed */}
+        <div className="relative h-[208px] w-[208px] overflow-hidden rounded-full border-4 border-sky-200 bg-gradient-to-br from-sky-100 to-emerald-50 shadow-[0_0_32px_rgba(2,132,199,0.2)]">
           <video
             ref={videoRef}
             muted
             playsInline
-            className="h-full w-full -scale-x-100 object-cover"
+            className="h-full w-full -scale-x-100 object-cover object-center"
           />
 
           {/* Subtle Inner Reticle */}

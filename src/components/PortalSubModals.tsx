@@ -482,7 +482,7 @@ export function WelcomeFaceScanModal({
                   fallbackFrameCount = 0;
                   setAutoScanCount(0);
                   setLiveMatchHud(null);
-                } else if (!confirmedLockRef.current && now - lastEmbedAt >= 120) {
+                } else if (!confirmedLockRef.current && now - lastEmbedAt >= 25) {
                   lastEmbedAt = now;
                   const snap = captureCanonicalFaceSnapshot(videoRef.current, rawBox);
                   const extracted = snap ? await extractCanonicalFaceDescriptor(snap) : null;

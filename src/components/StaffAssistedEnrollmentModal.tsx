@@ -167,7 +167,11 @@ export function StaffAssistedEnrollmentModal({
   const [allFiveAnglesReady, setAllFiveAnglesReady] = useState(false);
   const [biometric120Result, setBiometric120Result] = useState<FaceID120Result | null>(null);
   const [capturedSnapshotUrl, setCapturedSnapshotUrl] = useState<string | undefined>(undefined);
-  const [pendingSkipFaceScan, setPendingSkipFaceScan] = useState(false);
+  const modalBodyRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    modalBodyRef.current?.scrollTo({ top: 0 });
+  }, [step]);
 
   // Step 3 Initial Rehab Prescription state
   const [exerciseCategoryFilter, setExerciseCategoryFilter] = useState<ExerciseFilterCategory>('all');
@@ -193,7 +197,6 @@ export function StaffAssistedEnrollmentModal({
     }
     setBiometric120Result(null);
     setAllFiveAnglesReady(false);
-    setPendingSkipFaceScan(false);
     triggerFinalizeRef.current = null;
     setCreatedPatient(null);
     setCapturedSnapshotUrl(undefined);
@@ -270,7 +273,6 @@ export function StaffAssistedEnrollmentModal({
     setPdpaAccepted(true);
     setBiometric120Result(null);
     setAllFiveAnglesReady(false);
-    setPendingSkipFaceScan(false);
     triggerFinalizeRef.current = null;
     setCapturedSnapshotUrl(undefined);
     setCapturing(false);
@@ -308,18 +310,8 @@ export function StaffAssistedEnrollmentModal({
     e.preventDefault();
     if (!validateStep1()) return;
     setErrorMsg(null);
-    setPendingSkipFaceScan(false);
     setStep(2);
     setCapturing(true);
-  };
-
-  const handleSkipFaceToStep3 = () => {
-    if (!validateStep1()) return;
-    setErrorMsg(null);
-    setPendingSkipFaceScan(true);
-    setCapturing(false);
-    syncDefaultPrescriptionIfUntouched();
-    setStep(3);
   };
 
   const handleProceedFromStep2ToStep3 = async () => {
@@ -342,7 +334,6 @@ export function StaffAssistedEnrollmentModal({
       setErrorMsg('กรุณาสแกนใบหน้าให้ครบ 5 มุมหรือครบ 120 เฟรมก่อนดำเนินการต่อ');
       return;
     }
-    setPendingSkipFaceScan(false);
     setCapturing(false);
     syncDefaultPrescriptionIfUntouched();
     setStep(3);
@@ -392,7 +383,7 @@ export function StaffAssistedEnrollmentModal({
   };
 
   const handleFinalizeEnrollment = async (
-    mode: 'verified' | 'pending_skip',
+    _mode: 'verified' = 'verified',
     overrideImageUrl?: string,
     overrideBiometric120?: FaceID120Result,
     customSchedules: RehabScheduleItem[] = [],
@@ -401,9 +392,8 @@ export function StaffAssistedEnrollmentModal({
     setErrorMsg(null);
     setToastMsg(null);
     try {
-      const isPending = mode === 'pending_skip' && !isExistingPatientMode;
       let bio = overrideBiometric120 ?? biometric120Result;
-      if (!isPending && !bio && triggerFinalizeRef.current) {
+      if (!bio && triggerFinalizeRef.current) {
         const finalized = await triggerFinalizeRef.current();
         if (finalized) {
           bio = finalized;
@@ -413,8 +403,10 @@ export function StaffAssistedEnrollmentModal({
       const finalSnapshot =
         overrideImageUrl ?? bio?.compositeSheetDataUrl ?? bio?.avatarDataUrl ?? capturedSnapshotUrl;
 
-      if (!isPending && !bio) {
+      if (!bio) {
         setErrorMsg('กรุณาสแกนใบหน้าให้ครบ 5 มุมหรือครบ 120 เฟรมก่อนบันทึกข้อมูล');
+        setStep(2);
+        setCapturing(true);
         setSaving(false);
         return;
       }
@@ -484,34 +476,32 @@ export function StaffAssistedEnrollmentModal({
         nextAppointmentDate: effectiveNextAppointmentDate,
         rehabSchedules: customSchedules,
         password: pinCode.trim() || '1234',
-        skipFaceScan: isPending,
-        faceBiometricStatus: isPending ? 'PENDING' : 'VERIFIED',
+        skipFaceScan: false,
+        faceBiometricStatus: 'VERIFIED',
         faceImageUrl: finalSnapshot,
-        faceImageUrls: !isPending && bio ? bio.faceImageUrls : undefined,
-        angleImageUrls: !isPending && bio ? bio.angleSnapshots : undefined,
-        frontalCentroid: !isPending && bio ? bio.angleEmbeddings.center : undefined,
-        overallCentroid: !isPending && bio ? bio.masterEmbedding : undefined,
-        masterEmbedding: !isPending && bio ? bio.masterEmbedding : undefined,
-        angleEmbeddings: !isPending && bio ? bio.angleEmbeddings : undefined,
-        ...(!isPending && bio?.exemplarEmbeddings ? { exemplarEmbeddings: bio.exemplarEmbeddings } : {}),
-        ...(!isPending && bio?.biometricEngine ? { biometricEngine: bio.biometricEngine } : {}),
-        ...(!isPending && bio?.geometricRatios ? { geometricRatios: bio.geometricRatios } : {}),
-        framesCaptured: !isPending && bio ? bio.framesCaptured : 0,
-        qualityScore: !isPending && bio ? bio.qualityScore : undefined,
+        faceImageUrls: bio.faceImageUrls,
+        angleImageUrls: bio.angleSnapshots,
+        frontalCentroid: bio.angleEmbeddings.center,
+        overallCentroid: bio.masterEmbedding,
+        masterEmbedding: bio.masterEmbedding,
+        angleEmbeddings: bio.angleEmbeddings,
+        ...(bio.exemplarEmbeddings ? { exemplarEmbeddings: bio.exemplarEmbeddings } : {}),
+        ...(bio.biometricEngine ? { biometricEngine: bio.biometricEngine } : {}),
+        ...(bio.geometricRatios ? { geometricRatios: bio.geometricRatios } : {}),
+        framesCaptured: bio.framesCaptured,
+        qualityScore: bio.qualityScore,
       });
 
-      if (!isPending && bio) {
-        await syncPatientBiometricEverywhere({
-          apiClient,
-          patient: enrolled,
-          masterEmbedding: bio.masterEmbedding,
-          angleEmbeddings: bio.angleEmbeddings,
-          exemplarEmbeddings: bio.exemplarEmbeddings,
-          geometricRatios: bio.geometricRatios,
-          framesCaptured: bio.framesCaptured,
-          qualityScore: bio.qualityScore,
-        });
-      }
+      await syncPatientBiometricEverywhere({
+        apiClient,
+        patient: enrolled,
+        masterEmbedding: bio.masterEmbedding,
+        angleEmbeddings: bio.angleEmbeddings,
+        exemplarEmbeddings: bio.exemplarEmbeddings,
+        geometricRatios: bio.geometricRatios,
+        framesCaptured: bio.framesCaptured,
+        qualityScore: bio.qualityScore,
+      });
 
       if (customSchedules.length > 0 && (enrolled.rehabSchedules ?? []).length === 0) {
         const finalizedSchedules = customSchedules.map((s) => ({ ...s, patientId: enrolled.id }));
@@ -545,9 +535,7 @@ export function StaffAssistedEnrollmentModal({
           ? `ผู้ติดต่อฉุกเฉิน: ${emergencyName.trim()} (${emergencyRelation.trim() || '-'}) โทร ${emergencyPhone.trim() || '-'}`
           : '',
         `PIN สำรอง: ${pinCode.trim() || '1234'} | PDPA Consent: ยืนยันแล้วโดย ${currentUser.fullName}`,
-        isPending
-          ? 'สถานะใบหน้า: PENDING (รอสแกนหน้าเพิ่มเติม 120 เฟรม)'
-          : `สถานะใบหน้า: VERIFIED (3D Multi-Angle ${bio?.framesCaptured ?? 120} เฟรม)`,
+        `สถานะใบหน้า: VERIFIED (3D Multi-Angle 1024-D ${bio.framesCaptured ?? 120} เฟรม)`,
         customSchedules.length > 0
           ? `ท่ากายภาพเริ่มต้น: ${prescribedUniqueCount} ท่า (${customSchedules.length} รายการ${
               effectiveNextAppointmentDate ? ` • นัดถัดไป ${effectiveNextAppointmentDate}` : ''
@@ -560,13 +548,9 @@ export function StaffAssistedEnrollmentModal({
       await apiClient.appendMedicalNote(enrolled.id, structuredSummary).catch(() => {});
 
       setToastMsg(
-        isPending
-          ? customSchedules.length > 0
-            ? `บันทึกประวัติและท่ากายภาพ ${prescribedUniqueCount} ท่าเรียบร้อย (รอสแกน Face ID เพิ่มเติม)`
-            : 'บันทึกประวัติคนไข้เรียบร้อย (รอสแกน Face ID เพิ่มเติม)'
-          : customSchedules.length > 0
-            ? `ลงทะเบียนคนไข้ บันทึก Face ID 120 เฟรม และกำหนดท่ากายภาพ ${prescribedUniqueCount} ท่าสำเร็จ!`
-            : 'ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ!',
+        customSchedules.length > 0
+          ? `ลงทะเบียนคนไข้ บันทึก Face ID 120 เฟรม และกำหนดท่ากายภาพ ${prescribedUniqueCount} ท่าสำเร็จ!`
+          : 'ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ!',
       );
       setCreatedPatient(enrolled);
       setCapturing(false);
@@ -600,7 +584,7 @@ export function StaffAssistedEnrollmentModal({
               </h2>
               <p className="text-xs text-slate-500">
                 {isExistingPatientMode
-                  ? `บันทึกแม่แบบใบหน้า 512 มิติสำหรับรหัส ${targetPatient?.hn}`
+                  ? `บันทึกแม่แบบใบหน้า 1024 มิติสำหรับรหัส ${targetPatient?.hn}`
                   : 'ระบบเปิดประวัติผู้ป่วยอัตโนมัติและบันทึกเวชระเบียนคลินิก'}
               </p>
             </div>
@@ -708,7 +692,7 @@ export function StaffAssistedEnrollmentModal({
         </div>
 
         {/* Scrollable Content */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+        <div ref={modalBodyRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
           {errorMsg && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-700">
               {errorMsg}
@@ -1185,19 +1169,6 @@ export function StaffAssistedEnrollmentModal({
                   </button>
                 </div>
               )}
-
-              {!isExistingPatientMode && (
-                <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
-                  <button
-                    type="button"
-                    disabled={saving}
-                    onClick={handleSkipFaceToStep3}
-                    className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
-                  >
-                    ข้ามสแกนใบหน้าไปกำหนดท่ากายภาพ (สแกนทีหลัง) →
-                  </button>
-                </div>
-              )}
             </div>
           )}
 
@@ -1213,16 +1184,10 @@ export function StaffAssistedEnrollmentModal({
                     {targetJoint}
                   </span>
                 </div>
-                <span
-                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-extrabold ${
-                    !pendingSkipFaceScan && biometric120Result
-                      ? 'bg-emerald-100 text-emerald-800'
-                      : 'bg-amber-100 text-amber-800'
-                  }`}
-                >
-                  {!pendingSkipFaceScan && biometric120Result
-                    ? `Face ID 120 เฟรม พร้อมแล้ว ✓ (${Math.round(biometric120Result.qualityScore * 100)}%)`
-                    : 'รอสแกน Face ID ภายหลัง'}
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-extrabold text-emerald-800">
+                  {biometric120Result
+                    ? `Face ID 120 เฟรม (1024-D 3D) พร้อมแล้ว ✓ (${Math.round(biometric120Result.qualityScore * 100)}%)`
+                    : 'กรุณาสแกน Face ID 120 เฟรมก่อนบันทึก'}
                 </span>
               </div>
 
@@ -1573,7 +1538,7 @@ export function StaffAssistedEnrollmentModal({
                   >
                     <Sparkles className="h-3.5 w-3.5" />
                     {createdPatient.faceBiometricStatus === 'VERIFIED'
-                      ? `VERIFIED (${createdPatient.faceFramesCount ?? 120} เฟรม • 512D 3D)`
+                      ? `VERIFIED (${createdPatient.faceFramesCount ?? 120} เฟรม • 1024-D 3D)`
                       : 'PENDING (รอสแกนหน้า 120 เฟรม)'}
                   </span>
                 </div>
@@ -1674,13 +1639,6 @@ export function StaffAssistedEnrollmentModal({
                 ยกเลิก
               </button>
               <button
-                type="button"
-                onClick={handleSkipFaceToStep3}
-                className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs font-bold text-amber-800 hover:bg-amber-100"
-              >
-                ข้ามสแกนหน้า → กำหนดท่ากายภาพ
-              </button>
-              <button
                 type="submit"
                 form="staff-enroll-step1"
                 className="rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 px-5 py-2.5 text-xs font-extrabold text-white shadow-md hover:opacity-95"
@@ -1754,12 +1712,7 @@ export function StaffAssistedEnrollmentModal({
                 type="button"
                 disabled={saving}
                 onClick={() =>
-                  void handleFinalizeEnrollment(
-                    pendingSkipFaceScan ? 'pending_skip' : 'verified',
-                    undefined,
-                    undefined,
-                    [],
-                  )
+                  void handleFinalizeEnrollment('verified', undefined, undefined, [])
                 }
                 className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-100 disabled:opacity-50"
               >
@@ -1770,12 +1723,7 @@ export function StaffAssistedEnrollmentModal({
                 disabled={saving || selectedExerciseIds.length === 0 || scheduledDates.length === 0}
                 onClick={() => {
                   const built = buildPrescriptionSchedules();
-                  void handleFinalizeEnrollment(
-                    pendingSkipFaceScan ? 'pending_skip' : 'verified',
-                    undefined,
-                    undefined,
-                    built,
-                  );
+                  void handleFinalizeEnrollment('verified', undefined, undefined, built);
                 }}
                 className="rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-extrabold text-white shadow-lg shadow-emerald-600/25 hover:bg-emerald-500 disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none disabled:cursor-not-allowed cursor-pointer"
               >

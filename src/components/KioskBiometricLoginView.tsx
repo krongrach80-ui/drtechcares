@@ -2270,10 +2270,10 @@ export function KioskBiometricLoginView({
               let selection = selectPrimaryFace(res.faceLandmarks ?? []);
               let activeBlendshapes = res.faceBlendshapes?.[0]?.categories;
 
-              // Stage-1 & Stage-2 Two-Stage Smart ROI Zoom: when no face found at full-frame or face < 16% height,
+              // Stage-1 & Stage-2 Two-Stage Smart ROI Zoom: when no face found at full-frame or distant face < 12% height,
               // lock onto last known ROI / Pose head / horizontal sweep -> upscale 320x320 -> refine FaceLandmarker
               const coarseHeight = selection.primaryBox?.height ?? 0;
-              if (roiLandmarker && (!selection.primaryFace || coarseHeight < 0.16)) {
+              if (roiLandmarker && (!selection.primaryFace || coarseHeight < 0.12)) {
                 let targetRoi =
                   selection.primaryFace && selection.primaryBox
                     ? computeHeadZoneRoiFromFaceBox(
@@ -2539,8 +2539,8 @@ export function KioskBiometricLoginView({
                     !asyncMatchInFlight &&
                     !verifyingLockRef.current &&
                     bio &&
-                    meanEar >= 0.19 &&
-                    now - lastEmbedCheckAt >= 120
+                    meanEar >= 0.16 &&
+                    now - lastEmbedCheckAt >= 20
                   ) {
                     if (!matchSnapCanvasRef.current) {
                       matchSnapCanvasRef.current = document.createElement('canvas');
