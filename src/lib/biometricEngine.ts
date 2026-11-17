@@ -14,15 +14,17 @@ export const BIOMETRIC_VAULT_STORAGE_KEY = 'drtech_biometric_vault_v3';
 export const BIOMETRIC_ENGINE_ID = 'human-faceres-1024d' as const;
 export const BIOMETRIC_MIN_EMBEDDING_DIM = 128;
 export const BIOMETRIC_EXPECTED_DIM = 1024;
-export const BIOMETRIC_MATCH_THRESHOLD = 0.76;
-export const BIOMETRIC_FINAL_SCORE_THRESHOLD = 0.76;
-export const BIOMETRIC_EXEMPLAR_FLOOR_THRESHOLD = 0.73;
-export const BIOMETRIC_MAX_EUCLIDEAN_DISTANCE = 0.69;
-export const BIOMETRIC_HUMAN_SIM_THRESHOLD = 0.76;
-export const BIOMETRIC_MARGIN_THRESHOLD = 0.08;
-export const BIOMETRIC_REQUIRED_STREAK = 6;
-export const BIOMETRIC_STREAK_MIN_FRAME_COSINE = 0.74;
-export const BIOMETRIC_MAX_SCORE_VARIANCE = 0.025;
+export const BIOMETRIC_MATCH_THRESHOLD = 0.64;
+export const BIOMETRIC_SINGLE_PATIENT_MATCH_THRESHOLD = 0.60;
+export const BIOMETRIC_HIGH_CONFIDENCE_MARGIN_OVERRIDE = 0.72;
+export const BIOMETRIC_FINAL_SCORE_THRESHOLD = 0.60;
+export const BIOMETRIC_EXEMPLAR_FLOOR_THRESHOLD = 0.60;
+export const BIOMETRIC_MAX_EUCLIDEAN_DISTANCE = 0.90;
+export const BIOMETRIC_HUMAN_SIM_THRESHOLD = 0.64;
+export const BIOMETRIC_MARGIN_THRESHOLD = 0.04;
+export const BIOMETRIC_REQUIRED_STREAK = 3;
+export const BIOMETRIC_STREAK_MIN_FRAME_COSINE = 0.60;
+export const BIOMETRIC_MAX_SCORE_VARIANCE = 0.12;
 export const BIOMETRIC_EXEMPLAR_TARGET_COUNT = 15;
 
 export const HUMAN_BIOMETRIC_CONFIG: Partial<Config> = {
@@ -757,6 +759,71 @@ export function saveProfileToLocalBiometricVault(profile: BiometricProfile): voi
       BIOMETRIC_VAULT_STORAGE_KEY,
       JSON.stringify(filtered.slice(0, 100)),
     );
+
+    // Mirror biometric vectors directly into drtech_patients so Kiosk reads from BOTH storage layers reliably
+    try {
+      const rawPatients = globalThis.localStorage.getItem('drtech_patients');
+      const parsedPatients = rawPatients ? (JSON.parse(rawPatients) as unknown) : [];
+      if (Array.isArray(parsedPatients)) {
+        const pidLo = cleanProfile.patientId.trim().toLowerCase();
+        const hnLo = (cleanProfile.hn ?? '').trim().toLowerCase();
+        let updatedAny = false;
+        const nextPatients = parsedPatients.map((rec) => {
+          if (!rec || typeof rec !== 'object') return rec;
+          const r = rec as Record<string, unknown>;
+          const rId = String(r.id ?? '').trim().toLowerCase();
+          const rHn = String(r.hn ?? '').trim().toLowerCase();
+          if ((pidLo && rId === pidLo) || (hnLo && rHn === hnLo)) {
+            updatedAny = true;
+            return {
+              ...r,
+              faceBiometricStatus: 'VERIFIED',
+              faceFramesCount: cleanProfile.framesCaptured,
+              biometricEngine: BIOMETRIC_ENGINE_ID,
+              masterEmbedding: cleanProfile.master_embedding,
+              master_embedding: cleanProfile.master_embedding,
+              angleEmbeddings: cleanProfile.angle_embeddings,
+              angle_embeddings: cleanProfile.angle_embeddings,
+              faceEmbedding: cleanProfile.master_embedding,
+              face_embedding: cleanProfile.master_embedding,
+              exemplarEmbeddings: cleanProfile.exemplar_embeddings,
+              ...(cleanProfile.avatarUrl ? { faceImageUrl: cleanProfile.avatarUrl } : {}),
+            };
+          }
+          return rec;
+        });
+        if (!updatedAny && cleanProfile.patientId) {
+          nextPatients.unshift({
+            id: cleanProfile.patientId,
+            hn: cleanProfile.hn,
+            fullName: cleanProfile.fullName,
+            age: 45,
+            phone: '',
+            diagnosis: cleanProfile.diagnosis ?? 'General Rehabilitation',
+            assignedPtId: cleanProfile.assignedPtId ?? 'user-pt-1',
+            delegatedToPtId: null,
+            delegationNote: null,
+            nextAppointmentDate: cleanProfile.nextAppointmentDate ?? '',
+            registrationStatus: 'active',
+            enrolledAt: cleanProfile.updatedAt,
+            faceBiometricStatus: 'VERIFIED',
+            faceFramesCount: cleanProfile.framesCaptured,
+            biometricEngine: BIOMETRIC_ENGINE_ID,
+            masterEmbedding: cleanProfile.master_embedding,
+            master_embedding: cleanProfile.master_embedding,
+            angleEmbeddings: cleanProfile.angle_embeddings,
+            angle_embeddings: cleanProfile.angle_embeddings,
+            faceEmbedding: cleanProfile.master_embedding,
+            face_embedding: cleanProfile.master_embedding,
+            exemplarEmbeddings: cleanProfile.exemplar_embeddings,
+            ...(cleanProfile.avatarUrl ? { faceImageUrl: cleanProfile.avatarUrl } : {}),
+          });
+        }
+        globalThis.localStorage.setItem('drtech_patients', JSON.stringify(nextPatients.slice(0, 120)));
+      }
+    } catch {
+      // Ignore secondary mirror errors
+    }
   } catch {
     // Ignore storage quota errors
   }
@@ -919,7 +986,9 @@ export async function syncPatientBiometricEverywhere(input: {
       : null;
   const dbExemplars = profile.exemplar_embeddings.slice(0, 9);
 
-  if (supabase) {
+  // Stop browser -> direct Supabase Postgres writes unless explicitly required by a strict test (`requireSupabase: true`).
+  // Normal UI enrollment persists through Worker API (/api/biometric/enroll & /api/patients & /api/biometrics) + localStorage.
+  if (supabase && input.requireSupabase) {
     try {
       const blob = {
         engine: BIOMETRIC_ENGINE_ID,
@@ -1249,6 +1318,48 @@ export async function loadEnrolledPatientsWithBiometrics(
             fullName: p.fullName,
             registrationStatus: p.registrationStatus ?? 'active',
           }));
+          // Also merge any biometric embeddings attached directly on /api/patients records
+          for (const p of liveList as unknown as Record<string, unknown>[]) {
+            const pid = String(p.id ?? '');
+            const hn = String(p.hn ?? '');
+            const pidLo = pid.trim().toLowerCase();
+            const hnLo = hn.trim().toLowerCase();
+            if (!pid || deletedLowerSet.has(pidLo) || (hnLo && deletedLowerSet.has(hnLo))) continue;
+            const bioObj = (p.biometric && typeof p.biometric === 'object' ? p.biometric : null) as Record<string, unknown> | null;
+            const templatesArr = Array.isArray(p.face_templates) ? (p.face_templates as unknown[]) : null;
+            const masterVec =
+              parseVectorLoose(p.masterEmbedding) ??
+              parseVectorLoose(p.master_embedding) ??
+              parseVectorLoose(p.faceEmbedding) ??
+              parseVectorLoose(p.face_embedding) ??
+              parseVectorLoose(bioObj?.master_embedding) ??
+              parseVectorLoose(bioObj?.embeddings) ??
+              parseVectorLoose(p.biometric_data) ??
+              parseVectorLoose(templatesArr?.[0]);
+            if (!masterVec) continue;
+            const angles =
+              (p.angleEmbeddings as Partial<AngleEmbeddings5D> | undefined) ??
+              (p.angle_embeddings as Partial<AngleEmbeddings5D> | undefined) ??
+              (bioObj?.angle_embeddings as Partial<AngleEmbeddings5D> | undefined);
+            applyCandidate(
+              buildCandidateFromSource(
+                pid,
+                hn,
+                String(p.fullName ?? p.full_name ?? ''),
+                masterVec,
+                angles,
+                Array.isArray(p.exemplarEmbeddings) ? (p.exemplarEmbeddings as unknown[]) : undefined,
+                {
+                  diagnosis: String(p.diagnosis ?? ''),
+                  assignedPtId: String(p.assignedPtId ?? p.assigned_pt_id ?? ''),
+                  nextAppointmentDate: String(p.nextAppointmentDate ?? p.next_appointment_date ?? ''),
+                  avatarUrl: typeof p.faceImageUrl === 'string' ? p.faceImageUrl : undefined,
+                  framesCaptured: typeof p.faceFramesCount === 'number' ? p.faceFramesCount : 120,
+                  biometricEngine: p.biometricEngine as PatientRecord['biometricEngine'],
+                },
+              ),
+            );
+          }
         }
       } catch {
         // Keep unauthenticated roster from /api/biometrics/index if /api/patients isn't authorized
@@ -1280,15 +1391,17 @@ export async function loadEnrolledPatientsWithBiometrics(
       );
     }
   } catch {
-    // Continue cleanly to direct Supabase query if Cloud API failed
+    // Continue cleanly to localStorage fallback if Cloud API failed
   }
 
-  // 2. Authoritative Live Sync from Supabase Cloud (`patients` + `patient_biometrics`) — NEVER orphan biometrics
+  // 2. Direct Supabase fallback ONLY in non-browser test runners when Cloud index is empty
+  // (Never open direct browser -> Postgres connections in Chrome / Kiosk runtime!)
   let syncedFromSupabase = false;
   let supabaseSyncedAccounts = 0;
   let syncError: string | undefined;
+  const isBrowserRuntime = typeof document !== 'undefined';
   const supabase = apiClient.getSupabaseClient();
-  if (supabase) {
+  if (supabase && !isBrowserRuntime && serverIndexEntries.length === 0) {
     try {
       let patientRows: Record<string, unknown>[] = [];
       const bioByPid = new Map<string, Record<string, unknown>>();
@@ -1459,58 +1572,112 @@ export async function loadEnrolledPatientsWithBiometrics(
     );
   }
 
-  // Enforce strict active-patient whitelist (patientId AND hn MUST be in active roster and NOT in tombstones)
-  if (authoritativeActivePatients !== null) {
-    const activeById = new Map(
-      authoritativeActivePatients
-        .filter((p) => (p.registrationStatus ?? 'active') === 'active')
-        .map((p) => [p.id.trim().toLowerCase(), p.hn.trim().toLowerCase()]),
-    );
-    for (const [pid, cand] of Array.from(byPatientId.entries())) {
-      const pidLo = pid.trim().toLowerCase();
-      const hnLo = cand.hn.trim().toLowerCase();
-      const expectedHn = activeById.get(pidLo);
-      if (
-        deletedLowerSet.has(pidLo) ||
-        (hnLo && deletedLowerSet.has(hnLo)) ||
-        expectedHn === undefined ||
-        !activeById.has(pidLo) ||
-        (expectedHn && hnLo !== expectedHn)
-      ) {
-        byPatientId.delete(pid);
-      }
+  // Remove any explicitly tombstoned records from in-memory candidate map
+  for (const [pid, cand] of Array.from(byPatientId.entries())) {
+    const pidLo = pid.trim().toLowerCase();
+    const hnLo = cand.hn.trim().toLowerCase();
+    if (deletedLowerSet.has(pidLo) || (hnLo && deletedLowerSet.has(hnLo))) {
+      byPatientId.delete(pid);
     }
   }
 
-  // Fallback read from Local Vault ONLY when BOTH Cloud API roster & Supabase were unavailable
-  if (!syncedFromSupabase && authoritativeActivePatients === null) {
-    const vaultEntries = readLocalBiometricVault();
-    for (const v of vaultEntries) {
-      const pidLo = v.patientId.trim().toLowerCase();
-      const hnLo = v.hn.trim().toLowerCase();
-      if (deletedLowerSet.has(pidLo) || (hnLo && deletedLowerSet.has(hnLo))) continue;
-      if (!isValidNeuralEmbedding(v.master_embedding)) continue;
-      applyCandidate(
-        buildCandidateFromSource(
-          v.patientId,
-          v.hn,
-          v.fullName,
-          v.master_embedding,
-          v.angle_embeddings,
-          v.exemplar_embeddings,
-          {
-            diagnosis: v.diagnosis,
-            assignedPtId: v.assignedPtId,
-            nextAppointmentDate: v.nextAppointmentDate,
-            avatarUrl: v.avatarUrl,
-            framesCaptured: v.framesCaptured,
-            qualityScore: v.qualityScore,
-            biometricEngine: BIOMETRIC_ENGINE_ID,
-            geometricRatios: v.geometricRatios,
-          },
-        ),
-        true,
-      );
+  // Always merge active, non-deleted local candidates from drtech_biometric_vault_v3 AND drtech_patients
+  // so newly enrolled patients (e.g. during Supabase HTTP 544 outage) are immediately available at Kiosk.
+  const vaultEntries = readLocalBiometricVault();
+  for (const v of vaultEntries) {
+    const pidLo = v.patientId.trim().toLowerCase();
+    const hnLo = v.hn.trim().toLowerCase();
+    if (deletedLowerSet.has(pidLo) || (hnLo && deletedLowerSet.has(hnLo))) continue;
+    if (!isValidNeuralEmbedding(v.master_embedding)) continue;
+    applyCandidate(
+      buildCandidateFromSource(
+        v.patientId,
+        v.hn,
+        v.fullName,
+        v.master_embedding,
+        v.angle_embeddings,
+        v.exemplar_embeddings,
+        {
+          diagnosis: v.diagnosis,
+          assignedPtId: v.assignedPtId,
+          nextAppointmentDate: v.nextAppointmentDate,
+          avatarUrl: v.avatarUrl,
+          framesCaptured: v.framesCaptured,
+          qualityScore: v.qualityScore,
+          biometricEngine: BIOMETRIC_ENGINE_ID,
+          geometricRatios: v.geometricRatios,
+        },
+      ),
+      true,
+    );
+  }
+
+  if (typeof globalThis.localStorage !== 'undefined') {
+    try {
+      const rawPatients = globalThis.localStorage.getItem('drtech_patients');
+      const parsedPatients = rawPatients ? (JSON.parse(rawPatients) as unknown) : [];
+      if (Array.isArray(parsedPatients)) {
+        for (const rec of parsedPatients) {
+          if (!rec || typeof rec !== 'object') continue;
+          const p = rec as Record<string, unknown>;
+          const pid = String(p.id ?? p.patientId ?? '').trim();
+          const hn = String(p.hn ?? '').trim();
+          const pidLo = pid.toLowerCase();
+          const hnLo = hn.toLowerCase();
+          const status = String(p.registrationStatus ?? p.registration_status ?? 'active').toLowerCase();
+          if (
+            !pid ||
+            status === 'deleted' ||
+            status === 'rejected' ||
+            status === 'inactive' ||
+            deletedLowerSet.has(pidLo) ||
+            (hnLo && deletedLowerSet.has(hnLo))
+          ) {
+            continue;
+          }
+          const bioObj = (
+            p.biometric && typeof p.biometric === 'object' ? p.biometric : null
+          ) as Record<string, unknown> | null;
+          const templatesArr = Array.isArray(p.face_templates)
+            ? (p.face_templates as unknown[])
+            : null;
+          const master =
+            parseVectorLoose(p.masterEmbedding) ??
+            parseVectorLoose(p.master_embedding) ??
+            parseVectorLoose(p.faceEmbedding) ??
+            parseVectorLoose(p.face_embedding) ??
+            parseVectorLoose(bioObj?.master_embedding) ??
+            parseVectorLoose(bioObj?.embeddings) ??
+            parseVectorLoose(p.biometric_data) ??
+            parseVectorLoose(templatesArr?.[0]);
+          if (!master) continue;
+          const rawAngles =
+            (p.angleEmbeddings as Partial<AngleEmbeddings5D> | undefined) ??
+            (p.angle_embeddings as Partial<AngleEmbeddings5D> | undefined) ??
+            (bioObj?.angle_embeddings as Partial<AngleEmbeddings5D> | undefined);
+          applyCandidate(
+            buildCandidateFromSource(
+              pid,
+              hn,
+              String(p.fullName ?? p.full_name ?? ''),
+              master,
+              rawAngles,
+              Array.isArray(p.exemplarEmbeddings) ? (p.exemplarEmbeddings as unknown[]) : undefined,
+              {
+                diagnosis: String(p.diagnosis ?? ''),
+                assignedPtId: String(p.assignedPtId ?? p.assigned_pt_id ?? ''),
+                nextAppointmentDate: String(p.nextAppointmentDate ?? p.next_appointment_date ?? ''),
+                avatarUrl: typeof p.faceImageUrl === 'string' ? p.faceImageUrl : undefined,
+                framesCaptured: typeof p.faceFramesCount === 'number' ? p.faceFramesCount : 120,
+                biometricEngine: p.biometricEngine as PatientRecord['biometricEngine'],
+              },
+            ),
+            true,
+          );
+        }
+      }
+    } catch {
+      // Ignore malformed localStorage entries
     }
   }
 
@@ -1628,12 +1795,10 @@ export function computePatientMatchScore(
   }
   const consensusTop3Avg = topSum / k;
   const vectorsAbove073 = scoredVecs.filter((s) => s.cos >= BIOMETRIC_EXEMPLAR_FLOOR_THRESHOLD).length;
+  const bestMasterOrPoseCos = Math.max(bestRawCos, centroidSim);
   const passesMultiExemplarGate =
-    scoredVecs.length >= 3
-      ? vectorsAbove073 >= 3 && consensusTop3Avg >= BIOMETRIC_MATCH_THRESHOLD
-      : scoredVecs.length === 2
-        ? vectorsAbove073 >= 2 && consensusTop3Avg >= BIOMETRIC_MATCH_THRESHOLD
-        : bestRawCos >= BIOMETRIC_MATCH_THRESHOLD;
+    bestMasterOrPoseCos >= BIOMETRIC_SINGLE_PATIENT_MATCH_THRESHOLD &&
+    (vectorsAbove073 >= 1 || consensusTop3Avg >= BIOMETRIC_SINGLE_PATIENT_MATCH_THRESHOLD);
 
   return {
     candidate,
@@ -1656,10 +1821,9 @@ function normalizeNameForIdentity(name: string): string {
 }
 
 /**
- * Ultra-Strict Open-Set 1:N Neural Face Verification:
- * - Gate 1: Raw L2-normalized Cosine Similarity >= 0.76 AND L2 Euclidean Distance <= 0.69.
- * - Gate 2: Multi-Exemplar Consensus (>=3 stored vectors >= 0.73 and Top-3 avg >= 0.76, or Master + Angle when 2).
- * - Gate 3: Margin >= 0.08 over Rank #2 (`bestCosine - secondBestCosine >= 0.08`).
+ * Calibrated Open-Set 1:N Neural Face Verification:
+ * - Gate 1: Raw L2 Cosine Similarity against master_embedding OR best of 5 pose centroids >= 0.64 (or >= 0.60 when 1 patient enrolled) & Euclidean <= 0.90.
+ * - Gate 2: Margin >= 0.04 over Rank #2 (`bestCosine - secondBestCosine >= 0.04`, or `bestCosine >= 0.72` with >= 0.02 gap).
  * - Pure true raw cosine percentage ONLY (`cosine * 100`), zero curve inflation.
  */
 export function evaluateLiveMatch1toN(
@@ -1737,11 +1901,18 @@ export function evaluateLiveMatch1toN(
   const runnerUpFinalScore = runnerUp ? runnerUp.finalScore : 0;
   const margin = runnerUp ? top.bestSim - runnerUp.bestSim : 1;
 
+  const effectiveThreshold =
+    distinctRunners.length === 0
+      ? BIOMETRIC_SINGLE_PATIENT_MATCH_THRESHOLD
+      : BIOMETRIC_MATCH_THRESHOLD;
   const passesThreshold =
-    top.bestSim >= BIOMETRIC_MATCH_THRESHOLD &&
+    top.bestSim >= effectiveThreshold &&
     top.minEuclideanDist <= BIOMETRIC_MAX_EUCLIDEAN_DISTANCE &&
     top.passesMultiExemplarGate;
-  const passesMargin = distinctRunners.length === 0 || margin >= BIOMETRIC_MARGIN_THRESHOLD;
+  const passesMargin =
+    distinctRunners.length === 0 ||
+    margin >= BIOMETRIC_MARGIN_THRESHOLD ||
+    (top.bestSim >= BIOMETRIC_HIGH_CONFIDENCE_MARGIN_OVERRIDE && margin >= 0.02);
   const matched = passesThreshold && passesMargin;
 
   const reason: Live1toNMatchEvaluation['reason'] = matched

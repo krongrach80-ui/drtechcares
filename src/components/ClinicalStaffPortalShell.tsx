@@ -1600,32 +1600,8 @@ export function ClinicalStaffPortalShell({
         .catch(() => {});
     }, 10000);
 
-    // Supabase Realtime subscription for emergency Kiosk staff calls
-    const sb = apiClient.getSupabaseClient();
-    const channel = sb
-      ? sb
-          .channel('drtechcares-staff-calls')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'staff_calls' }, () => {
-            apiClient
-              .listStaffCalls()
-              .then((calls) => {
-                const nextOpen = calls.filter((c) => c.status === 'open').length;
-                if (nextOpen > prevOpenCallCountRef.current) {
-                  playEmergencyChime();
-                }
-                prevOpenCallCountRef.current = nextOpen;
-                setStaffCalls(sortNewestFirst(calls));
-              })
-              .catch(() => {});
-          })
-          .subscribe()
-      : null;
-
     return () => {
       window.clearInterval(pollTimer);
-      if (sb && channel) {
-        void sb.removeChannel(channel);
-      }
     };
   }, [refreshAll, pingCloudHealth, apiClient]);
 

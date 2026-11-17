@@ -115,13 +115,15 @@ export function cosineSimilarity(a: readonly number[], b: readonly number[]): nu
   return denom > 0 ? Math.max(-1, Math.min(1, dot / denom)) : 0;
 }
 
-export const FACE_MATCHER_RAW_COSINE_THRESHOLD = 0.76;
-export const FACE_MATCHER_MAX_EUCLIDEAN_DISTANCE = 0.69;
-export const FACE_MATCHER_EXEMPLAR_FLOOR = 0.73;
-export const FACE_MATCHER_MARGIN_THRESHOLD = 0.08;
-export const FACE_MATCHER_REQUIRED_STREAK = 6;
-export const FACE_MATCHER_MIN_STREAK_FRAME_COS = 0.74;
-export const FACE_MATCHER_MAX_SCORE_VARIANCE = 0.025;
+export const FACE_MATCHER_RAW_COSINE_THRESHOLD = 0.64;
+export const FACE_MATCHER_SINGLE_CANDIDATE_COSINE_THRESHOLD = 0.60;
+export const FACE_MATCHER_HIGH_CONFIDENCE_MARGIN_OVERRIDE = 0.72;
+export const FACE_MATCHER_MAX_EUCLIDEAN_DISTANCE = 0.90;
+export const FACE_MATCHER_EXEMPLAR_FLOOR = 0.60;
+export const FACE_MATCHER_MARGIN_THRESHOLD = 0.04;
+export const FACE_MATCHER_REQUIRED_STREAK = 3;
+export const FACE_MATCHER_MIN_STREAK_FRAME_COS = 0.60;
+export const FACE_MATCHER_MAX_SCORE_VARIANCE = 0.12;
 
 export function euclideanDistanceNormalized(
   a: readonly number[],
@@ -250,8 +252,7 @@ export function identifyPatient1toN(
     Math.abs(options.pitchDeg ?? 0) > 6 ||
     Math.abs(options.rollDeg ?? 0) > 10;
 
-  // Iron Rule 2: Strict Distinctiveness Margin (>= 0.08 between Rank #1 and Rank #2)
-  const marginThreshold = options.marginThreshold ?? 0.08;
+  const marginThreshold = options.marginThreshold ?? FACE_MATCHER_MARGIN_THRESHOLD;
 
   if (probeVector.length === 0 || candidates.length === 0) {
     return {
@@ -610,7 +611,24 @@ export function identifyPatient1toN(
     scored.filter((s) => s.engine !== 'arcface-onnx' && s.engine !== 'human-faceres-1024d'),
   );
 
-  const rawCosineThreshold = options.similarityThreshold ?? FACE_MATCHER_RAW_COSINE_THRESHOLD;
+  const distinctEligibleCount = new Set(
+    eligibleCandidates.map((c) => normalizePatientFullName(c.fullName) || c.patientId),
+  ).size;
+  const rawCosineThreshold =
+    options.similarityThreshold ??
+    (distinctEligibleCount <= 1
+      ? FACE_MATCHER_SINGLE_CANDIDATE_COSINE_THRESHOLD
+      : FACE_MATCHER_RAW_COSINE_THRESHOLD);
+
+  const passesCalibratedMargin = (
+    topSim: number,
+    margin: number,
+    distinctRunnerCount: number,
+    minMargin = marginThreshold,
+  ): boolean =>
+    distinctRunnerCount === 0 ||
+    margin >= minMargin ||
+    (topSim >= FACE_MATCHER_HIGH_CONFIDENCE_MARGIN_OVERRIDE && margin >= 0.02);
 
   const evalHumanPool = () => {
     const top = humanPool[0];
@@ -623,9 +641,12 @@ export function identifyPatient1toN(
     const margin = runnerUp ? top.rawSim - runnerUp.rawSim : 1;
     const passesThreshold =
       top.rawSim >= rawCosineThreshold &&
-      top.euclidDist <= FACE_MATCHER_MAX_EUCLIDEAN_DISTANCE &&
-      top.consensusPassed;
-    const passesMargin = distinctRunners.length === 0 || margin >= marginThreshold;
+      top.euclidDist <= FACE_MATCHER_MAX_EUCLIDEAN_DISTANCE;
+    const passesMargin = passesCalibratedMargin(
+      top.rawSim,
+      margin,
+      distinctRunners.length,
+    );
     const matched = passesThreshold && passesMargin;
     const reason: MultiAngleMatchResult['reason'] = matched
       ? 'OK'
@@ -651,9 +672,13 @@ export function identifyPatient1toN(
       top.rawSim >= arcSimThresh &&
       top.dualFactorScore >= arcSimThresh &&
       top.euclidDist <= FACE_MATCHER_MAX_EUCLIDEAN_DISTANCE &&
-      top.consensusPassed &&
       top.geometricPenalty <= 0.14;
-    const passesMargin = distinctRunners.length === 0 || margin >= arcMarginThresh;
+    const passesMargin = passesCalibratedMargin(
+      top.rawSim,
+      margin,
+      distinctRunners.length,
+      arcMarginThresh,
+    );
     const matched = passesThreshold && passesMargin;
     const reason: MultiAngleMatchResult['reason'] = matched
       ? 'OK'
@@ -674,11 +699,15 @@ export function identifyPatient1toN(
     const runnerUpSim = runnerUp ? runnerUp.rawSim : 0;
     const margin = runnerUp ? top.rawSim - runnerUp.rawSim : 1;
 
-    const passesMargin = distinctRunners.length === 0 || margin >= marginThreshold;
+    const passesMargin = passesCalibratedMargin(
+      top.rawSim,
+      margin,
+      distinctRunners.length,
+    );
     const topIsLegacyV1 = top.isLegacyV1;
     const similarityThreshold =
       options.similarityThreshold ??
-      (topIsLegacyV1 ? (isAngledPose ? 0.76 : 0.80) : FACE_MATCHER_RAW_COSINE_THRESHOLD);
+      (topIsLegacyV1 ? (isAngledPose ? 0.64 : 0.68) : rawCosineThreshold);
     const whitenedThreshold =
       options.whitenedThreshold ??
       (topIsLegacyV1 ? (isAngledPose ? 0.36 : 0.42) : isAngledPose ? 0.32 : 0.36);
@@ -890,7 +919,7 @@ export class TemporalBiometricMatcher {
       !match.bestCandidate ||
       match.similarity < FACE_MATCHER_MIN_STREAK_FRAME_COS
     ) {
-      // Unanimous lock: ANY failed, <0.74, or ambiguous frame immediately wipes streak back to 0!
+      // Unanimous lock: ANY failed, <0.60, or ambiguous frame immediately wipes streak back to 0!
       this.reset();
       return {
         confirmed: false,
@@ -1091,16 +1120,6 @@ export function subscribeBiometricIndex(
   }
   const intervalId = globalThis.setInterval(refresh, 5000);
 
-  const supabase = apiClient.getSupabaseClient();
-  const channel = supabase
-    ? supabase
-        .channel(`biometrics-index-rt-${Date.now()}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'patient_biometrics' }, refresh)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'face_templates' }, refresh)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'patients' }, refresh)
-        .subscribe()
-    : null;
-
   return () => {
     active = false;
     globalThis.clearInterval(intervalId);
@@ -1110,9 +1129,6 @@ export function subscribeBiometricIndex(
     }
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', onVisibilityChange);
-    }
-    if (channel && supabase) {
-      void supabase.removeChannel(channel);
     }
   };
 }

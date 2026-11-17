@@ -2906,43 +2906,43 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(neckRes.romDeg!).toBeGreaterThanOrEqual(21);
   });
 
-  it('never leaks candidate name on Kiosk bounding box below 0.76 or before 6/6 streak completes', () => {
+  it('never leaks candidate name on Kiosk bounding box below 0.60 or before 3/3 streak completes', () => {
     const unknownState = resolveKioskFaceBoundingBoxOverlay({
       isSpoof: false,
       isBioVerified: true,
-      rawCosine: 0.68,
+      rawCosine: 0.52,
       streak: 0,
-      requiredStreak: 6,
+      requiredStreak: 3,
       confirmedCandidateName: 'สมชาย ใจดี',
       confirmedCandidateHn: 'HN-75127',
     });
     expect(unknownState.variant).toBe('UNREGISTERED');
     expect(unknownState.boxColor).toBe('amber');
     expect(unknownState.displayName).toBeNull();
-    expect(unknownState.label).toContain('ไม่พบบัญชีที่ตรงกับใบหน้านี้');
+    expect(unknownState.label).toContain('กำลังตรวจสอบใบหน้า');
     expect(unknownState.label).not.toContain('สมชาย');
 
     const confirmingState = resolveKioskFaceBoundingBoxOverlay({
       isSpoof: false,
       isBioVerified: true,
-      rawCosine: 0.86,
-      streak: 3,
-      requiredStreak: 6,
+      rawCosine: 0.72,
+      streak: 2,
+      requiredStreak: 3,
       confirmedCandidateName: 'สมชาย ใจดี',
       confirmedCandidateHn: 'HN-75127',
     });
     expect(confirmingState.variant).toBe('CONFIRMING');
     expect(confirmingState.boxColor).toBe('blue');
     expect(confirmingState.displayName).toBeNull();
-    expect(confirmingState.label).toContain('กำลังยืนยันตัวตน... (3/6)');
+    expect(confirmingState.label).toContain('กำลังยืนยันตัวตน... (2/3)');
     expect(confirmingState.label).not.toContain('สมชาย');
 
     const verifiedState = resolveKioskFaceBoundingBoxOverlay({
       isSpoof: false,
       isBioVerified: true,
       rawCosine: 0.89,
-      streak: 6,
-      requiredStreak: 6,
+      streak: 3,
+      requiredStreak: 3,
       confirmedCandidateName: 'สมชาย ใจดี',
       confirmedCandidateHn: 'HN-75127',
     });

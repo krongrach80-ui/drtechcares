@@ -637,7 +637,7 @@ export function WelcomeFaceScanModal({
                         setMatchResult({
                           matched: false,
                           confidencePercent: Math.round(evalRes.confidencePercent),
-                          reason: '🔍 ไม่พบบัญชีที่ตรงกับใบหน้านี้ (ความคล้ายไม่ถึงเกณฑ์)',
+                          reason: '🔍 กำลังตรวจสอบใบหน้า...',
                         });
                         void fetchLiveBiometricsFromSupabase(apiClient)
                           .then((loaded) => {
@@ -829,7 +829,7 @@ export function WelcomeFaceScanModal({
               ) : (
                 <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[290px] -translate-x-1/2 rounded-lg border border-amber-400 bg-amber-50/95 px-3 py-1 text-center backdrop-blur-md shadow-xl">
                   <div className="text-[10px] font-extrabold text-amber-800">
-                    🔍 ไม่พบบัญชีที่ตรงกับใบหน้านี้ (ความคล้ายไม่ถึงเกณฑ์)
+                    🔍 กำลังตรวจสอบใบหน้า...
                   </div>
                 </div>
               )}
@@ -878,7 +878,7 @@ export function WelcomeFaceScanModal({
             ) : (
               <div className="flex items-center justify-between gap-2">
                 <span>
-                  ❌ ไม่พบบัญชีที่ตรงกับใบหน้านี้ในฐานข้อมูล Supabase ({matchResult.confidencePercent}%) — {matchResult.reason || 'กรุณาลงทะเบียนใหม่'}
+                  ❌ ยังไม่พบบัญชีที่ตรงกับใบหน้านี้ ({matchResult.confidencePercent}%) — {matchResult.reason || 'กรุณาลงทะเบียนใหม่'}
                 </span>
                 <button
                   type="button"

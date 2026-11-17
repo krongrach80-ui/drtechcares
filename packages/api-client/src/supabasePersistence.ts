@@ -97,6 +97,147 @@ export function newRecordId(useUuid: boolean, prefix: string): string {
   return `${prefix}-${Date.now()}-${hex}`;
 }
 
+export const SUPABASE_CIRCUIT_COOLDOWN_MS = 5 * 60 * 1000;
+export const MAX_DB_IMAGE_STRING_LENGTH = 4000;
+
+interface CircuitRecord {
+  downUntil: number;
+  reason: string | null;
+}
+
+const supabaseCircuitByClient = new WeakMap<object, CircuitRecord>();
+let globalSupabaseCircuit: CircuitRecord = { downUntil: 0, reason: null };
+
+export function isSupabaseTransientFailure(errOrStatus: unknown): boolean {
+  if (typeof errOrStatus === 'number') {
+    return (
+      errOrStatus === 401 ||
+      errOrStatus === 500 ||
+      errOrStatus === 502 ||
+      errOrStatus === 503 ||
+      errOrStatus === 504 ||
+      errOrStatus === 520 ||
+      errOrStatus === 522 ||
+      errOrStatus === 524 ||
+      errOrStatus === 544
+    );
+  }
+  if (!errOrStatus) return false;
+  const rawObj = typeof errOrStatus === 'object' ? (errOrStatus as Record<string, unknown>) : null;
+  const statusNum = rawObj && typeof rawObj.status === 'number' ? rawObj.status : null;
+  if (statusNum !== null && isSupabaseTransientFailure(statusNum)) {
+    return true;
+  }
+  const msg = String(
+    rawObj ? `${rawObj.code ?? ''} ${rawObj.message ?? ''} ${rawObj.details ?? ''} ${rawObj.hint ?? ''}` : errOrStatus,
+  ).toLowerCase();
+  return (
+    msg.includes('dbconnectiontimeout') ||
+    msg.includes('connection terminated') ||
+    msg.includes('544') ||
+    msg.includes('522') ||
+    msg.includes('504') ||
+    msg.includes('502') ||
+    msg.includes('503') ||
+    msg.includes('timeout') ||
+    msg.includes('timed out') ||
+    msg.includes('aborterror') ||
+    msg.includes('aborted') ||
+    msg.includes('fetch failed') ||
+    msg.includes('network') ||
+    msg.includes('57014') ||
+    msg.includes('08006') ||
+    msg.includes('08001') ||
+    msg.includes('53300') ||
+    msg.includes('upstream 5')
+  );
+}
+
+export function markSupabaseDown(
+  reason = 'supabase_unavailable',
+  client?: object | null,
+  cooldownMs = SUPABASE_CIRCUIT_COOLDOWN_MS,
+): void {
+  const next: CircuitRecord = { downUntil: Date.now() + cooldownMs, reason };
+  if (client && typeof client === 'object') {
+    supabaseCircuitByClient.set(client, next);
+  } else {
+    globalSupabaseCircuit = next;
+  }
+}
+
+export function isSupabaseCircuitOpen(client?: object | null, now = Date.now()): boolean {
+  if (client && typeof client === 'object') {
+    const rec = supabaseCircuitByClient.get(client);
+    if (!rec) return false;
+    if (rec.downUntil > now) return true;
+    supabaseCircuitByClient.delete(client);
+    return false;
+  }
+  if (globalSupabaseCircuit.downUntil > now) return true;
+  globalSupabaseCircuit = { downUntil: 0, reason: null };
+  return false;
+}
+
+export function getSupabaseCircuitState(
+  client?: object | null,
+  now = Date.now(),
+): { open: boolean; downUntil: number; remainingMs: number; reason: string | null } {
+  const rec =
+    client && typeof client === 'object'
+      ? supabaseCircuitByClient.get(client)
+      : globalSupabaseCircuit;
+  if (!rec || rec.downUntil <= now) {
+    return { open: false, downUntil: 0, remainingMs: 0, reason: null };
+  }
+  return {
+    open: true,
+    downUntil: rec.downUntil,
+    remainingMs: Math.max(0, rec.downUntil - now),
+    reason: rec.reason,
+  };
+}
+
+export function resetSupabaseCircuitForTests(client?: object | null): void {
+  if (client && typeof client === 'object') {
+    supabaseCircuitByClient.delete(client);
+  }
+  globalSupabaseCircuit = { downUntil: 0, reason: null };
+}
+
+/** Zero-Base64 DB sanitizer: strips any data:image/* string > maxLen (default 4000 chars) before Postgres writes. */
+export function stripOversizedBase64ForDb<T>(value: T, maxLen = MAX_DB_IMAGE_STRING_LENGTH): T {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^data:image\//i.test(trimmed) && trimmed.length > maxLen) {
+      return null as unknown as T;
+    }
+    if (/^data:[^;]+;base64,/i.test(trimmed) && trimmed.length > maxLen) {
+      return null as unknown as T;
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const mapped: unknown[] = [];
+    for (const item of value) {
+      if (typeof item === 'string' && /^data:(image\/|[^;]+;base64,)/i.test(item.trim()) && item.trim().length > maxLen) {
+        continue;
+      }
+      mapped.push(stripOversizedBase64ForDb(item, maxLen));
+    }
+    return mapped as unknown as T;
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v === undefined) continue;
+      out[k] = stripOversizedBase64ForDb(v, maxLen);
+    }
+    return out as T;
+  }
+  return value;
+}
+
 /** Safely apply `.limit(maxRows)` on real PostgREST builders without breaking minimal unit mocks. */
 function withQueryLimit(query: unknown, maxRows: number): PromiseLike<unknown> {
   const q = query as { limit?: (n: number) => PromiseLike<unknown> } | null;
@@ -104,6 +245,38 @@ function withQueryLimit(query: unknown, maxRows: number): PromiseLike<unknown> {
     return q.limit(maxRows);
   }
   return Promise.resolve(query);
+}
+
+/** Run PostgREST query with explicit columns (never SELECT *), stripping any unmigrated optional column on 42703/PGRST204. */
+async function selectExplicitWithFallback(
+  runQuery: (cols: string) => PromiseLike<unknown>,
+  initialCols: string,
+  maxRows = 50,
+): Promise<unknown> {
+  let cols = initialCols
+    .split(',')
+    .map((c) => c.trim())
+    .filter(Boolean);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const colStr = cols.join(',');
+    const res = (await withQueryLimit(runQuery(colStr), maxRows)) as
+      | { data?: unknown; error?: { code?: string; message?: string } | null }
+      | undefined;
+    if (!res?.error) return res;
+    const msg = String(res.error.message ?? '');
+    const m =
+      msg.match(/column\s+(?:[a-zA-Z0-9_]+\.)?["']?([a-zA-Z0-9_]+)["']?\s+does not exist/i) ||
+      msg.match(/Could not find the ['"]?([a-zA-Z0-9_]+)['"]? column/i);
+    if (m?.[1] && cols.length > 1) {
+      const nextCols = cols.filter((c) => c !== m[1]);
+      if (nextCols.length < cols.length) {
+        cols = nextCols;
+        continue;
+      }
+    }
+    return res;
+  }
+  return { data: null, error: { message: 'column_fallback_exhausted' } };
 }
 
 function rejectedBudget(reason: string): PromiseSettledResult<unknown> {
@@ -203,16 +376,32 @@ export function mergeStaffUsersFromDbRows(
   state.users = [...dbUsers, ...bootstrapAdminOnly];
 }
 
+const STAFF_USERS_LIGHT_COLS =
+  'id,username,password_hash,role,full_name,phone,specialty,license_no,license_number,patient_id,status,active,force_logged_out_at,created_at';
+
+const PATIENTS_LIGHT_COLS =
+  'id,hn,full_name,age,gender,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,face_biometric_status,face_frames_count,face_embedding,biometric_data,history,stroke_type,affected_side,motor_assessment_score,adl_dressing_score,max_safe_rom_deg,universal_health_link_code,created_at,updated_at';
+
+const PATIENT_BIOMETRICS_LIGHT_COLS =
+  'patient_id,hn,master_embedding,angle_embeddings,exemplar_embeddings,biometric_engine,model_version,frames_captured,frame_count,quality_score,updated_at';
+
 /** Fast single-table lookup of staff_users for POST /api/auth/login (never blocks on 17-table hydration). */
 export async function hydrateStaffUsersOnly(
   supabase: SupabaseClient,
   state: CloudRouterState,
-  timeoutMs = 2500,
+  timeoutMs = 1500,
 ): Promise<boolean> {
+  if (isSupabaseCircuitOpen(supabase)) {
+    return false;
+  }
   let timerId: ReturnType<typeof setTimeout> | undefined;
   try {
     const outcome = await Promise.race([
-      Promise.resolve(withQueryLimit(supabase.from('staff_users').select('*'), 200)).then((res) => ({
+      selectExplicitWithFallback(
+        (cols) => supabase.from('staff_users').select(cols),
+        STAFF_USERS_LIGHT_COLS,
+        50,
+      ).then((res) => ({
         timedOut: false as const,
         res: res as { data: Record<string, unknown>[] | null; error: unknown },
       })),
@@ -220,12 +409,22 @@ export async function hydrateStaffUsersOnly(
         timerId = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
       }),
     ]);
-    if (outcome.timedOut || outcome.res.error || !Array.isArray(outcome.res.data)) {
+    if (outcome.timedOut) {
+      markSupabaseDown('hydrate_staff_timeout', supabase);
+      return false;
+    }
+    if (outcome.res.error || !Array.isArray(outcome.res.data)) {
+      if (isSupabaseTransientFailure(outcome.res.error)) {
+        markSupabaseDown('hydrate_staff_transient_error', supabase);
+      }
       return false;
     }
     mergeStaffUsersFromDbRows(outcome.res.data, state);
     return true;
-  } catch {
+  } catch (err) {
+    if (isSupabaseTransientFailure(err)) {
+      markSupabaseDown('hydrate_staff_exception', supabase);
+    }
     return false;
   } finally {
     if (timerId !== undefined) {
@@ -238,41 +437,138 @@ export async function hydrateStateFromSupabase(
   supabase: SupabaseClient,
   state: CloudRouterState,
 ): Promise<void> {
-  const totalDeadlineMs = Date.now() + 2450;
+  if (isSupabaseCircuitOpen(supabase)) {
+    return;
+  }
+  const totalDeadlineMs = Date.now() + 1500;
 
-  // Stage 1 (Priority Clinical Directory): fetch patients & staff_users FIRST so PATIENTS COUNT > 0
-  // never contends with heavy Base64 biometrics, 512/1024-D templates, or historical logs on Free Tier.
+  // Stage 1 (Priority Clinical Directory): fetch patients & staff_users FIRST with explicit columns (zero SELECT *, no base64 images) & limit(50)
   const stage1Tasks: ReadonlyArray<() => PromiseLike<unknown>> = [
-    () => withQueryLimit(supabase.from('staff_users').select('*'), 200),
-    () => withQueryLimit(supabase.from('patients').select('*'), 300),
-    () => supabase.from('system_settings').select('*').eq('id', 1).maybeSingle(),
-    () => withQueryLimit(supabase.from('banned_targets').select('*').order('created_at', { ascending: false }), 200),
-    () => withQueryLimit(supabase.from('active_sessions').select('*').eq('revoked', false).order('created_at', { ascending: false }), 200),
+    () =>
+      selectExplicitWithFallback(
+        (cols) => supabase.from('staff_users').select(cols),
+        STAFF_USERS_LIGHT_COLS,
+        50,
+      ),
+    () =>
+      selectExplicitWithFallback(
+        (cols) => supabase.from('patients').select(cols),
+        PATIENTS_LIGHT_COLS,
+        50,
+      ),
+    () =>
+      supabase
+        .from('system_settings')
+        .select('id,ai_face_scan_enabled,ai_face_threshold,ai_pose_detection_enabled,kiosk_auto_reset_sec')
+        .eq('id', 1)
+        .maybeSingle(),
+    () =>
+      withQueryLimit(
+        supabase
+          .from('banned_targets')
+          .select('id,target_type,value,reason,banned_by,created_at')
+          .order('created_at', { ascending: false }),
+        50,
+      ),
+    () =>
+      withQueryLimit(
+        supabase
+          .from('active_sessions')
+          .select('token,user_id,role,ip_address,device_id,created_at,revoked')
+          .eq('revoked', false)
+          .order('created_at', { ascending: false }),
+        50,
+      ),
   ];
 
-  // Stage 2 (Biometric Embeddings & Clinical Config): queried sequentially after Stage 1 completes,
-  // using small batchSize=2 so patient_biometrics + face_templates never spike Free Tier connections.
+  // Stage 2 (Biometric Embeddings & Clinical Config): explicit lightweight columns + limit(50), excluding base64 avatar_url/questions blobs.
   const stage2Tasks: ReadonlyArray<() => PromiseLike<unknown>> = [
-    () => withQueryLimit(supabase.from('face_templates').select('patient_id, pose, embedding, quality_score'), 300),
-    () => withQueryLimit(supabase.from('patient_biometrics').select('*'), 150),
-    () => withQueryLimit(supabase.from('patient_courses').select('*'), 300),
-    () => supabase.from('exercises').select('*').eq('active', true),
-    () => supabase.from('modpacks').select('*').eq('active', true),
-    () => withQueryLimit(supabase.from('kiosks').select('*'), 50),
+    () => withQueryLimit(supabase.from('face_templates').select('patient_id,pose,embedding,quality_score'), 50),
+    () =>
+      selectExplicitWithFallback(
+        (cols) => supabase.from('patient_biometrics').select(cols),
+        PATIENT_BIOMETRICS_LIGHT_COLS,
+        50,
+      ),
+    () =>
+      withQueryLimit(
+        supabase.from('patient_courses').select('id,patient_id,title,weekly_schedule,cognitive_modpack_id,updated_at'),
+        50,
+      ),
+    () =>
+      withQueryLimit(
+        supabase
+          .from('exercises')
+          .select('id,code,category,name_th,body_side,instructions_th,target_rom_deg,hold_sec,name_i18n,instruction_i18n,detection_config,active')
+          .eq('active', true),
+        50,
+      ),
+    () =>
+      withQueryLimit(
+        supabase.from('modpacks').select('id,name,category,card_count,categories,active').eq('active', true),
+        50,
+      ),
+    () =>
+      withQueryLimit(
+        supabase.from('kiosks').select('kiosk_id,location,online,current_state,pairing_token,last_heartbeat_at'),
+        50,
+      ),
   ];
 
-  // Stage 3 (Historical Logs & Telemetry): fetched last within any remaining time budget.
+  // Stage 3 (Historical Logs & Telemetry): explicit lightweight columns + limit(50).
   const stage3Tasks: ReadonlyArray<() => PromiseLike<unknown>> = [
-    () => withQueryLimit(supabase.from('medical_notes').select('*').order('created_at', { ascending: false }), 150),
-    () => withQueryLimit(supabase.from('rehab_sessions').select('*').order('created_at', { ascending: false }), 150),
-    () => withQueryLimit(supabase.from('treatment_reports').select('*').order('created_at', { ascending: false }), 150),
-    () => withQueryLimit(supabase.from('staff_calls').select('*').order('created_at', { ascending: false }), 150),
-    () => withQueryLimit(supabase.from('audit_logs').select('*').order('created_at', { ascending: false }), 150),
-    () => withQueryLimit(supabase.from('rehab_session_history').select('*').order('session_date', { ascending: false }), 150),
+    () =>
+      withQueryLimit(
+        supabase
+          .from('medical_notes')
+          .select('id,patient_id,author_id,author_name,content,created_at')
+          .order('created_at', { ascending: false }),
+        50,
+      ),
+    () =>
+      withQueryLimit(
+        supabase
+          .from('rehab_sessions')
+          .select('id,patient_id,exercise_id,completed_sets,completed_reps,accuracy_percent,max_rom_deg,pain_stop_triggered,kinematics_replay,minigame_score,created_at')
+          .order('created_at', { ascending: false }),
+        50,
+      ),
+    () =>
+      withQueryLimit(
+        supabase
+          .from('treatment_reports')
+          .select('id,patient_id,pt_id,pt_name,summary,ai_recommendation,score_summary,created_at,updated_at')
+          .order('created_at', { ascending: false }),
+        50,
+      ),
+    () =>
+      withQueryLimit(
+        supabase
+          .from('staff_calls')
+          .select('id,kiosk_id,patient_id,reason,status,created_at')
+          .order('created_at', { ascending: false }),
+        50,
+      ),
+    () =>
+      withQueryLimit(
+        supabase
+          .from('audit_logs')
+          .select('id,event_type,actor_role,actor_id,actor_name,ip_address,device_id,target_id,detail,action,target,details,created_at')
+          .order('created_at', { ascending: false }),
+        50,
+      ),
+    () =>
+      withQueryLimit(
+        supabase
+          .from('rehab_session_history')
+          .select('id,patient_id,hn,session_date,exercise_code,exercise_name,joint_name,body_side,baseline_rom_deg,achieved_max_rom_deg,rom_delta_deg,motor_score_at_session,valid_reps,compensations_count,facility_name,recorded_by_pt_id,recorded_by_pt_name,clinical_notes,created_at')
+          .order('session_date', { ascending: false }),
+        50,
+      ),
   ];
 
   const [usersRes, patientsRes, settingsRes, bansRes, activeSessionsRes] =
-    (await settleStageInBatches(stage1Tasks, 5, Math.min(totalDeadlineMs, Date.now() + 1400))) as [
+    (await settleStageInBatches(stage1Tasks, 5, Math.min(totalDeadlineMs, Date.now() + 1200))) as [
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
       PromiseSettledResult<{ data: Record<string, unknown> | null; error: unknown }>,
@@ -299,6 +595,39 @@ export async function hydrateStateFromSupabase(
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
     ];
+
+  const settledAll: PromiseSettledResult<{ error?: unknown } | null>[] = [
+    usersRes,
+    patientsRes,
+    settingsRes,
+    bansRes,
+    activeSessionsRes,
+    templatesRes,
+    biometrics120Res,
+    coursesRes,
+    exercisesRes,
+    modpacksRes,
+    kiosksRes,
+    notesRes,
+    sessionsRes,
+    reportsRes,
+    callsRes,
+    auditRes,
+    sessionHistoryRes,
+  ];
+  for (const s of settledAll) {
+    if (s.status === 'rejected') {
+      if (isSupabaseTransientFailure(s.reason)) {
+        markSupabaseDown('hydrate_rejected_transient', supabase);
+        break;
+      }
+    } else if (s.value && typeof s.value === 'object' && 'error' in s.value && s.value.error) {
+      if (isSupabaseTransientFailure(s.value.error)) {
+        markSupabaseDown('hydrate_error_5xx_or_544', supabase);
+        break;
+      }
+    }
+  }
 
   if (usersRes.status === 'fulfilled' && !usersRes.value.error && Array.isArray(usersRes.value.data)) {
     mergeStaffUsersFromDbRows(usersRes.value.data as Record<string, unknown>[], state);
@@ -618,35 +947,6 @@ export async function hydrateStateFromSupabase(
             ? history.faceImageUrl
             : hydratedFaceImageUrls?.[0]);
 
-      if (
-        resolvedFaceStatus === 'VERIFIED' &&
-        (typeof r.face_frames_count !== 'number' || r.face_frames_count <= 0) &&
-        resolvedFramesCount > 0
-      ) {
-        try {
-          const tableRef = supabase.from('patients') as unknown as {
-            update?: (payload: Record<string, unknown>) => {
-              eq?: (col: string, val: string) => Promise<unknown>;
-            };
-          };
-          const q = tableRef.update?.({
-            face_frames_count: resolvedFramesCount,
-            history: {
-              ...history,
-              faceBiometricStatus: 'VERIFIED',
-              faceFramesCount: resolvedFramesCount,
-            },
-            updated_at: new Date().toISOString(),
-          });
-          void q?.eq?.('id', pid)?.then(
-            () => {},
-            () => {},
-          );
-        } catch {
-          // ignore best-effort self-heal errors
-        }
-      }
-
       const override = state.delegation_overrides?.[pid];
       const rawDelegationNote = r.delegation_note ? String(r.delegation_note) : null;
       const delegationMatch = rawDelegationNote?.match(/^\[(\d{4}-\d{2}-\d{2})\]\s*(.*)$/);
@@ -725,6 +1025,16 @@ export async function hydrateStateFromSupabase(
         prevPatient?.universalHealthLinkCode ||
         `DTC-EHR-${pid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase()}`;
 
+      const mergedPrimaryFaceImageUrl =
+        primaryFaceImageUrl ?? prevPatient?.faceImageUrl;
+      const mergedFaceImageUrls =
+        hydratedFaceImageUrls ?? prevPatient?.faceImageUrls;
+      const mergedAngleImageUrls =
+        hydratedAngleImageUrls ?? prevPatient?.angleImageUrls;
+      const mergedMaster = fallbackMaster ?? prevPatient?.masterEmbedding;
+      const mergedAngles = fallbackAngles ?? prevPatient?.angleEmbeddings;
+      const mergedExemplars = fallbackExemplars ?? prevPatient?.exemplarEmbeddings;
+
       return {
         id: pid,
         hn: String(r.hn),
@@ -749,25 +1059,28 @@ export async function hydrateStateFromSupabase(
         nextAppointmentDate: String(r.next_appointment_date ?? ''),
         registrationStatus: (r.registration_status as 'active' | 'archived') ?? 'active',
         enrolledAt: String(r.created_at ?? new Date().toISOString()),
-        faceBiometricStatus: resolvedFaceStatus,
-        faceFramesCount: resolvedFramesCount,
-        faceImageUrl: primaryFaceImageUrl,
-        faceImageUrls: hydratedFaceImageUrls,
-        angleImageUrls: hydratedAngleImageUrls,
-        masterEmbedding: fallbackMaster,
-        angleEmbeddings: fallbackAngles,
-        ...(fallbackExemplars ? { exemplarEmbeddings: fallbackExemplars } : {}),
+        faceBiometricStatus:
+          resolvedFaceStatus === 'VERIFIED' || prevPatient?.faceBiometricStatus === 'VERIFIED'
+            ? 'VERIFIED'
+            : resolvedFaceStatus,
+        faceFramesCount: Math.max(resolvedFramesCount, prevPatient?.faceFramesCount ?? 0),
+        faceImageUrl: mergedPrimaryFaceImageUrl,
+        faceImageUrls: mergedFaceImageUrls,
+        angleImageUrls: mergedAngleImageUrls,
+        masterEmbedding: mergedMaster,
+        angleEmbeddings: mergedAngles,
+        ...(mergedExemplars ? { exemplarEmbeddings: mergedExemplars } : {}),
         biometricEngine:
-          normalizeEngineTag(b120?.biometricEngine, fallbackMaster) ??
-          normalizeEngineTag(history.biometricEngine, fallbackMaster) ??
-          normalizeEngineTag(prevPatient?.biometricEngine, fallbackMaster),
+          normalizeEngineTag(b120?.biometricEngine, mergedMaster) ??
+          normalizeEngineTag(history.biometricEngine, mergedMaster) ??
+          normalizeEngineTag(prevPatient?.biometricEngine, mergedMaster),
         geometricRatios:
           history.geometricRatios && typeof history.geometricRatios === 'object'
             ? (history.geometricRatios as GeometricAnthropometricRatios)
             : prevPatient?.geometricRatios,
         rehabSchedules: Array.isArray(history.rehabSchedules)
           ? sanitizeAccidentalDefaultKneePrefix(history.rehabSchedules as RehabScheduleItem[])
-          : [],
+          : prevPatient?.rehabSchedules ?? [],
         biometricHistory:
           tpl && tpl.frontal && tpl.overall
             ? {
@@ -775,15 +1088,34 @@ export async function hydrateStateFromSupabase(
                 overall_centroid: tpl.overall,
                 raw_frames: tpl.raw,
               }
-            : fallbackMaster
+            : mergedMaster
               ? {
-                  frontal_centroid: fallbackAngles?.center ?? fallbackMaster,
-                  overall_centroid: fallbackMaster,
+                  frontal_centroid: mergedAngles?.center ?? mergedMaster,
+                  overall_centroid: mergedMaster,
                   raw_frames: [],
                 }
               : undefined,
       };
     });
+
+    // Preserve active in-memory patients that haven't been flushed to Postgres yet (e.g. during HTTP 544/timeout)
+    const dbSeenIds = new Set(state.patients.map((p) => p.id.trim().toLowerCase()));
+    const dbSeenHns = new Set(state.patients.map((p) => p.hn.trim().toLowerCase()).filter(Boolean));
+    for (const [prevId, prevP] of prevPatientsById.entries()) {
+      const pidLo = prevId.trim().toLowerCase();
+      const hnLo = (prevP.hn ?? '').trim().toLowerCase();
+      if (
+        (prevP.registrationStatus ?? 'active') !== 'active' ||
+        deletedPatientSet.has(prevId) ||
+        deletedPatientLower.has(pidLo) ||
+        (hnLo && deletedPatientLower.has(hnLo)) ||
+        dbSeenIds.has(pidLo) ||
+        (hnLo && dbSeenHns.has(hnLo))
+      ) {
+        continue;
+      }
+      state.patients.push(prevP);
+    }
   } else {
     state.patients = state.patients.filter(
       (p) =>
@@ -1201,11 +1533,18 @@ export async function persistToSupabase(
   supabase: SupabaseClient | null,
   task: (client: SupabaseClient) => PromiseLike<unknown>,
 ): Promise<boolean> {
-  if (!supabase) return false;
+  if (!supabase || isSupabaseCircuitOpen(supabase)) return false;
   try {
-    await task(supabase);
+    const res = (await task(supabase)) as { error?: unknown } | undefined;
+    if (res && typeof res === 'object' && res.error && isSupabaseTransientFailure(res.error)) {
+      markSupabaseDown('persist_transient_error', supabase);
+      return false;
+    }
     return true;
-  } catch {
+  } catch (err) {
+    if (isSupabaseTransientFailure(err)) {
+      markSupabaseDown('persist_exception', supabase);
+    }
     // Non-fatal fallback for offline / missing column / constraint edge cases
     return false;
   }
@@ -1213,16 +1552,20 @@ export async function persistToSupabase(
 
 /**
  * Bounded best-effort persistence wrapper for write endpoints (`POST`/`PUT`/`PATCH`):
- * awaits Supabase writes up to `timeoutMs` inside try/catch, logs warnings on errors/timeouts,
+ * awaits Supabase writes up to `timeoutMs` inside try/catch, trips 5-min circuit breaker on 5xx/544/timeout,
  * and NEVER throws HTTP 500 back to the client.
  */
 export async function persistWithTimeoutBestEffort(
   supabase: SupabaseClient | null,
   task: (client: SupabaseClient) => PromiseLike<unknown>,
-  timeoutMs = 2400,
+  timeoutMs = 1500,
   label = 'supabase_write',
 ): Promise<{ persisted: boolean; errorMessage?: string }> {
   if (!supabase) return { persisted: false };
+  if (isSupabaseCircuitOpen(supabase)) {
+    return { persisted: false, errorMessage: 'supabase_circuit_open' };
+  }
+  const boundedMs = Math.min(timeoutMs, 1500);
   let timerId: ReturnType<typeof setTimeout> | undefined;
   try {
     const outcome = await Promise.race([
@@ -1231,27 +1574,37 @@ export async function persistWithTimeoutBestEffort(
         (err) => ({ timedOut: false as const, err }),
       ),
       new Promise<{ timedOut: true }>((resolve) => {
-        timerId = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+        timerId = setTimeout(() => resolve({ timedOut: true }), boundedMs);
       }),
     ]);
     if (outcome.timedOut) {
-      console.warn(`[cloudRouter] ${label} timed out after ${timeoutMs}ms (kept in-memory state)`);
+      markSupabaseDown(`${label}_timeout`, supabase);
+      console.warn(`[cloudRouter] ${label} timed out after ${boundedMs}ms (circuit opened 5m; kept in-memory state)`);
       return { persisted: false, errorMessage: 'timeout' };
     }
     if ('err' in outcome && outcome.err) {
       const msg = outcome.err instanceof Error ? outcome.err.message : String(outcome.err);
+      if (isSupabaseTransientFailure(outcome.err)) {
+        markSupabaseDown(`${label}_exception`, supabase);
+      }
       console.warn(`[cloudRouter] ${label} failed cleanly (non-fatal):`, msg);
       return { persisted: false, errorMessage: msg };
     }
     const rawRes = 'res' in outcome ? (outcome.res as { error?: { message?: string } | null } | null) : null;
     if (rawRes && typeof rawRes === 'object' && rawRes.error) {
       const msg = rawRes.error.message || JSON.stringify(rawRes.error);
+      if (isSupabaseTransientFailure(rawRes.error)) {
+        markSupabaseDown(`${label}_postgrest_5xx`, supabase);
+      }
       console.warn(`[cloudRouter] ${label} PostgREST warning (non-fatal):`, msg);
       return { persisted: false, errorMessage: msg };
     }
     return { persisted: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    if (isSupabaseTransientFailure(err)) {
+      markSupabaseDown(`${label}_unexpected`, supabase);
+    }
     console.warn(`[cloudRouter] ${label} unexpected error (non-fatal):`, msg);
     return { persisted: false, errorMessage: msg };
   } finally {
@@ -1267,9 +1620,12 @@ export async function persistBiometricStrictToSupabase(
   supabase: SupabaseClient | null,
   task: (client: SupabaseClient) => PromiseLike<unknown>,
 ): Promise<void> {
-  if (!supabase) return;
+  if (!supabase || isSupabaseCircuitOpen(supabase)) return;
   const result = (await task(supabase)) as { error?: { message?: string } | null } | undefined;
   if (result && typeof result === 'object' && 'error' in result && result.error) {
+    if (isSupabaseTransientFailure(result.error)) {
+      markSupabaseDown('biometric_strict_5xx', supabase);
+    }
     throw new Error(result.error.message || 'Supabase biometric write failed');
   }
 }
@@ -1363,14 +1719,14 @@ export async function upsertCourseSafeToSupabase(
   const safePatientUuid = toSafeUuidOrNull(row.patient_id);
   if (!safePatientUuid) return;
   const safeId = isUuidString(row.id) ? row.id.trim() : newRecordId(true, 'course');
-  const working: Record<string, unknown> = {
+  const working: Record<string, unknown> = stripOversizedBase64ForDb({
     id: safeId,
     patient_id: safePatientUuid,
     title: row.title,
     weekly_schedule: row.weekly_schedule ?? [],
     cognitive_modpack_id: row.cognitive_modpack_id || null,
     updated_at: row.updated_at || new Date().toISOString(),
-  };
+  });
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const res = (await db.from('patient_courses').upsert(working, { onConflict: 'id' })) as
       | { error?: { code?: string; message?: string } | null }
@@ -1429,7 +1785,7 @@ export async function purgePatientInSupabaseBestEffort(
     linkedUsernames?: readonly string[];
   },
 ): Promise<void> {
-  if (!supabase) return;
+  if (!supabase || isSupabaseCircuitOpen(supabase)) return;
   try {
     const candidateUuids = Array.from(
       new Set([params.rawId, params.patientId].filter((v): v is string => isUuidString(v))),
@@ -1498,7 +1854,7 @@ export async function purgeUserInSupabaseBestEffort(
     linkedHn?: string | null;
   },
 ): Promise<void> {
-  if (!supabase) return;
+  if (!supabase || isSupabaseCircuitOpen(supabase)) return;
   try {
     const rawKeyClean = (params.rawId ?? '').trim();
     const userUuids = Array.from(

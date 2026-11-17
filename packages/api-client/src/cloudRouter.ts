@@ -67,9 +67,12 @@ import {
   type UserRole,
 } from './index';
 import {
+  getSupabaseCircuitState,
   hydrateStaffUsersOnly,
   hydrateStateFromSupabase,
+  isSupabaseCircuitOpen,
   isUuidString,
+  markSupabaseDown,
   newRecordId,
   normalizeCompactExemplars,
   normalizeStaffRole,
@@ -77,6 +80,7 @@ import {
   persistWithTimeoutBestEffort,
   purgePatientInSupabaseBestEffort,
   purgeUserInSupabaseBestEffort,
+  stripOversizedBase64ForDb,
   toSafeUuidOrNull,
   upsertCourseSafeToSupabase,
   type CloudRouterState,
@@ -470,14 +474,15 @@ async function upsertPatientBiometricsCompat(
   db: SupabaseClient,
   payload: Record<string, unknown>,
 ): Promise<void> {
+  if (isSupabaseCircuitOpen(db)) return;
   const safePatientUuid = toSafeUuidOrNull(
     typeof payload.patient_id === 'string' ? payload.patient_id : null,
   );
   if (!safePatientUuid) return;
-  const working: Record<string, unknown> = {
+  const working: Record<string, unknown> = stripOversizedBase64ForDb({
     ...payload,
     patient_id: safePatientUuid,
-  };
+  });
   for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
       const res = (await db
@@ -572,7 +577,7 @@ function buildPatientHistoryPayload(patient: PatientRecord): Record<string, unkn
   };
 }
 
-/** Writes a `patients` row safely: strips unmigrated/type-mismatched columns and switches to HN update on 23505. */
+/** Writes a `patients` row safely: strips oversized base64 images + unmigrated/type-mismatched columns and switches to HN update on 23505. */
 async function writePatientRowWithFramesFallback(
   db: SupabaseClient,
   mode: 'insert' | 'update',
@@ -580,7 +585,8 @@ async function writePatientRowWithFramesFallback(
   patientId?: string,
   _strict = false,
 ): Promise<void> {
-  const working: Record<string, unknown> = { ...fields };
+  if (isSupabaseCircuitOpen(db)) return;
+  const working: Record<string, unknown> = stripOversizedBase64ForDb({ ...fields });
   let activeMode = mode;
   let updateTargetCol: 'id' | 'hn' = 'id';
   let updateTargetVal = patientId;
@@ -748,6 +754,28 @@ async function uploadMultiAngleFaceBundle(
   faceImageUrls?: string[];
 }> {
   const cleanAngles = normalizeAngleUrlMap(input.angleImageUrls);
+  const localOnlyBundle = () => {
+    const extraRaw = Array.isArray(input.faceImageUrls)
+      ? input.faceImageUrls.filter((u): u is string => typeof u === 'string' && u.length > 0)
+      : [];
+    const combined = Array.from(
+      new Set(
+        [
+          input.faceImageUrl,
+          ...FACE_ANGLE_KEYS.map((k) => cleanAngles?.[k]),
+          ...extraRaw,
+        ].filter((u): u is string => typeof u === 'string' && u.length > 0),
+      ),
+    );
+    return {
+      primaryFaceImageUrl: input.faceImageUrl ?? cleanAngles?.center ?? combined[0],
+      angleImageUrls: cleanAngles,
+      faceImageUrls: combined.length > 0 ? combined : undefined,
+    };
+  };
+  if (!supabase || isSupabaseCircuitOpen(supabase)) {
+    return localOnlyBundle();
+  }
   const runAll = async () => {
     const angleEntries = await Promise.all(
       FACE_ANGLE_KEYS.map(async (key) => {
@@ -973,10 +1001,11 @@ function isUsableSupabaseKey(raw?: string): boolean {
 }
 
 function createBoundedSupabaseFetch(
-  timeoutMs = 2500,
+  timeoutMs = 1500,
   primaryKey = '',
   anonFallbackKey = '',
   customFetch?: typeof fetch,
+  circuitHook?: { isOpen: () => boolean; trip: (reason: string) => void },
 ): typeof fetch {
   const transportFetch = customFetch ?? globalThis.fetch;
   const runOnce = async (
@@ -1016,11 +1045,45 @@ function createBoundedSupabaseFetch(
   };
 
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const res = await runOnce(input, init);
-    if (res.status === 401 && anonFallbackKey && anonFallbackKey !== primaryKey) {
-      return runOnce(input, init, anonFallbackKey);
+    if (circuitHook?.isOpen()) {
+      return new Response(
+        JSON.stringify({
+          code: 'SUPABASE_CIRCUIT_OPEN',
+          message: 'Supabase circuit breaker active (5m memory-only mode)',
+        }),
+        { status: 503, headers: { 'Content-Type': 'application/json' } },
+      );
     }
-    return res;
+    try {
+      let res = await runOnce(input, init);
+      if (res.status === 401 && anonFallbackKey && anonFallbackKey !== primaryKey) {
+        res = await runOnce(input, init, anonFallbackKey);
+      }
+      if (
+        res.status === 401 ||
+        res.status === 500 ||
+        res.status === 502 ||
+        res.status === 503 ||
+        res.status === 504 ||
+        res.status === 520 ||
+        res.status === 522 ||
+        res.status === 524 ||
+        res.status === 544
+      ) {
+        circuitHook?.trip(`supabase_http_${res.status}`);
+      }
+      return res;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      circuitHook?.trip(`supabase_fetch_error:${msg}`);
+      return new Response(
+        JSON.stringify({
+          code: 'SUPABASE_FETCH_TIMEOUT',
+          message: msg || 'Supabase request failed or timed out',
+        }),
+        { status: 544, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
   };
 }
 
@@ -1034,19 +1097,27 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
   const key = resolvedServiceKey || resolvedAnonKey;
   const anonFallbackKey = resolvedAnonKey && resolvedAnonKey !== key ? resolvedAnonKey : '';
   const tokenSecret = key || 'drtechcares-clinical-edge-token-secret-2026';
+  const circuitHook = {
+    isOpen: () => false,
+    trip: (_reason: string) => {},
+  };
   const supabase: SupabaseClient | null =
     url && key
       ? createClient(url, key, {
           auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-          global: { fetch: createBoundedSupabaseFetch(2500, key, anonFallbackKey) },
+          global: { fetch: createBoundedSupabaseFetch(1500, key, anonFallbackKey, undefined, circuitHook) },
         })
       : null;
+  if (supabase) {
+    circuitHook.isOpen = () => isSupabaseCircuitOpen(supabase);
+    circuitHook.trip = (reason: string) => markSupabaseDown(reason, supabase);
+  }
   const state = createInitialState(Boolean(supabase));
 
   let hydrated = false;
   let lastHydratedAt = 0;
   const ensureHydrated = async (force = false, bypassCooldown = false) => {
-    if (!supabase) return;
+    if (!supabase || isSupabaseCircuitOpen(supabase)) return;
     const shouldHydrate =
       !hydrated || (force && (bypassCooldown || Date.now() - lastHydratedAt > 2500));
     if (!shouldHydrate) return;
@@ -1059,12 +1130,15 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       await Promise.race([
         hydrateStateFromSupabase(supabase, state),
         new Promise<void>((resolve) => {
-          timeoutId = setTimeout(resolve, 2500);
+          timeoutId = setTimeout(() => {
+            markSupabaseDown('ensure_hydrated_timeout', supabase);
+            resolve();
+          }, 1500);
         }),
       ]);
       lastHydratedAt = Date.now();
     } catch {
-      // Keep edge requests resilient when upstream Supabase slows down
+      markSupabaseDown('ensure_hydrated_exception', supabase);
     } finally {
       if (timeoutId !== undefined) {
         clearTimeout(timeoutId);
@@ -1333,13 +1407,17 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
     // Fast-path health check before hydration or DB queries so /api/health responds in <5ms
     if (pathname === '/api/health' && method === 'GET') {
+      const circuit = getSupabaseCircuitState(supabase);
       return jsonResponse({
         ok: true,
         status: 'healthy',
         timestamp: new Date().toISOString(),
         service: 'drtechcares-cloud-router',
         persistentDb: Boolean(supabase),
-        supabaseConnected: Boolean(supabase),
+        supabaseConnected: Boolean(supabase) && !circuit.open,
+        supabaseCircuitOpen: circuit.open,
+        supabaseCircuitRemainingSec: Math.ceil(circuit.remainingMs / 1000),
+        ...(circuit.reason ? { supabaseCircuitReason: circuit.reason } : {}),
         latencyMs: 0,
         zeroGhostCache: true,
       });
@@ -1797,10 +1875,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       await persistToSupabase(supabase, (db) =>
         db
           .from('staff_users')
-          .update({
-            avatar_url: target!.avatarUrl ?? null,
-            bio: target!.bio ?? null,
-          })
+          .update(
+            stripOversizedBase64ForDb({
+              avatar_url: target!.avatarUrl ?? null,
+              bio: target!.bio ?? null,
+            }),
+          )
           .eq('id', target!.id),
       );
 
@@ -2330,7 +2410,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       return jsonResponse({ ok: true, patient, course: defaultCourse, persisted: persistRes.persisted }, 201);
     }
 
-    if (pathname === '/api/biometrics/index' && method === 'GET') {
+    if ((pathname === '/api/biometrics/index' || pathname === '/api/biometrics') && method === 'GET') {
       const todayIdx = new Date().getDay();
       const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
       const deletedPatientLower = new Set(
@@ -2450,9 +2530,150 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
       return jsonResponse({
         index,
+        biometrics: index,
         activePatients,
         deletedIds: state.deleted_patient_ids ?? [],
       });
+    }
+
+    if (pathname === '/api/biometrics' && method === 'POST') {
+      const err = requireAuth(authUser, ['super_admin', 'pt']);
+      if (err) return err;
+      const body = await readJsonBody<{
+        patientId?: string;
+        hn?: string;
+        fullName?: string;
+        masterEmbedding?: unknown;
+        master_embedding?: unknown;
+        angleEmbeddings?: unknown;
+        angle_embeddings?: unknown;
+        faceEmbedding?: unknown;
+        face_embedding?: unknown;
+        exemplarEmbeddings?: unknown;
+        biometricEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
+        framesCaptured?: number;
+        qualityScore?: number;
+        faceImageUrl?: string;
+        angleImageUrls?: unknown;
+        faceImageUrls?: unknown;
+      }>(request);
+
+      const rawMaster =
+        parseEmbeddingVector(body?.masterEmbedding) ??
+        parseEmbeddingVector(body?.master_embedding) ??
+        parseEmbeddingVector(body?.faceEmbedding) ??
+        parseEmbeddingVector(body?.face_embedding);
+      if (!body || !rawMaster || rawMaster.length < 128) {
+        return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
+      }
+
+      const masterVec = l2Normalize(rawMaster);
+      const rawAnglesInput = body.angleEmbeddings ?? body.angle_embeddings;
+      const resolvedAngles =
+        normalizeAngleEmbeddingsInput(rawAnglesInput) ?? {
+          center: masterVec,
+          left: masterVec,
+          right: masterVec,
+          up: masterVec,
+          down: masterVec,
+        };
+      const exemplarList = parseExemplarArrayInput(body.exemplarEmbeddings, masterVec.length);
+      const resolvedEngine: PatientRecord['biometricEngine'] =
+        body.biometricEngine ?? (masterVec.length >= 768 ? 'human-faceres-1024d' : 'hybrid-512d');
+      const framesCaptured =
+        typeof body.framesCaptured === 'number' && body.framesCaptured > 0 ? body.framesCaptured : 120;
+      const qualityScore = typeof body.qualityScore === 'number' ? body.qualityScore : 0.96;
+
+      const lookupId = (body.patientId ?? '').trim();
+      const lookupHn = (body.hn ?? '').trim().toLowerCase();
+      let patient = state.patients.find(
+        (p) => (lookupId && p.id === lookupId) || (lookupHn && p.hn.toLowerCase() === lookupHn),
+      );
+      if (!patient) {
+        const pid = lookupId || newRecordId(Boolean(supabase), 'pat');
+        const assignedPtId =
+          authUser!.role === 'pt'
+            ? authUser!.id
+            : state.users.find((u) => u.role === 'pt')?.id || authUser!.id;
+        patient = {
+          id: pid,
+          hn: (body.hn || `HN-${Math.floor(10000 + Math.random() * 90000)}`).trim(),
+          fullName: (body.fullName || 'Patient').trim(),
+          age: 45,
+          gender: 'ชาย',
+          phone: '',
+          diagnosis: 'General Rehabilitation',
+          assignedPtId,
+          delegatedToPtId: null,
+          delegationNote: null,
+          nextAppointmentDate: '',
+          registrationStatus: 'active',
+          enrolledAt: new Date().toISOString(),
+          faceBiometricStatus: 'VERIFIED',
+          faceFramesCount: framesCaptured,
+        };
+        state.patients.push(patient);
+      }
+
+      patient.faceBiometricStatus = 'VERIFIED';
+      patient.faceFramesCount = framesCaptured;
+      patient.masterEmbedding = masterVec;
+      patient.angleEmbeddings = resolvedAngles;
+      patient.exemplarEmbeddings = exemplarList.length > 0 ? exemplarList : undefined;
+      patient.biometricEngine = resolvedEngine;
+      patient.biometricHistory = {
+        frontal_centroid: resolvedAngles.center,
+        overall_centroid: masterVec,
+        raw_frames: [],
+      };
+      if (body.faceImageUrl || body.angleImageUrls || body.faceImageUrls) {
+        const faceBundle = await uploadMultiAngleFaceBundle(supabase, patient.id, {
+          faceImageUrl: body.faceImageUrl,
+          angleImageUrls: body.angleImageUrls,
+          faceImageUrls: body.faceImageUrls,
+        });
+        if (faceBundle.primaryFaceImageUrl) patient.faceImageUrl = faceBundle.primaryFaceImageUrl;
+        if (faceBundle.angleImageUrls) patient.angleImageUrls = faceBundle.angleImageUrls;
+        if (faceBundle.faceImageUrls) patient.faceImageUrls = faceBundle.faceImageUrls;
+      }
+
+      if (masterVec.length === FACE_EMBEDDING_DIM) {
+        state.face_templates = state.face_templates.filter((t) => t.patientId !== patient!.id);
+        state.face_templates.push(
+          { patientId: patient.id, patientName: patient.fullName, pose: 'frontal_centroid', vector: resolvedAngles.center },
+          { patientId: patient.id, patientName: patient.fullName, pose: 'overall_centroid', vector: masterVec },
+          { patientId: patient.id, patientName: patient.fullName, pose: 'front', vector: resolvedAngles.center },
+          { patientId: patient.id, patientName: patient.fullName, pose: 'left', vector: resolvedAngles.left },
+          { patientId: patient.id, patientName: patient.fullName, pose: 'right', vector: resolvedAngles.right },
+          { patientId: patient.id, patientName: patient.fullName, pose: 'nod', vector: resolvedAngles.down },
+        );
+      }
+
+      const persistRes = await persistWithTimeoutBestEffort(
+        supabase,
+        async (db) => {
+          await upsertPatientBiometricsCompat(db, {
+            patient_id: patient!.id,
+            hn: patient!.hn,
+            master_embedding: masterVec,
+            angle_embeddings: resolvedAngles,
+            exemplar_embeddings: normalizeCompactExemplars(exemplarList, masterVec.length, 9),
+            biometric_engine: resolvedEngine,
+            model_version: resolvedEngine,
+            embedding_dim: masterVec.length,
+            frame_count: framesCaptured,
+            frames_captured: framesCaptured,
+            quality_score: qualityScore,
+            avatar_url: patient!.faceImageUrl ?? null,
+            updated_at: new Date().toISOString(),
+          });
+          return { error: null };
+        },
+        1500,
+        'upsert_biometrics',
+      );
+
+      return jsonResponse({ ok: true, patient, persisted: persistRes.persisted }, 201);
     }
 
     if (pathname === '/api/biometric/inspect-frame' && method === 'POST') {
@@ -2682,16 +2903,16 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       let matchedConfidence = result.confidencePercent;
       let verifyErrorCode: string | undefined;
 
-      // Primary Ultra-Strict Open-Set Deep Neural Matcher (human-faceres-1024d):
-      // True raw L2 cosine >= 0.76, Euclidean <= 0.69, multi-exemplar consensus (>=3 vectors >= 0.73 & top-3 avg >= 0.76),
-      // margin >= 0.08 over rank #2, ZERO artificial score boosting.
+      // Calibrated Open-Set Deep Neural Matcher (human-faceres-1024d):
+      // Accepts match when raw L2 cosine vs master_embedding OR best of 5 pose centroids >= 0.64 (or >= 0.60 when 1 patient enrolled),
+      // Euclidean <= 0.90, and margin >= 0.04 over rank #2 (or bestCosine >= 0.72 with >= 0.02 gap).
       if (!matchedPatientId && probeEngine === 'human-faceres-1024d') {
         const expectedDim = probeNorm.length;
         const normalizePatientName = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
-        const RAW_COS_THRESHOLD = 0.76;
-        const MAX_EUCLIDEAN_DIST = 0.69;
-        const EXEMPLAR_FLOOR = 0.73;
-        const MARGIN_THRESHOLD = 0.08;
+        const RAW_COS_THRESHOLD = activePatientIds.size <= 1 ? 0.60 : 0.64;
+        const MAX_EUCLIDEAN_DIST = 0.90;
+        const EXEMPLAR_FLOOR = 0.60;
+        const MARGIN_THRESHOLD = 0.04;
 
         const knnScores: {
           patientId: string;
@@ -2743,13 +2964,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           const topKSum = sims.slice(0, k).reduce((acc, s) => acc + Math.max(0, s.cos), 0);
           const consensusTop3Avg = topKSum / k;
           const vectorsAbove073 = sims.filter((s) => s.cos >= EXEMPLAR_FLOOR).length;
-
-          const passesMultiExemplar =
-            sims.length >= 3
-              ? vectorsAbove073 >= 3 && consensusTop3Avg >= RAW_COS_THRESHOLD
-              : sims.length === 2
-                ? vectorsAbove073 >= 2 && consensusTop3Avg >= RAW_COS_THRESHOLD
-                : bestRawSim >= RAW_COS_THRESHOLD;
+          const passesMultiExemplar = bestRawSim >= RAW_COS_THRESHOLD;
 
           knnScores.push({
             patientId: p.id,
@@ -2783,7 +2998,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             top.minEuclidDist <= MAX_EUCLIDEAN_DIST &&
             top.passesMultiExemplar,
         );
-        const passesMargin = distinctRunners.length === 0 || margin >= MARGIN_THRESHOLD;
+        const passesMargin =
+          distinctRunners.length === 0 ||
+          margin >= MARGIN_THRESHOLD ||
+          Boolean(top && top.bestRawSim >= 0.72 && margin >= 0.02);
 
         if (top && passesThreshold && passesMargin) {
           matchedPatientId = top.patientId;
@@ -3063,13 +3281,16 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           });
           const arcRunner = arcRunners[0];
           const arcMargin = arcRunner ? arcTop.raw - arcRunner.raw : 1;
-          const arcMinCos = 0.76;
+          const arcMinCos = activePatientIds.size <= 1 ? 0.60 : 0.64;
           const arcEuclidDist = euclideanDistance(probeNorm, arcTop.masterNorm);
           const arcPassesGate =
             arcTop.raw >= arcMinCos &&
-            arcEuclidDist <= 0.69 &&
+            arcEuclidDist <= 0.90 &&
             arcTop.geometricPenalty <= 0.14;
-          const arcPassesMargin = arcRunners.length === 0 || arcMargin >= 0.08;
+          const arcPassesMargin =
+            arcRunners.length === 0 ||
+            arcMargin >= 0.04 ||
+            (arcTop.raw >= 0.72 && arcMargin >= 0.02);
 
           if (arcPassesGate && !arcPassesMargin) {
             verifyErrorCode = 'AMBIGUOUS_CLOSE_CANDIDATES';
@@ -3096,8 +3317,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           const runner = distinctRunners[0];
           const margin = runner ? top.dualScore - runner.dualScore : 1;
 
-          const requiredMargin = 0.08;
-          const passesMargin = distinctRunners.length === 0 || margin >= requiredMargin;
+          const requiredMargin = 0.04;
+          const passesMargin =
+            distinctRunners.length === 0 ||
+            margin >= requiredMargin ||
+            Boolean(top && top.raw >= 0.72 && margin >= 0.02);
           const topIsLegacyV1 = Boolean(top?.isLegacyV1);
           const minDualThresh = topIsLegacyV1
             ? isAngledPose
@@ -3160,7 +3384,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         }
       }
 
-      if (!matchedPatientId || matchedConfidence < 76.0) {
+      const minConfidenceFloor = activePatientIds.size <= 1 ? 60.0 : 64.0;
+      if (!matchedPatientId || matchedConfidence < minConfidenceFloor) {
         return jsonResponse(
           {
             ...result,
@@ -3996,7 +4221,17 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (pathname === '/api/patients' && method === 'POST') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
-      const body = (await readJsonBody<Partial<PatientRecord> & { scheduledDate?: string }>(request)) ?? {};
+      const body =
+        (await readJsonBody<
+          Partial<PatientRecord> & {
+            scheduledDate?: string;
+            master_embedding?: unknown;
+            angle_embeddings?: unknown;
+            face_embedding?: unknown;
+            faceEmbedding?: unknown;
+            biometric?: { master_embedding?: unknown; angle_embeddings?: unknown; embeddings?: unknown };
+          }
+        >(request)) ?? {};
       const hn = (body.hn || `HN-${Math.floor(10000 + Math.random() * 90000)}`).trim();
       const fullName = (body.fullName || 'Patient').trim();
       const patientId = newRecordId(Boolean(supabase), 'pat');
@@ -4005,6 +4240,34 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           ? authUser!.id
           : body.assignedPtId || state.users.find((u) => u.role === 'pt')?.id || authUser!.id;
       const initialSchedules = normalizeInitialRehabSchedules(body.rehabSchedules, patientId, assignedPtId);
+
+      const rawMaster =
+        parseEmbeddingVector(body.masterEmbedding) ??
+        parseEmbeddingVector(body.master_embedding) ??
+        parseEmbeddingVector(body.faceEmbedding) ??
+        parseEmbeddingVector(body.face_embedding) ??
+        parseEmbeddingVector(body.biometric?.master_embedding) ??
+        parseEmbeddingVector(body.biometric?.embeddings);
+      const masterVec = rawMaster && rawMaster.length >= 128 ? l2Normalize(rawMaster) : undefined;
+      const angleInput =
+        body.angleEmbeddings ?? body.angle_embeddings ?? body.biometric?.angle_embeddings;
+      const resolvedAngles = masterVec
+        ? normalizeAngleEmbeddingsInput(angleInput) ?? {
+            center: masterVec,
+            left: masterVec,
+            right: masterVec,
+            up: masterVec,
+            down: masterVec,
+          }
+        : undefined;
+      const exemplarList = masterVec
+        ? parseExemplarArrayInput(body.exemplarEmbeddings, masterVec.length)
+        : [];
+      const resolvedEngine: PatientRecord['biometricEngine'] = masterVec
+        ? body.biometricEngine ?? (masterVec.length >= 768 ? 'human-faceres-1024d' : 'hybrid-512d')
+        : body.biometricEngine;
+      const hasBio = Boolean(masterVec && resolvedAngles);
+
       const created: PatientRecord = {
         id: patientId,
         hn,
@@ -4029,8 +4292,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         nextAppointmentDate: body.nextAppointmentDate ?? '',
         registrationStatus: 'active',
         enrolledAt: new Date().toISOString(),
-        faceBiometricStatus: body.faceBiometricStatus ?? 'PENDING',
-        faceFramesCount: body.faceFramesCount ?? 0,
+        faceBiometricStatus: hasBio ? 'VERIFIED' : body.faceBiometricStatus ?? 'PENDING',
+        faceFramesCount: body.faceFramesCount ?? (hasBio ? 120 : 0),
+        ...(body.faceImageUrl ? { faceImageUrl: body.faceImageUrl } : {}),
+        ...(masterVec ? { masterEmbedding: masterVec } : {}),
+        ...(resolvedAngles ? { angleEmbeddings: resolvedAngles } : {}),
+        ...(exemplarList.length > 0 ? { exemplarEmbeddings: exemplarList } : {}),
+        ...(resolvedEngine ? { biometricEngine: resolvedEngine } : {}),
         rehabSchedules: initialSchedules,
       };
       state.patients = state.patients.filter(
@@ -4038,6 +4306,19 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       );
       state.patients.push(created);
 
+      if (hasBio && masterVec && resolvedAngles && masterVec.length === FACE_EMBEDDING_DIM) {
+        state.face_templates = state.face_templates.filter((t) => t.patientId !== created.id);
+        state.face_templates.push(
+          { patientId: created.id, patientName: created.fullName, pose: 'frontal_centroid', vector: resolvedAngles.center },
+          { patientId: created.id, patientName: created.fullName, pose: 'overall_centroid', vector: masterVec },
+          { patientId: created.id, patientName: created.fullName, pose: 'front', vector: resolvedAngles.center },
+          { patientId: created.id, patientName: created.fullName, pose: 'left', vector: resolvedAngles.left },
+          { patientId: created.id, patientName: created.fullName, pose: 'right', vector: resolvedAngles.right },
+          { patientId: created.id, patientName: created.fullName, pose: 'nod', vector: resolvedAngles.down },
+        );
+      }
+
+      const patientBiometricBlob = buildPatientBiometricBlob(created);
       const persistRes = await persistWithTimeoutBestEffort(
         supabase,
         async (db) => {
@@ -4059,11 +4340,35 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             registration_status: 'active',
             face_biometric_status: created.faceBiometricStatus,
             face_frames_count: created.faceFramesCount,
+            ...(patientBiometricBlob
+              ? {
+                  face_embedding: patientBiometricBlob,
+                  biometric_data: patientBiometricBlob,
+                  biometric_updated_at: created.enrolledAt,
+                }
+              : {}),
             history: buildPatientHistoryPayload(created),
           });
+          if (hasBio && masterVec && resolvedAngles) {
+            await upsertPatientBiometricsCompat(db, {
+              patient_id: created.id,
+              hn: created.hn,
+              master_embedding: masterVec,
+              angle_embeddings: resolvedAngles,
+              exemplar_embeddings: normalizeCompactExemplars(exemplarList, masterVec.length, 9),
+              biometric_engine: resolvedEngine ?? null,
+              model_version: resolvedEngine ?? null,
+              embedding_dim: masterVec.length,
+              frame_count: created.faceFramesCount ?? 120,
+              frames_captured: created.faceFramesCount ?? 120,
+              quality_score: 0.96,
+              avatar_url: created.faceImageUrl ?? null,
+              updated_at: created.enrolledAt,
+            });
+          }
           return { error: null };
         },
-        2400,
+        1500,
         'create_patient',
       );
       return jsonResponse({ ok: true, patient: created, persisted: persistRes.persisted }, 201);

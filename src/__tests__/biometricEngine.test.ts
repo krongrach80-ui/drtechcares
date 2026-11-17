@@ -219,20 +219,28 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     expect(resStranger.topCandidate).toBeNull();
     expect(resStranger.reason).toBe('BELOW_THRESHOLD');
 
-    // Open-set 0.60-0.72 false-positive range -> MUST be rejected cleanly with zero name leak
+    // Open-set sub-threshold stranger (~0.52 cosine) -> MUST be rejected cleanly with zero name leak
     const rawOrthoBase = makeDeterministicUnitVector(555);
     const dBase = cosineSimilarityNormalized(patA.master_embedding, rawOrthoBase);
     const orthoUnit = normalizeVector(rawOrthoBase.map((v, i) => v - dBase * patA.master_embedding[i]));
-    const mediumStranger068 = normalizeVector(
-      patA.master_embedding.map((v, i) => 0.68 * v + Math.sqrt(1 - 0.68 * 0.68) * orthoUnit[i]),
+    const mediumStranger052 = normalizeVector(
+      patA.master_embedding.map((v, i) => 0.52 * v + Math.sqrt(1 - 0.52 * 0.52) * orthoUnit[i]),
     );
-    const resMedium = evaluateLiveMatch1toN(mediumStranger068, [patA, patB]);
+    const resMedium = evaluateLiveMatch1toN(mediumStranger052, [patA, patB]);
     expect(resMedium.matched).toBe(false);
     expect(resMedium.topCandidate).toBeNull();
-    expect(resMedium.confidencePercent).toBeLessThan(76);
+    expect(resMedium.confidencePercent).toBeLessThan(60);
     expect(resMedium.reason).toBe('BELOW_THRESHOLD');
 
-    // Ambiguous mid-point probe clearing >= 0.76 for TWO correlated candidates within 0.08 margin -> blocked!
+    // Genuine calibrated match at ~0.68 (>= 0.64 multi-patient) against master/centroid clears cleanly
+    const genuineAt068 = normalizeVector(
+      patA.master_embedding.map((v, i) => 0.68 * v + Math.sqrt(1 - 0.68 * 0.68) * orthoUnit[i]),
+    );
+    const resCalibrated068 = evaluateLiveMatch1toN(genuineAt068, [patA, patB]);
+    expect(resCalibrated068.matched).toBe(true);
+    expect(resCalibrated068.topCandidate?.patientId).toBe('pat-a');
+
+    // Ambiguous mid-point probe clearing >= 0.76 for TWO correlated candidates within margin -> blocked!
     const corrPatBVec = normalizeVector(
       patA.master_embedding.map((v, i) => 0.6 * v + 0.8 * orthoUnit[i]),
     );
@@ -256,11 +264,11 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     expect(resTie.reason).toBe('AMBIGUOUS_CLOSE_CANDIDATES');
   });
 
-  it('requires 6/6 consecutive matching live frames with low variance and resets on spoof, flip, or <0.74 dip', () => {
+  it('requires 3/3 consecutive matching live frames with low variance and resets on spoof, flip, or <0.60 dip', () => {
     const patA = makeCandidate('pat-a', 'HN-101', 'Patient Alpha', 1);
     const patB = makeCandidate('pat-b', 'HN-102', 'Patient Beta', 2);
     const tracker = new LiveIdentityStreakTracker(BIOMETRIC_REQUIRED_STREAK);
-    expect(BIOMETRIC_REQUIRED_STREAK).toBe(6);
+    expect(BIOMETRIC_REQUIRED_STREAK).toBe(3);
 
     const evalA = evaluateLiveMatch1toN(blendWithNoise(patA.master_embedding, 10, 0.05), [patA, patB]);
     const evalAHigh = evaluateLiveMatch1toN(patA.master_embedding, [patA, patB]);
@@ -269,10 +277,10 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     const s1 = tracker.step(evalA, { biologicalVerified: true });
     expect(s1.confirmed).toBe(false);
     expect(s1.streak).toBe(1);
-    // Strict zero-leak rule: candidate MUST stay null until 6/6 completes!
+    // Strict zero-leak rule: candidate MUST stay null until 3/3 completes!
     expect(s1.candidate).toBeNull();
 
-    // Identity flip resets streak back to 1 (still hiding candidate until 6/6)
+    // Identity flip resets streak back to 1 (still hiding candidate until 3/3)
     const flip = tracker.step(evalB, { biologicalVerified: true });
     expect(flip.confirmed).toBe(false);
     expect(flip.streak).toBe(1);
@@ -284,7 +292,7 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     expect(spoofed.streak).toBe(0);
     expect(spoofed.candidate).toBeNull();
 
-    // Large score variance (>= 0.025) between frame 1 and frame 2 resets streak to 0/6
+    // Large score variance (>= 0.12) between frame 1 and frame 2 resets streak to 0/3
     const rawDiffVec = makeDeterministicUnitVector(99);
     const dotD = cosineSimilarityNormalized(patA.master_embedding, rawDiffVec);
     const orthoD = normalizeVector(rawDiffVec.map((v, i) => v - dotD * patA.master_embedding[i]));
@@ -297,17 +305,17 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     expect(highVarFlip.confirmed).toBe(false);
     expect(highVarFlip.streak).toBe(0);
 
-    // 6/6 clean low-variance frames -> confirmed!
-    for (let i = 1; i <= 5; i += 1) {
+    // 3/3 clean low-variance frames -> confirmed!
+    for (let i = 1; i <= 2; i += 1) {
       const pending = tracker.step(evalA, { biologicalVerified: true });
       expect(pending.confirmed).toBe(false);
       expect(pending.streak).toBe(i);
       expect(pending.candidate).toBeNull();
     }
-    const sixth = tracker.step(evalA, { biologicalVerified: true });
-    expect(sixth.confirmed).toBe(true);
-    expect(sixth.streak).toBe(6);
-    expect(sixth.candidate?.patientId).toBe('pat-a');
+    const third = tracker.step(evalA, { biologicalVerified: true });
+    expect(third.confirmed).toBe(true);
+    expect(third.streak).toBe(3);
+    expect(third.candidate?.patientId).toBe('pat-a');
   });
 
   it('persists, merges, and filters legacy vs 1024-D accounts in drtech_biometric_vault_v3', async () => {

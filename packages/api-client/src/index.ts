@@ -1278,7 +1278,17 @@ export class DrTechCaresApiClient {
         if ((pidLo && deletedSet.has(pidLo)) || (hnLo && deletedSet.has(hnLo))) {
           return false;
         }
-        if (activeById) {
+        // If DB/Worker is degraded or restarted (activePatients empty) or entry was just enrolled locally,
+        // keep non-deleted local records instead of wiping newly enrolled patients during DB 544 outages.
+        const tsRaw = rec.syncedAtMs ?? rec.updatedAt ?? rec.enrolledAt ?? rec.createdAt;
+        const tsMs =
+          typeof tsRaw === 'number'
+            ? tsRaw
+            : typeof tsRaw === 'string'
+              ? Date.parse(tsRaw) || 0
+              : 0;
+        const isFreshLocalRecord = tsMs > 0 && Date.now() - tsMs < 60 * 60 * 1000;
+        if (activeById && activeById.size > 0 && !isFreshLocalRecord) {
           if (!pidLo || !activeById.has(pidLo)) return false;
           const expectedHn = activeById.get(pidLo);
           if (expectedHn && hnLo !== expectedHn) return false;

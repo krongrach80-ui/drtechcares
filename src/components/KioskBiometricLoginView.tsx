@@ -7,10 +7,10 @@ import {
   type NormalizedLandmark,
 } from '@mediapipe/tasks-vision';
 import {
+  DrTechCaresApiClient,
   isPatientCompletedTodayInStorage,
   resolveTodayPatientSchedule,
   type DailyScheduleDay,
-  type DrTechCaresApiClient,
   type KioskFaceVerifyResponse,
   type PatientBiometricIndexEntry,
   type PatientRecord,
@@ -28,6 +28,7 @@ import {
   BIOMETRIC_FINAL_SCORE_THRESHOLD,
   BIOMETRIC_MATCH_THRESHOLD,
   BIOMETRIC_REQUIRED_STREAK,
+  BIOMETRIC_SINGLE_PATIENT_MATCH_THRESHOLD,
   LiveIdentityStreakTracker,
   captureCanonicalFaceSnapshot,
   evaluateLiveMatch1toN,
@@ -325,7 +326,7 @@ export function resolveKioskFaceBoundingBoxOverlay(params: {
       displayName: params.confirmedCandidateName,
     };
   }
-  if (params.rawCosine >= 0.76 && clampedStreak >= 1 && !params.isAmbiguous) {
+  if (params.rawCosine >= 0.60 && clampedStreak >= 1 && !params.isAmbiguous) {
     return {
       variant: 'CONFIRMING',
       boxColor: 'blue',
@@ -339,7 +340,7 @@ export function resolveKioskFaceBoundingBoxOverlay(params: {
     boxColor: 'amber',
     label: params.isAmbiguous
       ? '⚠️ พบใบหน้าใกล้เคียงหลายคน — กรุณาขยับเข้าใกล้กล้อง'
-      : '🔍 ไม่พบบัญชีที่ตรงกับใบหน้านี้ (ความคล้ายไม่ถึงเกณฑ์)',
+      : '🔍 กำลังตรวจสอบใบหน้า...',
     subLabel: null,
     displayName: null,
   };
@@ -659,9 +660,9 @@ const COPY: Record<
     resumeCameraBtn: 'เปิดกล้องเริ่มสแกนใหม่',
     usePinFallbackBtn: 'ใช้รหัส PIN 4 หลักแทน',
     staffCalledToast: 'ส่งสัญญาณเรียกเจ้าหน้าที่เรียบร้อยแล้ว กรุณารอสักครู่',
-    notFoundTitle: '❌ ไม่พบบัญชีที่ตรงกับใบหน้านี้ในฐานข้อมูล Supabase',
+    notFoundTitle: '❌ ยังไม่พบบัญชีที่ตรงกับใบหน้านี้',
     notFoundDesc:
-      '❌ ไม่พบบัญชีที่ตรงกับใบหน้านี้ในฐานข้อมูล Supabase Cloud กรุณาให้เจ้าหน้าที่ช่วยลงทะเบียน หรือลองสแกนใหม่อีกครั้ง',
+      'ระบบตรวจสอบใบหน้าจากคลังผู้ป่วยที่ลงทะเบียนแล้วไม่พบความตรงกันตามเกณฑ์ กรุณาให้เจ้าหน้าที่ช่วยลงทะเบียน หรือลองสแกนใหม่อีกครั้ง',
     staffAssistBtn: 'เจ้าหน้าที่ลงทะเบียนให้',
     retryScanBtn: 'ลองสแกนใหม่อีกครั้ง',
     countdownLabel: 'กำลังนับถอยหลัง',
@@ -712,7 +713,7 @@ const COPY: Record<
     staffCalledToast: 'Staff alert dispatched cleanly. Assistance is on the way.',
     notFoundTitle: 'Account Not Found',
     notFoundDesc:
-      'No matching biometric profile was found in Supabase Cloud. Please ask staff to enroll you or try scanning again.',
+      'No matching biometric profile was found among enrolled patients. Please ask staff to enroll you or try scanning again.',
     staffAssistBtn: 'Staff Register Patient',
     retryScanBtn: 'Scan Face Again',
     countdownLabel: 'Hold steady',
@@ -761,8 +762,8 @@ const COPY: Record<
     resumeCameraBtn: '开启摄像头重新扫描',
     usePinFallbackBtn: '改用 4 位 PIN 码',
     staffCalledToast: '已呼叫医护人员，请稍候...',
-    notFoundTitle: '未找到系统账户',
-    notFoundDesc: '云端数据库中未匹配到该人脸档案，请联系医护人员协助建档或重新扫描。',
+    notFoundTitle: '未找到匹配的生物识别账户',
+    notFoundDesc: '当前已建档患者库中未匹配到该人脸档案，请联系医护人员协助建档或重新扫描。',
     staffAssistBtn: '医护人员协助建档',
     retryScanBtn: '重新识别人脸',
     countdownLabel: '倒计时准备中',
@@ -1786,7 +1787,7 @@ export function KioskBiometricLoginView({
                   stepRes.candidate &&
                   !isAmbiguous &&
                   evalRes.matched &&
-                  evalRes.topSimilarity >= BIOMETRIC_MATCH_THRESHOLD,
+                  evalRes.topSimilarity >= BIOMETRIC_SINGLE_PATIENT_MATCH_THRESHOLD,
               );
 
               const nextOverlay = resolveKioskFaceBoundingBoxOverlay({
@@ -1891,13 +1892,10 @@ export function KioskBiometricLoginView({
                   if (verifyRes.failureReasons?.includes('BIOLOGICAL_SPOOF_BLOCKED')) {
                     blockedBySpoof = true;
                     serverRejected = true;
-                  } else if (verifyRes.error === 'NO_ENROLLED_BIOMETRICS') {
-                    // Server has no template (e.g. account was deleted) — never fall back to localStorage!
-                    serverRejected = true;
                   } else if (
                     verifyRes.matched &&
                     verifyRes.patient &&
-                    verifyRes.confidencePercent >= 76 &&
+                    verifyRes.confidencePercent >= 60 &&
                     !excludedPatientIdsRef.current.includes(verifyRes.patient.id)
                   ) {
                     didAuthenticate = true;
@@ -1915,8 +1913,20 @@ export function KioskBiometricLoginView({
                     });
                     openVerifiedModal(nextPayload);
                     return;
-                  } else {
+                  } else if (verifyRes.error === 'AMBIGUOUS_CLOSE_CANDIDATES') {
                     serverRejected = true;
+                  } else {
+                    // Worker isolate may have cold-started while Supabase was down (HTTP 544);
+                    // allow verified local vault / drtech_patients match if not tombstoned as deleted.
+                    const deletedTombstones = DrTechCaresApiClient.readDeletedTombstones?.() ?? new Set<string>();
+                    const isDeleted =
+                      deletedTombstones.has(cand.patientId.toLowerCase()) ||
+                      (cand.hn ? deletedTombstones.has(cand.hn.toLowerCase()) : false);
+                    if (isDeleted) {
+                      serverRejected = true;
+                    } else {
+                      verifyNetworkFailed = true;
+                    }
                   }
                 } catch {
                   verifyNetworkFailed = true;
@@ -1929,7 +1939,7 @@ export function KioskBiometricLoginView({
                   }
                 }
 
-                // Local offline fallback ONLY when the network is genuinely unreachable (never on 401/NO_ENROLLED_BIOMETRICS)
+                // Local offline / DB-degraded fallback when Worker couldn't verify yet and patient exists locally
                 if (
                   verifyNetworkFailed &&
                   !serverRejected &&
@@ -1938,7 +1948,8 @@ export function KioskBiometricLoginView({
                   !isLastVerifyAmbiguous &&
                   params.snapBioVerified &&
                   !params.snapIsSpoof &&
-                  evalRes.topSimilarity >= BIOMETRIC_MATCH_THRESHOLD &&
+                  evalRes.matched &&
+                  evalRes.topSimilarity >= BIOMETRIC_SINGLE_PATIENT_MATCH_THRESHOLD &&
                   evalRes.topFinalScore >= BIOMETRIC_FINAL_SCORE_THRESHOLD &&
                   stepRes.streak >= BIOMETRIC_REQUIRED_STREAK &&
                   !excludedPatientIdsRef.current.includes(cand.patientId)
@@ -3341,7 +3352,7 @@ export function KioskBiometricLoginView({
                 </span>
               ) : (
                 <span className="text-slate-300">
-                  🔍 ไม่พบบัญชีที่ตรงกับใบหน้านี้ (ความคล้ายไม่ถึงเกณฑ์ ≥ 76.0%) [0/{BIOMETRIC_REQUIRED_STREAK}]
+                  🔍 กำลังตรวจสอบใบหน้า... [0/{BIOMETRIC_REQUIRED_STREAK}]
                 </span>
               )}
             </div>

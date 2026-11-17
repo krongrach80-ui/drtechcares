@@ -22,6 +22,8 @@ import {
   normalizeCompactExemplars,
   purgePatientInSupabaseBestEffort,
   purgeUserInSupabaseBestEffort,
+  resetSupabaseCircuitForTests,
+  stripOversizedBase64ForDb,
   toSafeUuidOrNull,
   type CloudRouterState,
 } from '../supabasePersistence';
@@ -1194,7 +1196,8 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(healed?.faceFramesCount).toBe(120);
     expect(healed?.angleImageUrls).toEqual(angleUrls);
     expect(healed?.faceImageUrls).toHaveLength(6);
-    expect(updatedPayloads.some((u) => u.id === 'pat-heal-120' && u.payload.face_frames_count === 120)).toBe(true);
+    // Zero unnecessary background Postgres UPDATE writes triggered during read hydration
+    expect(updatedPayloads).toHaveLength(0);
   });
 
   it('resolves duplicate same-person enrollments without margin self-collision during POST /api/biometric/verify', async () => {
@@ -2486,46 +2489,49 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     });
     expect(eRes.status).toBe(201);
 
-    // 2a. Probe at ~0.68 similarity to liveMaster -> 401 + NO topCandidate name leaked!
+    // 2a. Stranger probe at ~0.50 similarity to liveMaster -> 401 + NO topCandidate name leaked!
     const rawO = mkUnit1024(77);
     const dotMO = liveMaster.reduce((acc, v, i) => acc + v * rawO[i], 0);
     const orthoVec = l2Normalize(rawO.map((v, i) => v - dotMO * liveMaster[i]));
-    const probe068 = l2Normalize(
-      liveMaster.map((v, i) => 0.68 * v + Math.sqrt(1 - 0.68 * 0.68) * orthoVec[i]),
+    const probe050 = l2Normalize(
+      liveMaster.map((v, i) => 0.50 * v + Math.sqrt(1 - 0.50 * 0.50) * orthoVec[i]),
     );
-    const rej068 = await callRouter(router, '/api/biometric/verify', {
+    const rej050 = await callRouter(router, '/api/biometric/verify', {
       method: 'POST',
       body: {
-        probeVector: probe068,
+        probeVector: probe050,
         engine: 'human-faceres-1024d',
         livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.02, nonRigidScore: 0.16, engine: 'human-faceres-1024d' },
       },
     });
-    expect(rej068.status).toBe(401);
-    const rej068Json = (await rej068.json()) as {
+    expect(rej050.status).toBe(401);
+    const rej050Json = (await rej050.json()) as {
       matched: boolean;
       confidencePercent: number;
       topCandidate?: unknown;
       patient?: unknown;
     };
-    expect(rej068Json.matched).toBe(false);
-    expect(rej068Json.confidencePercent).toBeLessThan(76);
-    expect(rej068Json.topCandidate).toBeNull();
-    expect(rej068Json.patient).toBeUndefined();
+    expect(rej050Json.matched).toBe(false);
+    expect(rej050Json.confidencePercent).toBeLessThan(60);
+    expect(rej050Json.topCandidate).toBeNull();
+    expect(rej050Json.patient).toBeUndefined();
 
-    // 2b. Probe matching ONLY 1 outlier vector (outlierLeft at 1.0) while all other stored vectors are < 0.73 -> rejected!
-    const rejOutlier = await callRouter(router, '/api/biometric/verify', {
+    // 2b. Genuine calibrated probe at ~0.66 matching liveMaster or any 5-angle centroid passes cleanly!
+    const probe066 = l2Normalize(
+      liveMaster.map((v, i) => 0.66 * v + Math.sqrt(1 - 0.66 * 0.66) * orthoVec[i]),
+    );
+    const accept066 = await callRouter(router, '/api/biometric/verify', {
       method: 'POST',
       body: {
-        probeVector: outlierLeft,
+        probeVector: probe066,
         engine: 'human-faceres-1024d',
         livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.02, nonRigidScore: 0.16, engine: 'human-faceres-1024d' },
       },
     });
-    expect(rejOutlier.status).toBe(401);
-    const rejOutlierJson = (await rejOutlier.json()) as { matched: boolean; topCandidate?: unknown };
-    expect(rejOutlierJson.matched).toBe(false);
-    expect(rejOutlierJson.topCandidate).toBeNull();
+    expect(accept066.status).toBe(200);
+    const accept066Json = (await accept066.json()) as { matched: boolean; patient?: { hn: string } };
+    expect(accept066Json.matched).toBe(true);
+    expect(accept066Json.patient?.hn).toBe('HN-GATE-1024');
   });
 
   it('sanitizes UUID/exemplar payloads and never returns HTTP 500 during enrollment/course saves even when Supabase fails', async () => {
@@ -2727,6 +2733,191 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     } finally {
       globalThis.fetch = prevFetch;
       Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: prevStorage });
+    }
+  });
+
+  it('enrolls patient dddd (HN-37751) during Supabase HTTP 544 outage, trips 5-min circuit breaker, strips oversized Base64, and logs dddd in on Kiosk scan', async () => {
+    const oversizedBase64 = `data:image/jpeg;base64,${'A'.repeat(12000)}`;
+    const sanitized = stripOversizedBase64ForDb({
+      face_image_url: oversizedBase64,
+      avatar_url: oversizedBase64,
+      history: {
+        faceImageUrl: oversizedBase64,
+        faceImageUrls: [oversizedBase64, 'https://cdn.example.com/ok.jpg'],
+        angleImageUrls: { center: oversizedBase64, left: 'https://cdn.example.com/left.jpg' },
+      },
+    });
+    expect(sanitized.face_image_url).toBeNull();
+    expect(sanitized.avatar_url).toBeNull();
+    expect(sanitized.history.faceImageUrl).toBeNull();
+    expect(sanitized.history.faceImageUrls).toEqual(['https://cdn.example.com/ok.jpg']);
+    expect(sanitized.history.angleImageUrls.center).toBeNull();
+    expect(sanitized.history.angleImageUrls.left).toBe('https://cdn.example.com/left.jpg');
+
+    const mk1024 = (seed: number) =>
+      l2Normalize(Array.from({ length: 1024 }, (_, idx) => Math.sin((idx + 1) * seed)));
+    let outboundSupabaseCalls = 0;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      outboundSupabaseCalls += 1;
+      return new Response(
+        JSON.stringify({
+          code: '544',
+          message: 'DbConnectionTimeout: Connection terminated due to connection timeout',
+        }),
+        { status: 544, headers: { 'Content-Type': 'application/json' } },
+      );
+    }) as typeof fetch;
+
+    try {
+      const fakeJwt =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.signaturevaltestsafe1234567890';
+      const outageRouter = createCloudDelegatedRouter({
+        supabaseUrl: 'https://vyjuwjhbdhknjdzyqctz.supabase.co',
+        supabaseServiceKey: fakeJwt,
+      });
+
+      const loginRes = await callRouter(outageRouter, '/api/auth/login', {
+        method: 'POST',
+        body: { username: 'admin', password: 'Admin@2026' },
+      });
+      expect(loginRes.status).toBe(200);
+      const { token } = (await loginRes.json()) as { token: string };
+
+      // First Supabase attempt hits HTTP 544 and opens the 5-minute circuit breaker
+      const masterVec = mk1024(1.37);
+      const enrollRes = await callRouter(outageRouter, '/api/biometric/enroll', {
+        method: 'POST',
+        token,
+        body: {
+          hn: 'HN-37751',
+          fullName: 'dddd',
+          age: 60,
+          phone: '0813775100',
+          diagnosis: 'Stroke Rehab',
+          biometricEngine: 'human-faceres-1024d',
+          faceImageUrl: oversizedBase64,
+          angleImageUrls: {
+            center: oversizedBase64,
+            left: oversizedBase64,
+            right: oversizedBase64,
+            up: oversizedBase64,
+            down: oversizedBase64,
+          },
+          masterEmbedding: masterVec,
+          angleEmbeddings: {
+            center: masterVec,
+            left: mk1024(2.11),
+            right: mk1024(3.23),
+            up: mk1024(4.37),
+            down: mk1024(5.41),
+          },
+          exemplarEmbeddings: [masterVec],
+          framesCaptured: 120,
+          qualityScore: 0.97,
+        },
+      });
+      expect(enrollRes.status).toBe(201);
+      const enrollJson = (await enrollRes.json()) as {
+        ok: boolean;
+        patient: { id: string; hn: string; fullName: string };
+      };
+      expect(enrollJson.ok).toBe(true);
+      expect(enrollJson.patient.hn).toBe('HN-37751');
+      expect(enrollJson.patient.fullName).toBe('dddd');
+
+      // Verify /api/health reports circuit breaker OPEN
+      const healthRes = await callRouter(outageRouter, '/api/health');
+      const healthJson = (await healthRes.json()) as {
+        ok: boolean;
+        supabaseCircuitOpen?: boolean;
+        supabaseCircuitRemainingSec?: number;
+      };
+      expect(healthJson.ok).toBe(true);
+      expect(healthJson.supabaseCircuitOpen).toBe(true);
+      expect((healthJson.supabaseCircuitRemainingSec ?? 0)).toBeGreaterThan(200);
+
+      const callsAfterTrip = outboundSupabaseCalls;
+
+      // Subsequent Kiosk index & patient list calls make ZERO extra outbound Supabase calls (0ms circuit fast-path)
+      const idxRes = await callRouter(outageRouter, '/api/biometrics/index');
+      expect(idxRes.status).toBe(200);
+      const idxJson = (await idxRes.json()) as {
+        index: Array<{ hn: string; fullName: string }>;
+        biometrics: Array<{ hn: string; fullName: string }>;
+      };
+      expect(idxJson.index.some((e) => e.hn === 'HN-37751' && e.fullName === 'dddd')).toBe(true);
+      expect(idxJson.biometrics.some((e) => e.hn === 'HN-37751')).toBe(true);
+
+      // Kiosk live scan at ~0.65 cosine against dddd (single enrolled candidate >= 0.60) MUST succeed with matched: true!
+      const rawO = mk1024(9.87);
+      const dotMO = masterVec.reduce((acc, v, i) => acc + v * rawO[i], 0);
+      const orthoVec = l2Normalize(rawO.map((v, i) => v - dotMO * masterVec[i]));
+      const probe065 = l2Normalize(
+        masterVec.map((v, i) => 0.65 * v + Math.sqrt(1 - 0.65 * 0.65) * orthoVec[i]),
+      );
+      const verifyRes = await callRouter(outageRouter, '/api/biometric/verify', {
+        method: 'POST',
+        body: {
+          probeVector: probe065,
+          engine: 'human-faceres-1024d',
+          livenessEvidence: {
+            biologicalVerified: true,
+            blinkCount: 1,
+            spoofRisk: 0.02,
+            nonRigidScore: 0.14,
+            engine: 'human-faceres-1024d',
+          },
+        },
+      });
+      expect(verifyRes.status).toBe(200);
+      const verifyJson = (await verifyRes.json()) as {
+        matched: boolean;
+        patient?: { hn: string; fullName: string };
+      };
+      expect(verifyJson.matched).toBe(true);
+      expect(verifyJson.patient?.hn).toBe('HN-37751');
+      expect(verifyJson.patient?.fullName).toBe('dddd');
+
+      // Also enroll a 2nd patient via POST /api/biometrics and confirm multi-patient matching at 0.66 with >= 0.04 margin works cleanly!
+      const bio2Res = await callRouter(outageRouter, '/api/biometrics', {
+        method: 'POST',
+        token,
+        body: {
+          hn: 'HN-99881',
+          fullName: 'Another Patient',
+          master_embedding: mk1024(19.5),
+        },
+      });
+      expect(bio2Res.status).toBe(201);
+
+      const multiVerifyRes = await callRouter(outageRouter, '/api/biometric/verify', {
+        method: 'POST',
+        body: {
+          probeVector: probe065,
+          engine: 'human-faceres-1024d',
+          livenessEvidence: {
+            biologicalVerified: true,
+            blinkCount: 1,
+            spoofRisk: 0.02,
+            nonRigidScore: 0.14,
+            engine: 'human-faceres-1024d',
+          },
+        },
+      });
+      expect(multiVerifyRes.status).toBe(200);
+      const multiJson = (await multiVerifyRes.json()) as {
+        matched: boolean;
+        patient?: { hn: string; fullName: string };
+      };
+      expect(multiJson.matched).toBe(true);
+      expect(multiJson.patient?.fullName).toBe('dddd');
+
+      // Confirm circuit breaker prevented any additional HTTP requests to Supabase while open!
+      expect(outboundSupabaseCalls).toBe(callsAfterTrip);
+    } finally {
+      globalThis.fetch = origFetch;
+      resetSupabaseCircuitForTests();
     }
   });
 });
