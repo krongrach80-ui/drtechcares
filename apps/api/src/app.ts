@@ -20,6 +20,7 @@ import {
   clampTtsText,
   synthesizeTtsAudio,
 } from '../../../packages/api-client/src/ttsProxy';
+import { isAdminRole } from '../../../packages/api-client/src/index';
 import {
   ClinicalDatabase,
   hashPassword,
@@ -578,10 +579,7 @@ export function createDrTechCaresApiApp(
       return;
     }
     const actor = req.authUser!;
-    const actorIsAdmin =
-      actor.role === 'super_admin' ||
-      String(actor.role).toUpperCase() === 'ADMIN' ||
-      String(actor.role).toUpperCase() === 'SUPER_ADMIN';
+    const actorIsAdmin = isAdminRole(actor.role);
     if (actor.role === 'pt' && target.id !== actor.id && target.role !== 'patient') {
       res.status(403).json({ error: 'FORBIDDEN', message: 'PT cannot edit Admin or other PT accounts' });
       return;
@@ -591,14 +589,15 @@ export function createDrTechCaresApiApp(
       return;
     }
 
-    const { fullName, phone, specialty, licenseNo, avatarUrl, bio, role, active } =
-      req.body as Partial<UserAccount>;
+    const { fullName, phone, specialty, licenseNo, license_number, license_no, avatarUrl, bio, role, active } =
+      req.body as Partial<UserAccount> & { license_number?: string; license_no?: string };
     if (fullName !== undefined) target.fullName = fullName;
     if (phone !== undefined) target.phone = phone;
     if (specialty !== undefined && actor.role !== 'patient') target.specialty = specialty;
-    // Strict RBAC Field Lock: Only Admin may modify licenseNo; PT keeps existing DB licenseNo.
-    if (licenseNo !== undefined && actorIsAdmin) {
-      target.licenseNo = String(licenseNo).trim() || undefined;
+    // Strict RBAC Field Lock: Only Admin may modify licenseNo / license_number; PT keeps existing DB licenseNo.
+    const requestedLicense = licenseNo ?? license_number ?? license_no;
+    if (requestedLicense !== undefined && actorIsAdmin) {
+      target.licenseNo = String(requestedLicense).trim() || undefined;
     }
     if (avatarUrl !== undefined) target.avatarUrl = avatarUrl;
     if (bio !== undefined) target.bio = bio;

@@ -816,8 +816,35 @@ function normalizeInitialRehabSchedules(
   return out.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate));
 }
 
-function createBoundedSupabaseFetch(timeoutMs = 2500): typeof fetch {
-  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+function isUsableSupabaseKey(raw?: string): boolean {
+  const clean = (raw ?? '').trim();
+  if (clean.length < 20) return false;
+  const lower = clean.toLowerCase();
+  if (
+    lower.includes('placeholder') ||
+    lower.includes('your-') ||
+    lower.includes('your_') ||
+    lower.includes('dummy') ||
+    lower.includes('example') ||
+    lower.includes('changeme')
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function createBoundedSupabaseFetch(
+  timeoutMs = 2500,
+  primaryKey = '',
+  anonFallbackKey = '',
+  customFetch?: typeof fetch,
+): typeof fetch {
+  const transportFetch = customFetch ?? globalThis.fetch;
+  const runOnce = async (
+    input: RequestInfo | URL,
+    init: RequestInit | undefined,
+    overrideKey?: string,
+  ): Promise<Response> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const parentSignal = init?.signal;
@@ -829,8 +856,18 @@ function createBoundedSupabaseFetch(timeoutMs = 2500): typeof fetch {
         parentSignal.addEventListener('abort', onParentAbort, { once: true });
       }
     }
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+    const effectiveKey = overrideKey || primaryKey;
+    if (effectiveKey) {
+      if (overrideKey || !headers.has('apikey')) {
+        headers.set('apikey', effectiveKey);
+      }
+      if (overrideKey || !headers.has('authorization')) {
+        headers.set('authorization', `Bearer ${effectiveKey}`);
+      }
+    }
     try {
-      return await globalThis.fetch(input, { ...init, signal: controller.signal });
+      return await transportFetch(input, { ...init, headers, signal: controller.signal });
     } finally {
       clearTimeout(timer);
       if (parentSignal) {
@@ -838,17 +875,31 @@ function createBoundedSupabaseFetch(timeoutMs = 2500): typeof fetch {
       }
     }
   };
+
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const res = await runOnce(input, init);
+    if (res.status === 401 && anonFallbackKey && anonFallbackKey !== primaryKey) {
+      return runOnce(input, init, anonFallbackKey);
+    }
+    return res;
+  };
 }
 
 export function createCloudRouter(config: CloudClientConfig = {}) {
-  const url = config.supabaseUrl || '';
-  const key = config.supabaseServiceKey || config.supabaseAnonKey || '';
-  const tokenSecret = config.supabaseServiceKey || config.supabaseAnonKey || 'drtechcares-clinical-edge-token-secret-2026';
+  const url = (config.supabaseUrl || '').trim();
+  const resolvedServiceKey = isUsableSupabaseKey(config.supabaseServiceKey)
+    ? config.supabaseServiceKey!.trim()
+    : '';
+  const resolvedAnonKey =
+    [config.supabaseAnonKey, config.viteSupabaseAnonKey].find(isUsableSupabaseKey)?.trim() ?? '';
+  const key = resolvedServiceKey || resolvedAnonKey;
+  const anonFallbackKey = resolvedAnonKey && resolvedAnonKey !== key ? resolvedAnonKey : '';
+  const tokenSecret = key || 'drtechcares-clinical-edge-token-secret-2026';
   const supabase: SupabaseClient | null =
     url && key
       ? createClient(url, key, {
           auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-          global: { fetch: createBoundedSupabaseFetch(2500) },
+          global: { fetch: createBoundedSupabaseFetch(2500, key, anonFallbackKey) },
         })
       : null;
   const state = createInitialState(Boolean(supabase));
@@ -1504,13 +1555,17 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       if (actor.role === 'patient' && target.id !== actor.id) {
         return jsonResponse({ error: 'FORBIDDEN' }, 403);
       }
-      const body = (await readJsonBody<Partial<UserAccount>>(request)) ?? {};
+      const body =
+        (await readJsonBody<
+          Partial<UserAccount> & { license_number?: string; license_no?: string }
+        >(request)) ?? {};
       if (body.fullName !== undefined) target.fullName = body.fullName;
       if (body.phone !== undefined) target.phone = body.phone;
       if (body.specialty !== undefined && actor.role !== 'patient') target.specialty = body.specialty;
-      // Strict RBAC Field Lock: Only Hospital Admin (ADMIN / SUPER_ADMIN) may modify licenseNo; PT keeps DB value.
-      if (body.licenseNo !== undefined && actorIsAdmin) {
-        target.licenseNo = body.licenseNo.trim() || undefined;
+      // Strict RBAC Field Lock: Only Hospital Admin (ADMIN / SUPER_ADMIN) may modify licenseNo / license_number; PT keeps DB value.
+      const requestedLicense = body.licenseNo ?? body.license_number ?? body.license_no;
+      if (requestedLicense !== undefined && actorIsAdmin) {
+        target.licenseNo = String(requestedLicense).trim() || undefined;
       }
       if (body.avatarUrl !== undefined) target.avatarUrl = body.avatarUrl;
       if (body.bio !== undefined) target.bio = body.bio;

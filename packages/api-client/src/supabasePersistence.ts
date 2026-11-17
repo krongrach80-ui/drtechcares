@@ -106,24 +106,41 @@ function withQueryLimit(query: unknown, maxRows: number): PromiseLike<unknown> {
   return Promise.resolve(query);
 }
 
-/** Execute PostgREST tasks in small batches within a hard time budget so Workers never stall. */
-async function settleInBatches(
+function rejectedBudget(reason: string): PromiseSettledResult<unknown> {
+  return { status: 'rejected', reason: new Error(reason) };
+}
+
+/** Run one priority stage of PostgREST queries within a hard deadline while preserving fulfilled results. */
+async function settleStageInBatches(
   tasks: ReadonlyArray<() => PromiseLike<unknown>>,
-  batchSize = 5,
-  budgetMs = 2400,
+  batchSize: number,
+  deadlineMs: number,
 ): Promise<PromiseSettledResult<unknown>[]> {
-  const startedAt = Date.now();
   const results: PromiseSettledResult<unknown>[] = [];
   for (let i = 0; i < tasks.length; i += batchSize) {
-    if (Date.now() - startedAt >= budgetMs) {
-      const remaining = tasks.length - i;
-      for (let j = 0; j < remaining; j += 1) {
-        results.push({ status: 'rejected', reason: new Error('hydration_budget_exceeded') });
+    const remainingMs = deadlineMs - Date.now();
+    if (remainingMs <= 40) {
+      for (let j = i; j < tasks.length; j += 1) {
+        results.push(rejectedBudget('hydration_budget_exceeded'));
       }
       break;
     }
-    const chunk = tasks.slice(i, i + batchSize).map((fn) => Promise.resolve(fn()));
-    const chunkRes = await Promise.allSettled(chunk);
+    const chunk = tasks.slice(i, i + batchSize);
+    const wrappedChunk = chunk.map((fn) => {
+      let timerId: ReturnType<typeof setTimeout> | undefined;
+      return Promise.race([
+        Promise.resolve(fn()).then(
+          (val) => ({ status: 'fulfilled' as const, value: val }),
+          (err) => ({ status: 'rejected' as const, reason: err }),
+        ),
+        new Promise<PromiseSettledResult<unknown>>((resolve) => {
+          timerId = setTimeout(() => resolve(rejectedBudget('hydration_stage_timeout')), remainingMs);
+        }),
+      ]).finally(() => {
+        if (timerId !== undefined) clearTimeout(timerId);
+      });
+    });
+    const chunkRes = await Promise.all(wrappedChunk);
     results.push(...chunkRes);
   }
   return results;
@@ -220,87 +237,67 @@ export async function hydrateStateFromSupabase(
   supabase: SupabaseClient,
   state: CloudRouterState,
 ): Promise<void> {
-  const hydrationTasks: ReadonlyArray<() => PromiseLike<unknown>> = [
+  const totalDeadlineMs = Date.now() + 2450;
+
+  // Stage 1 (Priority Clinical Directory): fetch patients & staff_users FIRST so PATIENTS COUNT > 0
+  // never contends with heavy Base64 biometrics, 512/1024-D templates, or historical logs on Free Tier.
+  const stage1Tasks: ReadonlyArray<() => PromiseLike<unknown>> = [
     () => withQueryLimit(supabase.from('staff_users').select('*'), 200),
-    () => withQueryLimit(supabase.from('patients').select('*'), 500),
-    () => withQueryLimit(supabase.from('face_templates').select('patient_id, pose, embedding, quality_score'), 500),
-    () => withQueryLimit(supabase.from('medical_notes').select('*').order('created_at', { ascending: false }), 200),
-    () => withQueryLimit(supabase.from('patient_courses').select('*'), 500),
-    () => withQueryLimit(supabase.from('rehab_sessions').select('*').order('created_at', { ascending: false }), 200),
-    () => withQueryLimit(supabase.from('treatment_reports').select('*').order('created_at', { ascending: false }), 200),
-    () => supabase.from('exercises').select('*').eq('active', true),
-    () => supabase.from('modpacks').select('*').eq('active', true),
-    () => withQueryLimit(supabase.from('staff_calls').select('*').order('created_at', { ascending: false }), 200),
-    () => withQueryLimit(supabase.from('audit_logs').select('*').order('created_at', { ascending: false }), 200),
+    () => withQueryLimit(supabase.from('patients').select('*'), 300),
+    () => supabase.from('system_settings').select('*').eq('id', 1).maybeSingle(),
     () => withQueryLimit(supabase.from('banned_targets').select('*').order('created_at', { ascending: false }), 200),
     () => withQueryLimit(supabase.from('active_sessions').select('*').eq('revoked', false).order('created_at', { ascending: false }), 200),
-    () => supabase.from('system_settings').select('*').eq('id', 1).maybeSingle(),
-    () => withQueryLimit(supabase.from('kiosks').select('*'), 100),
-    () => withQueryLimit(supabase.from('patient_biometrics').select('*'), 200),
-    () => withQueryLimit(supabase.from('rehab_session_history').select('*').order('session_date', { ascending: false }), 200),
   ];
 
-  let raceTimerId: ReturnType<typeof setTimeout> | undefined;
-  let settledResults: PromiseSettledResult<unknown>[];
-  try {
-    settledResults = await Promise.race([
-      settleInBatches(hydrationTasks, 5, 2400),
-      new Promise<PromiseSettledResult<unknown>[]>((resolve) => {
-        raceTimerId = setTimeout(
-          () =>
-            resolve(
-              hydrationTasks.map(() => ({
-                status: 'rejected' as const,
-                reason: new Error('hydration_timeout_2500ms'),
-              })),
-            ),
-          2500,
-        );
-      }),
-    ]);
-  } finally {
-    if (raceTimerId !== undefined) {
-      clearTimeout(raceTimerId);
-    }
-  }
-
-  const [
-    usersRes,
-    patientsRes,
-    templatesRes,
-    notesRes,
-    coursesRes,
-    sessionsRes,
-    reportsRes,
-    exercisesRes,
-    modpacksRes,
-    callsRes,
-    auditRes,
-    bansRes,
-    activeSessionsRes,
-    settingsRes,
-    kiosksRes,
-    biometrics120Res,
-    sessionHistoryRes,
-  ] = settledResults as [
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown> | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
-    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+  // Stage 2 (Biometric Embeddings & Clinical Config): queried sequentially after Stage 1 completes,
+  // using small batchSize=2 so patient_biometrics + face_templates never spike Free Tier connections.
+  const stage2Tasks: ReadonlyArray<() => PromiseLike<unknown>> = [
+    () => withQueryLimit(supabase.from('face_templates').select('patient_id, pose, embedding, quality_score'), 300),
+    () => withQueryLimit(supabase.from('patient_biometrics').select('*'), 150),
+    () => withQueryLimit(supabase.from('patient_courses').select('*'), 300),
+    () => supabase.from('exercises').select('*').eq('active', true),
+    () => supabase.from('modpacks').select('*').eq('active', true),
+    () => withQueryLimit(supabase.from('kiosks').select('*'), 50),
   ];
+
+  // Stage 3 (Historical Logs & Telemetry): fetched last within any remaining time budget.
+  const stage3Tasks: ReadonlyArray<() => PromiseLike<unknown>> = [
+    () => withQueryLimit(supabase.from('medical_notes').select('*').order('created_at', { ascending: false }), 150),
+    () => withQueryLimit(supabase.from('rehab_sessions').select('*').order('created_at', { ascending: false }), 150),
+    () => withQueryLimit(supabase.from('treatment_reports').select('*').order('created_at', { ascending: false }), 150),
+    () => withQueryLimit(supabase.from('staff_calls').select('*').order('created_at', { ascending: false }), 150),
+    () => withQueryLimit(supabase.from('audit_logs').select('*').order('created_at', { ascending: false }), 150),
+    () => withQueryLimit(supabase.from('rehab_session_history').select('*').order('session_date', { ascending: false }), 150),
+  ];
+
+  const [usersRes, patientsRes, settingsRes, bansRes, activeSessionsRes] =
+    (await settleStageInBatches(stage1Tasks, 5, Math.min(totalDeadlineMs, Date.now() + 1400))) as [
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown> | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    ];
+
+  const [templatesRes, biometrics120Res, coursesRes, exercisesRes, modpacksRes, kiosksRes] =
+    (await settleStageInBatches(stage2Tasks, 2, totalDeadlineMs)) as [
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    ];
+
+  const [notesRes, sessionsRes, reportsRes, callsRes, auditRes, sessionHistoryRes] =
+    (await settleStageInBatches(stage3Tasks, 3, totalDeadlineMs)) as [
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    ];
 
   if (usersRes.status === 'fulfilled' && !usersRes.value.error && Array.isArray(usersRes.value.data)) {
     mergeStaffUsersFromDbRows(usersRes.value.data as Record<string, unknown>[], state);

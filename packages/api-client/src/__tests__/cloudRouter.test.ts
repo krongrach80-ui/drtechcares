@@ -2055,18 +2055,18 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(ptUpdatedJson.user.specialty).toBe('Neurological Stroke Rehabilitation');
     expect(ptUpdatedJson.user.licenseNo).toBe('PT-44012');
 
-    // PATCH by PT also refuses to mutate licenseNo
+    // PATCH by PT also refuses to mutate licenseNo or license_number / license_no
     const ptPatchRes = await callRouter(router, `/api/users/${ptUser.id}`, {
       method: 'PATCH',
       token: ptToken,
-      body: { licenseNo: 'PT-PATCH-HACK' },
+      body: { licenseNo: 'PT-PATCH-HACK', license_number: 'PT-SNAKE-HACK', license_no: 'PT-SNAKE-HACK2' },
     });
     expect(ptPatchRes.status).toBe(200);
     expect(
       ((await ptPatchRes.json()) as { user: { licenseNo?: string } }).user.licenseNo,
     ).toBe('PT-44012');
 
-    // Super Admin updates PT licenseNo -> allowed cleanly
+    // Super Admin updates PT licenseNo (and snake_case license_number) -> allowed cleanly
     const adminLogin = await callRouter(router, '/api/auth/login', {
       method: 'POST',
       body: { username: 'admin', password: 'Admin@2026' },
@@ -2075,7 +2075,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     const adminUpdateRes = await callRouter(router, `/api/users/${ptUser.id}`, {
       method: 'PUT',
       token: adminToken,
-      body: { licenseNo: 'PT-88776' },
+      body: { license_number: 'PT-88776' },
     });
     expect(adminUpdateRes.status).toBe(200);
     expect(
@@ -2115,6 +2115,82 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     const ok = await hydrateStaffUsersOnly(stalledSupabase, dummyState, 30);
     expect(ok).toBe(false);
     expect(queriedTables).toEqual(['staff_users']);
+
+    // Staged hydration preserves Stage 1 patients even if Stage 2/3 biometric or log queries fail
+    const queryOrder: string[] = [];
+    const stagedState = {
+      users: [],
+      deleted_user_ids: [],
+      deleted_patient_ids: [],
+      deleted_ban_ids: [],
+      deleted_staff_call_ids: [],
+      delegation_overrides: {},
+      patients: [],
+      face_templates: [],
+      medical_notes: [],
+      patient_courses: [],
+      rehab_sessions: [],
+      rehab_session_history: [],
+      treatment_reports: [],
+      exercises: [],
+      modpacks: [],
+      staff_calls: [],
+      audit_logs: [],
+      banned_targets: [],
+      active_sessions: [],
+      system_settings: {
+        aiFaceScanEnabled: true,
+        aiFaceThreshold: 0.925,
+        aiPoseDetectionEnabled: false,
+        kioskAutoResetSec: 6,
+      },
+      kiosks: [],
+    } as unknown as CloudRouterState;
+    const stagedSupabase = {
+      from: (table: string) => {
+        queryOrder.push(table);
+        const failIfHeavy =
+          table === 'patient_biometrics' || table === 'face_templates' || table === 'audit_logs';
+        const q: Record<string, unknown> = {
+          then: (resolve: (val: unknown) => void) =>
+            resolve(
+              failIfHeavy
+                ? { data: null, error: { message: 'Upstream 522 simulated' } }
+                : table === 'patients'
+                  ? {
+                      data: [
+                        {
+                          id: 'pat-stage1-1',
+                          hn: 'HN-75127',
+                          full_name: 'นายพงศกร จิตตเกตุ',
+                          age: 62,
+                          phone: '0811112233',
+                          diagnosis: 'Right Hemiparesis',
+                          registration_status: 'active',
+                          face_biometric_status: 'VERIFIED',
+                          history: {},
+                          created_at: new Date().toISOString(),
+                        },
+                      ],
+                      error: null,
+                    }
+                  : { data: [], error: null },
+            ),
+        };
+        q.select = () => q;
+        q.order = () => q;
+        q.limit = () => q;
+        q.eq = () => q;
+        q.maybeSingle = () => Promise.resolve({ data: null, error: null });
+        return q;
+      },
+    } as unknown as SupabaseClient;
+
+    await hydrateStateFromSupabase(stagedSupabase, stagedState);
+    expect(stagedState.patients.length).toBe(1);
+    expect(stagedState.patients[0].hn).toBe('HN-75127');
+    expect(queryOrder.indexOf('patients')).toBeLessThan(queryOrder.indexOf('patient_biometrics'));
+    expect(queryOrder.indexOf('patients')).toBeLessThan(queryOrder.indexOf('face_templates'));
   });
 });
 

@@ -8,13 +8,15 @@ let cachedRouter = null;
 function getOrCreateRouter(env) {
   const supabaseUrl = env.SUPABASE_URL || env.VITE_SUPABASE_URL || '';
   const supabaseAnonKey = env.SUPABASE_ANON_KEY || env.VITE_SUPABASE_ANON_KEY || '';
+  const viteSupabaseAnonKey = env.VITE_SUPABASE_ANON_KEY || '';
   const supabaseServiceKey = env.SUPABASE_SERVICE_ROLE_KEY || '';
-  const key = `${supabaseUrl}|${supabaseAnonKey}|${supabaseServiceKey}`;
+  const key = `${supabaseUrl}|${supabaseAnonKey}|${viteSupabaseAnonKey}|${supabaseServiceKey}`;
 
   if (!cachedRouter || cachedRouterKey !== key) {
     cachedRouter = createCloudDelegatedRouter({
       supabaseUrl,
       supabaseAnonKey,
+      viteSupabaseAnonKey,
       supabaseServiceKey,
     });
     cachedRouterKey = key;

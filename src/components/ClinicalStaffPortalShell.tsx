@@ -5653,13 +5653,24 @@ export function ClinicalStaffPortalShell({
                   <div>
                     <label className="flex items-center justify-between font-bold text-slate-600 mb-1">
                       <span>เลขที่ใบประกอบวิชาชีพ</span>
-                      <span className="text-[10px] font-semibold text-emerald-700">Admin แก้ไขได้</span>
+                      <span className={isAdminUser ? 'text-[10px] font-semibold text-emerald-700' : 'text-[10px] font-semibold text-slate-500'}>
+                        {isAdminUser ? 'Admin แก้ไขได้' : '🔒 ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)'}
+                      </span>
                     </label>
                     <input
                       value={editStaffLicenseNo}
-                      onChange={(e) => setEditStaffLicenseNo(e.target.value)}
+                      readOnly={!isAdminUser}
+                      disabled={!isAdminUser}
+                      onChange={(e) => {
+                        if (!isAdminUser) return;
+                        setEditStaffLicenseNo(e.target.value);
+                      }}
                       placeholder="เช่น PT-44012"
-                      className="w-full rounded-xl border border-emerald-300 bg-white px-3 py-2 font-mono font-bold text-slate-900 focus:border-emerald-500 focus:outline-none"
+                      className={
+                        !isAdminUser
+                          ? 'w-full rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 font-mono font-medium text-slate-600 cursor-not-allowed select-text focus:outline-none'
+                          : 'w-full rounded-xl border border-emerald-300 bg-white px-3 py-2 font-mono font-bold text-slate-900 focus:border-emerald-500 focus:outline-none'
+                      }
                     />
                   </div>
                 </>

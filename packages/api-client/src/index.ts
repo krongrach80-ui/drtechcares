@@ -430,6 +430,7 @@ export interface KioskFaceVerifyResponse extends BiometricVerificationResult {
 export interface CloudClientConfig {
   supabaseUrl?: string;
   supabaseAnonKey?: string;
+  viteSupabaseAnonKey?: string;
   supabaseServiceKey?: string;
   apiBaseUrl?: string;
 }
