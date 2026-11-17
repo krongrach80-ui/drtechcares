@@ -37,15 +37,16 @@ import {
 } from '../lib/ownerBiometricLock';
 import {
   AutoBoneBaselineCalibrator,
-  ARM_LOWERED_READY_NEXT_REP_BANNER_TH,
   ClinicalHandOneEuroFilter,
   ClinicalOneEuroLandmarkFilter,
+  HOLD_COMPLETED_WAIT_LOWER_BANNER_TH,
   HAND21_CONNECTIONS,
+  PHASE_2_LOWER_ARM_PROMPT_BANNER_TH,
   POSE_INDEX,
-  REP_COMPLETED_LOWER_ARM_BANNER_TH,
   computeJointAngle3D,
   evaluateActiveWristsLowered,
-  parseExerciseCodeAndSide,
+  formatRepScoredBannerTh,
+  resolveActiveExerciseSide,
   solveStrokeClinicalJointBiomechanics,
   stepStrokeHoldAndRepStateMachine,
   type ExerciseSideCode,
@@ -375,9 +376,14 @@ export interface ExerciseMetaHint {
   exercise_id?: string;
   catalog_exercise_id?: string;
   effective_code?: string;
-  prescribed_side?: ExerciseSideCode;
+  code?: string;
+  prescribed_side?: ExerciseSideCode | string;
+  side?: string | null;
+  target_side?: string | null;
   name_th?: string;
   name_en?: string;
+  target_joint?: string;
+  expected_plane?: ExpectedMovementPlane;
 }
 
 export function resolveExerciseSideFromMeta(
@@ -385,11 +391,15 @@ export function resolveExerciseSideFromMeta(
   targetJoint?: string,
   expectedPlane?: ExpectedMovementPlane,
 ): ExerciseSideCode | undefined {
-  if (exerciseMeta?.prescribed_side) return exerciseMeta.prescribed_side;
+  const canonical = resolveActiveExerciseSide(
+    exerciseMeta,
+    undefined,
+    targetJoint,
+    expectedPlane,
+  );
+  if (canonical) return canonical;
   const jointMode = classifyExerciseJointMode(exerciseMeta);
   if (
-    expectedPlane === 'bilateral' ||
-    expectedPlane === 'bilateral_push' ||
     jointMode === 'bilateral_raise' ||
     jointMode === 'bobath_push' ||
     jointMode === 'shoulder_shrug' ||
@@ -397,25 +407,6 @@ export function resolveExerciseSideFromMeta(
   ) {
     return 'BOTH';
   }
-  const raw = (
-    exerciseMeta?.effective_code ||
-    exerciseMeta?.catalog_exercise_id ||
-    exerciseMeta?.exercise_id ||
-    ''
-  ).trim();
-  const upper = raw.toUpperCase();
-  if (
-    upper.endsWith('_LEFT') ||
-    upper.endsWith('_RIGHT') ||
-    upper.endsWith('_BOTH') ||
-    upper.endsWith('_L') ||
-    upper.endsWith('_R') ||
-    upper === 'MOPH_NECK_TURN_BILATERAL'
-  ) {
-    return parseExerciseCodeAndSide(upper).side;
-  }
-  if (targetJoint === 'left_shoulder') return 'LEFT';
-  if (targetJoint === 'right_shoulder') return 'RIGHT';
   return undefined;
 }
 
@@ -2115,7 +2106,7 @@ export function SmartRehabKioskUI({
   const latestKinematicsRef = useRef<LiveJointMeasurement | null>(null);
   const holdElapsedSecRef = useRef<number>(0);
   const completedRepsRef = useRef<number>(0);
-  const repPhaseRef = useRef<StrokeHoldRepState['phase']>('READY_TO_RAISE');
+  const repPhaseRef = useRef<StrokeHoldRepState['phase']>('PHASE_1_HOLDING');
   const loweredFrameStreakRef = useRef<number>(0);
   const readyBannerUntilRef = useRef<number>(0);
   const cooldownStartedAtRef = useRef<number>(0);
@@ -2126,7 +2117,7 @@ export function SmartRehabKioskUI({
   useEffect(() => {
     completedRepsRef.current = 0;
     holdElapsedSecRef.current = 0;
-    repPhaseRef.current = 'READY_TO_RAISE';
+    repPhaseRef.current = 'PHASE_1_HOLDING';
     loweredFrameStreakRef.current = 0;
     readyBannerUntilRef.current = 0;
     cooldownStartedAtRef.current = 0;
@@ -2145,10 +2136,14 @@ export function SmartRehabKioskUI({
   }, [selectedExercise.exercise_id, selectedExercise.hold_sec]);
 
   useEffect(() => {
-    if (demoValidReps === 0 && completedRepsRef.current > 0 && repPhaseRef.current !== 'WAIT_LOWER_ARM') {
+    if (
+      demoValidReps === 0 &&
+      completedRepsRef.current > 0 &&
+      repPhaseRef.current !== 'PHASE_2_WAIT_LOWER_TO_SCORE'
+    ) {
       completedRepsRef.current = 0;
       holdElapsedSecRef.current = 0;
-      repPhaseRef.current = 'READY_TO_RAISE';
+      repPhaseRef.current = 'PHASE_1_HOLDING';
       loweredFrameStreakRef.current = 0;
       readyBannerUntilRef.current = 0;
     } else if (demoValidReps > completedRepsRef.current) {
@@ -2460,6 +2455,8 @@ export function SmartRehabKioskUI({
     let lastSpasticityAt = 0;
     let lastFatigueTriggerAt = 0;
     let latestRawPrimaryRomDeg: number | null = null;
+    let latestLeftArmRom: number | null = null;
+    let latestRightArmRom: number | null = null;
     let targetRomDeg: number | null = null;
     let latestLandmarks: NormalizedLandmark[] | null = null;
     let renderPrimaryLandmarks: NormalizedLandmark[] | null = null;
@@ -2729,6 +2726,8 @@ export function SmartRehabKioskUI({
           prevSafetySampleAt = 0;
           prevVelocityRom = null;
           latestRawPrimaryRomDeg = null;
+          latestLeftArmRom = null;
+          latestRightArmRom = null;
           targetRomDeg = null;
           smoothedRom = 0;
           smoothedTilt = 0;
@@ -2752,7 +2751,7 @@ export function SmartRehabKioskUI({
           lastHoldEmitAt = 0;
           holdElapsedSecRef.current = 0;
           completedRepsRef.current = 0;
-          repPhaseRef.current = 'READY_TO_RAISE';
+          repPhaseRef.current = 'PHASE_1_HOLDING';
           loweredFrameStreakRef.current = 0;
           readyBannerUntilRef.current = 0;
           cooldownStartedAtRef.current = 0;
@@ -3157,16 +3156,33 @@ export function SmartRehabKioskUI({
                 latestRawTiltDeg = measured.trunkTiltDeg;
                 wrongSideStreak = measured.wrongSideRaised ? wrongSideStreak + 1 : 0;
                 wrongPlaneStreak = measured.wrongPlaneRaised ? wrongPlaneStreak + 1 : 0;
-                // Instant block on frame 1 when wrong arm or single-arm in BOTH mode detected!
-                latestSideViolation = measured.sideViolation ?? 'NONE';
-                latestWrongSideRaised = Boolean(measured.wrongSideRaised);
-                latestWrongSideBannerTh = measured.wrongSideBannerTh;
+                const activeExSideInFrame = resolveExerciseSideFromMeta(
+                  curEx,
+                  curEx.target_joint,
+                  curExpectedPlane,
+                );
+                const sideDebounceFrames =
+                  activeExSideInFrame === 'BOTH' ||
+                  measured.sideViolation === 'SINGLE_ARM_IN_BOTH_MODE'
+                    ? 6
+                    : 1;
+                const sideViolationConfirmed =
+                  Boolean(measured.wrongSideRaised) && wrongSideStreak >= sideDebounceFrames;
+                latestSideViolation = sideViolationConfirmed
+                  ? (measured.sideViolation ?? 'NONE')
+                  : 'NONE';
+                latestWrongSideRaised = sideViolationConfirmed;
+                latestWrongSideBannerTh = sideViolationConfirmed
+                  ? measured.wrongSideBannerTh
+                  : null;
                 latestWrongPlaneRaised = wrongPlaneStreak >= 2;
                 latestWrongPlaneBannerTh = measured.wrongPlaneBannerTh;
                 latestLowVisibilityAlertTh = measured.lowVisibilityAlertTh ?? null;
                 latestPostureCompensated = Boolean(measured.postureCompensated);
                 latestPostureBannerTh = measured.postureBannerTh ?? null;
                 latestRawPrimaryRomDeg = measured.rawPrimaryRomDeg ?? measured.romDeg;
+                latestLeftArmRom = measured.leftArmRom ?? null;
+                latestRightArmRom = measured.rightArmRom ?? null;
 
                 // Stroke Safety Guards in Browser AI Mode
                 const safetyDtSec = prevSafetySampleAt > 0 ? Math.max(0.03, (now - prevSafetySampleAt) / 1000) : 0.1;
@@ -3247,6 +3263,8 @@ export function SmartRehabKioskUI({
                 latestPostureCompensated = false;
                 latestPostureBannerTh = null;
                 latestRawPrimaryRomDeg = null;
+                latestLeftArmRom = null;
+                latestRightArmRom = null;
                 targetRomDeg = null;
                 smoothedRom = 0;
                 smoothedTilt = 0;
@@ -3378,7 +3396,10 @@ export function SmartRehabKioskUI({
             const effPostureCompensated = checkPosture ? latestPostureCompensated : false;
             const effPostureBannerTh = checkPosture ? latestPostureBannerTh : null;
             targetRomDeg =
-              effWrongSideRaised || effWrongPlaneRaised ? 0 : latestRawPrimaryRomDeg;
+              effWrongPlaneRaised ||
+              (effWrongSideRaised && effSideViolation !== 'SINGLE_ARM_IN_BOTH_MODE')
+                ? 0
+                : latestRawPrimaryRomDeg;
 
             const tiltDelta = effRawTiltDeg - smoothedTilt;
             if (!checkTrunk) {
@@ -3440,7 +3461,7 @@ export function SmartRehabKioskUI({
               isSmallRomOrKnee: isSmallRomEx || curEx.target_joint.includes('knee'),
             });
 
-            // Step Ref-Driven Strict 3-State Hold & Rep State Machine (Mandatory Arm-Lowering Gate)
+            // Step Ref-Driven 3-Phase State Machine (Hold to 100% -> Lower Arm -> THEN Count +1 Rep)
             const repStep = stepStrokeHoldAndRepStateMachine({
               state: {
                 phase: repPhaseRef.current,
@@ -3452,6 +3473,9 @@ export function SmartRehabKioskUI({
                 readyBannerUntilMs: readyBannerUntilRef.current,
               },
               activeRomDeg: targetRomDeg !== null ? smoothedRom : null,
+              leftArmRomDeg: latestLeftArmRom,
+              rightArmRomDeg: latestRightArmRom,
+              exerciseSide: curExSide,
               targetRomDeg: effectiveTargetRomRef.current,
               targetHoldSec: holdTargetSec,
               targetReps: curEx.target_reps,
@@ -3485,38 +3509,57 @@ export function SmartRehabKioskUI({
               holdTimerTextRef.current.textContent = `${repStep.holdRemainingSec.toFixed(1)}s`;
             }
 
-            const showPersistentBanner =
-              repPhaseRef.current === 'WAIT_LOWER_ARM'
-                ? REP_COMPLETED_LOWER_ARM_BANNER_TH
-                : repStep.unlockedToReady ||
-                    (repPhaseRef.current === 'READY_TO_RAISE' &&
-                      now <= readyBannerUntilRef.current &&
-                      holdElapsedSecRef.current === 0)
-                  ? ARM_LOWERED_READY_NEXT_REP_BANNER_TH
-                  : null;
-
             if (repStep.justCompletedRep) {
-              lastEmittedHold = 0;
+              lastEmittedHold = repStep.holdRemainingSec;
               lastHoldEmitAt = now;
-              setDemoHoldRemainingSec(0);
+              setDemoHoldRemainingSec(repStep.holdRemainingSec);
               setDemoValidReps(repStep.nextState.completedReps);
-              if (repSuccessToastRef.current !== REP_COMPLETED_LOWER_ARM_BANNER_TH) {
-                repSuccessToastRef.current = REP_COMPLETED_LOWER_ARM_BANNER_TH;
-                setRepSuccessToastTh(REP_COMPLETED_LOWER_ARM_BANNER_TH);
+              const scoredMsg =
+                repStep.bannerTh ??
+                formatRepScoredBannerTh(repStep.nextState.completedReps, curEx.target_reps);
+              if (repSuccessToastRef.current !== scoredMsg) {
+                repSuccessToastRef.current = scoredMsg;
+                setRepSuccessToastTh(scoredMsg);
               }
               emitPresetState(
                 repStep.nextState.completedReps >= curEx.target_reps ? 'SET_FINISHED' : 'REP_COMPLETED',
               );
+            } else if (repStep.holdCompleteWaitLower) {
+              lastEmittedHold = 0;
+              lastHoldEmitAt = now;
+              setDemoHoldRemainingSec(0);
+              const waitMsg = repStep.bannerTh ?? HOLD_COMPLETED_WAIT_LOWER_BANNER_TH;
+              if (repSuccessToastRef.current !== waitMsg) {
+                repSuccessToastRef.current = waitMsg;
+                setRepSuccessToastTh(waitMsg);
+              }
+              emitPresetState('HOLD_PHASE');
             } else {
-              if (showPersistentBanner !== null) {
-                if (repSuccessToastRef.current !== showPersistentBanner) {
-                  repSuccessToastRef.current = showPersistentBanner;
-                  setRepSuccessToastTh(showPersistentBanner);
+              const phaseBanner =
+                repPhaseRef.current === 'PHASE_2_WAIT_LOWER_TO_SCORE'
+                  ? (repSuccessToastRef.current === HOLD_COMPLETED_WAIT_LOWER_BANNER_TH
+                      ? HOLD_COMPLETED_WAIT_LOWER_BANNER_TH
+                      : PHASE_2_LOWER_ARM_PROMPT_BANNER_TH)
+                  : repPhaseRef.current === 'PHASE_3_SCORED_READY' &&
+                      now <= repCelebrateUntilRef.current
+                    ? (repStep.bannerTh ??
+                        formatRepScoredBannerTh(repStep.nextState.completedReps, curEx.target_reps))
+                    : repPhaseRef.current === 'PHASE_1_HOLDING' &&
+                        holdElapsedSecRef.current > 0 &&
+                        repStep.statusKind === 'HOLD_PHASE'
+                      ? repStep.bannerTh
+                      : null;
+
+              if (phaseBanner !== null) {
+                if (repSuccessToastRef.current !== phaseBanner) {
+                  repSuccessToastRef.current = phaseBanner;
+                  setRepSuccessToastTh(phaseBanner);
                 }
               } else if (repSuccessToastRef.current !== null && now > repCelebrateUntilRef.current) {
                 repSuccessToastRef.current = null;
                 setRepSuccessToastTh(null);
               }
+
               if (
                 now - lastHoldEmitAt >= 90 &&
                 repStep.holdRemainingSec !== lastEmittedHold
@@ -3525,18 +3568,25 @@ export function SmartRehabKioskUI({
                 lastHoldEmitAt = now;
                 setDemoHoldRemainingSec(repStep.holdRemainingSec);
               }
+
               if (repStep.statusKind === 'WRONG_LIMB') {
                 emitPresetState('WRONG_LIMB');
               } else if (repStep.statusKind === 'WRONG_PLANE') {
                 emitPresetState('WRONG_PLANE');
               } else if (repStep.statusKind === 'POSTURE_COMPENSATED') {
                 emitPresetState('TRUNK_LEAN');
-              } else if (repStep.statusKind === 'HOLD_PHASE') {
+              } else if (
+                repPhaseRef.current === 'PHASE_2_WAIT_LOWER_TO_SCORE' ||
+                repStep.statusKind === 'HOLD_PHASE'
+              ) {
                 emitPresetState('HOLD_PHASE');
-              } else if (repStep.statusKind === 'REP_COMPLETED') {
-                emitPresetState('REP_COMPLETED');
               } else if (repStep.statusKind === 'SET_FINISHED') {
                 emitPresetState('SET_FINISHED');
+              } else if (
+                repPhaseRef.current === 'PHASE_3_SCORED_READY' &&
+                now <= repCelebrateUntilRef.current
+              ) {
+                emitPresetState('REP_COMPLETED');
               } else {
                 emitPresetState('ACTIVE_REP');
               }
@@ -3559,7 +3609,7 @@ export function SmartRehabKioskUI({
               wrongPlaneBannerTh: effWrongPlaneBannerTh,
               lowVisibilityAlertTh: latestLowVisibilityAlertTh,
               postureBannerTh: effPostureBannerTh,
-              repSuccessBannerTh: showPersistentBanner ?? (now <= repCelebrateUntilRef.current ? REP_COMPLETED_LOWER_ARM_BANNER_TH : null),
+              repSuccessBannerTh: repSuccessToastRef.current,
               overlayHint: latestOverlayHint,
               handLandmarks21: (() => {
                 const activeSide = resolveExerciseSideFromMeta(curEx, curEx.target_joint, curExpectedPlane);

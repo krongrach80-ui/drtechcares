@@ -64,7 +64,10 @@ export type StrokeSideViolationCode =
   | 'LEFT_ARM_RAISED_IN_RIGHT_MODE'
   | 'SINGLE_ARM_IN_BOTH_MODE';
 
-export type StrokeRepPhase = 'READY_TO_RAISE' | 'HOLDING' | 'WAIT_LOWER_ARM';
+export type StrokeRepPhase =
+  | 'PHASE_1_HOLDING'
+  | 'PHASE_2_WAIT_LOWER_TO_SCORE'
+  | 'PHASE_3_SCORED_READY';
 
 export interface StrokeHoldRepState {
   phase: StrokeRepPhase;
@@ -79,6 +82,9 @@ export interface StrokeHoldRepState {
 export interface StrokeHoldRepStepInput {
   state: StrokeHoldRepState;
   activeRomDeg: number | null;
+  leftArmRomDeg?: number | null;
+  rightArmRomDeg?: number | null;
+  exerciseSide?: 'LEFT' | 'RIGHT' | 'BOTH';
   targetRomDeg: number;
   targetHoldSec: number;
   targetReps: number;
@@ -101,6 +107,7 @@ export interface StrokeHoldRepStepResult {
   holdProgressPct: number;
   holdRemainingSec: number;
   justCompletedRep: boolean;
+  holdCompleteWaitLower?: boolean;
   unlockedToReady?: boolean;
   bannerTh: string | null;
   statusKind:
@@ -1346,7 +1353,10 @@ export function solveStrokeClinicalJointBiomechanics(
 
     if (exerciseSide === 'BOTH') {
       if (leftArmRom !== null && rightArmRom !== null) {
-        rawPrimaryRomDeg = Number((0.5 * (leftArmRom + rightArmRom)).toFixed(1));
+        rawPrimaryRomDeg =
+          leftArmRom >= 45 && rightArmRom >= 45
+            ? Number((0.5 * (leftArmRom + rightArmRom)).toFixed(1))
+            : Number(Math.min(leftArmRom, rightArmRom).toFixed(1));
       } else {
         rawPrimaryRomDeg = leftArmRom ?? rightArmRom;
       }
@@ -1457,12 +1467,11 @@ export function solveStrokeClinicalJointBiomechanics(
     } else if (effectiveSideMode === 'BOTH') {
       const lVal = leftArmRom ?? 0;
       const rVal = rightArmRom ?? 0;
-      const oneArmRaisedOnly = (lVal > 60 && rVal < 22) || (rVal > 60 && lVal < 22);
-      const asymmetricSpread = Math.max(lVal, rVal) >= 48 && Math.abs(lVal - rVal) > 55;
-      if (oneArmRaisedOnly || asymmetricSpread) {
+      const oneArmRaisedOnly = (lVal >= 65 && rVal < 35) || (rVal >= 65 && lVal < 35);
+      if (oneArmRaisedOnly) {
         sideViolation = 'SINGLE_ARM_IN_BOTH_MODE';
         sideViolationBannerTh =
-          '⚠️ ท่านี้ต้องทำพร้อมกันทั้ง 2 ข้าง! กรุณายกแขนทั้งซ้ายและขวาขึ้นพร้อมกัน';
+          '🙌 ท่านี้ฝึกทั้งสองข้างพร้อมกัน กรุณายกแขนทั้ง 2 ข้างขึ้นพร้อมกันครับ';
         wrongSideRaised = true;
         wrongSideBannerTh = sideViolationBannerTh;
         romDeg = 0;
@@ -1579,11 +1588,18 @@ export function solveStrokeClinicalJointBiomechanics(
   };
 }
 
-export const MANDATORY_LOWER_REST_STREAK_FRAMES = 4;
-export const REP_COMPLETED_LOWER_ARM_BANNER_TH =
-  '✅ ได้ +1 แต้มแล้ว! กรุณาเอาแขนลงเพื่อเริ่มนับรอบถัดไป';
+export const MANDATORY_LOWER_REST_STREAK_FRAMES = 3;
+export const HOLD_COMPLETED_WAIT_LOWER_BANNER_TH =
+  '✅ ค้างครบเวลาแล้ว! ค่อยๆ เอาแขนลงเพื่อนับเป็น 1 ครั้งครับ';
+export const PHASE_2_LOWER_ARM_PROMPT_BANNER_TH =
+  '⬇️ ค้างครบแล้ว! กรุณาเอาแขนลงข้างลำตัวเพื่อนับ +1 ครั้ง';
+export const REP_COMPLETED_LOWER_ARM_BANNER_TH = PHASE_2_LOWER_ARM_PROMPT_BANNER_TH;
 export const ARM_LOWERED_READY_NEXT_REP_BANNER_TH =
-  '👍 เอาแขนลงเรียบร้อย! ยกขึ้นเพื่อทำรอบถัดไปได้เลย';
+  '🎉 ยอดเยี่ยม! นับเพิ่ม +1 ครั้งเรียบร้อย';
+
+export function formatRepScoredBannerTh(completedReps: number, targetReps: number): string {
+  return `🎉 ยอดเยี่ยม! นับเพิ่ม +1 ครั้งเรียบร้อย (รวม ${completedReps}/${targetReps} ครั้ง)`;
+}
 
 /**
  * Checks anatomically whether active wrist(s) for arm exercises have physically dropped below
@@ -1628,11 +1644,17 @@ export function evaluateActiveWristsLowered(params: {
 }
 
 /**
- * Strict 3-State Rep Hysteresis Machine (`'READY_TO_RAISE' | 'HOLDING' | 'WAIT_LOWER_ARM'`):
- * - NO time-based auto-unlock after completing a rep. Holding in target zone only ever awards +1 rep.
- * - While in `'WAIT_LOWER_ARM'`, timer is frozen at 100% until user lowers ROM <= `restRomThreshold`
- *   AND drops wrist below chest/shoulder level (`wrist.y > shoulder.y + 0.25 * shoulderWidth`)
- *   for `4` consecutive frames (~120ms), resetting cleanly to `'READY_TO_RAISE'`.
+ * Strict 3-Phase Clinical Hold-Then-Lower State Machine:
+ * (`'PHASE_1_HOLDING' | 'PHASE_2_WAIT_LOWER_TO_SCORE' | 'PHASE_3_SCORED_READY'`)
+ *
+ * - **Phase 1 (`PHASE_1_HOLDING`)**: Accumulate hold time when `activeRom >= targetRom * 0.75`.
+ *   If dropped prematurely (`< targetRom * 0.55`), decay gently (`dt * 0.5`).
+ *   When `holdElapsedSec >= targetHoldSec`, lock bar at 100% and enter `'PHASE_2_WAIT_LOWER_TO_SCORE'`
+ *   WITHOUT incrementing `completedReps` yet!
+ * - **Phase 2 (`PHASE_2_WAIT_LOWER_TO_SCORE`)**: Prompt user to lower arm(s) back to rest
+ *   (`<= Math.min(45, targetRom * 0.42)`; both arms in `'BOTH'` mode) for 3 consecutive frames (~90ms).
+ * - **Phase 3 (`PHASE_3_SCORED_READY`)**: Increment `completedReps += 1`, reset hold timer to 0%,
+ *   emit celebratory banner, and accept the next raise smoothly into `'PHASE_1_HOLDING'`.
  */
 export function stepStrokeHoldAndRepStateMachine(
   input: StrokeHoldRepStepInput,
@@ -1658,9 +1680,16 @@ export function stepStrokeHoldAndRepStateMachine(
     };
   }
 
-  // 1. Strict Side Isolation Violation -> Hold timer resets in READY_TO_RAISE; NEVER unlocks WAIT_LOWER_ARM!
-  if (input.sideViolation !== 'NONE') {
-    if (next.phase === 'WAIT_LOWER_ARM') {
+  const isPhase2WaitLower = next.phase === 'PHASE_2_WAIT_LOWER_TO_SCORE';
+
+  // 1. Strict Side Isolation Gate
+  // Note: While already in PHASE_2_WAIT_LOWER_TO_SCORE for 'BOTH' exercises, lowering arms sequentially
+  // must never block/reset progress; check the resting threshold for both arms directly in Phase 2.
+  if (
+    input.sideViolation !== 'NONE' &&
+    !(isPhase2WaitLower && input.sideViolation === 'SINGLE_ARM_IN_BOTH_MODE')
+  ) {
+    if (isPhase2WaitLower) {
       next.holdElapsedSec = safeTargetHold;
       next.loweredFrameStreak = 0;
       return {
@@ -1673,7 +1702,8 @@ export function stepStrokeHoldAndRepStateMachine(
       };
     }
     next.holdElapsedSec = 0;
-    next.phase = 'READY_TO_RAISE';
+    next.loweredFrameStreak = 0;
+    next.phase = 'PHASE_1_HOLDING';
     return {
       nextState: next,
       holdProgressPct: 0,
@@ -1684,9 +1714,9 @@ export function stepStrokeHoldAndRepStateMachine(
     };
   }
 
-  // 2. Wrong Movement Plane Violation -> Stop hold timer & preserve WAIT_LOWER_ARM lock
+  // 2. Wrong Movement Plane Violation -> Stop hold timer & preserve PHASE_2_WAIT_LOWER_TO_SCORE lock
   if (input.wrongPlaneRaised) {
-    if (next.phase === 'WAIT_LOWER_ARM') {
+    if (isPhase2WaitLower) {
       next.holdElapsedSec = safeTargetHold;
       next.loweredFrameStreak = 0;
       return {
@@ -1699,7 +1729,8 @@ export function stepStrokeHoldAndRepStateMachine(
       };
     }
     next.holdElapsedSec = 0;
-    next.phase = 'READY_TO_RAISE';
+    next.loweredFrameStreak = 0;
+    next.phase = 'PHASE_1_HOLDING';
     return {
       nextState: next,
       holdProgressPct: 0,
@@ -1712,34 +1743,61 @@ export function stepStrokeHoldAndRepStateMachine(
 
   const isKneeFlex = Boolean(input.isKneeExercise && safeTargetRom < 140);
   const isSmallRom = Boolean(input.isSmallRomExercise) || safeTargetRom <= 70;
-  const restRomThreshold = isSmallRom ? safeTargetRom * 0.45 : Math.min(42, safeTargetRom * 0.42);
+  const restRomThreshold = isSmallRom
+    ? Math.min(45, safeTargetRom * 0.45)
+    : Math.min(45, safeTargetRom * 0.42);
 
-  // 3. WAIT_LOWER_ARM (Mandatory Return-to-Rest Gate — ZERO time-based auto-unlock!)
-  if (next.phase === 'WAIT_LOWER_ARM') {
+  // 3. PHASE_2_WAIT_LOWER_TO_SCORE (Must lower arm(s) back to rest before +1 rep is counted!)
+  if (isPhase2WaitLower) {
     next.holdElapsedSec = safeTargetHold;
 
-    const returnedToRestRom =
-      !input.blockCounting &&
-      rom !== null &&
-      Number.isFinite(rom) &&
-      (isKneeFlex ? rom > safeTargetRom + 20 : rom <= restRomThreshold);
+    let armsAtRestRom = false;
+    if (!input.blockCounting && rom !== null && Number.isFinite(rom)) {
+      if (isKneeFlex) {
+        armsAtRestRom = rom > safeTargetRom + 20;
+      } else if (input.exerciseSide === 'BOTH') {
+        const l = input.leftArmRomDeg;
+        const r = input.rightArmRomDeg;
+        if (l !== undefined && l !== null && r !== undefined && r !== null) {
+          armsAtRestRom = l <= restRomThreshold && r <= restRomThreshold;
+        } else if (l !== undefined && l !== null) {
+          armsAtRestRom = l <= restRomThreshold;
+        } else if (r !== undefined && r !== null) {
+          armsAtRestRom = r <= restRomThreshold;
+        } else {
+          armsAtRestRom = rom <= restRomThreshold;
+        }
+      } else if (input.exerciseSide === 'LEFT') {
+        const activeL = input.leftArmRomDeg ?? rom;
+        armsAtRestRom = activeL <= restRomThreshold;
+      } else if (input.exerciseSide === 'RIGHT') {
+        const activeR = input.rightArmRomDeg ?? rom;
+        armsAtRestRom = activeR <= restRomThreshold;
+      } else {
+        armsAtRestRom = rom <= restRomThreshold;
+      }
+    }
     const wristReturnedOk = isKneeFlex || input.armWristLowered !== false;
 
-    if (returnedToRestRom && wristReturnedOk) {
+    if (armsAtRestRom && wristReturnedOk) {
       next.loweredFrameStreak = (next.loweredFrameStreak ?? 0) + 1;
       if (next.loweredFrameStreak >= MANDATORY_LOWER_REST_STREAK_FRAMES) {
-        next.phase = 'READY_TO_RAISE';
+        next.completedReps = Math.min(input.targetReps, next.completedReps + 1);
+        next.phase = 'PHASE_3_SCORED_READY';
         next.holdElapsedSec = 0;
         next.loweredFrameStreak = 0;
-        next.readyBannerUntilMs = input.nowMs + 1600;
+        next.cooldownStartedAtMs = input.nowMs;
+        next.repCelebrateUntilMs = input.nowMs + 2200;
+        next.readyBannerUntilMs = input.nowMs + 2200;
+        const scoredBanner = formatRepScoredBannerTh(next.completedReps, input.targetReps);
         return {
           nextState: next,
           holdProgressPct: 0,
           holdRemainingSec: Number(safeTargetHold.toFixed(1)),
-          justCompletedRep: false,
+          justCompletedRep: true,
           unlockedToReady: true,
-          bannerTh: ARM_LOWERED_READY_NEXT_REP_BANNER_TH,
-          statusKind: 'ACTIVE_REP',
+          bannerTh: scoredBanner,
+          statusKind: next.completedReps >= input.targetReps ? 'SET_FINISHED' : 'REP_COMPLETED',
         };
       }
     } else {
@@ -1751,13 +1809,12 @@ export function stepStrokeHoldAndRepStateMachine(
       holdProgressPct: 100,
       holdRemainingSec: 0,
       justCompletedRep: false,
-      bannerTh: REP_COMPLETED_LOWER_ARM_BANNER_TH,
-      statusKind: 'REP_COMPLETED',
+      bannerTh: PHASE_2_LOWER_ARM_PROMPT_BANNER_TH,
+      statusKind: 'HOLD_PHASE',
     };
   }
 
   if (rom === null || !Number.isFinite(rom) || input.blockCounting) {
-    // Freeze softly without wiping progress on dropped frames or active face mismatch pause
     const pct = Math.min(100, (next.holdElapsedSec / safeTargetHold) * 100);
     const rem = Math.max(0, safeTargetHold - next.holdElapsedSec);
     return {
@@ -1766,72 +1823,74 @@ export function stepStrokeHoldAndRepStateMachine(
       holdRemainingSec: Number(rem.toFixed(1)),
       justCompletedRep: false,
       bannerTh: null,
-      statusKind: next.phase === 'HOLDING' ? 'HOLD_PHASE' : 'ACTIVE_REP',
+      statusKind: next.holdElapsedSec > 0 ? 'HOLD_PHASE' : 'ACTIVE_REP',
     };
   }
 
-  // 4. Forgiving Clinical Hysteresis & Progressive Accumulation
-  const inBoostZone = isKneeFlex ? rom <= safeTargetRom + 12 : rom >= safeTargetRom * 0.85;
-  const inEnterZone = isKneeFlex ? rom <= safeTargetRom + 20 : rom >= safeTargetRom * 0.68;
-  const inMaintainZone = isKneeFlex ? rom <= safeTargetRom + 28 : rom >= safeTargetRom * 0.55;
-  const holdGainDt = inBoostZone ? dt * 1.25 : dt;
+  // 4. PHASE_1_HOLDING / PHASE_3_SCORED_READY -> Hold Target First (NO +1 until Phase 2 lowering!)
+  const inTargetHoldZone = isKneeFlex ? rom <= safeTargetRom + 12 : rom >= safeTargetRom * 0.75;
+  const aboveDropZone = isKneeFlex ? rom <= safeTargetRom + 28 : rom >= safeTargetRom * 0.55;
 
-  // Note: input.isCompensatedNow (e.g. SHOULDER_HIKE / TRUNK_LEAN) is ADVISORY-ONLY and never halts counting!
-  if (next.phase === 'READY_TO_RAISE') {
-    if (inEnterZone) {
-      next.phase = 'HOLDING';
-      next.readyBannerUntilMs = 0;
-      next.holdElapsedSec = Math.min(safeTargetHold, next.holdElapsedSec + holdGainDt);
-    } else if (next.holdElapsedSec > 0) {
-      next.holdElapsedSec = Math.max(0, next.holdElapsedSec - dt * 0.15);
+  if (inTargetHoldZone) {
+    next.phase = 'PHASE_1_HOLDING';
+    next.readyBannerUntilMs = 0;
+    next.holdElapsedSec = Math.min(safeTargetHold, next.holdElapsedSec + dt);
+  } else if (!aboveDropZone) {
+    if (next.holdElapsedSec > 0) {
+      next.holdElapsedSec = Math.max(0, next.holdElapsedSec - dt * 0.5);
     }
-  } else if (next.phase === 'HOLDING') {
-    if (inMaintainZone) {
-      next.holdElapsedSec = Math.min(safeTargetHold, next.holdElapsedSec + holdGainDt);
-    } else {
-      next.holdElapsedSec = Math.max(0, next.holdElapsedSec - dt * 0.15);
-      if (next.holdElapsedSec <= 0) {
-        next.phase = 'READY_TO_RAISE';
-      }
+    if (
+      next.phase === 'PHASE_3_SCORED_READY' &&
+      next.readyBannerUntilMs &&
+      input.nowMs > next.readyBannerUntilMs
+    ) {
+      next.phase = 'PHASE_1_HOLDING';
     }
+  } else if (next.phase === 'PHASE_3_SCORED_READY' && next.holdElapsedSec === 0) {
+    // Wait cleanly between 55% and 75% without prematurely starting hold until >= 75%
+    next.phase = 'PHASE_1_HOLDING';
   }
 
-  // 5. Guaranteed +1 Rep Trigger -> Lock into WAIT_LOWER_ARM until physical return to rest
+  // 5. Hold reached 100% -> Lock into PHASE_2_WAIT_LOWER_TO_SCORE (do NOT count +1 rep yet!)
   if (next.holdElapsedSec >= safeTargetHold - 1e-4) {
-    next.completedReps = Math.min(input.targetReps, next.completedReps + 1);
     next.holdElapsedSec = safeTargetHold;
-    next.phase = 'WAIT_LOWER_ARM';
+    next.phase = 'PHASE_2_WAIT_LOWER_TO_SCORE';
     next.loweredFrameStreak = 0;
     next.readyBannerUntilMs = 0;
-    next.cooldownStartedAtMs = input.nowMs;
-    next.repCelebrateUntilMs = input.nowMs + 1600;
     return {
       nextState: next,
       holdProgressPct: 100,
       holdRemainingSec: 0,
-      justCompletedRep: true,
-      bannerTh: REP_COMPLETED_LOWER_ARM_BANNER_TH,
-      statusKind: next.completedReps >= input.targetReps ? 'SET_FINISHED' : 'REP_COMPLETED',
+      justCompletedRep: false,
+      holdCompleteWaitLower: true,
+      bannerTh: HOLD_COMPLETED_WAIT_LOWER_BANNER_TH,
+      statusKind: 'HOLD_PHASE',
     };
   }
 
   const pct = Math.min(100, (next.holdElapsedSec / safeTargetHold) * 100);
   const rem = Math.max(0, safeTargetHold - next.holdElapsedSec);
+  const holdingBanner =
+    inTargetHoldZone || next.holdElapsedSec > 0
+      ? `⏳ ค้างท่าไว้ในองศาที่ถูกต้อง... (${next.holdElapsedSec.toFixed(1)} / ${safeTargetHold.toFixed(1)} วิ)`
+      : null;
   const activeBanner =
     input.isCompensatedNow && input.postureBannerTh
       ? input.postureBannerTh
-      : next.phase === 'READY_TO_RAISE' &&
-          next.holdElapsedSec === 0 &&
-          next.readyBannerUntilMs &&
-          input.nowMs <= next.readyBannerUntilMs
-        ? ARM_LOWERED_READY_NEXT_REP_BANNER_TH
-        : null;
+      : holdingBanner ??
+        (next.phase === 'PHASE_3_SCORED_READY' &&
+        next.holdElapsedSec === 0 &&
+        next.readyBannerUntilMs &&
+        input.nowMs <= next.readyBannerUntilMs
+          ? formatRepScoredBannerTh(next.completedReps, input.targetReps)
+          : null);
+
   return {
     nextState: next,
     holdProgressPct: Number(pct.toFixed(2)),
     holdRemainingSec: Number(rem.toFixed(1)),
     justCompletedRep: false,
     bannerTh: activeBanner,
-    statusKind: next.phase === 'HOLDING' ? 'HOLD_PHASE' : 'ACTIVE_REP',
+    statusKind: inTargetHoldZone || next.holdElapsedSec > 0 ? 'HOLD_PHASE' : 'ACTIVE_REP',
   };
 }

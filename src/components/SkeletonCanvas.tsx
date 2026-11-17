@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Activity, AlertTriangle, CheckCircle2, Ruler, ShieldAlert, UserCheck, Users, UserX } from 'lucide-react';
+import { resolveActiveExerciseSide } from '@drtechcares/pose-engine';
 import {
   getPrescribedLimbPromptTh,
   getPrescribedPlanePromptTh,
@@ -186,7 +187,13 @@ export function SkeletonCanvas({
   const wrongLimbAlert = telemetry_analysis.compensation_detected.includes('WRONG_LIMB');
   const wrongPlaneAlert = telemetry_analysis.compensation_detected.includes('WRONG_PLANE');
   const expectedPlane = resolveExpectedPlaneForExercise(exercise);
-  const limbPrompt = getPrescribedLimbPromptTh(exercise.target_joint, expectedPlane);
+  const activeSide = resolveActiveExerciseSide(
+    exercise,
+    undefined,
+    exercise.target_joint,
+    expectedPlane,
+  );
+  const limbPrompt = getPrescribedLimbPromptTh(exercise.target_joint, expectedPlane, activeSide);
   const planePrompt = getPrescribedPlanePromptTh(expectedPlane);
   const guard = payload.identity_guard;
   const isMultiPerson = kiosk_state === 'PAUSED_MULTI_PERSON' || guard?.status === 'MULTI_PERSON';
@@ -232,10 +239,16 @@ export function SkeletonCanvas({
   // Arm angles (from straight-down 90deg in SVG coordinates):
   // Right arm abducts clockwise toward left-of-screen (90 -> 270 deg)
   // Left arm abducts counter-clockwise toward right-of-screen (90 -> -90 deg)
-  const rightArmDeg =
-    exercise.target_joint === 'right_shoulder' ? 90 + Math.min(180, currentRom) : 98;
-  const leftArmDeg =
-    exercise.target_joint === 'left_shoulder' ? 90 - Math.min(180, currentRom) : 82;
+  const isActiveRightArm =
+    activeSide === 'BOTH' ||
+    activeSide === 'RIGHT' ||
+    (!activeSide && exercise.target_joint === 'right_shoulder');
+  const isActiveLeftArm =
+    activeSide === 'BOTH' ||
+    activeSide === 'LEFT' ||
+    (!activeSide && exercise.target_joint === 'left_shoulder');
+  const rightArmDeg = isActiveRightArm ? 90 + Math.min(180, currentRom) : 98;
+  const leftArmDeg = isActiveLeftArm ? 90 - Math.min(180, currentRom) : 82;
 
   const rightElbow = polarPoint(rightShoulder.x, rightShoulder.y, 76, rightArmDeg);
   const rightWrist = polarPoint(rightElbow.x, rightElbow.y, 68, rightArmDeg);
@@ -419,15 +432,19 @@ export function SkeletonCanvas({
                 : isMultiPerson
                   ? `พบบุคคล ${guard?.person_count ?? 2} คน • หยุดนับชั่วคราว`
                   : wrongLimbAlert
-                    ? `⚠️ ยกแขนผิดข้าง • ${limbPrompt.bannerAlertTh}`
+                    ? activeSide === 'BOTH'
+                      ? limbPrompt.bannerAlertTh
+                      : `⚠️ ยกแขนผิดข้าง • ${limbPrompt.bannerAlertTh}`
                     : wrongPlaneAlert
                       ? `⚠️ ผิดทิศทาง • ${planePrompt.bannerAlertTh}`
                       : hasTrunkLean
                       ? 'ตรวจพบการเอียงลำตัวชดเชย'
                       : isRepCompletedOrFinished
-                        ? `ครบ ${exercise.hold_sec} วินาทีแล้ว • ${isLowerBody ? 'ค่อยๆ เอาขาลงช้าๆ' : 'ค่อยๆ เอาแขนลงช้าๆ'}`
+                        ? '🎉 ยอดเยี่ยม! นับเพิ่ม +1 ครั้งเรียบร้อย'
                         : isHold
-                          ? 'คงท่าตามมุมเป้าหมาย'
+                          ? rep_counter.hold_remaining_sec <= 0
+                            ? `✅ ค้างครบเวลาแล้ว • ${isLowerBody ? 'ค่อยๆ เอาขาลงเพื่อนับ +1 ครั้ง' : 'ค่อยๆ เอาแขนลงเพื่อนับ +1 ครั้ง'}`
+                            : 'คงท่าตามมุมเป้าหมาย'
                           : telemetry_analysis.is_form_valid
                             ? 'ท่าทางถูกต้อง • เคลื่อนไหวต่อเนื่อง'
                             : 'กรุณาจัดตำแหน่งร่างกาย'}
@@ -449,7 +466,9 @@ export function SkeletonCanvas({
               {limbPrompt.bannerAlertTh}
             </div>
             <div className="mt-0.5 text-xs font-bold text-rose-100 sm:text-sm">
-              ระบบหยุดเดินเวลาค้างท่าชั่วคราว จนกว่าจะลด{limbPrompt.wrongLimbTh}ลงและทำเฉพาะ{limbPrompt.requiredLimbTh}
+              {activeSide === 'BOTH'
+                ? 'ระบบหยุดเดินเวลาค้างท่าชั่วคราว กรุณายกแขนทั้ง 2 ข้างขึ้นพร้อมกันเพื่อทำท่าต่อครับ'
+                : `ระบบหยุดเดินเวลาค้างท่าชั่วคราว จนกว่าจะลด${limbPrompt.wrongLimbTh}ลงและทำเฉพาะ${limbPrompt.requiredLimbTh}`}
             </div>
           </div>
           <span className="shrink-0 rounded-full bg-rose-900/60 px-3 py-1 text-[11px] font-black uppercase tracking-wider text-rose-100">

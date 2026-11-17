@@ -645,6 +645,137 @@ export function formatEffectiveExerciseCode(baseCode: string, side: ExerciseSide
   return `${cleanBase}_${side}`;
 }
 
+export interface ActiveExerciseSideHint {
+  exercise_id?: string;
+  exerciseId?: string;
+  catalog_exercise_id?: string;
+  effective_code?: string;
+  effectiveCode?: string;
+  code?: string;
+  exerciseCode?: string;
+  prescribed_side?: string | null;
+  side?: string | null;
+  target_side?: string | null;
+  name_th?: string | null;
+  name_en?: string | null;
+  nameTh?: string | null;
+  nameEn?: string | null;
+  target_joint?: string | null;
+  targetJoint?: string | null;
+  expected_plane?: string | null;
+}
+
+/**
+ * Single canonical side resolver shared across Clinical Kiosk UI, Pose AI solver,
+ * SkeletonCanvas overlay, and voice prompt helpers.
+ */
+export function resolveActiveExerciseSide(
+  exercise?: ActiveExerciseSideHint | null,
+  scheduleItem?: ActiveExerciseSideHint | null,
+  targetJoint?: string | null,
+  expectedPlane?: string | null,
+): ExerciseSideCode | undefined {
+  const explicitSide =
+    normalizeSideValue(scheduleItem?.side) ??
+    normalizeSideValue(scheduleItem?.prescribed_side) ??
+    normalizeSideValue(scheduleItem?.target_side) ??
+    normalizeSideValue(exercise?.prescribed_side) ??
+    normalizeSideValue(exercise?.side) ??
+    normalizeSideValue(exercise?.target_side);
+  if (explicitSide) return explicitSide;
+
+  const rawCodes = [
+    scheduleItem?.effectiveCode,
+    scheduleItem?.effective_code,
+    scheduleItem?.exerciseCode,
+    scheduleItem?.exerciseId,
+    scheduleItem?.exercise_id,
+    exercise?.effective_code,
+    exercise?.effectiveCode,
+    exercise?.code,
+    exercise?.exerciseCode,
+    exercise?.catalog_exercise_id,
+    exercise?.exercise_id,
+    exercise?.exerciseId,
+  ].filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+
+  for (const code of rawCodes) {
+    const clean = code.trim().toUpperCase();
+    const mapped = LEGACY_EXERCISE_ID_MAP[clean.toLowerCase()];
+    const candidate = (mapped ?? clean).toUpperCase();
+    const match = candidate.match(SIDE_SUFFIX_REGEX);
+    if (match) {
+      const fromSuffix = normalizeSideValue(match[2]);
+      if (fromSuffix) return fromSuffix;
+    }
+    const master = CLINICAL_MASTER_EXERCISE_MAP.get(candidate);
+    if (master?.detection.side === 'both') return 'BOTH';
+    if (
+      candidate.includes('BOBATH_ARM_RAISE') ||
+      candidate.includes('BILATERAL') ||
+      candidate.includes('FORWARD_PUSH') ||
+      candidate.includes('SHRUG') ||
+      candidate.includes('NECK_TURN')
+    ) {
+      return 'BOTH';
+    }
+  }
+
+  const effPlane = expectedPlane ?? exercise?.expected_plane ?? scheduleItem?.expected_plane;
+  if (effPlane === 'bilateral' || effPlane === 'bilateral_push') {
+    return 'BOTH';
+  }
+
+  const combinedNames = [
+    scheduleItem?.name_th,
+    scheduleItem?.nameTh,
+    scheduleItem?.name_en,
+    scheduleItem?.nameEn,
+    exercise?.name_th,
+    exercise?.nameTh,
+    exercise?.name_en,
+    exercise?.nameEn,
+  ]
+    .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+    .join(' ')
+    .toLowerCase();
+
+  if (
+    combinedNames.includes('ทั้งสองข้าง') ||
+    combinedNames.includes('ทั้ง 2 ข้าง') ||
+    combinedNames.includes('(both)') ||
+    combinedNames.includes('both sides') ||
+    combinedNames.includes('both arms') ||
+    combinedNames.includes('ประสานมือ')
+  ) {
+    return 'BOTH';
+  }
+  if (
+    combinedNames.includes('ข้างซ้าย') ||
+    combinedNames.includes('แขนซ้าย') ||
+    combinedNames.includes('(left)')
+  ) {
+    return 'LEFT';
+  }
+  if (
+    combinedNames.includes('ข้างขวา') ||
+    combinedNames.includes('แขนขวา') ||
+    combinedNames.includes('(right)')
+  ) {
+    return 'RIGHT';
+  }
+
+  const effJoint =
+    targetJoint ??
+    exercise?.target_joint ??
+    exercise?.targetJoint ??
+    scheduleItem?.target_joint ??
+    scheduleItem?.targetJoint;
+  if (effJoint === 'left_shoulder') return 'LEFT';
+  if (effJoint === 'right_shoulder') return 'RIGHT';
+  return undefined;
+}
+
 export function resolveDefaultSideForExercise(
   ex: { id?: string; code?: string; detection?: { side?: string; expectedPlane?: string; mode?: string } },
   patientAffectedSide?: string | null,

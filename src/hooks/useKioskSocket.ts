@@ -3,6 +3,7 @@ import {
   CLINICAL_EXERCISES,
   normalizeStrokeExerciseId,
   parseExerciseCodeAndSide,
+  resolveActiveExerciseSide,
   resolveSideAdjustedExerciseCopy,
   type ExerciseSideCode,
 } from '@drtechcares/pose-engine';
@@ -195,14 +196,14 @@ export function resolveExpectedPlaneForExercise(item: {
   const normalizedId = rawId ? normalizeStrokeExerciseId(rawId) : '';
   const found = rawId
     ? CLINICAL_EXERCISES.find(
-        (c) =>
-          c.id === normalizedId ||
-          c.code === normalizedId ||
-          c.id === item.catalog_exercise_id ||
-          c.code === item.catalog_exercise_id ||
-          c.id === item.exercise_id ||
-          c.code === item.exercise_id,
-      )
+      (c) =>
+        c.id === normalizedId ||
+        c.code === normalizedId ||
+        c.id === item.catalog_exercise_id ||
+        c.code === item.catalog_exercise_id ||
+        c.id === item.exercise_id ||
+        c.code === item.exercise_id,
+    )
     : undefined;
   if (found?.detection.expectedPlane) {
     return found.detection.expectedPlane as ExpectedMovementPlane;
@@ -365,8 +366,8 @@ export function getPrescribedLimbPromptTh(
     return {
       requiredLimbTh: 'แขนทั้ง 2 ข้างพร้อมกัน',
       wrongLimbTh: 'แขนเพียงข้างเดียว',
-      bannerAlertTh: '⚠️ ท่านี้ต้องทำพร้อมกันทั้ง 2 ข้าง! กรุณายกแขนทั้งซ้ายและขวาขึ้นพร้อมกัน',
-      voicePromptTh: 'ท่านี้ต้องทำพร้อมกันทั้ง 2 ข้าง กรุณายกแขนทั้งซ้ายและขวาขึ้นพร้อมกันนะครับ',
+      bannerAlertTh: '🙌 ท่านี้ฝึกทั้งสองข้างพร้อมกัน กรุณายกแขนทั้ง 2 ข้างขึ้นพร้อมกันครับ',
+      voicePromptTh: 'ท่านี้ฝึกทั้งสองข้างพร้อมกัน กรุณายกแขนทั้ง 2 ข้างขึ้นพร้อมกันนะครับ',
     };
   }
   if (prescribedSide === 'LEFT' || (prescribedSide !== 'RIGHT' && targetJoint === 'left_shoulder')) {
@@ -498,8 +499,12 @@ export function mapTodayExercisesToPrescriptions(
         c.id === item.exerciseId ||
         c.code === item.exerciseId,
     );
-    const resolvedSide = parsed.side;
-    const effectiveCode = parsed.effectiveCode;
+    const inferredFromMeta = resolveActiveExerciseSide(undefined, item);
+    const resolvedSide = parsed.hasExplicitSide ? parsed.side : inferredFromMeta ?? parsed.side;
+    const effectiveCode =
+      resolvedSide !== parsed.side && parsed.baseCode
+        ? `${parsed.baseCode}_${resolvedSide}`
+        : parsed.effectiveCode;
     const target_joint = resolveTargetJointForTodayExercise(item, found, resolvedSide);
     const isLowRangeUpper =
       found &&
@@ -788,10 +793,17 @@ export function synthesizeDemoPayload({
   }
 
   if (preset === 'WRONG_LIMB') {
+    const expectedPlane = resolveExpectedPlaneForExercise(exercise);
+    const activeSide = resolveActiveExerciseSide(
+      exercise,
+      undefined,
+      exercise.target_joint,
+      expectedPlane,
+    );
     const limbInfo = getPrescribedLimbPromptTh(
       exercise.target_joint,
-      resolveExpectedPlaneForExercise(exercise),
-      exercise.prescribed_side,
+      expectedPlane,
+      activeSide,
     );
     return {
       kiosk_state: 'ACTIVE_REP',
@@ -902,7 +914,12 @@ export function synthesizeDemoPayload({
         highlight_color: 'GREEN',
         show_target_arc: true,
       },
-      tts_voice_th: `ดีมากครับ ค้างท่าไว้ ${Math.ceil(rem)} วินาที`,
+      tts_voice_th:
+        rem <= 0
+          ? isLowerBody
+            ? 'ค้างครบเวลาแล้ว ค่อยๆ เอาขาลงเพื่อนับเป็น 1 ครั้งครับ'
+            : 'ค้างครบเวลาแล้ว ค่อยๆ เอาแขนลงเพื่อนับเป็น 1 ครั้งครับ'
+          : `ดีมากครับ ค้างท่าไว้ ${Math.ceil(rem)} วินาที`,
       frame_base64: null,
     };
   }
@@ -1032,8 +1049,8 @@ export function useKioskSocket(
             target_joint: rx.target_joint,
             target_rom_deg:
               typeof options?.patientOverride?.max_safe_rom_deg === 'number' &&
-              options.patientOverride.max_safe_rom_deg > 0 &&
-              !rx.target_joint.includes('knee')
+                options.patientOverride.max_safe_rom_deg > 0 &&
+                !rx.target_joint.includes('knee')
                 ? Math.min(rx.target_rom_deg, options.patientOverride.max_safe_rom_deg)
                 : rx.target_rom_deg,
             hold_sec: rx.hold_sec,
@@ -1467,16 +1484,16 @@ export function useKioskSocket(
   );
   const isEdgeDirectCamera = Boolean(
     !isDemoMode &&
-      connectionStatus === 'connected' &&
-      livePayload &&
-      livePayload.camera_mode !== 'live_browser_bridge' &&
-      livePayload.camera_mode !== 'synthetic_mock',
+    connectionStatus === 'connected' &&
+    livePayload &&
+    livePayload.camera_mode !== 'live_browser_bridge' &&
+    livePayload.camera_mode !== 'synthetic_mock',
   );
   const isEdgeLiveCameraActive = Boolean(
     !isDemoMode &&
-      connectionStatus === 'connected' &&
-      livePayload &&
-      livePayload.camera_mode !== 'synthetic_mock',
+    connectionStatus === 'connected' &&
+    livePayload &&
+    livePayload.camera_mode !== 'synthetic_mock',
   );
   const isHttpsRemoteOrigin =
     typeof window !== 'undefined' &&
@@ -1487,9 +1504,9 @@ export function useKioskSocket(
   // AI_MODEL_ERROR / NO_POSE_DETECTED states) instead of reverting to synthetic demoPayload.
   const payload: KioskDecisionPayload =
     !isDemoMode &&
-    connectionStatus === 'connected' &&
-    livePayload &&
-    livePayload.camera_mode !== 'live_browser_bridge'
+      connectionStatus === 'connected' &&
+      livePayload &&
+      livePayload.camera_mode !== 'live_browser_bridge'
       ? livePayload
       : demoPayload;
 

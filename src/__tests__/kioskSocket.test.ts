@@ -5,16 +5,18 @@ import {
   sanitizeAccidentalDefaultKneePrefix,
 } from '@drtechcares/api-client';
 import {
-  ARM_LOWERED_READY_NEXT_REP_BANNER_TH,
   AutoBoneBaselineCalibrator,
   CLINICAL_EXERCISES,
   ClinicalHandOneEuroFilter,
   ClinicalOneEuroLandmarkFilter,
   HAND21_INDEX,
+  HOLD_COMPLETED_WAIT_LOWER_BANNER_TH,
+  PHASE_2_LOWER_ARM_PROMPT_BANNER_TH,
   POSE_INDEX,
-  REP_COMPLETED_LOWER_ARM_BANNER_TH,
   evaluateActiveWristsLowered,
+  formatRepScoredBannerTh,
   mergeDuplicateSideExercises,
+  resolveActiveExerciseSide,
   solveStrokeClinicalJointBiomechanics,
   stepStrokeHoldAndRepStateMachine,
   type StrokeHoldRepState,
@@ -2369,7 +2371,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(bothSingleBlocked.wrongSideRaised).toBe(true);
     expect(bothSingleBlocked.romDeg).toBe(0);
     expect(bothSingleBlocked.wrongSideBannerTh).toBe(
-      '⚠️ ท่านี้ต้องทำพร้อมกันทั้ง 2 ข้าง! กรุณายกแขนทั้งซ้ายและขวาขึ้นพร้อมกัน',
+      '🙌 ท่านี้ฝึกทั้งสองข้างพร้อมกัน กรุณายกแขนทั้ง 2 ข้างขึ้นพร้อมกันครับ',
     );
 
     const bothValid = measureLiveJointAngleAndTilt(
@@ -2462,9 +2464,9 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(strokes).toContain('#EF4444');
   });
 
-  it('enforces strict 3-state rep hysteresis (WAIT_LOWER_ARM blocks continuous holding for 10s until arm physically lowers 4 frames)', () => {
+  it('enforces 3-phase hold-then-lower scoring (hold to 100% -> PHASE_2_WAIT_LOWER_TO_SCORE -> lower arms 3 frames -> THEN count +1 rep)', () => {
     let state: StrokeHoldRepState = {
-      phase: 'READY_TO_RAISE',
+      phase: 'PHASE_1_HOLDING',
       holdElapsedSec: 0,
       completedReps: 0,
       cooldownStartedAtMs: 0,
@@ -2477,7 +2479,10 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       dtSec: number,
       nowMs: number,
       opts?: {
-        sideViolation?: 'NONE' | 'LEFT_ARM_RAISED_IN_RIGHT_MODE';
+        sideViolation?: 'NONE' | 'LEFT_ARM_RAISED_IN_RIGHT_MODE' | 'SINGLE_ARM_IN_BOTH_MODE';
+        exerciseSide?: 'LEFT' | 'RIGHT' | 'BOTH';
+        leftArmRomDeg?: number | null;
+        rightArmRomDeg?: number | null;
         isCompensatedNow?: boolean;
         postureBannerTh?: string | null;
         armWristLowered?: boolean;
@@ -2487,7 +2492,10 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       const res = stepStrokeHoldAndRepStateMachine({
         state,
         activeRomDeg: romDeg,
-        targetRomDeg: 120,
+        leftArmRomDeg: opts?.leftArmRomDeg,
+        rightArmRomDeg: opts?.rightArmRomDeg,
+        exerciseSide: opts?.exerciseSide ?? 'RIGHT',
+        targetRomDeg: 115,
         targetHoldSec: 3.0,
         targetReps: 10,
         dtSec,
@@ -2504,15 +2512,17 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       return res;
     };
 
-    // 1. Hold Entry at >= 0.68 * 120 = 81.6 deg -> enters HOLDING immediately
+    // 1. Entry at >= 0.75 * 115 = 86.25 deg -> accumulates in PHASE_1_HOLDING (completedReps stays 0)
     let nowCursor = 0;
-    let lastRes = stepTick(84, 0.1, (nowCursor += 100));
-    expect(state.phase).toBe('HOLDING');
+    let lastRes = stepTick(90, 0.1, (nowCursor += 100));
+    expect(state.phase).toBe('PHASE_1_HOLDING');
     expect(state.holdElapsedSec).toBeCloseTo(0.1, 2);
+    expect(state.completedReps).toBe(0);
+    expect(lastRes.bannerTh).toContain('⏳ ค้างท่าไว้ในองศาที่ถูกต้อง');
 
-    // 2. Keep Holding >= 66 deg with advisory posture warning (never blocks current rep!)
+    // 2. Continue holding >= 0.75 * 115 with advisory posture warning (still accumulates smoothly!)
     for (let i = 0; i < 10; i += 1) {
-      lastRes = stepTick(70, 0.1, (nowCursor += 100), {
+      lastRes = stepTick(92, 0.1, (nowCursor += 100), {
         isCompensatedNow: true,
         postureBannerTh: '⚠️ อย่ายักไหล่ช่วยครับ ผ่อนคลายหัวไหล่ลง',
       });
@@ -2520,48 +2530,53 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(state.holdElapsedSec).toBeCloseTo(1.1, 2);
     expect(lastRes.bannerTh).toContain('อย่ายักไหล่ช่วย');
 
-    // 3. Dip below 0.55 decays slowly (dt*0.15)
+    // 3. Premature drop below 0.55 * 115 (< 63.25 deg) decays gently at dt * 0.5
     lastRes = stepTick(50, 0.2, (nowCursor += 200));
-    expect(state.holdElapsedSec).toBeCloseTo(1.1 - 0.2 * 0.15, 2);
+    expect(state.holdElapsedSec).toBeCloseTo(1.1 - 0.2 * 0.5, 2);
 
-    // 4. Complete Rep 1 -> transitions strictly to WAIT_LOWER_ARM at 100% progress bar
-    for (let i = 0; i < 16; i += 1) {
-      lastRes = stepTick(110, 0.1, (nowCursor += 100));
-      if (lastRes.justCompletedRep) break;
+    // 4. Reach 100% hold (3.0s) -> transitions to PHASE_2_WAIT_LOWER_TO_SCORE with completedReps STILL 0!
+    for (let i = 0; i < 25; i += 1) {
+      lastRes = stepTick(118, 0.1, (nowCursor += 100));
+      if (lastRes.holdCompleteWaitLower) break;
     }
-    expect(lastRes.justCompletedRep).toBe(true);
-    expect(state.completedReps).toBe(1);
-    expect(state.phase).toBe('WAIT_LOWER_ARM');
+    expect(lastRes.holdCompleteWaitLower).toBe(true);
+    expect(lastRes.justCompletedRep).toBe(false);
+    expect(state.completedReps).toBe(0);
+    expect(state.phase).toBe('PHASE_2_WAIT_LOWER_TO_SCORE');
     expect(lastRes.holdProgressPct).toBe(100);
-    expect(lastRes.bannerTh).toBe(REP_COMPLETED_LOWER_ARM_BANNER_TH);
+    expect(lastRes.holdRemainingSec).toBe(0);
+    expect(lastRes.bannerTh).toBe(HOLD_COMPLETED_WAIT_LOWER_BANNER_TH);
 
-    // 5. CRITICAL CHECK: Keep holding arm up at 115 deg >= targetRom continuously for 10 full seconds!
-    // MUST award ONLY +1 rep total and stay frozen in WAIT_LOWER_ARM with ZERO auto-unlock!
+    // 5. CRITICAL CHECK: Keep holding peak 118 deg for 10 full seconds!
+    // MUST stay at completedReps === 0 and frozen at 100% in PHASE_2_WAIT_LOWER_TO_SCORE!
     for (let i = 0; i < 100; i += 1) {
-      lastRes = stepTick(115, 0.1, (nowCursor += 100), { armWristLowered: false });
+      lastRes = stepTick(118, 0.1, (nowCursor += 100), { armWristLowered: false });
       expect(lastRes.justCompletedRep).toBe(false);
     }
-    expect(state.completedReps).toBe(1);
-    expect(state.phase).toBe('WAIT_LOWER_ARM');
+    expect(state.completedReps).toBe(0);
+    expect(state.phase).toBe('PHASE_2_WAIT_LOWER_TO_SCORE');
     expect(lastRes.holdProgressPct).toBe(100);
+    expect(lastRes.bannerTh).toBe(PHASE_2_LOWER_ARM_PROMPT_BANNER_TH);
 
-    // 6. Lowering ROM slightly to 60 deg (> restRomThreshold = 42) or lowering ROM while wrist still up MUST NOT unlock!
-    expect(stepTick(60, 0.1, (nowCursor += 100), { armWristLowered: true }).nextState.phase).toBe('WAIT_LOWER_ARM');
-    expect(stepTick(35, 0.1, (nowCursor += 100), { armWristLowered: false }).nextState.phase).toBe('WAIT_LOWER_ARM');
+    // 6. Lowering ROM partially (> 45 deg) or lowering ROM while wrist still up MUST NOT score!
+    expect(stepTick(60, 0.1, (nowCursor += 100), { armWristLowered: true }).nextState.completedReps).toBe(0);
+    expect(stepTick(35, 0.1, (nowCursor += 100), { armWristLowered: false }).nextState.completedReps).toBe(0);
 
-    // 7. Lower activeRom <= 42 AND wrist dropped below chest/shoulder for 3 frames -> still locked; 4th frame unlocks cleanly!
-    for (let f = 1; f <= 3; f += 1) {
-      const preUnlock = stepTick(35, 0.033, (nowCursor += 33), { armWristLowered: true });
-      expect(preUnlock.nextState.phase).toBe('WAIT_LOWER_ARM');
+    // 7. Lower activeRom <= 45 AND wrist dropped for 2 frames -> still waiting; 3rd frame counts +1 rep!
+    for (let f = 1; f <= 2; f += 1) {
+      const preScore = stepTick(35, 0.033, (nowCursor += 33), { armWristLowered: true });
+      expect(preScore.nextState.phase).toBe('PHASE_2_WAIT_LOWER_TO_SCORE');
+      expect(preScore.nextState.completedReps).toBe(0);
     }
-    const unlocked = stepTick(35, 0.033, (nowCursor += 33), { armWristLowered: true });
-    expect(state.phase).toBe('READY_TO_RAISE');
+    const scoredRep1 = stepTick(35, 0.033, (nowCursor += 33), { armWristLowered: true });
+    expect(state.completedReps).toBe(1);
+    expect(state.phase).toBe('PHASE_3_SCORED_READY');
     expect(state.holdElapsedSec).toBe(0);
-    expect(unlocked.holdProgressPct).toBe(0);
-    expect(unlocked.unlockedToReady).toBe(true);
-    expect(unlocked.bannerTh).toBe(ARM_LOWERED_READY_NEXT_REP_BANNER_TH);
+    expect(scoredRep1.holdProgressPct).toBe(0);
+    expect(scoredRep1.justCompletedRep).toBe(true);
+    expect(scoredRep1.bannerTh).toBe(formatRepScoredBannerTh(1, 10));
 
-    // 8. Wrong-side raise resets READY_TO_RAISE/HOLDING timer and never increments reps
+    // 8. Wrong-side raise resets PHASE_1_HOLDING timer and never increments reps
     stepTick(108, 0.1, (nowCursor += 100));
     const blockedRes = stepTick(108, 0.1, (nowCursor += 100), {
       sideViolation: 'LEFT_ARM_RAISED_IN_RIGHT_MODE',
@@ -2570,13 +2585,58 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(state.holdElapsedSec).toBe(0);
     expect(state.completedReps).toBe(1);
 
-    // 9. Raise arm again cleanly and hold 3s -> increments completedReps to 2!
-    for (let i = 0; i < 25; i += 1) {
-      lastRes = stepTick(115, 0.1, (nowCursor += 100), { armWristLowered: false });
-      if (lastRes.justCompletedRep) break;
+    // 9. BOTH mode bilateral hold-then-lower: MUST hold BOTH then lower BOTH arms <= restThreshold before +1!
+    let bothState: StrokeHoldRepState = {
+      phase: 'PHASE_1_HOLDING',
+      holdElapsedSec: 0,
+      completedReps: 0,
+      cooldownStartedAtMs: 0,
+      repCelebrateUntilMs: 0,
+      loweredFrameStreak: 0,
+    };
+    const stepBoth = (rom: number, lRom: number, rRom: number, dt: number, armWristLowered = false) => {
+      const r = stepStrokeHoldAndRepStateMachine({
+        state: bothState,
+        activeRomDeg: rom,
+        leftArmRomDeg: lRom,
+        rightArmRomDeg: rRom,
+        exerciseSide: 'BOTH',
+        targetRomDeg: 115,
+        targetHoldSec: 3.0,
+        targetReps: 10,
+        dtSec: dt,
+        nowMs: (nowCursor += 33),
+        armWristLowered,
+        sideViolation: 'NONE',
+        wrongSideBannerTh: null,
+        wrongPlaneRaised: false,
+        wrongPlaneBannerTh: null,
+        isCompensatedNow: false,
+        postureBannerTh: null,
+      });
+      bothState = r.nextState;
+      return r;
+    };
+    for (let i = 0; i < 32; i += 1) {
+      stepBoth(117.9, 117.0, 118.8, 0.1, false);
     }
-    expect(state.completedReps).toBe(2);
-    expect(state.phase).toBe('WAIT_LOWER_ARM');
+    expect(bothState.phase).toBe('PHASE_2_WAIT_LOWER_TO_SCORE');
+    expect(bothState.completedReps).toBe(0);
+
+    // Lowering only left arm while right arm stays at 90 deg keeps completedReps === 0!
+    for (let i = 0; i < 5; i += 1) {
+      const partialLower = stepBoth(55, 20, 90, 0.033, false);
+      expect(partialLower.justCompletedRep).toBe(false);
+      expect(bothState.completedReps).toBe(0);
+    }
+
+    // Lowering BOTH arms <= 45 deg for 3 consecutive frames scores +1 rep!
+    stepBoth(22, 20, 24, 0.033, true);
+    stepBoth(22, 20, 24, 0.033, true);
+    const bothScored = stepBoth(22, 20, 24, 0.033, true);
+    expect(bothScored.justCompletedRep).toBe(true);
+    expect(bothState.completedReps).toBe(1);
+    expect(bothState.phase).toBe('PHASE_3_SCORED_READY');
 
     // Check anatomical wrist height evaluator directly
     const raisedPose = createNeutralLandmarks({
@@ -2596,6 +2656,54 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
         targetJoint: 'right_shoulder',
       }),
     ).toBe(true);
+  });
+
+  it('resolves BOTH exercises consistently across metadata hints, limb prompts, and bilateral arm raises without false RIGHT-only alerts', () => {
+    // 1. Even when prescribed_side is omitted and target_joint defaults to right_shoulder, name/schedule side resolves BOTH
+    const bothByNameOnly = {
+      exercise_id: 'ex-custom-abd',
+      name_th: '[Stroke ADL] กางแขนด้านข้าง (ฝึกกางแขนสวมเสื้อ) — ทั้งสองข้างพร้อมกัน (Both)',
+      name_en: 'Stroke ADL: Shoulder Abduction (Both Sides Together)',
+      target_joint: 'right_shoulder' as const,
+      expected_plane: 'abduction' as const,
+    };
+    expect(resolveActiveExerciseSide(bothByNameOnly, undefined, 'right_shoulder', 'abduction')).toBe('BOTH');
+    expect(
+      resolveActiveExerciseSide(
+        { exercise_id: 'STROKE_SH_ABD', target_joint: 'right_shoulder' },
+        { side: 'BOTH' },
+      ),
+    ).toBe('BOTH');
+
+    // 2. getPrescribedLimbPromptTh in BOTH mode NEVER returns right-arm or left-arm-only warning!
+    const bothPrompt = getPrescribedLimbPromptTh('right_shoulder', 'abduction', 'BOTH');
+    expect(bothPrompt.bannerAlertTh).toBe(
+      '🙌 ท่านี้ฝึกทั้งสองข้างพร้อมกัน กรุณายกแขนทั้ง 2 ข้างขึ้นพร้อมกันครับ',
+    );
+    expect(bothPrompt.bannerAlertTh).not.toContain('เฉพาะข้างขวา');
+    expect(bothPrompt.bannerAlertTh).not.toContain('เฉพาะข้างซ้าย');
+
+    // 3. Raising both arms bilaterally (~118 deg & ~65 deg mild stroke asymmetry) NEVER triggers WRONG_LIMB!
+    const asymmetricBothAbduction = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.40, y: 0.28, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.25, y: 0.22, z: -0.02, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.14, y: 0.17, z: -0.04, visibility: 0.99 },
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.60, y: 0.28, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_ELBOW]: { x: 0.72, y: 0.31, z: -0.02, visibility: 0.99 },
+      [POSE_INDEX.LEFT_WRIST]: { x: 0.82, y: 0.34, z: -0.04, visibility: 0.99 },
+    });
+    const bothAbdRes = measureLiveJointAngleAndTilt(
+      asymmetricBothAbduction,
+      'right_shoulder',
+      'abduction',
+      undefined,
+      bothByNameOnly,
+      { targetRomDeg: 115 },
+    );
+    expect(bothAbdRes.wrongSideRaised).toBe(false);
+    expect(bothAbdRes.sideViolation).toBe('NONE');
+    expect(bothAbdRes.romDeg).not.toBeNull();
+    expect(bothAbdRes.romDeg!).toBeGreaterThan(75);
   });
 
   it('unifies catalog to 15 master exercises and enforces LEFT, RIGHT, and BOTH prescriptions end-to-end', () => {
