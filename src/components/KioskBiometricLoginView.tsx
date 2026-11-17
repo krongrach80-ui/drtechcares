@@ -24,6 +24,15 @@ import {
   computeBoundingBoxFromLandmarks,
   subscribeBiometricIndex,
 } from '../lib/faceMatcher';
+import {
+  computeOwnerFaceBoxMetrics,
+  drawOwnerBiometricOverlayOnCanvas,
+  evaluateOwnerBoundKinematicHands,
+  verifyOwnerFace1to1,
+  type OwnerBiometricTemplate,
+  type OwnerFaceBoxMetrics,
+  type OwnerLockStatus,
+} from '../lib/ownerBiometricLock';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import {
   buildTtsProxyUrl,
@@ -39,6 +48,7 @@ import {
   computeHeadZoneRoiFromPose,
   evaluateLivenessAndPose,
   extractDualFlipFaceEmbedding,
+  extractGeometricAnthropometricRatios,
   inspectBiometricFrame3D,
   remapRoiLandmarksToFrame,
   renderUpscaledRoi256,
@@ -95,6 +105,7 @@ export interface KioskLoginSuccessPayload {
   todayExercises?: TodayPrescribedExerciseItem[];
   hasAppointmentToday?: boolean;
   completedToday?: boolean;
+  biometricTemplate?: OwnerBiometricTemplate;
 }
 
 function buildKioskLoginSuccessPayload(params: {
@@ -135,6 +146,19 @@ function buildKioskLoginSuccessPayload(params: {
     completedTodayOverride: completedOverride,
     now: new Date(),
   });
+  const biometricTemplate: OwnerBiometricTemplate | undefined =
+    params.indexEntry &&
+    Array.isArray(params.indexEntry.masterEmbedding) &&
+    params.indexEntry.masterEmbedding.length > 0
+      ? {
+          patientId: params.patient.id,
+          hn: params.patient.hn,
+          fullName: params.patient.fullName,
+          masterEmbedding: params.indexEntry.masterEmbedding,
+          angleEmbeddings: params.indexEntry.angleEmbeddings,
+          geometricRatios: params.indexEntry.geometricRatios,
+        }
+      : undefined;
   return {
     patient: {
       ...params.patient,
@@ -146,6 +170,7 @@ function buildKioskLoginSuccessPayload(params: {
     todayExercises: todaySchedule.todayExercises,
     hasAppointmentToday: todaySchedule.hasAppointmentToday,
     completedToday: todaySchedule.completedToday,
+    ...(biometricTemplate ? { biometricTemplate } : {}),
   };
 }
 
@@ -669,6 +694,10 @@ export function KioskBiometricLoginView({
   const [rightHandUpState, setRightHandUpState] = useState(false);
   const [twoHandCameraReady, setTwoHandCameraReady] = useState(false);
   const [twoHandDetectorReady, setTwoHandDetectorReady] = useState(false);
+  const [ownerGuardBanner, setOwnerGuardBanner] = useState<{
+    status: OwnerLockStatus;
+    text: string;
+  } | null>(null);
   const [isWelcomeSpeechDone, setIsWelcomeSpeechDone] = useState(false);
   const [raisedDuringSpeech, setRaisedDuringSpeech] = useState(false);
   const isSpeechDoneRef = useRef<boolean>(false);
@@ -967,6 +996,7 @@ export function KioskBiometricLoginView({
     setTwoHandDetected(false);
     setLeftHandUpState(false);
     setRightHandUpState(false);
+    setOwnerGuardBanner(null);
     if (confirmProgressFillRef.current) {
       confirmProgressFillRef.current.style.transform = 'scaleX(0)';
     }
@@ -1101,6 +1131,7 @@ export function KioskBiometricLoginView({
     setLeftHandUpState(false);
     setRightHandUpState(false);
     setTwoHandCameraReady(false);
+    setOwnerGuardBanner(null);
     setCameraError(null);
     setCameraPaused(false);
     setScanStage('scanning');
@@ -1188,6 +1219,14 @@ export function KioskBiometricLoginView({
     let lastReportedDetected = false;
     let twoHandCameraReadySent = false;
     let gestureTriggered = false;
+    let confirmFaceCycle = 0;
+    let cachedConfirmOwnerVerified = true;
+    let cachedConfirmFaceCount = 0;
+    let cachedConfirmFaceBox: OwnerFaceBoxMetrics | null = null;
+    let cachedConfirmExtraFaceBoxes: OwnerFaceBoxMetrics[] = [];
+    let confirmAlignCanvas: HTMLCanvasElement | null = null;
+    let confirmRoiCanvas: HTMLCanvasElement | null = null;
+    let lastOwnerGuardKey = '';
     const videoEl = videoRef.current;
 
     const stopMediaAndDetectors = () => {
@@ -1222,7 +1261,7 @@ export function KioskBiometricLoginView({
               const created = await HandLandmarker.createFromOptions(vision, {
                 baseOptions: delegate ? { modelAssetPath, delegate } : { modelAssetPath },
                 runningMode: 'VIDEO',
-                numHands: 2,
+                numHands: 4,
                 minHandDetectionConfidence: 0.35,
                 minHandPresenceConfidence: 0.35,
                 minTrackingConfidence: 0.35,
@@ -1499,16 +1538,10 @@ export function KioskBiometricLoginView({
               if (
                 v.readyState >= 2 &&
                 v.videoWidth > 0 &&
-                (handLandmarker || poseLandmarker || Boolean(edgeTelemetryRef.current?.hand_status))
+                (landmarker || handLandmarker || poseLandmarker)
               ) {
-                const edgeHands = edgeTelemetryRef.current?.hand_status;
-                const edgeLeftUp = Boolean(edgeHands?.left_raised);
-                const edgeRightUp = Boolean(edgeHands?.right_raised);
-                const edgeBothUpNow = Boolean(
-                  edgeHands && (edgeHands.active_card_zone === 'BOTH' || (edgeLeftUp && edgeRightUp)),
-                );
-                let latestLeftUp = edgeLeftUp;
-                let latestRightUp = edgeRightUp;
+                let latestLeftUp = false;
+                let latestRightUp = false;
 
                 // Throttle inference smoothly (~22Hz max, >=45ms apart) so 60-120fps animations never stutter
                 if (
@@ -1517,12 +1550,119 @@ export function KioskBiometricLoginView({
                 ) {
                   lastGestureVideoTime = v.currentTime;
                   lastGestureInferenceAt = now;
+                  confirmFaceCycle += 1;
+
+                  const cCanvas = confirmCanvasRef.current;
+                  const cw = cCanvas?.clientWidth || 320;
+                  const ch = cCanvas?.clientHeight || 200;
+
+                  // 1. Run FaceLandmarker + Continuous 1:1 Account Owner Verification every 4 frames (and immediately on cycle 1)
+                  if (landmarker) {
+                    try {
+                      const faceTs = Math.max(lastDetectTs + 1, Math.round(now));
+                      lastDetectTs = faceTs;
+                      const fRes = landmarker.detectForVideo(v, faceTs);
+                      const rawFaces = fRes.faceLandmarks ?? [];
+                      const faceSelection = selectPrimaryFace(rawFaces);
+                      const primaryLm = faceSelection.primaryFace ?? rawFaces[0] ?? null;
+                      const effCount =
+                        rawFaces.length > 1
+                          ? Math.max(1, faceSelection.effectiveFaceCount)
+                          : rawFaces.length;
+                      cachedConfirmFaceCount = effCount;
+
+                      if (!primaryLm || effCount === 0) {
+                        cachedConfirmFaceBox = null;
+                        cachedConfirmExtraFaceBoxes = [];
+                        cachedConfirmOwnerVerified = false;
+                      } else {
+                        cachedConfirmFaceBox = computeOwnerFaceBoxMetrics(
+                          primaryLm,
+                          v.videoWidth,
+                          v.videoHeight,
+                          cw,
+                          ch,
+                        );
+                        cachedConfirmExtraFaceBoxes = rawFaces
+                          .filter((lm) => lm !== primaryLm)
+                          .map((lm) =>
+                            computeOwnerFaceBoxMetrics(lm, v.videoWidth, v.videoHeight, cw, ch),
+                          )
+                          .filter((b): b is OwnerFaceBoxMetrics => b !== null);
+
+                        if (effCount > 1) {
+                          cachedConfirmOwnerVerified = false;
+                        } else if (
+                          !verifiedPayload.biometricTemplate ||
+                          verifiedPayload.biometricTemplate.masterEmbedding.length === 0
+                        ) {
+                          // Fallback for PIN-only patient sessions with no stored vector: still require single face
+                          cachedConfirmOwnerVerified = true;
+                        } else if (
+                          confirmFaceCycle === 1 ||
+                          confirmFaceCycle % 4 === 0 ||
+                          !cachedConfirmOwnerVerified
+                        ) {
+                          if (!confirmAlignCanvas) {
+                            confirmAlignCanvas = document.createElement('canvas');
+                          }
+                          if (!confirmRoiCanvas) {
+                            confirmRoiCanvas = document.createElement('canvas');
+                          }
+                          const faceCrop = alignFaceTo112(
+                            v,
+                            primaryLm,
+                            confirmAlignCanvas,
+                            confirmRoiCanvas,
+                          );
+                          if (faceCrop) {
+                            const { vector, mirroredVector } = await extractDualFlipFaceEmbedding(
+                              faceCrop,
+                              primaryLm,
+                            );
+                            if (!active) {
+                              shouldContinueLoop = false;
+                              return;
+                            }
+                            const livePose = evaluateLivenessAndPose(primaryLm, null, effCount);
+                            const rollDeg = computeEyeRollAngleDeg(
+                              primaryLm,
+                              v.videoWidth,
+                              v.videoHeight,
+                            );
+                            const probeRatios = extractGeometricAnthropometricRatios(primaryLm);
+                            const ownerCheck = verifyOwnerFace1to1({
+                              probeVector: vector,
+                              mirroredProbeVector: mirroredVector,
+                              yawDeg: livePose.yawDeg,
+                              pitchDeg: livePose.pitchDeg,
+                              rollDeg,
+                              probeRatios,
+                              ownerTemplate: verifiedPayload.biometricTemplate,
+                            });
+                            if (ownerCheck.hasTemplate) {
+                              cachedConfirmOwnerVerified = ownerCheck.matched;
+                            }
+                          }
+                        }
+                      }
+                    } catch {
+                      // Keep loop resilient across transient MediaPipe frame errors
+                    }
+                  }
+
                   if (!gestureOffscreenCanvas) {
                     gestureOffscreenCanvas = document.createElement('canvas');
                   }
                   const offW = 192;
-                  const offH = Math.max(108, Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))));
-                  if (gestureOffscreenCanvas.width !== offW || gestureOffscreenCanvas.height !== offH) {
+                  const offH = Math.max(
+                    108,
+                    Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))),
+                  );
+                  if (
+                    gestureOffscreenCanvas.width !== offW ||
+                    gestureOffscreenCanvas.height !== offH
+                  ) {
                     gestureOffscreenCanvas.width = offW;
                     gestureOffscreenCanvas.height = offH;
                   }
@@ -1534,6 +1674,7 @@ export function KioskBiometricLoginView({
 
                   let detectedHands: NormalizedLandmark[][] = [];
                   let detectedPose: NormalizedLandmark[] | null = null;
+                  let detectedPoseCount = 0;
                   if (handLandmarker) {
                     try {
                       const handTs = Math.max(lastDetectTs + 1, Math.round(now));
@@ -1544,10 +1685,11 @@ export function KioskBiometricLoginView({
                       // Keep gesture loop running across transient MediaPipe frame errors
                     }
                   }
-                  // Run heavier PoseLandmarker only if HandLandmarker is unavailable OR as sparse 8Hz fallback when exactly 1 hand shows
+                  // Run PoseLandmarker for skeleton-shoulder verification when HandLandmarker misses or single hand shows
                   if (
                     poseLandmarker &&
-                    (!handLandmarker || (detectedHands.length === 1 && now - lastPoseFallbackAt >= 140))
+                    (!handLandmarker ||
+                      (detectedHands.length >= 1 && now - lastPoseFallbackAt >= 140))
                   ) {
                     lastPoseFallbackAt = now;
                     try {
@@ -1555,25 +1697,69 @@ export function KioskBiometricLoginView({
                       lastPoseDetectTs = poseTs;
                       lastDetectTs = Math.max(lastDetectTs, poseTs);
                       const poseRes = poseLandmarker.detectForVideo(inferenceSource, poseTs);
+                      detectedPoseCount = (poseRes.landmarks ?? []).length;
                       detectedPose = poseRes.landmarks?.[0] ?? null;
                     } catch {
                       // Keep gesture loop running across transient MediaPipe frame errors
                     }
                   }
 
-                  const strictHands = evaluateStrictTwoHandsForStartModal(detectedHands, detectedPose);
-                  latestLeftUp = edgeLeftUp || strictHands.leftUp;
-                  latestRightUp = edgeRightUp || strictHands.rightUp;
-                  latestAnyHandUp = edgeBothUpNow || strictHands.bothUp;
+                  // 2. Owner-Bound Kinematic Hand Filter + Face Lock gate
+                  const handEval = evaluateOwnerBoundKinematicHands({
+                    ownerFaceVerified: cachedConfirmOwnerVerified,
+                    ownerFaceBox: cachedConfirmFaceBox,
+                    faceCount: cachedConfirmFaceCount,
+                    ownerName: verifiedPayload.patient.fullName,
+                    hands: detectedHands,
+                    pose: detectedPose,
+                    poseCount: detectedPoseCount,
+                    videoW: v.videoWidth,
+                    videoH: v.videoHeight,
+                    canvasW: cw,
+                    canvasH: ch,
+                  });
+
+                  const isGuardBlocked =
+                    handEval.status === 'IMPOSTOR_FACE' ||
+                    handEval.status === 'NO_OWNER_FACE' ||
+                    handEval.status === 'MULTI_PERSON' ||
+                    handEval.status === 'INTRUDER_HAND';
+
+                  if (isGuardBlocked) {
+                    latestLeftUp = false;
+                    latestRightUp = false;
+                    latestAnyHandUp = false;
+                    // Force hard lock reset to 0.0 / 4.0s (0%) whenever blocked by Face Lock or Intruder Hand!
+                    gestureHoldMs = 0;
+                    lastAnyHandRaisedAt = -Infinity;
+                    const alertStr =
+                      lang === 'en'
+                        ? handEval.alertBannerEn ?? handEval.alertBannerTh ?? ''
+                        : lang === 'cn'
+                          ? handEval.alertBannerCn ?? handEval.alertBannerTh ?? ''
+                          : handEval.alertBannerTh ?? '';
+                    const guardKey = `${handEval.status}:${alertStr}`;
+                    if (lastOwnerGuardKey !== guardKey) {
+                      lastOwnerGuardKey = guardKey;
+                      setOwnerGuardBanner(
+                        alertStr ? { status: handEval.status, text: alertStr } : null,
+                      );
+                    }
+                  } else {
+                    if (lastOwnerGuardKey !== '') {
+                      lastOwnerGuardKey = '';
+                      setOwnerGuardBanner(null);
+                    }
+                    latestLeftUp = handEval.leftUp;
+                    latestRightUp = handEval.rightUp;
+                    latestAnyHandUp = handEval.bothUp;
+                  }
 
                   setLeftHandUpState((prev) => (prev === latestLeftUp ? prev : latestLeftUp));
                   setRightHandUpState((prev) => (prev === latestRightUp ? prev : latestRightUp));
 
-                  // Lightweight live hand indicator circles on preview canvas
-                  const cCanvas = confirmCanvasRef.current;
+                  // 3. Draw Full-Bleed Overlay: Owner Face Box (#10B981 / #EF4444) + Biometric Tether HUD + Intruder Markers
                   if (cCanvas) {
-                    const cw = cCanvas.clientWidth || 320;
-                    const ch = cCanvas.clientHeight || 192;
                     if (cCanvas.width !== cw || cCanvas.height !== ch) {
                       cCanvas.width = cw;
                       cCanvas.height = ch;
@@ -1581,35 +1767,26 @@ export function KioskBiometricLoginView({
                     const cCtx = cCanvas.getContext('2d');
                     if (cCtx) {
                       cCtx.clearRect(0, 0, cw, ch);
-                      if (detectedHands.length > 0) {
-                        const dotColor = latestAnyHandUp ? '#10b981' : '#f59e0b';
-                        for (const h of detectedHands) {
-                          const center = h[9] ?? h[0];
-                          if (!center) continue;
-                          const px = (1 - center.x) * cw;
-                          const py = center.y * ch;
-                          cCtx.beginPath();
-                          cCtx.arc(px, py, 16, 0, Math.PI * 2);
-                          cCtx.fillStyle = latestAnyHandUp ? 'rgba(16,185,129,0.28)' : 'rgba(245,158,11,0.28)';
-                          cCtx.fill();
-                          cCtx.lineWidth = 3;
-                          cCtx.strokeStyle = dotColor;
-                          cCtx.stroke();
-                        }
-                      }
+                      drawOwnerBiometricOverlayOnCanvas(cCtx, cw, ch, {
+                        ownerName: verifiedPayload.patient.fullName,
+                        faceBox: cachedConfirmFaceBox,
+                        extraFaceBoxes: cachedConfirmExtraFaceBoxes,
+                        ownerFaceVerified: cachedConfirmOwnerVerified,
+                        faceCount: cachedConfirmFaceCount,
+                        handEval,
+                      });
                     }
                   }
-                } else if (edgeBothUpNow) {
-                  latestAnyHandUp = true;
                 }
 
+                const isLockedByOwnerSecurity = lastOwnerGuardKey !== '';
                 const holdStep = stepVerifiedHandHold({
-                  bothHandsNow: latestAnyHandUp,
-                  speechBlocked,
+                  bothHandsNow: latestAnyHandUp && !isLockedByOwnerSecurity,
+                  speechBlocked: speechBlocked || isLockedByOwnerSecurity,
                   nowMs: now,
                   dtMs: dt,
-                  lastRaisedAtMs: lastAnyHandRaisedAt,
-                  holdMs: gestureHoldMs,
+                  lastRaisedAtMs: isLockedByOwnerSecurity ? -Infinity : lastAnyHandRaisedAt,
+                  holdMs: isLockedByOwnerSecurity ? 0 : gestureHoldMs,
                 });
                 lastAnyHandRaisedAt = holdStep.lastRaisedAtMs;
                 gestureHoldMs = holdStep.holdMs;
@@ -2244,7 +2421,31 @@ export function KioskBiometricLoginView({
         );
       });
       if (matched) {
-        const matchedEntry = biometricIndexRef.current.find((e) => e.patientId === matched.id);
+        const matchedEntry =
+          biometricIndexRef.current.find(
+            (e) => e.patientId === matched.id || e.hn === matched.hn,
+          ) ??
+          ((matched.masterEmbedding && matched.masterEmbedding.length > 0)
+            ? ({
+                patientId: matched.id,
+                hn: matched.hn,
+                fullName: matched.fullName,
+                diagnosis: matched.diagnosis,
+                assignedPtId: matched.assignedPtId,
+                nextAppointmentDate: matched.nextAppointmentDate,
+                framesCaptured: matched.faceFramesCount ?? 120,
+                qualityScore: 0.96,
+                masterEmbedding: matched.masterEmbedding,
+                angleEmbeddings: matched.angleEmbeddings ?? {
+                  center: matched.masterEmbedding,
+                  left: matched.masterEmbedding,
+                  right: matched.masterEmbedding,
+                  up: matched.masterEmbedding,
+                  down: matched.masterEmbedding,
+                },
+                geometricRatios: matched.geometricRatios,
+              } as PatientBiometricIndexEntry)
+            : null);
         const pinPayload = buildKioskLoginSuccessPayload({
           patient: {
             id: matched.id,
@@ -2886,19 +3087,18 @@ export function KioskBiometricLoginView({
               {modalCopy.hnAndNextAppointment}
             </p>
 
-            {/* Full-Frame Live Camera Preview for STRICT 2-Hand Start Gesture */}
-            <div className="mt-4 relative mx-auto w-full h-44 sm:h-48 rounded-2xl overflow-hidden bg-slate-950 border-2 border-emerald-300 shadow-inner">
+            {/* Zero-Black-Bar Full-Bleed Camera Preview for Continuous 1:1 Owner Lock & Owner-Bound Hand Raising */}
+            <div className="mt-4 relative mx-auto w-full aspect-[16/10] md:aspect-[16/9] overflow-hidden rounded-2xl bg-emerald-950 border-2 border-emerald-300 shadow-inner">
               <video
                 ref={confirmVideoRef}
                 autoPlay
                 playsInline
                 muted
-                className="w-full h-full object-contain"
-                style={{ transform: 'scaleX(-1)' }}
+                className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
               />
               <canvas
                 ref={confirmCanvasRef}
-                className="pointer-events-none absolute inset-0 w-full h-full"
+                className="pointer-events-none absolute inset-0 w-full h-full object-cover scale-x-[-1]"
               />
               {!twoHandCameraReady && (
                 <div className="absolute inset-0 flex items-center justify-center bg-white/90 text-xs font-bold text-[#0F4C81]">
@@ -2921,7 +3121,7 @@ export function KioskBiometricLoginView({
                       className={`px-2.5 py-1 rounded-full text-[11px] font-black shadow ${
                         leftHandUpState
                           ? 'bg-emerald-600 text-white'
-                          : 'bg-slate-900/75 text-slate-200 border border-white/25'
+                          : 'bg-emerald-950/75 text-emerald-100 border border-white/25'
                       }`}
                     >
                       {leftHandUpState ? '✓ มือซ้ายพร้อม' : '○ รอมือซ้าย'}
@@ -2930,7 +3130,7 @@ export function KioskBiometricLoginView({
                       className={`px-2.5 py-1 rounded-full text-[11px] font-black shadow ${
                         rightHandUpState
                           ? 'bg-emerald-600 text-white'
-                          : 'bg-slate-900/75 text-slate-200 border border-white/25'
+                          : 'bg-emerald-950/75 text-emerald-100 border border-white/25'
                       }`}
                     >
                       {rightHandUpState ? '✓ มือขวาพร้อม' : '○ รอมือขวา'}
@@ -2939,7 +3139,19 @@ export function KioskBiometricLoginView({
                 )}
               </div>
               <div className="absolute inset-x-2 bottom-2 flex items-center justify-center pointer-events-none">
-                {!isWelcomeSpeechDone ? (
+                {ownerGuardBanner ? (
+                  <span
+                    key={`guard-${ownerGuardBanner.status}`}
+                    className={`px-3 py-1 rounded-full text-[11px] font-extrabold border shadow-lg ${
+                      ownerGuardBanner.status === 'IMPOSTOR_FACE' ||
+                      ownerGuardBanner.status === 'INTRUDER_HAND'
+                        ? 'bg-rose-600/95 text-white border-rose-200'
+                        : 'bg-amber-500/95 text-white border-amber-200'
+                    }`}
+                  >
+                    {ownerGuardBanner.text}
+                  </span>
+                ) : !isWelcomeSpeechDone ? (
                   <span
                     key="pill-speech"
                     className={`px-3 py-1 rounded-full text-[11px] font-extrabold border shadow ${
@@ -2979,40 +3191,61 @@ export function KioskBiometricLoginView({
               </div>
             </div>
 
-            {/* Dedicated 4-Second Loading Bar (locked strictly at 0% until welcome voice completes) */}
+            {/* Dedicated 4-Second Loading Bar (locked strictly at 0% until welcome voice completes + Owner 1:1 Lock passes) */}
             <div
               className={`mt-3 rounded-2xl border p-3 text-left ${
-                !isWelcomeSpeechDone
-                  ? raisedDuringSpeech
-                    ? 'border-amber-200 bg-amber-50/75'
-                    : 'border-slate-200 bg-slate-50/90'
-                  : 'border-emerald-200 bg-emerald-50/70'
+                ownerGuardBanner
+                  ? ownerGuardBanner.status === 'IMPOSTOR_FACE' ||
+                    ownerGuardBanner.status === 'INTRUDER_HAND'
+                    ? 'border-rose-300 bg-rose-50/90'
+                    : 'border-amber-300 bg-amber-50/85'
+                  : !isWelcomeSpeechDone
+                    ? raisedDuringSpeech
+                      ? 'border-amber-200 bg-amber-50/75'
+                      : 'border-slate-200 bg-slate-50/90'
+                    : 'border-emerald-200 bg-emerald-50/70'
               }`}
             >
               <div
-                className={`flex items-center justify-between text-[11px] font-extrabold mb-1.5 ${
-                  !isWelcomeSpeechDone
-                    ? raisedDuringSpeech
-                      ? 'text-amber-900'
-                      : 'text-slate-700'
-                    : 'text-emerald-950'
+                className={`flex items-center justify-between gap-2 text-[11px] font-extrabold mb-1.5 ${
+                  ownerGuardBanner
+                    ? ownerGuardBanner.status === 'IMPOSTOR_FACE' ||
+                      ownerGuardBanner.status === 'INTRUDER_HAND'
+                      ? 'text-rose-800'
+                      : 'text-amber-900'
+                    : !isWelcomeSpeechDone
+                      ? raisedDuringSpeech
+                        ? 'text-amber-900'
+                        : 'text-slate-700'
+                      : 'text-emerald-950'
                 }`}
               >
-                <span>
-                  {!isWelcomeSpeechDone
-                    ? raisedDuringSpeech
-                      ? modalCopy.speechEarlyRaiseBanner
-                      : modalCopy.speechBarHeader
-                    : twoHandDetected
-                      ? '⏳ กำลังโหลดยืนยัน 2 มือค้าง 4 วินาที...'
-                      : leftHandUpState !== rightHandUpState
-                        ? '⚠️ ยกมือเดียวไม่นับ กรุณายกขึ้นทั้ง 2 ข้าง'
-                        : 'หลอดโหลดเริ่มฝึก (ยก 2 ข้างค้าง 4 วิ)'}
+                <span className="truncate">
+                  {ownerGuardBanner
+                    ? ownerGuardBanner.text
+                    : !isWelcomeSpeechDone
+                      ? raisedDuringSpeech
+                        ? modalCopy.speechEarlyRaiseBanner
+                        : modalCopy.speechBarHeader
+                      : twoHandDetected
+                        ? '⏳ กำลังโหลดยืนยัน 2 มือค้าง 4 วินาที...'
+                        : leftHandUpState !== rightHandUpState
+                          ? '⚠️ ยกมือเดียวไม่นับ กรุณายกขึ้นทั้ง 2 ข้าง'
+                          : 'หลอดโหลดเริ่มฝึก (ยก 2 ข้างค้าง 4 วิ)'}
                 </span>
                 <span
                   key={isWelcomeSpeechDone ? lang : 'locked'}
                   ref={confirmProgressTextRef}
-                  className={`font-mono ${!isWelcomeSpeechDone ? 'text-slate-500' : 'text-emerald-700'}`}
+                  className={`font-mono shrink-0 ${
+                    ownerGuardBanner
+                      ? ownerGuardBanner.status === 'IMPOSTOR_FACE' ||
+                        ownerGuardBanner.status === 'INTRUDER_HAND'
+                        ? 'text-rose-700'
+                        : 'text-amber-800'
+                      : !isWelcomeSpeechDone
+                        ? 'text-slate-500'
+                        : 'text-emerald-700'
+                  }`}
                 >
                   0.0 / {(VERIFIED_HAND_HOLD_MS / 1000).toFixed(0)}.0 วิ (0%)
                 </span>
@@ -3021,13 +3254,15 @@ export function KioskBiometricLoginView({
                 <div
                   ref={confirmProgressFillRef}
                   className={`h-full w-full origin-left rounded-full ${
-                    !isWelcomeSpeechDone
-                      ? 'bg-slate-400'
-                      : twoHandDetected
-                        ? 'bg-gradient-to-r from-emerald-500 via-teal-400 to-sky-500'
-                        : leftHandUpState !== rightHandUpState
-                          ? 'bg-amber-400'
-                          : 'bg-emerald-500'
+                    ownerGuardBanner
+                      ? 'bg-rose-500'
+                      : !isWelcomeSpeechDone
+                        ? 'bg-slate-400'
+                        : twoHandDetected
+                          ? 'bg-gradient-to-r from-emerald-500 via-teal-400 to-sky-500'
+                          : leftHandUpState !== rightHandUpState
+                            ? 'bg-amber-400'
+                            : 'bg-emerald-500'
                   }`}
                   style={{ transform: 'scaleX(0)', willChange: 'transform' }}
                 />

@@ -1246,6 +1246,7 @@ export function App() {
                 stroke_type: authenticatedPatient.patient.strokeType,
                 motor_assessment_score: authenticatedPatient.patient.motorAssessmentScore,
               }}
+              ownerBiometrics={authenticatedPatient.biometricTemplate ?? null}
               prescribedExercises={prescribedOptions}
               isStaffAuthorized={Boolean(
                 currentUser && (currentUser.role === 'super_admin' || currentUser.role === 'pt'),
@@ -1366,6 +1367,7 @@ export function App() {
                   }
                 : undefined
             }
+            ownerBiometrics={authenticatedPatient?.biometricTemplate ?? null}
             prescribedExercises={authenticatedPatient ? prescribedOptions : undefined}
             isStaffAuthorized={Boolean(
               currentUser && (currentUser.role === 'super_admin' || currentUser.role === 'pt'),

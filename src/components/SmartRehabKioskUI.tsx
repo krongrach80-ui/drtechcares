@@ -1,7 +1,31 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { FilesetResolver, PoseLandmarker, type NormalizedLandmark } from '@mediapipe/tasks-vision';
-import { selectClinicalCameraDeviceId } from '@drtechcares/face-client';
+import {
+  FaceLandmarker,
+  FilesetResolver,
+  PoseLandmarker,
+  type NormalizedLandmark,
+} from '@mediapipe/tasks-vision';
+import {
+  alignFaceTo112,
+  computeEyeRollAngleDeg,
+  evaluateLivenessAndPose,
+  extractGeometricAnthropometricRatios,
+  extractHybrid512Descriptor,
+  flipImageDataHorizontally,
+  flipLandmarksHorizontally,
+  selectClinicalCameraDeviceId,
+  selectPrimaryFace,
+} from '@drtechcares/face-client';
+import {
+  computeObjectCoverLayout,
+  computeOwnerFaceBoxMetrics,
+  isPoseSkeletonLinkedToOwnerFace,
+  verifyOwnerFace1to1,
+  type OwnerBiometricTemplate,
+  type OwnerFaceBoxMetrics,
+  type OwnerLockStatus,
+} from '../lib/ownerBiometricLock';
 import { POSE_INDEX, ClinicalOneEuroLandmarkFilter, computeJointAngle3D } from '@drtechcares/pose-engine';
 import {
   Activity,
@@ -47,6 +71,7 @@ export { isUpperBodyVisibleInFrame };
 
 interface SmartRehabKioskUIProps {
   patient?: PatientSummary | null;
+  ownerBiometrics?: OwnerBiometricTemplate | null;
   prescribedExercises?: ExercisePrescriptionOption[];
   isStaffAuthorized?: boolean;
   onExerciseCompleted?: (exercise: ExercisePrescriptionOption) => void;
@@ -1196,6 +1221,13 @@ function drawLivePoseOverlayOnCanvas(
     smoothingStatusText?: string;
     showSkeleton?: boolean;
     isPrivacyMode?: boolean;
+    ownerLock?: {
+      ownerName: string;
+      faceBox: OwnerFaceBoxMetrics | null;
+      extraFaceBoxes?: OwnerFaceBoxMetrics[];
+      ownerFaceVerified: boolean;
+      faceCount: number;
+    };
   },
 ): void {
   if (!canvas) return;
@@ -1211,6 +1243,89 @@ function drawLivePoseOverlayOnCanvas(
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
+
+  // Draw Continuous 1:1 Account Owner Face Lock HUD + Biometric Tether onto full-bleed overlay
+  if (opts.ownerLock && opts.showSkeleton !== false) {
+    const { ownerName, faceBox, extraFaceBoxes = [], ownerFaceVerified, faceCount } = opts.ownerLock;
+    const drawRehabFaceBox = (box: OwnerFaceBoxMetrics, hex: string, label: string, dashed = false) => {
+      const x1 = Math.max(4, box.xMin * w);
+      const y1 = Math.max(4, box.yMin * h);
+      const bw = Math.max(24, box.width * w);
+      const bh = Math.max(28, box.height * h);
+      ctx.save();
+      ctx.strokeStyle = hex;
+      ctx.lineWidth = 3;
+      ctx.shadowColor = hex;
+      ctx.shadowBlur = 10;
+      if (dashed) ctx.setLineDash([7, 5]);
+      ctx.beginPath();
+      ctx.roundRect(x1, y1, bw, bh, 14);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.font = '800 12px "Sarabun", sans-serif';
+      const lw = ctx.measureText(label).width + 18;
+      const ly = Math.max(6, y1 - 24);
+      ctx.fillStyle = hex;
+      ctx.beginPath();
+      ctx.roundRect(x1, ly, lw, 22, 8);
+      ctx.fill();
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, x1 + 9, ly + 11);
+      ctx.restore();
+    };
+    if (faceBox) {
+      if (faceCount > 1) {
+        drawRehabFaceBox(faceBox, '#F59E0B', '⚠️ พบมากกว่า 1 คนในเฟรม', true);
+      } else if (ownerFaceVerified) {
+        drawRehabFaceBox(faceBox, '#10B981', `✓ เจ้าของบัญชี: ${ownerName}`, false);
+      } else {
+        drawRehabFaceBox(faceBox, '#EF4444', `⛔ ไม่ใช่เจ้าของบัญชี (${ownerName})`, false);
+      }
+    }
+    for (const extra of extraFaceBoxes) {
+      drawRehabFaceBox(extra, '#EF4444', '⚠️ บุคคลอื่น', true);
+    }
+
+    // Glowing Emerald Dashed Biometric Tether linking Owner Face Box to active wrists
+    if (
+      ownerFaceVerified &&
+      faceBox &&
+      faceCount === 1 &&
+      landmarksList.length > 0 &&
+      isUpperBodyVisibleInFrame(landmarksList[0])
+    ) {
+      const vwT = opts.videoWidth && opts.videoWidth > 0 ? opts.videoWidth : w;
+      const vhT = opts.videoHeight && opts.videoHeight > 0 ? opts.videoHeight : h;
+      const covT = computeObjectCoverLayout(vwT, vhT, w, h);
+      const p0 = landmarksList[0];
+      const fAnchorLX = faceBox.xMin * w + faceBox.width * w * 0.2;
+      const fAnchorRX = faceBox.xMax * w - faceBox.width * w * 0.2;
+      const fAnchorY = faceBox.centerY * h;
+      for (const [wIdx, ax] of [
+        [POSE_INDEX.LEFT_WRIST, fAnchorLX],
+        [POSE_INDEX.RIGHT_WRIST, fAnchorRX],
+      ] as const) {
+        const wLm = p0[wIdx];
+        if (!wLm || (wLm.visibility ?? 0) < 0.35) continue;
+        const wx = covT.offsetX + (1 - wLm.x) * covT.renderW;
+        const wy = covT.offsetY + wLm.y * covT.renderH;
+        ctx.save();
+        ctx.strokeStyle = '#10B981';
+        ctx.lineWidth = 2.2;
+        ctx.shadowColor = '#10B981';
+        ctx.shadowBlur = 8;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(ax, fAnchorY);
+        ctx.lineTo(wx, wy);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
+
   if (
     opts.showSkeleton === false ||
     landmarksList.length === 0 ||
@@ -1219,16 +1334,12 @@ function drawLivePoseOverlayOnCanvas(
     return;
   }
 
-  // Match CSS object-contain wide-angle framing so mirrored landmarks align 1:1 over the uncropped video feed
+  // Match CSS object-cover scale-x-[-1] full-bleed framing so mirrored landmarks align 1:1 with zero black bars
   const vw = opts.videoWidth && opts.videoWidth > 0 ? opts.videoWidth : w;
   const vh = opts.videoHeight && opts.videoHeight > 0 ? opts.videoHeight : h;
-  const fitScale = Math.min(w / vw, h / vh);
-  const renderW = vw * fitScale;
-  const renderH = vh * fitScale;
-  const offsetX = (w - renderW) / 2;
-  const offsetY = (h - renderH) / 2;
-  const rawCanvasX = (normX: number) => offsetX + (1 - normX) * renderW;
-  const rawCanvasY = (normY: number) => offsetY + normY * renderH;
+  const coverLayout = computeObjectCoverLayout(vw, vh, w, h);
+  const rawCanvasX = (normX: number) => coverLayout.offsetX + (1 - normX) * coverLayout.renderW;
+  const rawCanvasY = (normY: number) => coverLayout.offsetY + normY * coverLayout.renderH;
   const toCanvasPt = (_idx: number, lm: NormalizedLandmark) => ({
     x: rawCanvasX(lm.x),
     y: rawCanvasY(lm.y),
@@ -1433,7 +1544,7 @@ function drawLivePoseOverlayOnCanvas(
               z: ((lEarLm.z ?? 0) + (rEarLm.z ?? 0)) / 2,
             }
           : null;
-    let shoulderSpanPx = renderW * 0.18;
+    let shoulderSpanPx = coverLayout.renderW * 0.18;
     let neckPt: { x: number; y: number } | null = null;
     if (
       lShLm &&
@@ -1851,6 +1962,7 @@ function drawLivePoseOverlayOnCanvas(
 
 export function SmartRehabKioskUI({
   patient: patientProp,
+  ownerBiometrics: ownerBiometricsProp,
   prescribedExercises,
   isStaffAuthorized = false,
   onExerciseCompleted,
@@ -1953,6 +2065,12 @@ export function SmartRehabKioskUI({
   } | null>(null);
   const [fatigueRestSec, setFatigueRestSec] = useState<number>(0);
   const [reducedRomOverrideDeg, setReducedRomOverrideDeg] = useState<number | null>(null);
+  const [ownerRehabGuardAlert, setOwnerRehabGuardAlert] = useState<{
+    status: OwnerLockStatus;
+    text: string;
+  } | null>(null);
+  const ownerBiometricsRef = useRef<OwnerBiometricTemplate | null | undefined>(ownerBiometricsProp);
+  ownerBiometricsRef.current = ownerBiometricsProp;
 
   const effectiveTargetRomDeg = useMemo(() => {
     const isLowerLimb = selectedExercise.target_joint.includes('knee');
@@ -2230,6 +2348,17 @@ export function SmartRehabKioskUI({
     let stream: MediaStream | null = null;
     let rafId = 0;
     let poseLandmarker: PoseLandmarker | null = null;
+    let faceLandmarker: FaceLandmarker | null = null;
+    let faceAlignCanvas: HTMLCanvasElement | null = null;
+    let faceRoiCanvas: HTMLCanvasElement | null = null;
+    let lastFaceTs = 0;
+    let ownerFaceCycle = 0;
+    let cachedOwnerVerified = true;
+    let cachedOwnerFaceCount = 0;
+    let cachedOwnerMissingStreak = 0;
+    let cachedOwnerFaceBox: OwnerFaceBoxMetrics | null = null;
+    let cachedOwnerExtraBoxes: OwnerFaceBoxMetrics[] = [];
+    let lastOwnerRehabKey = '';
     let offscreenCanvas: HTMLCanvasElement | null = null;
     let useOffscreenFallback = false;
     let lastValidPoseAt = 0;
@@ -2365,6 +2494,15 @@ export function SmartRehabKioskUI({
         }
         poseLandmarker = null;
       }
+      if (faceLandmarker) {
+        try {
+          faceLandmarker.close();
+        } catch {
+          // ignore close errors
+        }
+        faceLandmarker = null;
+      }
+      setOwnerRehabGuardAlert(null);
     };
 
     async function initPoseCamera() {
@@ -2468,6 +2606,35 @@ export function SmartRehabKioskUI({
           if (poseLandmarker) break;
         }
         if (!poseLandmarker || !active) return;
+
+        // Lightweight FaceLandmarker for Continuous 1:1 Account Owner Face Lock every 5 frames
+        try {
+          for (const delegate of ['GPU', 'CPU', undefined] as const) {
+            try {
+              const fl = await FaceLandmarker.createFromOptions(vision, {
+                baseOptions: delegate
+                  ? { modelAssetPath: '/models/face_landmarker.task', delegate }
+                  : { modelAssetPath: '/models/face_landmarker.task' },
+                runningMode: 'VIDEO',
+                numFaces: 2,
+                outputFaceBlendshapes: true,
+                minFaceDetectionConfidence: 0.45,
+                minFacePresenceConfidence: 0.45,
+                minTrackingConfidence: 0.45,
+              });
+              if (!active) {
+                fl.close();
+                return;
+              }
+              faceLandmarker = fl;
+              break;
+            } catch {
+              // try next delegate
+            }
+          }
+        } catch {
+          faceLandmarker = null;
+        }
 
         const emitPresetState = (nextPreset: DemoPresetId) => {
           if (demoPresetRef.current !== nextPreset) {
@@ -2580,6 +2747,135 @@ export function SmartRehabKioskUI({
 
               const stepARules = formRulesRef.current;
               const stepACheckIdentity = isFormRuleActive(stepARules, 'identity');
+
+              // Continuous 1:1 Account Owner Face Lock (every 5 frames)
+              ownerFaceCycle += 1;
+              const activeOwnerBio = ownerBiometricsRef.current;
+              if (faceLandmarker && stepACheckIdentity && (ownerFaceCycle === 1 || ownerFaceCycle % 5 === 0)) {
+                try {
+                  const fTs = Math.max(lastFaceTs + 1, lastDetectTs + 1, Math.round(now));
+                  lastFaceTs = fTs;
+                  const fRes = faceLandmarker.detectForVideo(v, fTs);
+                  const rawFaces = fRes.faceLandmarks ?? [];
+                  const faceSel = selectPrimaryFace(rawFaces);
+                  const primaryFaceLm = faceSel.primaryFace ?? rawFaces[0] ?? null;
+                  const effFaceCount =
+                    rawFaces.length > 1 ? Math.max(1, faceSel.effectiveFaceCount) : rawFaces.length;
+                  cachedOwnerFaceCount = effFaceCount;
+                  const cw = poseCanvasRef.current?.clientWidth || 640;
+                  const ch = poseCanvasRef.current?.clientHeight || 480;
+
+                  if (!primaryFaceLm || effFaceCount === 0) {
+                    cachedOwnerMissingStreak += 1;
+                    cachedOwnerFaceBox = null;
+                    cachedOwnerExtraBoxes = [];
+                    if (activeOwnerBio && activeOwnerBio.masterEmbedding.length > 0 && cachedOwnerMissingStreak >= 4) {
+                      cachedOwnerVerified = false;
+                      const key = 'NO_OWNER_FACE';
+                      if (lastOwnerRehabKey !== key) {
+                        lastOwnerRehabKey = key;
+                        setOwnerRehabGuardAlert({
+                          status: 'NO_OWNER_FACE',
+                          text: '⚠️ ไม่พบใบหน้าเจ้าของบัญชี กรุณามองกล้องขณะทำกายภาพบำบัด',
+                        });
+                      }
+                    }
+                  } else {
+                    cachedOwnerMissingStreak = 0;
+                    cachedOwnerFaceBox = computeOwnerFaceBoxMetrics(
+                      primaryFaceLm,
+                      v.videoWidth,
+                      v.videoHeight,
+                      cw,
+                      ch,
+                    );
+                    cachedOwnerExtraBoxes = rawFaces
+                      .filter((lm) => lm !== primaryFaceLm)
+                      .map((lm) => computeOwnerFaceBoxMetrics(lm, v.videoWidth, v.videoHeight, cw, ch))
+                      .filter((b): b is OwnerFaceBoxMetrics => b !== null);
+
+                    if (effFaceCount > 1) {
+                      cachedOwnerVerified = false;
+                      const key = 'MULTI_PERSON';
+                      if (lastOwnerRehabKey !== key) {
+                        lastOwnerRehabKey = key;
+                        setOwnerRehabGuardAlert({
+                          status: 'MULTI_PERSON',
+                          text: '⚠️ พบผู้อื่นอยู่ในเฟรม กรุณาให้เจ้าของบัญชีอยู่หน้ากล้องเพียงคนเดียว',
+                        });
+                      }
+                    } else if (!activeOwnerBio || activeOwnerBio.masterEmbedding.length === 0) {
+                      cachedOwnerVerified = true;
+                      if (lastOwnerRehabKey !== '') {
+                        lastOwnerRehabKey = '';
+                        setOwnerRehabGuardAlert(null);
+                      }
+                    } else {
+                      if (!faceAlignCanvas) faceAlignCanvas = document.createElement('canvas');
+                      if (!faceRoiCanvas) faceRoiCanvas = document.createElement('canvas');
+                      const crop = alignFaceTo112(v, primaryFaceLm, faceAlignCanvas, faceRoiCanvas);
+                      if (crop) {
+                        const probeVec = extractHybrid512Descriptor(crop, primaryFaceLm);
+                        const mirroredVec = extractHybrid512Descriptor(
+                          flipImageDataHorizontally(crop),
+                          flipLandmarksHorizontally(primaryFaceLm),
+                        );
+                        const livePose = evaluateLivenessAndPose(primaryFaceLm, null, effFaceCount);
+                        const rollDeg = computeEyeRollAngleDeg(primaryFaceLm, v.videoWidth, v.videoHeight);
+                        const probeRatios = extractGeometricAnthropometricRatios(primaryFaceLm);
+                        const ownerRes = verifyOwnerFace1to1({
+                          probeVector: probeVec,
+                          mirroredProbeVector: mirroredVec,
+                          yawDeg: livePose.yawDeg,
+                          pitchDeg: livePose.pitchDeg,
+                          rollDeg,
+                          probeRatios,
+                          ownerTemplate: activeOwnerBio,
+                        });
+                        cachedOwnerVerified = !ownerRes.hasTemplate || ownerRes.matched;
+                        if (!cachedOwnerVerified) {
+                          const key = `IMPOSTOR:${activeOwnerBio.fullName}`;
+                          if (lastOwnerRehabKey !== key) {
+                            lastOwnerRehabKey = key;
+                            setOwnerRehabGuardAlert({
+                              status: 'IMPOSTOR_FACE',
+                              text: `⛔ คุณไม่ใช่เจ้าของบัญชี (${activeOwnerBio.fullName}) ไม่สามารถทำรายการแทนกันได้`,
+                            });
+                          }
+                        } else if (lastOwnerRehabKey !== '') {
+                          lastOwnerRehabKey = '';
+                          setOwnerRehabGuardAlert(null);
+                        }
+                      }
+                    }
+                  }
+                } catch {
+                  // keep loop resilient across transient face detection frames
+                }
+              }
+
+              // Also check Pose Skeleton head linkage + anatomical lateral envelope against ownerFaceBox
+              let ownerPoseLinked = true;
+              if (stepACheckIdentity && cachedOwnerFaceBox && allLandmarks[0]) {
+                const cwPose = poseCanvasRef.current?.clientWidth || 640;
+                const chPose = poseCanvasRef.current?.clientHeight || 480;
+                const covPose = computeObjectCoverLayout(v.videoWidth, v.videoHeight, cwPose, chPose);
+                ownerPoseLinked = isPoseSkeletonLinkedToOwnerFace(allLandmarks[0], cachedOwnerFaceBox, covPose);
+                if (!ownerPoseLinked && lastOwnerRehabKey === '') {
+                  lastOwnerRehabKey = 'INTRUDER_HAND';
+                  setOwnerRehabGuardAlert({
+                    status: 'INTRUDER_HAND',
+                    text: '⚠️ ตรวจพบท่าทางจากบุคคลอื่น กรุณาให้เจ้าของบัญชีทำกายภาพด้วยตนเองเท่านั้น',
+                  });
+                } else if (ownerPoseLinked && lastOwnerRehabKey === 'INTRUDER_HAND' && cachedOwnerVerified) {
+                  lastOwnerRehabKey = '';
+                  setOwnerRehabGuardAlert(null);
+                }
+              }
+              const ownerGuardBlockingNow = stepACheckIdentity && (!cachedOwnerVerified || !ownerPoseLinked || cachedOwnerFaceCount > 1);
+              if (ownerGuardBlockingNow) {
+                holdAccumMs = 0;
+              }
 
               if (latestPoseCount > 1 && stepACheckIdentity) {
                 singlePersonRecoveryFrames = 0;
@@ -2934,7 +3230,8 @@ export function SmartRehabKioskUI({
 
               const blockCounting =
                 (demoPresetRef.current === 'MULTI_PERSON' && checkIdentity) ||
-                countingLockedRef.current;
+                countingLockedRef.current ||
+                (checkIdentity && lastOwnerRehabKey !== '');
 
               const isCompensatedNow =
                 (checkTrunk && latestTrunkTiltDeg > 12) || effPostureCompensated;
@@ -3034,7 +3331,7 @@ export function SmartRehabKioskUI({
               holdRatio: holdAccumMs > 0 ? Math.min(1, holdAccumMs / holdTargetMs) : 0,
               trunkTiltDeg: latestTrunkTiltDeg,
               isMultiPerson: demoPresetRef.current === 'MULTI_PERSON' && checkIdentity,
-              isImpostorOrEmergency: countingLockedRef.current,
+              isImpostorOrEmergency: countingLockedRef.current || (checkIdentity && !cachedOwnerVerified),
               wrongSideRaised: effWrongSideRaised,
               wrongSideBannerTh: effWrongSideBannerTh,
               wrongPlaneRaised: effWrongPlaneRaised,
@@ -3046,6 +3343,15 @@ export function SmartRehabKioskUI({
               smoothingStatusText: formatSmoothingHud(),
               showSkeleton: showSkeletonOverlayRef.current,
               isPrivacyMode: isPrivacyModeRef.current,
+              ownerLock: checkIdentity && (cachedOwnerFaceBox || cachedOwnerExtraBoxes.length > 0)
+                ? {
+                    ownerName: ownerBiometricsRef.current?.fullName ?? payload.patient?.name ?? 'ผู้ป่วย',
+                    faceBox: cachedOwnerFaceBox,
+                    extraFaceBoxes: cachedOwnerExtraBoxes,
+                    ownerFaceVerified: cachedOwnerVerified,
+                    faceCount: cachedOwnerFaceCount,
+                  }
+                : undefined,
             });
           } else {
             renderPrimaryLandmarks = null;
@@ -3057,9 +3363,20 @@ export function SmartRehabKioskUI({
               holdRatio: 0,
               trunkTiltDeg: 0,
               isMultiPerson: false,
-              isImpostorOrEmergency: false,
+              isImpostorOrEmergency: checkIdentity && !cachedOwnerVerified,
+              videoWidth: v.videoWidth,
+              videoHeight: v.videoHeight,
               showSkeleton: showSkeletonOverlayRef.current,
               isPrivacyMode: isPrivacyModeRef.current,
+              ownerLock: checkIdentity && (cachedOwnerFaceBox || cachedOwnerExtraBoxes.length > 0)
+                ? {
+                    ownerName: ownerBiometricsRef.current?.fullName ?? payload.patient?.name ?? 'ผู้ป่วย',
+                    faceBox: cachedOwnerFaceBox,
+                    extraFaceBoxes: cachedOwnerExtraBoxes,
+                    ownerFaceVerified: cachedOwnerVerified,
+                    faceCount: cachedOwnerFaceCount,
+                  }
+                : undefined,
             });
           }
 
@@ -3536,22 +3853,39 @@ export function SmartRehabKioskUI({
               framingHintTh={liveFramingHintTh}
               liveVideoOverlay={
                 !isEdgeDirectCamera && livePoseActive && !cameraError ? (
-                  <div className={`relative h-full w-full ${isPrivacyMode ? 'bg-[#050811]' : 'bg-[#0B192C]'}`}>
+                  <div
+                    className={`relative h-full w-full overflow-hidden rounded-2xl ${
+                      isPrivacyMode ? 'bg-[#050811]' : 'bg-emerald-950'
+                    }`}
+                  >
                     <video
                       ref={videoRef}
                       autoPlay
                       playsInline
                       muted
-                      className={`h-full w-full object-contain transition-opacity duration-200 ${
+                      className={`absolute inset-0 h-full w-full object-cover scale-x-[-1] transition-opacity duration-200 ${
                         isPrivacyMode ? 'opacity-0' : 'opacity-100'
                       }`}
-                      style={{ transform: 'scaleX(-1)' }}
                     />
                     <canvas
                       ref={poseCanvasRef}
                       aria-label="Live Pose Skeleton & Angle Overlay"
                       className="pointer-events-none absolute inset-0 h-full w-full"
                     />
+                    {ownerRehabGuardAlert && (
+                      <div className="pointer-events-none absolute inset-x-4 bottom-4 z-20 flex justify-center">
+                        <div
+                          className={`rounded-2xl border-2 px-4 py-2 text-xs sm:text-sm font-black shadow-xl backdrop-blur-md ${
+                            ownerRehabGuardAlert.status === 'IMPOSTOR_FACE' ||
+                            ownerRehabGuardAlert.status === 'INTRUDER_HAND'
+                              ? 'border-rose-300 bg-rose-600/95 text-white'
+                              : 'border-amber-200 bg-amber-500/95 text-white'
+                          }`}
+                        >
+                          {ownerRehabGuardAlert.text}
+                        </div>
+                      </div>
+                    )}
                     <div className="pointer-events-none absolute left-4 top-16 z-10 inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-white/90 px-3 py-1 text-[11px] font-bold text-[#0F4C81] shadow-sm backdrop-blur-md">
                       <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
                       <span>
