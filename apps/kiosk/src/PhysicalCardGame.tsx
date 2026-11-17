@@ -3,6 +3,11 @@ import { FilesetResolver, HandLandmarker, type NormalizedLandmark } from '@media
 import { useClinicalI18n } from '@drtechcares/clinical-i18n';
 import {
   AudioChimeSynthesizer,
+  cancelAllKioskVoiceSpeech,
+  getSeniorVoiceToggleLabel,
+  readStoredKioskVoiceMuted,
+  subscribeKioskVoiceMuted,
+  writeStoredKioskVoiceMuted,
 } from '@drtechcares/kiosk-input';
 import { selectClinicalCameraDeviceId } from '@drtechcares/face-client';
 import {
@@ -704,23 +709,19 @@ function MinigameVoiceBar({
         <button
           type="button"
           onClick={onToggleMute}
-          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border-2 px-3.5 py-2 text-xs sm:text-sm font-black transition-colors active:scale-95 cursor-pointer ${
+          aria-pressed={voiceMuted}
+          className={`inline-flex shrink-0 items-center gap-2 rounded-2xl border-2 px-4 py-2 text-xs sm:text-sm font-black shadow-sm transition-all active:scale-95 cursor-pointer ${
             voiceMuted
-              ? 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
-              : 'border-sky-200 bg-sky-50 text-[#0F4C81] hover:bg-sky-100'
+              ? 'border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200'
+              : 'border-emerald-400 bg-emerald-100 text-emerald-950 hover:bg-emerald-200'
           }`}
         >
           {voiceMuted ? (
-            <>
-              <VolumeX className="h-4 w-4" />
-              <span>{activeOption.unmuteLabel}</span>
-            </>
+            <VolumeX className="h-4 w-4 shrink-0 text-amber-700" />
           ) : (
-            <>
-              <Volume2 className="h-4 w-4 text-[#0284C7]" />
-              <span>{activeOption.muteLabel}</span>
-            </>
+            <Volume2 className="h-4 w-4 shrink-0 text-emerald-700" />
           )}
+          <span>{getSeniorVoiceToggleLabel(voiceLang, voiceMuted)}</span>
         </button>
       </div>
     </div>
@@ -750,10 +751,12 @@ export function PhysicalCardGame({
   const [voiceLang, setVoiceLang] = useState<MinigameVoiceLang>(() =>
     readStoredMinigameVoiceLang(lang),
   );
-  const [voiceMuted, setVoiceMuted] = useState(false);
+  const [voiceMuted, setVoiceMuted] = useState<boolean>(() => readStoredKioskVoiceMuted());
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [questionPhase, setQuestionPhase] = useState<QuestionAnswerPhase>('READING_QUESTION');
-  const questionPhaseRef = useRef<QuestionAnswerPhase>('READING_QUESTION');
+  const [questionPhase, setQuestionPhase] = useState<QuestionAnswerPhase>(() =>
+    readStoredKioskVoiceMuted() ? 'READY_TO_ANSWER' : 'READING_QUESTION',
+  );
+  const questionPhaseRef = useRef<QuestionAnswerPhase>(questionPhase);
   questionPhaseRef.current = questionPhase;
   const bothHandsWarnSpeechTsRef = useRef<number>(0);
   const detectedHandsRef = useRef<DetectedCardHandSample[]>([]);
@@ -1219,6 +1222,7 @@ export function PhysicalCardGame({
       if (voiceMutedRef.current) {
         voiceMutedRef.current = false;
         setVoiceMuted(false);
+        writeStoredKioskVoiceMuted(false);
       }
       try {
         window.localStorage.setItem(VOICE_LANG_STORAGE_KEY, nextLang);
@@ -1261,11 +1265,12 @@ export function PhysicalCardGame({
   }, [getActiveVoiceText, resetTrackingRefs, speakMinigameText]);
 
   const handleToggleVoiceMute = useCallback(() => {
-    const nextMuted = !voiceMutedRef.current;
+    const nextMuted = writeStoredKioskVoiceMuted(!voiceMutedRef.current);
     voiceMutedRef.current = nextMuted;
     setVoiceMuted(nextMuted);
     if (nextMuted) {
       stopMinigameSpeech(true);
+      cancelAllKioskVoiceSpeech();
       questionPhaseRef.current = 'READY_TO_ANSWER';
       setQuestionPhase('READY_TO_ANSWER');
       return;
@@ -1275,6 +1280,19 @@ export function PhysicalCardGame({
       speakMinigameText(text, voiceLangRef.current, { forceInterrupt: true });
     }
   }, [getActiveVoiceText, speakMinigameText, stopMinigameSpeech]);
+
+  useEffect(() => {
+    return subscribeKioskVoiceMuted((muted) => {
+      voiceMutedRef.current = muted;
+      setVoiceMuted(muted);
+      if (muted) {
+        stopMinigameSpeech(true);
+        cancelAllKioskVoiceSpeech();
+        questionPhaseRef.current = 'READY_TO_ANSWER';
+        setQuestionPhase('READY_TO_ANSWER');
+      }
+    });
+  }, [stopMinigameSpeech]);
 
   const submitAnswer = useCallback(
     (choice: 'yes' | 'no') => {

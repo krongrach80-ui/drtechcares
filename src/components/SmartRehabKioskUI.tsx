@@ -76,6 +76,8 @@ import {
   Sparkles,
   Timer,
   UserCheck,
+  Volume2,
+  VolumeX,
   Wifi,
   WifiOff,
 } from 'lucide-react';
@@ -83,7 +85,14 @@ import { ExercisePostureGuide, ExercisePostureSvg } from './ExercisePostureGuide
 import { FaceScanOverlay } from './FaceScanOverlay';
 import { RomGauge } from './RomGauge';
 import { SkeletonCanvas } from './SkeletonCanvas';
-import { VoiceCoachBanner } from './VoiceCoachBanner';
+import {
+  VoiceCoachBanner,
+  cancelAllKioskVoiceSpeech,
+  getSeniorVoiceToggleLabel,
+  readStoredKioskVoiceMuted,
+  subscribeKioskVoiceMuted,
+  writeStoredKioskVoiceMuted,
+} from './VoiceCoachBanner';
 import {
   getPrescribedLimbPromptTh,
   getPrescribedPlanePromptTh,
@@ -1851,7 +1860,17 @@ export function SmartRehabKioskUI({
   const sendClientLandmarksRef = useRef(sendClientLandmarks);
   sendClientLandmarksRef.current = sendClientLandmarks;
 
-  const [voiceMuted, setVoiceMuted] = useState(false);
+  const [voiceMuted, setVoiceMuted] = useState<boolean>(() => readStoredKioskVoiceMuted());
+  useEffect(() => subscribeKioskVoiceMuted(setVoiceMuted), []);
+  const handleToggleVoiceMute = () => {
+    setVoiceMuted((prev) => {
+      const next = writeStoredKioskVoiceMuted(!prev);
+      if (next) {
+        cancelAllKioskVoiceSpeech();
+      }
+      return next;
+    });
+  };
   const [drawerOpen, setDrawerOpen] = useState(() => !patientProp);
   const [formRules, setFormRules] = useState<FormAssessmentRulesConfig>(() => {
     try {
@@ -3725,8 +3744,27 @@ export function SmartRehabKioskUI({
             )}
           </AnimatePresence>
 
-          {/* Right: Live Camera Toggle + Privacy Mode Switch + Skeleton Overlay Switch + Demo Mode Switch + Portal Switch + Emergency Stop */}
+          {/* Right: Live Camera Toggle + Voice Mute Toggle + Privacy Mode Switch + Skeleton Overlay Switch + Demo Mode Switch + Portal Switch + Emergency Stop */}
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleToggleVoiceMute}
+              aria-pressed={voiceMuted}
+              data-testid="kiosk-voice-mute-toggle"
+              className={`inline-flex items-center gap-2 rounded-2xl border-2 px-3.5 py-2 text-xs font-extrabold shadow-xs transition-all cursor-pointer active:scale-95 sm:text-sm ${
+                voiceMuted
+                  ? 'border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200'
+                  : 'border-emerald-400 bg-emerald-100 text-emerald-950 hover:bg-emerald-200'
+              }`}
+            >
+              {voiceMuted ? (
+                <VolumeX className="h-4 w-4 shrink-0 text-amber-700" />
+              ) : (
+                <Volume2 className="h-4 w-4 shrink-0 text-emerald-700" />
+              )}
+              <span>{getSeniorVoiceToggleLabel('th', voiceMuted)}</span>
+            </button>
+
             <button
               type="button"
               onClick={() => {
@@ -4473,7 +4511,7 @@ export function SmartRehabKioskUI({
             kioskState={kiosk_state}
             highlightColor={ui_directives.highlight_color}
             muted={voiceMuted}
-            onToggleMute={() => setVoiceMuted((m) => !m)}
+            onToggleMute={handleToggleVoiceMute}
           />
 
           {/* Interactive Demo Simulator Floating Control Drawer */}

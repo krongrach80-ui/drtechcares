@@ -32,6 +32,11 @@ import {
 import {
   buildTtsProxyUrl,
   pickSpeechVoice,
+  readStoredKioskVoiceMuted,
+  subscribeKioskVoiceMuted,
+  writeStoredKioskVoiceMuted,
+  cancelAllKioskVoiceSpeech,
+  getSeniorVoiceToggleLabel,
   type VoiceCoachLanguage,
 } from './VoiceCoachBanner';
 import {
@@ -583,7 +588,7 @@ export default function FaceID120Scanner({
   const [modelProgressMsg, setModelProgressMsg] = useState(ui.preparingModel);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [voiceEnabled, setVoiceEnabled] = useState<boolean>(() => !readStoredKioskVoiceMuted());
   const [phase, setPhase] = useState<'scanning' | 'computing' | 'completed'>('scanning');
 
   const [capturedCount, setCapturedCount] = useState(0);
@@ -717,6 +722,20 @@ export default function FaceID120Scanner({
   onReadyStateChangeRef.current = onReadyStateChange;
   const voiceEnabledRef = useRef(voiceEnabled);
   voiceEnabledRef.current = voiceEnabled;
+
+  useEffect(() => {
+    return subscribeKioskVoiceMuted((muted) => {
+      const enabled = !muted;
+      voiceEnabledRef.current = enabled;
+      setVoiceEnabled(enabled);
+      if (muted) {
+        speakSeqRef.current += 1;
+        isSpeakingRef.current = false;
+        queuedSpeechRef.current = null;
+        cancelAllKioskVoiceSpeech(audioRef.current);
+      }
+    });
+  }, []);
 
   const stopVoicePlayback = useCallback((clearQueue = true) => {
     speakSeqRef.current += 1;
@@ -1654,6 +1673,7 @@ export default function FaceID120Scanner({
               if (!voiceEnabled) {
                 setVoiceEnabled(true);
                 voiceEnabledRef.current = true;
+                writeStoredKioskVoiceMuted(false);
               }
               speakGuidance(phrase, { force: true, interrupt: true, speakLang: lang });
             }}
@@ -1668,8 +1688,10 @@ export default function FaceID120Scanner({
               setVoiceEnabled((prev) => {
                 const next = !prev;
                 voiceEnabledRef.current = next;
+                writeStoredKioskVoiceMuted(!next);
                 if (!next) {
                   stopVoicePlayback(true);
+                  cancelAllKioskVoiceSpeech(audioRef.current);
                 } else {
                   const phrase =
                     phase === 'completed'
@@ -1680,10 +1702,15 @@ export default function FaceID120Scanner({
                 return next;
               });
             }}
-            className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-white px-2.5 py-1 text-[11px] font-bold text-[#0F4C81] shadow-xs hover:bg-sky-50 cursor-pointer"
+            aria-pressed={!voiceEnabled}
+            className={`inline-flex items-center gap-1.5 rounded-xl border-2 px-3 py-1.5 text-xs font-extrabold shadow-xs transition-all cursor-pointer ${
+              voiceEnabled
+                ? 'border-emerald-400 bg-emerald-100 text-emerald-950 hover:bg-emerald-200'
+                : 'border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200'
+            }`}
           >
-            {voiceEnabled ? <Volume2 className="h-3.5 w-3.5 text-emerald-600" /> : <VolumeX className="h-3.5 w-3.5 text-slate-400" />}
-            {voiceEnabled ? ui.voiceOnBtn : ui.voiceOffBtn}
+            {voiceEnabled ? <Volume2 className="h-3.5 w-3.5 text-emerald-700" /> : <VolumeX className="h-3.5 w-3.5 text-amber-700" />}
+            <span>{getSeniorVoiceToggleLabel(lang, !voiceEnabled)}</span>
           </button>
           <button
             type="button"

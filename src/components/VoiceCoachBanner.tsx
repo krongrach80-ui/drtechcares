@@ -1,7 +1,26 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Languages, RotateCcw, Volume2, VolumeX } from 'lucide-react';
+import {
+  KIOSK_VOICE_MUTED_EVENT,
+  KIOSK_VOICE_MUTED_STORAGE_KEY,
+  cancelAllKioskVoiceSpeech,
+  getSeniorVoiceToggleLabel,
+  readStoredKioskVoiceMuted,
+  subscribeKioskVoiceMuted,
+  writeStoredKioskVoiceMuted,
+} from '@drtechcares/kiosk-input';
 import type { HighlightColor, KioskState } from '../hooks/useKioskSocket';
+
+export {
+  KIOSK_VOICE_MUTED_EVENT,
+  KIOSK_VOICE_MUTED_STORAGE_KEY,
+  cancelAllKioskVoiceSpeech,
+  getSeniorVoiceToggleLabel,
+  readStoredKioskVoiceMuted,
+  subscribeKioskVoiceMuted,
+  writeStoredKioskVoiceMuted,
+};
 
 export type VoiceCoachLanguage = 'th' | 'en' | 'zh';
 
@@ -1211,21 +1230,26 @@ export function VoiceCoachBanner({
 
         <button
           type="button"
-          onClick={onToggleMute}
-          className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3.5 py-2 text-sm font-bold transition-colors sm:px-4 ${
+          onClick={() => {
+            if (!muted) {
+              stopAllSpeech(true);
+              cancelAllKioskVoiceSpeech(audioRef.current);
+            }
+            onToggleMute();
+          }}
+          aria-pressed={muted}
+          className={`inline-flex shrink-0 items-center gap-2 rounded-2xl border-2 px-4 py-2.5 text-sm font-extrabold shadow-sm transition-all cursor-pointer active:scale-95 sm:px-5 ${
             muted
-              ? 'border-slate-200 bg-slate-100 text-slate-600 hover:bg-slate-200'
-              : 'border-sky-200 bg-sky-50 text-[#0F4C81] hover:bg-sky-100'
+              ? 'border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200'
+              : 'border-emerald-400 bg-emerald-100 text-emerald-950 hover:bg-emerald-200'
           }`}
         >
           {muted ? (
-            <VolumeX className="h-5 w-5" />
+            <VolumeX className="h-5 w-5 shrink-0 text-amber-700" />
           ) : (
-            <Volume2 className="h-5 w-5 text-[#0284C7]" />
+            <Volume2 className="h-5 w-5 shrink-0 text-emerald-700" />
           )}
-          <span className="hidden md:inline">
-            {muted ? langOption.unmuteLabel : langOption.muteLabel}
-          </span>
+          <span>{getSeniorVoiceToggleLabel(voiceLang, muted)}</span>
         </button>
       </div>
     </motion.div>

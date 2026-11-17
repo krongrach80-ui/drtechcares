@@ -38,11 +38,15 @@ import {
   stepSmoothRomAngle,
 } from '../components/SmartRehabKioskUI';
 import {
+  KIOSK_VOICE_MUTED_STORAGE_KEY,
   VOICE_COACH_LANGUAGES,
   buildTtsProxyUrl,
   decideVoiceCoachSpeechTurn,
+  getSeniorVoiceToggleLabel,
   pickSpeechVoice,
+  readStoredKioskVoiceMuted,
   translateVoiceCoachText,
+  writeStoredKioskVoiceMuted,
 } from '../components/VoiceCoachBanner';
 import {
   HAND_GLITCH_GRACE_MS,
@@ -614,10 +618,14 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(computeWelcomeSpeechFallbackMs('short')).toBe(3500);
     expect(computeWelcomeSpeechFallbackMs('x'.repeat(120))).toBe(9000);
 
-    // Gate stays locked while speechDone=false OR browserSpeaking=true
+    // Gate stays locked while speechDone=false OR browserSpeaking=true, EXCEPT immediately unlocked when voiceMuted=true
     expect(isVerifiedModalSpeechBlocked({ speechDone: false, browserSpeaking: false })).toBe(true);
     expect(isVerifiedModalSpeechBlocked({ speechDone: true, browserSpeaking: true })).toBe(true);
     expect(isVerifiedModalSpeechBlocked({ speechDone: true, browserSpeaking: false })).toBe(false);
+    expect(isVerifiedModalSpeechBlocked({ speechDone: false, browserSpeaking: true, voiceMuted: true })).toBe(false);
+    expect(KIOSK_VOICE_MUTED_STORAGE_KEY).toBe('drtech_kiosk_voice_muted');
+    expect(getSeniorVoiceToggleLabel('th', false)).toContain('เปิดเสียงพากย์ AI อยู่');
+    expect(getSeniorVoiceToggleLabel('th', true)).toContain('ปิดเสียงพากย์ AI แล้ว');
 
     // Localized speech lock strings across Thai, English, Chinese
     const sample = {
@@ -2446,7 +2454,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(strokes).toContain('#EF4444');
   });
 
-  it('guarantees +1 rep on full 3.0s hold with hysteresis tremor tolerance, wrong-side halt, and 1.2s / 65% cooldown unlock', () => {
+  it('guarantees forgiving clinical hold entry (68%), keep (55%), 1.25x boost (85%), slow progressive decay, advisory compensation, wrong-side halt, and 0.7s / 72% cooldown unlock', () => {
     let state: StrokeHoldRepState = {
       phase: 'WAIT_RAISE',
       holdElapsedSec: 0,
@@ -2459,8 +2467,13 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       romDeg: number,
       dtSec: number,
       nowMs: number,
-      sideViolation: 'NONE' | 'LEFT_ARM_RAISED_IN_RIGHT_MODE' = 'NONE',
+      opts?: {
+        sideViolation?: 'NONE' | 'LEFT_ARM_RAISED_IN_RIGHT_MODE';
+        isCompensatedNow?: boolean;
+        postureBannerTh?: string | null;
+      },
     ) => {
+      const sideViolation = opts?.sideViolation ?? 'NONE';
       const res = stepStrokeHoldAndRepStateMachine({
         state,
         activeRomDeg: romDeg,
@@ -2473,30 +2486,37 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
         wrongSideBannerTh: sideViolation === 'NONE' ? null : '⚠️ wrong side',
         wrongPlaneRaised: false,
         wrongPlaneBannerTh: null,
-        isCompensatedNow: false,
-        postureBannerTh: null,
+        isCompensatedNow: opts?.isCompensatedNow ?? false,
+        postureBannerTh: opts?.postureBannerTh ?? null,
       });
       state = res.nextState;
       return res;
     };
 
-    // 1. Raise into enter zone (106 deg >= 0.85 * 120 = 102) and hold 2.5s across 25 x 100ms frames
+    // 1. Easy Hold Entry at >= 0.68 * 120 = 81.6 deg (84 deg) -> enters HOLDING immediately at 1.0x speed
     let nowCursor = 0;
-    let lastRes = stepTick(106, 0.1, (nowCursor += 100));
+    let lastRes = stepTick(84, 0.1, (nowCursor += 100));
     expect(state.phase).toBe('HOLDING');
-    for (let i = 0; i < 24; i += 1) {
-      lastRes = stepTick(106, 0.1, (nowCursor += 100));
+    expect(state.holdElapsedSec).toBeCloseTo(0.1, 2);
+
+    // 2. Keep Holding at >= 0.55 * 120 = 66 deg (70 deg) for 10 frames -> +1.0s (total 1.1s), advisory compensation does NOT block!
+    for (let i = 0; i < 10; i += 1) {
+      lastRes = stepTick(70, 0.1, (nowCursor += 100), {
+        isCompensatedNow: true,
+        postureBannerTh: '⚠️ อย่ายักไหล่ช่วยครับ ผ่อนคลายหัวไหล่ลง',
+      });
     }
-    expect(lastRes.holdRemainingSec).toBeCloseTo(0.5, 1);
+    expect(state.holdElapsedSec).toBeCloseTo(1.1, 2);
+    expect(lastRes.bannerTh).toContain('อย่ายักไหล่ช่วย');
 
-    // 2. Micro-dip into grace band (80 deg is between 0.60 * 120 = 72 and 0.75 * 120 = 90) -> must NOT wipe to 0!
-    lastRes = stepTick(80, 0.25, (nowCursor += 250));
-    expect(state.holdElapsedSec).toBeGreaterThan(2.3);
+    // 3. Progressive Hold Accumulation: dip below 0.55 (50 deg) for 0.2s -> ultra-slow dt*0.15 decay (never resets to 0!)
+    lastRes = stepTick(50, 0.2, (nowCursor += 200));
+    expect(state.holdElapsedSec).toBeCloseTo(1.1 - 0.2 * 0.15, 2);
     expect(state.phase).toBe('HOLDING');
 
-    // 3. Resume >= 90 deg for 0.7s across 7 x 100ms frames -> guaranteed +1 rep (0 -> 1)
-    for (let i = 0; i < 7; i += 1) {
-      lastRes = stepTick(108, 0.1, (nowCursor += 100));
+    // 4. Accelerated 1.25x hold above >= 0.85 * 120 = 102 deg (106 deg) -> completes remaining ~1.93s cleanly within 1.6s!
+    for (let i = 0; i < 16; i += 1) {
+      lastRes = stepTick(106, 0.1, (nowCursor += 100));
       if (lastRes.justCompletedRep) break;
     }
     expect(lastRes.justCompletedRep).toBe(true);
@@ -2505,22 +2525,24 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(lastRes.holdProgressPct).toBe(100);
     expect(lastRes.bannerTh).toBe('✓ นับสำเร็จ +1 ครั้ง! ค่อยๆ ลดแขนลง');
 
-    // 4. Lower below 0.65 * 120 = 78 deg after cooldown debounce (>=350ms) -> unlocks cleanly to WAIT_RAISE
-    lastRes = stepTick(55, 0.1, (nowCursor += 400));
+    // 5. Lower below 0.72 * 120 = 86.4 deg (80 deg) after >= 150ms -> unlocks cleanly to WAIT_RAISE
+    lastRes = stepTick(80, 0.1, (nowCursor += 200));
     expect(state.phase).toBe('WAIT_RAISE');
     expect(state.holdElapsedSec).toBe(0);
 
-    // 5. Wrong-side raise mid-hold resets timer and never increments reps
-    for (let i = 0; i < 15; i += 1) {
+    // 6. Wrong-side raise mid-hold resets timer and never increments reps
+    for (let i = 0; i < 12; i += 1) {
       stepTick(108, 0.1, (nowCursor += 100));
     }
     expect(state.holdElapsedSec).toBeCloseTo(1.5, 1);
-    const blockedRes = stepTick(108, 0.1, (nowCursor += 100), 'LEFT_ARM_RAISED_IN_RIGHT_MODE');
+    const blockedRes = stepTick(108, 0.1, (nowCursor += 100), {
+      sideViolation: 'LEFT_ARM_RAISED_IN_RIGHT_MODE',
+    });
     expect(blockedRes.statusKind).toBe('WRONG_LIMB');
     expect(state.holdElapsedSec).toBe(0);
     expect(state.completedReps).toBe(1);
 
-    // 6. Auto-unlock COOLDOWN even if arm stays slightly above 65% after >= 1.2s
+    // 7. Fast auto-unlock COOLDOWN after 0.7s (700ms) even if arm stays slightly raised
     state = {
       phase: 'COOLDOWN',
       holdElapsedSec: 3.0,
@@ -2528,7 +2550,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       cooldownStartedAtMs: 8000,
       repCelebrateUntilMs: 9200,
     };
-    const autoUnlocked = stepTick(85, 0.1, 9250);
+    const autoUnlocked = stepTick(95, 0.1, 8750);
     expect(state.phase).toBe('WAIT_RAISE');
     expect(autoUnlocked.holdProgressPct).toBe(0);
     expect(autoUnlocked.holdRemainingSec).toBe(3.0);
@@ -2637,6 +2659,101 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     const bothAcceptTwo = measureLiveJointAngleAndTilt(bothForwardPts, mapped[2].target_joint, 'flexion', undefined, mapped[2]);
     expect(bothAcceptTwo.wrongSideRaised).toBe(false);
     expect(bothAcceptTwo.romDeg).toBeGreaterThan(75);
+  });
+
+  it('maps adaptive clinical effort-to-ROM across raises, proximity reaches, distal fallbacks, neck/shrug 1.6x gain, and 60 deg resting tolerance', () => {
+    // 1. Raises with prescribed targetRomDeg=125: chest-to-shoulder height reaches >= 90% goal without overhead lift
+    const chestHighPose = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.60, y: 0.25, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_HIP]: { x: 0.57, y: 0.65, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.40, y: 0.25, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_HIP]: { x: 0.43, y: 0.65, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.40, y: 0.36, z: -0.18, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.40, y: 0.30, z: -0.32, visibility: 0.99 },
+    });
+    const raiseRes = solveStrokeClinicalJointBiomechanics({
+      landmarks: chestHighPose,
+      targetJoint: 'right_shoulder',
+      exerciseSide: 'RIGHT',
+      expectedPlane: 'flexion',
+      targetRomDeg: 125,
+      jointMode: 'default',
+    });
+    expect(raiseRes.wrongSideRaised).toBe(false);
+    expect(raiseRes.romDeg).not.toBeNull();
+    expect(raiseRes.romDeg!).toBeGreaterThanOrEqual(112.5); // >= 90% of 125 deg target
+
+    // Resting opposite arm tilted out ~42 deg stays tolerated (<= 60 deg threshold)
+    const mildRestSway = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.60, y: 0.25, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_HIP]: { x: 0.57, y: 0.65, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_ELBOW]: { x: 0.60, y: 0.38, z: -0.10, visibility: 0.99 },
+      [POSE_INDEX.LEFT_WRIST]: { x: 0.60, y: 0.32, z: -0.22, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.40, y: 0.25, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_HIP]: { x: 0.43, y: 0.65, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.34, y: 0.43, z: -0.04, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.29, y: 0.53, z: -0.04, visibility: 0.99 },
+    });
+    const mildToleranceRes = solveStrokeClinicalJointBiomechanics({
+      landmarks: mildRestSway,
+      targetJoint: 'left_shoulder',
+      exerciseSide: 'LEFT',
+      expectedPlane: 'flexion',
+      targetRomDeg: 125,
+      jointMode: 'default',
+    });
+    expect(mildToleranceRes.wrongSideRaised).toBe(false);
+
+    // 2. Proximity reach (cross_body): entering 1.15 * shoulderWidth (0.20) hits ~100% of targetRomDeg (110)
+    const crossBodyNearPose = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.60, y: 0.25, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.40, y: 0.25, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_ELBOW]: { x: 0.55, y: 0.42, z: -0.1, visibility: 0.99 },
+      [POSE_INDEX.LEFT_WRIST]: { x: 0.46, y: 0.39, z: -0.18, visibility: 0.99 }, // dist to oppSh ~ 0.152 <= 1.15 * 0.20
+    });
+    const crossRes = solveStrokeClinicalJointBiomechanics({
+      landmarks: crossBodyNearPose,
+      targetJoint: 'left_shoulder',
+      exerciseSide: 'LEFT',
+      targetRomDeg: 110,
+      jointMode: 'cross_body',
+    });
+    expect(crossRes.romDeg).not.toBeNull();
+    expect(crossRes.romDeg!).toBeGreaterThanOrEqual(105);
+
+    // 3. Distal fallback without HandLandmarker (handLandmarksBySide omitted): registers visible wrist ROM cleanly
+    const distalPose = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.39, y: 0.45, z: -0.05, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.39, y: 0.32, z: -0.15, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_INDEX]: { x: 0.39, y: 0.26, z: -0.18, visibility: 0.95 },
+      [POSE_INDEX.RIGHT_THUMB]: { x: 0.40, y: 0.27, z: -0.18, visibility: 0.95 },
+    });
+    const distalRes = solveStrokeClinicalJointBiomechanics({
+      landmarks: distalPose,
+      targetJoint: 'right_shoulder',
+      exerciseSide: 'RIGHT',
+      targetRomDeg: 70,
+      jointMode: 'wrist_finger',
+    });
+    expect(distalRes.lowVisibilityAlertTh).toBeNull();
+    expect(distalRes.romDeg).not.toBeNull();
+    expect(distalRes.romDeg!).toBeGreaterThanOrEqual(48);
+
+    // 4. Neck lateral tilt 1.6x sensitivity gain (~14 deg physical tilt maps >= 22 deg)
+    const neckTiltedPose = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.60, y: 0.25, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.40, y: 0.25, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_EYE]: { x: 0.54, y: 0.145, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_EYE]: { x: 0.46, y: 0.125, z: 0, visibility: 0.99 },
+    });
+    const neckRes = solveStrokeClinicalJointBiomechanics({
+      landmarks: neckTiltedPose,
+      targetJoint: 'spine',
+      targetRomDeg: 35,
+      jointMode: 'neck',
+    });
+    expect(neckRes.romDeg).not.toBeNull();
+    expect(neckRes.romDeg!).toBeGreaterThanOrEqual(21);
   });
 });
 

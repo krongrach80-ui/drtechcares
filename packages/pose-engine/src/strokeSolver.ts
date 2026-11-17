@@ -302,6 +302,115 @@ export class AutoBoneBaselineCalibrator {
   }
 }
 
+/** Checks whether 21-point hand landmarks are dense and spread enough to compute distal ROM. */
+function hasUsableHand21(hand: readonly PoseLandmark[] | undefined): hand is readonly PoseLandmark[] {
+  if (!hand || hand.length < 21) return false;
+  const wrist = hand[HAND21_INDEX.WRIST];
+  const indexTip = hand[HAND21_INDEX.INDEX_TIP];
+  const pinkyMcp = hand[HAND21_INDEX.PINKY_MCP];
+  if (!wrist || !indexTip || !pinkyMcp) return false;
+  const minVis = Math.min(wrist.visibility ?? 1, indexTip.visibility ?? 1, pinkyMcp.visibility ?? 1);
+  if (minVis < 0.25) return false;
+  const palmSpan = Math.max(dist2D(wrist, pinkyMcp), dist2D(wrist, indexTip));
+  return palmSpan >= 0.02;
+}
+
+/**
+ * Computes clinical elevation ROM assisted by normalized wrist/elbow height within torso bounds
+ * so stroke patients reach 90%-105% of targetRomGoal between mid-chest and shoulder level.
+ */
+function computeAssistedElevationRom(params: {
+  rawAngleDeg: number | null;
+  shoulder: PoseLandmark | undefined;
+  elbow: PoseLandmark | undefined;
+  wrist: PoseLandmark | undefined;
+  hipY: number;
+  torsoSpan: number;
+  shoulderSpanX: number;
+  targetGoalDeg: number;
+  enabled: boolean;
+}): number | null {
+  const { rawAngleDeg, shoulder, elbow, wrist, hipY, torsoSpan, shoulderSpanX, targetGoalDeg, enabled } = params;
+  if (!enabled || !shoulder || !wrist || (wrist.visibility ?? 0) < 0.2) {
+    return rawAngleDeg;
+  }
+  const safeTorso = Math.max(torsoSpan, shoulderSpanX * 1.15, 0.14);
+  const wristLiftRatio = clamp((hipY - wrist.y) / safeTorso, 0, 1.45);
+  const elbowVis = elbow && (elbow.visibility ?? 0) >= 0.2;
+  const elbowLiftRatio = elbowVis ? clamp(((hipY - elbow.y) / safeTorso) * 1.12, 0, 1.45) : 0;
+  const effectiveLift = Math.max(wristLiftRatio, wristLiftRatio * 0.58 + elbowLiftRatio * 0.42);
+  const forwardZGain = shoulder.z != null && wrist.z != null
+    ? clamp((shoulder.z - wrist.z) / Math.max(0.12, shoulderSpanX), 0, 1.2)
+    : 0;
+
+  const base = rawAngleDeg ?? 0;
+  // Preserve low resting goniometer readings (< 22 deg / below chest zone) without artificial floor
+  if (effectiveLift < 0.42 || (base < 22 && effectiveLift < 0.48)) {
+    return rawAngleDeg;
+  }
+
+  // Map chest-to-shoulder height cleanly to ~80%-105% of targetGoalDeg
+  const chestToShoulderT = clamp((effectiveLift - 0.50) / (0.88 - 0.50), 0, 1);
+  const progressRatio = 0.76 + chestToShoulderT * 0.27;
+  const zBoostRatio = effectiveLift >= 0.48 && chestToShoulderT < 0.9 ? forwardZGain * 0.08 : 0;
+  const assistedDeg = clamp(
+    (progressRatio + zBoostRatio) * targetGoalDeg,
+    0,
+    targetGoalDeg * 1.05,
+  );
+  return Number(clamp(Math.max(base, assistedDeg), 0, 180).toFixed(1));
+}
+
+/**
+ * Fallback ROM calculation using MediaPipe 33-pt Pose wrist/elbow/hand-anchor landmarks
+ * when the 21-point HandLandmarker is inactive, too distant, or occluded.
+ */
+function computePoseDistalFallbackRom(params: {
+  landmarks: readonly PoseLandmark[];
+  side: 'left' | 'right';
+  mode: 'forearm_turn' | 'wrist_finger' | 'thumb_pinch';
+  shoulderSpanX: number;
+  forearmLen: number;
+  targetGoalDeg: number;
+}): number | null {
+  const { landmarks, side, mode, shoulderSpanX, forearmLen, targetGoalDeg } = params;
+  const sh = landmarks[side === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
+  const el = landmarks[side === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
+  const wr = landmarks[side === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
+  const pinky = landmarks[side === 'left' ? POSE_INDEX.LEFT_PINKY : POSE_INDEX.RIGHT_PINKY];
+  const index = landmarks[side === 'left' ? POSE_INDEX.LEFT_INDEX : POSE_INDEX.RIGHT_INDEX];
+  const thumb = landmarks[side === 'left' ? POSE_INDEX.LEFT_THUMB : POSE_INDEX.RIGHT_THUMB];
+
+  if (!el || !wr || (wr.visibility ?? 0) < 0.2) return null;
+  const safeFore = Math.max(0.08, forearmLen, shoulderSpanX * 0.65);
+
+  if (mode === 'thumb_pinch') {
+    if (thumb && index && (thumb.visibility ?? 0) >= 0.15 && (index.visibility ?? 0) >= 0.15) {
+      const pinchSpan = dist2D(thumb, index) / Math.max(0.04, shoulderSpanX * 0.32);
+      const liftBonus = el.y > wr.y ? clamp((el.y - wr.y) / safeFore, 0, 0.5) * 20 : 0;
+      const pinchClosePct = clamp(1.35 - pinchSpan, 0, 1.05);
+      return Number(clamp(pinchClosePct * targetGoalDeg * 1.05 + liftBonus, 0, Math.max(targetGoalDeg * 1.15, 75)).toFixed(1));
+    }
+  }
+
+  if (mode === 'forearm_turn' && index && pinky) {
+    const palmTilt = Math.abs(index.x - pinky.x) / Math.max(0.025, shoulderSpanX * 0.22);
+    const wristLift = clamp((el.y - wr.y) / safeFore, -0.2, 1.1);
+    const turnScore = clamp(palmTilt * 0.65 + Math.max(0, wristLift) * 0.55, 0, 1.1);
+    return Number(clamp(turnScore * targetGoalDeg * 1.02, 0, Math.max(targetGoalDeg * 1.1, 85)).toFixed(1));
+  }
+
+  // Generic visible forearm/wrist readiness & distal motion ROM fallback
+  const handAnchor = index ?? thumb ?? pinky;
+  const wristUp = clamp((el.y + safeFore * 0.25 - wr.y) / (safeFore * 0.95), 0, 1.05);
+  const shElevate = sh ? clamp((sh.y + safeFore * 0.9 - wr.y) / (safeFore * 1.15), 0, 1.05) : 0;
+  const wristFlex = handAnchor
+    ? clamp(Math.abs(handAnchor.y - wr.y) / Math.max(0.03, shoulderSpanX * 0.16), 0, 1.1)
+    : 0;
+  const combined = Math.max(wristUp * 0.72 + wristFlex * 0.38, shElevate * 0.95);
+  return Number(clamp(combined * targetGoalDeg * 1.02, 0, Math.max(targetGoalDeg * 1.1, 90)).toFixed(1));
+}
+
 /**
  * Computes clinical 3D joint angles and Stroke compensation detections across all
  * 26 standardized Stroke ADL & MOPH Elderly upper-body exercises.
@@ -363,6 +472,35 @@ export function solveStrokeClinicalJointBiomechanics(
             (lSh.y + rSh.y) / 2,
         )
       : 0;
+  const midShY = lSh && rSh ? (lSh.y + rSh.y) / 2 : (lSh?.y ?? rSh?.y ?? 0.35);
+  const midHipY = hipsVisible
+    ? (landmarks[POSE_INDEX.LEFT_HIP].y + landmarks[POSE_INDEX.RIGHT_HIP].y) / 2
+    : midShY + Math.max(torsoSpanY, shoulderSpanX * 1.48);
+  const effTorsoSpan = hipsVisible ? Math.max(torsoSpanY, shoulderSpanX * 1.15) : shoulderSpanX * 1.48;
+
+  const hasExplicitTargetRom = typeof input.targetRomDeg === 'number' && Number.isFinite(input.targetRomDeg) && input.targetRomDeg > 0;
+  const assistElevationEnabled =
+    hasExplicitTargetRom ||
+    jointMode === 'scap_protract' ||
+    jointMode === 'bobath_push' ||
+    jointMode === 'bilateral_raise';
+
+  const enhanceSideElevationRom = (side: 'left' | 'right', rawAngleDeg: number | null): number | null => {
+    const shPt = landmarks[side === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
+    const elPt = landmarks[side === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
+    const wrPt = landmarks[side === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
+    return computeAssistedElevationRom({
+      rawAngleDeg,
+      shoulder: shPt,
+      elbow: elPt,
+      wrist: wrPt,
+      hipY: midHipY,
+      torsoSpan: effTorsoSpan,
+      shoulderSpanX,
+      targetGoalDeg: targetRomGoal,
+      enabled: assistElevationEnabled,
+    });
+  };
 
   const computeForwardFlexionWithForeshortening = (
     side: 'left' | 'right',
@@ -596,12 +734,15 @@ export function solveStrokeClinicalJointBiomechanics(
     const interiorDeg = validW && wSh && wEl && wWr ? computeJointAngle3D(wSh, wEl, wWr) : computeJointAngle3D(sh, el, wr);
     const baseFlex = clamp(180 - interiorDeg, 0, 155);
 
-    // Distance fallback when wrist curls straight toward shoulder in camera view
-    const wrToShRatio = dist2D(wr, sh) / Math.max(0.10, armLen);
-    const isUpwardCurl = wr.y <= el.y + shoulderSpanX * 0.20;
-    const proxFlex = isUpwardCurl
-      ? clamp((0.88 - wrToShRatio) / (0.88 - 0.25), 0, 1) * 140
+    // Proximity fallback: bringing wrist within 1.15 * shoulderWidth of shoulder/chin achieves 100% targetGoal
+    const wrToOwnShRatio = dist2D(wr, sh) / Math.max(0.10, shoulderSpanX);
+    const isUpwardCurl = wr.y <= el.y + shoulderSpanX * 0.32;
+    const proxScore = isUpwardCurl
+      ? wrToOwnShRatio <= 1.15
+        ? 1.0 + clamp((1.15 - wrToOwnShRatio) / 0.9, 0, 0.08)
+        : clamp((1.65 - wrToOwnShRatio) / (1.65 - 1.15), 0, 1)
       : 0;
+    const proxFlex = proxScore * Math.max(targetRomGoal, 95);
 
     const dx = wr.x - el.x;
     const dy = wr.y - el.y;
@@ -659,8 +800,14 @@ export function solveStrokeClinicalJointBiomechanics(
     const wPt = landmarks[side === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
     if (!sPt || !oPt || !wPt || (wPt.visibility ?? 0) < UPPER_MIN_VIS) return null;
     const distToOpp = dist2D(wPt, oPt) / Math.max(0.10, shoulderSpanX);
-    const reachScore = clamp((1.35 - distToOpp) / (1.35 - 0.18), 0, 1);
-    return Number((reachScore * 115).toFixed(1));
+    // Keep hanging/lap-rest arms below trigger threshold until wrist elevates out of resting hang
+    const armLiftedOutOfRest = wPt.y <= sPt.y + effTorsoSpan * 0.72;
+    const rawReach =
+      distToOpp <= 1.15
+        ? 1.0 + clamp((1.15 - distToOpp) / 0.85, 0, 0.08)
+        : clamp((1.65 - distToOpp) / (1.65 - 1.15), 0, 1);
+    const reachScore = armLiftedOutOfRest ? rawReach : rawReach * 0.25;
+    return Number(clamp(reachScore * Math.max(targetRomGoal, 90), 0, Math.max(120, targetRomGoal * 1.1)).toFixed(1));
   };
 
   const computeHandToHeadSide = (side: 'left' | 'right'): number | null => {
@@ -669,28 +816,36 @@ export function solveStrokeClinicalJointBiomechanics(
     if (!sPt || !wPt || (wPt.visibility ?? 0) < UPPER_MIN_VIS) return null;
     const crownNorm = {
       x: nose ? nose.x : lSh && rSh ? (lSh.x + rSh.x) / 2 : sPt.x,
-      y: nose ? Math.max(0.05, nose.y - shoulderSpanX * 0.28) : Math.max(0.05, sPt.y - shoulderSpanX * 0.85),
+      y: nose ? Math.max(0.05, nose.y - shoulderSpanX * 0.22) : Math.max(0.05, sPt.y - shoulderSpanX * 0.80),
     };
-    const distHeadRatio = dist2D(wPt, crownNorm) / Math.max(0.10, baseline.upperArmLen);
-    const proxFactor = clamp((1.65 - distHeadRatio) / 1.15, 0, 1);
+    const noseAnchor = nose ?? crownNorm;
+    const headDistRatio = Math.min(dist2D(wPt, crownNorm), dist2D(wPt, noseAnchor)) / Math.max(0.10, shoulderSpanX);
+    const armLifted = wPt.y <= sPt.y + effTorsoSpan * 0.65;
+    const proxScore = armLifted
+      ? headDistRatio <= 1.15
+        ? 1.0 + clamp((1.15 - headDistRatio) / 0.85, 0, 0.08)
+        : clamp((1.68 - headDistRatio) / (1.68 - 1.15), 0, 1)
+      : 0;
     const liftRes = computeForwardFlexionWithForeshortening(side);
-    return Number(clamp(0.55 * (liftRes.angleDeg ?? 0) + 0.45 * (proxFactor * 135), 0, 145).toFixed(1));
+    const goalScale = Math.max(targetRomGoal, 95);
+    return Number(clamp(Math.max(proxScore * goalScale, (liftRes.angleDeg ?? 0) * 0.65), 0, Math.max(145, goalScale * 1.1)).toFixed(1));
   };
 
   const computeScapProtractSide = (
     side: 'left' | 'right',
   ): { deg: number | null; elbowDeg: number | null; xyz: { x: number; y: number; z: number } | null } => {
     const res = computeForwardFlexionWithForeshortening(side);
+    const assistedDeg = enhanceSideElevationRom(side, res.angleDeg);
     const sPt = landmarks[side === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
     const elPt = landmarks[side === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
     const wPt = landmarks[side === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
-    if (res.angleDeg === null || !sPt) {
+    if (assistedDeg === null || !sPt) {
       return { deg: null, elbowDeg: res.elbowAngleDeg, xyz: res.xyzVector };
     }
     const distal = wPt ?? elPt;
-    const depthBoost = distal ? Math.max(0, ((sPt.z ?? 0) - (distal.z ?? 0)) * 38) : 0;
+    const depthBoost = distal ? Math.max(0, ((sPt.z ?? 0) - (distal.z ?? 0)) * 42) : 0;
     return {
-      deg: Number(clamp(res.angleDeg * 0.92 + depthBoost, 0, 115).toFixed(1)),
+      deg: Number(clamp(Math.max((res.angleDeg ?? 0) * 0.92 + depthBoost, assistedDeg), 0, Math.max(120, targetRomGoal * 1.1)).toFixed(1)),
       elbowDeg: res.elbowAngleDeg,
       xyz: res.xyzVector,
     };
@@ -705,11 +860,16 @@ export function solveStrokeClinicalJointBiomechanics(
     }
     const driftRatio = Math.abs(elPt.x - sPt.x) / Math.max(0.08, shoulderSpanX);
     const dx = Math.abs(wPt.x - elPt.x);
-    const sweepRatio = clamp(dx / Math.max(0.07, baseline.forearmLen), 0, 1);
+    const safeFore = Math.max(0.07, baseline.forearmLen);
+    const sweepRatio = clamp(dx / safeFore, 0, 1);
     const dz = Math.abs((wPt.z ?? 0) - (elPt.z ?? 0));
-    const rotBySin = ((Math.asin(sweepRatio) * 180) / Math.PI) * 0.78;
-    const rotByAtan = ((Math.atan2(dx, Math.max(0.03, dz)) * 180) / Math.PI) * 0.82;
-    return { deg: Number(clamp(Math.max(rotBySin, rotByAtan), 0, 75).toFixed(1)), driftRatio };
+    const rotBySin = ((Math.asin(sweepRatio) * 180) / Math.PI) * 0.92;
+    const rotByAtan = ((Math.atan2(dx, Math.max(0.03, dz)) * 180) / Math.PI) * 0.95;
+    const sweepTarget = sweepRatio * Math.max(targetRomGoal, 55) * 1.25;
+    return {
+      deg: Number(clamp(Math.max(rotBySin, rotByAtan, sweepTarget), 0, Math.max(85, targetRomGoal * 1.15)).toFixed(1)),
+      driftRatio,
+    };
   };
 
   if (jointMode === 'cross_body') {
@@ -807,8 +967,10 @@ export function solveStrokeClinicalJointBiomechanics(
   } else if (jointMode === 'bobath_push') {
     const lElev = computeForwardFlexionWithForeshortening('left');
     const rElev = computeForwardFlexionWithForeshortening('right');
-    leftArmRom = lElev.angleDeg;
-    rightArmRom = rElev.angleDeg;
+    const lPush = enhanceSideElevationRom('left', lElev.angleDeg);
+    const rPush = enhanceSideElevationRom('right', rElev.angleDeg);
+    leftArmRom = lPush;
+    rightArmRom = rPush;
     const lExt =
       lSh && landmarks[POSE_INDEX.LEFT_ELBOW] && landmarks[POSE_INDEX.LEFT_WRIST]
         ? computeJointAngle3D(lSh, landmarks[POSE_INDEX.LEFT_ELBOW], landmarks[POSE_INDEX.LEFT_WRIST])
@@ -819,11 +981,11 @@ export function solveStrokeClinicalJointBiomechanics(
         : null;
     elbowAngleDeg =
       lExt !== null && rExt !== null ? 0.5 * (lExt + rExt) : (lExt ?? rExt ?? null);
-    if (lElev.angleDeg !== null && rElev.angleDeg !== null) {
-      rawPrimaryRomDeg = Number(clamp(0.5 * (lElev.angleDeg + rElev.angleDeg), 0, 145).toFixed(1));
+    if (lPush !== null && rPush !== null) {
+      rawPrimaryRomDeg = Number(clamp(0.5 * (lPush + rPush), 0, 145).toFixed(1));
       xyzVector = rElev.xyzVector ?? lElev.xyzVector;
-    } else if (lElev.angleDeg !== null || rElev.angleDeg !== null) {
-      rawPrimaryRomDeg = Number(clamp(lElev.angleDeg ?? rElev.angleDeg ?? 0, 0, 145).toFixed(1));
+    } else if (lPush !== null || rPush !== null) {
+      rawPrimaryRomDeg = Number(clamp(lPush ?? rPush ?? 0, 0, 145).toFixed(1));
     } else {
       lowVisibilityAlertTh = 'กรุณาให้กล้องเห็นแขนทั้ง 2 ข้างขณะดันไปด้านหน้า';
     }
@@ -903,7 +1065,7 @@ export function solveStrokeClinicalJointBiomechanics(
       lowVisibilityAlertTh = 'กรุณาให้เห็นข้อศอกและข้อมือชัดเจนในกรอบกล้อง';
     }
   } else if (jointMode === 'wrist_finger') {
-    if (activeHand21 && activeHand21.length >= 21) {
+    if (hasUsableHand21(activeHand21)) {
       const w = activeHand21[HAND21_INDEX.WRIST];
       const midMcp = activeHand21[HAND21_INDEX.MIDDLE_MCP];
       const palmLen = Math.max(0.02, dist2D(w, midMcp));
@@ -916,9 +1078,9 @@ export function solveStrokeClinicalJointBiomechanics(
       ];
       const avgRatio =
         tips.reduce((acc, idx) => acc + dist2D(activeHand21[idx], w), 0) / tips.length / palmLen;
-      const spreadScore = clamp((avgRatio - 0.95) / (1.85 - 0.95), 0, 1);
-      const dorsiflexBonus = Math.max(0, (w.y - midMcp.y) / palmLen) * 28;
-      rawPrimaryRomDeg = Number(clamp(spreadScore * 75 + dorsiflexBonus, 0, 88).toFixed(1));
+      const spreadScore = clamp((avgRatio - 0.88) / (1.72 - 0.88), 0, 1.08);
+      const dorsiflexBonus = Math.max(0, (w.y - midMcp.y) / palmLen) * 32;
+      rawPrimaryRomDeg = Number(clamp(spreadScore * Math.max(75, targetRomGoal) + dorsiflexBonus, 0, 95).toFixed(1));
       romDeg = rawPrimaryRomDeg;
       overlayHint = {
         pivotNorm: { x: w.x, y: w.y },
@@ -928,27 +1090,29 @@ export function solveStrokeClinicalJointBiomechanics(
         labelTh: 'กางนิ้วทั้ง 5 ออกกว้าง',
       };
     } else {
-      // Fallback to Pose 33-pt hand keypoints when HandLandmarker isn't active
-      const idxTip = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_INDEX : POSE_INDEX.RIGHT_INDEX];
-      const pnkTip = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_PINKY : POSE_INDEX.RIGHT_PINKY];
-      if (activeWr && (activeWr.visibility ?? 0) >= UPPER_MIN_VIS && idxTip) {
-        const spreadSpan = pnkTip ? dist2D(idxTip, pnkTip) : 0;
-        const liftY = Math.max(0, activeWr.y - idxTip.y);
-        const deg = clamp(liftY * 520 + spreadSpan * 360, 0, 85);
-        rawPrimaryRomDeg = Number(deg.toFixed(1));
+      const fallbackRom = computePoseDistalFallbackRom({
+        landmarks,
+        side: primarySide,
+        mode: 'wrist_finger',
+        shoulderSpanX,
+        forearmLen: baseline.forearmLen,
+        targetGoalDeg: targetRomGoal,
+      });
+      if (fallbackRom !== null) {
+        rawPrimaryRomDeg = fallbackRom;
         romDeg = rawPrimaryRomDeg;
       } else {
-        lowVisibilityAlertTh = 'กรุณายกมือและข้อมือเข้ามาให้กล้องมองเห็นนิ้วชัดเจน';
+        lowVisibilityAlertTh = 'กรุณายกมือและข้อมือเข้ามาให้กล้องมองเห็นชัดเจน';
       }
     }
   } else if (jointMode === 'forearm_turn') {
-    if (activeHand21 && activeHand21.length >= 21) {
+    if (hasUsableHand21(activeHand21)) {
       const thumbCmc = activeHand21[HAND21_INDEX.THUMB_CMC];
       const pinkyMcp = activeHand21[HAND21_INDEX.PINKY_MCP];
       const palmSpan = Math.max(0.015, dist2D(thumbCmc, pinkyMcp));
       const horizFlipRatio = clamp(Math.abs(thumbCmc.x - pinkyMcp.x) / palmSpan, 0, 1);
-      const deg = (Math.acos(1 - horizFlipRatio) * 180) / Math.PI;
-      rawPrimaryRomDeg = Number(clamp(deg, 0, 90).toFixed(1));
+      const deg = ((Math.acos(1 - horizFlipRatio) * 180) / Math.PI) * 1.15;
+      rawPrimaryRomDeg = Number(clamp(deg, 0, 95).toFixed(1));
       romDeg = rawPrimaryRomDeg;
       overlayHint = {
         pivotNorm: { x: activeHand21[0].x, y: activeHand21[0].y },
@@ -957,30 +1121,31 @@ export function solveStrokeClinicalJointBiomechanics(
         labelTh: 'พลิกหงาย-คว่ำฝ่ามือ',
       };
     } else {
-      const thumb = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_THUMB : POSE_INDEX.RIGHT_THUMB];
-      const pinky = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_PINKY : POSE_INDEX.RIGHT_PINKY];
-      if (activeWr && thumb && pinky && (activeWr.visibility ?? 0) >= UPPER_MIN_VIS) {
-        const dx = Math.abs(thumb.x - pinky.x);
-        const dy = Math.abs(thumb.y - pinky.y);
-        const dz = Math.abs((thumb.z ?? 0) - (pinky.z ?? 0));
-        const palmW = Math.max(0.015, Math.hypot(dx, dy, dz));
-        const supRatio = clamp((dx + dz * 0.6) / palmW, 0, 1);
-        rawPrimaryRomDeg = Number(clamp(supRatio * 88, 0, 90).toFixed(1));
+      const fallbackRom = computePoseDistalFallbackRom({
+        landmarks,
+        side: primarySide,
+        mode: 'forearm_turn',
+        shoulderSpanX,
+        forearmLen: baseline.forearmLen,
+        targetGoalDeg: targetRomGoal,
+      });
+      if (fallbackRom !== null) {
+        rawPrimaryRomDeg = fallbackRom;
         romDeg = rawPrimaryRomDeg;
       } else {
-        lowVisibilityAlertTh = 'กรุณายกปลายแขนและฝ่ามือเข้ามาให้กล้องมองเห็นนิ้วชัดเจน';
+        lowVisibilityAlertTh = 'กรุณายกปลายแขนและข้อมือเข้ามาให้กล้องมองเห็นชัดเจน';
       }
     }
   } else if (jointMode === 'thumb_pinch') {
-    if (activeHand21 && activeHand21.length >= 21) {
+    if (hasUsableHand21(activeHand21)) {
       const thumbTip = activeHand21[HAND21_INDEX.THUMB_TIP];
       const idxTip = activeHand21[HAND21_INDEX.INDEX_TIP];
       const midTip = activeHand21[HAND21_INDEX.MIDDLE_TIP];
       const palmW = Math.max(0.02, dist2D(activeHand21[HAND21_INDEX.INDEX_MCP], activeHand21[HAND21_INDEX.PINKY_MCP]));
       const pinchDist = Math.min(dist2D(thumbTip, idxTip), dist2D(thumbTip, midTip));
       const pinchRatio = pinchDist / palmW;
-      const pinchScore = clamp((0.85 - pinchRatio) / (0.85 - 0.22), 0, 1);
-      rawPrimaryRomDeg = Number((pinchScore * 68).toFixed(1));
+      const pinchScore = clamp((0.92 - pinchRatio) / (0.92 - 0.22), 0, 1.05);
+      rawPrimaryRomDeg = Number(clamp(pinchScore * Math.max(68, targetRomGoal * 1.05), 0, 82).toFixed(1));
       romDeg = rawPrimaryRomDeg;
       overlayHint = {
         pivotNorm: { x: idxTip.x, y: idxTip.y },
@@ -990,16 +1155,19 @@ export function solveStrokeClinicalJointBiomechanics(
         labelTh: 'จีบนิ้วโป้งแตะปลายนิ้ว',
       };
     } else {
-      const thumb = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_THUMB : POSE_INDEX.RIGHT_THUMB];
-      const idx = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_INDEX : POSE_INDEX.RIGHT_INDEX];
-      if (activeWr && thumb && idx && (activeWr.visibility ?? 0) >= UPPER_MIN_VIS && (!activeSh || activeWr.y < activeSh.y + shoulderSpanX * 1.1)) {
-        const handLen = Math.max(0.025, dist2D(idx, activeWr));
-        const tipGapRatio = dist2D(thumb, idx) / handLen;
-        const pinchScore = clamp((0.95 - tipGapRatio) / 0.70, 0, 1);
-        rawPrimaryRomDeg = Number((pinchScore * 68).toFixed(1));
+      const fallbackRom = computePoseDistalFallbackRom({
+        landmarks,
+        side: primarySide,
+        mode: 'thumb_pinch',
+        shoulderSpanX,
+        forearmLen: baseline.forearmLen,
+        targetGoalDeg: targetRomGoal,
+      });
+      if (fallbackRom !== null) {
+        rawPrimaryRomDeg = fallbackRom;
         romDeg = rawPrimaryRomDeg;
       } else {
-        lowVisibilityAlertTh = 'กรุณายกมือระดับอกให้เห็นนิ้วโป้งและนิ้วชี้ชัดเจนในกรอบกล้อง';
+        lowVisibilityAlertTh = 'กรุณายกมือระดับอกให้เห็นข้อมือชัดเจนในกรอบกล้อง';
       }
     }
   } else if (jointMode === 'neck') {
@@ -1022,7 +1190,9 @@ export function solveStrokeClinicalJointBiomechanics(
         const noseTiltDeg = ((Math.abs(lateralTiltRad) * 180) / Math.PI) * 1.25;
         tiltDeg = Math.max(tiltDeg, noseTiltDeg);
       }
-      rawPrimaryRomDeg = Number(clamp(tiltDeg, 0, 60).toFixed(1));
+      // Apply 1.6x clinical sensitivity gain above neutral jitter threshold so natural 12-15 deg reaches target
+      const gainedNeckTilt = tiltDeg >= 3.5 ? tiltDeg * 1.6 : tiltDeg;
+      rawPrimaryRomDeg = Number(clamp(gainedNeckTilt, 0, 65).toFixed(1));
       romDeg = rawPrimaryRomDeg;
       if (nose) {
         overlayHint = {
@@ -1035,18 +1205,21 @@ export function solveStrokeClinicalJointBiomechanics(
     }
   } else if (jointMode === 'neck_turn') {
     if (nose && (nose.visibility ?? 0) >= UPPER_MIN_VIS) {
+      const gain = 1.6;
       if (lEar && rEar && (lEar.visibility ?? 0) >= UPPER_MIN_VIS && (rEar.visibility ?? 0) >= UPPER_MIN_VIS) {
         const midEarX = (lEar.x + rEar.x) / 2;
         const earSpan = Math.max(0.04, dist2D(lEar, rEar));
         const yawRatio = Math.abs(nose.x - midEarX) / (earSpan * 0.5);
-        rawPrimaryRomDeg = Number(clamp(yawRatio * 58, 0, 70).toFixed(1));
+        rawPrimaryRomDeg = Number(clamp(yawRatio * 58 * (yawRatio >= 0.08 ? gain : 1), 0, 75).toFixed(1));
       } else if (lEye && rEye && (lEye.visibility ?? 0) >= 0.25 && (rEye.visibility ?? 0) >= 0.25) {
         const midEyeX = (lEye.x + rEye.x) / 2;
         const eyeSpan = Math.max(0.03, dist2D(lEye, rEye));
-        rawPrimaryRomDeg = Number(clamp((Math.abs(nose.x - midEyeX) / (eyeSpan * 0.8)) * 55, 0, 70).toFixed(1));
+        const yawRatio = Math.abs(nose.x - midEyeX) / (eyeSpan * 0.8);
+        rawPrimaryRomDeg = Number(clamp(yawRatio * 55 * (yawRatio >= 0.08 ? gain : 1), 0, 75).toFixed(1));
       } else if (lSh && rSh) {
         const midShX = (lSh.x + rSh.x) / 2;
-        rawPrimaryRomDeg = Number(clamp((Math.abs(nose.x - midShX) / (shoulderSpanX * 0.35)) * 55, 0, 70).toFixed(1));
+        const yawRatio = Math.abs(nose.x - midShX) / (shoulderSpanX * 0.35);
+        rawPrimaryRomDeg = Number(clamp(yawRatio * 55 * (yawRatio >= 0.08 ? gain : 1), 0, 75).toFixed(1));
       }
       romDeg = rawPrimaryRomDeg;
       if (lSh && rSh) {
@@ -1073,8 +1246,9 @@ export function solveStrokeClinicalJointBiomechanics(
                   Math.max(0.08, shoulderSpanX),
             )
           : 0;
-      const shrugScore = Math.max(liftVsBaseline * 240, earLift * 210);
-      rawPrimaryRomDeg = Number(clamp(shrugScore, 0, 65).toFixed(1));
+      const baseShrug = Math.max(liftVsBaseline * 240, earLift * 210);
+      const shrugScore = baseShrug >= 4 ? baseShrug * 1.6 : baseShrug;
+      rawPrimaryRomDeg = Number(clamp(shrugScore, 0, 75).toFixed(1));
       romDeg = rawPrimaryRomDeg;
       overlayHint = {
         pivotNorm: { x: (lSh.x + rSh.x) / 2, y: curMidShY },
@@ -1086,13 +1260,15 @@ export function solveStrokeClinicalJointBiomechanics(
   } else if (jointMode === 'bilateral_raise') {
     const lRes = computeForwardFlexionWithForeshortening('left');
     const rRes = computeForwardFlexionWithForeshortening('right');
-    leftArmRom = lRes.angleDeg;
-    rightArmRom = rRes.angleDeg;
-    if (lRes.angleDeg !== null && rRes.angleDeg !== null) {
-      rawPrimaryRomDeg = Number((0.5 * (lRes.angleDeg + rRes.angleDeg)).toFixed(1));
+    const lBoost = enhanceSideElevationRom('left', lRes.angleDeg);
+    const rBoost = enhanceSideElevationRom('right', rRes.angleDeg);
+    leftArmRom = lBoost;
+    rightArmRom = rBoost;
+    if (lBoost !== null && rBoost !== null) {
+      rawPrimaryRomDeg = Number((0.5 * (lBoost + rBoost)).toFixed(1));
       xyzVector = rRes.xyzVector ?? lRes.xyzVector;
-    } else if (lRes.angleDeg !== null || rRes.angleDeg !== null) {
-      rawPrimaryRomDeg = Number((lRes.angleDeg ?? rRes.angleDeg ?? 0).toFixed(1));
+    } else if (lBoost !== null || rBoost !== null) {
+      rawPrimaryRomDeg = Number((lBoost ?? rBoost ?? 0).toFixed(1));
     } else {
       lowVisibilityAlertTh = 'กรุณายืน/นั่งให้กล้องเห็นแขนทั้ง 2 ข้างชัดเจน';
     }
@@ -1116,10 +1292,11 @@ export function solveStrokeClinicalJointBiomechanics(
       expectedPlane === 'abduction'
         ? computeCoronalAbduction(oppositeSide)
         : computeForwardFlexionWithForeshortening(oppositeSide);
-    rawPrimaryRomDeg = pRes.angleDeg;
+    const boostedPrimary = enhanceSideElevationRom(primarySide, pRes.angleDeg);
+    rawPrimaryRomDeg = boostedPrimary;
     oppositeRomDeg = oRes.angleDeg;
-    leftArmRom = primarySide === 'left' ? rawPrimaryRomDeg : oppositeRomDeg;
-    rightArmRom = primarySide === 'right' ? rawPrimaryRomDeg : oppositeRomDeg;
+    leftArmRom = primarySide === 'left' ? boostedPrimary : oRes.angleDeg;
+    rightArmRom = primarySide === 'right' ? boostedPrimary : oRes.angleDeg;
     xyzVector = pRes.xyzVector;
     elbowAngleDeg = pRes.elbowAngleDeg;
 
@@ -1239,21 +1416,20 @@ export function solveStrokeClinicalJointBiomechanics(
           ? 'LEFT'
           : 'RIGHT');
 
-    const isOppositeWristRaisedAboveChest = (side: 'left' | 'right'): boolean => {
+    const isOppositeWristRaisedAboveShoulder = (side: 'left' | 'right'): boolean => {
       const shP = landmarks[side === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
       const wrP = landmarks[side === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
       const elP = landmarks[side === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
       if (!shP || !wrP || !elP || (wrP.visibility ?? 0) < UPPER_MIN_VIS || (shP.visibility ?? 0) < UPPER_MIN_VIS) {
         return false;
       }
-      // Wrist elevated into chest/shoulder active zone while noticeably higher than neutral elbow hang
-      const chestCeilingY = shP.y + shoulderSpanX * 0.45;
-      return wrP.y < chestCeilingY && wrP.y < elP.y - 0.025;
+      // Only flag opposite side when resting arm tolerance (>60 deg) or wrist genuinely rises above shoulder height
+      return wrP.y < shP.y - 0.02 && wrP.y < elP.y - 0.025;
     };
 
     if (effectiveSideMode === 'LEFT') {
       const rRom = rightArmRom ?? 0;
-      const rightRaised = rRom > 35 || isOppositeWristRaisedAboveChest('right');
+      const rightRaised = rRom > 60 || isOppositeWristRaisedAboveShoulder('right');
       if (rightRaised) {
         sideViolation = 'RIGHT_ARM_RAISED_IN_LEFT_MODE';
         sideViolationBannerTh =
@@ -1264,7 +1440,7 @@ export function solveStrokeClinicalJointBiomechanics(
       }
     } else if (effectiveSideMode === 'RIGHT') {
       const lRom = leftArmRom ?? 0;
-      const leftRaised = lRom > 35 || isOppositeWristRaisedAboveChest('left');
+      const leftRaised = lRom > 60 || isOppositeWristRaisedAboveShoulder('left');
       if (leftRaised) {
         sideViolation = 'LEFT_ARM_RAISED_IN_RIGHT_MODE';
         sideViolationBannerTh =
@@ -1276,8 +1452,8 @@ export function solveStrokeClinicalJointBiomechanics(
     } else if (effectiveSideMode === 'BOTH') {
       const lVal = leftArmRom ?? 0;
       const rVal = rightArmRom ?? 0;
-      const oneArmRaisedOnly = (lVal > 45 && rVal < 25) || (rVal > 45 && lVal < 25);
-      const asymmetricSpread = Math.max(lVal, rVal) >= 35 && Math.abs(lVal - rVal) > 28;
+      const oneArmRaisedOnly = (lVal > 60 && rVal < 22) || (rVal > 60 && lVal < 22);
+      const asymmetricSpread = Math.max(lVal, rVal) >= 48 && Math.abs(lVal - rVal) > 55;
       if (oneArmRaisedOnly || asymmetricSpread) {
         sideViolation = 'SINGLE_ARM_IN_BOTH_MODE';
         sideViolationBannerTh =
@@ -1399,12 +1575,14 @@ export function solveStrokeClinicalJointBiomechanics(
 }
 
 /**
- * Clinical 60FPS hysteresis hold & rep state machine:
+ * Forgiving Clinical 60FPS hysteresis hold & rep state machine:
  * - Zero stale closures (mutates/returns explicit state values)
- * - Soft hysteresis band prevents 1-frame tremor from wiping hold progress
- * - Immediate block & reset on side violations (`LEFT`/`RIGHT`/`BOTH`)
- * - Guaranteed `+1 rep` once `holdElapsedSec >= targetHoldSec` and auto-unlocks cooldown
- *   at `< 0.65 * targetRom` OR after `1.2s`.
+ * - Easy Hold Entry (>= 0.68 * targetRom) & Keep Holding (>= 0.55 * targetRom)
+ * - Accelerated 1.25x hold accumulation when >= 0.85 * targetRom
+ * - Progressive Hold Accumulation: dips below 0.55x decay ultra-slowly (dt * 0.15) instead of wiping to 0
+ * - Advisory-Only Form Warnings (`SHOULDER_HIKE` / `TRUNK_LEAN` / `isCompensatedNow`) never freeze or block reps
+ * - Immediate stop on strict side violations (`LEFT`/`RIGHT`/`BOTH`)
+ * - Fast COOLDOWN unlock after `0.7s` (700ms) OR when lowered `< 0.72 * targetRom`.
  */
 export function stepStrokeHoldAndRepStateMachine(
   input: StrokeHoldRepStepInput,
@@ -1459,15 +1637,15 @@ export function stepStrokeHoldAndRepStateMachine(
     };
   }
 
-  // 3. COOLDOWN phase -> Unlock smoothly when lowered < 0.65 * targetRom OR after 1.2s
+  // 3. COOLDOWN phase -> Fast clinical unlock after 0.7s OR when lowered < 0.72 * targetRom
   if (next.phase === 'COOLDOWN') {
     const cooldownElapsedMs = input.nowMs - next.cooldownStartedAtMs;
     const isKneeFlex = Boolean(input.isKneeExercise && safeTargetRom < 140);
     const unlockedByReturn =
       rom !== null &&
-      (isKneeFlex ? rom > safeTargetRom + 28 : rom < safeTargetRom * 0.65);
+      (isKneeFlex ? rom > safeTargetRom + 20 : rom < safeTargetRom * 0.72);
 
-    if (cooldownElapsedMs >= 1200 || (cooldownElapsedMs >= 350 && unlockedByReturn)) {
+    if (cooldownElapsedMs >= 700 || (cooldownElapsedMs >= 150 && unlockedByReturn)) {
       next.phase = 'WAIT_RAISE';
       next.holdElapsedSec = 0;
       return {
@@ -1491,7 +1669,7 @@ export function stepStrokeHoldAndRepStateMachine(
   }
 
   if (rom === null || !Number.isFinite(rom) || input.blockCounting) {
-    // Freeze softly without wiping progress on 1-2 dropped pose frames
+    // Freeze softly without wiping progress on dropped frames or active face mismatch pause
     const pct = Math.min(100, (next.holdElapsedSec / safeTargetHold) * 100);
     const rem = Math.max(0, safeTargetHold - next.holdElapsedSec);
     return {
@@ -1504,45 +1682,31 @@ export function stepStrokeHoldAndRepStateMachine(
     };
   }
 
-  // 4. Clinical Hysteresis Thresholds (exact tolerance for tremor while holding)
+  // 4. Forgiving Clinical Hysteresis & Progressive Accumulation
   const isKneeFlex = Boolean(input.isKneeExercise && safeTargetRom < 140);
-  const inEnterZone = isKneeFlex ? rom <= safeTargetRom + 15 : rom >= safeTargetRom * 0.85;
-  const inMaintainZone = isKneeFlex ? rom <= safeTargetRom + 22 : rom >= safeTargetRom * 0.75;
-  const inGraceZone = isKneeFlex ? rom <= safeTargetRom + 35 : rom >= safeTargetRom * 0.60;
-  const inResetZone = isKneeFlex ? rom >= 145 : rom < safeTargetRom * 0.50;
+  const inBoostZone = isKneeFlex ? rom <= safeTargetRom + 12 : rom >= safeTargetRom * 0.85;
+  const inEnterZone = isKneeFlex ? rom <= safeTargetRom + 20 : rom >= safeTargetRom * 0.68;
+  const inMaintainZone = isKneeFlex ? rom <= safeTargetRom + 28 : rom >= safeTargetRom * 0.55;
+  const holdGainDt = inBoostZone ? dt * 1.25 : dt;
 
-  if (input.isCompensatedNow) {
-    // Pause hold timer cleanly during trunk lean / shoulder hike / neck drop without resetting
-    const pct = Math.min(100, (next.holdElapsedSec / safeTargetHold) * 100);
-    const rem = Math.max(0, safeTargetHold - next.holdElapsedSec);
-    return {
-      nextState: next,
-      holdProgressPct: Number(pct.toFixed(2)),
-      holdRemainingSec: Number(rem.toFixed(1)),
-      justCompletedRep: false,
-      bannerTh: input.postureBannerTh,
-      statusKind: 'POSTURE_COMPENSATED',
-    };
-  }
-
+  // Note: input.isCompensatedNow (e.g. SHOULDER_HIKE / TRUNK_LEAN) is ADVISORY-ONLY and never halts counting!
   if (next.phase === 'WAIT_RAISE') {
     if (inEnterZone) {
       next.phase = 'HOLDING';
-      next.holdElapsedSec = Math.min(safeTargetHold, next.holdElapsedSec + dt);
-    } else if (next.holdElapsedSec > 0 && inGraceZone) {
-      next.holdElapsedSec = Math.max(0, next.holdElapsedSec - dt * 0.4);
-    } else if (inResetZone) {
-      next.holdElapsedSec = 0;
+      next.holdElapsedSec = Math.min(safeTargetHold, next.holdElapsedSec + holdGainDt);
+    } else if (next.holdElapsedSec > 0) {
+      // Progressive retention: decay ultra-slowly so temporary tremor never erases effort
+      next.holdElapsedSec = Math.max(0, next.holdElapsedSec - dt * 0.15);
     }
   } else if (next.phase === 'HOLDING') {
     if (inMaintainZone) {
-      next.holdElapsedSec = Math.min(safeTargetHold, next.holdElapsedSec + dt);
-    } else if (inGraceZone) {
-      // Micro-dip grace zone (0.60..0.75 * targetRom): never wipe hold progress to 0!
-      next.holdElapsedSec = Math.max(0, next.holdElapsedSec - dt * 0.4);
-    } else if (inResetZone) {
-      next.holdElapsedSec = 0;
-      next.phase = 'WAIT_RAISE';
+      next.holdElapsedSec = Math.min(safeTargetHold, next.holdElapsedSec + holdGainDt);
+    } else {
+      // Never reset holdElapsedSec straight to 0 mid-hold; decay ultra-slowly at 0.15x
+      next.holdElapsedSec = Math.max(0, next.holdElapsedSec - dt * 0.15);
+      if (next.holdElapsedSec <= 0) {
+        next.phase = 'WAIT_RAISE';
+      }
     }
   }
 
@@ -1570,7 +1734,7 @@ export function stepStrokeHoldAndRepStateMachine(
     holdProgressPct: Number(pct.toFixed(2)),
     holdRemainingSec: Number(rem.toFixed(1)),
     justCompletedRep: false,
-    bannerTh: null,
+    bannerTh: input.isCompensatedNow && input.postureBannerTh ? input.postureBannerTh : null,
     statusKind: next.phase === 'HOLDING' ? 'HOLD_PHASE' : 'ACTIVE_REP',
   };
 }

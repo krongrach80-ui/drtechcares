@@ -49,7 +49,12 @@ import {
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import {
   buildTtsProxyUrl,
+  cancelAllKioskVoiceSpeech,
+  getSeniorVoiceToggleLabel,
   pickSpeechVoice,
+  readStoredKioskVoiceMuted,
+  subscribeKioskVoiceMuted,
+  writeStoredKioskVoiceMuted,
   type VoiceCoachLanguage,
 } from './VoiceCoachBanner';
 import {
@@ -91,6 +96,8 @@ import {
   ShieldCheck,
   Sparkles,
   UserPlus,
+  Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 
@@ -245,7 +252,9 @@ export function computeWelcomeSpeechFallbackMs(greetingText: string): number {
 export function isVerifiedModalSpeechBlocked(params: {
   speechDone: boolean;
   browserSpeaking?: boolean;
+  voiceMuted?: boolean;
 }): boolean {
+  if (params.voiceMuted) return false;
   return !params.speechDone || Boolean(params.browserSpeaking);
 }
 
@@ -713,16 +722,49 @@ export function KioskBiometricLoginView({
     status: OwnerLockStatus;
     text: string;
   } | null>(null);
-  const [isWelcomeSpeechDone, setIsWelcomeSpeechDone] = useState(false);
+  const [isWelcomeSpeechDone, setIsWelcomeSpeechDone] = useState(() => readStoredKioskVoiceMuted());
   const [raisedDuringSpeech, setRaisedDuringSpeech] = useState(false);
-  const isSpeechDoneRef = useRef<boolean>(false);
+  const [voiceMuted, setVoiceMuted] = useState<boolean>(() => readStoredKioskVoiceMuted());
+  const voiceMutedRef = useRef<boolean>(voiceMuted);
+  voiceMutedRef.current = voiceMuted;
+  const isSpeechDoneRef = useRef<boolean>(readStoredKioskVoiceMuted());
   const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  const handleToggleVoiceMute = useCallback(() => {
+    const nextMuted = writeStoredKioskVoiceMuted(!voiceMutedRef.current);
+    voiceMutedRef.current = nextMuted;
+    setVoiceMuted(nextMuted);
+    if (nextMuted) {
+      modalSpeakSeqRef.current += 1;
+      cancelAllKioskVoiceSpeech(modalAudioRef.current);
+      activeUtteranceRef.current = null;
+      isSpeechDoneRef.current = true;
+      setIsWelcomeSpeechDone(true);
+      setRaisedDuringSpeech(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    return subscribeKioskVoiceMuted((muted) => {
+      voiceMutedRef.current = muted;
+      setVoiceMuted(muted);
+      if (muted) {
+        modalSpeakSeqRef.current += 1;
+        cancelAllKioskVoiceSpeech(modalAudioRef.current);
+        activeUtteranceRef.current = null;
+        isSpeechDoneRef.current = true;
+        setIsWelcomeSpeechDone(true);
+        setRaisedDuringSpeech(false);
+      }
+    });
+  }, []);
 
   const handleSelectLang = useCallback(
     (nextLang: ClinicalLang) => {
-      // Re-lock Speech-First Relay synchronously when patient switches modal language
-      isSpeechDoneRef.current = false;
-      setIsWelcomeSpeechDone(false);
+      // Re-lock Speech-First Relay only when voice narration is enabled; keep unlocked when muted
+      const muted = voiceMutedRef.current;
+      isSpeechDoneRef.current = muted;
+      setIsWelcomeSpeechDone(muted);
       setRaisedDuringSpeech(false);
       setTwoHandProgress(0);
       setTwoHandDetected(false);
@@ -785,14 +827,23 @@ export function KioskBiometricLoginView({
   useEffect(() => {
     const greeting = modalCopy?.voiceGreeting;
     if (!verifiedModalPayload || !greeting || typeof window === 'undefined') {
-      isSpeechDoneRef.current = false;
-      setIsWelcomeSpeechDone(false);
+      isSpeechDoneRef.current = voiceMuted;
+      setIsWelcomeSpeechDone(voiceMuted);
       setRaisedDuringSpeech(false);
       return;
     }
 
     const seq = ++modalSpeakSeqRef.current;
     const langOpt = LANG_OPTIONS.find((item) => item.code === lang) ?? LANG_OPTIONS[0];
+
+    if (voiceMuted) {
+      cancelAllKioskVoiceSpeech(modalAudioRef.current);
+      activeUtteranceRef.current = null;
+      isSpeechDoneRef.current = true;
+      setIsWelcomeSpeechDone(true);
+      setRaisedDuringSpeech(false);
+      return;
+    }
 
     // Lock two-hand confirmation strictly at 0% until welcome voice guidance completes
     isSpeechDoneRef.current = false;
@@ -858,8 +909,8 @@ export function KioskBiometricLoginView({
           // Ignore synthesis cancel errors
         }
       }
-      isSpeechDoneRef.current = false;
-      setIsWelcomeSpeechDone(false);
+      isSpeechDoneRef.current = voiceMutedRef.current;
+      setIsWelcomeSpeechDone(voiceMutedRef.current);
       setRaisedDuringSpeech(false);
     };
 
@@ -966,7 +1017,7 @@ export function KioskBiometricLoginView({
     }
 
     return stopSpeech;
-  }, [verifiedModalPayload?.patient.id, lang, modalCopy?.voiceGreeting]);
+  }, [verifiedModalPayload?.patient.id, lang, modalCopy?.voiceGreeting, voiceMuted]);
 
   const [showPinModal, setShowPinModal] = useState(false);
   const [pinDigits, setPinDigits] = useState('');
@@ -1832,6 +1883,7 @@ export function KioskBiometricLoginView({
               const speechBlocked = isVerifiedModalSpeechBlocked({
                 speechDone: isSpeechDoneRef.current,
                 browserSpeaking,
+                voiceMuted: voiceMutedRef.current,
               });
 
               if (speechBlocked) {
@@ -2725,8 +2777,27 @@ export function KioskBiometricLoginView({
               </div>
             </div>
 
-            {/* Right Controls: Cloud Online + Clock & Compact Language Switcher */}
-            <div className="flex items-center gap-2.5 shrink-0">
+            {/* Right Controls: AI Voice Mute Toggle + Cloud Online + Clock & Compact Language Switcher */}
+            <div className="flex flex-wrap items-center justify-end gap-2.5 shrink-0">
+              <button
+                type="button"
+                onClick={handleToggleVoiceMute}
+                aria-pressed={voiceMuted}
+                data-testid="kiosk-login-voice-mute-toggle"
+                className={`inline-flex items-center gap-2 rounded-xl border-2 px-3 py-1.5 text-xs sm:text-sm font-extrabold shadow-sm transition-all cursor-pointer active:scale-95 ${
+                  voiceMuted
+                    ? 'border-amber-300 bg-amber-100 text-amber-950 hover:bg-amber-200'
+                    : 'border-emerald-300 bg-emerald-100 text-emerald-950 hover:bg-emerald-200'
+                }`}
+              >
+                {voiceMuted ? (
+                  <VolumeX className="h-4 w-4 shrink-0 text-amber-700" />
+                ) : (
+                  <Volume2 className="h-4 w-4 shrink-0 text-emerald-700" />
+                )}
+                <span>{getSeniorVoiceToggleLabel(lang, voiceMuted)}</span>
+              </button>
+
               {/* Cloud Online + Clock Pill */}
               <div className="hidden sm:inline-flex h-9 px-3 items-center gap-2 rounded-xl bg-white/15 border border-white/25 text-xs font-semibold text-white whitespace-nowrap">
                 <span className="w-2 h-2 rounded-full bg-emerald-300 animate-pulse shrink-0 shadow-[0_0_8px_#34d399]" />
@@ -3291,28 +3362,49 @@ export function KioskBiometricLoginView({
       {verifiedModalPayload && modalCopy && (
         <div className="fixed inset-0 z-50 bg-[#0F4C81]/40 backdrop-blur-md flex items-center justify-center p-4">
           <div className="w-full max-w-md rounded-3xl bg-white border-2 border-emerald-500/50 shadow-2xl p-6 text-center">
-            {/* 3-Language Selector Bar inside Verified Patient Modal */}
-            <div
-              className="mb-4 inline-flex items-center gap-1 rounded-2xl border border-sky-200 bg-sky-50/90 p-1"
-              data-testid="verified-modal-language-switcher"
-            >
-              {LANG_OPTIONS.map((opt) => {
-                const active = lang === opt.code;
-                return (
-                  <button
-                    key={opt.code}
-                    type="button"
-                    onClick={() => handleSelectLang(opt.code)}
-                    className={`rounded-xl px-2.5 py-1 text-[11px] sm:text-xs font-extrabold transition cursor-pointer ${
-                      active
-                        ? 'bg-[#0284C7] text-white shadow-sm'
-                        : 'text-[#0F4C81] hover:bg-white'
-                    }`}
-                  >
-                    {opt.numberedLabel}
-                  </button>
-                );
-              })}
+            {/* 3-Language Selector Bar & Senior Voice Toggle inside Verified Patient Modal */}
+            <div className="mb-4 flex flex-col items-center gap-2.5">
+              <div
+                className="inline-flex items-center gap-1 rounded-2xl border border-sky-200 bg-sky-50/90 p-1"
+                data-testid="verified-modal-language-switcher"
+              >
+                {LANG_OPTIONS.map((opt) => {
+                  const active = lang === opt.code;
+                  return (
+                    <button
+                      key={opt.code}
+                      type="button"
+                      onClick={() => handleSelectLang(opt.code)}
+                      className={`rounded-xl px-2.5 py-1 text-[11px] sm:text-xs font-extrabold transition cursor-pointer ${
+                        active
+                          ? 'bg-[#0284C7] text-white shadow-sm'
+                          : 'text-[#0F4C81] hover:bg-white'
+                      }`}
+                    >
+                      {opt.numberedLabel}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={handleToggleVoiceMute}
+                aria-pressed={voiceMuted}
+                data-testid="verified-modal-voice-mute-toggle"
+                className={`inline-flex items-center justify-center gap-2 rounded-2xl border-2 px-4 py-2 text-xs sm:text-sm font-extrabold shadow-xs transition-all cursor-pointer active:scale-95 ${
+                  voiceMuted
+                    ? 'border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200'
+                    : 'border-emerald-400 bg-emerald-100 text-emerald-950 hover:bg-emerald-200'
+                }`}
+              >
+                {voiceMuted ? (
+                  <VolumeX className="h-4 w-4 shrink-0 text-amber-700" />
+                ) : (
+                  <Volume2 className="h-4 w-4 shrink-0 text-emerald-700" />
+                )}
+                <span>{getSeniorVoiceToggleLabel(lang, voiceMuted)}</span>
+              </button>
             </div>
 
             <div className="w-20 h-20 rounded-full mx-auto bg-gradient-to-tr from-emerald-500 to-teal-400 text-white flex items-center justify-center text-3xl font-black shadow-lg mb-3">
