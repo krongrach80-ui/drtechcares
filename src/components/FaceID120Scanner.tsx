@@ -12,6 +12,7 @@ import {
 import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import {
   alignFaceTo112,
+  computeHeadZoneRoiFromFaceBox,
   evaluateLivenessAndPose,
   extractArcFaceOnnxEmbedding,
   extractGeometricAnthropometricRatios,
@@ -19,6 +20,8 @@ import {
   flipImageDataHorizontally,
   isArcFaceSessionReady,
   preloadArcFaceOnnx,
+  remapRoiLandmarksToFrame,
+  renderUpscaledRoi256,
   selectClinicalCameraDeviceId,
   selectPrimaryFace,
 } from '@drtechcares/face-client';
@@ -572,6 +575,7 @@ export default function FaceID120Scanner({
   const snapshotCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const landmarkerRef = useRef<FaceLandmarker | null>(null);
+  const roiLandmarkerRef = useRef<FaceLandmarker | null>(null);
   const rafRef = useRef<number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const webFallbackTimerRef = useRef<number | null>(null);
@@ -947,6 +951,14 @@ export default function FaceID120Scanner({
         // ignore
       }
       landmarkerRef.current = null;
+    }
+    if (roiLandmarkerRef.current) {
+      try {
+        roiLandmarkerRef.current.close();
+      } catch {
+        // ignore
+      }
+      roiLandmarkerRef.current = null;
     }
   }, []);
 
@@ -1472,24 +1484,63 @@ export default function FaceID120Scanner({
         const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
         if (cancelled) return;
 
-        const landmarker = await FaceLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: '/models/face_landmarker.task',
-            delegate: 'GPU',
-          },
-          runningMode: 'VIDEO',
-          numFaces: 2,
-          minFaceDetectionConfidence: 0.65,
-          minFacePresenceConfidence: 0.65,
-          minTrackingConfidence: 0.65,
-          outputFaceBlendshapes: false,
-          outputFacialTransformationMatrixes: false,
-        });
+        let landmarker: FaceLandmarker | null = null;
+        for (const delegate of ['GPU', 'CPU'] as const) {
+          try {
+            landmarker = await FaceLandmarker.createFromOptions(vision, {
+              baseOptions: {
+                modelAssetPath: '/models/face_landmarker.task',
+                delegate,
+              },
+              runningMode: 'VIDEO',
+              numFaces: 2,
+              minFaceDetectionConfidence: 0.36,
+              minFacePresenceConfidence: 0.36,
+              minTrackingConfidence: 0.36,
+              outputFaceBlendshapes: false,
+              outputFacialTransformationMatrixes: false,
+            });
+            break;
+          } catch {
+            // Try CPU fallback if GPU unavailable
+          }
+        }
+        if (!landmarker) {
+          throw new Error('Failed to initialize FaceLandmarker');
+        }
         if (cancelled) {
           landmarker.close();
           return;
         }
         landmarkerRef.current = landmarker;
+
+        let roiLandmarker: FaceLandmarker | null = null;
+        try {
+          roiLandmarker = await FaceLandmarker.createFromOptions(vision, {
+            baseOptions: { modelAssetPath: '/models/face_landmarker.task', delegate: 'GPU' },
+            runningMode: 'IMAGE',
+            numFaces: 1,
+            minFaceDetectionConfidence: 0.3,
+            minFacePresenceConfidence: 0.3,
+          });
+        } catch {
+          try {
+            roiLandmarker = await FaceLandmarker.createFromOptions(vision, {
+              baseOptions: { modelAssetPath: '/models/face_landmarker.task', delegate: 'CPU' },
+              runningMode: 'IMAGE',
+              numFaces: 1,
+              minFaceDetectionConfidence: 0.3,
+              minFacePresenceConfidence: 0.3,
+            });
+          } catch {
+            roiLandmarker = null;
+          }
+        }
+        if (cancelled) {
+          roiLandmarker?.close();
+          return;
+        }
+        roiLandmarkerRef.current = roiLandmarker;
 
         const readyLang = langRef.current;
         const readyCopy = FACE_ID_120_UI_COPY[readyLang] ?? FACE_ID_120_UI_COPY.th;
@@ -1505,6 +1556,9 @@ export default function FaceID120Scanner({
         workCanvas.width = 112;
         workCanvas.height = 112;
         workCanvasRef.current = workCanvas;
+        const roiZoomCanvas = document.createElement('canvas');
+        let lastRegRoiBox: { x: number; y: number; width: number; height: number } | null = null;
+        let regSweepIdx = 0;
 
         const tickLoop = () => {
           if (cancelled || completedRef.current) return;
@@ -1530,11 +1584,55 @@ export default function FaceID120Scanner({
             return;
           }
 
-          const rawFaces = result?.faceLandmarks ?? [];
+          let rawFaces = result?.faceLandmarks ?? [];
+          let selection = selectPrimaryFace(rawFaces);
+          const coarseH = selection.primaryBox?.height ?? 0;
+          if (roiLandmarker && (!selection.primaryFace || coarseH < 0.16)) {
+            const sweepRects = [
+              { x: 0.25, y: 0.05, width: 0.5, height: 0.6 },
+              { x: 0.02, y: 0.05, width: 0.48, height: 0.6 },
+              { x: 0.5, y: 0.05, width: 0.48, height: 0.6 },
+            ];
+            const roiRect = selection.primaryFace && selection.primaryBox
+              ? computeHeadZoneRoiFromFaceBox(
+                  {
+                    x: Math.max(0, (selection.primaryCenter?.x ?? 0.5) - selection.primaryBox.width / 2),
+                    y: Math.max(0, (selection.primaryCenter?.y ?? 0.5) - selection.primaryBox.height / 2),
+                    width: selection.primaryBox.width,
+                    height: selection.primaryBox.height,
+                  },
+                  2.25,
+                )
+              : lastRegRoiBox
+                ? computeHeadZoneRoiFromFaceBox(lastRegRoiBox, 2.5)
+                : sweepRects[regSweepIdx++ % sweepRects.length];
+            const upscaled = renderUpscaledRoi256(vid, roiRect, roiZoomCanvas, 320);
+            if (upscaled) {
+              try {
+                const roiRes = roiLandmarker.detect(upscaled.canvas);
+                const roiSel = selectPrimaryFace(roiRes.faceLandmarks ?? []);
+                if (roiSel.primaryFace && roiSel.primaryFace.length >= 300) {
+                  const remapped = remapRoiLandmarksToFrame(roiSel.primaryFace, upscaled.cropPx);
+                  rawFaces = [
+                    remapped.map((p) => ({
+                      x: p.x,
+                      y: p.y,
+                      z: p.z ?? 0,
+                      visibility: 1,
+                    })),
+                  ];
+                  selection = selectPrimaryFace(rawFaces);
+                }
+              } catch {
+                // Keep primary selection
+              }
+            }
+          }
           const activeLang = langRef.current;
           const activeCopy = FACE_ID_120_UI_COPY[activeLang] ?? FACE_ID_120_UI_COPY.th;
 
-          if (rawFaces.length === 0) {
+          if (!selection.primaryFace && rawFaces.length === 0) {
+            lastRegRoiBox = null;
             setLivePose((p) => ({ ...p, faceDetected: false }));
             setGuidanceText(activeCopy.placeFaceCircle);
             setSubCueText(activeCopy.noFaceDetectedSub);
@@ -1543,7 +1641,14 @@ export default function FaceID120Scanner({
             return;
           }
 
-          const selection = selectPrimaryFace(rawFaces);
+          if (selection.primaryBox && selection.primaryCenter) {
+            lastRegRoiBox = {
+              x: Math.max(0, selection.primaryCenter.x - selection.primaryBox.width / 2),
+              y: Math.max(0, selection.primaryCenter.y - selection.primaryBox.height / 2),
+              width: selection.primaryBox.width,
+              height: selection.primaryBox.height,
+            };
+          }
           const landmarks3D = selection.primaryFace ?? rawFaces[0];
           const liveness = evaluateLivenessAndPose(
             landmarks3D,

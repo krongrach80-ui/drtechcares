@@ -1237,4 +1237,35 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     });
     expect(arcStrangerReject.matched).toBe(false);
   });
+
+  it('allows full-range kiosk login (0.25m close-up border clip, 5m far tiny face, and off-center left/right)', () => {
+    const mockPose = { yawDeg: 4, pitchDeg: 0, depthScore: 0.65 };
+    const passInspect = { scan_status: 'PASS', error_code: 'NONE' } as const;
+
+    // 1. Very close (~0.25m): forehead (10) & chin (152) clipped near edge, core 5pt inside frame
+    const closeLm = Array.from({ length: 478 }, () => ({ x: 0.5, y: 0.5, z: 0 }));
+    closeLm[10] = { x: 0.5, y: 0.001, z: 0 };
+    closeLm[152] = { x: 0.5, y: 0.999, z: 0 };
+    closeLm[234] = { x: 0.14, y: 0.5, z: 0 };
+    closeLm[454] = { x: 0.86, y: 0.5, z: 0 };
+    closeLm[33] = { x: 0.34, y: 0.38, z: 0 };
+    closeLm[263] = { x: 0.66, y: 0.38, z: 0 };
+    closeLm[1] = { x: 0.5, y: 0.54, z: -0.05 };
+    closeLm[61] = { x: 0.39, y: 0.72, z: 0 };
+    closeLm[291] = { x: 0.61, y: 0.72, z: 0 };
+    expect(isFullFrontalFaceReadyForLogin(closeLm, mockPose, passInspect)).toBe(true);
+
+    // 2. Far off-center left (~4.5m, ~2.8% height, x around 0.18)
+    const farLeftLm = Array.from({ length: 478 }, () => ({ x: 0.18, y: 0.45, z: 0 }));
+    farLeftLm[10] = { x: 0.18, y: 0.436, z: 0 };
+    farLeftLm[152] = { x: 0.18, y: 0.464, z: 0 };
+    farLeftLm[234] = { x: 0.17, y: 0.45, z: 0 };
+    farLeftLm[454] = { x: 0.19, y: 0.45, z: 0 };
+    farLeftLm[33] = { x: 0.174, y: 0.445, z: 0 };
+    farLeftLm[263] = { x: 0.186, y: 0.445, z: 0 };
+    farLeftLm[1] = { x: 0.18, y: 0.452, z: -0.01 };
+    farLeftLm[61] = { x: 0.176, y: 0.458, z: 0 };
+    farLeftLm[291] = { x: 0.184, y: 0.458, z: 0 };
+    expect(isFullFrontalFaceReadyForLogin(farLeftLm, mockPose, passInspect)).toBe(true);
+  });
 });

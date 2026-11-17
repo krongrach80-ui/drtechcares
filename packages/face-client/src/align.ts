@@ -185,19 +185,20 @@ export function alignFaceTo112(
   }
   const faceHeightRatio = maxY - minY;
 
-  // Stage-2 Two-Stage Smart ROI Super-Crop for distant faces (< 22% frame height)
+  // Stage-2 Two-Stage Smart ROI Super-Crop for distant faces (< 25% frame height)
   let warpSource: HTMLVideoElement | HTMLCanvasElement = source;
   let srcW = width;
   let srcH = height;
   let mappedLandmarks = landmarksNormalized;
 
-  if (faceHeightRatio > 0.01 && faceHeightRatio < 0.22 && typeof document !== 'undefined') {
+  if (faceHeightRatio > 0.008 && faceHeightRatio < 0.25 && typeof document !== 'undefined') {
     const roiBox = computeHeadZoneRoiFromFaceBox(
-      { x: minX, y: minY, width: Math.max(0.02, maxX - minX), height: faceHeightRatio },
-      2.15,
+      { x: minX, y: minY, width: Math.max(0.018, maxX - minX), height: faceHeightRatio },
+      2.2,
     );
     const workCanvas = roiWorkCanvas ?? document.createElement('canvas');
-    const upscaled = renderUpscaledRoi256(source, roiBox, workCanvas);
+    const outSz = faceHeightRatio < 0.1 ? 320 : 256;
+    const upscaled = renderUpscaledRoi256(source, roiBox, workCanvas, outSz);
     if (upscaled) {
       warpSource = upscaled.canvas;
       srcW = upscaled.canvas.width;

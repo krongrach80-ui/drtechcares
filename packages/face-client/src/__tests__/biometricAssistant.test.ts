@@ -492,5 +492,75 @@ describe('3D Biometric Verification Assistant & Face ID Prompts', () => {
     expect(lrPass.livenessPassed).toBe(true);
     expect(lrPass.spoofDetected).toBe(false);
   });
+
+  it('supports Full-Range 0.25m-5.0m scanning (close-up border clip, 2.5% far face, and left/right off-center)', () => {
+    // 1. Extreme Close-Up (~0.28m): forehead/chin clipped near top/bottom, core 5pt visible inside frame
+    const closeLandmarks = Array.from({ length: 478 }, () => ({ x: 0.5, y: 0.5, z: 0 }));
+    closeLandmarks[10] = { x: 0.5, y: 0.002, z: 0 };
+    closeLandmarks[152] = { x: 0.5, y: 0.998, z: 0 };
+    closeLandmarks[33] = { x: 0.32, y: 0.38, z: 0 };
+    closeLandmarks[263] = { x: 0.68, y: 0.38, z: 0 };
+    closeLandmarks[1] = { x: 0.5, y: 0.55, z: -0.05 };
+    closeLandmarks[61] = { x: 0.38, y: 0.72, z: 0 };
+    closeLandmarks[291] = { x: 0.62, y: 0.72, z: 0 };
+
+    const closePass = inspectBiometricFrame3D({
+      landmarks3D: closeLandmarks,
+      faceCount: 1,
+      allowLongRange: true,
+      metrics: {
+        faceHeightRatio: 0.91,
+        faceCenterX: 0.5,
+        faceCenterY: 0.5,
+        brightness: 120,
+        sharpness: 65,
+        eyesVisible: true,
+        mouthVisible: true,
+        depthScore: 0.65,
+      },
+    });
+    expect(closePass.scan_status).toBe('PASS');
+
+    // 2. Off-Center Full-Width Kiosk Login (e.g. seated left at x=0.14)
+    const offCenterPass = inspectBiometricFrame3D({
+      faceCount: 1,
+      allowLongRange: true,
+      metrics: {
+        faceHeightRatio: 0.24,
+        faceCenterX: 0.14,
+        faceCenterY: 0.45,
+        brightness: 125,
+        sharpness: 35,
+        eyesVisible: true,
+        mouthVisible: true,
+        depthScore: 0.55,
+      },
+    });
+    expect(offCenterPass.scan_status).toBe('PASS');
+
+    // 3. Far distance (~4.5-5.0m, 2.5% frame height)
+    const ultraFarPass = inspectBiometricFrame3D({
+      faceCount: 1,
+      allowLongRange: true,
+      metrics: {
+        faceHeightRatio: 0.025,
+        faceCenterX: 0.5,
+        faceCenterY: 0.42,
+        brightness: 120,
+        sharpness: 6,
+        eyesVisible: true,
+        mouthVisible: true,
+        depthScore: 0.5,
+      },
+    });
+    expect(ultraFarPass.scan_status).toBe('PASS');
+
+    // 4. Default strict 120-frame registration bounds still reject 0.22 far faces
+    const regFarReject = inspectBiometricFrame3D({
+      faceCount: 1,
+      metrics: { faceHeightRatio: 0.22, brightness: 120, sharpness: 50, eyesVisible: true, mouthVisible: true },
+    });
+    expect(regFarReject.error_code).toBe('TOO_FAR');
+  });
 });
 

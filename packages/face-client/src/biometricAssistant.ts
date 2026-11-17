@@ -280,6 +280,8 @@ export function inspectBiometricFrame3D(input: BiometricAssistantInput): Biometr
   let faceCenterY = m.faceCenterY;
   let croppedEdge = m.croppedEdge;
 
+  const longRangeEnabled = Boolean(input.allowLongRange ?? m.allowLongRange);
+
   if (landmarks.length >= 455) {
     const forehead = landmarks[10];
     const chin = landmarks[152];
@@ -288,11 +290,21 @@ export function inspectBiometricFrame3D(input: BiometricAssistantInput): Biometr
     faceHeightRatio ??= Math.abs(chin.y - forehead.y);
     faceCenterX ??= (leftCheek.x + rightCheek.x) / 2;
     faceCenterY ??= (forehead.y + chin.y) / 2;
-    croppedEdge ??=
-      !isLandmarkWithinFrame(forehead) ||
-      !isLandmarkWithinFrame(chin) ||
-      !isLandmarkWithinFrame(leftCheek) ||
-      !isLandmarkWithinFrame(rightCheek);
+    if (croppedEdge === undefined) {
+      if (longRangeEnabled) {
+        // In full-range mode, allow close-ups where forehead/chin graze frame border as long as core 5 points stay visible
+        const corePts = [landmarks[33], landmarks[263], landmarks[1], landmarks[61], landmarks[291]];
+        croppedEdge = corePts.some(
+          (pt) => !pt || !Number.isFinite(pt.x) || !Number.isFinite(pt.y) || pt.x < 0.005 || pt.x > 0.995 || pt.y < 0.005 || pt.y > 0.995,
+        );
+      } else {
+        croppedEdge =
+          !isLandmarkWithinFrame(forehead) ||
+          !isLandmarkWithinFrame(chin) ||
+          !isLandmarkWithinFrame(leftCheek) ||
+          !isLandmarkWithinFrame(rightCheek);
+      }
+    }
   }
 
   faceHeightRatio ??= faceCount === 1 ? 0.5 : 0;
@@ -301,7 +313,10 @@ export function inspectBiometricFrame3D(input: BiometricAssistantInput): Biometr
   croppedEdge ??= false;
 
   // Checkpoint 1: Framing & Alignment
-  const minFaceHeightThreshold = (input.allowLongRange ?? m.allowLongRange) ? 0.035 : 0.3;
+  const minFaceHeightThreshold = longRangeEnabled ? 0.022 : 0.3;
+  const maxFaceHeightThreshold = longRangeEnabled ? 0.96 : 0.82;
+  const maxCenterOffset = longRangeEnabled ? 0.45 : 0.24;
+
   if (faceCount === 0 || faceHeightRatio < minFaceHeightThreshold) {
     return {
       scan_status: 'RETRY',
@@ -318,7 +333,7 @@ export function inspectBiometricFrame3D(input: BiometricAssistantInput): Biometr
     };
   }
 
-  if (faceCount > 1 || croppedEdge || faceHeightRatio > 0.82) {
+  if (faceCount > 1 || croppedEdge || faceHeightRatio > maxFaceHeightThreshold) {
     return {
       scan_status: 'RETRY',
       confidence_score: 0.25,
@@ -334,7 +349,10 @@ export function inspectBiometricFrame3D(input: BiometricAssistantInput): Biometr
     };
   }
 
-  if (Math.abs(faceCenterX - 0.5) > 0.24 || Math.abs(faceCenterY - 0.5) > 0.24) {
+  if (
+    Math.abs(faceCenterX - 0.5) > maxCenterOffset ||
+    Math.abs(faceCenterY - 0.5) > maxCenterOffset
+  ) {
     return {
       scan_status: 'RETRY',
       confidence_score: 0.35,

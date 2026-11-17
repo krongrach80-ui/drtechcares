@@ -90,8 +90,8 @@ export function selectPrimaryFace(
     const width = maxX - minX;
     const height = maxY - minY;
     const area = width * height;
-    // Allow ultra-long-range faces (>= ~3.5-4% frame height / ~28x28px at 1080p)
-    if (width < 0.025 || height < 0.035 || area < 0.0009) continue;
+    // Allow ultra-long-range faces (>= ~2.2% frame height, up to ~5m)
+    if (width < 0.018 || height < 0.022 || area < 0.0004) continue;
 
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
