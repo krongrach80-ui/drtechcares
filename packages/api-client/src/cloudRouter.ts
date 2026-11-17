@@ -988,6 +988,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     }
 
     const requiresFreshHydration =
+      ((pathname === '/api/users' || pathname === '/api/staff') && method === 'GET') ||
       (pathname === '/api/biometrics/index' && method === 'GET') ||
       (pathname === '/api/biometric/verify' && method === 'POST') ||
       (pathname === '/api/patients' && method === 'GET') ||
@@ -1485,23 +1486,51 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         state.treatment_reports = state.treatment_reports.filter((r) => r.patientId !== linkedPatientId);
       }
 
-      await persistToSupabase(supabase, async (db) => {
-        await db.from('active_sessions').delete().eq('user_id', removed.id);
-        await db.from('staff_users').delete().eq('id', removed.id);
-        await db.from('staff_users').delete().eq('username', removed.username);
-        if (linkedPatientId) {
-          await db.from('face_templates').delete().eq('patient_id', linkedPatientId);
-          await db.from('patient_biometrics').delete().eq('patient_id', linkedPatientId);
-          await db.from('face_enrollments').delete().eq('patient_id', linkedPatientId);
-          await db.from('patient_courses').delete().eq('patient_id', linkedPatientId);
-          await db.from('rehab_schedules').delete().eq('patient_id', linkedPatientId);
-          await db.from('rehab_sessions').delete().eq('patient_id', linkedPatientId);
-          await db.from('medical_notes').delete().eq('patient_id', linkedPatientId);
-          await db.from('treatment_reports').delete().eq('patient_id', linkedPatientId);
-          await db.from('staff_users').delete().eq('patient_id', linkedPatientId);
-          await db.from('patients').delete().eq('id', linkedPatientId);
+      if (supabase) {
+        try {
+          await persistBiometricStrictToSupabase(supabase, async (db) => {
+            await db.from('active_sessions').delete().eq('user_id', removed.id);
+            await db
+              .from('patients')
+              .update({ assigned_pt_id: null })
+              .eq('assigned_pt_id', removed.id);
+            await db
+              .from('patients')
+              .update({ delegated_to_pt_id: null })
+              .eq('delegated_to_pt_id', removed.id);
+            const delById = (await db.from('staff_users').delete().eq('id', removed.id)) as {
+              error?: { message?: string } | null;
+            };
+            if (delById?.error) return delById;
+            const delByUsername = (await db
+              .from('staff_users')
+              .delete()
+              .eq('username', removed.username)) as { error?: { message?: string } | null };
+            if (delByUsername?.error) return delByUsername;
+            if (linkedPatientId) {
+              await db.from('face_templates').delete().eq('patient_id', linkedPatientId);
+              await db.from('patient_biometrics').delete().eq('patient_id', linkedPatientId);
+              await db.from('face_enrollments').delete().eq('patient_id', linkedPatientId);
+              await db.from('patient_courses').delete().eq('patient_id', linkedPatientId);
+              await db.from('rehab_schedules').delete().eq('patient_id', linkedPatientId);
+              await db.from('rehab_sessions').delete().eq('patient_id', linkedPatientId);
+              await db.from('medical_notes').delete().eq('patient_id', linkedPatientId);
+              await db.from('treatment_reports').delete().eq('patient_id', linkedPatientId);
+              await db.from('staff_users').delete().eq('patient_id', linkedPatientId);
+              await db.from('patients').delete().eq('id', linkedPatientId);
+            }
+            return { error: null };
+          });
+        } catch (err) {
+          return jsonResponse(
+            {
+              error: 'USER_DELETE_FAILED',
+              detail: err instanceof Error ? err.message : String(err),
+            },
+            500,
+          );
         }
-      });
+      }
       recordAudit({
         eventType: 'USER_DELETED',
         actorRole: authUser!.role,

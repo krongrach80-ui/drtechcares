@@ -173,14 +173,20 @@ export async function hydrateStateFromSupabase(
       .filter((u) => !deletedSet.has(u.id));
     const dbIds = new Set(dbUsers.map((u) => u.id));
     const dbUsernames = new Set(dbUsers.map((u) => u.username.toLowerCase()));
-    const localOnly = state.users.filter(
-      (u) =>
-        SEEDED_DEFAULT_USER_IDS.has(u.id) &&
-        !deletedSet.has(u.id) &&
-        !dbIds.has(u.id) &&
-        !dbUsernames.has(u.username.toLowerCase()),
-    );
-    state.users = [...dbUsers, ...localOnly];
+    // Authoritative Supabase staff list: NEVER resurrect deleted seeded PT accounts (pt_somchai / pt_waranya)
+    // across fresh Worker isolates; keep emergency super_admin bootstrap ONLY if DB has zero active admins.
+    const hasSuperAdminInDb = dbUsers.some((u) => u.role === 'super_admin' && u.active);
+    const bootstrapAdminOnly = hasSuperAdminInDb
+      ? []
+      : state.users.filter(
+          (u) =>
+            u.role === 'super_admin' &&
+            SEEDED_DEFAULT_USER_IDS.has(u.id) &&
+            !deletedSet.has(u.id) &&
+            !dbIds.has(u.id) &&
+            !dbUsernames.has(u.username.toLowerCase()),
+        );
+    state.users = [...dbUsers, ...bootstrapAdminOnly];
   }
 
   const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);

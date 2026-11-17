@@ -1867,5 +1867,149 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(syncJson.syncedCount).toBe(26);
     expect(syncJson.exercises).toHaveLength(26);
   });
+
+  it('never resurrects deleted seeded PT accounts (pt_somchai / pt_waranya) during hydrateStateFromSupabase across fresh Worker isolates', async () => {
+    const seededNow = new Date().toISOString();
+    const freshIsolateState = {
+      users: [
+        {
+          id: '00000000-0000-4000-8000-000000000001',
+          username: 'admin',
+          passwordHash: 'plain:Admin@2026',
+          role: 'super_admin',
+          fullName: 'Super Admin',
+          phone: '02-000-0001',
+          active: true,
+          forceLoggedOutAt: null,
+          createdAt: seededNow,
+        },
+        {
+          id: '00000000-0000-4000-8000-000000000002',
+          username: 'pt_somchai',
+          passwordHash: 'plain:Pt@2026',
+          role: 'pt',
+          fullName: 'กภ.สมชาย ใจดี (PT)',
+          phone: '081-111-2233',
+          active: true,
+          forceLoggedOutAt: null,
+          createdAt: seededNow,
+        },
+        {
+          id: '00000000-0000-4000-8000-000000000003',
+          username: 'pt_waranya',
+          passwordHash: 'plain:Pt@2026',
+          role: 'pt',
+          fullName: 'กภ.วรัญญา สุขสันต์ (PT)',
+          phone: '089-222-3344',
+          active: true,
+          forceLoggedOutAt: null,
+          createdAt: seededNow,
+        },
+      ],
+      deleted_user_ids: [],
+      deleted_patient_ids: [],
+      patients: [],
+      face_templates: [],
+      medical_notes: [],
+      patient_courses: [],
+      rehab_sessions: [],
+      rehab_session_history: [],
+      treatment_reports: [],
+      exercises: [],
+      modpacks: [],
+      staff_calls: [],
+      audit_logs: [],
+      banned_targets: [],
+      active_sessions: [],
+      system_settings: {
+        aiFaceScanEnabled: true,
+        aiFaceThreshold: 0.925,
+        aiPoseDetectionEnabled: false,
+        kioskAutoResetSec: 6,
+      },
+      kiosks: [],
+    } as unknown as CloudRouterState;
+
+    const makeMockSupabaseWithUsers = (rows: Record<string, unknown>[]) =>
+      ({
+        from: (table: string) => ({
+          select: () => ({
+            eq: () => ({
+              order: async () => ({ data: [], error: null }),
+              maybeSingle: async () => ({ data: null, error: null }),
+              then: (cb: (v: { data: unknown[]; error: null }) => void) =>
+                Promise.resolve({ data: [], error: null }).then(cb),
+            }),
+            order: () => ({
+              limit: async () => ({ data: [], error: null }),
+              then: (cb: (v: { data: unknown[]; error: null }) => void) =>
+                Promise.resolve({ data: [], error: null }).then(cb),
+            }),
+            then: (cb: (v: { data: Record<string, unknown>[]; error: null }) => void) =>
+              Promise.resolve({ data: table === 'staff_users' ? rows : [], error: null }).then(cb),
+          }),
+        }),
+      }) as unknown as SupabaseClient;
+
+    // 1. Supabase has ONLY admin + 1 patient (pt_somchai & pt_waranya were deleted permanently)
+    await hydrateStateFromSupabase(
+      makeMockSupabaseWithUsers([
+        {
+          id: '00000000-0000-4000-8000-000000000001',
+          username: 'admin',
+          password_hash: 'plain:Admin@2026',
+          role: 'super_admin',
+          full_name: 'Super Admin',
+          phone: '02-000-0001',
+          active: true,
+          created_at: seededNow,
+        },
+        {
+          id: 'pat-u-1',
+          username: 'hn29466',
+          password_hash: 'hash',
+          role: 'patient',
+          full_name: 'lym',
+          active: true,
+          created_at: seededNow,
+        },
+      ]),
+      freshIsolateState,
+    );
+
+    expect(freshIsolateState.users.map((u) => u.username)).toEqual(['admin', 'hn29466']);
+
+    // 2. If staff_users is completely empty (brand-new DB), emergency admin bootstraps without pt_somchai/pt_waranya
+    const emptyDbState = {
+      ...freshIsolateState,
+      users: [
+        {
+          id: '00000000-0000-4000-8000-000000000001',
+          username: 'admin',
+          passwordHash: 'plain:Admin@2026',
+          role: 'super_admin',
+          fullName: 'Super Admin',
+          phone: '02-000-0001',
+          active: true,
+          forceLoggedOutAt: null,
+          createdAt: seededNow,
+        },
+        {
+          id: '00000000-0000-4000-8000-000000000002',
+          username: 'pt_somchai',
+          passwordHash: 'plain:Pt@2026',
+          role: 'pt',
+          fullName: 'กภ.สมชาย ใจดี (PT)',
+          phone: '081-111-2233',
+          active: true,
+          forceLoggedOutAt: null,
+          createdAt: seededNow,
+        },
+      ],
+    } as unknown as CloudRouterState;
+
+    await hydrateStateFromSupabase(makeMockSupabaseWithUsers([]), emptyDbState);
+    expect(emptyDbState.users.map((u) => u.username)).toEqual(['admin']);
+  });
 });
 
