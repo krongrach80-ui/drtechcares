@@ -1,7 +1,9 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import {
   CLINICAL_EXERCISES,
+  DEPRECATED_EXERCISE_CODES,
   evaluateClinicalBiomechanicsPacket,
+  isDeprecatedExerciseRecord,
 } from '@drtechcares/pose-engine';
 import {
   COMMON_MODE_ALPHA,
@@ -4006,13 +4008,67 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     // 6. EXERCISES & MODPACKS
     // ========================
     if (pathname === '/api/exercises' && method === 'GET') {
-      const existingIds = new Set(state.exercises.map((e) => e.id));
-      const builtinExtras = CLINICAL_EXERCISES.filter((ex) => !existingIds.has(ex.id)).map((ex) => ({
+      const customExercises = state.exercises.filter(
+        (ex) => !isDeprecatedExerciseRecord(ex) && !CLINICAL_EXERCISES.some((c) => c.id === ex.id || c.code === ex.code),
+      );
+      const canonical = CLINICAL_EXERCISES.map((ex) => ({
         ...ex,
         createdBy: 'system',
       }));
-      const combined = builtinExtras.length > 0 ? [...state.exercises, ...builtinExtras] : state.exercises;
-      return jsonResponse({ exercises: combined });
+      return jsonResponse({ exercises: [...canonical, ...customExercises] });
+    }
+
+    if (pathname === '/api/exercises/sync-stroke-library' && method === 'POST') {
+      const err = requireAuth(authUser, ['super_admin', 'pt']);
+      if (err) return err;
+
+      const beforeCount = state.exercises.length;
+      const customRemaining = state.exercises.filter(
+        (ex) => !isDeprecatedExerciseRecord(ex) && !CLINICAL_EXERCISES.some((c) => c.id === ex.id || c.code === ex.code),
+      );
+      const canonical = CLINICAL_EXERCISES.map((ex) => ({
+        ...ex,
+        createdBy: 'system',
+      }));
+      state.exercises = [...canonical, ...customRemaining];
+      const purgedCount = Math.max(0, beforeCount - customRemaining.length);
+
+      await persistToSupabase(supabase, async (db) => {
+        const legacyIds = Array.from({ length: 40 }, (_, i) => `ex-${String(i + 1).padStart(2, '0')}`);
+        await db.from('exercises').delete().in('id', legacyIds);
+        await db.from('exercises').delete().in('code', [...DEPRECATED_EXERCISE_CODES]);
+        await db.from('exercises').delete().in('category', ['lower_limb', 'balance']);
+        await db.from('exercises').upsert(
+          CLINICAL_EXERCISES.map((ex) => ({
+            id: ex.id,
+            code: ex.code,
+            category: ex.category,
+            name_th: ex.name.th,
+            instructions_th: ex.instruction.th,
+            name_i18n: ex.name,
+            instruction_i18n: ex.instruction,
+            detection_config: ex.detection,
+            active: true,
+          })),
+          { onConflict: 'id' },
+        );
+      });
+
+      recordAudit({
+        eventType: 'STROKE_LIBRARY_SYNCED',
+        actorRole: authUser!.role,
+        actorId: authUser!.id,
+        actorName: authUser!.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        detail: `Synchronized 26 standardized Stroke ADL & MOPH upper-body exercises (purged=${purgedCount})`,
+      });
+      return jsonResponse({
+        ok: true,
+        purgedCount,
+        syncedCount: canonical.length,
+        exercises: state.exercises,
+      });
     }
 
     if (pathname === '/api/exercises' && method === 'POST') {

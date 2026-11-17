@@ -13,7 +13,11 @@ import {
   type UserAccount,
 } from '@drtechcares/api-client';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
-import { CLINICAL_EXERCISES, sortExercisesStrokeUpperFirst } from '@drtechcares/pose-engine';
+import {
+  CLINICAL_EXERCISES,
+  isDeprecatedExerciseRecord,
+  sortExercisesStrokeUpperFirst,
+} from '@drtechcares/pose-engine';
 import {
   Activity,
   CalendarDays,
@@ -44,17 +48,15 @@ interface StaffAssistedEnrollmentModalProps {
   onEnrolled: (patient: PatientRecord) => void;
 }
 
-type ExerciseFilterCategory = 'all' | 'upper_limb' | 'lower_limb' | 'neck_trunk' | 'balance';
+type ExerciseFilterCategory = 'all' | 'upper_limb' | 'neck_trunk';
 
 const ENROLLMENT_EXERCISE_FILTER_TABS: ReadonlyArray<{
   id: ExerciseFilterCategory;
   label: Record<ClinicalLang, string>;
 }> = [
   { id: 'all', label: { th: 'ทั้งหมด', en: 'All Postures', cn: '全部动作' } },
-  { id: 'upper_limb', label: { th: 'แขนและไหล่', en: 'Upper Limb', cn: '上肢/肩肘' } },
-  { id: 'lower_limb', label: { th: 'ขาและเข่า', en: 'Lower Limb', cn: '下肢/膝踝' } },
-  { id: 'neck_trunk', label: { th: 'คอและลำตัว', en: 'Neck & Trunk', cn: '颈部/躯干' } },
-  { id: 'balance', label: { th: 'ฝึกทรงตัว', en: 'Balance', cn: '平衡训练' } },
+  { id: 'upper_limb', label: { th: 'แขน ไหล่ ศอก และมือ', en: 'Upper Limb (Stroke)', cn: '上肢与肩肘手' } },
+  { id: 'neck_trunk', label: { th: 'คอและบ่า (สธ.)', en: 'Neck & Shoulders (MOPH)', cn: '颈部与肩胛' } },
 ];
 
 const FALLBACK_MANAGED_EXERCISES: ManagedExerciseRecord[] = CLINICAL_EXERCISES.map((ex) => ({
@@ -91,15 +93,50 @@ function getRecommendedExerciseIdsForJoint(
   catalog: readonly ManagedExerciseRecord[],
 ): string[] {
   const preferredByJoint: Record<string, string[]> = {
-    'ข้อไหล่และแขน Stroke ADL (Shoulder & Arm)': ['ex-27', 'ex-29', 'ex-31', 'ex-33', 'ex-35'],
-    'คอ บ่า และแขน สธ. ผู้สูงอายุ (MOPH Upper Body)': ['ex-37', 'ex-38', 'ex-39', 'ex-40'],
-    'ข้อไหล่ (Shoulder)': ['ex-27', 'ex-29', 'ex-01', 'ex-02'],
-    'ข้อศอกและแขน (Elbow & Arm)': ['ex-31', 'ex-32', 'ex-35', 'ex-05', 'ex-06'],
-    'หลังส่วนล่าง (Lower Back)': ['ex-23', 'ex-39', 'ex-15', 'ex-16'],
-    'เข่า (Knee)': ['ex-13', 'ex-14', 'ex-26'],
-    'การทรงตัวและสมอง (Neuro & Cognitive)': ['ex-21', 'ex-22', 'ex-39', 'ex-40'],
+    'ข้อไหล่และแขน Stroke ADL (Shoulder & Arm)': [
+      'STROKE_SH_FLEX_R',
+      'STROKE_SH_ABD_R',
+      'STROKE_CROSS_BODY_R',
+      'STROKE_SCAP_PROTRACT_R',
+      'STROKE_BOBATH_ARM_RAISE',
+    ],
+    'คอ บ่า และแขน สธ. ผู้สูงอายุ (MOPH Upper Body)': [
+      'MOPH_NECK_TILT_R',
+      'MOPH_NECK_TILT_L',
+      'MOPH_NECK_TURN_BILATERAL',
+      'MOPH_SHOULDER_SHRUG_ROLL',
+    ],
+    'ข้อไหล่ (Shoulder)': [
+      'STROKE_SH_FLEX_R',
+      'STROKE_SH_ABD_R',
+      'STROKE_SH_ROT_R',
+      'STROKE_CROSS_BODY_R',
+      'STROKE_SCAP_PROTRACT_R',
+    ],
+    'ข้อศอกและแขน (Elbow & Arm)': [
+      'STROKE_ELB_FLEX_EXT_R',
+      'STROKE_BOBATH_FORWARD_PUSH',
+      'STROKE_HAND_TO_HEAD_R',
+      'STROKE_FOREARM_TURN_R',
+    ],
+    'ข้อมือและกล้ามเนื้อมัดเล็ก (Wrist & Hand Fingers)': [
+      'STROKE_WRIST_FINGER_R',
+      'STROKE_THUMB_PINCH_R',
+      'STROKE_FOREARM_TURN_R',
+      'STROKE_WRIST_FINGER_L',
+    ],
+    'กล้ามเนื้อคอและบ่า สธ. (Cervical & Shoulder Girdle)': [
+      'MOPH_NECK_TILT_R',
+      'MOPH_NECK_TURN_BILATERAL',
+      'MOPH_SHOULDER_SHRUG_ROLL',
+    ],
   };
-  const preferred = preferredByJoint[jointLabel] ?? ['ex-27', 'ex-29', 'ex-37', 'ex-39'];
+  const preferred = preferredByJoint[jointLabel] ?? [
+    'STROKE_SH_FLEX_R',
+    'STROKE_SH_ABD_R',
+    'STROKE_ELB_FLEX_EXT_R',
+    'MOPH_SHOULDER_SHRUG_ROLL',
+  ];
   const validSet = new Set(catalog.map((e) => e.id));
   const filtered = preferred.filter((id) => validSet.has(id));
   if (filtered.length > 0) return filtered;
@@ -121,13 +158,12 @@ export function StaffAssistedEnrollmentModal({
   const isExistingPatientMode = Boolean(targetPatient);
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const todayIso = useMemo(() => formatLocalIsoDate(), []);
-  const catalogExercises = useMemo(
-    () =>
-      sortExercisesStrokeUpperFirst(
-        exercises.length > 0 ? exercises : FALLBACK_MANAGED_EXERCISES,
-      ),
-    [exercises],
-  );
+  const catalogExercises = useMemo(() => {
+    const cleanPassed = exercises.filter((ex) => !isDeprecatedExerciseRecord(ex));
+    return sortExercisesStrokeUpperFirst(
+      cleanPassed.length > 0 ? cleanPassed : FALLBACK_MANAGED_EXERCISES,
+    );
+  }, [exercises]);
 
   // Section 1: General Info
   const [hn, setHn] = useState(generatePatientHn);
@@ -852,10 +888,11 @@ export function StaffAssistedEnrollmentModal({
                       </option>
                       <option value="ข้อไหล่ (Shoulder)">ข้อไหล่ (Shoulder)</option>
                       <option value="ข้อศอกและแขน (Elbow & Arm)">ข้อศอกและแขน (Elbow &amp; Arm)</option>
-                      <option value="เข่า (Knee)">เข่า (Knee)</option>
-                      <option value="หลังส่วนล่าง (Lower Back)">หลังส่วนล่าง (Lower Back)</option>
-                      <option value="การทรงตัวและสมอง (Neuro & Cognitive)">
-                        การทรงตัวและสมอง (Neuro &amp; Cognitive)
+                      <option value="ข้อมือและกล้ามเนื้อมัดเล็ก (Wrist & Hand Fingers)">
+                        ข้อมือและกล้ามเนื้อมัดเล็ก (Wrist &amp; Hand Fingers)
+                      </option>
+                      <option value="กล้ามเนื้อคอและบ่า สธ. (Cervical & Shoulder Girdle)">
+                        กล้ามเนื้อคอและบ่า สธ. (Cervical &amp; Shoulder Girdle)
                       </option>
                     </select>
                   </div>

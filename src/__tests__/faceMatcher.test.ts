@@ -348,7 +348,7 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
         {
           id: 'sched-future',
           patientId: 'pat-a',
-          exerciseId: 'ex-01',
+          exerciseId: 'STROKE_SH_FLEX_R',
           scheduledDate: '2026-11-16',
           sets: 3,
           reps: 10,
@@ -367,7 +367,7 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
         {
           id: 'sched-today-1',
           patientId: 'pat-a',
-          exerciseId: 'ex-01',
+          exerciseId: 'STROKE_SH_FLEX_R',
           scheduledDate: '2026-11-14',
           sets: 3,
           reps: 10,
@@ -376,7 +376,7 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
         {
           id: 'sched-rest-ignored',
           patientId: 'pat-a',
-          exerciseId: 'ex-02',
+          exerciseId: 'STROKE_SH_FLEX_L',
           scheduledDate: '2026-11-14',
           sets: 2,
           reps: 8,
@@ -388,8 +388,8 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     });
     expect(scheduledToday.hasAppointmentToday).toBe(true);
     expect(scheduledToday.todayExercises).toHaveLength(1);
-    expect(scheduledToday.todayExercises[0].exerciseId).toBe('ex-01');
-    expect(scheduledToday.todayExercises[0].nameTh).toContain('ยกแขนตรงไปด้านหน้า');
+    expect(scheduledToday.todayExercises[0].exerciseId).toBe('STROKE_SH_FLEX_R');
+    expect(scheduledToday.todayExercises[0].nameTh).toContain('ยกแขนขวาไปด้านหน้า');
     expect(scheduledToday.todayExercises[0].sets).toBe(3);
     expect(scheduledToday.todayExercises[0].reps).toBe(10);
   });

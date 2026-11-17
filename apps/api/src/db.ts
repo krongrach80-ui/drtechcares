@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   CLINICAL_EXERCISES,
+  STROKE_CANONICAL_EXERCISE_SET,
+  isDeprecatedExerciseRecord,
   type BodySide,
   type ExerciseConfig,
 } from '@drtechcares/pose-engine';
@@ -328,6 +330,7 @@ export class ClinicalDatabase {
       try {
         const raw = fs.readFileSync(this.filePath, 'utf-8');
         this.state = JSON.parse(raw) as DatabaseState;
+        this.syncStrokeExerciseLibrary();
       } catch {
         this.state = createInitialState();
         this.save();
@@ -336,6 +339,28 @@ export class ClinicalDatabase {
       this.state = createInitialState();
       this.save();
     }
+  }
+
+  /**
+   * Purges deprecated leg/orthogonal/legacy ex-01..ex-40 exercises from local DB state
+   * and upserts all 26 canonical Stroke ADL & MOPH upper-body exercises.
+   */
+  syncStrokeExerciseLibrary(): { exercises: ManagedExerciseRecord[]; purgedCount: number } {
+    const existing = Array.isArray(this.state.exercises) ? this.state.exercises : [];
+    const nonDeprecatedCustom = existing.filter(
+      (ex) =>
+        !isDeprecatedExerciseRecord(ex) &&
+        !STROKE_CANONICAL_EXERCISE_SET.has(ex.code) &&
+        !STROKE_CANONICAL_EXERCISE_SET.has(ex.id),
+    );
+    const purgedCount = existing.filter((ex) => isDeprecatedExerciseRecord(ex)).length;
+    const canonical: ManagedExerciseRecord[] = CLINICAL_EXERCISES.map((ex) => ({
+      ...ex,
+      createdBy: 'system',
+    }));
+    this.state.exercises = [...canonical, ...nonDeprecatedCustom];
+    this.save();
+    return { exercises: this.state.exercises, purgedCount };
   }
 
   save(): void {

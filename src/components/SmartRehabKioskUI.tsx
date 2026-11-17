@@ -303,12 +303,18 @@ export function sanitizeAndStabilizePoseLandmarks(
 
 export type ExerciseJointMode =
   | 'elbow'
-  | 'neck'
-  | 'hip_march'
-  | 'shoulder_rotation'
+  | 'cross_body'
+  | 'scap_protract'
+  | 'bobath_push'
+  | 'hand_to_head'
+  | 'forearm_turn'
   | 'wrist_finger'
+  | 'thumb_pinch'
+  | 'shoulder_rotation'
   | 'shoulder_shrug'
   | 'bilateral_raise'
+  | 'neck'
+  | 'neck_turn'
   | 'default';
 
 export interface ExerciseMetaHint {
@@ -325,8 +331,14 @@ export function classifyExerciseJointMode(
   const id = (exerciseMeta.catalog_exercise_id || exerciseMeta.exercise_id || '').toLowerCase();
   const name = `${exerciseMeta.name_th ?? ''} ${exerciseMeta.name_en ?? ''}`.toLowerCase();
   if (
-    id === 'ex-05' ||
-    id === 'ex-06' ||
+    id.includes('hand_to_head') ||
+    name.includes('แตะศีรษะ') ||
+    name.includes('หวีผม') ||
+    name.includes('hand-to-head')
+  ) {
+    return 'hand_to_head';
+  }
+  if (
     id.includes('elb') ||
     name.includes('ข้อศอก') ||
     name.includes('elbow')
@@ -334,11 +346,56 @@ export function classifyExerciseJointMode(
     return 'elbow';
   }
   if (
+    id.includes('cross_body') ||
+    name.includes('ไขว้หน้าอก') ||
+    name.includes('cross-body')
+  ) {
+    return 'cross_body';
+  }
+  if (
+    id.includes('scap_protract') ||
+    name.includes('ผลักสะบัก') ||
+    name.includes('ยื่นมือเอื้อมไปด้านหน้า') ||
+    name.includes('protraction')
+  ) {
+    return 'scap_protract';
+  }
+  if (
+    id.includes('forward_push') ||
+    name.includes('ดันแขนตรงไปด้านหน้า') ||
+    name.includes('forward push')
+  ) {
+    return 'bobath_push';
+  }
+  if (
+    id.includes('arm_raise') ||
+    id.includes('bilateral_arm_raise') ||
+    name.includes('ประสานมือ') ||
+    name.includes('bilateral')
+  ) {
+    return 'bilateral_raise';
+  }
+  if (
     id.includes('sh_rot') ||
     name.includes('หมุนข้อไหล่') ||
     name.includes('shoulder rotation')
   ) {
     return 'shoulder_rotation';
+  }
+  if (
+    id.includes('forearm_turn') ||
+    name.includes('คว่ำ') ||
+    name.includes('หงายมือ') ||
+    name.includes('supination')
+  ) {
+    return 'forearm_turn';
+  }
+  if (
+    id.includes('thumb_pinch') ||
+    name.includes('จีบนิ้ว') ||
+    name.includes('pinch')
+  ) {
+    return 'thumb_pinch';
   }
   if (
     id.includes('wrist_finger') ||
@@ -355,29 +412,18 @@ export function classifyExerciseJointMode(
     return 'shoulder_shrug';
   }
   if (
-    id.includes('bilateral_arm_raise') ||
-    name.includes('ประสานมือ') ||
-    name.includes('bilateral')
+    id.includes('neck_turn') ||
+    name.includes('หันคอ') ||
+    name.includes('neck rotation')
   ) {
-    return 'bilateral_raise';
+    return 'neck_turn';
   }
   if (
-    id === 'ex-19' ||
-    id === 'ex-20' ||
     id.includes('neck') ||
     name.includes('เอียงคอ') ||
     name.includes('neck')
   ) {
     return 'neck';
-  }
-  if (
-    id === 'ex-15' ||
-    id === 'ex-16' ||
-    id.includes('hip_flex') ||
-    name.includes('ยกเข่าสูง') ||
-    name.includes('march')
-  ) {
-    return 'hip_march';
   }
   return 'default';
 }
@@ -658,7 +704,102 @@ export function measureLiveJointAngleAndTilt(
         )
       : 0;
 
-  if (jointMode === 'shoulder_rotation' && (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder')) {
+  if (jointMode === 'cross_body' && (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder')) {
+    const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
+    const shIdx = primarySide === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER;
+    const oppShIdx = primarySide === 'left' ? POSE_INDEX.RIGHT_SHOULDER : POSE_INDEX.LEFT_SHOULDER;
+    const wrIdx = primarySide === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST;
+    const elIdx = primarySide === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW;
+    const sh = landmarks[shIdx];
+    const oppSh = landmarks[oppShIdx];
+    const distal = landmarks[wrIdx] && (landmarks[wrIdx].visibility ?? 0) >= UPPER_MIN_VIS
+      ? landmarks[wrIdx]
+      : landmarks[elIdx];
+    if (sh && oppSh && distal && (sh.visibility ?? 0) >= UPPER_MIN_VIS && (distal.visibility ?? 0) >= UPPER_MIN_VIS) {
+      const oppVecX = oppSh.x - sh.x;
+      const oppSign = Math.sign(oppVecX) || (primarySide === 'right' ? 1 : -1);
+      const crossRatio = ((distal.x - sh.x) * oppSign) / shoulderSpanX;
+      const chestWindow = Math.max(0.2, 1 - Math.abs(distal.y - (sh.y + shoulderSpanX * 0.12)) / (shoulderSpanX * 1.15));
+      const deg = Math.min(118, Math.max(0, crossRatio * 108 * chestWindow));
+      rawPrimaryRomDeg = Number(deg.toFixed(1));
+      romDeg = rawPrimaryRomDeg;
+    } else {
+      lowVisibilityAlertTh = 'กรุณาให้เห็นหัวไหล่ทั้ง 2 ข้างและแขนในกรอบกล้อง';
+    }
+  } else if (jointMode === 'scap_protract' && (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder')) {
+    const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
+    const shIdx = primarySide === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER;
+    const elIdx = primarySide === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW;
+    const wrIdx = primarySide === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST;
+    const pResult = computeArmElevationDeg(primarySide);
+    const sh = landmarks[shIdx];
+    const el = landmarks[elIdx];
+    const wr = landmarks[wrIdx];
+    if (pResult.angleDeg !== null) {
+      if (sh && el && wr && (el.visibility ?? 0) >= UPPER_MIN_VIS && (wr.visibility ?? 0) >= UPPER_MIN_VIS) {
+        elbowAngleDeg = computeJointAngle3D(sh, el, wr);
+      }
+      const depthGain = sh && wr ? Math.max(0, (sh.z ?? 0) - (wr.z ?? 0)) * 45 : 0;
+      const rawProtract = Math.min(100, Math.max(0, pResult.angleDeg * 0.88 + depthGain));
+      rawPrimaryRomDeg = Number(rawProtract.toFixed(1));
+      if (elbowAngleDeg !== null && elbowAngleDeg < 130 && rawPrimaryRomDeg >= 45) {
+        postureCompensated = true;
+        postureBannerTh = `กรุณาเหยียดข้อศอกให้ตรงขณะยื่นไหล่ (${elbowAngleDeg.toFixed(0)}°)`;
+      }
+      romDeg = rawPrimaryRomDeg;
+      xyzVector = pResult.xyzVector;
+    } else {
+      lowVisibilityAlertTh = 'มองเห็นหัวไหล่และแขนไม่ชัดเจน กรุณาอยู่ในกรอบกล้อง';
+    }
+  } else if (jointMode === 'bobath_push') {
+    const measureElbowExtension = (side: 'left' | 'right'): number | null => {
+      const s = landmarks[side === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
+      const e = landmarks[side === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
+      const w = landmarks[side === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
+      if (!s || !e || !w || (s.visibility ?? 0) < UPPER_MIN_VIS || (w.visibility ?? 0) < UPPER_MIN_VIS) {
+        return null;
+      }
+      return computeJointAngle3D(s, e, w);
+    };
+    const lExt = measureElbowExtension('left');
+    const rExt = measureElbowExtension('right');
+    if (lExt !== null && rExt !== null) {
+      rawPrimaryRomDeg = Number(Math.min(172, (lExt + rExt) / 2).toFixed(1));
+      romDeg = rawPrimaryRomDeg;
+    } else if (lExt !== null || rExt !== null) {
+      rawPrimaryRomDeg = Number(Math.min(172, (lExt ?? rExt ?? 0)).toFixed(1));
+      romDeg = rawPrimaryRomDeg;
+    } else {
+      lowVisibilityAlertTh = 'กรุณาให้กล้องเห็นแขนทั้ง 2 ข้างขณะดันไปด้านหน้า';
+    }
+  } else if (jointMode === 'hand_to_head' && (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder')) {
+    const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
+    const shIdx = primarySide === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER;
+    const wrIdx = primarySide === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST;
+    const oppWrIdx = primarySide === 'left' ? POSE_INDEX.RIGHT_WRIST : POSE_INDEX.LEFT_WRIST;
+    const sh = landmarks[shIdx];
+    const wrist = landmarks[wrIdx];
+    const oppWrist = landmarks[oppWrIdx];
+    const nose = landmarks[POSE_INDEX.NOSE];
+    if (sh && wrist && (wrist.visibility ?? 0) >= UPPER_MIN_VIS) {
+      const headRefY = nose ? nose.y : sh.y - shoulderSpanX * 0.65;
+      const headRefX = nose ? nose.x : (lSh && rSh ? (lSh.x + rSh.x) / 2 : sh.x);
+      const liftRatio = Math.max(0, (sh.y + shoulderSpanX * 0.25 - wrist.y) / Math.max(0.12, sh.y + shoulderSpanX * 0.25 - headRefY));
+      const proxFactor = Math.max(0, 1 - Math.abs(wrist.x - headRefX) / Math.max(0.14, shoulderSpanX * 1.1));
+      const deg = Math.min(145, Math.max(0, liftRatio * 95 + proxFactor * Math.min(liftRatio, 1) * 45));
+      rawPrimaryRomDeg = Number(deg.toFixed(1));
+      const oppLift = oppWrist && (oppWrist.visibility ?? 0) >= UPPER_MIN_VIS
+        ? Math.max(0, (sh.y - oppWrist.y) / Math.max(0.12, shoulderSpanX))
+        : 0;
+      wrongSideRaised = oppLift >= 0.45 && rawPrimaryRomDeg < 35;
+      romDeg = wrongSideRaised ? 0 : rawPrimaryRomDeg;
+      if (wrongSideRaised) {
+        wrongSideBannerTh = getPrescribedLimbPromptTh(targetJoint).bannerAlertTh;
+      }
+    } else {
+      lowVisibilityAlertTh = 'กรุณาให้เห็นศีรษะและมือข้างที่ฝึกในกรอบกล้อง';
+    }
+  } else if (jointMode === 'shoulder_rotation' && (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder')) {
     const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
     const elIdx = primarySide === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW;
     const wrIdx = primarySide === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST;
@@ -672,6 +813,38 @@ export function measureLiveJointAngleAndTilt(
       romDeg = rawPrimaryRomDeg;
     } else {
       lowVisibilityAlertTh = 'กรุณาให้เห็นข้อศอกและข้อมือชัดเจนในกรอบกล้อง';
+    }
+  } else if (jointMode === 'forearm_turn' && (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder')) {
+    const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
+    const wr = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
+    const thumb = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_THUMB : POSE_INDEX.RIGHT_THUMB];
+    const pinky = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_PINKY : POSE_INDEX.RIGHT_PINKY];
+    if (wr && thumb && pinky && (wr.visibility ?? 0) >= UPPER_MIN_VIS) {
+      const dx = Math.abs(thumb.x - pinky.x);
+      const dy = Math.abs(thumb.y - pinky.y);
+      const dz = Math.abs((thumb.z ?? 0) - (pinky.z ?? 0));
+      const palmWidth = Math.max(0.015, Math.hypot(dx, dy, dz));
+      const supinationRatio = Math.min(1, (dx + dz * 0.6) / palmWidth);
+      const turnDeg = Math.min(90, Math.max(0, supinationRatio * 88));
+      rawPrimaryRomDeg = Number(turnDeg.toFixed(1));
+      romDeg = rawPrimaryRomDeg;
+    } else {
+      lowVisibilityAlertTh = 'กรุณายกปลายแขนและฝ่ามือเข้ามาให้กล้องมองเห็นนิ้วชัดเจน';
+    }
+  } else if (jointMode === 'thumb_pinch' && (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder')) {
+    const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
+    const sh = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
+    const wr = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
+    const thumb = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_THUMB : POSE_INDEX.RIGHT_THUMB];
+    const idx = landmarks[primarySide === 'left' ? POSE_INDEX.LEFT_INDEX : POSE_INDEX.RIGHT_INDEX];
+    if (wr && thumb && idx && (wr.visibility ?? 0) >= UPPER_MIN_VIS && (!sh || wr.y < sh.y + shoulderSpanX * 1.1)) {
+      const handLen = Math.max(0.025, Math.hypot(idx.x - wr.x, idx.y - wr.y));
+      const tipGapRatio = Math.hypot(thumb.x - idx.x, thumb.y - idx.y) / handLen;
+      const pinchScore = Math.max(0, Math.min(1, (0.95 - tipGapRatio) / 0.7));
+      rawPrimaryRomDeg = Number((pinchScore * 68).toFixed(1));
+      romDeg = rawPrimaryRomDeg;
+    } else {
+      lowVisibilityAlertTh = 'กรุณายกมือระดับอกให้เห็นนิ้วโป้งและนิ้วชี้ชัดเจนในกรอบกล้อง';
     }
   } else if (jointMode === 'wrist_finger' && (targetJoint === 'left_shoulder' || targetJoint === 'right_shoulder')) {
     const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
@@ -929,13 +1102,27 @@ export function measureLiveJointAngleAndTilt(
         hasValidWorldKnee && wHip && wKnee && wAnkle
           ? computeJointAngle3D(wHip, wKnee, wAnkle)
           : computeJointAngle3D(hip, knee, ankle);
-      romDeg =
-        jointMode === 'hip_march'
-          ? Number(Math.max(0, 180 - kneeInteriorDeg).toFixed(1))
-          : kneeInteriorDeg;
+      romDeg = kneeInteriorDeg;
       rawPrimaryRomDeg = romDeg;
     } else {
-      lowVisibilityAlertTh = 'มองไม่เห็นสะโพก-เข่า-ข้อเท้าชัดเจน กรุณาถอยห่างจากกล้องให้เห็นขาเต็มช่วง';
+      lowVisibilityAlertTh = 'มองไม่เห็นสะโพก-เข่า-ข้อเท้าชัดเจน กรุณาถอยห่างจากกล้องให้เห็นช่วงข้อต่อครบ';
+    }
+  } else if (jointMode === 'neck_turn') {
+    const nose = landmarks[POSE_INDEX.NOSE];
+    const lEar = landmarks[POSE_INDEX.LEFT_EAR];
+    const rEar = landmarks[POSE_INDEX.RIGHT_EAR];
+    if (nose && (nose.visibility ?? 0) >= UPPER_MIN_VIS) {
+      if (lEar && rEar && (lEar.visibility ?? 0) >= UPPER_MIN_VIS && (rEar.visibility ?? 0) >= UPPER_MIN_VIS) {
+        const midEarX = (lEar.x + rEar.x) / 2;
+        const earSpan = Math.max(0.04, Math.hypot(lEar.x - rEar.x, lEar.y - rEar.y));
+        const yawRatio = Math.abs(nose.x - midEarX) / (earSpan * 0.5);
+        romDeg = Number(Math.min(68, yawRatio * 55).toFixed(1));
+      } else if (lSh && rSh) {
+        const midShX = (lSh.x + rSh.x) / 2;
+        const yawRatio = Math.abs(nose.x - midShX) / Math.max(0.08, shoulderSpanX * 0.38);
+        romDeg = Number(Math.min(68, yawRatio * 55).toFixed(1));
+      }
+      rawPrimaryRomDeg = romDeg;
     }
   } else if (jointMode === 'neck') {
     const nose = landmarks[POSE_INDEX.NOSE];
@@ -2246,7 +2433,6 @@ export function SmartRehabKioskUI({
   const compensations = telemetry_analysis.compensation_detected;
   const trunkLeanAlert = isFormRuleActive(formRules, 'trunk') && compensations.includes('TRUNK_LEAN');
   const shoulderHikeAlert = isFormRuleActive(formRules, 'posture') && compensations.includes('SHOULDER_HIKE');
-  const kneeValgusAlert = isFormRuleActive(formRules, 'posture') && compensations.includes('KNEE_VALGUS');
   const tooFastAlert = isFormRuleActive(formRules, 'velocity') && compensations.includes('TOO_FAST');
   const wrongLimbAlert = isFormRuleActive(formRules, 'limb') && compensations.includes('WRONG_LIMB');
   const wrongPlaneAlert = isFormRuleActive(formRules, 'plane') && compensations.includes('WRONG_PLANE');
@@ -3515,16 +3701,10 @@ export function SmartRehabKioskUI({
     },
     {
       ruleKey: 'posture',
-      label:
-        selectedExercise.target_joint === 'right_knee'
-          ? 'เข่าตรงแนว ไม่บิดเข้าด้านใน'
-          : 'ผ่อนหัวไหล่ ไม่ยักไหล่ขึ้น',
-      ok:
-        selectedExercise.target_joint === 'right_knee'
-          ? !kneeValgusAlert && !isEmergency
-          : !shoulderHikeAlert && !isEmergency,
+      label: 'ผ่อนหัวไหล่ ไม่ยักไหล่ขึ้น',
+      ok: !shoulderHikeAlert && !isEmergency,
       ruleActive: isFormRuleActive(formRules, 'posture'),
-      warnText: selectedExercise.target_joint === 'right_knee' ? 'เข่าบิดใน' : 'ยักไหล่',
+      warnText: 'ยักไหล่',
     },
     {
       ruleKey: 'velocity',

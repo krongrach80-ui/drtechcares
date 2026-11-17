@@ -2102,14 +2102,12 @@ const WEEKDAY_PRESETS: ReadonlyArray<{
 ];
 
 const EXERCISE_FILTER_TABS: ReadonlyArray<{
-  id: 'all' | 'upper_limb' | 'lower_limb' | 'neck_trunk' | 'balance';
+  id: 'all' | 'upper_limb' | 'neck_trunk';
   label: Record<ClinicalLang, string>;
 }> = [
   { id: 'all', label: { th: 'ทั้งหมด', en: 'All Postures', cn: '全部动作' } },
-  { id: 'upper_limb', label: { th: 'แขนและไหล่', en: 'Upper Limb', cn: '上肢/肩肘' } },
-  { id: 'lower_limb', label: { th: 'ขาและเข่า', en: 'Lower Limb', cn: '下肢/膝踝' } },
-  { id: 'neck_trunk', label: { th: 'คอและลำตัว', en: 'Neck & Trunk', cn: '颈部/躯干' } },
-  { id: 'balance', label: { th: 'ฝึกทรงตัว', en: 'Balance', cn: '平衡训练' } },
+  { id: 'upper_limb', label: { th: 'แขน ไหล่ ศอก และมือ', en: 'Upper Limb (Stroke)', cn: '上肢与肩肘手' } },
+  { id: 'neck_trunk', label: { th: 'คอและบ่า (สธ.)', en: 'Neck & Shoulders (MOPH)', cn: '颈部与肩胛' } },
 ];
 
 /** Parses YYYY-MM-DD cleanly in local calendar coordinates without UTC drift. */
@@ -2203,7 +2201,7 @@ export function ScheduleCreatorAndDayModal({
   const [targetPatientId, setTargetPatientId] = useState(patient?.id || patients[0]?.id || '');
   const [ptId, setPtId] = useState(patient?.assignedPtId || ptUsers[0]?.id || '');
   const [exerciseCategoryFilter, setExerciseCategoryFilter] = useState<
-    'all' | 'upper_limb' | 'lower_limb' | 'neck_trunk' | 'balance'
+    'all' | 'upper_limb' | 'neck_trunk'
   >('all');
   const [selectedExerciseIds, setSelectedExerciseIds] = useState<string[]>([]);
   const [modpackId, setModpackId] = useState(modpacks[0]?.id || '');

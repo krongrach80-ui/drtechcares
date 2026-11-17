@@ -166,8 +166,8 @@ class ExercisePrescriptionSchema(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    exercise_id: str = "ex-03"
-    exercise_name: str = "Right Shoulder Abduction (กางแขนขวาด้านข้าง)"
+    exercise_id: str = "STROKE_SH_ABD_R"
+    exercise_name: str = "[Stroke ADL] กางแขนขวาด้านข้าง (ฝึกกางแขนสวมเสื้อ)"
     target_joint: str = "right_shoulder"
     target_rom_deg: float = 150.0
     hold_sec: float = 3.0

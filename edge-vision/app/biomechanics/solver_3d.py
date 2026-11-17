@@ -192,28 +192,72 @@ class Biomechanics3DSolver:
         if kind == "elbow_flexion":
             return joint_angle_3d(pts[sh_idx], pts[el_idx], pts[wr_idx])
 
-        if kind == "knee_extension":
-            if rule.id == "ex-26":
-                left_k = joint_angle_3d(pts[11], pts[13], pts[15])
-                right_k = joint_angle_3d(pts[12], pts[14], pts[16])
-                return 0.5 * (left_k + right_k)
-            return joint_angle_3d(pts[hp_idx], pts[kn_idx], pts[an_idx])
+        if kind == "cross_body_reach":
+            opp_sh_idx = 6 if side == "left" else 5
+            sh_span = max(0.08, float(np.linalg.norm(pts[5] - pts[6])))
+            opp_vec = pts[opp_sh_idx] - pts[sh_idx]
+            opp_norm = max(1e-5, float(np.linalg.norm(opp_vec)))
+            opp_unit = opp_vec / opp_norm
+            cross_proj = float(np.dot(pts[wr_idx] - pts[sh_idx], opp_unit)) / sh_span
+            return float(np.clip(cross_proj * 105.0, 0.0, 145.0))
 
-        if kind == "hip_flexion":
-            # Internal 3D angle shoulder -> hip -> knee (standing ~175°, lifted knee ~85°)
-            return joint_angle_3d(pts[sh_idx], pts[hp_idx], pts[kn_idx])
+        if kind == "scapular_protraction":
+            elev_deg = compute_shoulder_elevation_with_vertical_fallback(
+                pts_3d=pts,
+                side=side,
+                scores=scores,
+                min_visibility=float(self.settings.MIN_LANDMARK_VISIBILITY),
+                pts_2d=pts_2d,
+            )
+            depth_gain = max(0.0, float(pts[sh_idx, 2] - pts[wr_idx, 2]) * 42.0)
+            return float(np.clip(elev_deg * 0.88 + depth_gain, 0.0, 120.0))
 
-        if kind == "heel_raise":
-            # Measure foot pitch elevation angle in 3D from heel(19/22)->toe(17/20) vs horizontal + heel lift
-            foot_vec = pts[toe_idx] - pts[heel_idx]
-            horiz = np.array([foot_vec[0], 0.0, foot_vec[2]], dtype=np.float64)
-            pitch_deg = angle_between_vectors_3d(foot_vec, horiz)
-            lift_bonus = max(0.0, (baseline_heel_y - pts[heel_idx, 1]) * 350.0)
-            return float(np.clip(pitch_deg + lift_bonus, 0.0, 95.0))
+        if kind == "bilateral_elbow_push":
+            left_ext = joint_angle_3d(pts[5], pts[7], pts[9])
+            right_ext = joint_angle_3d(pts[6], pts[8], pts[10])
+            return float(np.clip(0.5 * (left_ext + right_ext), 0.0, 180.0))
+
+        if kind == "hand_to_head":
+            sh_span = max(0.08, float(np.linalg.norm(pts[5] - pts[6])))
+            head_y = float(pts[0, 1])
+            wr_y = float(pts[wr_idx, 1])
+            lift = max(0.0, (float(pts[sh_idx, 1]) + sh_span * 0.25 - wr_y) / max(0.08, float(pts[sh_idx, 1]) - head_y + sh_span * 0.25))
+            prox = max(0.0, 1.0 - abs(float(pts[wr_idx, 0] - pts[0, 0])) / (sh_span * 1.1))
+            return float(np.clip(lift * 95.0 + prox * min(lift, 1.0) * 45.0, 0.0, 160.0))
+
+        if kind == "forearm_rotation":
+            # Wholebody-133: thumb_tip 95/116, pinky_mcp/tip 108/129; fallback wrist/elbow vector roll
+            hand_root_idx = 91 if side == "left" else 112
+            thumb_tip_idx = 95 if side == "left" else 116
+            pinky_tip_idx = 111 if side == "left" else 132
+            if pts.shape[0] > pinky_tip_idx and float(np.linalg.norm(pts[thumb_tip_idx] - pts[pinky_tip_idx])) > 1e-4:
+                palm_vec = pts[thumb_tip_idx] - pts[pinky_tip_idx]
+                width = max(1e-4, float(np.linalg.norm(palm_vec)))
+                sup_ratio = min(1.0, (abs(float(palm_vec[0])) + abs(float(palm_vec[2])) * 0.6) / width)
+                return float(np.clip(sup_ratio * 88.0, 0.0, 95.0))
+            forearm = pts[wr_idx] - pts[el_idx]
+            return float(np.clip(angle_between_vectors_3d(forearm, np.array([1.0, 0.0, 0.0])), 0.0, 95.0))
+
+        if kind == "thumb_pinch":
+            hand_root_idx = 91 if side == "left" else 112
+            thumb_tip_idx = 95 if side == "left" else 116
+            index_tip_idx = 99 if side == "left" else 120
+            if pts.shape[0] > index_tip_idx and float(np.linalg.norm(pts[index_tip_idx] - pts[hand_root_idx])) > 1e-4:
+                palm_len = max(1e-4, float(np.linalg.norm(pts[index_tip_idx] - pts[hand_root_idx])))
+                pinch_gap = float(np.linalg.norm(pts[thumb_tip_idx] - pts[index_tip_idx])) / palm_len
+                score = float(np.clip((0.95 - pinch_gap) / 0.70, 0.0, 1.0))
+                return float(round(score * 68.0, 2))
+            return 25.0
 
         if kind == "neck_lateral_tilt":
             head_axis = pts[0] - mid_shoulder
             return angle_between_vectors_3d(head_axis, spine_vertical_unit)
+
+        if kind == "neck_yaw_turn":
+            ear_mid_x = 0.5 * float(pts[3, 0] + pts[4, 0])
+            ear_span = max(0.04, float(np.linalg.norm(pts[3] - pts[4])))
+            yaw_ratio = abs(float(pts[0, 0]) - ear_mid_x) / (ear_span * 0.5)
+            return float(np.clip(yaw_ratio * 55.0, 0.0, 75.0))
 
         if kind == "shoulder_rotation":
             # Measure forearm sweep away from anterior midline around elbow-shoulder axis
@@ -412,7 +456,11 @@ class Biomechanics3DSolver:
             pelvic_tilt_deg = compute_pelvic_tilt_deg(world_wb)
         else:
             # Seated close to webcam without visible hips: estimate upper trunk lean from shoulder level
-            trunk_tilt_deg = round(shoulder_tilt_deg * 0.7, 1) if rule.category in ("shoulder", "arm", "neck") else 0.0
+            trunk_tilt_deg = (
+                round(shoulder_tilt_deg * 0.7, 1)
+                if rule.category in ("upper_limb", "neck_trunk", "shoulder", "arm", "neck")
+                else 0.0
+            )
             pelvic_tilt_deg = 0.0
 
         if rule.side == "left":
@@ -469,7 +517,7 @@ class Biomechanics3DSolver:
                 compensations.append("SHOULDER_TILT")
         if (
             hips_visible
-            and ("PELVIC_TILT" in checks or rule.category in ("leg", "balance", "trunk", "shoulder"))
+            and ("PELVIC_TILT" in checks or rule.category in ("upper_limb", "neck_trunk", "leg", "balance", "trunk", "shoulder"))
             and pelvic_tilt_deg > self.settings.PELVIC_TILT_MAX_DEG
         ):
             compensations.append("PELVIC_TILT")

@@ -19,7 +19,14 @@ import type {
   UserRole,
 } from '@drtechcares/api-client';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
-import { sortExercisesStrokeUpperFirst, type BodySide, type ExerciseConfig } from '@drtechcares/pose-engine';
+import {
+  CLINICAL_EXERCISES,
+  STROKE_CANONICAL_EXERCISE_SET,
+  isDeprecatedExerciseRecord,
+  sortExercisesStrokeUpperFirst,
+  type BodySide,
+  type ExerciseConfig,
+} from '@drtechcares/pose-engine';
 import {
   Activity,
   Award,
@@ -1214,6 +1221,58 @@ function sortNewestFirst<T extends { createdAt: string }>(items: readonly T[]): 
   return [...items].sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
 }
 
+const LEGACY_EXERCISE_STORAGE_KEYS = [
+  'drtech_exercises_cache',
+  'drtech_rehab_exercises_v1',
+  'exercises',
+  'drtech_exercises',
+] as const;
+
+/**
+ * Purges deprecated legacy/lower-limb/ortho exercises from localStorage & Supabase
+ * and ensures all 26 standardized Stroke ADL & MOPH upper-body postures are synced cleanly.
+ */
+export async function syncStrokeExerciseLibrary(
+  apiClient: DrTechCaresApiClient,
+): Promise<{ exercises: ManagedExerciseRecord[]; purgedCount: number }> {
+  if (typeof globalThis.localStorage !== 'undefined') {
+    for (const storageKey of LEGACY_EXERCISE_STORAGE_KEYS) {
+      try {
+        globalThis.localStorage.removeItem(storageKey);
+      } catch {
+        // Ignore storage errors in SSR/restricted browsers
+      }
+    }
+  }
+
+  let purgedCount = 0;
+  let serverExercises: ManagedExerciseRecord[] = [];
+  if (typeof (apiClient as Partial<DrTechCaresApiClient>).syncStrokeExerciseLibrary === 'function') {
+    try {
+      const synced = await apiClient.syncStrokeExerciseLibrary();
+      purgedCount += synced.purgedCount ?? 0;
+      serverExercises = Array.isArray(synced.exercises) ? synced.exercises : [];
+    } catch {
+      // Fallback safely to canonical 26 list + local clean filter when offline or unauthenticated
+    }
+  }
+
+  const canonicalFallback: ManagedExerciseRecord[] = CLINICAL_EXERCISES.map((ex) => ({
+    ...ex,
+    createdBy: 'system',
+  }));
+  const cleanCustom = serverExercises.filter(
+    (ex) =>
+      !isDeprecatedExerciseRecord(ex) &&
+      !STROKE_CANONICAL_EXERCISE_SET.has(ex.code) &&
+      !STROKE_CANONICAL_EXERCISE_SET.has(ex.id),
+  );
+  return {
+    exercises: sortExercisesStrokeUpperFirst([...canonicalFallback, ...cleanCustom]),
+    purgedCount,
+  };
+}
+
 export function ClinicalStaffPortalShell({
   apiClient,
   currentUser,
@@ -1459,7 +1518,15 @@ export function ClinicalStaffPortalShell({
           return p;
         }),
       );
-      setExercises(exRes);
+      setExercises(sortExercisesStrokeUpperFirst(exRes.filter((ex) => !isDeprecatedExerciseRecord(ex))));
+      const needsStrokeSync =
+        exRes.some((ex) => isDeprecatedExerciseRecord(ex)) ||
+        exRes.filter((ex) => STROKE_CANONICAL_EXERCISE_SET.has(ex.code)).length < CLINICAL_EXERCISES.length;
+      if (needsStrokeSync) {
+        void syncStrokeExerciseLibrary(apiClient).then((synced) => {
+          setExercises(synced.exercises);
+        });
+      }
       setModpacks(mpRes);
       setSessions(sortNewestFirst(sessRes));
       setStaffCalls(sortNewestFirst(callsRes));
@@ -1543,6 +1610,23 @@ export function ClinicalStaffPortalShell({
       }
     };
   }, [refreshAll, pingCloudHealth, apiClient]);
+
+  useEffect(() => {
+    if (activeTab !== 'exercises') return;
+    const needsSync =
+      exercises.some((ex) => isDeprecatedExerciseRecord(ex)) ||
+      exercises.filter((ex) => STROKE_CANONICAL_EXERCISE_SET.has(ex.code)).length < CLINICAL_EXERCISES.length;
+    if (!needsSync) return;
+    let cancelled = false;
+    void syncStrokeExerciseLibrary(apiClient).then((synced) => {
+      if (!cancelled) {
+        setExercises(synced.exercises);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, exercises, apiClient]);
 
   useEffect(() => {
     if (!selectedSchedulePatientId) return;
@@ -3109,9 +3193,32 @@ export function ClinicalStaffPortalShell({
 
                 {/* Rehab Exercises Library */}
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
-                  <h3 className="text-sm font-extrabold text-slate-900">
-                    {locale.exercises.exerciseHeader} ({exercises.length})
-                  </h3>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-extrabold text-slate-900">
+                      {locale.exercises.exerciseHeader} ({exercises.length})
+                    </h3>
+                    <button
+                      type="button"
+                      disabled={submitting}
+                      onClick={async () => {
+                        setSubmitting(true);
+                        try {
+                          const synced = await syncStrokeExerciseLibrary(apiClient);
+                          setExercises(synced.exercises);
+                          flashBanner(
+                            'success',
+                            `ซิงก์คลังท่ากายภาพมาตรฐาน Stroke / สธ. ${synced.exercises.length} ท่าเรียบร้อย`,
+                          );
+                        } finally {
+                          setSubmitting(false);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-3 py-1.5 text-[11px] font-bold text-sky-800 hover:bg-sky-100 disabled:opacity-50 cursor-pointer"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      ซิงก์คลัง 26 ท่า Stroke/สธ.
+                    </button>
+                  </div>
                   <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
                     {sortExercisesStrokeUpperFirst(exercises).map((ex) => (
                       <div
@@ -3175,7 +3282,7 @@ export function ClinicalStaffPortalShell({
                           },
                           detection: {
                             mode: 'angle_rep_hold',
-                            jointGroup: exCategory === 'lower_limb' ? 'knee' : 'shoulder',
+                            jointGroup: exCategory === 'neck_trunk' ? 'neck' : 'shoulder',
                             side: exDefaultSide,
                             targetMinDeg: 30,
                             targetMaxDeg: 135,
@@ -3215,10 +3322,8 @@ export function ClinicalStaffPortalShell({
                       onChange={(e) => setExCategory(e.target.value as ExerciseConfig['category'])}
                       className="rounded-xl border border-slate-200 px-2.5 py-2"
                     >
-                      <option value="upper_limb">Upper Limb (แขน/ไหล่)</option>
-                      <option value="lower_limb">Lower Limb (ขา/เข่า)</option>
-                      <option value="neck_trunk">Neck &amp; Trunk (คอ/ลำตัว)</option>
-                      <option value="balance">Balance (การทรงตัว)</option>
+                      <option value="upper_limb">Upper Limb (แขน/ไหล่/ศอก/มือ Stroke)</option>
+                      <option value="neck_trunk">Neck &amp; Shoulders (คอ/บ่า สธ.)</option>
                     </select>
                     <input
                       required

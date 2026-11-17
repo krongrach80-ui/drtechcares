@@ -95,17 +95,18 @@ describe('Clinical Pose Estimation Engine', () => {
   });
 
   it('enforces straight-elbow guard (<135 deg) and completes full rep state machine cycle', () => {
-    const ex = CLINICAL_EXERCISES[0]; // Right Shoulder Flexion (target >= 110, hold 3s, requireStraightElbow)
+    const ex =
+      CLINICAL_EXERCISES.find((item) => item.code === 'STROKE_SCAP_PROTRACT_R') ?? CLINICAL_EXERCISES[0];
     const pipeline = new RehabExercisePipeline(ex, 'right', 1, 1, 1);
 
     const restPose = makeStandingPose();
     const raisedBentElbow = makeStandingPose({
-      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.40, y: 0.18, z: 0, visibility: 0.99 },
-      [POSE_INDEX.RIGHT_WRIST]: { x: 0.42, y: 0.32, z: 0, visibility: 0.99 }, // sharply bent elbow
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.30, y: 0.32, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.36, y: 0.44, z: 0, visibility: 0.99 }, // sharply bent elbow (~60°) at ~105° shoulder
     });
     const raisedStraight = makeStandingPose({
-      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.36, y: 0.22, z: 0, visibility: 0.99 },
-      [POSE_INDEX.RIGHT_WRIST]: { x: 0.30, y: 0.10, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.32, y: 0.30, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.22, y: 0.25, z: 0, visibility: 0.99 }, // straight elbow ~180° inside [70, 120] target zone
     });
 
     expect(pipeline.step(restPose, 0).state).toBe('IDLE');
@@ -143,7 +144,7 @@ describe('Clinical Pose Estimation Engine', () => {
       auth_status: { verified: true, confidence: 0.94, liveness: true, ...overrideAuth },
       spatial_framing: { distance_m: 2.0, full_body_visible: true, feet_visible: true, lighting_score: 0.9, ...overrideFraming },
       exercise_prescription: {
-        exercise_id: 'ex-01',
+        exercise_id: 'STROKE_SH_FLEX_R',
         target_joint: 'right_shoulder',
         target_rom_deg: 100,
         hold_sec: 1.0,
@@ -224,6 +225,26 @@ describe('Clinical Pose Estimation Engine', () => {
     expect(res.telemetry_analysis.compensation_detected).toEqual(['TRUNK_LEAN', 'INCOMPLETE_ROM']);
     expect(res.ui_directives.skeleton_highlight_joint).toBe('spine');
     expect(res.ui_directives.highlight_color).toBe('AMBER');
+  });
+
+  it('provides exactly 26 standardized Stroke & MOPH upper-body exercises with zero deprecated leg/duplicate codes', () => {
+    expect(CLINICAL_EXERCISES).toHaveLength(26);
+    expect(
+      CLINICAL_EXERCISES.every((ex) => ex.category === 'upper_limb' || ex.category === 'neck_trunk'),
+    ).toBe(true);
+    const codes = CLINICAL_EXERCISES.map((ex) => ex.code);
+    expect(codes).toContain('STROKE_CROSS_BODY_R');
+    expect(codes).toContain('STROKE_SCAP_PROTRACT_R');
+    expect(codes).toContain('STROKE_BOBATH_FORWARD_PUSH');
+    expect(codes).toContain('STROKE_HAND_TO_HEAD_R');
+    expect(codes).toContain('STROKE_FOREARM_TURN_R');
+    expect(codes).toContain('STROKE_THUMB_PINCH_R');
+    expect(codes).toContain('MOPH_NECK_TURN_BILATERAL');
+    expect(codes).not.toContain('BAL_STAND_R');
+    expect(codes).not.toContain('KNEE_EXT_R');
+    expect(codes).not.toContain('SIT_TO_STAND');
+    expect(codes).not.toContain('SH_WALL_SLIDE_R');
+    expect(codes).not.toContain('SH_PEND_R');
   });
 });
 

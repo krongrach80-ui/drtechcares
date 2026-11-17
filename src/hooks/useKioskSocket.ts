@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CLINICAL_EXERCISES } from '@drtechcares/pose-engine';
+import { CLINICAL_EXERCISES, normalizeStrokeExerciseId } from '@drtechcares/pose-engine';
 import type { TodayPrescribedExerciseItem } from '@drtechcares/api-client';
 import type {
   CalibrationState,
@@ -113,9 +113,16 @@ export type ExpectedMovementPlane =
   | 'flexion'
   | 'abduction'
   | 'rotation'
+  | 'cross_body'
+  | 'scap_protract'
+  | 'hand_to_head'
+  | 'forearm_turn'
   | 'wrist_finger'
+  | 'thumb_pinch'
   | 'shrug_roll'
+  | 'neck_turn'
   | 'bilateral'
+  | 'bilateral_push'
   | 'any';
 
 export interface ExercisePrescriptionOption {
@@ -145,6 +152,23 @@ export type DemoPresetId =
   | 'IMPOSTOR'
   | 'EMERGENCY_HALT';
 
+const VALID_EXPECTED_PLANES = new Set<ExpectedMovementPlane>([
+  'flexion',
+  'abduction',
+  'rotation',
+  'cross_body',
+  'scap_protract',
+  'hand_to_head',
+  'forearm_turn',
+  'wrist_finger',
+  'thumb_pinch',
+  'shrug_roll',
+  'neck_turn',
+  'bilateral',
+  'bilateral_push',
+  'any',
+]);
+
 export function resolveExpectedPlaneForExercise(item: {
   exercise_id?: string;
   catalog_exercise_id?: string;
@@ -153,31 +177,50 @@ export function resolveExpectedPlaneForExercise(item: {
   target_joint?: string;
   expected_plane?: ExpectedMovementPlane;
 }): ExpectedMovementPlane {
-  if (
-    item.expected_plane === 'flexion' ||
-    item.expected_plane === 'abduction' ||
-    item.expected_plane === 'rotation' ||
-    item.expected_plane === 'wrist_finger' ||
-    item.expected_plane === 'shrug_roll' ||
-    item.expected_plane === 'bilateral' ||
-    item.expected_plane === 'any'
-  ) {
+  if (item.expected_plane && VALID_EXPECTED_PLANES.has(item.expected_plane)) {
     return item.expected_plane;
   }
-  const found = CLINICAL_EXERCISES.find(
-    (c) =>
-      c.id === item.catalog_exercise_id ||
-      c.code === item.catalog_exercise_id ||
-      c.id === item.exercise_id ||
-      c.code === item.exercise_id,
-  );
+  const rawId = (item.catalog_exercise_id || item.exercise_id || '').trim();
+  const normalizedId = rawId ? normalizeStrokeExerciseId(rawId) : '';
+  const found = rawId
+    ? CLINICAL_EXERCISES.find(
+        (c) =>
+          c.id === normalizedId ||
+          c.code === normalizedId ||
+          c.id === item.catalog_exercise_id ||
+          c.code === item.catalog_exercise_id ||
+          c.id === item.exercise_id ||
+          c.code === item.exercise_id,
+      )
+    : undefined;
   if (found?.detection.expectedPlane) {
-    return found.detection.expectedPlane;
+    return found.detection.expectedPlane as ExpectedMovementPlane;
+  }
+  const combined = `${item.name_th ?? ''} ${item.name_en ?? ''} ${item.exercise_id ?? ''}`.toLowerCase();
+  if (combined.includes('neck_turn') || combined.includes('หันคอ')) {
+    return 'neck_turn';
+  }
+  if (combined.includes('thumb_pinch') || combined.includes('จีบนิ้ว') || combined.includes('pinch')) {
+    return 'thumb_pinch';
+  }
+  if (combined.includes('forearm_turn') || combined.includes('คว่ำ') || combined.includes('หงายมือ')) {
+    return 'forearm_turn';
+  }
+  if (combined.includes('hand_to_head') || combined.includes('แตะศีรษะ') || combined.includes('หวีผม')) {
+    return 'hand_to_head';
+  }
+  if (combined.includes('scap_protract') || combined.includes('ยื่นมือเอื้อมไปด้านหน้า') || combined.includes('protract')) {
+    return 'scap_protract';
+  }
+  if (combined.includes('cross_body') || combined.includes('ไขว้หน้าอก')) {
+    return 'cross_body';
+  }
+  if (combined.includes('forward_push') || combined.includes('ดันแขนตรงไปด้านหน้า')) {
+    return 'bilateral_push';
   }
   if (item.target_joint && item.target_joint !== 'left_shoulder' && item.target_joint !== 'right_shoulder') {
     return 'any';
   }
-  const combined = `${item.name_th ?? ''} ${item.name_en ?? ''} ${item.exercise_id ?? ''}`.toLowerCase();
   if (combined.includes('rotation') || combined.includes('หมุนข้อไหล่')) {
     return 'rotation';
   }
@@ -187,7 +230,7 @@ export function resolveExpectedPlaneForExercise(item: {
   if (combined.includes('shrug') || combined.includes('ยักไหล่')) {
     return 'shrug_roll';
   }
-  if (combined.includes('bilateral') || combined.includes('ประสานมือ') || combined.includes('2 ข้าง')) {
+  if (combined.includes('bilateral') || combined.includes('ประสานมือ') || combined.includes('arm_raise')) {
     return 'bilateral';
   }
   if (
@@ -229,11 +272,67 @@ export function getPrescribedPlanePromptTh(expectedPlane: ExpectedMovementPlane)
       voicePromptTh: 'กรุณากางแขนออกด้านข้างนะครับ ท่านี้ห้ามยกแขนไปด้านหน้า ระบบจะไม่นับรอบครับ',
     };
   }
+  if (expectedPlane === 'cross_body') {
+    return {
+      requiredPlaneTh: 'วาดแขนไขว้ผ่านหน้าอก',
+      wrongPlaneTh: 'กางแขนออกด้านนอก',
+      bannerAlertTh: 'กรุณาวาดแขนไขว้ผ่านหน้าอกเข้าหาไหล่ฝั่งตรงข้ามครับ',
+      voicePromptTh: 'กรุณายกแขนวาดไขว้ผ่านหน้าอกแตะไหล่ฝั่งตรงข้ามนะครับ',
+    };
+  }
+  if (expectedPlane === 'scap_protract') {
+    return {
+      requiredPlaneTh: 'เหยียดศอกตรงยื่นมือไปด้านหน้า',
+      wrongPlaneTh: 'งอข้อศอกหรือเอียงตัว',
+      bannerAlertTh: 'กรุณาเหยียดข้อศอกให้ตรงแล้วยื่นหัวไหล่ไปด้านหน้าระดับอกครับ',
+      voicePromptTh: 'กรุณาเหยียดศอกตรงแล้วยื่นมือไปด้านหน้าระดับหน้าอกนะครับ',
+    };
+  }
+  if (expectedPlane === 'bilateral_push') {
+    return {
+      requiredPlaneTh: 'ประสานมือดันเหยียดศอกไปด้านหน้า',
+      wrongPlaneTh: 'ยกแขนไม่สมมาตร',
+      bannerAlertTh: 'กรุณาประสานมือทั้ง 2 ข้างแล้วดันเหยียดข้อศอกตรงไปด้านหน้าครับ',
+      voicePromptTh: 'กรุณาประสานมือแล้วดันเหยียดข้อศอกตรงไปด้านหน้านะครับ',
+    };
+  }
+  if (expectedPlane === 'hand_to_head') {
+    return {
+      requiredPlaneTh: 'ยกมือขึ้นแตะศีรษะ',
+      wrongPlaneTh: 'ก้มศีรษะลงหามือ',
+      bannerAlertTh: 'ตั้งศีรษะให้ตรงแล้วยกมือขึ้นแตะบริเวณศีรษะนะครับ',
+      voicePromptTh: 'ตั้งศีรษะให้ตรงแล้วค่อยๆ ยกมือขึ้นแตะศีรษะนะครับ',
+    };
+  }
+  if (expectedPlane === 'forearm_turn') {
+    return {
+      requiredPlaneTh: 'คว่ำและหงายฝ่ามือในกรอบกล้อง',
+      wrongPlaneTh: 'กางข้อศอกหนีลำตัว',
+      bannerAlertTh: 'กรุณาแนบศอกข้างลำตัวและพลิกคว่ำ-หงายฝ่ามือช้าๆ ครับ',
+      voicePromptTh: 'กรุณาหนีบข้อศอกข้างลำตัวและพลิกหงายฝ่ามือสลับคว่ำมือนะครับ',
+    };
+  }
+  if (expectedPlane === 'thumb_pinch') {
+    return {
+      requiredPlaneTh: 'จีบปลายนิ้วโป้งแตะนิ้วเป็นรูปวงกลม',
+      wrongPlaneTh: 'มองไม่เห็นปลายนิ้วชัดเจน',
+      bannerAlertTh: 'กรุณายกมือในกรอบกล้องและจีบปลายนิ้วโป้งแตะนิ้วทีละนิ้วครับ',
+      voicePromptTh: 'กรุณายกมือขึ้นให้ชัดแล้วจีบปลายนิ้วโป้งแตะปลายนิ้วเป็นวงกลมนะครับ',
+    };
+  }
+  if (expectedPlane === 'neck_turn') {
+    return {
+      requiredPlaneTh: 'หันศีรษะมองซ้าย-ขวาอย่างช้าๆ',
+      wrongPlaneTh: 'หันไหล่ตามศีรษะ',
+      bannerAlertTh: 'กรุณาตั้งไหล่นิ่งและค่อยๆ หันศีรษะมองซ้าย-ขวาอย่างนุ่มนวลครับ',
+      voicePromptTh: 'ตั้งไหล่ให้นิ่งแล้วค่อยๆ หันศีรษะมองซ้ายขวาสลับกันนะครับ',
+    };
+  }
   return {
-    requiredPlaneTh: 'ยกแขนตามทิศทางที่กำหนด',
+    requiredPlaneTh: 'เคลื่อนไหวตามทิศทางที่กำหนด',
     wrongPlaneTh: 'เคลื่อนไหวผิดทิศทาง',
-    bannerAlertTh: 'กรุณายกแขนตามทิศทางที่กำหนดครับ',
-    voicePromptTh: 'กรุณายกแขนตามทิศทางที่กำหนดนะครับ',
+    bannerAlertTh: 'กรุณาเคลื่อนไหวตามทิศทางและท่าทางที่กำหนดครับ',
+    voicePromptTh: 'กรุณาเคลื่อนไหวตามทิศทางที่กำหนดนะครับ',
   };
 }
 
@@ -261,19 +360,11 @@ export function getPrescribedLimbPromptTh(
       voicePromptTh: 'กรุณายกแขนขวานะครับ ท่านี้ต้องทำด้วยแขนขวา ระบบจะไม่นับรอบหากยกแขนซ้ายครับ',
     };
   }
-  if (targetJoint === 'left_knee') {
-    return {
-      requiredLimbTh: 'ขาซ้าย',
-      wrongLimbTh: 'ขาขวา',
-      bannerAlertTh: 'กรุณาใช้ขาซ้าย (ท่านี้ต้องทำด้วยขาซ้าย)',
-      voicePromptTh: 'กรุณาทำท่าด้วยขาซ้ายตามที่กำหนดนะครับ',
-    };
-  }
   return {
-    requiredLimbTh: 'ขาขวา',
-    wrongLimbTh: 'ขาซ้าย',
-    bannerAlertTh: 'กรุณาใช้ขาขวาตามท่าที่กำหนด',
-    voicePromptTh: 'กรุณาทำท่าตามข้างที่กำหนดนะครับ',
+    requiredLimbTh: 'ศีรษะ/ลำตัวและแขนทั้ง 2 ข้าง',
+    wrongLimbTh: 'ไม่สมมาตร',
+    bannerAlertTh: 'กรุณาทำท่าทางตามแนวแกนกลางและข้างที่กำหนด',
+    voicePromptTh: 'กรุณาทำท่าตามทิศทางที่กำหนดนะครับ',
   };
 }
 
@@ -281,32 +372,36 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'offline';
 
 export const EXERCISE_OPTIONS: ExercisePrescriptionOption[] = [
   {
-    exercise_id: 'right_shoulder_abduction',
-    name_th: 'กางแขนขวาด้านข้าง',
-    name_en: 'Right Shoulder Abduction',
+    exercise_id: 'STROKE_SH_FLEX_R',
+    catalog_exercise_id: 'STROKE_SH_FLEX_R',
+    name_th: '[Stroke ADL] ยกแขนขวาตรงไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)',
+    name_en: '[Stroke ADL] Right Shoulder Forward Flexion',
+    target_joint: 'right_shoulder',
+    expected_plane: 'flexion',
+    target_rom_deg: 125,
+    hold_sec: 3,
+    target_reps: 10,
+  },
+  {
+    exercise_id: 'STROKE_SH_ABD_R',
+    catalog_exercise_id: 'STROKE_SH_ABD_R',
+    name_th: '[Stroke ADL] กางแขนขวาออกด้านข้าง (ฝึกกางแขนสวมเสื้อ)',
+    name_en: '[Stroke ADL] Right Shoulder Lateral Abduction',
     target_joint: 'right_shoulder',
     expected_plane: 'abduction',
-    target_rom_deg: 150,
+    target_rom_deg: 115,
     hold_sec: 3,
     target_reps: 10,
   },
   {
-    exercise_id: 'left_shoulder_abduction',
-    name_th: 'กางแขนซ้ายด้านข้าง',
-    name_en: 'Left Shoulder Abduction',
-    target_joint: 'left_shoulder',
-    expected_plane: 'abduction',
-    target_rom_deg: 150,
+    exercise_id: 'STROKE_BOBATH_ARM_RAISE',
+    catalog_exercise_id: 'STROKE_BOBATH_ARM_RAISE',
+    name_th: '[Stroke Bobath] ประสานมือยกแขนขึ้นด้านหน้า',
+    name_en: '[Stroke Bobath] Bilateral Clasped Overhead Raise',
+    target_joint: 'right_shoulder',
+    expected_plane: 'bilateral',
+    target_rom_deg: 135,
     hold_sec: 3,
-    target_reps: 10,
-  },
-  {
-    exercise_id: 'chair_squat',
-    name_th: 'ลุกนั่งฝึกกล้ามเนื้อขา',
-    name_en: 'Chair Squat Rehabilitation',
-    target_joint: 'right_knee',
-    target_rom_deg: 100,
-    hold_sec: 2,
     target_reps: 10,
   },
 ];
@@ -322,22 +417,14 @@ function resolveTargetJointForTodayExercise(
 ): Exclude<HighlightJoint, 'none'> {
   if (catalogMatch) {
     const group = catalogMatch.detection.jointGroup;
-    if (group === 'knee' || group === 'hip' || group === 'ankle') {
-      return catalogMatch.detection.side === 'left' ? 'left_knee' : 'right_knee';
-    }
     if (group === 'trunk' || group === 'neck') {
       return 'spine';
     }
     return catalogMatch.detection.side === 'left' ? 'left_shoulder' : 'right_shoulder';
   }
   const combined = `${item.nameTh} ${item.nameEn} ${item.targetJoint}`.toLowerCase();
-  if (
-    combined.includes('เข่า') ||
-    combined.includes('ขา') ||
-    combined.includes('knee') ||
-    combined.includes('squat')
-  ) {
-    return combined.includes('ซ้าย') || combined.includes('left') ? 'left_knee' : 'right_knee';
+  if (combined.includes('คอ') || combined.includes('neck') || combined.includes('spine')) {
+    return 'spine';
   }
   if (combined.includes('ซ้าย') || combined.includes('left')) {
     return 'left_shoulder';
@@ -360,8 +447,9 @@ export function mapTodayExercisesToPrescriptions(
   }
 
   return sourceItems.map((item) => {
+    const canonicalId = normalizeStrokeExerciseId(item.exerciseId);
     const found = CLINICAL_EXERCISES.find(
-      (c) => c.id === item.exerciseId || c.code === item.exerciseId,
+      (c) => c.id === canonicalId || c.code === canonicalId || c.id === item.exerciseId || c.code === item.exerciseId,
     );
     const target_joint = resolveTargetJointForTodayExercise(item, found);
     const isLowRangeUpper =
@@ -369,29 +457,31 @@ export function mapTodayExercisesToPrescriptions(
       (found.detection.jointGroup === 'neck' ||
         found.detection.jointGroup === 'wrist' ||
         found.detection.expectedPlane === 'rotation' ||
+        found.detection.expectedPlane === 'scap_protract' ||
+        found.detection.expectedPlane === 'forearm_turn' ||
+        found.detection.expectedPlane === 'thumb_pinch' ||
+        found.detection.expectedPlane === 'neck_turn' ||
         found.detection.expectedPlane === 'shrug_roll');
+    const defaultMidDeg = found
+      ? found.detection.targetRomDeg ?? Math.round((found.detection.targetMinDeg + found.detection.targetMaxDeg) / 2)
+      : 125;
     const target_rom_deg = found
       ? isLowRangeUpper
-        ? Math.max(15, Math.round((found.detection.targetMinDeg + found.detection.targetMaxDeg) / 2))
-        : Math.min(
-            160,
-            Math.max(85, Math.round((found.detection.targetMinDeg + found.detection.targetMaxDeg) / 2)),
-          )
-      : target_joint.includes('knee')
-        ? 100
-        : 150;
+        ? Math.max(25, defaultMidDeg)
+        : Math.min(165, Math.max(85, defaultMidDeg))
+      : 125;
 
     return {
-      exercise_id: item.id || item.exerciseId,
-      catalog_exercise_id: item.exerciseId,
+      exercise_id: item.id || canonicalId,
+      catalog_exercise_id: found?.id ?? canonicalId,
       schedule_id: item.id,
-      name_th: item.nameTh,
-      name_en: item.nameEn,
+      name_th: found?.name.th ?? item.nameTh,
+      name_en: found?.name.en ?? item.nameEn,
       target_joint,
       expected_plane:
-        found?.detection.expectedPlane ??
+        (found?.detection.expectedPlane as ExpectedMovementPlane | undefined) ??
         resolveExpectedPlaneForExercise({
-          exercise_id: item.exerciseId,
+          exercise_id: canonicalId,
           name_th: item.nameTh,
           name_en: item.nameEn,
           target_joint,

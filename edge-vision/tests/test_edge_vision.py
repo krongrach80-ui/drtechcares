@@ -124,16 +124,19 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertGreater(st.bone_lengths.torso_height, 0.15)  # type: ignore[union-attr]
 
     def test_04_all_26_clinical_exercises_and_aliases(self) -> None:
-        """All 26 Dr.Tech.Care clinical exercises plus Kiosk aliases resolve cleanly."""
+        """All 26 standardized Stroke ADL & MOPH exercises plus Kiosk aliases resolve cleanly."""
         self.assertEqual(len(ALL_26_EXERCISES), 26)
         ids = {r.id for r in ALL_26_EXERCISES}
         self.assertEqual(len(ids), 26)
-        self.assertEqual(resolve_exercise_rule("right_shoulder_abduction").id, "ex-03")
-        self.assertEqual(resolve_exercise_rule("left_shoulder_abduction").id, "ex-04")
-        self.assertEqual(resolve_exercise_rule("chair_squat").id, "ex-26")
+        self.assertTrue(all(r.category in ("upper_limb", "neck_trunk") for r in ALL_26_EXERCISES))
+        self.assertEqual(resolve_exercise_rule("right_shoulder_abduction").id, "STROKE_SH_ABD_R")
+        self.assertEqual(resolve_exercise_rule("left_shoulder_abduction").id, "STROKE_SH_ABD_L")
+        self.assertEqual(resolve_exercise_rule("STROKE_CROSS_BODY_R").id, "STROKE_CROSS_BODY_R")
+        self.assertEqual(resolve_exercise_rule("MOPH_NECK_TURN_BILATERAL").id, "MOPH_NECK_TURN_BILATERAL")
+        self.assertEqual(resolve_exercise_rule("ex-01").id, "STROKE_SH_FLEX_R")
 
     def test_05_3d_solver_angles_and_all_five_anti_cheat_checks(self) -> None:
-        """Verify true 3D ROM + TRUNK_LEAN, SHOULDER_HIKE, KNEE_VALGUS, HEEL_LIFT, TOO_FAST, and FALL."""
+        """Verify true 3D ROM + TRUNK_LEAN, SHOULDER_HIKE, ELBOW_FLEXION, TOO_FAST, and FALL."""
         solver = Biomechanics3DSolver(self.settings)
         cal = StandingCalibrator(duration_sec=2.0)
         stand_pts, _ = generate_synthetic_133_pose(0.0, is_calibrating=True)
@@ -148,8 +151,8 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertAlmostEqual(ang90, 90.0, places=3)
 
         # 1. Clean right shoulder abduction (~150 deg)
-        rule_sh = resolve_exercise_rule("ex-03")
-        good_sh, _ = generate_synthetic_133_pose(0.0, "ex-03", mock_pose_override="raise_right")
+        rule_sh = resolve_exercise_rule("STROKE_SH_ABD_R")
+        good_sh, _ = generate_synthetic_133_pose(0.0, "STROKE_SH_ABD_R", mock_pose_override="raise_right")
         res_good, emerg = solver.analyze(good_sh, rule_sh, cal, timestamp_sec=1.0, target_rom_override=140.0)
         self.assertIsNone(emerg)
         self.assertTrue(res_good.is_form_valid)
@@ -167,20 +170,16 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertIn("SHOULDER_HIKE", res_cheat.compensation_detected)
         self.assertIn("TOO_FAST", res_cheat.compensation_detected)
 
-        # 3. Squat KNEE_VALGUS (> 8 deg) & HEEL_LIFT (> 2.5 cm via foot keypoints 19/22)
+        # 3. Straight-arm guard (ELBOW_FLEXION) on STROKE_SH_FLEX_R when elbow bends excessively
         solver.reset()
-        rule_sq = resolve_exercise_rule("ex-26")
-        cheat_sq = stand_pts.copy()
-        cheat_sq[13, 0] -= 0.08  # left knee collapses medially
-        cheat_sq[14, 0] += 0.08  # right knee collapses medially
-        cheat_sq[19, 1] -= 0.04  # left heel lifted ~8cm
-        cheat_sq[22, 1] -= 0.04  # right heel lifted ~8cm
-        res_sq, _ = solver.analyze(cheat_sq, rule_sq, cal, timestamp_sec=2.0)
-        self.assertIn("KNEE_VALGUS", res_sq.compensation_detected)
-        self.assertIn("HEEL_LIFT", res_sq.compensation_detected)
+        rule_flex = resolve_exercise_rule("STROKE_SH_FLEX_R")
+        bent_arm = good_sh.copy()
+        bent_arm[10] = bent_arm[8] + np.array([0.0, -0.13, 0.0])  # wrist folded sharp at elbow (~30-70 deg interior)
+        res_bent, _ = solver.analyze(bent_arm, rule_flex, cal, timestamp_sec=2.0)
+        self.assertIn("ELBOW_FLEXION", res_bent.compensation_detected)
 
         # 4. Emergency Fall Detection
-        fall_pts, _ = generate_synthetic_133_pose(0.0, "ex-03", mock_pose_override="fall")
+        fall_pts, _ = generate_synthetic_133_pose(0.0, "STROKE_SH_ABD_R", mock_pose_override="fall")
         res_fall, fall_reason = solver.analyze(fall_pts, rule_sh, cal, timestamp_sec=2.1)
         self.assertIsNotNone(fall_reason)
         self.assertTrue(res_fall.pain_alert)
@@ -191,7 +190,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertEqual(fsm.fsm_state, "FACE_AUTH")
 
         rx = ExercisePrescriptionSchema(
-            exercise_id="ex-03",
+            exercise_id="STROKE_SH_ABD_R",
             target_rom_deg=130.0,
             hold_sec=0.5,
             target_reps=1,
@@ -200,7 +199,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertEqual(fsm.fsm_state, "CALIBRATE_2S")
 
         stand_pts, scores = generate_synthetic_133_pose(0.0, is_calibrating=True)
-        raised_pts, _ = generate_synthetic_133_pose(0.0, "ex-03", mock_pose_override="raise_right")
+        raised_pts, _ = generate_synthetic_133_pose(0.0, "STROKE_SH_ABD_R", mock_pose_override="raise_right")
         hand_empty = HandRaiseTelemetry()
 
         # Run 2.1s upright calibration
@@ -315,7 +314,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
                 self.assertEqual(len(first["keypoints_3d"]), 133)
                 self.assertIn("hand_status", first)
 
-                ws.send_json({"type": "prescription", "data": {"exercise_id": "ex-03", "target_rom_deg": 140}})
+                ws.send_json({"type": "prescription", "data": {"exercise_id": "STROKE_SH_ABD_R", "target_rom_deg": 140}})
                 ack = ws.receive_json()
                 while ack.get("type") != "ack":
                     ack = ws.receive_json()
@@ -345,12 +344,12 @@ class TestClinicalEdgeVision(unittest.TestCase):
             PatientMatchSchema(id="p-mp-01", hn="HN-701", full_name="Multi Person Patient", similarity=1.0),
             auto_start_calibration=False,
         )
-        rx = ExercisePrescriptionSchema(exercise_id="ex-03", target_rom_deg=110.0, hold_sec=0.5, target_reps=3)
+        rx = ExercisePrescriptionSchema(exercise_id="STROKE_SH_ABD_R", target_rom_deg=110.0, hold_sec=0.5, target_reps=3)
         fsm.set_prescription(rx, start_calibration=True)
 
         scores = np.full((TOTAL_WHOLEBODY_KEYPOINTS,), 0.95, dtype=np.float64)
         stand_pts, _ = generate_synthetic_133_pose(0.0, is_calibrating=True)
-        raised_pts, _ = generate_synthetic_133_pose(1.5, exercise_id="ex-03", is_calibrating=False)
+        raised_pts, _ = generate_synthetic_133_pose(1.5, exercise_id="STROKE_SH_ABD_R", is_calibrating=False)
         hand_empty = HandRaiseTelemetry()
 
         t = 0.0
@@ -363,7 +362,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
         xyz_mp, scores_mp, skel_cnt, skel_bboxes = pose_est.estimate_with_crowd(
             frame_bgr=None,
             timestamp_sec=t,
-            exercise_id="ex-03",
+            exercise_id="STROKE_SH_ABD_R",
             mock_pose_override="multi_person",
             is_mock_mode=True,
         )
@@ -455,12 +454,12 @@ class TestClinicalEdgeVision(unittest.TestCase):
             full_name="Authorized Patient",
             master_embedding=auth_vec.tolist(),
         )
-        rx = ExercisePrescriptionSchema(exercise_id="ex-03", target_rom_deg=110.0, hold_sec=0.5, target_reps=3)
+        rx = ExercisePrescriptionSchema(exercise_id="STROKE_SH_ABD_R", target_rom_deg=110.0, hold_sec=0.5, target_reps=3)
         fsm.set_prescription(rx, start_calibration=True)
 
         scores = np.full((TOTAL_WHOLEBODY_KEYPOINTS,), 0.95, dtype=np.float64)
         stand_pts, _ = generate_synthetic_133_pose(0.0, is_calibrating=True)
-        raised_pts, _ = generate_synthetic_133_pose(1.5, exercise_id="ex-03", is_calibrating=False)
+        raised_pts, _ = generate_synthetic_133_pose(1.5, exercise_id="STROKE_SH_ABD_R", is_calibrating=False)
         hand_empty = HandRaiseTelemetry()
 
         t = 0.0
@@ -605,9 +604,9 @@ class TestClinicalEdgeVision(unittest.TestCase):
         stand_world = wholebody133_to_world_meters(stand_pts)
         cal.force_calibrate_from_pose(stand_pts, world_pts=stand_world)
 
-        raised_pts, _ = generate_synthetic_133_pose(0.0, "ex-03", mock_pose_override="raise_right")
+        raised_pts, _ = generate_synthetic_133_pose(0.0, "STROKE_SH_ABD_R", mock_pose_override="raise_right")
         raised_world = wholebody133_to_world_meters(raised_pts)
-        rule = resolve_exercise_rule("ex-03")
+        rule = resolve_exercise_rule("STROKE_SH_ABD_R")
 
         res_front, _ = solver.analyze(
             raised_pts, rule, cal, timestamp_sec=1.0, target_rom_override=140.0, world_pts=raised_world, scores=scores
@@ -712,7 +711,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertEqual(fsm.movement_phase, "IDLE")
 
         rx = ExercisePrescriptionSchema(
-            exercise_id="ex-03",
+            exercise_id="STROKE_SH_ABD_R",
             target_rom_deg=110.0,
             hold_sec=2.0,
             target_reps=2,
@@ -817,8 +816,8 @@ class TestClinicalEdgeVision(unittest.TestCase):
             self.assertEqual(len(body["telemetry"]["pose_world_landmarks"]), TOTAL_MEDIAPIPE_KEYPOINTS)
 
     def test_16_seated_shoulder_flexion_vertical_reference_and_pna_headers(self) -> None:
-        """Seated Right Shoulder Flexion (ex-01) with occluded/out-of-frame hips uses [0, 1, 0] vertical vector."""
-        rule_flex = resolve_exercise_rule("ex-01")
+        """Seated Right Shoulder Flexion (STROKE_SH_FLEX_R) with occluded/out-of-frame hips uses [0, 1, 0] vertical vector."""
+        rule_flex = resolve_exercise_rule("STROKE_SH_FLEX_R")
         req_indices = rule_flex.required_landmark_indices()
         self.assertNotIn(11, req_indices)
         self.assertNotIn(12, req_indices)
@@ -894,8 +893,8 @@ class TestClinicalEdgeVision(unittest.TestCase):
                         "type": "prescription",
                         "start_calibration": False,
                         "data": {
-                            "exercise_id": "ex-01",
-                            "exercise_name": "Right Shoulder Flexion",
+                            "exercise_id": "STROKE_SH_FLEX_R",
+                            "exercise_name": "[Stroke ADL] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)",
                             "target_joint": "right_shoulder",
                             "target_rom_deg": 110,
                             "hold_sec": 3.0,
@@ -956,8 +955,8 @@ class TestClinicalEdgeVision(unittest.TestCase):
         fsm = ClinicalRehabFSM(live_settings)
         fsm.set_prescription(
             ExercisePrescriptionSchema(
-                exercise_id="ex-01",
-                exercise_name="Right Shoulder Flexion",
+                exercise_id="STROKE_SH_FLEX_R",
+                exercise_name="[Stroke ADL] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)",
                 target_joint="right_shoulder",
                 target_rom_deg=145.0,
                 hold_sec=3.0,
@@ -1002,22 +1001,30 @@ class TestClinicalEdgeVision(unittest.TestCase):
             coordinator.pose_estimator.close()
 
     def test_18_stroke_moph_exercises_and_safety_guards(self) -> None:
-        """Stroke ADL & MOPH Elderly exercises, 3D ROM calculation, and Safety Guards work accurately."""
-        from app.biomechanics.exercises import STROKE_AND_MOPH_EXERCISES, list_all_exercises
+        """Stroke ADL & MOPH Elderly exercises (exact 26), 3D ROM calculation, and Safety Guards work accurately."""
+        from app.biomechanics.exercises import list_all_exercises
 
-        self.assertGreaterEqual(len(STROKE_AND_MOPH_EXERCISES), 14)
-        self.assertEqual(len(list_all_exercises(include_stroke_moph=False)), 26)
-        self.assertEqual(len(list_all_exercises(include_stroke_moph=True)), 40)
+        all_meta = list_all_exercises(include_stroke_moph=True)
+        self.assertEqual(len(ALL_26_EXERCISES), 26)
+        self.assertEqual(len(all_meta), 26)
+        self.assertTrue(all(item["category"] in ("upper_limb", "neck_trunk") for item in all_meta))
 
         for code in (
             "STROKE_SH_FLEX",
             "STROKE_SH_ABD",
-            "STROKE_ELB_FLEX_EXT",
+            "STROKE_CROSS_BODY",
+            "STROKE_SCAP_PROTRACT",
             "STROKE_SH_ROT",
+            "STROKE_BOBATH_ARM_RAISE",
+            "STROKE_BOBATH_FORWARD_PUSH",
+            "STROKE_ELB_FLEX_EXT",
+            "STROKE_HAND_TO_HEAD",
+            "STROKE_FOREARM_TURN",
             "STROKE_WRIST_FINGER",
+            "STROKE_THUMB_PINCH",
             "MOPH_NECK_TILT",
+            "MOPH_NECK_TURN_BILATERAL",
             "MOPH_SHOULDER_SHRUG_ROLL",
-            "MOPH_BILATERAL_ARM_RAISE",
         ):
             resolved = resolve_exercise_rule(code)
             self.assertIsNotNone(resolved)
@@ -1027,7 +1034,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
         stand_pts, scores = generate_synthetic_133_pose(0.0, is_calibrating=True)
         cal.force_calibrate_from_pose(stand_pts)
 
-        # 1. Verify RTMW3D 133-pt hand landmarks drive STROKE_WRIST_FINGER_R
+        # 1. Verify RTMW3D 133-pt hand landmarks drive STROKE_WRIST_FINGER_R and new Stroke/MOPH metrics
         wrist_rule = resolve_exercise_rule("STROKE_WRIST_FINGER")
         hand_pts = stand_pts.copy()
         hand_pts[10] = np.array([0.36, 0.48, -0.25], dtype=np.float64)
@@ -1037,10 +1044,20 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertIsNone(wrist_emerg)
         self.assertGreater(wrist_res.current_rom_deg, 20.0)
 
+        cross_pts = stand_pts.copy()
+        cross_pts[10] = cross_pts[5] + np.array([0.02, 0.04, -0.05])
+        cross_res, _ = solver.analyze(cross_pts, resolve_exercise_rule("STROKE_CROSS_BODY_R"), cal, timestamp_sec=1.2)
+        self.assertGreater(cross_res.current_rom_deg, 65.0)
+
+        neck_turn_pts = stand_pts.copy()
+        neck_turn_pts[0] = np.array([0.54, 0.16, -0.04])
+        neck_res, _ = solver.analyze(neck_turn_pts, resolve_exercise_rule("MOPH_NECK_TURN_BILATERAL"), cal, timestamp_sec=1.4)
+        self.assertGreater(neck_res.current_rom_deg, 30.0)
+
         # 2. Verify CONTRAINDICATION_ROM_LIMIT + soft spasticity prompt
         solver.reset()
         flex_rule = resolve_exercise_rule("STROKE_SH_FLEX_R")
-        over_pts, _ = generate_synthetic_133_pose(0.0, "ex-03", mock_pose_override="raise_right")
+        over_pts, _ = generate_synthetic_133_pose(0.0, "STROKE_SH_ABD_R", mock_pose_override="raise_right")
         safe_res, safe_emerg = solver.analyze(
             over_pts,
             flex_rule,

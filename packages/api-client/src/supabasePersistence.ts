@@ -1,5 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { CLINICAL_EXERCISES } from '@drtechcares/pose-engine';
+import {
+  CLINICAL_EXERCISES,
+  isDeprecatedExerciseRecord,
+} from '@drtechcares/pose-engine';
 import {
   parseEmbeddingVector,
   type BiometricPose,
@@ -784,20 +787,27 @@ export async function hydrateStateFromSupabase(
     }));
   }
 
-  if (exercisesRes.status === 'fulfilled' && Array.isArray(exercisesRes.value.data) && exercisesRes.value.data.length > 0) {
-    const builtinFocusMap = new Map(CLINICAL_EXERCISES.map((c) => [c.id, c.clinicalFocus]));
-    const dbExIds = new Set(exercisesRes.value.data.map((r: Record<string, unknown>) => String(r.id)));
-    const dbExercises: ManagedExerciseRecord[] = exercisesRes.value.data.map((r: Record<string, unknown>) => {
-      const id = String(r.id);
-      return {
+  const canonicalMap = new Map(CLINICAL_EXERCISES.map((c) => [c.code, c]));
+  if (exercisesRes.status === 'fulfilled' && Array.isArray(exercisesRes.value.data)) {
+    const validCustomOrDb: ManagedExerciseRecord[] = [];
+    for (const r of exercisesRes.value.data as Record<string, unknown>[]) {
+      const id = String(r.id ?? '');
+      const code = String(r.code ?? id);
+      const category = (r.category as ManagedExerciseRecord['category']) ?? 'upper_limb';
+      if (isDeprecatedExerciseRecord({ id, code, category })) {
+        continue;
+      }
+      if (canonicalMap.has(code)) {
+        continue; // Use canonical 26 definition below so target ROM / localization stay exact
+      }
+      validCustomOrDb.push({
         id,
-        code: String(r.code),
-        category: (r.category as ManagedExerciseRecord['category']) ?? 'upper_limb',
-        clinicalFocus: builtinFocusMap.get(id),
+        code,
+        category,
         name: (r.name_i18n as ManagedExerciseRecord['name']) ?? {
-          th: String(r.name_th ?? r.code),
-          en: String(r.name_th ?? r.code),
-          cn: String(r.name_th ?? r.code),
+          th: String(r.name_th ?? code),
+          en: String(r.name_th ?? code),
+          cn: String(r.name_th ?? code),
         },
         instruction: (r.instruction_i18n as ManagedExerciseRecord['instruction']) ?? {
           th: String(r.instructions_th ?? ''),
@@ -816,10 +826,15 @@ export async function hydrateStateFromSupabase(
           defaultReps: 8,
         },
         createdBy: 'system',
-      };
-    });
-    const defaultsOnly = state.exercises.filter((e) => !dbExIds.has(e.id));
-    state.exercises = [...defaultsOnly, ...dbExercises];
+      });
+    }
+    const canonicalRecords: ManagedExerciseRecord[] = CLINICAL_EXERCISES.map((ex) => ({
+      ...ex,
+      createdBy: 'system',
+    }));
+    state.exercises = [...canonicalRecords, ...validCustomOrDb];
+  } else {
+    state.exercises = CLINICAL_EXERCISES.map((ex) => ({ ...ex, createdBy: 'system' }));
   }
 
   if (modpacksRes.status === 'fulfilled' && Array.isArray(modpacksRes.value.data) && modpacksRes.value.data.length > 0) {

@@ -8,7 +8,13 @@ import {
   type EnrolledTemplateCandidate,
   type GeometricAnthropometricRatios,
 } from '@drtechcares/smart-biometric-core';
-import { CLINICAL_EXERCISES, type BodySide, type ExerciseConfig } from '@drtechcares/pose-engine';
+import {
+  CLINICAL_EXERCISES,
+  isDeprecatedExerciseRecord,
+  normalizeStrokeExerciseId,
+  type BodySide,
+  type ExerciseConfig,
+} from '@drtechcares/pose-engine';
 
 export type UserRole = 'super_admin' | 'pt' | 'patient';
 export type ActivityType = 'minigame' | 'physio_exercise';
@@ -1251,7 +1257,25 @@ export class DrTechCaresApiClient {
   // Exercises & Modpacks
   async listExercises(): Promise<ManagedExerciseRecord[]> {
     const res = await this.request<{ exercises: ManagedExerciseRecord[] }>('/api/exercises');
-    return res.exercises;
+    return (res.exercises ?? []).filter((ex) => !isDeprecatedExerciseRecord(ex));
+  }
+
+  async syncStrokeExerciseLibrary(): Promise<{
+    ok: boolean;
+    purgedCount: number;
+    syncedCount: number;
+    exercises: ManagedExerciseRecord[];
+  }> {
+    if (typeof globalThis.localStorage !== 'undefined') {
+      try {
+        for (const key of ['drtech_exercises_cache', 'drtech_rehab_exercises_v1', 'exercises']) {
+          globalThis.localStorage.removeItem(key);
+        }
+      } catch {
+        // Ignore storage access errors
+      }
+    }
+    return this.request('/api/exercises/sync-stroke-library', { method: 'POST' });
   }
 
   async createExercise(ex: ExerciseConfig): Promise<ManagedExerciseRecord> {
@@ -1477,7 +1501,14 @@ function buildExerciseSummary(
   fallbackById?: Map<string, TodayPrescribedExerciseItem>,
   modpackId?: string,
 ): { nameTh: string; nameEn: string; targetJoint: string; holdSec: number; activityType: ActivityType } {
-  const found = catalog.find((c) => c.id === exerciseId);
+  const normalizedId = normalizeStrokeExerciseId(exerciseId);
+  const found = catalog.find(
+    (c) =>
+      c.id === exerciseId ||
+      c.code === exerciseId ||
+      c.id === normalizedId ||
+      c.code === normalizedId,
+  );
   if (found) {
     return {
       nameTh: found.name.th,

@@ -29,13 +29,28 @@ export interface ExerciseDetectionConfig {
   side: BodySide | 'both';
   targetMinDeg: number;
   targetMaxDeg: number;
+  targetRomDeg?: number;
   startRestMaxDeg: number;
   holdSec: number;
   defaultSets: number;
   defaultReps: number;
   requireStraightElbow?: boolean;
   minElbowDeg?: number;
-  expectedPlane?: 'flexion' | 'abduction' | 'rotation' | 'wrist_finger' | 'shrug_roll' | 'bilateral' | 'any';
+  expectedPlane?:
+    | 'flexion'
+    | 'abduction'
+    | 'rotation'
+    | 'cross_body'
+    | 'scap_protract'
+    | 'wrist_finger'
+    | 'forearm_turn'
+    | 'thumb_pinch'
+    | 'hand_to_head'
+    | 'shrug_roll'
+    | 'neck_turn'
+    | 'bilateral'
+    | 'bilateral_push'
+    | 'any';
 }
 
 export interface ExerciseConfig {

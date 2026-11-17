@@ -302,7 +302,7 @@ class OneEuroFilter3D(OneEuroFilter):
 
 def generate_synthetic_133_pose(
     t_sec: float,
-    exercise_id: str = "ex-03",
+    exercise_id: str = "STROKE_SH_ABD_R",
     is_calibrating: bool = False,
     mock_pose_override: Optional[str] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -356,24 +356,16 @@ def generate_synthetic_133_pose(
             pts[6, 1] += 0.32
             pts[11, 1] += 0.28
             pts[12, 1] += 0.28
-        elif "squat" in exercise_id.lower() or exercise_id in ("ex-13", "ex-14", "ex-26"):
-            hip_drop = cycle * 0.13
-            pts[0, 1] += hip_drop * 0.9
-            pts[5, 1] += hip_drop * 0.9
-            pts[6, 1] += hip_drop * 0.9
-            pts[11, 1] += hip_drop
-            pts[12, 1] += hip_drop
-            pts[11, 2] += 0.08 * cycle
-            pts[12, 2] += 0.08 * cycle
-            pts[13, 2] -= 0.10 * cycle
-            pts[14, 2] -= 0.10 * cycle
-        elif "left" in exercise_id.lower() or exercise_id in ("ex-02", "ex-04", "ex-06", "ex-08", "ex-10", "ex-12", "ex-25"):
+        elif "left" in exercise_id.lower() or exercise_id.upper().endswith("_L"):
             l_angle_rad = math.radians(12.0 + cycle * 145.0)
-            if "flex" in exercise_id.lower() or exercise_id == "ex-02":
+            if "flex" in exercise_id.lower() or "scap" in exercise_id.lower():
                 l_forward_z = -0.22 * cycle
+        elif "bilateral" in exercise_id.lower() or "bobath" in exercise_id.lower():
+            l_angle_rad = math.radians(12.0 + cycle * 135.0)
+            r_angle_rad = math.radians(12.0 + cycle * 135.0)
         else:
             r_angle_rad = math.radians(12.0 + cycle * 145.0)
-            if "flex" in exercise_id.lower() or exercise_id == "ex-01":
+            if "flex" in exercise_id.lower() or "scap" in exercise_id.lower():
                 r_forward_z = -0.22 * cycle
 
     # Left arm (shoulder 5 -> elbow 7 -> wrist 9)
@@ -871,7 +863,7 @@ class RTMW3DPoseEstimator:
         self,
         frame_bgr: Optional[np.ndarray],
         timestamp_sec: float,
-        exercise_id: str = "ex-03",
+        exercise_id: str = "STROKE_SH_ABD_R",
         is_calibrating: bool = False,
         mock_pose_override: Optional[str] = None,
         is_mock_mode: bool = False,
@@ -1046,7 +1038,7 @@ class RTMW3DPoseEstimator:
         self,
         frame_bgr: Optional[np.ndarray],
         timestamp_sec: float,
-        exercise_id: str = "ex-03",
+        exercise_id: str = "STROKE_SH_ABD_R",
         is_calibrating: bool = False,
         mock_pose_override: Optional[str] = None,
         is_mock_mode: bool = False,
@@ -1070,7 +1062,7 @@ class RTMW3DPoseEstimator:
         self,
         frame_bgr: Optional[np.ndarray],
         timestamp_sec: float,
-        exercise_id: str = "ex-03",
+        exercise_id: str = "STROKE_SH_ABD_R",
         is_calibrating: bool = False,
         mock_pose_override: Optional[str] = None,
         is_mock_mode: bool = False,

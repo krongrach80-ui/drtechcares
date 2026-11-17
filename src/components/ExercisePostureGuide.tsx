@@ -9,20 +9,20 @@ export type PostureIllustrationKind =
   | 'shoulder_abduction'
   | 'shoulder_scaption'
   | 'shoulder_overhead'
-  | 'shoulder_wall_slide'
-  | 'shoulder_pendulum'
   | 'shoulder_rotation'
+  | 'cross_body_reach'
+  | 'scapular_protract'
   | 'shoulder_shrug_roll'
   | 'bilateral_arm_raise'
+  | 'bobath_forward_push'
   | 'elbow_flexion'
+  | 'hand_to_head'
+  | 'forearm_turn'
   | 'wrist_finger'
+  | 'thumb_pinch'
   | 'neck_tilt'
-  | 'trunk_align'
-  | 'chair_squat'
-  | 'knee_extension'
-  | 'hip_march'
-  | 'heel_raise'
-  | 'single_leg_balance';
+  | 'neck_turn'
+  | 'trunk_align';
 
 export type PostureSide = 'right' | 'left' | 'both';
 export type PosturePreviewPhase = 'auto' | 'prepare' | 'move' | 'hold';
@@ -240,26 +240,83 @@ const REGION_COPY: Record<
       };
     },
   },
-  shoulder_wall_slide: {
+  cross_body_reach: {
     region: {
-      th: 'ข้อไหล่ & สะบัก (ใช้ผนังช่วยประคอง)',
-      en: 'Shoulder & Scapula (Wall Support)',
-      cn: '肩关节与肩胛（扶墙辅助）',
+      th: 'ข้อไหล่ด้านหน้า & กอดลำตัว (Cross-Body Reach)',
+      en: 'Horizontal Adduction • Opposite Shoulder Reach',
+      cn: '肩关节水平内收（交叉触摸对侧肩）',
     },
     view: {
-      th: 'มุมมองข้างผนัง (สไลด์มือไต่ขึ้นตามแนวตั้ง)',
-      en: 'Wall-guided vertical slide',
-      cn: '扶墙垂直向上滑举',
+      th: 'มุมมองหน้าตรง (วาดแขนไขว้ผ่านหน้าอกแตะไหล่ตรงข้าม)',
+      en: 'Front coronal view (Reach gently across chest)',
+      cn: '正面冠状位视角（手臂平缓横跨胸前）',
     },
     muscle: {
-      th: 'ค่อยๆ เพิ่มพิสัยข้อไหล่โดยมีผนังช่วยพยุงน้ำหนักแขน',
-      en: 'Wall-supported progressive overhead mobility',
-      cn: '借助墙面支撑安全提升肩关节活动度',
+      th: 'ยืดเยื่อหุ้มข้อไหล่ด้านหลัง เพื่อฝึกเอื้อมติดกระดุมและหยิบของข้างตัว',
+      en: 'Posterior shoulder capsule stretch for cross-chest dressing & reaching',
+      cn: '拉伸肩后囊并改善对侧穿衣取物功能',
     },
     caution: {
-      th: 'ประคองมือให้เลียบผนังขึ้นช้าๆ ไม่เอนตัวถอยหลัง',
-      en: 'Slide gently along wall; avoid leaning backward',
-      cn: '轻贴墙面缓慢上滑，不要后仰身体',
+      th: 'หน้าอกและลำตัวตั้งตรงนิ่ง ไม่บิดเอวตามมือที่เอื้อมไป',
+      en: 'Keep trunk steady facing camera; avoid twisting spine with arm',
+      cn: '保持躯干正对屏幕稳定，避免扭腰代偿',
+    },
+    adl: {
+      th: '👕 กิจวัตรประจำวัน: เอื้อมแตะไหล่ฝั่งตรงข้าม / คาดเข็มขัดนิรภัย',
+      en: '👕 Daily ADL: Reaching across chest / Buckling seatbelt',
+      cn: '👕 日常活动：交叉触摸对侧肩 / 系安全带',
+    },
+    steps: (side, rom, holdSec) => {
+      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
+      const oppTh = side === 'left' ? 'ขวา' : 'ซ้าย';
+      const sEn = side === 'left' ? 'left' : 'right';
+      const oppEn = side === 'left' ? 'right' : 'left';
+      const sCn = side === 'left' ? '左' : '右';
+      const oppCn = side === 'left' ? '右' : '左';
+      return {
+        th: [
+          `นั่งหรือยืนตรง ยกแขน${sTh}ขึ้นระดับหัวไหล่ขนานพื้น`,
+          `ค่อยๆ วาดแขน${sTh}ไขว้ผ่านหน้าอกไปแตะหัวไหล่ฝั่ง${oppTh} (~${rom}°)`,
+          `ค้างท่าที่จุดตึงสบาย ${holdSec} วินาที แล้วกางแขนกลับท่าเดิม`,
+        ],
+        en: [
+          `Sit or stand upright and raise ${sEn} arm comfortably to chest height`,
+          `Sweep ${sEn} arm across chest toward your ${oppEn} shoulder (~${rom}°)`,
+          `Hold comfortably for ${holdSec}s, then sweep smoothly back`,
+        ],
+        cn: [
+          `正坐或站直，平抬${sCn}臂至胸前水平高度`,
+          `将${sCn}臂横跨胸前缓慢伸向${oppCn}肩（约 ${rom}°）`,
+          `保持牵拉 ${holdSec} 秒后缓慢收回`,
+        ],
+      };
+    },
+  },
+  scapular_protract: {
+    region: {
+      th: 'ข้อสะบัก & หัวไหล่ด้านหน้า (Scapular Protraction)',
+      en: 'Scapular Protraction • Seated Forward Reach',
+      cn: '肩胛骨前伸推展控制',
+    },
+    view: {
+      th: 'มุมมองด้านข้าง (ดันข้อสะบักยื่นแขนตรงไปข้างหน้าระดับอก)',
+      en: 'Side profile view (Push shoulder blade forward at 90°)',
+      cn: '侧面视角（90° 水平前推肩胛骨）',
+    },
+    muscle: {
+      th: 'ปลุกการทำงานของกล้ามเนื้อ Serratus Anterior ลดปัญหาข้อไหล่หลวม/ไหล่ตก',
+      en: 'Activates serratus anterior stabilizing post-stroke shoulder subluxation',
+      cn: '激活前锯肌，改善卒中后肩关节半脱位与肩胛无力',
+    },
+    caution: {
+      th: 'เหยียดข้อศอกให้ตรงแล้วใช้ข้อสะบักดันมือยื่นไปข้างหน้า ไม่โน้มตัวตาม',
+      en: 'Keep elbow straight and glide shoulder blade forward without leaning chest',
+      cn: '伸直肘关节并仅前推肩胛，切勿身体大幅前倾',
+    },
+    adl: {
+      th: '🚪 กิจวัตรประจำวัน: เอื้อมเปิดประตู / หยิบของบนโต๊ะด้านหน้า',
+      en: '🚪 Daily ADL: Pushing door / Reaching across table',
+      cn: '🚪 日常活动：推门与桌面取物',
     },
     steps: (side, rom, holdSec) => {
       const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
@@ -267,67 +324,257 @@ const REGION_COPY: Record<
       const sCn = side === 'left' ? '左' : '右';
       return {
         th: [
-          `ยืนห่างผนังเล็กน้อย วางฝ่ามือ${sTh}แตะเบาๆ ที่ผนัง`,
-          `ค่อยๆ สไลด์มือ${sTh}ไต่ผนังขึ้นสูงสู่ ${rom}°`,
-          `ค้างที่จุดสูงสุด ${holdSec} วินาที แล้วสไลด์กลับลงช้าๆ`,
+          `นั่งหลังตรง ยกแขน${sTh}เหยียดตรงระดับหน้าอก 90°`,
+          `ยื่นมือและหัวไหล่${sTh}ไปด้านหน้าเพิ่มเติม (~${rom}°)`,
+          `ค้างท่าผลักสะบักไว้ ${holdSec} วินาที แล้วดึงไหล่กลับชิดพนัก`,
         ],
         en: [
-          `Stand near wall with ${sEn} palm lightly touching wall`,
-          `Slide ${sEn} hand smoothly upward along wall toward ${rom}°`,
-          `Hold at peak for ${holdSec}s, then slide back down slowly`,
+          `Sit tall with ${sEn} arm extended straight forward at chest height (90°)`,
+          `Glide ${sEn} shoulder blade forward extending reach (~${rom}°)`,
+          `Hold protraction steady for ${holdSec}s, then retract smoothly`,
         ],
         cn: [
-          `面向墙站立，${sCn}手轻贴墙面`,
-          `沿着墙面缓慢向上滑举至 ${rom}°`,
-          `最高处保持 ${holdSec} 秒后缓慢滑下`,
+          `端坐挺直腰背，${sCn}臂前平举 90°`,
+          `保持肘直，向前推展${sCn}侧肩胛骨（约 ${rom}°）`,
+          `保持前伸 ${holdSec} 秒后缓慢收回肩胛`,
         ],
       };
     },
   },
-  shoulder_pendulum: {
+  bobath_forward_push: {
     region: {
-      th: 'ข้อไหล่ (แกว่งลดตึงแบบคอดแมน)',
-      en: 'Relaxed Shoulder Joint (Codman)',
-      cn: '肩关节放松（钟摆减压）',
+      th: 'แขน 2 ข้างประสานมือเหยียดศอกตรง (Bobath Forward Push)',
+      en: 'Bilateral Clasped Forward Elbow Extension (Bobath)',
+      cn: '双手交叉前推伸肘（Bobath 模式）',
     },
     view: {
-      th: 'มุมมองด้านข้าง (โน้มตัวเล็กน้อยแล้วแกว่งเป็นวงกลม)',
-      en: 'Side lean view (Circular hanging swing)',
-      cn: '侧面微俯视角（自然下垂画圈摆动）',
+      th: 'มุมมองด้านข้าง (ประสานมือดันเหยียดศอกตรงจากอกไปด้านหน้า)',
+      en: 'Side profile view (Push clasped hands straight forward)',
+      cn: '侧面视角（双手交叉从胸前用力前推伸直双肘）',
     },
     muscle: {
-      th: 'คลายความฝืดและเพิ่มน้ำหล่อเลี้ยงข้อไหล่โดยไม่เกร็งกล้ามเนื้อ',
-      en: 'Gravity-assisted joint decompression without straining',
-      cn: '利用重力自然牵引放松僵硬肩关节',
+      th: 'ลดอาการเกร็งงอแขนแบบ Flexor Synergy และฝึกเหยียดศอกคู่ตามหลัก Bobath',
+      en: 'Inhibits flexor spasticity via bilateral clasped elbow push',
+      cn: '依据 Bobath 理念抑制屈肌痉挛并促进双侧对称伸肘',
     },
     caution: {
-      th: 'ใช้แขนอีกข้างยันโต๊ะ/เก้าอี้ไว้ให้มั่นคง ปล่อยแขนที่แกว่งให้หนักที่สุด',
-      en: 'Support with opposite hand on chair/table; let swinging arm hang loose',
-      cn: '健侧手扶稳桌椅，患侧手臂完全放松下垂',
+      th: 'สอดนิ้วโป้งข้างอ่อนแรงให้อยู่ด้านบนมือที่ประสานเสมอ เหยียดศอกให้สุดเท่าที่ทำได้',
+      en: 'Keep affected thumb placed on top of clasp and extend elbows symmetrically',
+      cn: '患侧拇指始终置于交叉上方，对称推直双肘',
     },
-    steps: (side, _rom, holdSec) => {
+    adl: {
+      th: '🤲 กิจวัตร Bobath: ผลักบานประตู / ยื่นถือถาดอาหาร 2 มือ',
+      en: '🤲 Bobath ADL: Symmetric reaching & holding items with both hands',
+      cn: '🤲 Bobath 训练：双手推门与协同递物',
+    },
+    steps: (_side, rom, holdSec) => ({
+      th: [
+        'ประสานนิ้วมือทั้งสองข้างเข้าด้วยกันไว้ที่กลางหน้าอก',
+        `ค่อยๆ ดันมือที่ประสานยืดข้อศอกตรงไปด้านหน้าระดับอกจนถึง ~${rom}°`,
+        `ค้างท่าแขนเหยียดตรง ${holdSec} วินาที แล้วดึงมือกลับมาชิดอก`,
+      ],
+      en: [
+        'Clasp all fingers snugly together in front of your chest',
+        `Push clasped hands straight forward extending elbows smoothly (~${rom}°)`,
+        `Hold full forward push for ${holdSec}s, then draw back to chest`,
+      ],
+      cn: [
+        '双手十指交叉相握置于胸前',
+        `沿胸前高度缓慢将双手向前推直（约 ${rom}°）`,
+        `伸直保持 ${holdSec} 秒后缓慢收回胸前`,
+      ],
+    }),
+  },
+  hand_to_head: {
+    region: {
+      th: 'ข้อศอก & ไหล่: ยกมือแตะศีรษะ / หวีผม (Functional Reach)',
+      en: 'Elbow & Shoulder • Hand-to-Head Grooming Reach',
+      cn: '肘肩协同功能训练 • 抬手摸头与梳头',
+    },
+    view: {
+      th: 'มุมมองหน้าตรง (งอศอกยกฝ่ามือขึ้นแตะบริเวณขมับ-ศีรษะ)',
+      en: 'Front coronal view (Lift hand smoothly toward head crown)',
+      cn: '正面冠状位视角（屈肘抬手轻触头顶）',
+    },
+    muscle: {
+      th: 'ประสานการทำงานข้อไหล่และข้อศอกเพื่อฟื้นฟูการสระผม ล้างหน้า และหวีผม',
+      en: 'Coordinated elbow flexion + shoulder lift for self-hygiene & combing',
+      cn: '协调肩肘运动，恢复自主洗脸、梳头与个人护理动作',
+    },
+    caution: {
+      th: 'ศีรษะตั้งตรงมองกล้อง ไม่ก้มหน้าลงมาหามือขณะยกมือขึ้น',
+      en: 'Keep head upright facing camera; bring hand up rather than ducking head',
+      cn: '头部保持直立平视镜头，切勿低头迎合手部',
+    },
+    adl: {
+      th: '🪥 กิจวัตรประจำวัน: ล้างหน้า / หวีผม / สวมหมวกด้วยตนเอง',
+      en: '🪥 Daily ADL: Face washing / Hair combing / Putting on hat',
+      cn: '🪥 日常活动：自主洗脸 / 梳头 / 戴帽',
+    },
+    steps: (side, rom, holdSec) => {
       const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const otherTh = side === 'left' ? 'ขวา' : 'ซ้าย';
       const sEn = side === 'left' ? 'left' : 'right';
       const sCn = side === 'left' ? '左' : '右';
       return {
         th: [
-          `โน้มลำตัวไปด้านหน้าเล็กน้อย ใช้มือ${otherTh}ยันเก้าอี้ประคอง`,
-          `ปล่อยแขน${sTh}ห้อยตรงตามแรงโน้มถ่วง อย่าเกร็งหัวไหล่`,
-          `แกว่งเบาๆ ต่อเนื่องสม่ำเสมอ ${holdSec} วินาที`,
+          `ตั้งศีรษะตรง ปล่อยมือ${sTh}ข้างลำตัวสบายๆ`,
+          `งอศอกพร้อมยกมือ${sTh}ขึ้นช้าๆ แตะบริเวณข้างศีรษะหรือกระหม่อม (~${rom}°)`,
+          `แตะค้างไว้ ${holdSec} วินาที แล้วลดมือกลับลงข้างตัว`,
         ],
         en: [
-          `Lean forward gently resting opposite hand on support`,
-          `Let your ${sEn} arm hang completely loose like a pendulum`,
-          `Swing gently in small controlled arcs for ${holdSec}s`,
+          `Sit or stand tall with ${sEn} arm resting comfortably`,
+          `Bend elbow and lift ${sEn} hand smoothly to touch temple/head crown (~${rom}°)`,
+          `Hold lightly at head for ${holdSec}s, then lower gently`,
         ],
         cn: [
-          `身体微前倾，健侧手轻扶椅子支撑稳定`,
-          `让${sCn}臂如钟摆般完全放松垂下`,
-          `轻柔摆动放松肩关节，持续 ${holdSec} 秒`,
+          `头部直立平视，${sCn}臂自然垂放体侧`,
+          `缓慢屈肘抬起${sCn}手轻触太阳穴或头顶（约 ${rom}°）`,
+          `轻触保持 ${holdSec} 秒后缓慢放下手臂`,
         ],
       };
     },
+  },
+  forearm_turn: {
+    region: {
+      th: 'ปลายแขน & ข้อมือ: คว่ำมือ-หงายมือ (Pronation/Supination)',
+      en: 'Forearm Rotation • Palm Up / Palm Down',
+      cn: '前臂旋前旋后训练 • 翻手掌心向上/向下',
+    },
+    view: {
+      th: 'มุมมองระยะใกล้ (พลิกฝ่ามือหงายขึ้นและคว่ำลงสลับกัน)',
+      en: 'Close forearm view (Flip palm steadily upward & downward)',
+      cn: '前臂近景视角（交替翻转掌心向上与向下）',
+    },
+    muscle: {
+      th: 'ฟื้นฟูข้อต่อกระดูกปลายแขน เพื่อการบิดลูกบิดประตู เปิดขวดน้ำ และรับเหรียญ',
+      en: 'Restores radioulnar rotation needed for doorknobs, jars & holding bowls',
+      cn: '改善前臂旋转活动度，恢复拧门把手、端碗与接物能力',
+    },
+    caution: {
+      th: 'หนีบศอกให้อยู่นิ่งข้างตัว ห้ามกางศอกเหวี่ยงช่วยพลิกมือ',
+      en: 'Pin elbow steady at your waist; rotate only the forearm and palm',
+      cn: '保持手肘紧贴腰侧稳定，仅转动前臂与手掌',
+    },
+    adl: {
+      th: '🔑 กิจวัตรประจำวัน: บิดลูกบิดประตู / หงายมือรับของ / เทน้ำ',
+      en: '🔑 Daily ADL: Turning doorknob / Receiving coins / Pouring',
+      cn: '🔑 日常活动：拧门把手 / 摊手接物 / 倒水',
+    },
+    steps: (side, rom, holdSec) => {
+      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
+      const sEn = side === 'left' ? 'left' : 'right';
+      const sCn = side === 'left' ? '左' : '右';
+      return {
+        th: [
+          `งอศอก${sTh} 90° แนบลำตัว ยื่นฝ่ามือให้อยู่ในกรอบกล้อง`,
+          `พลิกหงายฝ่ามือ${sTh}ขึ้นจนสุด (~${rom}°) แล้วพลิกคว่ำฝ่ามือลงช้าๆ`,
+          `ค้างท่าที่จุดหงายหรือคว่ำสุด ${holdSec} วินาที อย่างมั่นคง`,
+        ],
+        en: [
+          `Bend ${sEn} elbow 90° against side and position hand clearly facing camera`,
+          `Rotate forearm to turn palm flat up (~${rom}°), then flip smoothly palm down`,
+          `Pause and hold each turned position clearly for ${holdSec}s`,
+        ],
+        cn: [
+          `${sCn}肘弯曲90°贴紧体侧，手部清晰面向摄像头`,
+          `缓缓翻转${sCn}前臂使掌心朝上（约 ${rom}°），再缓慢翻转为掌心朝下`,
+          `每次翻转到位保持 ${holdSec} 秒`,
+        ],
+      };
+    },
+  },
+  thumb_pinch: {
+    region: {
+      th: 'นิ้วหัวแม่มือ & กล้ามเนื้อมัดเล็ก (Precision Thumb Pinch)',
+      en: 'Fine Motor • Thumb-to-Finger Tip Pinch',
+      cn: '手指精细动作 • 拇指对指捏合训练',
+    },
+    view: {
+      th: 'มุมมองระยะใกล้ (จีบปลายนิ้วโป้งแตะนิ้วชี้-ก้อยเป็นรูปวงกลม)',
+      en: 'Close hand view (Pinch thumb tip cleanly into an O-ring)',
+      cn: '手部特写视角（拇指依次与其余四指指尖捏合呈 O 形）',
+    },
+    muscle: {
+      th: 'ฝึกการควบคุมกล้ามเนื้อมัดเล็กในมือ เพื่อจับช้อน ติดกระดุม และจับปากกาเขียน',
+      en: 'Trains intrinsic thumb opposition for buttoning, writing & utensil grip',
+      cn: '强化手内在肌对指精细控制，辅助握笔、系扣与夹取小物',
+    },
+    caution: {
+      th: 'ยกมือให้เห็นปลายนิ้วชัดเจนในกรอบกล้อง ค่อยๆ จีบปลายนิ้วแตะทีละนิ้ว',
+      en: 'Show fingertips clearly to camera and touch pad-to-pad cleanly into an O-shape',
+      cn: '手掌在镜头中保持清晰，轻柔精准完成指腹捏合呈圆形',
+    },
+    adl: {
+      th: '✏️ กิจวัตรประจำวัน: จับปากกา / ติดกระดุมเสื้อ / คีบอาหาร',
+      en: '✏️ Daily ADL: Writing pen grip / Buttoning shirt / Picking small items',
+      cn: '✏️ 日常活动：握笔写字 / 系衣扣 / 夹取小物件',
+    },
+    steps: (side, _rom, holdSec) => {
+      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
+      const sEn = side === 'left' ? 'left' : 'right';
+      const sCn = side === 'left' ? '左' : '右';
+      return {
+        th: [
+          `ยกฝ่ามือ${sTh}ขึ้นระดับอก หันเข้าหากล้องอย่างชัดเจน`,
+          `จีบปลายนิ้วโป้ง${sTh}เข้าแตะปลายนิ้วชี้เป็นวงกลมรูปตัว O แล้วคลายออก`,
+          `ค้างท่าจีบนิ้วไว้ ${holdSec} วินาที ก่อนสลับแตะนิ้วกลาง นาง และก้อย`,
+        ],
+        en: [
+          `Hold ${sEn} palm clearly inside camera frame at chest level`,
+          `Bring ${sEn} thumb tip gently to index fingertip forming a crisp O-ring`,
+          `Hold pinch contact for ${holdSec}s, then repeat smoothly across remaining fingers`,
+        ],
+        cn: [
+          `将${sCn}手掌平举胸前并清晰面向摄像头`,
+          `用${sCn}手拇指指尖轻触食指指尖形成清晰 O 形，然后缓慢张开`,
+          `每次对捏保持 ${holdSec} 秒后依次换触中指、无名指与小指`,
+        ],
+      };
+    },
+  },
+  neck_turn: {
+    region: {
+      th: 'กระดูกต้นคอ & การเหลียวมอง 2 ข้าง (Cervical Rotation)',
+      en: 'Cervical Spine • Gentle Left-Right Head Turn',
+      cn: '颈椎水平旋转 • 左右温和转头（卫生部标准）',
+    },
+    view: {
+      th: 'มุมมองหน้าตรง (หันคางมองข้ามหัวไหล่ซ้ายและขวาอย่างช้าๆ)',
+      en: 'Front view (Turn chin smoothly left and right over level shoulders)',
+      cn: '正面视角（双肩保持不动，下颌水平缓慢转向左右肩方向）',
+    },
+    muscle: {
+      th: 'เพิ่มความคล่องตัวข้อต่อคอ ป้องกันคอตึง-เวียนศีรษะขณะมองรอบตัวในผู้สูงอายุ',
+      en: 'Maintains safe cervical rotation for scanning surroundings without dizziness',
+      cn: '维持老年人及卒中患者颈部灵活旋转，预防僵硬与转头头晕',
+    },
+    caution: {
+      th: 'หันช้าและนุ่มนวล ห้ามกระชากคอ หากเวียนศีรษะให้หยุดพักตรงกลางทันที',
+      en: 'Rotate smoothly; stop immediately at center if any dizziness occurs',
+      cn: '转动务必慢而轻柔；若感头晕请立即停于中立位休息',
+    },
+    adl: {
+      th: '🌿 มาตรฐาน สธ.: หันมองสิ่งรอบข้างและลดปวดคอเรื้อรัง',
+      en: '🌿 MOPH Elderly Neck Mobility: Safe visual scanning & neck relief',
+      cn: '🌿 卫生部推荐：安全环顾四周及预防慢性颈痛',
+    },
+    steps: (_side, rom, holdSec) => ({
+      th: [
+        'นั่งหลังตรง มองตรงเข้ากล้อง กดไหล่ทั้ง 2 ข้างลงสบายๆ',
+        `ค่อยๆ หันศีรษะมองข้ามหัวไหล่ข้างซ้าย (~${rom}°) แล้วหันสลับไปข้างขวา`,
+        `ค้างมุมหันแต่ละข้าง ${holdSec} วินาที อย่างนุ่มนวล`,
+      ],
+      en: [
+        'Sit upright looking straight ahead with both shoulders relaxed',
+        `Slowly rotate chin toward left shoulder (~${rom}°), then gently turn right`,
+        `Hold comfortably at each side for ${holdSec}s before centering`,
+      ],
+      cn: [
+        '端坐挺直，双眼平视前方，双肩放松下沉',
+        `缓慢水平转头望向左肩方向（约 ${rom}°），随后轻柔转向右侧`,
+        `每侧柔和保持 ${holdSec} 秒后再回正中位`,
+      ],
+    }),
   },
   shoulder_rotation: {
     region: {
@@ -652,228 +899,6 @@ const REGION_COPY: Record<
       ],
     }),
   },
-  chair_squat: {
-    region: {
-      th: 'กล้ามเนื้อต้นขา • ข้อเข่า & สะโพก (Sit-to-Stand)',
-      en: 'Quadriceps • Knees & Hips (Sit-to-Stand)',
-      cn: '大腿股四头肌 • 膝髋关节（坐站训练）',
-    },
-    view: {
-      th: 'มุมมองด้านข้างเก้าอี้ (ย่อ-เหยียดเข่าพร้อมลุกยืน)',
-      en: 'Chair side view (Rise upright & lower smoothly)',
-      cn: '座椅侧面视角（起立站直与缓慢坐下）',
-    },
-    muscle: {
-      th: 'สร้างกำลังขาสองข้างเพื่อลุกจากเตียง เก้าอี้ และห้องน้ำได้ปลอดภัย',
-      en: 'Lower-limb strength for safe chair, bed & toilet transfers',
-      cn: '强化下肢站立力量，保障日常起坐安全',
-    },
-    caution: {
-      th: 'เตรียมเก้าอี้มั่นคงด้านหลังเสมอ อย่าให้หัวเข่าบิดหุบเข้าด้านใน',
-      en: 'Keep sturdy chair behind you; avoid knees caving inward',
-      cn: '身后紧靠稳固座椅，膝盖勿向内扣',
-    },
-    adl: {
-      th: '🪑 กิจวัตรประจำวัน: ลุกจากเก้าอี้ / เตียงนอน อย่างมั่นคง',
-      en: '🪑 Daily ADL: Safe chair & bed transfer',
-      cn: '🪑 日常活动：安全起坐转移',
-    },
-    steps: (_side, _rom, holdSec) => ({
-      th: [
-        'นั่งปลายเก้าอี้ แยกเท้ากว้างเท่าช่วงไหล่ วางเท้ามั่นคงบนพื้น',
-        'โน้มตัวเล็กน้อย ดันส้นเท้าลุกยืนขึ้นช้าๆ จนเข่าเกือบตรง',
-        `ยืนทรงตัวตรงค้างไว้ ${holdSec} วินาที แล้วค่อยๆ หย่อนสะโพกนั่งลง`,
-      ],
-      en: [
-        'Sit near chair edge with feet flat shoulder-width apart',
-        'Shift slightly forward and push through heels to stand tall',
-        `Hold upright stance for ${holdSec}s, then sit back smoothly`,
-      ],
-      cn: [
-        '坐在椅子前缘，双脚与肩同宽平踩地面',
-        '身体微前倾，脚跟发力缓慢起立至膝关节伸直',
-        `直立保持 ${holdSec} 秒后控制重心缓慢坐回`,
-      ],
-    }),
-  },
-  knee_extension: {
-    region: {
-      th: 'กล้ามเนื้อหน้าขา & ข้อเข่า (ท่านั่งเหยียดขา)',
-      en: 'Quadriceps & Knee Joint (Seated Extension)',
-      cn: '股四头肌与膝关节（坐姿伸膝）',
-    },
-    view: {
-      th: 'มุมมองด้านข้างเก้าอี้ (เตะขาเหยียดเข่าตรงไปด้านหน้า)',
-      en: 'Seated side view (Straighten lower leg horizontally)',
-      cn: '坐姿侧面视角（小腿向前伸平）',
-    },
-    muscle: {
-      th: 'เสริมความแข็งแรงรอบข้อเข่าเพื่อช่วยการก้าวเดินและขึ้นบันได',
-      en: 'Builds knee-locking stability for safer walking & stairs',
-      cn: '强化膝关节伸展稳定，辅助平稳迈步',
-    },
-    caution: {
-      th: 'พิงพนักเก้าอี้ให้หลังตรง กระดกปลายเท้าเข้าหาตัวเล็กน้อยขณะเหยียด',
-      en: 'Keep back supported; flex toes gently upward at full extension',
-      cn: '背部靠稳椅背，伸直时脚尖微勾向自身',
-    },
-    steps: (side, _rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const sCn = side === 'left' ? '左' : '右';
-      return {
-        th: [
-          `นั่งหลังตรงบนเก้าอี้ พักขา${sTh}งอเข่า 90° สบายๆ`,
-          `ค่อยๆ เหยียดข้อเข่า${sTh}ยกปลายเท้าขึ้นจนขาขนานพื้น`,
-          `เกร็งหน้าขาค้างไว้ ${holdSec} วินาที แล้วหย่อนเท้าลงช้าๆ`,
-        ],
-        en: [
-          `Sit upright on chair with ${sEn} knee bent 90°`,
-          `Slowly straighten your ${sEn} knee until shin is horizontal`,
-          `Hold straight for ${holdSec}s, then lower foot slowly`,
-        ],
-        cn: [
-          `端坐于椅子上，${sCn}膝自然弯曲 90°`,
-          `缓慢伸直${sCn}膝使小腿与地面平行`,
-          `伸直保持 ${holdSec} 秒后缓慢放下`,
-        ],
-      };
-    },
-  },
-  hip_march: {
-    region: {
-      th: 'ข้อสะโพกด้านหน้า & กล้ามเนื้อพยุงก้าวเดิน',
-      en: 'Hip Flexors & Single-Stance Marching',
-      cn: '屈髋肌群与迈步抬腿控制',
-    },
-    view: {
-      th: 'มุมมองหน้าตรง (ยกเข่าสูงระดับสะโพกสลับขา)',
-      en: 'Front standing view (Lift knee to hip level)',
-      cn: '正面站姿视角（抬膝至髋部高度）',
-    },
-    muscle: {
-      th: 'ฝึกยกขาพ้นพื้นลดโอกาสสะดุดล้มในผู้สูงอายุและผู้ป่วยหลอดเลือดสมอง',
-      en: 'Trains foot-clearance height to prevent tripping & falls',
-      cn: '强化迈步抬脚高度，防止绊倒跌倒',
-    },
-    caution: {
-      th: 'เตรียมราวจับหรือพนักเก้าอี้ข้างตัวเพื่อความปลอดภัยขณะยกขา',
-      en: 'Keep chair/handrail nearby for balance safety while lifting knee',
-      cn: '身旁放置椅子或扶手以确保安全平衡',
-    },
-    steps: (side, _rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const sCn = side === 'left' ? '左' : '右';
-      return {
-        th: [
-          `ยืนตัวตรง แยกเท้าพอประมาณ ใช้มือแตะราวจับหากต้องการ`,
-          `ค่อยๆ ยกเข่า${sTh}ขึ้นด้านหน้าจนต้นขาขนานพื้นหรือระดับสะโพก`,
-          `ทรงตัวค้างไว้ ${holdSec} วินาที แล้ววางเท้าลงพื้นอย่างมั่นคง`,
-        ],
-        en: [
-          'Stand tall with feet hip-width apart near support rail',
-          `Raise your ${sEn} knee smoothly upward toward hip level`,
-          `Hold steady for ${holdSec}s, then place foot softly down`,
-        ],
-        cn: [
-          '双脚与肩同宽站立，必要时轻扶扶手',
-          `缓慢抬起${sCn}膝至髋部水平高度`,
-          `单腿稳定保持 ${holdSec} 秒后轻柔落地`,
-        ],
-      };
-    },
-  },
-  heel_raise: {
-    region: {
-      th: 'ข้อเท้า & กล้ามเนื้อน่อง (Calf & Ankle)',
-      en: 'Ankle Plantarflexors & Calf Strength',
-      cn: '踝关节跖屈与小腿肌力',
-    },
-    view: {
-      th: 'มุมมองด้านข้าง (เขย่งส้นเท้าขึ้นจากพื้นช้าๆ)',
-      en: 'Side lower-leg view (Lift heel upward on toes)',
-      cn: '小腿侧面视角（脚尖着地缓慢踮起脚跟）',
-    },
-    muscle: {
-      th: 'เพิ่มแรงถีบปลายเท้าขณะเดินและกระตุ้นการไหลเวียนโลหิตช่วงขา',
-      en: 'Improves walking push-off power & calf venous return',
-      cn: '增强步行蹬伸推力并促进下肢静脉回流',
-    },
-    caution: {
-      th: 'ถ่ายน้ำหนักบนจมูกเท้าอย่างมั่นคง มือแตะพนักเก้าอี้ได้เบาๆ',
-      en: 'Rise smoothly onto ball of foot; hold chair lightly if needed',
-      cn: '重心稳落前脚掌，必要时可轻扶椅背',
-    },
-    steps: (side, _rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const sCn = side === 'left' ? '左' : '右';
-      return {
-        th: [
-          `ยืนตรง เท้า${sTh}วางราบพื้น ลำตัวไม่เอนไปด้านหน้า`,
-          `ค่อยๆ เขย่งส้นเท้า${sTh}ขึ้นสูงสุดเท่าที่ทรงตัวได้`,
-          `ค้างไว้ด้านบน ${holdSec} วินาที แล้ววางส้นเท้าลงช้าๆ`,
-        ],
-        en: [
-          `Stand tall with ${sEn} foot flat on the floor`,
-          `Smoothly press onto ball of ${sEn} foot lifting heel upward`,
-          `Hold peak height for ${holdSec}s, then lower heel gently`,
-        ],
-        cn: [
-          `身体站直，${sCn}脚平踩地面`,
-          `缓慢踮起${sCn}脚跟至舒适最高处`,
-          `最高处保持 ${holdSec} 秒后缓慢放回地面`,
-        ],
-      };
-    },
-  },
-  single_leg_balance: {
-    region: {
-      th: 'สมดุลข้อสะโพก-เข่า-ข้อเท้า (Static Balance)',
-      en: 'Hip-Knee-Ankle Single-Leg Stability',
-      cn: '单腿静态平衡与核心控制',
-    },
-    view: {
-      th: 'มุมมองหน้าตรง (ยืนทรงตัวขาเดียวแนวดิ่งตรง)',
-      en: 'Front view (Balanced single-leg vertical axis)',
-      cn: '正面视角（单腿垂直中轴稳定站立）',
-    },
-    muscle: {
-      th: 'ฝึกการรับรู้ข้อต่อและการทรงตัวป้องกันการล้มขณะก้าวเดิน',
-      en: 'Proprioceptive balance training reducing fall risk',
-      cn: '训练本体感觉与防跌倒平衡控制',
-    },
-    caution: {
-      th: 'มองจุดนิ่งตรงหน้าและยืนใกล้เก้าอี้พยุงไว้เสมอ เพื่อความปลอดภัย',
-      en: 'Fix gaze ahead and keep chair support within arm reach',
-      cn: '平视前方固定点，确保随时可触及椅子防跌倒',
-    },
-    steps: (side, _rom, holdSec) => {
-      const stanceTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const liftTh = side === 'left' ? 'ขวา' : 'ซ้าย';
-      const stanceEn = side === 'left' ? 'left' : 'right';
-      const liftEn = side === 'left' ? 'right' : 'left';
-      const stanceCn = side === 'left' ? '左' : '右';
-      return {
-        th: [
-          `ยืนตัวตรงใกล้เก้าอี้ ค่อยๆ ถ่ายน้ำหนักลงบนขา${stanceTh}`,
-          `ยกเท้า${liftTh}ขึ้นพ้นพื้นเล็กน้อย รักษาสะโพกไม่เอียง`,
-          `นิ่งทรงตัวบนขา${stanceTh}อย่างมั่นคงต่อเนื่อง ${holdSec} วินาที`,
-        ],
-        en: [
-          `Stand tall near support and shift weight smoothly to ${stanceEn} leg`,
-          `Lift ${liftEn} foot slightly off floor while keeping hips level`,
-          `Balance steadily on your ${stanceEn} leg for ${holdSec}s`,
-        ],
-        cn: [
-          `站直并将身体重心平稳转移至${stanceCn}腿`,
-          `微抬起另一侧脚离开地面，保持骨盆水平`,
-          `使用${stanceCn}腿稳定单脚平衡站立 ${holdSec} 秒`,
-        ],
-      };
-    },
-  },
 };
 
 function resolveSideFromExercise(
@@ -888,21 +913,20 @@ function resolveSideFromExercise(
   if (
     exercise.expected_plane === 'shrug_roll' ||
     exercise.expected_plane === 'bilateral' ||
+    exercise.expected_plane === 'bilateral_push' ||
+    exercise.expected_plane === 'neck_turn' ||
     text.includes('ทั้งสองข้าง') ||
     text.includes('ทั้ง 2 ข้าง') ||
     text.includes('2 ข้าง') ||
     text.includes('ประสานมือ') ||
+    text.includes('ซ้าย-ขวา') ||
     text.includes('bilateral') ||
     text.includes('both') ||
-    text.includes('chair_squat') ||
-    text.includes('sit_to_stand') ||
-    text.includes('ลุกนั่ง') ||
-    text.includes('ลุกยืน') ||
     text.includes('ลำตัวตรง')
   ) {
     return 'both';
   }
-  if (exercise.target_joint === 'left_shoulder' || exercise.target_joint === 'left_knee') {
+  if (exercise.target_joint === 'left_shoulder') {
     return 'left';
   }
   if (text.includes('ซ้าย') || text.includes('left') || text.endsWith('_l')) {
@@ -930,42 +954,40 @@ export function resolveExercisePostureSpec(
   const group = catalogMatch?.detection.jointGroup;
   const plane = exercise.expected_plane ?? catalogMatch?.detection.expectedPlane;
 
-  if (group === 'neck' || combined.includes('เอียงคอ') || combined.includes('คอและบ่า') || combined.includes('neck')) {
+  if (plane === 'neck_turn' || combined.includes('หันคอ') || combined.includes('neck_turn')) {
+    kind = 'neck_turn';
+  } else if (group === 'neck' || combined.includes('เอียงคอ') || combined.includes('คอและบ่า') || combined.includes('neck')) {
     kind = 'neck_tilt';
-  } else if (group === 'trunk' || combined.includes('ลำตัวตรง') || combined.includes('trunk_sit') || combined.includes('posture alignment')) {
+  } else if (group === 'trunk' || combined.includes('ลำตัวตรง') || combined.includes('posture alignment')) {
     kind = 'trunk_align';
+  } else if (plane === 'thumb_pinch' || combined.includes('จีบนิ้ว') || combined.includes('thumb_pinch') || combined.includes('pinch')) {
+    kind = 'thumb_pinch';
+  } else if (plane === 'forearm_turn' || combined.includes('คว่ำ') || combined.includes('หงายมือ') || combined.includes('forearm_turn')) {
+    kind = 'forearm_turn';
   } else if (group === 'wrist' || plane === 'wrist_finger' || combined.includes('ข้อมือ') || combined.includes('นิ้วมือ') || combined.includes('wrist')) {
     kind = 'wrist_finger';
-  } else if (group === 'elbow' || combined.includes('ข้อศอก') || combined.includes('elbow')) {
+  } else if (plane === 'bilateral_push' || combined.includes('forward_push') || combined.includes('ดันแขนตรงไปด้านหน้า')) {
+    kind = 'bobath_forward_push';
+  } else if (plane === 'hand_to_head' || combined.includes('แตะศีรษะ') || combined.includes('หวีผม') || combined.includes('hand_to_head')) {
+    kind = 'hand_to_head';
+  } else if (group === 'elbow' || combined.includes('ข้อศอก') || combined.includes('elb_flex') || combined.includes('elbow')) {
     kind = 'elbow_flexion';
-  } else if (plane === 'shrug_roll' || combined.includes('ยักไหล่') || combined.includes('shrug')) {
+  } else if (plane === 'shrug_roll' || combined.includes('ยักไหล่') || combined.includes('หมุนหัวไหล่') || combined.includes('shrug')) {
     kind = 'shoulder_shrug_roll';
-  } else if (plane === 'bilateral' || combined.includes('ประสานมือ') || combined.includes('bilateral')) {
+  } else if (plane === 'bilateral' || combined.includes('ประสานมือยกแขน') || combined.includes('arm_raise') || combined.includes('bilateral')) {
     kind = 'bilateral_arm_raise';
-  } else if (group === 'balance' || combined.includes('ทรงตัวขาเดียว') || combined.includes('bal_stand') || combined.includes('balance')) {
-    kind = 'single_leg_balance';
-  } else if (group === 'ankle' || combined.includes('เขย่ง') || combined.includes('heel')) {
-    kind = 'heel_raise';
-  } else if (group === 'hip' || combined.includes('ยกเข่าสูง') || combined.includes('hip_flex') || combined.includes('march')) {
-    kind = 'hip_march';
-  } else if (combined.includes('squat') || combined.includes('ลุกนั่ง') || combined.includes('ลุกยืน') || combined.includes('sit-to-stand') || combined.includes('sit_to_stand')) {
-    kind = 'chair_squat';
-  } else if (group === 'knee' || combined.includes('เหยียดเข่า') || combined.includes('knee_ext')) {
-    kind = 'knee_extension';
-  } else if (plane === 'rotation' || combined.includes('หมุนข้อไหล่') || combined.includes('rot')) {
+  } else if (plane === 'scap_protract' || combined.includes('scap_protract') || combined.includes('ยื่นมือเอื้อมไปด้านหน้า') || combined.includes('protract')) {
+    kind = 'scapular_protract';
+  } else if (plane === 'cross_body' || combined.includes('cross_body') || combined.includes('ไขว้หน้าอก')) {
+    kind = 'cross_body_reach';
+  } else if (plane === 'rotation' || combined.includes('หมุนข้อไหล่') || combined.includes('sh_rot') || combined.includes('rot')) {
     kind = 'shoulder_rotation';
-  } else if (combined.includes('pendulum') || combined.includes('คอดแมน') || combined.includes('แกว่งแขน')) {
-    kind = 'shoulder_pendulum';
-  } else if (combined.includes('wall') || combined.includes('ไต่ผนัง') || combined.includes('สไลด์แขน')) {
-    kind = 'shoulder_wall_slide';
-  } else if (combined.includes('overhead') || combined.includes('เหนือศีรษะ') || combined.includes('sh_ovh')) {
+  } else if (combined.includes('overhead') || combined.includes('เหนือศีรษะ')) {
     kind = 'shoulder_overhead';
-  } else if (combined.includes('scaption') || combined.includes('ทแยง') || combined.includes('45°') || combined.includes('scap')) {
+  } else if (combined.includes('scaption') || combined.includes('ทแยง') || combined.includes('45°')) {
     kind = 'shoulder_scaption';
   } else if (plane === 'abduction' || combined.includes('กางแขน') || combined.includes('abduct') || combined.includes('sh_abd')) {
     kind = 'shoulder_abduction';
-  } else if (exercise.target_joint === 'right_knee' || exercise.target_joint === 'left_knee') {
-    kind = 'chair_squat';
   } else {
     kind = 'shoulder_flexion';
   }
@@ -1305,15 +1327,23 @@ export function ExercisePostureSvg({
 
   const p = cycle.progress;
 
-  const renderSideSagittalView = (mode: 'flexion' | 'pendulum') => {
+  const renderSideSagittalView = (mode: 'flexion' | 'scapular_protract' | 'bobath_forward_push') => {
     const faceDir: 1 | -1 = activeIsLeft ? -1 : 1;
-    const shoulderX = 88;
+    const isProtract = mode === 'scapular_protract';
+    const isPush = mode === 'bobath_forward_push';
+    const protractShiftX = isProtract ? p * 18 : 0;
+    const shoulderX = 88 + protractShiftX;
     const shoulderY = 82;
-    const currentAngleDeg =
-      mode === 'pendulum'
-        ? (Math.sin(p * Math.PI * 2) * 18)
+    const currentAngleDeg = isProtract
+      ? 88
+      : isPush
+        ? 26 + p * 64
         : p * targetRom;
-    const activeElbowBend = mode === 'pendulum' ? 3 : 8;
+    const activeElbowBend = isProtract
+      ? 4
+      : isPush
+        ? -(104 * (1 - p * 0.94))
+        : 8;
 
     const activeJoints = computeUpperLimbFkJoints({
       shoulderX,
@@ -1326,36 +1356,28 @@ export function ExercisePostureSvg({
       dirSign: 1,
     });
     const ghostJoints = computeUpperLimbFkJoints({
-      shoulderX,
+      shoulderX: isProtract ? 106 : 88,
       shoulderY,
       upperArmLen: 38,
       forearmLen: 34,
       handLen: 9,
-      angleDeg: targetRom,
-      elbowBendDeg: activeElbowBend,
+      angleDeg: isProtract || isPush ? 90 : targetRom,
+      elbowBendDeg: isProtract || isPush ? 4 : activeElbowBend,
       dirSign: 1,
     });
-    const arc = buildRomGuideArc(shoulderX, shoulderY, 50, targetRom, 1);
+    const arc = buildRomGuideArc(88, shoulderY, 50, targetRom, 1);
 
-    const leanAngle = mode === 'pendulum' ? 18 : 0;
+    const readoutDeg = isProtract
+      ? Math.round(p * Math.min(95, targetRom))
+      : isPush
+        ? Math.round(55 + p * (Math.min(170, targetRom) - 55))
+        : Math.round(currentAngleDeg);
 
     return (
       <g>
         <g transform={faceDir === -1 ? 'translate(200, 0) scale(-1, 1)' : undefined}>
           {/* Ground floor baseline */}
           <line x1="28" y1="186" x2="174" y2="186" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
-
-          {/* Support Table/Chair for Codman Pendulum */}
-          {mode === 'pendulum' && (
-            <path
-              d="M 134 186 L 134 126 L 166 126"
-              fill="none"
-              stroke="#94A3B8"
-              strokeWidth="5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          )}
 
           {/* Standing Side-Profile Legs (Natural Parallel Profile, NO splayed sticks) */}
           <g>
@@ -1367,16 +1389,12 @@ export function ExercisePostureSvg({
           </g>
 
           {/* Torso + Neck + Clear Side-Profile Head (nose & chin facing forward) */}
-          <g transform={leanAngle ? `rotate(${leanAngle}, 84, 132)` : undefined}>
+          <g>
             {!compact && mode === 'flexion' && (
               <line x1="82" y1="36" x2="82" y2="136" stroke="#CBD5E1" strokeWidth="1.8" strokeDasharray="4 4" />
             )}
 
-            {mode === 'pendulum' ? (
-              <line x1="88" y1="84" x2="136" y2="124" stroke="#94A3B8" strokeWidth="8.5" strokeLinecap="round" />
-            ) : (
-              <line x1="83" y1="84" x2="81" y2="140" stroke={mutedLimb} strokeWidth="9" strokeLinecap="round" opacity={0.55} />
-            )}
+            <line x1="83" y1="84" x2="81" y2="140" stroke={mutedLimb} strokeWidth="9" strokeLinecap="round" opacity={0.55} />
 
             {/* Side-Profile Anatomical Torso Capsule (rounded back + natural chest contour) */}
             <path
@@ -1405,21 +1423,25 @@ export function ExercisePostureSvg({
             {/* ROM Guide Arc + Ghost Target Arm */}
             {!compact && mode === 'flexion' && (
               <>
-                <CapsuleArmLimb
-                  joints={ghostJoints}
-                  color={accent}
-                  isActive
-                  isGhost
-                />
+                <CapsuleArmLimb joints={ghostJoints} color={accent} isActive isGhost />
+                <path d={arc.d} fill="none" stroke={accent} strokeWidth="2.6" strokeDasharray="5 4" opacity="0.88" />
+                <circle cx={arc.endX} cy={arc.endY} r="3.5" fill={accent} />
+              </>
+            )}
+
+            {/* Protraction & Bobath Forward Push Linear Guides */}
+            {!compact && (isProtract || isPush) && (
+              <>
+                <CapsuleArmLimb joints={ghostJoints} color={accent} isActive isGhost />
                 <path
-                  d={arc.d}
+                  d="M 118 68 L 166 68 M 158 62 L 166 68 L 158 74"
                   fill="none"
                   stroke={accent}
                   strokeWidth="2.6"
-                  strokeDasharray="5 4"
-                  opacity="0.88"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeDasharray={isPush ? undefined : '4 3'}
                 />
-                <circle cx={arc.endX} cy={arc.endY} r="3.5" fill={accent} />
               </>
             )}
 
@@ -1431,23 +1453,23 @@ export function ExercisePostureSvg({
               compact={compact}
             />
 
-            {!compact && mode === 'pendulum' && (
-              <ellipse
-                cx={shoulderX}
-                cy={shoulderY + 72}
-                rx="22"
-                ry="7"
-                fill="none"
+            {/* Clasped Hands Ring for Bobath Forward Push */}
+            {isPush && (
+              <circle
+                cx={activeJoints.hand.x}
+                cy={activeJoints.hand.y}
+                r="6.5"
+                fill="#FFFFFF"
+                fillOpacity="0.85"
                 stroke={accent}
                 strokeWidth="2.4"
-                strokeDasharray="4 3"
               />
             )}
           </g>
         </g>
 
         {/* Upright Non-Mirrored Live Angle Pill */}
-        {!compact && mode === 'flexion' && (
+        {!compact && (
           <g>
             <rect
               x={faceDir === -1 ? 16 : 136}
@@ -1467,7 +1489,7 @@ export function ExercisePostureSvg({
               fontWeight="800"
               fill={mutedBody}
             >
-              {Math.round(currentAngleDeg)}°
+              {readoutDeg}°
             </text>
           </g>
         )}
@@ -1485,25 +1507,28 @@ export function ExercisePostureSvg({
     const isElbow = spec.kind === 'elbow_flexion';
     const isRot = spec.kind === 'shoulder_rotation';
     const isTrunk = spec.kind === 'trunk_align';
+    const isCrossBody = spec.kind === 'cross_body_reach';
+    const isHandToHead = spec.kind === 'hand_to_head';
 
     const shrugDropOffset = isShrug ? -9 * p : 0;
     const curShY = shoulderY + shrugDropOffset;
 
     const resolvedPeakDeg =
-      spec.kind === 'shoulder_overhead' || spec.kind === 'shoulder_wall_slide' || isBilateral
-        ? Math.min(168, Math.max(135, targetRom))
+      spec.kind === 'shoulder_overhead' || isBilateral
+        ? Math.min(168, Math.max(125, targetRom))
         : spec.kind === 'shoulder_scaption'
           ? Math.min(145, targetRom)
           : targetRom;
 
+    const noPrimarySwing = isShrug || isElbow || isRot || isTrunk || isCrossBody || isHandToHead;
     const rAngle = isBilateral
       ? p * resolvedPeakDeg
-      : !activeIsLeft && !isShrug && !isElbow && !isRot && !isTrunk
+      : !activeIsLeft && !noPrimarySwing
         ? p * resolvedPeakDeg
         : 6;
     const lAngle = isBilateral
       ? p * resolvedPeakDeg
-      : activeIsLeft && !isShrug && !isElbow && !isRot && !isTrunk
+      : activeIsLeft && !noPrimarySwing
         ? p * resolvedPeakDeg
         : 6;
 
@@ -1544,6 +1569,32 @@ export function ExercisePostureSvg({
       }
     }
 
+    // Override horizontal chest sweep for cross-body shoulder reach
+    if (isCrossBody) {
+      if (!activeIsLeft) {
+        rightJoints.elbow = { x: rightShX - p * 22, y: shoulderY + 30 - p * 18 };
+        rightJoints.wrist = { x: rightShX + 4 - p * 56, y: shoulderY + 56 - p * 46 };
+        rightJoints.hand = { x: rightJoints.wrist.x - 6, y: rightJoints.wrist.y - 2 };
+      } else {
+        leftJoints.elbow = { x: leftShX + p * 22, y: shoulderY + 30 - p * 18 };
+        leftJoints.wrist = { x: leftShX - 4 + p * 56, y: shoulderY + 56 - p * 46 };
+        leftJoints.hand = { x: leftJoints.wrist.x + 6, y: leftJoints.wrist.y - 2 };
+      }
+    }
+
+    // Override grooming upward reach for hand-to-head
+    if (isHandToHead) {
+      if (!activeIsLeft) {
+        rightJoints.elbow = { x: rightShX + 8 + p * 26, y: shoulderY + 32 - p * 42 };
+        rightJoints.wrist = { x: rightShX + 10 - p * 26, y: shoulderY + 62 - p * 102 };
+        rightJoints.hand = { x: rightJoints.wrist.x - 6, y: rightJoints.wrist.y - 6 };
+      } else {
+        leftJoints.elbow = { x: leftShX - 8 - p * 26, y: shoulderY + 32 - p * 42 };
+        leftJoints.wrist = { x: leftShX - 10 + p * 26, y: shoulderY + 62 - p * 102 };
+        leftJoints.hand = { x: leftJoints.wrist.x + 6, y: leftJoints.wrist.y - 6 };
+      }
+    }
+
     const rGhostJoints = computeUpperLimbFkJoints({
       shoulderX: rightShX,
       shoulderY,
@@ -1565,8 +1616,8 @@ export function ExercisePostureSvg({
       dirSign: -1,
     });
 
-    const showRightGhost = (!activeIsLeft || isBilateral) && !isShrug && !isElbow && !isRot && !isTrunk;
-    const showLeftGhost = (activeIsLeft || isBilateral) && !isShrug && !isElbow && !isRot && !isTrunk;
+    const showRightGhost = (!activeIsLeft || isBilateral) && !noPrimarySwing;
+    const showLeftGhost = (activeIsLeft || isBilateral) && !noPrimarySwing;
     const rightArc = buildRomGuideArc(rightShX, shoulderY, 46, resolvedPeakDeg, 1);
     const leftArc = buildRomGuideArc(leftShX, shoulderY, 46, resolvedPeakDeg, -1);
 
@@ -1574,24 +1625,15 @@ export function ExercisePostureSvg({
       ? Math.round(165 - p * 120)
       : isRot
         ? Math.round(p * Math.min(90, targetRom))
-        : Math.round(p * resolvedPeakDeg);
+        : isCrossBody
+          ? Math.round(p * Math.min(115, targetRom))
+          : isHandToHead
+            ? Math.round(p * Math.min(135, targetRom))
+            : Math.round(p * resolvedPeakDeg);
 
     return (
       <g>
         <line x1="28" y1="186" x2="172" y2="186" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
-
-        {/* Wall reference line for wall-slide */}
-        {spec.kind === 'shoulder_wall_slide' && !compact && (
-          <line
-            x1={activeIsLeft ? 32 : 168}
-            y1="16"
-            x2={activeIsLeft ? 32 : 168}
-            y2="184"
-            stroke="#94A3B8"
-            strokeWidth="4.5"
-            strokeDasharray="6 4"
-          />
-        )}
 
         {/* Spine Alignment Axis */}
         {isTrunk && !compact && (
@@ -1666,6 +1708,28 @@ export function ExercisePostureSvg({
             <path d="M 56 76 L 56 54 M 51 60 L 56 54 L 61 60" fill="none" stroke={accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
             <path d="M 144 76 L 144 54 M 139 60 L 144 54 L 149 60" fill="none" stroke={accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
           </>
+        )}
+
+        {/* Cross-Body Chest Sweep Guide */}
+        {!compact && isCrossBody && (
+          <path
+            d={activeIsLeft ? 'M 68 96 Q 100 78 130 84' : 'M 132 96 Q 100 78 70 84'}
+            fill="none"
+            stroke={accent}
+            strokeWidth="2.4"
+            strokeDasharray="4 3"
+          />
+        )}
+
+        {/* Hand-to-Head Grooming Crown Target */}
+        {!compact && isHandToHead && (
+          <path
+            d={activeIsLeft ? 'M 54 114 Q 44 48 94 28' : 'M 146 114 Q 156 48 106 28'}
+            fill="none"
+            stroke={accent}
+            strokeWidth="2.4"
+            strokeDasharray="4 3"
+          />
         )}
 
         {/* Live Angle Pill */}
@@ -1744,9 +1808,156 @@ export function ExercisePostureSvg({
     );
   };
 
-  const renderNeckTilt = () => {
+  const renderForearmTurnCloseUp = () => {
+    const flipX = activeIsLeft ? -1 : 1;
+    const rollNorm = Math.sin(p * Math.PI);
+    const palmScaleY = 0.25 + 0.75 * Math.abs(Math.cos(p * Math.PI));
+    const palmUp = p >= 0.5;
+    const readoutDeg = Math.round(rollNorm * Math.min(85, targetRom));
+    return (
+      <g>
+        <g transform={`translate(100, 108) scale(${flipX}, 1)`}>
+          <line x1="-68" y1="16" x2="-10" y2="12" stroke="#1E3A5F" strokeWidth="16" strokeLinecap="round" />
+          <line x1="-68" y1="16" x2="-10" y2="12" stroke="#BAE6FD" strokeWidth="8" strokeLinecap="round" />
+          <circle cx="-10" cy="12" r="8" fill="#FFFFFF" stroke={accent} strokeWidth="2.6" />
+          <g transform={`translate(-2, 12) scale(1, ${palmScaleY.toFixed(2)})`}>
+            <rect
+              x="0"
+              y="-15"
+              width="38"
+              height="30"
+              rx="10"
+              fill={palmUp ? accent : '#FFFFFF'}
+              fillOpacity={palmUp ? 0.22 : 1}
+              stroke={accent}
+              strokeWidth="3"
+            />
+            {[38, 38, 36, 32].map((fx, i) => (
+              <line
+                key={i}
+                x1={fx}
+                y1={-10 + i * 7}
+                x2={fx + 22}
+                y2={-10 + i * 7}
+                stroke={accent}
+                strokeWidth="5"
+                strokeLinecap="round"
+              />
+            ))}
+            <line
+              x1="12"
+              y1={palmUp ? -14 : 14}
+              x2="22"
+              y2={palmUp ? -28 : 28}
+              stroke={accent}
+              strokeWidth="5.5"
+              strokeLinecap="round"
+            />
+          </g>
+          {!compact && (
+            <path
+              d="M 16 -44 A 34 34 0 0 1 16 44 M 10 38 L 16 44 L 24 38"
+              fill="none"
+              stroke={accent}
+              strokeWidth="2.5"
+              strokeDasharray="4 3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          )}
+        </g>
+        {!compact && (
+          <g>
+            <rect x="138" y="14" width="46" height="22" rx="11" fill="#FFFFFF" stroke={accent} strokeWidth="1.8" />
+            <text x="161" y="29" textAnchor="middle" fontSize="11" fontWeight="800" fill={mutedBody}>
+              {readoutDeg}°
+            </text>
+          </g>
+        )}
+      </g>
+    );
+  };
+
+  const renderThumbPinchCloseUp = () => {
+    const flipX = activeIsLeft ? -1 : 1;
+    const pinchClose = p;
+    const thumbTipX = 30 + pinchClose * 12;
+    const thumbTipY = -30 + pinchClose * 12;
+    const indexTipX = 48 - pinchClose * 6;
+    const indexTipY = -28 + pinchClose * 10;
+    const isContact = pinchClose > 0.72;
+    const readoutDeg = Math.round(pinchClose * Math.min(60, targetRom));
+
+    return (
+      <g>
+        <g transform={`translate(96, 114) scale(${flipX}, 1)`}>
+          <line x1="-64" y1="24" x2="-12" y2="12" stroke="#1E3A5F" strokeWidth="15" strokeLinecap="round" />
+          <line x1="-64" y1="24" x2="-12" y2="12" stroke="#BAE6FD" strokeWidth="7.5" strokeLinecap="round" />
+          <rect x="-8" y="-14" width="36" height="32" rx="11" fill={accent} fillOpacity="0.16" stroke={accent} strokeWidth="2.8" />
+          {/* Middle, Ring, Pinky comfortably upright */}
+          {[
+            { y: -2, len: 28 },
+            { y: 6, len: 26 },
+            { y: 14, len: 21 },
+          ].map((f, idx) => (
+            <line
+              key={idx}
+              x1="28"
+              y1={f.y}
+              x2={28 + f.len}
+              y2={f.y + idx * 2}
+              stroke={mutedLimb}
+              strokeWidth="4.8"
+              strokeLinecap="round"
+            />
+          ))}
+          {/* Index finger curving smoothly into O-pinch */}
+          <path
+            d={`M 26 -9 Q 42 -24 ${indexTipX.toFixed(1)} ${indexTipY.toFixed(1)}`}
+            fill="none"
+            stroke={accent}
+            strokeWidth="5.5"
+            strokeLinecap="round"
+          />
+          {/* Thumb sweeping inward to meet index tip */}
+          <path
+            d={`M 8 -13 Q 18 -30 ${thumbTipX.toFixed(1)} ${thumbTipY.toFixed(1)}`}
+            fill="none"
+            stroke={accent}
+            strokeWidth="6"
+            strokeLinecap="round"
+          />
+          <circle
+            cx={(thumbTipX + indexTipX) / 2}
+            cy={(thumbTipY + indexTipY) / 2}
+            r={isContact ? 7.5 : 4}
+            fill={isContact ? accent : '#FFFFFF'}
+            fillOpacity={isContact ? 0.25 : 0.8}
+            stroke={accent}
+            strokeWidth="2.2"
+          />
+        </g>
+        {!compact && (
+          <g>
+            <rect x="138" y="14" width="46" height="22" rx="11" fill="#FFFFFF" stroke={accent} strokeWidth="1.8" />
+            <text x="161" y="29" textAnchor="middle" fontSize="11" fontWeight="800" fill={mutedBody}>
+              {readoutDeg}°
+            </text>
+          </g>
+        )}
+      </g>
+    );
+  };
+
+  const renderNeckView = (mode: 'tilt' | 'turn') => {
+    const isTurn = mode === 'turn';
     const tiltDir = activeIsLeft ? -1 : 1;
-    const tiltDeg = tiltDir * p * Math.min(35, targetRom);
+    const tiltDeg = isTurn ? 0 : tiltDir * p * Math.min(35, targetRom);
+    const yawPx = isTurn ? Math.sin(p * Math.PI * 2) * 10 : 0;
+    const neckAngle = isTurn
+      ? Math.round(Math.abs(Math.sin(p * Math.PI * 2)) * Math.min(55, targetRom))
+      : Math.round(p * Math.min(35, targetRom));
+
     return (
       <g>
         {!compact && (
@@ -1765,134 +1976,51 @@ export function ExercisePostureSvg({
         <g transform={`translate(100, 98) rotate(${tiltDeg})`}>
           <line x1="0" y1="0" x2="0" y2="-24" stroke={accent} strokeWidth="11" strokeLinecap="round" />
           <circle cx="0" cy="-42" r="20" fill="#FFFFFF" stroke={accent} strokeWidth="3.5" />
-          <circle cx="-6" cy="-44" r="2.2" fill={mutedBody} />
-          <circle cx="6" cy="-44" r="2.2" fill={mutedBody} />
-          <path d="M -5 -36 Q 0 -33 5 -36" fill="none" stroke={mutedBody} strokeWidth="2" strokeLinecap="round" />
+          <circle cx={-6 + yawPx} cy="-44" r="2.2" fill={mutedBody} />
+          <circle cx={6 + yawPx} cy="-44" r="2.2" fill={mutedBody} />
+          <path
+            d={`M ${(-5 + yawPx).toFixed(1)} -36 Q ${(yawPx).toFixed(1)} -33 ${(5 + yawPx).toFixed(1)} -36`}
+            fill="none"
+            stroke={mutedBody}
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
         </g>
         {!compact && (
           <>
-            <path
-              d={activeIsLeft ? 'M 92 28 Q 66 32 56 54' : 'M 108 28 Q 134 32 144 54'}
-              fill="none"
-              stroke={accent}
-              strokeWidth="2.8"
-              strokeDasharray="4 3"
-            />
-            <text x="22" y="176" fontSize="10" fontWeight="800" fill={activeIsLeft ? '#EA580C' : '#94A3B8'}>
+            {isTurn ? (
+              <path
+                d="M 64 40 Q 100 22 136 40 M 69 35 L 63 40 L 70 44 M 131 35 L 137 40 L 130 44"
+                fill="none"
+                stroke={accent}
+                strokeWidth="2.6"
+                strokeDasharray="4 3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            ) : (
+              <path
+                d={activeIsLeft ? 'M 92 28 Q 66 32 56 54' : 'M 108 28 Q 134 32 144 54'}
+                fill="none"
+                stroke={accent}
+                strokeWidth="2.8"
+                strokeDasharray="4 3"
+              />
+            )}
+            <g>
+              <rect x="142" y="14" width="44" height="22" rx="11" fill="#FFFFFF" stroke={accent} strokeWidth="1.8" />
+              <text x="164" y="29" textAnchor="middle" fontSize="11" fontWeight="800" fill={mutedBody}>
+                {neckAngle}°
+              </text>
+            </g>
+            <text x="22" y="176" fontSize="10" fontWeight="800" fill={activeIsLeft || isTurn ? '#EA580C' : '#94A3B8'}>
               L (ซ้าย)
             </text>
-            <text x="140" y="176" fontSize="10" fontWeight="800" fill={!activeIsLeft ? '#059669' : '#94A3B8'}>
+            <text x="140" y="176" fontSize="10" fontWeight="800" fill={!activeIsLeft || isTurn ? '#059669' : '#94A3B8'}>
               R (ขวา)
             </text>
           </>
         )}
-      </g>
-    );
-  };
-
-  const renderLowerBodyView = () => {
-    if (spec.kind === 'chair_squat') {
-      const standRatio = p;
-      const hipY = 128 - standRatio * 24;
-      const shoulderY = hipY - 46;
-      const kneeX = 114 - standRatio * 22;
-      const kneeY = 132 + standRatio * 20;
-      const armJoints = computeUpperLimbFkJoints({
-        shoulderX: 84,
-        shoulderY: shoulderY + 4,
-        upperArmLen: 26,
-        forearmLen: 22,
-        handLen: 7,
-        angleDeg: 35 + (1 - standRatio) * 45,
-        elbowBendDeg: 8,
-        dirSign: 1,
-      });
-
-      return (
-        <g>
-          <line x1="26" y1="186" x2="174" y2="186" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
-          <path d="M 46 186 L 46 130 L 82 130 L 82 186 M 46 130 L 46 84" fill="none" stroke="#94A3B8" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
-          <line x1="82" y1={hipY} x2={kneeX} y2={kneeY} stroke={accent} strokeWidth="12" strokeLinecap="round" />
-          <line x1={kneeX} y1={kneeY} x2="96" y2="182" stroke={accent} strokeWidth="10.5" strokeLinecap="round" />
-          <line x1="94" y1="182" x2="108" y2="182" stroke={accent} strokeWidth="7" strokeLinecap="round" />
-          <line x1="82" y1={hipY} x2="84" y2={shoulderY} stroke={mutedBody} strokeWidth="13" strokeLinecap="round" />
-          <circle cx="86" cy={shoulderY - 18} r="13" fill="#FFFFFF" stroke={mutedBody} strokeWidth="2.8" />
-          <CapsuleArmLimb joints={armJoints} color={accent} isActive compact={compact} wristWidth={8} />
-        </g>
-      );
-    }
-
-    if (spec.kind === 'knee_extension') {
-      const flipDir: 1 | -1 = activeIsLeft ? -1 : 1;
-      const shinDeg = -p * 86;
-      const rad = (shinDeg * Math.PI) / 180;
-      const kneeX = 114;
-      const kneeY = 128;
-      const ankleX = kneeX + Math.sin(-rad) * 48;
-      const ankleY = kneeY + Math.cos(-rad) * 48;
-      return (
-        <g transform={flipDir === -1 ? 'translate(200, 0) scale(-1, 1)' : undefined}>
-          <line x1="26" y1="186" x2="174" y2="186" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
-          <path d="M 46 186 L 46 132 L 96 132 L 96 186 M 46 132 L 46 80" fill="none" stroke="#94A3B8" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
-          <line x1="74" y1="80" x2="74" y2="128" stroke={mutedBody} strokeWidth="13" strokeLinecap="round" />
-          <circle cx="76" cy="60" r="13" fill="#FFFFFF" stroke={mutedBody} strokeWidth="2.8" />
-          <line x1="74" y1="128" x2={kneeX} y2={kneeY} stroke={mutedBody} strokeWidth="12" strokeLinecap="round" />
-          <line x1={kneeX} y1={kneeY} x2={ankleX} y2={ankleY} stroke={accent} strokeWidth="11" strokeLinecap="round" />
-          <circle cx={kneeX} cy={kneeY} r="5.5" fill="#FFFFFF" stroke={accent} strokeWidth="2.5" />
-          <circle cx={ankleX} cy={ankleY} r="4.5" fill={accent} />
-        </g>
-      );
-    }
-
-    if (spec.kind === 'heel_raise') {
-      const liftY = -p * 18;
-      return (
-        <g>
-          <line x1="26" y1="186" x2="174" y2="186" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
-          <path d="M 44 186 L 44 114 L 68 114" fill="none" stroke="#94A3B8" strokeWidth="4.5" strokeLinecap="round" />
-          <g transform={`translate(0, ${liftY})`}>
-            <circle cx="100" cy="48" r="13" fill="#FFFFFF" stroke={mutedBody} strokeWidth="2.8" />
-            <line x1="100" y1="62" x2="100" y2="118" stroke={mutedBody} strokeWidth="13" strokeLinecap="round" />
-            <line x1="100" y1="78" x2="68" y2="112" stroke={mutedLimb} strokeWidth="8" strokeLinecap="round" />
-            <line x1="92" y1="118" x2="92" y2="180" stroke={activeIsLeft ? accent : mutedLimb} strokeWidth="10.5" strokeLinecap="round" />
-            <line x1="110" y1="118" x2="110" y2="180" stroke={activeIsLeft ? mutedLimb : accent} strokeWidth="10.5" strokeLinecap="round" />
-          </g>
-          {!compact && (
-            <path d="M 142 174 L 142 146 M 136 153 L 142 146 L 148 153" fill="none" stroke={accent} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" />
-          )}
-        </g>
-      );
-    }
-
-    const isMarch = spec.kind === 'hip_march';
-    const kneeLift = isMarch ? p * 36 : 26;
-    const isLeftLegActive = activeIsLeft;
-    return (
-      <g>
-        <line x1="28" y1="186" x2="172" y2="186" stroke="#CBD5E1" strokeWidth="2.5" strokeLinecap="round" />
-        {!compact && <line x1="100" y1="20" x2="100" y2="186" stroke="#E2E8F0" strokeWidth="2" strokeDasharray="4 4" />}
-        <path d="M 74 76 L 126 76 L 118 128 L 82 128 Z" fill="#DBEAFE" stroke={mutedBody} strokeWidth="2.8" strokeLinejoin="round" />
-        <circle cx="100" cy="46" r="14" fill="#FFFFFF" stroke={mutedBody} strokeWidth="2.8" />
-        <line x1="74" y1="78" x2="62" y2="118" stroke={mutedLimb} strokeWidth="8" strokeLinecap="round" />
-        <line x1="126" y1="78" x2="138" y2="118" stroke={mutedLimb} strokeWidth="8" strokeLinecap="round" />
-        <line
-          x1="88"
-          y1="128"
-          x2="86"
-          y2={isMarch ? (isLeftLegActive ? 180 - kneeLift : 182) : isLeftLegActive ? 182 : 148}
-          stroke={isLeftLegActive ? accent : '#1E3A5F'}
-          strokeWidth="11"
-          strokeLinecap="round"
-        />
-        <line
-          x1="112"
-          y1="128"
-          x2="114"
-          y2={isMarch ? (isLeftLegActive ? 182 : 180 - kneeLift) : isLeftLegActive ? 148 : 182}
-          stroke={isLeftLegActive ? '#1E3A5F' : accent}
-          strokeWidth="11"
-          strokeLinecap="round"
-        />
       </g>
     );
   };
@@ -1909,19 +2037,21 @@ export function ExercisePostureSvg({
 
       {spec.kind === 'wrist_finger'
         ? renderHandCloseUp()
-        : spec.kind === 'neck_tilt'
-          ? renderNeckTilt()
-          : spec.kind === 'shoulder_flexion'
-            ? renderSideSagittalView('flexion')
-            : spec.kind === 'shoulder_pendulum'
-              ? renderSideSagittalView('pendulum')
-              : spec.kind === 'chair_squat' ||
-                  spec.kind === 'knee_extension' ||
-                  spec.kind === 'hip_march' ||
-                  spec.kind === 'heel_raise' ||
-                  spec.kind === 'single_leg_balance'
-                ? renderLowerBodyView()
-                : renderCoronalFrontUpperBody()}
+        : spec.kind === 'forearm_turn'
+          ? renderForearmTurnCloseUp()
+          : spec.kind === 'thumb_pinch'
+            ? renderThumbPinchCloseUp()
+            : spec.kind === 'neck_tilt'
+              ? renderNeckView('tilt')
+              : spec.kind === 'neck_turn'
+                ? renderNeckView('turn')
+                : spec.kind === 'shoulder_flexion'
+                  ? renderSideSagittalView('flexion')
+                  : spec.kind === 'scapular_protract'
+                    ? renderSideSagittalView('scapular_protract')
+                    : spec.kind === 'bobath_forward_push'
+                      ? renderSideSagittalView('bobath_forward_push')
+                      : renderCoronalFrontUpperBody()}
     </svg>
   );
 }

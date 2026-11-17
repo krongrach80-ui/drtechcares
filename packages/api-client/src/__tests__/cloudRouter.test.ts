@@ -918,7 +918,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
           {
             id: 'sched-init-2',
             patientId: 'pending',
-            exerciseId: 'ex-03',
+            exerciseId: 'STROKE_SH_ABD_R',
             scheduledDate: plus2Iso,
             sets: 3,
             reps: 10,
@@ -928,7 +928,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
           {
             id: 'sched-init-1',
             patientId: 'pending',
-            exerciseId: 'ex-01',
+            exerciseId: 'STROKE_SH_FLEX_R',
             scheduledDate: todayIso,
             sets: 3,
             reps: 12,
@@ -953,7 +953,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(patient.nextAppointmentDate).toBe(todayIso);
     expect(patient.rehabSchedules).toHaveLength(2);
     expect(patient.rehabSchedules.every((s) => s.patientId === patient.id)).toBe(true);
-    expect(patient.rehabSchedules[0]?.exerciseId).toBe('ex-01');
+    expect(patient.rehabSchedules[0]?.exerciseId).toBe('STROKE_SH_FLEX_R');
 
     const verifyRes = await callRouter(router, '/api/biometric/verify', {
       method: 'POST',
@@ -969,7 +969,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(verifyJson.matched).toBe(true);
     expect(verifyJson.hasAppointmentToday).toBe(true);
     expect(verifyJson.patient.nextAppointmentDate).toBe(todayIso);
-    expect(verifyJson.todayExercises.map((e) => e.exerciseId)).toEqual(['ex-01']);
+    expect(verifyJson.todayExercises.map((e) => e.exerciseId)).toEqual(['STROKE_SH_FLEX_R']);
     expect(verifyJson.todayExercises[0]?.sets).toBe(3);
     expect(verifyJson.todayExercises[0]?.reps).toBe(12);
   });
@@ -1809,6 +1809,63 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       },
     });
     expect(strangerRes.status).toBe(401);
+  });
+
+  it('returns exact 26 canonical Stroke & MOPH exercises and purges legacy rows via POST /api/exercises/sync-stroke-library', async () => {
+    const router = createCloudDelegatedRouter({});
+    const ptLogin = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const { token: ptToken } = (await ptLogin.json()) as { token: string };
+
+    // Inject deprecated leg/ortho exercise into router and confirm GET strips it
+    const badCreate = await callRouter(router, '/api/exercises', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        id: 'ex-26',
+        code: 'SIT_TO_STAND',
+        category: 'lower_limb',
+        name: { th: 'ลุกนั่งเก้าอี้', en: 'Sit to Stand', cn: '坐站' },
+        instruction: { th: '-', en: '-', cn: '-' },
+        detection: {
+          mode: 'angle_rep_hold',
+          jointGroup: 'knee',
+          side: 'both',
+          targetMinDeg: 85,
+          targetMaxDeg: 170,
+          startRestMaxDeg: 100,
+          holdSec: 2,
+          defaultSets: 2,
+          defaultReps: 10,
+        },
+      },
+    });
+    expect(badCreate.status).toBe(201);
+
+    const listBeforeSync = await callRouter(router, '/api/exercises');
+    expect(listBeforeSync.status).toBe(200);
+    const listBeforeJson = (await listBeforeSync.json()) as { exercises: Array<{ id: string; code: string; category: string }> };
+    expect(listBeforeJson.exercises).toHaveLength(26);
+    expect(listBeforeJson.exercises.some((e) => e.category === 'lower_limb' || e.category === 'balance')).toBe(false);
+    expect(listBeforeJson.exercises.some((e) => e.id === 'ex-26' || e.code === 'SIT_TO_STAND')).toBe(false);
+
+    const syncRes = await callRouter(router, '/api/exercises/sync-stroke-library', {
+      method: 'POST',
+      token: ptToken,
+    });
+    expect(syncRes.status).toBe(200);
+    const syncJson = (await syncRes.json()) as {
+      ok: boolean;
+      purgedCount: number;
+      syncedCount: number;
+      exercises: Array<{ id: string; code: string; category: string }>;
+    };
+    expect(syncJson.ok).toBe(true);
+    expect(syncJson.purgedCount).toBeGreaterThanOrEqual(1);
+    expect(syncJson.syncedCount).toBe(26);
+    expect(syncJson.exercises).toHaveLength(26);
   });
 });
 

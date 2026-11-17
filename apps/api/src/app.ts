@@ -10,6 +10,7 @@ import {
 } from '@drtechcares/smart-biometric-core';
 import {
   evaluateClinicalBiomechanicsPacket,
+  isDeprecatedExerciseRecord,
 } from '@drtechcares/pose-engine';
 import {
   inspectBiometricFrame3D,
@@ -1220,7 +1221,29 @@ export function createDrTechCaresApiApp(
   // 6. EXERCISES & MODPACKS (Scoped Ownership for PT vs Full CRUD for Super Admin)
   // ========================
   app.get('/api/exercises', (_req: Request, res: Response) => {
-    res.json({ exercises: db.state.exercises });
+    const exercises = db.state.exercises.filter((ex) => !isDeprecatedExerciseRecord(ex));
+    res.json({ exercises });
+  });
+
+  app.post('/api/exercises/sync-stroke-library', requireAuth(['super_admin', 'pt']), (req: AuthenticatedRequest, res: Response) => {
+    const result = db.syncStrokeExerciseLibrary();
+    db.recordAudit({
+      actorId: req.authUser!.id,
+      actorRole: req.authUser!.role,
+      actorName: req.authUser!.fullName,
+      ipAddress: req.ip || '127.0.0.1',
+      deviceId: String(req.headers['x-device-id'] || 'portal'),
+      eventType: 'SYNC_STROKE_EXERCISE_LIBRARY',
+      targetId: 'exercises',
+      detail: `Synced 26 canonical Stroke/MOPH exercises (purged ${result.purgedCount} deprecated rows)`,
+    });
+    res.json({
+      ok: true,
+      purgedCount: result.purgedCount,
+      syncedCount: result.exercises.length,
+      total: result.exercises.length,
+      exercises: result.exercises,
+    });
   });
 
   app.post('/api/exercises', requireAuth(['super_admin', 'pt']), (req: AuthenticatedRequest, res: Response) => {

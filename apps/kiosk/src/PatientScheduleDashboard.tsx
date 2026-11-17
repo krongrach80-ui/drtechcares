@@ -38,13 +38,13 @@ export function PatientScheduleDashboard({
     label: 'Daily Rehabilitation Session',
     exercises: [
       {
-        exerciseId: 'ex-01',
+        exerciseId: 'STROKE_SH_FLEX_R',
         side: 'right' as const,
         sets: 2,
         reps: 5,
         holdSec: 3,
-        targetMinDeg: 110,
-        targetMaxDeg: 180,
+        targetMinDeg: 95,
+        targetMaxDeg: 135,
         allowedStarterSide: 'right' as const,
       },
     ],
@@ -146,7 +146,7 @@ export function PatientScheduleDashboard({
           </div>
           <h3 className="mt-4 text-xl font-bold">{t('startRehabBtn')}</h3>
           <ul className="mt-3 space-y-1.5 text-sm text-teal-50">
-            {(todayPlan.exercises.length > 0 ? todayPlan.exercises : [{ exerciseId: 'ex-01', sets: 2, reps: 5, holdSec: 3 }]).map(
+            {(todayPlan.exercises.length > 0 ? todayPlan.exercises : [{ exerciseId: 'STROKE_SH_FLEX_R', sets: 2, reps: 5, holdSec: 3 }]).map(
               (item, idx) => {
                 const ex = CLINICAL_EXERCISES.find((e) => e.id === item.exerciseId) ?? CLINICAL_EXERCISES[0];
                 return (
