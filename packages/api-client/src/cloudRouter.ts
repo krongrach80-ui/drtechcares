@@ -39,6 +39,7 @@ type RepCounterState = NonNullable<Parameters<typeof evaluateClinicalBiomechanic
 type FrameInspectionInput = Parameters<typeof inspectBiometricFrame3D>[0];
 import {
   formatLocalIsoDate,
+  isAdminRole,
   resolveNextAppointmentDate,
   resolveTodayPatientSchedule,
   type AffectedSide,
@@ -1412,7 +1413,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     }
 
     const userMatch = pathname.match(/^\/api\/(?:users|staff)\/([^/]+)$/);
-    if (userMatch && method === 'PUT') {
+    if (userMatch && (method === 'PUT' || method === 'PATCH')) {
       const err = requireAuth(authUser);
       if (err) return err;
       let target = state.users.find((u) => u.id === userMatch[1]);
@@ -1422,7 +1423,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
       if (!target) return jsonResponse({ error: 'USER_NOT_FOUND' }, 404);
       const actor = authUser!;
-      if (actor.role === 'pt' && target.id !== actor.id && target.role !== 'patient') {
+      const actorIsAdmin = isAdminRole(actor.role);
+      if (!actorIsAdmin && target.id !== actor.id && target.role !== 'patient') {
         return jsonResponse(
           { error: 'FORBIDDEN', message: 'PT cannot edit Admin or other PT accounts' },
           403,
@@ -1435,11 +1437,14 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       if (body.fullName !== undefined) target.fullName = body.fullName;
       if (body.phone !== undefined) target.phone = body.phone;
       if (body.specialty !== undefined && actor.role !== 'patient') target.specialty = body.specialty;
-      if (body.licenseNo !== undefined && actor.role !== 'patient') target.licenseNo = body.licenseNo;
+      // Strict RBAC Field Lock: Only Hospital Admin (ADMIN / SUPER_ADMIN) may modify licenseNo; PT keeps DB value.
+      if (body.licenseNo !== undefined && actorIsAdmin) {
+        target.licenseNo = body.licenseNo.trim() || undefined;
+      }
       if (body.avatarUrl !== undefined) target.avatarUrl = body.avatarUrl;
       if (body.bio !== undefined) target.bio = body.bio;
-      if (body.role !== undefined && actor.role === 'super_admin') target.role = normalizeStaffRole(body.role);
-      if (body.active !== undefined && actor.role === 'super_admin') target.active = body.active;
+      if (body.role !== undefined && actorIsAdmin) target.role = normalizeStaffRole(body.role);
+      if (body.active !== undefined && actorIsAdmin) target.active = body.active;
 
       await persistToSupabase(supabase, (db) =>
         db

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ApiError, resolveNextAppointmentDate } from '@drtechcares/api-client';
+import { ApiError, isAdminRole, resolveNextAppointmentDate } from '@drtechcares/api-client';
 import type {
   ActiveSessionRecord,
   AuditLogRecord,
@@ -44,9 +44,11 @@ import {
   HeartHandshake,
   KeyRound,
   Link2,
+  Lock,
   LogOut,
   Monitor,
   PauseCircle,
+  Pencil,
   Phone,
   Plus,
   RefreshCw,
@@ -1187,7 +1189,7 @@ function resolveUserProfile(
     fullName: local?.fullName?.trim() || u.fullName,
     phone: local?.phone !== undefined ? local.phone : u.phone || '',
     specialty: local?.specialty !== undefined ? local.specialty : u.specialty || 'เวชศาสตร์ฟื้นฟูกายภาพบำบัด',
-    licenseNo: local?.licenseNo !== undefined ? local.licenseNo : u.licenseNo || 'PT-44012',
+    licenseNo: u.licenseNo || local?.licenseNo || 'PT-44012',
     avatarUrl: local?.avatarUrl || u.avatarUrl || getDefaultAvatarForUser(u),
     bio: local?.bio !== undefined && local.bio.trim() ? local.bio : u.bio?.trim() || getDefaultBioForUser(u),
   };
@@ -1286,7 +1288,12 @@ export function ClinicalStaffPortalShell({
 }: ClinicalStaffPortalShellProps) {
   const { lang, setLang } = useClinicalI18n();
   const locale = PORTAL_TEXT[lang];
-  const isAdmin = currentUser.role === 'super_admin';
+  const isAdminUser =
+    isAdminRole(currentUser?.role) ||
+    currentUser?.role?.toUpperCase() === 'ADMIN' ||
+    currentUser?.role?.toUpperCase() === 'SUPER_ADMIN' ||
+    (currentUser?.role as string) === 'ผู้ดูแลระบบ';
+  const isAdmin = isAdminUser;
 
   const [activeTab, setActiveTab] = useState<PortalTab>(isAdmin ? 'staff' : 'patients');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -1336,6 +1343,11 @@ export function ClinicalStaffPortalShell({
   }>({ patient: null, tab: 'profile' });
   const [ehrLinkPatient, setEhrLinkPatient] = useState<PatientRecord | null>(null);
   const [selectedPtDetailModal, setSelectedPtDetailModal] = useState<UserAccount | null>(null);
+  const [editingStaffUser, setEditingStaffUser] = useState<UserAccount | null>(null);
+  const [editStaffFullName, setEditStaffFullName] = useState('');
+  const [editStaffPhone, setEditStaffPhone] = useState('');
+  const [editStaffSpecialty, setEditStaffSpecialty] = useState('');
+  const [editStaffLicenseNo, setEditStaffLicenseNo] = useState('');
   const [assignPatientIdForPt, setAssignPatientIdForPt] = useState('');
   const [scheduleModalMode, setScheduleModalMode] = useState<'create' | 'day_detail' | null>(null);
   const [selectedCalendarDateIso, setSelectedCalendarDateIso] = useState<string | null>(null);
@@ -1815,11 +1827,14 @@ export function ClinicalStaffPortalShell({
       flashBanner('error', 'กรุณาระบุชื่อ-นามสกุล');
       return;
     }
+    const existingLicense = activeUserRecord.licenseNo ?? myProfile.licenseNo;
+    // Strict RBAC Payload Guard: non-admin (PT) can never mutate licenseNo in State, localStorage, or DB.
+    const safeLicenseNumber = isAdminUser ? profileLicenseNo.trim() : existingLicense;
     const patch: StoredStaffProfileOverride = {
       fullName: profileFullName.trim(),
       phone: profilePhone.trim(),
       specialty: profileSpecialty.trim(),
-      licenseNo: profileLicenseNo.trim(),
+      licenseNo: safeLicenseNumber,
       avatarUrl: profileAvatarUrl,
       bio: profileBio.trim(),
     };
@@ -1831,6 +1846,9 @@ export function ClinicalStaffPortalShell({
     setProfileOverrides(nextOverrides);
     saveStaffProfileOverrides(nextOverrides);
     profileDirtyRef.current = false;
+    if (!isAdminUser) {
+      setProfileLicenseNo(safeLicenseNumber);
+    }
 
     setSubmitting(true);
     try {
@@ -1838,12 +1856,13 @@ export function ClinicalStaffPortalShell({
         fullName: patch.fullName,
         phone: patch.phone,
         specialty: activeUserRecord.role !== 'patient' ? patch.specialty : undefined,
-        licenseNo: activeUserRecord.role !== 'patient' ? patch.licenseNo : undefined,
+        licenseNo:
+          isAdminUser && activeUserRecord.role !== 'patient' ? safeLicenseNumber : undefined,
         avatarUrl: patch.avatarUrl,
         bio: patch.bio,
       });
       setUsers((prev) =>
-        prev.map((u) => (u.id === updated.id ? { ...u, ...updated, ...patch } : u)),
+        prev.map((u) => (u.id === updated.id ? { ...u, ...updated, ...patch, licenseNo: updated.licenseNo ?? safeLicenseNumber } : u)),
       );
       flashBanner('success', locale.profile.savedSuccess);
       await refreshAll();
@@ -1851,6 +1870,70 @@ export function ClinicalStaffPortalShell({
       if (await handleAuthFailureIfExpired(err)) return;
       // Preserve local profile override cleanly while letting the user know
       flashBanner('success', `${locale.profile.savedSuccess} (Local Sync)`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const openEditStaffModal = (target: UserAccount) => {
+    if (!isAdminUser) return;
+    const resolved = resolveUserProfile(target, profileOverrides);
+    setEditingStaffUser(target);
+    setEditStaffFullName(resolved.fullName);
+    setEditStaffPhone(resolved.phone);
+    setEditStaffSpecialty(resolved.specialty);
+    setEditStaffLicenseNo(target.licenseNo ?? resolved.licenseNo);
+  };
+
+  const handleSaveEditedStaff = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingStaffUser || !isAdminUser) return;
+    if (!editStaffFullName.trim()) {
+      flashBanner('error', 'กรุณาระบุชื่อ-นามสกุล');
+      return;
+    }
+    const existingLicense = editingStaffUser.licenseNo ?? '';
+    const safeLicenseNumber = isAdminUser ? editStaffLicenseNo.trim() : existingLicense;
+    const existingResolved = resolveUserProfile(editingStaffUser, profileOverrides);
+    const targetPatch: StoredStaffProfileOverride = {
+      fullName: editStaffFullName.trim(),
+      phone: editStaffPhone.trim(),
+      specialty: editStaffSpecialty.trim(),
+      licenseNo: safeLicenseNumber,
+      avatarUrl: existingResolved.avatarUrl,
+      bio: existingResolved.bio,
+    };
+    const nextOverrides: Record<string, StoredStaffProfileOverride> = {
+      ...profileOverrides,
+      [editingStaffUser.id]: targetPatch,
+      [`usr:${editingStaffUser.username.toLowerCase()}`]: targetPatch,
+    };
+    setProfileOverrides(nextOverrides);
+    saveStaffProfileOverrides(nextOverrides);
+
+    setSubmitting(true);
+    try {
+      const updated = await apiClient.updateUser(editingStaffUser.id, {
+        fullName: targetPatch.fullName,
+        phone: targetPatch.phone,
+        specialty: editingStaffUser.role !== 'patient' ? targetPatch.specialty : undefined,
+        licenseNo:
+          isAdminUser && editingStaffUser.role !== 'patient'
+            ? safeLicenseNumber
+            : undefined,
+      });
+      setUsers((prev) =>
+        prev.map((u) => (u.id === updated.id ? { ...u, ...updated, ...targetPatch } : u)),
+      );
+      if (selectedPtDetailModal?.id === editingStaffUser.id) {
+        setSelectedPtDetailModal({ ...editingStaffUser, ...updated, ...targetPatch });
+      }
+      setEditingStaffUser(null);
+      flashBanner('success', `บันทึกข้อมูลและเลขที่ใบประกอบวิชาชีพของ ${targetPatch.fullName} เรียบร้อยแล้ว`);
+      await refreshAll();
+    } catch (err) {
+      if (await handleAuthFailureIfExpired(err)) return;
+      flashBanner('error', err instanceof Error ? err.message : 'ไม่สามารถบันทึกข้อมูลเจ้าหน้าที่ได้');
     } finally {
       setSubmitting(false);
     }
@@ -2556,9 +2639,16 @@ export function ClinicalStaffPortalShell({
                             </span>
                           )}
                           {u.role === 'pt' && (
-                            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
-                              <UserCheck className="h-3 w-3 shrink-0" /> {locale.staff.rolePt}
-                            </span>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
+                                <UserCheck className="h-3 w-3 shrink-0" /> {locale.staff.rolePt}
+                              </span>
+                              {(u.licenseNo || profileOverrides[u.id]?.licenseNo) && (
+                                <span className="whitespace-nowrap rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 font-mono text-[10px] font-bold text-amber-900">
+                                  {u.licenseNo || profileOverrides[u.id]?.licenseNo}
+                                </span>
+                              )}
+                            </div>
                           )}
                           {u.role === 'patient' && (
                             <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700">
@@ -2583,6 +2673,17 @@ export function ClinicalStaffPortalShell({
                         {isAdmin && (
                           <td className="px-5 py-3.5 text-right">
                             <div className="inline-flex items-center justify-end gap-1.5">
+                              {u.role !== 'patient' && (
+                                <button
+                                  type="button"
+                                  onClick={() => openEditStaffModal(u)}
+                                  className="whitespace-nowrap rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer inline-flex items-center gap-1"
+                                  title="แก้ไขข้อมูลและเลขที่ใบประกอบวิชาชีพ"
+                                >
+                                  <Pencil className="h-3 w-3" />
+                                  <span>แก้ไข</span>
+                                </button>
+                              )}
                               {u.id !== currentUser.id && (
                                 <button
                                   type="button"
@@ -2964,9 +3065,29 @@ export function ClinicalStaffPortalShell({
 
                         <div className="flex items-center justify-between gap-2 rounded-xl border border-amber-200/80 bg-amber-50/70 px-3.5 py-2 text-xs">
                           <span className="font-semibold text-amber-900 whitespace-nowrap">{locale.pts.licenseLabel}</span>
-                          <span className="whitespace-nowrap rounded-lg bg-white border border-amber-200 px-2.5 py-0.5 font-mono text-[11px] font-bold text-slate-800">
-                            {ptProfile.licenseNo}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="whitespace-nowrap rounded-lg bg-white border border-amber-200 px-2.5 py-0.5 font-mono text-[11px] font-bold text-slate-800">
+                              {ptProfile.licenseNo}
+                            </span>
+                            {isAdminUser ? (
+                              <button
+                                type="button"
+                                onClick={() => openEditStaffModal(pt)}
+                                className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-0.5 text-[10px] font-extrabold text-amber-800 hover:bg-amber-100 cursor-pointer"
+                                title="แก้ไขเลขที่ใบประกอบวิชาชีพ (Admin)"
+                              >
+                                <Pencil className="h-3 w-3" />
+                                <span>แก้ไข</span>
+                              </button>
+                            ) : (
+                              <span
+                                className="inline-flex items-center gap-0.5 text-[10px] font-bold text-slate-500 whitespace-nowrap"
+                                title="ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)"
+                              >
+                                <Lock className="h-3 w-3" />
+                              </span>
+                            )}
+                          </div>
                         </div>
 
                         <div className="space-y-1.5 text-xs text-slate-600">
@@ -4810,17 +4931,36 @@ export function ClinicalStaffPortalShell({
                         />
                       </div>
                       <div>
-                        <label className="block font-extrabold text-slate-700 mb-1.5">
-                          {locale.profile.licenseLabel}
+                        <label className="flex flex-wrap items-center justify-between gap-1.5 font-extrabold text-slate-700 mb-1.5">
+                          <span>{locale.profile.licenseLabel}</span>
+                          {!isAdminUser && (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">
+                              <Lock className="h-3 w-3 shrink-0" />
+                              🔒 ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)
+                            </span>
+                          )}
                         </label>
                         <input
-                          value={profileLicenseNo}
+                          type="text"
+                          value={!isAdminUser ? (activeUserRecord.licenseNo || myProfile.licenseNo) : profileLicenseNo}
+                          readOnly={!isAdminUser}
+                          disabled={!isAdminUser}
                           onChange={(e) => {
+                            if (!isAdminUser) return;
                             profileDirtyRef.current = true;
                             setProfileLicenseNo(e.target.value);
                           }}
-                          className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-mono font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none"
+                          className={
+                            !isAdminUser
+                              ? 'w-full rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2.5 text-xs font-mono font-medium text-slate-600 cursor-not-allowed select-text focus:outline-none'
+                              : 'w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-mono font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none'
+                          }
                         />
+                        {!isAdminUser && (
+                          <p className="mt-1 text-[11px] font-semibold text-slate-500">
+                            🔒 ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)
+                          </p>
+                        )}
                       </div>
                     </div>
                   )}
@@ -5359,8 +5499,18 @@ export function ClinicalStaffPortalShell({
                 />
                 <div className="min-w-0">
                   <h3 className="text-base font-black text-slate-900">{modalPtProfile.fullName}</h3>
-                  <p className="text-slate-500">
-                    @{selectedPtDetailModal.username} • {modalPtProfile.licenseNo} • {modalPtProfile.specialty}
+                  <p className="text-slate-500 flex flex-wrap items-center gap-1.5">
+                    <span>@{selectedPtDetailModal.username} • {modalPtProfile.licenseNo} • {modalPtProfile.specialty}</span>
+                    {isAdminUser && (
+                      <button
+                        type="button"
+                        onClick={() => openEditStaffModal(selectedPtDetailModal)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer"
+                      >
+                        <Pencil className="h-3 w-3" />
+                        <span>แก้ไขใบอนุญาต / ข้อมูล</span>
+                      </button>
+                    )}
                   </p>
                   <p className="mt-0.5 flex items-center gap-1 font-mono text-emerald-700 font-semibold">
                     <Phone className="h-3 w-3 shrink-0" />
@@ -5444,6 +5594,96 @@ export function ClinicalStaffPortalShell({
         </div>
         );
       })()}
+
+      {/* Admin Staff Profile & License Edit Modal */}
+      {editingStaffUser && isAdminUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Pencil className="h-4 w-4 text-amber-600" />
+                <div>
+                  <h3 className="text-sm font-black text-slate-900">
+                    แก้ไขข้อมูลบุคลากรและใบประกอบวิชาชีพ
+                  </h3>
+                  <p className="text-[11px] text-slate-500 font-mono">@{editingStaffUser.username}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingStaffUser(null)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveEditedStaff} className="space-y-3">
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">ชื่อ - นามสกุล *</label>
+                <input
+                  required
+                  value={editStaffFullName}
+                  onChange={(e) => setEditStaffFullName(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 font-semibold text-slate-900"
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-600 mb-1">เบอร์โทรศัพท์ติดต่อ</label>
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={10}
+                  value={editStaffPhone}
+                  onChange={(e) => setEditStaffPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                  placeholder="08XXXXXXXX"
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 font-mono text-slate-900"
+                />
+              </div>
+              {editingStaffUser.role !== 'patient' && (
+                <>
+                  <div>
+                    <label className="block font-bold text-slate-600 mb-1">ความเชี่ยวชาญเฉพาะทาง</label>
+                    <input
+                      value={editStaffSpecialty}
+                      onChange={(e) => setEditStaffSpecialty(e.target.value)}
+                      className="w-full rounded-xl border border-slate-200 px-3 py-2 text-slate-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="flex items-center justify-between font-bold text-slate-600 mb-1">
+                      <span>เลขที่ใบประกอบวิชาชีพ</span>
+                      <span className="text-[10px] font-semibold text-emerald-700">Admin แก้ไขได้</span>
+                    </label>
+                    <input
+                      value={editStaffLicenseNo}
+                      onChange={(e) => setEditStaffLicenseNo(e.target.value)}
+                      placeholder="เช่น PT-44012"
+                      className="w-full rounded-xl border border-emerald-300 bg-white px-3 py-2 font-mono font-bold text-slate-900 focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+                </>
+              )}
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingStaffUser(null)}
+                  className="rounded-xl border border-slate-200 px-4 py-2 font-bold text-slate-600 cursor-pointer"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="rounded-xl bg-emerald-600 px-4 py-2 font-extrabold text-white hover:bg-emerald-500 disabled:opacity-50 cursor-pointer"
+                >
+                  {submitting ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Quick Check-in Modal */}
       {quickCheckinModalOpen && (

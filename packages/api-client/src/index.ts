@@ -22,6 +22,16 @@ import {
 export type UserRole = 'super_admin' | 'pt' | 'patient';
 export type ActivityType = 'minigame' | 'physio_exercise';
 
+/** Canonical Role-Based Access Control (RBAC) check for Hospital Administrator privileges. */
+export function isAdminRole(role?: string | null): boolean {
+  const normalized = String(role ?? '').trim().toUpperCase();
+  return (
+    normalized === 'ADMIN' ||
+    normalized === 'SUPER_ADMIN' ||
+    normalized === 'ผู้ดูแลระบบ'
+  );
+}
+
 export interface UserAccount {
   id: string;
   username: string;

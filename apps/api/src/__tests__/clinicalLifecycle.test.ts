@@ -453,4 +453,42 @@ describe('DRTECHCARES Production API, Auth, RBAC & Biometric Lifecycle', () => {
     expect(json.ui_directives.skeleton_highlight_joint).toBe('spine');
     expect(json.ui_directives.highlight_color).toBe('AMBER');
   });
+
+  it('enforces RBAC field lock on licenseNo in Express PUT /api/users/:id (PT blocked, Admin allowed)', async () => {
+    const ptLogin = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'pt_somchai', password: 'Pt@2026' }),
+    });
+    const ptAuth = (await ptLogin.json()) as { token: string; user: { id: string; licenseNo?: string } };
+    expect(ptAuth.user.licenseNo).toBe('PT-44012');
+
+    const ptEditRes = await fetch(`${baseUrl}/api/users/${ptAuth.user.id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ptAuth.token}`,
+      },
+      body: JSON.stringify({
+        specialty: 'Stroke ADL Specialist',
+        licenseNo: 'PT-SELF-EDIT-HACK',
+      }),
+    });
+    expect(ptEditRes.status).toBe(200);
+    const ptAfter = (await ptEditRes.json()) as { user: { specialty?: string; licenseNo?: string } };
+    expect(ptAfter.user.specialty).toBe('Stroke ADL Specialist');
+    expect(ptAfter.user.licenseNo).toBe('PT-44012');
+
+    const adminEditRes = await fetch(`${baseUrl}/api/users/${ptAuth.user.id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({ licenseNo: 'PT-99123' }),
+    });
+    expect(adminEditRes.status).toBe(200);
+    const adminAfter = (await adminEditRes.json()) as { user: { licenseNo?: string } };
+    expect(adminAfter.user.licenseNo).toBe('PT-99123');
+  });
 });

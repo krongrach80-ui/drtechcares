@@ -578,6 +578,10 @@ export function createDrTechCaresApiApp(
       return;
     }
     const actor = req.authUser!;
+    const actorIsAdmin =
+      actor.role === 'super_admin' ||
+      String(actor.role).toUpperCase() === 'ADMIN' ||
+      String(actor.role).toUpperCase() === 'SUPER_ADMIN';
     if (actor.role === 'pt' && target.id !== actor.id && target.role !== 'patient') {
       res.status(403).json({ error: 'FORBIDDEN', message: 'PT cannot edit Admin or other PT accounts' });
       return;
@@ -592,11 +596,14 @@ export function createDrTechCaresApiApp(
     if (fullName !== undefined) target.fullName = fullName;
     if (phone !== undefined) target.phone = phone;
     if (specialty !== undefined && actor.role !== 'patient') target.specialty = specialty;
-    if (licenseNo !== undefined && actor.role !== 'patient') target.licenseNo = licenseNo;
+    // Strict RBAC Field Lock: Only Admin may modify licenseNo; PT keeps existing DB licenseNo.
+    if (licenseNo !== undefined && actorIsAdmin) {
+      target.licenseNo = String(licenseNo).trim() || undefined;
+    }
     if (avatarUrl !== undefined) target.avatarUrl = avatarUrl;
     if (bio !== undefined) target.bio = bio;
-    if (role !== undefined && actor.role === 'super_admin') target.role = role;
-    if (active !== undefined && actor.role === 'super_admin') target.active = active;
+    if (role !== undefined && actorIsAdmin) target.role = role;
+    if (active !== undefined && actorIsAdmin) target.active = active;
     db.save();
 
     db.recordAudit({

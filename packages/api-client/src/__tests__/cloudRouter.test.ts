@@ -9,6 +9,7 @@ import {
   clampTtsText,
   createCloudDelegatedRouter,
   formatLocalIsoDate,
+  isAdminRole,
   normalizeTtsLang,
   resolveNextAppointmentDate,
   resolveTodayPatientSchedule,
@@ -2010,6 +2011,72 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
 
     await hydrateStateFromSupabase(makeMockSupabaseWithUsers([]), emptyDbState);
     expect(emptyDbState.users.map((u) => u.username)).toEqual(['admin']);
+  });
+
+  it('locks licenseNo against PT self-modification while allowing Admin updates via PUT/PATCH /api/users/:id', async () => {
+    expect(isAdminRole('super_admin')).toBe(true);
+    expect(isAdminRole('ADMIN')).toBe(true);
+    expect(isAdminRole('SUPER_ADMIN')).toBe(true);
+    expect(isAdminRole('ผู้ดูแลระบบ')).toBe(true);
+    expect(isAdminRole('pt')).toBe(false);
+    expect(isAdminRole('patient')).toBe(false);
+
+    const router = createCloudDelegatedRouter({});
+    const ptLogin = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    expect(ptLogin.status).toBe(200);
+    const { token: ptToken, user: ptUser } = (await ptLogin.json()) as {
+      token: string;
+      user: { id: string; licenseNo?: string };
+    };
+    expect(ptUser.licenseNo).toBe('PT-44012');
+
+    // PT updates specialty & phone while attempting to spoof licenseNo -> specialty/phone save, licenseNo MUST remain PT-44012
+    const ptUpdateRes = await callRouter(router, `/api/users/${ptUser.id}`, {
+      method: 'PUT',
+      token: ptToken,
+      body: {
+        phone: '0899998888',
+        specialty: 'Neurological Stroke Rehabilitation',
+        licenseNo: 'PT-SPOOF-999',
+      },
+    });
+    expect(ptUpdateRes.status).toBe(200);
+    const ptUpdatedJson = (await ptUpdateRes.json()) as {
+      user: { phone: string; specialty?: string; licenseNo?: string };
+    };
+    expect(ptUpdatedJson.user.phone).toBe('0899998888');
+    expect(ptUpdatedJson.user.specialty).toBe('Neurological Stroke Rehabilitation');
+    expect(ptUpdatedJson.user.licenseNo).toBe('PT-44012');
+
+    // PATCH by PT also refuses to mutate licenseNo
+    const ptPatchRes = await callRouter(router, `/api/users/${ptUser.id}`, {
+      method: 'PATCH',
+      token: ptToken,
+      body: { licenseNo: 'PT-PATCH-HACK' },
+    });
+    expect(ptPatchRes.status).toBe(200);
+    expect(
+      ((await ptPatchRes.json()) as { user: { licenseNo?: string } }).user.licenseNo,
+    ).toBe('PT-44012');
+
+    // Super Admin updates PT licenseNo -> allowed cleanly
+    const adminLogin = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin', password: 'Admin@2026' },
+    });
+    const { token: adminToken } = (await adminLogin.json()) as { token: string };
+    const adminUpdateRes = await callRouter(router, `/api/users/${ptUser.id}`, {
+      method: 'PUT',
+      token: adminToken,
+      body: { licenseNo: 'PT-88776' },
+    });
+    expect(adminUpdateRes.status).toBe(200);
+    expect(
+      ((await adminUpdateRes.json()) as { user: { licenseNo?: string } }).user.licenseNo,
+    ).toBe('PT-88776');
   });
 });
 
