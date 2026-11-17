@@ -58,6 +58,57 @@ export interface StrokeTargetOverlayHint {
   labelTh: string;
 }
 
+export type StrokeSideViolationCode =
+  | 'NONE'
+  | 'RIGHT_ARM_RAISED_IN_LEFT_MODE'
+  | 'LEFT_ARM_RAISED_IN_RIGHT_MODE'
+  | 'SINGLE_ARM_IN_BOTH_MODE';
+
+export type StrokeRepPhase = 'WAIT_RAISE' | 'HOLDING' | 'COOLDOWN';
+
+export interface StrokeHoldRepState {
+  phase: StrokeRepPhase;
+  holdElapsedSec: number;
+  completedReps: number;
+  cooldownStartedAtMs: number;
+  repCelebrateUntilMs: number;
+}
+
+export interface StrokeHoldRepStepInput {
+  state: StrokeHoldRepState;
+  activeRomDeg: number | null;
+  targetRomDeg: number;
+  targetHoldSec: number;
+  targetReps: number;
+  dtSec: number;
+  nowMs: number;
+  isKneeExercise?: boolean;
+  sideViolation: StrokeSideViolationCode;
+  wrongSideBannerTh: string | null;
+  wrongPlaneRaised: boolean;
+  wrongPlaneBannerTh: string | null;
+  isCompensatedNow: boolean;
+  postureBannerTh: string | null;
+  blockCounting?: boolean;
+}
+
+export interface StrokeHoldRepStepResult {
+  nextState: StrokeHoldRepState;
+  holdProgressPct: number;
+  holdRemainingSec: number;
+  justCompletedRep: boolean;
+  bannerTh: string | null;
+  statusKind:
+    | 'IDLE'
+    | 'ACTIVE_REP'
+    | 'HOLD_PHASE'
+    | 'REP_COMPLETED'
+    | 'SET_FINISHED'
+    | 'WRONG_LIMB'
+    | 'WRONG_PLANE'
+    | 'POSTURE_COMPENSATED';
+}
+
 export interface StrokePoseSolveInput {
   landmarks: readonly PoseLandmark[];
   worldLandmarks?: readonly PoseLandmark[];
@@ -66,6 +117,7 @@ export interface StrokePoseSolveInput {
     right?: readonly PoseLandmark[];
   };
   targetJoint: 'left_shoulder' | 'right_shoulder' | 'spine' | 'left_knee' | 'right_knee' | 'none';
+  exerciseSide?: 'LEFT' | 'RIGHT' | 'BOTH';
   expectedPlane?: string;
   targetRomDeg?: number;
   jointMode: StrokeJointMode;
@@ -75,12 +127,16 @@ export interface StrokePoseSolveInput {
 export interface StrokePoseSolveResult {
   romDeg: number | null;
   rawPrimaryRomDeg: number | null;
+  leftArmRom: number | null;
+  rightArmRom: number | null;
   oppositeRomDeg: number | null;
   trunkTiltDeg: number;
   shoulderTiltDeg: number;
   shoulderHikeRatio: number;
   neckDropDeg: number;
   elbowAngleDeg: number | null;
+  sideViolation: StrokeSideViolationCode;
+  sideViolationBannerTh: string | null;
   wrongSideRaised: boolean;
   wrongSideBannerTh: string | null;
   wrongPlaneRaised: boolean;
@@ -253,7 +309,15 @@ export class AutoBoneBaselineCalibrator {
 export function solveStrokeClinicalJointBiomechanics(
   input: StrokePoseSolveInput,
 ): StrokePoseSolveResult {
-  const { landmarks, worldLandmarks, handLandmarksBySide, targetJoint, expectedPlane = 'any', jointMode } = input;
+  const {
+    landmarks,
+    worldLandmarks,
+    handLandmarksBySide,
+    targetJoint,
+    exerciseSide,
+    expectedPlane = 'any',
+    jointMode,
+  } = input;
   const baseline = input.baseline ?? computeDefaultAnatomyBaseline(landmarks);
   const UPPER_MIN_VIS = 0.02;
 
@@ -562,7 +626,11 @@ export function solveStrokeClinicalJointBiomechanics(
 
   let romDeg: number | null = null;
   let rawPrimaryRomDeg: number | null = null;
+  let leftArmRom: number | null = null;
+  let rightArmRom: number | null = null;
   let oppositeRomDeg: number | null = null;
+  let sideViolation: StrokeSideViolationCode = 'NONE';
+  let sideViolationBannerTh: string | null = null;
   let wrongSideRaised = false;
   let wrongSideBannerTh: string | null = null;
   let wrongPlaneRaised = false;
@@ -626,21 +694,12 @@ export function solveStrokeClinicalJointBiomechanics(
         neckDropDeg = Number(noseLowerDeg.toFixed(1));
       }
 
-      const oppWr = landmarks[oppositeSide === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
-      if (oppWr && (oppWr.visibility ?? 0) >= UPPER_MIN_VIS) {
-        const oppDist = dist2D(oppWr, crownNorm) / Math.max(0.10, baseline.upperArmLen);
-        if (oppDist < 0.7 && rawPrimaryRomDeg < 35) {
-          wrongSideRaised = true;
-          wrongSideBannerTh = `ท่านี้ฝึกด้วยแขน${primarySide === 'left' ? 'ซ้าย' : 'ขวา'}เท่านั้น`;
-        }
-      }
-
-      romDeg = wrongSideRaised ? 0 : rawPrimaryRomDeg;
+      romDeg = rawPrimaryRomDeg;
       overlayHint = {
         pivotNorm: { x: activeSh.x, y: activeSh.y },
         targetNorm: crownNorm,
         currentNorm: { x: activeWr.x, y: activeWr.y },
-        inTargetZone: !wrongSideRaised && (rawPrimaryRomDeg ?? 0) >= targetRomGoal * 0.82,
+        inTargetZone: (rawPrimaryRomDeg ?? 0) >= targetRomGoal * 0.82,
         labelTh: 'ยกมือแตะศีรษะ',
       };
     } else {
@@ -670,6 +729,10 @@ export function solveStrokeClinicalJointBiomechanics(
       lowVisibilityAlertTh = 'มองเห็นหัวไหล่และแขนไม่ชัดเจน กรุณาอยู่ในกรอบกล้อง';
     }
   } else if (jointMode === 'bobath_push') {
+    const lElev = computeForwardFlexionWithForeshortening('left');
+    const rElev = computeForwardFlexionWithForeshortening('right');
+    leftArmRom = lElev.angleDeg;
+    rightArmRom = rElev.angleDeg;
     const lExt =
       lSh && landmarks[POSE_INDEX.LEFT_ELBOW] && landmarks[POSE_INDEX.LEFT_WRIST]
         ? computeJointAngle3D(lSh, landmarks[POSE_INDEX.LEFT_ELBOW], landmarks[POSE_INDEX.LEFT_WRIST])
@@ -678,10 +741,13 @@ export function solveStrokeClinicalJointBiomechanics(
       rSh && landmarks[POSE_INDEX.RIGHT_ELBOW] && landmarks[POSE_INDEX.RIGHT_WRIST]
         ? computeJointAngle3D(rSh, landmarks[POSE_INDEX.RIGHT_ELBOW], landmarks[POSE_INDEX.RIGHT_WRIST])
         : null;
-    if (lExt !== null && rExt !== null) {
-      rawPrimaryRomDeg = Number(clamp(0.5 * (lExt + rExt), 0, 175).toFixed(1));
-    } else if (lExt !== null || rExt !== null) {
-      rawPrimaryRomDeg = Number(clamp(lExt ?? rExt ?? 0, 0, 175).toFixed(1));
+    elbowAngleDeg =
+      lExt !== null && rExt !== null ? 0.5 * (lExt + rExt) : (lExt ?? rExt ?? null);
+    if (lElev.angleDeg !== null && rElev.angleDeg !== null) {
+      rawPrimaryRomDeg = Number(clamp(0.5 * (lElev.angleDeg + rElev.angleDeg), 0, 145).toFixed(1));
+      xyzVector = rElev.xyzVector ?? lElev.xyzVector;
+    } else if (lElev.angleDeg !== null || rElev.angleDeg !== null) {
+      rawPrimaryRomDeg = Number(clamp(lElev.angleDeg ?? rElev.angleDeg ?? 0, 0, 145).toFixed(1));
     } else {
       lowVisibilityAlertTh = 'กรุณาให้กล้องเห็นแขนทั้ง 2 ข้างขณะดันไปด้านหน้า';
     }
@@ -699,23 +765,36 @@ export function solveStrokeClinicalJointBiomechanics(
   } else if (jointMode === 'elbow') {
     const primaryRes = computeElbowFlexionRom(primarySide);
     const oppRes = computeElbowFlexionRom(oppositeSide);
+    const lRaiseRes = computeForwardFlexionWithForeshortening('left');
+    const rRaiseRes = computeForwardFlexionWithForeshortening('right');
     rawPrimaryRomDeg = primaryRes.flexionDeg;
     oppositeRomDeg = oppRes.flexionDeg;
+    leftArmRom =
+      lRaiseRes.angleDeg !== null || oppRes.flexionDeg !== null || primaryRes.flexionDeg !== null
+        ? Number(
+            Math.max(
+              lRaiseRes.angleDeg ?? 0,
+              primarySide === 'left' ? (primaryRes.flexionDeg ?? 0) : (oppRes.flexionDeg ?? 0),
+            ).toFixed(1),
+          )
+        : null;
+    rightArmRom =
+      rRaiseRes.angleDeg !== null || oppRes.flexionDeg !== null || primaryRes.flexionDeg !== null
+        ? Number(
+            Math.max(
+              rRaiseRes.angleDeg ?? 0,
+              primarySide === 'right' ? (primaryRes.flexionDeg ?? 0) : (oppRes.flexionDeg ?? 0),
+            ).toFixed(1),
+          )
+        : null;
     xyzVector = primaryRes.xyzVector;
-    wrongSideRaised =
-      oppositeRomDeg !== null &&
-      oppositeRomDeg >= 35 &&
-      (rawPrimaryRomDeg === null || (rawPrimaryRomDeg < 30 && oppositeRomDeg > rawPrimaryRomDeg + 18));
-    romDeg = wrongSideRaised ? 0 : rawPrimaryRomDeg;
-    if (wrongSideRaised) {
-      wrongSideBannerTh = `ท่านี้ต้องฝึกด้วยแขน${primarySide === 'left' ? 'ซ้าย' : 'ขวา'}เท่านั้น`;
-    }
+    romDeg = rawPrimaryRomDeg;
     if (activeSh && activeEl) {
       overlayHint = {
         pivotNorm: { x: activeEl.x, y: activeEl.y },
         targetNorm: { x: activeSh.x, y: activeSh.y + shoulderSpanX * 0.12 },
         currentNorm: activeWr ? { x: activeWr.x, y: activeWr.y } : undefined,
-        inTargetZone: !wrongSideRaised && (rawPrimaryRomDeg ?? 0) >= targetRomGoal * 0.82,
+        inTargetZone: (rawPrimaryRomDeg ?? 0) >= targetRomGoal * 0.82,
         labelTh: 'พับศอกเข้าหาไหล่',
       };
     }
@@ -931,6 +1010,8 @@ export function solveStrokeClinicalJointBiomechanics(
   } else if (jointMode === 'bilateral_raise') {
     const lRes = computeForwardFlexionWithForeshortening('left');
     const rRes = computeForwardFlexionWithForeshortening('right');
+    leftArmRom = lRes.angleDeg;
+    rightArmRom = rRes.angleDeg;
     if (lRes.angleDeg !== null && rRes.angleDeg !== null) {
       rawPrimaryRomDeg = Number((0.5 * (lRes.angleDeg + rRes.angleDeg)).toFixed(1));
       xyzVector = rRes.xyzVector ?? lRes.xyzVector;
@@ -961,15 +1042,12 @@ export function solveStrokeClinicalJointBiomechanics(
         : computeForwardFlexionWithForeshortening(oppositeSide);
     rawPrimaryRomDeg = pRes.angleDeg;
     oppositeRomDeg = oRes.angleDeg;
+    leftArmRom = primarySide === 'left' ? rawPrimaryRomDeg : oppositeRomDeg;
+    rightArmRom = primarySide === 'right' ? rawPrimaryRomDeg : oppositeRomDeg;
     xyzVector = pRes.xyzVector;
     elbowAngleDeg = pRes.elbowAngleDeg;
 
-    wrongSideRaised =
-      oppositeRomDeg !== null &&
-      oppositeRomDeg >= 45 &&
-      (rawPrimaryRomDeg === null || (rawPrimaryRomDeg < 65 && oppositeRomDeg > rawPrimaryRomDeg + 18));
-
-    if (!wrongSideRaised && rawPrimaryRomDeg !== null) {
+    if (rawPrimaryRomDeg !== null) {
       if (expectedPlane === 'abduction' && rawPrimaryRomDeg >= 42 && activeSh) {
         const latRatio =
           'lateralDxRatio' in pRes && typeof pRes.lateralDxRatio === 'number'
@@ -1008,13 +1086,10 @@ export function solveStrokeClinicalJointBiomechanics(
       }
     }
 
-    if (wrongSideRaised) {
-      wrongSideBannerTh = `กรุณายกแขน${primarySide === 'left' ? 'ซ้าย' : 'ขวา'} (ท่านี้ต้องทำด้วยแขน${primarySide === 'left' ? 'ซ้าย' : 'ขวา'})`;
-    }
     if (rawPrimaryRomDeg === null) {
       lowVisibilityAlertTh = 'มองเห็นข้อต่อแขนไม่ชัดเจน (< 0.70) กรุณาขยับให้อยู่ในกรอบกล้อง';
     }
-    romDeg = wrongSideRaised || wrongPlaneRaised ? 0 : rawPrimaryRomDeg;
+    romDeg = wrongPlaneRaised ? 0 : rawPrimaryRomDeg;
 
     if (activeSh) {
       const radGoal = (clamp(targetRomGoal, 30, 165) * Math.PI) / 180;
@@ -1031,13 +1106,95 @@ export function solveStrokeClinicalJointBiomechanics(
           y: clamp(activeSh.y + targetOffsetY, 0.04, 0.94),
         },
         currentNorm: activeWr ? { x: activeWr.x, y: activeWr.y } : undefined,
-        inTargetZone: !wrongSideRaised && !wrongPlaneRaised && (rawPrimaryRomDeg ?? 0) >= targetRomGoal * 0.82,
+        inTargetZone: !wrongPlaneRaised && (rawPrimaryRomDeg ?? 0) >= targetRomGoal * 0.82,
         labelTh: expectedPlane === 'abduction' ? 'กางแขนถึงจุดเป้าหมาย' : 'ยกแขนตรงถึงเป้าหมาย',
       };
     }
   } else if (targetJoint === 'spine') {
     rawPrimaryRomDeg = Number(Math.max(0, 15 - trunkTiltDeg).toFixed(1));
     romDeg = rawPrimaryRomDeg;
+  }
+
+  // --- Strict Side Isolation Engine (LEFT / RIGHT / BOTH) ---
+  const isUpperLimbIsolatedExercise =
+    jointMode !== 'neck' &&
+    jointMode !== 'neck_turn' &&
+    jointMode !== 'shoulder_shrug' &&
+    targetJoint !== 'spine' &&
+    targetJoint !== 'left_knee' &&
+    targetJoint !== 'right_knee' &&
+    targetJoint !== 'none';
+
+  if (isUpperLimbIsolatedExercise) {
+    if (leftArmRom === null) {
+      leftArmRom = computeForwardFlexionWithForeshortening('left').angleDeg;
+    }
+    if (rightArmRom === null) {
+      rightArmRom = computeForwardFlexionWithForeshortening('right').angleDeg;
+    }
+    if (oppositeRomDeg === null) {
+      oppositeRomDeg = primarySide === 'left' ? rightArmRom : leftArmRom;
+    }
+
+    const effectiveSideMode: 'LEFT' | 'RIGHT' | 'BOTH' =
+      exerciseSide ??
+      (jointMode === 'bilateral_raise' || jointMode === 'bobath_push'
+        ? 'BOTH'
+        : targetJoint === 'left_shoulder'
+          ? 'LEFT'
+          : 'RIGHT');
+
+    const isOppositeWristRaisedAboveChest = (side: 'left' | 'right'): boolean => {
+      const shP = landmarks[side === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
+      const wrP = landmarks[side === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
+      const elP = landmarks[side === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW];
+      if (!shP || !wrP || !elP || (wrP.visibility ?? 0) < UPPER_MIN_VIS || (shP.visibility ?? 0) < UPPER_MIN_VIS) {
+        return false;
+      }
+      // Wrist elevated into chest/shoulder active zone while noticeably higher than neutral elbow hang
+      const chestCeilingY = shP.y + shoulderSpanX * 0.45;
+      return wrP.y < chestCeilingY && wrP.y < elP.y - 0.025;
+    };
+
+    if (effectiveSideMode === 'LEFT') {
+      const rRom = rightArmRom ?? 0;
+      const rightRaised = rRom > 35 || isOppositeWristRaisedAboveChest('right');
+      if (rightRaised) {
+        sideViolation = 'RIGHT_ARM_RAISED_IN_LEFT_MODE';
+        sideViolationBannerTh =
+          '⚠️ ท่านี้ฝึกเฉพาะข้างซ้าย! กรุณาลดแขนขวาลง และยกเฉพาะแขนซ้ายข้างเดียว';
+        wrongSideRaised = true;
+        wrongSideBannerTh = sideViolationBannerTh;
+        romDeg = 0;
+      }
+    } else if (effectiveSideMode === 'RIGHT') {
+      const lRom = leftArmRom ?? 0;
+      const leftRaised = lRom > 35 || isOppositeWristRaisedAboveChest('left');
+      if (leftRaised) {
+        sideViolation = 'LEFT_ARM_RAISED_IN_RIGHT_MODE';
+        sideViolationBannerTh =
+          '⚠️ ท่านี้ฝึกเฉพาะข้างขวา! กรุณาลดแขนซ้ายลง และยกเฉพาะแขนขวาข้างเดียว';
+        wrongSideRaised = true;
+        wrongSideBannerTh = sideViolationBannerTh;
+        romDeg = 0;
+      }
+    } else if (effectiveSideMode === 'BOTH') {
+      const lVal = leftArmRom ?? 0;
+      const rVal = rightArmRom ?? 0;
+      const oneArmRaisedOnly = (lVal > 45 && rVal < 25) || (rVal > 45 && lVal < 25);
+      const asymmetricSpread = Math.max(lVal, rVal) >= 35 && Math.abs(lVal - rVal) > 28;
+      if (oneArmRaisedOnly || asymmetricSpread) {
+        sideViolation = 'SINGLE_ARM_IN_BOTH_MODE';
+        sideViolationBannerTh =
+          '⚠️ ท่านี้ต้องทำพร้อมกันทั้ง 2 ข้าง! กรุณายกแขนทั้งซ้ายและขวาขึ้นพร้อมกัน';
+        wrongSideRaised = true;
+        wrongSideBannerTh = sideViolationBannerTh;
+        romDeg = 0;
+      }
+    }
+    if (wrongSideRaised && overlayHint) {
+      overlayHint = { ...overlayHint, inTargetZone: false };
+    }
   }
 
   // --- Stroke Compensation Checks (Exact clinical thresholds & user alerts) ---
@@ -1120,12 +1277,16 @@ export function solveStrokeClinicalJointBiomechanics(
   return {
     romDeg,
     rawPrimaryRomDeg,
+    leftArmRom,
+    rightArmRom,
     oppositeRomDeg,
     trunkTiltDeg: Number(trunkTiltDeg.toFixed(1)),
     shoulderTiltDeg,
     shoulderHikeRatio,
     neckDropDeg,
     elbowAngleDeg,
+    sideViolation,
+    sideViolationBannerTh,
     wrongSideRaised,
     wrongSideBannerTh,
     wrongPlaneRaised,
@@ -1139,5 +1300,182 @@ export function solveStrokeClinicalJointBiomechanics(
     compensations: compensations.length > 0 ? compensations : ['NONE'],
     isFormValid: compensations.length === 0,
     overlayHint,
+  };
+}
+
+/**
+ * Clinical 60FPS hysteresis hold & rep state machine:
+ * - Zero stale closures (mutates/returns explicit state values)
+ * - Soft hysteresis band prevents 1-frame tremor from wiping hold progress
+ * - Immediate block & reset on side violations (`LEFT`/`RIGHT`/`BOTH`)
+ * - Guaranteed `+1 rep` once `holdElapsedSec >= targetHoldSec` and auto-unlocks cooldown
+ *   at `< 0.65 * targetRom` OR after `1.2s`.
+ */
+export function stepStrokeHoldAndRepStateMachine(
+  input: StrokeHoldRepStepInput,
+): StrokeHoldRepStepResult {
+  const safeTargetHold = Math.max(0.5, input.targetHoldSec || 3.0);
+  const safeTargetRom = Math.max(15, input.targetRomDeg || 110);
+  const dt = Math.max(0, Math.min(0.25, input.dtSec));
+  const rom = input.activeRomDeg;
+
+  const next: StrokeHoldRepState = { ...input.state };
+
+  if (next.completedReps >= input.targetReps) {
+    return {
+      nextState: next,
+      holdProgressPct: 100,
+      holdRemainingSec: 0,
+      justCompletedRep: false,
+      bannerTh: '🎉 ฝึกครบเซ็ตเรียบร้อยแล้ว เยี่ยมมากครับ!',
+      statusKind: 'SET_FINISHED',
+    };
+  }
+
+  // 1. Strict Side Isolation Violation -> Stop hold timer immediately & never count
+  if (input.sideViolation !== 'NONE') {
+    next.holdElapsedSec = 0;
+    if (next.phase !== 'COOLDOWN') {
+      next.phase = 'WAIT_RAISE';
+    }
+    return {
+      nextState: next,
+      holdProgressPct: 0,
+      holdRemainingSec: Number(safeTargetHold.toFixed(1)),
+      justCompletedRep: false,
+      bannerTh: input.wrongSideBannerTh,
+      statusKind: 'WRONG_LIMB',
+    };
+  }
+
+  // 2. Wrong Movement Plane Violation -> Stop hold timer & alert
+  if (input.wrongPlaneRaised) {
+    next.holdElapsedSec = 0;
+    if (next.phase !== 'COOLDOWN') {
+      next.phase = 'WAIT_RAISE';
+    }
+    return {
+      nextState: next,
+      holdProgressPct: 0,
+      holdRemainingSec: Number(safeTargetHold.toFixed(1)),
+      justCompletedRep: false,
+      bannerTh: input.wrongPlaneBannerTh,
+      statusKind: 'WRONG_PLANE',
+    };
+  }
+
+  // 3. COOLDOWN phase -> Unlock smoothly when lowered < 0.65 * targetRom OR after 1.2s
+  if (next.phase === 'COOLDOWN') {
+    const cooldownElapsedMs = input.nowMs - next.cooldownStartedAtMs;
+    const isKneeFlex = Boolean(input.isKneeExercise && safeTargetRom < 140);
+    const unlockedByReturn =
+      rom !== null &&
+      (isKneeFlex ? rom > safeTargetRom + 28 : rom < safeTargetRom * 0.65);
+
+    if (cooldownElapsedMs >= 1200 || (cooldownElapsedMs >= 350 && unlockedByReturn)) {
+      next.phase = 'WAIT_RAISE';
+      next.holdElapsedSec = 0;
+      return {
+        nextState: next,
+        holdProgressPct: 0,
+        holdRemainingSec: Number(safeTargetHold.toFixed(1)),
+        justCompletedRep: false,
+        bannerTh: null,
+        statusKind: 'ACTIVE_REP',
+      };
+    }
+
+    return {
+      nextState: next,
+      holdProgressPct: 100,
+      holdRemainingSec: 0,
+      justCompletedRep: false,
+      bannerTh: '✓ นับสำเร็จ +1 ครั้ง! ค่อยๆ ลดแขนลง',
+      statusKind: 'REP_COMPLETED',
+    };
+  }
+
+  if (rom === null || !Number.isFinite(rom) || input.blockCounting) {
+    // Freeze softly without wiping progress on 1-2 dropped pose frames
+    const pct = Math.min(100, (next.holdElapsedSec / safeTargetHold) * 100);
+    const rem = Math.max(0, safeTargetHold - next.holdElapsedSec);
+    return {
+      nextState: next,
+      holdProgressPct: Number(pct.toFixed(2)),
+      holdRemainingSec: Number(rem.toFixed(1)),
+      justCompletedRep: false,
+      bannerTh: null,
+      statusKind: next.phase === 'HOLDING' ? 'HOLD_PHASE' : 'ACTIVE_REP',
+    };
+  }
+
+  // 4. Clinical Hysteresis Thresholds (exact tolerance for tremor while holding)
+  const isKneeFlex = Boolean(input.isKneeExercise && safeTargetRom < 140);
+  const inEnterZone = isKneeFlex ? rom <= safeTargetRom + 15 : rom >= safeTargetRom * 0.85;
+  const inMaintainZone = isKneeFlex ? rom <= safeTargetRom + 22 : rom >= safeTargetRom * 0.75;
+  const inGraceZone = isKneeFlex ? rom <= safeTargetRom + 35 : rom >= safeTargetRom * 0.60;
+  const inResetZone = isKneeFlex ? rom >= 145 : rom < safeTargetRom * 0.50;
+
+  if (input.isCompensatedNow) {
+    // Pause hold timer cleanly during trunk lean / shoulder hike / neck drop without resetting
+    const pct = Math.min(100, (next.holdElapsedSec / safeTargetHold) * 100);
+    const rem = Math.max(0, safeTargetHold - next.holdElapsedSec);
+    return {
+      nextState: next,
+      holdProgressPct: Number(pct.toFixed(2)),
+      holdRemainingSec: Number(rem.toFixed(1)),
+      justCompletedRep: false,
+      bannerTh: input.postureBannerTh,
+      statusKind: 'POSTURE_COMPENSATED',
+    };
+  }
+
+  if (next.phase === 'WAIT_RAISE') {
+    if (inEnterZone) {
+      next.phase = 'HOLDING';
+      next.holdElapsedSec = Math.min(safeTargetHold, next.holdElapsedSec + dt);
+    } else if (next.holdElapsedSec > 0 && inGraceZone) {
+      next.holdElapsedSec = Math.max(0, next.holdElapsedSec - dt * 0.4);
+    } else if (inResetZone) {
+      next.holdElapsedSec = 0;
+    }
+  } else if (next.phase === 'HOLDING') {
+    if (inMaintainZone) {
+      next.holdElapsedSec = Math.min(safeTargetHold, next.holdElapsedSec + dt);
+    } else if (inGraceZone) {
+      // Micro-dip grace zone (0.60..0.75 * targetRom): never wipe hold progress to 0!
+      next.holdElapsedSec = Math.max(0, next.holdElapsedSec - dt * 0.4);
+    } else if (inResetZone) {
+      next.holdElapsedSec = 0;
+      next.phase = 'WAIT_RAISE';
+    }
+  }
+
+  // 5. Guaranteed Rep Trigger when targetHoldSec reached
+  if (next.holdElapsedSec >= safeTargetHold - 1e-4) {
+    next.completedReps = Math.min(input.targetReps, next.completedReps + 1);
+    next.holdElapsedSec = safeTargetHold;
+    next.phase = 'COOLDOWN';
+    next.cooldownStartedAtMs = input.nowMs;
+    next.repCelebrateUntilMs = input.nowMs + 1200;
+    return {
+      nextState: next,
+      holdProgressPct: 100,
+      holdRemainingSec: 0,
+      justCompletedRep: true,
+      bannerTh: '✓ นับสำเร็จ +1 ครั้ง! ค่อยๆ ลดแขนลง',
+      statusKind: next.completedReps >= input.targetReps ? 'SET_FINISHED' : 'REP_COMPLETED',
+    };
+  }
+
+  const pct = Math.min(100, (next.holdElapsedSec / safeTargetHold) * 100);
+  const rem = Math.max(0, safeTargetHold - next.holdElapsedSec);
+  return {
+    nextState: next,
+    holdProgressPct: Number(pct.toFixed(2)),
+    holdRemainingSec: Number(rem.toFixed(1)),
+    justCompletedRep: false,
+    bannerTh: null,
+    statusKind: next.phase === 'HOLDING' ? 'HOLD_PHASE' : 'ACTIVE_REP',
   };
 }

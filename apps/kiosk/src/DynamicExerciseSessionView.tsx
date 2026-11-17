@@ -210,12 +210,24 @@ export function DynamicExerciseSessionView({
                 landmarks: smoothedLandmarks,
                 worldLandmarks: smoothedWorld,
                 targetJoint: strokeTargetJoint,
+                exerciseSide:
+                  det.side === 'left'
+                    ? 'LEFT'
+                    : det.side === 'right'
+                      ? 'RIGHT'
+                      : det.side === 'both'
+                        ? 'BOTH'
+                        : undefined,
                 expectedPlane: det.expectedPlane ?? 'any',
                 targetRomDeg: det.targetRomDeg ?? det.targetMinDeg,
                 jointMode: strokeJointMode,
                 baseline: baselineRef.current.getBaseline() ?? undefined,
               });
-              setStrokeWarningTh(strokeSolved.postureBannerTh);
+              setStrokeWarningTh(
+                strokeSolved.sideViolationBannerTh ??
+                  strokeSolved.wrongPlaneBannerTh ??
+                  strokeSolved.postureBannerTh,
+              );
               setStrokeClinicalAngleDeg(strokeSolved.romDeg);
 
               const snap = pipelineRef.current.step(smoothedLandmarks, now);

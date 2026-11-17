@@ -338,26 +338,35 @@ export function getPrescribedPlanePromptTh(expectedPlane: ExpectedMovementPlane)
 
 export function getPrescribedLimbPromptTh(
   targetJoint: ExercisePrescriptionOption['target_joint'],
+  expectedPlane?: ExpectedMovementPlane,
 ): {
   requiredLimbTh: string;
   wrongLimbTh: string;
   bannerAlertTh: string;
   voicePromptTh: string;
 } {
+  if (expectedPlane === 'bilateral' || expectedPlane === 'bilateral_push') {
+    return {
+      requiredLimbTh: 'แขนทั้ง 2 ข้างพร้อมกัน',
+      wrongLimbTh: 'แขนเพียงข้างเดียว',
+      bannerAlertTh: '⚠️ ท่านี้ต้องทำพร้อมกันทั้ง 2 ข้าง! กรุณายกแขนทั้งซ้ายและขวาขึ้นพร้อมกัน',
+      voicePromptTh: 'ท่านี้ต้องทำพร้อมกันทั้ง 2 ข้าง กรุณายกแขนทั้งซ้ายและขวาขึ้นพร้อมกันนะครับ',
+    };
+  }
   if (targetJoint === 'left_shoulder') {
     return {
       requiredLimbTh: 'แขนซ้าย',
       wrongLimbTh: 'แขนขวา',
-      bannerAlertTh: 'กรุณายกแขนซ้าย (ท่านี้ต้องทำด้วยแขนซ้าย)',
-      voicePromptTh: 'กรุณายกแขนซ้ายนะครับ ท่านี้ต้องทำด้วยแขนซ้าย ระบบจะไม่นับรอบหากยกแขนขวาครับ',
+      bannerAlertTh: '⚠️ ท่านี้ฝึกเฉพาะข้างซ้าย! กรุณาลดแขนขวาลง และยกเฉพาะแขนซ้ายข้างเดียว',
+      voicePromptTh: 'ท่านี้ฝึกเฉพาะข้างซ้าย กรุณาลดแขนขวาลง และยกเฉพาะแขนซ้ายข้างเดียวนะครับ',
     };
   }
   if (targetJoint === 'right_shoulder') {
     return {
       requiredLimbTh: 'แขนขวา',
       wrongLimbTh: 'แขนซ้าย',
-      bannerAlertTh: 'กรุณายกแขนขวา (ท่านี้ต้องทำด้วยแขนขวา)',
-      voicePromptTh: 'กรุณายกแขนขวานะครับ ท่านี้ต้องทำด้วยแขนขวา ระบบจะไม่นับรอบหากยกแขนซ้ายครับ',
+      bannerAlertTh: '⚠️ ท่านี้ฝึกเฉพาะข้างขวา! กรุณาลดแขนซ้ายลง และยกเฉพาะแขนขวาข้างเดียว',
+      voicePromptTh: 'ท่านี้ฝึกเฉพาะข้างขวา กรุณาลดแขนซ้ายลง และยกเฉพาะแขนขวาข้างเดียวนะครับ',
     };
   }
   return {
@@ -731,7 +740,10 @@ export function synthesizeDemoPayload({
   }
 
   if (preset === 'WRONG_LIMB') {
-    const limbInfo = getPrescribedLimbPromptTh(exercise.target_joint);
+    const limbInfo = getPrescribedLimbPromptTh(
+      exercise.target_joint,
+      resolveExpectedPlaneForExercise(exercise),
+    );
     return {
       kiosk_state: 'ACTIVE_REP',
       patient: activePatient,
@@ -819,7 +831,7 @@ export function synthesizeDemoPayload({
 
   const inHoldPhase = preset === 'HOLD_PHASE' || clampedRom >= targetRom * 0.95;
   if (inHoldPhase) {
-    const rem = Math.max(0.1, Number(holdRemainingSec.toFixed(1)));
+    const rem = Math.max(0, Number(holdRemainingSec.toFixed(1)));
     return {
       kiosk_state: 'HOLD_PHASE',
       patient: activePatient,

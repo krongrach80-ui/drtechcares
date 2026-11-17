@@ -11,6 +11,8 @@ import {
   HAND21_INDEX,
   POSE_INDEX,
   solveStrokeClinicalJointBiomechanics,
+  stepStrokeHoldAndRepStateMachine,
+  type StrokeHoldRepState,
 } from '@drtechcares/pose-engine';
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision';
 import {
@@ -27,6 +29,8 @@ import {
   drawLivePoseOverlayOnCanvas,
   interpolatePoseLandmarks,
   isFormRuleActive,
+  lerpPoseLandmarksAlpha,
+  mapVideoPointToCoverCanvas,
   measureLiveJointAngleAndTilt,
   sanitizeAndStabilizePoseLandmarks,
   stepSmoothRomAngle,
@@ -292,7 +296,9 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(rightCheck.romDeg).not.toBeNull();
     expect(rightCheck.romDeg!).toBeLessThan(30);
     expect(rightCheck.oppositeRomDeg!).toBeGreaterThan(150);
-    expect(rightCheck.wrongSideBannerTh).toBe('กรุณายกแขนขวา (ท่านี้ต้องทำด้วยแขนขวา)');
+    expect(rightCheck.wrongSideBannerTh).toBe(
+      '⚠️ ท่านี้ฝึกเฉพาะข้างขวา! กรุณาลดแขนซ้ายลง และยกเฉพาะแขนขวาข้างเดียว',
+    );
 
     // When the same landmarks are used for LEFT_SHOULDER exercise, LEFT arm IS valid
     const leftCheck = measureLiveJointAngleAndTilt(leftRaisedOnly, 'left_shoulder');
@@ -308,7 +314,9 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     const wrongForLeft = measureLiveJointAngleAndTilt(rightRaisedOnly, 'left_shoulder');
     expect(wrongForLeft.wrongSideRaised).toBe(true);
     expect(wrongForLeft.romDeg!).toBeLessThan(30);
-    expect(wrongForLeft.wrongSideBannerTh).toBe('กรุณายกแขนซ้าย (ท่านี้ต้องทำด้วยแขนซ้าย)');
+    expect(wrongForLeft.wrongSideBannerTh).toBe(
+      '⚠️ ท่านี้ฝึกเฉพาะข้างซ้าย! กรุณาลดแขนขวาลง และยกเฉพาะแขนซ้ายข้างเดียว',
+    );
 
     // synthesizeDemoPayload WRONG_LIMB outputs WRONG_LIMB compensation and Thai voice warning
     const wrongLimbPayload = synthesizeDemoPayload({
@@ -811,6 +819,8 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     // 1. Close-up 16:9 webcam framing (hips occluded below frame, shoulderSpanX = 0.28, sh.y = 0.82)
     const eyeLevelCloseUp = createNeutralLandmarks({
       [POSE_INDEX.LEFT_SHOULDER]: { x: 0.64, y: 0.82, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_ELBOW]: { x: 0.66, y: 0.99, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_WRIST]: { x: 0.67, y: 1.15, z: 0, visibility: 0.99 },
       [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.36, y: 0.82, z: 0, visibility: 0.99 },
       [POSE_INDEX.LEFT_HIP]: { x: 0.60, y: 1.15, z: 0, visibility: 0.05 },
       [POSE_INDEX.RIGHT_HIP]: { x: 0.40, y: 1.15, z: 0, visibility: 0.05 },
@@ -828,6 +838,8 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     // 2. Target-level forward raise matching screenshot (wrist.y = 0.16, elbow.y = 0.45) -> ~145..160 deg, NOT 180 deg
     const targetLevelCloseUp = createNeutralLandmarks({
       [POSE_INDEX.LEFT_SHOULDER]: { x: 0.64, y: 0.82, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_ELBOW]: { x: 0.66, y: 0.99, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_WRIST]: { x: 0.67, y: 1.15, z: 0, visibility: 0.99 },
       [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.36, y: 0.82, z: 0, visibility: 0.99 },
       [POSE_INDEX.LEFT_HIP]: { x: 0.60, y: 1.15, z: 0, visibility: 0.05 },
       [POSE_INDEX.RIGHT_HIP]: { x: 0.40, y: 1.15, z: 0, visibility: 0.05 },
@@ -1084,6 +1096,8 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     // Seated distance (~1.8m, shoulderSpanX = 0.17, hips below frame)
     const seatedRest = createNeutralLandmarks({
       [POSE_INDEX.LEFT_SHOULDER]: { x: 0.585, y: 0.82, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_ELBOW]: { x: 0.60, y: 0.98, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_WRIST]: { x: 0.60, y: 1.12, z: 0, visibility: 0.99 },
       [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.415, y: 0.82, z: 0, visibility: 0.99 },
       [POSE_INDEX.LEFT_HIP]: { x: 0.56, y: 1.25, z: 0, visibility: 0.02 },
       [POSE_INDEX.RIGHT_HIP]: { x: 0.44, y: 1.25, z: 0, visibility: 0.02 },
@@ -1096,6 +1110,8 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
 
     const seatedOverhead = createNeutralLandmarks({
       [POSE_INDEX.LEFT_SHOULDER]: { x: 0.585, y: 0.86, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_ELBOW]: { x: 0.60, y: 1.02, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_WRIST]: { x: 0.60, y: 1.18, z: 0, visibility: 0.99 },
       [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.415, y: 0.86, z: 0, visibility: 0.99 },
       [POSE_INDEX.LEFT_HIP]: { x: 0.56, y: 1.25, z: 0, visibility: 0.02 },
       [POSE_INDEX.RIGHT_HIP]: { x: 0.44, y: 1.25, z: 0, visibility: 0.02 },
@@ -1471,6 +1487,8 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
   it('rescues close seated forward shoulder flexion when worldLandmarks compress depth (~34 deg) without false WRONG_PLANE', () => {
     const seatedPose2d = createNeutralLandmarks({
       [POSE_INDEX.LEFT_SHOULDER]: { x: 0.64, y: 0.78, z: 0, visibility: 0.98 },
+      [POSE_INDEX.LEFT_ELBOW]: { x: 0.66, y: 0.95, z: 0, visibility: 0.98 },
+      [POSE_INDEX.LEFT_WRIST]: { x: 0.67, y: 1.12, z: 0, visibility: 0.98 },
       [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.36, y: 0.78, z: 0, visibility: 0.98 },
       [POSE_INDEX.LEFT_HIP]: { x: 0.60, y: 1.15, z: 0, visibility: 0.05 },
       [POSE_INDEX.RIGHT_HIP]: { x: 0.40, y: 1.15, z: 0, visibility: 0.05 },
@@ -2269,6 +2287,247 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       postureBannerTh: '⚠️ อย่ายักไหล่ช่วยครับ ผ่อนคลายหัวไหล่ลง',
     });
     expect(strokeColors).toContain('#F59E0B');
+  });
+
+  it('enforces Strict Side Isolation Engine for LEFT, RIGHT, and BOTH exercises including simultaneous two-arm cheat', () => {
+    const bothArmsRaised = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_ELBOW]: { x: 0.62, y: 0.19, z: -0.05, visibility: 0.99 },
+      [POSE_INDEX.LEFT_WRIST]: { x: 0.62, y: 0.06, z: -0.05, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.38, y: 0.19, z: -0.05, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.38, y: 0.06, z: -0.05, visibility: 0.99 },
+    });
+
+    // 1. LEFT mode + raising BOTH arms -> RIGHT_ARM_RAISED_IN_LEFT_MODE
+    const bothInLeft = measureLiveJointAngleAndTilt(bothArmsRaised, 'left_shoulder', 'flexion');
+    expect(bothInLeft.sideViolation).toBe('RIGHT_ARM_RAISED_IN_LEFT_MODE');
+    expect(bothInLeft.wrongSideRaised).toBe(true);
+    expect(bothInLeft.romDeg).toBe(0);
+    expect(bothInLeft.wrongSideBannerTh).toBe(
+      '⚠️ ท่านี้ฝึกเฉพาะข้างซ้าย! กรุณาลดแขนขวาลง และยกเฉพาะแขนซ้ายข้างเดียว',
+    );
+
+    // 2. RIGHT mode + raising BOTH arms -> LEFT_ARM_RAISED_IN_RIGHT_MODE
+    const bothInRight = measureLiveJointAngleAndTilt(bothArmsRaised, 'right_shoulder', 'flexion');
+    expect(bothInRight.sideViolation).toBe('LEFT_ARM_RAISED_IN_RIGHT_MODE');
+    expect(bothInRight.wrongSideRaised).toBe(true);
+    expect(bothInRight.romDeg).toBe(0);
+    expect(bothInRight.wrongSideBannerTh).toBe(
+      '⚠️ ท่านี้ฝึกเฉพาะข้างขวา! กรุณาลดแขนซ้ายลง และยกเฉพาะแขนขวาข้างเดียว',
+    );
+
+    // 3. RIGHT elbow flexion + curling wrong (left) elbow -> LEFT_ARM_RAISED_IN_RIGHT_MODE
+    const wrongElbowPose = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_ELBOW]: { x: 0.60, y: 0.55, z: 0, visibility: 0.98 },
+      [POSE_INDEX.LEFT_WRIST]: { x: 0.59, y: 0.38, z: -0.06, visibility: 0.98 },
+    });
+    const elbWrong = measureLiveJointAngleAndTilt(wrongElbowPose, 'right_shoulder', 'any', undefined, {
+      exercise_id: 'STROKE_ELB_FLEX_EXT_R',
+      name_th: 'งอ-เหยียดข้อศอกขวา',
+    });
+    expect(elbWrong.sideViolation).toBe('LEFT_ARM_RAISED_IN_RIGHT_MODE');
+    expect(elbWrong.wrongSideRaised).toBe(true);
+    expect(elbWrong.romDeg).toBe(0);
+
+    // 4. BOTH mode (`STROKE_BOBATH_ARM_RAISE`): single arm -> blocked (`SINGLE_ARM_IN_BOTH_MODE`); symmetric both -> average ROM
+    const singleArmInBoth = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.38, y: 0.20, z: -0.05, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.38, y: 0.06, z: -0.05, visibility: 0.99 },
+    });
+    const bobathMeta = {
+      exercise_id: 'STROKE_BOBATH_ARM_RAISE',
+      name_th: '[Stroke Bobath] ประสานมือยกแขนขึ้นด้านหน้า',
+    };
+    const bothSingleBlocked = measureLiveJointAngleAndTilt(
+      singleArmInBoth,
+      'right_shoulder',
+      'bilateral',
+      undefined,
+      bobathMeta,
+    );
+    expect(bothSingleBlocked.sideViolation).toBe('SINGLE_ARM_IN_BOTH_MODE');
+    expect(bothSingleBlocked.wrongSideRaised).toBe(true);
+    expect(bothSingleBlocked.romDeg).toBe(0);
+    expect(bothSingleBlocked.wrongSideBannerTh).toBe(
+      '⚠️ ท่านี้ต้องทำพร้อมกันทั้ง 2 ข้าง! กรุณายกแขนทั้งซ้ายและขวาขึ้นพร้อมกัน',
+    );
+
+    const bothValid = measureLiveJointAngleAndTilt(
+      bothArmsRaised,
+      'right_shoulder',
+      'bilateral',
+      undefined,
+      bobathMeta,
+    );
+    expect(bothValid.sideViolation).toBe('NONE');
+    expect(bothValid.wrongSideRaised).toBe(false);
+    expect(bothValid.leftArmRom!).toBeGreaterThan(140);
+    expect(bothValid.rightArmRom!).toBeGreaterThan(140);
+    expect(bothValid.romDeg!).toBeGreaterThan(140);
+  });
+
+  it('computes 60FPS Lerp (alpha=0.42), object-cover canvas mapping, and dashed red wrong-arm skeleton rendering', () => {
+    // 1. Frame-to-frame Lerp (alpha = 0.42)
+    const prevPts = createNeutralLandmarks();
+    const targetPts = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.39, y: 0.18, z: -0.1, visibility: 0.99 },
+    });
+    const lerped = lerpPoseLandmarksAlpha(prevPts, targetPts, 0.42);
+    expect(lerped[POSE_INDEX.RIGHT_WRIST].y).toBeCloseTo(0.68 + (0.18 - 0.68) * 0.42, 4);
+
+    // 2. Object-cover + scale-x-[-1] mirroring: raw X > 0.5 (patient anatomical LEFT) renders on screen LEFT (< 0.5 * canvasW)
+    const mappedLeftArm = mapVideoPointToCoverCanvas(0.75, 0.5, 640, 360, 800, 450, true);
+    expect(mappedLeftArm.x).toBeCloseTo(200, 1);
+    expect(mappedLeftArm.y).toBeCloseTo(225, 1);
+
+    // 3. Dashed Red (#EF4444) overlay on violating arm in wrong-side mode
+    const dashPatterns: number[][] = [];
+    const strokes: string[] = [];
+    const mockCtx = {
+      save: () => {},
+      restore: () => {},
+      setTransform: () => {},
+      clearRect: () => {},
+      beginPath: () => {},
+      closePath: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      setLineDash: (arr: number[]) => {
+        if (arr.length > 0) dashPatterns.push([...arr]);
+      },
+      roundRect: () => {},
+      arc: () => {},
+      stroke: () => {
+        strokes.push(String(mockCtx.strokeStyle));
+      },
+      fill: () => {},
+      fillText: () => {},
+      measureText: (t: string) => ({ width: t.length * 7 }),
+      strokeStyle: '#000000',
+      fillStyle: '#000000',
+      lineWidth: 1,
+      lineCap: 'round',
+      lineJoin: 'round',
+      shadowColor: 'transparent',
+      shadowBlur: 0,
+      globalAlpha: 1,
+      font: 'sans-serif',
+      textAlign: 'center',
+      textBaseline: 'middle',
+    };
+    const fakeCanvas = {
+      clientWidth: 640,
+      clientHeight: 360,
+      width: 640,
+      height: 360,
+      getContext: () => mockCtx,
+    } as unknown as HTMLCanvasElement;
+
+    drawLivePoseOverlayOnCanvas(fakeCanvas, [createNeutralLandmarks()], {
+      targetJoint: 'right_shoulder',
+      expectedPlane: 'flexion',
+      romDeg: 0,
+      targetRomDeg: 125,
+      holdRatio: 0,
+      trunkTiltDeg: 2,
+      isMultiPerson: false,
+      isImpostorOrEmergency: false,
+      sideViolation: 'LEFT_ARM_RAISED_IN_RIGHT_MODE',
+      wrongSideRaised: true,
+      wrongSideBannerTh: '⚠️ ท่านี้ฝึกเฉพาะข้างขวา! กรุณาลดแขนซ้ายลง และยกเฉพาะแขนขวาข้างเดียว',
+      canvasWidth: 640,
+      canvasHeight: 360,
+    });
+    expect(dashPatterns).toContainEqual([8, 6]);
+    expect(strokes).toContain('#EF4444');
+  });
+
+  it('guarantees +1 rep on full 3.0s hold with hysteresis tremor tolerance, wrong-side halt, and 1.2s / 65% cooldown unlock', () => {
+    let state: StrokeHoldRepState = {
+      phase: 'WAIT_RAISE',
+      holdElapsedSec: 0,
+      completedReps: 0,
+      cooldownStartedAtMs: 0,
+      repCelebrateUntilMs: 0,
+    };
+
+    const stepTick = (
+      romDeg: number,
+      dtSec: number,
+      nowMs: number,
+      sideViolation: 'NONE' | 'LEFT_ARM_RAISED_IN_RIGHT_MODE' = 'NONE',
+    ) => {
+      const res = stepStrokeHoldAndRepStateMachine({
+        state,
+        activeRomDeg: romDeg,
+        targetRomDeg: 120,
+        targetHoldSec: 3.0,
+        targetReps: 10,
+        dtSec,
+        nowMs,
+        sideViolation,
+        wrongSideBannerTh: sideViolation === 'NONE' ? null : '⚠️ wrong side',
+        wrongPlaneRaised: false,
+        wrongPlaneBannerTh: null,
+        isCompensatedNow: false,
+        postureBannerTh: null,
+      });
+      state = res.nextState;
+      return res;
+    };
+
+    // 1. Raise into enter zone (106 deg >= 0.85 * 120 = 102) and hold 2.5s across 25 x 100ms frames
+    let nowCursor = 0;
+    let lastRes = stepTick(106, 0.1, (nowCursor += 100));
+    expect(state.phase).toBe('HOLDING');
+    for (let i = 0; i < 24; i += 1) {
+      lastRes = stepTick(106, 0.1, (nowCursor += 100));
+    }
+    expect(lastRes.holdRemainingSec).toBeCloseTo(0.5, 1);
+
+    // 2. Micro-dip into grace band (80 deg is between 0.60 * 120 = 72 and 0.75 * 120 = 90) -> must NOT wipe to 0!
+    lastRes = stepTick(80, 0.25, (nowCursor += 250));
+    expect(state.holdElapsedSec).toBeGreaterThan(2.3);
+    expect(state.phase).toBe('HOLDING');
+
+    // 3. Resume >= 90 deg for 0.7s across 7 x 100ms frames -> guaranteed +1 rep (0 -> 1)
+    for (let i = 0; i < 7; i += 1) {
+      lastRes = stepTick(108, 0.1, (nowCursor += 100));
+      if (lastRes.justCompletedRep) break;
+    }
+    expect(lastRes.justCompletedRep).toBe(true);
+    expect(state.completedReps).toBe(1);
+    expect(state.phase).toBe('COOLDOWN');
+    expect(lastRes.holdProgressPct).toBe(100);
+    expect(lastRes.bannerTh).toBe('✓ นับสำเร็จ +1 ครั้ง! ค่อยๆ ลดแขนลง');
+
+    // 4. Lower below 0.65 * 120 = 78 deg after cooldown debounce (>=350ms) -> unlocks cleanly to WAIT_RAISE
+    lastRes = stepTick(55, 0.1, (nowCursor += 400));
+    expect(state.phase).toBe('WAIT_RAISE');
+    expect(state.holdElapsedSec).toBe(0);
+
+    // 5. Wrong-side raise mid-hold resets timer and never increments reps
+    for (let i = 0; i < 15; i += 1) {
+      stepTick(108, 0.1, (nowCursor += 100));
+    }
+    expect(state.holdElapsedSec).toBeCloseTo(1.5, 1);
+    const blockedRes = stepTick(108, 0.1, (nowCursor += 100), 'LEFT_ARM_RAISED_IN_RIGHT_MODE');
+    expect(blockedRes.statusKind).toBe('WRONG_LIMB');
+    expect(state.holdElapsedSec).toBe(0);
+    expect(state.completedReps).toBe(1);
+
+    // 6. Auto-unlock COOLDOWN even if arm stays slightly above 65% after >= 1.2s
+    state = {
+      phase: 'COOLDOWN',
+      holdElapsedSec: 3.0,
+      completedReps: 1,
+      cooldownStartedAtMs: 8000,
+      repCelebrateUntilMs: 9200,
+    };
+    const autoUnlocked = stepTick(85, 0.1, 9250);
+    expect(state.phase).toBe('WAIT_RAISE');
+    expect(autoUnlocked.holdProgressPct).toBe(0);
+    expect(autoUnlocked.holdRemainingSec).toBe(3.0);
+    expect(state.holdElapsedSec).toBe(0);
   });
 });
 

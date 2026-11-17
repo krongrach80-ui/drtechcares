@@ -185,8 +185,8 @@ export function SkeletonCanvas({
   const hasKneeValgus = telemetry_analysis.compensation_detected.includes('KNEE_VALGUS');
   const wrongLimbAlert = telemetry_analysis.compensation_detected.includes('WRONG_LIMB');
   const wrongPlaneAlert = telemetry_analysis.compensation_detected.includes('WRONG_PLANE');
-  const limbPrompt = getPrescribedLimbPromptTh(exercise.target_joint);
   const expectedPlane = resolveExpectedPlaneForExercise(exercise);
+  const limbPrompt = getPrescribedLimbPromptTh(exercise.target_joint, expectedPlane);
   const planePrompt = getPrescribedPlanePromptTh(expectedPlane);
   const guard = payload.identity_guard;
   const isMultiPerson = kiosk_state === 'PAUSED_MULTI_PERSON' || guard?.status === 'MULTI_PERSON';
@@ -446,10 +446,10 @@ export function SkeletonCanvas({
           </div>
           <div className="min-w-0 flex-1">
             <div className="text-sm font-black tracking-tight sm:text-base">
-              ⚠️ ยกแขนผิดข้าง! ระบบไม่นับรอบ (ยก{limbPrompt.wrongLimbTh}อยู่)
+              {limbPrompt.bannerAlertTh}
             </div>
             <div className="mt-0.5 text-xs font-bold text-rose-100 sm:text-sm">
-              กรุณายก{limbPrompt.requiredLimbTh} (ท่ากายภาพนี้ต้องทำด้วย{limbPrompt.requiredLimbTh}เท่านั้น)
+              ระบบหยุดเดินเวลาค้างท่าชั่วคราว จนกว่าจะลด{limbPrompt.wrongLimbTh}ลงและทำเฉพาะ{limbPrompt.requiredLimbTh}
             </div>
           </div>
           <span className="shrink-0 rounded-full bg-rose-900/60 px-3 py-1 text-[11px] font-black uppercase tracking-wider text-rose-100">
