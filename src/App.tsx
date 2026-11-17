@@ -1274,22 +1274,22 @@ export function App() {
 
       return (
         <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
-          <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm border-b border-white/20">
+          <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-1.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-xs border-b border-white/20">
             <div className="flex items-center gap-2 font-bold">
-              <span className="px-2.5 py-0.5 rounded-full bg-white/20 border border-white/25 text-white">
+              <span className="px-2 py-0.5 rounded-full bg-white/20 border border-white/25 text-white">
                 {kc.minigameHeaderBadge}
               </span>
               <span>
                 {kc.patientLabel} {authenticatedPatient.patient.fullName} (HN: {authenticatedPatient.patient.hn})
               </span>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
               {renderKioskLangSwitcher()}
               {!hasCompletedRehabToday ? (
                 <button
                   type="button"
                   onClick={() => setTrainingStage('rehab_exercises')}
-                  className="rounded-xl border border-white/30 bg-white/15 px-3 py-1.5 font-bold text-white hover:bg-white/25 cursor-pointer"
+                  className="rounded-lg border border-white/30 bg-white/15 px-2.5 py-1 font-bold text-white hover:bg-white/25 cursor-pointer"
                 >
                   {kc.backToExercisesBtn}
                 </button>
@@ -1297,7 +1297,7 @@ export function App() {
                 <button
                   type="button"
                   onClick={() => setTrainingStage('overview')}
-                  className="rounded-xl border border-white/30 bg-white/15 px-3 py-1.5 font-bold text-white hover:bg-white/25 cursor-pointer"
+                  className="rounded-lg border border-white/30 bg-white/15 px-2.5 py-1 font-bold text-white hover:bg-white/25 cursor-pointer"
                 >
                   {kc.viewSummaryBtn}
                 </button>
@@ -1305,14 +1305,14 @@ export function App() {
               <button
                 type="button"
                 onClick={handleExitToLogin}
-                className="rounded-xl border border-emerald-200/40 bg-emerald-500/30 px-3 py-1.5 font-bold text-white hover:bg-emerald-500/45 cursor-pointer"
+                className="rounded-lg border border-emerald-200/40 bg-emerald-500/30 px-2.5 py-1 font-bold text-white hover:bg-emerald-500/45 cursor-pointer"
               >
                 {kc.backToLogin}
               </button>
             </div>
           </div>
-          <div className="flex-1 flex flex-col gap-4 p-3 sm:p-5">
-            <div className="rounded-2xl border border-emerald-300 bg-gradient-to-r from-emerald-50 via-teal-50 to-sky-50 px-4 py-3 text-[#0F4C81] text-xs sm:text-sm font-bold flex flex-wrap items-center justify-between gap-2 shadow-sm">
+          <div className="flex-1 flex flex-col gap-2 p-2 sm:p-3">
+            <div className="rounded-xl border border-emerald-200 bg-gradient-to-r from-emerald-50 via-teal-50 to-sky-50 px-3 py-1.5 text-[#0F4C81] text-xs font-semibold flex flex-wrap items-center justify-between gap-2">
               <span>{kc.minigameBanner}</span>
             </div>
             <PhysicalCardGame

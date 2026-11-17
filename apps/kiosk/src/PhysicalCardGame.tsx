@@ -4,7 +4,6 @@ import { useClinicalI18n } from '@drtechcares/clinical-i18n';
 import {
   AudioChimeSynthesizer,
   cancelAllKioskVoiceSpeech,
-  getSeniorVoiceToggleLabel,
   readStoredKioskVoiceMuted,
   subscribeKioskVoiceMuted,
   writeStoredKioskVoiceMuted,
@@ -16,7 +15,6 @@ import {
   CheckCircle2,
   Clock,
   Hand,
-  Languages,
   RotateCcw,
   Sparkles,
   Volume2,
@@ -27,18 +25,18 @@ import { sampleTenCognitiveCards, type CognitiveCardQuestion } from './PhysicalC
 import { getCardArtworkInnerSvg } from './PhysicalCardGameIllustrations';
 
 /**
- * Resolves adaptive Tailwind typography classes for minigame questions across TH / EN / CN
- * so short prompts render ultra-large for 1-4m visibility while long sentences stay inside bounds.
+ * Resolves giant senior-accessible Tailwind typography classes for minigame questions
+ * across TH / EN / CN so elderly patients can read every prompt immediately at 1-4m.
  */
 export function resolveMinigameQuestionSizeClass(questionText: string | undefined): string {
-  const questionLen = questionText?.trim().length || 0;
-  if (questionLen > 55) {
-    return 'text-2xl sm:text-3xl md:text-4xl leading-snug';
+  const qLen = (questionText ?? '').trim().length;
+  if (qLen > 45) {
+    return 'text-3xl sm:text-4xl md:text-5xl leading-snug';
   }
-  if (questionLen > 32) {
-    return 'text-3xl sm:text-4xl md:text-[2.65rem] leading-tight';
+  if (qLen > 25) {
+    return 'text-4xl sm:text-5xl md:text-[3.5rem] leading-tight';
   }
-  return 'text-3xl sm:text-4xl md:text-5xl leading-tight';
+  return 'text-4xl sm:text-5xl md:text-6xl leading-tight';
 }
 
 export function formatCognitiveCardBadge(cardId: string | undefined, fallbackIndex: number): string {
@@ -66,6 +64,7 @@ export type MinigameVoiceLang = 'th' | 'en' | 'zh';
 export interface MinigameVoiceOption {
   code: MinigameVoiceLang;
   shortLabel: string;
+  compactLabel: string;
   badgeLabel: string;
   speechLang: string;
   statusReady: string;
@@ -80,6 +79,7 @@ export const MINIGAME_VOICE_LANG_OPTIONS: ReadonlyArray<MinigameVoiceOption> = [
   {
     code: 'th',
     shortLabel: '1. ไทย',
+    compactLabel: '1.ไทย',
     badgeLabel: 'THAI AI VOICE COACH',
     speechLang: 'th-TH',
     statusReady: 'พร้อมอ่านคำถาม',
@@ -92,6 +92,7 @@ export const MINIGAME_VOICE_LANG_OPTIONS: ReadonlyArray<MinigameVoiceOption> = [
   {
     code: 'en',
     shortLabel: '2. อังกฤษ (EN)',
+    compactLabel: '2.EN',
     badgeLabel: 'ENGLISH AI VOICE COACH',
     speechLang: 'en-US',
     statusReady: 'READY',
@@ -104,6 +105,7 @@ export const MINIGAME_VOICE_LANG_OPTIONS: ReadonlyArray<MinigameVoiceOption> = [
   {
     code: 'zh',
     shortLabel: '3. จีน (中文)',
+    compactLabel: '3.中文',
     badgeLabel: 'CHINESE AI VOICE COACH',
     speechLang: 'zh-CN',
     statusReady: '准备就绪',
@@ -645,7 +647,6 @@ interface MinigameVoiceBarProps {
   voiceLang: MinigameVoiceLang;
   voiceMuted: boolean;
   isSpeaking: boolean;
-  spokenText: string;
   onSelectLang: (nextLang: MinigameVoiceLang) => void;
   onReplay: () => void;
   onToggleMute: () => void;
@@ -655,111 +656,67 @@ function MinigameVoiceBar({
   voiceLang,
   voiceMuted,
   isSpeaking,
-  spokenText,
   onSelectLang,
   onReplay,
   onToggleMute,
 }: MinigameVoiceBarProps) {
-  const activeOption =
-    MINIGAME_VOICE_LANG_OPTIONS.find((item) => item.code === voiceLang) ??
-    MINIGAME_VOICE_LANG_OPTIONS[0];
-
   return (
     <div
       data-minigame-voice-control="true"
-      className="w-full rounded-2xl border-2 border-sky-200 bg-gradient-to-r from-sky-50 via-white to-emerald-50/70 px-4 py-3 shadow-sm flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between text-left"
+      className="flex flex-wrap items-center gap-1.5 shrink-0"
     >
-      <div className="flex min-w-0 flex-1 items-center gap-3.5">
-        <button
-          type="button"
-          onClick={onReplay}
-          disabled={voiceMuted}
-          title={activeOption.replayLabel}
-          className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full shadow-md transition-transform active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer ${
-            voiceMuted
-              ? 'bg-slate-200 text-slate-500'
-              : 'bg-gradient-to-br from-[#0284C7] to-[#10B981] text-white'
-          }`}
-        >
-          {voiceMuted ? (
-            <VolumeX className="h-6 w-6" />
-          ) : (
-            <Volume2 className={`h-6 w-6 ${isSpeaking ? 'animate-pulse' : ''}`} />
-          )}
-        </button>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2 text-xs font-extrabold uppercase tracking-wider text-[#0284C7]">
-            <span>{activeOption.badgeLabel}</span>
-            <span className="rounded-full bg-sky-100 px-2.5 py-0.5 text-[11px] font-black text-[#0F4C81]">
-              {voiceMuted
-                ? activeOption.statusMuted
-                : isSpeaking
-                  ? activeOption.statusSpeaking
-                  : activeOption.statusReady}
-            </span>
-          </div>
-          <p className="mt-0.5 line-clamp-2 text-base md:text-lg font-extrabold text-emerald-950">
-            “{spokenText}”
-          </p>
-        </div>
+      <div
+        role="group"
+        aria-label="เลือกภาษาเสียงพากย์มินิเกม"
+        className="inline-flex items-center gap-0.5 rounded-full border border-sky-200 bg-sky-50/70 p-0.5"
+      >
+        {MINIGAME_VOICE_LANG_OPTIONS.map((opt) => {
+          const active = opt.code === voiceLang;
+          return (
+            <button
+              key={opt.code}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onSelectLang(opt.code)}
+              className={`rounded-full px-2 py-0.5 text-xs font-bold transition-all cursor-pointer ${
+                active
+                  ? 'bg-[#0284C7] text-white shadow-xs'
+                  : 'text-[#0F4C81] hover:bg-white'
+              }`}
+            >
+              {opt.compactLabel}
+            </button>
+          );
+        })}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 shrink-0">
-        <div
-          role="group"
-          aria-label="เลือกภาษาเสียงพากย์มินิเกม"
-          className="inline-flex flex-wrap items-center gap-1 rounded-full border-2 border-sky-200 bg-white p-1 shadow-sm"
-        >
-          <Languages className="ml-2 mr-0.5 hidden sm:block h-4 w-4 text-[#0284C7]" />
-          {MINIGAME_VOICE_LANG_OPTIONS.map((opt) => {
-            const active = opt.code === voiceLang;
-            return (
-              <button
-                key={opt.code}
-                type="button"
-                aria-pressed={active}
-                onClick={() => onSelectLang(opt.code)}
-                className={`rounded-full px-3.5 py-2 text-xs sm:text-sm font-black transition-all cursor-pointer ${
-                  active
-                    ? 'bg-[#0284C7] text-white shadow-sm'
-                    : 'text-[#0F4C81] hover:bg-sky-50'
-                }`}
-              >
-                {opt.shortLabel}
-              </button>
-            );
-          })}
-        </div>
+      <button
+        type="button"
+        onClick={onReplay}
+        disabled={voiceMuted}
+        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-sky-200 bg-white px-2.5 py-1 text-xs font-bold text-[#0F4C81] transition-colors hover:bg-sky-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+      >
+        <RotateCcw className="h-3 w-3 text-[#0284C7]" />
+        <span>พูดซ้ำ</span>
+      </button>
 
-        <button
-          type="button"
-          onClick={onReplay}
-          disabled={voiceMuted}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-full border-2 border-sky-200 bg-white px-3.5 py-2 text-xs sm:text-sm font-black text-[#0F4C81] transition-colors hover:bg-sky-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
-        >
-          <RotateCcw className="h-4 w-4 text-[#0284C7]" />
-          <span>{activeOption.replayLabel}</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={onToggleMute}
-          aria-pressed={voiceMuted}
-          className={`inline-flex shrink-0 items-center gap-2 rounded-2xl border-2 px-4 py-2 text-xs sm:text-sm font-black shadow-sm transition-all active:scale-95 cursor-pointer ${
-            voiceMuted
-              ? 'border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200'
-              : 'border-emerald-400 bg-emerald-100 text-emerald-950 hover:bg-emerald-200'
-          }`}
-        >
-          {voiceMuted ? (
-            <VolumeX className="h-4 w-4 shrink-0 text-amber-700" />
-          ) : (
-            <Volume2 className="h-4 w-4 shrink-0 text-emerald-700" />
-          )}
-          <span>{getSeniorVoiceToggleLabel(voiceLang, voiceMuted)}</span>
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={onToggleMute}
+        aria-pressed={voiceMuted}
+        className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-bold transition-all active:scale-95 cursor-pointer ${
+          voiceMuted
+            ? 'border-amber-300 bg-amber-100 text-amber-950 hover:bg-amber-200'
+            : 'border-emerald-300 bg-emerald-100 text-emerald-950 hover:bg-emerald-200'
+        }`}
+      >
+        {voiceMuted ? (
+          <VolumeX className="h-3.5 w-3.5 shrink-0 text-amber-700" />
+        ) : (
+          <Volume2 className={`h-3.5 w-3.5 shrink-0 text-emerald-700 ${isSpeaking ? 'animate-pulse' : ''}`} />
+        )}
+        <span>{voiceMuted ? '🔇 เสียง AI: ปิด' : '🔊 เสียง AI: เปิด'}</span>
+      </button>
     </div>
   );
 }
@@ -1954,15 +1911,13 @@ export function PhysicalCardGame({
   };
 
   if (completedSummary) {
-    const summarySpeechText = formatMinigameSummarySpeech(completedSummary, voiceLang);
     return (
       <div className="w-full flex-1 flex flex-col items-center justify-center rounded-3xl bg-white p-6 sm:p-12 shadow-xl border-2 border-slate-200 text-center space-y-6">
-        <div className="w-full max-w-5xl">
+        <div className="flex justify-center">
           <MinigameVoiceBar
             voiceLang={voiceLang}
             voiceMuted={voiceMuted}
             isSpeaking={isSpeaking}
-            spokenText={summarySpeechText}
             onSelectLang={handleSelectVoiceLang}
             onReplay={handleReplayVoice}
             onToggleMute={handleToggleVoiceMute}
@@ -2031,53 +1986,55 @@ export function PhysicalCardGame({
 
   const localizedQuestion = pickCardTextByVoiceLang(currentCard.question, voiceLang);
   const localizedSubject = pickCardTextByVoiceLang(currentCard.subject, voiceLang);
-  const activeVoiceQuote = feedback ? feedback.message : localizedQuestion;
   const questionSizeClass = resolveMinigameQuestionSizeClass(localizedQuestion);
   const cardNumberBadge = formatCognitiveCardBadge(currentCard.id, index);
   const visualKind = resolveCognitiveCardVisualKind(currentCard);
 
   return (
-    <div className="w-full flex-1 flex flex-col justify-between rounded-3xl bg-white p-3.5 sm:p-6 shadow-xl border-2 border-slate-200 gap-3 sm:gap-4">
-      {/* Header Section */}
-      <div className="shrink-0 flex flex-col gap-2.5 border-b-2 border-slate-100 pb-3.5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <span className="mg-badge-top inline-flex items-center gap-2.5 rounded-full bg-indigo-50 px-5 py-2 font-black text-indigo-700">
-            <Sparkles className="h-6 w-6 shrink-0" /> {t('startCognitiveGameBtn')} • {patientName}
+    <div className="w-full flex-1 flex flex-col justify-between rounded-2xl bg-white p-2.5 sm:p-4 shadow-xl border border-slate-200 gap-2.5 sm:gap-3">
+      {/* Ultra-Compact Single-Row Control Strip */}
+      <div className="shrink-0 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-3 py-1.5">
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
+          <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-medium text-indigo-700 shrink-0">
+            <Sparkles className="h-3.5 w-3.5 shrink-0" />
+            <span>{t('startCognitiveGameBtn')} • {patientName}</span>
           </span>
-          <span className="mg-score-pill rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#10B981] px-6 py-3 font-black text-white shadow-md whitespace-nowrap">
-            ข้อที่ {index + 1} / {cards.length} • คะแนน {score}
+          <span className="text-xs font-medium text-slate-600">
+            ยกมือค้าง 0.8 วินาทีเพื่อตอบ (ซ้าย = ไม่ใช่ / ขวา = ใช่) หรือคลิกปุ่มคำตอบได้ทันที
           </span>
         </div>
-        <p className="text-base sm:text-lg md:text-xl font-bold text-slate-800">
-          ยกมือค้าง 0.8 วินาทีเพื่อตอบ (ซ้าย = ไม่ใช่ / ขวา = ใช่) หรือคลิกปุ่มคำตอบได้ทันที
-        </p>
-        <MinigameVoiceBar
-          voiceLang={voiceLang}
-          voiceMuted={voiceMuted}
-          isSpeaking={isSpeaking}
-          spokenText={activeVoiceQuote}
-          onSelectLang={handleSelectVoiceLang}
-          onReplay={handleReplayVoice}
-          onToggleMute={handleToggleVoiceMute}
-        />
+
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <span className="rounded-lg bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#10B981] px-3 py-1 text-xs md:text-sm font-bold text-white shadow-xs whitespace-nowrap">
+            ข้อที่ {index + 1} / {cards.length} • คะแนน {score}
+          </span>
+          <MinigameVoiceBar
+            voiceLang={voiceLang}
+            voiceMuted={voiceMuted}
+            isSpeaking={isSpeaking}
+            onSelectLang={handleSelectVoiceLang}
+            onReplay={handleReplayVoice}
+            onToggleMute={handleToggleVoiceMute}
+          />
+        </div>
       </div>
 
-      {/* Main Full-Size Vertical Stack: Top = Compact Oversized Card, Middle = Camera, Bottom = Answer Buttons */}
-      <div className="flex-1 flex flex-col justify-between gap-3 sm:gap-4 min-h-0">
-        {/* Top Card: Full-Space Layout + Oversized Visual + Adaptive Giant Typography */}
-        <div className="w-full shrink-0 px-5 py-4 md:px-8 md:py-6 flex flex-col items-center justify-center gap-3 md:gap-4 rounded-3xl bg-gradient-to-b from-white to-emerald-50/30 border-2 border-indigo-200 text-center shadow-sm">
-          <div className="flex flex-wrap items-center justify-center gap-2.5">
-            <span className="text-sm md:text-base font-extrabold tracking-wider uppercase px-5 py-1.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 shadow-sm">
+      {/* Main Vertical Stack: Top = Artwork + Giant Question Spotlight, Middle = Camera, Bottom = Answer Buttons */}
+      <div className="flex-1 flex flex-col justify-between gap-2.5 sm:gap-3 min-h-0">
+        {/* Question Card + Giant Elderly-First Question Spotlight Banner */}
+        <div className="w-full shrink-0 px-3 py-2.5 md:px-5 md:py-3 flex flex-col items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-b from-white to-emerald-50/30 border border-indigo-200 text-center shadow-xs">
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <span className="text-xs font-extrabold tracking-wider uppercase px-3 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
               {currentCard.category.replace(/_/g, ' ')}
             </span>
-            <span className="text-sm md:text-base font-extrabold px-3.5 py-1 rounded-full bg-amber-100 text-amber-900 border border-amber-300 shadow-xs">
+            <span className="text-xs font-extrabold px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
               {cardNumberBadge}
             </span>
           </div>
 
           <div
             data-testid="minigame-card-visual-frame"
-            className="relative w-full max-w-[520px] md:max-w-[640px] h-[220px] sm:h-[250px] md:h-[280px] rounded-3xl flex items-center justify-center p-4 md:p-6 shadow-md border-2 border-indigo-200 bg-gradient-to-br from-amber-50/60 via-white to-sky-50/60 overflow-hidden"
+            className="relative w-full max-w-[460px] md:max-w-[540px] h-[180px] sm:h-[210px] md:h-[230px] rounded-2xl flex items-center justify-center p-3 shadow-sm border border-indigo-200 bg-gradient-to-br from-amber-50/60 via-white to-sky-50/60 overflow-hidden"
           >
             {visualKind === 'svg_art' && currentCard.artKey ? (
               <svg
@@ -2085,37 +2042,42 @@ export function PhysicalCardGame({
                 viewBox="28 16 344 224"
                 role="img"
                 aria-label={localizedSubject}
-                className="w-44 h-44 sm:w-52 sm:h-52 md:w-60 md:h-60 max-w-full max-h-full object-contain drop-shadow-md transition-transform duration-300"
+                className="w-40 h-40 sm:w-48 sm:h-48 md:w-52 md:h-52 max-w-full max-h-full object-contain drop-shadow-md transition-transform duration-300"
                 dangerouslySetInnerHTML={{ __html: getCardArtworkInnerSvg(currentCard.artKey) }}
               />
             ) : visualKind === 'image_url' && currentCard.imageUrl ? (
               <img
                 src={currentCard.imageUrl}
                 alt={localizedSubject}
-                className="w-full h-full max-h-[230px] object-contain drop-shadow-md"
+                className="w-full h-full max-h-[210px] object-contain drop-shadow-md"
                 draggable={false}
               />
             ) : (
               <span
                 aria-label={localizedSubject}
-                className="text-[6.5rem] sm:text-[7.5rem] md:text-[8.5rem] leading-none select-none drop-shadow"
+                className="text-[5.5rem] sm:text-[6.5rem] md:text-[7.5rem] leading-none select-none drop-shadow"
               >
                 {currentCard.icon}
               </span>
             )}
           </div>
 
-          <h2
-            data-testid="minigame-question-title"
-            className={`${questionSizeClass} font-black text-[#0F4C81] max-w-5xl w-full break-words`}
+          <div
+            data-testid="minigame-question-banner"
+            className="w-full bg-amber-50/90 border-2 border-amber-300 rounded-2xl px-4 py-3 md:px-6 md:py-4 shadow-sm text-center"
           >
-            {localizedQuestion}
-          </h2>
-          {voiceLang !== 'th' && (
-            <p className="text-base sm:text-lg font-bold text-slate-600 max-w-4xl">
-              ไทย: {currentCard.question.th}
-            </p>
-          )}
+            <h2
+              data-testid="minigame-question-title"
+              className={`${questionSizeClass} font-black text-slate-950 tracking-tight break-words drop-shadow-sm`}
+            >
+              {localizedQuestion}
+            </h2>
+            {voiceLang !== 'th' && (
+              <p className="mt-1.5 text-sm sm:text-base font-bold text-slate-700">
+                ไทย: {currentCard.question.th}
+              </p>
+            )}
+          </div>
         </div>
 
         {/* Middle Card: Full-Size Live Camera Viewport (120Hz Hand Tracking) */}

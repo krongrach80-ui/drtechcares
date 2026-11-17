@@ -5862,25 +5862,26 @@ export function ClinicalStaffPortalShell({
         </div>
       )}
 
-      {/* Physical Card Game Modal — Full-Size Kiosk View */}
+      {/* Physical Card Game Modal — Ultra-Compact Header + Full-Size Kiosk View */}
       {cardGameModalOpen && (
         <div className="fixed inset-0 z-50 flex flex-col w-screen h-screen bg-slate-100 overflow-y-auto overflow-x-hidden">
-          <div className="flex items-center justify-between gap-4 bg-white border-b-2 border-slate-200 px-5 py-3.5 sm:px-8 sm:py-4 shrink-0 shadow-sm">
-            <div className="flex items-center gap-3.5 min-w-0">
-              <Gamepad2 className="h-10 w-10 text-emerald-600 shrink-0" />
-              <h3 className="mg-modal-title font-black text-slate-900 truncate">
+          <div className="flex items-center justify-between gap-2 bg-white border-b border-slate-200 px-4 py-2 shrink-0 shadow-xs">
+            <div className="flex items-center gap-2 min-w-0">
+              <Gamepad2 className="h-5 w-5 text-emerald-600 shrink-0" />
+              <h3 className="text-sm md:text-base font-bold text-slate-900 truncate">
                 เกมการ์ดกายภาพบำบัด 10 ข้อ (ทดสอบระบบมือ/กล้อง หรือคลิกปุ่มตอบ)
               </h3>
             </div>
             <button
               type="button"
               onClick={() => setCardGameModalOpen(false)}
-              className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-600 hover:bg-rose-100 hover:text-rose-700 cursor-pointer shrink-0 transition"
+              aria-label="ปิดหน้าต่าง"
+              className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-sm text-slate-600 hover:bg-rose-100 hover:text-rose-700 cursor-pointer shrink-0 transition"
             >
-              <X className="h-9 w-9" />
+              <X className="h-4 w-4" />
             </button>
           </div>
-          <div className="flex-1 flex flex-col w-full min-h-0 p-3 sm:p-5">
+          <div className="flex-1 flex flex-col w-full min-h-0 p-2 sm:p-3">
             <PhysicalCardGame
               patientName={selectedSchedulePatient?.fullName ?? currentUser.fullName}
               onSessionFinished={async (summary) => {

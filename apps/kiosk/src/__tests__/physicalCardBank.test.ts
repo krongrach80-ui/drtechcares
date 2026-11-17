@@ -204,21 +204,24 @@ describe('PhysicalCardGame Trilingual AI Voiceover Helpers', () => {
     expect(isValidStrict21HandLandmarks(collapsed, 0.9)).toBe(false);
   });
 
-  it('scales question typography adaptively for short/medium/long TH/EN/CN prompts and supports SVG/IMG/Emoji visuals uniformly', () => {
+  it('scales question typography adaptively for giant senior-accessible TH/EN/CN prompts and supports SVG/IMG/Emoji visuals uniformly', () => {
     expect(resolveMinigameQuestionSizeClass('แครอทในภาพนี้มีสีฟ้าใช่ไหม?')).toBe(
-      'text-3xl sm:text-4xl md:text-5xl leading-tight',
+      'text-4xl sm:text-5xl md:text-[3.5rem] leading-tight',
     );
     expect(resolveMinigameQuestionSizeClass('图中的胡萝卜是蓝色的吗？')).toBe(
-      'text-3xl sm:text-4xl md:text-5xl leading-tight',
+      'text-4xl sm:text-5xl md:text-6xl leading-tight',
+    );
+    expect(resolveMinigameQuestionSizeClass('ในภาพนี้มีลูกแก้วสีส้มกี่ลูก?')).toBe(
+      'text-4xl sm:text-5xl md:text-[3.5rem] leading-tight',
     );
     expect(resolveMinigameQuestionSizeClass('Is the carrot in this picture colored blue?')).toBe(
-      'text-3xl sm:text-4xl md:text-[2.65rem] leading-tight',
+      'text-4xl sm:text-5xl md:text-[3.5rem] leading-tight',
     );
     expect(
       resolveMinigameQuestionSizeClass(
         'Should older adults hold onto the sturdy staircase handrail before walking upstairs safely?',
       ),
-    ).toBe('text-2xl sm:text-3xl md:text-4xl leading-snug');
+    ).toBe('text-3xl sm:text-4xl md:text-5xl leading-snug');
 
     expect(formatCognitiveCardBadge('card-006', 5)).toBe('#006');
     expect(formatCognitiveCardBadge(undefined, 9)).toBe('#010');
