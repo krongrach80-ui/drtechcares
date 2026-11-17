@@ -1,10 +1,8 @@
 import React, { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Activity, AlertTriangle, CheckCircle2, Ruler, ShieldAlert, UserCheck, Users, UserX } from 'lucide-react';
+import { AlertTriangle, Ruler, Target } from 'lucide-react';
 import { resolveActiveExerciseSide } from '@drtechcares/pose-engine';
 import {
-  getPrescribedLimbPromptTh,
-  getPrescribedPlanePromptTh,
   resolveExpectedPlaneForExercise,
   type ExercisePrescriptionOption,
   type KioskDecisionPayload,
@@ -75,7 +73,7 @@ export function SkeletonCanvas({
   hasLiveCamera = false,
   isPrivacyMode = false,
   showSkeletonOverlay = true,
-  framingHintTh = null,
+  framingHintTh: _framingHintTh = null,
   liveVideoOverlay,
   children,
 }: SkeletonCanvasProps) {
@@ -184,24 +182,17 @@ export function SkeletonCanvas({
   const hasTrunkLean = telemetry_analysis.compensation_detected.includes('TRUNK_LEAN');
   const hasShoulderHike = telemetry_analysis.compensation_detected.includes('SHOULDER_HIKE');
   const hasKneeValgus = telemetry_analysis.compensation_detected.includes('KNEE_VALGUS');
-  const wrongLimbAlert = telemetry_analysis.compensation_detected.includes('WRONG_LIMB');
-  const wrongPlaneAlert = telemetry_analysis.compensation_detected.includes('WRONG_PLANE');
   const expectedPlane = resolveExpectedPlaneForExercise(exercise);
-  const activeSide = resolveActiveExerciseSide(
-    exercise,
-    undefined,
-    exercise.target_joint,
-    expectedPlane,
-  );
-  const limbPrompt = getPrescribedLimbPromptTh(exercise.target_joint, expectedPlane, activeSide);
-  const planePrompt = getPrescribedPlanePromptTh(expectedPlane);
+  const activeSide =
+    resolveActiveExerciseSide(exercise, exercise, exercise.target_joint, expectedPlane) ??
+    (/both|ทั้งสองข้าง|ทั้ง\s*2\s*ข้าง|ประสานมือ|bobath/i.test(`${exercise.name_th} ${exercise.name_en}`)
+      ? 'BOTH'
+      : undefined);
   const guard = payload.identity_guard;
   const isMultiPerson = kiosk_state === 'PAUSED_MULTI_PERSON' || guard?.status === 'MULTI_PERSON';
   const isImpostor = kiosk_state === 'PAUSED_IMPOSTOR' || guard?.status === 'IMPOSTOR';
   const isEmergency = kiosk_state === 'EMERGENCY_HALT';
   const isHold = kiosk_state === 'HOLD_PHASE';
-  const isRepCompletedOrFinished = kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED';
-  const isLowerBody = exercise.target_joint.includes('knee') || exercise.target_joint.includes('hip');
 
   const distanceIdeal = distanceM > 0 && distanceM >= 1.8 && distanceM <= 2.2;
   const accentColor =
@@ -313,7 +304,7 @@ export function SkeletonCanvas({
 
   return (
     <div
-      className={`glass-card relative flex min-h-[420px] h-[460px] sm:h-[540px] lg:h-[620px] w-full flex-col justify-between overflow-hidden rounded-3xl transition-colors duration-300 ${
+      className={`glass-card relative aspect-[16/10] sm:aspect-[16/9] w-full flex flex-col justify-between overflow-hidden rounded-3xl shadow-lg transition-colors duration-300 ${
         isEmergency ? 'ring-4 ring-rose-500/70' : ''
       }`}
     >
@@ -377,182 +368,55 @@ export function SkeletonCanvas({
         )}
       </div>
 
-      {/* Top HUD Overlay: Distance & Posture Status */}
-      <div className="relative z-10 flex flex-wrap items-center justify-between gap-2 p-4 sm:p-5">
+      {/* Top HUD Corner Badges ONLY (100% Unobstructed Video) */}
+      <div className="pointer-events-none relative z-10 flex items-start justify-between gap-2 p-3">
         <div
-          className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-bold shadow-sm backdrop-blur-md sm:text-sm ${
+          className={`inline-flex max-w-[45%] items-center gap-1.5 truncate rounded-full border px-3 py-1 text-xs font-bold shadow-sm backdrop-blur-md sm:text-sm ${
             distanceM <= 0
               ? 'border-sky-200 bg-white/90 text-[#0F4C81]'
               : distanceIdeal
-                ? 'border-emerald-200 bg-white/85 text-[#0F4C81]'
-                : 'border-amber-300 bg-amber-50/90 text-amber-800'
+                ? 'border-emerald-200 bg-white/88 text-[#0F4C81]'
+                : 'border-amber-300 bg-amber-50/92 text-amber-900'
           }`}
         >
           <Ruler
-            className={`h-4 w-4 ${
+            className={`h-3.5 w-3.5 shrink-0 ${
               distanceM <= 0 ? 'text-[#0284C7]' : distanceIdeal ? 'text-[#10B981]' : 'text-[#F59E0B]'
             }`}
           />
-          <span>
-            {distanceM > 0 ? (
-              <>
-                ระยะยืน: <span className="tabular-mono">{distanceM.toFixed(1)}</span> ม. -{' '}
-                {distanceIdeal ? 'เหมาะสม' : distanceM < 1.8 ? 'กรุณาถอยหลังเล็กน้อย' : 'กรุณาขยับเข้าอีกนิด'}
-              </>
-            ) : (
-              <span>ระยะยืน: กำลังวัดระยะ...</span>
-            )}
+          <span className="truncate">
+            {distanceM > 0
+              ? `ระยะยืน: ${distanceM.toFixed(1)} ม. (${
+                  distanceIdeal ? 'เหมาะสม' : distanceM < 1.8 ? 'ถอยหลังเล็กน้อย' : 'ขยับเข้าอีกนิด'
+                })`
+              : 'ระยะยืน: กำลังวัดระยะ...'}
           </span>
         </div>
 
-        <motion.div
-          key={`${kiosk_state}-${ui_directives.highlight_color}-${wrongLimbAlert ? 'wrong' : wrongPlaneAlert ? 'wrong_plane' : 'ok'}`}
-          initial={{ scale: 0.96, opacity: 0.85 }}
-          animate={{ scale: 1, opacity: 1 }}
-          className={`inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-xs font-bold shadow-sm backdrop-blur-md sm:text-sm ${
-            ui_directives.highlight_color === 'RED' || wrongLimbAlert || wrongPlaneAlert
-              ? 'border-rose-300 bg-rose-500 text-white'
-              : ui_directives.highlight_color === 'AMBER'
-                ? 'border-amber-300 bg-amber-100/95 text-amber-900'
-                : 'border-emerald-200 bg-white/88 text-[#0D9488]'
+        <div
+          className={`inline-flex max-w-[48%] items-center gap-1.5 truncate rounded-full border px-3 py-1 text-xs font-extrabold shadow-sm backdrop-blur-md sm:text-sm ${
+            activeSide === 'BOTH'
+              ? 'border-teal-300 bg-white/92 text-teal-800'
+              : activeSide === 'LEFT'
+                ? 'border-orange-300 bg-white/92 text-orange-800'
+                : 'border-emerald-300 bg-white/92 text-emerald-800'
           }`}
         >
-          {ui_directives.highlight_color === 'RED' || wrongLimbAlert || wrongPlaneAlert ? (
-            <ShieldAlert className="h-4 w-4" />
-          ) : ui_directives.highlight_color === 'AMBER' ? (
-            <AlertTriangle className="h-4 w-4 text-[#F59E0B]" />
-          ) : (
-            <CheckCircle2 className="h-4 w-4 text-[#10B981]" />
-          )}
-          <span>
-            {isEmergency
-              ? 'หยุดพักฉุกเฉิน (EMERGENCY HALT)'
-              : isImpostor
-                ? 'ผู้ใช้งานไม่ใช่คนไข้ที่ลงทะเบียน'
-                : isMultiPerson
-                  ? `พบบุคคล ${guard?.person_count ?? 2} คน • หยุดนับชั่วคราว`
-                  : wrongLimbAlert
-                    ? activeSide === 'BOTH'
-                      ? limbPrompt.bannerAlertTh
-                      : `⚠️ ยกแขนผิดข้าง • ${limbPrompt.bannerAlertTh}`
-                    : wrongPlaneAlert
-                      ? `⚠️ ผิดทิศทาง • ${planePrompt.bannerAlertTh}`
-                      : hasTrunkLean
-                      ? 'ตรวจพบการเอียงลำตัวชดเชย'
-                      : isRepCompletedOrFinished
-                        ? '🎉 ยอดเยี่ยม! นับเพิ่ม +1 ครั้งเรียบร้อย'
-                        : isHold
-                          ? rep_counter.hold_remaining_sec <= 0
-                            ? `✅ ค้างครบเวลาแล้ว • ${isLowerBody ? 'ค่อยๆ เอาขาลงเพื่อนับ +1 ครั้ง' : 'ค่อยๆ เอาแขนลงเพื่อนับ +1 ครั้ง'}`
-                            : 'คงท่าตามมุมเป้าหมาย'
-                          : telemetry_analysis.is_form_valid
-                            ? 'ท่าทางถูกต้อง • เคลื่อนไหวต่อเนื่อง'
-                            : 'กรุณาจัดตำแหน่งร่างกาย'}
+          <Target className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">
+            เป้าหมาย:{' '}
+            {activeSide === 'BOTH'
+              ? 'ยกทั้ง 2 ข้างพร้อมกัน'
+              : activeSide === 'LEFT'
+                ? 'ข้างซ้าย (Left)'
+                : activeSide === 'RIGHT'
+                  ? 'ข้างขวา (Right)'
+                  : `ทำตามท่า ${targetRom}°`}
           </span>
-        </motion.div>
+        </div>
       </div>
 
-      {/* Wrong-Arm Enforcement Alert Banner */}
-      {!isEmergency && !isImpostor && !isMultiPerson && wrongLimbAlert && (
-        <div
-          role="alert"
-          className="relative z-20 mx-4 mb-2 flex items-center gap-3 rounded-2xl border-2 border-rose-400 bg-rose-600/95 px-4 py-3 text-white shadow-lg backdrop-blur-md sm:mx-5"
-        >
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/20 text-white">
-            <AlertTriangle className="h-6 w-6" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-black tracking-tight sm:text-base">
-              {limbPrompt.bannerAlertTh}
-            </div>
-            <div className="mt-0.5 text-xs font-bold text-rose-100 sm:text-sm">
-              {activeSide === 'BOTH'
-                ? 'ระบบหยุดเดินเวลาค้างท่าชั่วคราว กรุณายกแขนทั้ง 2 ข้างขึ้นพร้อมกันเพื่อทำท่าต่อครับ'
-                : `ระบบหยุดเดินเวลาค้างท่าชั่วคราว จนกว่าจะลด${limbPrompt.wrongLimbTh}ลงและทำเฉพาะ${limbPrompt.requiredLimbTh}`}
-            </div>
-          </div>
-          <span className="shrink-0 rounded-full bg-rose-900/60 px-3 py-1 text-[11px] font-black uppercase tracking-wider text-rose-100">
-            0 REPS ADDED
-          </span>
-        </div>
-      )}
-
-      {/* Wrong-Plane Enforcement Alert Banner */}
-      {!isEmergency && !isImpostor && !isMultiPerson && !wrongLimbAlert && wrongPlaneAlert && (
-        <div
-          role="alert"
-          className="relative z-20 mx-4 mb-2 flex items-center gap-3 rounded-2xl border-2 border-rose-400 bg-rose-600/95 px-4 py-3 text-white shadow-lg backdrop-blur-md sm:mx-5"
-        >
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/20 text-white">
-            <AlertTriangle className="h-6 w-6" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-black tracking-tight sm:text-base">
-              ⚠️ เคลื่อนไหวผิดทิศทาง! ระบบไม่นับรอบ (กำลัง{planePrompt.wrongPlaneTh}อยู่)
-            </div>
-            <div className="mt-0.5 text-xs font-bold text-rose-100 sm:text-sm">
-              {planePrompt.bannerAlertTh}
-            </div>
-          </div>
-          <span className="shrink-0 rounded-full bg-rose-900/60 px-3 py-1 text-[11px] font-black uppercase tracking-wider text-rose-100">
-            0 REPS ADDED
-          </span>
-        </div>
-      )}
-
-      {/* Continuous Anti-Cheat & Identity Guard Prominent Banner (Rule 1 + Rule 2) */}
-      {(isMultiPerson || isImpostor) && (
-        <div
-          role="alert"
-          className={`relative z-20 mx-4 mb-2 flex items-center gap-3 rounded-2xl border-2 px-4 py-3 shadow-lg backdrop-blur-md sm:mx-5 ${
-            isImpostor
-              ? 'border-rose-400 bg-rose-600/95 text-white'
-              : 'border-amber-400 bg-amber-500/95 text-slate-950'
-          }`}
-        >
-          <div
-            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${
-              isImpostor ? 'bg-white/20 text-white' : 'bg-slate-950/15 text-slate-950'
-            }`}
-          >
-            {isImpostor ? <UserX className="h-6 w-6" /> : <Users className="h-6 w-6" />}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-black tracking-tight sm:text-base">
-              {guard?.alert_title_th ||
-                (isImpostor
-                  ? 'คุณไม่ใช่คนไข้ที่ลงทะเบียนไว้'
-                  : 'ตรวจพบมีบุคคลอยู่หลายคนในเฟรม')}
-            </div>
-            <div
-              className={`mt-0.5 text-xs font-bold sm:text-sm ${
-                isImpostor ? 'text-rose-100' : 'text-slate-900'
-              }`}
-            >
-              {guard?.alert_subtitle_th ||
-                (isImpostor
-                  ? 'ระบบจะไม่นับรอบการฝึก กรุณาให้คนไข้ตัวจริงเข้าฝึกครับ'
-                  : 'กรุณาให้คนไข้ยืนหน้ากล้องเพียงลำพัง ระบบจึงจะนับรอบการฝึกต่อครับ')}
-            </div>
-          </div>
-          <span
-            className={`shrink-0 rounded-full px-3 py-1 text-[11px] font-black uppercase tracking-wider ${
-              isImpostor ? 'bg-rose-900/60 text-rose-100' : 'bg-amber-900/20 text-slate-950'
-            }`}
-          >
-            {isImpostor ? 'LOCKED • 0 REPS' : 'PAUSED'}
-          </span>
-        </div>
-      )}
-
-      {!isMultiPerson && !isImpostor && guard?.status === 'VERIFIED' && guard.is_counting_allowed && (
-        <div className="relative z-20 mx-4 mb-1 inline-flex w-fit items-center gap-1.5 rounded-full border border-emerald-300/80 bg-emerald-500/15 px-3 py-1 text-[11px] font-extrabold text-emerald-800 backdrop-blur-sm sm:mx-5">
-          <UserCheck className="h-3.5 w-3.5 text-emerald-600" />
-          <span>ยืนยันคนไข้ตัวจริง ({Math.round((guard.match_confidence || 1) * 100)}%)</span>
-        </div>
-      )}
-
-      {/* Clinical Live Error / Pose Waiting Overlay or Demo Procedural SVG Stickman */}
+      {/* Clinical Live Error or Demo Procedural SVG Stickman (Zero Blocking Overlay Banners Inside Video) */}
       <div className="relative z-10 flex flex-1 items-center justify-center px-2 pb-2">
         {!isDemoMode && (payload.error_code === 'CAMERA_DISCONNECTED' || payload.error_code === 'AI_MODEL_ERROR') && (
           <div
@@ -569,35 +433,6 @@ export function SkeletonCanvas({
             </div>
             <div className="mt-1 text-xs font-medium text-rose-100/90">
               {payload.error_message || 'กรุณาตรวจสอบการเชื่อมต่อกล้องเว็บแคมและสิทธิ์การใช้งาน'}
-            </div>
-          </div>
-        )}
-
-        {!isDemoMode &&
-          payload.error_code !== 'CAMERA_DISCONNECTED' &&
-          payload.error_code !== 'AI_MODEL_ERROR' &&
-          (framingHintTh ||
-            payload.error_code === 'NO_POSE_DETECTED' ||
-            (Boolean(payload.frame_base64) && !hasValidMp33)) && (
-            <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full border border-amber-300/80 bg-slate-900/85 px-4 py-1.5 text-xs font-bold text-amber-200 shadow-lg backdrop-blur-md">
-              {framingHintTh || 'กรุณาถอยห่างให้เห็นช่วงไหล่และลำตัว'}
-            </div>
-          )}
-
-        {!isDemoMode &&
-          !framingHintTh &&
-          !payload.error_code &&
-          payload.calibration &&
-          !payload.calibration.is_calibrated && (
-          <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-2xl border border-sky-300 bg-white/95 px-5 py-2.5 text-center text-[#0F4C81] shadow-xl backdrop-blur-md">
-            <div className="text-xs font-extrabold text-[#0284C7]">
-              {payload.calibration.message_th}
-            </div>
-            <div className="mt-1.5 h-2 w-56 overflow-hidden rounded-full bg-sky-100">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-[#0284C7] to-[#10B981] transition-all duration-150"
-                style={{ width: `${Math.round((payload.calibration.progress || 0) * 100)}%` }}
-              />
             </div>
           </div>
         )}
@@ -928,25 +763,6 @@ export function SkeletonCanvas({
             })}
           </svg>
         )}
-      </div>
-
-      {/* Bottom Camera Status Strip */}
-      <div className="relative z-10 flex items-center justify-between border-t border-white/70 bg-white/85 px-5 py-2.5 text-xs font-semibold text-[#0F4C81]/90 backdrop-blur-md">
-        <span className="inline-flex items-center gap-1.5">
-          <Activity className="h-4 w-4 text-[#0D9488]" />
-          {hasLiveCamera
-            ? 'กล้องตรวจจับท่าทางกายภาพบำบัดสด (Live AI Camera Pose Tracking)'
-            : isDemoMode
-              ? 'โหมดจำลองกายวิภาคเชิงโต้ตอบ (Interactive Demo Canvas)'
-              : payload.error_code
-                ? `Edge Vision Alert: ${payload.error_code}`
-                : `${payload.engine_backend || 'MediaPipe Pose Heavy 3D + One-Euro Filter Active'}${
-                    payload.fps ? ` • ${payload.fps.toFixed(0)} FPS` : ''
-                  }`}
-        </span>
-        <span className="tabular-mono text-[#0284C7]">
-          TARGET ROM {targetRom}° • HOLD {exercise.hold_sec}s
-        </span>
       </div>
 
       {children}

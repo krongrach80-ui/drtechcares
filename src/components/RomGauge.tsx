@@ -9,6 +9,7 @@ interface RomGaugeProps {
   highlightColor: HighlightColor;
   holdRemainingSec: number;
   holdTargetSec: number;
+  embedded?: boolean;
 }
 
 export function RomGauge({
@@ -19,6 +20,7 @@ export function RomGauge({
   highlightColor,
   holdRemainingSec,
   holdTargetSec,
+  embedded = false,
 }: RomGaugeProps) {
   const clampedInputRom = Math.max(0, Math.min(180, currentRomDeg));
   const displayedRomInt = Math.round(clampedInputRom);
@@ -49,7 +51,7 @@ export function RomGauge({
         : 'from-[#0284C7] to-[#10B981]';
 
   return (
-    <div className="glass-card rounded-3xl p-5">
+    <div className={embedded ? '' : 'glass-card rounded-3xl p-4 sm:p-5'}>
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs font-bold uppercase tracking-wider text-[#0284C7]">Range of Motion</p>

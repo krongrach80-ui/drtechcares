@@ -2196,7 +2196,7 @@ export function ExercisePostureGuide({
     <section
       aria-label={ui.headerTag}
       data-testid="exercise-posture-guide"
-      className="glass-card rounded-3xl p-4 sm:p-5"
+      className="glass-card flex-1 flex flex-col justify-between rounded-3xl p-4 sm:p-5"
     >
       {/* Top Header Strip */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-sky-100 pb-3">
@@ -2226,28 +2226,28 @@ export function ExercisePostureGuide({
       </div>
 
       {/* Main 2-Column Clinical Anatomic Mannequin + Step-by-Step Cues */}
-      <div className="mt-3.5 grid grid-cols-1 items-center gap-4 md:grid-cols-12">
-        <div className="md:col-span-4 flex flex-col items-center">
-          <div className="relative flex h-44 w-44 items-center justify-center rounded-2xl border border-sky-200/80 bg-gradient-to-br from-white via-sky-50/70 to-emerald-50/60 p-1.5 shadow-inner">
+      <div className="mt-3.5 flex-1 flex flex-col md:flex-row items-stretch gap-4">
+        <div className="w-full md:w-[240px] lg:w-[260px] min-h-[220px] shrink-0 bg-gradient-to-b from-sky-50 to-emerald-50/40 rounded-2xl p-4 flex flex-col items-center justify-center border border-sky-200">
+          <div className="relative flex w-40 h-40 md:w-48 md:h-48 items-center justify-center [&_svg]:w-full [&_svg]:h-full object-contain drop-shadow-sm">
             <ExercisePostureSvg exercise={exercise} phase={previewPhase} />
             {isHoldingNow && (
-              <span className="absolute top-2 right-2 rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-black text-white shadow animate-pulse">
+              <span className="absolute top-1 right-1 rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-black text-white shadow animate-pulse">
                 HOLD
               </span>
             )}
           </div>
-          <span className="mt-1.5 text-center text-[11px] font-bold text-slate-600">
+          <span className="mt-2 text-center text-xs font-bold text-[#0F4C81]/80">
             {spec.viewAngleLabel}
           </span>
         </div>
 
-        <div className="md:col-span-8 flex flex-col gap-2.5">
+        <div className="flex-1 flex flex-col justify-between gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h3 className="text-sm sm:text-base font-extrabold text-[#0F4C81]">
+              <h3 className="text-base sm:text-lg font-extrabold text-[#0F4C81]">
                 {lang === 'en' ? exercise.name_en : exercise.name_th}
               </h3>
-              <p className="text-xs font-medium text-slate-600">{spec.muscleFocus}</p>
+              <p className="text-xs sm:text-sm font-medium text-slate-600">{spec.muscleFocus}</p>
             </div>
             <div className="inline-flex flex-wrap items-center gap-1 rounded-2xl border border-sky-200 bg-sky-50/80 p-1">
               {(
@@ -2279,7 +2279,7 @@ export function ExercisePostureGuide({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 flex-1 items-stretch">
             {spec.steps.map((stepText, idx) => {
               const stepPhase: PosturePreviewPhase = idx === 0 ? 'prepare' : idx === 1 ? 'move' : 'hold';
               const highlighted = previewPhase === stepPhase || (idx === 2 && isHoldingNow);
@@ -2288,19 +2288,19 @@ export function ExercisePostureGuide({
                   key={idx}
                   type="button"
                   onClick={() => setPreviewPhase(previewPhase === stepPhase ? 'auto' : stepPhase)}
-                  className={`rounded-2xl border p-2.5 text-left transition cursor-pointer ${
+                  className={`h-full flex flex-col justify-start rounded-2xl border p-3.5 text-left transition cursor-pointer ${
                     highlighted
                       ? 'border-emerald-400 bg-emerald-50/90 shadow-sm ring-2 ring-emerald-200'
                       : 'border-sky-100 bg-white/85 hover:border-sky-300'
                   }`}
                 >
-                  <div className="flex items-center gap-1.5 text-[11px] font-black text-[#0284C7]">
-                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#0F4C81] text-[10px] font-black text-white">
+                  <div className="flex items-center gap-2 text-xs sm:text-sm font-black text-[#0284C7]">
+                    <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#0F4C81] text-xs font-black text-white">
                       {idx + 1}
                     </span>
                     <span>{idx === 0 ? ui.step1 : idx === 1 ? ui.step2 : ui.step3}</span>
                   </div>
-                  <p className="mt-1.5 text-xs font-semibold leading-snug text-slate-700">
+                  <p className="mt-2 text-sm md:text-base font-bold leading-snug text-slate-700">
                     {stepText}
                   </p>
                 </button>

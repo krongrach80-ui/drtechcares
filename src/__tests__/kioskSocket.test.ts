@@ -42,6 +42,7 @@ import {
   lerpPoseLandmarksAlpha,
   mapVideoPointToCoverCanvas,
   measureLiveJointAngleAndTilt,
+  resolveUnifiedKioskCoachingBanner,
   sanitizeAndStabilizePoseLandmarks,
   stepSmoothRomAngle,
   validateTetheredHandLandmarks21,
@@ -3135,6 +3136,84 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
         canvasH: 480,
       }).valid,
     ).toBe(true);
+  });
+
+  it('resolves unified external coaching banner with dynamic BOTH/LEFT/RIGHT messages and hold-lower prompt', () => {
+    const bothEx = {
+      exercise_id: 'sched-both-flex',
+      catalog_exercise_id: 'STROKE_SH_FLEX',
+      effective_code: 'STROKE_SH_FLEX_BOTH',
+      prescribed_side: 'BOTH' as const,
+      name_th: '[Stroke ADL] ยกแขนไปด้านหน้า (ฝึกเอื้อม/สวมเสื้อ) — ทั้งสองข้างพร้อมกัน (Both)',
+      name_en: 'Stroke ADL: Forward Shoulder Flexion (Both Arms)',
+      target_joint: 'right_shoulder' as const,
+      expected_plane: 'flexion' as const,
+      target_rom_deg: 125,
+      hold_sec: 3,
+      target_reps: 10,
+    };
+    const bothWrongBanner = resolveUnifiedKioskCoachingBanner({
+      exercise: bothEx,
+      expectedPlane: 'flexion',
+      kioskState: 'ACTIVE_REP',
+      wrongLimbAlert: true,
+      wrongPlaneAlert: false,
+      trunkLeanAlert: false,
+      shoulderHikeAlert: false,
+      tooFastAlert: false,
+      isMultiPerson: false,
+      isImpostor: false,
+      holdRemainingSec: 3,
+      holdTargetSec: 3,
+      currentRomDeg: 10,
+      targetRomDeg: 125,
+      validReps: 0,
+      targetReps: 10,
+    });
+    expect(bothWrongBanner.titleTh).toBe('⚠️ ท่านี้ต้องยกแขนทั้ง 2 ข้างพร้อมกัน (Both Arms)');
+    expect(bothWrongBanner.subtitleTh).not.toContain('เฉพาะข้างขวา');
+
+    const leftWrongBanner = resolveUnifiedKioskCoachingBanner({
+      exercise: { ...bothEx, prescribed_side: 'LEFT', target_joint: 'left_shoulder', name_th: 'ยกแขนซ้าย' },
+      expectedPlane: 'flexion',
+      kioskState: 'ACTIVE_REP',
+      wrongLimbAlert: true,
+      wrongPlaneAlert: false,
+      trunkLeanAlert: false,
+      shoulderHikeAlert: false,
+      tooFastAlert: false,
+      isMultiPerson: false,
+      isImpostor: false,
+      holdRemainingSec: 3,
+      holdTargetSec: 3,
+      currentRomDeg: 10,
+      targetRomDeg: 125,
+      validReps: 0,
+      targetReps: 10,
+    });
+    expect(leftWrongBanner.titleTh).toBe('⚠️ ท่านี้ฝึกเฉพาะข้างซ้าย (Left Arm Only)');
+    expect(leftWrongBanner.subtitleTh).toContain('ลดแขนขวาลง');
+
+    const holdDoneWaitLower = resolveUnifiedKioskCoachingBanner({
+      exercise: bothEx,
+      expectedPlane: 'flexion',
+      kioskState: 'HOLD_PHASE',
+      wrongLimbAlert: false,
+      wrongPlaneAlert: false,
+      trunkLeanAlert: false,
+      shoulderHikeAlert: false,
+      tooFastAlert: false,
+      isMultiPerson: false,
+      isImpostor: false,
+      holdRemainingSec: 0,
+      holdTargetSec: 3,
+      currentRomDeg: 128,
+      targetRomDeg: 125,
+      validReps: 1,
+      targetReps: 10,
+    });
+    expect(holdDoneWaitLower.tone).toBe('sky');
+    expect(holdDoneWaitLower.titleTh).toBe('✅ ค้างครบเวลาแล้ว! ค่อยๆ เอาแขนลงข้างลำตัวเพื่อนับ +1 ครั้ง');
   });
 });
 

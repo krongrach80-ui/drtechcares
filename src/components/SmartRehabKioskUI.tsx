@@ -645,6 +645,199 @@ export function measureLiveJointAngleAndTilt(
   };
 }
 
+export interface UnifiedCoachingBannerSpec {
+  tone: 'emerald' | 'sky' | 'amber' | 'rose' | 'slate';
+  titleTh: string;
+  subtitleTh: string;
+  badgeTh?: string;
+  suggestedRomDeg?: number | null;
+  fatigueRestSec?: number;
+  showSafetyAcknowledge?: boolean;
+}
+
+/**
+ * Resolves a single non-overlapping coaching banner rendered cleanly BELOW the camera
+ * viewport using canonical exercise side resolution so BOTH/LEFT exercises never show right-arm warnings.
+ */
+export function resolveUnifiedKioskCoachingBanner(params: {
+  exercise: ExerciseMetaHint & { name_th: string; name_en: string; hold_sec: number; target_reps: number; target_rom_deg: number };
+  expectedPlane: ExpectedMovementPlane;
+  kioskState: string;
+  wrongLimbAlert: boolean;
+  wrongPlaneAlert: boolean;
+  trunkLeanAlert: boolean;
+  shoulderHikeAlert: boolean;
+  tooFastAlert: boolean;
+  isMultiPerson: boolean;
+  isImpostor: boolean;
+  ownerRehabGuardAlert?: { text: string; status: string } | null;
+  strokeSafetyAlert?: { type: string; messageTh: string; suggestedRom?: number } | null;
+  fatigueRestSec?: number;
+  safetyGuardBannerTh?: string | null;
+  framingHintTh?: string | null;
+  repSuccessToastTh?: string | null;
+  holdRemainingSec: number;
+  holdTargetSec: number;
+  currentRomDeg: number;
+  targetRomDeg: number;
+  validReps: number;
+  targetReps: number;
+  calibrationMessageTh?: string | null;
+}): UnifiedCoachingBannerSpec {
+  const activeSide =
+    resolveExerciseSideFromMeta(params.exercise, params.exercise.target_joint, params.expectedPlane) ??
+    (/both|ทั้งสองข้าง|ทั้ง\s*2\s*ข้าง|ประสานมือ|bobath/i.test(
+      `${params.exercise.name_th} ${params.exercise.name_en}`,
+    )
+      ? 'BOTH'
+      : undefined);
+
+  if (params.ownerRehabGuardAlert) {
+    const isCritical =
+      params.ownerRehabGuardAlert.status === 'IMPOSTOR_FACE' ||
+      params.ownerRehabGuardAlert.status === 'INTRUDER_HAND';
+    return {
+      tone: isCritical ? 'rose' : 'amber',
+      titleTh: params.ownerRehabGuardAlert.text,
+      subtitleTh: 'กรุณาให้ผู้ป่วยเจ้าของบัญชีฝึกเพียงลำพังหน้ากล้องครับ',
+      badgeTh: '0 REPS ADDED',
+    };
+  }
+
+  if (params.isImpostor || params.isMultiPerson) {
+    return {
+      tone: params.isImpostor ? 'rose' : 'amber',
+      titleTh: params.isImpostor
+        ? '🚫 ผู้ใช้งานไม่ใช่คนไข้ที่ลงทะเบียนไว้'
+        : '⚠️ พบมากกว่า 1 คนในเฟรม • ระบบหยุดนับชั่วคราว',
+      subtitleTh: params.isImpostor
+        ? 'กรุณาให้คนไข้ตัวจริงเข้าฝึกครับ ระบบจะไม่นับรอบให้บุคคลอื่น'
+        : 'กรุณาให้คนไข้ยืนหน้ากล้องเพียงลำพัง ระบบจึงจะนับรอบการฝึกต่อครับ',
+      badgeTh: params.isImpostor ? 'LOCKED' : 'PAUSED',
+    };
+  }
+
+  if (params.wrongLimbAlert) {
+    if (activeSide === 'BOTH') {
+      return {
+        tone: 'rose',
+        titleTh: '⚠️ ท่านี้ต้องยกแขนทั้ง 2 ข้างพร้อมกัน (Both Arms)',
+        subtitleTh: 'กรุณายกแขนทั้งข้างซ้ายและข้างขวาขึ้นพร้อมกันให้ได้ระดับเดียวกันครับ',
+        badgeTh: 'BOTH ARMS',
+      };
+    }
+    if (activeSide === 'LEFT') {
+      return {
+        tone: 'rose',
+        titleTh: '⚠️ ท่านี้ฝึกเฉพาะข้างซ้าย (Left Arm Only)',
+        subtitleTh: 'กรุณาลดแขนขวาลงข้างลำตัว และยกเฉพาะแขนซ้ายข้างเดียวครับ',
+        badgeTh: 'LEFT ONLY',
+      };
+    }
+    return {
+      tone: 'rose',
+      titleTh: '⚠️ ท่านี้ฝึกเฉพาะข้างขวา (Right Arm Only)',
+      subtitleTh: 'กรุณาลดแขนซ้ายลงข้างลำตัว และยกเฉพาะแขนขวาข้างเดียวครับ',
+      badgeTh: 'RIGHT ONLY',
+    };
+  }
+
+  if (params.wrongPlaneAlert) {
+    const planePrompt = getPrescribedPlanePromptTh(params.expectedPlane);
+    return {
+      tone: 'amber',
+      titleTh: `⚠️ เคลื่อนไหวผิดทิศทาง — กรุณา${planePrompt.requiredPlaneTh}`,
+      subtitleTh: planePrompt.bannerAlertTh,
+      badgeTh: `กำลัง${planePrompt.wrongPlaneTh}`,
+    };
+  }
+
+  if (
+    params.trunkLeanAlert ||
+    params.shoulderHikeAlert ||
+    params.tooFastAlert ||
+    (params.strokeSafetyAlert && params.strokeSafetyAlert.type !== 'emergency') ||
+    params.safetyGuardBannerTh ||
+    (params.fatigueRestSec ?? 0) > 0
+  ) {
+    const titleTh =
+      params.strokeSafetyAlert?.messageTh ??
+      params.safetyGuardBannerTh ??
+      (params.trunkLeanAlert
+        ? '⚠️ ตรวจพบการเอียงลำตัวช่วย — กรุณารักษาลำตัวให้ตรงครับ'
+        : params.shoulderHikeAlert
+          ? '⚠️ ผ่อนคลายหัวไหล่ลง อย่ายักไหล่ช่วยยกนะครับ'
+          : '⚠️ ช้าลงนิดนึงครับ ไม่ต้องฝืนยกสูงเกินไปนะครับ');
+    const subtitleTh =
+      (params.fatigueRestSec ?? 0) > 0
+        ? `พักผ่อนคลายกล้ามเนื้อ ${params.fatigueRestSec} วินาที — จับราวจับหรือนั่งพักก่อนฝึกต่อได้ครับ`
+        : 'เคลื่อนไหวช้าๆ มั่นคง ตามช่วงองศาที่ปลอดภัยครับ';
+    return {
+      tone: 'amber',
+      titleTh,
+      subtitleTh,
+      suggestedRomDeg: params.strokeSafetyAlert?.suggestedRom ?? null,
+      fatigueRestSec: params.fatigueRestSec ?? 0,
+      showSafetyAcknowledge: Boolean(params.strokeSafetyAlert || (params.fatigueRestSec ?? 0) > 0),
+    };
+  }
+
+  const waitLowerRequested = Boolean(
+    params.repSuccessToastTh &&
+      (params.repSuccessToastTh.includes('เอาแขนลง') || params.repSuccessToastTh.includes('ค้างครบ')),
+  );
+  if (waitLowerRequested || (params.kioskState === 'HOLD_PHASE' && params.holdRemainingSec <= 0)) {
+    return {
+      tone: 'sky',
+      titleTh: '✅ ค้างครบเวลาแล้ว! ค่อยๆ เอาแขนลงข้างลำตัวเพื่อนับ +1 ครั้ง',
+      subtitleTh: 'ลดแขนลงกลับสู่ท่าพักช้าๆ ระบบจะบันทึก +1 ครั้งให้อัตโนมัติ',
+      badgeTh: 'WAIT LOWER',
+    };
+  }
+
+  if (params.repSuccessToastTh || params.kioskState === 'REP_COMPLETED' || params.kioskState === 'SET_FINISHED') {
+    return {
+      tone: 'emerald',
+      titleTh: params.repSuccessToastTh ?? `🎉 ยอดเยี่ยม! ได้ +1 ครั้งแล้ว (${params.validReps}/${params.targetReps})`,
+      subtitleTh: 'ค่อยๆ เตรียมพร้อมสำหรับรอบถัดไปตามจังหวะที่สบายครับ',
+      badgeTh: `${params.validReps}/${params.targetReps} REPS`,
+    };
+  }
+
+  if (params.kioskState === 'HOLD_PHASE') {
+    return {
+      tone: 'emerald',
+      titleTh: `⏳ กำลังค้างท่าเป้าหมาย — ค้างต่ออีก ${params.holdRemainingSec.toFixed(1)} วินาที`,
+      subtitleTh: 'ค้างไว้ให้นิ่งที่สุดครับ ครบเวลาแล้วค่อยๆ ลดแขนลงเพื่อนับรอบ',
+      badgeTh: `${params.holdRemainingSec.toFixed(1)}s LEFT`,
+    };
+  }
+
+  if (params.framingHintTh || params.calibrationMessageTh) {
+    return {
+      tone: 'amber',
+      titleTh: params.framingHintTh ?? params.calibrationMessageTh ?? 'กรุณาจัดตำแหน่งร่างกายหน้ากล้อง',
+      subtitleTh: 'ยืนห่างกล้อง ~1.8–2.2 เมตร ให้กล้องเห็นศีรษะ ไหล่ และลำตัวชัดเจน',
+    };
+  }
+
+  const movePrompt =
+    activeSide === 'BOTH'
+      ? '✋ ยกแขนทั้ง 2 ข้างขึ้นพร้อมกันถึงมุมเป้าหมาย'
+      : activeSide === 'LEFT'
+        ? '✋ ยกแขนข้างซ้ายขึ้นถึงมุมเป้าหมาย'
+        : activeSide === 'RIGHT'
+          ? '✋ ยกแขนข้างขวาขึ้นถึงมุมเป้าหมาย'
+          : '🏃 เคลื่อนไหวตามท่าทางเป้าหมายอย่างต่อเนื่อง';
+
+  return {
+    tone: 'emerald',
+    titleTh: movePrompt,
+    subtitleTh: `มุมปัจจุบัน ${Math.round(params.currentRomDeg)}° / เป้าหมาย ${Math.round(params.targetRomDeg)}° • ค้าง ${params.holdTargetSec.toFixed(1)} วินาที แล้วลดแขนลงเพื่อนับ +1 ครั้ง`,
+    badgeTh: `${Math.round(params.currentRomDeg)}° / ${Math.round(params.targetRomDeg)}°`,
+  };
+}
+
 /**
  * Smooths noisy joint ROM readings with a compact anti-jitter deadband and instant
  * fast-pursuit slew rate so gauge arcs and degree readouts lock onto rapid arm motion.
@@ -1710,79 +1903,8 @@ export function drawLivePoseOverlayOnCanvas(
     ctx.fillText(badgeText, jx, jy);
   }
 
-  // On-body alert badge when patient raises in wrong movement plane (e.g. side abduction instead of forward flexion)
-  if (opts.wrongPlaneRaised && !opts.wrongSideRaised) {
-    const activeElbowIdx =
-      opts.targetJoint === 'left_shoulder' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW;
-    const activeShIdx =
-      opts.targetJoint === 'left_shoulder' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER;
-    const activeLm = primary[activeElbowIdx] ?? primary[activeShIdx] ?? primary[POSE_INDEX.NOSE];
-    const planeInfo = getPrescribedPlanePromptTh(opts.expectedPlane ?? 'any');
-    const warnText = `✗ ${planeInfo.wrongPlaneTh} • กรุณา${planeInfo.requiredPlaneTh}`;
-    ctx.font = '800 13px "Sarabun", sans-serif';
-    const wtw = ctx.measureText(warnText).width;
-    const wbw = Math.min(w - 24, wtw + 24);
-    const wbh = 32;
-    const wx = activeLm
-      ? Math.max(wbw / 2 + 12, Math.min(w - wbw / 2 - 12, rawCanvasX(activeLm.x)))
-      : w / 2;
-    const wy = activeLm ? Math.max(88, Math.min(h - 36, rawCanvasY(activeLm.y) - 34)) : 96;
-
-    ctx.fillStyle = 'rgba(220, 38, 38, 0.92)';
-    ctx.strokeStyle = '#FCA5A5';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.roundRect(wx - wbw / 2, wy - wbh / 2, wbw, wbh, 16);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = '#FFFFFF';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(warnText, wx, wy);
-  }
-
-  // Prominent Strict Side Isolation alert banner + on-limb badge when wrong arm / single-arm in BOTH mode
-  if (opts.wrongSideRaised) {
-    const limbInfo = getPrescribedLimbPromptTh(opts.targetJoint, opts.expectedPlane, resolvedDrawSide);
-    const bannerText = opts.wrongSideBannerTh || limbInfo.bannerAlertTh;
-    ctx.font = '800 14px "Sarabun", sans-serif';
-    const bTw = ctx.measureText(bannerText).width;
-    const bBw = Math.min(w - 24, bTw + 28);
-    const bBh = 36;
-    const bX = w / 2;
-    const bY = 34;
-
-    ctx.fillStyle = 'rgba(220, 38, 38, 0.95)';
-    ctx.strokeStyle = '#FCA5A5';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.roundRect(bX - bBw / 2, bY - bBh / 2, bBw, bBh, 18);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = '#FFFFFF';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(bannerText, bX, bY, bBw - 20);
-  } else if (opts.repSuccessBannerTh && !opts.wrongPlaneRaised && !opts.postureBannerTh) {
-    ctx.font = '800 14px "Sarabun", sans-serif';
-    const gTw = ctx.measureText(opts.repSuccessBannerTh).width;
-    const gBw = Math.min(w - 24, gTw + 28);
-    const gBh = 34;
-    ctx.fillStyle = 'rgba(5, 150, 105, 0.94)';
-    ctx.strokeStyle = '#6EE7B7';
-    ctx.lineWidth = 2.2;
-    ctx.beginPath();
-    ctx.roundRect(w / 2 - gBw / 2, 16, gBw, gBh, 17);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = '#FFFFFF';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(opts.repSuccessBannerTh, w / 2, 33, gBw - 18);
-  }
-
+  // All warning & status banners are rendered cleanly BELOW the camera viewport
+  // via resolveUnifiedKioskCoachingBanner so nothing ever blocks the patient's body.
   // Multi-person camera bounding boxes when 2+ people enter view
   if (opts.isMultiPerson || landmarksList.length > 1) {
     landmarksList.forEach((person, pIdx) => {
@@ -1827,33 +1949,6 @@ export function drawLivePoseOverlayOnCanvas(
       ctx.textBaseline = 'middle';
       ctx.fillText(label, x1 + 8, ly + 11);
     });
-  }
-
-  const clinicalAlertBanner = !opts.wrongSideRaised && !opts.wrongPlaneRaised
-    ? opts.postureBannerTh
-      ? { text: `⚠ ${opts.postureBannerTh}`, bg: 'rgba(220, 38, 38, 0.92)', border: '#FCA5A5' }
-      : opts.lowVisibilityAlertTh
-        ? { text: `⚠ ${opts.lowVisibilityAlertTh}`, bg: 'rgba(217, 119, 6, 0.92)', border: '#FDE68A' }
-        : null
-    : null;
-  if (clinicalAlertBanner) {
-    ctx.font = '800 13px "Sarabun", sans-serif';
-    const tw = ctx.measureText(clinicalAlertBanner.text).width;
-    const bw = Math.min(w - 24, tw + 26);
-    const bh = 32;
-    const bx = w / 2;
-    const by = h - 68;
-    ctx.fillStyle = clinicalAlertBanner.bg;
-    ctx.strokeStyle = clinicalAlertBanner.border;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.roundRect(bx - bw / 2, by - bh / 2, bw, bh, 16);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = '#FFFFFF';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(clinicalAlertBanner.text, bx, by, bw - 18);
   }
 
   if (opts.smoothingStatusText) {
@@ -2255,6 +2350,40 @@ export function SmartRehabKioskUI({
   const isHoldPhase = kiosk_state === 'HOLD_PHASE';
   const isRepCelebration = kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED';
   const isEmergency = kiosk_state === 'EMERGENCY_HALT';
+  const isMultiPersonState =
+    kiosk_state === 'PAUSED_MULTI_PERSON' || payload.identity_guard?.status === 'MULTI_PERSON';
+  const isImpostorState =
+    kiosk_state === 'PAUSED_IMPOSTOR' || payload.identity_guard?.status === 'IMPOSTOR';
+  const unifiedCoachingBanner = resolveUnifiedKioskCoachingBanner({
+    exercise: selectedExercise,
+    expectedPlane: activeExpectedPlane,
+    kioskState: kiosk_state,
+    wrongLimbAlert,
+    wrongPlaneAlert,
+    trunkLeanAlert,
+    shoulderHikeAlert,
+    tooFastAlert,
+    isMultiPerson: isMultiPersonState,
+    isImpostor: isImpostorState,
+    ownerRehabGuardAlert,
+    strokeSafetyAlert,
+    fatigueRestSec,
+    safetyGuardBannerTh: telemetry_analysis.safety_guard_banner_th,
+    framingHintTh: liveFramingHintTh,
+    repSuccessToastTh,
+    holdRemainingSec: rep_counter.hold_remaining_sec,
+    holdTargetSec: selectedExercise.hold_sec,
+    currentRomDeg: telemetry_analysis.current_rom_deg,
+    targetRomDeg: effectiveTargetRomDeg,
+    validReps: rep_counter.valid_reps,
+    targetReps: selectedExercise.target_reps,
+    calibrationMessageTh:
+      !isDemoMode && livePoseActive && !isEdgeDirectCamera && !cameraReady && !cameraError
+        ? '⏳ กำลังเปิดกล้องตรวจจับท่าทาง...'
+        : payload.calibration && !payload.calibration.is_calibrated
+          ? payload.calibration.message_th
+          : null,
+  });
 
   const handleEmergencyStopClick = (customReason?: string) => {
     const reasonMsg =
@@ -3815,31 +3944,31 @@ export function SmartRehabKioskUI({
         />
       </div>
 
-      {/* Main Container */}
-      <div className="relative z-10 mx-auto flex min-h-screen max-w-[1600px] flex-col justify-between gap-4 p-3 sm:p-5">
-        {/* 2. Top Status Bar (Glass Header) */}
-        <header className="glass-card flex flex-wrap items-center justify-between gap-3 rounded-3xl px-4 py-3 sm:px-6">
+      {/* Main Full-Width Widescreen Container */}
+      <div className="relative z-10 w-full max-w-[1680px] mx-auto px-3 sm:px-5 py-2.5 flex min-h-screen flex-col justify-between gap-2.5">
+        {/* 2. Compact 1-Row Top Status Header */}
+        <header className="glass-card flex flex-wrap items-center justify-between gap-2 rounded-2xl p-3">
           {/* Left: Logo + Edge Vision Connection Status */}
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-2.5">
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-[#0284C7] to-[#10B981] text-white shadow-md">
-                <HeartPulse className="h-6 w-6" />
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div className="flex items-center gap-2">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#0284C7] to-[#10B981] text-white shadow-sm">
+                <HeartPulse className="h-5 w-5" />
               </div>
               <div>
-                <h1 className="text-lg font-extrabold tracking-tight text-[#0F4C81] sm:text-xl">
+                <h1 className="text-base font-extrabold tracking-tight text-[#0F4C81] sm:text-lg leading-none">
                   DRTECH<span className="text-[#0D9488]">CARES</span>
                 </h1>
-                <p className="text-[11px] font-semibold text-[#0284C7]">Smart Rehabilitation Kiosk</p>
+                <p className="text-[10px] font-semibold text-[#0284C7]">Smart Rehabilitation Kiosk</p>
               </div>
             </div>
 
             <div
-              className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-bold ${!isDemoMode && (connectionStatus === 'connected' || livePoseActive)
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${!isDemoMode && (connectionStatus === 'connected' || livePoseActive)
                   ? 'border-emerald-200 bg-emerald-50 text-[#0D9488]'
                   : 'border-sky-200 bg-sky-50 text-[#0284C7]'
                 }`}
             >
-              <span className="relative flex h-2.5 w-2.5">
+              <span className="relative flex h-2 w-2">
                 <span
                   className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 ${!isDemoMode && (connectionStatus === 'connected' || livePoseActive)
                       ? 'bg-[#10B981]'
@@ -3847,7 +3976,7 @@ export function SmartRehabKioskUI({
                     }`}
                 />
                 <span
-                  className={`relative inline-flex h-2.5 w-2.5 rounded-full ${!isDemoMode && (connectionStatus === 'connected' || livePoseActive)
+                  className={`relative inline-flex h-2 w-2 rounded-full ${!isDemoMode && (connectionStatus === 'connected' || livePoseActive)
                       ? 'bg-[#10B981]'
                       : 'bg-[#0284C7]'
                     }`}
@@ -3855,70 +3984,66 @@ export function SmartRehabKioskUI({
               </span>
               {!isDemoMode && (connectionStatus === 'connected' || livePoseActive) ? (
                 <>
-                  <Wifi className="h-3.5 w-3.5" />
+                  <Wifi className="h-3 w-3" />
                   <span>
                     {connectionStatus === 'connected'
-                      ? 'Connected to Edge Vision (Heavy 3D)'
-                      : 'Live AI Heavy 3D Active'}
+                      ? 'Edge Vision 3D'
+                      : 'Live AI 3D Active'}
                   </span>
                 </>
               ) : !isDemoMode ? (
                 <>
-                  <WifiOff className="h-3.5 w-3.5" />
-                  <span>Edge Vision & Camera Paused</span>
+                  <WifiOff className="h-3 w-3" />
+                  <span>Camera Paused</span>
                 </>
               ) : (
                 <>
-                  <WifiOff className="h-3.5 w-3.5" />
+                  <WifiOff className="h-3 w-3" />
                   <span>
                     {connectionStatus === 'connected'
-                      ? 'Demo Simulator (Live Paused)'
-                      : 'Demo Simulator Mode'}
+                      ? 'Demo (Live Paused)'
+                      : 'Demo Mode'}
                   </span>
                 </>
               )}
             </div>
+
+            {/* Patient Profile Badge inline when active */}
+            <AnimatePresence>
+              {patientRevealed && patient && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.96 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="flex items-center gap-2 rounded-xl border border-emerald-200/90 bg-white/90 px-3 py-1 shadow-xs"
+                >
+                  <UserCheck className="h-3.5 w-3.5 text-[#0D9488]" />
+                  <span className="text-xs font-bold text-[#0F4C81]">{patient.name}</span>
+                  <span className="tabular-mono text-[11px] font-semibold text-[#0284C7]">
+                    ({patient.id} • {rep_counter.valid_reps}/{selectedExercise.target_reps})
+                  </span>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
-          {/* Center: Patient Profile Badge */}
-          <AnimatePresence>
-            {patientRevealed && patient && (
-              <motion.div
-                initial={{ opacity: 0, y: -10, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="flex items-center gap-3 rounded-2xl border border-emerald-200/90 bg-white/90 px-4 py-1.5 shadow-sm"
-              >
-                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-100 text-[#0D9488]">
-                  <UserCheck className="h-4 w-4" />
-                </div>
-                <div className="leading-tight">
-                  <p className="text-sm font-bold text-[#0F4C81]">{patient.name}</p>
-                  <p className="tabular-mono text-[11px] font-semibold text-[#0284C7]">
-                    {patient.id} • ความคืบหน้า {rep_counter.valid_reps}/{selectedExercise.target_reps} ครั้ง
-                  </p>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Right: Live Camera Toggle + Voice Mute Toggle + Privacy Mode Switch + Skeleton Overlay Switch + Demo Mode Switch + Portal Switch + Emergency Stop */}
-          <div className="flex flex-wrap items-center gap-2">
+          {/* Right: Compact Action Controls */}
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
               onClick={handleToggleVoiceMute}
               aria-pressed={voiceMuted}
               data-testid="kiosk-voice-mute-toggle"
-              className={`inline-flex items-center gap-2 rounded-2xl border-2 px-3.5 py-2 text-xs font-extrabold shadow-xs transition-all cursor-pointer active:scale-95 sm:text-sm ${
+              className={`inline-flex items-center gap-1.5 rounded-xl border-2 px-2.5 py-1.5 text-xs font-extrabold shadow-xs transition-all cursor-pointer active:scale-95 ${
                 voiceMuted
                   ? 'border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200'
                   : 'border-emerald-400 bg-emerald-100 text-emerald-950 hover:bg-emerald-200'
               }`}
             >
               {voiceMuted ? (
-                <VolumeX className="h-4 w-4 shrink-0 text-amber-700" />
+                <VolumeX className="h-3.5 w-3.5 shrink-0 text-amber-700" />
               ) : (
-                <Volume2 className="h-4 w-4 shrink-0 text-emerald-700" />
+                <Volume2 className="h-3.5 w-3.5 shrink-0 text-emerald-700" />
               )}
               <span>{getSeniorVoiceToggleLabel('th', voiceMuted)}</span>
             </button>
@@ -3933,12 +4058,12 @@ export function SmartRehabKioskUI({
                   toggleDemoMode(false);
                 }
               }}
-              className={`inline-flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-bold transition-all sm:text-sm ${livePoseActive
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-bold transition-all cursor-pointer ${livePoseActive
                   ? 'border-emerald-300 bg-emerald-50 text-[#0D9488]'
                   : 'border-slate-200 bg-white/80 text-slate-600 hover:bg-slate-50'
                 }`}
             >
-              <Camera className="h-4 w-4" />
+              <Camera className="h-3.5 w-3.5" />
               <span>{livePoseActive ? 'กล้อง AI: ON' : 'กล้อง AI: OFF'}</span>
             </button>
 
@@ -3947,17 +4072,13 @@ export function SmartRehabKioskUI({
               onClick={handleTogglePrivacyMode}
               aria-pressed={isPrivacyMode}
               title="สลับระหว่างโหมดความเป็นส่วนตัว (พื้นหลังดำ) และโหมดแสดงภาพกล้องจริง"
-              className={`inline-flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-bold transition-all cursor-pointer sm:text-sm ${isPrivacyMode
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-bold transition-all cursor-pointer ${isPrivacyMode
                   ? 'border-slate-700 bg-slate-900 text-emerald-300 shadow-sm hover:bg-slate-800'
                   : 'border-sky-300 bg-sky-50 text-[#0F4C81] hover:bg-sky-100'
                 }`}
             >
-              {isPrivacyMode ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              <span>
-                {isPrivacyMode
-                  ? 'โหมดความเป็นส่วนตัว (พื้นหลังดำ)'
-                  : 'โหมดแสดงภาพกล้องจริง'}
-              </span>
+              {isPrivacyMode ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              <span>{isPrivacyMode ? 'โหมดความเป็นส่วนตัว' : 'โหมดภาพกล้องจริง'}</span>
             </button>
 
             <button
@@ -3965,34 +4086,30 @@ export function SmartRehabKioskUI({
               onClick={handleToggleSkeletonOverlay}
               aria-pressed={showSkeletonOverlay}
               title="สลับการแสดงหรือซ่อนเส้นโครงกระดูกและมุมข้อต่อบนหน้าจอ"
-              className={`inline-flex items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-bold transition-all cursor-pointer sm:text-sm ${showSkeletonOverlay
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-bold transition-all cursor-pointer ${showSkeletonOverlay
                   ? 'border-teal-300 bg-teal-50 text-[#0D9488] hover:bg-teal-100'
                   : 'border-slate-200 bg-white/80 text-slate-600 hover:bg-slate-50'
                 }`}
             >
-              <Activity className="h-4 w-4" />
-              <span>
-                {showSkeletonOverlay
-                  ? 'แสดง/ซ่อนเส้นโครงกระดูก: ON'
-                  : 'แสดง/ซ่อนเส้นโครงกระดูก: OFF'}
-              </span>
+              <Activity className="h-3.5 w-3.5" />
+              <span>{showSkeletonOverlay ? 'โครงกระดูก: ON' : 'โครงกระดูก: OFF'}</span>
             </button>
 
             <button
               type="button"
               onClick={handleToggleDemoMode}
-              className={`inline-flex items-center gap-2 rounded-2xl border px-3.5 py-2 text-xs font-bold transition-all sm:text-sm ${isDemoMode
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-bold transition-all cursor-pointer ${isDemoMode
                   ? 'border-[#38BDF8] bg-[#E0F2FE] text-[#0F4C81]'
                   : 'border-emerald-300 bg-emerald-50 text-[#0D9488]'
                 }`}
             >
-              <SlidersHorizontal className="h-4 w-4" />
+              <SlidersHorizontal className="h-3.5 w-3.5" />
               <span>
                 {isDemoMode
-                  ? 'Demo Simulator: ON'
+                  ? 'Demo: ON'
                   : isEdgeDirectCamera
-                    ? 'Live Edge: ON'
-                    : 'Demo Simulator: OFF'}
+                    ? 'Edge: ON'
+                    : 'Demo: OFF'}
               </span>
             </button>
 
@@ -4000,9 +4117,9 @@ export function SmartRehabKioskUI({
               <button
                 type="button"
                 onClick={onOpenLegacyKiosk}
-                className="rounded-2xl border border-sky-200 bg-white/80 px-3 py-2 text-xs font-bold text-[#0F4C81] hover:bg-sky-50"
+                className="rounded-xl border border-sky-200 bg-white/80 px-2.5 py-1.5 text-xs font-bold text-[#0F4C81] hover:bg-sky-50 cursor-pointer"
               >
-                โหมดสแกนเต็มระบบ
+                สแกนเต็มระบบ
               </button>
             )}
 
@@ -4010,7 +4127,7 @@ export function SmartRehabKioskUI({
               <button
                 type="button"
                 onClick={onOpenStaffPortal}
-                className="rounded-2xl border border-sky-200 bg-white/80 px-3 py-2 text-xs font-bold text-[#0284C7] hover:bg-sky-50"
+                className="rounded-xl border border-sky-200 bg-white/80 px-2.5 py-1.5 text-xs font-bold text-[#0284C7] hover:bg-sky-50 cursor-pointer"
               >
                 Staff Portal
               </button>
@@ -4019,9 +4136,9 @@ export function SmartRehabKioskUI({
             <button
               type="button"
               onClick={() => handleEmergencyStopClick()}
-              className="inline-flex items-center gap-2 rounded-2xl bg-[#EF4444] px-4 py-2 text-xs font-extrabold text-white shadow-md transition-transform hover:bg-red-600 active:scale-95 sm:text-sm"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-[#EF4444] px-3 py-1.5 text-xs font-extrabold text-white shadow-sm transition-transform hover:bg-red-600 active:scale-95 cursor-pointer"
             >
-              <AlertOctagon className="h-4 w-4" />
+              <AlertOctagon className="h-3.5 w-3.5" />
               <span>หยุดฉุกเฉิน</span>
             </button>
           </div>
@@ -4031,7 +4148,7 @@ export function SmartRehabKioskUI({
         {!isDemoMode && !isEdgeDirectCamera && cameraError && (
           <div
             role="alert"
-            className="glass-card flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-300/90 bg-rose-50/95 px-4 py-2.5 text-rose-950 shadow-sm"
+            className="glass-card flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-300/90 bg-rose-50/95 px-4 py-2 text-rose-950 shadow-sm"
           >
             <div className="flex min-w-0 flex-1 items-center gap-2.5">
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-rose-500/15 text-rose-700">
@@ -4056,64 +4173,10 @@ export function SmartRehabKioskUI({
           </div>
         )}
 
-        {/* Completion Banner when all prescribed exercises are finished */}
-        {(strokeSafetyAlert && strokeSafetyAlert.type !== 'emergency') ||
-          (telemetry_analysis.safety_guard_banner_th && !isEmergency) ||
-          fatigueRestSec > 0 ? (
-          <div className="glass-card flex flex-wrap items-center justify-between gap-3 rounded-3xl border-2 border-amber-400 bg-amber-50/95 px-5 py-3.5 text-amber-950 shadow-md">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-amber-500 text-white shadow">
-                <AlertTriangle className="h-5 w-5" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-sm font-extrabold">
-                  {strokeSafetyAlert?.messageTh ??
-                    telemetry_analysis.safety_guard_banner_th ??
-                    'โหมดพักความปลอดภัยสำหรับผู้ป่วย Stroke (Auto Rest)'}
-                </p>
-                {fatigueRestSec > 0 && (
-                  <p className="text-xs font-bold text-amber-800">
-                    พักผ่อนคลายกล้ามเนื้อ {fatigueRestSec} วินาที — จับราวจับหรือนั่งพักก่อนฝึกต่อได้ครับ
-                  </p>
-                )}
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {(strokeSafetyAlert?.suggestedRom ?? telemetry_analysis.suggested_reduced_rom_deg) ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nextDeg =
-                      strokeSafetyAlert?.suggestedRom ??
-                      telemetry_analysis.suggested_reduced_rom_deg ??
-                      90;
-                    setReducedRomOverrideDeg(nextDeg);
-                    setStrokeSafetyAlert(null);
-                  }}
-                  className="rounded-xl bg-amber-600 px-3.5 py-2 text-xs font-extrabold text-white shadow-sm hover:bg-amber-500 cursor-pointer"
-                >
-                  ลดเป้าหมายเป็น{' '}
-                  {strokeSafetyAlert?.suggestedRom ?? telemetry_analysis.suggested_reduced_rom_deg}°
-                </button>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => {
-                  setStrokeSafetyAlert(null);
-                  setFatigueRestSec(0);
-                }}
-                className="rounded-xl border border-amber-300 bg-white px-3.5 py-2 text-xs font-extrabold text-amber-900 hover:bg-amber-100 cursor-pointer"
-              >
-                {fatigueRestSec > 0 ? 'พร้อมฝึกต่อ' : 'รับทราบ'}
-              </button>
-            </div>
-          </div>
-        ) : null}
-
         {allExercisesCompleted && onAllExercisesCompleted && (
-          <div className="glass-card flex flex-wrap items-center justify-between gap-3 rounded-3xl border-2 border-emerald-400 bg-emerald-50/95 px-5 py-3.5 shadow-lg">
+          <div className="glass-card flex flex-wrap items-center justify-between gap-3 rounded-2xl border-2 border-emerald-400 bg-emerald-50/95 px-4 py-2.5 shadow-md">
             <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-500 text-white shadow">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500 text-white shadow">
                 <CheckCircle2 className="h-5 w-5" />
               </div>
               <div>
@@ -4128,7 +4191,7 @@ export function SmartRehabKioskUI({
             <button
               type="button"
               onClick={onAllExercisesCompleted}
-              className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 px-5 py-2.5 text-xs font-extrabold text-white shadow-md hover:from-emerald-500 hover:to-teal-500 cursor-pointer sm:text-sm"
+              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-2 text-xs font-extrabold text-white shadow-md hover:from-emerald-500 hover:to-teal-500 cursor-pointer sm:text-sm"
             >
               <Gamepad2 className="h-4 w-4" />
               <span>เข้าสู่มินิเกม (ขั้นตอนสุดท้าย) ➔</span>
@@ -4136,10 +4199,10 @@ export function SmartRehabKioskUI({
           </div>
         )}
 
-        {/* 3. Main Clinical Workspace: 16:9 Landscape (~65% Left / ~35% Right), 9:16 Portrait Responsive */}
-        <main className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-12">
-          {/* Left Stage (~65% width): Live AI Camera + Exercise Posture Guide Below Camera */}
-          <section className="flex flex-col gap-4 lg:col-span-8 lg:self-start">
+        {/* 3. Balanced 12-Column Clinical Workspace */}
+        <main className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-12 items-stretch">
+          {/* Left Stage: Unobstructed Camera + Unified Live Coaching Banner Below + Expanded Guide Card */}
+          <section className="lg:col-span-8 flex flex-col gap-3">
             <SkeletonCanvas
               payload={payload}
               exercise={selectedExercise}
@@ -4162,7 +4225,7 @@ export function SmartRehabKioskUI({
                 !isEdgeDirectCamera && livePoseActive && !cameraError ? (
                   <div
                     ref={videoContainerRef}
-                    className={`relative h-full w-full overflow-hidden rounded-2xl ${isPrivacyMode ? 'bg-[#050811]' : 'bg-emerald-950'
+                    className={`relative h-full w-full overflow-hidden rounded-3xl ${isPrivacyMode ? 'bg-[#050811]' : 'bg-emerald-950'
                       }`}
                   >
                     <video
@@ -4178,32 +4241,6 @@ export function SmartRehabKioskUI({
                       aria-label="Live Pose Skeleton & Angle Overlay"
                       className="pointer-events-none absolute inset-0 h-full w-full"
                     />
-                    {repSuccessToastTh && !ownerRehabGuardAlert && (
-                      <div className="pointer-events-none absolute inset-x-4 bottom-4 z-20 flex justify-center">
-                        <div className="rounded-2xl border-2 border-emerald-300 bg-emerald-600/95 px-5 py-2.5 text-sm font-black text-white shadow-xl backdrop-blur-md sm:text-base">
-                          {repSuccessToastTh}
-                        </div>
-                      </div>
-                    )}
-                    {ownerRehabGuardAlert && (
-                      <div className="pointer-events-none absolute inset-x-4 bottom-4 z-20 flex justify-center">
-                        <div
-                          className={`rounded-2xl border-2 px-4 py-2 text-xs sm:text-sm font-black shadow-xl backdrop-blur-md ${ownerRehabGuardAlert.status === 'IMPOSTOR_FACE' ||
-                              ownerRehabGuardAlert.status === 'INTRUDER_HAND'
-                              ? 'border-rose-300 bg-rose-600/95 text-white'
-                              : 'border-amber-200 bg-amber-500/95 text-white'
-                            }`}
-                        >
-                          {ownerRehabGuardAlert.text}
-                        </div>
-                      </div>
-                    )}
-                    <div className="pointer-events-none absolute left-4 top-16 z-10 inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-white/90 px-3 py-1 text-[11px] font-bold text-[#0F4C81] shadow-sm backdrop-blur-md">
-                      <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
-                      <span>
-                        {cameraReady ? '📷 กล้องตรวจจับท่าทางสด (Live AI Pose)' : '⏳ กำลังเปิดกล้อง...'}
-                      </span>
-                    </div>
                   </div>
                 ) : undefined
               }
@@ -4248,7 +4285,92 @@ export function SmartRehabKioskUI({
               )}
             </SkeletonCanvas>
 
-            {/* Exercise-Specific Animated Posture Guide directly below Camera */}
+            {/* Single Unified Live Coaching & Status Bar OUTSIDE Video (Zero Obstruction Inside Camera) */}
+            <div
+              role="status"
+              data-testid="kiosk-unified-coaching-banner"
+              className={`min-h-[64px] rounded-2xl px-5 py-3 flex flex-wrap items-center justify-between gap-4 shadow-sm border-2 transition-colors ${
+                unifiedCoachingBanner.tone === 'rose'
+                  ? 'border-rose-400 bg-rose-50 text-rose-950'
+                  : unifiedCoachingBanner.tone === 'amber'
+                    ? 'border-amber-400 bg-amber-50 text-amber-950'
+                    : unifiedCoachingBanner.tone === 'sky'
+                      ? 'border-sky-400 bg-sky-50 text-[#0F4C81]'
+                      : 'border-emerald-400 bg-emerald-50/95 text-emerald-950'
+              }`}
+            >
+              <div className="flex min-w-0 flex-1 items-center gap-3">
+                <div
+                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white shadow-xs ${
+                    unifiedCoachingBanner.tone === 'rose'
+                      ? 'bg-rose-600'
+                      : unifiedCoachingBanner.tone === 'amber'
+                        ? 'bg-amber-500'
+                        : unifiedCoachingBanner.tone === 'sky'
+                          ? 'bg-sky-600'
+                          : 'bg-emerald-600'
+                  }`}
+                >
+                  {unifiedCoachingBanner.tone === 'rose' || unifiedCoachingBanner.tone === 'amber' ? (
+                    <AlertTriangle className="h-5 w-5" />
+                  ) : (
+                    <CheckCircle2 className="h-5 w-5" />
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm sm:text-base font-black leading-tight">
+                    {unifiedCoachingBanner.titleTh}
+                  </p>
+                  <p className="mt-0.5 text-xs sm:text-sm font-bold opacity-85">
+                    {unifiedCoachingBanner.subtitleTh}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {unifiedCoachingBanner.suggestedRomDeg ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextDeg = unifiedCoachingBanner.suggestedRomDeg ?? 90;
+                      setReducedRomOverrideDeg(nextDeg);
+                      setStrokeSafetyAlert(null);
+                    }}
+                    className="rounded-xl bg-amber-600 px-3 py-1.5 text-xs font-extrabold text-white shadow-xs hover:bg-amber-500 cursor-pointer"
+                  >
+                    ลดเป้าหมายเป็น {unifiedCoachingBanner.suggestedRomDeg}°
+                  </button>
+                ) : null}
+                {unifiedCoachingBanner.showSafetyAcknowledge ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStrokeSafetyAlert(null);
+                      setFatigueRestSec(0);
+                    }}
+                    className="rounded-xl border border-amber-300 bg-white px-3 py-1.5 text-xs font-extrabold text-amber-900 hover:bg-amber-100 cursor-pointer"
+                  >
+                    {(unifiedCoachingBanner.fatigueRestSec ?? 0) > 0 ? 'พร้อมฝึกต่อ' : 'รับทราบ'}
+                  </button>
+                ) : unifiedCoachingBanner.badgeTh ? (
+                  <span
+                    className={`rounded-full px-3 py-1 text-xs font-black tracking-wide whitespace-nowrap ${
+                      unifiedCoachingBanner.tone === 'rose'
+                        ? 'bg-rose-600 text-white'
+                        : unifiedCoachingBanner.tone === 'amber'
+                          ? 'bg-amber-200 text-amber-950'
+                          : unifiedCoachingBanner.tone === 'sky'
+                            ? 'bg-sky-200 text-[#0F4C81]'
+                            : 'bg-emerald-200 text-emerald-950'
+                    }`}
+                  >
+                    {unifiedCoachingBanner.badgeTh}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+
+            {/* Exercise-Specific Animated Posture Guide filling remaining height */}
             <ExercisePostureGuide
               exercise={selectedExercise}
               currentRomDeg={telemetry_analysis.current_rom_deg}
@@ -4257,10 +4379,10 @@ export function SmartRehabKioskUI({
             />
           </section>
 
-          {/* Right Telemetry Panel (~35% width) */}
-          <aside className="flex flex-col gap-4 lg:col-span-4">
-            {/* Card 1: Exercise Prescription Header */}
-            <div className="glass-card rounded-3xl p-5">
+          {/* Right Telemetry Panel (~33% width, aligned bottom-to-bottom with Left Column) */}
+          <aside className="lg:col-span-4 flex flex-col justify-between gap-3">
+            {/* Card 1: Active Exercise Info & Playlist */}
+            <div className="glass-card rounded-3xl p-4 sm:p-5 flex flex-col justify-between gap-3">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-100/90 px-3 py-1 text-[11px] font-bold text-[#0284C7]">
@@ -4268,7 +4390,9 @@ export function SmartRehabKioskUI({
                     ท่าที่ {currentExerciseIndex + 1} จาก {exerciseOptions.length} • เซต{' '}
                     {selectedExercise.target_sets ?? 1} × {selectedExercise.target_reps} ครั้ง
                   </span>
-                  <h2 className="mt-2 text-xl font-extrabold text-[#0F4C81]">{selectedExercise.name_th}</h2>
+                  <h2 className="mt-2 text-lg sm:text-xl font-extrabold text-[#0F4C81] leading-snug">
+                    {selectedExercise.name_th}
+                  </h2>
                   <p className="text-xs font-semibold text-[#0284C7]">{selectedExercise.name_en}</p>
                   {(selectedExercise.target_joint === 'left_shoulder' ||
                     selectedExercise.target_joint === 'right_shoulder' ||
@@ -4317,7 +4441,7 @@ export function SmartRehabKioskUI({
                 </div>
               </div>
 
-              <div className="mt-3 flex max-h-36 flex-wrap gap-1.5 overflow-y-auto pr-1">
+              <div className="flex max-h-36 flex-wrap gap-1.5 overflow-y-auto pr-1">
                 {exerciseOptions.map((opt, idx) => {
                   const active = opt.exercise_id === selectedExercise.exercise_id;
                   const done = completedIds.includes(opt.exercise_id);
@@ -4341,23 +4465,8 @@ export function SmartRehabKioskUI({
               </div>
             </div>
 
-            {/* Card 2: Hero ROM Angle Gauge */}
-            <RomGauge
-              currentRomDeg={telemetry_analysis.current_rom_deg}
-              targetRomDeg={effectiveTargetRomDeg}
-              completionPct={
-                effectiveTargetRomDeg > 0
-                  ? Math.min(100, Math.round((telemetry_analysis.current_rom_deg / effectiveTargetRomDeg) * 100))
-                  : telemetry_analysis.rom_completion_pct
-              }
-              kioskState={kiosk_state}
-              highlightColor={ui_directives.highlight_color}
-              holdRemainingSec={rep_counter.hold_remaining_sec}
-              holdTargetSec={selectedExercise.hold_sec}
-            />
-
-            {/* Card 3: Repetition & Hold Counter */}
-            <div className="glass-card relative overflow-hidden rounded-3xl p-5">
+            {/* Card 2: Combined Large RANGE OF MOTION Gauge + Rep Counter & Hold Timer */}
+            <div className="glass-card relative overflow-hidden rounded-3xl p-4 sm:p-5 flex flex-col gap-3">
               {/* Emerald Shockwave Ripple on Rep Completion */}
               <AnimatePresence>
                 {isRepCelebration && (
@@ -4372,7 +4481,22 @@ export function SmartRehabKioskUI({
                 )}
               </AnimatePresence>
 
-              <div className="grid grid-cols-2 gap-3">
+              <RomGauge
+                embedded
+                currentRomDeg={telemetry_analysis.current_rom_deg}
+                targetRomDeg={effectiveTargetRomDeg}
+                completionPct={
+                  effectiveTargetRomDeg > 0
+                    ? Math.min(100, Math.round((telemetry_analysis.current_rom_deg / effectiveTargetRomDeg) * 100))
+                    : telemetry_analysis.rom_completion_pct
+                }
+                kioskState={kiosk_state}
+                highlightColor={ui_directives.highlight_color}
+                holdRemainingSec={rep_counter.hold_remaining_sec}
+                holdTargetSec={selectedExercise.hold_sec}
+              />
+
+              <div className="border-t border-sky-100 pt-3 grid grid-cols-2 gap-3">
                 {/* Valid Reps */}
                 <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-white to-emerald-50/70 p-3.5">
                   <p className="text-xs font-bold text-[#0D9488]">จำนวนครั้งที่ถูกต้อง</p>
@@ -4382,11 +4506,11 @@ export function SmartRehabKioskUI({
                       initial={{ y: -10, scale: 1.25, opacity: 0.4 }}
                       animate={{ y: 0, scale: 1, opacity: 1 }}
                       transition={{ type: 'spring', stiffness: 320, damping: 18 }}
-                      className="tabular-mono text-3xl font-extrabold text-[#0F4C81]"
+                      className="tabular-mono text-3xl sm:text-4xl font-extrabold text-[#0F4C81]"
                     >
                       {rep_counter.valid_reps}
                     </motion.span>
-                    <span className="tabular-mono text-sm font-bold text-[#0F4C81]/60">
+                    <span className="tabular-mono text-sm font-bold text-[#0F4C81]/65">
                       / {selectedExercise.target_reps} ครั้ง
                     </span>
                   </div>
@@ -4405,7 +4529,7 @@ export function SmartRehabKioskUI({
                   </p>
                   <div
                     ref={holdTimerTextRef}
-                    className="tabular-mono mt-1 text-3xl font-extrabold"
+                    className="tabular-mono mt-1 text-3xl sm:text-4xl font-extrabold"
                   >
                     {rep_counter.hold_remaining_sec.toFixed(1)}s
                   </div>
@@ -4441,7 +4565,7 @@ export function SmartRehabKioskUI({
               </div>
 
               {/* Rep Visual Dots */}
-              <div className="mt-3.5 flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5">
                 {Array.from({ length: selectedExercise.target_reps }).map((_, idx) => {
                   const done = idx < rep_counter.valid_reps;
                   return (
@@ -4456,8 +4580,8 @@ export function SmartRehabKioskUI({
                 })}
               </div>
 
-              {/* Action Controls: Manual Test Rep (Debug/Demo/Staff only) / Complete Current Exercise -> Next or Final Minigame */}
-              <div className="mt-3.5 flex flex-col gap-2">
+              {/* Action Controls */}
+              <div className="flex flex-col gap-2">
                 {canShowManualRepButton && (
                   <button
                     type="button"
@@ -4500,8 +4624,8 @@ export function SmartRehabKioskUI({
               </div>
             </div>
 
-            {/* Card 4: Biomechanical Form Checklist */}
-            <div className="glass-card rounded-3xl p-5">
+            {/* Card 3: Biomechanical Form Checklist filling bottom of right column */}
+            <div className="glass-card rounded-3xl p-4 sm:p-5 flex-1 flex flex-col justify-between">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <button
                   type="button"
