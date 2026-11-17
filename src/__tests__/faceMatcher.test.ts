@@ -320,74 +320,124 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     expect(classifyDisplayBucket(0, -8)).toBe('up');
     expect(classifyDisplayBucket(0, 8)).toBe('down');
 
-    // Step 1 (center 0..39): accepts center ONLY; rejects left/right/up/down!
+    // Step 1 (center 0..39): accepts centered frontal faces (|rawYaw| <= 22) even if pitch is offset; rejects |yaw| > 22
     const inStep1 = { center: 10, left: 0, right: 0, up: 0, down: 0 };
     expect(getActiveEnrollmentStage(inStep1)?.key).toBe('center');
     expect(chooseCaptureBucket(0, 0, inStep1)).toBe('center');
     expect(chooseCaptureBucket(-12, 0, inStep1)).toBe('center');
-    expect(chooseCaptureBucket(-20, 0, inStep1)).toBeNull();
-    expect(chooseCaptureBucket(20, 0, inStep1)).toBeNull();
-    expect(chooseCaptureBucket(0, 15, inStep1)).toBeNull();
+    expect(chooseCaptureBucket(0, 15, inStep1)).toBe('center');
+    expect(chooseCaptureBucket(-25, 0, inStep1)).toBeNull();
+    expect(chooseCaptureBucket(25, 0, inStep1)).toBeNull();
 
-    // Step 2 (left 0..19): unlocks ONLY left; right, up, down, center are strictly locked (null)!
+    // Step 2 (left 0..19): forgiving 4° left turn, 2.5° steady >= 400ms, or 1.2s anti-stall; rejects opposite right turn without anti-stall
     const inStep2 = { center: 40, left: 1, right: 0, up: 0, down: 0 };
     expect(getActiveEnrollmentStage(inStep2)?.key).toBe('left');
-    expect(chooseCaptureBucket(-9, 0, inStep2)).toBe('left');
+    expect(chooseCaptureBucket(-4.5, 0, inStep2)).toBe('left');
+    expect(chooseCaptureBucket(-2.8, 0, inStep2, { steadyTurnMs: 450 })).toBe('left');
+    expect(chooseCaptureBucket(0, 0, inStep2, { stageWaitMs: 1250 })).toBe('left');
     expect(chooseCaptureBucket(3, 0, inStep2)).toBeNull();
     expect(chooseCaptureBucket(15, 0, inStep2)).toBeNull();
     expect(chooseCaptureBucket(0, -10, inStep2)).toBeNull();
     expect(chooseCaptureBucket(0, 12, inStep2)).toBeNull();
     expect(buildWrongDirectionCue('left', 14, 0, 'th')).toContain('ซ้าย');
 
-    // Step 3 (right 0..19): unlocks right ONLY after left reaches 20/20
+    // Step 3 (right 0..19): unlocks right after left reaches 20/20 (4° turn, 2.5° steady, or 1.2s anti-stall)
     const inStep3 = { center: 40, left: 20, right: 0, up: 0, down: 0 };
     expect(getActiveEnrollmentStage(inStep3)?.key).toBe('right');
-    expect(chooseCaptureBucket(9, 0, inStep3)).toBe('right');
+    expect(chooseCaptureBucket(4.5, 0, inStep3)).toBe('right');
+    expect(chooseCaptureBucket(2.8, 0, inStep3, { steadyTurnMs: 450 })).toBe('right');
+    expect(chooseCaptureBucket(0, 0, inStep3, { stageWaitMs: 1250 })).toBe('right');
     expect(chooseCaptureBucket(-15, 0, inStep3)).toBeNull();
     expect(chooseCaptureBucket(0, -10, inStep3)).toBeNull();
     expect(chooseCaptureBucket(0, 10, inStep3)).toBeNull();
 
-    // Step 4 (up 0..19): unlocks up ONLY after right reaches 20/20
+    // Step 4 (up 0..19): unlocks up on -3.5° pitch, >=2% nose upward shift, or 1.2s anti-stall
     const inStep4 = { center: 40, left: 20, right: 20, up: 0, down: 0 };
     expect(getActiveEnrollmentStage(inStep4)?.key).toBe('up');
-    expect(chooseCaptureBucket(0, -7, inStep4)).toBe('up');
+    expect(chooseCaptureBucket(0, -3.8, inStep4)).toBe('up');
+    expect(chooseCaptureBucket(0, 0, inStep4, { noseVerticalShiftRatio: -0.025 })).toBe('up');
+    expect(chooseCaptureBucket(0, 0, inStep4, { stageWaitMs: 1250 })).toBe('up');
     expect(chooseCaptureBucket(0, 8, inStep4)).toBeNull();
 
-    // Step 5 (down 0..19): unlocks down ONLY after up reaches 20/20
+    // Step 5 (down 0..19): unlocks down on +3.5° pitch, >=2% nose downward shift, or 1.2s anti-stall
     const inStep5 = { center: 40, left: 20, right: 20, up: 20, down: 0 };
     expect(getActiveEnrollmentStage(inStep5)?.key).toBe('down');
-    expect(chooseCaptureBucket(0, 7, inStep5)).toBe('down');
+    expect(chooseCaptureBucket(0, 3.8, inStep5)).toBe('down');
+    expect(chooseCaptureBucket(0, 0, inStep5, { noseVerticalShiftRatio: 0.025 })).toBe('down');
+    expect(chooseCaptureBucket(0, 0, inStep5, { stageWaitMs: 1250 })).toBe('down');
     expect(chooseCaptureBucket(0, -8, inStep5)).toBeNull();
 
-    // Normalized mirror-aware head pose computation (-45° to +45°, no 94° spikes!)
-    const makeFaceMesh468 = (noseX: number, noseY: number) => {
+    // Anatomical Pitch & Mirror-Aware Yaw (both mouth-span 16:9 webcam & eye-only 0.68 fallback -> Pitch ~ 0°!)
+    const makeFaceMesh468 = (noseX: number, noseY: number, withMouth = true) => {
       const pts = Array.from({ length: 468 }, () => ({ x: 0.5, y: 0.5, z: 0 }));
       pts[33] = { x: 0.36, y: 0.4, z: 0 };
       pts[133] = { x: 0.44, y: 0.4, z: 0 };
       pts[362] = { x: 0.56, y: 0.4, z: 0 };
-      pts[263] = { x: 0.64, y: 0.4, z: 0 }; // eyeMid = (0.5, 0.4), eyeDist = 0.20
+      pts[263] = { x: 0.64, y: 0.4, z: 0 }; // eyeMid = (0.5, 0.4), eyeDist(1:1) = 0.20
       pts[1] = { x: noseX, y: noseY, z: -0.05 };
+      if (withMouth) {
+        // Neutral face: eyeMidY = 0.40, noseY = 0.54, mouthMidY = 0.65 -> (0.54 - 0.40) / 0.25 = 0.56 -> Pitch = 0°
+        pts[61] = { x: 0.44, y: 0.65, z: 0 };
+        pts[291] = { x: 0.56, y: 0.65, z: 0 };
+        pts[13] = { x: 0.5, y: 0.645, z: 0 };
+        pts[14] = { x: 0.5, y: 0.655, z: 0 };
+      }
       return pts;
     };
-    const centerPose = computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.5, 0.504));
-    expect(Math.abs(centerPose.yawDeg)).toBeLessThanOrEqual(1);
-    expect(Math.abs(centerPose.pitchDeg)).toBeLessThanOrEqual(1);
 
-    // Turning LEFT on mirrored screen -> nose shifts +x in raw sensor -> negative yawDeg in [-45, -8]
-    const mirrorLeftPose = computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.54, 0.504));
+    // 1:1 and 16:9 webcam neutral frontal face MUST report Pitch ~ 0° and Angle: center (NOT Pitch: 45° / down!)
+    const centerPose16x9 = computeNormalizedMirroredHeadPoseDeg(
+      makeFaceMesh468(0.5, 0.54, true),
+      1280 / 720,
+    );
+    expect(Math.abs(centerPose16x9.yawDeg)).toBeLessThanOrEqual(1);
+    expect(Math.abs(centerPose16x9.pitchDeg)).toBeLessThanOrEqual(1);
+    expect(classifyDisplayBucket(centerPose16x9.yawDeg, centerPose16x9.pitchDeg)).toBe('center');
+
+    // Eye-only fallback (without mouth landmarks) uses natural 0.68 frontal nose offset -> 0.40 + 0.20 * 0.68 = 0.536
+    const centerPoseEyeOnly = computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.5, 0.536, false));
+    expect(Math.abs(centerPoseEyeOnly.yawDeg)).toBeLessThanOrEqual(1);
+    expect(Math.abs(centerPoseEyeOnly.pitchDeg)).toBeLessThanOrEqual(1);
+
+    // Turning LEFT on mirrored screen -> nose shifts +x in raw sensor -> negative yawDeg in [-45, -4]
+    const mirrorLeftPose = computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.54, 0.54, true));
     expect(mirrorLeftPose.yawDeg).toBeLessThanOrEqual(-8);
     expect(mirrorLeftPose.yawDeg).toBeGreaterThanOrEqual(-45);
 
-    // Turning RIGHT on mirrored screen -> nose shifts -x in raw sensor -> positive yawDeg in [8, 45]
-    const mirrorRightPose = computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.46, 0.504));
+    // Turning RIGHT on mirrored screen -> nose shifts -x in raw sensor -> positive yawDeg in [4, 45]
+    const mirrorRightPose = computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.46, 0.54, true));
     expect(mirrorRightPose.yawDeg).toBeGreaterThanOrEqual(8);
     expect(mirrorRightPose.yawDeg).toBeLessThanOrEqual(45);
 
+    // Looking slightly UP / DOWN with mouth landmarks gives clean negative / positive pitch
+    expect(computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.5, 0.51, true)).pitchDeg).toBeLessThanOrEqual(-8);
+    expect(computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.5, 0.57, true)).pitchDeg).toBeGreaterThanOrEqual(8);
+
     // Extreme outlier offset NEVER jumps to 94° — strictly clamped to [-45, 45]
-    const extremeYaw = computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.95, 0.504));
+    const extremeYaw = computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.95, 0.54, true));
     expect(extremeYaw.yawDeg).toBe(-45);
-    const extremeRight = computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.05, 0.504));
+    const extremeRight = computeNormalizedMirroredHeadPoseDeg(makeFaceMesh468(0.05, 0.54, true));
     expect(extremeRight.yawDeg).toBe(45);
+
+    // End-to-end 120-frame sequential progression simulation (center 40 -> left 20 -> right 20 -> up 20 -> down 20)
+    const simCounts = { center: 0, left: 0, right: 0, up: 0, down: 0 };
+    const simPoses: Array<{ key: keyof typeof simCounts; yaw: number; pitch: number }> = [
+      { key: 'center', yaw: centerPose16x9.yawDeg, pitch: centerPose16x9.pitchDeg },
+      { key: 'left', yaw: -6, pitch: 0 },
+      { key: 'right', yaw: 6, pitch: 0 },
+      { key: 'up', yaw: 0, pitch: -5 },
+      { key: 'down', yaw: 0, pitch: 5 },
+    ];
+    for (const stage of simPoses) {
+      const target = ENROLLMENT_SEQUENCE.find((s) => s.key === stage.key)!.target;
+      for (let i = 0; i < target; i += 1) {
+        const picked = chooseCaptureBucket(stage.yaw, stage.pitch, simCounts, { rawYawDeg: stage.yaw });
+        expect(picked).toBe(stage.key);
+        simCounts[picked!] += 1;
+      }
+    }
+    expect(simCounts).toEqual({ center: 40, left: 20, right: 20, up: 20, down: 20 });
+    expect(getActiveEnrollmentStage(simCounts)).toBeNull();
   });
 
   it('resolves today appointment status and exercise list accurately for rest vs scheduled days', () => {
@@ -1105,11 +1155,11 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
           const isInner = x >= 26 && x <= 86 && y >= 30 && y <= 92;
           const val = isInner
             ? Math.round(
-                110 +
-                  45 *
-                    Math.sin((x + personToneOffset) * 0.27) *
-                    Math.cos((y - personToneOffset) * 0.23),
-              )
+              110 +
+              45 *
+              Math.sin((x + personToneOffset) * 0.27) *
+              Math.cos((y - personToneOffset) * 0.23),
+            )
             : 215; // identical bright white room wall & ceiling for both people!
           data[idx] = val;
           data[idx + 1] = val;
@@ -1171,12 +1221,12 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
           const isInner = x >= 22 && x <= 90 && y >= 22 && y <= 90;
           const texture = isInner
             ? 118 * lightingMul +
-              lightBias +
-              42 *
-                lightingMul *
-                (Math.sin((x + personFreqShift * 7) * 0.29) +
-                  0.65 * Math.cos((y - personFreqShift * 5) * 0.26) +
-                  0.35 * Math.sin((x * 0.14 + y * 0.19) * (1 + personFreqShift * 0.08)))
+            lightBias +
+            42 *
+            lightingMul *
+            (Math.sin((x + personFreqShift * 7) * 0.29) +
+              0.65 * Math.cos((y - personFreqShift * 5) * 0.26) +
+              0.35 * Math.sin((x * 0.14 + y * 0.19) * (1 + personFreqShift * 0.08)))
             : bgVal;
           const v = Math.max(0, Math.min(255, Math.round(texture)));
           data[idx] = v;

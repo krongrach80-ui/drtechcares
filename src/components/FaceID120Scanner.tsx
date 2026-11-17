@@ -385,14 +385,26 @@ function toTtsLangAndBcp47(lang: ClinicalLang): { ttsLang: VoiceCoachLanguage; b
 interface CapturedSample {
   yawDeg: number;
   pitchDeg: number;
+  rawYawDeg?: number;
+  rawPitchDeg?: number;
+  noseBoxRatio?: number;
   sharpness: number;
   bucket: Bucket5Key;
   embedding: number[];
   geometricRatios?: GeometricAnthropometricRatios;
 }
 
+export interface CaptureGateContext {
+  rawYawDeg?: number;
+  inCircleGuide?: boolean;
+  steadyTurnMs?: number;
+  noseVerticalShiftRatio?: number;
+  stageWaitMs?: number;
+}
+
 export function computeNormalizedMirroredHeadPoseDeg(
   landmarks3D: readonly { x: number; y: number; z?: number }[],
+  aspectRatio = 1,
 ): { yawDeg: number; pitchDeg: number; rollDeg: number } {
   if (!landmarks3D || landmarks3D.length < 300) {
     return { yawDeg: 0, pitchDeg: 0, rollDeg: 0 };
@@ -406,6 +418,9 @@ export function computeNormalizedMirroredHeadPoseDeg(
     return { yawDeg: 0, pitchDeg: 0, rollDeg: 0 };
   }
 
+  const safeAspect =
+    Number.isFinite(aspectRatio) && aspectRatio > 0.25 && aspectRatio < 4 ? aspectRatio : 1;
+
   const rightEyeX = (rOuter.x + rInner.x) * 0.5;
   const rightEyeY = (rOuter.y + rInner.y) * 0.5;
   const leftEyeX = (lOuter.x + lInner.x) * 0.5;
@@ -413,18 +428,51 @@ export function computeNormalizedMirroredHeadPoseDeg(
 
   const eyeMidX = (leftEyeX + rightEyeX) * 0.5;
   const eyeMidY = (leftEyeY + rightEyeY) * 0.5;
-  const eyeDistance = Math.max(0.02, Math.hypot(leftEyeX - rightEyeX, leftEyeY - rightEyeY));
+  const eyeDx = (leftEyeX - rightEyeX) * safeAspect;
+  const eyeDy = leftEyeY - rightEyeY;
+  const eyeDistance = Math.max(0.02, Math.hypot(eyeDx, eyeDy));
 
   // Preview video uses CSS -scale-x-100 mirror:
   // Moving head toward screen LEFT shrinks (1 - noseTip.x) relative to (1 - eyeMidX) -> eyeMidX - noseTip.x < 0
-  const mirroredYawRatio = (eyeMidX - noseTip.x) / eyeDistance;
+  const mirroredYawRatio = ((eyeMidX - noseTip.x) * safeAspect) / eyeDistance;
   const yawDeg = Math.max(-45, Math.min(45, Number((mirroredYawRatio * 65).toFixed(1))));
 
-  // Vertical nose offset relative to neutral resting nose position (~0.52 * eyeDistance below eye midpoint)
-  const noseDropRatio = (noseTip.y - (eyeMidY + eyeDistance * 0.52)) / eyeDistance;
-  const pitchDeg = Math.max(-45, Math.min(45, Number((noseDropRatio * 75).toFixed(1))));
+  // Anatomical pitch using mouth-to-eye vertical span when valid mouth landmarks exist (cancels webcam aspect distortion).
+  const mouthRight = landmarks3D[61];
+  const mouthLeft = landmarks3D[291];
+  const upperLip = landmarks3D[13];
+  const lowerLip = landmarks3D[14];
+  const mouthCandidates = [mouthRight, mouthLeft, upperLip, lowerLip].filter(
+    (pt): pt is { x: number; y: number; z?: number } => Boolean(pt && Number.isFinite(pt.y)),
+  );
+  const mouthSpanX =
+    mouthLeft && mouthRight ? Math.abs(mouthLeft.x - mouthRight.x) : 0;
+  const lipOpenSpanY =
+    upperLip && lowerLip ? Math.abs(lowerLip.y - upperLip.y) : 0;
+  const mouthMidY =
+    mouthCandidates.length > 0
+      ? mouthCandidates.reduce((acc, pt) => acc + pt.y, 0) / mouthCandidates.length
+      : 0;
+  const hasGenuineMouth =
+    mouthCandidates.length >= 2 &&
+    (mouthSpanX > 0.005 || lipOpenSpanY > 0.002) &&
+    mouthMidY > noseTip.y + 0.004 &&
+    mouthMidY > eyeMidY + 0.02;
 
-  const rollRad = Math.atan2(leftEyeY - rightEyeY, leftEyeX - rightEyeX);
+  let rawPitch: number;
+  if (hasGenuineMouth) {
+    const minSpan = eyeMidY > 2 ? 1 : 0.01;
+    const faceVerticalSpan = Math.max(minSpan, mouthMidY - eyeMidY);
+    const noseRatio = (noseTip.y - eyeMidY) / faceVerticalSpan;
+    rawPitch = (noseRatio - 0.56) * 110;
+  } else {
+    const minEye = eyeMidY > 2 ? 1 : 0.02;
+    const noseEyeRatio = (noseTip.y - eyeMidY) / Math.max(minEye, eyeDistance);
+    rawPitch = (noseEyeRatio - 0.68) * 85;
+  }
+  const pitchDeg = Math.max(-45, Math.min(45, Number(rawPitch.toFixed(1))));
+
+  const rollRad = Math.atan2(eyeDy, eyeDx);
   const rollDeg = Math.max(-45, Math.min(45, Number(((rollRad * 180) / Math.PI).toFixed(1))));
 
   return { yawDeg, pitchDeg, rollDeg };
@@ -438,40 +486,52 @@ export function getActiveEnrollmentStage(
 
 export function classifyDisplayBucket(yawDeg: number, pitchDeg: number): Bucket5Key {
   if (Math.abs(yawDeg) >= Math.abs(pitchDeg) * 1.15) {
-    if (yawDeg <= -8) return 'left';
-    if (yawDeg >= 8) return 'right';
+    if (yawDeg <= -4) return 'left';
+    if (yawDeg >= 4) return 'right';
   }
-  if (pitchDeg <= -6) return 'up';
-  if (pitchDeg >= 6) return 'down';
-  if (yawDeg <= -8) return 'left';
-  if (yawDeg >= 8) return 'right';
+  if (pitchDeg <= -3.5) return 'up';
+  if (pitchDeg >= 3.5) return 'down';
+  if (yawDeg <= -4) return 'left';
+  if (yawDeg >= 4) return 'right';
   return 'center';
 }
 
 /**
- * Strict 5-Stage Sequential State Machine Gate:
+ * 5-Stage Sequential State Machine Gate with forgiving clinical thresholds & anti-stall protection:
  * Only accepts frames for `currentStage = ENROLLMENT_SEQUENCE.find(s => counts[s.key] < s.target)`.
- * Never allows skipping ahead or filling future buckets (right/up/down stay 0/20 🔒 until their turn).
  */
 export function chooseCaptureBucket(
   yawDeg: number,
   pitchDeg: number,
   counts: Record<Bucket5Key, number>,
+  context?: CaptureGateContext,
 ): Bucket5Key | null {
   const currentStage = getActiveEnrollmentStage(counts);
   if (!currentStage) return null;
 
+  const inCircleGuide = context?.inCircleGuide ?? true;
+  if (!inCircleGuide) return null;
+
+  const rawYaw = context?.rawYawDeg ?? yawDeg;
+  const steadyMs = context?.steadyTurnMs ?? 0;
+  const noseShift = context?.noseVerticalShiftRatio ?? 0;
+  const stageWaitMs = context?.stageWaitMs ?? 0;
+
   switch (currentStage.key) {
     case 'center':
-      return Math.abs(yawDeg) <= 12 && Math.abs(pitchDeg) <= 10 ? 'center' : null;
+      return Math.abs(rawYaw) <= 22 || stageWaitMs >= 1200 ? 'center' : null;
     case 'left':
-      return yawDeg <= -8 ? 'left' : null;
+      return yawDeg <= -4 || (yawDeg <= -2.5 && steadyMs >= 400) || stageWaitMs >= 1200
+        ? 'left'
+        : null;
     case 'right':
-      return yawDeg >= 8 ? 'right' : null;
+      return yawDeg >= 4 || (yawDeg >= 2.5 && steadyMs >= 400) || stageWaitMs >= 1200
+        ? 'right'
+        : null;
     case 'up':
-      return pitchDeg <= -6 ? 'up' : null;
+      return pitchDeg <= -3.5 || noseShift <= -0.02 || stageWaitMs >= 1200 ? 'up' : null;
     case 'down':
-      return pitchDeg >= 6 ? 'down' : null;
+      return pitchDeg >= 3.5 || noseShift >= 0.02 || stageWaitMs >= 1200 ? 'down' : null;
   }
 }
 
@@ -482,7 +542,7 @@ export function buildWrongDirectionCue(
   lang: ClinicalLang,
 ): string | null {
   if (targetBucket === 'center') {
-    if (Math.abs(deltaYaw) <= 12 && Math.abs(deltaPitch) <= 10) return null;
+    if (Math.abs(deltaYaw) <= 22) return null;
     if (lang === 'en') return 'Please keep your face centered looking straight at the camera.';
     if (lang === 'cn') return '请保持面部正对摄像头中央。';
     return '👁️ กรุณามองตรงเข้าหากล้องนิ่งๆ (อย่าเพิ่งหันซ้ายหรือขวา)';
@@ -715,9 +775,13 @@ export default function FaceID120Scanner({
   const stageTransitionLockUntilRef = useRef<number>(0);
   const baselineCenterYawRef = useRef<number>(0);
   const baselineCenterPitchRef = useRef<number>(0);
-  const centerPoseSamplesRef = useRef<{ yawSum: number; pitchSum: number; count: number }>({
+  const baselineCenterNoseRatioRef = useRef<number>(0);
+  const stageEnteredAtRef = useRef<number>(0);
+  const stageSteadyTurnSinceRef = useRef<{ key: Bucket5Key; since: number } | null>(null);
+  const centerPoseSamplesRef = useRef<{ yawSum: number; pitchSum: number; noseRatioSum: number; count: number }>({
     yawSum: 0,
     pitchSum: 0,
+    noseRatioSum: 0,
     count: 0,
   });
   const hasSnapshotFrameRef = useRef(false);
@@ -1236,7 +1300,10 @@ export default function FaceID120Scanner({
     stageTransitionLockUntilRef.current = 0;
     baselineCenterYawRef.current = 0;
     baselineCenterPitchRef.current = 0;
-    centerPoseSamplesRef.current = { yawSum: 0, pitchSum: 0, count: 0 };
+    baselineCenterNoseRatioRef.current = 0;
+    stageEnteredAtRef.current = 0;
+    stageSteadyTurnSinceRef.current = null;
+    centerPoseSamplesRef.current = { yawSum: 0, pitchSum: 0, noseRatioSum: 0, count: 0 };
     prevLandmarksRef.current = null;
     onReadyStateChangeRef.current?.(false, finalizeScan);
   }, [finalizeScan]);
@@ -1376,7 +1443,6 @@ export default function FaceID120Scanner({
         const neuralExtractCanvas = document.createElement('canvas');
         let neuralExtractInFlight = false;
         let lastExtractDispatchedAt = 0;
-        let lastCompanionAt = 0;
         let lastSharpnessAt = 0;
         let lastSharpnessVal = 68;
         let lastAngleSnapAt = 0;
@@ -1396,7 +1462,9 @@ export default function FaceID120Scanner({
         const recordAcceptedSample = (sample: CapturedSample) => {
           if (cancelled || completedRef.current || unmountedRef.current) return false;
           if (samplesRef.current.length >= TOTAL_TICKS) return false;
-          if (performance.now() < stageTransitionLockUntilRef.current) return false;
+          const nowRec = performance.now();
+          if (nowRec < stageTransitionLockUntilRef.current) return false;
+          if (nowRec - lastCaptureAtRef.current < 70) return false;
           const activeStageNow = getActiveEnrollmentStage(bucketCountsRef.current);
           if (!activeStageNow || sample.bucket !== activeStageNow.key) {
             return false;
@@ -1404,10 +1472,18 @@ export default function FaceID120Scanner({
           if (bucketCountsRef.current[sample.bucket] >= BUCKET_TARGETS[sample.bucket]) {
             return false;
           }
+          lastCaptureAtRef.current = nowRec;
           if (sample.bucket === 'center') {
-            centerPoseSamplesRef.current.yawSum += sample.yawDeg;
-            centerPoseSamplesRef.current.pitchSum += sample.pitchDeg;
+            centerPoseSamplesRef.current.yawSum += sample.rawYawDeg ?? sample.yawDeg;
+            centerPoseSamplesRef.current.pitchSum += sample.rawPitchDeg ?? sample.pitchDeg;
+            if (typeof sample.noseBoxRatio === 'number') {
+              centerPoseSamplesRef.current.noseRatioSum += sample.noseBoxRatio;
+            }
             centerPoseSamplesRef.current.count += 1;
+            const c = centerPoseSamplesRef.current.count;
+            baselineCenterYawRef.current = centerPoseSamplesRef.current.yawSum / c;
+            baselineCenterPitchRef.current = centerPoseSamplesRef.current.pitchSum / c;
+            baselineCenterNoseRatioRef.current = centerPoseSamplesRef.current.noseRatioSum / c;
           }
           samplesRef.current.push(sample);
           bucketCountsRef.current = {
@@ -1433,13 +1509,17 @@ export default function FaceID120Scanner({
             nextStageAfter &&
             nextStageAfter.key !== activeStageNow.key
           ) {
-            stageTransitionLockUntilRef.current = performance.now() + 450;
+            stageTransitionLockUntilRef.current = nowRec + 350;
+            stageEnteredAtRef.current = nowRec + 350;
+            stageSteadyTurnSinceRef.current = null;
             latestRealAnchor = null;
             if (activeStageNow.key === 'center' && centerPoseSamplesRef.current.count > 0) {
               baselineCenterYawRef.current =
                 centerPoseSamplesRef.current.yawSum / centerPoseSamplesRef.current.count;
               baselineCenterPitchRef.current =
                 centerPoseSamplesRef.current.pitchSum / centerPoseSamplesRef.current.count;
+              baselineCenterNoseRatioRef.current =
+                centerPoseSamplesRef.current.noseRatioSum / centerPoseSamplesRef.current.count;
             }
             const transLang = langRef.current;
             const nextCue = getFaceId120TargetGuidance(transLang, nextStageAfter.key);
@@ -1552,16 +1632,39 @@ export default function FaceID120Scanner({
           );
           prevLandmarksRef.current = [...landmarks3D];
 
-          // Normalized mirror-aware pose (-45° to +45°); calibrated relative to baselineCenter after Step 1
-          const normPose = computeNormalizedMirroredHeadPoseDeg(landmarks3D);
+          // Normalized mirror-aware & aspect-corrected pose (-45° to +45°), auto-calibrated to Step 1 frontal neutral zero
+          const aspectRatio =
+            vid.videoWidth > 0 && vid.videoHeight > 0 ? vid.videoWidth / vid.videoHeight : 1;
+          const normPose = computeNormalizedMirroredHeadPoseDeg(landmarks3D, aspectRatio);
           const stageAtFrame = getActiveEnrollmentStage(bucketCountsRef.current);
-          const isCenterStage = !stageAtFrame || stageAtFrame.key === 'center';
-          const yawDeg = isCenterStage
-            ? normPose.yawDeg
-            : Math.max(-45, Math.min(45, Number((normPose.yawDeg - baselineCenterYawRef.current).toFixed(1))));
-          const pitchDeg = isCenterStage
-            ? normPose.pitchDeg
-            : Math.max(-45, Math.min(45, Number((normPose.pitchDeg - baselineCenterPitchRef.current).toFixed(1))));
+          const stageKey = stageAtFrame?.key ?? 'center';
+          const isCenterStage = stageKey === 'center';
+          const faceCx = selection.primaryCenter?.x ?? landmarks3D[1].x;
+          const faceCy = selection.primaryCenter?.y ?? landmarks3D[1].y;
+          const inCircleGuide = Math.hypot(faceCx - 0.5, faceCy - 0.48) <= 0.38;
+          const boxHeight = Math.max(0.05, selection.primaryBox?.height ?? 0.25);
+          const currentNoseBoxRatio = (landmarks3D[1].y - faceCy) / boxHeight;
+
+          if (
+            isCenterStage &&
+            centerPoseSamplesRef.current.count === 0 &&
+            inCircleGuide &&
+            Math.abs(normPose.yawDeg) <= 22
+          ) {
+            baselineCenterYawRef.current = normPose.yawDeg;
+            baselineCenterPitchRef.current = normPose.pitchDeg;
+            baselineCenterNoseRatioRef.current = currentNoseBoxRatio;
+          }
+
+          const yawDeg = Math.max(
+            -45,
+            Math.min(45, Number((normPose.yawDeg - baselineCenterYawRef.current).toFixed(1))),
+          );
+          const pitchDeg = Math.max(
+            -45,
+            Math.min(45, Number((normPose.pitchDeg - baselineCenterPitchRef.current).toFixed(1))),
+          );
+          const noseVerticalShiftRatio = currentNoseBoxRatio - baselineCenterNoseRatioRef.current;
           const rollDeg = normPose.rollDeg;
 
           // Throttle CPU getImageData sharpness inspection (~90ms) so 60 FPS video capture never stalls
@@ -1611,10 +1714,41 @@ export default function FaceID120Scanner({
             }
           }
 
-          const inTransitionLock = performance.now() < stageTransitionLockUntilRef.current;
+          const inTransitionLock = now < stageTransitionLockUntilRef.current;
+          if (!inCircleGuide || currentSharpness < 1 || inTransitionLock) {
+            stageEnteredAtRef.current = now;
+            stageSteadyTurnSinceRef.current = null;
+          } else if (stageEnteredAtRef.current === 0) {
+            stageEnteredAtRef.current = now;
+          }
+          const stageWaitMs =
+            !inCircleGuide || currentSharpness < 1 || inTransitionLock
+              ? 0
+              : Math.max(0, now - stageEnteredAtRef.current);
+
+          let steadyTurnMs = 0;
+          if (
+            !inTransitionLock &&
+            ((stageKey === 'left' && yawDeg <= -2.5) || (stageKey === 'right' && yawDeg >= 2.5))
+          ) {
+            if (!stageSteadyTurnSinceRef.current || stageSteadyTurnSinceRef.current.key !== stageKey) {
+              stageSteadyTurnSinceRef.current = { key: stageKey, since: now };
+            }
+            steadyTurnMs = now - stageSteadyTurnSinceRef.current.since;
+          } else {
+            stageSteadyTurnSinceRef.current = null;
+          }
+
+          const gateCtx: CaptureGateContext = {
+            rawYawDeg: normPose.yawDeg,
+            inCircleGuide,
+            steadyTurnMs,
+            noseVerticalShiftRatio,
+            stageWaitMs,
+          };
           const captureBucket = inTransitionLock
             ? null
-            : chooseCaptureBucket(yawDeg, pitchDeg, bucketCountsRef.current);
+            : chooseCaptureBucket(yawDeg, pitchDeg, bucketCountsRef.current, gateCtx);
           const angleForPhoto = captureBucket ?? displayBucket;
           if (!angleCanvasesRef.current[angleForPhoto] || (captureBucket && now - lastAngleSnapAt >= 180)) {
             captureAngleFrameToCanvas(vid, angleForPhoto, currentSharpness);
@@ -1622,11 +1756,21 @@ export default function FaceID120Scanner({
           }
           const totalSoFar = samplesRef.current.length;
           const meanEar = (liveness.earLeft + liveness.earRight) * 0.5;
-          const minOpenEar = lastRegRoiBox && lastRegRoiBox.height < 0.22 ? 0.13 : 0.16;
+          const minOpenEar =
+            captureBucket === 'down'
+              ? 0.08
+              : lastRegRoiBox && lastRegRoiBox.height < 0.22
+                ? 0.11
+                : 0.13;
 
-          // Capture frames strictly into the SINGLE active sequential stage bucket
+          // Capture frames cleanly at ~13–14 FPS (70-75ms cadence) into the active sequential stage bucket
           if (!inTransitionLock && captureBucket && meanEar >= minOpenEar && totalSoFar < TOTAL_TICKS) {
-            if (!neuralExtractInFlight) {
+            const shouldDispatchNeural =
+              !neuralExtractInFlight &&
+              (!latestRealAnchor ||
+                latestRealAnchor.bucket !== captureBucket ||
+                now - lastExtractDispatchedAt >= 95);
+            if (shouldDispatchNeural) {
               const snapInput = captureCanonicalFaceSnapshot(vid, lastRegRoiBox, neuralExtractCanvas, landmarks3D);
               if (snapInput) {
                 neuralExtractInFlight = true;
@@ -1634,18 +1778,27 @@ export default function FaceID120Scanner({
                 const dispatchedStageKey = captureBucket;
                 const snapYaw = yawDeg;
                 const snapPitch = pitchDeg;
+                const snapRawYaw = normPose.yawDeg;
+                const snapRawPitch = normPose.pitchDeg;
+                const snapNoseRatio = currentNoseBoxRatio;
                 const snapSharpness = currentSharpness;
+                const snapGateCtx = { ...gateCtx };
                 const snapGeom = extractGeometricAnthropometricRatios(landmarks3D);
                 void extractCanonicalFaceDescriptor(snapInput)
                   .then((desc) => {
                     if (cancelled || completedRef.current || unmountedRef.current) return;
                     if (!desc.embedding || desc.embedding.length < 128) return;
-                    if (performance.now() < stageTransitionLockUntilRef.current) return;
+                    const resolvedAt = performance.now();
+                    if (resolvedAt < stageTransitionLockUntilRef.current) return;
                     const activeAtResolve = getActiveEnrollmentStage(bucketCountsRef.current);
                     if (!activeAtResolve || activeAtResolve.key !== dispatchedStageKey) return;
-                    const targetBkt = chooseCaptureBucket(snapYaw, snapPitch, bucketCountsRef.current);
+                    const targetBkt = chooseCaptureBucket(
+                      snapYaw,
+                      snapPitch,
+                      bucketCountsRef.current,
+                      snapGateCtx,
+                    );
                     if (!targetBkt || targetBkt !== activeAtResolve.key) return;
-                    lastCaptureAtRef.current = performance.now();
                     latestRealAnchor = {
                       bucket: targetBkt,
                       yawDeg: snapYaw,
@@ -1653,12 +1806,15 @@ export default function FaceID120Scanner({
                       sharpness: snapSharpness,
                       embedding: desc.embedding,
                       geom: snapGeom,
-                      arrivedAt: performance.now(),
+                      arrivedAt: resolvedAt,
                       companionsUsed: 0,
                     };
                     recordAcceptedSample({
                       yawDeg: snapYaw,
                       pitchDeg: snapPitch,
+                      rawYawDeg: snapRawYaw,
+                      rawPitchDeg: snapRawPitch,
+                      noseBoxRatio: snapNoseRatio,
                       sharpness: snapSharpness,
                       bucket: targetBkt,
                       embedding: desc.embedding,
@@ -1670,21 +1826,24 @@ export default function FaceID120Scanner({
                     neuralExtractInFlight = false;
                   });
               }
-            } else if (
+            }
+            if (
               latestRealAnchor &&
               latestRealAnchor.bucket === captureBucket &&
-              latestRealAnchor.companionsUsed < 2 &&
-              now - lastExtractDispatchedAt >= 45 &&
-              now - lastCompanionAt >= 32 &&
-              now - latestRealAnchor.arrivedAt <= 250 &&
-              Math.abs(yawDeg - latestRealAnchor.yawDeg) <= 2.5 &&
-              Math.abs(pitchDeg - latestRealAnchor.pitchDeg) <= 2.5
+              now - lastCaptureAtRef.current >= 72 &&
+              now - latestRealAnchor.arrivedAt <= 900 &&
+              (latestRealAnchor.companionsUsed < 6 || stageWaitMs >= 1200) &&
+              (stageWaitMs >= 1200 ||
+                (Math.abs(yawDeg - latestRealAnchor.yawDeg) <= 6 &&
+                  Math.abs(pitchDeg - latestRealAnchor.pitchDeg) <= 6))
             ) {
               latestRealAnchor.companionsUsed += 1;
-              lastCompanionAt = now;
               recordAcceptedSample({
                 yawDeg,
                 pitchDeg,
+                rawYawDeg: normPose.yawDeg,
+                rawPitchDeg: normPose.pitchDeg,
+                noseBoxRatio: currentNoseBoxRatio,
                 sharpness: currentSharpness,
                 bucket: captureBucket,
                 embedding: latestRealAnchor.embedding,
