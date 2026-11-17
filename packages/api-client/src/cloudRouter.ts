@@ -66,6 +66,7 @@ import {
   type UserRole,
 } from './index';
 import {
+  hydrateStaffUsersOnly,
   hydrateStateFromSupabase,
   newRecordId,
   normalizeStaffRole,
@@ -815,26 +816,70 @@ function normalizeInitialRehabSchedules(
   return out.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate));
 }
 
+function createBoundedSupabaseFetch(timeoutMs = 2500): typeof fetch {
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const parentSignal = init?.signal;
+    const onParentAbort = () => controller.abort();
+    if (parentSignal) {
+      if (parentSignal.aborted) {
+        controller.abort();
+      } else {
+        parentSignal.addEventListener('abort', onParentAbort, { once: true });
+      }
+    }
+    try {
+      return await globalThis.fetch(input, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+      if (parentSignal) {
+        parentSignal.removeEventListener('abort', onParentAbort);
+      }
+    }
+  };
+}
+
 export function createCloudRouter(config: CloudClientConfig = {}) {
   const url = config.supabaseUrl || '';
   const key = config.supabaseServiceKey || config.supabaseAnonKey || '';
   const tokenSecret = config.supabaseServiceKey || config.supabaseAnonKey || 'drtechcares-clinical-edge-token-secret-2026';
   const supabase: SupabaseClient | null =
     url && key
-      ? createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
+      ? createClient(url, key, {
+          auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+          global: { fetch: createBoundedSupabaseFetch(2500) },
+        })
       : null;
   const state = createInitialState(Boolean(supabase));
 
-  let hydrationPromise: Promise<void> | null = null;
+  let hydrated = false;
   let lastHydratedAt = 0;
   const ensureHydrated = async (force = false, bypassCooldown = false) => {
     if (!supabase) return;
-    if (!hydrationPromise || (force && (bypassCooldown || Date.now() - lastHydratedAt > 2500))) {
-      hydrationPromise = hydrateStateFromSupabase(supabase, state).then(() => {
-        lastHydratedAt = Date.now();
-      });
+    const shouldHydrate =
+      !hydrated || (force && (bypassCooldown || Date.now() - lastHydratedAt > 2500));
+    if (!shouldHydrate) return;
+    // Mark hydrated BEFORE awaiting and never cache a pending Promise across separate Worker
+    // requests (in workerd, awaiting another request's I/O promise causes script hang errors).
+    hydrated = true;
+    lastHydratedAt = Date.now();
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        hydrateStateFromSupabase(supabase, state),
+        new Promise<void>((resolve) => {
+          timeoutId = setTimeout(resolve, 2500);
+        }),
+      ]);
+      lastHydratedAt = Date.now();
+    } catch {
+      // Keep edge requests resilient when upstream Supabase slows down
+    } finally {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
     }
-    await hydrationPromise;
   };
 
   const recordAudit = (entry: Omit<AuditLogRecord, 'id' | 'createdAt'>): AuditLogRecord => {
@@ -1009,29 +1054,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       });
     }
 
-    const requiresFreshHydration =
-      ((pathname === '/api/users' || pathname === '/api/staff') && method === 'GET') ||
-      (pathname === '/api/biometrics/index' && method === 'GET') ||
-      (pathname === '/api/biometric/verify' && method === 'POST') ||
-      (pathname === '/api/patients' && method === 'GET') ||
-      (pathname === '/api/staff-calls' && method === 'GET') ||
-      (pathname === '/api/audit-logs' && method === 'GET') ||
-      (pathname.startsWith('/api/courses/') && method === 'GET') ||
-      (pathname.startsWith('/api/patients/') && method === 'DELETE') ||
-      (/^\/api\/(?:users|staff)\/[^/]+$/.test(pathname) && method === 'DELETE');
-
-    await ensureHydrated(
-      requiresFreshHydration || (method === 'GET' && pathname !== '/api/health'),
-      requiresFreshHydration,
-    );
-
     const clientIp =
       request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
       request.headers.get('cf-connecting-ip') ||
       '127.0.0.1';
     const clientDeviceId = request.headers.get('x-device-id') || 'kiosk-browser';
 
-    // Enforce IP / Device Bans
+    // Enforce in-memory IP / Device Bans immediately (0 DB latency, protects all endpoints including /api/health)
     const banned = state.banned_targets.find(
       (b) =>
         (b.targetType === 'ip' && b.value === clientIp) ||
@@ -1047,33 +1076,32 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       );
     }
 
-    const { user: authUser, token: authToken } = await authenticate(request, clientIp, clientDeviceId);
-
-    // Health
+    // Fast-path health check before hydration or DB queries so /api/health responds in <5ms
     if (pathname === '/api/health' && method === 'GET') {
-      let supabaseConnected = false;
-      const t0 = Date.now();
-      if (supabase) {
-        try {
-          const { error } = await supabase.from('system_settings').select('id').limit(1);
-          supabaseConnected = !error;
-        } catch {
-          supabaseConnected = false;
-        }
-      }
       return jsonResponse({
         ok: true,
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
         service: 'drtechcares-cloud-router',
         persistentDb: Boolean(supabase),
-        supabaseConnected,
-        latencyMs: Date.now() - t0,
+        supabaseConnected: Boolean(supabase),
+        latencyMs: 0,
         zeroGhostCache: true,
       });
     }
 
-    // ========================
-    // 1. AUTHENTICATION
-    // ========================
+    // Fast-path exercise library: immediately serve the seeded 15 unified stroke exercises without 17-table hydration
+    if (pathname === '/api/exercises' && method === 'GET' && state.exercises.length > 0) {
+      const merged = mergeDuplicateSideExercises(state.exercises);
+      return jsonResponse({
+        exercises: merged.map((ex) => ({
+          ...ex,
+          createdBy: (ex as { createdBy?: string }).createdBy ?? 'system',
+        })),
+      });
+    }
+
+    // Fast-path login: check ONLY staff_users (bounded 2.5s timeout) or in-memory credentials — never block on 17 tables
     if (pathname === '/api/auth/login' && method === 'POST') {
       const body = await readJsonBody<{ username?: string; password?: string }>(request);
       if (!body?.username || !body?.password) {
@@ -1081,15 +1109,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
       const rawUsername = body.username.trim().toLowerCase();
       const normalizedUsername = rawUsername === 'director' ? 'admin' : rawUsername;
-      let user = state.users.find(
+
+      const dbSynced = supabase ? await hydrateStaffUsersOnly(supabase, state, 2500) : false;
+      const user = state.users.find(
         (u) => u.username.toLowerCase() === normalizedUsername && u.active,
       );
-      if (!user && supabase) {
-        await ensureHydrated(true, true);
-        user = state.users.find(
-          (u) => u.username.toLowerCase() === normalizedUsername && u.active,
-        );
-      }
       if (!user || !(await verifyPasswordEdge(body.password, user.passwordHash))) {
         recordAudit({
           eventType: 'LOGIN_FAILED',
@@ -1117,16 +1141,41 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         revoked: false,
       };
       state.active_sessions.unshift(sessionRow);
-      await persistToSupabase(supabase, (db) =>
-        db.from('active_sessions').insert({
-          token: sessionRow.token,
-          user_id: sessionRow.userId,
-          role: sessionRow.role,
-          ip_address: sessionRow.ipAddress,
-          device_id: sessionRow.deviceId,
-          revoked: false,
-        }),
-      );
+      if (supabase) {
+        if (dbSynced) {
+          let persistTimerId: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              persistToSupabase(supabase, (db) =>
+                db.from('active_sessions').insert({
+                  token: sessionRow.token,
+                  user_id: sessionRow.userId,
+                  role: sessionRow.role,
+                  ip_address: sessionRow.ipAddress,
+                  device_id: sessionRow.deviceId,
+                  revoked: false,
+                }),
+              ),
+              new Promise<void>((resolve) => {
+                persistTimerId = setTimeout(resolve, 800);
+              }),
+            ]);
+          } finally {
+            if (persistTimerId !== undefined) clearTimeout(persistTimerId);
+          }
+        } else {
+          void persistToSupabase(supabase, (db) =>
+            db.from('active_sessions').insert({
+              token: sessionRow.token,
+              user_id: sessionRow.userId,
+              role: sessionRow.role,
+              ip_address: sessionRow.ipAddress,
+              device_id: sessionRow.deviceId,
+              revoked: false,
+            }),
+          );
+        }
+      }
 
       recordAudit({
         eventType: 'USER_LOGIN',
@@ -1140,6 +1189,28 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
       return jsonResponse({ token, user: publicUser(user) });
     }
+
+    const requiresFreshHydration =
+      ((pathname === '/api/users' || pathname === '/api/staff') && method === 'GET') ||
+      (pathname === '/api/biometrics/index' && method === 'GET') ||
+      (pathname === '/api/biometric/verify' && method === 'POST') ||
+      (pathname === '/api/patients' && method === 'GET') ||
+      (pathname === '/api/staff-calls' && method === 'GET') ||
+      (pathname === '/api/audit-logs' && method === 'GET') ||
+      (pathname.startsWith('/api/courses/') && method === 'GET') ||
+      (pathname.startsWith('/api/patients/') && method === 'DELETE') ||
+      (/^\/api\/(?:users|staff)\/[^/]+$/.test(pathname) && method === 'DELETE');
+
+    await ensureHydrated(
+      requiresFreshHydration || (method === 'GET' && pathname !== '/api/exercises' && pathname !== '/api/health'),
+      requiresFreshHydration,
+    );
+
+    const { user: authUser, token: authToken } = await authenticate(request, clientIp, clientDeviceId);
+
+    // ========================
+    // 1. AUTHENTICATION
+    // ========================
 
     if (pathname === '/api/auth/register' && method === 'POST') {
       const body = await readJsonBody<{

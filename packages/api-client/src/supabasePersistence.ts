@@ -97,10 +97,173 @@ export function newRecordId(useUuid: boolean, prefix: string): string {
   return `${prefix}-${Date.now()}-${hex}`;
 }
 
+/** Safely apply `.limit(maxRows)` on real PostgREST builders without breaking minimal unit mocks. */
+function withQueryLimit(query: unknown, maxRows: number): PromiseLike<unknown> {
+  const q = query as { limit?: (n: number) => PromiseLike<unknown> } | null;
+  if (q && typeof q.limit === 'function') {
+    return q.limit(maxRows);
+  }
+  return Promise.resolve(query);
+}
+
+/** Execute PostgREST tasks in small batches within a hard time budget so Workers never stall. */
+async function settleInBatches(
+  tasks: ReadonlyArray<() => PromiseLike<unknown>>,
+  batchSize = 5,
+  budgetMs = 2400,
+): Promise<PromiseSettledResult<unknown>[]> {
+  const startedAt = Date.now();
+  const results: PromiseSettledResult<unknown>[] = [];
+  for (let i = 0; i < tasks.length; i += batchSize) {
+    if (Date.now() - startedAt >= budgetMs) {
+      const remaining = tasks.length - i;
+      for (let j = 0; j < remaining; j += 1) {
+        results.push({ status: 'rejected', reason: new Error('hydration_budget_exceeded') });
+      }
+      break;
+    }
+    const chunk = tasks.slice(i, i + batchSize).map((fn) => Promise.resolve(fn()));
+    const chunkRes = await Promise.allSettled(chunk);
+    results.push(...chunkRes);
+  }
+  return results;
+}
+
+/** Merge authoritative staff_users DB rows into state without resurrecting deleted seeded PT accounts. */
+export function mergeStaffUsersFromDbRows(
+  rows: Record<string, unknown>[],
+  state: CloudRouterState,
+): void {
+  const deletedSet = new Set(state.deleted_user_ids ?? []);
+  const prevById = new Map(state.users.map((u) => [u.id, u]));
+  const prevByUsername = new Map(state.users.map((u) => [u.username.toLowerCase(), u]));
+  const dbUsers: StoredUserAccount[] = rows
+    .map((r: Record<string, unknown>) => {
+      const id = String(r.id);
+      const username = String(r.username);
+      const prev = prevById.get(id) ?? prevByUsername.get(username.toLowerCase());
+      return {
+        id,
+        username,
+        passwordHash: String(r.password_hash ?? ''),
+        role: normalizeStaffRole(r.role),
+        fullName: String(r.full_name ?? ''),
+        phone: String(r.phone ?? ''),
+        specialty: r.specialty ? String(r.specialty) : undefined,
+        licenseNo: r.license_no
+          ? String(r.license_no)
+          : r.license_number
+            ? String(r.license_number)
+            : undefined,
+        avatarUrl: typeof r.avatar_url === 'string' && r.avatar_url ? r.avatar_url : prev?.avatarUrl,
+        bio: typeof r.bio === 'string' && r.bio ? r.bio : prev?.bio,
+        patientId: r.patient_id ? String(r.patient_id) : undefined,
+        active:
+          r.active !== undefined && r.active !== null
+            ? Boolean(r.active)
+            : String(r.status ?? 'ACTIVE').toUpperCase() !== 'SUSPENDED',
+        forceLoggedOutAt: r.force_logged_out_at ? String(r.force_logged_out_at) : null,
+        createdAt: String(r.created_at ?? new Date().toISOString()),
+      };
+    })
+    .filter((u) => !deletedSet.has(u.id));
+  const dbIds = new Set(dbUsers.map((u) => u.id));
+  const dbUsernames = new Set(dbUsers.map((u) => u.username.toLowerCase()));
+  // Authoritative Supabase staff list: NEVER resurrect deleted seeded PT accounts (pt_somchai / pt_waranya)
+  // across fresh Worker isolates; keep emergency super_admin bootstrap ONLY if DB has zero active admins.
+  const hasSuperAdminInDb = dbUsers.some((u) => u.role === 'super_admin' && u.active);
+  const bootstrapAdminOnly = hasSuperAdminInDb
+    ? []
+    : state.users.filter(
+        (u) =>
+          u.role === 'super_admin' &&
+          SEEDED_DEFAULT_USER_IDS.has(u.id) &&
+          !deletedSet.has(u.id) &&
+          !dbIds.has(u.id) &&
+          !dbUsernames.has(u.username.toLowerCase()),
+      );
+  state.users = [...dbUsers, ...bootstrapAdminOnly];
+}
+
+/** Fast single-table lookup of staff_users for POST /api/auth/login (never blocks on 17-table hydration). */
+export async function hydrateStaffUsersOnly(
+  supabase: SupabaseClient,
+  state: CloudRouterState,
+  timeoutMs = 2500,
+): Promise<boolean> {
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const outcome = await Promise.race([
+      Promise.resolve(withQueryLimit(supabase.from('staff_users').select('*'), 200)).then((res) => ({
+        timedOut: false as const,
+        res: res as { data: Record<string, unknown>[] | null; error: unknown },
+      })),
+      new Promise<{ timedOut: true }>((resolve) => {
+        timerId = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+      }),
+    ]);
+    if (outcome.timedOut || outcome.res.error || !Array.isArray(outcome.res.data)) {
+      return false;
+    }
+    mergeStaffUsersFromDbRows(outcome.res.data, state);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (timerId !== undefined) {
+      clearTimeout(timerId);
+    }
+  }
+}
+
 export async function hydrateStateFromSupabase(
   supabase: SupabaseClient,
   state: CloudRouterState,
 ): Promise<void> {
+  const hydrationTasks: ReadonlyArray<() => PromiseLike<unknown>> = [
+    () => withQueryLimit(supabase.from('staff_users').select('*'), 200),
+    () => withQueryLimit(supabase.from('patients').select('*'), 500),
+    () => withQueryLimit(supabase.from('face_templates').select('patient_id, pose, embedding, quality_score'), 500),
+    () => withQueryLimit(supabase.from('medical_notes').select('*').order('created_at', { ascending: false }), 200),
+    () => withQueryLimit(supabase.from('patient_courses').select('*'), 500),
+    () => withQueryLimit(supabase.from('rehab_sessions').select('*').order('created_at', { ascending: false }), 200),
+    () => withQueryLimit(supabase.from('treatment_reports').select('*').order('created_at', { ascending: false }), 200),
+    () => supabase.from('exercises').select('*').eq('active', true),
+    () => supabase.from('modpacks').select('*').eq('active', true),
+    () => withQueryLimit(supabase.from('staff_calls').select('*').order('created_at', { ascending: false }), 200),
+    () => withQueryLimit(supabase.from('audit_logs').select('*').order('created_at', { ascending: false }), 200),
+    () => withQueryLimit(supabase.from('banned_targets').select('*').order('created_at', { ascending: false }), 200),
+    () => withQueryLimit(supabase.from('active_sessions').select('*').eq('revoked', false).order('created_at', { ascending: false }), 200),
+    () => supabase.from('system_settings').select('*').eq('id', 1).maybeSingle(),
+    () => withQueryLimit(supabase.from('kiosks').select('*'), 100),
+    () => withQueryLimit(supabase.from('patient_biometrics').select('*'), 200),
+    () => withQueryLimit(supabase.from('rehab_session_history').select('*').order('session_date', { ascending: false }), 200),
+  ];
+
+  let raceTimerId: ReturnType<typeof setTimeout> | undefined;
+  let settledResults: PromiseSettledResult<unknown>[];
+  try {
+    settledResults = await Promise.race([
+      settleInBatches(hydrationTasks, 5, 2400),
+      new Promise<PromiseSettledResult<unknown>[]>((resolve) => {
+        raceTimerId = setTimeout(
+          () =>
+            resolve(
+              hydrationTasks.map(() => ({
+                status: 'rejected' as const,
+                reason: new Error('hydration_timeout_2500ms'),
+              })),
+            ),
+          2500,
+        );
+      }),
+    ]);
+  } finally {
+    if (raceTimerId !== undefined) {
+      clearTimeout(raceTimerId);
+    }
+  }
+
   const [
     usersRes,
     patientsRes,
@@ -119,76 +282,28 @@ export async function hydrateStateFromSupabase(
     kiosksRes,
     biometrics120Res,
     sessionHistoryRes,
-  ] = await Promise.allSettled([
-    supabase.from('staff_users').select('*'),
-    supabase.from('patients').select('*'),
-    supabase.from('face_templates').select('patient_id, pose, embedding, quality_score'),
-    supabase.from('medical_notes').select('*').order('created_at', { ascending: false }),
-    supabase.from('patient_courses').select('*'),
-    supabase.from('rehab_sessions').select('*').order('created_at', { ascending: false }),
-    supabase.from('treatment_reports').select('*').order('created_at', { ascending: false }),
-    supabase.from('exercises').select('*').eq('active', true),
-    supabase.from('modpacks').select('*').eq('active', true),
-    supabase.from('staff_calls').select('*').order('created_at', { ascending: false }),
-    supabase.from('audit_logs').select('*').order('created_at', { ascending: false }).limit(250),
-    supabase.from('banned_targets').select('*').order('created_at', { ascending: false }),
-    supabase.from('active_sessions').select('*').eq('revoked', false).order('created_at', { ascending: false }),
-    supabase.from('system_settings').select('*').eq('id', 1).maybeSingle(),
-    supabase.from('kiosks').select('*'),
-    supabase.from('patient_biometrics').select('*'),
-    supabase.from('rehab_session_history').select('*').order('session_date', { ascending: false }),
-  ]);
+  ] = settledResults as [
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown> | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+  ];
 
   if (usersRes.status === 'fulfilled' && !usersRes.value.error && Array.isArray(usersRes.value.data)) {
-    const deletedSet = new Set(state.deleted_user_ids ?? []);
-    const prevById = new Map(state.users.map((u) => [u.id, u]));
-    const prevByUsername = new Map(state.users.map((u) => [u.username.toLowerCase(), u]));
-    const dbUsers: StoredUserAccount[] = usersRes.value.data
-      .map((r: Record<string, unknown>) => {
-        const id = String(r.id);
-        const username = String(r.username);
-        const prev = prevById.get(id) ?? prevByUsername.get(username.toLowerCase());
-        return {
-          id,
-          username,
-          passwordHash: String(r.password_hash ?? ''),
-          role: normalizeStaffRole(r.role),
-          fullName: String(r.full_name ?? ''),
-          phone: String(r.phone ?? ''),
-          specialty: r.specialty ? String(r.specialty) : undefined,
-          licenseNo: r.license_no
-            ? String(r.license_no)
-            : r.license_number
-              ? String(r.license_number)
-              : undefined,
-          avatarUrl: typeof r.avatar_url === 'string' && r.avatar_url ? r.avatar_url : prev?.avatarUrl,
-          bio: typeof r.bio === 'string' && r.bio ? r.bio : prev?.bio,
-          patientId: r.patient_id ? String(r.patient_id) : undefined,
-          active:
-            r.active !== undefined && r.active !== null
-              ? Boolean(r.active)
-              : String(r.status ?? 'ACTIVE').toUpperCase() !== 'SUSPENDED',
-          forceLoggedOutAt: r.force_logged_out_at ? String(r.force_logged_out_at) : null,
-          createdAt: String(r.created_at ?? new Date().toISOString()),
-        };
-      })
-      .filter((u) => !deletedSet.has(u.id));
-    const dbIds = new Set(dbUsers.map((u) => u.id));
-    const dbUsernames = new Set(dbUsers.map((u) => u.username.toLowerCase()));
-    // Authoritative Supabase staff list: NEVER resurrect deleted seeded PT accounts (pt_somchai / pt_waranya)
-    // across fresh Worker isolates; keep emergency super_admin bootstrap ONLY if DB has zero active admins.
-    const hasSuperAdminInDb = dbUsers.some((u) => u.role === 'super_admin' && u.active);
-    const bootstrapAdminOnly = hasSuperAdminInDb
-      ? []
-      : state.users.filter(
-          (u) =>
-            u.role === 'super_admin' &&
-            SEEDED_DEFAULT_USER_IDS.has(u.id) &&
-            !deletedSet.has(u.id) &&
-            !dbIds.has(u.id) &&
-            !dbUsernames.has(u.username.toLowerCase()),
-        );
-    state.users = [...dbUsers, ...bootstrapAdminOnly];
+    mergeStaffUsersFromDbRows(usersRes.value.data as Record<string, unknown>[], state);
   }
 
   const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
@@ -806,7 +921,7 @@ export async function hydrateStateFromSupabase(
         continue;
       }
       if (canonicalMap.has(code)) {
-        continue; // Use canonical 26 definition below so target ROM / localization stay exact
+        continue;
       }
       validCustomOrDb.push({
         id,

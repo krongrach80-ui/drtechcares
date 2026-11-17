@@ -3,6 +3,8 @@ import { createCloudDelegatedRouter } from '@drtechcares/api-client';
 let cachedRouterKey = '';
 let cachedRouter = null;
 
+// Reuses only pure in-memory router closure; createCloudDelegatedRouter never shares pending
+// I/O Promises (such as hydrationPromise) across separate Cloudflare Worker fetch invocations.
 function getOrCreateRouter(env) {
   const supabaseUrl = env.SUPABASE_URL || env.VITE_SUPABASE_URL || '';
   const supabaseAnonKey = env.SUPABASE_ANON_KEY || env.VITE_SUPABASE_ANON_KEY || '';
@@ -57,8 +59,24 @@ export default {
 
     // Delegate /api/* directly to cached cloud router (with Supabase PostgreSQL persistence)
     if (url.pathname.startsWith('/api/')) {
-      const router = getOrCreateRouter(env);
-      return router(request);
+      try {
+        const router = getOrCreateRouter(env);
+        return await router(request);
+      } catch (err) {
+        return new Response(
+          JSON.stringify({
+            error: 'INTERNAL_WORKER_ERROR',
+            message: err instanceof Error ? err.message : String(err),
+          }),
+          {
+            status: 500,
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+              'Access-Control-Allow-Origin': '*',
+            },
+          },
+        );
+      }
     }
 
     // Serve static assets from Cloudflare ASSETS binding

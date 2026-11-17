@@ -15,7 +15,11 @@ import {
   resolveTodayPatientSchedule,
   synthesizeTtsAudio,
 } from '../index';
-import { hydrateStateFromSupabase, type CloudRouterState } from '../supabasePersistence';
+import {
+  hydrateStaffUsersOnly,
+  hydrateStateFromSupabase,
+  type CloudRouterState,
+} from '../supabasePersistence';
 
 function makeHybridEmbedding(seed: number): number[] {
   const raw = new Array<number>(FACE_EMBEDDING_DIM);
@@ -2077,6 +2081,40 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(
       ((await adminUpdateRes.json()) as { user: { licenseNo?: string } }).user.licenseNo,
     ).toBe('PT-88776');
+  });
+
+  it('serves /api/health and /api/exercises in fast-path and bounds hydrateStaffUsersOnly timeout', async () => {
+    const router = createCloudDelegatedRouter({});
+    const t0 = Date.now();
+    const healthRes = await callRouter(router, '/api/health');
+    const healthJson = (await healthRes.json()) as { ok: boolean; status?: string; timestamp?: string };
+    expect(healthRes.status).toBe(200);
+    expect(healthJson.ok).toBe(true);
+    expect(healthJson.status).toBe('healthy');
+    expect(typeof healthJson.timestamp).toBe('string');
+
+    const exRes = await callRouter(router, '/api/exercises');
+    const exJson = (await exRes.json()) as { exercises: unknown[] };
+    expect(exRes.status).toBe(200);
+    expect(exJson.exercises).toHaveLength(15);
+    expect(Date.now() - t0).toBeLessThan(200);
+
+    // hydrateStaffUsersOnly queries ONLY staff_users and resolves false on timeout without throwing
+    let queriedTables: string[] = [];
+    const stalledSupabase = {
+      from: (table: string) => {
+        queriedTables.push(table);
+        return {
+          select: () => ({
+            limit: () => new Promise(() => {}),
+          }),
+        };
+      },
+    } as unknown as SupabaseClient;
+    const dummyState = { users: [], deleted_user_ids: [] } as unknown as CloudRouterState;
+    const ok = await hydrateStaffUsersOnly(stalledSupabase, dummyState, 30);
+    expect(ok).toBe(false);
+    expect(queriedTables).toEqual(['staff_users']);
   });
 });
 
