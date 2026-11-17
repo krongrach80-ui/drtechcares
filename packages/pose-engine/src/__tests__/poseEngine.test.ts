@@ -96,7 +96,7 @@ describe('Clinical Pose Estimation Engine', () => {
 
   it('enforces straight-elbow guard (<135 deg) and completes full rep state machine cycle', () => {
     const ex =
-      CLINICAL_EXERCISES.find((item) => item.code === 'STROKE_SCAP_PROTRACT_R') ?? CLINICAL_EXERCISES[0];
+      CLINICAL_EXERCISES.find((item) => item.code === 'STROKE_SCAP_PROTRACT') ?? CLINICAL_EXERCISES[0];
     const pipeline = new RehabExercisePipeline(ex, 'right', 1, 1, 1);
 
     const restPose = makeStandingPose();
@@ -227,19 +227,25 @@ describe('Clinical Pose Estimation Engine', () => {
     expect(res.ui_directives.highlight_color).toBe('AMBER');
   });
 
-  it('provides exactly 26 standardized Stroke & MOPH upper-body exercises with zero deprecated leg/duplicate codes', () => {
-    expect(CLINICAL_EXERCISES).toHaveLength(26);
+  it('provides exactly 15 unified master Stroke & MOPH upper-body exercises with zero duplicate L/R or deprecated codes', () => {
+    expect(CLINICAL_EXERCISES).toHaveLength(15);
     expect(
       CLINICAL_EXERCISES.every((ex) => ex.category === 'upper_limb' || ex.category === 'neck_trunk'),
     ).toBe(true);
     const codes = CLINICAL_EXERCISES.map((ex) => ex.code);
-    expect(codes).toContain('STROKE_CROSS_BODY_R');
-    expect(codes).toContain('STROKE_SCAP_PROTRACT_R');
+    expect(codes).toContain('STROKE_SH_FLEX');
+    expect(codes).toContain('STROKE_SH_ABD');
+    expect(codes).toContain('STROKE_CROSS_BODY');
+    expect(codes).toContain('STROKE_SCAP_PROTRACT');
     expect(codes).toContain('STROKE_BOBATH_FORWARD_PUSH');
-    expect(codes).toContain('STROKE_HAND_TO_HEAD_R');
-    expect(codes).toContain('STROKE_FOREARM_TURN_R');
-    expect(codes).toContain('STROKE_THUMB_PINCH_R');
-    expect(codes).toContain('MOPH_NECK_TURN_BILATERAL');
+    expect(codes).toContain('STROKE_HAND_TO_HEAD');
+    expect(codes).toContain('STROKE_FOREARM_TURN');
+    expect(codes).toContain('STROKE_THUMB_PINCH');
+    expect(codes).toContain('MOPH_NECK_TILT');
+    expect(codes).toContain('MOPH_NECK_TURN');
+    expect(codes).not.toContain('STROKE_SH_FLEX_R');
+    expect(codes).not.toContain('STROKE_SH_FLEX_L');
+    expect(codes).not.toContain('MOPH_NECK_TURN_BILATERAL');
     expect(codes).not.toContain('BAL_STAND_R');
     expect(codes).not.toContain('KNEE_EXT_R');
     expect(codes).not.toContain('SIT_TO_STAND');

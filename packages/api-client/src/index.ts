@@ -12,8 +12,11 @@ import {
   CLINICAL_EXERCISES,
   isDeprecatedExerciseRecord,
   normalizeStrokeExerciseId,
+  parseExerciseCodeAndSide,
+  resolveSideAdjustedExerciseCopy,
   type BodySide,
   type ExerciseConfig,
+  type ExerciseSideCode,
 } from '@drtechcares/pose-engine';
 
 export type UserRole = 'super_admin' | 'pt' | 'patient';
@@ -40,6 +43,9 @@ export interface RehabScheduleItem {
   patientId: string;
   ptId?: string;
   exerciseId?: string;
+  exerciseCode?: string;
+  side?: ExerciseSideCode;
+  effectiveCode?: string;
   modpackId?: string;
   scheduledDate: string; // YYYY-MM-DD
   sets: number;
@@ -51,8 +57,13 @@ export interface RehabScheduleItem {
 export interface TodayPrescribedExerciseItem {
   id: string;
   exerciseId: string;
+  exerciseCode?: string;
+  side?: ExerciseSideCode;
+  effectiveCode?: string;
   nameTh: string;
   nameEn: string;
+  instructionTh?: string;
+  instructionEn?: string;
   targetJoint: string;
   activityType: ActivityType;
   sets: number;
@@ -1494,19 +1505,40 @@ function buildExerciseSummary(
   catalog: readonly ExerciseConfig[],
   fallbackById?: Map<string, TodayPrescribedExerciseItem>,
   modpackId?: string,
-): { nameTh: string; nameEn: string; targetJoint: string; holdSec: number; activityType: ActivityType } {
+  explicitSide?: ExerciseSideCode | string | null,
+): {
+  exerciseCode?: string;
+  side?: ExerciseSideCode;
+  effectiveCode?: string;
+  nameTh: string;
+  nameEn: string;
+  instructionTh?: string;
+  instructionEn?: string;
+  targetJoint: string;
+  holdSec: number;
+  activityType: ActivityType;
+} {
   const normalizedId = normalizeStrokeExerciseId(exerciseId);
+  const parsed = parseExerciseCodeAndSide(exerciseId, explicitSide);
   const found = catalog.find(
     (c) =>
+      c.id === parsed.baseCode ||
+      c.code === parsed.baseCode ||
       c.id === exerciseId ||
       c.code === exerciseId ||
       c.id === normalizedId ||
       c.code === normalizedId,
   );
   if (found) {
+    const adjusted = resolveSideAdjustedExerciseCopy(found, parsed.side);
     return {
-      nameTh: found.name.th,
-      nameEn: found.name.en,
+      exerciseCode: parsed.baseCode,
+      side: parsed.side,
+      effectiveCode: parsed.effectiveCode,
+      nameTh: adjusted.nameTh,
+      nameEn: adjusted.nameEn,
+      instructionTh: adjusted.instructionTh,
+      instructionEn: adjusted.instructionEn,
       targetJoint: JOINT_GROUP_LABELS[found.detection.jointGroup] ?? found.detection.jointGroup,
       holdSec: found.detection.holdSec ?? 3,
       activityType:
@@ -1767,15 +1799,21 @@ export function resolvePrescribedExercisesFromSchedules(
   const result: TodayPrescribedExerciseItem[] = [];
 
   for (const item of sourcePool) {
-    const exId = item.exerciseId || item.modpackId || 'minigame';
-    if (seenExIds.has(exId)) continue;
-    seenExIds.add(exId);
-    const meta = buildExerciseSummary(exId, catalog, emptyFallback, item.modpackId);
+    const exId = item.effectiveCode || item.exerciseId || item.exerciseCode || item.modpackId || 'minigame';
+    const dedupeKey = `${exId}::${item.side ?? ''}`;
+    if (seenExIds.has(dedupeKey)) continue;
+    seenExIds.add(dedupeKey);
+    const meta = buildExerciseSummary(exId, catalog, emptyFallback, item.modpackId, item.side);
     result.push({
       id: item.id,
-      exerciseId: exId,
+      exerciseId: item.exerciseId || exId,
+      ...(meta.exerciseCode ? { exerciseCode: meta.exerciseCode } : {}),
+      ...(meta.side ? { side: meta.side } : {}),
+      ...(meta.effectiveCode ? { effectiveCode: meta.effectiveCode } : {}),
       nameTh: meta.nameTh,
       nameEn: meta.nameEn,
+      ...(meta.instructionTh ? { instructionTh: meta.instructionTh } : {}),
+      ...(meta.instructionEn ? { instructionEn: meta.instructionEn } : {}),
       targetJoint: meta.targetJoint,
       activityType: meta.activityType,
       sets: item.sets,
@@ -1862,13 +1900,18 @@ export function resolveTodayPatientSchedule(input: {
       input.completedTodayOverride || hasCompletedSessionToday || allScheduledCompleted,
     );
     const todayExercises: TodayPrescribedExerciseItem[] = scheduledToday.map((item) => {
-      const exId = item.exerciseId || item.modpackId || 'minigame';
-      const meta = buildExerciseSummary(exId, catalog, fallbackById, item.modpackId);
+      const exId = item.effectiveCode || item.exerciseId || item.exerciseCode || item.modpackId || 'minigame';
+      const meta = buildExerciseSummary(exId, catalog, fallbackById, item.modpackId, item.side);
       return {
         id: item.id,
-        exerciseId: exId,
+        exerciseId: item.exerciseId || exId,
+        ...(meta.exerciseCode ? { exerciseCode: meta.exerciseCode } : {}),
+        ...(meta.side ? { side: meta.side } : {}),
+        ...(meta.effectiveCode ? { effectiveCode: meta.effectiveCode } : {}),
         nameTh: meta.nameTh,
         nameEn: meta.nameEn,
+        ...(meta.instructionTh ? { instructionTh: meta.instructionTh } : {}),
+        ...(meta.instructionEn ? { instructionEn: meta.instructionEn } : {}),
         targetJoint: meta.targetJoint,
         activityType: meta.activityType,
         sets: item.sets,

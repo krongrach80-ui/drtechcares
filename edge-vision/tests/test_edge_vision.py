@@ -18,7 +18,7 @@ import numpy as np
 from fastapi.testclient import TestClient
 
 from app.biomechanics.calibrator import StandingCalibrator
-from app.biomechanics.exercises import ALL_26_EXERCISES, resolve_exercise_rule
+from app.biomechanics.exercises import ALL_15_EXERCISES, ALL_26_EXERCISES, resolve_exercise_rule
 from app.biomechanics.solver_3d import (
     Biomechanics3DSolver,
     compute_pelvic_tilt_deg,
@@ -123,17 +123,39 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertGreater(st.bone_lengths.cm_per_unit, 80.0)  # type: ignore[union-attr]
         self.assertGreater(st.bone_lengths.torso_height, 0.15)  # type: ignore[union-attr]
 
-    def test_04_all_26_clinical_exercises_and_aliases(self) -> None:
-        """All 26 standardized Stroke ADL & MOPH exercises plus Kiosk aliases resolve cleanly."""
-        self.assertEqual(len(ALL_26_EXERCISES), 26)
-        ids = {r.id for r in ALL_26_EXERCISES}
-        self.assertEqual(len(ids), 26)
-        self.assertTrue(all(r.category in ("upper_limb", "neck_trunk") for r in ALL_26_EXERCISES))
-        self.assertEqual(resolve_exercise_rule("right_shoulder_abduction").id, "STROKE_SH_ABD_R")
-        self.assertEqual(resolve_exercise_rule("left_shoulder_abduction").id, "STROKE_SH_ABD_L")
-        self.assertEqual(resolve_exercise_rule("STROKE_CROSS_BODY_R").id, "STROKE_CROSS_BODY_R")
-        self.assertEqual(resolve_exercise_rule("MOPH_NECK_TURN_BILATERAL").id, "MOPH_NECK_TURN_BILATERAL")
-        self.assertEqual(resolve_exercise_rule("ex-01").id, "STROKE_SH_FLEX_R")
+    def test_04_all_15_unified_master_exercises_and_aliases(self) -> None:
+        """All 15 Unified Stroke ADL & MOPH Master Exercises plus L/R/BOTH and legacy aliases resolve cleanly."""
+        self.assertEqual(len(ALL_15_EXERCISES), 15)
+        self.assertEqual(len(ALL_26_EXERCISES), 15)
+        ids = {r.id for r in ALL_15_EXERCISES}
+        self.assertEqual(len(ids), 15)
+        self.assertTrue(all(r.category in ("upper_limb", "neck_trunk") for r in ALL_15_EXERCISES))
+
+        r_abd = resolve_exercise_rule("right_shoulder_abduction")
+        self.assertEqual(r_abd.id, "STROKE_SH_ABD")
+        self.assertEqual(r_abd.side, "right")
+        self.assertEqual(r_abd.target_joint, "right_shoulder")
+
+        l_abd = resolve_exercise_rule("left_shoulder_abduction")
+        self.assertEqual(l_abd.id, "STROKE_SH_ABD")
+        self.assertEqual(l_abd.side, "left")
+        self.assertEqual(l_abd.target_joint, "left_shoulder")
+
+        b_flex = resolve_exercise_rule("STROKE_SH_FLEX_BOTH")
+        self.assertEqual(b_flex.id, "STROKE_SH_FLEX")
+        self.assertEqual(b_flex.side, "both")
+
+        cross_r = resolve_exercise_rule("STROKE_CROSS_BODY_R")
+        self.assertEqual(cross_r.id, "STROKE_CROSS_BODY")
+        self.assertEqual(cross_r.side, "right")
+
+        neck_bi = resolve_exercise_rule("MOPH_NECK_TURN_BILATERAL")
+        self.assertEqual(neck_bi.id, "MOPH_NECK_TURN")
+        self.assertEqual(neck_bi.side, "both")
+
+        legacy_flex = resolve_exercise_rule("ex-01")
+        self.assertEqual(legacy_flex.id, "STROKE_SH_FLEX")
+        self.assertEqual(legacy_flex.side, "right")
 
     def test_05_3d_solver_angles_and_all_five_anti_cheat_checks(self) -> None:
         """Verify true 3D ROM + TRUNK_LEAN, SHOULDER_HIKE, ELBOW_FLEXION, TOO_FAST, and FALL."""
@@ -293,7 +315,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
 
             exs = client.get("/api/exercises")
             self.assertEqual(exs.status_code, 200)
-            self.assertEqual(exs.json()["count"], 26)
+            self.assertEqual(exs.json()["count"], 15)
 
             # Start -> frame -> finalize enrollment
             s_res = client.post("/api/enroll/start", json={"patient_id": "p-ws-01", "hn": "HN-555"}).json()
@@ -1001,12 +1023,12 @@ class TestClinicalEdgeVision(unittest.TestCase):
             coordinator.pose_estimator.close()
 
     def test_18_stroke_moph_exercises_and_safety_guards(self) -> None:
-        """Stroke ADL & MOPH Elderly exercises (exact 26), 3D ROM calculation, and Safety Guards work accurately."""
+        """Stroke ADL & MOPH Elderly 15 Master Exercises, BOTH-mode ROM, and Safety Guards work accurately."""
         from app.biomechanics.exercises import list_all_exercises
 
         all_meta = list_all_exercises(include_stroke_moph=True)
-        self.assertEqual(len(ALL_26_EXERCISES), 26)
-        self.assertEqual(len(all_meta), 26)
+        self.assertEqual(len(ALL_15_EXERCISES), 15)
+        self.assertEqual(len(all_meta), 15)
         self.assertTrue(all(item["category"] in ("upper_limb", "neck_trunk") for item in all_meta))
 
         for code in (
@@ -1023,11 +1045,22 @@ class TestClinicalEdgeVision(unittest.TestCase):
             "STROKE_WRIST_FINGER",
             "STROKE_THUMB_PINCH",
             "MOPH_NECK_TILT",
-            "MOPH_NECK_TURN_BILATERAL",
+            "MOPH_NECK_TURN",
             "MOPH_SHOULDER_SHRUG_ROLL",
         ):
             resolved = resolve_exercise_rule(code)
-            self.assertIsNotNone(resolved)
+            self.assertEqual(resolved.id, code)
+
+        # Verify BOTH side override on a single-arm master exercise averages both sides accurately
+        both_flex_rule = resolve_exercise_rule("STROKE_SH_FLEX", side_override="both")
+        self.assertEqual(both_flex_rule.side, "both")
+        solver_both = Biomechanics3DSolver(self.settings)
+        cal_both = StandingCalibrator(duration_sec=0.2)
+        stand_both, scores_both = generate_synthetic_133_pose(0.0, is_calibrating=True)
+        cal_both.force_calibrate_from_pose(stand_both)
+        both_pts, _ = generate_synthetic_133_pose(2.0, "STROKE_SH_ABD_BOTH")
+        res_both, _ = solver_both.analyze(both_pts, both_flex_rule, cal_both, timestamp_sec=1.0, scores=scores_both)
+        self.assertGreater(res_both.current_rom_deg, 90.0)
 
         solver = Biomechanics3DSolver(self.settings)
         cal = StandingCalibrator(duration_sec=0.2)

@@ -20,6 +20,23 @@ import {
   type UserAccount,
 } from '@drtechcares/api-client';
 import {
+  CLINICAL_EXERCISES,
+  formatEffectiveExerciseCode,
+  mergeDuplicateSideExercises,
+  normalizeSideValue,
+  parseExerciseCodeAndSide,
+  resolveDefaultSideForExercise,
+  resolveSideAdjustedExerciseCopy,
+  sortExercisesStrokeUpperFirst,
+  type ExerciseSideCode,
+} from '@drtechcares/pose-engine';
+import {
+  BILATERAL_INHERENT_EXERCISE_CODES,
+  ExerciseSidePills,
+  GlobalQuickSideSelector,
+  getSideBadgeMeta,
+} from './ExerciseSideSelector';
+import {
   alignFaceTo112,
   BiologicalLivenessTracker,
   captureDownscaledContextFrame,
@@ -1705,8 +1722,19 @@ export function PatientProfileAndHistoryModal({
                 await apiClient.recordRehabSession({
                   patientId: patient.id,
                   activityType: 'physio_exercise',
-                  exerciseId: 'STROKE_SH_FLEX_R',
-                  exerciseName: '[Stroke ADL] ยกแขนขวาไปด้านหน้า',
+                  exerciseId:
+                    patient.affectedSide === 'LEFT'
+                      ? 'STROKE_SH_FLEX_LEFT'
+                      : patient.affectedSide === 'BOTH'
+                        ? 'STROKE_SH_FLEX_BOTH'
+                        : 'STROKE_SH_FLEX_RIGHT',
+                  exerciseName: `[Stroke ADL] ยกแขน${
+                    patient.affectedSide === 'LEFT'
+                      ? 'ซ้าย'
+                      : patient.affectedSide === 'BOTH'
+                        ? 'ทั้งสองข้าง'
+                        : 'ขวา'
+                  }ไปด้านหน้า`,
                   jointName: 'shoulder',
                   bodySide: patient.affectedSide ?? 'RIGHT',
                   completedSets: 3,
@@ -2186,7 +2214,10 @@ export function ScheduleCreatorAndDayModal({
   const [exerciseCategoryFilter, setExerciseCategoryFilter] = useState<
     'all' | 'upper_limb' | 'neck_trunk'
   >('all');
-  const [selectedExerciseIds, setSelectedExerciseIds] = useState<string[]>([]);
+  const [selectedSideByBaseCode, setSelectedSideByBaseCode] = useState<Record<string, ExerciseSideCode>>({});
+  const [globalQuickSide, setGlobalQuickSide] = useState<ExerciseSideCode>(
+    () => normalizeSideValue(patient?.affectedSide) ?? 'RIGHT',
+  );
   const [modpackId, setModpackId] = useState(modpacks[0]?.id || '');
   const [sets, setSets] = useState(3);
   const [reps, setReps] = useState(10);
@@ -2219,17 +2250,18 @@ export function ScheduleCreatorAndDayModal({
     setMonthSpan(1);
     setStartFromAnchorOnly(false);
     setWeeklyExcludedDates([]);
+    const defaultPatientSide = normalizeSideValue(patient?.affectedSide) ?? 'RIGHT';
+    setGlobalQuickSide(defaultPatientSide);
     const sanitizedSchedules = sanitizeAccidentalDefaultKneePrefix(patient?.rehabSchedules ?? []);
-    const anchorDayExIds = Array.from(
-      new Set(
-        sanitizedSchedules
-          .filter(
-            (item) => item.scheduledDate === anchorIso && item.status !== 'REST' && Boolean(item.exerciseId),
-          )
-          .map((item) => item.exerciseId as string),
-      ),
-    );
-    setSelectedExerciseIds(anchorDayExIds);
+    const nextSideMap: Record<string, ExerciseSideCode> = {};
+    for (const item of sanitizedSchedules) {
+      if (item.scheduledDate !== anchorIso || item.status === 'REST') continue;
+      const rawCode = item.exerciseCode || item.effectiveCode || item.exerciseId;
+      if (!rawCode) continue;
+      const parsed = parseExerciseCodeAndSide(rawCode, item.side);
+      nextSideMap[parsed.baseCode] = parsed.side;
+    }
+    setSelectedSideByBaseCode(nextSideMap);
   }, [patient, selectedDateIso, mode, todayIso]);
 
   const activePatient = patients.find((p) => p.id === targetPatientId) || patient;
@@ -2248,10 +2280,23 @@ export function ScheduleCreatorAndDayModal({
     return existingScheduleDatesSet.get(selectedDateIso) ?? [];
   }, [mode, activePatient, selectedDateIso, existingScheduleDatesSet]);
 
+  const unifiedExercises = useMemo(() => {
+    const source =
+      exercises.length > 0
+        ? exercises
+        : CLINICAL_EXERCISES.map((ex) => ({ ...ex, createdBy: 'system' }));
+    return mergeDuplicateSideExercises(sortExercisesStrokeUpperFirst(source));
+  }, [exercises]);
+
   const filteredExercises = useMemo(() => {
-    if (exerciseCategoryFilter === 'all') return exercises;
-    return exercises.filter((ex) => ex.category === exerciseCategoryFilter);
-  }, [exercises, exerciseCategoryFilter]);
+    if (exerciseCategoryFilter === 'all') return unifiedExercises;
+    return unifiedExercises.filter((ex) => ex.category === exerciseCategoryFilter);
+  }, [unifiedExercises, exerciseCategoryFilter]);
+
+  const selectedEntries = useMemo(
+    () => Object.entries(selectedSideByBaseCode) as [string, ExerciseSideCode][],
+    [selectedSideByBaseCode],
+  );
 
   const computedWeeklyBaseDates = useMemo(() => {
     const minIso = startFromAnchorOnly ? selectedDateIso || todayIso : null;
@@ -2282,8 +2327,44 @@ export function ScheduleCreatorAndDayModal({
 
   const anchorIso = selectedDateIso || todayIso;
 
-  const toggleExercise = (id: string) => {
-    setSelectedExerciseIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+  const toggleExercise = (ex: ManagedExerciseRecord) => {
+    const parsed = parseExerciseCodeAndSide(ex.code || ex.id);
+    const baseCode = parsed.baseCode;
+    setSelectedSideByBaseCode((prev) => {
+      if (prev[baseCode]) {
+        const next = { ...prev };
+        delete next[baseCode];
+        return next;
+      }
+      const defaultSide = BILATERAL_INHERENT_EXERCISE_CODES.has(baseCode)
+        ? 'BOTH'
+        : resolveDefaultSideForExercise(ex, activePatient?.affectedSide ?? globalQuickSide);
+      return {
+        ...prev,
+        [baseCode]: BILATERAL_INHERENT_EXERCISE_CODES.has(baseCode) ? 'BOTH' : globalQuickSide || defaultSide,
+      };
+    });
+  };
+
+  const setCardSide = (baseCode: string, side: ExerciseSideCode) => {
+    setSelectedSideByBaseCode((prev) => ({
+      ...prev,
+      [baseCode]: side,
+    }));
+  };
+
+  const applyGlobalSideToSelected = (side: ExerciseSideCode) => {
+    setGlobalQuickSide(side);
+    setSelectedSideByBaseCode((prev) => {
+      const next: Record<string, ExerciseSideCode> = {};
+      for (const [code] of Object.entries(prev)) {
+        next[code] =
+          side !== 'BOTH' && BILATERAL_INHERENT_EXERCISE_CODES.has(code)
+            ? 'BOTH'
+            : side;
+      }
+      return next;
+    });
   };
 
   const toggleManualDate = (iso: string) => {
@@ -2324,7 +2405,7 @@ export function ScheduleCreatorAndDayModal({
 
   const handleSaveSchedule = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activePatient || selectedExerciseIds.length === 0 || finalSelectedDates.length === 0) return;
+    if (!activePatient || selectedEntries.length === 0 || finalSelectedDates.length === 0) return;
     setSaving(true);
     try {
       const finalSelectedDateSet = new Set(finalSelectedDates);
@@ -2333,13 +2414,17 @@ export function ScheduleCreatorAndDayModal({
       let seq = 0;
 
       for (const dateIso of finalSelectedDates) {
-        for (const exId of selectedExerciseIds) {
+        for (const [baseCode, side] of selectedEntries) {
           seq += 1;
+          const effectiveCode = formatEffectiveExerciseCode(baseCode, side);
           generated.push({
             id: `sched-${baseTs}-${seq}`,
             patientId: activePatient.id,
             ptId: ptId || activePatient.assignedPtId,
-            exerciseId: exId,
+            exerciseId: effectiveCode,
+            exerciseCode: baseCode,
+            side,
+            effectiveCode,
             modpackId: modpackId || undefined,
             scheduledDate: dateIso,
             sets,
@@ -2362,7 +2447,7 @@ export function ScheduleCreatorAndDayModal({
       });
 
       await onSaved(
-        `บันทึกตารางกายภาพ ${selectedExerciseIds.length} ท่า จำนวน ${finalSelectedDates.length} วัน (${generated.length} รายการ) ให้ ${activePatient.fullName} แล้ว`,
+        `บันทึกตารางกายภาพ ${selectedEntries.length} ท่า จำนวน ${finalSelectedDates.length} วัน (${generated.length} รายการ) ให้ ${activePatient.fullName} แล้ว`,
       );
       onClose();
     } finally {
@@ -2434,14 +2519,38 @@ export function ScheduleCreatorAndDayModal({
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 {dayItems.map((item) => {
-                  const ex = exercises.find((e) => e.id === item.exerciseId);
+                  const parsedItem = parseExerciseCodeAndSide(
+                    item.exerciseCode || item.effectiveCode || item.exerciseId,
+                    item.side,
+                  );
+                  const ex = unifiedExercises.find(
+                    (e) =>
+                      parseExerciseCodeAndSide(e.code || e.id).baseCode ===
+                      parsedItem.baseCode,
+                  );
                   const mp = modpacks.find((m) => m.id === item.modpackId);
+                  const adjustedCopy = ex
+                    ? resolveSideAdjustedExerciseCopy(ex, parsedItem.side)
+                    : null;
+                  const sideMeta = getSideBadgeMeta(parsedItem.side);
                   return (
                     <div key={item.id} className="rounded-2xl border border-slate-200 bg-white p-3 space-y-2 shadow-xs">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
-                          <div className="font-extrabold text-slate-900 truncate">
-                            {ex ? ex.name[lang] || ex.name.th : 'Rehab Course'} {mp ? `• ${mp.name}` : ''}
+                          <div className="font-extrabold text-slate-900 truncate flex items-center gap-1.5">
+                            <span className="truncate">
+                              {adjustedCopy
+                                ? (lang === 'en' ? adjustedCopy.nameEn : adjustedCopy.nameTh)
+                                : ex
+                                  ? ex.name[lang] || ex.name.th
+                                  : 'Rehab Course'}
+                              {mp ? ` • ${mp.name}` : ''}
+                            </span>
+                            <span
+                              className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-extrabold ${sideMeta.badgeClass}`}
+                            >
+                              {sideMeta.shortLabel[lang]}
+                            </span>
                           </div>
                           <div className="text-[11px] text-slate-500">
                             {item.sets} × {item.reps} {item.notes ? `• ${item.notes}` : ''}
@@ -2509,7 +2618,14 @@ export function ScheduleCreatorAndDayModal({
               <label className="block font-bold text-slate-600 mb-1">{sm.selectPatientLabel}</label>
               <select
                 value={targetPatientId}
-                onChange={(e) => setTargetPatientId(e.target.value)}
+                onChange={(e) => {
+                  const nextId = e.target.value;
+                  setTargetPatientId(nextId);
+                  const nextP = patients.find((p) => p.id === nextId);
+                  if (nextP) {
+                    setGlobalQuickSide(normalizeSideValue(nextP.affectedSide) ?? 'RIGHT');
+                  }
+                }}
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-bold text-slate-800"
               >
                 {patients.map((p) => (
@@ -2526,16 +2642,20 @@ export function ScheduleCreatorAndDayModal({
                 onChange={(e) => setPtId(e.target.value)}
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-bold text-slate-800"
               >
-                {ptUsers.map((pt) => (
-                  <option key={pt.id} value={pt.id}>
-                    {pt.fullName}
-                  </option>
-                ))}
+                {ptUsers.length === 0 ? (
+                  <option value="">คลินิก / ตามผู้สั่งการ</option>
+                ) : (
+                  ptUsers.map((pt) => (
+                    <option key={pt.id} value={pt.id}>
+                      {pt.fullName}
+                    </option>
+                  ))
+                )}
               </select>
             </div>
           </div>
 
-          {/* 1. เลือกท่าทางในการกายภาพได้ */}
+          {/* 1. เลือกท่าทางในการกายภาพได้ (15 Unified Master Cards + Segmented Side Selector) */}
           <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -2544,30 +2664,84 @@ export function ScheduleCreatorAndDayModal({
                 </span>
                 <span className="text-sm font-black text-slate-900 flex items-center gap-1.5">
                   <Dumbbell className="h-4 w-4 text-emerald-600" />
-                  เลือกท่าทางในการกายภาพบำบัด (เลือกได้หลายท่า)
+                  เลือกท่าทางในการกายภาพบำบัด (15 ท่าหลัก — เลือกข้างในแต่ละการ์ด)
                 </span>
                 <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[11px] font-extrabold text-emerald-700">
-                  เลือกแล้ว {selectedExerciseIds.length} ท่า
+                  เลือกแล้ว {selectedEntries.length} ท่า
                 </span>
               </div>
 
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
-                  onClick={() => setSelectedExerciseIds(filteredExercises.map((ex) => ex.id))}
+                  onClick={() => {
+                    setSelectedSideByBaseCode((prev) => {
+                      const next = { ...prev };
+                      for (const ex of filteredExercises) {
+                        const baseCode = parseExerciseCodeAndSide(ex.code || ex.id).baseCode;
+                        if (!next[baseCode]) {
+                          next[baseCode] = BILATERAL_INHERENT_EXERCISE_CODES.has(baseCode)
+                            ? 'BOTH'
+                            : globalQuickSide ||
+                              resolveDefaultSideForExercise(ex, activePatient?.affectedSide);
+                        }
+                      }
+                      return next;
+                    });
+                  }}
                   className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 cursor-pointer"
                 >
                   เลือกทั้งหมดในหมวดนี้
                 </button>
                 <button
                   type="button"
-                  onClick={() => setSelectedExerciseIds([])}
+                  onClick={() => setSelectedSideByBaseCode({})}
                   className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-500 hover:bg-rose-50 hover:text-rose-700 cursor-pointer"
                 >
                   ล้างท่า
                 </button>
               </div>
             </div>
+
+            <GlobalQuickSideSelector
+              value={globalQuickSide}
+              selectedCount={selectedEntries.length}
+              onSelectGlobal={applyGlobalSideToSelected}
+              lang={lang}
+            />
+
+            {selectedEntries.length > 0 && (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-2.5 flex flex-wrap gap-1.5">
+                {selectedEntries.map(([baseCode, side]) => {
+                  const found = unifiedExercises.find(
+                    (ex) => parseExerciseCodeAndSide(ex.code || ex.id).baseCode === baseCode,
+                  );
+                  const sideMeta = getSideBadgeMeta(side);
+                  return (
+                    <button
+                      key={baseCode}
+                      type="button"
+                      onClick={() =>
+                        setSelectedSideByBaseCode((prev) => {
+                          const next = { ...prev };
+                          delete next[baseCode];
+                          return next;
+                        })
+                      }
+                      className="inline-flex items-center gap-1 rounded-full bg-white border border-emerald-300 px-2.5 py-0.5 text-[11px] font-bold text-emerald-900 hover:bg-rose-50 hover:border-rose-300 cursor-pointer"
+                    >
+                      <span>{found ? found.name[lang] || found.name.th : baseCode}</span>
+                      <span
+                        className={`rounded-full border px-1.5 py-0 text-[10px] font-extrabold ${sideMeta.badgeClass}`}
+                      >
+                        {sideMeta.shortLabel[lang]}
+                      </span>
+                      <span aria-hidden="true">×</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
             {/* Category Filter Tabs */}
             <div className="flex flex-wrap gap-1.5">
@@ -2587,15 +2761,30 @@ export function ScheduleCreatorAndDayModal({
               ))}
             </div>
 
-            {/* Interactive Posture Multi-Select Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-60 overflow-y-auto pr-1">
+            {/* Interactive Unified Posture Grid with Per-Card Segmented Side Pills */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-64 overflow-y-auto pr-1">
               {filteredExercises.map((ex) => {
-                const checked = selectedExerciseIds.includes(ex.id);
+                const baseCode = parseExerciseCodeAndSide(ex.code || ex.id).baseCode;
+                const assignedSide = selectedSideByBaseCode[baseCode] ?? null;
+                const checked = assignedSide !== null;
+                const effectiveDisplay = assignedSide
+                  ? formatEffectiveExerciseCode(baseCode, assignedSide)
+                  : baseCode;
+                const displayCopy = assignedSide
+                  ? resolveSideAdjustedExerciseCopy(ex, assignedSide)
+                  : null;
                 return (
-                  <button
-                    key={ex.id}
-                    type="button"
-                    onClick={() => toggleExercise(ex.id)}
+                  <div
+                    key={baseCode}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => toggleExercise(ex)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        toggleExercise(ex);
+                      }
+                    }}
                     className={`rounded-2xl border p-3 text-left transition cursor-pointer flex items-start gap-2.5 ${
                       checked
                         ? 'border-emerald-500 bg-emerald-50/70 ring-1 ring-emerald-500/40 shadow-xs'
@@ -2611,28 +2800,38 @@ export function ScheduleCreatorAndDayModal({
                     >
                       <Check className="h-3.5 w-3.5 stroke-[3]" />
                     </span>
-                    <div className="min-w-0 flex-1 space-y-1">
+                    <div className="min-w-0 flex-1 space-y-1.5">
                       <div className="flex items-center justify-between gap-1.5">
                         <span className="font-extrabold text-slate-900 truncate">
-                          {ex.name[lang] || ex.name.th}
+                          {displayCopy
+                            ? (lang === 'en' ? displayCopy.nameEn : displayCopy.nameTh)
+                            : ex.name[lang] || ex.name.th}
                         </span>
                         <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-600">
-                          {ex.code}
+                          {effectiveDisplay}
                         </span>
                       </div>
                       <p className="text-[11px] text-slate-500 line-clamp-1">
                         {ex.instruction[lang] || ex.instruction.th}
                       </p>
-                      <div className="text-[10px] font-bold text-emerald-700">
-                        มุมเป้า {ex.detection.targetMinDeg}°–{ex.detection.targetMaxDeg}° • ค้าง {ex.detection.holdSec} วิ • แนะนำ {ex.detection.defaultSets}×{ex.detection.defaultReps}
+                      <div className="flex flex-wrap items-center justify-between gap-1.5 pt-0.5">
+                        <ExerciseSidePills
+                          value={assignedSide}
+                          onSelect={(side) => setCardSide(baseCode, side)}
+                          lang={lang}
+                          compact
+                        />
+                        <div className="text-[10px] font-bold text-emerald-700">
+                          เป้า {ex.detection.targetMinDeg}°–{ex.detection.targetMaxDeg}° • {ex.detection.defaultSets}×{ex.detection.defaultReps}
+                        </div>
                       </div>
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
 
-            {selectedExerciseIds.length === 0 && (
+            {selectedEntries.length === 0 && (
               <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] font-bold text-amber-800">
                 กรุณาเลือกท่ากายภาพบำบัดอย่างน้อย 1 ท่า
               </div>
@@ -2978,8 +3177,8 @@ export function ScheduleCreatorAndDayModal({
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-3 text-white shadow-sm">
             <div className="space-y-0.5">
               <div className="font-extrabold text-xs sm:text-sm">
-                สรุป: {selectedExerciseIds.length} ท่ากายภาพ × {finalSelectedDates.length} วัน ={' '}
-                <span className="text-emerald-200">{selectedExerciseIds.length * finalSelectedDates.length} รายการ</span>
+                สรุป: {selectedEntries.length} ท่ากายภาพ × {finalSelectedDates.length} วัน ={' '}
+                <span className="text-emerald-200">{selectedEntries.length * finalSelectedDates.length} รายการ</span>
               </div>
               <div className="text-[11px] text-sky-100">
                 เซต × ครั้ง: {sets} × {reps} • โหมด:{' '}
@@ -2996,7 +3195,7 @@ export function ScheduleCreatorAndDayModal({
               </button>
               <button
                 type="submit"
-                disabled={saving || selectedExerciseIds.length === 0 || finalSelectedDates.length === 0}
+                disabled={saving || selectedEntries.length === 0 || finalSelectedDates.length === 0}
                 className="whitespace-nowrap h-10 px-5 inline-flex items-center justify-center rounded-xl bg-emerald-500 font-extrabold text-slate-950 hover:bg-emerald-400 disabled:opacity-40 cursor-pointer"
               >
                 {saving ? sm.savingBtn : sm.saveScheduleBtn}

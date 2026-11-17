@@ -66,7 +66,10 @@ class ClinicalRehabFSM:
         self.movement_phase: MovementPhase = "IDLE"
         self.patient: Optional[PatientMatchSchema] = None
         self.prescription = ExercisePrescriptionSchema()
-        self.rule: ClinicalExerciseRule = resolve_exercise_rule(self.prescription.exercise_id)
+        self.rule: ClinicalExerciseRule = resolve_exercise_rule(
+            self.prescription.exercise_id,
+            side_override=self.prescription.prescribed_side,
+        )
 
         self.valid_reps: int = 0
         self.invalid_reps: int = 0
@@ -105,7 +108,7 @@ class ClinicalRehabFSM:
 
     def set_prescription(self, rx: ExercisePrescriptionSchema, start_calibration: bool = True) -> None:
         self.prescription = rx
-        self.rule = resolve_exercise_rule(rx.exercise_id)
+        self.rule = resolve_exercise_rule(rx.exercise_id, side_override=rx.prescribed_side)
         self.valid_reps = 0
         self.invalid_reps = 0
         self.target_reps = max(1, int(rx.target_reps or self.rule.default_reps))

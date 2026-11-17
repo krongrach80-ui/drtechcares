@@ -181,17 +181,122 @@ class Biomechanics3DSolver:
             sh_span * 0.65,
         )
 
+        side_dependent_kinds = {
+            "shoulder_elevation",
+            "elbow_flexion",
+            "cross_body_reach",
+            "scapular_protraction",
+            "hand_to_head",
+            "forearm_rotation",
+            "thumb_pinch",
+            "shoulder_rotation",
+            "wrist_finger_extension",
+        }
+        kind = rule.metric_kind
+        if rule.side == "both" and kind in side_dependent_kinds:
+            left_deg = self._compute_side_primary_rom(
+                pts=pts,
+                side="left",
+                kind=kind,
+                sh_span=sh_span,
+                arm_len_ref=arm_len_ref,
+                forearm_len_ref=forearm_len_ref,
+                scores=scores,
+                pts_2d=pts_2d,
+            )
+            right_deg = self._compute_side_primary_rom(
+                pts=pts,
+                side="right",
+                kind=kind,
+                sh_span=sh_span,
+                arm_len_ref=arm_len_ref,
+                forearm_len_ref=forearm_len_ref,
+                scores=scores,
+                pts_2d=pts_2d,
+            )
+            return round(0.5 * (left_deg + right_deg), 2)
+
         side = rule.side if rule.side in ("left", "right") else "right"
+        if kind in side_dependent_kinds:
+            return self._compute_side_primary_rom(
+                pts=pts,
+                side=side,
+                kind=kind,
+                sh_span=sh_span,
+                arm_len_ref=arm_len_ref,
+                forearm_len_ref=forearm_len_ref,
+                scores=scores,
+                pts_2d=pts_2d,
+            )
+
+        if kind == "bilateral_elbow_push":
+            left_ext = joint_angle_3d(pts[5], pts[7], pts[9])
+            right_ext = joint_angle_3d(pts[6], pts[8], pts[10])
+            return float(np.clip(0.5 * (left_ext + right_ext), 0.0, 180.0))
+
+        if kind == "neck_lateral_tilt":
+            eye_span = float(np.linalg.norm(pts[1, :2] - pts[2, :2]))
+            sh_vec_2d = pts[5, :2] - pts[6, :2]
+            if eye_span > 1e-4 and float(np.linalg.norm(sh_vec_2d)) > 1e-4:
+                eye_vec_2d = pts[1, :2] - pts[2, :2]
+                eye_ang = math.degrees(math.atan2(float(eye_vec_2d[1]), float(eye_vec_2d[0])))
+                sh_ang = math.degrees(math.atan2(float(sh_vec_2d[1]), float(sh_vec_2d[0])))
+                delta = abs(eye_ang - sh_ang)
+                if delta > 180.0:
+                    delta = 360.0 - delta
+                return round(float(np.clip(delta, 0.0, 50.0)), 2)
+            head_axis = pts[0] - mid_shoulder
+            return angle_between_vectors_3d(head_axis, spine_vertical_unit)
+
+        if kind == "neck_yaw_turn":
+            ear_mid_x = 0.5 * float(pts[3, 0] + pts[4, 0])
+            ear_span = max(0.04, float(np.linalg.norm(pts[3] - pts[4])))
+            yaw_ratio = abs(float(pts[0, 0]) - ear_mid_x) / (ear_span * 0.5)
+            return float(np.clip(yaw_ratio * 55.0, 0.0, 75.0))
+
+        if kind == "shoulder_shrug_roll":
+            ear_l_dist = float(np.linalg.norm(pts[3] - pts[5]))
+            ear_r_dist = float(np.linalg.norm(pts[4] - pts[6]))
+            avg_ratio = (0.5 * (ear_l_dist + ear_r_dist)) / sh_span
+            shrug_deg = max(0.0, (0.42 - avg_ratio) * 220.0)
+            return float(np.clip(shrug_deg, 0.0, 65.0))
+
+        if kind == "bilateral_arm_raise":
+            left_rom = compute_shoulder_elevation_with_vertical_fallback(
+                pts_3d=pts,
+                side="left",
+                scores=scores,
+                min_visibility=float(self.settings.MIN_LANDMARK_VISIBILITY),
+                pts_2d=pts_2d,
+            )
+            right_rom = compute_shoulder_elevation_with_vertical_fallback(
+                pts_3d=pts,
+                side="right",
+                scores=scores,
+                min_visibility=float(self.settings.MIN_LANDMARK_VISIBILITY),
+                pts_2d=pts_2d,
+            )
+            return round(0.5 * (left_rom + right_rom), 2)
+
+        # balance_trunk_sway / trunk_flexion
+        live_spine = mid_shoulder - mid_hip
+        return angle_between_vectors_3d(live_spine, spine_vertical_unit)
+
+    def _compute_side_primary_rom(
+        self,
+        pts: np.ndarray,
+        side: str,
+        kind: str,
+        sh_span: float,
+        arm_len_ref: float,
+        forearm_len_ref: float,
+        scores: Optional[np.ndarray] = None,
+        pts_2d: Optional[np.ndarray] = None,
+    ) -> float:
         sh_idx = 5 if side == "left" else 6
         el_idx = 7 if side == "left" else 8
         wr_idx = 9 if side == "left" else 10
-        hp_idx = 11 if side == "left" else 12
-        kn_idx = 13 if side == "left" else 14
-        an_idx = 15 if side == "left" else 16
-        toe_idx = 17 if side == "left" else 20
-        heel_idx = 19 if side == "left" else 22
 
-        kind = rule.metric_kind
         if kind == "shoulder_elevation":
             base_deg = compute_shoulder_elevation_with_vertical_fallback(
                 pts_3d=pts,
@@ -200,7 +305,6 @@ class Biomechanics3DSolver:
                 min_visibility=float(self.settings.MIN_LANDMARK_VISIBILITY),
                 pts_2d=pts_2d,
             )
-            # Foreshortening compensation when sitting facing webcam and pushing/raising toward camera
             el_pt = pts_2d[el_idx] if pts_2d is not None else pts[el_idx]
             sh_pt = pts_2d[sh_idx] if pts_2d is not None else pts[sh_idx]
             sh_span_2d = (
@@ -214,13 +318,11 @@ class Biomechanics3DSolver:
                 proj_ratio = float(np.clip(proj_len_2d / max(arm_ref_2d, 1e-4), 0.0, 1.0))
                 foreshorten_deg = math.degrees(math.acos(proj_ratio))
                 if float(el_pt[1]) <= float(sh_pt[1]) + 0.05 * sh_span_2d:
-                    # Overhead / high forward reach above shoulder line
                     foreshorten_deg = max(foreshorten_deg, 92.0 + min(55.0, abs(float(sh_pt[1] - el_pt[1])) / max(arm_ref_2d, 1e-4) * 85.0))
                 return round(float(np.clip(max(base_deg, foreshorten_deg), 0.0, 175.0)), 2)
             return base_deg
 
         if kind == "elbow_flexion":
-            # Ascending flexion: 0 deg (straight down) -> 135 deg (fully flexed toward shoulder)
             interior_deg = joint_angle_3d(pts[sh_idx], pts[el_idx], pts[wr_idx])
             asc_deg = float(np.clip(180.0 - interior_deg, 0.0, 145.0))
             sh_wr_dist = float(np.linalg.norm(pts[wr_idx] - pts[sh_idx]))
@@ -253,11 +355,6 @@ class Biomechanics3DSolver:
             fwd_foreshorten = math.degrees(math.acos(float(np.clip(proj_arm / total_arm, 0.0, 1.0))))
             return round(float(np.clip(max(elev_deg * 0.88 + depth_gain, fwd_foreshorten * 1.1), 0.0, 120.0)), 2)
 
-        if kind == "bilateral_elbow_push":
-            left_ext = joint_angle_3d(pts[5], pts[7], pts[9])
-            right_ext = joint_angle_3d(pts[6], pts[8], pts[10])
-            return float(np.clip(0.5 * (left_ext + right_ext), 0.0, 180.0))
-
         if kind == "hand_to_head":
             head_y = float(pts[0, 1])
             wr_y = float(pts[wr_idx, 1])
@@ -268,7 +365,6 @@ class Biomechanics3DSolver:
             return round(float(np.clip(max(lift * 95.0 + prox * min(lift, 1.0) * 45.0, crown_deg), 0.0, 160.0)), 2)
 
         if kind == "forearm_rotation":
-            # Wholebody-133: thumb_cmc 93/114, pinky_mcp 108/129, thumb_tip 95/116, pinky_tip 111/132
             thumb_cmc_idx = 93 if side == "left" else 114
             pinky_mcp_idx = 108 if side == "left" else 129
             thumb_tip_idx = 95 if side == "left" else 116
@@ -303,28 +399,7 @@ class Biomechanics3DSolver:
                 return float(round(score * 75.0, 2))
             return 25.0
 
-        if kind == "neck_lateral_tilt":
-            eye_span = float(np.linalg.norm(pts[1, :2] - pts[2, :2]))
-            sh_vec_2d = pts[5, :2] - pts[6, :2]
-            if eye_span > 1e-4 and float(np.linalg.norm(sh_vec_2d)) > 1e-4:
-                eye_vec_2d = pts[1, :2] - pts[2, :2]
-                eye_ang = math.degrees(math.atan2(float(eye_vec_2d[1]), float(eye_vec_2d[0])))
-                sh_ang = math.degrees(math.atan2(float(sh_vec_2d[1]), float(sh_vec_2d[0])))
-                delta = abs(eye_ang - sh_ang)
-                if delta > 180.0:
-                    delta = 360.0 - delta
-                return round(float(np.clip(delta, 0.0, 50.0)), 2)
-            head_axis = pts[0] - mid_shoulder
-            return angle_between_vectors_3d(head_axis, spine_vertical_unit)
-
-        if kind == "neck_yaw_turn":
-            ear_mid_x = 0.5 * float(pts[3, 0] + pts[4, 0])
-            ear_span = max(0.04, float(np.linalg.norm(pts[3] - pts[4])))
-            yaw_ratio = abs(float(pts[0, 0]) - ear_mid_x) / (ear_span * 0.5)
-            return float(np.clip(yaw_ratio * 55.0, 0.0, 75.0))
-
         if kind == "shoulder_rotation":
-            # External/Internal sweep of forearm around elbow axis using arcsin horizontal projection + 3D fallback
             forearm = pts[wr_idx] - pts[el_idx]
             lateral_plane = np.array([forearm[0], 0.0, forearm[2]], dtype=np.float64)
             anterior_ref = np.array([0.0, 0.0, -1.0], dtype=np.float64)
@@ -334,56 +409,27 @@ class Biomechanics3DSolver:
             rot_arcsin = math.degrees(math.asin(horiz_sin)) * (70.0 / 90.0)
             return round(float(np.clip(max(rot_3d, rot_arcsin), 0.0, 95.0)), 2)
 
-        if kind == "wrist_finger_extension":
-            # Support RTMW3D 133-pt hand keypoints: left 91..111, right 112..132
-            hand_root_idx = 91 if side == "left" else 112
-            mid_mcp_idx = 100 if side == "left" else 121
-            tip_indices = [95, 99, 103, 107, 111] if side == "left" else [116, 120, 124, 128, 132]
-            mid_tip_idx = 103 if side == "left" else 124
-            if (
-                pts.shape[0] > tip_indices[-1]
-                and float(np.linalg.norm(pts[mid_tip_idx] - pts[hand_root_idx])) > 1e-4
-            ):
-                forearm_dir = pts[wr_idx] - pts[el_idx]
-                hand_dir = pts[mid_tip_idx] - pts[hand_root_idx]
-                ext_deg = angle_between_vectors_3d(forearm_dir, hand_dir)
-                palm_len = max(1e-4, float(np.linalg.norm(pts[mid_mcp_idx] - pts[hand_root_idx])))
-                if palm_len > 1e-4 and float(np.linalg.norm(pts[mid_mcp_idx])) > 1e-4:
-                    avg_tip_dist = float(np.mean([np.linalg.norm(pts[ti] - pts[hand_root_idx]) for ti in tip_indices]))
-                    finger_spread_deg = float(np.clip(((avg_tip_dist / palm_len) - 1.1) / 0.9 * 85.0, 0.0, 85.0))
-                    return round(float(np.clip(max(ext_deg, finger_spread_deg), 0.0, 95.0)), 2)
-                return float(np.clip(ext_deg, 0.0, 95.0))
-            wrist_vec = pts[wr_idx] - pts[el_idx]
-            horiz = np.array([wrist_vec[0], 0.0, wrist_vec[2]], dtype=np.float64)
-            return float(np.clip(angle_between_vectors_3d(wrist_vec, horiz), 0.0, 90.0))
-
-        if kind == "shoulder_shrug_roll":
-            ear_l_dist = float(np.linalg.norm(pts[3] - pts[5]))
-            ear_r_dist = float(np.linalg.norm(pts[4] - pts[6]))
-            avg_ratio = (0.5 * (ear_l_dist + ear_r_dist)) / sh_span
-            shrug_deg = max(0.0, (0.42 - avg_ratio) * 220.0)
-            return float(np.clip(shrug_deg, 0.0, 65.0))
-
-        if kind == "bilateral_arm_raise":
-            left_rom = compute_shoulder_elevation_with_vertical_fallback(
-                pts_3d=pts,
-                side="left",
-                scores=scores,
-                min_visibility=float(self.settings.MIN_LANDMARK_VISIBILITY),
-                pts_2d=pts_2d,
-            )
-            right_rom = compute_shoulder_elevation_with_vertical_fallback(
-                pts_3d=pts,
-                side="right",
-                scores=scores,
-                min_visibility=float(self.settings.MIN_LANDMARK_VISIBILITY),
-                pts_2d=pts_2d,
-            )
-            return round(0.5 * (left_rom + right_rom), 2)
-
-        # balance_trunk_sway / trunk_flexion
-        live_spine = mid_shoulder - mid_hip
-        return angle_between_vectors_3d(live_spine, spine_vertical_unit)
+        # wrist_finger_extension
+        hand_root_idx = 91 if side == "left" else 112
+        mid_mcp_idx = 100 if side == "left" else 121
+        tip_indices = [95, 99, 103, 107, 111] if side == "left" else [116, 120, 124, 128, 132]
+        mid_tip_idx = 103 if side == "left" else 124
+        if (
+            pts.shape[0] > tip_indices[-1]
+            and float(np.linalg.norm(pts[mid_tip_idx] - pts[hand_root_idx])) > 1e-4
+        ):
+            forearm_dir = pts[wr_idx] - pts[el_idx]
+            hand_dir = pts[mid_tip_idx] - pts[hand_root_idx]
+            ext_deg = angle_between_vectors_3d(forearm_dir, hand_dir)
+            palm_len = max(1e-4, float(np.linalg.norm(pts[mid_mcp_idx] - pts[hand_root_idx])))
+            if palm_len > 1e-4 and float(np.linalg.norm(pts[mid_mcp_idx])) > 1e-4:
+                avg_tip_dist = float(np.mean([np.linalg.norm(pts[ti] - pts[hand_root_idx]) for ti in tip_indices]))
+                finger_spread_deg = float(np.clip(((avg_tip_dist / palm_len) - 1.1) / 0.9 * 85.0, 0.0, 85.0))
+                return round(float(np.clip(max(ext_deg, finger_spread_deg), 0.0, 95.0)), 2)
+            return float(np.clip(ext_deg, 0.0, 95.0))
+        wrist_vec = pts[wr_idx] - pts[el_idx]
+        horiz = np.array([wrist_vec[0], 0.0, wrist_vec[2]], dtype=np.float64)
+        return float(np.clip(angle_between_vectors_3d(wrist_vec, horiz), 0.0, 90.0))
 
     def _compute_stability_score(
         self,
@@ -548,11 +594,16 @@ class Biomechanics3DSolver:
             )
 
         # Active side elbow extension angle (11/13/15 equivalent -> 5/7/9 left, 6/8/10 right)
-        side = rule.side if rule.side in ("left", "right") else "right"
-        sh_idx = 5 if side == "left" else 6
-        el_idx = 7 if side == "left" else 8
-        wr_idx = 9 if side == "left" else 10
-        elbow_flexion_deg = joint_angle_3d(world_wb[sh_idx], world_wb[el_idx], world_wb[wr_idx])
+        if rule.side == "both":
+            l_elb = joint_angle_3d(world_wb[5], world_wb[7], world_wb[9])
+            r_elb = joint_angle_3d(world_wb[6], world_wb[8], world_wb[10])
+            elbow_flexion_deg = min(l_elb, r_elb)
+        else:
+            side = rule.side if rule.side in ("left", "right") else "right"
+            sh_idx = 5 if side == "left" else 6
+            el_idx = 7 if side == "left" else 8
+            wr_idx = 9 if side == "left" else 10
+            elbow_flexion_deg = joint_angle_3d(world_wb[sh_idx], world_wb[el_idx], world_wb[wr_idx])
 
         # 3. KNEE_VALGUS > 8.0° (medial knee collapse in frontal plane relative to hip->ankle line)
         l_valgus = angle_between_vectors_3d(

@@ -360,7 +360,7 @@ def generate_synthetic_133_pose(
             l_angle_rad = math.radians(12.0 + cycle * 145.0)
             if "flex" in exercise_id.lower() or "scap" in exercise_id.lower():
                 l_forward_z = -0.22 * cycle
-        elif "bilateral" in exercise_id.lower() or "bobath" in exercise_id.lower():
+        elif "bilateral" in exercise_id.lower() or "bobath" in exercise_id.lower() or "both" in exercise_id.lower():
             l_angle_rad = math.radians(12.0 + cycle * 135.0)
             r_angle_rad = math.radians(12.0 + cycle * 135.0)
         else:

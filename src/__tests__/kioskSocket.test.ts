@@ -6,10 +6,12 @@ import {
 } from '@drtechcares/api-client';
 import {
   AutoBoneBaselineCalibrator,
+  CLINICAL_EXERCISES,
   ClinicalHandOneEuroFilter,
   ClinicalOneEuroLandmarkFilter,
   HAND21_INDEX,
   POSE_INDEX,
+  mergeDuplicateSideExercises,
   solveStrokeClinicalJointBiomechanics,
   stepStrokeHoldAndRepStateMachine,
   type StrokeHoldRepState,
@@ -244,7 +246,10 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
 
     expect(mapped).toHaveLength(2);
     expect(mapped[0].exercise_id).toBe('sch-1');
-    expect(mapped[0].catalog_exercise_id).toBe('STROKE_SH_FLEX_R');
+    expect(mapped[0].catalog_exercise_id).toBe('STROKE_SH_FLEX');
+    expect(mapped[0].base_code).toBe('STROKE_SH_FLEX');
+    expect(mapped[0].prescribed_side).toBe('RIGHT');
+    expect(mapped[0].effective_code).toBe('STROKE_SH_FLEX_RIGHT');
     expect(mapped[0].target_joint).toBe('right_shoulder');
     expect(mapped[0].target_reps).toBe(10);
     expect(mapped[0].target_sets).toBe(3);
@@ -2528,6 +2533,110 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(autoUnlocked.holdProgressPct).toBe(0);
     expect(autoUnlocked.holdRemainingSec).toBe(3.0);
     expect(state.holdElapsedSec).toBe(0);
+  });
+
+  it('unifies catalog to 15 master exercises and enforces LEFT, RIGHT, and BOTH prescriptions end-to-end', () => {
+    expect(CLINICAL_EXERCISES).toHaveLength(15);
+    const mergedLegacy = mergeDuplicateSideExercises([
+      ...CLINICAL_EXERCISES,
+      { ...CLINICAL_EXERCISES[0], id: 'STROKE_SH_FLEX_R', code: 'STROKE_SH_FLEX_R' },
+      { ...CLINICAL_EXERCISES[0], id: 'STROKE_SH_FLEX_L', code: 'STROKE_SH_FLEX_L' },
+    ]);
+    expect(mergedLegacy).toHaveLength(15);
+
+    const todaySchedule = resolveTodayPatientSchedule({
+      rehabSchedules: [
+        {
+          id: 'u-left',
+          patientId: 'pat-1',
+          exerciseId: 'STROKE_SH_FLEX_LEFT',
+          exerciseCode: 'STROKE_SH_FLEX',
+          side: 'LEFT',
+          effectiveCode: 'STROKE_SH_FLEX_LEFT',
+          scheduledDate: '2026-11-17',
+          sets: 3,
+          reps: 10,
+          status: 'ACTIVE',
+        },
+        {
+          id: 'u-right',
+          patientId: 'pat-1',
+          exerciseId: 'STROKE_SH_FLEX_RIGHT',
+          exerciseCode: 'STROKE_SH_FLEX',
+          side: 'RIGHT',
+          effectiveCode: 'STROKE_SH_FLEX_RIGHT',
+          scheduledDate: '2026-11-17',
+          sets: 3,
+          reps: 10,
+          status: 'ACTIVE',
+        },
+        {
+          id: 'u-both',
+          patientId: 'pat-1',
+          exerciseId: 'STROKE_SH_FLEX_BOTH',
+          exerciseCode: 'STROKE_SH_FLEX',
+          side: 'BOTH',
+          effectiveCode: 'STROKE_SH_FLEX_BOTH',
+          scheduledDate: '2026-11-17',
+          sets: 3,
+          reps: 10,
+          status: 'ACTIVE',
+        },
+      ],
+      nextAppointmentDate: '2026-11-17',
+      now: new Date(2026, 10, 17, 10, 0, 0),
+    });
+
+    expect(todaySchedule.hasAppointmentToday).toBe(true);
+    expect(todaySchedule.todayExercises).toHaveLength(3);
+    expect(todaySchedule.todayExercises[0].nameTh).toContain('ข้างซ้าย');
+    expect(todaySchedule.todayExercises[1].nameTh).toContain('ข้างขวา');
+    expect(todaySchedule.todayExercises[2].nameTh).toContain('ทั้งสองข้าง');
+
+    const mapped = mapTodayExercisesToPrescriptions(todaySchedule.todayExercises);
+    expect(mapped[0].prescribed_side).toBe('LEFT');
+    expect(mapped[0].target_joint).toBe('left_shoulder');
+    expect(mapped[1].prescribed_side).toBe('RIGHT');
+    expect(mapped[1].target_joint).toBe('right_shoulder');
+    expect(mapped[2].prescribed_side).toBe('BOTH');
+
+    // Mannequin follows prescribed_side cleanly
+    expect(resolveExercisePostureSpec(mapped[0], 'th').side).toBe('left');
+    expect(resolveExercisePostureSpec(mapped[1], 'th').side).toBe('right');
+    expect(resolveExercisePostureSpec(mapped[2], 'th').side).toBe('both');
+
+    // Pose AI enforces LEFT-only, RIGHT-only, and BOTH-simultaneous on STROKE_SH_FLEX
+    const leftForwardPts = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_ELBOW]: { x: 0.58, y: 0.34, z: -0.22, visibility: 0.99 },
+      [POSE_INDEX.LEFT_WRIST]: { x: 0.58, y: 0.34, z: -0.44, visibility: 0.99 },
+    });
+    const rightForwardPts = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.42, y: 0.34, z: -0.22, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.42, y: 0.34, z: -0.44, visibility: 0.99 },
+    });
+    const bothForwardPts = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_ELBOW]: { x: 0.58, y: 0.34, z: -0.22, visibility: 0.99 },
+      [POSE_INDEX.LEFT_WRIST]: { x: 0.58, y: 0.34, z: -0.44, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.42, y: 0.34, z: -0.22, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.42, y: 0.34, z: -0.44, visibility: 0.99 },
+    });
+
+    // LEFT prescription: accepts left arm only, rejects right arm & both arms
+    const leftOk = measureLiveJointAngleAndTilt(leftForwardPts, mapped[0].target_joint, 'flexion', undefined, mapped[0]);
+    expect(leftOk.wrongSideRaised).toBe(false);
+    expect(leftOk.romDeg).toBeGreaterThan(75);
+    const leftWrongRight = measureLiveJointAngleAndTilt(rightForwardPts, mapped[0].target_joint, 'flexion', undefined, mapped[0]);
+    expect(leftWrongRight.wrongSideRaised).toBe(true);
+    const leftWrongBoth = measureLiveJointAngleAndTilt(bothForwardPts, mapped[0].target_joint, 'flexion', undefined, mapped[0]);
+    expect(leftWrongBoth.wrongSideRaised).toBe(true);
+
+    // BOTH prescription on unified STROKE_SH_FLEX: blocks single-arm lift, accepts synchronized both arms
+    const bothRejectSingle = measureLiveJointAngleAndTilt(rightForwardPts, mapped[2].target_joint, 'flexion', undefined, mapped[2]);
+    expect(bothRejectSingle.wrongSideRaised).toBe(true);
+    expect(bothRejectSingle.sideViolation).toBe('SINGLE_ARM_IN_BOTH_MODE');
+    const bothAcceptTwo = measureLiveJointAngleAndTilt(bothForwardPts, mapped[2].target_joint, 'flexion', undefined, mapped[2]);
+    expect(bothAcceptTwo.wrongSideRaised).toBe(false);
+    expect(bothAcceptTwo.romDeg).toBeGreaterThan(75);
   });
 });
 

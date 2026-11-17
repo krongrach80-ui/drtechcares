@@ -4,6 +4,8 @@ import {
   DEPRECATED_EXERCISE_CODES,
   evaluateClinicalBiomechanicsPacket,
   isDeprecatedExerciseRecord,
+  mergeDuplicateSideExercises,
+  parseExerciseCodeAndSide,
 } from '@drtechcares/pose-engine';
 import {
   COMMON_MODE_ALPHA,
@@ -777,11 +779,30 @@ function normalizeInitialRehabSchedules(
     const status = validStatuses.has(rawStatus) ? rawStatus : 'ACTIVE';
     const sets = typeof item.sets === 'number' && Number.isFinite(item.sets) ? Math.max(1, Math.round(item.sets)) : 3;
     const reps = typeof item.reps === 'number' && Number.isFinite(item.reps) ? Math.max(1, Math.round(item.reps)) : 10;
+    const rawExerciseId =
+      typeof item.effectiveCode === 'string' && item.effectiveCode.trim()
+        ? item.effectiveCode.trim()
+        : typeof item.effective_code === 'string' && item.effective_code.trim()
+          ? item.effective_code.trim()
+          : typeof item.exerciseId === 'string' && item.exerciseId.trim()
+            ? item.exerciseId.trim()
+            : typeof item.exercise_code === 'string' && item.exercise_code.trim()
+              ? item.exercise_code.trim()
+              : undefined;
+    const rawSide = typeof item.side === 'string' ? item.side : undefined;
+    const rawCodeField =
+      typeof item.exerciseCode === 'string' && item.exerciseCode.trim()
+        ? item.exerciseCode.trim()
+        : typeof item.exercise_code === 'string' && item.exercise_code.trim()
+          ? item.exercise_code.trim()
+          : undefined;
+    const parsedEx = rawExerciseId ? parseExerciseCodeAndSide(rawExerciseId, rawSide) : null;
     out.push({
       id: typeof item.id === 'string' && item.id.trim() ? item.id.trim() : `sched-${Date.now()}-${idx + 1}`,
       patientId,
       ptId: typeof item.ptId === 'string' && item.ptId.trim() ? item.ptId.trim() : assignedPtId,
-      exerciseId: typeof item.exerciseId === 'string' && item.exerciseId.trim() ? item.exerciseId.trim() : undefined,
+      exerciseId: rawExerciseId,
+      ...(parsedEx ? { exerciseCode: rawCodeField || parsedEx.baseCode, side: parsedEx.side, effectiveCode: rawExerciseId || parsedEx.effectiveCode } : {}),
       modpackId: typeof item.modpackId === 'string' && item.modpackId.trim() ? item.modpackId.trim() : undefined,
       scheduledDate,
       sets,
@@ -4211,14 +4232,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     // 6. EXERCISES & MODPACKS
     // ========================
     if (pathname === '/api/exercises' && method === 'GET') {
-      const customExercises = state.exercises.filter(
-        (ex) => !isDeprecatedExerciseRecord(ex) && !CLINICAL_EXERCISES.some((c) => c.id === ex.id || c.code === ex.code),
-      );
-      const canonical = CLINICAL_EXERCISES.map((ex) => ({
-        ...ex,
-        createdBy: 'system',
-      }));
-      return jsonResponse({ exercises: [...canonical, ...customExercises] });
+      const merged = mergeDuplicateSideExercises(state.exercises);
+      return jsonResponse({
+        exercises: merged.map((ex) => ({
+          ...ex,
+          createdBy: (ex as { createdBy?: string }).createdBy ?? 'system',
+        })),
+      });
     }
 
     if (pathname === '/api/exercises/sync-stroke-library' && method === 'POST') {

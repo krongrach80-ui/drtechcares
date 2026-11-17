@@ -1235,7 +1235,7 @@ export function createDrTechCaresApiApp(
       deviceId: String(req.headers['x-device-id'] || 'portal'),
       eventType: 'SYNC_STROKE_EXERCISE_LIBRARY',
       targetId: 'exercises',
-      detail: `Synced 26 canonical Stroke/MOPH exercises (purged ${result.purgedCount} deprecated rows)`,
+      detail: `Synced 15 unified master Stroke/MOPH exercises (purged ${result.purgedCount} deprecated rows)`,
     });
     res.json({
       ok: true,

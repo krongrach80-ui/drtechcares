@@ -5,7 +5,7 @@ import type {
   PatientCourseRecord,
   PatientRecord,
 } from '@drtechcares/api-client';
-import { CLINICAL_EXERCISES } from '@drtechcares/pose-engine';
+import { CLINICAL_EXERCISES, parseExerciseCodeAndSide } from '@drtechcares/pose-engine';
 import { Activity, Calendar, Coffee, LogOut, PhoneCall, Sparkles } from 'lucide-react';
 
 interface PatientScheduleDashboardProps {
@@ -38,7 +38,7 @@ export function PatientScheduleDashboard({
     label: 'Daily Rehabilitation Session',
     exercises: [
       {
-        exerciseId: 'STROKE_SH_FLEX_R',
+        exerciseId: 'STROKE_SH_FLEX_RIGHT',
         side: 'right' as const,
         sets: 2,
         reps: 5,
@@ -146,12 +146,15 @@ export function PatientScheduleDashboard({
           </div>
           <h3 className="mt-4 text-xl font-bold">{t('startRehabBtn')}</h3>
           <ul className="mt-3 space-y-1.5 text-sm text-teal-50">
-            {(todayPlan.exercises.length > 0 ? todayPlan.exercises : [{ exerciseId: 'STROKE_SH_FLEX_R', sets: 2, reps: 5, holdSec: 3 }]).map(
+            {(todayPlan.exercises.length > 0 ? todayPlan.exercises : [{ exerciseId: 'STROKE_SH_FLEX_RIGHT', side: 'right', sets: 2, reps: 5, holdSec: 3 }]).map(
               (item, idx) => {
-                const ex = CLINICAL_EXERCISES.find((e) => e.id === item.exerciseId) ?? CLINICAL_EXERCISES[0];
+                const parsed = parseExerciseCodeAndSide(item.exerciseId, (item as { side?: string }).side);
+                const ex = CLINICAL_EXERCISES.find((e) => e.id === parsed.baseCode || e.code === parsed.baseCode) ?? CLINICAL_EXERCISES[0];
+                const sideBadge =
+                  parsed.side === 'LEFT' ? 'ซ้าย' : parsed.side === 'BOTH' ? 'ทั้งสองข้าง' : 'ขวา';
                 return (
                   <li key={`${item.exerciseId}-${idx}`}>
-                    • {pick(ex.name)} — {item.sets} sets × {item.reps} reps ({item.holdSec}s hold)
+                    • {pick(ex.name)} [{sideBadge}] — {item.sets} sets × {item.reps} reps ({item.holdSec}s hold)
                   </li>
                 );
               },

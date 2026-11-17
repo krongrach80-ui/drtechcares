@@ -389,7 +389,10 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     expect(scheduledToday.hasAppointmentToday).toBe(true);
     expect(scheduledToday.todayExercises).toHaveLength(1);
     expect(scheduledToday.todayExercises[0].exerciseId).toBe('STROKE_SH_FLEX_R');
-    expect(scheduledToday.todayExercises[0].nameTh).toContain('ยกแขนขวาไปด้านหน้า');
+    expect(scheduledToday.todayExercises[0].exerciseCode).toBe('STROKE_SH_FLEX');
+    expect(scheduledToday.todayExercises[0].side).toBe('RIGHT');
+    expect(scheduledToday.todayExercises[0].nameTh).toContain('ยกแขนไปด้านหน้า');
+    expect(scheduledToday.todayExercises[0].nameTh).toContain('ข้างขวา');
     expect(scheduledToday.todayExercises[0].sets).toBe(3);
     expect(scheduledToday.todayExercises[0].reps).toBe(10);
   });

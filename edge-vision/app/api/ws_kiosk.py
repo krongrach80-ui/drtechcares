@@ -313,9 +313,14 @@ class KioskRuntimeCoordinator:
                 else msg
             )
             rx = ExercisePrescriptionSchema(
-                exercise_id=str(rx_raw.get("exercise_id") or rx_raw.get("id") or "STROKE_SH_ABD_R"),
+                exercise_id=str(rx_raw.get("exercise_id") or rx_raw.get("base_code") or rx_raw.get("id") or "STROKE_SH_ABD"),
                 exercise_name=str(rx_raw.get("exercise_name") or rx_raw.get("name") or "Clinical Exercise"),
                 target_joint=str(rx_raw.get("target_joint") or "right_shoulder"),
+                prescribed_side=(
+                    str(rx_raw.get("prescribed_side") or rx_raw.get("side")).strip()
+                    if (rx_raw.get("prescribed_side") or rx_raw.get("side"))
+                    else None
+                ),
                 target_rom_deg=float(rx_raw.get("target_rom_deg") or rx_raw.get("minAngleDeg") or 110.0),
                 hold_sec=float(rx_raw.get("hold_sec") or rx_raw.get("holdDurationSec") or 3.0),
                 target_reps=int(rx_raw.get("target_reps") or rx_raw.get("reps") or 5),

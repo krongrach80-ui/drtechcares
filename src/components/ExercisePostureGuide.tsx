@@ -1,5 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CLINICAL_EXERCISES, type ExerciseConfig } from '@drtechcares/pose-engine';
+import {
+  CLINICAL_EXERCISES,
+  parseExerciseCodeAndSide,
+  type ExerciseConfig,
+} from '@drtechcares/pose-engine';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import { CheckCircle2, Pause, Play, ShieldCheck, Sparkles, Target } from 'lucide-react';
 import type { ExercisePrescriptionOption } from '../hooks/useKioskSocket';
@@ -81,9 +85,9 @@ const REGION_COPY: Record<
       cn: '👕 日常活动：前伸取物 / 穿套袖',
     },
     steps: (side, rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const sCn = side === 'left' ? '左' : '右';
+      const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
+      const sEn = side === 'left' ? 'left' : side === 'both' ? 'both sides' : 'right';
+      const sCn = side === 'left' ? '左' : side === 'both' ? '双侧' : '右';
       return {
         th: [
           `ยืนหรือนั่งตัวตรง ปล่อยแขน${sTh}ห้อยลงแนวดิ่งข้างลำตัว (0°)`,
@@ -130,9 +134,9 @@ const REGION_COPY: Record<
       cn: '🧥 日常活动：张臂穿外套',
     },
     steps: (side, rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const sCn = side === 'left' ? '左' : '右';
+      const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
+      const sEn = side === 'left' ? 'left' : side === 'both' ? 'both sides' : 'right';
+      const sCn = side === 'left' ? '左' : side === 'both' ? '双侧' : '右';
       return {
         th: [
           `ยืนตรงหน้ากล้อง ปล่อยแขน${sTh}ห้อยข้างลำตัว (0°)`,
@@ -174,9 +178,9 @@ const REGION_COPY: Record<
       cn: '拇指朝上，保持手肘自然伸直',
     },
     steps: (side, rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const sCn = side === 'left' ? '左' : '右';
+      const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
+      const sEn = side === 'left' ? 'left' : side === 'both' ? 'both sides' : 'right';
+      const sCn = side === 'left' ? '左' : side === 'both' ? '双侧' : '右';
       return {
         th: [
           `ตั้งลำตัวตรง ปล่อยแขน${sTh}ลงข้างลำตัว (0°)`,
@@ -218,9 +222,9 @@ const REGION_COPY: Record<
       cn: '量力而行，切勿拱腰借力',
     },
     steps: (side, rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const sCn = side === 'left' ? '左' : '右';
+      const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
+      const sEn = side === 'left' ? 'left' : side === 'both' ? 'both sides' : 'right';
+      const sCn = side === 'left' ? '左' : side === 'both' ? '双侧' : '右';
       return {
         th: [
           `ยืนหลังตรง ปล่อยแขน${sTh}ข้างลำตัว (0°)`,
@@ -267,12 +271,12 @@ const REGION_COPY: Record<
       cn: '👕 日常活动：交叉触摸对侧肩 / 系安全带',
     },
     steps: (side, rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const oppTh = side === 'left' ? 'ขวา' : 'ซ้าย';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const oppEn = side === 'left' ? 'right' : 'left';
-      const sCn = side === 'left' ? '左' : '右';
-      const oppCn = side === 'left' ? '右' : '左';
+      const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
+      const oppTh = side === 'left' ? 'ขวา' : side === 'both' ? 'ตรงข้ามสลับ/พร้อมกัน' : 'ซ้าย';
+      const sEn = side === 'left' ? 'left' : side === 'both' ? 'both' : 'right';
+      const oppEn = side === 'left' ? 'right' : side === 'both' ? 'opposite' : 'left';
+      const sCn = side === 'left' ? '左' : side === 'both' ? '双侧' : '右';
+      const oppCn = side === 'left' ? '右' : side === 'both' ? '对侧' : '左';
       return {
         th: [
           `นั่งหรือยืนตรง ยกแขน${sTh}ขึ้นระดับหัวไหล่ขนานพื้น`,
@@ -319,9 +323,9 @@ const REGION_COPY: Record<
       cn: '🚪 日常活动：推门与桌面取物',
     },
     steps: (side, rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const sCn = side === 'left' ? '左' : '右';
+      const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
+      const sEn = side === 'left' ? 'left' : side === 'both' ? 'both sides' : 'right';
+      const sCn = side === 'left' ? '左' : side === 'both' ? '双侧' : '右';
       return {
         th: [
           `นั่งหลังตรง ยกแขน${sTh}เหยียดตรงระดับหน้าอก 90°`,
@@ -412,9 +416,9 @@ const REGION_COPY: Record<
       cn: '🪥 日常活动：自主洗脸 / 梳头 / 戴帽',
     },
     steps: (side, rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const sCn = side === 'left' ? '左' : '右';
+      const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
+      const sEn = side === 'left' ? 'left' : side === 'both' ? 'both sides' : 'right';
+      const sCn = side === 'left' ? '左' : side === 'both' ? '双侧' : '右';
       return {
         th: [
           `ตั้งศีรษะตรง ปล่อยมือ${sTh}ข้างลำตัวสบายๆ`,
@@ -461,9 +465,9 @@ const REGION_COPY: Record<
       cn: '🔑 日常活动：拧门把手 / 摊手接物 / 倒水',
     },
     steps: (side, rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const sCn = side === 'left' ? '左' : '右';
+      const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
+      const sEn = side === 'left' ? 'left' : side === 'both' ? 'both sides' : 'right';
+      const sCn = side === 'left' ? '左' : side === 'both' ? '双侧' : '右';
       return {
         th: [
           `งอศอก${sTh} 90° แนบลำตัว ยื่นฝ่ามือให้อยู่ในกรอบกล้อง`,
@@ -510,9 +514,9 @@ const REGION_COPY: Record<
       cn: '✏️ 日常活动：握笔写字 / 系衣扣 / 夹取小物件',
     },
     steps: (side, _rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const sCn = side === 'left' ? '左' : '右';
+      const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
+      const sEn = side === 'left' ? 'left' : side === 'both' ? 'both sides' : 'right';
+      const sCn = side === 'left' ? '左' : side === 'both' ? '双侧' : '右';
       return {
         th: [
           `ยกฝ่ามือ${sTh}ขึ้นระดับอก หันเข้าหากล้องอย่างชัดเจน`,
@@ -603,9 +607,9 @@ const REGION_COPY: Record<
       cn: '🔘 日常活动：反手穿衣 / 系扣子',
     },
     steps: (side, rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const sCn = side === 'left' ? '左' : '右';
+      const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
+      const sEn = side === 'left' ? 'left' : side === 'both' ? 'both sides' : 'right';
+      const sCn = side === 'left' ? '左' : side === 'both' ? '双侧' : '右';
       return {
         th: [
           `งอข้อศอก${sTh} 90° แล้วแนบข้อศอกชิดเอวให้มั่นคง`,
@@ -740,9 +744,9 @@ const REGION_COPY: Record<
       cn: '🍽️ 日常活动：拉穿衣袖 / 自主进食',
     },
     steps: (side, _rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const sCn = side === 'left' ? '左' : '右';
+      const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
+      const sEn = side === 'left' ? 'left' : side === 'both' ? 'both sides' : 'right';
+      const sCn = side === 'left' ? '左' : side === 'both' ? '双侧' : '右';
       return {
         th: [
           `แนบต้นแขน${sTh}ข้างลำตัว เหยียดปลายแขน${sTh}ลงด้านล่าง`,
@@ -789,9 +793,9 @@ const REGION_COPY: Record<
       cn: '✋ 日常活动：握勺取杯 / 自主张手放物',
     },
     steps: (side, _rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const sCn = side === 'left' ? '左' : '右';
+      const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
+      const sEn = side === 'left' ? 'left' : side === 'both' ? 'both sides' : 'right';
+      const sCn = side === 'left' ? '左' : side === 'both' ? '双侧' : '右';
       return {
         th: [
           `วางหรือยกปลายแขน${sTh}ระดับหน้าอก หันฝ่ามือเข้ากล้อง`,
@@ -838,9 +842,9 @@ const REGION_COPY: Record<
       cn: '🌿 卫生部标准：预防颈部僵硬与肌群劳损',
     },
     steps: (side, rom, holdSec) => {
-      const sTh = side === 'left' ? 'ซ้าย' : 'ขวา';
-      const sEn = side === 'left' ? 'left' : 'right';
-      const sCn = side === 'left' ? '左' : '右';
+      const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
+      const sEn = side === 'left' ? 'left' : side === 'both' ? 'both sides' : 'right';
+      const sCn = side === 'left' ? '左' : side === 'both' ? '双侧' : '右';
       return {
         th: [
           'นั่งหรือยืนหลังตรง มองตรงไปด้านหน้า ลดหัวไหล่ทั้ง 2 ข้างลงต่ำ',
@@ -905,9 +909,29 @@ function resolveSideFromExercise(
   exercise: ExercisePrescriptionOption,
   catalogMatch?: (typeof CLINICAL_EXERCISES)[number],
 ): PostureSide {
-  if (catalogMatch?.detection.side === 'both') return 'both';
-  if (catalogMatch?.detection.side === 'left') return 'left';
-  if (catalogMatch?.detection.side === 'right') return 'right';
+  if (exercise.prescribed_side === 'LEFT') return 'left';
+  if (exercise.prescribed_side === 'RIGHT') return 'right';
+  if (exercise.prescribed_side === 'BOTH') return 'both';
+
+  const rawCode = (
+    exercise.effective_code ||
+    exercise.catalog_exercise_id ||
+    exercise.exercise_id ||
+    ''
+  )
+    .trim()
+    .toUpperCase();
+  if (
+    rawCode.endsWith('_LEFT') ||
+    rawCode.endsWith('_RIGHT') ||
+    rawCode.endsWith('_BOTH') ||
+    rawCode.endsWith('_L') ||
+    rawCode.endsWith('_R') ||
+    rawCode === 'MOPH_NECK_TURN_BILATERAL'
+  ) {
+    const parsedSide = parseExerciseCodeAndSide(rawCode).side;
+    return parsedSide === 'LEFT' ? 'left' : parsedSide === 'BOTH' ? 'both' : 'right';
+  }
 
   const text = `${exercise.exercise_id} ${exercise.name_th} ${exercise.name_en}`.toLowerCase();
   if (
@@ -929,9 +953,12 @@ function resolveSideFromExercise(
   if (exercise.target_joint === 'left_shoulder') {
     return 'left';
   }
-  if (text.includes('ซ้าย') || text.includes('left') || text.endsWith('_l')) {
+  if (text.includes('ซ้าย') || text.includes('left')) {
     return 'left';
   }
+  if (catalogMatch?.detection.side === 'both') return 'both';
+  if (catalogMatch?.detection.side === 'left') return 'left';
+  if (catalogMatch?.detection.side === 'right') return 'right';
   return 'right';
 }
 
@@ -939,8 +966,16 @@ export function resolveExercisePostureSpec(
   exercise: ExercisePrescriptionOption,
   lang: ClinicalLang = 'th',
 ): ExercisePostureSpec {
+  const rawMatchId =
+    exercise.base_code ||
+    exercise.catalog_exercise_id ||
+    exercise.effective_code ||
+    exercise.exercise_id;
+  const parsedBase = parseExerciseCodeAndSide(rawMatchId, exercise.prescribed_side).baseCode;
   const catalogMatch = CLINICAL_EXERCISES.find(
     (c) =>
+      c.id === parsedBase ||
+      c.code === parsedBase ||
       c.id === exercise.catalog_exercise_id ||
       c.code === exercise.catalog_exercise_id ||
       c.id === exercise.exercise_id ||
@@ -1355,6 +1390,16 @@ export function ExercisePostureSvg({
       elbowBendDeg: activeElbowBend,
       dirSign: 1,
     });
+    const backJoints = computeUpperLimbFkJoints({
+      shoulderX: shoulderX - 5,
+      shoulderY: shoulderY - 2,
+      upperArmLen: 38,
+      forearmLen: 34,
+      handLen: 9,
+      angleDeg: currentAngleDeg,
+      elbowBendDeg: activeElbowBend,
+      dirSign: 1,
+    });
     const ghostJoints = computeUpperLimbFkJoints({
       shoulderX: isProtract ? 106 : 88,
       shoulderY,
@@ -1394,7 +1439,13 @@ export function ExercisePostureSvg({
               <line x1="82" y1="36" x2="82" y2="136" stroke="#CBD5E1" strokeWidth="1.8" strokeDasharray="4 4" />
             )}
 
-            <line x1="83" y1="84" x2="81" y2="140" stroke={mutedLimb} strokeWidth="9" strokeLinecap="round" opacity={0.55} />
+            {spec.side === 'both' ? (
+              <g opacity={0.62}>
+                <CapsuleArmLimb joints={backJoints} color={accent} isActive compact={compact} />
+              </g>
+            ) : (
+              <line x1="83" y1="84" x2="81" y2="140" stroke={mutedLimb} strokeWidth="9" strokeLinecap="round" opacity={0.55} />
+            )}
 
             {/* Side-Profile Anatomical Torso Capsule (rounded back + natural chest contour) */}
             <path
@@ -1502,7 +1553,7 @@ export function ExercisePostureSvg({
     const rightShX = 128;
     const shoulderY = 82;
 
-    const isBilateral = spec.kind === 'bilateral_arm_raise';
+    const isBilateral = spec.kind === 'bilateral_arm_raise' || spec.side === 'both';
     const isShrug = spec.kind === 'shoulder_shrug_roll';
     const isElbow = spec.kind === 'elbow_flexion';
     const isRot = spec.kind === 'shoulder_rotation';
@@ -1521,19 +1572,19 @@ export function ExercisePostureSvg({
           : targetRom;
 
     const noPrimarySwing = isShrug || isElbow || isRot || isTrunk || isCrossBody || isHandToHead;
-    const rAngle = isBilateral
+    const rAngle = isBilateral && !noPrimarySwing
       ? p * resolvedPeakDeg
       : !activeIsLeft && !noPrimarySwing
         ? p * resolvedPeakDeg
         : 6;
-    const lAngle = isBilateral
+    const lAngle = isBilateral && !noPrimarySwing
       ? p * resolvedPeakDeg
       : activeIsLeft && !noPrimarySwing
         ? p * resolvedPeakDeg
         : 6;
 
-    const rElbowBend = isElbow && !activeIsLeft ? -p * 145 : !activeIsLeft ? 6 : 4;
-    const lElbowBend = isElbow && activeIsLeft ? -p * 145 : activeIsLeft ? 6 : 4;
+    const rElbowBend = isElbow && (!activeIsLeft || isBilateral) ? -p * 145 : !activeIsLeft || isBilateral ? 6 : 4;
+    const lElbowBend = isElbow && (activeIsLeft || isBilateral) ? -p * 145 : activeIsLeft || isBilateral ? 6 : 4;
 
     const rightJoints = computeUpperLimbFkJoints({
       shoulderX: rightShX,
@@ -1541,8 +1592,8 @@ export function ExercisePostureSvg({
       upperArmLen: 36,
       forearmLen: 32,
       handLen: 9,
-      angleDeg: isRot && !activeIsLeft ? 5 : rAngle,
-      elbowBendDeg: isRot && !activeIsLeft ? 88 * (1 - p * 0.45) : rElbowBend,
+      angleDeg: isRot && (!activeIsLeft || isBilateral) ? 5 : rAngle,
+      elbowBendDeg: isRot && (!activeIsLeft || isBilateral) ? 88 * (1 - p * 0.45) : rElbowBend,
       dirSign: 1,
     });
     const leftJoints = computeUpperLimbFkJoints({
@@ -1551,8 +1602,8 @@ export function ExercisePostureSvg({
       upperArmLen: 36,
       forearmLen: 32,
       handLen: 9,
-      angleDeg: isRot && activeIsLeft ? 5 : lAngle,
-      elbowBendDeg: isRot && activeIsLeft ? 88 * (1 - p * 0.45) : lElbowBend,
+      angleDeg: isRot && (activeIsLeft || isBilateral) ? 5 : lAngle,
+      elbowBendDeg: isRot && (activeIsLeft || isBilateral) ? 88 * (1 - p * 0.45) : lElbowBend,
       dirSign: -1,
     });
 
@@ -1772,10 +1823,8 @@ export function ExercisePostureSvg({
   const renderHandCloseUp = () => {
     const wristLiftDeg = 16 - p * 42;
     const spreadRatio = p;
-    const flipX = activeIsLeft ? -1 : 1;
-
-    return (
-      <g transform={`translate(100, 108) scale(${flipX}, 1)`}>
+    const renderOneHand = (tx: number, ty: number, scale: number, flipX: number, keyId: string) => (
+      <g key={keyId} transform={`translate(${tx}, ${ty}) scale(${flipX * scale}, ${scale})`}>
         <line x1="-66" y1="26" x2="-12" y2="12" stroke="#1E3A5F" strokeWidth="16" strokeLinecap="round" />
         <line x1="-66" y1="26" x2="-12" y2="12" stroke="#BAE6FD" strokeWidth="8" strokeLinecap="round" />
         <circle cx="-12" cy="12" r="9" fill={accent} fillOpacity="0.2" stroke={accent} strokeWidth="2.6" />
@@ -1806,66 +1855,85 @@ export function ExercisePostureSvg({
         )}
       </g>
     );
+
+    if (spec.side === 'both') {
+      return (
+        <g>
+          {renderOneHand(64, 108, 0.56, -1, 'hand-l')}
+          {renderOneHand(136, 108, 0.56, 1, 'hand-r')}
+        </g>
+      );
+    }
+    return renderOneHand(100, 108, 1, activeIsLeft ? -1 : 1, 'hand-single');
   };
 
   const renderForearmTurnCloseUp = () => {
-    const flipX = activeIsLeft ? -1 : 1;
     const rollNorm = Math.sin(p * Math.PI);
     const palmScaleY = 0.25 + 0.75 * Math.abs(Math.cos(p * Math.PI));
     const palmUp = p >= 0.5;
     const readoutDeg = Math.round(rollNorm * Math.min(85, targetRom));
+    const renderOneForearm = (tx: number, ty: number, scale: number, flipX: number, keyId: string) => (
+      <g key={keyId} transform={`translate(${tx}, ${ty}) scale(${flipX * scale}, ${scale})`}>
+        <line x1="-68" y1="16" x2="-10" y2="12" stroke="#1E3A5F" strokeWidth="16" strokeLinecap="round" />
+        <line x1="-68" y1="16" x2="-10" y2="12" stroke="#BAE6FD" strokeWidth="8" strokeLinecap="round" />
+        <circle cx="-10" cy="12" r="8" fill="#FFFFFF" stroke={accent} strokeWidth="2.6" />
+        <g transform={`translate(-2, 12) scale(1, ${palmScaleY.toFixed(2)})`}>
+          <rect
+            x="0"
+            y="-15"
+            width="38"
+            height="30"
+            rx="10"
+            fill={palmUp ? accent : '#FFFFFF'}
+            fillOpacity={palmUp ? 0.22 : 1}
+            stroke={accent}
+            strokeWidth="3"
+          />
+          {[38, 38, 36, 32].map((fx, i) => (
+            <line
+              key={i}
+              x1={fx}
+              y1={-10 + i * 7}
+              x2={fx + 22}
+              y2={-10 + i * 7}
+              stroke={accent}
+              strokeWidth="5"
+              strokeLinecap="round"
+            />
+          ))}
+          <line
+            x1="12"
+            y1={palmUp ? -14 : 14}
+            x2="22"
+            y2={palmUp ? -28 : 28}
+            stroke={accent}
+            strokeWidth="5.5"
+            strokeLinecap="round"
+          />
+        </g>
+        {!compact && (
+          <path
+            d="M 16 -44 A 34 34 0 0 1 16 44 M 10 38 L 16 44 L 24 38"
+            fill="none"
+            stroke={accent}
+            strokeWidth="2.5"
+            strokeDasharray="4 3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        )}
+      </g>
+    );
     return (
       <g>
-        <g transform={`translate(100, 108) scale(${flipX}, 1)`}>
-          <line x1="-68" y1="16" x2="-10" y2="12" stroke="#1E3A5F" strokeWidth="16" strokeLinecap="round" />
-          <line x1="-68" y1="16" x2="-10" y2="12" stroke="#BAE6FD" strokeWidth="8" strokeLinecap="round" />
-          <circle cx="-10" cy="12" r="8" fill="#FFFFFF" stroke={accent} strokeWidth="2.6" />
-          <g transform={`translate(-2, 12) scale(1, ${palmScaleY.toFixed(2)})`}>
-            <rect
-              x="0"
-              y="-15"
-              width="38"
-              height="30"
-              rx="10"
-              fill={palmUp ? accent : '#FFFFFF'}
-              fillOpacity={palmUp ? 0.22 : 1}
-              stroke={accent}
-              strokeWidth="3"
-            />
-            {[38, 38, 36, 32].map((fx, i) => (
-              <line
-                key={i}
-                x1={fx}
-                y1={-10 + i * 7}
-                x2={fx + 22}
-                y2={-10 + i * 7}
-                stroke={accent}
-                strokeWidth="5"
-                strokeLinecap="round"
-              />
-            ))}
-            <line
-              x1="12"
-              y1={palmUp ? -14 : 14}
-              x2="22"
-              y2={palmUp ? -28 : 28}
-              stroke={accent}
-              strokeWidth="5.5"
-              strokeLinecap="round"
-            />
-          </g>
-          {!compact && (
-            <path
-              d="M 16 -44 A 34 34 0 0 1 16 44 M 10 38 L 16 44 L 24 38"
-              fill="none"
-              stroke={accent}
-              strokeWidth="2.5"
-              strokeDasharray="4 3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          )}
-        </g>
+        {spec.side === 'both' ? (
+          <>
+            {renderOneForearm(64, 108, 0.56, -1, 'forearm-l')}
+            {renderOneForearm(136, 108, 0.56, 1, 'forearm-r')}
+          </>
+        ) : (
+          renderOneForearm(100, 108, 1, activeIsLeft ? -1 : 1, 'forearm-single')
+        )}
         {!compact && (
           <g>
             <rect x="138" y="14" width="46" height="22" rx="11" fill="#FFFFFF" stroke={accent} strokeWidth="1.8" />
@@ -1879,7 +1947,6 @@ export function ExercisePostureSvg({
   };
 
   const renderThumbPinchCloseUp = () => {
-    const flipX = activeIsLeft ? -1 : 1;
     const pinchClose = p;
     const thumbTipX = 30 + pinchClose * 12;
     const thumbTipY = -30 + pinchClose * 12;
@@ -1888,55 +1955,63 @@ export function ExercisePostureSvg({
     const isContact = pinchClose > 0.72;
     const readoutDeg = Math.round(pinchClose * Math.min(60, targetRom));
 
+    const renderOnePinch = (tx: number, ty: number, scale: number, flipX: number, keyId: string) => (
+      <g key={keyId} transform={`translate(${tx}, ${ty}) scale(${flipX * scale}, ${scale})`}>
+        <line x1="-64" y1="24" x2="-12" y2="12" stroke="#1E3A5F" strokeWidth="15" strokeLinecap="round" />
+        <line x1="-64" y1="24" x2="-12" y2="12" stroke="#BAE6FD" strokeWidth="7.5" strokeLinecap="round" />
+        <rect x="-8" y="-14" width="36" height="32" rx="11" fill={accent} fillOpacity="0.16" stroke={accent} strokeWidth="2.8" />
+        {[
+          { y: -2, len: 28 },
+          { y: 6, len: 26 },
+          { y: 14, len: 21 },
+        ].map((f, idx) => (
+          <line
+            key={idx}
+            x1="28"
+            y1={f.y}
+            x2={28 + f.len}
+            y2={f.y + idx * 2}
+            stroke={mutedLimb}
+            strokeWidth="4.8"
+            strokeLinecap="round"
+          />
+        ))}
+        <path
+          d={`M 26 -9 Q 42 -24 ${indexTipX.toFixed(1)} ${indexTipY.toFixed(1)}`}
+          fill="none"
+          stroke={accent}
+          strokeWidth="5.5"
+          strokeLinecap="round"
+        />
+        <path
+          d={`M 8 -13 Q 18 -30 ${thumbTipX.toFixed(1)} ${thumbTipY.toFixed(1)}`}
+          fill="none"
+          stroke={accent}
+          strokeWidth="6"
+          strokeLinecap="round"
+        />
+        <circle
+          cx={(thumbTipX + indexTipX) / 2}
+          cy={(thumbTipY + indexTipY) / 2}
+          r={isContact ? 7.5 : 4}
+          fill={isContact ? accent : '#FFFFFF'}
+          fillOpacity={isContact ? 0.25 : 0.8}
+          stroke={accent}
+          strokeWidth="2.2"
+        />
+      </g>
+    );
+
     return (
       <g>
-        <g transform={`translate(96, 114) scale(${flipX}, 1)`}>
-          <line x1="-64" y1="24" x2="-12" y2="12" stroke="#1E3A5F" strokeWidth="15" strokeLinecap="round" />
-          <line x1="-64" y1="24" x2="-12" y2="12" stroke="#BAE6FD" strokeWidth="7.5" strokeLinecap="round" />
-          <rect x="-8" y="-14" width="36" height="32" rx="11" fill={accent} fillOpacity="0.16" stroke={accent} strokeWidth="2.8" />
-          {/* Middle, Ring, Pinky comfortably upright */}
-          {[
-            { y: -2, len: 28 },
-            { y: 6, len: 26 },
-            { y: 14, len: 21 },
-          ].map((f, idx) => (
-            <line
-              key={idx}
-              x1="28"
-              y1={f.y}
-              x2={28 + f.len}
-              y2={f.y + idx * 2}
-              stroke={mutedLimb}
-              strokeWidth="4.8"
-              strokeLinecap="round"
-            />
-          ))}
-          {/* Index finger curving smoothly into O-pinch */}
-          <path
-            d={`M 26 -9 Q 42 -24 ${indexTipX.toFixed(1)} ${indexTipY.toFixed(1)}`}
-            fill="none"
-            stroke={accent}
-            strokeWidth="5.5"
-            strokeLinecap="round"
-          />
-          {/* Thumb sweeping inward to meet index tip */}
-          <path
-            d={`M 8 -13 Q 18 -30 ${thumbTipX.toFixed(1)} ${thumbTipY.toFixed(1)}`}
-            fill="none"
-            stroke={accent}
-            strokeWidth="6"
-            strokeLinecap="round"
-          />
-          <circle
-            cx={(thumbTipX + indexTipX) / 2}
-            cy={(thumbTipY + indexTipY) / 2}
-            r={isContact ? 7.5 : 4}
-            fill={isContact ? accent : '#FFFFFF'}
-            fillOpacity={isContact ? 0.25 : 0.8}
-            stroke={accent}
-            strokeWidth="2.2"
-          />
-        </g>
+        {spec.side === 'both' ? (
+          <>
+            {renderOnePinch(64, 114, 0.56, -1, 'pinch-l')}
+            {renderOnePinch(136, 114, 0.56, 1, 'pinch-r')}
+          </>
+        ) : (
+          renderOnePinch(96, 114, 1, activeIsLeft ? -1 : 1, 'pinch-single')
+        )}
         {!compact && (
           <g>
             <rect x="138" y="14" width="46" height="22" rx="11" fill="#FFFFFF" stroke={accent} strokeWidth="1.8" />

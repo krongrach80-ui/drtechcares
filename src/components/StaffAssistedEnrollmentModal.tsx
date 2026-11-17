@@ -15,9 +15,22 @@ import {
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import {
   CLINICAL_EXERCISES,
+  formatEffectiveExerciseCode,
   isDeprecatedExerciseRecord,
+  mergeDuplicateSideExercises,
+  normalizeSideValue,
+  parseExerciseCodeAndSide,
+  resolveDefaultSideForExercise,
+  resolveSideAdjustedExerciseCopy,
   sortExercisesStrokeUpperFirst,
+  type ExerciseSideCode,
 } from '@drtechcares/pose-engine';
+import {
+  BILATERAL_INHERENT_EXERCISE_CODES,
+  ExerciseSidePills,
+  GlobalQuickSideSelector,
+  getSideBadgeMeta,
+} from './ExerciseSideSelector';
 import {
   Activity,
   CalendarDays,
@@ -94,53 +107,51 @@ function getRecommendedExerciseIdsForJoint(
 ): string[] {
   const preferredByJoint: Record<string, string[]> = {
     'ข้อไหล่และแขน Stroke ADL (Shoulder & Arm)': [
-      'STROKE_SH_FLEX_R',
-      'STROKE_SH_ABD_R',
-      'STROKE_CROSS_BODY_R',
-      'STROKE_SCAP_PROTRACT_R',
+      'STROKE_SH_FLEX',
+      'STROKE_SH_ABD',
+      'STROKE_CROSS_BODY',
+      'STROKE_SCAP_PROTRACT',
       'STROKE_BOBATH_ARM_RAISE',
     ],
     'คอ บ่า และแขน สธ. ผู้สูงอายุ (MOPH Upper Body)': [
-      'MOPH_NECK_TILT_R',
-      'MOPH_NECK_TILT_L',
-      'MOPH_NECK_TURN_BILATERAL',
+      'MOPH_NECK_TILT',
+      'MOPH_NECK_TURN',
       'MOPH_SHOULDER_SHRUG_ROLL',
     ],
     'ข้อไหล่ (Shoulder)': [
-      'STROKE_SH_FLEX_R',
-      'STROKE_SH_ABD_R',
-      'STROKE_SH_ROT_R',
-      'STROKE_CROSS_BODY_R',
-      'STROKE_SCAP_PROTRACT_R',
+      'STROKE_SH_FLEX',
+      'STROKE_SH_ABD',
+      'STROKE_SH_ROT',
+      'STROKE_CROSS_BODY',
+      'STROKE_SCAP_PROTRACT',
     ],
     'ข้อศอกและแขน (Elbow & Arm)': [
-      'STROKE_ELB_FLEX_EXT_R',
+      'STROKE_ELB_FLEX_EXT',
       'STROKE_BOBATH_FORWARD_PUSH',
-      'STROKE_HAND_TO_HEAD_R',
-      'STROKE_FOREARM_TURN_R',
+      'STROKE_HAND_TO_HEAD',
+      'STROKE_FOREARM_TURN',
     ],
     'ข้อมือและกล้ามเนื้อมัดเล็ก (Wrist & Hand Fingers)': [
-      'STROKE_WRIST_FINGER_R',
-      'STROKE_THUMB_PINCH_R',
-      'STROKE_FOREARM_TURN_R',
-      'STROKE_WRIST_FINGER_L',
+      'STROKE_WRIST_FINGER',
+      'STROKE_THUMB_PINCH',
+      'STROKE_FOREARM_TURN',
     ],
     'กล้ามเนื้อคอและบ่า สธ. (Cervical & Shoulder Girdle)': [
-      'MOPH_NECK_TILT_R',
-      'MOPH_NECK_TURN_BILATERAL',
+      'MOPH_NECK_TILT',
+      'MOPH_NECK_TURN',
       'MOPH_SHOULDER_SHRUG_ROLL',
     ],
   };
   const preferred = preferredByJoint[jointLabel] ?? [
-    'STROKE_SH_FLEX_R',
-    'STROKE_SH_ABD_R',
-    'STROKE_ELB_FLEX_EXT_R',
+    'STROKE_SH_FLEX',
+    'STROKE_SH_ABD',
+    'STROKE_ELB_FLEX_EXT',
     'MOPH_SHOULDER_SHRUG_ROLL',
   ];
-  const validSet = new Set(catalog.map((e) => e.id));
+  const validSet = new Set(catalog.map((e) => parseExerciseCodeAndSide(e.code || e.id).baseCode));
   const filtered = preferred.filter((id) => validSet.has(id));
   if (filtered.length > 0) return filtered;
-  return catalog.slice(0, 3).map((e) => e.id);
+  return catalog.slice(0, 3).map((e) => parseExerciseCodeAndSide(e.code || e.id).baseCode);
 }
 
 export function StaffAssistedEnrollmentModal({
@@ -160,8 +171,10 @@ export function StaffAssistedEnrollmentModal({
   const todayIso = useMemo(() => formatLocalIsoDate(), []);
   const catalogExercises = useMemo(() => {
     const cleanPassed = exercises.filter((ex) => !isDeprecatedExerciseRecord(ex));
-    return sortExercisesStrokeUpperFirst(
-      cleanPassed.length > 0 ? cleanPassed : FALLBACK_MANAGED_EXERCISES,
+    return mergeDuplicateSideExercises(
+      sortExercisesStrokeUpperFirst(
+        cleanPassed.length > 0 ? cleanPassed : FALLBACK_MANAGED_EXERCISES,
+      ),
     );
   }, [exercises]);
 
@@ -211,7 +224,8 @@ export function StaffAssistedEnrollmentModal({
 
   // Step 3 Initial Rehab Prescription state
   const [exerciseCategoryFilter, setExerciseCategoryFilter] = useState<ExerciseFilterCategory>('all');
-  const [selectedExerciseIds, setSelectedExerciseIds] = useState<string[]>([]);
+  const [selectedSideByBaseCode, setSelectedSideByBaseCode] = useState<Record<string, ExerciseSideCode>>({});
+  const [globalQuickSide, setGlobalQuickSide] = useState<ExerciseSideCode>('RIGHT');
   const [prescriptionTouched, setPrescriptionTouched] = useState(false);
   const [prescriptionSets, setPrescriptionSets] = useState(3);
   const [prescriptionReps, setPrescriptionReps] = useState(10);
@@ -240,7 +254,8 @@ export function StaffAssistedEnrollmentModal({
     setToastMsg(null);
     setExerciseCategoryFilter('all');
     setPrescriptionTouched(false);
-    setSelectedExerciseIds([]);
+    setSelectedSideByBaseCode({});
+    setGlobalQuickSide('RIGHT');
     setPrescriptionSets(3);
     setPrescriptionReps(10);
     setSelectedModpackId('');
@@ -270,6 +285,17 @@ export function StaffAssistedEnrollmentModal({
     if (exerciseCategoryFilter === 'all') return catalogExercises;
     return catalogExercises.filter((ex) => ex.category === exerciseCategoryFilter);
   }, [catalogExercises, exerciseCategoryFilter]);
+
+  const selectedEntries = useMemo(
+    () => Object.entries(selectedSideByBaseCode) as [string, ExerciseSideCode][],
+    [selectedSideByBaseCode],
+  );
+
+  useEffect(() => {
+    if (!prescriptionTouched) {
+      setGlobalQuickSide(normalizeSideValue(affectedSide) ?? 'RIGHT');
+    }
+  }, [affectedSide, prescriptionTouched]);
 
   if (!open) return null;
 
@@ -314,7 +340,8 @@ export function StaffAssistedEnrollmentModal({
     setCapturing(false);
     setExerciseCategoryFilter('all');
     setPrescriptionTouched(false);
-    setSelectedExerciseIds([]);
+    setSelectedSideByBaseCode({});
+    setGlobalQuickSide('RIGHT');
     setPrescriptionSets(3);
     setPrescriptionReps(10);
     setSelectedModpackId('');
@@ -375,9 +402,43 @@ export function StaffAssistedEnrollmentModal({
     setStep(3);
   };
 
-  const toggleExerciseSelection = (id: string) => {
+  const toggleExerciseSelection = (ex: ManagedExerciseRecord) => {
+    const baseCode = parseExerciseCodeAndSide(ex.code || ex.id).baseCode;
     setPrescriptionTouched(true);
-    setSelectedExerciseIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+    setSelectedSideByBaseCode((prev) => {
+      if (prev[baseCode]) {
+        const next = { ...prev };
+        delete next[baseCode];
+        return next;
+      }
+      const defaultSide = BILATERAL_INHERENT_EXERCISE_CODES.has(baseCode)
+        ? 'BOTH'
+        : globalQuickSide || resolveDefaultSideForExercise(ex, affectedSide);
+      return { ...prev, [baseCode]: defaultSide };
+    });
+  };
+
+  const setCardSide = (baseCode: string, side: ExerciseSideCode) => {
+    setPrescriptionTouched(true);
+    setSelectedSideByBaseCode((prev) => ({
+      ...prev,
+      [baseCode]: side,
+    }));
+  };
+
+  const applyGlobalSideToSelected = (side: ExerciseSideCode) => {
+    setPrescriptionTouched(true);
+    setGlobalQuickSide(side);
+    setSelectedSideByBaseCode((prev) => {
+      const next: Record<string, ExerciseSideCode> = {};
+      for (const [code] of Object.entries(prev)) {
+        next[code] =
+          side !== 'BOTH' && BILATERAL_INHERENT_EXERCISE_CODES.has(code)
+            ? 'BOTH'
+            : side;
+      }
+      return next;
+    });
   };
 
   const toggleScheduledDate = (iso: string) => {
@@ -392,20 +453,24 @@ export function StaffAssistedEnrollmentModal({
   };
 
   const buildPrescriptionSchedules = (): RehabScheduleItem[] => {
-    if (selectedExerciseIds.length === 0 || scheduledDates.length === 0) return [];
+    if (selectedEntries.length === 0 || scheduledDates.length === 0) return [];
     const sortedDates = [...scheduledDates].sort();
     const ptId = assignedPtId || currentUser.id;
     const baseTs = Date.now();
     const out: RehabScheduleItem[] = [];
     let seq = 0;
     for (const dateIso of sortedDates) {
-      for (const exId of selectedExerciseIds) {
+      for (const [baseCode, side] of selectedEntries) {
         seq += 1;
+        const effectiveCode = formatEffectiveExerciseCode(baseCode, side);
         out.push({
           id: `sched-${baseTs}-${seq}`,
           patientId: 'pending',
           ptId,
-          exerciseId: exId,
+          exerciseId: effectiveCode,
+          exerciseCode: baseCode,
+          side,
+          effectiveCode,
           modpackId: selectedModpackId || undefined,
           scheduledDate: dateIso,
           sets: Math.max(1, Number(prescriptionSets) || 3),
@@ -1239,10 +1304,10 @@ export function StaffAssistedEnrollmentModal({
                     </span>
                     <span className="text-sm font-black text-slate-900 flex items-center gap-1.5">
                       <Dumbbell className="h-4 w-4 text-emerald-600" />
-                      เลือกท่ากายภาพบำบัดสำหรับคนไข้รายนี้ (เลือกได้หลายท่า)
+                      เลือกท่ากายภาพบำบัดสำหรับคนไข้รายนี้ (15 ท่าหลัก — เลือกข้างในแต่ละการ์ด)
                     </span>
                     <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[11px] font-extrabold text-emerald-700">
-                      เลือกแล้ว {selectedExerciseIds.length} ท่า
+                      เลือกแล้ว {selectedEntries.length} ท่า
                     </span>
                   </div>
 
@@ -1251,7 +1316,14 @@ export function StaffAssistedEnrollmentModal({
                       type="button"
                       onClick={() => {
                         setPrescriptionTouched(true);
-                        setSelectedExerciseIds(getRecommendedExerciseIdsForJoint(targetJoint, catalogExercises));
+                        const recIds = getRecommendedExerciseIdsForJoint(targetJoint, catalogExercises);
+                        const nextMap: Record<string, ExerciseSideCode> = {};
+                        for (const baseCode of recIds) {
+                          nextMap[baseCode] = BILATERAL_INHERENT_EXERCISE_CODES.has(baseCode)
+                            ? 'BOTH'
+                            : globalQuickSide || normalizeSideValue(affectedSide) || 'RIGHT';
+                        }
+                        setSelectedSideByBaseCode(nextMap);
                       }}
                       className="rounded-lg border border-teal-200 bg-teal-50 px-2.5 py-1 text-[11px] font-bold text-teal-800 hover:bg-teal-100 cursor-pointer"
                     >
@@ -1261,9 +1333,18 @@ export function StaffAssistedEnrollmentModal({
                       type="button"
                       onClick={() => {
                         setPrescriptionTouched(true);
-                        setSelectedExerciseIds((prev) =>
-                          Array.from(new Set([...prev, ...filteredExercises.map((ex) => ex.id)])),
-                        );
+                        setSelectedSideByBaseCode((prev) => {
+                          const next = { ...prev };
+                          for (const ex of filteredExercises) {
+                            const baseCode = parseExerciseCodeAndSide(ex.code || ex.id).baseCode;
+                            if (!next[baseCode]) {
+                              next[baseCode] = BILATERAL_INHERENT_EXERCISE_CODES.has(baseCode)
+                                ? 'BOTH'
+                                : globalQuickSide || resolveDefaultSideForExercise(ex, affectedSide);
+                            }
+                          }
+                          return next;
+                        });
                       }}
                       className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 cursor-pointer"
                     >
@@ -1273,7 +1354,7 @@ export function StaffAssistedEnrollmentModal({
                       type="button"
                       onClick={() => {
                         setPrescriptionTouched(true);
-                        setSelectedExerciseIds([]);
+                        setSelectedSideByBaseCode({});
                       }}
                       className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-500 hover:bg-rose-50 hover:text-rose-700 cursor-pointer"
                     >
@@ -1282,24 +1363,45 @@ export function StaffAssistedEnrollmentModal({
                   </div>
                 </div>
 
-                {selectedExerciseIds.length > 0 && (
+                <GlobalQuickSideSelector
+                  value={globalQuickSide}
+                  selectedCount={selectedEntries.length}
+                  onSelectGlobal={applyGlobalSideToSelected}
+                  lang={lang}
+                />
+
+                {selectedEntries.length > 0 && (
                   <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-2.5 space-y-1.5">
                     <div className="flex items-center justify-between text-[11px] font-bold text-emerald-800">
-                      <span>ท่าที่เลือกไว้ทั้งหมด ({selectedExerciseIds.length} ท่า — ทุกหมวด)</span>
+                      <span>ท่าที่เลือกไว้ทั้งหมด ({selectedEntries.length} ท่า — ทุกหมวด)</span>
                       <span className="text-[10px] font-medium text-emerald-700">กดที่แท็กเพื่อเอาออกได้</span>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
-                      {selectedExerciseIds.map((exId) => {
-                        const found = catalogExercises.find((c) => c.id === exId);
-                        const label = found ? found.name[lang] || found.name.th : exId;
+                      {selectedEntries.map(([baseCode, side]) => {
+                        const found = catalogExercises.find(
+                          (c) => parseExerciseCodeAndSide(c.code || c.id).baseCode === baseCode,
+                        );
+                        const label = found ? found.name[lang] || found.name.th : baseCode;
+                        const sideMeta = getSideBadgeMeta(side);
                         return (
                           <button
-                            key={exId}
+                            key={baseCode}
                             type="button"
-                            onClick={() => toggleExerciseSelection(exId)}
+                            onClick={() =>
+                              setSelectedSideByBaseCode((prev) => {
+                                const next = { ...prev };
+                                delete next[baseCode];
+                                return next;
+                              })
+                            }
                             className="inline-flex items-center gap-1 rounded-full bg-white border border-emerald-300 px-2.5 py-0.5 text-[11px] font-bold text-emerald-900 hover:bg-rose-50 hover:border-rose-300 hover:text-rose-800 cursor-pointer"
                           >
                             <span>{label}</span>
+                            <span
+                              className={`rounded-full border px-1.5 py-0 text-[10px] font-extrabold ${sideMeta.badgeClass}`}
+                            >
+                              {sideMeta.shortLabel[lang]}
+                            </span>
                             <span aria-hidden="true">×</span>
                           </button>
                         );
@@ -1326,15 +1428,30 @@ export function StaffAssistedEnrollmentModal({
                   ))}
                 </div>
 
-                {/* Interactive Multi-Select Exercise Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-56 overflow-y-auto pr-1">
+                {/* Interactive Unified Multi-Select Exercise Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-60 overflow-y-auto pr-1">
                   {filteredExercises.map((ex) => {
-                    const checked = selectedExerciseIds.includes(ex.id);
+                    const baseCode = parseExerciseCodeAndSide(ex.code || ex.id).baseCode;
+                    const assignedSide = selectedSideByBaseCode[baseCode] ?? null;
+                    const checked = assignedSide !== null;
+                    const effectiveDisplay = assignedSide
+                      ? formatEffectiveExerciseCode(baseCode, assignedSide)
+                      : baseCode;
+                    const displayCopy = assignedSide
+                      ? resolveSideAdjustedExerciseCopy(ex, assignedSide)
+                      : null;
                     return (
-                      <button
-                        key={ex.id}
-                        type="button"
-                        onClick={() => toggleExerciseSelection(ex.id)}
+                      <div
+                        key={baseCode}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => toggleExerciseSelection(ex)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggleExerciseSelection(ex);
+                          }
+                        }}
                         className={`rounded-2xl border p-3 text-left transition cursor-pointer flex items-start gap-2.5 ${
                           checked
                             ? 'border-emerald-500 bg-emerald-50/70 ring-1 ring-emerald-500/40 shadow-xs'
@@ -1350,28 +1467,38 @@ export function StaffAssistedEnrollmentModal({
                         >
                           <Check className="h-3.5 w-3.5 stroke-[3]" />
                         </span>
-                        <div className="min-w-0 flex-1 space-y-1">
+                        <div className="min-w-0 flex-1 space-y-1.5">
                           <div className="flex items-center justify-between gap-1.5">
                             <span className="font-extrabold text-slate-900 truncate">
-                              {ex.name[lang] || ex.name.th}
+                              {displayCopy
+                                ? (lang === 'en' ? displayCopy.nameEn : displayCopy.nameTh)
+                                : ex.name[lang] || ex.name.th}
                             </span>
                             <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-600">
-                              {ex.code}
+                              {effectiveDisplay}
                             </span>
                           </div>
                           <p className="text-[11px] text-slate-500 line-clamp-1">
                             {ex.instruction[lang] || ex.instruction.th}
                           </p>
-                          <div className="text-[10px] font-bold text-emerald-700">
-                            มุมเป้า {ex.detection.targetMinDeg}°–{ex.detection.targetMaxDeg}° • ค้าง {ex.detection.holdSec} วิ • แนะนำ {ex.detection.defaultSets}×{ex.detection.defaultReps}
+                          <div className="flex flex-wrap items-center justify-between gap-1.5 pt-0.5">
+                            <ExerciseSidePills
+                              value={assignedSide}
+                              onSelect={(side) => setCardSide(baseCode, side)}
+                              lang={lang}
+                              compact
+                            />
+                            <div className="text-[10px] font-bold text-emerald-700">
+                              เป้า {ex.detection.targetMinDeg}°–{ex.detection.targetMaxDeg}° • {ex.detection.defaultSets}×{ex.detection.defaultReps}
+                            </div>
                           </div>
                         </div>
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
 
-                {selectedExerciseIds.length === 0 && (
+                {selectedEntries.length === 0 && (
                   <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] font-bold text-amber-800">
                     กรุณาเลือกท่ากายภาพอย่างน้อย 1 ท่า หรือกด “ข้ามการกำหนดท่า (บันทึกเฉพาะประวัติ)” ด้านล่าง
                   </div>
@@ -1453,7 +1580,7 @@ export function StaffAssistedEnrollmentModal({
                     </span>
                   </div>
                   <span className="rounded-full bg-blue-50 border border-blue-200 px-2.5 py-0.5 text-[11px] font-extrabold text-blue-700">
-                    เลือกไว้ {scheduledDates.length} วัน ({selectedExerciseIds.length * scheduledDates.length} รายการ)
+                    เลือกไว้ {scheduledDates.length} วัน ({selectedEntries.length * scheduledDates.length} รายการ)
                   </span>
                 </div>
 
@@ -1759,7 +1886,7 @@ export function StaffAssistedEnrollmentModal({
               </button>
               <button
                 type="button"
-                disabled={saving || selectedExerciseIds.length === 0 || scheduledDates.length === 0}
+                disabled={saving || selectedEntries.length === 0 || scheduledDates.length === 0}
                 onClick={() => {
                   const built = buildPrescriptionSchedules();
                   void handleFinalizeEnrollment('verified', undefined, undefined, built);
@@ -1768,7 +1895,7 @@ export function StaffAssistedEnrollmentModal({
               >
                 {saving
                   ? 'กำลังบันทึกเวชระเบียนและท่ากายภาพ...'
-                  : `บันทึกคนไข้พร้อมท่ากายภาพ (${selectedExerciseIds.length} ท่า) และเปิดใช้งานตู้ →`}
+                  : `บันทึกคนไข้พร้อมท่ากายภาพ (${selectedEntries.length} ท่า) และเปิดใช้งานตู้ →`}
               </button>
             </>
           )}

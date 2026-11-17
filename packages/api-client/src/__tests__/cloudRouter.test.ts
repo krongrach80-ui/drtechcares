@@ -1811,7 +1811,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(strangerRes.status).toBe(401);
   });
 
-  it('returns exact 26 canonical Stroke & MOPH exercises and purges legacy rows via POST /api/exercises/sync-stroke-library', async () => {
+  it('returns exact 15 unified master Stroke & MOPH exercises and purges legacy rows via POST /api/exercises/sync-stroke-library', async () => {
     const router = createCloudDelegatedRouter({});
     const ptLogin = await callRouter(router, '/api/auth/login', {
       method: 'POST',
@@ -1847,7 +1847,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     const listBeforeSync = await callRouter(router, '/api/exercises');
     expect(listBeforeSync.status).toBe(200);
     const listBeforeJson = (await listBeforeSync.json()) as { exercises: Array<{ id: string; code: string; category: string }> };
-    expect(listBeforeJson.exercises).toHaveLength(26);
+    expect(listBeforeJson.exercises).toHaveLength(15);
     expect(listBeforeJson.exercises.some((e) => e.category === 'lower_limb' || e.category === 'balance')).toBe(false);
     expect(listBeforeJson.exercises.some((e) => e.id === 'ex-26' || e.code === 'SIT_TO_STAND')).toBe(false);
 
@@ -1864,8 +1864,8 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     };
     expect(syncJson.ok).toBe(true);
     expect(syncJson.purgedCount).toBeGreaterThanOrEqual(1);
-    expect(syncJson.syncedCount).toBe(26);
-    expect(syncJson.exercises).toHaveLength(26);
+    expect(syncJson.syncedCount).toBe(15);
+    expect(syncJson.exercises).toHaveLength(15);
   });
 
   it('never resurrects deleted seeded PT accounts (pt_somchai / pt_waranya) during hydrateStateFromSupabase across fresh Worker isolates', async () => {

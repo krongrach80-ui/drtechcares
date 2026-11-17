@@ -2,6 +2,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   CLINICAL_EXERCISES,
   isDeprecatedExerciseRecord,
+  mergeDuplicateSideExercises,
+  sortExercisesStrokeUpperFirst,
 } from '@drtechcares/pose-engine';
 import {
   parseEmbeddingVector,
@@ -838,9 +840,13 @@ export async function hydrateStateFromSupabase(
       ...ex,
       createdBy: 'system',
     }));
-    state.exercises = [...canonicalRecords, ...validCustomOrDb];
+    state.exercises = mergeDuplicateSideExercises(
+      sortExercisesStrokeUpperFirst([...canonicalRecords, ...validCustomOrDb]),
+    );
   } else {
-    state.exercises = CLINICAL_EXERCISES.map((ex) => ({ ...ex, createdBy: 'system' }));
+    state.exercises = sortExercisesStrokeUpperFirst(
+      CLINICAL_EXERCISES.map((ex) => ({ ...ex, createdBy: 'system' })),
+    );
   }
 
   if (modpacksRes.status === 'fulfilled' && Array.isArray(modpacksRes.value.data) && modpacksRes.value.data.length > 0) {

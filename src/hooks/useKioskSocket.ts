@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CLINICAL_EXERCISES, normalizeStrokeExerciseId } from '@drtechcares/pose-engine';
+import {
+  CLINICAL_EXERCISES,
+  normalizeStrokeExerciseId,
+  parseExerciseCodeAndSide,
+  resolveSideAdjustedExerciseCopy,
+  type ExerciseSideCode,
+} from '@drtechcares/pose-engine';
 import type { TodayPrescribedExerciseItem } from '@drtechcares/api-client';
 import type {
   CalibrationState,
@@ -128,9 +134,14 @@ export type ExpectedMovementPlane =
 export interface ExercisePrescriptionOption {
   exercise_id: string;
   catalog_exercise_id?: string;
+  base_code?: string;
+  effective_code?: string;
+  prescribed_side?: ExerciseSideCode;
   schedule_id?: string;
   name_th: string;
   name_en: string;
+  instruction_th?: string;
+  instruction_en?: string;
   target_joint: Exclude<HighlightJoint, 'none'>;
   expected_plane?: ExpectedMovementPlane;
   target_rom_deg: number;
@@ -339,13 +350,18 @@ export function getPrescribedPlanePromptTh(expectedPlane: ExpectedMovementPlane)
 export function getPrescribedLimbPromptTh(
   targetJoint: ExercisePrescriptionOption['target_joint'],
   expectedPlane?: ExpectedMovementPlane,
+  prescribedSide?: ExerciseSideCode,
 ): {
   requiredLimbTh: string;
   wrongLimbTh: string;
   bannerAlertTh: string;
   voicePromptTh: string;
 } {
-  if (expectedPlane === 'bilateral' || expectedPlane === 'bilateral_push') {
+  if (
+    prescribedSide === 'BOTH' ||
+    expectedPlane === 'bilateral' ||
+    expectedPlane === 'bilateral_push'
+  ) {
     return {
       requiredLimbTh: 'แขนทั้ง 2 ข้างพร้อมกัน',
       wrongLimbTh: 'แขนเพียงข้างเดียว',
@@ -353,7 +369,7 @@ export function getPrescribedLimbPromptTh(
       voicePromptTh: 'ท่านี้ต้องทำพร้อมกันทั้ง 2 ข้าง กรุณายกแขนทั้งซ้ายและขวาขึ้นพร้อมกันนะครับ',
     };
   }
-  if (targetJoint === 'left_shoulder') {
+  if (prescribedSide === 'LEFT' || (prescribedSide !== 'RIGHT' && targetJoint === 'left_shoulder')) {
     return {
       requiredLimbTh: 'แขนซ้าย',
       wrongLimbTh: 'แขนขวา',
@@ -361,7 +377,7 @@ export function getPrescribedLimbPromptTh(
       voicePromptTh: 'ท่านี้ฝึกเฉพาะข้างซ้าย กรุณาลดแขนขวาลง และยกเฉพาะแขนซ้ายข้างเดียวนะครับ',
     };
   }
-  if (targetJoint === 'right_shoulder') {
+  if (prescribedSide === 'RIGHT' || targetJoint === 'right_shoulder') {
     return {
       requiredLimbTh: 'แขนขวา',
       wrongLimbTh: 'แขนซ้าย',
@@ -381,10 +397,13 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'offline';
 
 export const EXERCISE_OPTIONS: ExercisePrescriptionOption[] = [
   {
-    exercise_id: 'STROKE_SH_FLEX_R',
-    catalog_exercise_id: 'STROKE_SH_FLEX_R',
-    name_th: '[Stroke ADL] ยกแขนขวาตรงไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)',
-    name_en: '[Stroke ADL] Right Shoulder Forward Flexion',
+    exercise_id: 'STROKE_SH_FLEX_RIGHT',
+    catalog_exercise_id: 'STROKE_SH_FLEX',
+    base_code: 'STROKE_SH_FLEX',
+    effective_code: 'STROKE_SH_FLEX_RIGHT',
+    prescribed_side: 'RIGHT',
+    name_th: '[Stroke ADL] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)',
+    name_en: 'Stroke ADL: Forward Shoulder Flexion (Right)',
     target_joint: 'right_shoulder',
     expected_plane: 'flexion',
     target_rom_deg: 125,
@@ -392,10 +411,13 @@ export const EXERCISE_OPTIONS: ExercisePrescriptionOption[] = [
     target_reps: 10,
   },
   {
-    exercise_id: 'STROKE_SH_ABD_R',
-    catalog_exercise_id: 'STROKE_SH_ABD_R',
-    name_th: '[Stroke ADL] กางแขนขวาออกด้านข้าง (ฝึกกางแขนสวมเสื้อ)',
-    name_en: '[Stroke ADL] Right Shoulder Lateral Abduction',
+    exercise_id: 'STROKE_SH_ABD_RIGHT',
+    catalog_exercise_id: 'STROKE_SH_ABD',
+    base_code: 'STROKE_SH_ABD',
+    effective_code: 'STROKE_SH_ABD_RIGHT',
+    prescribed_side: 'RIGHT',
+    name_th: '[Stroke ADL] กางแขนขวาด้านข้าง (ฝึกกางแขนสวมเสื้อ)',
+    name_en: 'Stroke ADL: Shoulder Abduction (Right)',
     target_joint: 'right_shoulder',
     expected_plane: 'abduction',
     target_rom_deg: 115,
@@ -405,8 +427,11 @@ export const EXERCISE_OPTIONS: ExercisePrescriptionOption[] = [
   {
     exercise_id: 'STROKE_BOBATH_ARM_RAISE',
     catalog_exercise_id: 'STROKE_BOBATH_ARM_RAISE',
-    name_th: '[Stroke Bobath] ประสานมือยกแขนขึ้นด้านหน้า',
-    name_en: '[Stroke Bobath] Bilateral Clasped Overhead Raise',
+    base_code: 'STROKE_BOBATH_ARM_RAISE',
+    effective_code: 'STROKE_BOBATH_ARM_RAISE_BOTH',
+    prescribed_side: 'BOTH',
+    name_th: '[Stroke & สธ.] ประสานมือสองข้างชูขึ้นเหนือศีรษะ (ท่า Bobath พยุงแขนอ่อนแรง)',
+    name_en: 'Stroke & MOPH: Bobath Bilateral Clasped Arm Raise',
     target_joint: 'right_shoulder',
     expected_plane: 'bilateral',
     target_rom_deg: 135,
@@ -423,19 +448,22 @@ export const DEMO_PATIENT: PatientSummary = {
 function resolveTargetJointForTodayExercise(
   item: TodayPrescribedExerciseItem,
   catalogMatch?: (typeof CLINICAL_EXERCISES)[number],
+  resolvedSide?: ExerciseSideCode,
 ): Exclude<HighlightJoint, 'none'> {
   if (catalogMatch) {
     const group = catalogMatch.detection.jointGroup;
     if (group === 'trunk' || group === 'neck') {
       return 'spine';
     }
+    if (resolvedSide === 'LEFT') return 'left_shoulder';
+    if (resolvedSide === 'RIGHT') return 'right_shoulder';
     return catalogMatch.detection.side === 'left' ? 'left_shoulder' : 'right_shoulder';
   }
   const combined = `${item.nameTh} ${item.nameEn} ${item.targetJoint}`.toLowerCase();
   if (combined.includes('คอ') || combined.includes('neck') || combined.includes('spine')) {
     return 'spine';
   }
-  if (combined.includes('ซ้าย') || combined.includes('left')) {
+  if (resolvedSide === 'LEFT' || combined.includes('ซ้าย') || combined.includes('left')) {
     return 'left_shoulder';
   }
   return 'right_shoulder';
@@ -456,11 +484,23 @@ export function mapTodayExercisesToPrescriptions(
   }
 
   return sourceItems.map((item) => {
-    const canonicalId = normalizeStrokeExerciseId(item.exerciseId);
-    const found = CLINICAL_EXERCISES.find(
-      (c) => c.id === canonicalId || c.code === canonicalId || c.id === item.exerciseId || c.code === item.exerciseId,
+    const parsed = parseExerciseCodeAndSide(
+      item.exerciseCode || item.effectiveCode || item.exerciseId,
+      item.side,
     );
-    const target_joint = resolveTargetJointForTodayExercise(item, found);
+    const canonicalId = normalizeStrokeExerciseId(parsed.baseCode || item.exerciseId);
+    const found = CLINICAL_EXERCISES.find(
+      (c) =>
+        c.id === canonicalId ||
+        c.code === canonicalId ||
+        c.id === parsed.baseCode ||
+        c.code === parsed.baseCode ||
+        c.id === item.exerciseId ||
+        c.code === item.exerciseId,
+    );
+    const resolvedSide = parsed.side;
+    const effectiveCode = parsed.effectiveCode;
+    const target_joint = resolveTargetJointForTodayExercise(item, found, resolvedSide);
     const isLowRangeUpper =
       found &&
       (found.detection.jointGroup === 'neck' ||
@@ -480,17 +520,25 @@ export function mapTodayExercisesToPrescriptions(
         : Math.min(165, Math.max(85, defaultMidDeg))
       : 125;
 
+    const sideCopy = found ? resolveSideAdjustedExerciseCopy(found, resolvedSide) : null;
+
     return {
-      exercise_id: item.id || canonicalId,
+      exercise_id: item.id || effectiveCode,
       catalog_exercise_id: found?.id ?? canonicalId,
+      base_code: found?.code ?? canonicalId,
+      effective_code: effectiveCode,
+      prescribed_side: resolvedSide,
       schedule_id: item.id,
-      name_th: found?.name.th ?? item.nameTh,
-      name_en: found?.name.en ?? item.nameEn,
+      name_th: sideCopy?.nameTh ?? found?.name.th ?? item.nameTh,
+      name_en: sideCopy?.nameEn ?? found?.name.en ?? item.nameEn,
+      instruction_th: found?.instruction.th ?? item.instructionTh,
+      instruction_en: found?.instruction.en ?? item.instructionEn,
       target_joint,
       expected_plane:
         (found?.detection.expectedPlane as ExpectedMovementPlane | undefined) ??
         resolveExpectedPlaneForExercise({
           exercise_id: canonicalId,
+          catalog_exercise_id: found?.id ?? canonicalId,
           name_th: item.nameTh,
           name_en: item.nameEn,
           target_joint,
@@ -743,6 +791,7 @@ export function synthesizeDemoPayload({
     const limbInfo = getPrescribedLimbPromptTh(
       exercise.target_joint,
       resolveExpectedPlaneForExercise(exercise),
+      exercise.prescribed_side,
     );
     return {
       kiosk_state: 'ACTIVE_REP',
@@ -976,7 +1025,9 @@ export function useKioskSocket(
           type: 'prescription',
           include_frame: true,
           data: {
-            exercise_id: rx.catalog_exercise_id ?? rx.exercise_id,
+            exercise_id: rx.effective_code ?? rx.catalog_exercise_id ?? rx.exercise_id,
+            base_code: rx.base_code ?? rx.catalog_exercise_id ?? undefined,
+            prescribed_side: rx.prescribed_side ?? undefined,
             exercise_name: `${rx.name_en} (${rx.name_th})`,
             target_joint: rx.target_joint,
             target_rom_deg:

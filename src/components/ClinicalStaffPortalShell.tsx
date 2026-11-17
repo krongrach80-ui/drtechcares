@@ -23,6 +23,7 @@ import {
   CLINICAL_EXERCISES,
   STROKE_CANONICAL_EXERCISE_SET,
   isDeprecatedExerciseRecord,
+  mergeDuplicateSideExercises,
   sortExercisesStrokeUpperFirst,
   type BodySide,
   type ExerciseConfig,
@@ -1268,7 +1269,9 @@ export async function syncStrokeExerciseLibrary(
       !STROKE_CANONICAL_EXERCISE_SET.has(ex.id),
   );
   return {
-    exercises: sortExercisesStrokeUpperFirst([...canonicalFallback, ...cleanCustom]),
+    exercises: mergeDuplicateSideExercises(
+      sortExercisesStrokeUpperFirst([...canonicalFallback, ...cleanCustom]),
+    ),
     purgedCount,
   };
 }
@@ -1518,10 +1521,13 @@ export function ClinicalStaffPortalShell({
           return p;
         }),
       );
-      setExercises(sortExercisesStrokeUpperFirst(exRes.filter((ex) => !isDeprecatedExerciseRecord(ex))));
+      const unifiedEx = mergeDuplicateSideExercises(
+        sortExercisesStrokeUpperFirst(exRes.filter((ex) => !isDeprecatedExerciseRecord(ex))),
+      );
+      setExercises(unifiedEx);
       const needsStrokeSync =
         exRes.some((ex) => isDeprecatedExerciseRecord(ex)) ||
-        exRes.filter((ex) => STROKE_CANONICAL_EXERCISE_SET.has(ex.code)).length < CLINICAL_EXERCISES.length;
+        unifiedEx.filter((ex) => STROKE_CANONICAL_EXERCISE_SET.has(ex.code)).length < CLINICAL_EXERCISES.length;
       if (needsStrokeSync) {
         void syncStrokeExerciseLibrary(apiClient).then((synced) => {
           setExercises(synced.exercises);
@@ -1615,7 +1621,8 @@ export function ClinicalStaffPortalShell({
     if (activeTab !== 'exercises') return;
     const needsSync =
       exercises.some((ex) => isDeprecatedExerciseRecord(ex)) ||
-      exercises.filter((ex) => STROKE_CANONICAL_EXERCISE_SET.has(ex.code)).length < CLINICAL_EXERCISES.length;
+      mergeDuplicateSideExercises(exercises).filter((ex) => STROKE_CANONICAL_EXERCISE_SET.has(ex.code)).length <
+        CLINICAL_EXERCISES.length;
     if (!needsSync) return;
     let cancelled = false;
     void syncStrokeExerciseLibrary(apiClient).then((synced) => {
@@ -3216,11 +3223,11 @@ export function ClinicalStaffPortalShell({
                       className="inline-flex items-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-3 py-1.5 text-[11px] font-bold text-sky-800 hover:bg-sky-100 disabled:opacity-50 cursor-pointer"
                     >
                       <RefreshCw className="h-3.5 w-3.5" />
-                      ซิงก์คลัง 26 ท่า Stroke/สธ.
+                      ซิงก์คลัง 15 ท่าหลัก Stroke/สธ.
                     </button>
                   </div>
                   <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
-                    {sortExercisesStrokeUpperFirst(exercises).map((ex) => (
+                    {mergeDuplicateSideExercises(sortExercisesStrokeUpperFirst(exercises)).map((ex) => (
                       <div
                         key={ex.id}
                         className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs"
@@ -3231,8 +3238,14 @@ export function ClinicalStaffPortalShell({
                             <span className="ml-1 rounded bg-sky-100 px-1.5 py-0.5 font-mono text-[10px] text-sky-800">
                               {ex.code}
                             </span>
-                            <span className="ml-1 rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-700 uppercase">
-                              {ex.detection.side}
+                            <span className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800 uppercase">
+                              {ex.detection.side === 'both' ||
+                              ex.code === 'STROKE_BOBATH_ARM_RAISE' ||
+                              ex.code === 'STROKE_BOBATH_FORWARD_PUSH' ||
+                              ex.code === 'MOPH_NECK_TURN' ||
+                              ex.code === 'MOPH_SHOULDER_SHRUG_ROLL'
+                                ? 'L+R (BOTH)'
+                                : 'L / R / BOTH'}
                             </span>
                           </div>
                           <div className="text-[11px] text-slate-500 truncate">{ex.instruction[lang] || ex.instruction.th}</div>

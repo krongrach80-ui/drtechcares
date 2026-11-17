@@ -47,8 +47,10 @@ import {
   HAND21_CONNECTIONS,
   POSE_INDEX,
   computeJointAngle3D,
+  parseExerciseCodeAndSide,
   solveStrokeClinicalJointBiomechanics,
   stepStrokeHoldAndRepStateMachine,
+  type ExerciseSideCode,
   type StrokeAnatomyBaseline,
   type StrokeHoldRepState,
   type StrokeSideViolationCode,
@@ -347,8 +349,49 @@ export type ExerciseJointMode =
 export interface ExerciseMetaHint {
   exercise_id?: string;
   catalog_exercise_id?: string;
+  effective_code?: string;
+  prescribed_side?: ExerciseSideCode;
   name_th?: string;
   name_en?: string;
+}
+
+export function resolveExerciseSideFromMeta(
+  exerciseMeta?: ExerciseMetaHint,
+  targetJoint?: string,
+  expectedPlane?: ExpectedMovementPlane,
+): ExerciseSideCode | undefined {
+  if (exerciseMeta?.prescribed_side) return exerciseMeta.prescribed_side;
+  const jointMode = classifyExerciseJointMode(exerciseMeta);
+  if (
+    expectedPlane === 'bilateral' ||
+    expectedPlane === 'bilateral_push' ||
+    jointMode === 'bilateral_raise' ||
+    jointMode === 'bobath_push' ||
+    jointMode === 'shoulder_shrug' ||
+    jointMode === 'neck_turn'
+  ) {
+    return 'BOTH';
+  }
+  const raw = (
+    exerciseMeta?.effective_code ||
+    exerciseMeta?.catalog_exercise_id ||
+    exerciseMeta?.exercise_id ||
+    ''
+  ).trim();
+  const upper = raw.toUpperCase();
+  if (
+    upper.endsWith('_LEFT') ||
+    upper.endsWith('_RIGHT') ||
+    upper.endsWith('_BOTH') ||
+    upper.endsWith('_L') ||
+    upper.endsWith('_R') ||
+    upper === 'MOPH_NECK_TURN_BILATERAL'
+  ) {
+    return parseExerciseCodeAndSide(upper).side;
+  }
+  if (targetJoint === 'left_shoulder') return 'LEFT';
+  if (targetJoint === 'right_shoulder') return 'RIGHT';
+  return undefined;
 }
 
 export function classifyExerciseJointMode(
@@ -473,17 +516,7 @@ export function measureLiveJointAngleAndTilt(
   const UPPER_MIN_VIS = 0.02;
   const jointMode = classifyExerciseJointMode(exerciseMeta);
   if (targetJoint !== 'left_knee' && targetJoint !== 'right_knee') {
-    const inferredSide: 'LEFT' | 'RIGHT' | 'BOTH' | undefined =
-      expectedPlane === 'bilateral' ||
-      expectedPlane === 'bilateral_push' ||
-      jointMode === 'bilateral_raise' ||
-      jointMode === 'bobath_push'
-        ? 'BOTH'
-        : targetJoint === 'left_shoulder'
-          ? 'LEFT'
-          : targetJoint === 'right_shoulder'
-            ? 'RIGHT'
-            : undefined;
+    const inferredSide = resolveExerciseSideFromMeta(exerciseMeta, targetJoint, expectedPlane);
     const solved = solveStrokeClinicalJointBiomechanics({
       landmarks,
       worldLandmarks,
@@ -497,7 +530,8 @@ export function measureLiveJointAngleAndTilt(
     });
     if (solved.wrongSideRaised) {
       solved.wrongSideBannerTh =
-        solved.sideViolationBannerTh ?? getPrescribedLimbPromptTh(targetJoint, expectedPlane).bannerAlertTh;
+        solved.sideViolationBannerTh ??
+        getPrescribedLimbPromptTh(targetJoint, expectedPlane, inferredSide).bannerAlertTh;
     }
     if (solved.wrongPlaneRaised) {
       solved.wrongPlaneBannerTh = getPrescribedPlanePromptTh(expectedPlane).bannerAlertTh;
@@ -1054,15 +1088,28 @@ export function drawLivePoseOverlayOnCanvas(
     rHipLm.y > maxShY + 0.16 &&
     Math.abs(lHipLm.x - rHipLm.x) >= 0.09,
   );
+  const resolvedDrawSide = resolveExerciseSideFromMeta(
+    opts.exerciseMeta,
+    opts.targetJoint,
+    opts.expectedPlane,
+  );
+  const isBilateralMode =
+    resolvedDrawSide === 'BOTH' ||
+    opts.expectedPlane === 'bilateral' ||
+    opts.expectedPlane === 'bilateral_push';
+
   const activeWristLm =
-    opts.targetJoint === 'left_shoulder'
-      ? primary[POSE_INDEX.LEFT_WRIST]
-      : opts.targetJoint === 'right_shoulder'
-        ? primary[POSE_INDEX.RIGHT_WRIST]
-        : undefined;
+    resolvedDrawSide === 'BOTH'
+      ? undefined
+      : resolvedDrawSide === 'LEFT' || opts.targetJoint === 'left_shoulder'
+        ? primary[POSE_INDEX.LEFT_WRIST]
+        : opts.targetJoint === 'right_shoulder'
+          ? primary[POSE_INDEX.RIGHT_WRIST]
+          : undefined;
 
   const isOppositeArmIdx = (idx: number) => {
-    if (opts.targetJoint === 'left_shoulder') {
+    if (isBilateralMode) return false;
+    if (resolvedDrawSide === 'LEFT' || opts.targetJoint === 'left_shoulder') {
       return (
         idx === POSE_INDEX.RIGHT_ELBOW ||
         idx === POSE_INDEX.RIGHT_WRIST ||
@@ -1071,7 +1118,7 @@ export function drawLivePoseOverlayOnCanvas(
         idx === POSE_INDEX.RIGHT_THUMB
       );
     }
-    if (opts.targetJoint === 'right_shoulder') {
+    if (resolvedDrawSide === 'RIGHT' || opts.targetJoint === 'right_shoulder') {
       return (
         idx === POSE_INDEX.LEFT_ELBOW ||
         idx === POSE_INDEX.LEFT_WRIST ||
@@ -1120,9 +1167,6 @@ export function drawLivePoseOverlayOnCanvas(
     return true;
   };
 
-  const isBilateralMode =
-    opts.expectedPlane === 'bilateral' || opts.expectedPlane === 'bilateral_push';
-
   const isHighlightedEdge = (a: number, b: number) => {
     const isLeftEdge =
       (a === POSE_INDEX.LEFT_SHOULDER && b === POSE_INDEX.LEFT_ELBOW) ||
@@ -1133,10 +1177,10 @@ export function drawLivePoseOverlayOnCanvas(
     if (isBilateralMode) {
       return isLeftEdge || isRightEdge;
     }
-    if (opts.targetJoint === 'left_shoulder') {
+    if (resolvedDrawSide === 'LEFT' || opts.targetJoint === 'left_shoulder') {
       return isLeftEdge;
     }
-    if (opts.targetJoint === 'right_shoulder') {
+    if (resolvedDrawSide === 'RIGHT' || opts.targetJoint === 'right_shoulder') {
       return isRightEdge;
     }
     if (opts.targetJoint === 'left_knee') {
@@ -1623,7 +1667,7 @@ export function drawLivePoseOverlayOnCanvas(
 
   // Prominent Strict Side Isolation alert banner + on-limb badge when wrong arm / single-arm in BOTH mode
   if (opts.wrongSideRaised) {
-    const limbInfo = getPrescribedLimbPromptTh(opts.targetJoint, opts.expectedPlane);
+    const limbInfo = getPrescribedLimbPromptTh(opts.targetJoint, opts.expectedPlane, resolvedDrawSide);
     const bannerText = opts.wrongSideBannerTh || limbInfo.bannerAlertTh;
     ctx.font = '800 14px "Sarabun", sans-serif';
     const bTw = ctx.measureText(bannerText).width;
@@ -3390,12 +3434,12 @@ export function SmartRehabKioskUI({
               repSuccessBannerTh:
                 now <= repCelebrateUntilRef.current ? '✓ นับสำเร็จ +1 ครั้ง! ค่อยๆ ลดแขนลง' : null,
               overlayHint: latestOverlayHint,
-              handLandmarks21:
-                curEx.target_joint === 'left_shoulder'
-                  ? latestHandLandmarksBySide.left
-                  : curEx.target_joint === 'right_shoulder'
-                    ? latestHandLandmarksBySide.right
-                    : (latestHandLandmarksBySide.right ?? latestHandLandmarksBySide.left),
+              handLandmarks21: (() => {
+                const activeSide = resolveExerciseSideFromMeta(curEx, curEx.target_joint, curExpectedPlane);
+                if (activeSide === 'LEFT') return latestHandLandmarksBySide.left;
+                if (activeSide === 'RIGHT') return latestHandLandmarksBySide.right;
+                return latestHandLandmarksBySide.right ?? latestHandLandmarksBySide.left;
+              })(),
               videoWidth: v.videoWidth,
               videoHeight: v.videoHeight,
               canvasWidth: canvasW,
@@ -3487,38 +3531,51 @@ export function SmartRehabKioskUI({
     ruleActive: boolean;
     warnText: string;
   }[] = [
-      ...(selectedExercise.target_joint === 'left_shoulder' ||
-        selectedExercise.target_joint === 'right_shoulder'
-        ? [
-          {
-            ruleKey: 'limb' as const,
-            label:
-              selectedExercise.target_joint === 'left_shoulder'
-                ? 'ยกเฉพาะแขนซ้ายตามท่าที่กำหนด'
-                : 'ยกเฉพาะแขนขวาตามท่าที่กำหนด',
-            ok: !wrongLimbAlert && !isEmergency,
-            ruleActive: isFormRuleActive(formRules, 'limb'),
-            warnText:
-              selectedExercise.target_joint === 'left_shoulder'
-                ? 'กรุณายกแขนซ้าย'
-                : 'กรุณายกแขนขวา',
-          },
-          ...(activeExpectedPlane === 'flexion' || activeExpectedPlane === 'abduction'
-            ? [
-              {
-                ruleKey: 'plane' as const,
-                label:
-                  activeExpectedPlane === 'flexion'
-                    ? 'ทิศทางถูกต้อง (ยกแขนไปด้านหน้าเท่านั้น)'
-                    : 'ทิศทางถูกต้อง (กางแขนออกด้านข้างเท่านั้น)',
-                ok: !wrongPlaneAlert && !isEmergency,
-                ruleActive: isFormRuleActive(formRules, 'plane'),
-                warnText:
-                  activeExpectedPlane === 'flexion' ? 'ห้ามกางด้านข้าง' : 'ห้ามยกด้านหน้า',
-              },
-            ]
-            : []),
-        ]
+      ...((selectedExercise.target_joint === 'left_shoulder' ||
+        selectedExercise.target_joint === 'right_shoulder' ||
+        selectedExercise.prescribed_side !== undefined)
+        ? (() => {
+          const checkSide = resolveExerciseSideFromMeta(
+            selectedExercise,
+            selectedExercise.target_joint,
+            activeExpectedPlane,
+          );
+          if (selectedExercise.target_joint === 'spine' && !checkSide) return [];
+          return [
+            {
+              ruleKey: 'limb' as const,
+              label:
+                checkSide === 'BOTH'
+                  ? 'ยกพร้อมกันทั้ง 2 ข้าง (ซ้าย + ขวา)'
+                  : checkSide === 'LEFT'
+                    ? 'ยกเฉพาะแขนซ้ายตามท่าที่กำหนด'
+                    : 'ยกเฉพาะแขนขวาตามท่าที่กำหนด',
+              ok: !wrongLimbAlert && !isEmergency,
+              ruleActive: isFormRuleActive(formRules, 'limb'),
+              warnText:
+                checkSide === 'BOTH'
+                  ? 'กรุณายกพร้อมกันทั้ง 2 ข้าง'
+                  : checkSide === 'LEFT'
+                    ? 'กรุณายกแขนซ้าย'
+                    : 'กรุณายกแขนขวา',
+            },
+            ...(activeExpectedPlane === 'flexion' || activeExpectedPlane === 'abduction'
+              ? [
+                {
+                  ruleKey: 'plane' as const,
+                  label:
+                    activeExpectedPlane === 'flexion'
+                      ? 'ทิศทางถูกต้อง (ยกแขนไปด้านหน้าเท่านั้น)'
+                      : 'ทิศทางถูกต้อง (กางแขนออกด้านข้างเท่านั้น)',
+                  ok: !wrongPlaneAlert && !isEmergency,
+                  ruleActive: isFormRuleActive(formRules, 'plane'),
+                  warnText:
+                    activeExpectedPlane === 'flexion' ? 'ห้ามกางด้านข้าง' : 'ห้ามยกด้านหน้า',
+                },
+              ]
+              : []),
+          ];
+        })()
         : []),
       {
         ruleKey: 'trunk',
@@ -4018,19 +4075,28 @@ export function SmartRehabKioskUI({
                   <h2 className="mt-2 text-xl font-extrabold text-[#0F4C81]">{selectedExercise.name_th}</h2>
                   <p className="text-xs font-semibold text-[#0284C7]">{selectedExercise.name_en}</p>
                   {(selectedExercise.target_joint === 'left_shoulder' ||
-                    selectedExercise.target_joint === 'right_shoulder') && (
+                    selectedExercise.target_joint === 'right_shoulder' ||
+                    selectedExercise.prescribed_side !== undefined) && (() => {
+                      const uiSide = resolveExerciseSideFromMeta(
+                        selectedExercise,
+                        selectedExercise.target_joint,
+                        activeExpectedPlane,
+                      );
+                      return (
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         <div
-                          className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1 text-xs font-extrabold ${selectedExercise.target_joint === 'left_shoulder'
-                              ? 'border-orange-300 bg-orange-50 text-orange-800'
-                              : 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                          className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1 text-xs font-extrabold ${uiSide === 'BOTH'
+                              ? 'border-teal-300 bg-teal-50 text-teal-800'
+                              : uiSide === 'LEFT'
+                                ? 'border-orange-300 bg-orange-50 text-orange-800'
+                                : 'border-emerald-300 bg-emerald-50 text-emerald-800'
                             }`}
                         >
                           <span>✋ ท่านี้ต้องยกเฉพาะ:</span>
                           <span>
-                            {activeExpectedPlane === 'bilateral' || activeExpectedPlane === 'bilateral_push'
+                            {uiSide === 'BOTH'
                               ? 'ทั้ง 2 ข้างพร้อมกัน (Both Arms Together)'
-                              : selectedExercise.target_joint === 'left_shoulder'
+                              : uiSide === 'LEFT'
                                 ? 'แขนซ้าย (Left Arm Only)'
                                 : 'แขนขวา (Right Arm Only)'}
                           </span>
@@ -4045,7 +4111,8 @@ export function SmartRehabKioskUI({
                           </div>
                         )}
                       </div>
-                    )}
+                      );
+                    })()}
                 </div>
 
                 {/* Animated Miniature Guide Illustration (synced to selected exercise) */}

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Literal, Optional, Tuple
 
 import numpy as np
@@ -222,13 +222,13 @@ def compute_shoulder_elevation_with_vertical_fallback(
     return 0.0
 
 
-ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
-    # --- Category A: Stroke ADL Shoulder & Arm (12) ---
+ALL_15_EXERCISES: List[ClinicalExerciseRule] = [
+    # --- Category A: Stroke ADL Shoulder & Arm (7 Unified Master Exercises) ---
     ClinicalExerciseRule(
-        id="STROKE_SH_FLEX_R",
-        code="STROKE_SH_FLEX_R",
-        name_th="[Stroke ADL] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)",
-        name_en="Stroke ADL: Right Shoulder Forward Flexion",
+        id="STROKE_SH_FLEX",
+        code="STROKE_SH_FLEX",
+        name_th="[Stroke ADL] ยกแขนไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)",
+        name_en="Stroke ADL: Forward Shoulder Flexion",
         category="upper_limb",
         side="right",
         pattern="shoulder",
@@ -243,28 +243,10 @@ ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
         anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "ELBOW_FLEXION", "TOO_FAST"),
     ),
     ClinicalExerciseRule(
-        id="STROKE_SH_FLEX_L",
-        code="STROKE_SH_FLEX_L",
-        name_th="[Stroke ADL] ยกแขนซ้ายไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)",
-        name_en="Stroke ADL: Left Shoulder Forward Flexion",
-        category="upper_limb",
-        side="left",
-        pattern="shoulder",
-        metric_kind="shoulder_elevation",
-        target_joint="left_shoulder",
-        min_angle_deg=90.0,
-        max_angle_deg=165.0,
-        rest_angle_deg=30.0,
-        default_hold_sec=3.0,
-        default_sets=2,
-        default_reps=6,
-        anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "ELBOW_FLEXION", "TOO_FAST"),
-    ),
-    ClinicalExerciseRule(
-        id="STROKE_SH_ABD_R",
-        code="STROKE_SH_ABD_R",
-        name_th="[Stroke ADL] กางแขนขวาด้านข้าง (ฝึกกางแขนสวมเสื้อ)",
-        name_en="Stroke ADL: Right Shoulder Abduction",
+        id="STROKE_SH_ABD",
+        code="STROKE_SH_ABD",
+        name_th="[Stroke ADL] กางแขนด้านข้าง (ฝึกกางแขนสวมเสื้อ)",
+        name_en="Stroke ADL: Shoulder Abduction",
         category="upper_limb",
         side="right",
         pattern="shoulder",
@@ -279,28 +261,10 @@ ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
         anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
     ),
     ClinicalExerciseRule(
-        id="STROKE_SH_ABD_L",
-        code="STROKE_SH_ABD_L",
-        name_th="[Stroke ADL] กางแขนซ้ายด้านข้าง (ฝึกกางแขนสวมเสื้อ)",
-        name_en="Stroke ADL: Left Shoulder Abduction",
-        category="upper_limb",
-        side="left",
-        pattern="shoulder",
-        metric_kind="shoulder_elevation",
-        target_joint="left_shoulder",
-        min_angle_deg=85.0,
-        max_angle_deg=160.0,
-        rest_angle_deg=30.0,
-        default_hold_sec=3.0,
-        default_sets=2,
-        default_reps=6,
-        anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
-    ),
-    ClinicalExerciseRule(
-        id="STROKE_CROSS_BODY_R",
-        code="STROKE_CROSS_BODY_R",
-        name_th="[Stroke ADL] เอื้อมมือขวาแตะไหล่ซ้าย (ฝึกดึงแขนเสื้อ/ใส่เสื้อคลุม)",
-        name_en="Stroke ADL: Right Cross-Body Shoulder Reach",
+        id="STROKE_CROSS_BODY",
+        code="STROKE_CROSS_BODY",
+        name_th="[Stroke ADL] เอื้อมมือข้ามลำตัวแตะไหล่ตรงข้าม (ฝึกดึงแขนเสื้อ/ใส่เสื้อคลุม)",
+        name_en="Stroke ADL: Cross-Body Shoulder Reach",
         category="upper_limb",
         side="right",
         pattern="shoulder",
@@ -315,28 +279,10 @@ ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
         anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
     ),
     ClinicalExerciseRule(
-        id="STROKE_CROSS_BODY_L",
-        code="STROKE_CROSS_BODY_L",
-        name_th="[Stroke ADL] เอื้อมมือซ้ายแตะไหล่ขวา (ฝึกดึงแขนเสื้อ/ใส่เสื้อคลุม)",
-        name_en="Stroke ADL: Left Cross-Body Shoulder Reach",
-        category="upper_limb",
-        side="left",
-        pattern="shoulder",
-        metric_kind="cross_body_reach",
-        target_joint="left_shoulder",
-        min_angle_deg=75.0,
-        max_angle_deg=145.0,
-        rest_angle_deg=25.0,
-        default_hold_sec=3.0,
-        default_sets=2,
-        default_reps=6,
-        anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
-    ),
-    ClinicalExerciseRule(
-        id="STROKE_SH_ROT_R",
-        code="STROKE_SH_ROT_R",
-        name_th="[Stroke ADL] หมุนข้อไหล่ขวาเข้า-ออก (อ้อมใส่เสื้อ/ติดกระดุม)",
-        name_en="Stroke ADL: Right Shoulder External/Internal Rotation",
+        id="STROKE_SH_ROT",
+        code="STROKE_SH_ROT",
+        name_th="[Stroke ADL] หมุนข้อไหล่เข้า-ออก (อ้อมใส่เสื้อ/ติดกระดุม)",
+        name_en="Stroke ADL: Shoulder External/Internal Rotation",
         category="upper_limb",
         side="right",
         pattern="rotation",
@@ -354,57 +300,15 @@ ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
         rest_hysteresis_margin_deg=12.0,
     ),
     ClinicalExerciseRule(
-        id="STROKE_SH_ROT_L",
-        code="STROKE_SH_ROT_L",
-        name_th="[Stroke ADL] หมุนข้อไหล่ซ้ายเข้า-ออก (อ้อมใส่เสื้อ/ติดกระดุม)",
-        name_en="Stroke ADL: Left Shoulder External/Internal Rotation",
-        category="upper_limb",
-        side="left",
-        pattern="rotation",
-        metric_kind="shoulder_rotation",
-        target_joint="left_shoulder",
-        min_angle_deg=45.0,
-        max_angle_deg=90.0,
-        rest_angle_deg=15.0,
-        default_hold_sec=3.0,
-        default_sets=2,
-        default_reps=6,
-        anti_cheat_checks=("TRUNK_LEAN", "TOO_FAST"),
-        hysteresis_enter_margin_deg=5.0,
-        hysteresis_exit_margin_deg=10.0,
-        rest_hysteresis_margin_deg=12.0,
-    ),
-    ClinicalExerciseRule(
-        id="STROKE_SCAP_PROTRACT_R",
-        code="STROKE_SCAP_PROTRACT_R",
-        name_th="[Stroke ADL] เหยียดแขนขวาดันไปด้านหน้าระดับอก (ป้องกันข้อไหล่หลุด)",
-        name_en="Stroke ADL: Right Scapular Protraction Punch",
+        id="STROKE_SCAP_PROTRACT",
+        code="STROKE_SCAP_PROTRACT",
+        name_th="[Stroke ADL] เหยียดแขนดันไปด้านหน้าระดับอก (ป้องกันข้อไหล่หลุด)",
+        name_en="Stroke ADL: Scapular Protraction Punch",
         category="upper_limb",
         side="right",
         pattern="shoulder",
         metric_kind="scapular_protraction",
         target_joint="right_shoulder",
-        min_angle_deg=70.0,
-        max_angle_deg=120.0,
-        rest_angle_deg=25.0,
-        default_hold_sec=3.0,
-        default_sets=2,
-        default_reps=6,
-        anti_cheat_checks=("TRUNK_LEAN", "ELBOW_FLEXION", "TOO_FAST"),
-        hysteresis_enter_margin_deg=5.0,
-        hysteresis_exit_margin_deg=10.0,
-        rest_hysteresis_margin_deg=15.0,
-    ),
-    ClinicalExerciseRule(
-        id="STROKE_SCAP_PROTRACT_L",
-        code="STROKE_SCAP_PROTRACT_L",
-        name_th="[Stroke ADL] เหยียดแขนซ้ายดันไปด้านหน้าระดับอก (ป้องกันข้อไหล่หลุด)",
-        name_en="Stroke ADL: Left Scapular Protraction Punch",
-        category="upper_limb",
-        side="left",
-        pattern="shoulder",
-        metric_kind="scapular_protraction",
-        target_joint="left_shoulder",
         min_angle_deg=70.0,
         max_angle_deg=120.0,
         rest_angle_deg=25.0,
@@ -452,12 +356,12 @@ ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
         default_reps=6,
         anti_cheat_checks=("TRUNK_LEAN", "TOO_FAST"),
     ),
-    # --- Category B: Stroke ADL Elbow, Forearm, Wrist & Fingers (10) ---
+    # --- Category B: Stroke ADL Elbow, Forearm, Wrist & Fingers (5 Unified Master Exercises) ---
     ClinicalExerciseRule(
-        id="STROKE_ELB_FLEX_EXT_R",
-        code="STROKE_ELB_FLEX_EXT_R",
-        name_th="[Stroke ADL] งอ-เหยียดข้อศอกขวา (ดึงแขนเสื้อ/ป้อนอาหาร)",
-        name_en="Stroke ADL: Right Elbow Flexion & Extension",
+        id="STROKE_ELB_FLEX_EXT",
+        code="STROKE_ELB_FLEX_EXT",
+        name_th="[Stroke ADL] งอ-เหยียดข้อศอก (ดึงแขนเสื้อ/ป้อนอาหาร)",
+        name_en="Stroke ADL: Elbow Flexion & Extension",
         category="upper_limb",
         side="right",
         pattern="elbow",
@@ -475,31 +379,10 @@ ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
         rest_hysteresis_margin_deg=14.0,
     ),
     ClinicalExerciseRule(
-        id="STROKE_ELB_FLEX_EXT_L",
-        code="STROKE_ELB_FLEX_EXT_L",
-        name_th="[Stroke ADL] งอ-เหยียดข้อศอกซ้าย (ดึงแขนเสื้อ/ป้อนอาหาร)",
-        name_en="Stroke ADL: Left Elbow Flexion & Extension",
-        category="upper_limb",
-        side="left",
-        pattern="elbow",
-        metric_kind="elbow_flexion",
-        target_joint="left_shoulder",
-        min_angle_deg=95.0,
-        max_angle_deg=145.0,
-        rest_angle_deg=25.0,
-        default_hold_sec=2.0,
-        default_sets=2,
-        default_reps=8,
-        anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
-        hysteresis_enter_margin_deg=6.0,
-        hysteresis_exit_margin_deg=14.0,
-        rest_hysteresis_margin_deg=14.0,
-    ),
-    ClinicalExerciseRule(
-        id="STROKE_HAND_TO_HEAD_R",
-        code="STROKE_HAND_TO_HEAD_R",
-        name_th="[Stroke ADL] ยกมือขวาแตะศีรษะ (ฝึกสวมเสื้อทางศีรษะ/หวีผม)",
-        name_en="Stroke ADL: Right Hand-to-Head Grooming Reach",
+        id="STROKE_HAND_TO_HEAD",
+        code="STROKE_HAND_TO_HEAD",
+        name_th="[Stroke ADL] ยกมือแตะศีรษะ (ฝึกสวมเสื้อทางศีรษะ/หวีผม)",
+        name_en="Stroke ADL: Hand-to-Head Grooming Reach",
         category="upper_limb",
         side="right",
         pattern="elbow",
@@ -514,28 +397,10 @@ ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
         anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
     ),
     ClinicalExerciseRule(
-        id="STROKE_HAND_TO_HEAD_L",
-        code="STROKE_HAND_TO_HEAD_L",
-        name_th="[Stroke ADL] ยกมือซ้ายแตะศีรษะ (ฝึกสวมเสื้อทางศีรษะ/หวีผม)",
-        name_en="Stroke ADL: Left Hand-to-Head Grooming Reach",
-        category="upper_limb",
-        side="left",
-        pattern="elbow",
-        metric_kind="hand_to_head",
-        target_joint="left_shoulder",
-        min_angle_deg=95.0,
-        max_angle_deg=160.0,
-        rest_angle_deg=35.0,
-        default_hold_sec=3.0,
-        default_sets=2,
-        default_reps=6,
-        anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
-    ),
-    ClinicalExerciseRule(
-        id="STROKE_FOREARM_TURN_R",
-        code="STROKE_FOREARM_TURN_R",
-        name_th="[Stroke ADL] พลิกหงาย-คว่ำฝ่ามือขวา (ฝึกถือช้อน/บิดลูกบิดประตู)",
-        name_en="Stroke ADL: Right Forearm Supination & Pronation",
+        id="STROKE_FOREARM_TURN",
+        code="STROKE_FOREARM_TURN",
+        name_th="[Stroke ADL] พลิกหงาย-คว่ำฝ่ามือ (ฝึกถือช้อน/บิดลูกบิดประตู)",
+        name_en="Stroke ADL: Forearm Supination & Pronation",
         category="upper_limb",
         side="right",
         pattern="wrist",
@@ -553,31 +418,10 @@ ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
         rest_hysteresis_margin_deg=15.0,
     ),
     ClinicalExerciseRule(
-        id="STROKE_FOREARM_TURN_L",
-        code="STROKE_FOREARM_TURN_L",
-        name_th="[Stroke ADL] พลิกหงาย-คว่ำฝ่ามือซ้าย (ฝึกถือช้อน/บิดลูกบิดประตู)",
-        name_en="Stroke ADL: Left Forearm Supination & Pronation",
-        category="upper_limb",
-        side="left",
-        pattern="wrist",
-        metric_kind="forearm_rotation",
-        target_joint="left_shoulder",
-        min_angle_deg=50.0,
-        max_angle_deg=95.0,
-        rest_angle_deg=18.0,
-        default_hold_sec=2.5,
-        default_sets=2,
-        default_reps=8,
-        anti_cheat_checks=("TOO_FAST",),
-        hysteresis_enter_margin_deg=6.0,
-        hysteresis_exit_margin_deg=12.0,
-        rest_hysteresis_margin_deg=15.0,
-    ),
-    ClinicalExerciseRule(
-        id="STROKE_WRIST_FINGER_R",
-        code="STROKE_WRIST_FINGER_R",
-        name_th="[Stroke ADL] กระดกข้อมือ & กาง-กำนิ้วมือขวา (ลดเกร็งนิ้วมือ)",
-        name_en="Stroke ADL: Right Wrist Extension & Finger Open/Close",
+        id="STROKE_WRIST_FINGER",
+        code="STROKE_WRIST_FINGER",
+        name_th="[Stroke ADL] กระดกข้อมือ & กาง-กำนิ้วมือ (ลดเกร็งนิ้วมือ)",
+        name_en="Stroke ADL: Wrist Extension & Finger Open/Close",
         category="upper_limb",
         side="right",
         pattern="wrist",
@@ -595,31 +439,10 @@ ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
         rest_hysteresis_margin_deg=12.0,
     ),
     ClinicalExerciseRule(
-        id="STROKE_WRIST_FINGER_L",
-        code="STROKE_WRIST_FINGER_L",
-        name_th="[Stroke ADL] กระดกข้อมือ & กาง-กำนิ้วมือซ้าย (ลดเกร็งนิ้วมือ)",
-        name_en="Stroke ADL: Left Wrist Extension & Finger Open/Close",
-        category="upper_limb",
-        side="left",
-        pattern="wrist",
-        metric_kind="wrist_finger_extension",
-        target_joint="left_shoulder",
-        min_angle_deg=42.0,
-        max_angle_deg=85.0,
-        rest_angle_deg=15.0,
-        default_hold_sec=2.5,
-        default_sets=2,
-        default_reps=8,
-        anti_cheat_checks=("TOO_FAST",),
-        hysteresis_enter_margin_deg=5.0,
-        hysteresis_exit_margin_deg=10.0,
-        rest_hysteresis_margin_deg=12.0,
-    ),
-    ClinicalExerciseRule(
-        id="STROKE_THUMB_PINCH_R",
-        code="STROKE_THUMB_PINCH_R",
-        name_th="[Stroke ADL] จีบนิ้วโป้งแตะปลายนิ้วมือขวา (ฝึกติดกระดุมเสื้อ/รูดซิป)",
-        name_en="Stroke ADL: Right Thumb-to-Finger Fine Pinch",
+        id="STROKE_THUMB_PINCH",
+        code="STROKE_THUMB_PINCH",
+        name_th="[Stroke ADL] จีบนิ้วโป้งแตะปลายนิ้วมือ (ฝึกติดกระดุมเสื้อ/รูดซิป)",
+        name_en="Stroke ADL: Thumb-to-Finger Fine Pinch",
         category="upper_limb",
         side="right",
         pattern="wrist",
@@ -636,35 +459,14 @@ ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
         hysteresis_exit_margin_deg=10.0,
         rest_hysteresis_margin_deg=12.0,
     ),
+    # --- Category C: MOPH Elderly & Stroke Neck & Shoulder Girdle (3 Unified Master Exercises) ---
     ClinicalExerciseRule(
-        id="STROKE_THUMB_PINCH_L",
-        code="STROKE_THUMB_PINCH_L",
-        name_th="[Stroke ADL] จีบนิ้วโป้งแตะปลายนิ้วมือซ้าย (ฝึกติดกระดุมเสื้อ/รูดซิป)",
-        name_en="Stroke ADL: Left Thumb-to-Finger Fine Pinch",
-        category="upper_limb",
-        side="left",
-        pattern="wrist",
-        metric_kind="thumb_pinch",
-        target_joint="left_shoulder",
-        min_angle_deg=35.0,
-        max_angle_deg=80.0,
-        rest_angle_deg=14.0,
-        default_hold_sec=2.5,
-        default_sets=2,
-        default_reps=8,
-        anti_cheat_checks=("TOO_FAST",),
-        hysteresis_enter_margin_deg=5.0,
-        hysteresis_exit_margin_deg=10.0,
-        rest_hysteresis_margin_deg=12.0,
-    ),
-    # --- Category C: MOPH Elderly & Stroke Neck & Shoulder Girdle (4) ---
-    ClinicalExerciseRule(
-        id="MOPH_NECK_TILT_R",
-        code="MOPH_NECK_TILT_R",
-        name_th="[สธ. ผู้สูงอายุ] ยืดกล้ามเนื้อคอและบ่า เอียงคอขวาช้าๆ",
-        name_en="MOPH Elderly: Gentle Right Lateral Neck Stretch",
+        id="MOPH_NECK_TILT",
+        code="MOPH_NECK_TILT",
+        name_th="[สธ. ผู้สูงอายุ] ยืดกล้ามเนื้อคอและบ่า เอียงคอช้าๆ",
+        name_en="MOPH Elderly: Gentle Lateral Neck Stretch",
         category="neck_trunk",
-        side="right",
+        side="both",
         pattern="neck",
         metric_kind="neck_lateral_tilt",
         target_joint="spine",
@@ -680,31 +482,10 @@ ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
         rest_hysteresis_margin_deg=10.0,
     ),
     ClinicalExerciseRule(
-        id="MOPH_NECK_TILT_L",
-        code="MOPH_NECK_TILT_L",
-        name_th="[สธ. ผู้สูงอายุ] ยืดกล้ามเนื้อคอและบ่า เอียงคอซ้ายช้าๆ",
-        name_en="MOPH Elderly: Gentle Left Lateral Neck Stretch",
-        category="neck_trunk",
-        side="left",
-        pattern="neck",
-        metric_kind="neck_lateral_tilt",
-        target_joint="spine",
-        min_angle_deg=18.0,
-        max_angle_deg=45.0,
-        rest_angle_deg=8.0,
-        default_hold_sec=3.0,
-        default_sets=2,
-        default_reps=5,
-        anti_cheat_checks=("SHOULDER_HIKE", "TOO_FAST"),
-        hysteresis_enter_margin_deg=4.0,
-        hysteresis_exit_margin_deg=8.0,
-        rest_hysteresis_margin_deg=10.0,
-    ),
-    ClinicalExerciseRule(
-        id="MOPH_NECK_TURN_BILATERAL",
-        code="MOPH_NECK_TURN_BILATERAL",
+        id="MOPH_NECK_TURN",
+        code="MOPH_NECK_TURN",
         name_th="[Stroke & สธ.] หันศีรษะมองซ้าย-ขวาช้าๆ (กระตุ้นการรับรู้ภาพด้านที่อ่อนแรง)",
-        name_en="Stroke & MOPH: Bilateral Neck Rotation Scanning",
+        name_en="Stroke & MOPH: Neck Rotation Visual Scanning",
         category="neck_trunk",
         side="both",
         pattern="neck",
@@ -744,81 +525,138 @@ ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
     ),
 ]
 
-ALL_CLINICAL_EXERCISES: List[ClinicalExerciseRule] = [*ALL_26_EXERCISES]
+# Backward-compatible symbol referencing the 15 Unified Master Exercises
+ALL_26_EXERCISES: List[ClinicalExerciseRule] = ALL_15_EXERCISES
+
+ALL_CLINICAL_EXERCISES: List[ClinicalExerciseRule] = [*ALL_15_EXERCISES]
 
 EXERCISE_BY_ID: Dict[str, ClinicalExerciseRule] = {rule.id: rule for rule in ALL_CLINICAL_EXERCISES}
 EXERCISE_BY_CODE: Dict[str, ClinicalExerciseRule] = {rule.code: rule for rule in ALL_CLINICAL_EXERCISES}
 
-# Canonical + legacy compatibility alias lookup map
+# Canonical + legacy compatibility alias lookup map (returns effective code with optional side suffix)
 EXERCISE_ALIASES: Dict[str, str] = {
-    "right_shoulder_abduction": "STROKE_SH_ABD_R",
-    "left_shoulder_abduction": "STROKE_SH_ABD_L",
-    "right_shoulder_flexion": "STROKE_SH_FLEX_R",
-    "left_shoulder_flexion": "STROKE_SH_FLEX_L",
-    "elbow_flexion_right": "STROKE_ELB_FLEX_EXT_R",
-    "elbow_flexion_left": "STROKE_ELB_FLEX_EXT_L",
-    "stroke_sh_flex": "STROKE_SH_FLEX_R",
-    "stroke_sh_abd": "STROKE_SH_ABD_R",
-    "stroke_cross_body": "STROKE_CROSS_BODY_R",
-    "stroke_scap_protract": "STROKE_SCAP_PROTRACT_R",
-    "stroke_elb_flex_ext": "STROKE_ELB_FLEX_EXT_R",
-    "stroke_hand_to_head": "STROKE_HAND_TO_HEAD_R",
-    "stroke_forearm_turn": "STROKE_FOREARM_TURN_R",
-    "stroke_sh_rot": "STROKE_SH_ROT_R",
-    "stroke_wrist_finger": "STROKE_WRIST_FINGER_R",
-    "stroke_thumb_pinch": "STROKE_THUMB_PINCH_R",
-    "moph_neck_tilt": "MOPH_NECK_TILT_R",
-    "moph_neck_turn_bilateral": "MOPH_NECK_TURN_BILATERAL",
-    "moph_shoulder_shrug_roll": "MOPH_SHOULDER_SHRUG_ROLL",
-    "moph_bilateral_arm_raise": "STROKE_BOBATH_ARM_RAISE",
+    "right_shoulder_abduction": "STROKE_SH_ABD_RIGHT",
+    "left_shoulder_abduction": "STROKE_SH_ABD_LEFT",
+    "right_shoulder_flexion": "STROKE_SH_FLEX_RIGHT",
+    "left_shoulder_flexion": "STROKE_SH_FLEX_LEFT",
+    "elbow_flexion_right": "STROKE_ELB_FLEX_EXT_RIGHT",
+    "elbow_flexion_left": "STROKE_ELB_FLEX_EXT_LEFT",
+    "stroke_sh_flex": "STROKE_SH_FLEX",
+    "stroke_sh_abd": "STROKE_SH_ABD",
+    "stroke_cross_body": "STROKE_CROSS_BODY",
+    "stroke_scap_protract": "STROKE_SCAP_PROTRACT",
+    "stroke_elb_flex_ext": "STROKE_ELB_FLEX_EXT",
+    "stroke_hand_to_head": "STROKE_HAND_TO_HEAD",
+    "stroke_forearm_turn": "STROKE_FOREARM_TURN",
+    "stroke_sh_rot": "STROKE_SH_ROT",
+    "stroke_wrist_finger": "STROKE_WRIST_FINGER",
+    "stroke_thumb_pinch": "STROKE_THUMB_PINCH",
+    "moph_neck_tilt": "MOPH_NECK_TILT",
+    "moph_neck_turn": "MOPH_NECK_TURN",
+    "moph_neck_turn_bilateral": "MOPH_NECK_TURN_BOTH",
+    "moph_shoulder_shrug_roll": "MOPH_SHOULDER_SHRUG_ROLL_BOTH",
+    "moph_bilateral_arm_raise": "STROKE_BOBATH_ARM_RAISE_BOTH",
     # Legacy numeric IDs remapped safely to upper-body canonical exercises
-    "ex-01": "STROKE_SH_FLEX_R",
-    "ex-02": "STROKE_SH_FLEX_L",
-    "ex-03": "STROKE_SH_ABD_R",
-    "ex-04": "STROKE_SH_ABD_L",
-    "ex-05": "STROKE_ELB_FLEX_EXT_R",
-    "ex-06": "STROKE_ELB_FLEX_EXT_L",
-    "ex-07": "STROKE_SCAP_PROTRACT_R",
-    "ex-08": "STROKE_SCAP_PROTRACT_L",
-    "ex-09": "STROKE_SH_FLEX_R",
-    "ex-10": "STROKE_SH_FLEX_L",
-    "ex-11": "STROKE_SH_ROT_R",
-    "ex-12": "STROKE_SH_ROT_L",
-    "ex-19": "MOPH_NECK_TILT_R",
-    "ex-20": "MOPH_NECK_TILT_L",
-    "ex-27": "STROKE_SH_FLEX_R",
-    "ex-28": "STROKE_SH_FLEX_L",
-    "ex-29": "STROKE_SH_ABD_R",
-    "ex-30": "STROKE_SH_ABD_L",
-    "ex-31": "STROKE_ELB_FLEX_EXT_R",
-    "ex-32": "STROKE_ELB_FLEX_EXT_L",
-    "ex-33": "STROKE_SH_ROT_R",
-    "ex-34": "STROKE_SH_ROT_L",
-    "ex-35": "STROKE_WRIST_FINGER_R",
-    "ex-36": "STROKE_WRIST_FINGER_L",
-    "ex-37": "MOPH_NECK_TILT_R",
-    "ex-38": "MOPH_NECK_TILT_L",
-    "ex-39": "MOPH_SHOULDER_SHRUG_ROLL",
-    "ex-40": "STROKE_BOBATH_ARM_RAISE",
+    "ex-01": "STROKE_SH_FLEX_RIGHT",
+    "ex-02": "STROKE_SH_FLEX_LEFT",
+    "ex-03": "STROKE_SH_ABD_RIGHT",
+    "ex-04": "STROKE_SH_ABD_LEFT",
+    "ex-05": "STROKE_ELB_FLEX_EXT_RIGHT",
+    "ex-06": "STROKE_ELB_FLEX_EXT_LEFT",
+    "ex-07": "STROKE_SCAP_PROTRACT_RIGHT",
+    "ex-08": "STROKE_SCAP_PROTRACT_LEFT",
+    "ex-09": "STROKE_SH_FLEX_RIGHT",
+    "ex-10": "STROKE_SH_FLEX_LEFT",
+    "ex-11": "STROKE_SH_ROT_RIGHT",
+    "ex-12": "STROKE_SH_ROT_LEFT",
+    "ex-19": "MOPH_NECK_TILT_RIGHT",
+    "ex-20": "MOPH_NECK_TILT_LEFT",
+    "ex-27": "STROKE_SH_FLEX_RIGHT",
+    "ex-28": "STROKE_SH_FLEX_LEFT",
+    "ex-29": "STROKE_SH_ABD_RIGHT",
+    "ex-30": "STROKE_SH_ABD_LEFT",
+    "ex-31": "STROKE_ELB_FLEX_EXT_RIGHT",
+    "ex-32": "STROKE_ELB_FLEX_EXT_LEFT",
+    "ex-33": "STROKE_SH_ROT_RIGHT",
+    "ex-34": "STROKE_SH_ROT_LEFT",
+    "ex-35": "STROKE_WRIST_FINGER_RIGHT",
+    "ex-36": "STROKE_WRIST_FINGER_LEFT",
+    "ex-37": "MOPH_NECK_TILT_RIGHT",
+    "ex-38": "MOPH_NECK_TILT_LEFT",
+    "ex-39": "MOPH_SHOULDER_SHRUG_ROLL_BOTH",
+    "ex-40": "STROKE_BOBATH_ARM_RAISE_BOTH",
 }
 
 
-def resolve_exercise_rule(identifier: str) -> ClinicalExerciseRule:
-    """Resolve exercise by canonical ID/code ('STROKE_SH_FLEX_R'), frontend alias, or legacy ID."""
+def parse_exercise_identifier(
+    identifier: str,
+    side_override: Optional[str] = None,
+) -> Tuple[str, Optional[str]]:
+    """Extract canonical base exercise ID and side ('left' | 'right' | 'both') from any code/alias."""
     norm = (identifier or "").strip()
-    if norm in EXERCISE_BY_ID:
-        return EXERCISE_BY_ID[norm]
-    if norm.upper() in EXERCISE_BY_CODE:
-        return EXERCISE_BY_CODE[norm.upper()]
-    alias_id = EXERCISE_ALIASES.get(norm.lower())
-    if alias_id and alias_id in EXERCISE_BY_ID:
-        return EXERCISE_BY_ID[alias_id]
-    return EXERCISE_BY_ID["STROKE_SH_ABD_R"]
+    mapped = EXERCISE_ALIASES.get(norm.lower(), norm)
+    upper = mapped.upper()
+    parsed_side: Optional[str] = None
+
+    if upper == "MOPH_NECK_TURN_BILATERAL":
+        base = "MOPH_NECK_TURN"
+        parsed_side = "both"
+    elif upper.endswith("_LEFT"):
+        base = upper[:-5]
+        parsed_side = "left"
+    elif upper.endswith("_RIGHT"):
+        base = upper[:-6]
+        parsed_side = "right"
+    elif upper.endswith("_BOTH"):
+        base = upper[:-5]
+        parsed_side = "both"
+    elif upper.endswith("_L") and len(upper) > 2:
+        base = upper[:-2]
+        parsed_side = "left"
+    elif upper.endswith("_R") and len(upper) > 2:
+        base = upper[:-2]
+        parsed_side = "right"
+    else:
+        base = upper
+
+    if side_override:
+        so = side_override.strip().lower()
+        if so in ("left", "l"):
+            parsed_side = "left"
+        elif so in ("right", "r"):
+            parsed_side = "right"
+        elif so in ("both", "b", "bilateral"):
+            parsed_side = "both"
+
+    return base, parsed_side
+
+
+def resolve_exercise_rule(
+    identifier: str,
+    side_override: Optional[str] = None,
+) -> ClinicalExerciseRule:
+    """Resolve unified master exercise by ID/code, effective code ('STROKE_SH_FLEX_LEFT'), or legacy alias."""
+    base_code, parsed_side = parse_exercise_identifier(identifier, side_override=side_override)
+    base_rule = (
+        EXERCISE_BY_ID.get(base_code)
+        or EXERCISE_BY_CODE.get(base_code)
+        or EXERCISE_BY_ID["STROKE_SH_ABD"]
+    )
+    resolved_side = parsed_side or base_rule.side
+    if resolved_side == base_rule.side:
+        return base_rule
+    if base_rule.target_joint == "spine":
+        resolved_joint = "spine"
+    elif resolved_side == "left":
+        resolved_joint = "left_shoulder"
+    else:
+        resolved_joint = "right_shoulder"
+    return replace(base_rule, side=resolved_side, target_joint=resolved_joint)
 
 
 def list_all_exercises(include_stroke_moph: bool = True) -> List[Dict[str, object]]:
-    """Return serializable metadata for all 26 standardized Stroke ADL & MOPH upper-body exercises."""
-    source = ALL_26_EXERCISES
+    """Return serializable metadata for all 15 unified Stroke ADL & MOPH upper-body master exercises."""
+    source = ALL_15_EXERCISES
     return [
         {
             "id": r.id,
