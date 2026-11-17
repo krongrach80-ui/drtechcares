@@ -33,8 +33,8 @@ class OneEuroScalar {
   private prevRaw = 0;
 
   constructor(
-    private readonly minCutoff = 1.2,
-    private readonly beta = 0.015,
+    public readonly minCutoff = 1.15,
+    public readonly beta = 0.06,
     private readonly dCutoff = 1.0,
   ) {}
 
@@ -78,8 +78,8 @@ export class ClinicalOneEuroLandmarkFilter {
   private lastSeenMs: number | null = null;
 
   constructor(
-    private readonly minCutoff = 1.2,
-    private readonly beta = 0.015,
+    public readonly minCutoff = 1.15,
+    public readonly beta = 0.06,
     private readonly dCutoff = 1.0,
   ) {}
 
@@ -112,6 +112,34 @@ export class ClinicalOneEuroLandmarkFilter {
       z: lm.z !== undefined ? this.filters[i].z.filter(lm.z, timestampMs) : undefined,
       visibility: lm.visibility,
     }));
+  }
+}
+
+/**
+ * Dual-hand 21-point MediaPipe Hand One-Euro filter (minCutoff = 1.15, beta = 0.06)
+ * eliminating fine-motor tremor spikes while preserving crisp pinch/wrist tracking at 60fps.
+ */
+export class ClinicalHandOneEuroFilter {
+  private readonly sideFilters: Record<BodySide, ClinicalOneEuroLandmarkFilter>;
+
+  constructor(minCutoff = 1.15, beta = 0.06, dCutoff = 1.0) {
+    this.sideFilters = {
+      left: new ClinicalOneEuroLandmarkFilter(minCutoff, beta, dCutoff),
+      right: new ClinicalOneEuroLandmarkFilter(minCutoff, beta, dCutoff),
+    };
+  }
+
+  reset(side?: BodySide): void {
+    if (side) {
+      this.sideFilters[side].reset();
+      return;
+    }
+    this.sideFilters.left.reset();
+    this.sideFilters.right.reset();
+  }
+
+  filterHand(side: BodySide, handLandmarks: readonly PoseLandmark[], timestampMs: number): PoseLandmark[] {
+    return this.sideFilters[side].filterLandmarks(handLandmarks, timestampMs);
   }
 }
 

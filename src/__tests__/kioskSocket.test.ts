@@ -4,7 +4,14 @@ import {
   resolveTodayPatientSchedule,
   sanitizeAccidentalDefaultKneePrefix,
 } from '@drtechcares/api-client';
-import { POSE_INDEX } from '@drtechcares/pose-engine';
+import {
+  AutoBoneBaselineCalibrator,
+  ClinicalHandOneEuroFilter,
+  ClinicalOneEuroLandmarkFilter,
+  HAND21_INDEX,
+  POSE_INDEX,
+  solveStrokeClinicalJointBiomechanics,
+} from '@drtechcares/pose-engine';
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision';
 import {
   EXERCISE_OPTIONS,
@@ -17,6 +24,7 @@ import {
 import {
   DEFAULT_FORM_ASSESSMENT_RULES,
   LandmarkSmoother,
+  drawLivePoseOverlayOnCanvas,
   interpolatePoseLandmarks,
   isFormRuleActive,
   measureLiveJointAngleAndTilt,
@@ -1457,7 +1465,7 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     );
     expect(shrugRes.postureCompensated).toBe(true);
     expect(shrugRes.shoulderTiltDeg).toBeGreaterThan(13.5);
-    expect(shrugRes.postureBannerTh).toContain('ห้ามยกไหล่หรือเอียงไหล่ช่วย');
+    expect(shrugRes.postureBannerTh).toContain('อย่ายักไหล่ช่วยครับ ผ่อนคลายหัวไหล่ลง');
   });
 
   it('rescues close seated forward shoulder flexion when worldLandmarks compress depth (~34 deg) without false WRONG_PLANE', () => {
@@ -2021,6 +2029,246 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(computePostureCycleState('auto', 1400, 3).stage).toBe('move');
     expect(computePostureCycleState('auto', 2800, 3).stage).toBe('hold');
     expect(computePostureCycleState('auto', 2800, 3).progress).toBe(1);
+  });
+
+  it('verifies One-Euro (1.15/0.06), AutoBoneBaseline, ascending elbow, 21-pt hand exercises, neck eye-tilt, and compensation gates', () => {
+    // 1. One-Euro filter defaults (1.15 / 0.06) smooth body & 21-pt hand coordinates
+    const bodyFilter = new ClinicalOneEuroLandmarkFilter();
+    const handFilter = new ClinicalHandOneEuroFilter();
+    expect(bodyFilter.minCutoff).toBeCloseTo(1.15, 2);
+    expect(bodyFilter.beta).toBeCloseTo(0.06, 2);
+    const rawHand21 = Array.from({ length: 21 }, (_, idx) => ({
+      x: 0.35 + (idx % 5) * 0.02,
+      y: 0.50 - Math.floor(idx / 4) * 0.03,
+      z: 0,
+      visibility: 0.98,
+    }));
+    const hand1 = handFilter.filterHand('right', rawHand21, 100);
+    const hand2 = handFilter.filterHand(
+      'right',
+      rawHand21.map((p, i) => (i === HAND21_INDEX.INDEX_TIP ? { ...p, y: p.y - 0.04 } : p)),
+      116,
+    );
+    expect(hand1).toHaveLength(21);
+    expect(hand2[HAND21_INDEX.INDEX_TIP].y).toBeGreaterThan(rawHand21[HAND21_INDEX.INDEX_TIP].y - 0.04);
+
+    // 2. AutoBoneBaselineCalibrator maintains anatomical upperArmLen >= 0.82 * shoulderWidth
+    const calibrator = new AutoBoneBaselineCalibrator();
+    const neutral = createNeutralLandmarks();
+    const baseSnap = calibrator.update(neutral);
+    expect(baseSnap.upperArmLen).toBeGreaterThanOrEqual(baseSnap.shoulderWidth * 0.82 - 1e-6);
+
+    // 3. STROKE_ELB_FLEX_EXT_R ascends from ~5 deg (rest) to > 105 deg (curled)
+    const elbowMeta = { exercise_id: 'STROKE_ELB_FLEX_EXT_R', name_th: 'งอ-เหยียดข้อศอกขวา' };
+    const elbowRest = measureLiveJointAngleAndTilt(neutral, 'right_shoulder', 'any', undefined, elbowMeta, {
+      baseline: baseSnap,
+      targetRomDeg: 110,
+    });
+    expect(elbowRest.romDeg!).toBeLessThan(20);
+    const elbowFlexed = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.37, y: 0.60, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.38, y: 0.43, z: -0.06, visibility: 0.98 },
+    });
+    const elbowPeak = measureLiveJointAngleAndTilt(elbowFlexed, 'right_shoulder', 'any', undefined, elbowMeta, {
+      baseline: baseSnap,
+      targetRomDeg: 110,
+    });
+    expect(elbowPeak.romDeg!).toBeGreaterThan(100);
+
+    // 4. STROKE_SH_ROT_R measures horizontal forearm external rotation (0..70 deg)
+    const rotMeta = { exercise_id: 'STROKE_SH_ROT_R', name_th: 'หมุนหัวไหล่ขวาออกด้านนอก' };
+    const rotPose = createNeutralLandmarks({
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.38, y: 0.60, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.21, y: 0.60, z: -0.02, visibility: 0.98 },
+    });
+    const rotRes = measureLiveJointAngleAndTilt(rotPose, 'right_shoulder', 'rotation', undefined, rotMeta, {
+      baseline: baseSnap,
+      targetRomDeg: 55,
+    });
+    expect(rotRes.romDeg!).toBeGreaterThanOrEqual(45);
+    expect(rotRes.overlayHint).not.toBeNull();
+
+    // 5. 21-pt HandLandmarker: WRIST_FINGER, FOREARM_TURN, THUMB_PINCH
+    const openHand21 = Array.from({ length: 21 }, () => ({ x: 0.38, y: 0.50, z: 0, visibility: 0.99 }));
+    openHand21[HAND21_INDEX.WRIST] = { x: 0.38, y: 0.56, z: 0, visibility: 0.99 };
+    openHand21[HAND21_INDEX.MIDDLE_MCP] = { x: 0.38, y: 0.48, z: 0, visibility: 0.99 };
+    openHand21[HAND21_INDEX.THUMB_CMC] = { x: 0.42, y: 0.52, z: 0, visibility: 0.99 };
+    openHand21[HAND21_INDEX.INDEX_MCP] = { x: 0.40, y: 0.48, z: 0, visibility: 0.99 };
+    openHand21[HAND21_INDEX.PINKY_MCP] = { x: 0.34, y: 0.48, z: 0, visibility: 0.99 };
+    openHand21[HAND21_INDEX.THUMB_TIP] = { x: 0.46, y: 0.44, z: 0, visibility: 0.99 };
+    openHand21[HAND21_INDEX.INDEX_TIP] = { x: 0.41, y: 0.34, z: 0, visibility: 0.99 };
+    openHand21[HAND21_INDEX.MIDDLE_TIP] = { x: 0.38, y: 0.32, z: 0, visibility: 0.99 };
+    openHand21[HAND21_INDEX.RING_TIP] = { x: 0.35, y: 0.34, z: 0, visibility: 0.99 };
+    openHand21[HAND21_INDEX.PINKY_TIP] = { x: 0.31, y: 0.37, z: 0, visibility: 0.99 };
+
+    const wristOpenRes = solveStrokeClinicalJointBiomechanics({
+      landmarks: neutral,
+      handLandmarksBySide: { right: openHand21 },
+      targetJoint: 'right_shoulder',
+      expectedPlane: 'wrist_finger',
+      jointMode: 'wrist_finger',
+      baseline: baseSnap,
+      targetRomDeg: 55,
+    });
+    expect(wristOpenRes.romDeg!).toBeGreaterThanOrEqual(55);
+
+    const turnRes = solveStrokeClinicalJointBiomechanics({
+      landmarks: neutral,
+      handLandmarksBySide: { right: openHand21 },
+      targetJoint: 'right_shoulder',
+      expectedPlane: 'forearm_turn',
+      jointMode: 'forearm_turn',
+      baseline: baseSnap,
+      targetRomDeg: 65,
+    });
+    expect(turnRes.romDeg!).toBeGreaterThanOrEqual(65);
+
+    const pinchHand21 = openHand21.map((p) => ({ ...p }));
+    pinchHand21[HAND21_INDEX.THUMB_TIP] = { x: 0.405, y: 0.345, z: 0, visibility: 0.99 };
+    const pinchRes = solveStrokeClinicalJointBiomechanics({
+      landmarks: neutral,
+      handLandmarksBySide: { right: pinchHand21 },
+      targetJoint: 'right_shoulder',
+      expectedPlane: 'thumb_pinch',
+      jointMode: 'thumb_pinch',
+      baseline: baseSnap,
+      targetRomDeg: 50,
+    });
+    expect(pinchRes.romDeg!).toBeGreaterThanOrEqual(55);
+
+    // 6. MOPH_NECK_TILT using eye-line vs shoulder-line
+    const eyeTiltPose = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_EYE]: { x: 0.53, y: 0.27, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_EYE]: { x: 0.47, y: 0.24, z: 0, visibility: 0.98 },
+    });
+    const eyeNeckRes = solveStrokeClinicalJointBiomechanics({
+      landmarks: eyeTiltPose,
+      targetJoint: 'spine',
+      jointMode: 'neck',
+      baseline: baseSnap,
+      targetRomDeg: 20,
+    });
+    expect(eyeNeckRes.romDeg!).toBeGreaterThanOrEqual(22);
+
+    // 7. Compensation gates: SHOULDER_HIKE (>14% width), TRUNK_LEAN (>12 deg), NECK_DROP (>15 deg)
+    const trunkLeanPose = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.72, y: 0.40, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.48, y: 0.40, z: 0, visibility: 0.98 },
+    });
+    const trunkRes = solveStrokeClinicalJointBiomechanics({
+      landmarks: trunkLeanPose,
+      targetJoint: 'right_shoulder',
+      jointMode: 'default',
+      baseline: baseSnap,
+    });
+    expect(trunkRes.compensations).toContain('TRUNK_LEAN');
+    expect(trunkRes.postureBannerTh).toBe('⚠️ กรุณาตั้งลำตัวให้ตรง ไม่เอนตัวช่วยยกแขน');
+
+    const headDropPose = createNeutralLandmarks({
+      [POSE_INDEX.NOSE]: { x: 0.50, y: 0.36, z: -0.08, visibility: 0.98 },
+      [POSE_INDEX.LEFT_EYE]: { x: 0.53, y: 0.22, z: 0, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_EYE]: { x: 0.47, y: 0.22, z: 0, visibility: 0.98 },
+      [POSE_INDEX.LEFT_EAR]: { x: 0.56, y: 0.22, z: 0.02, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_EAR]: { x: 0.44, y: 0.22, z: 0.02, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.32, y: 0.36, z: -0.10, visibility: 0.98 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.46, y: 0.22, z: -0.05, visibility: 0.98 },
+    });
+    const neckDropRes = solveStrokeClinicalJointBiomechanics({
+      landmarks: headDropPose,
+      targetJoint: 'right_shoulder',
+      expectedPlane: 'hand_to_head',
+      jointMode: 'hand_to_head',
+      baseline: baseSnap,
+    });
+    expect(neckDropRes.compensations).toContain('NECK_DROP');
+    expect(neckDropRes.postureBannerTh).toBe('⚠️ มองตรงข้างหน้าครับ ให้ยกมือขึ้นหาศีรษะแทนการก้มคอ');
+  });
+
+  it('draws Stroke Target Zone Circle, 21-pt Hand skeleton, and Amber (#F59E0B) vs Emerald (#10B981) highlight on canvas', () => {
+    const strokeColors: string[] = [];
+    const arcRadii: number[] = [];
+    const mockCtx = {
+      save: () => {},
+      restore: () => {},
+      setTransform: () => {},
+      clearRect: () => {},
+      beginPath: () => {},
+      closePath: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      setLineDash: () => {},
+      roundRect: () => {},
+      arc: (_x: number, _y: number, r: number) => {
+        arcRadii.push(r);
+      },
+      stroke: () => {
+        strokeColors.push(String(mockCtx.strokeStyle));
+      },
+      fill: () => {},
+      fillText: () => {},
+      measureText: (t: string) => ({ width: t.length * 7 }),
+      strokeStyle: '#000000',
+      fillStyle: '#000000',
+      lineWidth: 1,
+      lineCap: 'round',
+      lineJoin: 'round',
+      shadowColor: 'transparent',
+      shadowBlur: 0,
+      globalAlpha: 1,
+      font: 'sans-serif',
+      textAlign: 'center',
+      textBaseline: 'middle',
+    };
+    const fakeCanvas = {
+      clientWidth: 640,
+      clientHeight: 480,
+      width: 640,
+      height: 480,
+      getContext: () => mockCtx,
+    } as unknown as HTMLCanvasElement;
+
+    const hand21 = Array.from({ length: 21 }, (_, idx) => ({
+      x: 0.35 + (idx % 5) * 0.015,
+      y: 0.45 - Math.floor(idx / 5) * 0.025,
+      z: 0,
+      visibility: 0.99,
+    }));
+
+    // 1. Clean form -> Emerald #10B981 + Target Zone arc (r=20/24) + 21 hand dots
+    drawLivePoseOverlayOnCanvas(fakeCanvas, [createNeutralLandmarks()], {
+      targetJoint: 'right_shoulder',
+      romDeg: 92,
+      targetRomDeg: 100,
+      holdRatio: 0.5,
+      trunkTiltDeg: 2,
+      isMultiPerson: false,
+      isImpostorOrEmergency: false,
+      postureBannerTh: null,
+      handLandmarks21: hand21,
+      overlayHint: {
+        pivotNorm: { x: 0.38, y: 0.40 },
+        targetNorm: { x: 0.25, y: 0.22 },
+        currentNorm: { x: 0.30, y: 0.26 },
+        inTargetZone: true,
+        labelTh: 'ยกมือถึงเป้าหมาย',
+      },
+    });
+    expect(strokeColors).toContain('#10B981');
+    expect(arcRadii).toContain(24);
+
+    // 2. Compensation form -> Amber #F59E0B
+    strokeColors.length = 0;
+    drawLivePoseOverlayOnCanvas(fakeCanvas, [createNeutralLandmarks()], {
+      targetJoint: 'right_shoulder',
+      romDeg: 92,
+      targetRomDeg: 100,
+      holdRatio: 0,
+      trunkTiltDeg: 15,
+      isMultiPerson: false,
+      isImpostorOrEmergency: false,
+      postureBannerTh: '⚠️ อย่ายักไหล่ช่วยครับ ผ่อนคลายหัวไหล่ลง',
+    });
+    expect(strokeColors).toContain('#F59E0B');
   });
 });
 

@@ -96,11 +96,11 @@ class EdgeVisionSettings(BaseModel):
     USE_GPU_IF_AVAILABLE: bool = True
 
     # One-Euro Filter parameters for 2D (pose_landmarks) & 3D (pose_world_landmarks) jitter removal
-    ONE_EURO_MIN_CUTOFF: float = 1.2
-    ONE_EURO_BETA: float = 0.08
+    ONE_EURO_MIN_CUTOFF: float = 1.15
+    ONE_EURO_BETA: float = 0.06
     ONE_EURO_D_CUTOFF: float = 1.0
-    ONE_EURO_2D_MIN_CUTOFF: float = 1.5
-    ONE_EURO_2D_BETA: float = 0.08
+    ONE_EURO_2D_MIN_CUTOFF: float = 1.15
+    ONE_EURO_2D_BETA: float = 0.06
 
     # 2-Second Standing & Anthropometric Calibration + Anti-Cheating thresholds
     CALIBRATION_DURATION_SEC: float = 2.0
@@ -108,7 +108,7 @@ class EdgeVisionSettings(BaseModel):
     CALIBRATION_MIN_VISIBILITY: float = 0.70
     CALIBRATION_MIN_TORSO_HEIGHT_RATIO: float = 0.16
     CALIBRATION_MAX_TORSO_HEIGHT_RATIO: float = 0.55
-    TRUNK_LEAN_MAX_DEG: float = 10.0
+    TRUNK_LEAN_MAX_DEG: float = 12.0
     SHOULDER_TILT_MAX_DEG: float = 12.0
     PELVIC_TILT_MAX_DEG: float = 10.0
     SHOULDER_HIKE_MAX_CM: float = 3.0

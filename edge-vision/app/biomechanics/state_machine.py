@@ -202,7 +202,7 @@ class ClinicalRehabFSM:
         )
 
     def _returned_to_rest(self, rom_deg: float) -> bool:
-        return self.rule.is_in_rest_zone(rom_deg)
+        return self.rule.is_in_rest_zone(rom_deg, target_override=self._target_rom_deg())
 
     def _update_active_movement_phase(self, rom_deg: float) -> MovementPhase:
         """Determine IDLE / READY / CONCENTRIC / ECCENTRIC phase during ACTIVE tracking."""

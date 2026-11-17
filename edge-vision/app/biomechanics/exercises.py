@@ -94,13 +94,14 @@ class ClinicalExerciseRule:
             return rom_deg <= thresh
         return rom_deg >= thresh
 
-    def is_in_rest_zone(self, rom_deg: float) -> bool:
-        """Hysteresis-stabilized return-to-rest boundary required before counting next rep."""
+    def is_in_rest_zone(self, rom_deg: float, target_override: Optional[float] = None) -> bool:
+        """Hysteresis-stabilized return-to-rest boundary (< 45% of target ROM) required before next rep."""
         rest = float(self.rest_angle_deg)
         margin = float(self.rest_hysteresis_margin_deg)
         if self.is_descending_target:
             return rom_deg >= rest - margin
-        return rom_deg <= rest + margin
+        target = float(target_override) if target_override is not None else float(self.min_angle_deg)
+        return rom_deg < target * 0.45
 
     def required_landmark_indices(self) -> Tuple[int, ...]:
         """Return 133-topology body indices needed for reliable upper-body ROM and compensation tracking."""
@@ -462,16 +463,16 @@ ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
         pattern="elbow",
         metric_kind="elbow_flexion",
         target_joint="right_shoulder",
-        min_angle_deg=55.0,
-        max_angle_deg=165.0,
-        rest_angle_deg=145.0,
+        min_angle_deg=95.0,
+        max_angle_deg=145.0,
+        rest_angle_deg=25.0,
         default_hold_sec=2.0,
         default_sets=2,
         default_reps=8,
         anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
         hysteresis_enter_margin_deg=6.0,
         hysteresis_exit_margin_deg=14.0,
-        rest_hysteresis_margin_deg=25.0,
+        rest_hysteresis_margin_deg=14.0,
     ),
     ClinicalExerciseRule(
         id="STROKE_ELB_FLEX_EXT_L",
@@ -483,16 +484,16 @@ ALL_26_EXERCISES: List[ClinicalExerciseRule] = [
         pattern="elbow",
         metric_kind="elbow_flexion",
         target_joint="left_shoulder",
-        min_angle_deg=55.0,
-        max_angle_deg=165.0,
-        rest_angle_deg=145.0,
+        min_angle_deg=95.0,
+        max_angle_deg=145.0,
+        rest_angle_deg=25.0,
         default_hold_sec=2.0,
         default_sets=2,
         default_reps=8,
         anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
         hysteresis_enter_margin_deg=6.0,
         hysteresis_exit_margin_deg=14.0,
-        rest_hysteresis_margin_deg=25.0,
+        rest_hysteresis_margin_deg=14.0,
     ),
     ClinicalExerciseRule(
         id="STROKE_HAND_TO_HEAD_R",

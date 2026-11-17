@@ -33,6 +33,8 @@ class BoneLengths3D(BaseModel):
     baseline_hip_y: float = 0.54
     baseline_shoulder_tilt_deg: float = 0.0
     baseline_pelvic_tilt_deg: float = 0.0
+    resting_shoulder_delta_y: float = 0.0
+    resting_spine_angle_deg: float = 0.0
     arm_to_torso_ratio: float = 0.0
     leg_to_torso_ratio: float = 0.0
     estimated_distance_m: float = 2.0

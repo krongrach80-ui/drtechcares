@@ -121,8 +121,8 @@ class OneEuroFilter:
 
     def __init__(
         self,
-        min_cutoff: float = 1.2,
-        beta: float = 0.08,
+        min_cutoff: float = 1.15,
+        beta: float = 0.06,
         d_cutoff: float = 1.0,
         min_visibility: float = 0.0,
     ) -> None:
@@ -249,15 +249,15 @@ def filter_landmarks_by_visibility(
 class OneEuroFilter3D(OneEuroFilter):
     """
     Vectorized One-Euro Filter across all 133 (X, Y, Z) coordinates:
-    - Eliminates micro-jitter while holding isometric targets (min_cutoff = 1.2 Hz).
-    - Adapts cutoff proportionally to 3D velocity (beta = 0.08) for near-zero fast-motion lag.
+    - Eliminates micro-jitter while holding isometric targets (min_cutoff = 1.15 Hz).
+    - Adapts cutoff proportionally to 3D velocity (beta = 0.06) for near-zero fast-motion lag.
     """
 
     def __init__(
         self,
         num_keypoints: int = TOTAL_WHOLEBODY_KEYPOINTS,
-        min_cutoff: float = 1.2,
-        beta: float = 0.08,
+        min_cutoff: float = 1.15,
+        beta: float = 0.06,
         d_cutoff: float = 1.0,
         min_visibility: float = 0.0,
     ) -> None:

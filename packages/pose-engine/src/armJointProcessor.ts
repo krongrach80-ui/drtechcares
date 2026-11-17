@@ -7,6 +7,8 @@ export const MIN_STRAIGHT_ELBOW_DEG = 135;
 
 export const POSE_INDEX = {
   NOSE: 0,
+  LEFT_EYE: 2,
+  RIGHT_EYE: 5,
   LEFT_EAR: 7,
   RIGHT_EAR: 8,
   LEFT_SHOULDER: 11,

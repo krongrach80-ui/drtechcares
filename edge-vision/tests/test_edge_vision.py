@@ -1133,6 +1133,56 @@ class TestClinicalEdgeVision(unittest.TestCase):
         clean_match = mgr.match_1_to_n(base_a, yaw_deg=0.0, pitch_deg=0.0, excluded_patient_ids=["p-edge-b"])
         self.assertEqual(clean_match.id, "p-edge-a")
 
+    def test_20_stroke_biomechanics_upgrade_baseline_hand_and_hysteresis(self) -> None:
+        """Verify 1.15/0.06 One-Euro config, auto bone baseline, ascending elbow, NECK_DROP, SHOULDER_HIKE >14%, and <45% hysteresis."""
+        # 1. Config defaults match Stroke biomechanical specification
+        self.assertAlmostEqual(self.settings.ONE_EURO_MIN_CUTOFF, 1.15, places=2)
+        self.assertAlmostEqual(self.settings.ONE_EURO_BETA, 0.06, places=2)
+        self.assertAlmostEqual(self.settings.ONE_EURO_2D_MIN_CUTOFF, 1.15, places=2)
+        self.assertAlmostEqual(self.settings.ONE_EURO_2D_BETA, 0.06, places=2)
+        self.assertAlmostEqual(self.settings.TRUNK_LEAN_MAX_DEG, 12.0, places=2)
+
+        # 2. Auto bone baseline captures anatomical minimums and resting pose deltas
+        cal = StandingCalibrator(duration_sec=0.2)
+        stand_pts, scores = generate_synthetic_133_pose(0.0, is_calibrating=True)
+        bones = cal.force_calibrate_from_pose(stand_pts)
+        self.assertGreaterEqual(bones.upper_arm_len, bones.shoulder_width * 0.82 - 1e-5)
+        self.assertAlmostEqual(bones.resting_shoulder_delta_y, float(stand_pts[5, 1] - stand_pts[6, 1]), places=4)
+
+        # 3. Ascending STROKE_ELB_FLEX_EXT_R (0 -> 135 deg) & strict <45% targetRom rest hysteresis
+        elb_rule = resolve_exercise_rule("STROKE_ELB_FLEX_EXT_R")
+        self.assertFalse(elb_rule.is_descending_target)
+        self.assertFalse(elb_rule.is_in_rest_zone(50.0, target_override=100.0))
+        self.assertTrue(elb_rule.is_in_rest_zone(42.0, target_override=100.0))
+
+        solver = Biomechanics3DSolver(self.settings)
+        elb_rest_res, _ = solver.analyze(stand_pts, elb_rule, cal, timestamp_sec=1.0, scores=scores)
+        self.assertLess(elb_rest_res.current_rom_deg, 25.0)
+
+        elb_flex_pts = stand_pts.copy()
+        elb_flex_pts[8] = elb_flex_pts[6] + np.array([0.0, 0.16, -0.02])
+        elb_flex_pts[10] = elb_flex_pts[6] + np.array([0.0, 0.03, -0.06])
+        elb_flex_res, _ = solver.analyze(elb_flex_pts, elb_rule, cal, timestamp_sec=2.2, scores=scores)
+        self.assertGreater(elb_flex_res.current_rom_deg, 95.0)
+
+        # 4. Hand-to-head detects NECK_DROP > 15 deg with exact Thai correction prompt
+        solver.reset()
+        hth_rule = resolve_exercise_rule("STROKE_HAND_TO_HEAD_R")
+        drop_pts = stand_pts.copy()
+        drop_pts[0] = drop_pts[3] * 0.5 + drop_pts[4] * 0.5 + np.array([0.0, 0.09, -0.05])
+        drop_pts[10] = drop_pts[0] + np.array([-0.03, -0.02, -0.04])
+        drop_res, _ = solver.analyze(drop_pts, hth_rule, cal, timestamp_sec=3.0, scores=scores)
+        self.assertIn("NECK_DROP", drop_res.compensation_detected)
+        self.assertIn("มองตรงข้างหน้าครับ", " ".join(drop_res.compensation_warnings))
+
+        # 5. MOPH Shoulder Shrug Roll never triggers SHOULDER_HIKE anti-cheat banner
+        shrug_rule = resolve_exercise_rule("MOPH_SHOULDER_SHRUG_ROLL")
+        shrug_pts = stand_pts.copy()
+        shrug_pts[5, 1] -= 0.04
+        shrug_pts[6, 1] -= 0.04
+        shrug_res, _ = solver.analyze(shrug_pts, shrug_rule, cal, timestamp_sec=4.0, scores=scores)
+        self.assertNotIn("SHOULDER_HIKE", shrug_res.compensation_detected)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

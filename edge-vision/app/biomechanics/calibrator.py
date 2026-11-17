@@ -55,6 +55,8 @@ class StandingCalibrator:
         self.baseline_right_heel_y: float = 0.935
         self.baseline_shoulder_tilt_deg: float = 0.0
         self.baseline_pelvic_tilt_deg: float = 0.0
+        self.baseline_shoulder_delta_y: float = 0.0
+        self.baseline_spine_angle_deg: float = 0.0
         self.estimated_distance_m: float = 2.0
 
     @property
@@ -235,9 +237,11 @@ class StandingCalibrator:
         self.baseline_pelvic_tilt_deg = (
             self._coronal_tilt_deg(med_world[11], med_world[12]) if has_anatomical_torso else 0.0
         )
+        self.baseline_shoulder_delta_y = float(med_world[5, 1] - med_world[6, 1])
+        self.baseline_spine_angle_deg = float(self._spine_tilt_from_vertical(med_world))
 
-        avg_upper = 0.5 * (l_upper + r_upper)
-        avg_fore = 0.5 * (l_fore + r_fore)
+        avg_upper = max(0.5 * (l_upper + r_upper), shoulder_width * 0.82)
+        avg_fore = max(0.5 * (l_fore + r_fore), shoulder_width * 0.72)
         avg_thigh = 0.5 * (l_thigh + r_thigh)
         avg_shin = 0.5 * (l_shin + r_shin)
 
@@ -259,6 +263,8 @@ class StandingCalibrator:
             baseline_hip_y=round(float(mid_hip[1]), 5),
             baseline_shoulder_tilt_deg=round(self.baseline_shoulder_tilt_deg, 1),
             baseline_pelvic_tilt_deg=round(self.baseline_pelvic_tilt_deg, 1),
+            resting_shoulder_delta_y=round(self.baseline_shoulder_delta_y, 5),
+            resting_spine_angle_deg=round(self.baseline_spine_angle_deg, 2),
             arm_to_torso_ratio=round((avg_upper + avg_fore) / torso_height, 4),
             leg_to_torso_ratio=round((avg_thigh + avg_shin) / torso_height, 4),
             estimated_distance_m=self.estimated_distance_m,
