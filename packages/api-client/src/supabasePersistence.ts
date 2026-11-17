@@ -97,7 +97,7 @@ export function newRecordId(useUuid: boolean, prefix: string): string {
   return `${prefix}-${Date.now()}-${hex}`;
 }
 
-export const SUPABASE_CIRCUIT_COOLDOWN_MS = 5 * 60 * 1000;
+export const SUPABASE_CIRCUIT_COOLDOWN_MS = 20 * 1000;
 export const MAX_DB_IMAGE_STRING_LENGTH = 4000;
 
 interface CircuitRecord {
@@ -198,11 +198,73 @@ export function getSupabaseCircuitState(
   };
 }
 
-export function resetSupabaseCircuitForTests(client?: object | null): void {
+export function clearSupabaseCircuit(client?: object | null): void {
   if (client && typeof client === 'object') {
     supabaseCircuitByClient.delete(client);
   }
   globalSupabaseCircuit = { downUntil: 0, reason: null };
+}
+
+export function resetSupabaseCircuitForTests(client?: object | null): void {
+  clearSupabaseCircuit(client);
+}
+
+/**
+ * Resets the circuit breaker (`downUntil = 0`) and executes a fast, bounded
+ * `SELECT id FROM patients LIMIT 1` probe (up to `timeoutMs`, default 1500ms)
+ * so health checks recover immediately after a Supabase restart.
+ */
+export async function probeSupabaseHealth(
+  supabase: SupabaseClient | null,
+  timeoutMs = 1500,
+): Promise<{ ok: boolean; latencyMs: number; reason?: string }> {
+  if (!supabase) {
+    return { ok: false, latencyMs: 0, reason: 'no_supabase_client' };
+  }
+  clearSupabaseCircuit(supabase);
+  const startedAt = Date.now();
+  const boundedMs = Math.max(100, Math.min(timeoutMs, 1500));
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const outcome = await Promise.race([
+      Promise.resolve(supabase.from('patients').select('id').limit(1)).then(
+        (res) => ({ timedOut: false as const, res }),
+        (err) => ({ timedOut: false as const, err }),
+      ),
+      new Promise<{ timedOut: true }>((resolve) => {
+        timerId = setTimeout(() => resolve({ timedOut: true }), boundedMs);
+      }),
+    ]);
+    const latencyMs = Date.now() - startedAt;
+    if (outcome.timedOut) {
+      markSupabaseDown('health_ping_timeout', supabase);
+      return { ok: false, latencyMs, reason: 'health_ping_timeout' };
+    }
+    if ('err' in outcome && outcome.err) {
+      const msg = outcome.err instanceof Error ? outcome.err.message : String(outcome.err);
+      if (!isSupabaseCircuitOpen(supabase)) {
+        markSupabaseDown(`health_ping_error:${msg}`, supabase);
+      }
+      return { ok: false, latencyMs, reason: msg };
+    }
+    const rawRes = 'res' in outcome ? (outcome.res as { error?: { message?: string } | null } | null) : null;
+    if (rawRes && typeof rawRes === 'object' && rawRes.error) {
+      const msg = rawRes.error.message || JSON.stringify(rawRes.error);
+      if (!isSupabaseCircuitOpen(supabase)) {
+        markSupabaseDown(`health_ping_postgrest:${msg}`, supabase);
+      }
+      return { ok: false, latencyMs, reason: msg };
+    }
+    return { ok: true, latencyMs };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!isSupabaseCircuitOpen(supabase)) {
+      markSupabaseDown(`health_ping_exception:${msg}`, supabase);
+    }
+    return { ok: false, latencyMs: Date.now() - startedAt, reason: msg };
+  } finally {
+    if (timerId !== undefined) clearTimeout(timerId);
+  }
 }
 
 /** Zero-Base64 DB sanitizer: strips any data:image/* string > maxLen (default 4000 chars) before Postgres writes. */
@@ -1552,7 +1614,7 @@ export async function persistToSupabase(
 
 /**
  * Bounded best-effort persistence wrapper for write endpoints (`POST`/`PUT`/`PATCH`):
- * awaits Supabase writes up to `timeoutMs` inside try/catch, trips 5-min circuit breaker on 5xx/544/timeout,
+ * awaits Supabase writes up to `timeoutMs` inside try/catch, trips 20s circuit breaker on 5xx/544/timeout,
  * and NEVER throws HTTP 500 back to the client.
  */
 export async function persistWithTimeoutBestEffort(
@@ -1579,7 +1641,7 @@ export async function persistWithTimeoutBestEffort(
     ]);
     if (outcome.timedOut) {
       markSupabaseDown(`${label}_timeout`, supabase);
-      console.warn(`[cloudRouter] ${label} timed out after ${boundedMs}ms (circuit opened 5m; kept in-memory state)`);
+      console.warn(`[cloudRouter] ${label} timed out after ${boundedMs}ms (circuit opened 20s; kept in-memory state)`);
       return { persisted: false, errorMessage: 'timeout' };
     }
     if ('err' in outcome && outcome.err) {

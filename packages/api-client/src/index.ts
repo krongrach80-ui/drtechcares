@@ -652,23 +652,27 @@ export class DrTechCaresApiClient {
     return this.supabase;
   }
 
-  async checkHealth(): Promise<{
+  async checkHealth(options?: { refresh?: boolean }): Promise<{
     ok: boolean;
     persistentDb: boolean;
     supabaseConnected: boolean;
+    supabaseCircuitOpen?: boolean;
     latencyMs: number;
   }> {
     const start = Date.now();
     try {
+      const path = options?.refresh ? '/api/health?refresh=1' : '/api/health';
       const res = await this.request<{
         ok: boolean;
         persistentDb?: boolean;
         supabaseConnected?: boolean;
-      }>('/api/health');
+        supabaseCircuitOpen?: boolean;
+      }>(path);
       return {
         ok: Boolean(res.ok),
         persistentDb: Boolean(res.persistentDb),
         supabaseConnected: res.supabaseConnected ?? Boolean(res.persistentDb),
+        supabaseCircuitOpen: Boolean(res.supabaseCircuitOpen),
         latencyMs: Date.now() - start,
       };
     } catch {
@@ -676,6 +680,7 @@ export class DrTechCaresApiClient {
         ok: false,
         persistentDb: false,
         supabaseConnected: false,
+        supabaseCircuitOpen: false,
         latencyMs: Date.now() - start,
       };
     }

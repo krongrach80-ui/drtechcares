@@ -2736,7 +2736,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     }
   });
 
-  it('enrolls patient dddd (HN-37751) during Supabase HTTP 544 outage, trips 5-min circuit breaker, strips oversized Base64, and logs dddd in on Kiosk scan', async () => {
+  it('enrolls patient dddd (HN-37751) during Supabase HTTP 544 outage, trips 20s circuit breaker, strips oversized Base64, recovers immediately on /api/health, and logs dddd in on Kiosk scan', async () => {
     const oversizedBase64 = `data:image/jpeg;base64,${'A'.repeat(12000)}`;
     const sanitized = stripOversizedBase64ForDb({
       face_image_url: oversizedBase64,
@@ -2826,16 +2826,19 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       expect(enrollJson.patient.hn).toBe('HN-37751');
       expect(enrollJson.patient.fullName).toBe('dddd');
 
-      // Verify /api/health reports circuit breaker OPEN
+      // Verify /api/health resets downUntil=0, tests SELECT id FROM patients LIMIT 1, and stays in 20s circuit breaker while HTTP 544 persists
       const healthRes = await callRouter(outageRouter, '/api/health');
       const healthJson = (await healthRes.json()) as {
         ok: boolean;
+        supabaseConnected?: boolean;
         supabaseCircuitOpen?: boolean;
         supabaseCircuitRemainingSec?: number;
       };
       expect(healthJson.ok).toBe(true);
+      expect(healthJson.supabaseConnected).toBe(false);
       expect(healthJson.supabaseCircuitOpen).toBe(true);
-      expect((healthJson.supabaseCircuitRemainingSec ?? 0)).toBeGreaterThan(200);
+      expect((healthJson.supabaseCircuitRemainingSec ?? 0)).toBeGreaterThan(0);
+      expect((healthJson.supabaseCircuitRemainingSec ?? 0)).toBeLessThanOrEqual(20);
 
       const callsAfterTrip = outboundSupabaseCalls;
 
@@ -2915,6 +2918,51 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
 
       // Confirm circuit breaker prevented any additional HTTP requests to Supabase while open!
       expect(outboundSupabaseCalls).toBe(callsAfterTrip);
+
+      // Once Supabase recovers (HTTP 200 on SELECT id FROM patients LIMIT 1), /api/health resets supabaseDownUntil = 0 and immediately reports supabaseConnected: true
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })) as typeof fetch;
+
+      const recoveredHealthRes = await callRouter(outageRouter, '/api/health');
+      expect(recoveredHealthRes.status).toBe(200);
+      const recoveredHealth = (await recoveredHealthRes.json()) as {
+        ok: boolean;
+        supabaseConnected: boolean;
+        supabaseCircuitOpen: boolean;
+        supabaseCircuitRemainingSec: number;
+      };
+      expect(recoveredHealth.ok).toBe(true);
+      expect(recoveredHealth.supabaseConnected).toBe(true);
+      expect(recoveredHealth.supabaseCircuitOpen).toBe(false);
+      expect(recoveredHealth.supabaseCircuitRemainingSec).toBe(0);
+
+      // Re-trip on simulated 503, then verify ?refresh=1 on regular API requests clears the open circuit immediately when Supabase returns 200
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ message: 'restarting' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        })) as typeof fetch;
+      const reTripHealth = (await (await callRouter(outageRouter, '/api/health')).json()) as {
+        supabaseCircuitOpen: boolean;
+      };
+      expect(reTripHealth.supabaseCircuitOpen).toBe(true);
+
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })) as typeof fetch;
+      const refreshPatientsRes = await callRouter(outageRouter, '/api/patients?refresh=1', { token });
+      expect(refreshPatientsRes.status).toBe(200);
+      const afterRefreshHealth = (await (await callRouter(outageRouter, '/api/health')).json()) as {
+        supabaseConnected: boolean;
+        supabaseCircuitOpen: boolean;
+      };
+      expect(afterRefreshHealth.supabaseConnected).toBe(true);
+      expect(afterRefreshHealth.supabaseCircuitOpen).toBe(false);
     } finally {
       globalThis.fetch = origFetch;
       resetSupabaseCircuitForTests();

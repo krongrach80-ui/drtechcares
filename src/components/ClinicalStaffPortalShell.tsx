@@ -338,8 +338,8 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       adminRole: 'ผู้อำนวยการ (Admin)',
       ptRole: 'นักกายภาพบำบัด (PT)',
       collapseTitle: 'ย่อ/ขยายเมนู',
-      dbCloud: 'ฐานข้อมูล: Cloud',
-      dbNormal: 'ปกติ',
+      dbCloud: 'ฐานข้อมูล (Cloud)',
+      dbNormal: 'ออนไลน์',
       dbOffline: 'ออฟไลน์',
     },
     actions: {
@@ -349,7 +349,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       returnKiosk: '← หน้าตู้ Kiosk',
       logout: 'ออกจากระบบ',
       cardGame: 'การ์ดกายภาพ (10 ข้อ)',
-      cloudConnected: 'Supabase Cloud',
+      cloudConnected: '🟢 Online (เชื่อมต่อระบบแล้ว)',
       cloudOffline: 'Offline (ลองใหม่)',
     },
     staff: {
@@ -565,7 +565,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       returnKiosk: '← Back to Kiosk',
       logout: 'Sign Out',
       cardGame: 'Rehab Cards (10 Qs)',
-      cloudConnected: 'Supabase Cloud',
+      cloudConnected: '🟢 Online (Connected)',
       cloudOffline: 'Offline (Retry)',
     },
     staff: {
@@ -781,7 +781,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       returnKiosk: '← 返回终端画面',
       logout: '退出登录',
       cardGame: '康复认知卡 (10题)',
-      cloudConnected: 'Supabase 云端在线',
+      cloudConnected: '🟢 Online (已连接云端)',
       cloudOffline: '离线 (点击重试)',
     },
     staff: {
@@ -1303,9 +1303,14 @@ export function ClinicalStaffPortalShell({
   );
   const profileDirtyRef = useRef(false);
 
-  // Supabase connection health ping state
-  const [cloudHealth, setCloudHealth] = useState<{ online: boolean; latencyMs?: number }>({
-    online: true,
+  // Cloud Worker HTTP API + DB health state (derived purely from HTTP 200 responses & navigator.onLine, never WebSocket Realtime)
+  const [cloudHealth, setCloudHealth] = useState<{
+    online: boolean;
+    dbConnected: boolean;
+    latencyMs?: number;
+  }>({
+    online: typeof navigator === 'undefined' ? true : navigator.onLine !== false,
+    dbConnected: typeof navigator === 'undefined' ? true : navigator.onLine !== false,
   });
 
   // Core data state
@@ -1479,28 +1484,43 @@ export function ClinicalStaffPortalShell({
     }, 4500);
   }, []);
 
-  const pingCloudHealth = useCallback(async () => {
-    const h = await apiClient.checkHealth();
-    setCloudHealth({ online: h.ok && h.supabaseConnected, latencyMs: h.latencyMs });
-  }, [apiClient]);
+  const pingCloudHealth = useCallback(
+    async (forceRefresh = false) => {
+      const browserOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+      const h = await apiClient.checkHealth({ refresh: forceRefresh });
+      const workerOnline = browserOnline && h.ok;
+      const dbConnected = workerOnline && h.supabaseConnected;
+      setCloudHealth({ online: workerOnline, dbConnected, latencyMs: h.latencyMs });
+    },
+    [apiClient],
+  );
 
   const refreshAll = useCallback(async () => {
     setLoading(true);
     try {
       let listUsersError: unknown = null;
+      let patientsHttpOk = false;
       const [uRes, pRes, exRes, mpRes, sessRes, callsRes, settingsRes, secRes, healthRes] = await Promise.all([
         apiClient.listUsers().catch((err) => {
           listUsersError = err;
           return null;
         }),
-        apiClient.listPatients().catch(() => []),
+        apiClient
+          .listPatients()
+          .then((rows) => {
+            patientsHttpOk = true;
+            return rows;
+          })
+          .catch(() => []),
         apiClient.listExercises().catch(() => []),
         apiClient.listModpacks().catch(() => []),
         apiClient.listRehabSessions().catch(() => []),
         apiClient.listStaffCalls().catch(() => []),
         apiClient.getSystemSettings().catch(() => null),
         isAdmin ? apiClient.listSecurityAudit().catch(() => null) : Promise.resolve(null),
-        apiClient.checkHealth().catch(() => ({ ok: false, supabaseConnected: false, latencyMs: 0 })),
+        apiClient
+          .checkHealth({ refresh: true })
+          .catch(() => ({ ok: false, persistentDb: false, supabaseConnected: false, latencyMs: 0 })),
       ]);
 
       if (listUsersError) {
@@ -1548,7 +1568,11 @@ export function ClinicalStaffPortalShell({
       setModpacks(mpRes);
       setSessions(sortNewestFirst(sessRes));
       setStaffCalls(sortNewestFirst(callsRes));
-      setCloudHealth({ online: healthRes.ok && healthRes.supabaseConnected, latencyMs: healthRes.latencyMs });
+      const browserOnline = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+      const isCloudOnline = browserOnline && (healthRes.ok || uRes !== null || patientsHttpOk);
+      const dbConnected =
+        browserOnline && (healthRes.ok ? healthRes.supabaseConnected : uRes !== null || patientsHttpOk);
+      setCloudHealth({ online: isCloudOnline, dbConnected, latencyMs: healthRes.latencyMs });
 
       const nextOpenCount = callsRes.filter((c) => c.status === 'open').length;
       if (nextOpenCount > prevOpenCallCountRef.current) {
@@ -1587,6 +1611,16 @@ export function ClinicalStaffPortalShell({
 
   useEffect(() => {
     refreshAll();
+    const handleOnline = () => {
+      void pingCloudHealth(true);
+    };
+    const handleOffline = () => {
+      setCloudHealth((prev) => ({ ...prev, online: false, dbConnected: false }));
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', handleOnline);
+      window.addEventListener('offline', handleOffline);
+    }
     const pollTimer = window.setInterval(() => {
       void pingCloudHealth();
       apiClient
@@ -1602,6 +1636,10 @@ export function ClinicalStaffPortalShell({
 
     return () => {
       window.clearInterval(pollTimer);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', handleOnline);
+        window.removeEventListener('offline', handleOffline);
+      }
     };
   }, [refreshAll, pingCloudHealth, apiClient]);
 
@@ -2471,11 +2509,11 @@ export function ClinicalStaffPortalShell({
               <span className="text-white/90 truncate">{locale.sidebar.dbCloud}</span>
               <span
                 className={`inline-flex items-center gap-1 font-bold shrink-0 ${
-                  cloudHealth.online ? 'text-emerald-200' : 'text-rose-200'
+                  cloudHealth.dbConnected ? 'text-emerald-200' : 'text-rose-200'
                 }`}
               >
-                <span className={`h-2 w-2 rounded-full ${cloudHealth.online ? 'bg-emerald-300' : 'bg-rose-300'}`} />
-                {cloudHealth.online ? locale.sidebar.dbNormal : locale.sidebar.dbOffline}
+                <span className={`h-2 w-2 rounded-full ${cloudHealth.dbConnected ? 'bg-emerald-300' : 'bg-rose-300'}`} />
+                {cloudHealth.dbConnected ? locale.sidebar.dbNormal : locale.sidebar.dbOffline}
               </span>
             </div>
           )}
@@ -2534,11 +2572,11 @@ export function ClinicalStaffPortalShell({
 
             <button
               type="button"
-              onClick={() => void pingCloudHealth()}
+              onClick={() => void pingCloudHealth(true)}
               title={
                 cloudHealth.latencyMs !== undefined
-                  ? `Supabase Latency: ${cloudHealth.latencyMs}ms`
-                  : 'Test Supabase Cloud'
+                  ? `Worker API Latency: ${cloudHealth.latencyMs}ms (คลิกเพื่อตรวจสอบใหม่)`
+                  : 'Test Worker API & Cloud Health'
               }
               className={`whitespace-nowrap h-9 min-w-[140px] inline-flex items-center justify-center gap-1.5 rounded-full border px-3.5 font-bold cursor-pointer transition shrink-0 ${
                 cloudHealth.online
@@ -2546,7 +2584,11 @@ export function ClinicalStaffPortalShell({
                   : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
               }`}
             >
-              {cloudHealth.online ? <Wifi className="h-3.5 w-3.5 shrink-0" /> : <WifiOff className="h-3.5 w-3.5 shrink-0" />}
+              {cloudHealth.online ? (
+                <Wifi className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+              ) : (
+                <WifiOff className="h-3.5 w-3.5 shrink-0" />
+              )}
               <span>{cloudHealth.online ? locale.actions.cloudConnected : locale.actions.cloudOffline}</span>
             </button>
 

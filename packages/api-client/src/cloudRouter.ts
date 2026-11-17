@@ -78,6 +78,7 @@ import {
   normalizeStaffRole,
   persistToSupabase,
   persistWithTimeoutBestEffort,
+  probeSupabaseHealth,
   purgePatientInSupabaseBestEffort,
   purgeUserInSupabaseBestEffort,
   stripOversizedBase64ForDb,
@@ -1007,12 +1008,12 @@ function createBoundedSupabaseFetch(
   customFetch?: typeof fetch,
   circuitHook?: { isOpen: () => boolean; trip: (reason: string) => void },
 ): typeof fetch {
-  const transportFetch = customFetch ?? globalThis.fetch;
   const runOnce = async (
     input: RequestInfo | URL,
     init: RequestInit | undefined,
     overrideKey?: string,
   ): Promise<Response> => {
+    const transportFetch = customFetch ?? globalThis.fetch;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const parentSignal = init?.signal;
@@ -1049,7 +1050,7 @@ function createBoundedSupabaseFetch(
       return new Response(
         JSON.stringify({
           code: 'SUPABASE_CIRCUIT_OPEN',
-          message: 'Supabase circuit breaker active (5m memory-only mode)',
+          message: 'Supabase circuit breaker active (20s memory-only mode)',
         }),
         { status: 503, headers: { 'Content-Type': 'application/json' } },
       );
@@ -1405,8 +1406,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       );
     }
 
-    // Fast-path health check before hydration or DB queries so /api/health responds in <5ms
+    const forceSupabaseProbe = reqUrl.searchParams.get('refresh') === '1';
+
+    // Health check & explicit refresh probe: reset stale circuit breaker and test lightweight SELECT id FROM patients LIMIT 1 (1500ms timeout)
     if (pathname === '/api/health' && method === 'GET') {
+      const ping = supabase ? await probeSupabaseHealth(supabase, 1500) : { ok: false, latencyMs: 0 };
       const circuit = getSupabaseCircuitState(supabase);
       return jsonResponse({
         ok: true,
@@ -1414,13 +1418,17 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         timestamp: new Date().toISOString(),
         service: 'drtechcares-cloud-router',
         persistentDb: Boolean(supabase),
-        supabaseConnected: Boolean(supabase) && !circuit.open,
+        supabaseConnected: Boolean(supabase) && ping.ok && !circuit.open,
         supabaseCircuitOpen: circuit.open,
         supabaseCircuitRemainingSec: Math.ceil(circuit.remainingMs / 1000),
-        ...(circuit.reason ? { supabaseCircuitReason: circuit.reason } : {}),
-        latencyMs: 0,
+        ...(circuit.reason ? { supabaseCircuitReason: circuit.reason } : ping.reason ? { supabaseCircuitReason: ping.reason } : {}),
+        latencyMs: ping.latencyMs,
         zeroGhostCache: true,
       });
+    }
+
+    if (forceSupabaseProbe && supabase) {
+      await probeSupabaseHealth(supabase, 1500);
     }
 
     // Fast-path exercise library: immediately serve the seeded 15 unified stroke exercises without 17-table hydration
