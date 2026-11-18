@@ -181,9 +181,9 @@ export function CoursePrescriptionView({
                     onChange={(e) => updateDay(day.dayIndex, { activityType: e.target.value as ActivityType })}
                     className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 font-semibold"
                   >
-                    <option value="minigame">🎮 มินิเกมฝึกสมอง</option>
+                    <option value="minigame">มินิเกมฝึกสมอง</option>
                     <option value="physio_exercise" disabled={isLockedForPt}>
-                      {isLockedForPt ? '🚧 ท่ากายภาพ (อยู่ระหว่างพัฒนา - ล็อก)' : '🏋️ ท่ากายภาพบำบัดหน้ากล้อง'}
+                      {isLockedForPt ? 'ท่ากายภาพ (อยู่ระหว่างพัฒนา - ล็อก)' : 'ท่ากายภาพบำบัดหน้ากล้อง'}
                     </option>
                   </select>
 

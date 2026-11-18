@@ -1,4 +1,6 @@
 import React from 'react';
+import fs from 'node:fs';
+import path from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import {
@@ -67,6 +69,7 @@ import {
   getSeniorVoiceToggleLabel,
   pickSpeechVoice,
   readStoredKioskVoiceMuted,
+  sanitizeSpeechText,
   translateVoiceCoachText,
   writeStoredKioskVoiceMuted,
 } from '../components/VoiceCoachBanner';
@@ -330,7 +333,7 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(rightCheck.romDeg!).toBeLessThan(30);
     expect(rightCheck.oppositeRomDeg!).toBeGreaterThan(150);
     expect(rightCheck.wrongSideBannerTh).toBe(
-      '⚠️ ท่านี้ฝึกเฉพาะข้างขวา! กรุณาลดแขนซ้ายลง และยกเฉพาะแขนขวาข้างเดียว',
+      'ท่านี้ฝึกเฉพาะข้างขวา! กรุณาลดแขนซ้ายลง และยกเฉพาะแขนขวาข้างเดียว',
     );
 
     // When the same landmarks are used for LEFT_SHOULDER exercise, LEFT arm IS valid
@@ -348,7 +351,7 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(wrongForLeft.wrongSideRaised).toBe(true);
     expect(wrongForLeft.romDeg!).toBeLessThan(30);
     expect(wrongForLeft.wrongSideBannerTh).toBe(
-      '⚠️ ท่านี้ฝึกเฉพาะข้างซ้าย! กรุณาลดแขนขวาลง และยกเฉพาะแขนซ้ายข้างเดียว',
+      'ท่านี้ฝึกเฉพาะข้างซ้าย! กรุณาลดแขนขวาลง และยกเฉพาะแขนซ้ายข้างเดียว',
     );
 
     // synthesizeDemoPayload WRONG_LIMB outputs WRONG_LIMB compensation and Thai voice warning
@@ -2217,7 +2220,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       baseline: baseSnap,
     });
     expect(trunkRes.compensations).toContain('TRUNK_LEAN');
-    expect(trunkRes.postureBannerTh).toBe('⚠️ กรุณาตั้งลำตัวให้ตรง ไม่เอนตัวช่วยยกแขน');
+    expect(trunkRes.postureBannerTh).toBe('กรุณาตั้งลำตัวให้ตรง ไม่เอนตัวช่วยยกแขน');
 
     const headDropPose = createNeutralLandmarks({
       [POSE_INDEX.NOSE]: { x: 0.50, y: 0.36, z: -0.08, visibility: 0.98 },
@@ -2236,7 +2239,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       baseline: baseSnap,
     });
     expect(neckDropRes.compensations).toContain('NECK_DROP');
-    expect(neckDropRes.postureBannerTh).toBe('⚠️ มองตรงข้างหน้าครับ ให้ยกมือขึ้นหาศีรษะแทนการก้มคอ');
+    expect(neckDropRes.postureBannerTh).toBe('มองตรงข้างหน้าครับ ให้ยกมือขึ้นหาศีรษะแทนการก้มคอ');
   });
 
   it('draws Stroke Target Zone Circle, 21-pt Hand skeleton, and Amber (#F59E0B) vs Emerald (#10B981) highlight on canvas', () => {
@@ -2321,7 +2324,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       trunkTiltDeg: 15,
       isMultiPerson: false,
       isImpostorOrEmergency: false,
-      postureBannerTh: '⚠️ อย่ายักไหล่ช่วยครับ ผ่อนคลายหัวไหล่ลง',
+      postureBannerTh: 'อย่ายักไหล่ช่วยครับ ผ่อนคลายหัวไหล่ลง',
     });
     expect(strokeColors).toContain('#F59E0B');
   });
@@ -2340,7 +2343,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(bothInLeft.wrongSideRaised).toBe(true);
     expect(bothInLeft.romDeg).toBe(0);
     expect(bothInLeft.wrongSideBannerTh).toBe(
-      '⚠️ ท่านี้ฝึกเฉพาะข้างซ้าย! กรุณาลดแขนขวาลง และยกเฉพาะแขนซ้ายข้างเดียว',
+      'ท่านี้ฝึกเฉพาะข้างซ้าย! กรุณาลดแขนขวาลง และยกเฉพาะแขนซ้ายข้างเดียว',
     );
 
     // 2. RIGHT mode + raising BOTH arms -> LEFT_ARM_RAISED_IN_RIGHT_MODE
@@ -2349,7 +2352,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(bothInRight.wrongSideRaised).toBe(true);
     expect(bothInRight.romDeg).toBe(0);
     expect(bothInRight.wrongSideBannerTh).toBe(
-      '⚠️ ท่านี้ฝึกเฉพาะข้างขวา! กรุณาลดแขนซ้ายลง และยกเฉพาะแขนขวาข้างเดียว',
+      'ท่านี้ฝึกเฉพาะข้างขวา! กรุณาลดแขนซ้ายลง และยกเฉพาะแขนขวาข้างเดียว',
     );
 
     // 3. RIGHT elbow flexion + curling wrong (left) elbow -> LEFT_ARM_RAISED_IN_RIGHT_MODE
@@ -2385,7 +2388,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(bothSingleBlocked.wrongSideRaised).toBe(true);
     expect(bothSingleBlocked.romDeg).toBe(0);
     expect(bothSingleBlocked.wrongSideBannerTh).toBe(
-      '🙌 ท่านี้ฝึกทั้งสองข้างพร้อมกัน กรุณายกแขนทั้ง 2 ข้างขึ้นพร้อมกันครับ',
+      'ท่านี้ฝึกทั้งสองข้างพร้อมกัน กรุณายกแขนทั้ง 2 ข้างขึ้นพร้อมกันครับ',
     );
 
     const bothValid = measureLiveJointAngleAndTilt(
@@ -2470,7 +2473,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       isImpostorOrEmergency: false,
       sideViolation: 'LEFT_ARM_RAISED_IN_RIGHT_MODE',
       wrongSideRaised: true,
-      wrongSideBannerTh: '⚠️ ท่านี้ฝึกเฉพาะข้างขวา! กรุณาลดแขนซ้ายลง และยกเฉพาะแขนขวาข้างเดียว',
+      wrongSideBannerTh: 'ท่านี้ฝึกเฉพาะข้างขวา! กรุณาลดแขนซ้ายลง และยกเฉพาะแขนขวาข้างเดียว',
       canvasWidth: 640,
       canvasHeight: 360,
     });
@@ -2523,7 +2526,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
         armWristLowered: opts?.armWristLowered,
         handsOutOfFrameRaised: opts?.handsOutOfFrameRaised,
         sideViolation,
-        wrongSideBannerTh: sideViolation === 'NONE' ? null : '⚠️ wrong side',
+        wrongSideBannerTh: sideViolation === 'NONE' ? null : 'wrong side',
         wrongPlaneRaised: false,
         wrongPlaneBannerTh: null,
         isCompensatedNow: opts?.isCompensatedNow ?? false,
@@ -2540,17 +2543,17 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(state.phase).toBe('PHASE_1_HOLDING');
     expect(state.holdElapsedSec).toBeCloseTo(0.1, 2);
     expect(state.completedReps).toBe(0);
-    expect(lastRes.bannerTh).toContain('⏳ ค้างท่าไว้ในองศาที่ถูกต้อง');
+    expect(lastRes.bannerTh).toContain('ค้างท่าไว้ในองศาที่ถูกต้อง');
 
     // 2. Continue holding with posture compensation flag -> NEVER resets or stalls timer!
     for (let i = 0; i < 10; i += 1) {
       lastRes = stepTick(92, 0.1, (nowCursor += 100), {
         isCompensatedNow: true,
-        postureBannerTh: '⚠️ อย่ายักไหล่ช่วยครับ',
+        postureBannerTh: 'อย่ายักไหล่ช่วยครับ',
       });
     }
     expect(state.holdElapsedSec).toBeCloseTo(1.1, 2);
-    expect(lastRes.bannerTh).toContain('⏳ ค้างท่าไว้ในองศาที่ถูกต้อง');
+    expect(lastRes.bannerTh).toContain('ค้างท่าไว้ในองศาที่ถูกต้อง');
 
     // 3. Brief dip < 0.65 * 115 decays gently at dt * 0.15 (NEVER warps to 0.0s!)
     lastRes = stepTick(50, 0.2, (nowCursor += 200));
@@ -2568,7 +2571,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(state.holdElapsedSec).toBeCloseTo(3.0, 2);
     expect(lastRes.holdProgressPct).toBe(100);
     expect(lastRes.holdRemainingSec).toBe(0);
-    expect(lastRes.bannerTh).toContain('🎉 ได้ +1 แต้มแล้ว! (รวม 1/10 ครั้ง)');
+    expect(lastRes.bannerTh).toContain('ได้ +1 แต้มแล้ว! (รวม 1/10 ครั้ง)');
     expect(lastRes.bannerTh).toContain('กรุณาเอาแขนลงข้างลำตัวเพื่อเริ่มนับรอบถัดไป');
 
     // 5. CRITICAL CHECK: Keeping arm held up at 118 deg for 10 full seconds MUST stay locked at 1 rep (no spam!)
@@ -2738,7 +2741,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     // 2. getPrescribedLimbPromptTh in BOTH mode NEVER returns right-arm or left-arm-only warning!
     const bothPrompt = getPrescribedLimbPromptTh('right_shoulder', 'abduction', 'BOTH');
     expect(bothPrompt.bannerAlertTh).toBe(
-      '🙌 ท่านี้ฝึกทั้งสองข้างพร้อมกัน กรุณายกแขนทั้ง 2 ข้างขึ้นพร้อมกันครับ',
+      'ท่านี้ฝึกทั้งสองข้างพร้อมกัน กรุณายกแขนทั้ง 2 ข้างขึ้นพร้อมกันครับ',
     );
     expect(bothPrompt.bannerAlertTh).not.toContain('เฉพาะข้างขวา');
     expect(bothPrompt.bannerAlertTh).not.toContain('เฉพาะข้างซ้าย');
@@ -3008,7 +3011,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(verifiedState.variant).toBe('VERIFIED');
     expect(verifiedState.boxColor).toBe('emerald');
     expect(verifiedState.displayName).toBe('สมชาย ใจดี');
-    expect(verifiedState.label).toContain('✓ ยืนยันเจ้าของบัญชี: สมชาย ใจดี');
+    expect(verifiedState.label).toContain('ยืนยันเจ้าของบัญชี: สมชาย ใจดี');
   });
 
   it('rejects out-of-frame / teleported limb joints, suppresses glitching bone lines, and strictly tethers 21-pt hand mesh to valid wrist', () => {
@@ -3229,7 +3232,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       validReps: 0,
       targetReps: 10,
     });
-    expect(bothWrongBanner.titleTh).toBe('⚠️ ท่านี้ต้องยกแขนทั้ง 2 ข้างพร้อมกัน (Both Arms)');
+    expect(bothWrongBanner.titleTh).toBe('ท่านี้ต้องยกแขนทั้ง 2 ข้างพร้อมกัน (Both Arms)');
     expect(bothWrongBanner.subtitleTh).not.toContain('เฉพาะข้างขวา');
 
     const leftWrongBanner = resolveUnifiedKioskCoachingBanner({
@@ -3250,7 +3253,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       validReps: 0,
       targetReps: 10,
     });
-    expect(leftWrongBanner.titleTh).toBe('⚠️ ท่านี้ฝึกเฉพาะข้างซ้าย (Left Arm Only)');
+    expect(leftWrongBanner.titleTh).toBe('ท่านี้ฝึกเฉพาะข้างซ้าย (Left Arm Only)');
     expect(leftWrongBanner.subtitleTh).toContain('ลดแขนขวาลง');
 
     const holdDoneWaitLower = resolveUnifiedKioskCoachingBanner({
@@ -3272,7 +3275,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       targetReps: 10,
     });
     expect(holdDoneWaitLower.tone).toBe('sky');
-    expect(holdDoneWaitLower.titleTh).toBe('✅ ค้างครบเวลาแล้ว! ค่อยๆ เอาแขนลงข้างลำตัวเพื่อนับ +1 ครั้ง');
+    expect(holdDoneWaitLower.titleTh).toBe('ค้างครบเวลาแล้ว! ค่อยๆ เอาแขนลงข้างลำตัวเพื่อนับ +1 ครั้ง');
   });
 
   it('provides Pose Test Mode bypassing face login with all 15 exercises, dynamic LEFT/RIGHT/BOTH side switcher, and Portal launch buttons', () => {
@@ -3341,36 +3344,38 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(testUiHtml).toContain('HN-TEST-POSE');
     expect(testUiHtml).toContain('ผู้ทดลองระบบ (โหมดทดสอบท่ากายภาพ 15 ท่า)');
     expect(testUiHtml).toContain('Dr.Tech.Care • โหมดทดสอบท่าทาง');
-    expect(testUiHtml).toContain('🟢 ออนไลน์ (ระบบกล้องพร้อม)');
+    expect(testUiHtml).toContain('ออนไลน์ (ระบบกล้องพร้อม)');
     expect(testUiHtml).toContain('เลือกท่าที่จะทดลอง 1–15');
     expect(testUiHtml).toContain('1. ');
     expect(testUiHtml).toContain('15. ');
-    expect(testUiHtml).toContain('⏮ ก่อนหน้า');
-    expect(testUiHtml).toContain('ถัดไป ⏭');
+    expect(testUiHtml).toContain('ก่อนหน้า');
+    expect(testUiHtml).toContain('ถัดไป');
     expect(testUiHtml).toContain('ซ้าย (L)');
     expect(testUiHtml).toContain('ขวา (R)');
     expect(testUiHtml).toContain('ทั้งสองข้าง (Both)');
-    expect(testUiHtml).toContain('🔄 รีเซ็ต (0/10)');
-    expect(testUiHtml).toContain('← กลับหน้า Admin Portal');
+    expect(testUiHtml).toContain('รีเซ็ต (0/10)');
+    expect(testUiHtml).toContain('กลับหน้า Admin Portal');
     expect(testUiHtml).toContain('kiosk-unified-coaching-banner');
     expect(testUiHtml).toContain('จำนวนครั้งสำเร็จ');
-    expect(testUiHtml).toContain('⏱ ค้างท่าเป้าหมาย');
+    expect(testUiHtml).toContain('ค้างท่าเป้าหมาย');
     expect(testUiHtml).toContain('kiosk-hold-timer-display');
     expect(testUiHtml).toContain('มุมการเคลื่อนไหว ROM');
     expect(testUiHtml).toContain('kiosk-pip-coach-box');
     expect(testUiHtml).toContain('kiosk-pip-coach-toggle');
     expect(testUiHtml).toContain('kiosk-coach-expand-btn');
-    expect(testUiHtml).toContain('🔍 ขยายใหญ่');
-    expect(testUiHtml).toContain('🎬 หุ่นสาธิต');
+    expect(testUiHtml).toContain('ขยายใหญ่');
+    expect(testUiHtml).toContain('หุ่นสาธิต');
     expect(testUiHtml).toContain('kiosk-step-card-1');
     expect(testUiHtml).toContain('kiosk-step-card-2');
     expect(testUiHtml).toContain('kiosk-step-card-3');
-    expect(testUiHtml).toContain('▶ กำลังทำขั้นนี้');
+    expect(testUiHtml).toContain('กำลังทำขั้นนี้');
     expect(testUiHtml).toContain('animated-rehab-coach-model');
     expect(testUiHtml).toContain('ตารางตรวจสอบเช็คลิสต์');
     expect(testUiHtml).toContain('THAI AI VOICE COACH:');
-    expect(testUiHtml).toContain('🔊 เสียงพากย์');
+    expect(testUiHtml).toContain('เสียงพากย์');
     expect(testUiHtml).toContain('kiosk-voice-mute-toggle');
+    const emojiPattern = /[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/u;
+    expect(emojiPattern.test(testUiHtml)).toBe(false);
 
     // ClinicalStaffPortalShell renders all 3 quick-launch Pose Test buttons (sidebar, top header, Tab 4)
     const mockApi = new DrTechCaresApiClient();
@@ -3399,10 +3404,11 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(portalHtml).toContain('sidebar-pose-test-btn');
     expect(portalHtml).toContain('ทดลองท่าทางกายภาพ (15 ท่า)');
     expect(portalHtml).toContain('header-pose-test-btn');
-    expect(portalHtml).toContain('🏃 ทดลองท่ากายภาพ');
+    expect(portalHtml).toContain('ทดลองท่ากายภาพ');
     expect(portalHtml).toContain('tab4-pose-test-btn');
     expect(portalHtml).toContain('exercise-card-pose-test-STROKE_SH_FLEX');
-    expect(portalHtml).toContain('▶️ ทดลองทำท่านี้ด้วยกล้องทันที');
+    expect(portalHtml).toContain('ทดลองทำท่านี้ด้วยกล้องทันที');
+    expect(emojiPattern.test(portalHtml)).toBe(false);
   });
 
   it('renders synchronized 60FPS AnimatedRehabCoachModel for all 15 clinical exercises and LEFT/RIGHT/BOTH across all 4 timeline phases', () => {
@@ -3454,7 +3460,50 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
         }),
       );
       expect(htmlLower).toContain('+1 ครั้ง!');
+      const emojiPattern = /[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/u;
+      expect(emojiPattern.test(htmlLower)).toBe(false);
     }
+  });
+
+  it('keeps all non-test source files free of Unicode emojis and sanitizes speech text before TTS', () => {
+    expect(sanitizeSpeechText('🎉 ได้ +1 แต้มแล้ว! ⏳ กรุณาค้างท่า ✅')).toBe(
+      'ได้ +1 แต้มแล้ว! กรุณาค้างท่า',
+    );
+    expect(sanitizeSpeechText('  ⚠️ Hold 3s ▶️ and relax 🔊  ')).toBe('Hold 3s and relax');
+    expect(sanitizeSpeechText('')).toBe('');
+    expect(sanitizeSpeechText('   ')).toBe('');
+
+    const emojiPattern = /[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/u;
+    const repoRoot = path.resolve(process.cwd());
+    const violations: string[] = [];
+
+    const scanDir = (dirPath: string) => {
+      for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+        if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+        const fullPath = path.join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+          scanDir(fullPath);
+          continue;
+        }
+        if (!/\.(ts|tsx|html|css)$/i.test(entry.name)) continue;
+        if (/__tests__|\.test\./i.test(fullPath)) continue;
+        const content = fs.readFileSync(fullPath, 'utf8');
+        if (emojiPattern.test(content)) {
+          violations.push(path.relative(repoRoot, fullPath));
+        }
+      }
+    };
+
+    for (const rootSubdir of ['src', 'packages', 'apps']) {
+      const target = path.join(repoRoot, rootSubdir);
+      if (fs.existsSync(target)) scanDir(target);
+    }
+    const indexHtml = path.join(repoRoot, 'index.html');
+    if (fs.existsSync(indexHtml) && emojiPattern.test(fs.readFileSync(indexHtml, 'utf8'))) {
+      violations.push('index.html');
+    }
+
+    expect(violations).toEqual([]);
   });
 });
 

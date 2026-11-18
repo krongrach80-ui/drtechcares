@@ -80,9 +80,9 @@ const REGION_COPY: Record<
       cn: '保持躯干挺直，切勿后仰或耸肩代偿',
     },
     adl: {
-      th: '👕 กิจวัตรประจำวัน: เอื้อมหยิบ / สอดแขนเสื้อ',
-      en: '👕 Daily ADL: Forward reach / Putting arm through sleeve',
-      cn: '👕 日常活动：前伸取物 / 穿套袖',
+      th: 'กิจวัตรประจำวัน: เอื้อมหยิบ / สอดแขนเสื้อ',
+      en: 'Daily ADL: Forward reach / Putting arm through sleeve',
+      cn: '日常活动：前伸取物 / 穿套袖',
     },
     steps: (side, rom, holdSec) => {
       const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
@@ -129,9 +129,9 @@ const REGION_COPY: Record<
       cn: '沿体侧外展，避免向对侧倾斜借力',
     },
     adl: {
-      th: '🧥 กิจวัตรประจำวัน: กางแขนสวมเสื้อเชิ้ต/เสื้อคลุม',
-      en: '🧥 Daily ADL: Spreading arm into shirt or jacket',
-      cn: '🧥 日常活动：张臂穿外套',
+      th: 'กิจวัตรประจำวัน: กางแขนสวมเสื้อเชิ้ต/เสื้อคลุม',
+      en: 'Daily ADL: Spreading arm into shirt or jacket',
+      cn: '日常活动：张臂穿外套',
     },
     steps: (side, rom, holdSec) => {
       const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
@@ -266,9 +266,9 @@ const REGION_COPY: Record<
       cn: '保持躯干正对屏幕稳定，避免扭腰代偿',
     },
     adl: {
-      th: '👕 กิจวัตรประจำวัน: เอื้อมแตะไหล่ฝั่งตรงข้าม / คาดเข็มขัดนิรภัย',
-      en: '👕 Daily ADL: Reaching across chest / Buckling seatbelt',
-      cn: '👕 日常活动：交叉触摸对侧肩 / 系安全带',
+      th: 'กิจวัตรประจำวัน: เอื้อมแตะไหล่ฝั่งตรงข้าม / คาดเข็มขัดนิรภัย',
+      en: 'Daily ADL: Reaching across chest / Buckling seatbelt',
+      cn: '日常活动：交叉触摸对侧肩 / 系安全带',
     },
     steps: (side, rom, holdSec) => {
       const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
@@ -318,9 +318,9 @@ const REGION_COPY: Record<
       cn: '伸直肘关节并仅前推肩胛，切勿身体大幅前倾',
     },
     adl: {
-      th: '🚪 กิจวัตรประจำวัน: เอื้อมเปิดประตู / หยิบของบนโต๊ะด้านหน้า',
-      en: '🚪 Daily ADL: Pushing door / Reaching across table',
-      cn: '🚪 日常活动：推门与桌面取物',
+      th: 'กิจวัตรประจำวัน: เอื้อมเปิดประตู / หยิบของบนโต๊ะด้านหน้า',
+      en: 'Daily ADL: Pushing door / Reaching across table',
+      cn: '日常活动：推门与桌面取物',
     },
     steps: (side, rom, holdSec) => {
       const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
@@ -367,9 +367,9 @@ const REGION_COPY: Record<
       cn: '患侧拇指始终置于交叉上方，对称推直双肘',
     },
     adl: {
-      th: '🤲 กิจวัตร Bobath: ผลักบานประตู / ยื่นถือถาดอาหาร 2 มือ',
-      en: '🤲 Bobath ADL: Symmetric reaching & holding items with both hands',
-      cn: '🤲 Bobath 训练：双手推门与协同递物',
+      th: 'กิจวัตร Bobath: ผลักบานประตู / ยื่นถือถาดอาหาร 2 มือ',
+      en: 'Bobath ADL: Symmetric reaching & holding items with both hands',
+      cn: 'Bobath 训练：双手推门与协同递物',
     },
     steps: (_side, rom, holdSec) => ({
       th: [
@@ -411,9 +411,9 @@ const REGION_COPY: Record<
       cn: '头部保持直立平视镜头，切勿低头迎合手部',
     },
     adl: {
-      th: '🪥 กิจวัตรประจำวัน: ล้างหน้า / หวีผม / สวมหมวกด้วยตนเอง',
-      en: '🪥 Daily ADL: Face washing / Hair combing / Putting on hat',
-      cn: '🪥 日常活动：自主洗脸 / 梳头 / 戴帽',
+      th: 'กิจวัตรประจำวัน: ล้างหน้า / หวีผม / สวมหมวกด้วยตนเอง',
+      en: 'Daily ADL: Face washing / Hair combing / Putting on hat',
+      cn: '日常活动：自主洗脸 / 梳头 / 戴帽',
     },
     steps: (side, rom, holdSec) => {
       const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
@@ -460,9 +460,9 @@ const REGION_COPY: Record<
       cn: '保持手肘紧贴腰侧稳定，仅转动前臂与手掌',
     },
     adl: {
-      th: '🔑 กิจวัตรประจำวัน: บิดลูกบิดประตู / หงายมือรับของ / เทน้ำ',
-      en: '🔑 Daily ADL: Turning doorknob / Receiving coins / Pouring',
-      cn: '🔑 日常活动：拧门把手 / 摊手接物 / 倒水',
+      th: 'กิจวัตรประจำวัน: บิดลูกบิดประตู / หงายมือรับของ / เทน้ำ',
+      en: 'Daily ADL: Turning doorknob / Receiving coins / Pouring',
+      cn: '日常活动：拧门把手 / 摊手接物 / 倒水',
     },
     steps: (side, rom, holdSec) => {
       const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
@@ -509,9 +509,9 @@ const REGION_COPY: Record<
       cn: '手掌在镜头中保持清晰，轻柔精准完成指腹捏合呈圆形',
     },
     adl: {
-      th: '✏️ กิจวัตรประจำวัน: จับปากกา / ติดกระดุมเสื้อ / คีบอาหาร',
-      en: '✏️ Daily ADL: Writing pen grip / Buttoning shirt / Picking small items',
-      cn: '✏️ 日常活动：握笔写字 / 系衣扣 / 夹取小物件',
+      th: 'กิจวัตรประจำวัน: จับปากกา / ติดกระดุมเสื้อ / คีบอาหาร',
+      en: 'Daily ADL: Writing pen grip / Buttoning shirt / Picking small items',
+      cn: '日常活动：握笔写字 / 系衣扣 / 夹取小物件',
     },
     steps: (side, _rom, holdSec) => {
       const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
@@ -558,9 +558,9 @@ const REGION_COPY: Record<
       cn: '转动务必慢而轻柔；若感头晕请立即停于中立位休息',
     },
     adl: {
-      th: '🌿 มาตรฐาน สธ.: หันมองสิ่งรอบข้างและลดปวดคอเรื้อรัง',
-      en: '🌿 MOPH Elderly Neck Mobility: Safe visual scanning & neck relief',
-      cn: '🌿 卫生部推荐：安全环顾四周及预防慢性颈痛',
+      th: 'มาตรฐาน สธ.: หันมองสิ่งรอบข้างและลดปวดคอเรื้อรัง',
+      en: 'MOPH Elderly Neck Mobility: Safe visual scanning & neck relief',
+      cn: '卫生部推荐：安全环顾四周及预防慢性颈痛',
     },
     steps: (_side, rom, holdSec) => ({
       th: [
@@ -602,9 +602,9 @@ const REGION_COPY: Record<
       cn: '保持手肘紧贴腰侧，勿让手肘离开身体',
     },
     adl: {
-      th: '🔘 กิจวัตรประจำวัน: อ้อมแขนใส่เสื้อ / ติดกระดุม / หวีผม',
-      en: '🔘 Daily ADL: Tucking shirt / Buttoning / Grooming',
-      cn: '🔘 日常活动：反手穿衣 / 系扣子',
+      th: 'กิจวัตรประจำวัน: อ้อมแขนใส่เสื้อ / ติดกระดุม / หวีผม',
+      en: 'Daily ADL: Tucking shirt / Buttoning / Grooming',
+      cn: '日常活动：反手穿衣 / 系扣子',
     },
     steps: (side, rom, holdSec) => {
       const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
@@ -651,9 +651,9 @@ const REGION_COPY: Record<
       cn: '保持颈部挺直平视前方，切勿前伸下巴',
     },
     adl: {
-      th: '🌿 มาตรฐาน สธ. ผู้สูงอายุ: คลายบ่า-ไหล่ ลดอาการปวดตึง',
-      en: '🌿 MOPH Elderly Care: Relieve neck/shoulder tension',
-      cn: '🌿 卫生部老年保健：舒缓肩颈僵紧',
+      th: 'มาตรฐาน สธ. ผู้สูงอายุ: คลายบ่า-ไหล่ ลดอาการปวดตึง',
+      en: 'MOPH Elderly Care: Relieve neck/shoulder tension',
+      cn: '卫生部老年保健：舒缓肩颈僵紧',
     },
     steps: (_side, _rom, holdSec) => ({
       th: [
@@ -695,9 +695,9 @@ const REGION_COPY: Record<
       cn: '上举时配合深吸气，放下时缓慢呼气',
     },
     adl: {
-      th: '🤝 มาตรฐาน สธ.: แขนดีช่วยพยุงแขนอ่อนแรง + บริหารปอด',
-      en: '🤝 MOPH Self-Assisted Raise: Symmetrical reach & breathing',
-      cn: '🤝 卫生部推荐：健侧带动患侧上举及深呼吸',
+      th: 'มาตรฐาน สธ.: แขนดีช่วยพยุงแขนอ่อนแรง + บริหารปอด',
+      en: 'MOPH Self-Assisted Raise: Symmetrical reach & breathing',
+      cn: '卫生部推荐：健侧带动患侧上举及深呼吸',
     },
     steps: (_side, rom, holdSec) => ({
       th: [
@@ -739,9 +739,9 @@ const REGION_COPY: Record<
       cn: '保持上臂固定于体侧，仅弯曲伸直前臂',
     },
     adl: {
-      th: '🍽️ กิจวัตรประจำวัน: ดึงแขนเสื้อ / ตักอาหารเข้าปาก',
-      en: '🍽️ Daily ADL: Pulling sleeves / Feeding hand-to-mouth',
-      cn: '🍽️ 日常活动：拉穿衣袖 / 自主进食',
+      th: 'กิจวัตรประจำวัน: ดึงแขนเสื้อ / ตักอาหารเข้าปาก',
+      en: 'Daily ADL: Pulling sleeves / Feeding hand-to-mouth',
+      cn: '日常活动：拉穿衣袖 / 自主进食',
     },
     steps: (side, _rom, holdSec) => {
       const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
@@ -788,9 +788,9 @@ const REGION_COPY: Record<
       cn: '将手部置于摄像头清晰视野内以便识别五指伸展',
     },
     adl: {
-      th: '✋ กิจวัตรประจำวัน: หยิบช้อน / จับแก้ว / ปล่อยของจากมือ',
-      en: '✋ Daily ADL: Holding spoon/cup & releasing objects',
-      cn: '✋ 日常活动：握勺取杯 / 自主张手放物',
+      th: 'กิจวัตรประจำวัน: หยิบช้อน / จับแก้ว / ปล่อยของจากมือ',
+      en: 'Daily ADL: Holding spoon/cup & releasing objects',
+      cn: '日常活动：握勺取杯 / 自主张手放物',
     },
     steps: (side, _rom, holdSec) => {
       const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';
@@ -837,9 +837,9 @@ const REGION_COPY: Record<
       cn: '动作务必极其缓慢！严禁甩头或代偿耸肩',
     },
     adl: {
-      th: '🌿 มาตรฐาน สธ.: ป้องกันคอตก ลดปวดตึงต้นคอและเวียนศีรษะ',
-      en: '🌿 MOPH Neck Care: Prevents stiff neck & muscle tightness',
-      cn: '🌿 卫生部标准：预防颈部僵硬与肌群劳损',
+      th: 'มาตรฐาน สธ.: ป้องกันคอตก ลดปวดตึงต้นคอและเวียนศีรษะ',
+      en: 'MOPH Neck Care: Prevents stiff neck & muscle tightness',
+      cn: '卫生部标准：预防颈部僵硬与肌群劳损',
     },
     steps: (side, rom, holdSec) => {
       const sTh = side === 'left' ? 'ซ้าย' : side === 'both' ? 'ทั้งสองข้าง' : 'ขวา';

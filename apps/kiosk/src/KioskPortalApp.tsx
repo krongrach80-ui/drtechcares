@@ -563,8 +563,8 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
               <p className="text-xs font-semibold text-slate-400">ตารางฝึกของวันนี้</p>
               <p className="mt-1 text-lg font-bold text-white">
                 {todayRoutine?.activityType === 'physio_exercise'
-                  ? '🚧 ท่ากายภาพบำบัด'
-                  : '🎮 มินิเกมฝึกสมองและการตัดสินใจ'}
+                  ? 'ท่ากายภาพบำบัด'
+                  : 'มินิเกมฝึกสมองและการตัดสินใจ'}
               </p>
             </div>
             <div className="rounded-2xl bg-teal-600/20 border border-teal-500/40 p-4">

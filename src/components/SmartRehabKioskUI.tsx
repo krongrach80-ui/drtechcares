@@ -69,22 +69,30 @@ import {
   Activity,
   AlertOctagon,
   AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
   Camera,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Crosshair,
   Eye,
   EyeOff,
   Gamepad2,
+  Mic,
   Pause,
   Play,
   PlusCircle,
   RotateCcw,
+  Ruler,
   Shield,
+  SkipBack,
+  SkipForward,
   SlidersHorizontal,
   Timer,
   Volume2,
   VolumeX,
+  X,
 } from 'lucide-react';
 import {
   ExpandedCoachModal,
@@ -98,6 +106,7 @@ import {
   VoiceCoachBanner,
   cancelAllKioskVoiceSpeech,
   readStoredKioskVoiceMuted,
+  sanitizeSpeechText,
   subscribeKioskVoiceMuted,
   translateVoiceCoachText,
   writeStoredKioskVoiceMuted,
@@ -712,8 +721,8 @@ export function resolveUnifiedKioskCoachingBanner(params: {
     return {
       tone: params.isImpostor ? 'rose' : 'amber',
       titleTh: params.isImpostor
-        ? '🚫 ผู้ใช้งานไม่ใช่คนไข้ที่ลงทะเบียนไว้'
-        : '⚠️ พบมากกว่า 1 คนในเฟรม • ระบบหยุดนับชั่วคราว',
+        ? 'ผู้ใช้งานไม่ใช่คนไข้ที่ลงทะเบียนไว้'
+        : 'พบมากกว่า 1 คนในเฟรม • ระบบหยุดนับชั่วคราว',
       subtitleTh: params.isImpostor
         ? 'กรุณาให้คนไข้ตัวจริงเข้าฝึกครับ ระบบจะไม่นับรอบให้บุคคลอื่น'
         : 'กรุณาให้คนไข้ยืนหน้ากล้องเพียงลำพัง ระบบจึงจะนับรอบการฝึกต่อครับ',
@@ -725,7 +734,7 @@ export function resolveUnifiedKioskCoachingBanner(params: {
     if (activeSide === 'BOTH') {
       return {
         tone: 'rose',
-        titleTh: '⚠️ ท่านี้ต้องยกแขนทั้ง 2 ข้างพร้อมกัน (Both Arms)',
+        titleTh: 'ท่านี้ต้องยกแขนทั้ง 2 ข้างพร้อมกัน (Both Arms)',
         subtitleTh: 'กรุณายกแขนทั้งข้างซ้ายและข้างขวาขึ้นพร้อมกันให้ได้ระดับเดียวกันครับ',
         badgeTh: 'BOTH ARMS',
       };
@@ -733,14 +742,14 @@ export function resolveUnifiedKioskCoachingBanner(params: {
     if (activeSide === 'LEFT') {
       return {
         tone: 'rose',
-        titleTh: '⚠️ ท่านี้ฝึกเฉพาะข้างซ้าย (Left Arm Only)',
+        titleTh: 'ท่านี้ฝึกเฉพาะข้างซ้าย (Left Arm Only)',
         subtitleTh: 'กรุณาลดแขนขวาลงข้างลำตัว และยกเฉพาะแขนซ้ายข้างเดียวครับ',
         badgeTh: 'LEFT ONLY',
       };
     }
     return {
       tone: 'rose',
-      titleTh: '⚠️ ท่านี้ฝึกเฉพาะข้างขวา (Right Arm Only)',
+      titleTh: 'ท่านี้ฝึกเฉพาะข้างขวา (Right Arm Only)',
       subtitleTh: 'กรุณาลดแขนซ้ายลงข้างลำตัว และยกเฉพาะแขนขวาข้างเดียวครับ',
       badgeTh: 'RIGHT ONLY',
     };
@@ -750,7 +759,7 @@ export function resolveUnifiedKioskCoachingBanner(params: {
     const planePrompt = getPrescribedPlanePromptTh(params.expectedPlane);
     return {
       tone: 'amber',
-      titleTh: `⚠️ เคลื่อนไหวผิดทิศทาง — กรุณา${planePrompt.requiredPlaneTh}`,
+      titleTh: `เคลื่อนไหวผิดทิศทาง — กรุณา${planePrompt.requiredPlaneTh}`,
       subtitleTh: planePrompt.bannerAlertTh,
       badgeTh: `กำลัง${planePrompt.wrongPlaneTh}`,
     };
@@ -761,7 +770,7 @@ export function resolveUnifiedKioskCoachingBanner(params: {
       tone: 'emerald',
       titleTh: params.repSuccessToastTh,
       subtitleTh: 'ค้างครบเวลาแล้ว! ลดแขนลงข้างลำตัวเพื่อเริ่มนับรอบถัดไป',
-      badgeTh: `${params.validReps}/${params.targetReps} REPS • ✅ ครบ!`,
+      badgeTh: `${params.validReps}/${params.targetReps} REPS • ครบ!`,
     };
   }
 
@@ -772,7 +781,7 @@ export function resolveUnifiedKioskCoachingBanner(params: {
   if (waitLowerRequested || (params.kioskState === 'HOLD_PHASE' && params.holdRemainingSec <= 0)) {
     return {
       tone: 'sky',
-      titleTh: '✅ ค้างครบเวลาแล้ว! ค่อยๆ เอาแขนลงข้างลำตัวเพื่อนับ +1 ครั้ง',
+      titleTh: 'ค้างครบเวลาแล้ว! ค่อยๆ เอาแขนลงข้างลำตัวเพื่อนับ +1 ครั้ง',
       subtitleTh: 'ลดแขนลงกลับสู่ท่าพักช้าๆ เพื่อเตรียมพร้อมรอบถัดไป',
       badgeTh: 'WAIT LOWER',
     };
@@ -783,7 +792,7 @@ export function resolveUnifiedKioskCoachingBanner(params: {
       tone: 'emerald',
       titleTh:
         params.repSuccessToastTh ??
-        `🎉 ได้ +1 แต้มแล้ว! (รวม ${params.validReps}/${params.targetReps} ครั้ง) • กรุณาเอาแขนลงข้างลำตัวเพื่อเริ่มนับรอบถัดไป`,
+        `ได้ +1 แต้มแล้ว! (รวม ${params.validReps}/${params.targetReps} ครั้ง) • กรุณาเอาแขนลงข้างลำตัวเพื่อเริ่มนับรอบถัดไป`,
       subtitleTh: 'ลดแขนลงกลับสู่ท่าพักเพื่อเริ่มนับรอบถัดไปครับ',
       badgeTh: `${params.validReps}/${params.targetReps} REPS`,
     };
@@ -793,7 +802,7 @@ export function resolveUnifiedKioskCoachingBanner(params: {
     const elapsedSec = Math.max(0, params.holdTargetSec - params.holdRemainingSec);
     return {
       tone: 'emerald',
-      titleTh: `⏳ กำลังค้างท่าเป้าหมาย — ${elapsedSec.toFixed(1)} / ${params.holdTargetSec.toFixed(1)} วินาที`,
+      titleTh: `กำลังค้างท่าเป้าหมาย — ${elapsedSec.toFixed(1)} / ${params.holdTargetSec.toFixed(1)} วินาที`,
       subtitleTh: 'ค้างไว้ให้นิ่งที่สุดครับ ถึงเป้าแล้วจะบวก +1 ครั้งทันที',
       badgeTh: `${params.holdRemainingSec.toFixed(1)}s LEFT`,
     };
@@ -811,10 +820,10 @@ export function resolveUnifiedKioskCoachingBanner(params: {
       params.strokeSafetyAlert?.messageTh ??
       params.safetyGuardBannerTh ??
       (params.trunkLeanAlert
-        ? '⚠️ ลำตัวเอียงมากกว่า 18° — กรุณาค่อยๆ ปรับลำตัวให้ตรงครับ'
+        ? 'ลำตัวเอียงมากกว่า 18° — กรุณาค่อยๆ ปรับลำตัวให้ตรงครับ'
         : params.shoulderHikeAlert
-          ? '⚠️ ผ่อนคลายหัวไหล่ลงเล็กน้อยครับ'
-          : '⚠️ เคลื่อนไหวช้าลงนิดนึงครับ ไม่ต้องฝืนยกสูงเกินไปนะครับ');
+          ? 'ผ่อนคลายหัวไหล่ลงเล็กน้อยครับ'
+          : 'เคลื่อนไหวช้าลงนิดนึงครับ ไม่ต้องฝืนยกสูงเกินไปนะครับ');
     const subtitleTh = 'ตัวนับเวลายังคงทำงานต่อตามปกติครับ';
     return {
       tone: 'amber',
@@ -836,12 +845,12 @@ export function resolveUnifiedKioskCoachingBanner(params: {
 
   const movePrompt =
     activeSide === 'BOTH'
-      ? '✋ ยกแขนทั้ง 2 ข้างขึ้นพร้อมกันถึงมุมเป้าหมาย'
+      ? 'ยกแขนทั้ง 2 ข้างขึ้นพร้อมกันถึงมุมเป้าหมาย'
       : activeSide === 'LEFT'
-        ? '✋ ยกแขนข้างซ้ายขึ้นถึงมุมเป้าหมาย'
+        ? 'ยกแขนข้างซ้ายขึ้นถึงมุมเป้าหมาย'
         : activeSide === 'RIGHT'
-          ? '✋ ยกแขนข้างขวาขึ้นถึงมุมเป้าหมาย'
-          : '🏃 เคลื่อนไหวตามท่าทางเป้าหมายอย่างต่อเนื่อง';
+          ? 'ยกแขนข้างขวาขึ้นถึงมุมเป้าหมาย'
+          : 'เคลื่อนไหวตามท่าทางเป้าหมายอย่างต่อเนื่อง';
 
   return {
     tone: 'emerald',
@@ -1187,15 +1196,15 @@ export function drawLivePoseOverlayOnCanvas(
     };
     if (faceBox) {
       if (faceCount > 1) {
-        drawRehabFaceBox(faceBox, '#F59E0B', '⚠️ พบมากกว่า 1 คนในเฟรม', true);
+        drawRehabFaceBox(faceBox, '#F59E0B', 'พบมากกว่า 1 คนในเฟรม', true);
       } else if (ownerFaceVerified) {
-        drawRehabFaceBox(faceBox, '#10B981', `✓ เจ้าของบัญชี: ${ownerName}`, false);
+        drawRehabFaceBox(faceBox, '#10B981', `เจ้าของบัญชี: ${ownerName}`, false);
       } else {
-        drawRehabFaceBox(faceBox, '#EF4444', `⛔ ไม่ใช่เจ้าของบัญชี (${ownerName})`, false);
+        drawRehabFaceBox(faceBox, '#EF4444', `ไม่ใช่เจ้าของบัญชี (${ownerName})`, false);
       }
     }
     for (const extra of extraFaceBoxes) {
-      drawRehabFaceBox(extra, '#EF4444', '⚠️ บุคคลอื่น', true);
+      drawRehabFaceBox(extra, '#EF4444', 'บุคคลอื่น', true);
     }
 
     // Glowing Emerald Dashed Biometric Tether linking Owner Face Box to active wrists
@@ -1944,7 +1953,7 @@ export function drawLivePoseOverlayOnCanvas(
       const bw = Math.min(w - x1 - 8, Math.max(72, maxX - minX + 48));
       const bh = Math.min(h - y1 - 8, Math.max(96, maxY - minY + 44));
       const boxHex = pIdx === 0 ? '#10B981' : '#F59E0B';
-      const label = pIdx === 0 ? '✓ คนไข้หลัก' : '⚠ บุคคลเกินในเฟรม';
+      const label = pIdx === 0 ? 'คนไข้หลัก' : 'บุคคลเกินในเฟรม';
 
       ctx.strokeStyle = boxHex;
       ctx.lineWidth = 3;
@@ -2464,7 +2473,7 @@ export function SmartRehabKioskUI({
     targetReps: selectedExercise.target_reps,
     calibrationMessageTh:
       !isDemoMode && livePoseActive && !isEdgeDirectCamera && !cameraReady && !cameraError
-        ? '⏳ กำลังเปิดกล้องตรวจจับท่าทาง...'
+        ? 'กำลังเปิดกล้องตรวจจับท่าทาง...'
         : payload.calibration && !payload.calibration.is_calibrated
           ? payload.calibration.message_th
           : null,
@@ -3090,7 +3099,7 @@ export function SmartRehabKioskUI({
                   lastOwnerRehabKey = 'MULTI_PERSON';
                   setOwnerRehabGuardAlert({
                     status: 'MULTI_PERSON',
-                    text: '⚠️ พบมากกว่า 1 คนในเฟรม กรุณาให้เจ้าของบัญชีฝึกเพียงลำพัง',
+                    text: 'พบมากกว่า 1 คนในเฟรม กรุณาให้เจ้าของบัญชีฝึกเพียงลำพัง',
                   });
                 }
               }
@@ -3494,7 +3503,7 @@ export function SmartRehabKioskUI({
             const effPostureCompensated = false;
             const effPostureBannerTh =
               checkTrunk && latestRawTiltDeg > 18
-                ? '⚠️ ลำตัวเอียงมากกว่า 18° กรุณาค่อยๆ ปรับลำตัวให้ตรง'
+                ? 'ลำตัวเอียงมากกว่า 18° กรุณาค่อยๆ ปรับลำตัวให้ตรง'
                 : null;
             targetRomDeg =
               effWrongPlaneRaised ||
@@ -4046,7 +4055,8 @@ export function SmartRehabKioskUI({
   );
   const rawVoiceTextTh =
     strokeSafetyAlert?.messageTh ?? telemetry_analysis.safety_guard_banner_th ?? tts_voice_th;
-  const displayedVoiceSubtitle = translateVoiceCoachText(rawVoiceTextTh, zone5VoiceLang);
+  const cleanSpeechText = sanitizeSpeechText(rawVoiceTextTh);
+  const displayedVoiceSubtitle = sanitizeSpeechText(translateVoiceCoachText(cleanSpeechText, zone5VoiceLang));
 
   return (
     <div className="h-[100dvh] max-h-[100dvh] w-full overflow-hidden bg-gradient-to-b from-slate-50 via-white to-emerald-50/40 text-slate-800 flex flex-col justify-between p-2.5 md:p-3 gap-2 select-none">
@@ -4075,34 +4085,43 @@ export function SmartRehabKioskUI({
 
           <div className="flex items-center gap-2 shrink-0">
             <div
-              className={`rounded-full border px-3 py-1 font-bold text-xs md:text-sm whitespace-nowrap ${
+              className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 font-bold text-xs md:text-sm whitespace-nowrap ${
                 isOnlineReady
                   ? 'bg-emerald-50 border-emerald-400 text-emerald-800'
                   : 'bg-amber-50 border-amber-400 text-amber-800'
               }`}
             >
-              {isOnlineReady
-                ? '🟢 ออนไลน์ (ระบบกล้องพร้อม)'
-                : isDemoMode
-                  ? '🟡 โหมดจำลอง'
-                  : '🟠 พักกล้องชั่วคราว'}
+              <span
+                className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${
+                  isOnlineReady ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
+                }`}
+              />
+              <span>
+                {isOnlineReady
+                  ? 'ออนไลน์ (ระบบกล้องพร้อม)'
+                  : isDemoMode
+                    ? 'โหมดจำลอง'
+                    : 'พักกล้องชั่วคราว'}
+              </span>
             </div>
 
             <button
               type="button"
               onClick={isPoseTestMode ? handleResetPoseTestReps : resetDemoSession}
-              className="bg-sky-50 hover:bg-sky-100 border border-sky-300 text-blue-800 font-bold text-xs md:text-sm px-3 py-1 rounded-xl cursor-pointer active:scale-95 transition whitespace-nowrap"
+              className="inline-flex items-center gap-1.5 bg-sky-50 hover:bg-sky-100 border border-sky-300 text-blue-800 font-bold text-xs md:text-sm px-3 py-1 rounded-xl cursor-pointer active:scale-95 transition whitespace-nowrap"
             >
-              🔄 รีเซ็ต (0/{selectedExercise.target_reps})
+              <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+              <span>รีเซ็ต (0/{selectedExercise.target_reps})</span>
             </button>
 
             {onBackToAdminPortal || onOpenStaffPortal ? (
               <button
                 type="button"
                 onClick={onBackToAdminPortal ?? onOpenStaffPortal}
-                className="bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs md:text-sm px-3.5 py-1.5 rounded-xl shadow-sm cursor-pointer active:scale-95 transition whitespace-nowrap"
+                className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs md:text-sm px-3.5 py-1.5 rounded-xl shadow-sm cursor-pointer active:scale-95 transition whitespace-nowrap"
               >
-                ← กลับหน้า Admin Portal
+                <ArrowLeft className="w-4 h-4 shrink-0" />
+                <span>กลับหน้า Admin Portal</span>
               </button>
             ) : (
               <button
@@ -4137,7 +4156,7 @@ export function SmartRehabKioskUI({
           >
             {exerciseOptions.map((opt, idx) => (
               <option key={opt.exercise_id} value={opt.exercise_id}>
-                {completedIds.includes(opt.exercise_id) && !isPoseTestMode ? '✓' : `${idx + 1}.`} {opt.name_th}
+                {completedIds.includes(opt.exercise_id) && !isPoseTestMode ? '[ครบ]' : `${idx + 1}.`} {opt.name_th}
               </option>
             ))}
           </select>
@@ -4152,9 +4171,10 @@ export function SmartRehabKioskUI({
                 setSelectedExercise(exerciseOptions[prevIdx]);
               }
             }}
-            className="bg-blue-50 hover:bg-blue-100 border border-blue-300 text-blue-800 font-extrabold text-xs md:text-sm px-3 py-1.5 rounded-xl shrink-0 cursor-pointer active:scale-95 transition whitespace-nowrap"
+            className="inline-flex items-center gap-1.5 bg-blue-50 hover:bg-blue-100 border border-blue-300 text-blue-800 font-extrabold text-xs md:text-sm px-3 py-1.5 rounded-xl shrink-0 cursor-pointer active:scale-95 transition whitespace-nowrap"
           >
-            ⏮ ก่อนหน้า
+            <SkipBack className="w-3.5 h-3.5 shrink-0" />
+            <span>ก่อนหน้า</span>
           </button>
 
           <button
@@ -4167,9 +4187,10 @@ export function SmartRehabKioskUI({
                 setSelectedExercise(exerciseOptions[nextIdx]);
               }
             }}
-            className="bg-blue-50 hover:bg-blue-100 border border-blue-300 text-blue-800 font-extrabold text-xs md:text-sm px-3 py-1.5 rounded-xl shrink-0 cursor-pointer active:scale-95 transition whitespace-nowrap"
+            className="inline-flex items-center gap-1.5 bg-blue-50 hover:bg-blue-100 border border-blue-300 text-blue-800 font-extrabold text-xs md:text-sm px-3 py-1.5 rounded-xl shrink-0 cursor-pointer active:scale-95 transition whitespace-nowrap"
           >
-            ถัดไป ⏭
+            <span>ถัดไป</span>
+            <SkipForward className="w-3.5 h-3.5 shrink-0" />
           </button>
 
           {isPoseTestMode ? (
@@ -4215,9 +4236,10 @@ export function SmartRehabKioskUI({
                     markCurrentExerciseCompleted();
                     setSelectedExercise(nextUncompletedExercise);
                   }}
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs md:text-sm px-3 py-1.5 rounded-xl shadow-sm cursor-pointer whitespace-nowrap"
+                  className="inline-flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs md:text-sm px-3 py-1.5 rounded-xl shadow-sm cursor-pointer whitespace-nowrap"
                 >
-                  ไปท่าถัดไป ➔
+                  <span>ไปท่าถัดไป</span>
+                  <ArrowRight className="w-3.5 h-3.5 shrink-0" />
                 </button>
               )}
               {!nextUncompletedExercise && onAllExercisesCompleted && (
@@ -4227,9 +4249,11 @@ export function SmartRehabKioskUI({
                     markCurrentExerciseCompleted();
                     onAllExercisesCompleted();
                   }}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs md:text-sm px-3 py-1.5 rounded-xl shadow-sm cursor-pointer whitespace-nowrap"
+                  className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs md:text-sm px-3 py-1.5 rounded-xl shadow-sm cursor-pointer whitespace-nowrap"
                 >
-                  🎮 เข้าสู่มินิเกม ➔
+                  <Gamepad2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>เข้าสู่มินิเกม</span>
+                  <ArrowRight className="w-3.5 h-3.5 shrink-0" />
                 </button>
               )}
             </div>
@@ -4278,7 +4302,8 @@ export function SmartRehabKioskUI({
             className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1 text-xs font-extrabold text-white shadow-xs hover:bg-emerald-500 shrink-0 cursor-pointer"
           >
             <Gamepad2 className="h-3.5 w-3.5" />
-            <span>เข้าสู่มินิเกม ➔</span>
+            <span>เข้าสู่มินิเกม</span>
+            <ArrowRight className="h-3.5 w-3.5 shrink-0" />
           </button>
         </div>
       )}
@@ -4371,8 +4396,9 @@ export function SmartRehabKioskUI({
 
           {/* Top-Left Standing Distance Badge */}
           <div className="pointer-events-none absolute top-2.5 left-3 z-20">
-            <div className="bg-white/95 border-2 border-emerald-500 text-emerald-900 font-extrabold text-sm md:text-base px-3.5 py-1 rounded-full shadow">
-              📏 ระยะยืน: {distanceLabel}
+            <div className="inline-flex items-center gap-1.5 bg-white/95 border-2 border-emerald-500 text-emerald-900 font-extrabold text-sm md:text-base px-3.5 py-1 rounded-full shadow">
+              <Ruler className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>ระยะยืน: {distanceLabel}</span>
             </div>
           </div>
 
@@ -4386,8 +4412,9 @@ export function SmartRehabKioskUI({
 
           {/* Top-Right Side Target Badge & Live Angle Box */}
           <div className="pointer-events-none absolute top-2.5 right-3 z-20 flex flex-col items-end gap-1.5">
-            <div className="bg-blue-900/90 border border-sky-300 text-white font-extrabold text-sm md:text-base px-3.5 py-1 rounded-full shadow">
-              🎯 เป้าหมาย: {targetSideLabel}
+            <div className="inline-flex items-center gap-1.5 bg-blue-900/90 border border-sky-300 text-white font-extrabold text-sm md:text-base px-3.5 py-1 rounded-full shadow">
+              <Crosshair className="w-4 h-4 text-sky-300 shrink-0" />
+              <span>เป้าหมาย: {targetSideLabel}</span>
             </div>
             <div className="bg-white/95 border-2 border-blue-600 text-blue-950 font-black text-xl md:text-2xl px-3.5 py-1 rounded-xl shadow-md tabular-mono">
               {Math.round(activeRom)}° / {effectiveTargetRomDeg}°
@@ -4408,14 +4435,21 @@ export function SmartRehabKioskUI({
               }`}
             >
               <div className="flex flex-wrap items-center justify-center gap-2">
+                {(unifiedCoachingBanner.tone === 'rose' || unifiedCoachingBanner.tone === 'amber') ? (
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                ) : isWaitLowerArmUi || holdPct >= 100 ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                ) : (
+                  <Timer className="w-4 h-4 text-emerald-600 shrink-0" />
+                )}
                 <p className="text-sm md:text-base font-extrabold leading-tight">
                   {unifiedCoachingBanner.tone === 'rose' || unifiedCoachingBanner.tone === 'amber'
-                    ? `⚠️ ${unifiedCoachingBanner.titleTh}${unifiedCoachingBanner.subtitleTh ? ` — ${unifiedCoachingBanner.subtitleTh}` : ''}`
+                    ? `${unifiedCoachingBanner.titleTh}${unifiedCoachingBanner.subtitleTh ? ` — ${unifiedCoachingBanner.subtitleTh}` : ''}`
                     : isWaitLowerArmUi || holdPct >= 100
-                      ? '✅ ค้างครบเวลา! +1 ครั้ง ค่อยๆ ลดแขนลงช้าๆ'
+                      ? 'ค้างครบเวลา! +1 ครั้ง ค่อยๆ ลดแขนลงช้าๆ'
                       : isHoldPhase
-                        ? `⏱ ค้างท่าไว้ ${holdTargetSec.toFixed(1)} วินาที! (ทำดีมาก!)`
-                        : `✨ ค่อยๆ ยกแขนขึ้นช้าๆ ให้ถึงเป้าหมาย ${effectiveTargetRomDeg} องศา (ทำดีมาก!)`}
+                        ? `ค้างท่าไว้ ${holdTargetSec.toFixed(1)} วินาที! (ทำดีมาก!)`
+                        : `ค่อยๆ ยกแขนขึ้นช้าๆ ให้ถึงเป้าหมาย ${effectiveTargetRomDeg} องศา (ทำดีมาก!)`}
                 </p>
                 {unifiedCoachingBanner.suggestedRomDeg ? (
                   <button
@@ -4487,8 +4521,9 @@ export function SmartRehabKioskUI({
 
         {/* Card 2: Target Hold Timer */}
         <div className="bg-emerald-50/90 border-2 border-emerald-400 rounded-2xl px-3 py-2 text-center shadow-sm flex flex-col items-center justify-between">
-          <p className="text-emerald-950 font-extrabold text-sm md:text-base leading-tight">
-            ⏱ ค้างท่าเป้าหมาย
+          <p className="inline-flex items-center justify-center gap-1.5 text-emerald-950 font-extrabold text-sm md:text-base leading-tight">
+            <Timer className="w-4 h-4 text-emerald-700 shrink-0" />
+            <span>ค้างท่าเป้าหมาย</span>
           </p>
           <div className="text-emerald-700 font-black text-2xl md:text-3xl tabular-mono leading-tight my-0.5 flex items-baseline justify-center gap-1">
             <span ref={holdTimerTextRef} data-testid="kiosk-hold-timer-display">
@@ -4561,8 +4596,9 @@ export function SmartRehabKioskUI({
         aria-label="ขั้นตอนการฝึกและตารางตรวจสอบเช็คลิสต์"
         className="shrink-0 bg-white border-2 border-sky-100 rounded-2xl px-3.5 py-2 shadow-sm"
       >
-        <h2 className="text-sm md:text-base font-extrabold text-blue-950 mb-1.5 truncate">
-          🏃 {selectedExercise.name_th} — {targetSideLabel}
+        <h2 className="flex items-center gap-1.5 text-sm md:text-base font-extrabold text-blue-950 mb-1.5 truncate">
+          <Activity className="w-4 h-4 text-blue-700 shrink-0" />
+          <span className="truncate">{selectedExercise.name_th} — {targetSideLabel}</span>
         </h2>
 
         <div className="grid grid-cols-12 gap-2.5 items-stretch">
@@ -4615,12 +4651,21 @@ export function SmartRehabKioskUI({
                 aria-pressed={baseItem.ruleActive}
                 className="w-full flex items-center justify-between gap-1.5 text-left cursor-pointer hover:bg-emerald-100/50 rounded-md px-1 py-0.5 transition"
               >
-                <span
-                  className={`text-[11px] md:text-xs font-bold leading-tight ${
-                    !baseItem.ruleActive ? 'text-slate-400 line-through' : 'text-slate-800'
-                  }`}
-                >
-                  {!baseItem.ruleActive ? '⏸' : baseItem.ok ? '✔️' : '⚠️'} {displayLabel}
+                <span className="inline-flex items-center gap-1.5 min-w-0">
+                  {!baseItem.ruleActive ? (
+                    <Pause className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  ) : baseItem.ok ? (
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  )}
+                  <span
+                    className={`text-[11px] md:text-xs font-bold leading-tight truncate ${
+                      !baseItem.ruleActive ? 'text-slate-400 line-through' : 'text-slate-800'
+                    }`}
+                  >
+                    {displayLabel}
+                  </span>
                 </span>
                 <span
                   className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-extrabold ${
@@ -4645,9 +4690,9 @@ export function SmartRehabKioskUI({
         <div className="flex items-center gap-2.5 min-w-0 flex-1">
           <span
             aria-hidden="true"
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/15 text-sm"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/15"
           >
-            🎙️
+            <Mic className="w-4 h-4 text-white" />
           </span>
           <span className="text-emerald-200 font-extrabold text-xs md:text-sm shrink-0">
             THAI AI VOICE COACH:
@@ -4664,14 +4709,14 @@ export function SmartRehabKioskUI({
             onClick={handleToggleVoiceMute}
             aria-pressed={voiceMuted}
             data-testid="kiosk-voice-mute-toggle"
-            className={`font-extrabold text-xs md:text-sm px-3 py-1 rounded-lg cursor-pointer transition whitespace-nowrap inline-flex items-center gap-1 ${
+            className={`font-extrabold text-xs md:text-sm px-3 py-1 rounded-lg cursor-pointer transition whitespace-nowrap inline-flex items-center gap-1.5 ${
               voiceMuted
                 ? 'bg-amber-400 text-slate-950 hover:bg-amber-300'
                 : 'bg-white/20 hover:bg-white/30 text-white'
             }`}
           >
             {voiceMuted ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
-            <span>{voiceMuted ? '🔇 ปิดเสียง' : '🔊 เสียงพากย์'}</span>
+            <span>{voiceMuted ? 'ปิดเสียง' : 'เสียงพากย์'}</span>
           </button>
 
           <button
@@ -4716,7 +4761,7 @@ export function SmartRehabKioskUI({
         <div className="sr-only" aria-hidden="true">
           <VoiceCoachBanner
             key={zone5VoiceLang}
-            textTh={rawVoiceTextTh}
+            textTh={cleanSpeechText}
             kioskState={kiosk_state}
             highlightColor={ui_directives.highlight_color}
             muted={voiceMuted}
@@ -4728,15 +4773,17 @@ export function SmartRehabKioskUI({
         {toolsPopoverOpen && (
           <div className="fixed bottom-14 right-3 z-40 w-[min(94vw,680px)] rounded-2xl border-2 border-sky-200 bg-white/98 p-3 text-slate-800 shadow-2xl backdrop-blur-md space-y-2.5">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
-              <span className="text-xs font-extrabold text-blue-950">
-                ⚙️ เครื่องมือผู้ดูแล &amp; การแสดงผลกล้อง
+              <span className="inline-flex items-center gap-1.5 text-xs font-extrabold text-blue-950">
+                <SlidersHorizontal className="w-3.5 h-3.5 text-blue-700" />
+                <span>เครื่องมือผู้ดูแล &amp; การแสดงผลกล้อง</span>
               </span>
               <button
                 type="button"
                 onClick={() => setToolsPopoverOpen(false)}
-                className="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700 hover:bg-slate-200 cursor-pointer"
+                className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700 hover:bg-slate-200 cursor-pointer"
               >
-                ปิดหน้าต่าง ✕
+                <span>ปิดหน้าต่าง</span>
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
 

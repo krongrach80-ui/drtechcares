@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Eye, EyeOff, Maximize2, Play, X } from 'lucide-react';
 import type { ExerciseSideCode } from '@drtechcares/pose-engine';
 import type { ExercisePrescriptionOption } from '../hooks/useKioskSocket';
 
@@ -431,7 +432,7 @@ function HoldPulseTarget({
             fontSize={compact ? 10 : 10.5}
             fontWeight={800}
           >
-            ⭕ ค้าง {targetHoldSec}วิ ({countdownSec}s)
+            ค้าง {targetHoldSec}วิ ({countdownSec}s)
           </text>
         </g>
       </g>
@@ -448,6 +449,18 @@ function HoldPulseTarget({
     );
   }
   return null;
+}
+
+function TargetStarBadge({ x, y }: { x: number; y: number }) {
+  return (
+    <polygon
+      points="0,-8 2.4,-2.6 8,-2.4 3.6,1.2 5.2,6.8 0,3.6 -5.2,6.8 -3.6,1.2 -8,-2.4 -2.4,-2.6"
+      fill="#f59e0b"
+      stroke="#b45309"
+      strokeWidth={1.2}
+      transform={`translate(${x.toFixed(1)}, ${y.toFixed(1)})`}
+    />
+  );
 }
 
 function DirectionalArrow({ from, to, bulge = -20 }: { from: Pt; to: Pt; bulge?: number }) {
@@ -663,9 +676,7 @@ export function AnimatedRehabCoachModel({
           {/* Dashed Target Ghost + Star */}
           <TargetGhostLimb p1={shoulder} p2={targetElbow} p3={targetWrist} />
           {(kind === 'scap_protract' || kind === 'bobath_forward_push') && (
-            <text x={targetWrist.x + 12} y={targetWrist.y + 5} fontSize={14}>
-              ⭐
-            </text>
+            <TargetStarBadge x={targetWrist.x + 18} y={targetWrist.y} />
           )}
           {/* Active Forearm/Upper Arm */}
           <ActiveOrMutedLimb
@@ -755,7 +766,7 @@ export function AnimatedRehabCoachModel({
               <circle cx={(indexTip.x + thumbTip.x) / 2} cy={(indexTip.y + thumbTip.y) / 2} r={12} fill={EMERALD} fillOpacity={0.35} stroke={EMERALD_DARK} strokeWidth={2.5} />
             )}
             <text x={130} y={188} textAnchor="middle" fill="#0f172a" fontSize={12} fontWeight={800}>
-              {frame.motionProgress > 0.75 ? '👌 จีบนิ้วโป้ง-ชี้' : '🖐 กางนิ้วออก'} • {sideLabel}
+              {frame.motionProgress > 0.75 ? 'จีบนิ้วโป้ง-ชี้' : 'กางนิ้วออก'} • {sideLabel}
             </text>
             {isHoldOrLower && (
               <HoldPulseTarget
@@ -821,7 +832,7 @@ export function AnimatedRehabCoachModel({
             />
           )}
           <text x={130} y={190} textAnchor="middle" fill="#0f172a" fontSize={12} fontWeight={800}>
-            {spreadRatio > 0.5 ? '🖐 กระดกข้อมือ + กาง 5 นิ้ว' : '✊ ผ่อนข้อมือ / กำหลวมๆ'} • {sideLabel}
+            {spreadRatio > 0.5 ? 'กระดกข้อมือ + กาง 5 นิ้ว' : 'ผ่อนข้อมือ / กำหลวมๆ'} • {sideLabel}
           </text>
           {isHoldOrLower && (
             <HoldPulseTarget
@@ -908,11 +919,7 @@ export function AnimatedRehabCoachModel({
             active={kind === 'trunk_reach'}
             width={9}
           />
-          {kind === 'trunk_reach' && (
-            <text x={212} y={94} fontSize={16}>
-              ⭐
-            </text>
-          )}
+          {kind === 'trunk_reach' && <TargetStarBadge x={218} y={88} />}
           {kind === 'knee_extension' && isMoving && (
             <DirectionalArrow from={{ x: 146, y: 184 }} to={{ x: 194, y: 140 }} bulge={16} />
           )}
@@ -1212,15 +1219,16 @@ export function AnimatedRehabCoachModel({
         <g transform="translate(192, 16)">
           <rect x={-52} y={-11} width={104} height={20} rx={10} fill="#ffffff" stroke="#0284c7" strokeWidth={1.6} />
           <text x={0} y={3} textAnchor="middle" fill="#0f172a" fontSize={10} fontWeight={900}>
-            {currentDeg}° ➔ {targetRom}°
+            {currentDeg}° → {targetRom}°
           </text>
         </g>
 
         {/* Active Side Pill Top-Left */}
         <g transform="translate(64, 16)">
           <rect x={-54} y={-11} width={108} height={20} rx={10} fill="#10b981" />
-          <text x={0} y={3} textAnchor="middle" fill="#ffffff" fontSize={10} fontWeight={900}>
-            🎯 {sideLabel}
+          <circle cx={-40} cy={-1} r={3.5} fill="#ffffff" />
+          <text x={6} y={3} textAnchor="middle" fill="#ffffff" fontSize={10} fontWeight={900}>
+            {sideLabel}
           </text>
         </g>
 
@@ -1254,9 +1262,10 @@ export function Zone2PipCoachOverlay({
           onClick={onToggleVisible}
           data-testid="kiosk-pip-coach-toggle"
           aria-label="ซ่อน/แสดงหุ่นโค้ชบนจอ"
-          className="bg-white/90 backdrop-blur-md border-2 border-emerald-500 text-emerald-900 font-extrabold text-xs px-3 py-1 rounded-full shadow-lg hover:bg-emerald-50 cursor-pointer active:scale-95 transition"
+          className="inline-flex items-center gap-1.5 bg-white/90 backdrop-blur-md border-2 border-emerald-500 text-emerald-900 font-extrabold text-xs px-3 py-1 rounded-full shadow-lg hover:bg-emerald-50 cursor-pointer active:scale-95 transition"
         >
-          👁️ ซ่อน/แสดงหุ่นโค้ชบนจอ
+          <Eye className="w-3.5 h-3.5 shrink-0" />
+          <span>ซ่อน/แสดงหุ่นโค้ชบนจอ</span>
         </button>
       </div>
     );
@@ -1268,8 +1277,9 @@ export function Zone2PipCoachOverlay({
       className="absolute top-14 left-3 z-20 w-28 h-32 md:w-36 md:h-40 bg-white/90 backdrop-blur-md border-2 border-emerald-500 rounded-2xl shadow-xl p-1.5 flex flex-col items-center justify-between"
     >
       <div className="w-full flex items-center justify-between gap-1 shrink-0">
-        <span className="text-[10px] font-black text-emerald-900 truncate">
-          🎬 {frame.phaseLabelTh}
+        <span className="inline-flex items-center gap-1 text-[10px] font-black text-emerald-900 truncate">
+          <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+          <span className="truncate">{frame.phaseLabelTh}</span>
         </span>
         <button
           type="button"
@@ -1277,9 +1287,10 @@ export function Zone2PipCoachOverlay({
           data-testid="kiosk-pip-coach-toggle"
           title="ซ่อน/แสดงหุ่นโค้ชบนจอ"
           aria-label="ซ่อน/แสดงหุ่นโค้ชบนจอ"
-          className="rounded-md bg-emerald-100 hover:bg-emerald-200 px-1.5 py-0.5 text-[10px] font-extrabold text-emerald-950 shrink-0 cursor-pointer"
+          className="inline-flex items-center gap-0.5 rounded-md bg-emerald-100 hover:bg-emerald-200 px-1.5 py-0.5 text-[10px] font-extrabold text-emerald-950 shrink-0 cursor-pointer"
         >
-          👁️ ซ่อน
+          <EyeOff className="w-3 h-3 shrink-0" />
+          <span>ซ่อน</span>
         </button>
       </div>
 
@@ -1329,16 +1340,18 @@ export function Zone4CoachStageAndSteps({
       {/* Left 3 Columns: Live Animated Coach Stage */}
       <div className="col-span-3 bg-gradient-to-b from-sky-50 to-emerald-50/70 border-2 border-emerald-400 rounded-2xl p-2 flex flex-col items-center justify-between relative overflow-hidden">
         <div className="w-full flex items-center justify-between gap-1 shrink-0 z-10">
-          <span className="bg-emerald-600 text-white text-[10px] md:text-xs font-black px-2 py-0.5 rounded-full truncate">
-            🎬 หุ่นสาธิต ({frame.phaseLabelTh})
+          <span className="inline-flex items-center gap-1 bg-emerald-600 text-white text-[10px] md:text-xs font-black px-2 py-0.5 rounded-full truncate">
+            <span className="inline-block w-2 h-2 rounded-full bg-white animate-pulse shrink-0" />
+            <span className="truncate">หุ่นสาธิต ({frame.phaseLabelTh})</span>
           </span>
           <button
             type="button"
             onClick={onExpandPreview}
             data-testid="kiosk-coach-expand-btn"
-            className="bg-white hover:bg-sky-50 border border-blue-300 text-blue-800 text-[10px] md:text-xs font-extrabold px-2 py-0.5 rounded-lg shrink-0 cursor-pointer shadow-xs active:scale-95 transition"
+            className="inline-flex items-center gap-1 bg-white hover:bg-sky-50 border border-blue-300 text-blue-800 text-[10px] md:text-xs font-extrabold px-2 py-0.5 rounded-lg shrink-0 cursor-pointer shadow-xs active:scale-95 transition"
           >
-            🔍 ขยายใหญ่
+            <Maximize2 className="w-3 h-3 shrink-0" />
+            <span>ขยายใหญ่</span>
           </button>
         </div>
 
@@ -1374,8 +1387,9 @@ export function Zone4CoachStageAndSteps({
                   {item.title}
                 </span>
                 {isActiveStep && (
-                  <span className="bg-emerald-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full animate-pulse whitespace-nowrap">
-                    ▶ กำลังทำขั้นนี้
+                  <span className="inline-flex items-center gap-1 bg-emerald-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full animate-pulse whitespace-nowrap">
+                    <Play className="w-2.5 h-2.5 fill-current shrink-0" />
+                    <span>กำลังทำขั้นนี้</span>
                   </span>
                 )}
               </div>
@@ -1423,7 +1437,7 @@ export function ExpandedCoachModal({
         <div className="flex items-center justify-between gap-3 border-b border-slate-200 pb-2.5">
           <div className="min-w-0">
             <p className="text-xs font-extrabold text-emerald-700">
-              🎬 หุ่นโค้ชสาธิต 60FPS ({frame.phaseLabelTh})
+              หุ่นโค้ชสาธิต 60FPS ({frame.phaseLabelTh})
             </p>
             <h3 className="text-lg md:text-xl font-black text-blue-950 truncate">
               {exercise.name_th} — {targetSideLabel}
@@ -1432,9 +1446,10 @@ export function ExpandedCoachModal({
           <button
             type="button"
             onClick={onClose}
-            className="bg-blue-600 hover:bg-blue-700 text-white font-extrabold px-4 py-2 rounded-xl text-sm shrink-0 cursor-pointer"
+            className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold px-4 py-2 rounded-xl text-sm shrink-0 cursor-pointer"
           >
-            ปิดหน้าต่าง ✕
+            <span>ปิดหน้าต่าง</span>
+            <X className="w-4 h-4 shrink-0" />
           </button>
         </div>
 

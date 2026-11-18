@@ -715,7 +715,7 @@ function MinigameVoiceBar({
         ) : (
           <Volume2 className={`h-3.5 w-3.5 shrink-0 text-emerald-700 ${isSpeaking ? 'animate-pulse' : ''}`} />
         )}
-        <span>{voiceMuted ? '🔇 เสียง AI: ปิด' : '🔊 เสียง AI: เปิด'}</span>
+        <span>{voiceMuted ? 'เสียง AI: ปิด' : 'เสียง AI: เปิด'}</span>
       </button>
     </div>
   );
@@ -1816,7 +1816,7 @@ export function PhysicalCardGame({
                   ctx,
                   handSample.px,
                   handSample.topPx,
-                  '⚠️ ยก 2 มือพร้อมกัน!',
+                  'ยก 2 มือพร้อมกัน!',
                   'rgba(220, 38, 38, 0.94)',
                 );
               } else if (isRaised && !isSpeechLocked) {
@@ -2055,9 +2055,9 @@ export function PhysicalCardGame({
             ) : (
               <span
                 aria-label={localizedSubject}
-                className="text-[9.5rem] sm:text-[11.5rem] md:text-[13.5rem] leading-none select-none drop-shadow-md transform scale-110"
+                className="text-3xl sm:text-4xl md:text-5xl font-black text-indigo-900 px-6 py-4 rounded-2xl bg-indigo-50 border-2 border-indigo-200 select-none"
               >
-                {currentCard.icon}
+                {localizedSubject}
               </span>
             )}
           </div>
@@ -2097,10 +2097,10 @@ export function PhysicalCardGame({
                 }`}
               >
                 {bothHandsWarn
-                  ? '⚠️ ห้ามยก 2 มือพร้อมกัน! กรุณาลดมือลง 1 ข้างเพื่อตอบ'
+                  ? 'ห้ามยก 2 มือพร้อมกัน! กรุณาลดมือลง 1 ข้างเพื่อตอบ'
                   : questionPhase === 'READING_QUESTION'
-                    ? '🔊 กรุณาฟังคำถามให้จบก่อนยกมือตอบ...'
-                    : '✋ ยกมือข้างเดียวเพื่อตอบได้เลย!'}
+                    ? 'กรุณาฟังคำถามให้จบก่อนยกมือตอบ...'
+                    : 'ยกมือข้างเดียวเพื่อตอบได้เลย!'}
               </span>
 
               {questionPhase === 'READY_TO_ANSWER' && pendingChoice === 'yes' && !bothHandsWarn ? (
@@ -2134,7 +2134,7 @@ export function PhysicalCardGame({
           {bothHandsWarn && (
             <div className="pointer-events-none mg-cam-status absolute inset-x-6 top-1/2 -translate-y-1/2 z-20 flex items-center justify-center gap-3 rounded-3xl bg-red-600/95 border-2 border-white px-7 py-5 font-black text-white shadow-2xl text-center">
               <AlertTriangle className="h-10 w-10 shrink-0" />
-              <span className="text-lg sm:text-xl">⚠️ ห้ามยก 2 มือพร้อมกัน! กรุณาลดมือลง 1 ข้างเพื่อตอบ</span>
+              <span className="text-lg sm:text-xl">ห้ามยก 2 มือพร้อมกัน! กรุณาลดมือลง 1 ข้างเพื่อตอบ</span>
             </div>
           )}
 

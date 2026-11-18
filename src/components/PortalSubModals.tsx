@@ -156,7 +156,7 @@ const SUBMODAL_TEXT: Record<
     saveNewPwdBtn: 'บันทึกรหัสผ่านใหม่',
     agePrefix: 'อายุ',
     ageUnit: 'ปี',
-    sendFaceScanBtn: '📸 ส่งตัวสแกนหน้า',
+    sendFaceScanBtn: 'ส่งตัวสแกนหน้า',
     profileTab: 'โปรไฟล์ & เวชระเบียน',
     historyTab: 'ประวัติการฝึก & ROM',
     editProfileHeading: 'แก้ไขข้อมูลพื้นฐานคนไข้',
@@ -208,7 +208,7 @@ const SUBMODAL_TEXT: Record<
     saveNewPwdBtn: 'Save New Password',
     agePrefix: 'Age',
     ageUnit: 'yrs',
-    sendFaceScanBtn: '📸 Send to Face Scan',
+    sendFaceScanBtn: 'Send to Face Scan',
     profileTab: 'Profile & Medical Records',
     historyTab: 'Training History & ROM',
     editProfileHeading: 'Edit Patient Demographics',
@@ -260,7 +260,7 @@ const SUBMODAL_TEXT: Record<
     saveNewPwdBtn: '保存新密码',
     agePrefix: '年龄',
     ageUnit: '岁',
-    sendFaceScanBtn: '📸 前往人脸建档',
+    sendFaceScanBtn: '前往人脸建档',
     profileTab: '档案与病历记录',
     historyTab: '康复记录与 ROM 角度',
     editProfileHeading: '编辑患者基本信息',
@@ -637,7 +637,7 @@ export function WelcomeFaceScanModal({
                         setMatchResult({
                           matched: false,
                           confidencePercent: Math.round(evalRes.confidencePercent),
-                          reason: '🔍 กำลังตรวจสอบใบหน้า...',
+                          reason: 'กำลังตรวจสอบใบหน้า...',
                         });
                         void fetchLiveBiometricsFromSupabase(apiClient)
                           .then((loaded) => {
@@ -802,19 +802,19 @@ export function WelcomeFaceScanModal({
               {spoofDetectedNow ? (
                 <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[290px] -translate-x-1/2 rounded-lg border border-rose-400 bg-rose-50/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
                   <div className="text-[11px] font-black text-rose-700">
-                    ⚠️ ตรวจพบภาพถ่ายหรือหน้าจอมือถือ — กรุณากะพริบตาหรือขยับศีรษะด้วยใบหน้าจริง
+                    ตรวจพบภาพถ่ายหรือหน้าจอมือถือ — กรุณากะพริบตาหรือขยับศีรษะด้วยใบหน้าจริง
                   </div>
                 </div>
               ) : !bioStatus?.biologicalVerified ? (
                 <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[290px] -translate-x-1/2 rounded-lg border border-sky-300 bg-white/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
                   <div className="text-[10px] font-extrabold text-[#0F4C81]">
-                    👁️ กรุณากะพริบตาหรือขยับศีรษะเล็กน้อยเพื่อยืนยันตัวตน
+                    กรุณากะพริบตาหรือขยับศีรษะเล็กน้อยเพื่อยืนยันตัวตน
                   </div>
                 </div>
               ) : liveMatchHud?.confirmed && liveMatchHud?.candidate ? (
                 <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-emerald-400 bg-white/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
                   <div className="text-[11px] font-black text-emerald-700">
-                    ✓ ยืนยันเจ้าของบัญชี: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
+                    ยืนยันเจ้าของบัญชี: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
                   </div>
                   <div className="text-[10px] font-bold text-[#0F4C81]">
                     {liveMatchHud.confidencePercent.toFixed(1)}% ({liveMatchHud.streak}/{BIOMETRIC_REQUIRED_STREAK})
@@ -823,13 +823,13 @@ export function WelcomeFaceScanModal({
               ) : lastRawCosine >= BIOMETRIC_MATCH_THRESHOLD && autoScanCount > 0 ? (
                 <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-blue-400 bg-blue-50/95 px-3 py-1 text-center backdrop-blur-md shadow-xl">
                   <div className="text-[10px] font-extrabold text-blue-800">
-                    ⏳ กำลังยืนยันตัวตน... ({autoScanCount}/{BIOMETRIC_REQUIRED_STREAK})
+                    กำลังยืนยันตัวตน... ({autoScanCount}/{BIOMETRIC_REQUIRED_STREAK})
                   </div>
                 </div>
               ) : (
                 <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[290px] -translate-x-1/2 rounded-lg border border-amber-400 bg-amber-50/95 px-3 py-1 text-center backdrop-blur-md shadow-xl">
                   <div className="text-[10px] font-extrabold text-amber-800">
-                    🔍 กำลังตรวจสอบใบหน้า...
+                    กำลังตรวจสอบใบหน้า...
                   </div>
                 </div>
               )}
@@ -878,7 +878,7 @@ export function WelcomeFaceScanModal({
             ) : (
               <div className="flex items-center justify-between gap-2">
                 <span>
-                  ❌ ยังไม่พบบัญชีที่ตรงกับใบหน้านี้ ({matchResult.confidencePercent}%) — {matchResult.reason || 'กรุณาลงทะเบียนใหม่'}
+                  ยังไม่พบบัญชีที่ตรงกับใบหน้านี้ ({matchResult.confidencePercent}%) — {matchResult.reason || 'กรุณาลงทะเบียนใหม่'}
                 </span>
                 <button
                   type="button"
@@ -1635,7 +1635,7 @@ export function PatientProfileAndHistoryModal({
                               <span className="font-mono text-[10px] text-slate-500">({cmp.code})</span>
                             </div>
                             <div className="text-[11px] text-slate-600">
-                              ครั้งที่ 1: <span className="font-mono font-bold">{cmp.base.toFixed(1)}°</span> ➔{' '}
+                              ครั้งที่ 1: <span className="font-mono font-bold">{cmp.base.toFixed(1)}°</span> →{' '}
                               ครั้งล่าสุด ({cmp.count}):{' '}
                               <span className="font-mono font-black text-sky-700">
                                 {cmp.latest.achievedMaxRomDeg.toFixed(1)}°
@@ -3022,7 +3022,7 @@ export function ScheduleCreatorAndDayModal({
                       >
                         <div className="text-xs">{w.label[lang]}</div>
                         <div className={`text-[10px] mt-0.5 ${active ? 'text-blue-100' : 'text-slate-400'}`}>
-                          {active ? '✓ ฝึก' : 'พัก'}
+                          {active ? 'ฝึก' : 'พัก'}
                         </div>
                       </button>
                     );
@@ -3167,7 +3167,7 @@ export function ScheduleCreatorAndDayModal({
                     >
                       <span className="text-xs font-extrabold">{dayNum}</span>
                       <span className={`text-[9px] font-bold ${isSelected ? 'text-white/90' : 'text-emerald-600'}`}>
-                        {isSelected ? '✓ เลือก' : existingCount > 0 ? `${existingCount} ท่าเดิม` : ''}
+                        {isSelected ? 'เลือก' : existingCount > 0 ? `${existingCount} ท่าเดิม` : ''}
                       </span>
                     </button>
                   );

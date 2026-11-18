@@ -525,9 +525,9 @@ export function evaluateOwnerBoundKinematicHands(input: {
       singleOnly: false,
       intruderHandDetected: false,
       poseLinkedToOwner: false,
-      alertBannerTh: '⚠️ พบผู้อื่นอยู่ในเฟรม กรุณาให้เจ้าของบัญชีอยู่หน้ากล้องเพียงคนเดียว',
-      alertBannerEn: '⚠️ Multiple people detected — account owner must be alone in front of the camera',
-      alertBannerCn: '⚠️ 画面中检测到多名人员，请仅由账户本人面向摄像头',
+      alertBannerTh: 'พบผู้อื่นอยู่ในเฟรม กรุณาให้เจ้าของบัญชีอยู่หน้ากล้องเพียงคนเดียว',
+      alertBannerEn: 'Multiple people detected — account owner must be alone in front of the camera',
+      alertBannerCn: '画面中检测到多名人员，请仅由账户本人面向摄像头',
       intruderPalms: [],
     };
   }
@@ -541,9 +541,9 @@ export function evaluateOwnerBoundKinematicHands(input: {
       singleOnly: false,
       intruderHandDetected: false,
       poseLinkedToOwner: false,
-      alertBannerTh: '⚠️ ไม่พบใบหน้าเจ้าของบัญชี กรุณามองกล้องขณะยกมือ',
-      alertBannerEn: '⚠️ Owner face not found — please face the camera while raising hands',
-      alertBannerCn: '⚠️ 未检测到本人面部，请在举手时直视摄像头',
+      alertBannerTh: 'ไม่พบใบหน้าเจ้าของบัญชี กรุณามองกล้องขณะยกมือ',
+      alertBannerEn: 'Owner face not found — please face the camera while raising hands',
+      alertBannerCn: '未检测到本人面部，请在举手时直视摄像头',
       intruderPalms: [],
     };
   }
@@ -557,9 +557,9 @@ export function evaluateOwnerBoundKinematicHands(input: {
       singleOnly: false,
       intruderHandDetected: false,
       poseLinkedToOwner: false,
-      alertBannerTh: `⛔ คุณไม่ใช่เจ้าของบัญชี (${input.ownerName}) ไม่สามารถทำรายการแทนกันได้`,
-      alertBannerEn: `⛔ Identity mismatch — you are not the account owner (${input.ownerName})`,
-      alertBannerCn: `⛔ 身份不匹配 — 您不是账户本人 (${input.ownerName})，无法代为操作`,
+      alertBannerTh: `คุณไม่ใช่เจ้าของบัญชี (${input.ownerName}) ไม่สามารถทำรายการแทนกันได้`,
+      alertBannerEn: `Identity mismatch — you are not the account owner (${input.ownerName})`,
+      alertBannerCn: `身份不匹配 — 您不是账户本人 (${input.ownerName})，无法代为操作`,
       intruderPalms: [],
     };
   }
@@ -584,9 +584,9 @@ export function evaluateOwnerBoundKinematicHands(input: {
       singleOnly: false,
       intruderHandDetected: true,
       poseLinkedToOwner,
-      alertBannerTh: '⚠️ ตรวจพบมือของบุคคลอื่น กรุณาให้เจ้าของบัญชียกมือด้วยตนเองเท่านั้น',
-      alertBannerEn: '⚠️ Another person’s hand detected — only the account owner may raise hands',
-      alertBannerCn: '⚠️ 检测到他人手部，请仅由账户本人亲自举起双手',
+      alertBannerTh: 'ตรวจพบมือของบุคคลอื่น กรุณาให้เจ้าของบัญชียกมือด้วยตนเองเท่านั้น',
+      alertBannerEn: 'Another person’s hand detected — only the account owner may raise hands',
+      alertBannerCn: '检测到他人手部，请仅由账户本人亲自举起双手',
       intruderPalms,
     };
   }
@@ -710,9 +710,9 @@ export function evaluateOwnerBoundKinematicHands(input: {
       singleOnly: false,
       intruderHandDetected: true,
       poseLinkedToOwner,
-      alertBannerTh: '⚠️ ตรวจพบมือของบุคคลอื่น กรุณาให้เจ้าของบัญชียกมือด้วยตนเองเท่านั้น',
-      alertBannerEn: '⚠️ Another person’s hand detected — only the account owner may raise hands',
-      alertBannerCn: '⚠️ 检测到他人手部，请仅由账户本人亲自举起双手',
+      alertBannerTh: 'ตรวจพบมือของบุคคลอื่น กรุณาให้เจ้าของบัญชียกมือด้วยตนเองเท่านั้น',
+      alertBannerEn: 'Another person’s hand detected — only the account owner may raise hands',
+      alertBannerCn: '检测到他人手部，请仅由账户本人亲自举起双手',
       intruderPalms,
     };
   }
@@ -820,16 +820,16 @@ export function drawOwnerBiometricOverlayOnCanvas(
 
   if (faceBox) {
     if (faceCount > 1) {
-      drawFaceBox(faceBox, '#F59E0B', '⚠️ พบมากกว่า 1 คนในเฟรม', true);
+      drawFaceBox(faceBox, '#F59E0B', 'พบมากกว่า 1 คนในเฟรม', true);
     } else if (ownerFaceVerified) {
-      drawFaceBox(faceBox, '#10B981', `✓ เจ้าของบัญชี: ${ownerName}`, false);
+      drawFaceBox(faceBox, '#10B981', `ยืนยันเจ้าของบัญชี: ${ownerName}`, false);
     } else {
-      drawFaceBox(faceBox, '#EF4444', `⛔ ไม่ใช่เจ้าของบัญชี (${ownerName})`, false);
+      drawFaceBox(faceBox, '#EF4444', `ไม่ใช่เจ้าของบัญชี (${ownerName})`, false);
     }
   }
 
   for (const extra of extraFaceBoxes) {
-    drawFaceBox(extra, '#EF4444', '⚠️ บุคคลอื่น', true);
+    drawFaceBox(extra, '#EF4444', 'บุคคลอื่น', true);
   }
 
   if (handEval) {
@@ -889,7 +889,7 @@ export function drawOwnerBiometricOverlayOnCanvas(
         ctx,
         bad.rawX,
         Math.max(16, bad.rawY - 24),
-        '⛔ มือบุคคลอื่น',
+        'มือบุคคลอื่น',
         '#EF4444',
         '#FFFFFF',
         'center',

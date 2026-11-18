@@ -90,15 +90,23 @@ export interface KioskVoiceMuteCopy {
   mutedLabel: string;
 }
 
+/** Strip Unicode emojis, variation selectors, and symbol dingbats before speech synthesis or UI display. */
+export function sanitizeSpeechText(rawText: string): string {
+  return rawText
+    .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** Accessible high-contrast labels for senior patients across TH / EN / ZH. */
 export function getSeniorVoiceToggleLabel(lang: 'th' | 'en' | 'zh' | string, muted: boolean): string {
   const norm = lang.trim().toLowerCase();
   if (norm.startsWith('en')) {
-    return muted ? '🔇 AI Voice Muted (Tap to Unmute)' : '🔊 AI Voice On (Tap to Mute)';
+    return muted ? 'AI Voice Muted (Tap to Unmute)' : 'AI Voice On (Tap to Mute)';
   }
   if (norm.startsWith('zh') || norm === 'cn') {
-    return muted ? '🔇 AI 语音已静音 (点击开启)' : '🔊 AI 语音播报中 (点击静音)';
+    return muted ? 'AI 语音已静音 (点击开启)' : 'AI 语音播报中 (点击静音)';
   }
-  return muted ? '🔇 ปิดเสียงพากย์ AI แล้ว (กดเพื่อเปิดเสียง)' : '🔊 เปิดเสียงพากย์ AI อยู่ (กดเพื่อปิดเสียง)';
+  return muted ? 'ปิดเสียงพากย์ AI แล้ว (กดเพื่อเปิดเสียง)' : 'เปิดเสียงพากย์ AI อยู่ (กดเพื่อปิดเสียง)';
 }
 

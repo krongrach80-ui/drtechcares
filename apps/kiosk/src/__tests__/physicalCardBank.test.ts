@@ -230,21 +230,21 @@ describe('PhysicalCardGame Trilingual AI Voiceover Helpers', () => {
       resolveCognitiveCardVisualKind({
         artKey: 'carrot',
         imageUrl: 'data:image/svg+xml;utf8,%3Csvg%3E%3C/svg%3E',
-        icon: '🥕',
+        icon: 'carrot',
       }),
     ).toBe('svg_art');
     expect(
       resolveCognitiveCardVisualKind({
         artKey: undefined as unknown as 'carrot',
         imageUrl: 'https://example.com/custom-card.png',
-        icon: '🍎',
+        icon: 'apple',
       }),
     ).toBe('image_url');
     expect(
       resolveCognitiveCardVisualKind({
         artKey: undefined as unknown as 'carrot',
         imageUrl: '',
-        icon: '🍌',
+        icon: 'banana',
       }),
     ).toBe('emoji_icon');
 

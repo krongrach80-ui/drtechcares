@@ -50,6 +50,7 @@ import {
   PauseCircle,
   Pencil,
   Phone,
+  Play,
   Plus,
   RefreshCw,
   Save,
@@ -353,7 +354,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       returnKiosk: '← หน้าตู้ Kiosk',
       logout: 'ออกจากระบบ',
       cardGame: 'การ์ดกายภาพ (10 ข้อ)',
-      cloudConnected: '🟢 Online (เชื่อมต่อระบบแล้ว)',
+      cloudConnected: 'Online (เชื่อมต่อระบบแล้ว)',
       cloudOffline: 'Offline (ลองใหม่)',
     },
     staff: {
@@ -411,7 +412,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       title: 'ทำเนียบนักกายภาพบำบัด (PT Directory)',
       subtitle: 'รายชื่อนักกายภาพบำบัดประจำโรงพยาบาล เลขที่ใบอนุญาตประกอบวิชาชีพ และคนไข้ที่ดูแล',
       searchPlaceholder: 'ค้นหาชื่อ PT, เลขที่ใบอนุญาต, ความเชี่ยวชาญ...',
-      licenseLabel: '🏅 ใบประกอบวิชาชีพ:',
+      licenseLabel: 'ใบประกอบวิชาชีพ:',
       specialtyLabel: 'ความเชี่ยวชาญ:',
       patientsCountLabel: 'คนไข้ที่ดูแล:',
       patientsUnit: 'ท่าน',
@@ -467,7 +468,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
     security: {
       title: 'ประวัติและความปลอดภัย (Audit, Bans & Security)',
       subtitle: 'คำเรียกเจ้าหน้าที่ฉุกเฉิน (Realtime), บันทึก Audit Log, บังคับตัดเซสชัน, ระบบแบน และจัดการตู้ Kiosk',
-      testAlertBtn: '🔔 ทดสอบแจ้งเตือนฉุกเฉิน',
+      testAlertBtn: 'ทดสอบแจ้งเตือนฉุกเฉิน',
       emergencyBannerTitle: 'มีคนไข้ต้องการความช่วยเหลือที่ตู้ Kiosk',
       emergencyBannerDesc: 'เชื่อมต่อ Realtime Supabase + Polling อัตโนมัติเมื่อคนไข้กดเรียกเจ้าหน้าที่',
       viewCallsBtn: 'ดูรายการเรียกเจ้าหน้าที่ทันที',
@@ -485,9 +486,9 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       colActions: 'ดำเนินการ',
       ackBtn: 'รับเรื่อง',
       resolveBtn: 'แก้ไขแล้ว',
-      statusResolved: '✓ แก้ไขแล้ว',
-      statusAck: '⏳ กำลังตรวจสอบ',
-      statusOpen: '🔔 รอเจ้าหน้าที่',
+      statusResolved: 'แก้ไขแล้ว',
+      statusAck: 'กำลังตรวจสอบ',
+      statusOpen: 'รอเจ้าหน้าที่',
       emptyCalls: 'ยังไม่มีคำเรียกเจ้าหน้าที่ฉุกเฉิน',
       registerKioskBtn: '+ ลงทะเบียนตู้ Kiosk ใหม่',
       kioskPanelTitle: 'อุปกรณ์ตู้ Kiosk ในระบบ',
@@ -569,7 +570,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       returnKiosk: '← Back to Kiosk',
       logout: 'Sign Out',
       cardGame: 'Rehab Cards (10 Qs)',
-      cloudConnected: '🟢 Online (Connected)',
+      cloudConnected: 'Online (Connected)',
       cloudOffline: 'Offline (Retry)',
     },
     staff: {
@@ -627,7 +628,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       title: 'Physiotherapist Directory',
       subtitle: 'Registered hospital physiotherapists, medical license numbers, and assigned patients',
       searchPlaceholder: 'Search PT name, license no., specialty...',
-      licenseLabel: '🏅 License No:',
+      licenseLabel: 'License No:',
       specialtyLabel: 'Specialty:',
       patientsCountLabel: 'Patients:',
       patientsUnit: 'patients',
@@ -683,7 +684,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
     security: {
       title: 'Audit, Bans & Kiosk Security',
       subtitle: 'Realtime Kiosk emergency alerts, tamper-evident audit logs, session kick, bans & terminal status',
-      testAlertBtn: '🔔 Test Emergency Alert',
+      testAlertBtn: 'Test Emergency Alert',
       emergencyBannerTitle: 'Patient Assistance Requested at Kiosk',
       emergencyBannerDesc: 'Synced via Realtime Supabase + 10s automatic polling',
       viewCallsBtn: 'View Staff Calls Now',
@@ -701,9 +702,9 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       colActions: 'ACTION',
       ackBtn: 'Acknowledge',
       resolveBtn: 'Resolve',
-      statusResolved: '✓ Resolved',
-      statusAck: '⏳ Checking',
-      statusOpen: '🔔 Waiting Staff',
+      statusResolved: 'Resolved',
+      statusAck: 'Checking',
+      statusOpen: 'Waiting Staff',
       emptyCalls: 'No emergency staff calls',
       registerKioskBtn: '+ Register Kiosk',
       kioskPanelTitle: 'Registered Kiosk Terminals',
@@ -785,7 +786,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       returnKiosk: '← 返回终端画面',
       logout: '退出登录',
       cardGame: '康复认知卡 (10题)',
-      cloudConnected: '🟢 Online (已连接云端)',
+      cloudConnected: 'Online (已连接云端)',
       cloudOffline: '离线 (点击重试)',
     },
     staff: {
@@ -843,7 +844,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       title: '物理治疗师团队名录 (PT Directory)',
       subtitle: '在院注册物理治疗师名单、执业资格证号与负责患者数量统计',
       searchPlaceholder: '搜索康复师姓名、执业证号、专业方向...',
-      licenseLabel: '🏅 执业证号:',
+      licenseLabel: '执业证号:',
       specialtyLabel: '临床专长:',
       patientsCountLabel: '负责患者数:',
       patientsUnit: '位',
@@ -899,7 +900,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
     security: {
       title: '安全审计日志、封禁与终端管理 (Security)',
       subtitle: '终端实时紧急呼叫、不可篡改审计日志 (Audit Log)、强制踢出会话、封禁及 Kiosk 管理',
-      testAlertBtn: '🔔 测试紧急呼叫警报',
+      testAlertBtn: '测试紧急呼叫警报',
       emergencyBannerTitle: '有患者在 Kiosk 终端请求协助',
       emergencyBannerDesc: '已通过 Supabase Realtime 与 10 秒轮询自动同步警报',
       viewCallsBtn: '立即查看呼叫列表',
@@ -917,9 +918,9 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       colActions: '处理操作',
       ackBtn: '受理',
       resolveBtn: '已处理',
-      statusResolved: '✓ 已完成处理',
-      statusAck: '⏳ 核查处理中',
-      statusOpen: '🔔 待响应',
+      statusResolved: '已完成处理',
+      statusAck: '核查处理中',
+      statusOpen: '待响应',
       emptyCalls: '暂无终端紧急呼叫记录',
       registerKioskBtn: '+ 注册新 Kiosk 终端',
       kioskPanelTitle: '已注册 Kiosk 设备列表',
@@ -2519,7 +2520,7 @@ export function ClinicalStaffPortalShell({
             data-testid="sidebar-pose-test-btn"
             className="w-full h-10 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-400 hover:to-teal-400 px-3 font-extrabold shadow-md border border-white/25 whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer transition"
           >
-            <span className="shrink-0">🏃</span>
+            <Activity className="h-4 w-4 shrink-0" />
             {!sidebarCollapsed && <span className="truncate">ทดลองท่าทางกายภาพ (15 ท่า)</span>}
           </button>
 
@@ -2644,7 +2645,8 @@ export function ClinicalStaffPortalShell({
               data-testid="header-pose-test-btn"
               className="whitespace-nowrap h-9 min-w-[145px] inline-flex items-center justify-center gap-1.5 rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 px-3.5 font-extrabold text-white shadow-sm hover:from-emerald-500 hover:to-teal-500 cursor-pointer shrink-0 transition"
             >
-              <span>🏃 ทดลองท่ากายภาพ</span>
+              <Activity className="h-3.5 w-3.5 shrink-0" />
+              <span>ทดลองท่ากายภาพ</span>
             </button>
 
             {onReturnToKiosk && (
@@ -3255,7 +3257,8 @@ export function ClinicalStaffPortalShell({
                     data-testid="tab4-pose-test-btn"
                     className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-2 shrink-0 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
                   >
-                    <span>🏃 ทดลองท่าทางกายภาพ (15 ท่า)</span>
+                    <Activity className="h-4 w-4 shrink-0" />
+                    <span>ทดลองท่าทางกายภาพ (15 ท่า)</span>
                   </button>
                   <button
                     type="button"
@@ -3489,9 +3492,10 @@ export function ClinicalStaffPortalShell({
                             type="button"
                             onClick={() => handleLaunchPoseTest(ex.code || ex.id)}
                             data-testid={`exercise-card-pose-test-${ex.code || ex.id}`}
-                            className="whitespace-nowrap rounded-xl border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-extrabold text-emerald-800 hover:bg-emerald-100 cursor-pointer transition"
+                            className="inline-flex items-center gap-1 whitespace-nowrap rounded-xl border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-extrabold text-emerald-800 hover:bg-emerald-100 cursor-pointer transition"
                           >
-                            ▶️ ทดลองทำท่านี้ด้วยกล้องทันที
+                            <Play className="h-3 w-3 fill-current shrink-0" />
+                            <span>ทดลองทำท่านี้ด้วยกล้องทันที</span>
                           </button>
                           {(isAdmin || ex.createdBy === currentUser.id) && (
                             <button
@@ -3815,13 +3819,13 @@ export function ClinicalStaffPortalShell({
                             className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold"
                           >
                             <option value="minigame">
-                              🎮 {lang === 'cn' ? '认知卡牌小游戏' : lang === 'en' ? 'Cognitive Minigame' : 'มินิเกมการ์ด'}
+                              {lang === 'cn' ? '认知卡牌小游戏' : lang === 'en' ? 'Cognitive Minigame' : 'มินิเกมการ์ด'}
                             </option>
                             <option
                               value="physio_exercise"
                               disabled={!isAdmin && !systemSettings.aiPoseDetectionEnabled}
                             >
-                              🏋️ {lang === 'cn' ? 'AI 康复训练' : lang === 'en' ? 'AI Rehab Exercise' : 'ท่ากายภาพ AI'}{' '}
+                              {lang === 'cn' ? 'AI 康复训练' : lang === 'en' ? 'AI Rehab Exercise' : 'ท่ากายภาพ AI'}{' '}
                               {!isAdmin && !systemSettings.aiPoseDetectionEnabled ? '(Locked)' : ''}
                             </option>
                           </select>
@@ -4204,24 +4208,25 @@ export function ClinicalStaffPortalShell({
               <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
                 {(
                   [
-                    { id: 'calls', label: `🔔 ${locale.security.tabCalls} (${staffCalls.length})` },
-                    { id: 'audit', label: `🕒 ${locale.security.tabAudit} (${auditLogs.length})` },
-                    { id: 'sessions', label: `👥 ${locale.security.tabSessions} (${activeSessions.length})` },
-                    { id: 'bans', label: `⊘ ${locale.security.tabBans} (${bannedTargets.length})` },
-                    { id: 'kiosks', label: `🖥 ${locale.security.tabKiosks} (${kiosks.length})` },
+                    { id: 'calls', label: `${locale.security.tabCalls} (${staffCalls.length})`, Icon: Bell },
+                    { id: 'audit', label: `${locale.security.tabAudit} (${auditLogs.length})`, Icon: Clock },
+                    { id: 'sessions', label: `${locale.security.tabSessions} (${activeSessions.length})`, Icon: Users },
+                    { id: 'bans', label: `${locale.security.tabBans} (${bannedTargets.length})`, Icon: Ban },
+                    { id: 'kiosks', label: `${locale.security.tabKiosks} (${kiosks.length})`, Icon: Monitor },
                   ] as const
                 ).map((sub) => (
                   <button
                     key={sub.id}
                     type="button"
                     onClick={() => setSecuritySubTab(sub.id)}
-                    className={`whitespace-nowrap h-9 px-4 inline-flex items-center justify-center rounded-xl transition cursor-pointer ${
+                    className={`whitespace-nowrap h-9 px-4 inline-flex items-center justify-center gap-1.5 rounded-xl transition cursor-pointer ${
                       securitySubTab === sub.id
                         ? 'bg-blue-700 text-white shadow-sm'
                         : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
                     }`}
                   >
-                    {sub.label}
+                    <sub.Icon className="h-3.5 w-3.5 shrink-0" />
+                    <span>{sub.label}</span>
                   </button>
                 ))}
               </div>
@@ -4424,8 +4429,9 @@ export function ClinicalStaffPortalShell({
                                 <td className="px-4 py-3">
                                   <div className="font-semibold text-rose-600 break-words">{call.reason}</div>
                                   {patientLabel && (
-                                    <div className="text-[11px] font-bold text-slate-500 mt-0.5">
-                                      👤 {patientLabel}
+                                    <div className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-500 mt-0.5">
+                                      <User className="h-3 w-3 shrink-0" />
+                                      <span>{patientLabel}</span>
                                     </div>
                                   )}
                                 </td>
@@ -5059,7 +5065,7 @@ export function ClinicalStaffPortalShell({
                           {!isAdminUser && (
                             <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">
                               <Lock className="h-3 w-3 shrink-0" />
-                              🔒 ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)
+                              ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)
                             </span>
                           )}
                         </label>
@@ -5080,8 +5086,9 @@ export function ClinicalStaffPortalShell({
                           }
                         />
                         {!isAdminUser && (
-                          <p className="mt-1 text-[11px] font-semibold text-slate-500">
-                            🔒 ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)
+                          <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500">
+                            <Lock className="h-3 w-3 shrink-0" />
+                            <span>ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)</span>
                           </p>
                         )}
                       </div>
@@ -5776,8 +5783,9 @@ export function ClinicalStaffPortalShell({
                   <div>
                     <label className="flex items-center justify-between font-bold text-slate-600 mb-1">
                       <span>เลขที่ใบประกอบวิชาชีพ</span>
-                      <span className={isAdminUser ? 'text-[10px] font-semibold text-emerald-700' : 'text-[10px] font-semibold text-slate-500'}>
-                        {isAdminUser ? 'Admin แก้ไขได้' : '🔒 ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)'}
+                      <span className={isAdminUser ? 'text-[10px] font-semibold text-emerald-700' : 'inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500'}>
+                        {!isAdminUser && <Lock className="h-3 w-3 shrink-0" />}
+                        {isAdminUser ? 'Admin แก้ไขได้' : 'ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)'}
                       </span>
                     </label>
                     <input

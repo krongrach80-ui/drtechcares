@@ -12,7 +12,7 @@ export const FOREARM_MIN_RATIO = 0.18;
 export const FOREARM_MAX_RATIO = 1.30;
 export const HAND21_WRIST_TETHER_MAX_RATIO = 0.40;
 export const HAND21_BONE_MAX_RATIO = 0.30;
-export const HAND_OUT_OF_FRAME_BADGE_TH = '✋ มืออยู่นอกกรอบกล้อง';
+export const HAND_OUT_OF_FRAME_BADGE_TH = 'มืออยู่นอกกรอบกล้อง';
 
 export type ScoredLandmark = PoseLandmark & { score?: number };
 

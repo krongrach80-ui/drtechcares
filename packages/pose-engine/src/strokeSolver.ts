@@ -1451,7 +1451,7 @@ export function solveStrokeClinicalJointBiomechanics(
       if (rightRaised) {
         sideViolation = 'RIGHT_ARM_RAISED_IN_LEFT_MODE';
         sideViolationBannerTh =
-          '⚠️ ท่านี้ฝึกเฉพาะข้างซ้าย! กรุณาลดแขนขวาลง และยกเฉพาะแขนซ้ายข้างเดียว';
+          'ท่านี้ฝึกเฉพาะข้างซ้าย! กรุณาลดแขนขวาลง และยกเฉพาะแขนซ้ายข้างเดียว';
         wrongSideRaised = true;
         wrongSideBannerTh = sideViolationBannerTh;
         romDeg = 0;
@@ -1462,7 +1462,7 @@ export function solveStrokeClinicalJointBiomechanics(
       if (leftRaised) {
         sideViolation = 'LEFT_ARM_RAISED_IN_RIGHT_MODE';
         sideViolationBannerTh =
-          '⚠️ ท่านี้ฝึกเฉพาะข้างขวา! กรุณาลดแขนซ้ายลง และยกเฉพาะแขนขวาข้างเดียว';
+          'ท่านี้ฝึกเฉพาะข้างขวา! กรุณาลดแขนซ้ายลง และยกเฉพาะแขนขวาข้างเดียว';
         wrongSideRaised = true;
         wrongSideBannerTh = sideViolationBannerTh;
         romDeg = 0;
@@ -1474,7 +1474,7 @@ export function solveStrokeClinicalJointBiomechanics(
       if (oneArmRaisedOnly) {
         sideViolation = 'SINGLE_ARM_IN_BOTH_MODE';
         sideViolationBannerTh =
-          '🙌 ท่านี้ฝึกทั้งสองข้างพร้อมกัน กรุณายกแขนทั้ง 2 ข้างขึ้นพร้อมกันครับ';
+          'ท่านี้ฝึกทั้งสองข้างพร้อมกัน กรุณายกแขนทั้ง 2 ข้างขึ้นพร้อมกันครับ';
         wrongSideRaised = true;
         wrongSideBannerTh = sideViolationBannerTh;
         romDeg = 0;
@@ -1516,7 +1516,7 @@ export function solveStrokeClinicalJointBiomechanics(
   ) {
     compensations.push('TRUNK_LEAN');
     postureCompensated = true;
-    postureBannerTh = '⚠️ กรุณาตั้งลำตัวให้ตรง ไม่เอนตัวช่วยยกแขน';
+    postureBannerTh = 'กรุณาตั้งลำตัวให้ตรง ไม่เอนตัวช่วยยกแขน';
   }
 
   if (
@@ -1529,7 +1529,7 @@ export function solveStrokeClinicalJointBiomechanics(
   ) {
     compensations.push('SHOULDER_HIKE');
     postureCompensated = true;
-    postureBannerTh = '⚠️ อย่ายักไหล่ช่วยครับ ผ่อนคลายหัวไหล่ลง';
+    postureBannerTh = 'อย่ายักไหล่ช่วยครับ ผ่อนคลายหัวไหล่ลง';
   }
 
   if (
@@ -1549,7 +1549,7 @@ export function solveStrokeClinicalJointBiomechanics(
   if (jointMode === 'hand_to_head' && neckDropDeg > 15) {
     compensations.push('NECK_DROP');
     postureCompensated = true;
-    postureBannerTh = '⚠️ มองตรงข้างหน้าครับ ให้ยกมือขึ้นหาศีรษะแทนการก้มคอ';
+    postureBannerTh = 'มองตรงข้างหน้าครับ ให้ยกมือขึ้นหาศีรษะแทนการก้มคอ';
   }
 
   if (wrongSideRaised) compensations.push('WRONG_LIMB');
@@ -1593,19 +1593,19 @@ export function solveStrokeClinicalJointBiomechanics(
 
 export const MANDATORY_LOWER_REST_STREAK_FRAMES = 3;
 export const HOLD_COMPLETED_WAIT_LOWER_BANNER_TH =
-  '✅ ค้างครบเวลาแล้ว! ค่อยๆ เอาแขนลงเพื่อนับเป็น 1 ครั้งครับ';
+  'ค้างครบเวลาแล้ว! ค่อยๆ เอาแขนลงเพื่อนับเป็น 1 ครั้งครับ';
 export const PHASE_2_LOWER_ARM_PROMPT_BANNER_TH =
-  '⬇️ ค้างครบแล้ว! กรุณาเอาแขนลงข้างลำตัวเพื่อนับ +1 ครั้ง';
+  'ค้างครบแล้ว! กรุณาเอาแขนลงข้างลำตัวเพื่อนับ +1 ครั้ง';
 export const REP_COMPLETED_LOWER_ARM_BANNER_TH = PHASE_2_LOWER_ARM_PROMPT_BANNER_TH;
 export const ARM_LOWERED_READY_NEXT_REP_BANNER_TH =
-  '🎉 ยอดเยี่ยม! นับเพิ่ม +1 ครั้งเรียบร้อย';
+  'ยอดเยี่ยม! นับเพิ่ม +1 ครั้งเรียบร้อย';
 
 export function formatRepScoredBannerTh(completedReps: number, targetReps: number): string {
-  return `🎉 ได้ +1 แต้มแล้ว! (รวม ${completedReps}/${targetReps} ครั้ง) • กรุณาเอาแขนลงข้างลำตัวเพื่อเริ่มนับรอบถัดไป`;
+  return `ได้ +1 แต้มแล้ว! (รวม ${completedReps}/${targetReps} ครั้ง) • กรุณาเอาแขนลงข้างลำตัวเพื่อเริ่มนับรอบถัดไป`;
 }
 
 export function formatWaitLowerAfterRepBankBannerTh(completedReps: number, targetReps: number): string {
-  return `🎉 ได้ +1 แต้มแล้ว! (รวม ${completedReps}/${targetReps} ครั้ง) • กรุณาเอาแขนลงข้างลำตัวเพื่อเริ่มนับรอบถัดไป`;
+  return `ได้ +1 แต้มแล้ว! (รวม ${completedReps}/${targetReps} ครั้ง) • กรุณาเอาแขนลงข้างลำตัวเพื่อเริ่มนับรอบถัดไป`;
 }
 
 /**
@@ -1680,7 +1680,7 @@ export function stepStrokeHoldAndRepStateMachine(
       holdProgressPct: 100,
       holdRemainingSec: 0,
       justCompletedRep: false,
-      bannerTh: '🎉 ฝึกครบเซ็ตเรียบร้อยแล้ว เยี่ยมมากครับ!',
+      bannerTh: 'ฝึกครบเซ็ตเรียบร้อยแล้ว เยี่ยมมากครับ!',
       statusKind: 'SET_FINISHED',
     };
   }
@@ -1897,7 +1897,7 @@ export function stepStrokeHoldAndRepStateMachine(
   const rem = Math.max(0, safeTargetHold - next.holdElapsedSec);
   const holdingBanner =
     inTargetHoldZone || next.holdElapsedSec > 0
-      ? `⏳ ค้างท่าไว้ในองศาที่ถูกต้อง... (${next.holdElapsedSec.toFixed(1)} / ${safeTargetHold.toFixed(1)} วิ)`
+      ? `ค้างท่าไว้ในองศาที่ถูกต้อง... (${next.holdElapsedSec.toFixed(1)} / ${safeTargetHold.toFixed(1)} วิ)`
       : null;
 
   return {

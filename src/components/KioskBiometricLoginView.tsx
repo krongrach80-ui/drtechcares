@@ -56,6 +56,7 @@ import {
   getSeniorVoiceToggleLabel,
   pickSpeechVoice,
   readStoredKioskVoiceMuted,
+  sanitizeSpeechText,
   subscribeKioskVoiceMuted,
   writeStoredKioskVoiceMuted,
   type VoiceCoachLanguage,
@@ -301,7 +302,7 @@ export function resolveKioskFaceBoundingBoxOverlay(params: {
     return {
       variant: 'SPOOF',
       boxColor: 'rose',
-      label: '⛔ ตรวจพบความเสี่ยง Spoof (ภาพถ่าย/หน้าจอมือถือ)',
+      label: 'ตรวจพบความเสี่ยง Spoof (ภาพถ่าย/หน้าจอมือถือ)',
       subLabel: null,
       displayName: null,
     };
@@ -311,8 +312,8 @@ export function resolveKioskFaceBoundingBoxOverlay(params: {
       variant: 'LIVENESS',
       boxColor: 'blue',
       label: params.isLongRange
-        ? '📷 พบใบหน้าจากระยะไกล — กำลังยืนยันความมีชีวิต...'
-        : '👁️ กรุณากะพริบตาหรือขยับศีรษะเพื่อยืนยันใบหน้าจริง',
+        ? 'พบใบหน้าจากระยะไกล — กำลังยืนยันความมีชีวิต...'
+        : 'กรุณากะพริบตาหรือขยับศีรษะเพื่อยืนยันใบหน้าจริง',
       subLabel: `ระยะ ${(params.distanceM ?? 1.8).toFixed(1)} ม.`,
       displayName: null,
     };
@@ -333,8 +334,8 @@ export function resolveKioskFaceBoundingBoxOverlay(params: {
   ) {
     const pct = (params.confidencePercent ?? params.rawCosine * 100).toFixed(1);
     const fullLabel = params.confirmedCandidateHn
-      ? `✓ ยืนยันเจ้าของบัญชี: ${params.confirmedCandidateName} (${params.confirmedCandidateHn})`
-      : `✓ ยืนยันเจ้าของบัญชี: ${params.confirmedCandidateName}`;
+      ? `ยืนยันเจ้าของบัญชี: ${params.confirmedCandidateName} (${params.confirmedCandidateHn})`
+      : `ยืนยันเจ้าของบัญชี: ${params.confirmedCandidateName}`;
     return {
       variant: 'VERIFIED',
       boxColor: 'emerald',
@@ -347,7 +348,7 @@ export function resolveKioskFaceBoundingBoxOverlay(params: {
     return {
       variant: 'CONFIRMING',
       boxColor: 'blue',
-      label: `🔍 กำลังตรวจสอบใบหน้า... (${clampedStreak}/${required})`,
+      label: `กำลังตรวจสอบใบหน้า... (${clampedStreak}/${required})`,
       subLabel: `ระยะ ${(params.distanceM ?? 1.8).toFixed(1)} ม.`,
       displayName: null,
     };
@@ -356,7 +357,7 @@ export function resolveKioskFaceBoundingBoxOverlay(params: {
     return {
       variant: 'UNREGISTERED',
       boxColor: 'amber',
-      label: '⚠️ พบใบหน้าใกล้เคียงหลายคน — กรุณาขยับเข้าใกล้กล้อง',
+      label: 'พบใบหน้าใกล้เคียงหลายคน — กรุณาขยับเข้าใกล้กล้อง',
       subLabel: null,
       displayName: null,
     };
@@ -365,7 +366,7 @@ export function resolveKioskFaceBoundingBoxOverlay(params: {
     return {
       variant: 'UNREGISTERED',
       boxColor: 'rose',
-      label: '❌ ไม่พบบัญชีที่ตรงกับใบหน้านี้ (กรุณาลงทะเบียนคนไข้ใหม่ก่อนใช้งาน)',
+      label: 'ไม่พบบัญชีที่ตรงกับใบหน้านี้ (กรุณาลงทะเบียนคนไข้ใหม่ก่อนใช้งาน)',
       subLabel: null,
       displayName: null,
     };
@@ -373,7 +374,7 @@ export function resolveKioskFaceBoundingBoxOverlay(params: {
   return {
     variant: 'UNREGISTERED',
     boxColor: 'amber',
-    label: `🔍 กำลังตรวจสอบใบหน้า... (${clampedStreak}/${required})`,
+    label: `กำลังตรวจสอบใบหน้า... (${clampedStreak}/${required})`,
     subLabel: null,
     displayName: null,
   };
@@ -508,16 +509,16 @@ export function getKioskVerifiedModalCopy(
       confidenceBadge: `Biometric Confidence ${params.confidencePercent}% (Verified)`,
       hnAndNextAppointment: `HN: ${params.hn} • Next Appointment: ${nextAppt}`,
       openingCamera: 'Opening camera for 2-hand detection...',
-      speechCornerBadge: '🔊 Speaking guide...',
-      speechListenBanner: '🔊 Please listen until the guide finishes before raising both hands...',
-      speechEarlyRaiseBanner: '⏳ Please wait for the voice guide to finish before holding hands up',
-      speechBarHeader: '🔊 Waiting for voice guide to finish before starting...',
-      gestureDetectedPill: `🙌 Both hands detected! Hold steady ${heldSec}/${totalSec.toFixed(0)}.0s (${params.twoHandProgressPct}%)`,
-      gestureSingleHandPill: '⚠️ 1 hand only does not count — raise BOTH hands together',
-      gestureLoadingPill: '⏳ Preparing AI 2-hand detector...',
-      gestureReadyPill: `🙌 Guide finished! Raise BOTH hands & hold ${totalSec.toFixed(0)}s to start`,
-      startBtnHolding: `🙌 Holding BOTH hands... ${heldSec}/${totalSec.toFixed(0)}.0s (${remainSec}s left)`,
-      startBtnIdle: `🙌 Raise BOTH Hands ${totalSec.toFixed(0)}s (Both Required) or Tap to Start ➔`,
+      speechCornerBadge: 'Speaking guide...',
+      speechListenBanner: 'Please listen until the guide finishes before raising both hands...',
+      speechEarlyRaiseBanner: 'Please wait for the voice guide to finish before holding hands up',
+      speechBarHeader: 'Waiting for voice guide to finish before starting...',
+      gestureDetectedPill: `Both hands detected! Hold steady ${heldSec}/${totalSec.toFixed(0)}.0s (${params.twoHandProgressPct}%)`,
+      gestureSingleHandPill: '1 hand only does not count — raise BOTH hands together',
+      gestureLoadingPill: 'Preparing AI 2-hand detector...',
+      gestureReadyPill: `Guide finished! Raise BOTH hands & hold ${totalSec.toFixed(0)}s to start`,
+      startBtnHolding: `Holding BOTH hands... ${heldSec}/${totalSec.toFixed(0)}.0s (${remainSec}s left)`,
+      startBtnIdle: `Raise BOTH Hands ${totalSec.toFixed(0)}s (Both Required) or Tap to Start →`,
       telemetryBtn: 'Open Biomechanics Telemetry (Smart Rehab Telemetry)',
       notMeBtn: 'Not me (Scan again)',
       voiceGreeting: `Identity verified. Welcome, ${params.fullName}. Please raise both hands together and hold for ${totalSec.toFixed(0)} seconds, or tap the button to start.`,
@@ -528,16 +529,16 @@ export function getKioskVerifiedModalCopy(
       confidenceBadge: `生物识别准确度 ${params.confidencePercent}%（验证通过）`,
       hnAndNextAppointment: `病历号 HN: ${params.hn} • 下次预约: ${nextAppt}`,
       openingCamera: '正在开启双手举起识别摄像头...',
-      speechCornerBadge: '🔊 语音引导中...',
-      speechListenBanner: '🔊 请先听完语音引导后再举起双手...',
-      speechEarlyRaiseBanner: '⏳ 请等语音引导结束后再举手保持',
-      speechBarHeader: '🔊 等待语音引导结束后开始双手检测...',
-      gestureDetectedPill: `🙌 已检测到双手举起！请保持 ${heldSec}/${totalSec.toFixed(0)}.0 秒 (${params.twoHandProgressPct}%)`,
-      gestureSingleHandPill: '⚠️ 单手不计入 — 请同时举起双手',
-      gestureLoadingPill: '⏳ 正在准备 AI 双手识别模块...',
-      gestureReadyPill: `🙌 语音引导已结束！请双手举起保持 ${totalSec.toFixed(0)} 秒开始训练`,
-      startBtnHolding: `🙌 正在加载确认... ${heldSec}/${totalSec.toFixed(0)}.0 秒（剩余 ${remainSec} 秒）`,
-      startBtnIdle: `🙌 同时举起双手保持 ${totalSec.toFixed(0)} 秒 或 点击此处开始训练 ➔`,
+      speechCornerBadge: '语音引导中...',
+      speechListenBanner: '请先听完语音引导后再举起双手...',
+      speechEarlyRaiseBanner: '请等语音引导结束后再举手保持',
+      speechBarHeader: '等待语音引导结束后开始双手检测...',
+      gestureDetectedPill: `已检测到双手举起！请保持 ${heldSec}/${totalSec.toFixed(0)}.0 秒 (${params.twoHandProgressPct}%)`,
+      gestureSingleHandPill: '单手不计入 — 请同时举起双手',
+      gestureLoadingPill: '正在准备 AI 双手识别模块...',
+      gestureReadyPill: `语音引导已结束！请双手举起保持 ${totalSec.toFixed(0)} 秒开始训练`,
+      startBtnHolding: `正在加载确认... ${heldSec}/${totalSec.toFixed(0)}.0 秒（剩余 ${remainSec} 秒）`,
+      startBtnIdle: `同时举起双手保持 ${totalSec.toFixed(0)} 秒 或 点击此处开始训练 →`,
       telemetryBtn: '打开生物力学分析界面 (Smart Rehab Telemetry)',
       notMeBtn: '不是我本人（重新扫描）',
       voiceGreeting: `身份验证成功，欢迎您，${params.fullName}。请同时举起双手保持 ${totalSec.toFixed(0)} 秒，或点击按钮开始训练。`,
@@ -547,16 +548,16 @@ export function getKioskVerifiedModalCopy(
     confidenceBadge: `ความแม่นยำชีวมาตร ${params.confidencePercent}% (ผ่านเกณฑ์)`,
     hnAndNextAppointment: `HN: ${params.hn} • นัดถัดไป: ${nextAppt}`,
     openingCamera: 'กำลังเปิดกล้องตรวจจับการยกมือทั้ง 2 ข้าง...',
-    speechCornerBadge: '🔊 กำลังพูดแนะนำ...',
-    speechListenBanner: '🔊 กรุณาฟังเสียงแนะนำให้จบก่อนยกมือทั้ง 2 ข้าง...',
-    speechEarlyRaiseBanner: '⏳ รอให้เสียงพูดจบก่อนนะครับ แล้วค่อยยกมือค้างไว้',
-    speechBarHeader: '🔊 กำลังรอเสียงแนะนำพูดจบก่อนเริ่มตรวจจับ (ล็อก 0%)',
-    gestureDetectedPill: `🙌 ตรวจพบยกครบ 2 ข้าง! ค้างไว้ ${heldSec}/${totalSec.toFixed(0)}.0 วิ (${params.twoHandProgressPct}%)`,
-    gestureSingleHandPill: '⚠️ ยกมือเดียวไม่นับ • กรุณายกขึ้นทั้ง 2 ข้างพร้อมกัน',
-    gestureLoadingPill: '⏳ กำลังเตรียม AI ตรวจจับการยกมือ 2 ข้าง...',
-    gestureReadyPill: `🙌 เสียงพูดจบแล้ว! ยกมือทั้ง 2 ข้างค้างไว้ ${totalSec.toFixed(0)} วิ เพื่อเริ่มฝึก`,
-    startBtnHolding: `🙌 กำลังโหลด 2 ข้าง... ${heldSec}/${totalSec.toFixed(0)}.0 วิ (เหลือ ${remainSec} วิ)`,
-    startBtnIdle: `🙌 ยกมือทั้ง 2 ข้างค้าง ${totalSec.toFixed(0)} วิ (ต้อง 2 ข้างเท่านั้น) หรือ กดที่นี่ ➔`,
+    speechCornerBadge: 'กำลังพูดแนะนำ...',
+    speechListenBanner: 'กรุณาฟังเสียงแนะนำให้จบก่อนยกมือทั้ง 2 ข้าง...',
+    speechEarlyRaiseBanner: 'รอให้เสียงพูดจบก่อนนะครับ แล้วค่อยยกมือค้างไว้',
+    speechBarHeader: 'กำลังรอเสียงแนะนำพูดจบก่อนเริ่มตรวจจับ (ล็อก 0%)',
+    gestureDetectedPill: `ตรวจพบยกครบ 2 ข้าง! ค้างไว้ ${heldSec}/${totalSec.toFixed(0)}.0 วิ (${params.twoHandProgressPct}%)`,
+    gestureSingleHandPill: 'ยกมือเดียวไม่นับ • กรุณายกขึ้นทั้ง 2 ข้างพร้อมกัน',
+    gestureLoadingPill: 'กำลังเตรียม AI ตรวจจับการยกมือ 2 ข้าง...',
+    gestureReadyPill: `เสียงพูดจบแล้ว! ยกมือทั้ง 2 ข้างค้างไว้ ${totalSec.toFixed(0)} วิ เพื่อเริ่มฝึก`,
+    startBtnHolding: `กำลังโหลด 2 ข้าง... ${heldSec}/${totalSec.toFixed(0)}.0 วิ (เหลือ ${remainSec} วิ)`,
+    startBtnIdle: `ยกมือทั้ง 2 ข้างค้าง ${totalSec.toFixed(0)} วิ (ต้อง 2 ข้างเท่านั้น) หรือ กดที่นี่ →`,
     telemetryBtn: 'เปิดหน้าจอวิเคราะห์ชีวกลศาสตร์ (Smart Rehab Telemetry)',
     notMeBtn: 'ไม่ใช่ฉัน (สแกนใหม่)',
     voiceGreeting: `ยืนยันตัวตนสำเร็จ ยินดีต้อนรับคุณ ${params.fullName} กรุณายกมือทั้งสองข้างพร้อมกันค้างไว้ ${totalSec.toFixed(0)} วินาที หรือกดปุ่มเพื่อเริ่มฝึกครับ`,
@@ -675,18 +676,18 @@ const COPY: Record<
     registerNewPatient: 'ลงทะเบียนคนไข้ใหม่',
     callStaff: 'เรียกเจ้าหน้าที่ช่วยเหลือ',
     staffLogin: 'เข้าสู่ระบบเจ้าหน้าที่',
-    checkingLiveness: '👁️ กรุณากะพริบตาหรือขยับศีรษะเล็กน้อยเพื่อยืนยันตัวตน',
-    longRangePrompt: '🎯 ตรวจพบใบหน้าระยะไกล • มองตรงหรือพยักหน้าเบาๆ เพื่อเข้าสู่ระบบ',
+    checkingLiveness: 'กรุณากะพริบตาหรือขยับศีรษะเล็กน้อยเพื่อยืนยันตัวตน',
+    longRangePrompt: 'ตรวจพบใบหน้าระยะไกล • มองตรงหรือพยักหน้าเบาๆ เพื่อเข้าสู่ระบบ',
     distancePrefix: 'ระยะห่าง',
     distanceUnit: 'ม.',
-    liveVerified: '✓ ยืนยันบุคคลจริง (Liveness Verified)',
-    spoofBlocked: '⚠️ ตรวจพบภาพถ่ายหรือหน้าจอมือถือ — กรุณากะพริบตาหรือขยับศีรษะด้วยใบหน้าจริง',
+    liveVerified: 'ยืนยันบุคคลจริง (Liveness Verified)',
+    spoofBlocked: 'ตรวจพบภาพถ่ายหรือหน้าจอมือถือ — กรุณากะพริบตาหรือขยับศีรษะด้วยใบหน้าจริง',
     alignFace: 'ระบบสแกนอัตโนมัติเต็มจอ • มองกล้องเพื่อยืนยันตัวตน',
     verifying: 'กำลังสแกนและเปรียบเทียบกับฐานข้อมูลใบหน้า...',
-    turnHeadPrefix: '😊 กรุณาหันหน้าเข้าหากล้องอีกนิด กำลังจับคู่บัญชี... (ความคล้าย',
+    turnHeadPrefix: 'กรุณาหันหน้าเข้าหากล้องอีกนิด กำลังจับคู่บัญชี... (ความคล้าย',
     turnHeadSuffix: '%)',
     ambiguousClosePrompt:
-      '🔍 กำลังแยกแยะความละเอียดใบหน้า กรุณามองตรงเข้าหากล้องและขยับเข้ามาใกล้ขึ้นเล็กน้อย',
+      'กำลังแยกแยะความละเอียดใบหน้า กรุณามองตรงเข้าหากล้องและขยับเข้ามาใกล้ขึ้นเล็กน้อย',
     rescanBtn: 'เริ่มสแกนใบหน้าใหม่อีกครั้ง',
     pinBtn: 'ใช้รหัส PIN 4 หลัก',
     enrollSelfBtn: 'สมัครคนไข้ใหม่',
@@ -697,13 +698,13 @@ const COPY: Record<
     resumeCameraBtn: 'เปิดกล้องเริ่มสแกนใหม่',
     usePinFallbackBtn: 'ใช้รหัส PIN 4 หลักแทน',
     staffCalledToast: 'ส่งสัญญาณเรียกเจ้าหน้าที่เรียบร้อยแล้ว กรุณารอสักครู่',
-    notFoundTitle: '❌ ยังไม่พบบัญชีที่ตรงกับใบหน้านี้',
+    notFoundTitle: 'ยังไม่พบบัญชีที่ตรงกับใบหน้านี้',
     notFoundDesc:
       'ระบบตรวจสอบใบหน้าจากคลังผู้ป่วยที่ลงทะเบียนแล้วไม่พบความตรงกันตามเกณฑ์ กรุณาให้เจ้าหน้าที่ช่วยลงทะเบียน หรือลองสแกนใหม่อีกครั้ง',
     staffAssistBtn: 'เจ้าหน้าที่ลงทะเบียนให้',
     retryScanBtn: 'ลองสแกนใหม่อีกครั้ง',
     countdownLabel: 'กำลังนับถอยหลัง',
-    liveMatchVerified: '✓ พบบัญชีตรงกัน',
+    liveMatchVerified: 'พบบัญชีตรงกัน',
     liveMatchAccuracy: 'ความแม่นยำ',
     framesUnit: 'เฟรม',
     scanningDbTitle: 'กำลังสแกนใบหน้าเทียบฐานข้อมูล...',
@@ -726,18 +727,18 @@ const COPY: Record<
     registerNewPatient: 'Register Patient',
     callStaff: 'Call Staff',
     staffLogin: 'Staff Login',
-    checkingLiveness: '👁️ Please blink or gently move your head to verify',
-    longRangePrompt: '🎯 Long-Range Face Locked • Look ahead or nod gently to sign in',
+    checkingLiveness: 'Please blink or gently move your head to verify',
+    longRangePrompt: 'Long-Range Face Locked • Look ahead or nod gently to sign in',
     distancePrefix: 'Distance',
     distanceUnit: 'm',
-    liveVerified: '✓ Live Person Verified (Liveness Verified)',
-    spoofBlocked: '⚠️ Photo or Phone Screen Detected — Blink or move head with a live face',
+    liveVerified: 'Live Person Verified (Liveness Verified)',
+    spoofBlocked: 'Photo or Phone Screen Detected — Blink or move head with a live face',
     alignFace: 'Full-screen auto-scan active • Look at the camera',
     verifying: 'Scanning & matching face against database...',
-    turnHeadPrefix: '😊 Turn slightly toward the camera, matching profile... (',
+    turnHeadPrefix: 'Turn slightly toward the camera, matching profile... (',
     turnHeadSuffix: '% match)',
     ambiguousClosePrompt:
-      '🔍 Refining facial distinction — please look straight into the camera and move slightly closer',
+      'Refining facial distinction — please look straight into the camera and move slightly closer',
     rescanBtn: 'Restart Face Scan',
     pinBtn: 'Use 4-Digit PIN',
     enrollSelfBtn: 'New Patient Sign Up',
@@ -754,7 +755,7 @@ const COPY: Record<
     staffAssistBtn: 'Staff Register Patient',
     retryScanBtn: 'Scan Face Again',
     countdownLabel: 'Hold steady',
-    liveMatchVerified: '✓ Account Matched',
+    liveMatchVerified: 'Account Matched',
     liveMatchAccuracy: 'Confidence',
     framesUnit: 'frames',
     scanningDbTitle: 'Scanning face against database...',
@@ -777,18 +778,18 @@ const COPY: Record<
     registerNewPatient: '注册新患者',
     callStaff: '呼叫医护人员',
     staffLogin: '医护系统登录',
-    checkingLiveness: '👁️ 请轻眨眼或微转头部以验证真人身份',
-    longRangePrompt: '🎯 远距离人脸已锁定 • 请直视镜头或轻点头以登录',
+    checkingLiveness: '请轻眨眼或微转头部以验证真人身份',
+    longRangePrompt: '远距离人脸已锁定 • 请直视镜头或轻点头以登录',
     distancePrefix: '距离',
     distanceUnit: '米',
-    liveVerified: '✓ 真人活体已验证 (Liveness Verified)',
-    spoofBlocked: '⚠️ 检测到照片或手机屏幕 — 请使用真人眨眼或轻转头部',
+    liveVerified: '真人活体已验证 (Liveness Verified)',
+    spoofBlocked: '检测到照片或手机屏幕 — 请使用真人眨眼或轻转头部',
     alignFace: '全屏自动扫描已开启 • 请注视摄像头',
     verifying: '正在扫描并与人脸数据库比对...',
-    turnHeadPrefix: '😊 请略微转正面向摄像头，正在匹配档案…（相似度',
+    turnHeadPrefix: '请略微转正面向摄像头，正在匹配档案…（相似度',
     turnHeadSuffix: '%）',
     ambiguousClosePrompt:
-      '🔍 正在精细区分面部特征 — 请直视摄像头并稍微靠近一些',
+      '正在精细区分面部特征 — 请直视摄像头并稍微靠近一些',
     rescanBtn: '重新开始人脸扫描',
     pinBtn: '使用 4 位 PIN 码',
     enrollSelfBtn: '新患者注册',
@@ -804,7 +805,7 @@ const COPY: Record<
     staffAssistBtn: '医护人员协助建档',
     retryScanBtn: '重新识别人脸',
     countdownLabel: '倒计时准备中',
-    liveMatchVerified: '✓ 已匹配账户',
+    liveMatchVerified: '已匹配账户',
     liveMatchAccuracy: '匹配准确度',
     framesUnit: '帧',
     scanningDbTitle: '正在扫描并与人脸库比对...',
@@ -1086,7 +1087,9 @@ export function KioskBiometricLoginView({
           if (finished || modalSpeakSeqRef.current !== seq) return;
           const voices = synth.getVoices();
           const matchedVoice = pickSpeechVoice(voices, langOpt.bcp47);
-          const utterance = new SpeechSynthesisUtterance(greeting);
+          const cleanSpeechText = sanitizeSpeechText(greeting);
+          if (!cleanSpeechText) return;
+          const utterance = new SpeechSynthesisUtterance(cleanSpeechText);
           utterance.lang = matchedVoice?.lang || langOpt.bcp47;
           if (matchedVoice) utterance.voice = matchedVoice;
           utterance.rate = VERIFIED_MODAL_SPEECH_RATE;
@@ -2474,18 +2477,18 @@ export function KioskBiometricLoginView({
                 if (holdStep.detected && confirmPillLabelRef.current) {
                   confirmPillLabelRef.current.textContent =
                     lang === 'en'
-                      ? `🙌 Both hands detected! Hold ${heldSecStr}/4.0s (${pctInt}%)`
+                      ? `Both hands detected! Hold ${heldSecStr}/4.0s (${pctInt}%)`
                       : lang === 'cn'
-                        ? `🙌 已检测到双手举起！保持 ${heldSecStr}/4.0 秒 (${pctInt}%)`
-                        : `🙌 ยกครบ 2 ข้าง! ค้างไว้ ${heldSecStr}/4.0 วิ (${pctInt}%)`;
+                        ? `已检测到双手举起！保持 ${heldSecStr}/4.0 秒 (${pctInt}%)`
+                        : `ยกครบ 2 ข้าง! ค้างไว้ ${heldSecStr}/4.0 วิ (${pctInt}%)`;
                 }
                 if (nextProgress > 0 && confirmBtnLabelRef.current) {
                   confirmBtnLabelRef.current.textContent =
                     lang === 'en'
-                      ? `🙌 Holding BOTH hands... ${heldSecStr}/4.0s (${remainSecStr}s left)`
+                      ? `Holding BOTH hands... ${heldSecStr}/4.0s (${remainSecStr}s left)`
                       : lang === 'cn'
-                        ? `🙌 正在加载确认... ${heldSecStr}/4.0 秒（剩余 ${remainSecStr} 秒）`
-                        : `🙌 กำลังโหลด 2 ข้าง... ${heldSecStr}/4.0 วิ (เหลือ ${remainSecStr} วิ)`;
+                        ? `正在加载确认... ${heldSecStr}/4.0 秒（剩余 ${remainSecStr} 秒）`
+                        : `กำลังโหลด 2 ข้าง... ${heldSecStr}/4.0 วิ (เหลือ ${remainSecStr} วิ)`;
                 }
 
                 if (holdStep.detected !== lastReportedDetected) {
@@ -3225,9 +3228,10 @@ export function KioskBiometricLoginView({
                       <button
                         type="button"
                         onClick={() => setShowCalibHud(false)}
-                        className="text-slate-500 hover:text-[#0F4C81]"
+                        aria-label="ปิดแถบข้อมูล"
+                        className="text-slate-500 hover:text-[#0F4C81] cursor-pointer"
                       >
-                        ✕
+                        <X className="w-3.5 h-3.5" />
                       </button>
                     </div>
                     <div className="text-[10px] text-[#0284C7] truncate">Host: {supabaseHost}</div>
@@ -3404,7 +3408,7 @@ export function KioskBiometricLoginView({
                 }`}
               >
                 {liveDebugHud?.syncedFromSupabase || supabaseSyncedFromCloud
-                  ? `☁️ ซิงก์ฐานข้อมูลใบหน้าจาก Supabase สำเร็จ: ${liveDebugHud?.validAccounts ?? dbAccountCount} บัญชี`
+                  ? `ซิงก์ฐานข้อมูลใบหน้าจาก Supabase สำเร็จ: ${liveDebugHud?.validAccounts ?? dbAccountCount} บัญชี`
                   : `คลังใบหน้า: ${liveDebugHud?.validAccounts ?? dbAccountCount} บัญชี`}
               </span>
               {(liveDebugHud?.legacyAccounts ?? legacyAccountCount) > 0 && (
@@ -3417,7 +3421,7 @@ export function KioskBiometricLoginView({
             <div className="text-sky-200 truncate max-w-full">
               {liveDebugHud?.topName ? (
                 <>
-                  ✓ ยืนยันเจ้าของบัญชี:{' '}
+                  ยืนยันเจ้าของบัญชี:{' '}
                   <span className="font-bold text-emerald-300">{liveDebugHud.topName}</span>{' '}
                   (ความตรงกัน {liveDebugHud.topPct.toFixed(1)}% [{liveDebugHud.streak}/
                   {liveDebugHud.requiredStreak}])
@@ -3428,15 +3432,15 @@ export function KioskBiometricLoginView({
                 </span>
               ) : liveDebugHud && liveDebugHud.streak > 0 ? (
                 <span className="text-blue-200">
-                  🔍 กำลังตรวจสอบใบหน้า... ({liveDebugHud.streak}/{liveDebugHud.requiredStreak})
+                  กำลังตรวจสอบใบหน้า... ({liveDebugHud.streak}/{liveDebugHud.requiredStreak})
                 </span>
               ) : liveDebugHud?.hasEvaluatedMatch ? (
                 <span className="text-rose-300 font-bold">
-                  ❌ ไม่พบบัญชีที่ตรงกับใบหน้านี้ (กรุณาลงทะเบียนคนไข้ใหม่ก่อนใช้งาน)
+                  ไม่พบบัญชีที่ตรงกับใบหน้านี้ (กรุณาลงทะเบียนคนไข้ใหม่ก่อนใช้งาน)
                 </span>
               ) : (
                 <span className="text-slate-300">
-                  🔍 กำลังตรวจสอบใบหน้า... (0/{BIOMETRIC_REQUIRED_STREAK})
+                  กำลังตรวจสอบใบหน้า... (0/{BIOMETRIC_REQUIRED_STREAK})
                 </span>
               )}
             </div>
@@ -3720,7 +3724,7 @@ export function KioskBiometricLoginView({
                           : 'bg-emerald-950/75 text-emerald-100 border border-white/25'
                       }`}
                     >
-                      {leftHandUpState ? '✓ มือซ้ายพร้อม' : '○ รอมือซ้าย'}
+                      {leftHandUpState ? 'มือซ้ายพร้อม' : 'รอมือซ้าย'}
                     </span>
                     <span
                       className={`px-2.5 py-1 rounded-full text-[11px] font-black shadow ${
@@ -3729,7 +3733,7 @@ export function KioskBiometricLoginView({
                           : 'bg-emerald-950/75 text-emerald-100 border border-white/25'
                       }`}
                     >
-                      {rightHandUpState ? '✓ มือขวาพร้อม' : '○ รอมือขวา'}
+                      {rightHandUpState ? 'มือขวาพร้อม' : 'รอมือขวา'}
                     </span>
                   </>
                 )}
@@ -3824,9 +3828,9 @@ export function KioskBiometricLoginView({
                         ? modalCopy.speechEarlyRaiseBanner
                         : modalCopy.speechBarHeader
                       : twoHandDetected
-                        ? '⏳ กำลังโหลดยืนยัน 2 มือค้าง 4 วินาที...'
+                        ? 'กำลังโหลดยืนยัน 2 มือค้าง 4 วินาที...'
                         : leftHandUpState !== rightHandUpState
-                          ? '⚠️ ยกมือเดียวไม่นับ กรุณายกขึ้นทั้ง 2 ข้าง'
+                          ? 'ยกมือเดียวไม่นับ กรุณายกขึ้นทั้ง 2 ข้าง'
                           : 'หลอดโหลดเริ่มฝึก (ยก 2 ข้างค้าง 4 วิ)'}
                 </span>
                 <span

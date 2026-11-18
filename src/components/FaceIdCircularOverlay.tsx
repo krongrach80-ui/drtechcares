@@ -109,7 +109,7 @@ export function FaceIdCircularOverlay({
             return (
               <div
                 key={cp.key}
-                className={`rounded-lg px-2 py-1 text-center text-[10px] font-bold border ${
+                className={`rounded-lg px-2 py-1 text-center text-[10px] font-bold border inline-flex items-center justify-center gap-1 ${
                   !inspection
                     ? 'bg-white/90 border-sky-200 text-[#0F4C81]'
                     : ok
@@ -117,8 +117,8 @@ export function FaceIdCircularOverlay({
                       : 'bg-rose-50/95 border-rose-400 text-rose-700'
                 }`}
               >
-                {ok ? '✓ ' : '• '}
-                {cp.label}
+                {ok ? <CheckCircle2 className="w-3 h-3 shrink-0" /> : <span className="inline-block w-1.5 h-1.5 rounded-full bg-current shrink-0" />}
+                <span>{cp.label}</span>
               </div>
             );
           })}

@@ -23,7 +23,7 @@ import {
   type KioskLoginSuccessPayload,
 } from './components/KioskBiometricLoginView';
 import { StaffAssistedEnrollmentModal } from './components/StaffAssistedEnrollmentModal';
-import { CheckCircle2, Shuffle, Volume2 } from 'lucide-react';
+import { ArrowRight, Calendar, CheckCircle2, Gamepad2, Hand, Leaf, RotateCcw, Shuffle, Volume2 } from 'lucide-react';
 import {
   RandomHandStartPrompt,
   pickRandomHandSide,
@@ -162,7 +162,7 @@ const KIOSK_TRAINING_COPY: Record<
       date
         ? `กรุณากลับมาฝึกอีกครั้งในวันนัดหมายถัดไป (${date})`
         : 'กรุณากลับมาฝึกอีกครั้งในวันนัดหมายถัดไปตามตารางนัดหมาย',
-    doneTodayTag: 'ทำครบแล้ววันนี้ ✓',
+    doneTodayTag: 'ทำครบแล้ววันนี้',
     restHeaderBadge: 'Rest Day • วันพักผ่อน',
     scheduleCheckBadge: (date) => `ตรวจสอบตารางนัดหมายวันนี้ (${date})`,
     restHeading: (name) => `วันนี้คือวันพักผ่อนของคุณ ( ${name} )`,
@@ -184,15 +184,15 @@ const KIOSK_TRAINING_COPY: Record<
     setsRepsTag: (sets, reps) => `${sets} เซต × ${reps} ครั้ง`,
     doneTag: 'ทำครบแล้ว',
     finalStepBanner:
-      '🎮 ขั้นตอนสุดท้าย: มินิเกมฝึกสมอง (จะเปิดอัตโนมัติหลังจากทำท่ากายภาพบำบัดครบทุกท่าแล้ว)',
+      'ขั้นตอนสุดท้าย: มินิเกมฝึกสมอง (จะเปิดอัตโนมัติหลังจากทำท่ากายภาพบำบัดครบทุกท่าแล้ว)',
     step1Badge: 'ขั้นตอนที่ 1/2: ฝึกท่ากายภาพบำบัดตามกำหนด',
     backToOverviewBtn: '← กลับหน้ารายการกายภาพวันนี้',
-    skipToMinigameBtn: 'ข้ามไปมินิเกม (ขั้นตอนสุดท้าย) ➔',
+    skipToMinigameBtn: 'ข้ามไปมินิเกม (ขั้นตอนสุดท้าย) →',
     minigameHeaderBadge: 'AI Kiosk Training • ขั้นตอนสุดท้าย (มินิเกม)',
     backToExercisesBtn: '← กลับหน้าท่ากายภาพบำบัด',
     viewSummaryBtn: '← ดูสรุปผลการกายภาพวันนี้',
     minigameBanner:
-      '🎉 ยอดเยี่ยมมาก! คุณทำท่ากายภาพบำบัดครบตามกำหนดแล้ว — ขั้นตอนสุดท้าย: มินิเกมฝึกสมองและการ์ดกายภาพ',
+      'ยอดเยี่ยมมาก! คุณทำท่ากายภาพบำบัดครบตามกำหนดแล้ว — ขั้นตอนสุดท้าย: มินิเกมฝึกสมองและการ์ดกายภาพ',
   },
   en: {
     backToLogin: '← Back to Face Scan (Kiosk Login)',
@@ -211,7 +211,7 @@ const KIOSK_TRAINING_COPY: Record<
       date
         ? `Please return on your next scheduled appointment (${date})`
         : 'Please return on your next scheduled appointment',
-    doneTodayTag: 'Completed Today ✓',
+    doneTodayTag: 'Completed Today',
     restHeaderBadge: 'Rest Day • Recovery Day',
     scheduleCheckBadge: (date) => `Checked Today's Schedule (${date})`,
     restHeading: (name) => `Today is your rest day ( ${name} )`,
@@ -233,15 +233,15 @@ const KIOSK_TRAINING_COPY: Record<
     setsRepsTag: (sets, reps) => `${sets} sets × ${reps} reps`,
     doneTag: 'Completed',
     finalStepBanner:
-      '🎮 Final Step: Cognitive Memory Mini-Game (opens automatically after completing all exercises)',
+      'Final Step: Cognitive Memory Mini-Game (opens automatically after completing all exercises)',
     step1Badge: 'Step 1/2: Prescribed Physical Therapy',
     backToOverviewBtn: "← Back to Today's Program",
-    skipToMinigameBtn: 'Skip to Mini-Game (Final Step) ➔',
+    skipToMinigameBtn: 'Skip to Mini-Game (Final Step) →',
     minigameHeaderBadge: 'AI Kiosk Training • Final Step (Mini-Game)',
     backToExercisesBtn: '← Back to Exercises',
     viewSummaryBtn: "← View Today's Summary",
     minigameBanner:
-      '🎉 Great job! All prescribed exercises are complete — Final step: Cognitive Rehab Card Mini-Game.',
+      'Great job! All prescribed exercises are complete — Final step: Cognitive Rehab Card Mini-Game.',
   },
   cn: {
     backToLogin: '← 返回人脸识别首页 (Kiosk Login)',
@@ -257,7 +257,7 @@ const KIOSK_TRAINING_COPY: Record<
     completedDescPart2: '，且您今日的康复训练记录已保存完毕。',
     completedNextAppt: (date) =>
       date ? `请于下次预约日再来继续训练 (${date})` : '请于下次预约日再来继续训练',
-    doneTodayTag: '今日已完成 ✓',
+    doneTodayTag: '今日已完成',
     restHeaderBadge: '休息日 • 肌肉恢复日',
     scheduleCheckBadge: (date) => `已核对今日预约安排 (${date})`,
     restHeading: (name) => `今天是您的休息日 ( ${name} )`,
@@ -276,14 +276,14 @@ const KIOSK_TRAINING_COPY: Record<
     holdSecTag: (sec) => `保持 ${sec} 秒`,
     setsRepsTag: (sets, reps) => `${sets} 组 × ${reps} 次`,
     doneTag: '已完成',
-    finalStepBanner: '🎮 最后一步：认知记忆小游戏（完成全部康复动作后将自动开启）',
+    finalStepBanner: '最后一步：认知记忆小游戏（完成全部康复动作后将自动开启）',
     step1Badge: '步骤 1/2：按处方进行物理康复训练',
     backToOverviewBtn: '← 返回今日康复计划',
-    skipToMinigameBtn: '跳至小游戏（最后一步）➔',
+    skipToMinigameBtn: '跳至小游戏（最后一步）→',
     minigameHeaderBadge: 'AI Kiosk 训练 • 最后一步（小游戏）',
     backToExercisesBtn: '← 返回康复动作训练',
     viewSummaryBtn: '← 查看今日康复总结',
-    minigameBanner: '🎉 太棒了！您已完成所有规定康复动作 — 最后一步：认知康复卡片小游戏',
+    minigameBanner: '太棒了！您已完成所有规定康复动作 — 最后一步：认知康复卡片小游戏',
   },
 };
 
@@ -1003,7 +1003,7 @@ export function App() {
               className="fixed bottom-4 right-4 z-50 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-teal-900/85 hover:bg-teal-800 text-emerald-100 border border-emerald-400/40 shadow-lg backdrop-blur-sm text-xs md:text-sm font-semibold transition-all active:scale-95 whitespace-nowrap cursor-pointer"
               title="ข้ามการจำกัด 1 ครั้ง/วัน เพื่อทดสอบระบบตรวจจับท่าทางกายภาพอีกครั้ง"
             >
-              <span>🔄</span>
+              <RotateCcw className="w-4 h-4 shrink-0" />
               <span>{getRetestPostureButtonLabel(lang)}</span>
             </button>
           </div>
@@ -1040,8 +1040,8 @@ export function App() {
             </div>
             <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
               <div className="w-full max-w-xl rounded-3xl bg-white border-2 border-amber-300 shadow-2xl p-6 sm:p-8 text-center">
-                <div className="mx-auto w-16 h-16 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center text-3xl mb-4">
-                  🌿
+                <div className="mx-auto w-16 h-16 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center mb-4">
+                  <Leaf className="w-8 h-8" />
                 </div>
                 <span className="inline-block px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-xs font-extrabold mb-3">
                   {kc.scheduleCheckBadge(todaySchedule.todayIso)}
@@ -1112,8 +1112,8 @@ export function App() {
             </div>
             <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
               <div className="w-full max-w-3xl rounded-3xl bg-white border-2 border-emerald-400 shadow-2xl p-6 sm:p-8 text-center">
-                <div className="mx-auto w-16 h-16 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-3xl mb-4">
-                  📅
+                <div className="mx-auto w-16 h-16 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mb-4">
+                  <Calendar className="w-8 h-8" />
                 </div>
                 <span className="inline-block px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-extrabold mb-3">
                   {kc.scheduledCountBadge(todaySchedule.todayIso, todayExercises.length)}
@@ -1138,7 +1138,7 @@ export function App() {
                         randomHandSide === 'left' ? 'bg-orange-500' : 'bg-emerald-600'
                       }`}
                     >
-                      <span>{randomHandSide === 'left' ? '🫲' : '🫱'}</span>
+                      <Hand className={`w-4 h-4 shrink-0 ${randomHandSide === 'left' ? '-scale-x-100' : ''}`} />
                       <span>
                         {randomHandSide === 'left' ? kc.startLeftBadge : kc.startRightBadge}
                       </span>

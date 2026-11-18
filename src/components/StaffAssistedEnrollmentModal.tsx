@@ -546,7 +546,7 @@ export function StaffAssistedEnrollmentModal({
           requireSupabase: false,
         }).catch(() => null);
         setErrorMsg(null);
-        setToastMsg('✅ บันทึกใบหน้าและข้อมูลคนไข้เรียบร้อยแล้ว!');
+        setToastMsg('บันทึกใบหน้าและข้อมูลคนไข้เรียบร้อยแล้ว!');
         setCreatedPatient(updated);
         setCapturing(false);
         setStep(4);
@@ -654,8 +654,8 @@ export function StaffAssistedEnrollmentModal({
       setErrorMsg(null);
       setToastMsg(
         customSchedules.length > 0
-          ? `✅ ลงทะเบียนใบหน้าและกำหนดท่ากายภาพ ${prescribedUniqueCount} ท่าเรียบร้อย!`
-          : '✅ ลงทะเบียนใบหน้าและบันทึกเวชระเบียนคนไข้เรียบร้อยแล้ว!',
+          ? `ลงทะเบียนใบหน้าและกำหนดท่ากายภาพ ${prescribedUniqueCount} ท่าเรียบร้อย!`
+          : 'ลงทะเบียนใบหน้าและบันทึกเวชระเบียนคนไข้เรียบร้อยแล้ว!',
       );
       setCreatedPatient(enrolled);
       setCapturing(false);
@@ -738,7 +738,7 @@ export function StaffAssistedEnrollmentModal({
                 }`}
               >
                 <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/25 text-[11px] font-black">
-                  {step > 1 ? '✓' : '1'}
+                  {step > 1 ? 'OK' : '1'}
                 </span>
                 <span>1. กรอกข้อมูลคนไข้</span>
               </div>
@@ -756,7 +756,7 @@ export function StaffAssistedEnrollmentModal({
             }`}
           >
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-200/80 text-[11px] font-black text-slate-700">
-              {step > 2 ? '✓' : isExistingPatientMode ? '1' : '2'}
+              {step > 2 ? 'OK' : isExistingPatientMode ? '1' : '2'}
             </span>
             <span>{isExistingPatientMode ? '1. Face ID 120 เฟรม (3D)' : '2. Face ID 120 เฟรม (3D)'}</span>
           </div>
@@ -774,7 +774,7 @@ export function StaffAssistedEnrollmentModal({
                 }`}
               >
                 <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-200/80 text-[11px] font-black text-slate-700">
-                  {step > 3 ? '✓' : '3'}
+                  {step > 3 ? 'OK' : '3'}
                 </span>
                 <span>3. กำหนดท่ากายภาพบำบัด</span>
               </div>
@@ -1292,7 +1292,7 @@ export function StaffAssistedEnrollmentModal({
                 </div>
                 <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-extrabold text-emerald-800">
                   {biometric120Result
-                    ? `Face ID 120 เฟรม (1024-D 3D) พร้อมแล้ว ✓ (${Math.round(biometric120Result.qualityScore * 100)}%)`
+                    ? `Face ID 120 เฟรม (1024-D 3D) พร้อมแล้ว (${Math.round(biometric120Result.qualityScore * 100)}%)`
                     : 'กรุณาสแกน Face ID 120 เฟรมก่อนบันทึก'}
                 </span>
               </div>

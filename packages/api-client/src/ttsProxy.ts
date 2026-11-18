@@ -8,9 +8,12 @@ export function normalizeTtsLang(rawLang?: string | null): SupportedTtsLang {
   return 'en';
 }
 
-/** Clamp & collapse whitespace so TTS requests stay within upstream ~200 char limits. */
+/** Strip emojis/dingbats, collapse whitespace, and clamp so TTS requests stay clean & within ~200 char limits. */
 export function clampTtsText(text: string, maxLen = 190): string {
-  const collapsed = text.replace(/\s+/g, ' ').trim();
+  const collapsed = text
+    .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!collapsed) return '';
   if (collapsed.length <= maxLen) return collapsed;
 

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Camera,
+  Check,
   CheckCircle2,
   Loader2,
   Lock,
@@ -35,6 +36,7 @@ import {
   buildTtsProxyUrl,
   pickSpeechVoice,
   readStoredKioskVoiceMuted,
+  sanitizeSpeechText,
   subscribeKioskVoiceMuted,
   writeStoredKioskVoiceMuted,
   cancelAllKioskVoiceSpeech,
@@ -150,28 +152,28 @@ const FACE_ID_120_GUIDANCE: Record<ClinicalLang, Record<Bucket5Key, FaceId120Gui
     left: {
       label: 'หันซ้าย',
       stepTitle: 'ขั้นตอนที่ 2/5: ค่อยๆ หันหน้าไปทางซ้าย',
-      turnCue: '✅ สแกนหน้าตรงครบ 40/40 แล้ว! ขั้นต่อไป: กรุณาหันหน้าไปทางซ้าย',
+      turnCue: 'สแกนหน้าตรงครบ 40/40 แล้ว! ขั้นต่อไป: กรุณาหันหน้าไปทางซ้าย',
       holdCue: 'กำลังเก็บมิติใบหน้าด้านซ้าย',
       voice: 'สแกนหน้าตรงครบแล้ว ขั้นตอนที่ 2 กรุณาหันหน้าไปทางซ้ายครับ',
     },
     right: {
       label: 'หันขวา',
       stepTitle: 'ขั้นตอนที่ 3/5: ค่อยๆ หันหน้าไปทางขวา',
-      turnCue: '✅ หันซ้ายครบ 20/20 แล้ว! ขั้นต่อไป: กรุณาหันหน้าไปทางขวา',
+      turnCue: 'หันซ้ายครบ 20/20 แล้ว! ขั้นต่อไป: กรุณาหันหน้าไปทางขวา',
       holdCue: 'กำลังเก็บมิติใบหน้าด้านขวา',
       voice: 'หันซ้ายครบแล้ว ขั้นตอนที่ 3 กรุณาหันหน้าไปทางขวาครับ',
     },
     up: {
       label: 'เงยหน้า',
       stepTitle: 'ขั้นตอนที่ 4/5: ค่อยๆ เงยหน้าขึ้นเล็กน้อย',
-      turnCue: '✅ หันขวาครบ 20/20 แล้ว! ขั้นต่อไป: กรุณาเงยหน้าขึ้นเล็กน้อย',
+      turnCue: 'หันขวาครบ 20/20 แล้ว! ขั้นต่อไป: กรุณาเงยหน้าขึ้นเล็กน้อย',
       holdCue: 'กำลังเก็บมิติมุมเงยหน้า',
       voice: 'หันขวาครบแล้ว ขั้นตอนที่ 4 กรุณาเงยหน้าขึ้นเล็กน้อยครับ',
     },
     down: {
       label: 'ก้มหน้า',
       stepTitle: 'ขั้นตอนที่ 5/5: ค่อยๆ ก้มหน้าลงเล็กน้อย',
-      turnCue: '✅ เงยหน้าครบ 20/20 แล้ว! ขั้นสุดท้าย: กรุณาก้มหน้าลงเล็กน้อย',
+      turnCue: 'เงยหน้าครบ 20/20 แล้ว! ขั้นสุดท้าย: กรุณาก้มหน้าลงเล็กน้อย',
       holdCue: 'กำลังเก็บมิติมุมก้มหน้า',
       voice: 'เงยหน้าครบแล้ว ขั้นตอนที่ 5 ขั้นสุดท้าย กรุณาก้มหน้าลงเล็กน้อยครับ',
     },
@@ -581,57 +583,57 @@ export function buildWrongDirectionCue(
 ): string | null {
   if (targetBucket === 'center') {
     if (Math.abs(deltaYaw) <= 8 && Math.abs(deltaPitch) <= 9) return null;
-    if (lang === 'en') return '⚠️ Look straight into the camera to capture frontal baseline frames.';
-    if (lang === 'cn') return '⚠️ 请保持面部正对摄像头静止，采集正面图像。';
-    return '⚠️ กรุณามองตรงหน้ากล้องนิ่งๆ เพื่อเก็บภาพหน้าตรง';
+    if (lang === 'en') return 'Look straight into the camera to capture frontal baseline frames.';
+    if (lang === 'cn') return '请保持面部正对摄像头静止，采集正面图像。';
+    return 'กรุณามองตรงหน้ากล้องนิ่งๆ เพื่อเก็บภาพหน้าตรง';
   }
   if (targetBucket === 'left') {
     if (deltaYaw <= -11) return null;
     const progressDeg = Math.max(0, Math.round(-deltaYaw));
     if (lang === 'en') {
-      return `⬅️ Turn head LEFT clearly (${progressDeg}° / > 11° required)`;
+      return `Turn head LEFT clearly (${progressDeg}° / > 11° required)`;
     }
     if (lang === 'cn') {
-      return `⬅️ 请明显向屏幕左侧转头 (${progressDeg}° / 需大于 11°)`;
+      return `请明显向屏幕左侧转头 (${progressDeg}° / 需大于 11°)`;
     }
     return deltaYaw > 5
-      ? `⚠️ กำลังหันขวา — กรุณาหันหน้าไปทางซ้ายให้ชัดเจน (ตอนนี้ 0° / ต้องมากกว่า 11°)`
-      : `⬅️ กรุณาหันหน้าไปทางซ้ายให้ชัดเจน (ตอนนี้ ${progressDeg}° / ต้องมากกว่า 11°)`;
+      ? `กำลังหันขวา — กรุณาหันหน้าไปทางซ้ายให้ชัดเจน (ตอนนี้ 0° / ต้องมากกว่า 11°)`
+      : `กรุณาหันหน้าไปทางซ้ายให้ชัดเจน (ตอนนี้ ${progressDeg}° / ต้องมากกว่า 11°)`;
   }
   if (targetBucket === 'right') {
     if (deltaYaw >= 11) return null;
     const progressDeg = Math.max(0, Math.round(deltaYaw));
     if (lang === 'en') {
-      return `➡️ Turn head RIGHT clearly (${progressDeg}° / > 11° required)`;
+      return `Turn head RIGHT clearly (${progressDeg}° / > 11° required)`;
     }
     if (lang === 'cn') {
-      return `➡️ 请明显向屏幕右侧转头 (${progressDeg}° / 需大于 11°)`;
+      return `请明显向屏幕右侧转头 (${progressDeg}° / 需大于 11°)`;
     }
     return deltaYaw < -5
-      ? `⚠️ กำลังหันซ้าย — กรุณาหันหน้าไปทางขวาให้ชัดเจน (ตอนนี้ 0° / ต้องมากกว่า 11°)`
-      : `➡️ กรุณาหันหน้าไปทางขวาให้ชัดเจน (ตอนนี้ ${progressDeg}° / ต้องมากกว่า 11°)`;
+      ? `กำลังหันซ้าย — กรุณาหันหน้าไปทางขวาให้ชัดเจน (ตอนนี้ 0° / ต้องมากกว่า 11°)`
+      : `กรุณาหันหน้าไปทางขวาให้ชัดเจน (ตอนนี้ ${progressDeg}° / ต้องมากกว่า 11°)`;
   }
   if (targetBucket === 'up') {
     if (deltaPitch <= -8 && Math.abs(deltaYaw) <= 16) return null;
     const progressDeg = Math.max(0, Math.round(-deltaPitch));
     if (lang === 'en') {
-      return `⬆️ Tilt chin UP clearly (${progressDeg}° / > 8° required)`;
+      return `Tilt chin UP clearly (${progressDeg}° / > 8° required)`;
     }
     if (lang === 'cn') {
-      return `⬆️ 请明显向上抬头 (${progressDeg}° / 需大于 8°)`;
+      return `请明显向上抬头 (${progressDeg}° / 需大于 8°)`;
     }
-    return `⬆️ กรุณาเงยหน้าขึ้นด้านบนให้ชัดเจน (ตอนนี้ ${progressDeg}° / ต้องมากกว่า 8°)`;
+    return `กรุณาเงยหน้าขึ้นด้านบนให้ชัดเจน (ตอนนี้ ${progressDeg}° / ต้องมากกว่า 8°)`;
   }
   if (targetBucket === 'down') {
     if (deltaPitch >= 8 && Math.abs(deltaYaw) <= 16) return null;
     const progressDeg = Math.max(0, Math.round(deltaPitch));
     if (lang === 'en') {
-      return `⬇️ Tilt chin DOWN clearly (${progressDeg}° / > 8° required)`;
+      return `Tilt chin DOWN clearly (${progressDeg}° / > 8° required)`;
     }
     if (lang === 'cn') {
-      return `⬇️ 请明显向下低头 (${progressDeg}° / 需大于 8°)`;
+      return `请明显向下低头 (${progressDeg}° / 需大于 8°)`;
     }
-    return `⬇️ กรุณาก้มหน้าลงด้านล่างให้ชัดเจน (ตอนนี้ ${progressDeg}° / ต้องมากกว่า 8°)`;
+    return `กรุณาก้มหน้าลงด้านล่างให้ชัดเจน (ตอนนี้ ${progressDeg}° / ต้องมากกว่า 8°)`;
   }
   return null;
 }
@@ -1130,7 +1132,12 @@ export default function FaceID120Scanner({
       }
       try {
         window.speechSynthesis.cancel();
-        const utter = new SpeechSynthesisUtterance(trimmed);
+        const cleanSpeechText = sanitizeSpeechText(trimmed);
+        if (!cleanSpeechText) {
+          handleFinished();
+          return;
+        }
+        const utter = new SpeechSynthesisUtterance(cleanSpeechText);
         utter.lang = bcp47;
         utter.rate = speakLang === 'en' ? 1.0 : 1.04;
         utter.pitch = 1.02;
@@ -2269,22 +2276,22 @@ export default function FaceID120Scanner({
             <>
               {targetBucketHint === 'left' && (
                 <div className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 z-10 rounded-full bg-amber-500/95 px-2.5 py-1 text-[11px] font-black text-white shadow-lg animate-pulse">
-                  ⬅️ หันซ้าย
+                  ← หันซ้าย
                 </div>
               )}
               {targetBucketHint === 'right' && (
                 <div className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 z-10 rounded-full bg-amber-500/95 px-2.5 py-1 text-[11px] font-black text-white shadow-lg animate-pulse">
-                  หันขวา ➡️
+                  หันขวา →
                 </div>
               )}
               {targetBucketHint === 'up' && (
                 <div className="pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 z-10 rounded-full bg-amber-500/95 px-2.5 py-1 text-[11px] font-black text-white shadow-lg animate-pulse whitespace-nowrap">
-                  ⬆️ เงยหน้าขึ้น
+                  ↑ เงยหน้าขึ้น
                 </div>
               )}
               {targetBucketHint === 'down' && (
                 <div className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 z-10 rounded-full bg-amber-500/95 px-2.5 py-1 text-[11px] font-black text-white shadow-lg animate-pulse whitespace-nowrap">
-                  ⬇️ ก้มหน้าลง
+                  ↓ ก้มหน้าลง
                 </div>
               )}
             </>
@@ -2367,7 +2374,7 @@ export default function FaceID120Scanner({
         )}
       </div>
 
-      {/* Strict 5-Stage Sequential Step Cards (Done -> Active -> Locked Queue 🔒) */}
+      {/* Strict 5-Stage Sequential Step Cards (Done -> Active -> Locked Queue) */}
       <div className="mt-4 grid grid-cols-5 gap-1.5 text-center text-[11px]">
         {(() => {
           const activeStage = getActiveEnrollmentStage(bucketCounts);
@@ -2401,14 +2408,19 @@ export default function FaceID120Scanner({
                   {isLockedQueue ? (
                     <Lock className="h-3 w-3 shrink-0 text-slate-400" />
                   ) : isActiveStep ? (
-                    <span className="shrink-0">👉</span>
+                    <span className="inline-block w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
                   ) : null}
                   <span className="truncate">
                     {stage.step}. {itemLabel}
                   </span>
                 </div>
-                <div className="mt-0.5 font-mono text-xs font-black">
-                  {count}/{target} {ok ? '✓' : isLockedQueue ? '🔒' : ''}
+                <div className="mt-0.5 inline-flex items-center justify-center gap-1 font-mono text-xs font-black">
+                  <span>{count}/{target}</span>
+                  {ok ? (
+                    <Check className="h-3 w-3 text-emerald-600 shrink-0" />
+                  ) : isLockedQueue ? (
+                    <Lock className="h-3 w-3 text-slate-400 shrink-0" />
+                  ) : null}
                 </div>
                 <div className="mt-0.5 text-[10px] font-bold">
                   {ok

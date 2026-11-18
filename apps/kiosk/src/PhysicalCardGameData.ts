@@ -40,7 +40,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'apple',
-    icon: '🍎',
+    icon: 'apple',
     subject: { th: 'แอปเปิลแดง', en: 'Red Apple', cn: '红苹果' },
     question: {
       th: 'ภาพนี้คือผลไม้ที่มีสีแดงใช่ไหม?',
@@ -57,7 +57,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'banana',
-    icon: '🍌',
+    icon: 'banana',
     subject: { th: 'กล้วยสีเหลือง', en: 'Yellow Banana', cn: '黄香蕉' },
     question: {
       th: 'กล้วยในภาพนี้มีสีม่วงใช่ไหม?',
@@ -74,7 +74,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'broccoli',
-    icon: '🥦',
+    icon: 'broccoli',
     subject: { th: 'บรอกโคลี', en: 'Broccoli', cn: '西兰花' },
     question: {
       th: 'ภาพนี้คือผักสีเขียวที่มีประโยชน์ใช่ไหม?',
@@ -91,7 +91,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'milk',
-    icon: '🥛',
+    icon: 'milk',
     subject: { th: 'นมสด', en: 'Fresh Milk', cn: '鲜牛奶' },
     question: {
       th: 'นมในภาพนี้เป็นอาหารทอดกรอบใช่ไหม?',
@@ -108,7 +108,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'watermelon',
-    icon: '🍉',
+    icon: 'watermelon',
     subject: { th: 'แตงโม', en: 'Watermelon', cn: '西瓜' },
     question: {
       th: 'ผลไม้ในภาพนี้มีเนื้อสีแดงและเมล็ดสีดำใช่ไหม?',
@@ -125,7 +125,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'carrot',
-    icon: '🥕',
+    icon: 'carrot',
     subject: { th: 'แครอท', en: 'Carrot', cn: '胡萝卜' },
     question: {
       th: 'แครอทในภาพนี้มีสีฟ้าใช่ไหม?',
@@ -142,7 +142,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'fish_food',
-    icon: '🐟',
+    icon: 'fish_food',
     subject: { th: 'ปลาสด', en: 'Fresh Fish', cn: '鲜鱼' },
     question: {
       th: 'ปลาในภาพนี้เป็นอาหารที่ให้โปรตีนใช่ไหม?',
@@ -159,7 +159,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'mango',
-    icon: '🥭',
+    icon: 'mango',
     subject: { th: 'มะม่วงสุก', en: 'Ripe Mango', cn: '芒果' },
     question: {
       th: 'ผลไม้สีเหลืองในภาพนี้ใช้สวมเท้าแทนรองเท้าได้ใช่ไหม?',
@@ -176,7 +176,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'orange',
-    icon: '🍊',
+    icon: 'orange',
     subject: { th: 'ส้ม', en: 'Orange', cn: '橙子' },
     question: {
       th: 'ผลไม้สีส้มลูกนี้เป็นแหล่งวิตามินซีใช่ไหม?',
@@ -193,7 +193,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'fried_egg',
-    icon: '🍳',
+    icon: 'fried_egg',
     subject: { th: 'ไข่ดาว', en: 'Fried Egg', cn: '煎蛋' },
     question: {
       th: 'ไข่ดาวในกระทะนี้เป็นขนมเค้กวันเกิดใช่ไหม?',
@@ -210,7 +210,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'rice_bowl',
-    icon: '🍚',
+    icon: 'rice_bowl',
     subject: { th: 'ข้าวสวยในชาม', en: 'Bowl of Rice', cn: '一碗米饭' },
     question: {
       th: 'ชามสีฟ้านี้บรรจุข้าวสวยสำหรับรับประทานใช่ไหม?',
@@ -227,7 +227,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'papaya',
-    icon: '🥭',
+    icon: 'papaya',
     subject: { th: 'มะละกอสุก', en: 'Ripe Papaya', cn: '木瓜' },
     question: {
       th: 'มะละกอในภาพนี้เป็นเครื่องดนตรีใช่ไหม?',
@@ -244,7 +244,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'pineapple',
-    icon: '🍍',
+    icon: 'pineapple',
     subject: { th: 'สับปะรด', en: 'Pineapple', cn: '菠萝' },
     question: {
       th: 'สับปะรดในภาพมีจุกใบสีเขียวอยู่ด้านบนใช่ไหม?',
@@ -261,7 +261,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'coconut',
-    icon: '🥥',
+    icon: 'coconut',
     subject: { th: 'มะพร้าวน้ำหอม', en: 'Fresh Coconut', cn: '青椰子' },
     question: {
       th: 'น้ำในลูกมะพร้าวนี้เป็นน้ำมันเครื่องใช่ไหม?',
@@ -278,7 +278,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'corn',
-    icon: '🌽',
+    icon: 'corn',
     subject: { th: 'ข้าวโพด', en: 'Sweet Corn', cn: '玉米' },
     question: {
       th: 'ข้าวโพดในภาพมีเมล็ดสีเหลืองห่อด้วยเปลือกสีเขียวใช่ไหม?',
@@ -295,7 +295,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'strawberry',
-    icon: '🍓',
+    icon: 'strawberry',
     subject: { th: 'สตรอว์เบอร์รี', en: 'Strawberry', cn: '草莓' },
     question: {
       th: 'ผลไม้สีแดงลูกเล็กนี้คือลูกมะพร้าวเปลือกแข็งใช่ไหม?',
@@ -312,7 +312,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'grapes',
-    icon: '🍇',
+    icon: 'grapes',
     subject: { th: 'องุ่นม่วง', en: 'Purple Grapes', cn: '紫葡萄' },
     question: {
       th: 'พวงผลไม้สีม่วงในภาพนี้คือองุ่นใช่ไหม?',
@@ -329,7 +329,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'pumpkin',
-    icon: '🎃',
+    icon: 'pumpkin',
     subject: { th: 'ฟักทอง', en: 'Pumpkin', cn: '南瓜' },
     question: {
       th: 'ฟักทองลูกสีส้มนี้ใช้อาบน้ำแทนสบู่ใช่ไหม?',
@@ -346,7 +346,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'soup_bowl',
-    icon: '🍲',
+    icon: 'soup_bowl',
     subject: { th: 'ชามซุปร้อน', en: 'Hot Soup Bowl', cn: '热汤碗' },
     question: {
       th: 'ภาพนี้แสดงชามซุปร้อนที่มีไอน้ำลอยขึ้นใช่ไหม?',
@@ -363,7 +363,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'food_fruit',
     artKey: 'water_glass',
-    icon: '🥤',
+    icon: 'water_glass',
     subject: { th: 'แก้วน้ำดื่ม', en: 'Glass of Water', cn: '一杯水' },
     question: {
       th: 'เราควรเทน้ำดื่มทิ้งทั้งหมดเพื่อไม่ให้ร่างกายได้น้ำใช่ไหม?',
@@ -382,7 +382,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'key',
-    icon: '🔑',
+    icon: 'key',
     subject: { th: 'กุญแจ', en: 'Key', cn: '钥匙' },
     question: {
       th: 'กุญแจสีทองในภาพนี้ใช้ไขเปิดประตูใช่ไหม?',
@@ -399,7 +399,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'toothbrush',
-    icon: '🪥',
+    icon: 'toothbrush',
     subject: { th: 'แปรงสีฟัน', en: 'Toothbrush', cn: '牙刷' },
     question: {
       th: 'แปรงสีฟันสีชมพูนี้ใช้กวาดลานบ้านใช่ไหม?',
@@ -416,7 +416,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'eyeglasses',
-    icon: '👓',
+    icon: 'eyeglasses',
     subject: { th: 'แว่นตา', en: 'Eyeglasses', cn: '眼镜' },
     question: {
       th: 'แว่นตาในภาพนี้ช่วยให้มองเห็นตัวหนังสือได้ชัดเจนขึ้นใช่ไหม?',
@@ -433,7 +433,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'umbrella',
-    icon: '☂️',
+    icon: 'umbrella',
     subject: { th: 'ร่มสีฟ้า', en: 'Blue Umbrella', cn: '蓝雨伞' },
     question: {
       th: 'ร่มสีฟ้าในภาพนี้ใช้ตักแกงรับประทานใช่ไหม?',
@@ -450,7 +450,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'alarm_clock',
-    icon: '⏰',
+    icon: 'alarm_clock',
     subject: { th: 'นาฬิกาปลุก', en: 'Alarm Clock', cn: '闹钟' },
     question: {
       th: 'นาฬิกาปลุกกระดิ่งสีแดงนี้ใช้ดูเวลาและปลุกตอนเช้าใช่ไหม?',
@@ -467,7 +467,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'chair',
-    icon: '🪑',
+    icon: 'chair',
     subject: { th: 'เก้าอี้ไม้', en: 'Wooden Chair', cn: '木椅' },
     question: {
       th: 'เก้าอี้ไม้ในภาพนี้มีไว้สวมบนศีรษะแทนหมวกใช่ไหม?',
@@ -484,7 +484,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'stethoscope',
-    icon: '🩺',
+    icon: 'stethoscope',
     subject: { th: 'หูฟังแพทย์', en: 'Stethoscope', cn: '听诊器' },
     question: {
       th: 'อุปกรณ์ในภาพนี้คือหูฟังของคุณหมอใช่ไหม?',
@@ -501,7 +501,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'spoon_fork',
-    icon: '🍴',
+    icon: 'spoon_fork',
     subject: { th: 'ช้อนและส้อม', en: 'Spoon and Fork', cn: '勺子和叉子' },
     question: {
       th: 'ช้อนและส้อมคู่นี้ใช้ตัดกระดาษแทนกรรไกรใช่ไหม?',
@@ -518,7 +518,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'hair_comb',
-    icon: '💇',
+    icon: 'hair_comb',
     subject: { th: 'หวีผม', en: 'Hair Comb', cn: '梳子' },
     question: {
       th: 'หวีสีม่วงในภาพนี้ใช้หวีจัดทรงผมใช่ไหม?',
@@ -535,7 +535,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'scissors',
-    icon: '✂️',
+    icon: 'scissors',
     subject: { th: 'กรรไกร', en: 'Scissors', cn: '剪刀' },
     question: {
       th: 'กรรไกรด้ามสีแดงนี้ใช้ชงกาแฟใช่ไหม?',
@@ -552,7 +552,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'pillow',
-    icon: '🛏️',
+    icon: 'pillow',
     subject: { th: 'หมอนหนุน', en: 'Pillow', cn: '枕头' },
     question: {
       th: 'หมอนสีขาวใบนี้อยู่คู่กับการนอนหลับพักผ่อนใช่ไหม?',
@@ -569,7 +569,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'walking_shoes',
-    icon: '👟',
+    icon: 'walking_shoes',
     subject: { th: 'รองเท้าเดิน', en: 'Walking Shoes', cn: '步行鞋' },
     question: {
       th: 'รองเท้าสีฟ้าในภาพนี้ใช้ถือเขียนหนังสือแทนปากกาใช่ไหม?',
@@ -586,7 +586,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'telephone',
-    icon: '☎️',
+    icon: 'telephone',
     subject: { th: 'โทรศัพท์', en: 'Telephone', cn: '电话' },
     question: {
       th: 'โทรศัพท์ในภาพนี้ใช้โทรติดต่อพูดคุยกับผู้อื่นใช่ไหม?',
@@ -603,7 +603,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'open_book',
-    icon: '📖',
+    icon: 'open_book',
     subject: { th: 'หนังสือเปิด', en: 'Open Book', cn: '打开的书' },
     question: {
       th: 'หนังสือที่เปิดอยู่นี้ใช้ตักน้ำดื่มแทนแก้วใช่ไหม?',
@@ -620,7 +620,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'teacup',
-    icon: '🍵',
+    icon: 'teacup',
     subject: { th: 'ถ้วยชาร้อน', en: 'Hot Teacup', cn: '热茶杯' },
     question: {
       th: 'ถ้วยที่มีจานรองและไอน้ำนี้ใช้ใส่ชาอุ่นๆ ใช่ไหม?',
@@ -637,7 +637,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'wristwatch',
-    icon: '⌚',
+    icon: 'wristwatch',
     subject: { th: 'นาฬิกาข้อมือ', en: 'Wristwatch', cn: '手表' },
     question: {
       th: 'นาฬิกาข้อมือเรือนนี้ใช้ทอดไข่ดาวบนเตาใช่ไหม?',
@@ -654,7 +654,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'flashlight',
-    icon: '🔦',
+    icon: 'flashlight',
     subject: { th: 'ไฟฉาย', en: 'Flashlight', cn: '手电筒' },
     question: {
       th: 'ไฟฉายสีแดงในภาพนี้ส่องแสงสว่างในที่มืดได้ใช่ไหม?',
@@ -671,7 +671,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'table_fan',
-    icon: '🌀',
+    icon: 'table_fan',
     subject: { th: 'พัดลมตั้งโต๊ะ', en: 'Table Fan', cn: '台扇' },
     question: {
       th: 'พัดลมสีฟ้าในภาพนี้มีหน้าที่ต้มน้ำให้เดือดใช่ไหม?',
@@ -688,7 +688,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'sun_hat',
-    icon: '👒',
+    icon: 'sun_hat',
     subject: { th: 'หมวกกันแดด', en: 'Sun Hat', cn: '遮阳帽' },
     question: {
       th: 'หมวกสีเหลืองปีกกว้างนี้ช่วยบังแดดเวลาออกนอกบ้านใช่ไหม?',
@@ -705,7 +705,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'objects',
     artKey: 'thermometer',
-    icon: '🌡️',
+    icon: 'thermometer',
     subject: { th: 'ปรอทวัดไข้', en: 'Thermometer', cn: '体温计' },
     question: {
       th: 'ปรอทวัดอุณหภูมิในภาพนี้ใช้ตอกตะปูแทนค้อนใช่ไหม?',
@@ -724,7 +724,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'animals',
     artKey: 'elephant',
-    icon: '🐘',
+    icon: 'elephant',
     subject: { th: 'ช้าง', en: 'Elephant', cn: '大象' },
     question: {
       th: 'ช้างในภาพนี้มีงวงยาวและงาสีขาวใช่ไหม?',
@@ -741,7 +741,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'animals',
     artKey: 'dog',
-    icon: '🐕',
+    icon: 'dog',
     subject: { th: 'สุนัข', en: 'Dog', cn: '小狗' },
     question: {
       th: 'สุนัขในภาพนี้มีปีกบินอยู่บนก้อนเมฆใช่ไหม?',
@@ -758,7 +758,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'animals',
     artKey: 'bird',
-    icon: '🐦',
+    icon: 'bird',
     subject: { th: 'นกสีฟ้า', en: 'Blue Bird', cn: '蓝鸟' },
     question: {
       th: 'นกสีฟ้าตัวนี้มีจะงอยปากและปีกใช่ไหม?',
@@ -775,7 +775,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'animals',
     artKey: 'turtle',
-    icon: '🐢',
+    icon: 'turtle',
     subject: { th: 'เต่า', en: 'Turtle', cn: '乌龟' },
     question: {
       th: 'เต่ากระดองเขียวตัวนี้วิ่งเร็วกว่าเสือชีตาห์ใช่ไหม?',
@@ -792,7 +792,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'animals',
     artKey: 'bee',
-    icon: '🐝',
+    icon: 'bee',
     subject: { th: 'ผึ้ง', en: 'Honey Bee', cn: '蜜蜂' },
     question: {
       th: 'ผึ้งลายเหลืองดำตัวนี้มีปีกช่วยบินหาน้ำหวานใช่ไหม?',
@@ -809,7 +809,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'animals',
     artKey: 'cat',
-    icon: '🐈',
+    icon: 'cat',
     subject: { th: 'แมวส้ม', en: 'Orange Cat', cn: '橘猫' },
     question: {
       th: 'แมวสีส้มในภาพนี้มีกระดองแข็งเหมือนเต่าใช่ไหม?',
@@ -826,7 +826,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'animals',
     artKey: 'rabbit',
-    icon: '🐇',
+    icon: 'rabbit',
     subject: { th: 'กระต่ายขาว', en: 'White Rabbit', cn: '白兔' },
     question: {
       th: 'กระต่ายสีขาวในภาพนี้มีหูยาว 2 ข้างใช่ไหม?',
@@ -843,7 +843,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'animals',
     artKey: 'tropical_fish',
-    icon: '🐠',
+    icon: 'tropical_fish',
     subject: { th: 'ปลาทะเลสีส้ม', en: 'Orange Clownfish', cn: '小丑鱼' },
     question: {
       th: 'ปลาสีส้มขาวตัวนี้เดินสี่ขาบนต้นไม้สูงใช่ไหม?',
@@ -860,7 +860,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'animals',
     artKey: 'butterfly',
-    icon: '🦋',
+    icon: 'butterfly',
     subject: { th: 'ผีเสื้อ', en: 'Butterfly', cn: '蝴蝶' },
     question: {
       th: 'ผีเสื้อตัวนี้มีปีกสีม่วงชมพูสวยงาม 2 ข้างใช่ไหม?',
@@ -877,7 +877,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'animals',
     artKey: 'rooster',
-    icon: '🐓',
+    icon: 'rooster',
     subject: { th: 'ไก่ตัวผู้', en: 'Rooster', cn: '公鸡' },
     question: {
       th: 'ไก่หงอนแดงตัวนี้ดำน้ำลึกกลางมหาสมุทรใช่ไหม?',
@@ -894,7 +894,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'animals',
     artKey: 'cow',
-    icon: '🐄',
+    icon: 'cow',
     subject: { th: 'วัวลายขาวดำ', en: 'Cow', cn: '奶牛' },
     question: {
       th: 'วัวลายขาวดำในภาพนี้เป็นสัตว์ที่ให้นมสดใช่ไหม?',
@@ -911,7 +911,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'animals',
     artKey: 'duck',
-    icon: '🦆',
+    icon: 'duck',
     subject: { th: 'เป็ดเหลือง', en: 'Yellow Duck', cn: '黄鸭' },
     question: {
       th: 'เป็ดสีเหลืองที่ลอยน้ำนี้มีขาสี่ขาเหมือนม้าใช่ไหม?',
@@ -928,7 +928,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'animals',
     artKey: 'horse',
-    icon: '🐎',
+    icon: 'horse',
     subject: { th: 'ม้าสีน้ำตาล', en: 'Brown Horse', cn: '棕马' },
     question: {
       th: 'ม้าสีน้ำตาลในภาพนี้มีแผงคอและหางยาวใช่ไหม?',
@@ -945,7 +945,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'animals',
     artKey: 'frog',
-    icon: '🐸',
+    icon: 'frog',
     subject: { th: 'กบเขียว', en: 'Green Frog', cn: '绿青蛙' },
     question: {
       th: 'กบสีเขียวบนใบบัวนี้มีปีกเหมือนนกใช่ไหม?',
@@ -962,7 +962,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'animals',
     artKey: 'crab',
-    icon: '🦀',
+    icon: 'crab',
     subject: { th: 'ปูแดง', en: 'Red Crab', cn: '红螃蟹' },
     question: {
       th: 'ปูสีแดงตัวนี้มีก้ามโตอยู่ด้านข้างทั้งสองข้างใช่ไหม?',
@@ -981,7 +981,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'counting',
     artKey: 'count_apples_3',
-    icon: '🍎',
+    icon: 'count_apples_3',
     subject: { th: 'แอปเปิล 3 ผล', en: 'Three Apples', cn: '三个苹果' },
     question: {
       th: 'ในภาพนี้มีแอปเปิลทั้งหมด 5 ลูกใช่ไหม?',
@@ -998,7 +998,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'counting',
     artKey: 'count_stars_2plus2',
-    icon: '⭐',
+    icon: 'count_stars_2plus2',
     subject: { th: 'ดาว 2 + 2 ดวง', en: 'Stars 2 + 2', cn: '星星 2+2' },
     question: {
       th: 'จากภาพ ดาว 2 ดวง บวก 2 ดวง เท่ากับ 4 ดวงใช่ไหม?',
@@ -1015,7 +1015,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'counting',
     artKey: 'count_fingers_5',
-    icon: '🖐️',
+    icon: 'count_fingers_5',
     subject: { th: 'มือ 1 ข้าง 5 นิ้ว', en: 'Five Fingers', cn: '五根手指' },
     question: {
       th: 'มือ 1 ข้างในภาพนี้มีทั้งหมด 8 นิ้วใช่ไหม?',
@@ -1032,7 +1032,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'counting',
     artKey: 'count_car_4wheels',
-    icon: '🚗',
+    icon: 'count_car_4wheels',
     subject: { th: 'โจทย์เลข 10 - 4', en: 'Math 10 - 4', cn: '算术 10 - 4' },
     question: {
       th: 'จากโจทย์ใต้รูปรถยนต์ 10 ลบ 4 เท่ากับ 6 ใช่ไหม?',
@@ -1049,7 +1049,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'counting',
     artKey: 'count_balls_2',
-    icon: '⚽',
+    icon: 'count_balls_2',
     subject: { th: 'ลูกฟุตบอล 2 ลูก', en: 'Two Soccer Balls', cn: '两个足球' },
     question: {
       th: 'ในภาพนี้มีลูกฟุตบอลทั้งหมด 4 ลูกใช่ไหม?',
@@ -1066,7 +1066,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'counting',
     artKey: 'count_oranges_6',
-    icon: '🍊',
+    icon: 'count_oranges_6',
     subject: { th: 'ส้ม 6 ผล', en: 'Six Oranges', cn: '六个橙子' },
     question: {
       th: 'ในภาพนี้มีผลส้มทั้งหมด 6 ลูกใช่ไหม?',
@@ -1083,7 +1083,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'counting',
     artKey: 'count_balloons_3',
-    icon: '🎈',
+    icon: 'count_balloons_3',
     subject: { th: 'ลูกโป่ง 3 ใบ', en: 'Three Balloons', cn: '三个气球' },
     question: {
       th: 'ในภาพนี้มีลูกโป่งทั้งหมด 6 ใบใช่ไหม?',
@@ -1100,7 +1100,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'counting',
     artKey: 'count_flowers_5',
-    icon: '🌸',
+    icon: 'count_flowers_5',
     subject: { th: 'ดอกไม้ 5 ดอก', en: 'Five Flowers', cn: '五朵花' },
     question: {
       th: 'นับดอกไม้ในภาพนี้ได้ทั้งหมด 5 ดอกใช่ไหม?',
@@ -1117,7 +1117,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'counting',
     artKey: 'count_birds_4',
-    icon: '🐦',
+    icon: 'count_birds_4',
     subject: { th: 'นก 4 ตัว', en: 'Four Birds', cn: '四只鸟' },
     question: {
       th: 'ในภาพนี้มีนกสีฟ้าทั้งหมด 2 ตัวใช่ไหม?',
@@ -1134,7 +1134,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'counting',
     artKey: 'count_cups_2',
-    icon: '☕',
+    icon: 'count_cups_2',
     subject: { th: 'แก้วกาแฟ 2 ใบ', en: 'Two Cups', cn: '两个杯子' },
     question: {
       th: 'ในภาพนี้มีแก้วหูสีฟ้าทั้งหมด 2 ใบใช่ไหม?',
@@ -1151,7 +1151,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'counting',
     artKey: 'count_marbles_7',
-    icon: '🔮',
+    icon: 'count_marbles_7',
     subject: { th: 'ลูกแก้ว 7 ลูก', en: 'Seven Marbles', cn: '七颗弹珠' },
     question: {
       th: 'ในภาพนี้มีลูกแก้วสีสันสดใสทั้งหมด 10 ลูกใช่ไหม?',
@@ -1168,7 +1168,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'counting',
     artKey: 'count_blocks_3plus2',
-    icon: '🧱',
+    icon: 'count_blocks_3plus2',
     subject: { th: 'บล็อกไม้ 3 + 2', en: 'Blocks 3 + 2', cn: '积木 3+2' },
     question: {
       th: 'บล็อก 3 ก้อน บวกเพิ่มอีก 2 ก้อน เท่ากับ 5 ก้อนใช่ไหม?',
@@ -1185,7 +1185,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'counting',
     artKey: 'count_octopus_8',
-    icon: '🐙',
+    icon: 'count_octopus_8',
     subject: { th: 'ปลาหมึก 8 หนวด', en: 'Eight-Arm Octopus', cn: '八爪章鱼' },
     question: {
       th: 'ปลาหมึกสีชมพูในภาพนี้มีหนวดแค่ 2 เส้นใช่ไหม?',
@@ -1202,7 +1202,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'counting',
     artKey: 'count_clock_12',
-    icon: '🕛',
+    icon: 'count_clock_12',
     subject: { th: 'ตัวเลขบนหน้าปัดนาฬิกา', en: '12 Clock Numbers', cn: '时钟12个数字' },
     question: {
       th: 'หน้าปัดนาฬิกาในภาพมีตัวเลข 1 ถึง 12 ครบ 12 ตัวใช่ไหม?',
@@ -1219,7 +1219,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'counting',
     artKey: 'count_hearts_1plus1',
-    icon: '❤️',
+    icon: 'count_hearts_1plus1',
     subject: { th: 'หัวใจ 1 + 1 ดวง', en: 'Hearts 1 + 1', cn: '爱心 1+1' },
     question: {
       th: 'หัวใจ 1 ดวง บวก 1 ดวง เท่ากับ 5 ดวงใช่ไหม?',
@@ -1238,7 +1238,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'safety_routine',
     artKey: 'medicine',
-    icon: '💊',
+    icon: 'medicine',
     subject: { th: 'ยาและน้ำเปล่า', en: 'Medicine & Water', cn: '药物和温水' },
     question: {
       th: 'ควรทานยาตามแพทย์สั่งพร้อมน้ำสะอาดใช่ไหม?',
@@ -1255,7 +1255,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'safety_routine',
     artKey: 'nonslip_shoes',
-    icon: '👟',
+    icon: 'nonslip_shoes',
     subject: { th: 'รองเท้ากันลื่น', en: 'Non-Slip Shoes', cn: '防滑鞋' },
     question: {
       th: 'พื้นรองเท้าที่มีดอกยางกันลื่นช่วยทำให้ลื่นล้มง่ายขึ้นใช่ไหม?',
@@ -1272,7 +1272,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'safety_routine',
     artKey: 'stove_off',
-    icon: '🔥',
+    icon: 'stove_off',
     subject: { th: 'ปิดเตาแก๊ส (OFF)', en: 'Stove Switched OFF', cn: '关闭炉灶' },
     question: {
       th: 'เมื่อทำอาหารเสร็จแล้วควรปิดสวิตช์เตาให้อยู่ตำแหน่ง OFF ใช่ไหม?',
@@ -1289,7 +1289,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'safety_routine',
     artKey: 'wash_hands',
-    icon: '🧼',
+    icon: 'wash_hands',
     subject: { th: 'ล้างมือให้สะอาด', en: 'Wash Hands', cn: '洗手' },
     question: {
       th: 'ก่อนรับประทานอาหาร เราไม่จำเป็นต้องล้างมือให้สะอาดใช่ไหม?',
@@ -1306,7 +1306,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'safety_routine',
     artKey: 'stair_handrail',
-    icon: '🪜',
+    icon: 'stair_handrail',
     subject: { th: 'ราวจับบันได', en: 'Stair Handrail', cn: '楼梯扶手' },
     question: {
       th: 'เวลาเดินขึ้นลงบันได ควรจับราวจับเพื่อป้องกันการหกล้มใช่ไหม?',
@@ -1323,7 +1323,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'safety_routine',
     artKey: 'walking_cane',
-    icon: '🦯',
+    icon: 'walking_cane',
     subject: { th: 'ไม้เท้าพยุงเดิน', en: 'Walking Cane', cn: '拐杖' },
     question: {
       th: 'ผู้ที่มีปัญหาการทรงตัวควรกระโดดวิ่งโดยไม่ใช้ไม้เท้าช่วยพยุงใช่ไหม?',
@@ -1340,7 +1340,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'safety_routine',
     artKey: 'bp_monitor',
-    icon: '🩺',
+    icon: 'bp_monitor',
     subject: { th: 'เครื่องวัดความดันโลหิต', en: 'Blood Pressure Monitor', cn: '血压计' },
     question: {
       th: 'เครื่องในภาพนี้ใช้วัดความดันโลหิตใช่ไหม?',
@@ -1357,7 +1357,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'safety_routine',
     artKey: 'safety_helmet',
-    icon: '⛑️',
+    icon: 'safety_helmet',
     subject: { th: 'หมวกนิรภัย', en: 'Safety Helmet', cn: '安全帽' },
     question: {
       th: 'หมวกกันน็อกสีเหลืองนี้ใช้ใส่นอนบนเตียงในห้องนอนใช่ไหม?',
@@ -1374,7 +1374,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'safety_routine',
     artKey: 'seatbelt',
-    icon: '🚗',
+    icon: 'seatbelt',
     subject: { th: 'เข็มขัดนิรภัย', en: 'Seatbelt', cn: '安全带' },
     question: {
       th: 'เวลาโดยสารรถยนต์ควรคาดเข็มขัดนิรภัยทุกครั้งใช่ไหม?',
@@ -1391,7 +1391,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'safety_routine',
     artKey: 'crosswalk',
-    icon: '🚸',
+    icon: 'crosswalk',
     subject: { th: 'ทางม้าลาย', en: 'Crosswalk', cn: '斑马线' },
     question: {
       th: 'เราควรวิ่งข้ามถนนตรงทางโค้งมืดๆ แทนการข้ามทางม้าลายใช่ไหม?',
@@ -1408,7 +1408,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'safety_routine',
     artKey: 'wet_floor_cone',
-    icon: '⚠️',
+    icon: 'wet_floor_cone',
     subject: { th: 'ป้ายเตือนพื้นเปียก', en: 'Wet Floor Sign', cn: '小心地滑标志' },
     question: {
       th: 'ป้ายตั้งสีเหลืองเครื่องหมายตกใจเตือนให้ระวังพื้นลื่นใช่ไหม?',
@@ -1425,7 +1425,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'safety_routine',
     artKey: 'shoulder_stretch',
-    icon: '🤸',
+    icon: 'shoulder_stretch',
     subject: { th: 'ท่ายืดเหยียดไหล่', en: 'Shoulder Stretch', cn: '肩部伸展' },
     question: {
       th: 'การฝึกยืดเหยียดไหล่เบาๆ ทำให้กล้ามเนื้อฉีกขาดทันทีทุกครั้งใช่ไหม?',
@@ -1444,7 +1444,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'color_shape_time',
     artKey: 'traffic_red',
-    icon: '🚦',
+    icon: 'traffic_red',
     subject: { th: 'ไฟจราจรสีแดง', en: 'Red Traffic Light', cn: '红灯' },
     question: {
       th: 'สัญญาณไฟสีแดงด้านบนสุดหมายถึงให้รถหยุดใช่ไหม?',
@@ -1461,7 +1461,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'color_shape_time',
     artKey: 'traffic_green',
-    icon: '🟢',
+    icon: 'traffic_green',
     subject: { th: 'ไฟจราจรสีเขียว', en: 'Green Traffic Light', cn: '绿灯' },
     question: {
       th: 'เมื่อไฟจราจรสีเขียวด้านล่างสว่างขึ้น หมายถึงห้ามขับผ่านใช่ไหม?',
@@ -1478,7 +1478,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'color_shape_time',
     artKey: 'triangle',
-    icon: '🔺',
+    icon: 'triangle',
     subject: { th: 'สามเหลี่ยมสีแดง', en: 'Red Triangle', cn: '红色三角形' },
     question: {
       th: 'รูปทรงสีแดงในภาพนี้เป็นรูปสามเหลี่ยมมี 3 มุมใช่ไหม?',
@@ -1495,7 +1495,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'color_shape_time',
     artKey: 'blue_circle',
-    icon: '🔵',
+    icon: 'blue_circle',
     subject: { th: 'วงกลมสีฟ้า', en: 'Blue Circle', cn: '蓝色圆形' },
     question: {
       th: 'รูปวงกลมสีฟ้าในภาพนี้มีมุมแหลม 4 มุมใช่ไหม?',
@@ -1512,7 +1512,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'color_shape_time',
     artKey: 'green_square',
-    icon: '🟩',
+    icon: 'green_square',
     subject: { th: 'สี่เหลี่ยมจัตุรัสสีเขียว', en: 'Green Square', cn: '绿色正方形' },
     question: {
       th: 'รูปสีเขียวในภาพนี้คือรูปสี่เหลี่ยมที่มี 4 ด้านเท่ากันใช่ไหม?',
@@ -1529,7 +1529,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'color_shape_time',
     artKey: 'yellow_star',
-    icon: '⭐',
+    icon: 'yellow_star',
     subject: { th: 'ดาวสีเหลือง', en: 'Yellow Star', cn: '黄色星星' },
     question: {
       th: 'รูปดาว 5 แฉกในภาพนี้เป็นสีดำสนิทใช่ไหม?',
@@ -1546,7 +1546,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'color_shape_time',
     artKey: 'morning_sun',
-    icon: '☀️',
+    icon: 'morning_sun',
     subject: { th: 'ดวงอาทิตย์ยามเช้า', en: 'Morning Sun', cn: '早晨太阳' },
     question: {
       th: 'ดวงอาทิตย์ส่องแสงเหนือภูเขาในภาพแสดงถึงเวลากลางวันใช่ไหม?',
@@ -1563,7 +1563,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'color_shape_time',
     artKey: 'night_moon',
-    icon: '🌙',
+    icon: 'night_moon',
     subject: { th: 'พระจันทร์และดาวกลางคืน', en: 'Moon and Stars at Night', cn: '夜晚月亮星星' },
     question: {
       th: 'ท้องฟ้าสีเข้มที่มีพระจันทร์และดวงดาวคือเวลาเที่ยงวันใช่ไหม?',
@@ -1580,7 +1580,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'color_shape_time',
     artKey: 'morning_clock_8am',
-    icon: '🕗',
+    icon: 'morning_clock_8am',
     subject: { th: 'นาฬิกาเวลา 08:00 น.', en: '08:00 AM Clock', cn: '上午8点时钟' },
     question: {
       th: 'นาฬิกาในภาพนี้ชี้บอกเวลา 8 โมงเช้า (08:00 AM) ใช่ไหม?',
@@ -1597,7 +1597,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'color_shape_time',
     artKey: 'rainbow',
-    icon: '🌈',
+    icon: 'rainbow',
     subject: { th: 'รุ้งกินน้ำ', en: 'Rainbow', cn: '彩虹' },
     question: {
       th: 'รุ้งกินน้ำโค้งในภาพมีเพียงสีเทาสีเดียวใช่ไหม?',
@@ -1616,7 +1616,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'position',
     artKey: 'arrow_up',
-    icon: '⬆️',
+    icon: 'arrow_up',
     subject: { th: 'ลูกศรชี้ขึ้น', en: 'Up Arrow', cn: '向上箭头' },
     question: {
       th: 'ลูกศรสีเขียวเข้มในภาพนี้ชี้ขึ้นด้านบนใช่ไหม?',
@@ -1633,7 +1633,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'position',
     artKey: 'arrow_down',
-    icon: '⬇️',
+    icon: 'arrow_down',
     subject: { th: 'ลูกศรชี้ลง', en: 'Down Arrow', cn: '向下箭头' },
     question: {
       th: 'ลูกศรสีน้ำเงินในภาพนี้ชี้ขึ้นข้างบนฟ้าใช่ไหม?',
@@ -1650,7 +1650,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'position',
     artKey: 'arrow_right',
-    icon: '➡️',
+    icon: 'arrow_right',
     subject: { th: 'ลูกศรชี้ขวา', en: 'Right Arrow', cn: '向右箭头' },
     question: {
       th: 'ลูกศรสีเขียวในภาพนี้ชี้ไปทางด้านขวาใช่ไหม?',
@@ -1667,7 +1667,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'position',
     artKey: 'arrow_left',
-    icon: '⬅️',
+    icon: 'arrow_left',
     subject: { th: 'ลูกศรชี้ซ้าย', en: 'Left Arrow', cn: '向左箭头' },
     question: {
       th: 'ลูกศรสีส้มในภาพนี้ชี้ไปทางด้านขวาใช่ไหม?',
@@ -1684,7 +1684,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'position',
     artKey: 'house_roof_top',
-    icon: '🏠',
+    icon: 'house_roof_top',
     subject: { th: 'หลังคาบ้านด้านบน', en: 'Roof on Top', cn: '屋顶在上面' },
     question: {
       th: 'หลังคาบ้านสีแดงตั้งอยู่ด้านบนสุดของตัวบ้านใช่ไหม?',
@@ -1701,7 +1701,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'position',
     artKey: 'apple_on_table',
-    icon: '🍎',
+    icon: 'apple_on_table',
     subject: { th: 'แอปเปิลบนโต๊ะ', en: 'Apple on Table', cn: '桌子上的苹果' },
     question: {
       th: 'ลูกแอปเปิลสีแดงในภาพนี้อยู่ใต้โต๊ะใช่ไหม?',
@@ -1718,7 +1718,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'position',
     artKey: 'ball_under_table',
-    icon: '⚽',
+    icon: 'ball_under_table',
     subject: { th: 'ลูกบอลใต้โต๊ะ', en: 'Ball Under Table', cn: '桌子下的球' },
     question: {
       th: 'ลูกฟุตบอลในภาพนี้วางอยู่ใต้โต๊ะใช่ไหม?',
@@ -1735,7 +1735,7 @@ const SEEDS: readonly CardSeed[] = [
   {
     category: 'position',
     artKey: 'bird_on_branch',
-    icon: '🐦',
+    icon: 'bird_on_branch',
     subject: { th: 'นกเกาะบนกิ่งไม้', en: 'Bird on Branch', cn: '树枝上的鸟' },
     question: {
       th: 'นกสีฟ้าในภาพนี้เกาะอยู่ใต้กิ่งไม้ใช่ไหม?',

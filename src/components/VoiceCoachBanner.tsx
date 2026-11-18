@@ -7,6 +7,7 @@ import {
   cancelAllKioskVoiceSpeech,
   getSeniorVoiceToggleLabel,
   readStoredKioskVoiceMuted,
+  sanitizeSpeechText,
   subscribeKioskVoiceMuted,
   writeStoredKioskVoiceMuted,
 } from '@drtechcares/kiosk-input';
@@ -18,6 +19,7 @@ export {
   cancelAllKioskVoiceSpeech,
   getSeniorVoiceToggleLabel,
   readStoredKioskVoiceMuted,
+  sanitizeSpeechText,
   subscribeKioskVoiceMuted,
   writeStoredKioskVoiceMuted,
 };
@@ -477,7 +479,7 @@ export function translateVoiceCoachText(
 }
 
 export function buildTtsProxyUrl(text: string, lang: VoiceCoachLanguage): string {
-  const collapsed = text.replace(/\s+/g, ' ').trim();
+  const collapsed = sanitizeSpeechText(text);
   const maxLen = 190;
   let clipped = collapsed;
   if (collapsed.length > maxLen) {
@@ -787,8 +789,10 @@ export function VoiceCoachBanner({
 
           const currentVoices = voices.length > 0 ? voices : synth.getVoices();
           const matchedVoice = pickSpeechVoice(currentVoices, targetOpt.bcp47);
+          const cleanSpeechText = sanitizeSpeechText(clean);
+          if (!cleanSpeechText) return;
 
-          const utterance = new SpeechSynthesisUtterance(clean);
+          const utterance = new SpeechSynthesisUtterance(cleanSpeechText);
           utterance.lang = matchedVoice?.lang || targetOpt.bcp47;
           if (matchedVoice) {
             utterance.voice = matchedVoice;

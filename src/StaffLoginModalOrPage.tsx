@@ -78,7 +78,7 @@ const STAFF_LOGIN_COPY: Record<
 > = {
   th: {
     badge: '+ Dr.Tech.Care • Hospital Staff Portal',
-    registrationBadge: '👨‍⚕️ เจ้าหน้าที่ลงทะเบียนคนไข้ (STAFF-ASSISTED MODE)',
+    registrationBadge: 'เจ้าหน้าที่ลงทะเบียนคนไข้ (STAFF-ASSISTED MODE)',
     title: 'เข้าสู่ระบบบุคลากร Dr.Tech.Care',
     registrationTitle: 'ยืนยันสิทธิ์เจ้าหน้าที่เพื่อสมัครคนไข้ใหม่',
     subtitle: 'เข้าถึงระบบบริหารเวชระเบียนคลินิกและตารางกายภาพบำบัด',
@@ -118,7 +118,7 @@ const STAFF_LOGIN_COPY: Record<
   },
   en: {
     badge: '+ Dr.Tech.Care • Hospital Staff Portal',
-    registrationBadge: '👨‍⚕️ Staff-Assisted Patient Registration Mode',
+    registrationBadge: 'Staff-Assisted Patient Registration Mode',
     title: 'Dr.Tech.Care Hospital Staff Login',
     registrationTitle: 'Staff Verification for Patient Enrollment',
     subtitle: 'Access clinical medical records and physical therapy schedule management',
@@ -159,7 +159,7 @@ const STAFF_LOGIN_COPY: Record<
   },
   cn: {
     badge: '+ Dr.Tech.Care • Hospital Staff Portal',
-    registrationBadge: '👨‍⚕️ 医护人员协助建档模式',
+    registrationBadge: '医护人员协助建档模式',
     title: 'Dr.Tech.Care 医院员工登录',
     registrationTitle: '医护人员验证 • 患者建档',
     subtitle: '访问临床病历管理系统与物理康复治疗日程',
