@@ -22,6 +22,7 @@ import {
   selectPrimaryFace,
 } from '@drtechcares/face-client';
 import {
+  computeCraniofacialRatios12,
   evaluateFrameQuality,
   type GeometricAnthropometricRatios,
 } from '@drtechcares/smart-biometric-core';
@@ -45,6 +46,7 @@ import {
   buildBiometricProfileFromSamples,
   captureCanonicalFaceSnapshot,
   extractCanonicalFaceDescriptor,
+  extractFacePatchSignature384,
   normalizeVector,
   warmupBiometricEngine,
 } from '../lib/biometricEngine';
@@ -1315,21 +1317,37 @@ export default function FaceID120Scanner({
         .filter((s) => s.geometricRatios)
         .map((s) => s.geometricRatios!);
       const ratioPool = centerRatios.length >= 3 ? centerRatios : fallbackRatios;
+      const r12Pool = ratioPool
+        .map((r) => r.craniofacialRatios12)
+        .filter((arr): arr is number[] => Array.isArray(arr) && arr.length === 12);
+      const avgCranio12 =
+        r12Pool.length > 0
+          ? Array.from({ length: 12 }, (_, idx) =>
+              Number((r12Pool.reduce((acc, a) => acc + a[idx], 0) / r12Pool.length).toFixed(4)),
+            )
+          : undefined;
+      const centerPatch384 = profile.geometricRatios?.appearancePatch384;
       const geometricRatios: GeometricAnthropometricRatios | undefined =
-        ratioPool.length > 0
+        ratioPool.length > 0 || centerPatch384
           ? {
-              eyeToNoseRatio: Number(
-                (ratioPool.reduce((acc, r) => acc + r.eyeToNoseRatio, 0) / ratioPool.length).toFixed(4),
-              ),
-              faceWidthToUpperHeight: Number(
-                (ratioPool.reduce((acc, r) => acc + r.faceWidthToUpperHeight, 0) / ratioPool.length).toFixed(4),
-              ),
-              mouthToEyeRatio: Number(
-                (ratioPool.reduce((acc, r) => acc + r.mouthToEyeRatio, 0) / ratioPool.length).toFixed(4),
-              ),
-              noseToChinRatio: Number(
-                (ratioPool.reduce((acc, r) => acc + r.noseToChinRatio, 0) / ratioPool.length).toFixed(4),
-              ),
+              eyeToNoseRatio:
+                ratioPool.length > 0
+                  ? Number((ratioPool.reduce((acc, r) => acc + r.eyeToNoseRatio, 0) / ratioPool.length).toFixed(4))
+                  : 1,
+              faceWidthToUpperHeight:
+                ratioPool.length > 0
+                  ? Number((ratioPool.reduce((acc, r) => acc + r.faceWidthToUpperHeight, 0) / ratioPool.length).toFixed(4))
+                  : 1,
+              mouthToEyeRatio:
+                ratioPool.length > 0
+                  ? Number((ratioPool.reduce((acc, r) => acc + r.mouthToEyeRatio, 0) / ratioPool.length).toFixed(4))
+                  : 1,
+              noseToChinRatio:
+                ratioPool.length > 0
+                  ? Number((ratioPool.reduce((acc, r) => acc + r.noseToChinRatio, 0) / ratioPool.length).toFixed(4))
+                  : 1,
+              ...(centerPatch384 ? { appearancePatch384: centerPatch384 } : {}),
+              ...(avgCranio12 ? { craniofacialRatios12: avgCranio12 } : {}),
             }
           : undefined;
 
@@ -1902,7 +1920,23 @@ export default function FaceID120Scanner({
                 const snapEyeToNoseRatio = normPose.eyeToNoseRatio;
                 const snapSharpness = currentSharpness;
                 const snapGateCtx = { ...gateCtx };
-                const snapGeom = extractGeometricAnthropometricRatios(landmarks3D);
+                const rawSnapGeom = extractGeometricAnthropometricRatios(landmarks3D);
+                const snapPatch384 = extractFacePatchSignature384(snapInput);
+                const snapRatios12 = computeCraniofacialRatios12(
+                  landmarks3D,
+                  (vid.videoWidth || 1280) / (vid.videoHeight || 720),
+                );
+                const snapGeom: GeometricAnthropometricRatios | undefined =
+                  rawSnapGeom || snapPatch384 || snapRatios12
+                    ? {
+                        eyeToNoseRatio: rawSnapGeom?.eyeToNoseRatio ?? 1,
+                        faceWidthToUpperHeight: rawSnapGeom?.faceWidthToUpperHeight ?? 1,
+                        mouthToEyeRatio: rawSnapGeom?.mouthToEyeRatio ?? 1,
+                        noseToChinRatio: rawSnapGeom?.noseToChinRatio ?? 1,
+                        ...(snapPatch384 ? { appearancePatch384: snapPatch384 } : {}),
+                        ...(snapRatios12 ? { craniofacialRatios12: snapRatios12 } : {}),
+                      }
+                    : undefined;
                 void extractCanonicalFaceDescriptor(snapInput)
                   .then((desc) => {
                     if (cancelled || completedRef.current || unmountedRef.current) return;

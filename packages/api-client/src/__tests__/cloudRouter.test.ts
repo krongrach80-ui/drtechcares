@@ -17,14 +17,18 @@ import {
   synthesizeTtsAudio,
 } from '../index';
 import {
+  HYDRATE_TTL_MS,
   hydrateStaffUsersOnly,
   hydrateStateFromSupabase,
   normalizeCompactExemplars,
   purgePatientInSupabaseBestEffort,
   purgeUserInSupabaseBestEffort,
+  resetHydrationCacheForTests,
   resetSupabaseCircuitForTests,
+  resetUnsupportedColumnsForTests,
   stripOversizedBase64ForDb,
   toSafeUuidOrNull,
+  unsupportedColumnsByTable,
   type CloudRouterState,
 } from '../supabasePersistence';
 
@@ -532,7 +536,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         delegationNote: null,
       },
     };
-    await hydrateStateFromSupabase(mockSupabase, state);
+    await hydrateStateFromSupabase(mockSupabase, state, { force: true });
     expect(state.patients.find((p) => p.id === 'pat-delegated-1')?.delegatedToPtId).toBeNull();
   });
 
@@ -2516,11 +2520,11 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(rej050Json.topCandidate).toBeNull();
     expect(rej050Json.patient).toBeUndefined();
 
-    // 2b. Genuine calibrated probe at ~0.66 matching liveMaster or any 5-angle centroid passes cleanly!
+    // 2b. Sub-threshold stranger probe at ~0.66 is STRICTLY rejected (401, matched: false)
     const probe066 = l2Normalize(
       liveMaster.map((v, i) => 0.66 * v + Math.sqrt(1 - 0.66 * 0.66) * orthoVec[i]),
     );
-    const accept066 = await callRouter(router, '/api/biometric/verify', {
+    const rej066 = await callRouter(router, '/api/biometric/verify', {
       method: 'POST',
       body: {
         probeVector: probe066,
@@ -2528,10 +2532,27 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.02, nonRigidScore: 0.16, engine: 'human-faceres-1024d' },
       },
     });
-    expect(accept066.status).toBe(200);
-    const accept066Json = (await accept066.json()) as { matched: boolean; patient?: { hn: string } };
-    expect(accept066Json.matched).toBe(true);
-    expect(accept066Json.patient?.hn).toBe('HN-GATE-1024');
+    expect(rej066.status).toBe(401);
+    const rej066Json = (await rej066.json()) as { matched: boolean; patientId: string | null };
+    expect(rej066Json.matched).toBe(false);
+    expect(rej066Json.patientId).toBeNull();
+
+    // 2c. Genuine calibrated probe at ~0.92 (>= 0.84 raw, >= 0.80 centered, L2 <= 0.56) passes cleanly!
+    const probe092 = l2Normalize(
+      liveMaster.map((v, i) => 0.92 * v + Math.sqrt(1 - 0.92 * 0.92) * orthoVec[i]),
+    );
+    const accept092 = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      body: {
+        probeVector: probe092,
+        engine: 'human-faceres-1024d',
+        livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.02, nonRigidScore: 0.16, engine: 'human-faceres-1024d' },
+      },
+    });
+    expect(accept092.status).toBe(200);
+    const accept092Json = (await accept092.json()) as { matched: boolean; patient?: { hn: string } };
+    expect(accept092Json.matched).toBe(true);
+    expect(accept092Json.patient?.hn).toBe('HN-GATE-1024');
   });
 
   it('sanitizes UUID/exemplar payloads and never returns HTTP 500 during enrollment/course saves even when Supabase fails', async () => {
@@ -2784,8 +2805,14 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       expect(loginRes.status).toBe(200);
       const { token } = (await loginRes.json()) as { token: string };
 
-      // First Supabase attempt hits HTTP 544 and opens the 5-minute circuit breaker
+      // Realistic 5-angle captures of the SAME person (turning left/right/up/down shifts embedding ~10% vs center)
       const masterVec = mk1024(1.37);
+      const mkSamePersonAngle = (seed: number) => {
+        const rawA = mk1024(seed);
+        const dot = masterVec.reduce((acc, v, idx) => acc + v * rawA[idx], 0);
+        const ortho = l2Normalize(rawA.map((v, idx) => v - dot * masterVec[idx]));
+        return l2Normalize(masterVec.map((v, idx) => 0.9 * v + Math.sqrt(1 - 0.9 * 0.9) * ortho[idx]));
+      };
       const enrollRes = await callRouter(outageRouter, '/api/biometric/enroll', {
         method: 'POST',
         token,
@@ -2807,10 +2834,10 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
           masterEmbedding: masterVec,
           angleEmbeddings: {
             center: masterVec,
-            left: mk1024(2.11),
-            right: mk1024(3.23),
-            up: mk1024(4.37),
-            down: mk1024(5.41),
+            left: mkSamePersonAngle(2.11),
+            right: mkSamePersonAngle(3.23),
+            up: mkSamePersonAngle(4.37),
+            down: mkSamePersonAngle(5.41),
           },
           exemplarEmbeddings: [masterVec],
           framesCaptured: 120,
@@ -2852,17 +2879,43 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       expect(idxJson.index.some((e) => e.hn === 'HN-37751' && e.fullName === 'dddd')).toBe(true);
       expect(idxJson.biometrics.some((e) => e.hn === 'HN-37751')).toBe(true);
 
-      // Kiosk live scan at ~0.65 cosine against dddd (single enrolled candidate >= 0.60) MUST succeed with matched: true!
+      // Unregistered stranger scan at ~0.65 cosine against single-patient dddd DB MUST fail 401 matched: false (zero single-patient loophole!)
       const rawO = mk1024(9.87);
       const dotMO = masterVec.reduce((acc, v, i) => acc + v * rawO[i], 0);
       const orthoVec = l2Normalize(rawO.map((v, i) => v - dotMO * masterVec[i]));
-      const probe065 = l2Normalize(
+      const probe065Stranger = l2Normalize(
         masterVec.map((v, i) => 0.65 * v + Math.sqrt(1 - 0.65 * 0.65) * orthoVec[i]),
+      );
+      const strangerVerifyRes = await callRouter(outageRouter, '/api/biometric/verify', {
+        method: 'POST',
+        body: {
+          probeVector: probe065Stranger,
+          engine: 'human-faceres-1024d',
+          livenessEvidence: {
+            biologicalVerified: true,
+            blinkCount: 1,
+            spoofRisk: 0.02,
+            nonRigidScore: 0.14,
+            engine: 'human-faceres-1024d',
+          },
+        },
+      });
+      expect(strangerVerifyRes.status).toBe(401);
+      const strangerJson = (await strangerVerifyRes.json()) as {
+        matched: boolean;
+        patientId: string | null;
+      };
+      expect(strangerJson.matched).toBe(false);
+      expect(strangerJson.patientId).toBeNull();
+
+      // Genuine Kiosk scan at ~0.92 cosine against dddd MUST succeed with matched: true!
+      const probe092Genuine = l2Normalize(
+        masterVec.map((v, i) => 0.92 * v + Math.sqrt(1 - 0.92 * 0.92) * orthoVec[i]),
       );
       const verifyRes = await callRouter(outageRouter, '/api/biometric/verify', {
         method: 'POST',
         body: {
-          probeVector: probe065,
+          probeVector: probe092Genuine,
           engine: 'human-faceres-1024d',
           livenessEvidence: {
             biologicalVerified: true,
@@ -2882,7 +2935,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       expect(verifyJson.patient?.hn).toBe('HN-37751');
       expect(verifyJson.patient?.fullName).toBe('dddd');
 
-      // Also enroll a 2nd patient via POST /api/biometrics and confirm multi-patient matching at 0.66 with >= 0.04 margin works cleanly!
+      // Also enroll a 2nd patient via POST /api/biometrics and confirm multi-patient matching with >= 0.08 margin works cleanly while stranger stays rejected!
       const bio2Res = await callRouter(outageRouter, '/api/biometrics', {
         method: 'POST',
         token,
@@ -2894,10 +2947,26 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       });
       expect(bio2Res.status).toBe(201);
 
+      const multiStrangerRes = await callRouter(outageRouter, '/api/biometric/verify', {
+        method: 'POST',
+        body: {
+          probeVector: probe065Stranger,
+          engine: 'human-faceres-1024d',
+          livenessEvidence: {
+            biologicalVerified: true,
+            blinkCount: 1,
+            spoofRisk: 0.02,
+            nonRigidScore: 0.14,
+            engine: 'human-faceres-1024d',
+          },
+        },
+      });
+      expect(multiStrangerRes.status).toBe(401);
+
       const multiVerifyRes = await callRouter(outageRouter, '/api/biometric/verify', {
         method: 'POST',
         body: {
-          probeVector: probe065,
+          probeVector: probe092Genuine,
           engine: 'human-faceres-1024d',
           livenessEvidence: {
             biologicalVerified: true,
@@ -2966,6 +3035,112 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     } finally {
       globalThis.fetch = origFetch;
       resetSupabaseCircuitForTests();
+    }
+  });
+
+  it('uses safe base schema columns, caches 42703 missing columns permanently in unsupportedColumnsByTable, and deduplicates 60s hydration', async () => {
+    resetUnsupportedColumnsForTests();
+    const patientsSelectHistory: string[] = [];
+    const seenColsByTable: Record<string, string[]> = {};
+    let patientsError42703Count = 0;
+
+    const createBaseSchemaMockSupabase = () =>
+      ({
+        from: (table: string) => ({
+          select: (cols: string) => {
+            seenColsByTable[table] ??= [];
+            seenColsByTable[table].push(cols);
+            if (table === 'patients') {
+              patientsSelectHistory.push(cols);
+            }
+            const makeResult = () => {
+              if (table === 'patients' && cols.split(',').includes('delegation_note')) {
+                patientsError42703Count += 1;
+                return {
+                  data: null,
+                  error: { code: '42703', message: 'column patients.delegation_note does not exist' },
+                };
+              }
+              return { data: [], error: null };
+            };
+            const chain = {
+              eq: () => chain,
+              order: () => chain,
+              limit: async () => makeResult(),
+              maybeSingle: async () => ({ data: null, error: null }),
+              then: (resolve: (val: unknown) => unknown) => Promise.resolve(makeResult()).then(resolve),
+            };
+            return chain;
+          },
+        }),
+      }) as unknown as SupabaseClient;
+
+    const mockSupabase = createBaseSchemaMockSupabase();
+    const state = {
+      users: [],
+      patients: [],
+      face_templates: [],
+      medical_notes: [],
+      patient_courses: [],
+      rehab_sessions: [],
+      rehab_session_history: [],
+      treatment_reports: [],
+      exercises: [],
+      modpacks: [],
+      staff_calls: [],
+      audit_logs: [],
+      banned_targets: [],
+      active_sessions: [],
+      system_settings: {
+        aiFaceScanEnabled: true,
+        aiFaceThreshold: 0.84,
+        aiPoseDetectionEnabled: false,
+        kioskAutoResetSec: 6,
+      },
+      kiosks: [],
+    } as unknown as CloudRouterState;
+
+    try {
+      // 1. Concurrent initial calls deduplicate via hydrationInFlight and never spam unmigrated 42703 cols
+      await Promise.all([
+        hydrateStateFromSupabase(mockSupabase, state),
+        hydrateStateFromSupabase(mockSupabase, state),
+        hydrateStateFromSupabase(mockSupabase, state),
+      ]);
+
+      // Base schema column lists MUST NEVER request the 9 missing columns
+      for (const unmigrated of [
+        'gender',
+        'stroke_type',
+        'affected_side',
+        'motor_assessment_score',
+        'adl_dressing_score',
+      ]) {
+        expect(seenColsByTable.patients?.some((c) => c.split(',').includes(unmigrated))).toBe(false);
+      }
+      expect(seenColsByTable.exercises?.some((c) => c.split(',').includes('name_th'))).toBe(false);
+      expect(seenColsByTable.modpacks?.some((c) => c.split(',').includes('category'))).toBe(false);
+      expect(seenColsByTable.kiosks?.some((c) => c.split(',').includes('pairing_token'))).toBe(false);
+      expect(seenColsByTable.audit_logs?.some((c) => c.split(',').includes('action'))).toBe(false);
+
+      // Observed missing column is permanently cached after 1 fallback retry (never 5-retry loop)
+      expect(patientsError42703Count).toBe(1);
+      expect(unsupportedColumnsByTable.get('patients')?.has('delegation_note')).toBe(true);
+      expect(patientsSelectHistory).toHaveLength(2);
+
+      // 2. Subsequent call within HYDRATE_TTL_MS (60_000ms) skips Postgres completely
+      expect(HYDRATE_TTL_MS).toBe(60_000);
+      await hydrateStateFromSupabase(mockSupabase, state);
+      expect(patientsSelectHistory).toHaveLength(2);
+
+      // 3. Forced refresh strips cached unsupported column BEFORE querying -> 0 new 42703 errors!
+      await hydrateStateFromSupabase(mockSupabase, state, { force: true });
+      expect(patientsError42703Count).toBe(1);
+      expect(patientsSelectHistory).toHaveLength(3);
+      expect(patientsSelectHistory[2].split(',').includes('delegation_note')).toBe(false);
+    } finally {
+      resetHydrationCacheForTests(state);
+      resetUnsupportedColumnsForTests();
     }
   });
 });

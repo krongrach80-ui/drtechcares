@@ -1519,7 +1519,7 @@ export function ClinicalStaffPortalShell({
         apiClient.getSystemSettings().catch(() => null),
         isAdmin ? apiClient.listSecurityAudit().catch(() => null) : Promise.resolve(null),
         apiClient
-          .checkHealth({ refresh: true })
+          .checkHealth()
           .catch(() => ({ ok: false, persistentDb: false, supabaseConnected: false, latencyMs: 0 })),
       ]);
 
@@ -1632,7 +1632,7 @@ export function ClinicalStaffPortalShell({
           setStaffCalls(sortNewestFirst(calls));
         })
         .catch(() => {});
-    }, 10000);
+    }, 30_000);
 
     return () => {
       window.clearInterval(pollTimer);

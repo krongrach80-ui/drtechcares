@@ -11,13 +11,21 @@ import {
   COMMON_MODE_ALPHA,
   FACE_EMBEDDING_DIM,
   CANONICAL_HUMAN_FACE_BASELINE_512,
+  STRICT_CENTERED_COSINE_THRESHOLD,
+  STRICT_COHORT_MARGIN,
+  STRICT_DISTINCTIVENESS_MARGIN,
+  STRICT_MAX_EUCLIDEAN_DISTANCE,
+  STRICT_RAW_COSINE_THRESHOLD,
   classifyLivePoseZone,
   computeArcFaceBiometricScore,
   computeDualFactorBiometricScore,
   computeFaceCoreMetrics,
+  computeMaxImposterCohortScore,
   cosineSimilarity,
   detectBiometricVectorEngine,
   euclideanDistance,
+  evaluateAppearanceAndCraniofacialGate,
+  evaluateTripleGateNeuralCandidate,
   isLegacyV1HybridVector,
   l2Normalize,
   mirrorPoseZone,
@@ -67,6 +75,7 @@ import {
   type UserRole,
 } from './index';
 import {
+  HYDRATE_TTL_MS,
   getSupabaseCircuitState,
   hydrateStaffUsersOnly,
   hydrateStateFromSupabase,
@@ -81,7 +90,10 @@ import {
   probeSupabaseHealth,
   purgePatientInSupabaseBestEffort,
   purgeUserInSupabaseBestEffort,
+  recordUnsupportedColumn,
   stripOversizedBase64ForDb,
+  stripUnsupportedColumnsForWrite,
+  stripUnsupportedColumnsForWriteRows,
   toSafeUuidOrNull,
   upsertCourseSafeToSupabase,
   type CloudRouterState,
@@ -480,11 +492,14 @@ async function upsertPatientBiometricsCompat(
     typeof payload.patient_id === 'string' ? payload.patient_id : null,
   );
   if (!safePatientUuid) return;
-  const working: Record<string, unknown> = stripOversizedBase64ForDb({
-    ...payload,
-    patient_id: safePatientUuid,
-  });
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  const working: Record<string, unknown> = stripUnsupportedColumnsForWrite(
+    'patient_biometrics',
+    stripOversizedBase64ForDb({
+      ...payload,
+      patient_id: safePatientUuid,
+    }),
+  );
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       const res = (await db
         .from('patient_biometrics')
@@ -499,7 +514,9 @@ async function upsertPatientBiometricsCompat(
           .eq('hn', working.hn)) as { error?: unknown } | undefined;
         if (!updateRes?.error) return;
       }
-      const missingCol = parsePostgrestMissingCol(res.error);
+      const missingCol =
+        recordUnsupportedColumn('patient_biometrics', res.error) ??
+        parsePostgrestMissingCol(res.error);
       if (missingCol && missingCol in working && missingCol !== 'patient_id' && missingCol !== 'hn') {
         delete working[missingCol];
         continue;
@@ -578,7 +595,7 @@ function buildPatientHistoryPayload(patient: PatientRecord): Record<string, unkn
   };
 }
 
-/** Writes a `patients` row safely: strips oversized base64 images + unmigrated/type-mismatched columns and switches to HN update on 23505. */
+/** Writes a `patients` row safely: pre-strips cached missing cols + oversized base64 images and switches to HN update on 23505. */
 async function writePatientRowWithFramesFallback(
   db: SupabaseClient,
   mode: 'insert' | 'update',
@@ -587,7 +604,10 @@ async function writePatientRowWithFramesFallback(
   _strict = false,
 ): Promise<void> {
   if (isSupabaseCircuitOpen(db)) return;
-  const working: Record<string, unknown> = stripOversizedBase64ForDb({ ...fields });
+  const working: Record<string, unknown> = stripUnsupportedColumnsForWrite(
+    'patients',
+    stripOversizedBase64ForDb({ ...fields }),
+  );
   let activeMode = mode;
   let updateTargetCol: 'id' | 'hn' = 'id';
   let updateTargetVal = patientId;
@@ -606,6 +626,7 @@ async function writePatientRowWithFramesFallback(
     'face_frames_count',
     'face_image_url',
     'face_biometric_status',
+    'gender',
     'stroke_type',
     'affected_side',
     'motor_assessment_score',
@@ -616,7 +637,7 @@ async function writePatientRowWithFramesFallback(
     'delegated_to_pt_id',
     'delegation_note',
   ]);
-  for (let attempt = 0; attempt < 12; attempt += 1) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
     try {
       const res = await exec(working);
       if (!res?.error) return;
@@ -632,9 +653,16 @@ async function writePatientRowWithFramesFallback(
         delete working.id;
         continue;
       }
-      const missingCol = parsePostgrestMissingCol(res.error);
-      if (missingCol && missingCol in working && missingCol !== 'history' && missingCol !== 'hn') {
+      const missingCol =
+        recordUnsupportedColumn('patients', res.error) ?? parsePostgrestMissingCol(res.error);
+      if (missingCol && missingCol !== 'history' && missingCol !== 'hn') {
         delete working[missingCol];
+        // Jump straight to safe optional-stripped payload so unmigrated columns never retry 12 times
+        for (const optCol of optionalCols) {
+          if (optCol !== 'assigned_pt_id' && optCol !== 'delegated_to_pt_id' && optCol !== 'delegation_note') {
+            delete working[optCol];
+          }
+        }
         continue;
       }
       if (isPgVectorDimensionOrTypeMismatch(res.error)) {
@@ -1117,19 +1145,22 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
   let hydrated = false;
   let lastHydratedAt = 0;
-  const ensureHydrated = async (force = false, bypassCooldown = false) => {
+  const ensureHydrated = async (force = false, bypassTtl = false) => {
     if (!supabase || isSupabaseCircuitOpen(supabase)) return;
+    const now = Date.now();
     const shouldHydrate =
-      !hydrated || (force && (bypassCooldown || Date.now() - lastHydratedAt > 2500));
+      !hydrated ||
+      bypassTtl ||
+      (force && now - lastHydratedAt >= HYDRATE_TTL_MS);
     if (!shouldHydrate) return;
     // Mark hydrated BEFORE awaiting and never cache a pending Promise across separate Worker
     // requests (in workerd, awaiting another request's I/O promise causes script hang errors).
     hydrated = true;
-    lastHydratedAt = Date.now();
+    lastHydratedAt = now;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        hydrateStateFromSupabase(supabase, state),
+        hydrateStateFromSupabase(supabase, state, { force: true }),
         new Promise<void>((resolve) => {
           timeoutId = setTimeout(() => {
             markSupabaseDown('ensure_hydrated_timeout', supabase);
@@ -1137,7 +1168,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           }, 1500);
         }),
       ]);
-      lastHydratedAt = Date.now();
+      if (!isSupabaseCircuitOpen(supabase)) {
+        lastHydratedAt = Date.now();
+      }
     } catch {
       markSupabaseDown('ensure_hydrated_exception', supabase);
     } finally {
@@ -1158,19 +1191,25 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       state.audit_logs.length = 1000;
     }
     if (supabase) {
-      void persistToSupabase(supabase, (db) =>
-        db.from('audit_logs').insert({
-          id: log.id,
-          event_type: log.eventType,
-          actor_role: log.actorRole,
-          actor_id: log.actorId,
-          actor_name: log.actorName,
-          ip_address: log.ipAddress,
-          device_id: log.deviceId,
-          target_id: log.targetId ?? null,
-          detail: { message: log.detail },
-        }),
-      );
+      void persistToSupabase(supabase, async (db) => {
+        const res = (await db.from('audit_logs').insert(
+          stripUnsupportedColumnsForWrite('audit_logs', {
+            id: log.id,
+            event_type: log.eventType,
+            actor_role: log.actorRole,
+            actor_id: log.actorId,
+            actor_name: log.actorName,
+            ip_address: log.ipAddress,
+            device_id: log.deviceId,
+            target_id: log.targetId ?? null,
+            detail: { message: log.detail },
+          }),
+        )) as { error?: unknown } | undefined;
+        if (res?.error) {
+          recordUnsupportedColumn('audit_logs', res.error);
+        }
+        return res;
+      });
     }
     return log;
   };
@@ -1531,19 +1570,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       return jsonResponse({ token, user: publicUser(user) });
     }
 
-    const requiresFreshHydration =
-      ((pathname === '/api/users' || pathname === '/api/staff') && method === 'GET') ||
-      (pathname === '/api/biometrics/index' && method === 'GET') ||
-      (pathname === '/api/biometric/verify' && method === 'POST') ||
-      (pathname === '/api/patients' && method === 'GET') ||
-      (pathname === '/api/staff-calls' && method === 'GET') ||
-      (pathname === '/api/audit-logs' && method === 'GET') ||
-      (pathname.startsWith('/api/courses/') && method === 'GET');
+    const shouldHydrateRequest =
+      forceSupabaseProbe ||
+      pathname === '/api/biometric/verify' ||
+      (method === 'GET' && pathname !== '/api/exercises' && pathname !== '/api/health');
 
-    await ensureHydrated(
-      requiresFreshHydration || (method === 'GET' && pathname !== '/api/exercises' && pathname !== '/api/health'),
-      requiresFreshHydration,
-    );
+    await ensureHydrated(shouldHydrateRequest, forceSupabaseProbe);
 
     const { user: authUser, token: authToken } = await authenticate(request, clientIp, clientDeviceId);
 
@@ -2882,6 +2914,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           .map((p) => p.id),
       );
       const hybridCandidates = candidates.filter((c) => nonArcFacePatientIds.has(c.patientId));
+      const probeRatios = body.geometricRatios ?? body.livenessEvidence?.geometricRatios ?? null;
       const result =
         probeEngine === 'arcface-onnx' || probeEngine === 'human-faceres-1024d'
           ? {
@@ -2899,7 +2932,14 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               totalEnrolledPatients: totalPatients,
               excludedPatientIds: Array.from(excludedPatientSet),
               thresholds: {
-                minRawCosMulti: state.system_settings.aiFaceThreshold,
+                minRawCosSingle: Math.max(
+                  STRICT_RAW_COSINE_THRESHOLD,
+                  state.system_settings.aiFaceThreshold ?? STRICT_RAW_COSINE_THRESHOLD,
+                ),
+                minRawCosMulti: Math.max(
+                  STRICT_RAW_COSINE_THRESHOLD,
+                  state.system_settings.aiFaceThreshold ?? STRICT_RAW_COSINE_THRESHOLD,
+                ),
               },
             });
 
@@ -2911,84 +2951,104 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       let matchedConfidence = result.confidencePercent;
       let verifyErrorCode: string | undefined;
 
-      // Calibrated Open-Set Deep Neural Matcher (human-faceres-1024d):
-      // Accepts match when raw L2 cosine vs master_embedding OR best of 5 pose centroids >= 0.64 (or >= 0.60 when 1 patient enrolled),
-      // Euclidean <= 0.90, and margin >= 0.04 over rank #2 (or bestCosine >= 0.72 with >= 0.02 gap).
+      if (matchedPatientId) {
+        const matchedPat = state.patients.find((p) => p.id === matchedPatientId);
+        const gate2 = evaluateAppearanceAndCraniofacialGate(
+          probeRatios,
+          matchedPat?.geometricRatios ?? null,
+        );
+        const topRaw = result.topCandidate?.metrics.rawCos ?? 0;
+        const cohortScore = computeMaxImposterCohortScore(probeNorm);
+        if (
+          !gate2.passed ||
+          topRaw < STRICT_RAW_COSINE_THRESHOLD ||
+          topRaw <= cohortScore + STRICT_COHORT_MARGIN
+        ) {
+          matchedPatientId = null;
+          matchedPatientName = null;
+          matchedConfidence = Number((Math.max(0, Math.min(1, topRaw)) * 100).toFixed(1));
+        }
+      }
+
+      // Triple-Gate Open-Set Deep Neural Matcher (human-faceres-1024d):
+      // Gate 1: master AND center rawCos >= 0.84, centeredCos >= 0.80, L2 <= 0.56, >= 2 centroids >= 0.82
+      // Gate 2: Patch ZNCC >= 0.76, Craniofacial deviation <= 0.065, std >= 0.02 when missing patch
+      // Gate 3: bestRaw > maxImposterCohort + 0.08 AND Rank #1 - Rank #2 >= 0.08 (ZERO single-patient loophole)
       if (!matchedPatientId && probeEngine === 'human-faceres-1024d') {
         const expectedDim = probeNorm.length;
         const normalizePatientName = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
-        const RAW_COS_THRESHOLD = activePatientIds.size <= 1 ? 0.60 : 0.64;
-        const MAX_EUCLIDEAN_DIST = 0.90;
-        const EXEMPLAR_FLOOR = 0.60;
-        const MARGIN_THRESHOLD = 0.04;
+        const maxCohortScore = computeMaxImposterCohortScore(probeNorm);
+
+        const resolveAngleVec = (p: PatientRecord, zone: FacePoseZone5): number[] | undefined => {
+          const direct = parseEmbeddingVector(p.angleEmbeddings?.[zone]);
+          if (direct && direct.length === expectedDim) return direct;
+          const poseKey =
+            zone === 'center' ? 'frontal_centroid' : zone === 'up' || zone === 'down' ? 'nod' : zone;
+          const tpl = parseEmbeddingVector(
+            state.face_templates.find((t) => t.patientId === p.id && t.pose === poseKey)?.vector,
+          );
+          return tpl && tpl.length === expectedDim ? tpl : undefined;
+        };
 
         const knnScores: {
           patientId: string;
           fullName: string;
           orderIdx: number;
           bestRawSim: number;
-          minEuclidDist: number;
-          consensusTop3Avg: number;
-          vectorsAbove073: number;
-          uniqueCount: number;
-          passesMultiExemplar: boolean;
+          bestCentroidCosine: number;
+          gatePassed: boolean;
         }[] = [];
 
         for (let orderIdx = 0; orderIdx < state.patients.length; orderIdx += 1) {
           const p = state.patients[orderIdx];
           if (!activePatientIds.has(p.id)) continue;
 
-          const uniqueVecs: number[][] = [];
-          const pushUniqueVec = (raw: unknown) => {
-            const parsed = parseEmbeddingVector(raw);
-            if (!parsed || parsed.length !== expectedDim) return;
-            const normV = l2Normalize(parsed);
-            if (!uniqueVecs.some((existing) => cosineSimilarity(existing, normV) >= 0.9999)) {
-              uniqueVecs.push(normV);
-            }
-          };
+          const tplFront = parseEmbeddingVector(
+            state.face_templates.find((t) => t.patientId === p.id && t.pose === 'frontal_centroid')?.vector,
+          );
+          const tplOverall = parseEmbeddingVector(
+            state.face_templates.find((t) => t.patientId === p.id && t.pose === 'overall_centroid')?.vector,
+          );
+          const parsedMaster = [parseEmbeddingVector(p.masterEmbedding), tplOverall, tplFront].find(
+            (v): v is number[] => Boolean(v && v.length === expectedDim),
+          );
+          if (!parsedMaster) continue;
 
-          pushUniqueVec(p.masterEmbedding);
-          if (p.angleEmbeddings) {
-            pushUniqueVec(p.angleEmbeddings.center);
-            pushUniqueVec(p.angleEmbeddings.left);
-            pushUniqueVec(p.angleEmbeddings.right);
-            pushUniqueVec(p.angleEmbeddings.up);
-            pushUniqueVec(p.angleEmbeddings.down);
-          }
-          (p.exemplarEmbeddings ?? []).forEach((raw) => pushUniqueVec(raw));
-          if (uniqueVecs.length === 0) continue;
-
-          const sims = uniqueVecs
-            .map((v) => ({
-              cos: cosineSimilarity(probeNorm, v),
-              dist: euclideanDistance(probeNorm, v),
-            }))
-            .sort((a, b) => b.cos - a.cos);
-
-          const bestRawSim = Math.max(0, sims[0].cos);
-          const minEuclidDist = sims[0].dist;
-          const k = Math.min(3, sims.length);
-          const topKSum = sims.slice(0, k).reduce((acc, s) => acc + Math.max(0, s.cos), 0);
-          const consensusTop3Avg = topKSum / k;
-          const vectorsAbove073 = sims.filter((s) => s.cos >= EXEMPLAR_FLOOR).length;
-          const passesMultiExemplar = bestRawSim >= RAW_COS_THRESHOLD;
+          const gate = evaluateTripleGateNeuralCandidate(
+            probeNorm,
+            {
+              masterEmbedding: parsedMaster,
+              angleEmbeddings: {
+                center: resolveAngleVec(p, 'center'),
+                left: resolveAngleVec(p, 'left'),
+                right: resolveAngleVec(p, 'right'),
+                up: resolveAngleVec(p, 'up'),
+                down: resolveAngleVec(p, 'down'),
+              },
+              exemplarEmbeddings: (p.exemplarEmbeddings ?? []).filter(
+                (ex) => Array.isArray(ex) && ex.length === expectedDim,
+              ),
+              geometricRatios: p.geometricRatios ?? null,
+            },
+            probeRatios,
+          );
 
           knnScores.push({
             patientId: p.id,
             fullName: p.fullName,
             orderIdx,
-            bestRawSim,
-            minEuclidDist,
-            consensusTop3Avg,
-            vectorsAbove073,
-            uniqueCount: sims.length,
-            passesMultiExemplar,
+            bestRawSim: gate.rawCosine,
+            bestCentroidCosine: gate.bestCentroidCosine,
+            gatePassed: gate.passed,
           });
         }
 
         knnScores.sort(
-          (a, b) => b.bestRawSim - a.bestRawSim || b.consensusTop3Avg - a.consensusTop3Avg || b.orderIdx - a.orderIdx,
+          (a, b) =>
+            Number(b.gatePassed) - Number(a.gatePassed) ||
+            b.bestRawSim - a.bestRawSim ||
+            b.bestCentroidCosine - a.bestCentroidCosine ||
+            b.orderIdx - a.orderIdx,
         );
         const top = knnScores[0] ?? null;
         const topName = top ? normalizePatientName(top.fullName) : '';
@@ -2998,24 +3058,20 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               .filter((s) => !(topName && normalizePatientName(s.fullName) === topName))
           : [];
         const runner = distinctRunners[0] ?? null;
-        const margin = top && runner ? top.bestRawSim - runner.bestRawSim : 1;
+        const runnerScore = runner ? Math.max(runner.bestRawSim, runner.bestCentroidCosine) : 0;
+        const margin = top && runner ? top.bestRawSim - runnerScore : 1;
 
-        const passesThreshold = Boolean(
-          top &&
-            top.bestRawSim >= RAW_COS_THRESHOLD &&
-            top.minEuclidDist <= MAX_EUCLIDEAN_DIST &&
-            top.passesMultiExemplar,
+        const passesCohortGuard = Boolean(
+          top && top.bestRawSim > maxCohortScore + STRICT_COHORT_MARGIN,
         );
         const passesMargin =
-          distinctRunners.length === 0 ||
-          margin >= MARGIN_THRESHOLD ||
-          Boolean(top && top.bestRawSim >= 0.72 && margin >= 0.02);
+          distinctRunners.length === 0 || margin >= STRICT_DISTINCTIVENESS_MARGIN;
 
-        if (top && passesThreshold && passesMargin) {
+        if (top && top.gatePassed && passesCohortGuard && passesMargin) {
           matchedPatientId = top.patientId;
           matchedPatientName = top.fullName;
           matchedConfidence = Number((Math.max(0, Math.min(1, top.bestRawSim)) * 100).toFixed(1));
-        } else if (top && passesThreshold && !passesMargin) {
+        } else if (top && top.gatePassed && passesCohortGuard && !passesMargin) {
           verifyErrorCode = 'AMBIGUOUS_CLOSE_CANDIDATES';
           matchedConfidence = Number((Math.max(0, Math.min(1, top.bestRawSim)) * 100).toFixed(1));
         } else if (top) {
@@ -3028,7 +3084,6 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         const yawDegVal = body.yawDeg ?? body.livenessEvidence?.yawDeg ?? 0;
         const pitchDegVal = body.pitchDeg ?? body.livenessEvidence?.pitchDeg ?? 0;
         const rollDegVal = body.rollDeg ?? body.livenessEvidence?.rollDeg ?? 0;
-        const probeRatios = body.geometricRatios ?? body.livenessEvidence?.geometricRatios ?? null;
         const livePoseZone = classifyLivePoseZone(yawDegVal, pitchDegVal);
         const mirroredZone = mirrorPoseZone(livePoseZone);
 
@@ -3084,6 +3139,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         const arcFaceVariants: { zone: FacePoseZone5; vec: number[] }[] =
           probeEngine === 'arcface-onnx' ? primaryVariants : [];
 
+        const maxArcCohortScore = mirroredProbeNorm
+          ? Math.max(computeMaxImposterCohortScore(probeNorm), computeMaxImposterCohortScore(mirroredProbeNorm))
+          : computeMaxImposterCohortScore(probeNorm);
+
         const normalizePatientName = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
         const scoresByPatient: {
           patientId: string;
@@ -3094,9 +3153,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           engine: BiometricVectorEngine;
           isLegacyV1: boolean;
           raw: number;
+          bestCentroidCosine: number;
+          euclidDist: number;
           meanCentered: number;
           white: number;
           geometricPenalty: number;
+          gate2Passed: boolean;
+          tripleGatePassed: boolean;
           bestCos3D: number;
           bestCraniofacialCos: number;
           bestInnerDctCos: number;
@@ -3144,35 +3207,45 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
                     : [];
           if (activeVariants.length === 0) continue;
 
-          const angleMap: Record<FacePoseZone5, number[] | undefined> = {
+          const rawAngleMap: Record<FacePoseZone5, number[] | undefined> = {
             center:
               parseEmbeddingVector(p.angleEmbeddings?.center) ??
               tplFront ??
-              parseEmbeddingVector(p.biometricHistory?.frontal_centroid) ??
-              masterNorm,
+              parseEmbeddingVector(p.biometricHistory?.frontal_centroid),
             left:
               parseEmbeddingVector(p.angleEmbeddings?.left) ??
-              parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'left')?.vector) ??
-              masterNorm,
+              parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'left')?.vector),
             right:
               parseEmbeddingVector(p.angleEmbeddings?.right) ??
-              parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'right')?.vector) ??
-              masterNorm,
+              parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'right')?.vector),
             up:
               parseEmbeddingVector(p.angleEmbeddings?.up) ??
-              parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'nod')?.vector) ??
-              masterNorm,
+              parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'nod')?.vector),
             down:
               parseEmbeddingVector(p.angleEmbeddings?.down) ??
-              parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'nod')?.vector) ??
-              masterNorm,
+              parseEmbeddingVector(state.face_templates.find((t) => t.patientId === p.id && t.pose === 'nod')?.vector),
           };
+          const angleMap: Record<FacePoseZone5, number[]> = {
+            center: rawAngleMap.center ?? masterNorm,
+            left: rawAngleMap.left ?? masterNorm,
+            right: rawAngleMap.right ?? masterNorm,
+            up: rawAngleMap.up ?? masterNorm,
+            down: rawAngleMap.down ?? masterNorm,
+          };
+
+          const gate2Check = evaluateAppearanceAndCraniofacialGate(
+            probeRatios,
+            p.geometricRatios ?? null,
+          );
 
           let bestDual = -1;
           let bestRaw = 0;
+          let bestCentroidCos = 0;
+          let bestEuclid = Number.POSITIVE_INFINITY;
           let bestMeanCentered = 0;
           let bestWhite = 0;
           let bestGeomPenalty = 0;
+          let tripleGatePassed = false;
           let bestCos3D = 0;
           let bestCraniofacialCos = 0;
           let bestInnerDctCos = 0;
@@ -3182,22 +3255,25 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
           if (candEngine === 'arcface-onnx') {
             for (const variant of activeVariants) {
-              const sameZoneVec = angleMap[variant.zone] ?? masterNorm;
-              const sameZoneArc = computeArcFaceBiometricScore(variant.vec, sameZoneVec, {
+              const gate = evaluateTripleGateNeuralCandidate(
+                variant.vec,
+                {
+                  masterEmbedding: masterNorm,
+                  angleEmbeddings: rawAngleMap,
+                  exemplarEmbeddings: p.exemplarEmbeddings,
+                  geometricRatios: p.geometricRatios ?? null,
+                },
                 probeRatios,
-                candidateRatios: p.geometricRatios ?? null,
-              });
-              const masterArc = computeArcFaceBiometricScore(variant.vec, masterNorm, {
-                probeRatios,
-                candidateRatios: p.geometricRatios ?? null,
-              });
-              const arcScore = 0.55 * sameZoneArc.score + 0.45 * masterArc.score;
-              if (arcScore > bestDual) {
-                bestDual = arcScore;
-                bestRaw = Math.max(sameZoneArc.rawCos, masterArc.rawCos);
-                bestMeanCentered = bestRaw;
-                bestWhite = bestRaw;
-                bestGeomPenalty = Math.max(sameZoneArc.geometricPenalty, masterArc.geometricPenalty);
+              );
+              const candidateScore = gate.passed ? gate.rawCosine : gate.rawCosine * 0.5;
+              if (candidateScore > bestDual) {
+                bestDual = candidateScore;
+                bestRaw = gate.rawCosine;
+                bestCentroidCos = gate.bestCentroidCosine;
+                bestEuclid = gate.l2Dist;
+                bestMeanCentered = gate.centeredCosine;
+                bestWhite = gate.rawCosine;
+                tripleGatePassed = gate.passed;
               }
             }
           } else {
@@ -3220,6 +3296,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
                     ? sameZoneDual
                     : masterDual;
                 bestRaw = dom.rawCos;
+                bestCentroidCos = dom.rawCos;
+                bestEuclid = euclideanDistance(variant.vec, masterNorm);
                 bestMeanCentered = dom.meanCenteredCos;
                 bestWhite = Math.max(sameZoneDual.whitenedCos, masterDual.whitenedCos);
                 bestGeomPenalty = Math.max(
@@ -3248,22 +3326,33 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               engine: candEngine,
               isLegacyV1: candEngine === 'legacy-v1',
               raw: bestRaw,
+              bestCentroidCosine: bestCentroidCos,
+              euclidDist: bestEuclid,
               meanCentered: bestMeanCentered,
               white: bestWhite,
               geometricPenalty: bestGeomPenalty,
+              gate2Passed: gate2Check.passed,
+              tripleGatePassed,
               bestCos3D,
               bestCraniofacialCos,
               bestInnerDctCos,
               bestInnerDctWhite,
               bestInnerPatchCos,
               bestInnerPatchWhite,
-              rankScore: bestDual,
+              rankScore: candEngine === 'arcface-onnx'
+                ? tripleGatePassed
+                  ? bestRaw
+                  : bestRaw * 0.5
+                : bestDual,
             });
           }
         }
 
         const sortScores = (list: typeof scoresByPatient) =>
           [...list].sort((a, b) => {
+            if (a.tripleGatePassed !== b.tripleGatePassed) {
+              return Number(b.tripleGatePassed) - Number(a.tripleGatePassed);
+            }
             const nameA = normalizePatientName(a.fullName);
             const nameB = normalizePatientName(b.fullName);
             if (nameA && nameA === nameB && Math.abs(b.rankScore - a.rankScore) < 0.035) {
@@ -3278,7 +3367,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           Math.abs(pitchDegVal) > 6 ||
           Math.abs(rollDegVal) > 10;
 
-        // 1. Prioritize pure ArcFace ResNet-50 candidates (isolated from hybrid/legacy margin pool)
+        // 1. Prioritize pure ArcFace ResNet-50 candidates with full Triple-Gate (Zero Loopholes)
         const arcScores = sortScores(scoresByPatient.filter((s) => s.engine === 'arcface-onnx'));
         const arcTop = arcScores[0];
         if (arcTop) {
@@ -3288,17 +3377,14 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             return !(arcTopName && sName && sName === arcTopName);
           });
           const arcRunner = arcRunners[0];
-          const arcMargin = arcRunner ? arcTop.raw - arcRunner.raw : 1;
-          const arcMinCos = activePatientIds.size <= 1 ? 0.60 : 0.64;
-          const arcEuclidDist = euclideanDistance(probeNorm, arcTop.masterNorm);
-          const arcPassesGate =
-            arcTop.raw >= arcMinCos &&
-            arcEuclidDist <= 0.90 &&
-            arcTop.geometricPenalty <= 0.14;
+          const arcRunnerScore = arcRunner
+            ? Math.max(arcRunner.raw, arcRunner.bestCentroidCosine)
+            : 0;
+          const arcMargin = arcRunner ? arcTop.raw - arcRunnerScore : 1;
+          const arcPassesCohort = arcTop.raw > maxArcCohortScore + STRICT_COHORT_MARGIN;
+          const arcPassesGate = arcTop.tripleGatePassed && arcPassesCohort;
           const arcPassesMargin =
-            arcRunners.length === 0 ||
-            arcMargin >= 0.04 ||
-            (arcTop.raw >= 0.72 && arcMargin >= 0.02);
+            arcRunners.length === 0 || arcMargin >= STRICT_DISTINCTIVENESS_MARGIN;
 
           if (arcPassesGate && !arcPassesMargin) {
             verifyErrorCode = 'AMBIGUOUS_CLOSE_CANDIDATES';
@@ -3324,55 +3410,36 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             : [];
           const runner = distinctRunners[0];
           const margin = runner ? top.dualScore - runner.dualScore : 1;
-
-          const requiredMargin = 0.04;
           const passesMargin =
-            distinctRunners.length === 0 ||
-            margin >= requiredMargin ||
-            Boolean(top && top.raw >= 0.72 && margin >= 0.02);
+            distinctRunners.length === 0 || margin >= STRICT_DISTINCTIVENESS_MARGIN;
           const topIsLegacyV1 = Boolean(top?.isLegacyV1);
           const minDualThresh = topIsLegacyV1
             ? isAngledPose
-              ? 0.75
-              : 0.80
+              ? 0.80
+              : 0.84
             : isAngledPose
-              ? 0.70
-              : 0.75;
-          const minWhiteThresh = topIsLegacyV1
-            ? isAngledPose
-              ? 0.36
-              : 0.42
-            : isAngledPose
-              ? 0.32
-              : 0.36;
-          const minMeanCentered = topIsLegacyV1
-            ? isAngledPose
-              ? 0.56
-              : 0.64
-            : isAngledPose
-              ? 0.52
-              : 0.60;
+              ? 0.78
+              : 0.82;
+          const minWhiteThresh = topIsLegacyV1 ? 0.45 : 0.42;
 
           const passesSubbandFloor = Boolean(
             top &&
-              top.bestInnerDctCos >=
-                (topIsLegacyV1 ? (isAngledPose ? 0.32 : 0.40) : isAngledPose ? 0.34 : 0.42) &&
-              top.bestInnerDctWhite >=
-                (topIsLegacyV1 ? (isAngledPose ? 0.14 : 0.20) : isAngledPose ? 0.15 : 0.22) &&
-              top.bestInnerPatchCos >=
-                (topIsLegacyV1 ? (isAngledPose ? 0.26 : 0.34) : isAngledPose ? 0.30 : 0.38) &&
-              top.bestInnerPatchWhite >=
-                (topIsLegacyV1 ? (isAngledPose ? 0.10 : 0.16) : isAngledPose ? 0.12 : 0.18) &&
-              top.bestCos3D >=
-                (topIsLegacyV1 ? (isAngledPose ? 0.60 : 0.68) : isAngledPose ? 0.52 : 0.60) &&
-              top.bestCraniofacialCos >=
-                (topIsLegacyV1 ? (isAngledPose ? 0.28 : 0.36) : isAngledPose ? 0.28 : 0.35),
+              top.bestInnerDctCos >= 0.42 &&
+              top.bestInnerDctWhite >= 0.22 &&
+              top.bestInnerPatchCos >= 0.38 &&
+              top.bestInnerPatchWhite >= 0.18 &&
+              top.bestCos3D >= 0.68 &&
+              top.bestCraniofacialCos >= 0.36,
           );
           const passesDualGate = Boolean(
             top &&
+              top.gate2Passed &&
+              top.raw >= STRICT_RAW_COSINE_THRESHOLD &&
+              top.raw > maxArcCohortScore + STRICT_COHORT_MARGIN &&
+              top.meanCentered >= STRICT_CENTERED_COSINE_THRESHOLD &&
+              top.euclidDist <= STRICT_MAX_EUCLIDEAN_DISTANCE &&
               top.dualScore >= minDualThresh &&
               top.white >= minWhiteThresh &&
-              top.meanCentered >= minMeanCentered &&
               top.geometricPenalty <= 0.14 &&
               passesSubbandFloor,
           );
@@ -3392,7 +3459,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         }
       }
 
-      const minConfidenceFloor = activePatientIds.size <= 1 ? 60.0 : 64.0;
+      const minConfidenceFloor = STRICT_RAW_COSINE_THRESHOLD * 100;
       if (!matchedPatientId || matchedConfidence < minConfidenceFloor) {
         return jsonResponse(
           {
@@ -5177,17 +5244,18 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         await db.from('exercises').delete().in('code', [...DEPRECATED_EXERCISE_CODES]);
         await db.from('exercises').delete().in('category', ['lower_limb', 'balance']);
         await db.from('exercises').upsert(
-          CLINICAL_EXERCISES.map((ex) => ({
-            id: ex.id,
-            code: ex.code,
-            category: ex.category,
-            name_th: ex.name.th,
-            instructions_th: ex.instruction.th,
-            name_i18n: ex.name,
-            instruction_i18n: ex.instruction,
-            detection_config: ex.detection,
-            active: true,
-          })),
+          stripUnsupportedColumnsForWriteRows(
+            'exercises',
+            CLINICAL_EXERCISES.map((ex) => ({
+              id: ex.id,
+              code: ex.code,
+              category: ex.category,
+              name_i18n: ex.name,
+              instruction_i18n: ex.instruction,
+              detection_config: ex.detection,
+              active: true,
+            })),
+          ),
           { onConflict: 'id' },
         );
       });

@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DrTechCaresApiClient, PatientBiometricIndexEntry } from '@drtechcares/api-client';
 import {
+  IMPOSTER_COHORT_VECTORS_1024,
+  computeCraniofacialRatios12,
+  computePatchZnccScore,
+  extractFacePatchSignature384FromRgba,
+} from '@drtechcares/smart-biometric-core';
+import {
   BIOMETRIC_ENGINE_ID,
   BIOMETRIC_EXPECTED_DIM,
   BIOMETRIC_FINAL_SCORE_THRESHOLD,
@@ -153,10 +159,17 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     expect(computeHumanDescriptorSimilarity(a, probeAt062)).toBeCloseTo(0.62, 3);
     expect(computeHumanDescriptorSimilarity(a, probeAt062)).toBeLessThan(BIOMETRIC_HUMAN_SIM_THRESHOLD);
 
-    // Genuine probe at >= 0.78 passes >= 0.76 raw cosine without nonlinear inflation
+    // Probe at 0.78 is BELOW strict >= 0.84 threshold and MUST be rejected
     const probeAt078 = normalizeVector(a.map((v, i) => 0.78 * v + Math.sqrt(1 - 0.78 * 0.78) * orthoB[i]));
     expect(computeHumanDescriptorSimilarity(a, probeAt078)).toBeCloseTo(0.78, 3);
-    expect(computeHumanDescriptorSimilarity(a, probeAt078)).toBeGreaterThanOrEqual(
+    expect(computeHumanDescriptorSimilarity(a, probeAt078)).toBeLessThan(
+      BIOMETRIC_HUMAN_SIM_THRESHOLD,
+    );
+
+    // Genuine probe at 0.90 passes strict >= 0.84 threshold cleanly
+    const probeAt090 = normalizeVector(a.map((v, i) => 0.9 * v + Math.sqrt(1 - 0.9 * 0.9) * orthoB[i]));
+    expect(computeHumanDescriptorSimilarity(a, probeAt090)).toBeCloseTo(0.9, 3);
+    expect(computeHumanDescriptorSimilarity(a, probeAt090)).toBeGreaterThanOrEqual(
       BIOMETRIC_HUMAN_SIM_THRESHOLD,
     );
 
@@ -232,13 +245,21 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     expect(resMedium.confidencePercent).toBeLessThan(60);
     expect(resMedium.reason).toBe('BELOW_THRESHOLD');
 
-    // Genuine calibrated match at ~0.68 (>= 0.64 multi-patient) against master/centroid clears cleanly
-    const genuineAt068 = normalizeVector(
+    // Sub-threshold stranger at ~0.68 -> MUST be rejected (strict floor = 0.84 / centered 0.80 / L2 <= 0.56)
+    const strangerAt068 = normalizeVector(
       patA.master_embedding.map((v, i) => 0.68 * v + Math.sqrt(1 - 0.68 * 0.68) * orthoUnit[i]),
     );
-    const resCalibrated068 = evaluateLiveMatch1toN(genuineAt068, [patA, patB]);
-    expect(resCalibrated068.matched).toBe(true);
-    expect(resCalibrated068.topCandidate?.patientId).toBe('pat-a');
+    const resRejected068 = evaluateLiveMatch1toN(strangerAt068, [patA, patB]);
+    expect(resRejected068.matched).toBe(false);
+    expect(resRejected068.topCandidate).toBeNull();
+
+    // Genuine probe at ~0.92 matching master & center clears all Gate 1+3 thresholds cleanly
+    const genuineAt092 = normalizeVector(
+      patA.master_embedding.map((v, i) => 0.92 * v + Math.sqrt(1 - 0.92 * 0.92) * orthoUnit[i]),
+    );
+    const resCalibrated092 = evaluateLiveMatch1toN(genuineAt092, [patA, patB]);
+    expect(resCalibrated092.matched).toBe(true);
+    expect(resCalibrated092.topCandidate?.patientId).toBe('pat-a');
 
     // Ambiguous mid-point probe clearing >= 0.76 for TWO correlated candidates within margin -> blocked!
     const corrPatBVec = normalizeVector(
@@ -264,11 +285,11 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     expect(resTie.reason).toBe('AMBIGUOUS_CLOSE_CANDIDATES');
   });
 
-  it('requires 3/3 consecutive matching live frames with low variance and resets on spoof, flip, or <0.60 dip', () => {
+  it('requires 6/6 consecutive matching live frames with low variance and resets on spoof, flip, or below-0.84 dip', () => {
     const patA = makeCandidate('pat-a', 'HN-101', 'Patient Alpha', 1);
     const patB = makeCandidate('pat-b', 'HN-102', 'Patient Beta', 2);
     const tracker = new LiveIdentityStreakTracker(BIOMETRIC_REQUIRED_STREAK);
-    expect(BIOMETRIC_REQUIRED_STREAK).toBe(3);
+    expect(BIOMETRIC_REQUIRED_STREAK).toBe(6);
 
     const evalA = evaluateLiveMatch1toN(blendWithNoise(patA.master_embedding, 10, 0.05), [patA, patB]);
     const evalAHigh = evaluateLiveMatch1toN(patA.master_embedding, [patA, patB]);
@@ -277,10 +298,10 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     const s1 = tracker.step(evalA, { biologicalVerified: true });
     expect(s1.confirmed).toBe(false);
     expect(s1.streak).toBe(1);
-    // Strict zero-leak rule: candidate MUST stay null until 3/3 completes!
+    // Strict zero-leak rule: candidate MUST stay null until 6/6 completes!
     expect(s1.candidate).toBeNull();
 
-    // Identity flip resets streak back to 1 (still hiding candidate until 3/3)
+    // Identity flip resets streak back to 1 (still hiding candidate until 6/6)
     const flip = tracker.step(evalB, { biologicalVerified: true });
     expect(flip.confirmed).toBe(false);
     expect(flip.streak).toBe(1);
@@ -292,30 +313,30 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     expect(spoofed.streak).toBe(0);
     expect(spoofed.candidate).toBeNull();
 
-    // Large score variance (>= 0.12) between frame 1 and frame 2 resets streak to 0/3
+    // Large score variance (>= 0.08) between frame 1 and frame 2 resets streak to 0/6
     const rawDiffVec = makeDeterministicUnitVector(99);
     const dotD = cosineSimilarityNormalized(patA.master_embedding, rawDiffVec);
     const orthoD = normalizeVector(rawDiffVec.map((v, i) => v - dotD * patA.master_embedding[i]));
-    const frameAt078 = evaluateLiveMatch1toN(
-      normalizeVector(patA.master_embedding.map((v, i) => 0.78 * v + Math.sqrt(1 - 0.78 * 0.78) * orthoD[i])),
+    const frameAt088 = evaluateLiveMatch1toN(
+      normalizeVector(patA.master_embedding.map((v, i) => 0.88 * v + Math.sqrt(1 - 0.88 * 0.88) * orthoD[i])),
       [patA, patB],
     );
-    expect(tracker.step(frameAt078, { biologicalVerified: true }).streak).toBe(1);
+    expect(tracker.step(frameAt088, { biologicalVerified: true }).streak).toBe(1);
     const highVarFlip = tracker.step(evalAHigh, { biologicalVerified: true });
     expect(highVarFlip.confirmed).toBe(false);
     expect(highVarFlip.streak).toBe(0);
 
-    // 3/3 clean low-variance frames -> confirmed!
-    for (let i = 1; i <= 2; i += 1) {
+    // 6/6 clean low-variance frames -> confirmed!
+    for (let i = 1; i <= 5; i += 1) {
       const pending = tracker.step(evalA, { biologicalVerified: true });
       expect(pending.confirmed).toBe(false);
       expect(pending.streak).toBe(i);
       expect(pending.candidate).toBeNull();
     }
-    const third = tracker.step(evalA, { biologicalVerified: true });
-    expect(third.confirmed).toBe(true);
-    expect(third.streak).toBe(3);
-    expect(third.candidate?.patientId).toBe('pat-a');
+    const sixth = tracker.step(evalA, { biologicalVerified: true });
+    expect(sixth.confirmed).toBe(true);
+    expect(sixth.streak).toBe(6);
+    expect(sixth.candidate?.patientId).toBe('pat-a');
   });
 
   it('persists, merges, and filters legacy vs 1024-D accounts in drtech_biometric_vault_v3', async () => {
@@ -621,6 +642,140 @@ describe('Unified @vladmandic/human (1024-D) Biometric Engine', () => {
     expect(remainingPatients.map((p) => p.id)).toEqual(['pat-active-1']);
     const remainingTemplates = JSON.parse(storageMap.get('drtech_face_templates') ?? '[]') as { patientId: string }[];
     expect(remainingTemplates.map((t) => t.patientId)).toEqual(['pat-active-1']);
+  });
+
+  it('enforces Triple-Gate zero false-accept: rejects 0.70 strangers in 1-patient & 3-patient DBs while passing genuine +/-2% probes via ZNCC + Craniofacial + Cohort', () => {
+    const mkRgbaFace = (seed: number, brightnessBias = 0, contrastScale = 1, invert = false) => {
+      const w = 32;
+      const h = 32;
+      const data = new Uint8ClampedArray(w * h * 4);
+      for (let y = 0; y < h; y += 1) {
+        for (let x = 0; x < w; x += 1) {
+          const idx = (y * w + x) * 4;
+          const wave =
+            Math.sin((x + 1) * (0.25 + seed * 0.13)) * 55 +
+            Math.cos((y + 1) * (0.31 + seed * 0.07)) * 45 +
+            128;
+          const val = invert ? 255 - wave : wave * contrastScale + brightnessBias;
+          const clamped = Math.max(0, Math.min(255, Math.round(val)));
+          data[idx] = clamped;
+          data[idx + 1] = Math.max(0, Math.min(255, clamped + (seed % 9) - 4));
+          data[idx + 2] = Math.max(0, Math.min(255, clamped - (seed % 7) + 3));
+          data[idx + 3] = 255;
+        }
+      }
+      return { width: w, height: h, data };
+    };
+
+    const mkLms = (jitter = 0) => {
+      const lms = Array.from({ length: 478 }, () => ({ x: 0.5, y: 0.5, z: 0 }));
+      lms[33] = { x: 0.42 + jitter, y: 0.42, z: 0 };
+      lms[133] = { x: 0.46, y: 0.42, z: 0 };
+      lms[263] = { x: 0.58 - jitter, y: 0.42, z: 0 };
+      lms[362] = { x: 0.54, y: 0.42, z: 0 };
+      lms[168] = { x: 0.5, y: 0.41, z: -0.02 };
+      lms[10] = { x: 0.5, y: 0.28, z: 0 };
+      lms[1] = { x: 0.5, y: 0.51, z: -0.04 };
+      lms[61] = { x: 0.45, y: 0.62, z: 0 };
+      lms[291] = { x: 0.55, y: 0.62, z: 0 };
+      lms[152] = { x: 0.5, y: 0.74, z: 0 };
+      lms[234] = { x: 0.34, y: 0.48, z: 0 };
+      lms[454] = { x: 0.66, y: 0.48, z: 0 };
+      lms[172] = { x: 0.38, y: 0.63, z: 0 };
+      lms[397] = { x: 0.62, y: 0.63, z: 0 };
+      return lms;
+    };
+
+    const enrolledPatch = extractFacePatchSignature384FromRgba(mkRgbaFace(3, 0, 1));
+    const genuineShiftedLightPatch = extractFacePatchSignature384FromRgba(mkRgbaFace(3, 38, 1.35));
+    const strangerPatch = extractFacePatchSignature384FromRgba(mkRgbaFace(19, 0, 1, true));
+    expect(enrolledPatch).not.toBeNull();
+    expect(genuineShiftedLightPatch).not.toBeNull();
+    expect(strangerPatch).not.toBeNull();
+    expect(computePatchZnccScore(enrolledPatch!, genuineShiftedLightPatch!)).toBeGreaterThanOrEqual(0.76);
+    expect(computePatchZnccScore(enrolledPatch!, strangerPatch!)).toBeLessThan(0.76);
+
+    const enrolledCranio = computeCraniofacialRatios12(mkLms(0));
+    const genuineCranio = computeCraniofacialRatios12(mkLms(0.002));
+    expect(enrolledCranio).toBeDefined();
+    expect(genuineCranio).toBeDefined();
+
+    const makeTriplePatient = (id: string, hn: string, name: string, seed: number, patch: number[], cranio: number[]) => ({
+      ...makeCandidate(id, hn, name, seed),
+      geometricRatios: {
+        eyeToNoseRatio: 1.1,
+        faceWidthToUpperHeight: 1.2,
+        mouthToEyeRatio: 0.85,
+        noseToChinRatio: 0.9,
+        appearancePatch384: patch,
+        craniofacialRatios12: cranio,
+      },
+    });
+
+    const pat1 = makeTriplePatient('pat-only-1', 'HN-ONLY-1', 'Somchai Only', 7, enrolledPatch!, enrolledCranio!);
+    const pat2 = makeTriplePatient('pat-two-2', 'HN-TWO-2', 'Waranya Two', 17, strangerPatch!, enrolledCranio!);
+    const pat3 = makeTriplePatient('pat-three-3', 'HN-THREE-3', 'Nida Three', 29, strangerPatch!, enrolledCranio!);
+
+    // 1) 1-patient DB vs 0.70 similarity stranger -> MUST return matched: false, topCandidate: null
+    const rawO = makeDeterministicUnitVector(101);
+    const dotO = cosineSimilarityNormalized(pat1.master_embedding, rawO);
+    const orthoO = normalizeVector(rawO.map((v, i) => v - dotO * pat1.master_embedding[i]));
+    const stranger070 = normalizeVector(
+      pat1.master_embedding.map((v, i) => 0.7 * v + Math.sqrt(1 - 0.7 * 0.7) * orthoO[i]),
+    );
+    const singleStrangerRes = evaluateLiveMatch1toN(stranger070, [pat1], [], undefined, 'center', {
+      eyeToNoseRatio: 1.1,
+      faceWidthToUpperHeight: 1.2,
+      mouthToEyeRatio: 0.85,
+      noseToChinRatio: 0.9,
+      appearancePatch384: strangerPatch!,
+      craniofacialRatios12: genuineCranio!,
+    });
+    expect(singleStrangerRes.matched).toBe(false);
+    expect(singleStrangerRes.topCandidate).toBeNull();
+
+    // 2) 3-patient DB vs unregistered stranger & imposter cohort member -> matched: false
+    const cohortProbe = IMPOSTER_COHORT_VECTORS_1024[0];
+    const multiStrangerRes = evaluateLiveMatch1toN(cohortProbe, [pat1, pat2, pat3]);
+    expect(multiStrangerRes.matched).toBe(false);
+    expect(multiStrangerRes.topCandidate).toBeNull();
+
+    // 3) Stranger wearing fake identical vector (0.94) but wrong Gate-2 facial patch ZNCC (< 0.76) -> REJECTED!
+    const fakePatchProbe = blendWithNoise(pat1.master_embedding, 88, 0.02);
+    const failedZnccRes = evaluateLiveMatch1toN(fakePatchProbe, [pat1], [], undefined, 'center', {
+      eyeToNoseRatio: 1.1,
+      faceWidthToUpperHeight: 1.2,
+      mouthToEyeRatio: 0.85,
+      noseToChinRatio: 0.9,
+      appearancePatch384: strangerPatch!,
+      craniofacialRatios12: genuineCranio!,
+    });
+    expect(failedZnccRes.matched).toBe(false);
+    expect(failedZnccRes.topCandidate).toBeNull();
+
+    // 4) Genuine user (+/-2% realistic noise + brightness-shifted patch) passes ALL 3 Gates + 6/6 consecutive streak
+    const genuineProbe = blendWithNoise(pat1.master_embedding, 77, 0.02);
+    const genuineRes = evaluateLiveMatch1toN(genuineProbe, [pat1, pat2, pat3], [], undefined, 'center', {
+      eyeToNoseRatio: 1.1,
+      faceWidthToUpperHeight: 1.2,
+      mouthToEyeRatio: 0.85,
+      noseToChinRatio: 0.9,
+      appearancePatch384: genuineShiftedLightPatch!,
+      craniofacialRatios12: genuineCranio!,
+    });
+    expect(genuineRes.matched).toBe(true);
+    expect(genuineRes.topCandidate?.patientId).toBe('pat-only-1');
+
+    const strictTracker = new LiveIdentityStreakTracker(BIOMETRIC_REQUIRED_STREAK);
+    for (let f = 1; f < 6; f += 1) {
+      const pending = strictTracker.step(genuineRes, { biologicalVerified: true });
+      expect(pending.confirmed).toBe(false);
+      expect(pending.streak).toBe(f);
+    }
+    const locked = strictTracker.step(genuineRes, { biologicalVerified: true });
+    expect(locked.confirmed).toBe(true);
+    expect(locked.streak).toBe(6);
+    expect(locked.candidate?.patientId).toBe('pat-only-1');
   });
 });
 

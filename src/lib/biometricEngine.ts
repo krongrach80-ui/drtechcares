@@ -8,23 +8,36 @@ import {
   type PatientRecord,
 } from '@drtechcares/api-client';
 import { notifyBiometricIndexChanged } from './faceMatcher';
-import type { GeometricAnthropometricRatios } from '@drtechcares/smart-biometric-core';
+import {
+  REQUIRED_MATCH_STREAK,
+  STRICT_CENTERED_COSINE_THRESHOLD,
+  STRICT_COHORT_MARGIN,
+  STRICT_DISTINCTIVENESS_MARGIN,
+  STRICT_MAX_EUCLIDEAN_DISTANCE,
+  STRICT_MIN_CENTROID_COSINE,
+  STRICT_RAW_COSINE_THRESHOLD,
+  computeMaxImposterCohortScore,
+  evaluateTripleGateNeuralCandidate,
+  extractFacePatchSignature384FromRgba,
+  type GeometricAnthropometricRatios,
+} from '@drtechcares/smart-biometric-core';
+
+export { REQUIRED_MATCH_STREAK };
 
 export const BIOMETRIC_VAULT_STORAGE_KEY = 'drtech_biometric_vault_v3';
 export const BIOMETRIC_ENGINE_ID = 'human-faceres-1024d' as const;
 export const BIOMETRIC_MIN_EMBEDDING_DIM = 128;
 export const BIOMETRIC_EXPECTED_DIM = 1024;
-export const BIOMETRIC_MATCH_THRESHOLD = 0.64;
-export const BIOMETRIC_SINGLE_PATIENT_MATCH_THRESHOLD = 0.60;
-export const BIOMETRIC_HIGH_CONFIDENCE_MARGIN_OVERRIDE = 0.72;
-export const BIOMETRIC_FINAL_SCORE_THRESHOLD = 0.60;
-export const BIOMETRIC_EXEMPLAR_FLOOR_THRESHOLD = 0.60;
-export const BIOMETRIC_MAX_EUCLIDEAN_DISTANCE = 0.90;
-export const BIOMETRIC_HUMAN_SIM_THRESHOLD = 0.64;
-export const BIOMETRIC_MARGIN_THRESHOLD = 0.04;
-export const BIOMETRIC_REQUIRED_STREAK = 3;
-export const BIOMETRIC_STREAK_MIN_FRAME_COSINE = 0.60;
-export const BIOMETRIC_MAX_SCORE_VARIANCE = 0.12;
+export const BIOMETRIC_MATCH_THRESHOLD = STRICT_RAW_COSINE_THRESHOLD;
+export const BIOMETRIC_CENTERED_COSINE_THRESHOLD = STRICT_CENTERED_COSINE_THRESHOLD;
+export const BIOMETRIC_FINAL_SCORE_THRESHOLD = STRICT_RAW_COSINE_THRESHOLD;
+export const BIOMETRIC_EXEMPLAR_FLOOR_THRESHOLD = STRICT_MIN_CENTROID_COSINE;
+export const BIOMETRIC_MAX_EUCLIDEAN_DISTANCE = STRICT_MAX_EUCLIDEAN_DISTANCE;
+export const BIOMETRIC_HUMAN_SIM_THRESHOLD = STRICT_RAW_COSINE_THRESHOLD;
+export const BIOMETRIC_MARGIN_THRESHOLD = STRICT_DISTINCTIVENESS_MARGIN;
+export const BIOMETRIC_REQUIRED_STREAK = REQUIRED_MATCH_STREAK;
+export const BIOMETRIC_STREAK_MIN_FRAME_COSINE = STRICT_RAW_COSINE_THRESHOLD;
+export const BIOMETRIC_MAX_SCORE_VARIANCE = 0.08;
 export const BIOMETRIC_EXEMPLAR_TARGET_COUNT = 15;
 
 export const HUMAN_BIOMETRIC_CONFIG: Partial<Config> = {
@@ -146,6 +159,7 @@ export interface NeuralSampleInput {
 export interface PatientMatchScoreResult {
   candidate: EnrolledBiometricCandidate;
   bestSim: number;
+  centeredSimilarity: number;
   centroidSim: number;
   exemplarSim: number;
   humanSim: number;
@@ -154,7 +168,10 @@ export interface PatientMatchScoreResult {
   consensusTop3Avg: number;
   vectorsAbove073: number;
   uniqueVectorCount: number;
+  patchZncc: number | null;
+  craniofacialDeviation: number | null;
   passesMultiExemplarGate: boolean;
+  tripleGateFailureReasons: string[];
   bestSource: string;
 }
 
@@ -163,18 +180,29 @@ export interface Live1toNMatchEvaluation {
   topCandidate: EnrolledBiometricCandidate | null;
   runnerUpCandidate: EnrolledBiometricCandidate | null;
   topSimilarity: number;
+  topCenteredSimilarity: number;
   topCentroidSimilarity: number;
   topExemplarSimilarity: number;
   topHumanSimilarity: number;
   topFinalScore: number;
   topEuclideanDistance: number;
   topConsensusTop3Avg: number;
+  topPatchZncc: number | null;
+  topCraniofacialDeviation: number | null;
+  cohortMargin: number;
   runnerUpSimilarity: number;
   runnerUpFinalScore: number;
   margin: number;
   confidencePercent: number;
   bestSource: string;
-  reason: 'OK' | 'NO_CANDIDATES' | 'EXCLUDED_ONLY' | 'BELOW_THRESHOLD' | 'AMBIGUOUS_CLOSE_CANDIDATES';
+  reason:
+    | 'OK'
+    | 'NO_CANDIDATES'
+    | 'EXCLUDED_ONLY'
+    | 'BELOW_THRESHOLD'
+    | 'AMBIGUOUS_CLOSE_CANDIDATES'
+    | 'IMPOSTER_COHORT_REJECTED'
+    | 'LOW_VARIANCE_REENROLL_REQUIRED';
   validAccounts: number;
   totalAccounts: number;
 }
@@ -468,6 +496,32 @@ function applyCanonicalLuminanceToCanvas(canvas: HTMLCanvasElement): void {
 }
 
 /**
+ * Extracts a lighting-invariant 384-D Zero-Mean Normalized (mean=0, std=1) appearance patch
+ * (16x16 inner-face luminance = 256 + 8x8 Cb/Cr chrominance = 128) from a canonical inner-face crop.
+ */
+export function extractFacePatchSignature384(
+  source: HTMLCanvasElement | ImageData | null | undefined,
+): number[] | null {
+  if (!source) return null;
+  if ('data' in source && 'width' in source && 'height' in source && !('getContext' in source)) {
+    return extractFacePatchSignature384FromRgba(source);
+  }
+  if ('getContext' in source && typeof (source as HTMLCanvasElement).getContext === 'function') {
+    const canvas = source as HTMLCanvasElement;
+    if (canvas.width < 16 || canvas.height < 16) return null;
+    try {
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return null;
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      return extractFacePatchSignature384FromRgba(img);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
  * Captures a race-free, illumination-invariant inner-face snapshot (`224x224`, Mean Luminance `128`):
  * - When `landmarks` (FaceMesh/Human) are provided: levels eye-roll to 0 deg and tightly crops
  *   eyebrows-to-chin and cheekbone-to-cheekbone without wall/background noise.
@@ -686,6 +740,86 @@ export function buildBiometricProfileFromSamples(
     selectedExemplars.push(master_embedding);
   }
 
+  // Merge zero-mean appearance patch & 12 craniofacial anatomical ratios into geometricRatios when collected on samples
+  let resolvedGeometricRatios = meta.geometricRatios ? { ...meta.geometricRatios } : undefined;
+  const centerSamplePatches = normalizedSamples
+    .filter((s) => s.bucket === 'center' && Array.isArray(s.geometricRatios?.appearancePatch384) && s.geometricRatios!.appearancePatch384!.length === 384)
+    .map((s) => s.geometricRatios!.appearancePatch384!);
+  const fallbackPatches = normalizedSamples
+    .filter((s) => Array.isArray(s.geometricRatios?.appearancePatch384) && s.geometricRatios!.appearancePatch384!.length === 384)
+    .map((s) => s.geometricRatios!.appearancePatch384!);
+  const patchPool = centerSamplePatches.length > 0 ? centerSamplePatches : fallbackPatches;
+  if (patchPool.length > 0 && !resolvedGeometricRatios?.appearancePatch384) {
+    const avgPatch = new Array<number>(384).fill(0);
+    for (const p of patchPool) {
+      for (let i = 0; i < 384; i += 1) avgPatch[i] += p[i];
+    }
+    for (let i = 0; i < 384; i += 1) avgPatch[i] /= patchPool.length;
+    const normBlock = (arr: number[], start: number, len: number) => {
+      let sum = 0;
+      for (let i = 0; i < len; i += 1) sum += arr[start + i];
+      const mean = sum / len;
+      let varSum = 0;
+      for (let i = 0; i < len; i += 1) {
+        const d = arr[start + i] - mean;
+        varSum += d * d;
+      }
+      const std = Math.sqrt(varSum / len);
+      if (std > 1e-4) {
+        for (let i = 0; i < len; i += 1) {
+          arr[start + i] = Number(((arr[start + i] - mean) / std).toFixed(4));
+        }
+      }
+    };
+    normBlock(avgPatch, 0, 256);
+    normBlock(avgPatch, 256, 64);
+    normBlock(avgPatch, 320, 64);
+    resolvedGeometricRatios = {
+      ...(resolvedGeometricRatios ?? {
+        eyeToNoseRatio: 1,
+        faceWidthToUpperHeight: 1,
+        mouthToEyeRatio: 1,
+        noseToChinRatio: 1,
+      }),
+      appearancePatch384: avgPatch,
+    };
+  }
+
+  const centerCranio = normalizedSamples
+    .filter(
+      (s) =>
+        s.bucket === 'center' &&
+        Array.isArray(s.geometricRatios?.craniofacialRatios12) &&
+        s.geometricRatios!.craniofacialRatios12!.length === 12,
+    )
+    .map((s) => s.geometricRatios!.craniofacialRatios12!);
+  const fallbackCranio = normalizedSamples
+    .filter(
+      (s) =>
+        Array.isArray(s.geometricRatios?.craniofacialRatios12) &&
+        s.geometricRatios!.craniofacialRatios12!.length === 12,
+    )
+    .map((s) => s.geometricRatios!.craniofacialRatios12!);
+  const cranioPool = centerCranio.length > 0 ? centerCranio : fallbackCranio;
+  if (cranioPool.length > 0 && !resolvedGeometricRatios?.craniofacialRatios12) {
+    const avgCranio = new Array<number>(12).fill(0);
+    for (const c of cranioPool) {
+      for (let i = 0; i < 12; i += 1) avgCranio[i] += c[i];
+    }
+    for (let i = 0; i < 12; i += 1) {
+      avgCranio[i] = Number((avgCranio[i] / cranioPool.length).toFixed(4));
+    }
+    resolvedGeometricRatios = {
+      ...(resolvedGeometricRatios ?? {
+        eyeToNoseRatio: 1,
+        faceWidthToUpperHeight: 1,
+        mouthToEyeRatio: 1,
+        noseToChinRatio: 1,
+      }),
+      craniofacialRatios12: avgCranio,
+    };
+  }
+
   return {
     patientId: meta.patientId ?? '',
     hn: meta.hn ?? '',
@@ -696,7 +830,7 @@ export function buildBiometricProfileFromSamples(
     angle_embeddings,
     exemplar_embeddings: selectedExemplars,
     ...(meta.avatarUrl ? { avatarUrl: meta.avatarUrl } : {}),
-    ...(meta.geometricRatios ? { geometricRatios: meta.geometricRatios } : {}),
+    ...(resolvedGeometricRatios ? { geometricRatios: resolvedGeometricRatios } : {}),
     framesCaptured: normalizedSamples.length,
     qualityScore: meta.qualityScore ?? 0.96,
     updatedAt: new Date().toISOString(),
@@ -787,6 +921,7 @@ export function saveProfileToLocalBiometricVault(profile: BiometricProfile): voi
               faceEmbedding: cleanProfile.master_embedding,
               face_embedding: cleanProfile.master_embedding,
               exemplarEmbeddings: cleanProfile.exemplar_embeddings,
+              ...(cleanProfile.geometricRatios ? { geometricRatios: cleanProfile.geometricRatios } : {}),
               ...(cleanProfile.avatarUrl ? { faceImageUrl: cleanProfile.avatarUrl } : {}),
             };
           }
@@ -1532,6 +1667,10 @@ export async function loadEnrolledPatientsWithBiometrics(
                 master.length >= 768
                   ? BIOMETRIC_ENGINE_ID
                   : (history.biometricEngine as PatientRecord['biometricEngine']),
+              geometricRatios:
+                history.geometricRatios && typeof history.geometricRatios === 'object'
+                  ? (history.geometricRatios as GeometricAnthropometricRatios)
+                  : undefined,
             },
           );
           if (prevCloud) {
@@ -1710,15 +1849,17 @@ export async function fetchLiveBiometricsFromSupabase(
 }
 
 /**
- * Evaluates a live L2-normalized embedding strictly using raw L2 Cosine Similarity & Euclidean Distance
- * across unique stored vectors (`master_embedding`, distinct `angle_embeddings`, and `exemplar_embeddings`)
- * with ZERO artificial score inflation or non-linear curve boosting.
+ * Evaluates a live L2-normalized embedding strictly under Triple-Gate Zero False-Accept Verification:
+ * - Gate 1: Both master_embedding & center satisfy rawCos >= 0.84, centeredCos >= 0.80, L2 <= 0.56,
+ *   plus >= 2 angle centroids >= 0.82.
+ * - Gate 2: Patch ZNCC >= 0.76 & craniofacial deviation <= 0.065 (+ std >= 0.02 when missing patch).
  */
 export function computePatientMatchScore(
   liveEmbedding: readonly number[],
   candidate: EnrolledBiometricCandidate,
   _humanOverride?: Pick<Human, 'match'> | null,
   liveBucket?: keyof AngleEmbeddings5D,
+  probeRatios?: GeometricAnthropometricRatios | null,
 ): PatientMatchScoreResult {
   const liveNorm = normalizeVector(liveEmbedding);
   const expectedDim = liveNorm.length;
@@ -1747,6 +1888,7 @@ export function computePatientMatchScore(
     return {
       candidate,
       bestSim: 0,
+      centeredSimilarity: 0,
       centroidSim: 0,
       exemplarSim: 0,
       humanSim: 0,
@@ -1755,39 +1897,33 @@ export function computePatientMatchScore(
       consensusTop3Avg: 0,
       vectorsAbove073: 0,
       uniqueVectorCount: 0,
+      patchZncc: null,
+      craniofacialDeviation: null,
       passesMultiExemplarGate: false,
+      tripleGateFailureReasons: ['NO_STORED_VECTORS'],
       bestSource: 'none',
     };
   }
 
-  let centroidSim = 0;
-  let bestTargetCos = -1;
-  let bestSource = 'none';
-  const scoredVecs: { cos: number; dist: number; source: string }[] = [];
+  const tg = evaluateTripleGateNeuralCandidate(
+    liveNorm,
+    {
+      masterEmbedding: candidate.master_embedding,
+      angleEmbeddings: candidate.angle_embeddings,
+      exemplarEmbeddings: candidate.exemplar_embeddings,
+      geometricRatios: candidate.geometricRatios ?? candidate.sourceEntry?.geometricRatios ?? null,
+    },
+    probeRatios,
+  );
 
-  for (const item of uniqueStored) {
-    const cos = cosineSimilarityNormalized(liveNorm, item.vec);
-    const dist = euclideanDistanceNormalized(liveNorm, item.vec);
-    scoredVecs.push({ cos, dist, source: item.source });
-    if (
-      item.source === 'master' ||
-      item.source === 'center' ||
-      item.source === 'left' ||
-      item.source === 'right' ||
-      item.source === 'up' ||
-      item.source === 'down'
-    ) {
-      centroidSim = Math.max(centroidSim, cos);
-    }
-    if (cos > bestTargetCos) {
-      bestTargetCos = cos;
-      bestSource = item.source;
-    }
-  }
+  const scoredVecs = uniqueStored
+    .map((item) => ({
+      cos: cosineSimilarityNormalized(liveNorm, item.vec),
+      dist: euclideanDistanceNormalized(liveNorm, item.vec),
+      source: item.source,
+    }))
+    .sort((a, b) => b.cos - a.cos);
 
-  scoredVecs.sort((a, b) => b.cos - a.cos);
-  const bestRawCos = Math.max(0, scoredVecs[0].cos);
-  const minEuclideanDist = scoredVecs[0].dist;
   const k = Math.min(3, scoredVecs.length);
   let topSum = 0;
   for (let i = 0; i < k; i += 1) {
@@ -1795,24 +1931,24 @@ export function computePatientMatchScore(
   }
   const consensusTop3Avg = topSum / k;
   const vectorsAbove073 = scoredVecs.filter((s) => s.cos >= BIOMETRIC_EXEMPLAR_FLOOR_THRESHOLD).length;
-  const bestMasterOrPoseCos = Math.max(bestRawCos, centroidSim);
-  const passesMultiExemplarGate =
-    bestMasterOrPoseCos >= BIOMETRIC_SINGLE_PATIENT_MATCH_THRESHOLD &&
-    (vectorsAbove073 >= 1 || consensusTop3Avg >= BIOMETRIC_SINGLE_PATIENT_MATCH_THRESHOLD);
 
   return {
     candidate,
-    bestSim: bestRawCos,
-    centroidSim: Math.max(0, centroidSim),
+    bestSim: tg.rawCosine,
+    centeredSimilarity: tg.centeredCosine,
+    centroidSim: tg.bestCentroidCosine,
     exemplarSim: consensusTop3Avg,
-    humanSim: bestRawCos,
-    finalScore: bestRawCos,
-    minEuclideanDist,
+    humanSim: tg.rawCosine,
+    finalScore: tg.rawCosine,
+    minEuclideanDist: tg.l2Dist,
     consensusTop3Avg,
     vectorsAbove073,
     uniqueVectorCount: scoredVecs.length,
-    passesMultiExemplarGate,
-    bestSource,
+    patchZncc: tg.patchZncc,
+    craniofacialDeviation: tg.craniofacialDeviation,
+    passesMultiExemplarGate: tg.passed,
+    tripleGateFailureReasons: tg.failureReasons,
+    bestSource: tg.bestAngle,
   };
 }
 
@@ -1821,10 +1957,11 @@ function normalizeNameForIdentity(name: string): string {
 }
 
 /**
- * Calibrated Open-Set 1:N Neural Face Verification:
- * - Gate 1: Raw L2 Cosine Similarity against master_embedding OR best of 5 pose centroids >= 0.64 (or >= 0.60 when 1 patient enrolled) & Euclidean <= 0.90.
- * - Gate 2: Margin >= 0.04 over Rank #2 (`bestCosine - secondBestCosine >= 0.04`, or `bestCosine >= 0.72` with >= 0.02 gap).
- * - Pure true raw cosine percentage ONLY (`cosine * 100`), zero curve inflation.
+ * Zero False-Accept Open-Set 1:N Neural Face Verification (Unified across 1-patient & N-patient DBs):
+ * - Gate 1: Both master_embedding & center satisfy rawCos >= 0.84, centeredCos >= 0.80, L2 <= 0.56,
+ *   plus >= 2 angle centroids >= 0.82.
+ * - Gate 2: Patch ZNCC >= 0.76 & craniofacial deviation <= 0.065 (or std >= 0.02 when missing patch).
+ * - Gate 3: Strict margin >= 0.08 over Rank #2 AND strict margin > 0.08 over 12 Imposter Cohort templates.
  */
 export function evaluateLiveMatch1toN(
   liveEmbedding: readonly number[],
@@ -1832,6 +1969,7 @@ export function evaluateLiveMatch1toN(
   excludedIds: readonly string[] = [],
   humanOverride?: Pick<Human, 'match'> | null,
   liveBucket?: keyof AngleEmbeddings5D,
+  probeRatios?: GeometricAnthropometricRatios | null,
 ): Live1toNMatchEvaluation {
   const excludedSet = new Set(excludedIds);
   const dim = liveEmbedding.length;
@@ -1846,12 +1984,16 @@ export function evaluateLiveMatch1toN(
       topCandidate: null,
       runnerUpCandidate: null,
       topSimilarity: 0,
+      topCenteredSimilarity: 0,
       topCentroidSimilarity: 0,
       topExemplarSimilarity: 0,
       topHumanSimilarity: 0,
       topFinalScore: 0,
       topEuclideanDistance: Number.POSITIVE_INFINITY,
       topConsensusTop3Avg: 0,
+      topPatchZncc: null,
+      topCraniofacialDeviation: null,
+      cohortMargin: 0,
       runnerUpSimilarity: 0,
       runnerUpFinalScore: 0,
       margin: 0,
@@ -1869,12 +2011,16 @@ export function evaluateLiveMatch1toN(
       topCandidate: null,
       runnerUpCandidate: null,
       topSimilarity: 0,
+      topCenteredSimilarity: 0,
       topCentroidSimilarity: 0,
       topExemplarSimilarity: 0,
       topHumanSimilarity: 0,
       topFinalScore: 0,
       topEuclideanDistance: Number.POSITIVE_INFINITY,
       topConsensusTop3Avg: 0,
+      topPatchZncc: null,
+      topCraniofacialDeviation: null,
+      cohortMargin: 0,
       runnerUpSimilarity: 0,
       runnerUpFinalScore: 0,
       margin: 0,
@@ -1887,8 +2033,8 @@ export function evaluateLiveMatch1toN(
   }
 
   const scored = eligible
-    .map((c) => computePatientMatchScore(liveEmbedding, c, humanOverride, liveBucket))
-    .sort((a, b) => b.bestSim - a.bestSim || b.consensusTop3Avg - a.consensusTop3Avg);
+    .map((c) => computePatientMatchScore(liveEmbedding, c, humanOverride, liveBucket, probeRatios))
+    .sort((a, b) => b.bestSim - a.bestSim || b.centeredSimilarity - a.centeredSimilarity || b.consensusTop3Avg - a.consensusTop3Avg);
 
   const top = scored[0];
   const topName = normalizeNameForIdentity(top.candidate.fullName);
@@ -1901,25 +2047,28 @@ export function evaluateLiveMatch1toN(
   const runnerUpFinalScore = runnerUp ? runnerUp.finalScore : 0;
   const margin = runnerUp ? top.bestSim - runnerUp.bestSim : 1;
 
-  const effectiveThreshold =
-    distinctRunners.length === 0
-      ? BIOMETRIC_SINGLE_PATIENT_MATCH_THRESHOLD
-      : BIOMETRIC_MATCH_THRESHOLD;
+  const maxCohortScore = computeMaxImposterCohortScore(liveEmbedding);
+  const cohortMargin = top.bestSim - maxCohortScore;
+  const passesCohort = top.bestSim > maxCohortScore + STRICT_COHORT_MARGIN;
+
+  // Same strict security thresholds regardless of whether 1 patient or 1,000 patients are enrolled
   const passesThreshold =
-    top.bestSim >= effectiveThreshold &&
+    top.bestSim >= BIOMETRIC_MATCH_THRESHOLD &&
+    top.centeredSimilarity >= BIOMETRIC_CENTERED_COSINE_THRESHOLD &&
     top.minEuclideanDist <= BIOMETRIC_MAX_EUCLIDEAN_DISTANCE &&
     top.passesMultiExemplarGate;
-  const passesMargin =
-    distinctRunners.length === 0 ||
-    margin >= BIOMETRIC_MARGIN_THRESHOLD ||
-    (top.bestSim >= BIOMETRIC_HIGH_CONFIDENCE_MARGIN_OVERRIDE && margin >= 0.02);
-  const matched = passesThreshold && passesMargin;
+  const passesMargin = distinctRunners.length === 0 || margin >= BIOMETRIC_MARGIN_THRESHOLD;
+  const matched = passesThreshold && passesCohort && passesMargin;
 
   const reason: Live1toNMatchEvaluation['reason'] = matched
     ? 'OK'
-    : passesThreshold && !passesMargin
-      ? 'AMBIGUOUS_CLOSE_CANDIDATES'
-      : 'BELOW_THRESHOLD';
+    : passesThreshold && !passesCohort
+      ? 'IMPOSTER_COHORT_REJECTED'
+      : passesThreshold && !passesMargin
+        ? 'AMBIGUOUS_CLOSE_CANDIDATES'
+        : top.tripleGateFailureReasons.some((r) => r.includes('LOW_VARIANCE'))
+          ? 'LOW_VARIANCE_REENROLL_REQUIRED'
+          : 'BELOW_THRESHOLD';
 
   const confidencePercent = Number((Math.max(0, Math.min(1, top.bestSim)) * 100).toFixed(1));
 
@@ -1928,12 +2077,16 @@ export function evaluateLiveMatch1toN(
     topCandidate: matched ? top.candidate : null,
     runnerUpCandidate: matched ? (runnerUp?.candidate ?? null) : null,
     topSimilarity: top.bestSim,
+    topCenteredSimilarity: top.centeredSimilarity,
     topCentroidSimilarity: top.centroidSim,
     topExemplarSimilarity: top.exemplarSim,
     topHumanSimilarity: top.humanSim,
     topFinalScore: top.finalScore,
     topEuclideanDistance: top.minEuclideanDist,
     topConsensusTop3Avg: top.consensusTop3Avg,
+    topPatchZncc: top.patchZncc,
+    topCraniofacialDeviation: top.craniofacialDeviation,
+    cohortMargin,
     runnerUpSimilarity: runnerUpSim,
     runnerUpFinalScore,
     margin,

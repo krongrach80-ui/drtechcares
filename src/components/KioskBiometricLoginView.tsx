@@ -24,15 +24,17 @@ import {
   subscribeBiometricIndex,
 } from '../lib/faceMatcher';
 import {
+  BIOMETRIC_CENTERED_COSINE_THRESHOLD,
   BIOMETRIC_ENGINE_ID,
   BIOMETRIC_FINAL_SCORE_THRESHOLD,
   BIOMETRIC_MATCH_THRESHOLD,
   BIOMETRIC_REQUIRED_STREAK,
-  BIOMETRIC_SINGLE_PATIENT_MATCH_THRESHOLD,
   LiveIdentityStreakTracker,
+  REQUIRED_MATCH_STREAK,
   captureCanonicalFaceSnapshot,
   evaluateLiveMatch1toN,
   extractCanonicalFaceDescriptor,
+  extractFacePatchSignature384,
   fetchLiveBiometricsFromSupabase,
   warmupBiometricEngine,
   type EnrolledBiometricCandidate,
@@ -78,7 +80,13 @@ import {
 } from '@drtechcares/face-client';
 import { FacePresenceTracker } from '@drtechcares/kiosk-input';
 import { POSE_INDEX } from '@drtechcares/pose-engine';
-import { purgeLegacyBiometricCache } from '@drtechcares/smart-biometric-core';
+import {
+  STRICT_LOGIN_MAX_PITCH_DEG,
+  STRICT_LOGIN_MAX_YAW_DEG,
+  computeCraniofacialRatios12,
+  purgeLegacyBiometricCache,
+  type GeometricAnthropometricRatios,
+} from '@drtechcares/smart-biometric-core';
 import {
   useEdgeVisionSocket,
   type EdgeKioskTelemetryPayload,
@@ -271,12 +279,15 @@ export interface KioskFaceBoundingBoxOverlay {
 
 /**
  * Resolves Kiosk face bounding-box visual state with strict zero-leak privacy:
- * NEVER returns a candidate name when rawCosine < 0.76 or before the 6/6 streak completes.
+ * NEVER returns a candidate name when rawCosine < 0.84, centeredCosine < 0.80, or before 6/6 streak completes.
  */
 export function resolveKioskFaceBoundingBoxOverlay(params: {
   isSpoof: boolean;
   isBioVerified: boolean;
   rawCosine: number;
+  centeredCosine?: number;
+  hasEvaluatedMatch?: boolean;
+  gatePassed?: boolean;
   streak: number;
   requiredStreak: number;
   confirmedCandidateName: string | null;
@@ -306,10 +317,16 @@ export function resolveKioskFaceBoundingBoxOverlay(params: {
       displayName: null,
     };
   }
-  const required = Math.max(1, params.requiredStreak);
+  const required = Math.max(1, params.requiredStreak || REQUIRED_MATCH_STREAK);
   const clampedStreak = Math.max(0, Math.min(required, params.streak));
+  const centeredOk =
+    params.centeredCosine === undefined ||
+    params.centeredCosine >= BIOMETRIC_CENTERED_COSINE_THRESHOLD;
+  const gate1Ok = params.rawCosine >= BIOMETRIC_MATCH_THRESHOLD && centeredOk;
+
   if (
-    params.rawCosine >= 0.76 &&
+    gate1Ok &&
+    params.gatePassed !== false &&
     clampedStreak >= required &&
     params.confirmedCandidateName &&
     !params.isAmbiguous
@@ -326,21 +343,37 @@ export function resolveKioskFaceBoundingBoxOverlay(params: {
       displayName: params.confirmedCandidateName,
     };
   }
-  if (params.rawCosine >= 0.60 && clampedStreak >= 1 && !params.isAmbiguous) {
+  if (gate1Ok && params.gatePassed !== false && clampedStreak >= 1 && !params.isAmbiguous) {
     return {
       variant: 'CONFIRMING',
       boxColor: 'blue',
-      label: `⏳ กำลังยืนยันตัวตน... (${clampedStreak}/${required})`,
+      label: `🔍 กำลังตรวจสอบใบหน้า... (${clampedStreak}/${required})`,
       subLabel: `ระยะ ${(params.distanceM ?? 1.8).toFixed(1)} ม.`,
+      displayName: null,
+    };
+  }
+  if (params.isAmbiguous) {
+    return {
+      variant: 'UNREGISTERED',
+      boxColor: 'amber',
+      label: '⚠️ พบใบหน้าใกล้เคียงหลายคน — กรุณาขยับเข้าใกล้กล้อง',
+      subLabel: null,
+      displayName: null,
+    };
+  }
+  if (params.hasEvaluatedMatch && (!gate1Ok || params.gatePassed === false)) {
+    return {
+      variant: 'UNREGISTERED',
+      boxColor: 'rose',
+      label: '❌ ไม่พบบัญชีที่ตรงกับใบหน้านี้ (กรุณาลงทะเบียนคนไข้ใหม่ก่อนใช้งาน)',
+      subLabel: null,
       displayName: null,
     };
   }
   return {
     variant: 'UNREGISTERED',
     boxColor: 'amber',
-    label: params.isAmbiguous
-      ? '⚠️ พบใบหน้าใกล้เคียงหลายคน — กรุณาขยับเข้าใกล้กล้อง'
-      : '🔍 กำลังตรวจสอบใบหน้า...',
+    label: `🔍 กำลังตรวจสอบใบหน้า... (${clampedStreak}/${required})`,
     subLabel: null,
     displayName: null,
   };
@@ -543,7 +576,8 @@ export function isFullFrontalFaceReadyForLogin(
   }
   if (
     inspection.error_code === 'OBSTRUCTED_EYES' ||
-    inspection.error_code === 'OBSTRUCTED_MOUTH'
+    inspection.error_code === 'OBSTRUCTED_MOUTH' ||
+    inspection.error_code === 'BLURRY'
   ) {
     return false;
   }
@@ -569,8 +603,11 @@ export function isFullFrontalFaceReadyForLogin(
     return false;
   }
 
-  // Allow natural slight head turn / tilt (up to ±40° yaw, ±35° pitch) matching 5-angle bank
-  if (Math.abs(liveness.yawDeg) > 40 || Math.abs(liveness.pitchDeg) > 35) {
+  // Strict frontal pose requirement for Kiosk login (|yaw| <= 14 deg, |pitch| <= 14 deg)
+  if (
+    Math.abs(liveness.yawDeg) > STRICT_LOGIN_MAX_YAW_DEG ||
+    Math.abs(liveness.pitchDeg) > STRICT_LOGIN_MAX_PITCH_DEG
+  ) {
     return false;
   }
 
@@ -1145,8 +1182,10 @@ export function KioskBiometricLoginView({
     totalAccounts: number;
     legacyAccounts: number;
     syncedFromSupabase?: boolean;
+    hasEvaluatedMatch?: boolean;
     topName: string | null;
     topPct: number;
+    centeredPct?: number;
     runnerUpName: string | null;
     runnerUpPct: number;
     streak: number;
@@ -1246,8 +1285,14 @@ export function KioskBiometricLoginView({
   const [ambiguousCloseHint, setAmbiguousCloseHint] = useState(false);
   const mirroredRef = useRef(mirrored);
   mirroredRef.current = mirrored;
+  const lastCandidatesSyncAtRef = useRef<number>(0);
 
-  const refreshBiometricCandidates = useCallback(async () => {
+  const refreshBiometricCandidates = useCallback(async (force = false) => {
+    const now = Date.now();
+    if (!force && lastCandidatesSyncAtRef.current > 0 && now - lastCandidatesSyncAtRef.current < 15_000) {
+      return;
+    }
+    lastCandidatesSyncAtRef.current = now;
     try {
       const loaded = await fetchLiveBiometricsFromSupabase(apiClient);
       biometricCandidatesRef.current = loaded.compatibleCandidates;
@@ -1299,7 +1344,7 @@ export function KioskBiometricLoginView({
 
   useEffect(() => {
     return subscribeBiometricIndex(apiClient, () => {
-      void refreshBiometricCandidates();
+      void refreshBiometricCandidates(false);
     });
   }, [apiClient, refreshBiometricCandidates]);
 
@@ -1697,7 +1742,33 @@ export function KioskBiometricLoginView({
               params.snapVideoH,
             );
             const canonicalYawDeg = -params.snapYawDeg;
-            const geometricRatios = extractGeometricAnthropometricRatios(params.snapLandmarks);
+            // Re-verify strict frontal pose gate on snapshot before matching
+            if (
+              Math.abs(canonicalYawDeg) > STRICT_LOGIN_MAX_YAW_DEG ||
+              Math.abs(params.snapPitchDeg) > STRICT_LOGIN_MAX_PITCH_DEG
+            ) {
+              streakTrackerRef.current.reset();
+              setBurstCount(0);
+              setLiveMatchHud(null);
+              return;
+            }
+            const rawGeom = extractGeometricAnthropometricRatios(params.snapLandmarks);
+            const patch384 = extractFacePatchSignature384(params.snapCanvas);
+            const ratios12 = computeCraniofacialRatios12(
+              params.snapLandmarks,
+              (params.snapVideoW || 1280) / (params.snapVideoH || 720),
+            );
+            const geometricRatios: GeometricAnthropometricRatios | undefined =
+              rawGeom || patch384 || ratios12
+                ? {
+                    eyeToNoseRatio: rawGeom?.eyeToNoseRatio ?? 1,
+                    faceWidthToUpperHeight: rawGeom?.faceWidthToUpperHeight ?? 1,
+                    mouthToEyeRatio: rawGeom?.mouthToEyeRatio ?? 1,
+                    noseToChinRatio: rawGeom?.noseToChinRatio ?? 1,
+                    ...(patch384 ? { appearancePatch384: patch384 } : {}),
+                    ...(ratios12 ? { craniofacialRatios12: ratios12 } : {}),
+                  }
+                : undefined;
             const livenessEvidence = {
               biologicalVerified: params.snapBioVerified,
               blinkCount: params.snapBioBlinkCount,
@@ -1772,6 +1843,9 @@ export function KioskBiometricLoginView({
                 extracted.embedding,
                 candidates,
                 excludedPatientIdsRef.current,
+                undefined,
+                undefined,
+                geometricRatios,
               );
               const stepRes = streakTrackerRef.current.step(evalRes, {
                 spoofDetected: params.snapIsSpoof,
@@ -1779,6 +1853,7 @@ export function KioskBiometricLoginView({
               });
 
               const topPct = Number((evalRes.topSimilarity * 100).toFixed(1));
+              const centeredPct = Number((evalRes.topCenteredSimilarity * 100).toFixed(1));
               const runnerUpPct = Number((evalRes.runnerUpSimilarity * 100).toFixed(1));
               const isAmbiguous = evalRes.reason === 'AMBIGUOUS_CLOSE_CANDIDATES';
               isLastVerifyAmbiguous = isAmbiguous;
@@ -1787,13 +1862,17 @@ export function KioskBiometricLoginView({
                   stepRes.candidate &&
                   !isAmbiguous &&
                   evalRes.matched &&
-                  evalRes.topSimilarity >= BIOMETRIC_SINGLE_PATIENT_MATCH_THRESHOLD,
+                  evalRes.topSimilarity >= BIOMETRIC_MATCH_THRESHOLD &&
+                  evalRes.topCenteredSimilarity >= BIOMETRIC_CENTERED_COSINE_THRESHOLD,
               );
 
               const nextOverlay = resolveKioskFaceBoundingBoxOverlay({
                 isSpoof: params.snapIsSpoof,
                 isBioVerified: params.snapBioVerified,
                 rawCosine: evalRes.topSimilarity,
+                centeredCosine: evalRes.topCenteredSimilarity,
+                hasEvaluatedMatch: true,
+                gatePassed: evalRes.matched,
                 streak: stepRes.streak,
                 requiredStreak: stepRes.requiredStreak,
                 confirmedCandidateName:
@@ -1812,14 +1891,16 @@ export function KioskBiometricLoginView({
                 validAccounts: evalRes.validAccounts,
                 totalAccounts: counts.total,
                 legacyAccounts: counts.legacy,
-                // Strict privacy rule: never expose any candidate name while < 0.76 or < 6/6 streak
+                hasEvaluatedMatch: true,
+                // Strict zero-leak rule: never expose any candidate name while < 0.84 or < 6/6 streak
                 topName: isConfirmedReady && stepRes.candidate ? stepRes.candidate.fullName : null,
                 topPct,
+                centeredPct,
                 runnerUpName: null,
                 runnerUpPct,
                 streak: stepRes.streak,
                 requiredStreak: stepRes.requiredStreak,
-                reason: stepRes.reason,
+                reason: evalRes.matched ? stepRes.reason : evalRes.reason,
               });
               setBurstCount(stepRes.streak);
               setAmbiguousCloseHint(isAmbiguous);
@@ -1895,7 +1976,7 @@ export function KioskBiometricLoginView({
                   } else if (
                     verifyRes.matched &&
                     verifyRes.patient &&
-                    verifyRes.confidencePercent >= 60 &&
+                    verifyRes.confidencePercent >= 84 &&
                     !excludedPatientIdsRef.current.includes(verifyRes.patient.id)
                   ) {
                     didAuthenticate = true;
@@ -1913,20 +1994,9 @@ export function KioskBiometricLoginView({
                     });
                     openVerifiedModal(nextPayload);
                     return;
-                  } else if (verifyRes.error === 'AMBIGUOUS_CLOSE_CANDIDATES') {
-                    serverRejected = true;
                   } else {
-                    // Worker isolate may have cold-started while Supabase was down (HTTP 544);
-                    // allow verified local vault / drtech_patients match if not tombstoned as deleted.
-                    const deletedTombstones = DrTechCaresApiClient.readDeletedTombstones?.() ?? new Set<string>();
-                    const isDeleted =
-                      deletedTombstones.has(cand.patientId.toLowerCase()) ||
-                      (cand.hn ? deletedTombstones.has(cand.hn.toLowerCase()) : false);
-                    if (isDeleted) {
-                      serverRejected = true;
-                    } else {
-                      verifyNetworkFailed = true;
-                    }
+                    // Explicit server rejection (matched: false / 401 / AMBIGUOUS_CLOSE_CANDIDATES) MUST NEVER fall through to local login!
+                    serverRejected = true;
                   }
                 } catch {
                   verifyNetworkFailed = true;
@@ -1939,7 +2009,7 @@ export function KioskBiometricLoginView({
                   }
                 }
 
-                // Local offline / DB-degraded fallback when Worker couldn't verify yet and patient exists locally
+                // Local offline-only fallback strictly when Worker HTTP call itself failed/timed out AND all 3 local Triple-Gates passed 6/6
                 if (
                   verifyNetworkFailed &&
                   !serverRejected &&
@@ -1949,7 +2019,8 @@ export function KioskBiometricLoginView({
                   params.snapBioVerified &&
                   !params.snapIsSpoof &&
                   evalRes.matched &&
-                  evalRes.topSimilarity >= BIOMETRIC_SINGLE_PATIENT_MATCH_THRESHOLD &&
+                  evalRes.topSimilarity >= BIOMETRIC_MATCH_THRESHOLD &&
+                  evalRes.topCenteredSimilarity >= BIOMETRIC_CENTERED_COSINE_THRESHOLD &&
                   evalRes.topFinalScore >= BIOMETRIC_FINAL_SCORE_THRESHOLD &&
                   stepRes.streak >= BIOMETRIC_REQUIRED_STREAK &&
                   !excludedPatientIdsRef.current.includes(cand.patientId)
@@ -2735,19 +2806,22 @@ export function KioskBiometricLoginView({
                   !isFrameSpoof && isFullFrontalFaceReadyForLogin(landmarks, liveness, inspection);
                 if (!faceReadyForLogin) {
                   unreadyFrameStreak += 1;
+                  // Immediately wipe matchStreak when head leaves +/-14° frontal window, frame blurs, or spoof is flagged
+                  if (!verifyingLockRef.current && !asyncMatchInFlight) {
+                    streakTrackerRef.current.reset();
+                    setBurstCount(0);
+                    setLiveMatchHud(null);
+                    setTurningHintPct(null);
+                  }
                   if (
                     (isFrameSpoof || unreadyFrameStreak >= 18) &&
                     !verifyingLockRef.current &&
                     !asyncMatchInFlight
                   ) {
-                    streakTrackerRef.current.reset();
                     bioVerifiedUnmatchedStartAt = 0;
                     isLastVerifyAmbiguous = false;
-                    setBurstCount(0);
-                    setLiveMatchHud(null);
                     liveOverlayRef.current = null;
                     setLiveOverlay(null);
-                    setTurningHintPct(null);
                     setAmbiguousCloseHint(false);
                     setScanStage('scanning');
                   }
@@ -3168,7 +3242,7 @@ export function KioskBiometricLoginView({
                       <div>rPPG: {Math.round((bioReport?.rppgScore ?? 0) * 100)}%</div>
                       <div>Burst: {burstCount}/{BIOMETRIC_REQUIRED_STREAK}</div>
                     </div>
-                    {lastVerifyResult?.matched && lastVerifyResult.confidencePercent >= 76 && lastVerifyResult?.topCandidate && (
+                    {lastVerifyResult?.matched && lastVerifyResult.confidencePercent >= 84 && lastVerifyResult?.topCandidate && (
                       <div className="text-[10px] text-emerald-300 pt-1 border-t border-slate-800">
                         Top: {lastVerifyResult.topCandidate.patientName ?? lastVerifyResult.topCandidate.patientId} (
                         {lastVerifyResult.confidencePercent}%)
@@ -3191,6 +3265,12 @@ export function KioskBiometricLoginView({
                           isSpoof,
                           isBioVerified,
                           rawCosine: (liveDebugHud?.topPct ?? 0) / 100,
+                          centeredCosine:
+                            liveDebugHud?.centeredPct !== undefined
+                              ? liveDebugHud.centeredPct / 100
+                              : undefined,
+                          hasEvaluatedMatch: Boolean(liveDebugHud?.hasEvaluatedMatch),
+                          gatePassed: Boolean(liveDebugHud?.topName),
                           streak: burstCount,
                           requiredStreak: BIOMETRIC_REQUIRED_STREAK,
                           confirmedCandidateName:
@@ -3348,11 +3428,15 @@ export function KioskBiometricLoginView({
                 </span>
               ) : liveDebugHud && liveDebugHud.streak > 0 ? (
                 <span className="text-blue-200">
-                  ⏳ กำลังยืนยันตัวตน... ({liveDebugHud.streak}/{liveDebugHud.requiredStreak})
+                  🔍 กำลังตรวจสอบใบหน้า... ({liveDebugHud.streak}/{liveDebugHud.requiredStreak})
+                </span>
+              ) : liveDebugHud?.hasEvaluatedMatch ? (
+                <span className="text-rose-300 font-bold">
+                  ❌ ไม่พบบัญชีที่ตรงกับใบหน้านี้ (กรุณาลงทะเบียนคนไข้ใหม่ก่อนใช้งาน)
                 </span>
               ) : (
                 <span className="text-slate-300">
-                  🔍 กำลังตรวจสอบใบหน้า... [0/{BIOMETRIC_REQUIRED_STREAK}]
+                  🔍 กำลังตรวจสอบใบหน้า... (0/{BIOMETRIC_REQUIRED_STREAK})
                 </span>
               )}
             </div>

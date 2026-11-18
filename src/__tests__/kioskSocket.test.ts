@@ -2952,13 +2952,13 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(neckRes.romDeg!).toBeGreaterThanOrEqual(21);
   });
 
-  it('never leaks candidate name on Kiosk bounding box below 0.60 or before 3/3 streak completes', () => {
+  it('never leaks candidate name on Kiosk bounding box below 0.84 or before 6/6 streak completes', () => {
     const unknownState = resolveKioskFaceBoundingBoxOverlay({
       isSpoof: false,
       isBioVerified: true,
       rawCosine: 0.52,
       streak: 0,
-      requiredStreak: 3,
+      requiredStreak: 6,
       confirmedCandidateName: 'สมชาย ใจดี',
       confirmedCandidateHn: 'HN-75127',
     });
@@ -2971,24 +2971,24 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     const confirmingState = resolveKioskFaceBoundingBoxOverlay({
       isSpoof: false,
       isBioVerified: true,
-      rawCosine: 0.72,
+      rawCosine: 0.88,
       streak: 2,
-      requiredStreak: 3,
+      requiredStreak: 6,
       confirmedCandidateName: 'สมชาย ใจดี',
       confirmedCandidateHn: 'HN-75127',
     });
     expect(confirmingState.variant).toBe('CONFIRMING');
     expect(confirmingState.boxColor).toBe('blue');
     expect(confirmingState.displayName).toBeNull();
-    expect(confirmingState.label).toContain('กำลังยืนยันตัวตน... (2/3)');
+    expect(confirmingState.label).toContain('กำลังตรวจสอบใบหน้า... (2/6)');
     expect(confirmingState.label).not.toContain('สมชาย');
 
     const verifiedState = resolveKioskFaceBoundingBoxOverlay({
       isSpoof: false,
       isBioVerified: true,
-      rawCosine: 0.89,
-      streak: 3,
-      requiredStreak: 3,
+      rawCosine: 0.91,
+      streak: 6,
+      requiredStreak: 6,
       confirmedCandidateName: 'สมชาย ใจดี',
       confirmedCandidateHn: 'HN-75127',
     });

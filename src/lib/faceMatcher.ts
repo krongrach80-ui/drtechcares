@@ -6,12 +6,28 @@ import {
   CANONICAL_HUMAN_FACE_BASELINE_512,
   COMMON_MODE_ALPHA,
   FACE_EMBEDDING_DIM,
+  IMPOSTER_COHORT_VECTORS,
+  REQUIRED_MATCH_STREAK,
+  STRICT_CENTERED_COSINE_THRESHOLD,
+  STRICT_COHORT_MARGIN,
+  STRICT_DISTINCTIVENESS_MARGIN,
+  STRICT_MAX_EUCLIDEAN_DISTANCE,
+  STRICT_MIN_CENTROID_COSINE,
+  STRICT_PATCH_ZNCC_THRESHOLD,
+  STRICT_RAW_COSINE_THRESHOLD,
   classifyLivePoseZone,
   computeArcFaceBiometricScore,
+  computeCraniofacialRatios12,
   computeDualFactorBiometricScore,
+  computeMaxImposterCohortScore,
   computeMeanCenteredVector,
+  computePatchZnccScore,
+  computeVectorStd,
   cosineSimilarity as coreCosineSimilarity,
   detectBiometricVectorEngine,
+  evaluateAppearanceAndCraniofacialGate,
+  evaluateTripleGateNeuralCandidate,
+  getImposterCohortVectors,
   isLegacyV1HybridVector,
   l2Normalize,
   mirrorPoseZone,
@@ -19,7 +35,16 @@ import {
   type BiometricVectorEngine,
   type FacePoseZone5,
   type GeometricAnthropometricRatios,
+  type TripleGateResult,
 } from '@drtechcares/smart-biometric-core';
+
+export {
+  IMPOSTER_COHORT_VECTORS,
+  REQUIRED_MATCH_STREAK,
+  computeCraniofacialRatios12,
+  computePatchZnccScore,
+  getImposterCohortVectors,
+};
 
 export interface MultiAngleMatchOptions {
   similarityThreshold?: number;
@@ -29,7 +54,7 @@ export interface MultiAngleMatchOptions {
   yawDeg?: number;
   pitchDeg?: number;
   rollDeg?: number;
-  engine?: 'arcface-onnx' | 'hybrid-512d';
+  engine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
   mirroredProbeVector?: readonly number[];
   hybridV2ProbeVector?: readonly number[];
   mirroredHybridV2ProbeVector?: readonly number[];
@@ -45,10 +70,22 @@ export interface MultiAngleMatchResult {
   bestAngle: 'master' | 'center' | 'left' | 'right' | 'up' | 'down' | 'extra' | 'none';
   livePoseZone?: FacePoseZone5;
   similarity: number;
+  centeredSimilarity?: number;
+  l2Distance?: number;
+  patchZncc?: number | null;
+  craniofacialDeviation?: number | null;
+  cohortMargin?: number;
   confidencePercent: number;
   margin: number;
   runnerUpSimilarity: number;
-  reason?: 'OK' | 'NO_CANDIDATES' | 'EXCLUDED_ONLY' | 'BELOW_THRESHOLD' | 'AMBIGUOUS_CLOSE_CANDIDATES';
+  reason?:
+    | 'OK'
+    | 'NO_CANDIDATES'
+    | 'EXCLUDED_ONLY'
+    | 'BELOW_THRESHOLD'
+    | 'AMBIGUOUS_CLOSE_CANDIDATES'
+    | 'IMPOSTER_COHORT_REJECTED'
+    | 'LOW_VARIANCE_REENROLL_REQUIRED';
 }
 
 export interface FaceBoundingBox {
@@ -115,15 +152,14 @@ export function cosineSimilarity(a: readonly number[], b: readonly number[]): nu
   return denom > 0 ? Math.max(-1, Math.min(1, dot / denom)) : 0;
 }
 
-export const FACE_MATCHER_RAW_COSINE_THRESHOLD = 0.64;
-export const FACE_MATCHER_SINGLE_CANDIDATE_COSINE_THRESHOLD = 0.60;
-export const FACE_MATCHER_HIGH_CONFIDENCE_MARGIN_OVERRIDE = 0.72;
-export const FACE_MATCHER_MAX_EUCLIDEAN_DISTANCE = 0.90;
-export const FACE_MATCHER_EXEMPLAR_FLOOR = 0.60;
-export const FACE_MATCHER_MARGIN_THRESHOLD = 0.04;
-export const FACE_MATCHER_REQUIRED_STREAK = 3;
-export const FACE_MATCHER_MIN_STREAK_FRAME_COS = 0.60;
-export const FACE_MATCHER_MAX_SCORE_VARIANCE = 0.12;
+export const FACE_MATCHER_RAW_COSINE_THRESHOLD = STRICT_RAW_COSINE_THRESHOLD;
+export const FACE_MATCHER_CENTERED_COSINE_THRESHOLD = STRICT_CENTERED_COSINE_THRESHOLD;
+export const FACE_MATCHER_MAX_EUCLIDEAN_DISTANCE = STRICT_MAX_EUCLIDEAN_DISTANCE;
+export const FACE_MATCHER_EXEMPLAR_FLOOR = STRICT_MIN_CENTROID_COSINE;
+export const FACE_MATCHER_MARGIN_THRESHOLD = STRICT_DISTINCTIVENESS_MARGIN;
+export const FACE_MATCHER_REQUIRED_STREAK = REQUIRED_MATCH_STREAK;
+export const FACE_MATCHER_MIN_STREAK_FRAME_COS = STRICT_RAW_COSINE_THRESHOLD;
+export const FACE_MATCHER_MAX_SCORE_VARIANCE = 0.08;
 
 export function euclideanDistanceNormalized(
   a: readonly number[],
@@ -180,23 +216,40 @@ function evaluateCandidateExemplarConsensus(
     return { uniqueCount: 0, floorPassCount: 0, requiredCount: 1, topAvg: 0, passed: false };
   }
 
+  // For neural engines (`human-faceres-1024d`, `arcface-onnx`), `evaluateTripleGateNeuralCandidate`
+  // enforces strict >= 2 centroids >= 0.82. For `hybrid-512d` (`v2`/`v1`), evaluate dual-factor
+  // invariance (immune to 0..255 clothing/border flips) with strict top-centroid >= 0.84 or dual >= 0.75.
+  const candEngine = detectBiometricVectorEngine(uniqueVectors[0], candidate.biometricEngine);
   const sims = uniqueVectors
     .map((vec) => {
       let best = -1;
       for (const p of probes) {
-        const c = cosineSimilarity(p, vec);
-        if (c > best) best = c;
+        const rawC = cosineSimilarity(p, vec);
+        const eff =
+          candEngine === 'hybrid-v2' || candEngine === 'legacy-v1'
+            ? Math.max(
+                rawC,
+                computeDualFactorBiometricScore(p, vec, { candidateRatios: candidate.geometricRatios })
+                  .dualFactorScore,
+              )
+            : rawC;
+        if (eff > best) best = eff;
       }
       return best;
     })
     .sort((a, b) => b - a);
 
-  const requiredCount = uniqueVectors.length >= 3 ? 3 : uniqueVectors.length;
-  const floorPassCount = sims.filter((s) => s >= FACE_MATCHER_EXEMPLAR_FLOOR).length;
+  const requiredCount = uniqueVectors.length >= 2 ? 2 : uniqueVectors.length;
+  const isNeuralCand = candEngine === 'human-faceres-1024d' || candEngine === 'arcface-onnx';
+  const secondaryFloor = isNeuralCand ? FACE_MATCHER_EXEMPLAR_FLOOR : 0.75;
+  const floorPassCount = sims.filter((s) => s >= secondaryFloor).length;
   const topSlice = sims.slice(0, requiredCount);
   const topAvg = topSlice.reduce((acc, v) => acc + v, 0) / Math.max(1, topSlice.length);
   const passed =
-    floorPassCount >= requiredCount && topAvg >= FACE_MATCHER_RAW_COSINE_THRESHOLD;
+    floorPassCount >= requiredCount &&
+    (isNeuralCand
+      ? topAvg >= FACE_MATCHER_RAW_COSINE_THRESHOLD
+      : (sims[0] ?? 0) >= 0.78 && topAvg >= 0.76);
 
   return {
     uniqueCount: uniqueVectors.length,
@@ -354,6 +407,8 @@ export function identifyPatient1toN(
     bestInnerDctWhite: number;
     bestInnerPatchCos: number;
     bestInnerPatchWhite: number;
+    tripleGate: TripleGateResult | null;
+    cohortMaxScore: number;
   }[] = [];
 
   for (let orderIdx = 0; orderIdx < eligibleCandidates.length; orderIdx += 1) {
@@ -405,33 +460,36 @@ export function identifyPatient1toN(
     let bestInnerDctWhite = 0;
     let bestInnerPatchCos = 0;
     let bestInnerPatchWhite = 0;
+    let bestTripleGate: TripleGateResult | null = null;
+    let bestCohortMaxScore = 0;
 
     if (candEngine === 'human-faceres-1024d') {
-      const checkVec = (
-        vec: readonly number[] | undefined,
-        angleLabel: 'master' | 'center' | 'left' | 'right' | 'up' | 'down' | 'extra',
-      ) => {
-        if (!Array.isArray(vec) || vec.length !== normalizedProbe.length) return;
-        const normVec = l2Normalize(vec);
-        for (const variant of activeVariants) {
-          const sim = cosineSimilarity(variant.vec, normVec);
-          if (sim > bestVariantScore) {
-            bestVariantScore = sim;
-            bestRawSim = sim;
-            bestEuclidDist = euclideanDistanceNormalized(variant.vec, normVec);
-            bestMeanCenteredSim = sim;
-            bestWhitenedSim = sim;
-            bestAngle = angleLabel;
-          }
+      for (const variant of activeVariants) {
+        const tg = evaluateTripleGateNeuralCandidate(
+          variant.vec,
+          {
+            masterEmbedding: cand.masterEmbedding,
+            angleEmbeddings: cand.angleEmbeddings,
+            exemplarEmbeddings: cand.exemplarEmbeddings,
+            geometricRatios: cand.geometricRatios,
+          },
+          options.geometricRatios,
+        );
+        const cohortMax = computeMaxImposterCohortScore(variant.vec);
+        const better =
+          !bestTripleGate ||
+          (tg.passed && !bestTripleGate.passed) ||
+          (tg.passed === bestTripleGate.passed && tg.rawCosine > bestTripleGate.rawCosine);
+        if (better) {
+          bestTripleGate = tg;
+          bestCohortMaxScore = cohortMax;
+          bestVariantScore = tg.rawCosine;
+          bestRawSim = tg.rawCosine;
+          bestEuclidDist = tg.l2Dist;
+          bestMeanCenteredSim = tg.centeredCosine;
+          bestWhitenedSim = tg.centeredCosine;
+          bestAngle = tg.bestAngle;
         }
-      };
-      checkVec(cand.masterEmbedding, 'master');
-      const zones: FacePoseZone5[] = ['center', 'left', 'right', 'up', 'down'];
-      for (const z of zones) {
-        checkVec(cand.angleEmbeddings?.[z], z);
-      }
-      for (const ex of cand.exemplarEmbeddings ?? []) {
-        checkVec(ex, 'extra');
       }
     } else if (candEngine === 'arcface-onnx') {
       for (const variant of activeVariants) {
@@ -453,6 +511,17 @@ export function identifyPatient1toN(
               candidateRatios: cand.geometricRatios,
             })
           : null;
+        const tg = evaluateTripleGateNeuralCandidate(
+          variant.vec,
+          {
+            masterEmbedding: cand.masterEmbedding,
+            angleEmbeddings: cand.angleEmbeddings,
+            exemplarEmbeddings: cand.exemplarEmbeddings,
+            geometricRatios: cand.geometricRatios,
+          },
+          options.geometricRatios,
+        );
+        const cohortMax = computeMaxImposterCohortScore(variant.vec);
         const arcScore =
           sameZoneArc && masterArc
             ? 0.55 * sameZoneArc.score + 0.45 * masterArc.score
@@ -463,17 +532,13 @@ export function identifyPatient1toN(
             : 'master';
         if (arcScore > bestVariantScore) {
           bestVariantScore = arcScore;
+          bestTripleGate = tg;
+          bestCohortMaxScore = cohortMax;
           bestAngle = chosenAngle;
-          bestRawSim = Math.max(sameZoneArc?.rawCos ?? 0, masterArc?.rawCos ?? 0);
-          const dominantVec =
-            (sameZoneArc?.rawCos ?? -1) >= (masterArc?.rawCos ?? -1)
-              ? sameZoneVec
-              : masterVec;
-          bestEuclidDist = dominantVec
-            ? euclideanDistanceNormalized(variant.vec, dominantVec)
-            : Number.POSITIVE_INFINITY;
-          bestMeanCenteredSim = bestRawSim;
-          bestWhitenedSim = bestRawSim;
+          bestRawSim = tg.rawCosine;
+          bestEuclidDist = tg.l2Dist;
+          bestMeanCenteredSim = tg.centeredCosine;
+          bestWhitenedSim = tg.centeredCosine;
           bestGeomPenalty = Math.max(
             sameZoneArc?.geometricPenalty ?? 0,
             masterArc?.geometricPenalty ?? 0,
@@ -500,6 +565,17 @@ export function identifyPatient1toN(
               candidateRatios: cand.geometricRatios,
             })
           : null;
+        const tg = evaluateTripleGateNeuralCandidate(
+          variant.vec,
+          {
+            masterEmbedding: cand.masterEmbedding,
+            angleEmbeddings: cand.angleEmbeddings,
+            exemplarEmbeddings: cand.exemplarEmbeddings,
+            geometricRatios: cand.geometricRatios,
+          },
+          options.geometricRatios,
+        );
+        const cohortMax = computeMaxImposterCohortScore(variant.vec);
 
         let dualScore = 0;
         let dominantDual = sameZoneDual ?? masterDual!;
@@ -521,6 +597,8 @@ export function identifyPatient1toN(
 
         if (dualScore > bestVariantScore) {
           bestVariantScore = dualScore;
+          bestTripleGate = tg;
+          bestCohortMaxScore = cohortMax;
           bestAngle = chosenAngle;
           bestRawSim = dominantDual.rawCos;
           const dominantVec = dominantDual === sameZoneDual ? sameZoneVec : masterVec;
@@ -576,6 +654,8 @@ export function identifyPatient1toN(
         bestInnerDctWhite,
         bestInnerPatchCos,
         bestInnerPatchWhite,
+        tripleGate: bestTripleGate,
+        cohortMaxScore: bestCohortMaxScore,
       });
     }
   }
@@ -611,24 +691,14 @@ export function identifyPatient1toN(
     scored.filter((s) => s.engine !== 'arcface-onnx' && s.engine !== 'human-faceres-1024d'),
   );
 
-  const distinctEligibleCount = new Set(
-    eligibleCandidates.map((c) => normalizePatientFullName(c.fullName) || c.patientId),
-  ).size;
-  const rawCosineThreshold =
-    options.similarityThreshold ??
-    (distinctEligibleCount <= 1
-      ? FACE_MATCHER_SINGLE_CANDIDATE_COSINE_THRESHOLD
-      : FACE_MATCHER_RAW_COSINE_THRESHOLD);
+  // Strict single threshold across 1-patient and 1,000-patient databases (zero single-patient loophole)
+  const rawCosineThreshold = options.similarityThreshold ?? FACE_MATCHER_RAW_COSINE_THRESHOLD;
 
-  const passesCalibratedMargin = (
-    topSim: number,
+  const passesStrictMargin = (
     margin: number,
     distinctRunnerCount: number,
     minMargin = marginThreshold,
-  ): boolean =>
-    distinctRunnerCount === 0 ||
-    margin >= minMargin ||
-    (topSim >= FACE_MATCHER_HIGH_CONFIDENCE_MARGIN_OVERRIDE && margin >= 0.02);
+  ): boolean => distinctRunnerCount === 0 || margin >= minMargin;
 
   const evalHumanPool = () => {
     const top = humanPool[0];
@@ -639,22 +709,26 @@ export function identifyPatient1toN(
     const runnerUp = distinctRunners[0];
     const runnerUpSim = runnerUp ? runnerUp.rawSim : 0;
     const margin = runnerUp ? top.rawSim - runnerUp.rawSim : 1;
+    const cohortMargin = top.rawSim - top.cohortMaxScore;
+    const passesCohort = top.rawSim > top.cohortMaxScore + STRICT_COHORT_MARGIN;
     const passesThreshold =
+      Boolean(top.tripleGate?.passed) &&
       top.rawSim >= rawCosineThreshold &&
+      top.meanCenteredSim >= FACE_MATCHER_CENTERED_COSINE_THRESHOLD &&
       top.euclidDist <= FACE_MATCHER_MAX_EUCLIDEAN_DISTANCE;
-    const passesMargin = passesCalibratedMargin(
-      top.rawSim,
-      margin,
-      distinctRunners.length,
-    );
-    const matched = passesThreshold && passesMargin;
+    const passesMargin = passesStrictMargin(margin, distinctRunners.length);
+    const matched = passesThreshold && passesCohort && passesMargin;
     const reason: MultiAngleMatchResult['reason'] = matched
       ? 'OK'
-      : passesThreshold && !passesMargin
-        ? 'AMBIGUOUS_CLOSE_CANDIDATES'
-        : 'BELOW_THRESHOLD';
+      : passesThreshold && !passesCohort
+        ? 'IMPOSTER_COHORT_REJECTED'
+        : passesThreshold && !passesMargin
+          ? 'AMBIGUOUS_CLOSE_CANDIDATES'
+          : top.tripleGate?.failureReasons.some((r) => r.includes('LOW_VARIANCE'))
+            ? 'LOW_VARIANCE_REENROLL_REQUIRED'
+            : 'BELOW_THRESHOLD';
     const displayPercent = Number(Math.max(0, Math.min(100, top.rawSim * 100)).toFixed(1));
-    return { top, runnerUpSim, margin, matched, reason, displayPercent };
+    return { top, runnerUpSim, margin, cohortMargin, matched, reason, displayPercent };
   };
 
   const evalArcPool = () => {
@@ -666,27 +740,28 @@ export function identifyPatient1toN(
     const runnerUp = distinctRunners[0];
     const runnerUpSim = runnerUp ? runnerUp.rawSim : 0;
     const margin = runnerUp ? top.rawSim - runnerUp.rawSim : 1;
+    const cohortMargin = top.rawSim - top.cohortMaxScore;
+    const passesCohort = top.rawSim > top.cohortMaxScore + STRICT_COHORT_MARGIN;
     const arcSimThresh = rawCosineThreshold;
     const arcMarginThresh = options.marginThreshold ?? FACE_MATCHER_MARGIN_THRESHOLD;
     const passesThreshold =
+      Boolean(top.tripleGate?.passed) &&
       top.rawSim >= arcSimThresh &&
+      top.meanCenteredSim >= FACE_MATCHER_CENTERED_COSINE_THRESHOLD &&
       top.dualFactorScore >= arcSimThresh &&
       top.euclidDist <= FACE_MATCHER_MAX_EUCLIDEAN_DISTANCE &&
       top.geometricPenalty <= 0.14;
-    const passesMargin = passesCalibratedMargin(
-      top.rawSim,
-      margin,
-      distinctRunners.length,
-      arcMarginThresh,
-    );
-    const matched = passesThreshold && passesMargin;
+    const passesMargin = passesStrictMargin(margin, distinctRunners.length, arcMarginThresh);
+    const matched = passesThreshold && passesCohort && passesMargin;
     const reason: MultiAngleMatchResult['reason'] = matched
       ? 'OK'
-      : passesThreshold && !passesMargin
-        ? 'AMBIGUOUS_CLOSE_CANDIDATES'
-        : 'BELOW_THRESHOLD';
+      : passesThreshold && !passesCohort
+        ? 'IMPOSTER_COHORT_REJECTED'
+        : passesThreshold && !passesMargin
+          ? 'AMBIGUOUS_CLOSE_CANDIDATES'
+          : 'BELOW_THRESHOLD';
     const displayPercent = Number(Math.max(0, Math.min(100, top.rawSim * 100)).toFixed(1));
-    return { top, runnerUpSim, margin, matched, reason, displayPercent };
+    return { top, runnerUpSim, margin, cohortMargin, matched, reason, displayPercent };
   };
 
   const evalHybridPool = () => {
@@ -698,16 +773,19 @@ export function identifyPatient1toN(
     const runnerUp = distinctRunners[0];
     const runnerUpSim = runnerUp ? runnerUp.rawSim : 0;
     const margin = runnerUp ? top.rawSim - runnerUp.rawSim : 1;
+    const effectiveHybScore = Math.max(top.rawSim, top.dualFactorScore);
+    const cohortMargin = effectiveHybScore - top.cohortMaxScore;
+    const passesCohort = effectiveHybScore > top.cohortMaxScore + STRICT_COHORT_MARGIN;
 
-    const passesMargin = passesCalibratedMargin(
-      top.rawSim,
+    const passesMargin = passesStrictMargin(
       margin,
       distinctRunners.length,
+      options.marginThreshold ?? FACE_MATCHER_MARGIN_THRESHOLD,
     );
     const topIsLegacyV1 = top.isLegacyV1;
     const similarityThreshold =
       options.similarityThreshold ??
-      (topIsLegacyV1 ? (isAngledPose ? 0.64 : 0.68) : rawCosineThreshold);
+      (topIsLegacyV1 ? (isAngledPose ? 0.75 : 0.80) : isAngledPose ? 0.70 : 0.75);
     const whitenedThreshold =
       options.whitenedThreshold ??
       (topIsLegacyV1 ? (isAngledPose ? 0.36 : 0.42) : isAngledPose ? 0.32 : 0.36);
@@ -746,9 +824,15 @@ export function identifyPatient1toN(
         top.bestCos3D >= sub3DMin &&
         top.bestCraniofacialCos >= craniofacialMin);
 
+    const gate2Check = evaluateAppearanceAndCraniofacialGate(
+      options.geometricRatios,
+      top.candidate.geometricRatios,
+    );
+    const candStdOk = computeVectorStd(top.candidate.masterEmbedding) >= 0.02;
+
     const passesThreshold =
-      top.rawSim >= rawCosineThreshold &&
-      top.euclidDist <= FACE_MATCHER_MAX_EUCLIDEAN_DISTANCE &&
+      gate2Check.passed &&
+      candStdOk &&
       top.consensusPassed &&
       top.dualFactorScore >= similarityThreshold &&
       top.whitenedSim >= whitenedThreshold &&
@@ -756,15 +840,17 @@ export function identifyPatient1toN(
       top.geometricPenalty <= 0.14 &&
       passesSubbandFloor;
 
-    const matched = passesThreshold && passesMargin;
+    const matched = passesThreshold && passesCohort && passesMargin;
     const reason: MultiAngleMatchResult['reason'] = matched
       ? 'OK'
-      : passesThreshold && !passesMargin
-        ? 'AMBIGUOUS_CLOSE_CANDIDATES'
-        : 'BELOW_THRESHOLD';
+      : passesThreshold && !passesCohort
+        ? 'IMPOSTER_COHORT_REJECTED'
+        : passesThreshold && !passesMargin
+          ? 'AMBIGUOUS_CLOSE_CANDIDATES'
+          : 'BELOW_THRESHOLD';
 
     const displayPercent = Number(Math.max(0, Math.min(100, top.rawSim * 100)).toFixed(1));
-    return { top, runnerUpSim, margin, matched, reason, displayPercent };
+    return { top, runnerUpSim, margin, cohortMargin, matched, reason, displayPercent };
   };
 
   const humanEval = evalHumanPool();
@@ -786,11 +872,11 @@ export function identifyPatient1toN(
           ? hybridEval
           : (humanEval ?? arcEval)!;
 
-  const { top, runnerUpSim, margin, matched, reason, displayPercent } = chosen;
+  const { top, runnerUpSim, margin, cohortMargin, matched, reason, displayPercent } = chosen;
 
   if (typeof window !== 'undefined' && typeof console !== 'undefined' && console.debug) {
     console.debug(
-      `[FaceMatcher] zone=${livePoseZone} angle=${top.angle} rawCos=${(top.rawSim * 100).toFixed(1)}% euclid=${top.euclidDist.toFixed(3)} margin=${(margin * 100).toFixed(1)}% matched=${matched} reason=${reason}`,
+      `[FaceMatcher] zone=${livePoseZone} angle=${top.angle} rawCos=${(top.rawSim * 100).toFixed(1)}% centeredCos=${(top.meanCenteredSim * 100).toFixed(1)}% euclid=${top.euclidDist.toFixed(3)} margin=${(margin * 100).toFixed(1)}% cohortMargin=${(cohortMargin * 100).toFixed(1)}% matched=${matched} reason=${reason}`,
     );
   }
 
@@ -799,6 +885,7 @@ export function identifyPatient1toN(
   void whitenEmbedding;
   void CANONICAL_HUMAN_FACE_BASELINE_512;
   void COMMON_MODE_ALPHA;
+  void STRICT_PATCH_ZNCC_THRESHOLD;
 
   return {
     matched,
@@ -806,6 +893,11 @@ export function identifyPatient1toN(
     bestAngle: top.angle,
     livePoseZone,
     similarity: top.rawSim,
+    centeredSimilarity: top.meanCenteredSim,
+    l2Distance: top.euclidDist,
+    patchZncc: top.tripleGate?.patchZncc ?? null,
+    craniofacialDeviation: top.tripleGate?.craniofacialDeviation ?? null,
+    cohortMargin,
     confidencePercent: displayPercent,
     margin,
     runnerUpSimilarity: runnerUpSim,
@@ -1118,7 +1210,7 @@ export function subscribeBiometricIndex(
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
-  const intervalId = globalThis.setInterval(refresh, 5000);
+  const intervalId = globalThis.setInterval(refresh, 30_000);
 
   return () => {
     active = false;

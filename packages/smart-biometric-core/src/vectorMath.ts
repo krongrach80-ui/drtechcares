@@ -7,6 +7,20 @@ export const COMMON_MODE_ALPHA = 0.92;
 export const NOT_FOUND_CONFIRM_ROUNDS = 1;
 export const BURST_FRAME_COUNT = 3;
 
+export const REQUIRED_MATCH_STREAK = 6;
+export const STRICT_RAW_COSINE_THRESHOLD = 0.84;
+export const STRICT_CENTERED_COSINE_THRESHOLD = 0.80;
+export const STRICT_MAX_EUCLIDEAN_DISTANCE = 0.56;
+export const STRICT_MIN_CENTROID_COSINE = 0.82;
+export const STRICT_MIN_CENTROID_COUNT = 2;
+export const STRICT_PATCH_ZNCC_THRESHOLD = 0.76;
+export const STRICT_CRANIOFACIAL_MAX_DEVIATION = 0.065;
+export const STRICT_MIN_VECTOR_STD = 0.02;
+export const STRICT_DISTINCTIVENESS_MARGIN = 0.08;
+export const STRICT_COHORT_MARGIN = 0.08;
+export const STRICT_LOGIN_MAX_YAW_DEG = 14;
+export const STRICT_LOGIN_MAX_PITCH_DEG = 14;
+
 export type BiometricPose = 'frontal_centroid' | 'overall_centroid' | 'front' | 'left' | 'right' | 'nod';
 export type FacePoseZone5 = 'center' | 'left' | 'right' | 'up' | 'down';
 
@@ -19,6 +33,10 @@ export interface GeometricAnthropometricRatios {
   mouthToEyeRatio: number;
   /** Nose-tip to chin height divided by eye-midpoint to mouth-midpoint height */
   noseToChinRatio: number;
+  /** Zero-mean unit-std 384-D inner-face appearance patch (256 luma 16x16 + 128 Cb/Cr 8x8) */
+  appearancePatch384?: number[];
+  /** 12 IOD-normalized craniofacial anatomical ratios for Gate-2 skeletal verification */
+  craniofacialRatios12?: number[];
 }
 
 export interface GeometricRatioMatchResult {
@@ -1094,4 +1112,627 @@ export function trimOutlierVectorsAndAverage(
     }
   }
   return l2Normalize(weighted);
+}
+
+export interface VectorPairMetrics {
+  rawCosine: number;
+  centeredCosine: number;
+  l2Dist: number;
+  stdA: number;
+  stdB: number;
+}
+
+export function computeVectorStd(vec: readonly number[]): number {
+  if (vec.length === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < vec.length; i += 1) {
+    sum += vec[i];
+  }
+  const mean = sum / vec.length;
+  let sqDiff = 0;
+  for (let i = 0; i < vec.length; i += 1) {
+    const d = vec[i] - mean;
+    sqDiff += d * d;
+  }
+  return Math.sqrt(sqDiff / vec.length);
+}
+
+/**
+ * Strictly zero-mean centers and L2-normalizes a vector.
+ * Returns `null` for flat / zero-variance degenerate vectors so they can never fake 1.0 cosine.
+ */
+export function computeZeroMeanCenteredVectorStrict(vector: readonly number[]): number[] | null {
+  if (vector.length === 0) return null;
+  let sum = 0;
+  for (let i = 0; i < vector.length; i += 1) {
+    sum += vector[i];
+  }
+  const mean = sum / vector.length;
+  const centered = new Array<number>(vector.length);
+  let sumSq = 0;
+  for (let i = 0; i < vector.length; i += 1) {
+    const d = vector[i] - mean;
+    centered[i] = d;
+    sumSq += d * d;
+  }
+  if (sumSq <= 1e-10) return null;
+  const norm = Math.sqrt(sumSq);
+  return centered.map((v) => v / norm);
+}
+
+export function computeVectorPairMetrics(a: readonly number[], b: readonly number[]): VectorPairMetrics {
+  const normA = l2Normalize(a);
+  const normB = l2Normalize(b);
+  const rawCosine = cosineSimilarity(normA, normB);
+  const l2Dist = euclideanDistance(normA, normB);
+  const centeredA = computeZeroMeanCenteredVectorStrict(normA);
+  const centeredB = computeZeroMeanCenteredVectorStrict(normB);
+  const centeredCosine =
+    centeredA && centeredB ? cosineSimilarity(centeredA, centeredB) : 0;
+  return {
+    rawCosine,
+    centeredCosine,
+    l2Dist,
+    stdA: computeVectorStd(normA),
+    stdB: computeVectorStd(normB),
+  };
+}
+
+function buildSyntheticCohortVectors(dim: number, count = 12): readonly (readonly number[])[] {
+  const baseline = new Array<number>(dim);
+  for (let i = 0; i < dim; i += 1) {
+    baseline[i] =
+      dim === FACE_EMBEDDING_DIM
+        ? CANONICAL_HUMAN_FACE_BASELINE_512[i]
+        : 0.14 + 0.04 * Math.cos(i * 0.031) + 0.02 * Math.sin(i * 0.017);
+  }
+  const baseUnit = l2Normalize(baseline);
+
+  const out: (readonly number[])[] = [];
+  for (let k = 0; k < count; k += 1) {
+    const wave = new Array<number>(dim);
+    const freqA = 0.3713 + k * 0.1137;
+    const freqB = 0.7191 + k * 0.1733;
+    const phase = 1.93 + k * 2.41;
+    for (let i = 0; i < dim; i += 1) {
+      wave[i] =
+        Math.sin((i + 1) * freqA + phase) * 0.6 +
+        Math.cos((i + 7) * freqB - phase * 0.5) * 0.4;
+    }
+    const waveUnit = l2Normalize(wave);
+    const baseWeight = 0.35;
+    const resWeight = Math.sqrt(1 - baseWeight * baseWeight);
+    const merged = l2Normalize(baseUnit.map((b, i) => baseWeight * b + resWeight * waveUnit[i]));
+    out.push(Object.freeze(merged));
+  }
+  return Object.freeze(out);
+}
+
+/** Deterministic 12-face baseline Imposter Cohort (512-D) protecting single-patient databases. */
+export const IMPOSTER_COHORT_VECTORS: readonly (readonly number[])[] = buildSyntheticCohortVectors(
+  FACE_EMBEDDING_DIM,
+  12,
+);
+
+/** Deterministic 12-face baseline Imposter Cohort (1024-D) for `@vladmandic/human` faceres. */
+export const IMPOSTER_COHORT_VECTORS_1024: readonly (readonly number[])[] =
+  buildSyntheticCohortVectors(1024, 12);
+
+const dynamicCohortCache = new Map<number, readonly (readonly number[])[]>();
+
+export function getImposterCohortVectors(dim: number): readonly (readonly number[])[] {
+  if (dim === FACE_EMBEDDING_DIM) return IMPOSTER_COHORT_VECTORS;
+  if (dim === 1024) return IMPOSTER_COHORT_VECTORS_1024;
+  let cached = dynamicCohortCache.get(dim);
+  if (!cached && dim > 0) {
+    cached = buildSyntheticCohortVectors(dim, 12);
+    dynamicCohortCache.set(dim, cached);
+  }
+  return cached ?? [];
+}
+
+export function computeMaxImposterCohortScore(probeVector: readonly number[]): number {
+  if (probeVector.length === 0) return 0;
+  const probeUnit = l2Normalize(probeVector);
+  const cohort = getImposterCohortVectors(probeUnit.length);
+  let maxScore = -1;
+  for (let i = 0; i < cohort.length; i += 1) {
+    const sim = cosineSimilarity(probeUnit, cohort[i]);
+    if (sim > maxScore) maxScore = sim;
+  }
+  return maxScore > -1 ? maxScore : 0;
+}
+
+/**
+ * Extracts a lighting-invariant 384-D Zero-Mean Normalized (mean=0, std=1) face appearance
+ * patch from an RGBA inner-face crop (`16x16` Luminance = 256 + `8x8` Cb/Cr Chrominance = 128).
+ */
+export function extractFacePatchSignature384FromRgba(image: {
+  width: number;
+  height: number;
+  data: ArrayLike<number>;
+}): number[] | null {
+  const { width, height, data } = image;
+  if (!width || !height || width < 16 || height < 16 || data.length < width * height * 4) {
+    return null;
+  }
+
+  const normalizeZeroMeanUnitStd = (vals: number[]): number[] | null => {
+    const n = vals.length;
+    if (n === 0) return null;
+    let sum = 0;
+    for (let i = 0; i < n; i += 1) sum += vals[i];
+    const mean = sum / n;
+    let varSum = 0;
+    for (let i = 0; i < n; i += 1) {
+      const d = vals[i] - mean;
+      varSum += d * d;
+    }
+    const std = Math.sqrt(varSum / n);
+    if (std < 1e-4) return null;
+    return vals.map((v) => Number(((v - mean) / std).toFixed(4)));
+  };
+
+  // Sample inner face [0.12..0.88] to strip edge margins cleanly
+  const sampleGridChannel = (grid: number, channel: 'Y' | 'Cb' | 'Cr'): number[] => {
+    const out = new Array<number>(grid * grid).fill(0);
+    const xStart = Math.floor(width * 0.12);
+    const yStart = Math.floor(height * 0.12);
+    const spanW = Math.max(grid, Math.floor(width * 0.76));
+    const spanH = Math.max(grid, Math.floor(height * 0.76));
+
+    for (let gy = 0; gy < grid; gy += 1) {
+      const py0 = yStart + Math.floor((gy * spanH) / grid);
+      const py1 = Math.max(py0 + 1, yStart + Math.floor(((gy + 1) * spanH) / grid));
+      for (let gx = 0; gx < grid; gx += 1) {
+        const px0 = xStart + Math.floor((gx * spanW) / grid);
+        const px1 = Math.max(px0 + 1, xStart + Math.floor(((gx + 1) * spanW) / grid));
+        let sum = 0;
+        let cnt = 0;
+        for (let py = py0; py < py1 && py < height; py += 1) {
+          for (let px = px0; px < px1 && px < width; px += 1) {
+            const idx = (py * width + px) * 4;
+            const r = data[idx] ?? 0;
+            const g = data[idx + 1] ?? 0;
+            const b = data[idx + 2] ?? 0;
+            const val =
+              channel === 'Y'
+                ? 0.299 * r + 0.587 * g + 0.114 * b
+                : channel === 'Cb'
+                  ? -0.1687 * r - 0.3313 * g + 0.5 * b + 128
+                  : 0.5 * r - 0.4187 * g - 0.0813 * b + 128;
+            sum += val;
+            cnt += 1;
+          }
+        }
+        out[gy * grid + gx] = cnt > 0 ? sum / cnt : 0;
+      }
+    }
+    return out;
+  };
+
+  const rawLuma256 = sampleGridChannel(16, 'Y');
+  const normLuma = normalizeZeroMeanUnitStd(rawLuma256);
+  if (!normLuma) return null;
+
+  const rawCb64 = sampleGridChannel(8, 'Cb');
+  const rawCr64 = sampleGridChannel(8, 'Cr');
+  const zeroCb = normalizeZeroMeanUnitStd(rawCb64) ?? new Array<number>(64).fill(0);
+  const zeroCr = normalizeZeroMeanUnitStd(rawCr64) ?? new Array<number>(64).fill(0);
+
+  return [...normLuma, ...zeroCb, ...zeroCr];
+}
+
+function sliceZncc(a: readonly number[], b: readonly number[], start: number, len: number): number | null {
+  if (a.length < start + len || b.length < start + len) return null;
+  let sumA = 0;
+  let sumB = 0;
+  for (let i = 0; i < len; i += 1) {
+    sumA += a[start + i];
+    sumB += b[start + i];
+  }
+  const meanA = sumA / len;
+  const meanB = sumB / len;
+  let dot = 0;
+  let normSqA = 0;
+  let normSqB = 0;
+  for (let i = 0; i < len; i += 1) {
+    const da = a[start + i] - meanA;
+    const db = b[start + i] - meanB;
+    dot += da * db;
+    normSqA += da * da;
+    normSqB += db * db;
+  }
+  if (normSqA <= 1e-8 || normSqB <= 1e-8) return null;
+  return Math.max(-1, Math.min(1, dot / Math.sqrt(normSqA * normSqB)));
+}
+
+/**
+ * Zero-Mean Normalized Cross-Correlation (ZNCC) for the 384-D inner-face patch
+ * (256 luminance + 64 Cb + 64 Cr). Grayscale-only channels fall back smoothly to luminance ZNCC.
+ */
+export function computePatchZnccScore(patchA: readonly number[], patchB: readonly number[]): number {
+  if (patchA.length !== 384 || patchB.length !== 384) return 0;
+  const znccY = sliceZncc(patchA, patchB, 0, 256);
+  if (znccY === null) return 0;
+  const znccCb = sliceZncc(patchA, patchB, 256, 64);
+  const znccCr = sliceZncc(patchA, patchB, 320, 64);
+  if (znccCb === null && znccCr === null) return znccY;
+  const effCb = znccCb ?? znccY;
+  const effCr = znccCr ?? znccY;
+  return Number((0.7 * znccY + 0.15 * effCb + 0.15 * effCr).toFixed(4));
+}
+
+/**
+ * Extracts 12 scale- and translation-invariant craniofacial anatomical ratios
+ * from 468/478-pt face landmarks (metric aspect-corrected when `aspectRatio` is provided).
+ */
+export function computeCraniofacialRatios12(
+  landmarks3D: readonly { x: number; y: number; z?: number }[],
+  aspectRatio = 1,
+): number[] | undefined {
+  if (!landmarks3D || landmarks3D.length < 455) return undefined;
+  const safeAspect = Number.isFinite(aspectRatio) && aspectRatio > 0.2 ? aspectRatio : 1;
+  const pt = (idx: number, fallbackIdx?: number) => landmarks3D[idx] ?? (fallbackIdx !== undefined ? landmarks3D[fallbackIdx] : undefined);
+
+  const lEyeOuter = pt(33);
+  const lEyeInner = pt(133, 33);
+  const rEyeInner = pt(362, 263);
+  const rEyeOuter = pt(263);
+  const forehead = pt(10, 168);
+  const glabella = pt(168, 10);
+  const noseTip = pt(1, 4);
+  const lNostril = pt(98, 1);
+  const rNostril = pt(327, 1);
+  const lCheek = pt(234);
+  const rCheek = pt(454);
+  const lJaw = pt(172, 234);
+  const rJaw = pt(397, 454);
+  const lMouth = pt(61);
+  const rMouth = pt(291);
+  const chin = pt(152);
+
+  if (
+    !lEyeOuter || !lEyeInner || !rEyeInner || !rEyeOuter ||
+    !forehead || !glabella || !noseTip || !lNostril || !rNostril ||
+    !lCheek || !rCheek || !lJaw || !rJaw || !lMouth || !rMouth || !chin
+  ) {
+    return undefined;
+  }
+
+  const dist = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    Math.max(1e-4, Math.hypot((a.x - b.x) * safeAspect, a.y - b.y));
+  const mid = (a: { x: number; y: number }, b: { x: number; y: number }) => ({
+    x: (a.x + b.x) * 0.5,
+    y: (a.y + b.y) * 0.5,
+  });
+
+  const eyeL = mid(lEyeOuter, lEyeInner);
+  const eyeR = mid(rEyeInner, rEyeOuter);
+  const eyeMid = mid(eyeL, eyeR);
+  const mouthMid = mid(lMouth, rMouth);
+
+  const eyeDist = dist(eyeL, eyeR);
+  const faceWidth = dist(lCheek, rCheek);
+  const faceHeight = dist(forehead, chin);
+  const eyeToNose = dist(eyeMid, noseTip);
+  const noseWidth = dist(lNostril, rNostril);
+  const mouthWidth = dist(lMouth, rMouth);
+  const eyeToMouth = dist(eyeMid, mouthMid);
+  const jawWidth = dist(lJaw, rJaw);
+  const bridgeLen = dist(glabella, noseTip);
+  const noseToChin = dist(noseTip, chin);
+  const avgEyeOpenW = (dist(lEyeOuter, lEyeInner) + dist(rEyeInner, rEyeOuter)) * 0.5;
+  const philtrumLen = dist(noseTip, mouthMid);
+  const chinHeight = dist(mouthMid, chin);
+  const cheekMouthSpan = (dist(lCheek, lMouth) + dist(rCheek, rMouth)) * 0.5;
+
+  const ratios = [
+    eyeDist / faceWidth,
+    eyeToNose / faceHeight,
+    noseWidth / eyeDist,
+    mouthWidth / eyeDist,
+    eyeToMouth / jawWidth,
+    faceWidth / faceHeight,
+    jawWidth / faceWidth,
+    bridgeLen / eyeDist,
+    noseToChin / eyeToMouth,
+    avgEyeOpenW / eyeDist,
+    philtrumLen / chinHeight,
+    cheekMouthSpan / faceWidth,
+  ];
+  return ratios.map((r) => Number(Math.min(6, Math.max(0.05, r)).toFixed(4)));
+}
+
+export function computeCraniofacialRatioDeviation(
+  probeRatios?: GeometricAnthropometricRatios | null,
+  candidateRatios?: GeometricAnthropometricRatios | null,
+): { available: boolean; meanDeviation: number; passed: boolean } {
+  if (!probeRatios || !candidateRatios) {
+    return { available: false, meanDeviation: 0, passed: true };
+  }
+  const p12 = probeRatios.craniofacialRatios12;
+  const c12 = candidateRatios.craniofacialRatios12;
+  if (Array.isArray(p12) && Array.isArray(c12) && p12.length === 12 && c12.length === 12) {
+    let sumRel = 0;
+    for (let i = 0; i < 12; i += 1) {
+      const a = p12[i];
+      const b = c12[i];
+      const denom = Math.max(0.2, (Math.abs(a) + Math.abs(b)) * 0.5);
+      sumRel += Math.abs(a - b) / denom;
+    }
+    const meanDeviation = Number((sumRel / 12).toFixed(4));
+    return {
+      available: true,
+      meanDeviation,
+      passed: meanDeviation <= STRICT_CRANIOFACIAL_MAX_DEVIATION,
+    };
+  }
+
+  // Fallback to 4-ratio geometric signature when an older record stores only 4 ratios
+  const pairs: [number, number][] = [
+    [probeRatios.eyeToNoseRatio, candidateRatios.eyeToNoseRatio],
+    [probeRatios.faceWidthToUpperHeight, candidateRatios.faceWidthToUpperHeight],
+    [probeRatios.mouthToEyeRatio, candidateRatios.mouthToEyeRatio],
+    [probeRatios.noseToChinRatio, candidateRatios.noseToChinRatio],
+  ].filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b) && Math.max(a, b) > 0) as [
+    number,
+    number,
+  ][];
+  if (pairs.length === 0) {
+    return { available: false, meanDeviation: 0, passed: true };
+  }
+  let sumRel = 0;
+  for (const [a, b] of pairs) {
+    sumRel += Math.abs(a - b) / Math.max(0.2, (Math.abs(a) + Math.abs(b)) * 0.5);
+  }
+  const meanDeviation = Number((sumRel / pairs.length).toFixed(4));
+  return {
+    available: true,
+    meanDeviation,
+    passed: meanDeviation <= STRICT_CRANIOFACIAL_MAX_DEVIATION,
+  };
+}
+
+export function evaluateAppearanceAndCraniofacialGate(
+  probeRatios?: GeometricAnthropometricRatios | null,
+  candidateRatios?: GeometricAnthropometricRatios | null,
+): {
+  passed: boolean;
+  patchAvailable: boolean;
+  patchZncc: number | null;
+  ratioAvailable: boolean;
+  ratioMeanDeviation: number | null;
+  failureReason?: string;
+} {
+  const pPatch = probeRatios?.appearancePatch384;
+  const cPatch = candidateRatios?.appearancePatch384;
+  const patchAvailable = Boolean(
+    Array.isArray(pPatch) && Array.isArray(cPatch) && pPatch.length === 384 && cPatch.length === 384,
+  );
+  const patchZncc = patchAvailable ? computePatchZnccScore(pPatch!, cPatch!) : null;
+  const ratioRes = computeCraniofacialRatioDeviation(probeRatios, candidateRatios);
+
+  if (patchAvailable && patchZncc !== null && patchZncc < STRICT_PATCH_ZNCC_THRESHOLD) {
+    return {
+      passed: false,
+      patchAvailable: true,
+      patchZncc,
+      ratioAvailable: ratioRes.available,
+      ratioMeanDeviation: ratioRes.available ? ratioRes.meanDeviation : null,
+      failureReason: `PATCH_ZNCC_BELOW_THRESHOLD (${patchZncc.toFixed(3)} < ${STRICT_PATCH_ZNCC_THRESHOLD})`,
+    };
+  }
+  if (ratioRes.available && !ratioRes.passed) {
+    return {
+      passed: false,
+      patchAvailable,
+      patchZncc,
+      ratioAvailable: true,
+      ratioMeanDeviation: ratioRes.meanDeviation,
+      failureReason: `CRANIOFACIAL_RATIO_MISMATCH (${ratioRes.meanDeviation.toFixed(3)} > ${STRICT_CRANIOFACIAL_MAX_DEVIATION})`,
+    };
+  }
+  return {
+    passed: true,
+    patchAvailable,
+    patchZncc,
+    ratioAvailable: ratioRes.available,
+    ratioMeanDeviation: ratioRes.available ? ratioRes.meanDeviation : null,
+  };
+}
+
+export interface TripleGateCandidateInput {
+  masterEmbedding: readonly number[];
+  angleEmbeddings?: Partial<Record<FacePoseZone5, readonly number[] | undefined>>;
+  exemplarEmbeddings?: readonly (readonly number[])[];
+  geometricRatios?: GeometricAnthropometricRatios | null;
+}
+
+export interface TripleGateResult {
+  passed: boolean;
+  rawCosine: number;
+  centeredCosine: number;
+  l2Dist: number;
+  bestCentroidCosine: number;
+  masterRawCosine: number;
+  masterCenteredCosine: number;
+  masterL2Dist: number;
+  centerRawCosine: number;
+  centerCenteredCosine: number;
+  centerL2Dist: number;
+  centroidsAbove082Count: number;
+  patchZncc: number | null;
+  craniofacialDeviation: number | null;
+  bestAngle: 'master' | FacePoseZone5 | 'extra';
+  failureReasons: string[];
+}
+
+/**
+ * Evaluates a live probe vector + optional Gate-2 appearance signature against a candidate
+ * using Gate 1 (master AND center rawCos >= 0.84, centeredCos >= 0.80, L2 <= 0.56, and >= 2 angle centroids >= 0.82)
+ * + Gate 2 (Patch ZNCC >= 0.76, Craniofacial 12/4 deviation <= 0.065, std >= 0.02 when missing patch).
+ */
+export function evaluateTripleGateNeuralCandidate(
+  probeVec: readonly number[],
+  candidate: TripleGateCandidateInput,
+  probeRatios?: GeometricAnthropometricRatios | null,
+): TripleGateResult {
+  const emptyFail = (reason: string): TripleGateResult => ({
+    passed: false,
+    rawCosine: 0,
+    centeredCosine: 0,
+    l2Dist: Number.POSITIVE_INFINITY,
+    bestCentroidCosine: 0,
+    masterRawCosine: 0,
+    masterCenteredCosine: 0,
+    masterL2Dist: Number.POSITIVE_INFINITY,
+    centerRawCosine: 0,
+    centerCenteredCosine: 0,
+    centerL2Dist: Number.POSITIVE_INFINITY,
+    centroidsAbove082Count: 0,
+    patchZncc: null,
+    craniofacialDeviation: null,
+    bestAngle: 'master',
+    failureReasons: [reason],
+  });
+
+  if (
+    !Array.isArray(probeVec) ||
+    probeVec.length === 0 ||
+    !Array.isArray(candidate.masterEmbedding) ||
+    candidate.masterEmbedding.length !== probeVec.length
+  ) {
+    return emptyFail('INVALID_OR_MISMATCHED_VECTOR_DIM');
+  }
+
+  const probeNorm = l2Normalize(probeVec);
+  const masterNorm = l2Normalize(candidate.masterEmbedding);
+  const centerRaw = candidate.angleEmbeddings?.center;
+  const hasExplicitCenter = Array.isArray(centerRaw) && centerRaw.length === probeNorm.length;
+  const centerNorm = hasExplicitCenter ? l2Normalize(centerRaw!) : masterNorm;
+
+  const masterMetrics = computeVectorPairMetrics(probeNorm, masterNorm);
+  const centerMetrics = hasExplicitCenter
+    ? computeVectorPairMetrics(probeNorm, centerNorm)
+    : masterMetrics;
+
+  const failureReasons: string[] = [];
+
+  if (masterMetrics.rawCosine < STRICT_RAW_COSINE_THRESHOLD) {
+    failureReasons.push(`masterRawCos ${masterMetrics.rawCosine.toFixed(4)} < ${STRICT_RAW_COSINE_THRESHOLD}`);
+  }
+  if (masterMetrics.centeredCosine < STRICT_CENTERED_COSINE_THRESHOLD) {
+    failureReasons.push(
+      `masterCenteredCos ${masterMetrics.centeredCosine.toFixed(4)} < ${STRICT_CENTERED_COSINE_THRESHOLD}`,
+    );
+  }
+  if (masterMetrics.l2Dist > STRICT_MAX_EUCLIDEAN_DISTANCE) {
+    failureReasons.push(`masterL2 ${masterMetrics.l2Dist.toFixed(4)} > ${STRICT_MAX_EUCLIDEAN_DISTANCE}`);
+  }
+
+  if (centerMetrics.rawCosine < STRICT_RAW_COSINE_THRESHOLD) {
+    failureReasons.push(`centerRawCos ${centerMetrics.rawCosine.toFixed(4)} < ${STRICT_RAW_COSINE_THRESHOLD}`);
+  }
+  if (centerMetrics.centeredCosine < STRICT_CENTERED_COSINE_THRESHOLD) {
+    failureReasons.push(
+      `centerCenteredCos ${centerMetrics.centeredCosine.toFixed(4)} < ${STRICT_CENTERED_COSINE_THRESHOLD}`,
+    );
+  }
+  if (centerMetrics.l2Dist > STRICT_MAX_EUCLIDEAN_DISTANCE) {
+    failureReasons.push(`centerL2 ${centerMetrics.l2Dist.toFixed(4)} > ${STRICT_MAX_EUCLIDEAN_DISTANCE}`);
+  }
+
+  // Evaluate all stored pose centroids: require center + at least 1 other stored centroid >= 0.82
+  let bestCentroidCosine = Math.max(masterMetrics.rawCosine, centerMetrics.rawCosine);
+  let bestAngle: 'master' | FacePoseZone5 | 'extra' =
+    centerMetrics.rawCosine >= masterMetrics.rawCosine ? 'center' : 'master';
+  let centroidsAbove082Count = centerMetrics.rawCosine >= STRICT_MIN_CENTROID_COSINE ? 1 : 0;
+
+  const secondaryZones: FacePoseZone5[] = ['left', 'right', 'up', 'down'];
+  let otherCentroidsFound = 0;
+  for (const z of secondaryZones) {
+    const rawZ = candidate.angleEmbeddings?.[z];
+    if (Array.isArray(rawZ) && rawZ.length === probeNorm.length) {
+      otherCentroidsFound += 1;
+      const simZ = cosineSimilarity(probeNorm, l2Normalize(rawZ));
+      if (simZ >= STRICT_MIN_CENTROID_COSINE) {
+        centroidsAbove082Count += 1;
+      }
+      if (simZ > bestCentroidCosine) {
+        bestCentroidCosine = simZ;
+        bestAngle = z;
+      }
+    }
+  }
+  if (otherCentroidsFound === 0) {
+    for (const ex of candidate.exemplarEmbeddings ?? []) {
+      if (Array.isArray(ex) && ex.length === probeNorm.length) {
+        otherCentroidsFound += 1;
+        const simEx = cosineSimilarity(probeNorm, l2Normalize(ex));
+        if (simEx >= STRICT_MIN_CENTROID_COSINE) {
+          centroidsAbove082Count += 1;
+        }
+        if (simEx > bestCentroidCosine) {
+          bestCentroidCosine = simEx;
+          bestAngle = 'extra';
+        }
+      }
+    }
+    if (otherCentroidsFound === 0 && masterMetrics.rawCosine >= STRICT_MIN_CENTROID_COSINE) {
+      centroidsAbove082Count += 1;
+    }
+  }
+
+  if (
+    centerMetrics.rawCosine < STRICT_MIN_CENTROID_COSINE ||
+    centroidsAbove082Count < STRICT_MIN_CENTROID_COUNT
+  ) {
+    failureReasons.push(
+      `angleCentroids>=${STRICT_MIN_CENTROID_COSINE}: ${centroidsAbove082Count} < ${STRICT_MIN_CENTROID_COUNT}`,
+    );
+  }
+
+  const gate2 = evaluateAppearanceAndCraniofacialGate(probeRatios, candidate.geometricRatios);
+  if (
+    !gate2.patchAvailable &&
+    (masterMetrics.stdB < STRICT_MIN_VECTOR_STD || masterMetrics.stdA < STRICT_MIN_VECTOR_STD)
+  ) {
+    failureReasons.push(
+      `LOW_VARIANCE_VECTOR_REENROLL_REQUIRED (std=${Math.min(masterMetrics.stdA, masterMetrics.stdB).toFixed(4)} < ${STRICT_MIN_VECTOR_STD})`,
+    );
+  }
+  if (!gate2.passed && gate2.failureReason) {
+    failureReasons.push(gate2.failureReason);
+  }
+
+  const pairedRaw = Math.min(masterMetrics.rawCosine, centerMetrics.rawCosine);
+  const pairedCentered = Math.min(masterMetrics.centeredCosine, centerMetrics.centeredCosine);
+  const pairedL2 = Math.max(masterMetrics.l2Dist, centerMetrics.l2Dist);
+
+  const gate1And2Passed = failureReasons.length === 0;
+  return {
+    passed: gate1And2Passed,
+    rawCosine: gate1And2Passed
+      ? Math.max(masterMetrics.rawCosine, centerMetrics.rawCosine)
+      : Math.max(0, pairedRaw),
+    centeredCosine: gate1And2Passed
+      ? Math.max(masterMetrics.centeredCosine, centerMetrics.centeredCosine)
+      : Math.max(0, pairedCentered),
+    l2Dist: gate1And2Passed
+      ? Math.min(masterMetrics.l2Dist, centerMetrics.l2Dist)
+      : pairedL2,
+    bestCentroidCosine: Math.max(0, bestCentroidCosine),
+    masterRawCosine: Math.max(0, masterMetrics.rawCosine),
+    masterCenteredCosine: Math.max(0, masterMetrics.centeredCosine),
+    masterL2Dist: masterMetrics.l2Dist,
+    centerRawCosine: Math.max(0, centerMetrics.rawCosine),
+    centerCenteredCosine: Math.max(0, centerMetrics.centeredCosine),
+    centerL2Dist: centerMetrics.l2Dist,
+    centroidsAbove082Count,
+    patchZncc: gate2.patchZncc,
+    craniofacialDeviation: gate2.ratioMeanDeviation,
+    bestAngle,
+    failureReasons,
+  };
 }

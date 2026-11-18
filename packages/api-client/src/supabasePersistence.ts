@@ -99,6 +99,105 @@ export function newRecordId(useUuid: boolean, prefix: string): string {
 
 export const SUPABASE_CIRCUIT_COOLDOWN_MS = 20 * 1000;
 export const MAX_DB_IMAGE_STRING_LENGTH = 4000;
+export const HYDRATE_TTL_MS = 60_000;
+
+/**
+ * Permanent per-table cache of unmigrated columns that returned Postgres 42703 / PostgREST PGRST204.
+ * Once a missing column is observed, ALL subsequent SELECT / INSERT / UPDATE / UPSERT calls for
+ * that table strip it BEFORE executing the query so 42703 retry storms never repeat.
+ */
+export const unsupportedColumnsByTable = new Map<string, Set<string>>();
+
+export function resetUnsupportedColumnsForTests(): void {
+  unsupportedColumnsByTable.clear();
+}
+
+export function parseUndefinedColumnError(error: unknown): string | null {
+  if (!error) return null;
+  const rawObj = typeof error === 'object' ? (error as Record<string, unknown>) : null;
+  const msg = rawObj ? String(rawObj.message ?? '') : String(error);
+  const code = rawObj ? String(rawObj.code ?? '') : '';
+  const m =
+    msg.match(/column\s+(?:[a-zA-Z0-9_]+\.)?["']?([a-zA-Z0-9_]+)["']?\s+does not exist/i) ||
+    msg.match(/Could not find the ['"]?([a-zA-Z0-9_]+)['"]? column/i);
+  if (m?.[1]) return m[1];
+  if (code === '42703' || code === 'PGRST204') {
+    const quoted = msg.match(/['"]([a-zA-Z0-9_]+)['"]/);
+    if (quoted?.[1]) return quoted[1];
+  }
+  return null;
+}
+
+export function markUnsupportedColumnForTable(table: string, column: string): void {
+  const cleanCol = column.trim();
+  if (!table || !cleanCol) return;
+  let set = unsupportedColumnsByTable.get(table);
+  if (!set) {
+    set = new Set<string>();
+    unsupportedColumnsByTable.set(table, set);
+  }
+  set.add(cleanCol);
+}
+
+export function recordUnsupportedColumn(table: string, error: unknown): string | null {
+  const col = parseUndefinedColumnError(error);
+  if (!col) return null;
+  markUnsupportedColumnForTable(table, col);
+  return col;
+}
+
+export function stripUnsupportedColumnsForWrite<T extends Record<string, unknown>>(
+  table: string,
+  payload: T,
+): Record<string, unknown> {
+  const unsupported = unsupportedColumnsByTable.get(table);
+  if (!unsupported || unsupported.size === 0) return payload;
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (!unsupported.has(key)) {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned;
+}
+
+export function stripUnsupportedColumnsForWriteRows(
+  table: string,
+  rows: ReadonlyArray<Record<string, unknown>>,
+): Record<string, unknown>[] {
+  const unsupported = unsupportedColumnsByTable.get(table);
+  if (!unsupported || unsupported.size === 0) return rows.map((row) => ({ ...row }));
+  return rows.map((row) => stripUnsupportedColumnsForWrite(table, row));
+}
+
+export function filterSelectColsForTable(table: string, colsCsv: string): string {
+  const cols = colsCsv
+    .split(',')
+    .map((c) => c.trim())
+    .filter(Boolean);
+  const unsupported = unsupportedColumnsByTable.get(table);
+  if (!unsupported || unsupported.size === 0) return cols.join(',');
+  const filtered = cols.filter((c) => !unsupported.has(c));
+  return (filtered.length > 0 ? filtered : cols.slice(0, 1)).join(',');
+}
+
+const lastHydratedAtByState = new WeakMap<CloudRouterState, number>();
+const hydrationInFlightByState = new WeakMap<CloudRouterState, Promise<void>>();
+
+export function getLastHydratedAt(state: CloudRouterState): number {
+  return lastHydratedAtByState.get(state) ?? 0;
+}
+
+export function invalidateHydrationCache(state: CloudRouterState): void {
+  lastHydratedAtByState.delete(state);
+}
+
+export function resetHydrationCacheForTests(state?: CloudRouterState): void {
+  if (state) {
+    lastHydratedAtByState.delete(state);
+    hydrationInFlightByState.delete(state);
+  }
+}
 
 interface CircuitRecord {
   downUntil: number;
@@ -309,36 +408,50 @@ function withQueryLimit(query: unknown, maxRows: number): PromiseLike<unknown> {
   return Promise.resolve(query);
 }
 
-/** Run PostgREST query with explicit columns (never SELECT *), stripping any unmigrated optional column on 42703/PGRST204. */
+/**
+ * Run PostgREST query with explicit columns (never SELECT *).
+ * Strips permanently cached missing columns BEFORE executing; if Postgres 42703 / PGRST204 occurs,
+ * records the missing column into `unsupportedColumnsByTable` and jumps directly to `safeFallbackCols`
+ * in at most 1 retry (never loops 5 times per call).
+ */
 async function selectExplicitWithFallback(
+  table: string,
   runQuery: (cols: string) => PromiseLike<unknown>,
   initialCols: string,
+  safeFallbackCols = initialCols,
   maxRows = 50,
 ): Promise<unknown> {
-  let cols = initialCols
-    .split(',')
-    .map((c) => c.trim())
-    .filter(Boolean);
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const colStr = cols.join(',');
-    const res = (await withQueryLimit(runQuery(colStr), maxRows)) as
+  const firstCols = filterSelectColsForTable(table, initialCols);
+  const res = (await withQueryLimit(runQuery(firstCols), maxRows)) as
+    | { data?: unknown; error?: { code?: string; message?: string } | null }
+    | undefined;
+  if (!res?.error) return res;
+
+  const missingCol = recordUnsupportedColumn(table, res.error);
+  if (!missingCol) return res;
+
+  const fallbackCols = filterSelectColsForTable(table, safeFallbackCols);
+  if (!fallbackCols || fallbackCols === firstCols) {
+    const strippedInitial = filterSelectColsForTable(table, firstCols);
+    if (!strippedInitial || strippedInitial === firstCols) {
+      return res;
+    }
+    const retryRes = (await withQueryLimit(runQuery(strippedInitial), maxRows)) as
       | { data?: unknown; error?: { code?: string; message?: string } | null }
       | undefined;
-    if (!res?.error) return res;
-    const msg = String(res.error.message ?? '');
-    const m =
-      msg.match(/column\s+(?:[a-zA-Z0-9_]+\.)?["']?([a-zA-Z0-9_]+)["']?\s+does not exist/i) ||
-      msg.match(/Could not find the ['"]?([a-zA-Z0-9_]+)['"]? column/i);
-    if (m?.[1] && cols.length > 1) {
-      const nextCols = cols.filter((c) => c !== m[1]);
-      if (nextCols.length < cols.length) {
-        cols = nextCols;
-        continue;
-      }
+    if (retryRes?.error) {
+      recordUnsupportedColumn(table, retryRes.error);
     }
-    return res;
+    return retryRes;
   }
-  return { data: null, error: { message: 'column_fallback_exhausted' } };
+
+  const fallbackRes = (await withQueryLimit(runQuery(fallbackCols), maxRows)) as
+    | { data?: unknown; error?: { code?: string; message?: string } | null }
+    | undefined;
+  if (fallbackRes?.error) {
+    recordUnsupportedColumn(table, fallbackRes.error);
+  }
+  return fallbackRes;
 }
 
 function rejectedBudget(reason: string): PromiseSettledResult<unknown> {
@@ -438,14 +551,32 @@ export function mergeStaffUsersFromDbRows(
   state.users = [...dbUsers, ...bootstrapAdminOnly];
 }
 
-const STAFF_USERS_LIGHT_COLS =
-  'id,username,password_hash,role,full_name,phone,specialty,license_no,license_number,patient_id,status,active,force_logged_out_at,created_at';
+// Exact base schema columns matching supabase/migrations/20261113000001_drtechcares_schema_and_rpc.sql
+// Extended fields live in patients.history JSONB, exercises.*_i18n, kiosks.current_state, and audit_logs.detail.
+const STAFF_USERS_BASE_COLS =
+  'id,username,password_hash,role,full_name,phone,specialty,license_no,patient_id,active,force_logged_out_at,created_at';
 
-const PATIENTS_LIGHT_COLS =
-  'id,hn,full_name,age,gender,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,face_biometric_status,face_frames_count,face_embedding,biometric_data,history,stroke_type,affected_side,motor_assessment_score,adl_dressing_score,max_safe_rom_deg,universal_health_link_code,created_at,updated_at';
+const PATIENTS_BASE_COLS =
+  'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,history,created_at,updated_at';
+const PATIENTS_MINIMAL_SAFE_COLS =
+  'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,history,created_at';
 
-const PATIENT_BIOMETRICS_LIGHT_COLS =
-  'patient_id,hn,master_embedding,angle_embeddings,exemplar_embeddings,biometric_engine,model_version,frames_captured,frame_count,quality_score,updated_at';
+const PATIENT_BIOMETRICS_BASE_COLS =
+  'patient_id,hn,master_embedding,angle_embeddings,exemplar_embeddings,biometric_engine,model_version,frames_captured,quality_score,updated_at';
+const PATIENT_BIOMETRICS_MINIMAL_SAFE_COLS =
+  'patient_id,hn,master_embedding,angle_embeddings,updated_at';
+
+const EXERCISES_BASE_COLS =
+  'id,code,category,name_i18n,instruction_i18n,detection_config,active';
+
+const MODPACKS_BASE_COLS =
+  'id,name,categories,active';
+
+const KIOSKS_BASE_COLS =
+  'kiosk_id,location,online,current_state,last_heartbeat_at';
+
+const AUDIT_LOGS_BASE_COLS =
+  'id,event_type,actor_role,actor_id,actor_name,ip_address,device_id,target_id,detail,created_at';
 
 /** Fast single-table lookup of staff_users for POST /api/auth/login (never blocks on 17-table hydration). */
 export async function hydrateStaffUsersOnly(
@@ -460,8 +591,10 @@ export async function hydrateStaffUsersOnly(
   try {
     const outcome = await Promise.race([
       selectExplicitWithFallback(
+        'staff_users',
         (cols) => supabase.from('staff_users').select(cols),
-        STAFF_USERS_LIGHT_COLS,
+        STAFF_USERS_BASE_COLS,
+        STAFF_USERS_BASE_COLS,
         50,
       ).then((res) => ({
         timedOut: false as const,
@@ -498,24 +631,55 @@ export async function hydrateStaffUsersOnly(
 export async function hydrateStateFromSupabase(
   supabase: SupabaseClient,
   state: CloudRouterState,
+  options?: { force?: boolean },
+): Promise<void> {
+  if (isSupabaseCircuitOpen(supabase)) {
+    return;
+  }
+  const now = Date.now();
+  const lastHydratedAt = lastHydratedAtByState.get(state) ?? 0;
+  if (!options?.force && lastHydratedAt > 0 && now - lastHydratedAt < HYDRATE_TTL_MS) {
+    return;
+  }
+  const existingFlight = hydrationInFlightByState.get(state);
+  if (existingFlight) {
+    return existingFlight;
+  }
+
+  const runPromise = runHydrateStateFromSupabaseInternal(supabase, state).finally(() => {
+    if (hydrationInFlightByState.get(state) === runPromise) {
+      hydrationInFlightByState.delete(state);
+    }
+  });
+  hydrationInFlightByState.set(state, runPromise);
+  return runPromise;
+}
+
+async function runHydrateStateFromSupabaseInternal(
+  supabase: SupabaseClient,
+  state: CloudRouterState,
 ): Promise<void> {
   if (isSupabaseCircuitOpen(supabase)) {
     return;
   }
   const totalDeadlineMs = Date.now() + 1500;
 
-  // Stage 1 (Priority Clinical Directory): fetch patients & staff_users FIRST with explicit columns (zero SELECT *, no base64 images) & limit(50)
+  // Stage 1 (Priority Clinical Directory): fetch patients & staff_users FIRST with explicit base-schema columns & limit(50)
   const stage1Tasks: ReadonlyArray<() => PromiseLike<unknown>> = [
     () =>
       selectExplicitWithFallback(
+        'staff_users',
         (cols) => supabase.from('staff_users').select(cols),
-        STAFF_USERS_LIGHT_COLS,
+        STAFF_USERS_BASE_COLS,
+        STAFF_USERS_BASE_COLS,
         50,
       ),
     () =>
       selectExplicitWithFallback(
+        'patients',
         (cols) => supabase.from('patients').select(cols),
-        PATIENTS_LIGHT_COLS,
+        PATIENTS_BASE_COLS,
+        PATIENTS_MINIMAL_SAFE_COLS,
         50,
       ),
     () =>
@@ -543,13 +707,22 @@ export async function hydrateStateFromSupabase(
       ),
   ];
 
-  // Stage 2 (Biometric Embeddings & Clinical Config): explicit lightweight columns + limit(50), excluding base64 avatar_url/questions blobs.
+  // Stage 2 (Biometric Embeddings & Clinical Config): explicit base-schema columns + limit(50)
   const stage2Tasks: ReadonlyArray<() => PromiseLike<unknown>> = [
-    () => withQueryLimit(supabase.from('face_templates').select('patient_id,pose,embedding,quality_score'), 50),
     () =>
       selectExplicitWithFallback(
+        'face_templates',
+        (cols) => supabase.from('face_templates').select(cols),
+        'patient_id,pose,embedding,quality_score',
+        'patient_id,pose,embedding',
+        50,
+      ),
+    () =>
+      selectExplicitWithFallback(
+        'patient_biometrics',
         (cols) => supabase.from('patient_biometrics').select(cols),
-        PATIENT_BIOMETRICS_LIGHT_COLS,
+        PATIENT_BIOMETRICS_BASE_COLS,
+        PATIENT_BIOMETRICS_MINIMAL_SAFE_COLS,
         50,
       ),
     () =>
@@ -558,26 +731,32 @@ export async function hydrateStateFromSupabase(
         50,
       ),
     () =>
-      withQueryLimit(
-        supabase
-          .from('exercises')
-          .select('id,code,category,name_th,body_side,instructions_th,target_rom_deg,hold_sec,name_i18n,instruction_i18n,detection_config,active')
-          .eq('active', true),
+      selectExplicitWithFallback(
+        'exercises',
+        (cols) => supabase.from('exercises').select(cols).eq('active', true),
+        EXERCISES_BASE_COLS,
+        'id,code,category,active',
         50,
       ),
     () =>
-      withQueryLimit(
-        supabase.from('modpacks').select('id,name,category,card_count,categories,active').eq('active', true),
+      selectExplicitWithFallback(
+        'modpacks',
+        (cols) => supabase.from('modpacks').select(cols).eq('active', true),
+        MODPACKS_BASE_COLS,
+        'id,name,active',
         50,
       ),
     () =>
-      withQueryLimit(
-        supabase.from('kiosks').select('kiosk_id,location,online,current_state,pairing_token,last_heartbeat_at'),
+      selectExplicitWithFallback(
+        'kiosks',
+        (cols) => supabase.from('kiosks').select(cols),
+        KIOSKS_BASE_COLS,
+        KIOSKS_BASE_COLS,
         50,
       ),
   ];
 
-  // Stage 3 (Historical Logs & Telemetry): explicit lightweight columns + limit(50).
+  // Stage 3 (Historical Logs & Telemetry): explicit base-schema columns + limit(50)
   const stage3Tasks: ReadonlyArray<() => PromiseLike<unknown>> = [
     () =>
       withQueryLimit(
@@ -612,19 +791,27 @@ export async function hydrateStateFromSupabase(
         50,
       ),
     () =>
-      withQueryLimit(
-        supabase
-          .from('audit_logs')
-          .select('id,event_type,actor_role,actor_id,actor_name,ip_address,device_id,target_id,detail,action,target,details,created_at')
-          .order('created_at', { ascending: false }),
+      selectExplicitWithFallback(
+        'audit_logs',
+        (cols) =>
+          supabase
+            .from('audit_logs')
+            .select(cols)
+            .order('created_at', { ascending: false }),
+        AUDIT_LOGS_BASE_COLS,
+        AUDIT_LOGS_BASE_COLS,
         50,
       ),
     () =>
-      withQueryLimit(
-        supabase
-          .from('rehab_session_history')
-          .select('id,patient_id,hn,session_date,exercise_code,exercise_name,joint_name,body_side,baseline_rom_deg,achieved_max_rom_deg,rom_delta_deg,motor_score_at_session,valid_reps,compensations_count,facility_name,recorded_by_pt_id,recorded_by_pt_name,clinical_notes,created_at')
-          .order('session_date', { ascending: false }),
+      selectExplicitWithFallback(
+        'rehab_session_history',
+        (cols) =>
+          supabase
+            .from('rehab_session_history')
+            .select(cols)
+            .order('session_date', { ascending: false }),
+        'id,patient_id,hn,session_date,exercise_code,exercise_name,joint_name,body_side,baseline_rom_deg,achieved_max_rom_deg,rom_delta_deg,motor_score_at_session,valid_reps,compensations_count,facility_name,recorded_by_pt_id,recorded_by_pt_name,clinical_notes,created_at',
+        'id,patient_id,hn,session_date,exercise_code,exercise_name,achieved_max_rom_deg,valid_reps,created_at',
         50,
       ),
   ];
@@ -1588,6 +1775,10 @@ export async function hydrateStateFromSupabase(
         lastHeartbeatAt: String(r.last_heartbeat_at ?? new Date().toISOString()),
       };
     });
+  }
+
+  if (!isSupabaseCircuitOpen(supabase)) {
+    lastHydratedAtByState.set(state, Date.now());
   }
 }
 

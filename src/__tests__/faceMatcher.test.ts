@@ -26,7 +26,11 @@ import {
   matchMultiAngleEmbedding,
 } from '../lib/faceMatcher';
 import {
+  computeCraniofacialRatios12,
   computeGeometricAnthropometricRatios,
+  computePatchZnccScore,
+  extractFacePatchSignature384FromRgba,
+  getImposterCohortVectors,
   isLegacyV1HybridVector,
   trimOutlierVectorsAndAverage,
 } from '@drtechcares/smart-biometric-core';
@@ -877,7 +881,7 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
       owner.angleEmbeddings.center.map((v, idx) => v * 0.52 + lowDiff[idx] * Math.sqrt(1 - 0.52 * 0.52)),
     );
     const strictMatcher = new TemporalBiometricMatcher();
-    expect(strictMatcher.requiredConsecutiveFrames).toBe(3);
+    expect(strictMatcher.requiredConsecutiveFrames).toBe(6);
     const lowOut = strictMatcher.evaluateFrame(
       {
         probeVector: rejectedProbe,
@@ -895,7 +899,28 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     expect(lowOut.streakCount).toBe(0);
     expect(lowOut.candidate).toBeNull();
 
-    // 2. Genuine long-range probe confirms only at 3/3 frames with raw similarity >= 0.64
+    // 1b. Unregistered 0.70 probe MUST be strictly rejected with zero streak increment
+    const probe070 = l2Normalize(
+      owner.angleEmbeddings.center.map((v, idx) => v * 0.7 + lowDiff[idx] * Math.sqrt(1 - 0.7 * 0.7)),
+    );
+    const rej070 = strictMatcher.evaluateFrame(
+      {
+        probeVector: probe070,
+        depthScore: 0.45,
+        yawDeg: 0,
+        pitchDeg: 0,
+        microMotion: 0.001,
+        biologicalVerified: true,
+        spoofDetected: false,
+        faceHeightRatio: 0.08,
+      },
+      [owner, other],
+    );
+    expect(rej070.confirmed).toBe(false);
+    expect(rej070.streakCount).toBe(0);
+    expect(rej070.candidate).toBeNull();
+
+    // 2. Genuine long-range probe confirms only at 6/6 consecutive frontal frames (raw >= 0.84, centered >= 0.80, L2 <= 0.56)
     const farProbe = l2Normalize(
       owner.angleEmbeddings.center.map((v, idx) => v * 0.92 + lowDiff[idx] * 0.39),
     );
@@ -935,7 +960,7 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     expect(out.streakCount).toBe(1);
     expect(out.candidate).toBeNull();
 
-    for (let i = 1; i < 3; i += 1) {
+    for (let i = 1; i < 6; i += 1) {
       out = strictMatcher.evaluateFrame(
         {
           probeVector: farProbe,
@@ -949,15 +974,15 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
         },
         [owner, other],
       );
-      if (i < 2) {
+      if (i < 5) {
         expect(out.confirmed).toBe(false);
         expect(out.candidate).toBeNull();
       }
     }
     expect(out.confirmed).toBe(true);
-    expect(out.streakCount).toBe(3);
+    expect(out.streakCount).toBe(6);
     expect(out.candidate?.patientId).toBe('pat-lr');
-    expect(out.confidencePercent).toBeGreaterThanOrEqual(64);
+    expect(out.confidencePercent).toBeGreaterThanOrEqual(84);
   });
 
   it('parses all embedding formats, handles 20-deg roll tilt & mirror flip, and enforces strict 6/6 unanimous identity lock', () => {
@@ -1016,18 +1041,32 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     expect(mirrorMatch.matched).toBe(true);
     expect(mirrorMatch.bestCandidate?.patientId).toBe('pat-5angle');
 
-    // 6. Allows natural desk posture in isFullFrontalFaceReadyForLogin
+    // 6. Strict Frontal Kiosk Login Gate: |yaw| <= 14 deg and |pitch| <= 14 deg (rejects angled profiles >= 15 deg or blurry frames)
     expect(
       isFullFrontalFaceReadyForLogin(
         tiltedLms,
         { yawDeg: 32, pitchDeg: 18, depthScore: 0.42 },
         { scan_status: 'PASS', error_code: 'NONE' },
       ),
+    ).toBe(false);
+    expect(
+      isFullFrontalFaceReadyForLogin(
+        tiltedLms,
+        { yawDeg: 8, pitchDeg: 6, depthScore: 0.42 },
+        { scan_status: 'RETRY', error_code: 'BLURRY' },
+      ),
+    ).toBe(false);
+    expect(
+      isFullFrontalFaceReadyForLogin(
+        tiltedLms,
+        { yawDeg: 12, pitchDeg: -13, depthScore: 0.42 },
+        { scan_status: 'PASS', error_code: 'NONE' },
+      ),
     ).toBe(true);
 
-    // 7. Strict 3/3 Unanimous Identity Lock: resets immediately to 0 on miss or identity switch
+    // 7. Strict 6/6 Unanimous Identity Lock: resets immediately to 0 on miss or identity switch
     const matcher = new TemporalBiometricMatcher();
-    expect(matcher.requiredConsecutiveFrames).toBe(3);
+    expect(matcher.requiredConsecutiveFrames).toBe(6);
 
     const angledProbe = l2Normalize(
       pureRightOwner.angleEmbeddings.right.map((v, idx) => v * 0.94 + pureRightOwner.masterEmbedding[idx] * 0.06),
@@ -1084,8 +1123,8 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     expect(glitchFrame.confirmed).toBe(false);
     expect(glitchFrame.candidate).toBeNull();
 
-    // Requires full 3/3 consecutive matching frames to confirm & reveal candidate
-    for (let i = 0; i < 2; i += 1) {
+    // Requires full 6/6 consecutive matching frames to confirm & reveal candidate
+    for (let i = 0; i < 5; i += 1) {
       const step = matcher.evaluateFrame(
         {
           probeVector: angledProbe,
@@ -1103,7 +1142,7 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
       expect(step.streakCount).toBe(i + 1);
       expect(step.candidate).toBeNull();
     }
-    const thirdConfirm = matcher.evaluateFrame(
+    const sixthConfirm = matcher.evaluateFrame(
       {
         probeVector: angledProbe,
         depthScore: 0.52,
@@ -1116,9 +1155,9 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
       },
       [otherPat, pureRightOwner],
     );
-    expect(thirdConfirm.confirmed).toBe(true);
-    expect(thirdConfirm.streakCount).toBe(3);
-    expect(thirdConfirm.candidate?.patientId).toBe('pat-5angle');
+    expect(sixthConfirm.confirmed).toBe(true);
+    expect(sixthConfirm.streakCount).toBe(6);
+    expect(sixthConfirm.candidate?.patientId).toBe('pat-5angle');
   });
 
   it('enforces Pose-Synchronized matching, >= 0.08 Distinctiveness Margin, excludedPatientIds ("ไม่ใช่ฉัน"), Bottom-20% outlier trimming, and Two-Person Room Separation', () => {
@@ -1403,9 +1442,17 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
       biometricEngine: 'hybrid-512d',
     };
 
-    // 1. ArcFace probe with >= 0.54 neural cosine (even if ~0.62 — below hybrid's 0.75!) matches ArcFace account cleanly!
-    const litArcProbe = l2Normalize(arcOwnerVec.map((v, i) => v * 0.65 + mkArcFaceUnit(777)[i] * 0.42));
-    const arcMatch = identifyPatient1toN(litArcProbe, [hybridCandidate, arcOwnerCandidate], {
+    // 1. Sub-threshold ArcFace probe (~0.839 < 0.84) is rejected; genuine probe (>= 0.84 raw, >= 0.80 centered, <= 0.56 L2) matches ArcFace account cleanly!
+    const subThreshArcProbe = l2Normalize(arcOwnerVec.map((v, i) => v * 0.65 + mkArcFaceUnit(777)[i] * 0.42));
+    const subArcReject = identifyPatient1toN(subThreshArcProbe, [hybridCandidate, arcOwnerCandidate], {
+      engine: 'arcface-onnx',
+      yawDeg: 0,
+      pitchDeg: 0,
+    });
+    expect(subArcReject.matched).toBe(false);
+
+    const genuineArcProbe = l2Normalize(arcOwnerVec.map((v, i) => v * 0.88 + mkArcFaceUnit(777)[i] * 0.25));
+    const arcMatch = identifyPatient1toN(genuineArcProbe, [hybridCandidate, arcOwnerCandidate], {
       engine: 'arcface-onnx',
       yawDeg: 0,
       pitchDeg: 0,
@@ -1459,5 +1506,136 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     farLeftLm[61] = { x: 0.176, y: 0.458, z: 0 };
     farLeftLm[291] = { x: 0.184, y: 0.458, z: 0 };
     expect(isFullFrontalFaceReadyForLogin(farLeftLm, mockPose, passInspect)).toBe(true);
+  });
+
+  it('rejects unregistered 0.70 strangers in 1-patient & 3-patient DBs while passing genuine +/-2% probes across all 3 Triple-Gate stages', () => {
+    const mk1024 = (seed: number) =>
+      l2Normalize(Array.from({ length: 1024 }, (_, idx) => Math.sin((idx + 1) * (seed * 0.91 + 0.13))));
+
+    const mkRgba = (seed: number, brightOffset = 0, flip = false) => {
+      const w = 32;
+      const h = 32;
+      const data = new Uint8ClampedArray(w * h * 4);
+      for (let y = 0; y < h; y += 1) {
+        for (let x = 0; x < w; x += 1) {
+          const i = (y * w + x) * 4;
+          const base = 128 + Math.sin((x + 1) * (seed * 0.21)) * 52 + Math.cos((y + 1) * (seed * 0.17)) * 46;
+          const raw = flip ? 255 - base : base + brightOffset;
+          const px = Math.max(0, Math.min(255, Math.round(raw)));
+          data[i] = px;
+          data[i + 1] = Math.max(0, Math.min(255, px + (seed % 7) - 3));
+          data[i + 2] = Math.max(0, Math.min(255, px - (seed % 5) + 2));
+          data[i + 3] = 255;
+        }
+      }
+      return { width: w, height: h, data };
+    };
+
+    const mkLms = (dx = 0) => {
+      const lms = Array.from({ length: 478 }, () => ({ x: 0.5, y: 0.5, z: 0 }));
+      lms[33] = { x: 0.41 + dx, y: 0.41, z: 0 };
+      lms[133] = { x: 0.46, y: 0.41, z: 0 };
+      lms[263] = { x: 0.59 - dx, y: 0.41, z: 0 };
+      lms[362] = { x: 0.54, y: 0.41, z: 0 };
+      lms[168] = { x: 0.5, y: 0.4, z: -0.02 };
+      lms[10] = { x: 0.5, y: 0.27, z: 0 };
+      lms[1] = { x: 0.5, y: 0.5, z: -0.04 };
+      lms[61] = { x: 0.45, y: 0.61, z: 0 };
+      lms[291] = { x: 0.55, y: 0.61, z: 0 };
+      lms[152] = { x: 0.5, y: 0.73, z: 0 };
+      lms[234] = { x: 0.33, y: 0.48, z: 0 };
+      lms[454] = { x: 0.67, y: 0.48, z: 0 };
+      lms[172] = { x: 0.37, y: 0.62, z: 0 };
+      lms[397] = { x: 0.63, y: 0.62, z: 0 };
+      return lms;
+    };
+
+    const p1Patch = extractFacePatchSignature384FromRgba(mkRgba(5, 0, false))!;
+    const p1LitPatch = extractFacePatchSignature384FromRgba(mkRgba(5, 28, false))!;
+    const pStrangerPatch = extractFacePatchSignature384FromRgba(mkRgba(17, 0, true))!;
+    expect(computePatchZnccScore(p1Patch, p1LitPatch)).toBeGreaterThanOrEqual(0.76);
+    expect(computePatchZnccScore(p1Patch, pStrangerPatch)).toBeLessThan(0.76);
+
+    const cranioBase = computeCraniofacialRatios12(mkLms(0))!;
+    const cranioSmallJitter = computeCraniofacialRatios12(mkLms(0.0015))!;
+
+    const makeNeuralEntry = (id: string, hn: string, name: string, seed: number, patch: number[]): PatientBiometricIndexEntry => {
+      const m = mk1024(seed);
+      return {
+        patientId: id,
+        hn,
+        fullName: name,
+        diagnosis: 'Stroke',
+        assignedPtId: 'pt-1',
+        nextAppointmentDate: '2026-11-20',
+        framesCaptured: 120,
+        qualityScore: 0.97,
+        biometricEngine: 'human-faceres-1024d',
+        masterEmbedding: m,
+        angleEmbeddings: { center: m, left: m, right: m, up: m, down: m },
+        exemplarEmbeddings: [m],
+        geometricRatios: {
+          eyeToNoseRatio: 1.15,
+          faceWidthToUpperHeight: 1.22,
+          mouthToEyeRatio: 0.88,
+          noseToChinRatio: 0.92,
+          appearancePatch384: patch,
+          craniofacialRatios12: cranioBase,
+        },
+      };
+    };
+
+    const p1 = makeNeuralEntry('pat-single-1', 'HN-01', 'คุณหนึ่ง', 11, p1Patch);
+    const p2 = makeNeuralEntry('pat-multi-2', 'HN-02', 'คุณสอง', 23, pStrangerPatch);
+    const p3 = makeNeuralEntry('pat-multi-3', 'HN-03', 'คุณสาม', 37, pStrangerPatch);
+
+    // 1. 1-patient DB vs 0.70 similarity stranger -> strictly matched: false, bestCandidate: null
+    const noiseRaw = mk1024(99);
+    const dot = p1.masterEmbedding.reduce((a, v, idx) => a + v * noiseRaw[idx], 0);
+    const ortho = l2Normalize(noiseRaw.map((v, idx) => v - dot * p1.masterEmbedding[idx]));
+    const stranger070 = l2Normalize(
+      p1.masterEmbedding.map((v, idx) => v * 0.7 + ortho[idx] * Math.sqrt(1 - 0.7 * 0.7)),
+    );
+    const onePatRes = identifyPatient1toN(stranger070, [p1], {
+      engine: 'human-faceres-1024d',
+      geometricRatios: {
+        eyeToNoseRatio: 1.15,
+        faceWidthToUpperHeight: 1.22,
+        mouthToEyeRatio: 0.88,
+        noseToChinRatio: 0.92,
+        appearancePatch384: pStrangerPatch,
+        craniofacialRatios12: cranioSmallJitter,
+      },
+    });
+    expect(onePatRes.matched).toBe(false);
+    expect(onePatRes.bestCandidate).toBeNull();
+
+    // 2. 3-patient DB vs imposter cohort vector -> strictly rejected
+    const cohortProbe1024 = getImposterCohortVectors(1024)[0];
+    const threePatRes = identifyPatient1toN(cohortProbe1024, [p1, p2, p3], {
+      engine: 'human-faceres-1024d',
+    });
+    expect(threePatRes.matched).toBe(false);
+    expect(threePatRes.bestCandidate).toBeNull();
+
+    // 3. Genuine probe with +/-2% noise + brightness-shifted ZNCC patch passes Triple-Gate
+    const genuineProbe = l2Normalize(
+      p1.masterEmbedding.map((v, idx) => v * 0.98 + ortho[idx] * Math.sqrt(1 - 0.98 * 0.98)),
+    );
+    const genuineRes = identifyPatient1toN(genuineProbe, [p1, p2, p3], {
+      engine: 'human-faceres-1024d',
+      geometricRatios: {
+        eyeToNoseRatio: 1.15,
+        faceWidthToUpperHeight: 1.22,
+        mouthToEyeRatio: 0.88,
+        noseToChinRatio: 0.92,
+        appearancePatch384: p1LitPatch,
+        craniofacialRatios12: cranioSmallJitter,
+      },
+    });
+    expect(genuineRes.matched).toBe(true);
+    expect(genuineRes.bestCandidate?.patientId).toBe('pat-single-1');
+    expect(genuineRes.patchZncc).toBeGreaterThanOrEqual(0.76);
+    expect(genuineRes.craniofacialDeviation).toBeLessThanOrEqual(0.065);
   });
 });
