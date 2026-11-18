@@ -56,6 +56,10 @@ import {
   validateTetheredHandLandmarks21,
 } from '../components/SmartRehabKioskUI';
 import {
+  AnimatedRehabCoachModel,
+  computeCoachTimelineFrame,
+} from '../components/AnimatedRehabCoachModel';
+import {
   KIOSK_VOICE_MUTED_STORAGE_KEY,
   VOICE_COACH_LANGUAGES,
   buildTtsProxyUrl,
@@ -3331,19 +3335,42 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
         onBackToAdminPortal: () => {},
       }),
     );
+    expect(testUiHtml).toContain('h-[100dvh] max-h-[100dvh] w-full overflow-hidden');
+    expect(testUiHtml).toContain('flex-1 min-h-0');
     expect(testUiHtml).toContain('pose-test-switcher-bar');
     expect(testUiHtml).toContain('HN-TEST-POSE');
     expect(testUiHtml).toContain('ผู้ทดลองระบบ (โหมดทดสอบท่ากายภาพ 15 ท่า)');
+    expect(testUiHtml).toContain('Dr.Tech.Care • โหมดทดสอบท่าทาง');
+    expect(testUiHtml).toContain('🟢 ออนไลน์ (ระบบกล้องพร้อม)');
     expect(testUiHtml).toContain('เลือกท่าที่จะทดลอง 1–15');
     expect(testUiHtml).toContain('1. ');
     expect(testUiHtml).toContain('15. ');
-    expect(testUiHtml).toContain('⏮ ท่าก่อนหน้า');
-    expect(testUiHtml).toContain('⏭ ท่าถัดไป');
-    expect(testUiHtml).toContain('⬅️ ข้างซ้าย (Left)');
-    expect(testUiHtml).toContain('➡️ ข้างขวา (Right)');
-    expect(testUiHtml).toContain('🙌 ทั้งสองข้าง (Both)');
-    expect(testUiHtml).toContain('🔄 รีเซ็ตรอบนับ (0/10)');
-    expect(testUiHtml).toContain('⬅️ กลับหน้า Admin Portal');
+    expect(testUiHtml).toContain('⏮ ก่อนหน้า');
+    expect(testUiHtml).toContain('ถัดไป ⏭');
+    expect(testUiHtml).toContain('ซ้าย (L)');
+    expect(testUiHtml).toContain('ขวา (R)');
+    expect(testUiHtml).toContain('ทั้งสองข้าง (Both)');
+    expect(testUiHtml).toContain('🔄 รีเซ็ต (0/10)');
+    expect(testUiHtml).toContain('← กลับหน้า Admin Portal');
+    expect(testUiHtml).toContain('kiosk-unified-coaching-banner');
+    expect(testUiHtml).toContain('จำนวนครั้งสำเร็จ');
+    expect(testUiHtml).toContain('⏱ ค้างท่าเป้าหมาย');
+    expect(testUiHtml).toContain('kiosk-hold-timer-display');
+    expect(testUiHtml).toContain('มุมการเคลื่อนไหว ROM');
+    expect(testUiHtml).toContain('kiosk-pip-coach-box');
+    expect(testUiHtml).toContain('kiosk-pip-coach-toggle');
+    expect(testUiHtml).toContain('kiosk-coach-expand-btn');
+    expect(testUiHtml).toContain('🔍 ขยายใหญ่');
+    expect(testUiHtml).toContain('🎬 หุ่นสาธิต');
+    expect(testUiHtml).toContain('kiosk-step-card-1');
+    expect(testUiHtml).toContain('kiosk-step-card-2');
+    expect(testUiHtml).toContain('kiosk-step-card-3');
+    expect(testUiHtml).toContain('▶ กำลังทำขั้นนี้');
+    expect(testUiHtml).toContain('animated-rehab-coach-model');
+    expect(testUiHtml).toContain('ตารางตรวจสอบเช็คลิสต์');
+    expect(testUiHtml).toContain('THAI AI VOICE COACH:');
+    expect(testUiHtml).toContain('🔊 เสียงพากย์');
+    expect(testUiHtml).toContain('kiosk-voice-mute-toggle');
 
     // ClinicalStaffPortalShell renders all 3 quick-launch Pose Test buttons (sidebar, top header, Tab 4)
     const mockApi = new DrTechCaresApiClient();
@@ -3376,6 +3403,58 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(portalHtml).toContain('tab4-pose-test-btn');
     expect(portalHtml).toContain('exercise-card-pose-test-STROKE_SH_FLEX');
     expect(portalHtml).toContain('▶️ ทดลองทำท่านี้ด้วยกล้องทันที');
+  });
+
+  it('renders synchronized 60FPS AnimatedRehabCoachModel for all 15 clinical exercises and LEFT/RIGHT/BOTH across all 4 timeline phases', () => {
+    const fPrepare = computeCoachTimelineFrame(0.5, 3);
+    expect(fPrepare.phase).toBe('prepare');
+    expect(fPrepare.activeStepNumber).toBe(1);
+    expect(fPrepare.motionProgress).toBe(0);
+
+    const fMove = computeCoachTimelineFrame(2.1, 3);
+    expect(fMove.phase).toBe('move');
+    expect(fMove.activeStepNumber).toBe(2);
+    expect(fMove.motionProgress).toBeGreaterThan(0.2);
+    expect(fMove.motionProgress).toBeLessThan(0.9);
+
+    const fHold = computeCoachTimelineFrame(4.0, 3);
+    expect(fHold.phase).toBe('hold');
+    expect(fHold.activeStepNumber).toBe(3);
+    expect(fHold.motionProgress).toBe(1);
+
+    const fLower = computeCoachTimelineFrame(5.6, 3);
+    expect(fLower.phase).toBe('lower');
+    expect(fLower.activeStepNumber).toBe(3);
+    expect(fLower.motionProgress).toBeLessThan(1);
+
+    const all15 = buildAll15ClinicalExercisePrescriptions();
+    expect(all15).toHaveLength(15);
+
+    for (const ex of all15) {
+      for (const side of ['LEFT', 'RIGHT', 'BOTH'] as const) {
+        const htmlHold = renderToStaticMarkup(
+          React.createElement(AnimatedRehabCoachModel, {
+            exercise: ex,
+            targetSide: side,
+            cycleElapsedSec: 4.0,
+          }),
+        );
+        expect(htmlHold).toContain('animated-rehab-coach-model');
+        expect(htmlHold).toContain('data-coach-phase="hold"');
+        expect(htmlHold).toContain('#10b981');
+        expect(htmlHold).toContain(
+          side === 'LEFT' ? 'ซ้าย (L)' : side === 'RIGHT' ? 'ขวา (R)' : 'ทั้ง 2 ข้าง',
+        );
+      }
+      const htmlLower = renderToStaticMarkup(
+        React.createElement(AnimatedRehabCoachModel, {
+          exercise: ex,
+          targetSide: 'RIGHT',
+          cycleElapsedSec: 5.5,
+        }),
+      );
+      expect(htmlLower).toContain('+1 ครั้ง!');
+    }
   });
 });
 

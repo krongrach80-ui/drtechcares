@@ -76,31 +76,32 @@ import {
   Eye,
   EyeOff,
   Gamepad2,
-  HeartPulse,
   Pause,
   Play,
   PlusCircle,
   RotateCcw,
+  Shield,
   SlidersHorizontal,
-  Sparkles,
   Timer,
-  UserCheck,
   Volume2,
   VolumeX,
-  Wifi,
-  WifiOff,
 } from 'lucide-react';
-import { ExercisePostureGuide, ExercisePostureSvg } from './ExercisePostureGuide';
+import {
+  ExpandedCoachModal,
+  Zone2PipCoachOverlay,
+  Zone4CoachStageAndSteps,
+} from './AnimatedRehabCoachModel';
+import { resolveExercisePostureSpec } from './ExercisePostureGuide';
 import { FaceScanOverlay } from './FaceScanOverlay';
-import { RomGauge } from './RomGauge';
 import { SkeletonCanvas } from './SkeletonCanvas';
 import {
   VoiceCoachBanner,
   cancelAllKioskVoiceSpeech,
-  getSeniorVoiceToggleLabel,
   readStoredKioskVoiceMuted,
   subscribeKioskVoiceMuted,
+  translateVoiceCoachText,
   writeStoredKioskVoiceMuted,
+  type VoiceCoachLanguage,
 } from './VoiceCoachBanner';
 import {
   POSE_TEST_PATIENT,
@@ -2078,6 +2079,28 @@ export function SmartRehabKioskUI({
       return next;
     });
   };
+  const [zone5VoiceLang, setZone5VoiceLang] = useState<VoiceCoachLanguage>(() => {
+    if (typeof window === 'undefined') return 'th';
+    try {
+      const saved = window.localStorage.getItem('drtechcares_voice_coach_lang_v1');
+      return saved === 'en' || saved === 'zh' ? saved : 'th';
+    } catch {
+      return 'th';
+    }
+  });
+  const handleSelectZone5VoiceLang = (nextLang: VoiceCoachLanguage) => {
+    setZone5VoiceLang(nextLang);
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem('drtechcares_voice_coach_lang_v1', nextLang);
+      } catch {
+        // Ignore storage errors in restricted contexts
+      }
+    }
+  };
+  const [toolsPopoverOpen, setToolsPopoverOpen] = useState<boolean>(false);
+  const [showPipCoach, setShowPipCoach] = useState<boolean>(true);
+  const [coachModalOpen, setCoachModalOpen] = useState<boolean>(false);
   const [drawerOpen, setDrawerOpen] = useState(() => !patientProp);
   const [formRules, setFormRules] = useState<FormAssessmentRulesConfig>(() => {
     try {
@@ -3961,1180 +3984,987 @@ export function SmartRehabKioskUI({
   const hasDisabledFormRule =
     !formRules.enabled || checklistItems.some((item) => !item.ruleActive);
 
+  const isOnlineReady = !isDemoMode && (connectionStatus === 'connected' || livePoseActive);
+  const displayedDistanceM =
+    !isDemoMode && isEdgeDirectCamera
+      ? (payload.calibration?.estimated_distance_m ?? 0)
+      : demoDistanceM;
+  const distanceLabel =
+    displayedDistanceM > 0
+      ? `${displayedDistanceM.toFixed(1)} ม.${displayedDistanceM >= 1.4 && displayedDistanceM <= 2.6 ? ' (เหมาะสม)' : ''}`
+      : 'รอจับระยะ...';
+  const currentUiSide =
+    resolveExerciseSideFromMeta(
+      selectedExercise,
+      selectedExercise.target_joint,
+      activeExpectedPlane,
+    ) ?? activePoseTestSide;
+  const targetSideLabel =
+    currentUiSide === 'BOTH'
+      ? 'ทั้งสองข้าง (Both)'
+      : currentUiSide === 'LEFT'
+        ? 'ซ้าย (Left)'
+        : 'ขวา (Right)';
+  const activeRom = Math.max(0, telemetry_analysis.current_rom_deg);
+  const holdTargetSec = Math.max(0.5, selectedExercise.hold_sec);
+  const liveHoldElapsed = isWaitLowerArmUi
+    ? holdTargetSec
+    : holdElapsedUiSec > 0
+      ? holdElapsedUiSec
+      : Math.max(0, holdTargetSec - rep_counter.hold_remaining_sec);
+  const holdPct =
+    isWaitLowerArmUi || kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED'
+      ? 100
+      : Math.max(0, Math.min(100, (liveHoldElapsed / holdTargetSec) * 100));
+  const romPct =
+    effectiveTargetRomDeg > 0
+      ? Math.min(100, Math.max(0, Math.round((activeRom / effectiveTargetRomDeg) * 100)))
+      : Math.min(100, Math.max(0, Math.round(telemetry_analysis.rom_completion_pct)));
+  const postureSpec = resolveExercisePostureSpec(selectedExercise, 'th');
+  const coreChecklistItems = [
+    {
+      ruleKey: 'trunk' as const,
+      displayLabel: 'ลำตัวตั้งตรง ไม่เอียง',
+      baseItem: checklistItems.find((item) => item.ruleKey === 'trunk'),
+    },
+    {
+      ruleKey: 'posture' as const,
+      displayLabel: 'ผ่อนหัวไหล่ ไม่ยกเกร็ง',
+      baseItem: checklistItems.find((item) => item.ruleKey === 'posture'),
+    },
+    {
+      ruleKey: 'identity' as const,
+      displayLabel: 'ยืนยันตัวตนคนไข้ (1 คนในเฟรม)',
+      baseItem: checklistItems.find((item) => item.ruleKey === 'identity'),
+    },
+  ].filter(
+    (entry): entry is {
+      ruleKey: 'trunk' | 'posture' | 'identity';
+      displayLabel: string;
+      baseItem: (typeof checklistItems)[number];
+    } => Boolean(entry.baseItem),
+  );
+  const rawVoiceTextTh =
+    strokeSafetyAlert?.messageTh ?? telemetry_analysis.safety_guard_banner_th ?? tts_voice_th;
+  const displayedVoiceSubtitle = translateVoiceCoachText(rawVoiceTextTh, zone5VoiceLang);
+
   return (
-    <div className="clinical-mist-bg relative min-h-screen w-full overflow-x-hidden text-[#0F4C81]">
-      {/* 1. Ambient Breathing Aurora Background */}
-      <div className="pointer-events-none fixed inset-0 overflow-hidden">
-        <motion.div
-          animate={{ x: [0, 36, -18, 0], y: [0, -24, 20, 0], scale: [1, 1.08, 0.96, 1] }}
-          transition={{ repeat: Infinity, duration: 18, ease: 'easeInOut' }}
-          className="absolute -left-24 -top-24 h-96 w-96 rounded-full bg-[#A7F3D0]/55 blur-3xl"
-        />
-        <motion.div
-          animate={{ x: [0, -40, 24, 0], y: [0, 28, -16, 0], scale: [1, 0.94, 1.07, 1] }}
-          transition={{ repeat: Infinity, duration: 22, ease: 'easeInOut' }}
-          className="absolute -bottom-24 -right-24 h-[440px] w-[440px] rounded-full bg-[#BAE6FD]/60 blur-3xl"
-        />
-        <motion.div
-          animate={{ opacity: [0.25, 0.45, 0.25] }}
-          transition={{ repeat: Infinity, duration: 10, ease: 'easeInOut' }}
-          className="absolute left-1/2 top-1/3 h-80 w-80 -translate-x-1/2 rounded-full bg-[#E0F2FE]/70 blur-3xl"
-        />
-      </div>
-
-      {/* Main Full-Width Widescreen Container */}
-      <div className="relative z-10 w-full max-w-[1680px] mx-auto px-3 sm:px-5 py-2.5 flex min-h-screen flex-col justify-between gap-2.5">
-        {/* 2. Compact 1-Row Top Status Header */}
-        <header className="glass-card flex flex-wrap items-center justify-between gap-2 rounded-2xl p-3">
-          {/* Left: Logo + Edge Vision Connection Status */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="flex items-center gap-2">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#0284C7] to-[#10B981] text-white shadow-sm">
-                <HeartPulse className="h-5 w-5" />
-              </div>
-              <div>
-                <h1 className="text-base font-extrabold tracking-tight text-[#0F4C81] sm:text-lg leading-none">
-                  DRTECH<span className="text-[#0D9488]">CARES</span>
-                </h1>
-                <p className="text-[10px] font-semibold text-[#0284C7]">Smart Rehabilitation Kiosk</p>
-              </div>
+    <div className="h-[100dvh] max-h-[100dvh] w-full overflow-hidden bg-gradient-to-b from-slate-50 via-white to-emerald-50/40 text-slate-800 flex flex-col justify-between p-2.5 md:p-3 gap-2 select-none">
+      {/* ZONE 1: Compact 2-Row Clinical White-Blue-Green Header & Controls */}
+      <header
+        data-testid={isPoseTestMode ? 'pose-test-switcher-bar' : undefined}
+        className="shrink-0 bg-white border-2 border-sky-100 rounded-2xl px-3 py-2 shadow-sm flex flex-col gap-1.5"
+      >
+        {/* Row 1: Brand, Status Pill, Quick Reset, Return to Admin Portal */}
+        <div className="flex items-center justify-between gap-2 flex-nowrap">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-teal-500 to-emerald-600 text-white shadow-xs">
+              <Shield className="h-4 w-4" />
             </div>
-
-            <div
-              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${!isDemoMode && (connectionStatus === 'connected' || livePoseActive)
-                  ? 'border-emerald-200 bg-emerald-50 text-[#0D9488]'
-                  : 'border-sky-200 bg-sky-50 text-[#0284C7]'
-                }`}
-            >
-              <span className="relative flex h-2 w-2">
-                <span
-                  className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 ${!isDemoMode && (connectionStatus === 'connected' || livePoseActive)
-                      ? 'bg-[#10B981]'
-                      : 'bg-[#38BDF8]'
-                    }`}
-                />
-                <span
-                  className={`relative inline-flex h-2 w-2 rounded-full ${!isDemoMode && (connectionStatus === 'connected' || livePoseActive)
-                      ? 'bg-[#10B981]'
-                      : 'bg-[#0284C7]'
-                    }`}
-                />
-              </span>
-              {!isDemoMode && (connectionStatus === 'connected' || livePoseActive) ? (
-                <>
-                  <Wifi className="h-3 w-3" />
-                  <span>
-                    {connectionStatus === 'connected'
-                      ? 'Edge Vision 3D'
-                      : 'Live AI 3D Active'}
-                  </span>
-                </>
-              ) : !isDemoMode ? (
-                <>
-                  <WifiOff className="h-3 w-3" />
-                  <span>Camera Paused</span>
-                </>
-              ) : (
-                <>
-                  <WifiOff className="h-3 w-3" />
-                  <span>
-                    {connectionStatus === 'connected'
-                      ? 'Demo (Live Paused)'
-                      : 'Demo Mode'}
-                  </span>
-                </>
-              )}
-            </div>
-
-            {/* Patient Profile Badge inline when active */}
-            <AnimatePresence>
+            <div className="flex items-baseline gap-2 min-w-0 truncate">
+              <h1 className="font-extrabold text-blue-950 text-base md:text-lg truncate">
+                Dr.Tech.Care • {isPoseTestMode ? 'โหมดทดสอบท่าทาง' : 'Smart Rehab Kiosk'}
+              </h1>
               {patientRevealed && patient && (
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.96 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="flex items-center gap-2 rounded-xl border border-emerald-200/90 bg-white/90 px-3 py-1 shadow-xs"
-                >
-                  <UserCheck className="h-3.5 w-3.5 text-[#0D9488]" />
-                  <span className="text-xs font-bold text-[#0F4C81]">{patient.name}</span>
-                  <span className="tabular-mono text-[11px] font-semibold text-[#0284C7]">
-                    ({patient.id} • {rep_counter.valid_reps}/{selectedExercise.target_reps})
-                  </span>
-                </motion.div>
+                <span className="hidden sm:inline text-xs md:text-sm font-bold text-sky-700 truncate">
+                  {patient.name} ({patient.id})
+                </span>
               )}
-            </AnimatePresence>
+            </div>
           </div>
 
-          {/* Right: Compact Action Controls */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              onClick={handleToggleVoiceMute}
-              aria-pressed={voiceMuted}
-              data-testid="kiosk-voice-mute-toggle"
-              className={`inline-flex items-center gap-1.5 rounded-xl border-2 px-2.5 py-1.5 text-xs font-extrabold shadow-xs transition-all cursor-pointer active:scale-95 ${
-                voiceMuted
-                  ? 'border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200'
-                  : 'border-emerald-400 bg-emerald-100 text-emerald-950 hover:bg-emerald-200'
+          <div className="flex items-center gap-2 shrink-0">
+            <div
+              className={`rounded-full border px-3 py-1 font-bold text-xs md:text-sm whitespace-nowrap ${
+                isOnlineReady
+                  ? 'bg-emerald-50 border-emerald-400 text-emerald-800'
+                  : 'bg-amber-50 border-amber-400 text-amber-800'
               }`}
             >
-              {voiceMuted ? (
-                <VolumeX className="h-3.5 w-3.5 shrink-0 text-amber-700" />
-              ) : (
-                <Volume2 className="h-3.5 w-3.5 shrink-0 text-emerald-700" />
-              )}
-              <span>{getSeniorVoiceToggleLabel('th', voiceMuted)}</span>
-            </button>
+              {isOnlineReady
+                ? '🟢 ออนไลน์ (ระบบกล้องพร้อม)'
+                : isDemoMode
+                  ? '🟡 โหมดจำลอง'
+                  : '🟠 พักกล้องชั่วคราว'}
+            </div>
 
             <button
               type="button"
-              onClick={() => {
-                const nextLive = !livePoseActive;
-                setLivePoseActive(nextLive);
-                if (nextLive && isDemoMode) {
-                  setAutoCycleDemo(false);
-                  toggleDemoMode(false);
-                }
-              }}
-              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-bold transition-all cursor-pointer ${livePoseActive
-                  ? 'border-emerald-300 bg-emerald-50 text-[#0D9488]'
-                  : 'border-slate-200 bg-white/80 text-slate-600 hover:bg-slate-50'
-                }`}
+              onClick={isPoseTestMode ? handleResetPoseTestReps : resetDemoSession}
+              className="bg-sky-50 hover:bg-sky-100 border border-sky-300 text-blue-800 font-bold text-xs md:text-sm px-3 py-1 rounded-xl cursor-pointer active:scale-95 transition whitespace-nowrap"
             >
-              <Camera className="h-3.5 w-3.5" />
-              <span>{livePoseActive ? 'กล้อง AI: ON' : 'กล้อง AI: OFF'}</span>
+              🔄 รีเซ็ต (0/{selectedExercise.target_reps})
             </button>
 
-            <button
-              type="button"
-              onClick={handleTogglePrivacyMode}
-              aria-pressed={isPrivacyMode}
-              title="สลับระหว่างโหมดความเป็นส่วนตัว (พื้นหลังดำ) และโหมดแสดงภาพกล้องจริง"
-              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-bold transition-all cursor-pointer ${isPrivacyMode
-                  ? 'border-slate-700 bg-slate-900 text-emerald-300 shadow-sm hover:bg-slate-800'
-                  : 'border-sky-300 bg-sky-50 text-[#0F4C81] hover:bg-sky-100'
-                }`}
-            >
-              {isPrivacyMode ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-              <span>{isPrivacyMode ? 'โหมดความเป็นส่วนตัว' : 'โหมดภาพกล้องจริง'}</span>
-            </button>
+            {onBackToAdminPortal || onOpenStaffPortal ? (
+              <button
+                type="button"
+                onClick={onBackToAdminPortal ?? onOpenStaffPortal}
+                className="bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs md:text-sm px-3.5 py-1.5 rounded-xl shadow-sm cursor-pointer active:scale-95 transition whitespace-nowrap"
+              >
+                ← กลับหน้า Admin Portal
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => handleEmergencyStopClick()}
+                className="bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs md:text-sm px-3.5 py-1.5 rounded-xl shadow-sm cursor-pointer active:scale-95 transition whitespace-nowrap"
+              >
+                หยุดฉุกเฉิน
+              </button>
+            )}
+          </div>
+        </div>
 
-            <button
-              type="button"
-              onClick={handleToggleSkeletonOverlay}
-              aria-pressed={showSkeletonOverlay}
-              title="สลับการแสดงหรือซ่อนเส้นโครงกระดูกและมุมข้อต่อบนหน้าจอ"
-              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-bold transition-all cursor-pointer ${showSkeletonOverlay
-                  ? 'border-teal-300 bg-teal-50 text-[#0D9488] hover:bg-teal-100'
-                  : 'border-slate-200 bg-white/80 text-slate-600 hover:bg-slate-50'
-                }`}
-            >
-              <Activity className="h-3.5 w-3.5" />
-              <span>{showSkeletonOverlay ? 'โครงกระดูก: ON' : 'โครงกระดูก: OFF'}</span>
-            </button>
+        {/* Row 2: Exercise Dropdown (1-15) + Prev/Next Buttons + Left/Right/Both Side Pills */}
+        <div className="flex items-center justify-between gap-2 flex-wrap md:flex-nowrap">
+          <label htmlFor="pose-test-exercise-select" className="sr-only">
+            เลือกท่าที่จะทดลอง 1–{exerciseOptions.length}
+          </label>
+          <select
+            id="pose-test-exercise-select"
+            aria-label={`เลือกท่าที่จะทดลอง 1–${exerciseOptions.length}`}
+            value={selectedExercise.exercise_id}
+            onChange={(e) => {
+              if (isPoseTestMode) {
+                handleSelectPoseTestExercise(e.target.value);
+              } else {
+                const nextRx = exerciseOptions.find((opt) => opt.exercise_id === e.target.value);
+                if (nextRx) setSelectedExercise(nextRx);
+              }
+            }}
+            className="flex-1 min-w-[200px] bg-slate-50 border-2 border-blue-200 text-blue-950 font-extrabold text-sm md:text-base rounded-xl px-3 py-1.5 focus:border-blue-500 focus:outline-none cursor-pointer"
+          >
+            {exerciseOptions.map((opt, idx) => (
+              <option key={opt.exercise_id} value={opt.exercise_id}>
+                {completedIds.includes(opt.exercise_id) && !isPoseTestMode ? '✓' : `${idx + 1}.`} {opt.name_th}
+              </option>
+            ))}
+          </select>
 
-            <button
-              type="button"
-              onClick={handleToggleDemoMode}
-              className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-bold transition-all cursor-pointer ${isDemoMode
-                  ? 'border-[#38BDF8] bg-[#E0F2FE] text-[#0F4C81]'
-                  : 'border-emerald-300 bg-emerald-50 text-[#0D9488]'
-                }`}
+          <button
+            type="button"
+            onClick={() => {
+              if (isPoseTestMode) {
+                handleStepPoseTestExercise(-1);
+              } else if (exerciseOptions.length > 0) {
+                const prevIdx = (currentExerciseIndex - 1 + exerciseOptions.length) % exerciseOptions.length;
+                setSelectedExercise(exerciseOptions[prevIdx]);
+              }
+            }}
+            className="bg-blue-50 hover:bg-blue-100 border border-blue-300 text-blue-800 font-extrabold text-xs md:text-sm px-3 py-1.5 rounded-xl shrink-0 cursor-pointer active:scale-95 transition whitespace-nowrap"
+          >
+            ⏮ ก่อนหน้า
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (isPoseTestMode) {
+                handleStepPoseTestExercise(1);
+              } else if (exerciseOptions.length > 0) {
+                const nextIdx = (currentExerciseIndex + 1) % exerciseOptions.length;
+                setSelectedExercise(exerciseOptions[nextIdx]);
+              }
+            }}
+            className="bg-blue-50 hover:bg-blue-100 border border-blue-300 text-blue-800 font-extrabold text-xs md:text-sm px-3 py-1.5 rounded-xl shrink-0 cursor-pointer active:scale-95 transition whitespace-nowrap"
+          >
+            ถัดไป ⏭
+          </button>
+
+          {isPoseTestMode ? (
+            <div
+              className="flex items-center gap-1.5 shrink-0"
+              role="group"
+              aria-label="เลือกข้างที่ต้องการทดสอบ"
             >
-              <SlidersHorizontal className="h-3.5 w-3.5" />
-              <span>
-                {isDemoMode
-                  ? 'Demo: ON'
-                  : isEdgeDirectCamera
-                    ? 'Edge: ON'
-                    : 'Demo: OFF'}
+              {(
+                [
+                  { code: 'LEFT' as const, label: 'ซ้าย (L)' },
+                  { code: 'RIGHT' as const, label: 'ขวา (R)' },
+                  { code: 'BOTH' as const, label: 'ทั้งสองข้าง (Both)' },
+                ] as const
+              ).map((pill) => {
+                const isActive = activePoseTestSide === pill.code;
+                return (
+                  <button
+                    key={pill.code}
+                    type="button"
+                    aria-pressed={isActive}
+                    onClick={() => handleSwitchPoseTestSide(pill.code)}
+                    className={`cursor-pointer active:scale-95 transition whitespace-nowrap rounded-xl ${
+                      isActive
+                        ? 'bg-emerald-600 border-2 border-emerald-700 text-white font-extrabold text-xs md:text-sm px-3.5 py-1.5 shadow-sm'
+                        : 'bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 font-bold text-xs md:text-sm px-3 py-1.5'
+                    }`}
+                  >
+                    {pill.label}
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="bg-emerald-600 border-2 border-emerald-700 text-white font-extrabold text-xs md:text-sm px-3.5 py-1.5 rounded-xl shadow-sm whitespace-nowrap">
+                {targetSideLabel}
               </span>
-            </button>
-
-            {onOpenLegacyKiosk && (
-              <button
-                type="button"
-                onClick={onOpenLegacyKiosk}
-                className="rounded-xl border border-sky-200 bg-white/80 px-2.5 py-1.5 text-xs font-bold text-[#0F4C81] hover:bg-sky-50 cursor-pointer"
-              >
-                สแกนเต็มระบบ
-              </button>
-            )}
-
-            {onOpenStaffPortal && (
-              <button
-                type="button"
-                onClick={onOpenStaffPortal}
-                className="rounded-xl border border-sky-200 bg-white/80 px-2.5 py-1.5 text-xs font-bold text-[#0284C7] hover:bg-sky-50 cursor-pointer"
-              >
-                Staff Portal
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={() => handleEmergencyStopClick()}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-[#EF4444] px-3 py-1.5 text-xs font-extrabold text-white shadow-sm transition-transform hover:bg-red-600 active:scale-95 cursor-pointer"
-            >
-              <AlertOctagon className="h-3.5 w-3.5" />
-              <span>หยุดฉุกเฉิน</span>
-            </button>
-          </div>
-        </header>
-
-        {/* Camera Hardware Alert Banner (only shown if local camera access fails) */}
-        {!isDemoMode && !isEdgeDirectCamera && cameraError && (
-          <div
-            role="alert"
-            className="glass-card flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-300/90 bg-rose-50/95 px-4 py-2 text-rose-950 shadow-sm"
-          >
-            <div className="flex min-w-0 flex-1 items-center gap-2.5">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-rose-500/15 text-rose-700">
-                <AlertTriangle className="h-4 w-4" />
-              </div>
-              <p className="text-xs font-extrabold text-rose-950">
-                ไม่สามารถเปิดกล้องเว็บแคมได้: {cameraError}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setCameraError(null);
-                setLivePoseActive(false);
-                window.setTimeout(() => setLivePoseActive(true), 120);
-              }}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-extrabold text-white shadow-sm hover:bg-rose-500"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-              <span>ลองเปิดกล้องใหม่</span>
-            </button>
-          </div>
-        )}
-
-        {allExercisesCompleted && onAllExercisesCompleted && (
-          <div className="glass-card flex flex-wrap items-center justify-between gap-3 rounded-2xl border-2 border-emerald-400 bg-emerald-50/95 px-4 py-2.5 shadow-md">
-            <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500 text-white shadow">
-                <CheckCircle2 className="h-5 w-5" />
-              </div>
-              <div>
-                <p className="text-sm font-extrabold text-emerald-950">
-                  ทำท่ากายภาพบำบัดครบทั้งหมด {exerciseOptions.length} ท่าแล้ว!
-                </p>
-                <p className="text-xs font-semibold text-emerald-800">
-                  ระบบกำลังพาเข้าสู่ขั้นตอนสุดท้าย: มินิเกมฝึกสมองและการ์ดกายภาพ...
-                </p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={onAllExercisesCompleted}
-              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-2 text-xs font-extrabold text-white shadow-md hover:from-emerald-500 hover:to-teal-500 cursor-pointer sm:text-sm"
-            >
-              <Gamepad2 className="h-4 w-4" />
-              <span>เข้าสู่มินิเกม (ขั้นตอนสุดท้าย) ➔</span>
-            </button>
-          </div>
-        )}
-
-        {/* Quick Exercise & Side Selector Bar (Pose Test Sandbox Mode / Bypass Face Scan) */}
-        {isPoseTestMode && (
-          <section
-            data-testid="pose-test-switcher-bar"
-            className="glass-card rounded-2xl border-2 border-teal-300/90 bg-gradient-to-r from-emerald-50/95 via-teal-50/95 to-sky-50/95 px-3.5 py-2.5 shadow-sm"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-2.5">
-              {/* Left: Badge + Dropdown (1-15) + Prev/Next */}
-              <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
-                <span className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-2.5 py-1 text-[11px] font-extrabold text-white shadow-xs shrink-0">
-                  🏃 โหมดทดลองท่ากายภาพ ({exerciseOptions.length} ท่า)
-                </span>
-
-                <label htmlFor="pose-test-exercise-select" className="sr-only">
-                  เลือกท่าที่จะทดลอง 1–{exerciseOptions.length}
-                </label>
-                <select
-                  id="pose-test-exercise-select"
-                  aria-label={`เลือกท่าที่จะทดลอง 1–${exerciseOptions.length}`}
-                  value={selectedExercise.exercise_id}
-                  onChange={(e) => handleSelectPoseTestExercise(e.target.value)}
-                  className="h-9 min-w-[240px] max-w-full sm:max-w-[380px] flex-1 rounded-xl border border-teal-300 bg-white px-2.5 text-xs font-extrabold text-[#0F4C81] shadow-xs focus:border-teal-500 focus:outline-none cursor-pointer"
-                >
-                  {exerciseOptions.map((opt, idx) => (
-                    <option key={opt.exercise_id} value={opt.exercise_id}>
-                      {idx + 1}. {opt.name_th}
-                    </option>
-                  ))}
-                </select>
-
-                <div className="inline-flex items-center gap-1 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => handleStepPoseTestExercise(-1)}
-                    className="h-9 inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 cursor-pointer active:scale-95"
-                  >
-                    <span>⏮ ท่าก่อนหน้า</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleStepPoseTestExercise(1)}
-                    className="h-9 inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 cursor-pointer active:scale-95"
-                  >
-                    <span>⏭ ท่าถัดไป</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Middle: Side Switcher Pills (LEFT / RIGHT / BOTH) */}
-              <div
-                className="flex flex-wrap items-center gap-1 rounded-xl border border-teal-200 bg-white/90 p-1 shadow-xs"
-                role="group"
-                aria-label="เลือกข้างที่ต้องการทดสอบ"
-              >
-                <span className="px-2 text-[11px] font-bold text-slate-500">เลือกข้าง:</span>
-                {(
-                  [
-                    { code: 'LEFT' as const, label: '⬅️ ข้างซ้าย (Left)' },
-                    { code: 'RIGHT' as const, label: '➡️ ข้างขวา (Right)' },
-                    { code: 'BOTH' as const, label: '🙌 ทั้งสองข้าง (Both)' },
-                  ] as const
-                ).map((pill) => {
-                  const isActive = activePoseTestSide === pill.code;
-                  return (
-                    <button
-                      key={pill.code}
-                      type="button"
-                      aria-pressed={isActive}
-                      onClick={() => handleSwitchPoseTestSide(pill.code)}
-                      className={`h-7 rounded-lg px-2.5 text-[11px] font-extrabold transition cursor-pointer ${
-                        isActive
-                          ? 'bg-gradient-to-r from-[#0F4C81] to-[#0D9488] text-white shadow-xs'
-                          : 'bg-slate-50 text-slate-700 hover:bg-teal-50 hover:text-teal-900'
-                      }`}
-                    >
-                      {pill.label}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Right: Reset Counter & Return to Admin Portal */}
-              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+              {nextUncompletedExercise && (
                 <button
                   type="button"
-                  onClick={handleResetPoseTestReps}
-                  className="h-9 inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3 text-xs font-extrabold text-amber-900 hover:bg-amber-100 cursor-pointer active:scale-95"
+                  onClick={() => {
+                    markCurrentExerciseCompleted();
+                    setSelectedExercise(nextUncompletedExercise);
+                  }}
+                  className="bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs md:text-sm px-3 py-1.5 rounded-xl shadow-sm cursor-pointer whitespace-nowrap"
                 >
-                  <span>🔄 รีเซ็ตรอบนับ (0/{selectedExercise.target_reps})</span>
+                  ไปท่าถัดไป ➔
                 </button>
+              )}
+              {!nextUncompletedExercise && onAllExercisesCompleted && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    markCurrentExerciseCompleted();
+                    onAllExercisesCompleted();
+                  }}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs md:text-sm px-3 py-1.5 rounded-xl shadow-sm cursor-pointer whitespace-nowrap"
+                >
+                  🎮 เข้าสู่มินิเกม ➔
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </header>
 
-                {(onBackToAdminPortal || onOpenStaffPortal) && (
+      {/* Camera Hardware Alert Banner (only shown if local camera access fails) */}
+      {!isDemoMode && !isEdgeDirectCamera && cameraError && (
+        <div
+          role="alert"
+          className="shrink-0 flex items-center justify-between gap-2 rounded-xl border-2 border-rose-300 bg-rose-50 px-3 py-1.5 text-rose-900 shadow-xs"
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600" />
+            <p className="text-xs md:text-sm font-extrabold truncate">
+              ไม่สามารถเปิดกล้องเว็บแคมได้: {cameraError}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setCameraError(null);
+              setLivePoseActive(false);
+              window.setTimeout(() => setLivePoseActive(true), 120);
+            }}
+            className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1 text-xs font-extrabold text-white hover:bg-rose-500 shrink-0 cursor-pointer"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            <span>ลองเปิดกล้องใหม่</span>
+          </button>
+        </div>
+      )}
+
+      {allExercisesCompleted && onAllExercisesCompleted && (
+        <div className="shrink-0 flex items-center justify-between gap-2 rounded-xl border-2 border-emerald-400 bg-emerald-50 px-3 py-1.5 shadow-xs">
+          <div className="flex items-center gap-2 min-w-0">
+            <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+            <p className="text-xs md:text-sm font-extrabold text-emerald-950 truncate">
+              ทำท่ากายภาพครบทั้งหมด {exerciseOptions.length} ท่าแล้ว!
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onAllExercisesCompleted}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1 text-xs font-extrabold text-white shadow-xs hover:bg-emerald-500 shrink-0 cursor-pointer"
+          >
+            <Gamepad2 className="h-3.5 w-3.5" />
+            <span>เข้าสู่มินิเกม ➔</span>
+          </button>
+        </div>
+      )}
+
+      {/* ZONE 2: Giant Flexible Camera Viewport (Takes 100% of remaining 100dvh vertical space) */}
+      <section
+        aria-label="หน้าจอกล้องวิเคราะห์ท่าทางสด"
+        className="flex-1 min-h-0 relative w-full rounded-2xl overflow-hidden border-2 border-emerald-400 bg-slate-900 shadow-md [&>div]:!aspect-auto [&>div]:!h-full [&>div]:!w-full [&>div]:!min-h-0 [&>div]:!rounded-none [&>div]:!border-0 [&>div]:!bg-transparent [&>div]:!shadow-none [&>div>div:nth-child(2)]:hidden"
+      >
+        <SkeletonCanvas
+          payload={payload}
+          exercise={selectedExercise}
+          isDemoMode={isDemoMode}
+          distanceM={
+            !isDemoMode && isEdgeDirectCamera
+              ? (payload.calibration?.estimated_distance_m ?? 0)
+              : demoDistanceM
+          }
+          trunkTiltDeg={
+            !isDemoMode && isEdgeDirectCamera
+              ? (payload.telemetry_analysis?.trunk_tilt_deg ?? 0)
+              : demoTrunkTiltDeg
+          }
+          hasLiveCamera={!isEdgeDirectCamera && livePoseActive && !cameraError}
+          isPrivacyMode={isPrivacyMode}
+          showSkeletonOverlay={showSkeletonOverlay}
+          framingHintTh={liveFramingHintTh}
+          liveVideoOverlay={
+            !isEdgeDirectCamera && livePoseActive && !cameraError ? (
+              <div
+                ref={videoContainerRef}
+                className={`relative h-full w-full overflow-hidden ${isPrivacyMode ? 'bg-[#050811]' : 'bg-emerald-950'
+                  }`}
+              >
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className={`w-full h-full object-cover scale-x-[-1] transition-opacity duration-200 ${isPrivacyMode ? 'opacity-0' : 'opacity-100'
+                    }`}
+                />
+                <canvas
+                  ref={poseCanvasRef}
+                  aria-label="Live Pose Skeleton & Angle Overlay"
+                  className="pointer-events-none absolute inset-0 w-full h-full object-cover"
+                />
+              </div>
+            ) : undefined
+          }
+        >
+          {kiosk_state === 'AUTH_FRAMING' && (
+            <FaceScanOverlay
+              verified={demoFaceMatched || Boolean(patient?.id)}
+              streakFrames={demoStreakFrames}
+              requiredFrames={5}
+              distanceM={demoDistanceM}
+              patientName={patient?.name}
+            />
+          )}
+
+          {isEmergency && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-rose-950/85 p-4 text-center text-white backdrop-blur-sm"
+            >
+              <AlertOctagon className="h-14 w-14 text-rose-400" />
+              <h2 className="mt-2 text-2xl font-extrabold">หยุดพักฉุกเฉิน (EMERGENCY HALT)</h2>
+              <p className="mt-1 max-w-md text-sm font-extrabold text-rose-100">
+                {strokeSafetyAlert?.type === 'emergency'
+                  ? strokeSafetyAlert.messageTh
+                  : telemetry_analysis.safety_guard_banner_th ||
+                  'ตรวจพบการเสียสมดุล กรุณานั่งพักและจับราวจับ • ระบบแจ้งเตือนเจ้าหน้าที่แล้ว'}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setStrokeSafetyAlert(null);
+                  setFatigueRestSec(0);
+                  resetDemoSession();
+                }}
+                className="mt-4 inline-flex items-center gap-2 rounded-xl bg-white px-5 py-2 text-sm font-bold text-rose-700 shadow-lg hover:bg-rose-50 cursor-pointer"
+              >
+                <RotateCcw className="h-4 w-4" />
+                รีเซ็ตสถานะเพื่อฝึกต่อ
+              </button>
+            </motion.div>
+          )}
+
+          {/* Top-Left Standing Distance Badge */}
+          <div className="pointer-events-none absolute top-2.5 left-3 z-20">
+            <div className="bg-white/95 border-2 border-emerald-500 text-emerald-900 font-extrabold text-sm md:text-base px-3.5 py-1 rounded-full shadow">
+              📏 ระยะยืน: {distanceLabel}
+            </div>
+          </div>
+
+          {/* Picture-in-Picture Live Animated Rehab Coach in Corner of Camera */}
+          <Zone2PipCoachOverlay
+            exercise={selectedExercise}
+            targetSide={currentUiSide}
+            visible={showPipCoach}
+            onToggleVisible={() => setShowPipCoach((prev) => !prev)}
+          />
+
+          {/* Top-Right Side Target Badge & Live Angle Box */}
+          <div className="pointer-events-none absolute top-2.5 right-3 z-20 flex flex-col items-end gap-1.5">
+            <div className="bg-blue-900/90 border border-sky-300 text-white font-extrabold text-sm md:text-base px-3.5 py-1 rounded-full shadow">
+              🎯 เป้าหมาย: {targetSideLabel}
+            </div>
+            <div className="bg-white/95 border-2 border-blue-600 text-blue-950 font-black text-xl md:text-2xl px-3.5 py-1 rounded-xl shadow-md tabular-mono">
+              {Math.round(activeRom)}° / {effectiveTargetRomDeg}°
+            </div>
+          </div>
+
+          {/* Bottom Coaching Banner Inside Camera */}
+          <div className="absolute bottom-2 left-3 right-3 z-20">
+            <div
+              role="status"
+              data-testid="kiosk-unified-coaching-banner"
+              className={`rounded-xl border-2 px-4 py-1.5 shadow-lg text-center transition-colors ${
+                unifiedCoachingBanner.tone === 'rose'
+                  ? 'bg-rose-50/95 border-rose-500 text-rose-900'
+                  : unifiedCoachingBanner.tone === 'amber'
+                    ? 'bg-amber-50/95 border-amber-500 text-amber-950'
+                    : 'bg-white/95 border-emerald-500 text-blue-950'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <p className="text-sm md:text-base font-extrabold leading-tight">
+                  {unifiedCoachingBanner.tone === 'rose' || unifiedCoachingBanner.tone === 'amber'
+                    ? `⚠️ ${unifiedCoachingBanner.titleTh}${unifiedCoachingBanner.subtitleTh ? ` — ${unifiedCoachingBanner.subtitleTh}` : ''}`
+                    : isWaitLowerArmUi || holdPct >= 100
+                      ? '✅ ค้างครบเวลา! +1 ครั้ง ค่อยๆ ลดแขนลงช้าๆ'
+                      : isHoldPhase
+                        ? `⏱ ค้างท่าไว้ ${holdTargetSec.toFixed(1)} วินาที! (ทำดีมาก!)`
+                        : `✨ ค่อยๆ ยกแขนขึ้นช้าๆ ให้ถึงเป้าหมาย ${effectiveTargetRomDeg} องศา (ทำดีมาก!)`}
+                </p>
+                {unifiedCoachingBanner.suggestedRomDeg ? (
                   <button
                     type="button"
-                    onClick={onBackToAdminPortal ?? onOpenStaffPortal}
-                    className="h-9 inline-flex items-center gap-1.5 rounded-xl bg-slate-800 px-3 text-xs font-extrabold text-white shadow-xs hover:bg-slate-700 cursor-pointer active:scale-95"
+                    onClick={() => {
+                      const nextDeg = unifiedCoachingBanner.suggestedRomDeg ?? 90;
+                      setReducedRomOverrideDeg(nextDeg);
+                      setStrokeSafetyAlert(null);
+                    }}
+                    className="rounded-lg bg-blue-600 px-2.5 py-0.5 text-xs font-extrabold text-white shadow-xs hover:bg-blue-700 cursor-pointer"
                   >
-                    <span>⬅️ กลับหน้า Admin Portal</span>
+                    ลดเป้าหมายเป็น {unifiedCoachingBanner.suggestedRomDeg}°
                   </button>
-                )}
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* 3. Balanced 12-Column Clinical Workspace */}
-        <main className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-12 items-stretch">
-          {/* Left Stage: Unobstructed Camera + Unified Live Coaching Banner Below + Expanded Guide Card */}
-          <section className="lg:col-span-8 flex flex-col gap-3">
-            <SkeletonCanvas
-              payload={payload}
-              exercise={selectedExercise}
-              isDemoMode={isDemoMode}
-              distanceM={
-                !isDemoMode && isEdgeDirectCamera
-                  ? (payload.calibration?.estimated_distance_m ?? 0)
-                  : demoDistanceM
-              }
-              trunkTiltDeg={
-                !isDemoMode && isEdgeDirectCamera
-                  ? (payload.telemetry_analysis?.trunk_tilt_deg ?? 0)
-                  : demoTrunkTiltDeg
-              }
-              hasLiveCamera={!isEdgeDirectCamera && livePoseActive && !cameraError}
-              isPrivacyMode={isPrivacyMode}
-              showSkeletonOverlay={showSkeletonOverlay}
-              framingHintTh={liveFramingHintTh}
-              liveVideoOverlay={
-                !isEdgeDirectCamera && livePoseActive && !cameraError ? (
-                  <div
-                    ref={videoContainerRef}
-                    className={`relative h-full w-full overflow-hidden rounded-3xl ${isPrivacyMode ? 'bg-[#050811]' : 'bg-emerald-950'
-                      }`}
-                  >
-                    <video
-                      ref={videoRef}
-                      autoPlay
-                      playsInline
-                      muted
-                      className={`absolute inset-0 h-full w-full object-cover scale-x-[-1] transition-opacity duration-200 ${isPrivacyMode ? 'opacity-0' : 'opacity-100'
-                        }`}
-                    />
-                    <canvas
-                      ref={poseCanvasRef}
-                      aria-label="Live Pose Skeleton & Angle Overlay"
-                      className="pointer-events-none absolute inset-0 h-full w-full"
-                    />
-                  </div>
-                ) : undefined
-              }
-            >
-              {kiosk_state === 'AUTH_FRAMING' && (
-                <FaceScanOverlay
-                  verified={demoFaceMatched || Boolean(patient?.id)}
-                  streakFrames={demoStreakFrames}
-                  requiredFrames={5}
-                  distanceM={demoDistanceM}
-                  patientName={patient?.name}
-                />
-              )}
-
-              {isEmergency && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-rose-950/85 p-6 text-center text-white backdrop-blur-sm"
-                >
-                  <AlertOctagon className="h-20 w-20 text-rose-400" />
-                  <h2 className="mt-4 text-3xl font-extrabold">หยุดพักฉุกเฉิน (EMERGENCY HALT)</h2>
-                  <p className="mt-2 max-w-md text-lg font-extrabold text-rose-100">
-                    {strokeSafetyAlert?.type === 'emergency'
-                      ? strokeSafetyAlert.messageTh
-                      : telemetry_analysis.safety_guard_banner_th ||
-                      'ตรวจพบการเสียสมดุล กรุณานั่งพักและจับราวจับ • ระบบแจ้งเตือนเจ้าหน้าที่แล้ว'}
-                  </p>
+                ) : null}
+                {unifiedCoachingBanner.showSafetyAcknowledge && (
                   <button
                     type="button"
                     onClick={() => {
                       setStrokeSafetyAlert(null);
                       setFatigueRestSec(0);
-                      resetDemoSession();
                     }}
-                    className="mt-6 inline-flex items-center gap-2 rounded-2xl bg-white px-6 py-3 text-sm font-bold text-rose-700 shadow-lg hover:bg-rose-50 cursor-pointer"
+                    className="rounded-lg border border-blue-400 bg-white px-2.5 py-0.5 text-xs font-extrabold text-blue-900 hover:bg-blue-50 cursor-pointer"
                   >
-                    <RotateCcw className="h-4 w-4" />
-                    รีเซ็ตสถานะเพื่อฝึกต่อ
+                    {(unifiedCoachingBanner.fatigueRestSec ?? 0) > 0 ? 'พร้อมฝึกต่อ' : 'รับทราบ'}
                   </button>
-                </motion.div>
-              )}
-            </SkeletonCanvas>
-
-            {/* Single Unified Live Coaching & Status Bar OUTSIDE Video (Zero Obstruction Inside Camera) */}
-            {(() => {
-              const bannerHoldTarget = Math.max(0.5, selectedExercise.hold_sec);
-              const bannerHoldElapsed = isWaitLowerArmUi
-                ? bannerHoldTarget
-                : holdElapsedUiSec > 0
-                  ? holdElapsedUiSec
-                  : Math.max(0, bannerHoldTarget - rep_counter.hold_remaining_sec);
-              const bannerHoldPct = isWaitLowerArmUi || kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED'
-                ? 100
-                : Math.max(0, Math.min(100, (bannerHoldElapsed / bannerHoldTarget) * 100));
-              const showHoldBarInBanner = isHoldPhase || isWaitLowerArmUi || bannerHoldElapsed > 0;
-              return (
-                <div
-                  role="status"
-                  data-testid="kiosk-unified-coaching-banner"
-                  className={`min-h-[64px] rounded-2xl px-5 py-3 flex flex-col gap-2.5 shadow-sm border-2 transition-colors ${
-                    unifiedCoachingBanner.tone === 'rose'
-                      ? 'border-rose-400 bg-rose-50 text-rose-950'
-                      : unifiedCoachingBanner.tone === 'amber'
-                        ? 'border-amber-400 bg-amber-50 text-amber-950'
-                        : unifiedCoachingBanner.tone === 'sky'
-                          ? 'border-sky-400 bg-sky-50 text-[#0F4C81]'
-                          : 'border-emerald-400 bg-emerald-50/95 text-emerald-950'
-                  }`}
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-4">
-                    <div className="flex min-w-0 flex-1 items-center gap-3">
-                      <div
-                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white shadow-xs ${
-                          unifiedCoachingBanner.tone === 'rose'
-                            ? 'bg-rose-600'
-                            : unifiedCoachingBanner.tone === 'amber'
-                              ? 'bg-amber-500'
-                              : unifiedCoachingBanner.tone === 'sky'
-                                ? 'bg-sky-600'
-                                : 'bg-emerald-600'
-                        }`}
-                      >
-                        {unifiedCoachingBanner.tone === 'rose' || unifiedCoachingBanner.tone === 'amber' ? (
-                          <AlertTriangle className="h-5 w-5" />
-                        ) : (
-                          <CheckCircle2 className="h-5 w-5" />
-                        )}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-sm sm:text-base font-black leading-tight">
-                          {unifiedCoachingBanner.titleTh}
-                        </p>
-                        <p className="mt-0.5 text-xs sm:text-sm font-bold opacity-85">
-                          {unifiedCoachingBanner.subtitleTh}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      {unifiedCoachingBanner.suggestedRomDeg ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const nextDeg = unifiedCoachingBanner.suggestedRomDeg ?? 90;
-                            setReducedRomOverrideDeg(nextDeg);
-                            setStrokeSafetyAlert(null);
-                          }}
-                          className="rounded-xl bg-amber-600 px-3 py-1.5 text-xs font-extrabold text-white shadow-xs hover:bg-amber-500 cursor-pointer"
-                        >
-                          ลดเป้าหมายเป็น {unifiedCoachingBanner.suggestedRomDeg}°
-                        </button>
-                      ) : null}
-                      {unifiedCoachingBanner.showSafetyAcknowledge ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setStrokeSafetyAlert(null);
-                            setFatigueRestSec(0);
-                          }}
-                          className="rounded-xl border border-amber-300 bg-white px-3 py-1.5 text-xs font-extrabold text-amber-900 hover:bg-amber-100 cursor-pointer"
-                        >
-                          {(unifiedCoachingBanner.fatigueRestSec ?? 0) > 0 ? 'พร้อมฝึกต่อ' : 'รับทราบ'}
-                        </button>
-                      ) : unifiedCoachingBanner.badgeTh ? (
-                        <span
-                          className={`rounded-full px-3 py-1 text-xs font-black tracking-wide whitespace-nowrap ${
-                            unifiedCoachingBanner.tone === 'rose'
-                              ? 'bg-rose-600 text-white'
-                              : unifiedCoachingBanner.tone === 'amber'
-                                ? 'bg-amber-200 text-amber-950'
-                                : unifiedCoachingBanner.tone === 'sky'
-                                  ? 'bg-sky-200 text-[#0F4C81]'
-                                  : 'bg-emerald-200 text-emerald-950'
-                          }`}
-                        >
-                          {unifiedCoachingBanner.badgeTh}
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
-                  {showHoldBarInBanner && (
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between text-[11px] font-extrabold">
-                        <span className={isWaitLowerArmUi || bannerHoldPct >= 100 ? 'text-emerald-700' : 'text-[#0F4C81]'}>
-                          {isWaitLowerArmUi || bannerHoldPct >= 100
-                            ? '✅ ค้างครบเวลา! +1 ครั้ง (เอาแขนลงเพื่อเริ่มรอบต่อไป)'
-                            : `⏱ กำลังค้างท่า ${bannerHoldElapsed.toFixed(1)}s / ${bannerHoldTarget.toFixed(1)}s`}
-                        </span>
-                        <span className="tabular-mono font-black text-emerald-700">
-                          {Math.round(bannerHoldPct)}%
-                        </span>
-                      </div>
-                      <div className="h-2.5 w-full overflow-hidden rounded-full bg-white/80 ring-1 ring-emerald-200">
-                        <div
-                          data-testid="kiosk-coaching-hold-progress-bar"
-                          className={`h-full rounded-full transition-[width] duration-75 ${
-                            isWaitLowerArmUi || bannerHoldPct >= 100
-                              ? 'bg-emerald-500 animate-pulse'
-                              : 'bg-gradient-to-r from-[#0284C7] to-[#10B981]'
-                          }`}
-                          style={{ width: `${bannerHoldPct}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-
-            {/* Exercise-Specific Animated Posture Guide filling remaining height */}
-            <ExercisePostureGuide
-              exercise={selectedExercise}
-              currentRomDeg={telemetry_analysis.current_rom_deg}
-              targetRomDeg={effectiveTargetRomDeg}
-              kioskState={kiosk_state}
-            />
-          </section>
-
-          {/* Right Telemetry Panel (~33% width, aligned bottom-to-bottom with Left Column) */}
-          <aside className="lg:col-span-4 flex flex-col justify-between gap-3">
-            {/* Card 1: Active Exercise Info & Playlist */}
-            <div className="glass-card rounded-3xl p-4 sm:p-5 flex flex-col justify-between gap-3">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-100/90 px-3 py-1 text-[11px] font-bold text-[#0284C7]">
-                    <Sparkles className="h-3.5 w-3.5" />
-                    ท่าที่ {currentExerciseIndex + 1} จาก {exerciseOptions.length} • เซต{' '}
-                    {selectedExercise.target_sets ?? 1} × {selectedExercise.target_reps} ครั้ง
-                  </span>
-                  <h2 className="mt-2 text-lg sm:text-xl font-extrabold text-[#0F4C81] leading-snug">
-                    {selectedExercise.name_th}
-                  </h2>
-                  <p className="text-xs font-semibold text-[#0284C7]">{selectedExercise.name_en}</p>
-                  {(selectedExercise.target_joint === 'left_shoulder' ||
-                    selectedExercise.target_joint === 'right_shoulder' ||
-                    selectedExercise.prescribed_side !== undefined) && (() => {
-                      const uiSide = resolveExerciseSideFromMeta(
-                        selectedExercise,
-                        selectedExercise.target_joint,
-                        activeExpectedPlane,
-                      );
-                      return (
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        <div
-                          className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1 text-xs font-extrabold ${uiSide === 'BOTH'
-                              ? 'border-teal-300 bg-teal-50 text-teal-800'
-                              : uiSide === 'LEFT'
-                                ? 'border-orange-300 bg-orange-50 text-orange-800'
-                                : 'border-emerald-300 bg-emerald-50 text-emerald-800'
-                            }`}
-                        >
-                          <span>✋ ท่านี้ต้องยกเฉพาะ:</span>
-                          <span>
-                            {uiSide === 'BOTH'
-                              ? 'ทั้ง 2 ข้างพร้อมกัน (Both Arms Together)'
-                              : uiSide === 'LEFT'
-                                ? 'แขนซ้าย (Left Arm Only)'
-                                : 'แขนขวา (Right Arm Only)'}
-                          </span>
-                        </div>
-                        {(activeExpectedPlane === 'flexion' || activeExpectedPlane === 'abduction') && (
-                          <div className="inline-flex items-center gap-1.5 rounded-xl border border-sky-300 bg-sky-50 px-3 py-1 text-xs font-extrabold text-[#0F4C81]">
-                            <span>
-                              {activeExpectedPlane === 'flexion'
-                                ? '⬆️ ทิศทาง: ยกตรงไปด้านหน้า • ตรวจจับมุม 3 มิติ (แกน X-Y-Z)'
-                                : '↔️ ทิศทาง: กางออกด้านข้าง • ตรวจจับมุม 3 มิติ (แกน X-Y-Z)'}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                      );
-                    })()}
-                </div>
-
-                {/* Animated Miniature Guide Illustration (synced to selected exercise) */}
-                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border border-sky-100 bg-gradient-to-br from-sky-50 to-emerald-50">
-                  <ExercisePostureSvg exercise={selectedExercise} compact />
-                </div>
-              </div>
-
-              <div className="flex max-h-36 flex-wrap gap-1.5 overflow-y-auto pr-1">
-                {exerciseOptions.map((opt, idx) => {
-                  const active = opt.exercise_id === selectedExercise.exercise_id;
-                  const done = completedIds.includes(opt.exercise_id);
-                  return (
-                    <button
-                      key={opt.exercise_id}
-                      type="button"
-                      onClick={() => setSelectedExercise(opt)}
-                      className={`inline-flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-xs font-bold transition-colors ${active
-                          ? 'bg-[#0F4C81] text-white shadow-sm'
-                          : done
-                            ? 'bg-emerald-100 text-emerald-900 border border-emerald-300'
-                            : 'bg-sky-50 text-[#0F4C81] hover:bg-sky-100'
-                        }`}
-                    >
-                      <span>{done ? '✓' : `${idx + 1}.`}</span>
-                      <span>{opt.name_th}</span>
-                    </button>
-                  );
-                })}
+                )}
               </div>
             </div>
+          </div>
+        </SkeletonCanvas>
+      </section>
 
-            {/* Card 2: Combined Large RANGE OF MOTION Gauge + Rep Counter & Hold Timer */}
-            <div className="glass-card relative overflow-hidden rounded-3xl p-4 sm:p-5 flex flex-col gap-3">
-              {/* Emerald Shockwave Ripple on Rep Completion */}
-              <AnimatePresence>
-                {isRepCelebration && (
-                  <motion.div
-                    key={`ripple-${rep_counter.valid_reps}`}
-                    initial={{ scale: 0.75, opacity: 0.65 }}
-                    animate={{ scale: 1.45, opacity: 0 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.85, ease: 'easeOut' }}
-                    className="pointer-events-none absolute inset-0 rounded-3xl border-4 border-[#10B981]"
-                  />
-                )}
-              </AnimatePresence>
-
-              <RomGauge
-                embedded
-                currentRomDeg={telemetry_analysis.current_rom_deg}
-                targetRomDeg={effectiveTargetRomDeg}
-                completionPct={
-                  effectiveTargetRomDeg > 0
-                    ? Math.min(100, Math.round((telemetry_analysis.current_rom_deg / effectiveTargetRomDeg) * 100))
-                    : telemetry_analysis.rom_completion_pct
-                }
-                kioskState={kiosk_state}
-                highlightColor={ui_directives.highlight_color}
-                holdRemainingSec={rep_counter.hold_remaining_sec}
-                holdTargetSec={selectedExercise.hold_sec}
+      {/* ZONE 3: 3 Oversized Scoreboard Cards */}
+      <section
+        aria-label="สรุปผลคะแนนการทำกายภาพ"
+        className="shrink-0 grid grid-cols-3 gap-2.5"
+      >
+        {/* Card 1: Completed Reps */}
+        <div className="relative overflow-hidden bg-white border-2 border-blue-200 rounded-2xl px-3 py-2 text-center shadow-sm flex flex-col items-center justify-between">
+          <AnimatePresence>
+            {isRepCelebration && (
+              <motion.div
+                key={`ripple-${rep_counter.valid_reps}`}
+                initial={{ scale: 0.85, opacity: 0.65 }}
+                animate={{ scale: 1.35, opacity: 0 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.75, ease: 'easeOut' }}
+                className="pointer-events-none absolute inset-0 rounded-2xl border-4 border-emerald-500"
               />
+            )}
+          </AnimatePresence>
+          <p className="text-blue-900 font-extrabold text-sm md:text-base leading-tight">
+            จำนวนครั้งสำเร็จ
+          </p>
+          <div className="text-blue-700 font-black text-2xl md:text-3xl tabular-mono leading-tight my-0.5">
+            {rep_counter.valid_reps} / {selectedExercise.target_reps} ครั้ง
+          </div>
+          <div className="w-full flex items-center justify-center gap-1">
+            {Array.from({ length: Math.min(10, Math.max(1, selectedExercise.target_reps)) }).map((_, idx) => (
+              <span
+                key={idx}
+                className={`h-2 flex-1 max-w-[16px] rounded-full transition-colors ${
+                  idx < rep_counter.valid_reps ? 'bg-emerald-500' : 'bg-sky-100'
+                }`}
+              />
+            ))}
+          </div>
+        </div>
 
-              <div className="border-t border-sky-100 pt-3 grid grid-cols-2 gap-3">
-                {/* Valid Reps */}
-                <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-white to-emerald-50/70 p-3.5">
-                  <p className="text-xs font-bold text-[#0D9488]">จำนวนครั้งที่ถูกต้อง</p>
-                  <div className="mt-1 flex items-baseline gap-1.5">
-                    <motion.span
-                      key={rep_counter.valid_reps}
-                      initial={{ y: -10, scale: 1.25, opacity: 0.4 }}
-                      animate={{ y: 0, scale: 1, opacity: 1 }}
-                      transition={{ type: 'spring', stiffness: 320, damping: 18 }}
-                      className="tabular-mono text-3xl sm:text-4xl font-extrabold text-[#0F4C81]"
-                    >
-                      {rep_counter.valid_reps}
-                    </motion.span>
-                    <span className="tabular-mono text-sm font-bold text-[#0F4C81]/65">
-                      / {selectedExercise.target_reps} ครั้ง
-                    </span>
-                  </div>
-                </div>
+        {/* Card 2: Target Hold Timer */}
+        <div className="bg-emerald-50/90 border-2 border-emerald-400 rounded-2xl px-3 py-2 text-center shadow-sm flex flex-col items-center justify-between">
+          <p className="text-emerald-950 font-extrabold text-sm md:text-base leading-tight">
+            ⏱ ค้างท่าเป้าหมาย
+          </p>
+          <div className="text-emerald-700 font-black text-2xl md:text-3xl tabular-mono leading-tight my-0.5 flex items-baseline justify-center gap-1">
+            <span ref={holdTimerTextRef} data-testid="kiosk-hold-timer-display">
+              {isWaitLowerArmUi || holdPct >= 100
+                ? `${holdTargetSec.toFixed(1)}s (ครบ!)`
+                : `${liveHoldElapsed.toFixed(1)}s`}
+            </span>
+            <span className="text-sm md:text-lg font-extrabold text-emerald-700/80">
+              / {holdTargetSec.toFixed(1)}s
+            </span>
+          </div>
+          <div className="w-full h-2 bg-emerald-200 rounded-full overflow-hidden">
+            <div
+              ref={holdProgressBarRef}
+              className={`h-full rounded-full transition-[width] duration-75 ${
+                isWaitLowerArmUi || holdPct >= 100 ? 'bg-emerald-600 animate-pulse' : 'bg-emerald-600'
+              }`}
+              style={{
+                width: `${holdPct}%`,
+                willChange: 'width',
+              }}
+            />
+          </div>
+        </div>
 
-                {/* Live Hold Timer */}
-                {(() => {
-                  const holdTargetSec = Math.max(0.5, selectedExercise.hold_sec);
-                  const liveHoldElapsed = isWaitLowerArmUi
-                    ? holdTargetSec
-                    : holdElapsedUiSec > 0
-                      ? holdElapsedUiSec
-                      : Math.max(0, holdTargetSec - rep_counter.hold_remaining_sec);
-                  const holdPct = isWaitLowerArmUi || kiosk_state === 'REP_COMPLETED' || kiosk_state === 'SET_FINISHED'
-                    ? 100
-                    : Math.max(0, Math.min(100, (liveHoldElapsed / holdTargetSec) * 100));
-                  const activeHoldStyle = isWaitLowerArmUi || isHoldPhase || holdPct >= 100;
-                  return (
-                    <div
-                      className={`rounded-2xl border p-3.5 transition-colors ${
-                        isWaitLowerArmUi || holdPct >= 100
-                          ? 'border-emerald-400 bg-emerald-600 text-white shadow-md shadow-emerald-500/25'
-                          : activeHoldStyle
-                            ? 'border-emerald-300 bg-emerald-500 text-white'
-                            : 'border-sky-100 bg-gradient-to-br from-white to-sky-50/70 text-[#0F4C81]'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-1">
-                        <p className={`flex items-center gap-1 text-xs font-bold ${activeHoldStyle ? 'text-emerald-50' : 'text-[#0284C7]'}`}>
-                          <Timer className="h-3.5 w-3.5" />
-                          ค้างท่าเป้าหมาย
-                        </p>
-                        <span className={`text-[11px] font-extrabold tabular-mono ${activeHoldStyle ? 'text-emerald-50' : 'text-slate-500'}`}>
-                          / {holdTargetSec.toFixed(1)}s
-                        </span>
-                      </div>
-                      <div
-                        ref={holdTimerTextRef}
-                        data-testid="kiosk-hold-timer-display"
-                        className="tabular-mono mt-1 text-2xl sm:text-3xl font-extrabold"
-                      >
-                        {isWaitLowerArmUi || holdPct >= 100
-                          ? `${holdTargetSec.toFixed(1)}s (ครบ!)`
-                          : `${liveHoldElapsed.toFixed(1)}s`}
-                      </div>
-                      <div
-                        className={`mt-2 h-2.5 w-full overflow-hidden rounded-full ${
-                          activeHoldStyle ? 'bg-white/30' : 'bg-sky-100'
-                        }`}
-                      >
-                        <div
-                          ref={holdProgressBarRef}
-                          className={`h-full rounded-full transition-[width] duration-75 ${
-                            isWaitLowerArmUi || holdPct >= 100
-                              ? 'bg-emerald-200 animate-pulse'
-                              : activeHoldStyle
-                                ? 'bg-white'
-                                : 'bg-gradient-to-r from-[#0284C7] to-[#10B981]'
-                          }`}
-                          style={{
-                            width: `${holdPct}%`,
-                            willChange: 'width',
-                          }}
-                        />
-                      </div>
-                      {(isWaitLowerArmUi || holdPct >= 100) && (
-                        <p className="mt-1.5 text-[11px] font-extrabold leading-tight text-emerald-50">
-                          ✅ ค้างครบเวลา! +1 ครั้ง (เอาแขนลงเพื่อเริ่มรอบต่อไป)
-                        </p>
-                      )}
-                    </div>
-                  );
-                })()}
+        {/* Card 3: ROM Semi-Circular Gauge */}
+        <div className="bg-white border-2 border-teal-200 rounded-2xl px-3 py-2 text-center shadow-sm flex flex-col items-center justify-center">
+          <p className="text-teal-950 font-extrabold text-sm md:text-base leading-tight">
+            มุมการเคลื่อนไหว ROM
+          </p>
+          <div className="flex items-center justify-center gap-2 mt-0.5">
+            <svg viewBox="0 0 120 66" className="w-16 h-9 md:w-20 md:h-11 overflow-visible shrink-0" aria-hidden="true">
+              <defs>
+                <linearGradient id="kioskRomClinicalGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stopColor="#0284C7" />
+                  <stop offset="100%" stopColor="#10B981" />
+                </linearGradient>
+              </defs>
+              <path
+                d="M 12 58 A 48 48 0 0 1 108 58"
+                fill="none"
+                stroke="#e2e8f0"
+                strokeWidth="12"
+                strokeLinecap="round"
+              />
+              <path
+                d="M 12 58 A 48 48 0 0 1 108 58"
+                fill="none"
+                stroke="url(#kioskRomClinicalGrad)"
+                strokeWidth="12"
+                strokeLinecap="round"
+                strokeDasharray="150.8"
+                strokeDashoffset={150.8 * (1 - romPct / 100)}
+              />
+            </svg>
+            <div className="text-left leading-tight">
+              <div className="text-teal-700 font-black text-2xl md:text-3xl tabular-mono leading-none">
+                {telemetry_analysis.current_rom_deg.toFixed(1)}°
               </div>
-
-              {/* Rep Visual Dots */}
-              <div className="flex items-center gap-1.5">
-                {Array.from({ length: selectedExercise.target_reps }).map((_, idx) => {
-                  const done = idx < rep_counter.valid_reps;
-                  return (
-                    <motion.div
-                      key={idx}
-                      animate={{ scale: done ? [1, 1.15, 1] : 1 }}
-                      transition={{ duration: 0.25 }}
-                      className={`h-2.5 flex-1 rounded-full transition-colors ${done ? 'bg-[#10B981]' : 'bg-sky-100'
-                        }`}
-                    />
-                  );
-                })}
-              </div>
-
-              {/* Action Controls */}
-              <div className="flex flex-col gap-2">
-                {canShowManualRepButton && (
-                  <button
-                    type="button"
-                    onClick={() => setDemoPreset('REP_COMPLETED')}
-                    disabled={rep_counter.valid_reps >= selectedExercise.target_reps}
-                    className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-bold text-[#0F4C81] hover:bg-sky-100 disabled:opacity-50 cursor-pointer"
-                  >
-                    <PlusCircle className="h-3.5 w-3.5" />
-                    <span>+1 ครั้ง (นับครั้งสำเร็จ)</span>
-                  </button>
-                )}
-
-                {nextUncompletedExercise ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      markCurrentExerciseCompleted();
-                      setSelectedExercise(nextUncompletedExercise);
-                    }}
-                    className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-[#0284C7] to-[#10B981] px-3 py-2.5 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
-                  >
-                    <CheckCircle2 className="h-4 w-4" />
-                    <span>ทำท่านี้ครบแล้ว • ไปท่าถัดไป ({nextUncompletedExercise.name_th}) ➔</span>
-                  </button>
-                ) : (
-                  onAllExercisesCompleted && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        markCurrentExerciseCompleted();
-                        onAllExercisesCompleted();
-                      }}
-                      className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-3 py-2.5 text-xs font-extrabold text-white shadow hover:from-emerald-500 hover:to-teal-500 cursor-pointer"
-                    >
-                      <Gamepad2 className="h-4 w-4" />
-                      <span>ทำกายภาพครบทุกท่าแล้ว • เข้าสู่มินิเกม (ขั้นตอนสุดท้าย) ➔</span>
-                    </button>
-                  )
-                )}
-              </div>
+              <p className="text-slate-600 text-xs font-bold mt-0.5">
+                (เป้าหมาย {effectiveTargetRomDeg}°)
+              </p>
             </div>
+          </div>
+        </div>
+      </section>
 
-            {/* Card 3: Biomechanical Form Checklist filling bottom of right column */}
-            <div className="glass-card rounded-3xl p-4 sm:p-5 flex-1 flex flex-col justify-between">
-              <div className="flex flex-wrap items-center justify-between gap-2">
+      {/* ZONE 4: Compact Step-by-Step Guide & 3-Item Checklist */}
+      <section
+        aria-label="ขั้นตอนการฝึกและตารางตรวจสอบเช็คลิสต์"
+        className="shrink-0 bg-white border-2 border-sky-100 rounded-2xl px-3.5 py-2 shadow-sm"
+      >
+        <h2 className="text-sm md:text-base font-extrabold text-blue-950 mb-1.5 truncate">
+          🏃 {selectedExercise.name_th} — {targetSideLabel}
+        </h2>
+
+        <div className="grid grid-cols-12 gap-2.5 items-stretch">
+          {/* Left 3 cols + Middle 6 cols: Synchronized Live Coach Model & 3 Step Cards (Zero Truncation) */}
+          <Zone4CoachStageAndSteps
+            exercise={selectedExercise}
+            targetSide={currentUiSide}
+            steps={postureSpec.steps}
+            holdTargetSec={holdTargetSec}
+            targetRomDeg={effectiveTargetRomDeg}
+            onExpandPreview={() => setCoachModalOpen(true)}
+          />
+
+          {/* Right 3 cols: Compact 3-Item Live Checklist */}
+          <div className="col-span-3 bg-emerald-50/60 border border-emerald-200 rounded-2xl px-2.5 py-1.5 flex flex-col justify-between space-y-1">
+            <div className="flex items-center justify-between gap-1.5 pb-0.5 border-b border-emerald-200/70">
+              <span className="text-[11px] md:text-xs font-black text-emerald-950 truncate">
+                ตารางตรวจสอบเช็คลิสต์
+              </span>
+              <div className="flex items-center gap-1 shrink-0">
                 <button
                   type="button"
-                  onClick={() => setFormChecklistExpanded((prev) => !prev)}
-                  className="flex items-center gap-2 text-left text-sm font-extrabold text-[#0F4C81] hover:text-[#0284C7] cursor-pointer"
-                  aria-expanded={formChecklistExpanded}
+                  onClick={toggleMasterFormAssessment}
+                  aria-pressed={formRules.enabled}
+                  className={`rounded-md px-1.5 py-0.5 text-[10px] font-extrabold cursor-pointer transition ${
+                    formRules.enabled
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-slate-300 text-slate-700'
+                  }`}
                 >
-                  <Activity
-                    className={`h-4 w-4 shrink-0 ${formRules.enabled ? 'text-[#0D9488]' : 'text-slate-400'}`}
-                  />
-                  <span>การประเมินท่าทางแบบเรียลไทม์</span>
+                  {formRules.enabled ? 'เปิด' : 'ปิด'}
                 </button>
-
-                <div className="flex items-center gap-1.5">
+                {hasDisabledFormRule && (
                   <button
                     type="button"
-                    onClick={toggleMasterFormAssessment}
-                    aria-pressed={formRules.enabled}
-                    title={formRules.enabled ? 'กดเพื่อปิดระบบประเมินท่าทางแบบเรียลไทม์' : 'กดเพื่อเปิดระบบประเมินท่าทางแบบเรียลไทม์'}
-                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-extrabold transition-colors cursor-pointer ${formRules.enabled
-                        ? 'border-emerald-300 bg-emerald-50 text-[#0D9488] hover:bg-emerald-100'
-                        : 'border-slate-300 bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
+                    onClick={resetAllFormRules}
+                    className="rounded-md bg-blue-600 px-1.5 py-0.5 text-[10px] font-extrabold text-white cursor-pointer"
                   >
-                    <span
-                      className={`inline-flex h-3.5 w-6 items-center rounded-full p-0.5 transition-colors ${formRules.enabled ? 'bg-[#10B981] justify-end' : 'bg-slate-400 justify-start'
-                        }`}
-                    >
-                      <span className="h-2.5 w-2.5 rounded-full bg-white shadow-sm" />
-                    </span>
-                    <span>{formRules.enabled ? 'เปิดประเมิน' : 'ปิดประเมิน'}</span>
+                    เปิดหมด
                   </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setFormChecklistExpanded((prev) => !prev)}
-                    aria-label={formChecklistExpanded ? 'ซ่อนรายการประเมินท่าทาง' : 'เปิดดูรายการประเมินท่าทาง'}
-                    className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-white/80 px-2.5 py-1 text-[11px] font-bold text-[#0F4C81] hover:bg-sky-50 cursor-pointer"
-                  >
-                    <span>{formChecklistExpanded ? 'ซ่อน' : 'เปิดดู'}</span>
-                    {formChecklistExpanded ? (
-                      <ChevronUp className="h-3.5 w-3.5" />
-                    ) : (
-                      <ChevronDown className="h-3.5 w-3.5" />
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              <AnimatePresence initial={false}>
-                {formChecklistExpanded ? (
-                  <motion.div
-                    key="form-checklist-expanded"
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.2, ease: 'easeOut' }}
-                    className="overflow-hidden"
-                  >
-                    <div className="mt-2.5 mb-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
-                      <span className="tabular-mono font-bold text-[#0284C7]">
-                        {isFormRuleActive(formRules, 'trunk')
-                          ? `เอียงลำตัว ${demoTrunkTiltDeg.toFixed(1)}°`
-                          : 'เอียงลำตัว: ปิดเช็ก'}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[11px] font-semibold text-slate-500">
-                          กดแต่ละหัวข้อเพื่อเปิด/ปิด
-                        </span>
-                        {hasDisabledFormRule && (
-                          <button
-                            type="button"
-                            onClick={resetAllFormRules}
-                            className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-bold text-[#0284C7] hover:bg-sky-100 cursor-pointer"
-                          >
-                            <RotateCcw className="h-3 w-3" />
-                            <span>เปิดทั้งหมด</span>
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {!formRules.enabled && (
-                      <div className="mb-2.5 flex items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-600">
-                        <span>ปิดการประเมินท่าทางอยู่ • นับรอบตามมุมองศาอย่างเดียว</span>
-                        <button
-                          type="button"
-                          onClick={toggleMasterFormAssessment}
-                          className="shrink-0 rounded-full bg-emerald-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
-                        >
-                          กดเปิดประเมิน
-                        </button>
-                      </div>
-                    )}
-
-                    <div className="space-y-2">
-                      {checklistItems.map((item) => (
-                        <button
-                          key={item.label}
-                          type="button"
-                          onClick={() => toggleSingleFormRule(item.ruleKey)}
-                          aria-pressed={item.ruleActive}
-                          className={`flex w-full items-center justify-between gap-2 rounded-2xl border px-3.5 py-2.5 text-left text-sm font-semibold transition-colors cursor-pointer ${!item.ruleActive
-                              ? 'border-dashed border-slate-200 bg-slate-50/70 text-slate-400 hover:border-slate-300 hover:bg-slate-100/70'
-                              : item.ok
-                                ? 'border-emerald-100 bg-emerald-50/60 text-[#0F4C81] hover:bg-emerald-50'
-                                : 'border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100/70'
-                            }`}
-                        >
-                          <span className="flex items-center gap-2">
-                            {!item.ruleActive ? (
-                              <Pause className="h-4 w-4 shrink-0 text-slate-400" />
-                            ) : item.ok ? (
-                              <CheckCircle2 className="h-4 w-4 shrink-0 text-[#10B981]" />
-                            ) : (
-                              <AlertTriangle className="h-4 w-4 shrink-0 text-[#F59E0B]" />
-                            )}
-                            <span className={!item.ruleActive ? 'line-through decoration-slate-300' : ''}>
-                              {item.label}
-                            </span>
-                          </span>
-                          <span
-                            className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ${!item.ruleActive
-                                ? 'bg-slate-200 text-slate-600'
-                                : item.ok
-                                  ? 'bg-emerald-100 text-[#0D9488]'
-                                  : 'bg-amber-200 text-amber-900'
-                              }`}
-                          >
-                            {!item.ruleActive ? 'ปิดอยู่' : item.ok ? 'ผ่าน' : item.warnText}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </motion.div>
-                ) : (
-                  <div className="mt-2 flex items-center justify-between text-xs font-semibold text-slate-500">
-                    <span>
-                      {formRules.enabled
-                        ? `กำลังเปิดประเมิน (${checklistItems.filter((item) => item.ruleActive).length}/${checklistItems.length} หัวข้อ)`
-                        : 'ปิดการประเมินท่าทางอยู่ • นับรอบตามมุมองศาอย่างเดียว'}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setFormChecklistExpanded(true)}
-                      className="font-bold text-[#0284C7] hover:underline cursor-pointer"
-                    >
-                      คลิกเพื่อเปิดดูรายการ
-                    </button>
-                  </div>
                 )}
-              </AnimatePresence>
+              </div>
             </div>
-          </aside>
-        </main>
 
-        {/* 4. Bottom Floating Dock: Thai AI Coach + Demo Simulator Drawer */}
-        <footer className="space-y-3">
+            {coreChecklistItems.map(({ ruleKey, displayLabel, baseItem }) => (
+              <button
+                key={ruleKey}
+                type="button"
+                onClick={() => toggleSingleFormRule(ruleKey)}
+                aria-pressed={baseItem.ruleActive}
+                className="w-full flex items-center justify-between gap-1.5 text-left cursor-pointer hover:bg-emerald-100/50 rounded-md px-1 py-0.5 transition"
+              >
+                <span
+                  className={`text-[11px] md:text-xs font-bold leading-tight ${
+                    !baseItem.ruleActive ? 'text-slate-400 line-through' : 'text-slate-800'
+                  }`}
+                >
+                  {!baseItem.ruleActive ? '⏸' : baseItem.ok ? '✔️' : '⚠️'} {displayLabel}
+                </span>
+                <span
+                  className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-extrabold ${
+                    !baseItem.ruleActive
+                      ? 'bg-slate-200 text-slate-600'
+                      : baseItem.ok
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-amber-500 text-white'
+                  }`}
+                >
+                  {!baseItem.ruleActive ? 'ปิดอยู่' : baseItem.ok ? 'ผ่าน' : baseItem.warnText}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ZONE 5: Compact Accessible Voice Coach Footer */}
+      <footer className="shrink-0 relative bg-gradient-to-r from-teal-700 via-emerald-700 to-blue-800 text-white rounded-2xl px-4 py-2 flex items-center justify-between gap-3 shadow-sm">
+        {/* Left: Microphone badge + Label + Live Spoken Subtitle */}
+        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+          <span
+            aria-hidden="true"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/15 text-sm"
+          >
+            🎙️
+          </span>
+          <span className="text-emerald-200 font-extrabold text-xs md:text-sm shrink-0">
+            THAI AI VOICE COACH:
+          </span>
+          <p className="text-white font-bold text-sm md:text-base truncate">
+            &ldquo;{displayedVoiceSubtitle}&rdquo;
+          </p>
+        </div>
+
+        {/* Right: Audio Toggle, Thai/EN Language Pills, and Floating Clinical Tools Popover */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={handleToggleVoiceMute}
+            aria-pressed={voiceMuted}
+            data-testid="kiosk-voice-mute-toggle"
+            className={`font-extrabold text-xs md:text-sm px-3 py-1 rounded-lg cursor-pointer transition whitespace-nowrap inline-flex items-center gap-1 ${
+              voiceMuted
+                ? 'bg-amber-400 text-slate-950 hover:bg-amber-300'
+                : 'bg-white/20 hover:bg-white/30 text-white'
+            }`}
+          >
+            {voiceMuted ? <VolumeX className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
+            <span>{voiceMuted ? '🔇 ปิดเสียง' : '🔊 เสียงพากย์'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleSelectZone5VoiceLang('th')}
+            aria-pressed={zone5VoiceLang === 'th'}
+            className={`px-2.5 py-1 rounded-lg text-xs md:text-sm font-extrabold cursor-pointer transition ${
+              zone5VoiceLang === 'th'
+                ? 'bg-white text-teal-900 shadow-xs'
+                : 'bg-teal-900/50 hover:bg-teal-900/80 text-white'
+            }`}
+          >
+            ไทย
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleSelectZone5VoiceLang('en')}
+            aria-pressed={zone5VoiceLang === 'en'}
+            className={`px-2.5 py-1 rounded-lg text-xs md:text-sm font-extrabold cursor-pointer transition ${
+              zone5VoiceLang === 'en'
+                ? 'bg-white text-teal-900 shadow-xs'
+                : 'bg-teal-900/50 hover:bg-teal-900/80 text-white'
+            }`}
+          >
+            EN
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setToolsPopoverOpen((prev) => !prev)}
+            aria-expanded={toolsPopoverOpen}
+            title="ตั้งค่ากล้อง / โหมดจำลอง"
+            className="bg-white/15 hover:bg-white/25 text-white font-bold px-2.5 py-1 rounded-lg text-xs cursor-pointer transition inline-flex items-center gap-1"
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">ตั้งค่า</span>
+          </button>
+        </div>
+
+        {/* Preserve live TTS & Speech Queue Engine invisibly without altering layout height */}
+        <div className="sr-only" aria-hidden="true">
           <VoiceCoachBanner
-            textTh={
-              strokeSafetyAlert?.messageTh ??
-              telemetry_analysis.safety_guard_banner_th ??
-              tts_voice_th
-            }
+            key={zone5VoiceLang}
+            textTh={rawVoiceTextTh}
             kioskState={kiosk_state}
             highlightColor={ui_directives.highlight_color}
             muted={voiceMuted}
             onToggleMute={handleToggleVoiceMute}
           />
+        </div>
 
-          {/* Interactive Demo Simulator Floating Control Drawer */}
-          {isDemoMode && (
-            <div className="glass-card rounded-3xl px-4 py-3 sm:px-6">
-              <div className="flex flex-wrap items-center justify-between gap-2">
+        {/* Floating Staff Utility & Demo Popover (Zero Impact on 100dvh Layout Height) */}
+        {toolsPopoverOpen && (
+          <div className="fixed bottom-14 right-3 z-40 w-[min(94vw,680px)] rounded-2xl border-2 border-sky-200 bg-white/98 p-3 text-slate-800 shadow-2xl backdrop-blur-md space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+              <span className="text-xs font-extrabold text-blue-950">
+                ⚙️ เครื่องมือผู้ดูแล &amp; การแสดงผลกล้อง
+              </span>
+              <button
+                type="button"
+                onClick={() => setToolsPopoverOpen(false)}
+                className="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700 hover:bg-slate-200 cursor-pointer"
+              >
+                ปิดหน้าต่าง ✕
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  const nextLive = !livePoseActive;
+                  setLivePoseActive(nextLive);
+                  if (nextLive && isDemoMode) {
+                    setAutoCycleDemo(false);
+                    toggleDemoMode(false);
+                  }
+                }}
+                className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 font-bold cursor-pointer ${
+                  livePoseActive
+                    ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                    : 'border-slate-300 bg-slate-100 text-slate-600'
+                }`}
+              >
+                <Camera className="h-3.5 w-3.5" />
+                <span>{livePoseActive ? 'กล้อง AI: ON' : 'กล้อง AI: OFF'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleTogglePrivacyMode}
+                aria-pressed={isPrivacyMode}
+                className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 font-bold cursor-pointer ${
+                  isPrivacyMode
+                    ? 'border-emerald-500 bg-slate-900 text-emerald-300'
+                    : 'border-sky-200 bg-sky-50 text-blue-900'
+                }`}
+              >
+                {isPrivacyMode ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                <span>{isPrivacyMode ? 'โหมดความเป็นส่วนตัว' : 'โหมดภาพกล้องจริง'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleToggleSkeletonOverlay}
+                aria-pressed={showSkeletonOverlay}
+                className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 font-bold cursor-pointer ${
+                  showSkeletonOverlay
+                    ? 'border-teal-300 bg-teal-50 text-teal-800'
+                    : 'border-slate-300 bg-slate-100 text-slate-600'
+                }`}
+              >
+                <Activity className="h-3.5 w-3.5" />
+                <span>{showSkeletonOverlay ? 'โครงกระดูก: ON' : 'โครงกระดูก: OFF'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleToggleDemoMode}
+                className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 font-bold cursor-pointer ${
+                  isDemoMode
+                    ? 'border-blue-400 bg-blue-100 text-blue-950'
+                    : 'border-slate-300 bg-slate-100 text-slate-700'
+                }`}
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                <span>{isDemoMode ? 'Demo: ON' : isEdgeDirectCamera ? 'Edge: ON' : 'Demo: OFF'}</span>
+              </button>
+
+              {canShowManualRepButton && (
                 <button
                   type="button"
-                  onClick={() => setDrawerOpen((o) => !o)}
-                  className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-wider text-[#0F4C81] sm:text-sm"
+                  onClick={() => setDemoPreset('REP_COMPLETED')}
+                  disabled={rep_counter.valid_reps >= selectedExercise.target_reps}
+                  className="inline-flex items-center gap-1 rounded-xl border border-blue-300 bg-blue-50 px-2.5 py-1.5 font-bold text-blue-900 disabled:opacity-50 cursor-pointer"
                 >
-                  <SlidersHorizontal className="h-4 w-4 text-[#0284C7]" />
-                  <span>Demo Simulator Controls (พรีวิวสถานะ &amp; มุมข้อต่อสด)</span>
-                  {drawerOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+                  <PlusCircle className="h-3.5 w-3.5" />
+                  <span>+1 ครั้ง</span>
                 </button>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setAutoCycleDemo((a) => !a)}
-                    className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-bold transition-colors ${autoCycleDemo
-                        ? 'bg-[#10B981] text-white'
-                        : 'bg-sky-100 text-[#0F4C81] hover:bg-sky-200'
-                      }`}
-                  >
-                    {autoCycleDemo ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-                    <span>{autoCycleDemo ? 'หยุดจำลองอัตโนมัติ' : 'เล่นจำลองต่อเนื่อง'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={resetDemoSession}
-                    className="inline-flex items-center gap-1 rounded-full border border-sky-200 bg-white px-3 py-1.5 text-xs font-bold text-[#0F4C81] hover:bg-sky-50"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                    รีเซ็ต
-                  </button>
-                </div>
-              </div>
-
-              {drawerOpen && (
-                <div className="mt-3 space-y-3 border-t border-sky-100 pt-3">
-                  {/* State Switch Pills */}
-                  <div className="flex flex-wrap gap-1.5">
-                    {DEMO_PRESETS.map((p) => {
-                      const active = demoPreset === p.id;
-                      return (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() => setDemoPreset(p.id)}
-                          className={`rounded-xl px-3 py-1.5 text-xs font-bold transition-all ${active
-                              ? p.id === 'IMPOSTOR'
-                                ? 'bg-[#EF4444] text-white shadow-sm'
-                                : p.id === 'TRUNK_LEAN' ||
-                                  p.id === 'MULTI_PERSON' ||
-                                  p.id === 'WRONG_LIMB' ||
-                                  p.id === 'WRONG_PLANE'
-                                  ? 'bg-[#F59E0B] text-white shadow-sm'
-                                  : 'bg-[#0284C7] text-white shadow-sm'
-                              : 'bg-white/80 text-[#0F4C81] hover:bg-sky-50'
-                            }`}
-                        >
-                          {p.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {/* Sliders: current_rom_deg, trunk_tilt_deg, distance_m */}
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                    <label className="flex flex-col gap-1">
-                      <div className="flex justify-between text-xs font-bold">
-                        <span>มุมข้อต่อ (current_rom_deg)</span>
-                        <span className="tabular-mono text-[#0284C7]">{demoRomDeg.toFixed(0)}°</span>
-                      </div>
-                      <input
-                        type="range"
-                        min={0}
-                        max={180}
-                        step={1}
-                        value={demoRomDeg}
-                        onChange={(e) => {
-                          setAutoCycleDemo(false);
-                          setDemoRomDeg(Number(e.target.value));
-                        }}
-                        className="accent-[#0284C7]"
-                      />
-                    </label>
-
-                    <label className="flex flex-col gap-1">
-                      <div className="flex justify-between text-xs font-bold">
-                        <span>เอียงลำตัว (trunk_tilt_deg)</span>
-                        <span
-                          className={`tabular-mono ${demoTrunkTiltDeg > 10 ? 'text-[#F59E0B]' : 'text-[#0D9488]'
-                            }`}
-                        >
-                          {demoTrunkTiltDeg.toFixed(1)}°
-                        </span>
-                      </div>
-                      <input
-                        type="range"
-                        min={0}
-                        max={25}
-                        step={0.5}
-                        value={demoTrunkTiltDeg}
-                        onChange={(e) => {
-                          setAutoCycleDemo(false);
-                          setDemoTrunkTiltDeg(Number(e.target.value));
-                        }}
-                        className="accent-[#F59E0B]"
-                      />
-                    </label>
-
-                    <label className="flex flex-col gap-1">
-                      <div className="flex justify-between text-xs font-bold">
-                        <span>ระยะยืนหน้าตู้ (distance_m)</span>
-                        <span className="tabular-mono text-[#0D9488]">{demoDistanceM.toFixed(2)} ม.</span>
-                      </div>
-                      <input
-                        type="range"
-                        min={1.4}
-                        max={2.6}
-                        step={0.05}
-                        value={demoDistanceM}
-                        onChange={(e) => setDemoDistanceM(Number(e.target.value))}
-                        className="accent-[#10B981]"
-                      />
-                    </label>
-                  </div>
-                </div>
               )}
+
+              {onOpenLegacyKiosk && (
+                <button
+                  type="button"
+                  onClick={onOpenLegacyKiosk}
+                  className="rounded-xl border border-slate-300 bg-white px-2.5 py-1.5 font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  สแกนเต็มระบบ
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => handleEmergencyStopClick()}
+                className="inline-flex items-center gap-1 rounded-xl bg-rose-600 px-3 py-1.5 font-extrabold text-white hover:bg-rose-500 cursor-pointer"
+              >
+                <AlertOctagon className="h-3.5 w-3.5" />
+                <span>หยุดฉุกเฉิน</span>
+              </button>
             </div>
-          )}
-        </footer>
-      </div>
+
+            {/* Interactive Demo Simulator Controls inside Popover */}
+            {isDemoMode && (
+              <div className="space-y-2 border-t border-slate-200 pt-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDrawerOpen((o) => !o)}
+                    className="flex items-center gap-1.5 text-xs font-extrabold text-blue-900 cursor-pointer"
+                  >
+                    <span>Demo Simulator Controls</span>
+                    {drawerOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
+                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setAutoCycleDemo((a) => !a)}
+                      className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-bold cursor-pointer ${
+                        autoCycleDemo ? 'bg-emerald-600 text-white' : 'bg-sky-100 text-blue-900'
+                      }`}
+                    >
+                      {autoCycleDemo ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+                      <span>{autoCycleDemo ? 'หยุดจำลอง' : 'เล่นจำลอง'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetDemoSession}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-2.5 py-1 text-xs font-bold text-slate-700 cursor-pointer"
+                    >
+                      <RotateCcw className="h-3 w-3" />
+                      รีเซ็ต
+                    </button>
+                  </div>
+                </div>
+
+                {drawerOpen && (
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap gap-1">
+                      {DEMO_PRESETS.map((p) => {
+                        const active = demoPreset === p.id;
+                        return (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => setDemoPreset(p.id)}
+                            className={`rounded-lg px-2.5 py-1 text-[11px] font-bold cursor-pointer ${
+                              active
+                                ? p.id === 'IMPOSTOR'
+                                  ? 'bg-rose-600 text-white'
+                                  : p.id === 'TRUNK_LEAN' ||
+                                      p.id === 'MULTI_PERSON' ||
+                                      p.id === 'WRONG_LIMB' ||
+                                      p.id === 'WRONG_PLANE'
+                                    ? 'bg-amber-500 text-white'
+                                    : 'bg-blue-600 text-white'
+                                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                            }`}
+                          >
+                            {p.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                      <label className="flex flex-col gap-0.5">
+                        <div className="flex justify-between font-bold">
+                          <span>ROM</span>
+                          <span className="text-blue-700">{demoRomDeg.toFixed(0)}°</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={180}
+                          step={1}
+                          value={demoRomDeg}
+                          onChange={(e) => {
+                            setAutoCycleDemo(false);
+                            setDemoRomDeg(Number(e.target.value));
+                          }}
+                          className="accent-blue-600"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-0.5">
+                        <div className="flex justify-between font-bold">
+                          <span>เอียงลำตัว</span>
+                          <span className="text-emerald-700">{demoTrunkTiltDeg.toFixed(1)}°</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={25}
+                          step={0.5}
+                          value={demoTrunkTiltDeg}
+                          onChange={(e) => {
+                            setAutoCycleDemo(false);
+                            setDemoTrunkTiltDeg(Number(e.target.value));
+                          }}
+                          className="accent-amber-500"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-0.5">
+                        <div className="flex justify-between font-bold">
+                          <span>ระยะยืน</span>
+                          <span className="text-teal-700">{demoDistanceM.toFixed(2)} ม.</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={1.4}
+                          max={2.6}
+                          step={0.05}
+                          value={demoDistanceM}
+                          onChange={(e) => setDemoDistanceM(Number(e.target.value))}
+                          className="accent-emerald-600"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </footer>
+
+      <ExpandedCoachModal
+        open={coachModalOpen}
+        exercise={selectedExercise}
+        targetSide={currentUiSide}
+        targetSideLabel={targetSideLabel}
+        steps={postureSpec.steps}
+        onClose={() => setCoachModalOpen(false)}
+      />
     </div>
   );
 }
