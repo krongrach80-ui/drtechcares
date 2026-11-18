@@ -70,6 +70,8 @@ import {
   Zap,
 } from 'lucide-react';
 import { PhysicalCardGame } from '../../apps/kiosk/src/PhysicalCardGame';
+import { POSE_TEST_PATIENT, buildAll15ClinicalExercisePrescriptions } from '../hooks/useKioskSocket';
+import { SmartRehabKioskUI } from './SmartRehabKioskUI';
 import { notifyBiometricIndexChanged } from '../lib/faceMatcher';
 import { removeProfileFromLocalBiometricVault } from '../lib/biometricEngine';
 import { StaffAssistedEnrollmentModal } from './StaffAssistedEnrollmentModal';
@@ -86,6 +88,8 @@ export interface ClinicalStaffPortalShellProps {
   currentUser: UserAccount;
   onLogout: () => Promise<void> | void;
   onReturnToKiosk?: () => void;
+  onOpenPoseTestMode?: (initialExerciseCode?: string) => void;
+  initialTab?: PortalTab;
   autoOpenEnroll?: boolean;
   onAutoOpenEnrollConsumed?: () => void;
 }
@@ -1283,6 +1287,8 @@ export function ClinicalStaffPortalShell({
   currentUser,
   onLogout,
   onReturnToKiosk,
+  onOpenPoseTestMode,
+  initialTab,
   autoOpenEnroll,
   onAutoOpenEnrollConsumed,
 }: ClinicalStaffPortalShellProps) {
@@ -1295,7 +1301,7 @@ export function ClinicalStaffPortalShell({
     (currentUser?.role as string) === 'ผู้ดูแลระบบ';
   const isAdmin = isAdminUser;
 
-  const [activeTab, setActiveTab] = useState<PortalTab>(isAdmin ? 'staff' : 'patients');
+  const [activeTab, setActiveTab] = useState<PortalTab>(() => initialTab ?? (isAdmin ? 'staff' : 'patients'));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const [profileOverrides, setProfileOverrides] = useState<Record<string, StoredStaffProfileOverride>>(
@@ -1316,7 +1322,9 @@ export function ClinicalStaffPortalShell({
   // Core data state
   const [users, setUsers] = useState<UserAccount[]>([]);
   const [patients, setPatients] = useState<PatientRecord[]>([]);
-  const [exercises, setExercises] = useState<ManagedExerciseRecord[]>([]);
+  const [exercises, setExercises] = useState<ManagedExerciseRecord[]>(() =>
+    CLINICAL_EXERCISES.map((ex) => ({ ...ex, createdBy: 'system' })),
+  );
   const [modpacks, setModpacks] = useState<ModpackRecord[]>([]);
   const [sessions, setSessions] = useState<RehabSessionRecord[]>([]);
   const [staffCalls, setStaffCalls] = useState<StaffCallRecord[]>([]);
@@ -1342,6 +1350,16 @@ export function ClinicalStaffPortalShell({
   const [resetPassUser, setResetPassUser] = useState<UserAccount | null>(null);
   const [quickCheckinModalOpen, setQuickCheckinModalOpen] = useState(false);
   const [cardGameModalOpen, setCardGameModalOpen] = useState(false);
+  const [poseTestOverlayExerciseCode, setPoseTestOverlayExerciseCode] = useState<string | null | undefined>(
+    undefined,
+  );
+  const handleLaunchPoseTest = (initialExerciseCode?: string) => {
+    if (onOpenPoseTestMode) {
+      onOpenPoseTestMode(initialExerciseCode);
+      return;
+    }
+    setPoseTestOverlayExerciseCode(initialExerciseCode ?? null);
+  };
   const [patientModalState, setPatientModalState] = useState<{
     patient: PatientRecord | null;
     tab: 'profile' | 'history';
@@ -2497,6 +2515,16 @@ export function ClinicalStaffPortalShell({
         <div className="p-3 space-y-2 border-t border-white/20 text-xs">
           <button
             type="button"
+            onClick={() => handleLaunchPoseTest()}
+            data-testid="sidebar-pose-test-btn"
+            className="w-full h-10 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-400 hover:to-teal-400 px-3 font-extrabold shadow-md border border-white/25 whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer transition"
+          >
+            <span className="shrink-0">🏃</span>
+            {!sidebarCollapsed && <span className="truncate">ทดลองท่าทางกายภาพ (15 ท่า)</span>}
+          </button>
+
+          <button
+            type="button"
             onClick={() => setCardGameModalOpen(true)}
             className="w-full h-10 flex items-center justify-center gap-2 rounded-xl bg-white text-[#0F4C81] hover:bg-emerald-50 px-3 font-extrabold shadow whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer"
           >
@@ -2608,6 +2636,15 @@ export function ClinicalStaffPortalShell({
             >
               <Zap className="h-3.5 w-3.5 text-amber-500 shrink-0" />
               <span>{locale.actions.quickCheckin}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleLaunchPoseTest()}
+              data-testid="header-pose-test-btn"
+              className="whitespace-nowrap h-9 min-w-[145px] inline-flex items-center justify-center gap-1.5 rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 px-3.5 font-extrabold text-white shadow-sm hover:from-emerald-500 hover:to-teal-500 cursor-pointer shrink-0 transition"
+            >
+              <span>🏃 ทดลองท่ากายภาพ</span>
             </button>
 
             {onReturnToKiosk && (
@@ -3211,14 +3248,24 @@ export function ClinicalStaffPortalShell({
                     </p>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setCardGameModalOpen(true)}
-                  className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-2 shrink-0 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
-                >
-                  <Gamepad2 className="h-4 w-4 shrink-0" />
-                  {locale.exercises.playCardBtn}
-                </button>
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleLaunchPoseTest()}
+                    data-testid="tab4-pose-test-btn"
+                    className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-2 shrink-0 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
+                  >
+                    <span>🏃 ทดลองท่าทางกายภาพ (15 ท่า)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCardGameModalOpen(true)}
+                    className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-2 shrink-0 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
+                  >
+                    <Gamepad2 className="h-4 w-4 shrink-0" />
+                    {locale.exercises.playCardBtn}
+                  </button>
+                </div>
               </div>
 
               {/* AI Pose Safety Switch Banner */}
@@ -3437,24 +3484,34 @@ export function ClinicalStaffPortalShell({
                           </div>
                           <div className="text-[11px] text-slate-500 truncate">{ex.instruction[lang] || ex.instruction.th}</div>
                         </div>
-                        {(isAdmin || ex.createdBy === currentUser.id) && (
+                        <div className="flex items-center gap-1.5 shrink-0">
                           <button
                             type="button"
-                            onClick={async () => {
-                              try {
-                                await apiClient.deleteExercise(ex.id);
-                                flashBanner('success', `ลบท่ากายภาพ "${ex.name.th}" แล้ว`);
-                                await refreshAll();
-                              } catch (err) {
-                                flashBanner('error', err instanceof Error ? err.message : 'ไม่สามารถลบท่ากายภาพกลางได้');
-                              }
-                            }}
-                            className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer shrink-0"
-                            title={locale.staff.deleteTitle}
+                            onClick={() => handleLaunchPoseTest(ex.code || ex.id)}
+                            data-testid={`exercise-card-pose-test-${ex.code || ex.id}`}
+                            className="whitespace-nowrap rounded-xl border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-extrabold text-emerald-800 hover:bg-emerald-100 cursor-pointer transition"
                           >
-                            <Trash2 className="h-4 w-4" />
+                            ▶️ ทดลองทำท่านี้ด้วยกล้องทันที
                           </button>
-                        )}
+                          {(isAdmin || ex.createdBy === currentUser.id) && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  await apiClient.deleteExercise(ex.id);
+                                  flashBanner('success', `ลบท่ากายภาพ "${ex.name.th}" แล้ว`);
+                                  await refreshAll();
+                                } catch (err) {
+                                  flashBanner('error', err instanceof Error ? err.message : 'ไม่สามารถลบท่ากายภาพกลางได้');
+                                }
+                              }}
+                              className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer shrink-0"
+                              title={locale.staff.deleteTitle}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -5943,6 +6000,24 @@ export function ClinicalStaffPortalShell({
               }}
             />
           </div>
+        </div>
+      )}
+
+      {/* Standalone Pose Test Sandbox Modal (when ClinicalStaffPortalShell is rendered outside App.tsx router) */}
+      {poseTestOverlayExerciseCode !== undefined && (
+        <div
+          data-testid="standalone-pose-test-modal"
+          className="fixed inset-0 z-50 w-screen h-screen bg-slate-100 overflow-y-auto overflow-x-hidden"
+        >
+          <SmartRehabKioskUI
+            isPoseTestMode
+            initialExerciseCode={poseTestOverlayExerciseCode}
+            patient={POSE_TEST_PATIENT}
+            ownerBiometrics={null}
+            prescribedExercises={buildAll15ClinicalExercisePrescriptions(exercises)}
+            isStaffAuthorized
+            onBackToAdminPortal={() => setPoseTestOverlayExerciseCode(undefined)}
+          />
         </div>
       )}
     </div>

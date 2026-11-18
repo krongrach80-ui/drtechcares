@@ -1,9 +1,13 @@
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import {
+  DrTechCaresApiClient,
   resolvePrescribedExercisesFromSchedules,
   resolveTodayPatientSchedule,
   sanitizeAccidentalDefaultKneePrefix,
 } from '@drtechcares/api-client';
+import { ClinicalI18nProvider } from '@drtechcares/clinical-i18n';
 import {
   AutoBoneBaselineCalibrator,
   CLINICAL_EXERCISES,
@@ -24,6 +28,9 @@ import {
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision';
 import {
   EXERCISE_OPTIONS,
+  POSE_TEST_PATIENT,
+  applyExerciseSideOverride,
+  buildAll15ClinicalExercisePrescriptions,
   getPrescribedLimbPromptTh,
   mapTodayExercisesToPrescriptions,
   resolveExpectedPlaneForExercise,
@@ -34,6 +41,7 @@ import {
   DEFAULT_FORM_ASSESSMENT_RULES,
   HAND_OUT_OF_FRAME_BADGE_TH,
   LandmarkSmoother,
+  SmartRehabKioskUI,
   applyKinematicSkeletonLock,
   drawLivePoseOverlayOnCanvas,
   interpolatePoseLandmarks,
@@ -75,6 +83,7 @@ import {
   getRetestPostureButtonLabel,
   shouldShowCompletedTodayScreen,
 } from '../App';
+import { ClinicalStaffPortalShell } from '../components/ClinicalStaffPortalShell';
 import {
   computePostureCycleState,
   computeUpperLimbFkJoints,
@@ -3260,6 +3269,113 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     });
     expect(holdDoneWaitLower.tone).toBe('sky');
     expect(holdDoneWaitLower.titleTh).toBe('✅ ค้างครบเวลาแล้ว! ค่อยๆ เอาแขนลงข้างลำตัวเพื่อนับ +1 ครั้ง');
+  });
+
+  it('provides Pose Test Mode bypassing face login with all 15 exercises, dynamic LEFT/RIGHT/BOTH side switcher, and Portal launch buttons', () => {
+    const all15 = buildAll15ClinicalExercisePrescriptions();
+    expect(all15).toHaveLength(15);
+    expect(all15.map((ex) => ex.catalog_exercise_id)).toEqual(CLINICAL_EXERCISES.map((ex) => ex.id));
+    expect(all15.every((ex) => ex.target_reps === 10)).toBe(true);
+    expect(POSE_TEST_PATIENT.hn).toBe('HN-TEST-POSE');
+
+    // Dynamic side switching updates exercise_id, effective_code, prescribed_side, target_joint, and copy
+    const firstEx = all15[0];
+    const leftSwitched = applyExerciseSideOverride(firstEx, 'LEFT');
+    expect(leftSwitched.prescribed_side).toBe('LEFT');
+    expect(leftSwitched.target_joint).toBe('left_shoulder');
+    expect(leftSwitched.exercise_id).toBe('STROKE_SH_FLEX_LEFT');
+    expect(leftSwitched.name_th).toContain('ข้างซ้าย (L)');
+    expect(resolveActiveExerciseSide(leftSwitched)).toBe('LEFT');
+
+    const rightSwitched = applyExerciseSideOverride(leftSwitched, 'RIGHT');
+    expect(rightSwitched.prescribed_side).toBe('RIGHT');
+    expect(rightSwitched.target_joint).toBe('right_shoulder');
+    expect(rightSwitched.exercise_id).toBe('STROKE_SH_FLEX_RIGHT');
+    expect(resolveActiveExerciseSide(rightSwitched)).toBe('RIGHT');
+
+    const bothSwitched = applyExerciseSideOverride(rightSwitched, 'BOTH');
+    expect(bothSwitched.prescribed_side).toBe('BOTH');
+    expect(bothSwitched.exercise_id).toBe('STROKE_SH_FLEX_BOTH');
+    expect(bothSwitched.name_th).toContain('ทั้งสองข้าง');
+    expect(resolveActiveExerciseSide(bothSwitched)).toBe('BOTH');
+
+    const switchedLeftBanner = resolveUnifiedKioskCoachingBanner({
+      exercise: leftSwitched,
+      expectedPlane: resolveExpectedPlaneForExercise(leftSwitched),
+      kioskState: 'ACTIVE_REP',
+      wrongLimbAlert: true,
+      wrongPlaneAlert: false,
+      trunkLeanAlert: false,
+      shoulderHikeAlert: false,
+      tooFastAlert: false,
+      isMultiPerson: false,
+      isImpostor: false,
+      holdRemainingSec: 3,
+      holdTargetSec: 3,
+      currentRomDeg: 10,
+      targetRomDeg: 125,
+      validReps: 0,
+      targetReps: 10,
+    });
+    expect(switchedLeftBanner.titleTh).toContain('เฉพาะข้างซ้าย');
+
+    // SmartRehabKioskUI renders Quick Exercise & Side Switcher Bar when isPoseTestMode=true (bypassing face login)
+    const testUiHtml = renderToStaticMarkup(
+      React.createElement(SmartRehabKioskUI, {
+        isPoseTestMode: true,
+        patient: POSE_TEST_PATIENT,
+        ownerBiometrics: null,
+        prescribedExercises: all15,
+        initialExerciseCode: 'STROKE_WRIST_FINGER',
+        isStaffAuthorized: true,
+        onBackToAdminPortal: () => {},
+      }),
+    );
+    expect(testUiHtml).toContain('pose-test-switcher-bar');
+    expect(testUiHtml).toContain('HN-TEST-POSE');
+    expect(testUiHtml).toContain('ผู้ทดลองระบบ (โหมดทดสอบท่ากายภาพ 15 ท่า)');
+    expect(testUiHtml).toContain('เลือกท่าที่จะทดลอง 1–15');
+    expect(testUiHtml).toContain('1. ');
+    expect(testUiHtml).toContain('15. ');
+    expect(testUiHtml).toContain('⏮ ท่าก่อนหน้า');
+    expect(testUiHtml).toContain('⏭ ท่าถัดไป');
+    expect(testUiHtml).toContain('⬅️ ข้างซ้าย (Left)');
+    expect(testUiHtml).toContain('➡️ ข้างขวา (Right)');
+    expect(testUiHtml).toContain('🙌 ทั้งสองข้าง (Both)');
+    expect(testUiHtml).toContain('🔄 รีเซ็ตรอบนับ (0/10)');
+    expect(testUiHtml).toContain('⬅️ กลับหน้า Admin Portal');
+
+    // ClinicalStaffPortalShell renders all 3 quick-launch Pose Test buttons (sidebar, top header, Tab 4)
+    const mockApi = new DrTechCaresApiClient();
+    const portalHtml = renderToStaticMarkup(
+      React.createElement(
+        ClinicalI18nProvider,
+        null,
+        React.createElement(ClinicalStaffPortalShell, {
+          apiClient: mockApi,
+          currentUser: {
+            id: 'user-super-1',
+            username: 'admin',
+            role: 'super_admin',
+            fullName: 'ผอ.สมชาย ทดสอบ',
+            phone: '0810000000',
+            active: true,
+            createdAt: new Date().toISOString(),
+          },
+          initialTab: 'exercises',
+          onLogout: () => {},
+          onReturnToKiosk: () => {},
+          onOpenPoseTestMode: () => {},
+        }),
+      ),
+    );
+    expect(portalHtml).toContain('sidebar-pose-test-btn');
+    expect(portalHtml).toContain('ทดลองท่าทางกายภาพ (15 ท่า)');
+    expect(portalHtml).toContain('header-pose-test-btn');
+    expect(portalHtml).toContain('🏃 ทดลองท่ากายภาพ');
+    expect(portalHtml).toContain('tab4-pose-test-btn');
+    expect(portalHtml).toContain('exercise-card-pose-test-STROKE_SH_FLEX');
+    expect(portalHtml).toContain('▶️ ทดลองทำท่านี้ด้วยกล้องทันที');
   });
 });
 

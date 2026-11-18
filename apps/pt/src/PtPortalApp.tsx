@@ -7,6 +7,7 @@ export interface PtPortalAppProps {
   currentUser: UserAccount;
   onLogout: () => void;
   onReturnToKiosk?: () => void;
+  onOpenPoseTestMode?: (initialExerciseCode?: string) => void;
   autoOpenEnroll?: boolean;
   onAutoOpenEnrollConsumed?: () => void;
 }
@@ -16,6 +17,7 @@ export function PtPortalApp({
   currentUser,
   onLogout,
   onReturnToKiosk,
+  onOpenPoseTestMode,
   autoOpenEnroll,
   onAutoOpenEnrollConsumed,
 }: PtPortalAppProps) {
@@ -25,6 +27,7 @@ export function PtPortalApp({
       currentUser={currentUser}
       onLogout={onLogout}
       onReturnToKiosk={onReturnToKiosk}
+      onOpenPoseTestMode={onOpenPoseTestMode}
       autoOpenEnroll={autoOpenEnroll}
       onAutoOpenEnrollConsumed={onAutoOpenEnrollConsumed}
     />

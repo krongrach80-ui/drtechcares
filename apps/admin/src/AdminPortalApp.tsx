@@ -7,6 +7,7 @@ export interface AdminPortalAppProps {
   currentUser: UserAccount;
   onLogout: () => void;
   onReturnToKiosk?: () => void;
+  onOpenPoseTestMode?: (initialExerciseCode?: string) => void;
   autoOpenEnroll?: boolean;
   onAutoOpenEnrollConsumed?: () => void;
 }
@@ -16,6 +17,7 @@ export function AdminPortalApp({
   currentUser,
   onLogout,
   onReturnToKiosk,
+  onOpenPoseTestMode,
   autoOpenEnroll,
   onAutoOpenEnrollConsumed,
 }: AdminPortalAppProps) {
@@ -25,6 +27,7 @@ export function AdminPortalApp({
       currentUser={currentUser}
       onLogout={onLogout}
       onReturnToKiosk={onReturnToKiosk}
+      onOpenPoseTestMode={onOpenPoseTestMode}
       autoOpenEnroll={autoOpenEnroll}
       onAutoOpenEnrollConsumed={onAutoOpenEnrollConsumed}
     />

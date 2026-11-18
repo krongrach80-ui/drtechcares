@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CLINICAL_EXERCISES,
+  mergeDuplicateSideExercises,
   normalizeStrokeExerciseId,
   parseExerciseCodeAndSide,
   resolveActiveExerciseSide,
   resolveSideAdjustedExerciseCopy,
+  sortExercisesStrokeUpperFirst,
+  type ExerciseConfig,
   type ExerciseSideCode,
 } from '@drtechcares/pose-engine';
 import type { TodayPrescribedExerciseItem } from '@drtechcares/api-client';
@@ -445,6 +448,162 @@ export const DEMO_PATIENT: PatientSummary = {
   id: 'PT-8841',
   name: 'คุณสมชาย ใจดี',
 };
+
+export const POSE_TEST_PATIENT: PatientSummary = {
+  id: 'HN-TEST-POSE',
+  hn: 'HN-TEST-POSE',
+  name: 'ผู้ทดลองระบบ (โหมดทดสอบท่ากายภาพ 15 ท่า)',
+  max_safe_rom_deg: 180,
+  affected_side: 'BOTH',
+  stroke_type: 'SANDBOX_POSE_TEST',
+  motor_assessment_score: 6,
+};
+
+function findCatalogExerciseConfig(rawCodeOrId?: string | null): ExerciseConfig | undefined {
+  const raw = (rawCodeOrId ?? '').trim();
+  if (!raw) return undefined;
+  const parsed = parseExerciseCodeAndSide(raw);
+  const canonicalId = normalizeStrokeExerciseId(parsed.baseCode || raw);
+  return CLINICAL_EXERCISES.find(
+    (c) =>
+      c.id === canonicalId ||
+      c.code === canonicalId ||
+      c.id === parsed.baseCode ||
+      c.code === parsed.baseCode ||
+      c.id === raw ||
+      c.code === raw,
+  );
+}
+
+/** Builds all 15 unified clinical exercises in 1..15 order for Pose Test Mode (10 reps/exercise). */
+export function buildAll15ClinicalExercisePrescriptions(
+  catalogOverrides?: ReadonlyArray<{
+    id: string;
+    code: string;
+    category?: string;
+    name: { th: string; en: string; cn?: string };
+    instruction: { th: string; en: string; cn?: string };
+    detection?: ExerciseConfig['detection'];
+  }>,
+): ExercisePrescriptionOption[] {
+  const sourcePool: ExerciseConfig[] =
+    catalogOverrides && catalogOverrides.length > 0
+      ? mergeDuplicateSideExercises(
+          sortExercisesStrokeUpperFirst(
+            catalogOverrides.map((ex) => {
+              const master = findCatalogExerciseConfig(ex.code || ex.id);
+              return (
+                master ?? {
+                  id: ex.id,
+                  code: ex.code,
+                  category: (ex.category as ExerciseConfig['category']) ?? 'upper_limb',
+                  clinicalFocus: 'stroke_adl',
+                  name: {
+                    th: ex.name.th,
+                    en: ex.name.en,
+                    cn: ex.name.cn ?? ex.name.en,
+                  },
+                  instruction: {
+                    th: ex.instruction.th,
+                    en: ex.instruction.en,
+                    cn: ex.instruction.cn ?? ex.instruction.en,
+                  },
+                  detection: ex.detection ?? CLINICAL_EXERCISES[0].detection,
+                }
+              );
+            }),
+          ),
+        )
+      : [...CLINICAL_EXERCISES];
+
+  const todayItems: TodayPrescribedExerciseItem[] = sourcePool.map((ex, idx) => {
+    const defaultSide: ExerciseSideCode =
+      ex.detection.side === 'both'
+        ? 'BOTH'
+        : ex.detection.side === 'left'
+          ? 'LEFT'
+          : 'RIGHT';
+    const baseCode = ex.code || ex.id;
+    return {
+      id: `pose-test-${idx + 1}-${baseCode}_${defaultSide}`,
+      exerciseId: ex.id,
+      exerciseCode: baseCode,
+      effectiveCode: `${baseCode}_${defaultSide}`,
+      side: defaultSide,
+      nameTh: ex.name.th,
+      nameEn: ex.name.en,
+      instructionTh: ex.instruction.th,
+      instructionEn: ex.instruction.en,
+      targetJoint: ex.detection.jointGroup,
+      activityType: 'physio_exercise' as const,
+      holdSec: ex.detection.holdSec ?? 3,
+      sets: 1,
+      reps: 10,
+      status: 'ACTIVE' as const,
+    };
+  });
+
+  return mapTodayExercisesToPrescriptions(todayItems).map((rx, idx) => {
+    const base = sourcePool[idx];
+    const side: ExerciseSideCode = rx.prescribed_side ?? 'RIGHT';
+    const baseCode = base?.code ?? rx.base_code ?? rx.catalog_exercise_id ?? rx.exercise_id;
+    return {
+      ...rx,
+      exercise_id: `${baseCode}_${side}`,
+      catalog_exercise_id: base?.id ?? rx.catalog_exercise_id ?? baseCode,
+      base_code: baseCode,
+      effective_code: `${baseCode}_${side}`,
+      prescribed_side: side,
+      target_reps: 10,
+      target_sets: 1,
+    };
+  });
+}
+
+/** Switches an exercise prescription dynamically to LEFT, RIGHT, or BOTH while updating copy & target joint. */
+export function applyExerciseSideOverride(
+  rx: ExercisePrescriptionOption,
+  nextSide: ExerciseSideCode,
+): ExercisePrescriptionOption {
+  const baseCode =
+    rx.base_code ||
+    rx.catalog_exercise_id ||
+    parseExerciseCodeAndSide(rx.effective_code || rx.exercise_id).baseCode ||
+    rx.exercise_id;
+  const master = findCatalogExerciseConfig(baseCode) ?? findCatalogExerciseConfig(rx.exercise_id);
+  const copy = master ? resolveSideAdjustedExerciseCopy(master, nextSide) : null;
+  const keepSpine = rx.target_joint === 'spine' || master?.detection.jointGroup === 'neck';
+  const nextTargetJoint: ExercisePrescriptionOption['target_joint'] = keepSpine
+    ? 'spine'
+    : nextSide === 'LEFT'
+      ? 'left_shoulder'
+      : 'right_shoulder';
+
+  const masterPlane = master?.detection.expectedPlane as ExpectedMovementPlane | undefined;
+  const nextExpectedPlane: ExpectedMovementPlane | undefined =
+    nextSide === 'BOTH'
+      ? masterPlane ?? rx.expected_plane
+      : masterPlane === 'bilateral'
+        ? 'flexion'
+        : rx.expected_plane === 'bilateral'
+          ? 'flexion'
+          : masterPlane ?? rx.expected_plane;
+
+  return {
+    ...rx,
+    exercise_id: `${baseCode}_${nextSide}`,
+    catalog_exercise_id: master?.id ?? rx.catalog_exercise_id ?? baseCode,
+    base_code: baseCode,
+    effective_code: `${baseCode}_${nextSide}`,
+    prescribed_side: nextSide,
+    target_joint: nextTargetJoint,
+    expected_plane: nextExpectedPlane,
+    name_th: copy?.nameTh ?? rx.name_th,
+    name_en: copy?.nameEn ?? rx.name_en,
+    instruction_th: copy?.instructionTh ?? rx.instruction_th,
+    instruction_en: copy?.instructionEn ?? rx.instruction_en,
+  };
+}
 
 function resolveTargetJointForTodayExercise(
   item: TodayPrescribedExerciseItem,
@@ -982,6 +1141,7 @@ export function useKioskSocket(
   options?: {
     prescribedExercises?: ExercisePrescriptionOption[];
     patientOverride?: PatientSummary | null;
+    initialSelectedExerciseId?: string | null;
   },
 ) {
   const wsCandidates = useMemo(() => resolveKioskWsCandidates(wsUrl), [wsUrl]);
@@ -998,9 +1158,29 @@ export function useKioskSocket(
     options?.prescribedExercises?.length || options?.patientOverride,
   );
 
-  const [selectedExercise, setSelectedExerciseState] = useState<ExercisePrescriptionOption>(
-    () => exerciseOptions[0],
+  const resolveMatchingExercise = useCallback(
+    (codeOrId?: string | null): ExercisePrescriptionOption | undefined => {
+      const clean = (codeOrId ?? '').trim().toUpperCase();
+      if (!clean) return undefined;
+      const parsedClean = parseExerciseCodeAndSide(clean).baseCode;
+      return exerciseOptions.find((opt) => {
+        const optIds = [opt.exercise_id, opt.base_code, opt.catalog_exercise_id, opt.effective_code]
+          .filter((v): v is string => Boolean(v))
+          .map((v) => v.toUpperCase());
+        return (
+          optIds.includes(clean) ||
+          optIds.includes(parsedClean) ||
+          optIds.some((v) => parseExerciseCodeAndSide(v).baseCode === parsedClean)
+        );
+      });
+    },
+    [exerciseOptions],
   );
+
+  const [selectedExercise, setSelectedExerciseState] = useState<ExercisePrescriptionOption>(
+    () => resolveMatchingExercise(options?.initialSelectedExerciseId) ?? exerciseOptions[0],
+  );
+  const lastAppliedInitialExRef = useRef<string | null | undefined>(options?.initialSelectedExerciseId);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [isDemoMode, setIsDemoMode] = useState<boolean>(false);
   const [livePayload, setLivePayload] = useState<KioskDecisionPayload | null>(null);
@@ -1066,8 +1246,21 @@ export function useKioskSocket(
   }, [options?.patientOverride]);
 
   useEffect(() => {
+    if (options?.initialSelectedExerciseId !== lastAppliedInitialExRef.current) {
+      lastAppliedInitialExRef.current = options?.initialSelectedExerciseId;
+      const matched = resolveMatchingExercise(options?.initialSelectedExerciseId);
+      if (matched && matched.exercise_id !== selectedExercise.exercise_id) {
+        setSelectedExerciseState(matched);
+        setDemoValidReps(0);
+        setDemoInvalidReps(0);
+        setDemoHoldRemainingSec(matched.hold_sec);
+        setDemoPresetState('ACTIVE_REP');
+        sendExercisePrescription(matched);
+        return;
+      }
+    }
     if (!exerciseOptions.some((opt) => opt.exercise_id === selectedExercise.exercise_id)) {
-      const first = exerciseOptions[0];
+      const first = resolveMatchingExercise(options?.initialSelectedExerciseId) ?? exerciseOptions[0];
       setSelectedExerciseState(first);
       setDemoValidReps(0);
       setDemoInvalidReps(0);
@@ -1075,7 +1268,13 @@ export function useKioskSocket(
       setDemoPresetState('ACTIVE_REP');
       sendExercisePrescription(first);
     }
-  }, [exerciseOptions, selectedExercise.exercise_id, sendExercisePrescription]);
+  }, [
+    exerciseOptions,
+    selectedExercise.exercise_id,
+    options?.initialSelectedExerciseId,
+    resolveMatchingExercise,
+    sendExercisePrescription,
+  ]);
 
   const setSelectedExercise = useCallback(
     (rx: ExercisePrescriptionOption) => {

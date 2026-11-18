@@ -103,6 +103,9 @@ import {
   writeStoredKioskVoiceMuted,
 } from './VoiceCoachBanner';
 import {
+  POSE_TEST_PATIENT,
+  applyExerciseSideOverride,
+  buildAll15ClinicalExercisePrescriptions,
   getPrescribedLimbPromptTh,
   getPrescribedPlanePromptTh,
   resolveExpectedPlaneForExercise,
@@ -129,6 +132,9 @@ interface SmartRehabKioskUIProps {
   ownerBiometrics?: OwnerBiometricTemplate | null;
   prescribedExercises?: ExercisePrescriptionOption[];
   isStaffAuthorized?: boolean;
+  isPoseTestMode?: boolean;
+  initialExerciseCode?: string | null;
+  onBackToAdminPortal?: () => void;
   onExerciseCompleted?: (exercise: ExercisePrescriptionOption) => void;
   onAllExercisesCompleted?: () => void;
   onEmergencyStop?: (info: { reason: string; patientId?: string; exerciseNameTh?: string }) => void;
@@ -1981,18 +1987,50 @@ export function SmartRehabKioskUI({
   ownerBiometrics: ownerBiometricsProp,
   prescribedExercises,
   isStaffAuthorized = false,
+  isPoseTestMode = false,
+  initialExerciseCode = null,
+  onBackToAdminPortal,
   onExerciseCompleted,
   onAllExercisesCompleted,
   onEmergencyStop,
   onOpenStaffPortal,
   onOpenLegacyKiosk,
 }: SmartRehabKioskUIProps) {
+  const [testSideOverrides, setTestSideOverrides] = useState<Record<string, ExerciseSideCode>>({});
+  const effectivePatient = useMemo(
+    () => (patientProp !== undefined ? patientProp : isPoseTestMode ? POSE_TEST_PATIENT : undefined),
+    [patientProp, isPoseTestMode],
+  );
+  const baseExercisesList = useMemo(() => {
+    if (prescribedExercises && prescribedExercises.length > 0) {
+      return prescribedExercises;
+    }
+    if (isPoseTestMode) {
+      return buildAll15ClinicalExercisePrescriptions();
+    }
+    return undefined;
+  }, [prescribedExercises, isPoseTestMode]);
+
+  const effectivePrescribedExercises = useMemo(() => {
+    if (!baseExercisesList) return undefined;
+    if (Object.keys(testSideOverrides).length === 0) return baseExercisesList;
+    return baseExercisesList.map((rx) => {
+      const baseKey = rx.base_code ?? rx.catalog_exercise_id ?? rx.exercise_id;
+      const sideOv = testSideOverrides[baseKey];
+      return sideOv ? applyExerciseSideOverride(rx, sideOv) : rx;
+    });
+  }, [baseExercisesList, testSideOverrides]);
+
   const socketOptions = useMemo(
     () =>
-      prescribedExercises || patientProp !== undefined
-        ? { prescribedExercises, patientOverride: patientProp }
+      effectivePrescribedExercises || effectivePatient !== undefined || initialExerciseCode
+        ? {
+            prescribedExercises: effectivePrescribedExercises,
+            patientOverride: effectivePatient,
+            initialSelectedExerciseId: initialExerciseCode,
+          }
         : undefined,
-    [prescribedExercises, patientProp],
+    [effectivePrescribedExercises, effectivePatient, initialExerciseCode],
   );
 
   const {
@@ -2095,8 +2133,13 @@ export function SmartRehabKioskUI({
     status: OwnerLockStatus;
     text: string;
   } | null>(null);
-  const ownerBiometricsRef = useRef<OwnerBiometricTemplate | null | undefined>(ownerBiometricsProp);
-  ownerBiometricsRef.current = ownerBiometricsProp;
+  const isPoseTestModeRef = useRef<boolean>(isPoseTestMode);
+  isPoseTestModeRef.current = isPoseTestMode;
+  const ownerBiometricsRef = useRef<OwnerBiometricTemplate | null | undefined>(
+    isPoseTestMode ? null : ownerBiometricsProp,
+  );
+  ownerBiometricsRef.current = isPoseTestMode ? null : ownerBiometricsProp;
+  const manualResetNonceRef = useRef<number>(0);
 
   const effectiveTargetRomDeg = useMemo(() => {
     const isLowerLimb = selectedExercise.target_joint.includes('knee');
@@ -2303,6 +2346,7 @@ export function SmartRehabKioskUI({
   demoPresetRef.current = demoPreset;
   formRulesRef.current = formRules;
   countingLockedRef.current =
+    !isPoseTestMode &&
     isFormRuleActive(formRules, 'identity') &&
     (payload.kiosk_state === 'PAUSED_MULTI_PERSON' ||
       payload.kiosk_state === 'PAUSED_IMPOSTOR' ||
@@ -2526,6 +2570,7 @@ export function SmartRehabKioskUI({
     let smoothedTilt = 0;
     let singlePersonRecoveryFrames = 0;
     let trackedExId = selectedExerciseRef.current.exercise_id;
+    let trackedResetNonce = manualResetNonceRef.current;
     let torsoAnchor: TorsoAnchorState | null = null;
     const landmarkSmoother = new LandmarkSmoother({
       alpha: 0.25,
@@ -2916,7 +2961,8 @@ export function SmartRehabKioskUI({
           if (!active || !videoRef.current || !poseLandmarker) return;
           const curEx = selectedExerciseRef.current;
           const curExpectedPlane = resolveExpectedPlaneForExercise(curEx);
-          if (trackedExId !== curEx.exercise_id) {
+          if (trackedExId !== curEx.exercise_id || trackedResetNonce !== manualResetNonceRef.current) {
+            trackedResetNonce = manualResetNonceRef.current;
             resetExerciseTrackingState(curEx.exercise_id);
           }
 
@@ -2967,7 +3013,7 @@ export function SmartRehabKioskUI({
             latestPoseCount = allLandmarks.length;
 
             const stepARules = formRulesRef.current;
-            const stepACheckIdentity = isFormRuleActive(stepARules, 'identity');
+            const stepACheckIdentity = !isPoseTestModeRef.current && isFormRuleActive(stepARules, 'identity');
 
             // Active Single-Person Exercise Lock:
             // Once logged in, ALWAYS treat single-person frames (personCount <= 1) as verified owner so
@@ -3341,7 +3387,8 @@ export function SmartRehabKioskUI({
           if (!active || !videoRef.current || !poseLandmarker) return;
           const curEx = selectedExerciseRef.current;
           const curExpectedPlane = resolveExpectedPlaneForExercise(curEx);
-          if (trackedExId !== curEx.exercise_id) {
+          if (trackedExId !== curEx.exercise_id || trackedResetNonce !== manualResetNonceRef.current) {
+            trackedResetNonce = manualResetNonceRef.current;
             resetExerciseTrackingState(curEx.exercise_id);
           }
 
@@ -3758,7 +3805,68 @@ export function SmartRehabKioskUI({
     setDemoValidReps,
   ]);
 
-  const patientRevealed = Boolean(patient?.name && (kiosk_state !== 'AUTH_FRAMING' || demoFaceMatched));
+  const patientRevealed = Boolean(
+    patient?.name && (isPoseTestMode || kiosk_state !== 'AUTH_FRAMING' || demoFaceMatched),
+  );
+
+  const activePoseTestIndex = Math.max(
+    0,
+    exerciseOptions.findIndex((opt) => opt.exercise_id === selectedExercise.exercise_id),
+  );
+  const activePoseTestSide: ExerciseSideCode =
+    resolveExerciseSideFromMeta(selectedExercise, selectedExercise.target_joint, activeExpectedPlane) ??
+    'RIGHT';
+
+  const resetPoseTestProgress = (nextHoldSec: number) => {
+    manualResetNonceRef.current += 1;
+    completedRepsRef.current = 0;
+    holdElapsedSecRef.current = 0;
+    repPhaseRef.current = 'PHASE_1_HOLDING';
+    loweredFrameStreakRef.current = 0;
+    readyBannerUntilRef.current = 0;
+    waitLowerStartedAtRef.current = 0;
+    repSuccessToastRef.current = null;
+    setDemoValidReps(0);
+    setDemoHoldRemainingSec(nextHoldSec);
+    setHoldElapsedUiSec(0);
+    setIsWaitLowerArmUi(false);
+    setRepSuccessToastTh(null);
+    if (holdProgressBarRef.current) {
+      holdProgressBarRef.current.style.width = '0%';
+    }
+    if (holdTimerTextRef.current) {
+      holdTimerTextRef.current.textContent = '0.0s';
+    }
+  };
+
+  const handleSelectPoseTestExercise = (exerciseId: string) => {
+    const nextRx = exerciseOptions.find((opt) => opt.exercise_id === exerciseId);
+    if (!nextRx) return;
+    setSelectedExercise(nextRx);
+    resetPoseTestProgress(nextRx.hold_sec);
+  };
+
+  const handleStepPoseTestExercise = (delta: -1 | 1) => {
+    if (exerciseOptions.length === 0) return;
+    const nextIdx = (activePoseTestIndex + delta + exerciseOptions.length) % exerciseOptions.length;
+    const nextRx = exerciseOptions[nextIdx];
+    setSelectedExercise(nextRx);
+    resetPoseTestProgress(nextRx.hold_sec);
+  };
+
+  const handleSwitchPoseTestSide = (nextSide: ExerciseSideCode) => {
+    const baseKey =
+      selectedExercise.base_code ?? selectedExercise.catalog_exercise_id ?? selectedExercise.exercise_id;
+    const nextRx = applyExerciseSideOverride(selectedExercise, nextSide);
+    setTestSideOverrides((prev) => ({ ...prev, [baseKey]: nextSide }));
+    setSelectedExercise(nextRx);
+    resetPoseTestProgress(nextRx.hold_sec);
+  };
+
+  const handleResetPoseTestReps = () => {
+    resetPoseTestProgress(selectedExercise.hold_sec);
+    resetDemoSession();
+  };
 
   const checklistItems: {
     ruleKey: FormAssessmentRuleKey;
@@ -4127,6 +4235,111 @@ export function SmartRehabKioskUI({
               <span>เข้าสู่มินิเกม (ขั้นตอนสุดท้าย) ➔</span>
             </button>
           </div>
+        )}
+
+        {/* Quick Exercise & Side Selector Bar (Pose Test Sandbox Mode / Bypass Face Scan) */}
+        {isPoseTestMode && (
+          <section
+            data-testid="pose-test-switcher-bar"
+            className="glass-card rounded-2xl border-2 border-teal-300/90 bg-gradient-to-r from-emerald-50/95 via-teal-50/95 to-sky-50/95 px-3.5 py-2.5 shadow-sm"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2.5">
+              {/* Left: Badge + Dropdown (1-15) + Prev/Next */}
+              <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
+                <span className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-2.5 py-1 text-[11px] font-extrabold text-white shadow-xs shrink-0">
+                  🏃 โหมดทดลองท่ากายภาพ ({exerciseOptions.length} ท่า)
+                </span>
+
+                <label htmlFor="pose-test-exercise-select" className="sr-only">
+                  เลือกท่าที่จะทดลอง 1–{exerciseOptions.length}
+                </label>
+                <select
+                  id="pose-test-exercise-select"
+                  aria-label={`เลือกท่าที่จะทดลอง 1–${exerciseOptions.length}`}
+                  value={selectedExercise.exercise_id}
+                  onChange={(e) => handleSelectPoseTestExercise(e.target.value)}
+                  className="h-9 min-w-[240px] max-w-full sm:max-w-[380px] flex-1 rounded-xl border border-teal-300 bg-white px-2.5 text-xs font-extrabold text-[#0F4C81] shadow-xs focus:border-teal-500 focus:outline-none cursor-pointer"
+                >
+                  {exerciseOptions.map((opt, idx) => (
+                    <option key={opt.exercise_id} value={opt.exercise_id}>
+                      {idx + 1}. {opt.name_th}
+                    </option>
+                  ))}
+                </select>
+
+                <div className="inline-flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleStepPoseTestExercise(-1)}
+                    className="h-9 inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 cursor-pointer active:scale-95"
+                  >
+                    <span>⏮ ท่าก่อนหน้า</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleStepPoseTestExercise(1)}
+                    className="h-9 inline-flex items-center gap-1 rounded-xl border border-slate-300 bg-white px-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 cursor-pointer active:scale-95"
+                  >
+                    <span>⏭ ท่าถัดไป</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Middle: Side Switcher Pills (LEFT / RIGHT / BOTH) */}
+              <div
+                className="flex flex-wrap items-center gap-1 rounded-xl border border-teal-200 bg-white/90 p-1 shadow-xs"
+                role="group"
+                aria-label="เลือกข้างที่ต้องการทดสอบ"
+              >
+                <span className="px-2 text-[11px] font-bold text-slate-500">เลือกข้าง:</span>
+                {(
+                  [
+                    { code: 'LEFT' as const, label: '⬅️ ข้างซ้าย (Left)' },
+                    { code: 'RIGHT' as const, label: '➡️ ข้างขวา (Right)' },
+                    { code: 'BOTH' as const, label: '🙌 ทั้งสองข้าง (Both)' },
+                  ] as const
+                ).map((pill) => {
+                  const isActive = activePoseTestSide === pill.code;
+                  return (
+                    <button
+                      key={pill.code}
+                      type="button"
+                      aria-pressed={isActive}
+                      onClick={() => handleSwitchPoseTestSide(pill.code)}
+                      className={`h-7 rounded-lg px-2.5 text-[11px] font-extrabold transition cursor-pointer ${
+                        isActive
+                          ? 'bg-gradient-to-r from-[#0F4C81] to-[#0D9488] text-white shadow-xs'
+                          : 'bg-slate-50 text-slate-700 hover:bg-teal-50 hover:text-teal-900'
+                      }`}
+                    >
+                      {pill.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Right: Reset Counter & Return to Admin Portal */}
+              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleResetPoseTestReps}
+                  className="h-9 inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3 text-xs font-extrabold text-amber-900 hover:bg-amber-100 cursor-pointer active:scale-95"
+                >
+                  <span>🔄 รีเซ็ตรอบนับ (0/{selectedExercise.target_reps})</span>
+                </button>
+
+                {(onBackToAdminPortal || onOpenStaffPortal) && (
+                  <button
+                    type="button"
+                    onClick={onBackToAdminPortal ?? onOpenStaffPortal}
+                    className="h-9 inline-flex items-center gap-1.5 rounded-xl bg-slate-800 px-3 text-xs font-extrabold text-white shadow-xs hover:bg-slate-700 cursor-pointer active:scale-95"
+                  >
+                    <span>⬅️ กลับหน้า Admin Portal</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </section>
         )}
 
         {/* 3. Balanced 12-Column Clinical Workspace */}

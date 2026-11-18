@@ -31,6 +31,8 @@ import {
 } from './components/RandomHandStartPrompt';
 import { SmartRehabKioskUI } from './components/SmartRehabKioskUI';
 import {
+  POSE_TEST_PATIENT,
+  buildAll15ClinicalExercisePrescriptions,
   mapTodayExercisesToPrescriptions,
   type ExercisePrescriptionOption,
 } from './hooks/useKioskSocket';
@@ -488,6 +490,9 @@ export function App() {
     typeof window !== 'undefined' ? resolveRoute(window.location.pathname) : '/',
   );
   const [kioskMode, setKioskMode] = useState<KioskViewMode>('login');
+  const [isPoseTestMode, setIsPoseTestMode] = useState(false);
+  const [poseTestInitialExerciseCode, setPoseTestInitialExerciseCode] = useState<string | null>(null);
+  const [poseTestReturnRoute, setPoseTestReturnRoute] = useState<'/admin' | '/pt'>('/admin');
   const [staffModalIntent, setStaffModalIntent] = useState<StaffAuthIntent | null>(null);
   const [pendingAutoOpenEnroll, setPendingAutoOpenEnroll] = useState(false);
   const [authenticatedPatient, setAuthenticatedPatient] = useState<KioskLoginSuccessPayload | null>(null);
@@ -751,6 +756,8 @@ export function App() {
     };
 
     const handleExitToLogin = () => {
+      setIsPoseTestMode(false);
+      setPoseTestInitialExerciseCode(null);
       setAllowRestDayPractice(false);
       setBypassDailyLimit(false);
       setTrainingStage('overview');
@@ -813,6 +820,33 @@ export function App() {
         // Keep Kiosk flow responsive even if offline
       }
     };
+
+    if (isPoseTestMode) {
+      const poseTestPrescriptions = buildAll15ClinicalExercisePrescriptions(kioskExercises);
+      return (
+        <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
+          <SmartRehabKioskUI
+            isPoseTestMode
+            initialExerciseCode={poseTestInitialExerciseCode}
+            patient={POSE_TEST_PATIENT}
+            ownerBiometrics={null}
+            prescribedExercises={poseTestPrescriptions}
+            isStaffAuthorized
+            onBackToAdminPortal={() => {
+              setIsPoseTestMode(false);
+              setPoseTestInitialExerciseCode(null);
+              setKioskMode('login');
+              navigate(poseTestReturnRoute);
+            }}
+            onOpenStaffPortal={() => {
+              setIsPoseTestMode(false);
+              navigate(poseTestReturnRoute);
+            }}
+            onOpenLegacyKiosk={() => setKioskMode('classic')}
+          />
+        </div>
+      );
+    }
 
     if (kioskMode === 'classic') {
       return (
@@ -1499,7 +1533,18 @@ export function App() {
         apiClient={apiClient}
         currentUser={currentUser}
         onLogout={handleLogout}
-        onReturnToKiosk={() => navigate('/')}
+        onReturnToKiosk={() => {
+          setIsPoseTestMode(false);
+          navigate('/');
+        }}
+        onOpenPoseTestMode={(exerciseCode) => {
+          setPoseTestReturnRoute('/admin');
+          setPoseTestInitialExerciseCode(exerciseCode ?? null);
+          setAuthenticatedPatient(null);
+          setIsPoseTestMode(true);
+          setKioskMode('rehab');
+          navigate('/');
+        }}
         autoOpenEnroll={pendingAutoOpenEnroll}
         onAutoOpenEnrollConsumed={() => setPendingAutoOpenEnroll(false)}
       />
@@ -1520,7 +1565,18 @@ export function App() {
         apiClient={apiClient}
         currentUser={currentUser}
         onLogout={handleLogout}
-        onReturnToKiosk={() => navigate('/')}
+        onReturnToKiosk={() => {
+          setIsPoseTestMode(false);
+          navigate('/');
+        }}
+        onOpenPoseTestMode={(exerciseCode) => {
+          setPoseTestReturnRoute('/pt');
+          setPoseTestInitialExerciseCode(exerciseCode ?? null);
+          setAuthenticatedPatient(null);
+          setIsPoseTestMode(true);
+          setKioskMode('rehab');
+          navigate('/');
+        }}
         autoOpenEnroll={pendingAutoOpenEnroll}
         onAutoOpenEnrollConsumed={() => setPendingAutoOpenEnroll(false)}
       />
