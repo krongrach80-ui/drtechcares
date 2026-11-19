@@ -3140,7 +3140,7 @@ export function ClinicalStaffPortalShell({
                   return (
                     <div
                       key={pt.id}
-                      className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-col justify-between space-y-4 transition-colors duration-150 hover:border-emerald-200 hover:shadow-md"
+                      className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-col justify-between space-y-4 card-hover-lift animate-card-enter hover:border-emerald-200"
                     >
                       <div className="space-y-3">
                         <div className="flex items-start justify-between gap-2">
@@ -3754,7 +3754,7 @@ export function ClinicalStaffPortalShell({
               </div>
 
               {weeklyEditorOpen && selectedSchedulePatient && (
-                <div className="rounded-2xl border-2 border-emerald-200 bg-white p-5 space-y-4 shadow-md">
+                <div className="rounded-2xl border-2 border-emerald-200 bg-white p-5 space-y-4 shadow-md animate-popup-spring">
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-extrabold text-slate-900">
                       {locale.schedules.weeklyPlanBtn} — {selectedSchedulePatient.fullName}
@@ -3790,7 +3790,11 @@ export function ClinicalStaffPortalShell({
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
                     {weeklySchedule.map((day, idx) => (
-                      <div key={idx} className="rounded-xl border border-slate-200 bg-slate-50/80 p-3 space-y-2 text-xs">
+                      <div
+                        key={idx}
+                        style={{ animationDelay: `${idx * 35}ms` }}
+                        className="rounded-xl border border-slate-200 bg-slate-50/80 p-3 space-y-2 text-xs card-hover-lift animate-card-enter"
+                      >
                         <div className="flex items-center justify-between">
                           <span className="font-extrabold text-slate-800">
                             {lang === 'th' ? `วัน${WEEKDAY_NAMES_TH[idx]}` : locale.schedules.calendarHeaders[idx]}
@@ -3862,10 +3866,11 @@ export function ClinicalStaffPortalShell({
                 </div>
               )}
 
+              <div key={scheduleSubTab} className="animate-view-enter space-y-4">
               {scheduleSubTab === 'individual' ? (
                 <>
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                    <div className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2">
+                    <div className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2 card-hover-lift animate-card-enter">
                       <div className="min-w-0">
                         <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statTotal}</div>
                         <div className="mt-1 text-xl font-black text-slate-900 whitespace-nowrap">
@@ -3876,7 +3881,10 @@ export function ClinicalStaffPortalShell({
                         <CalendarDays className="h-5 w-5" />
                       </div>
                     </div>
-                    <div className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2">
+                    <div
+                      style={{ animationDelay: '45ms' }}
+                      className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2 card-hover-lift animate-card-enter"
+                    >
                       <div className="min-w-0">
                         <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statActive}</div>
                         <div className="mt-1 text-xl font-black text-emerald-600 whitespace-nowrap">
@@ -3887,7 +3895,10 @@ export function ClinicalStaffPortalShell({
                         <Activity className="h-5 w-5" />
                       </div>
                     </div>
-                    <div className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2">
+                    <div
+                      style={{ animationDelay: '90ms' }}
+                      className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2 card-hover-lift animate-card-enter"
+                    >
                       <div className="min-w-0">
                         <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statRest}</div>
                         <div className="mt-1 text-xl font-black text-amber-600 whitespace-nowrap">
@@ -3898,7 +3909,10 @@ export function ClinicalStaffPortalShell({
                         <PauseCircle className="h-5 w-5" />
                       </div>
                     </div>
-                    <div className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2">
+                    <div
+                      style={{ animationDelay: '135ms' }}
+                      className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2 card-hover-lift animate-card-enter"
+                    >
                       <div className="min-w-0">
                         <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statCompleted}</div>
                         <div className="mt-1 text-xl font-black text-blue-600 whitespace-nowrap">
@@ -3915,7 +3929,10 @@ export function ClinicalStaffPortalShell({
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex items-center gap-2">
                         <Calendar className="h-4 w-4 text-emerald-600 shrink-0" />
-                        <h3 className="text-sm font-black text-slate-900 whitespace-nowrap">
+                        <h3
+                          key={`cal-title-${calendarDate.getFullYear()}-${calendarDate.getMonth()}`}
+                          className="text-sm font-black text-slate-900 whitespace-nowrap animate-toast-in"
+                        >
                           {lang === 'cn'
                             ? `${calendarDate.getFullYear()}年 ${CN_MONTHS[calendarDate.getMonth()]}`
                             : lang === 'en'
@@ -3973,7 +3990,10 @@ export function ClinicalStaffPortalShell({
                       ))}
                     </div>
 
-                    <div className="grid grid-cols-7 gap-2">
+                    <div
+                      key={`cal-grid-${calendarDate.getFullYear()}-${calendarDate.getMonth()}`}
+                      className="grid grid-cols-7 gap-2 animate-calendar-month"
+                    >
                       {calendarDays.map((dayNum, idx) => {
                         if (dayNum === null) {
                           return <div key={`empty-${idx}`} className="min-h-[88px] sm:min-h-[96px] rounded-xl bg-slate-50/40" />;
@@ -3996,20 +4016,21 @@ export function ClinicalStaffPortalShell({
                           <button
                             key={dateIso}
                             type="button"
+                            style={{ animationDelay: `${Math.min(idx, 35) * 14}ms` }}
                             onClick={() => {
                               setSelectedCalendarDateIso(dateIso);
                               setScheduleModalMode('day_detail');
                             }}
-                            className={`min-h-[88px] sm:min-h-[96px] rounded-xl border p-2 flex flex-col justify-between text-left text-xs transition cursor-pointer ${
+                            className={`calendar-day-tile animate-card-enter min-h-[88px] sm:min-h-[96px] rounded-xl border p-2 flex flex-col justify-between text-left text-xs cursor-pointer ${
                               isToday
-                                ? 'border-emerald-500 bg-emerald-50/30 ring-1 ring-emerald-500/30'
+                                ? 'border-emerald-500 bg-emerald-50/40 ring-1 ring-emerald-500/35'
                                 : 'border-slate-100 bg-white hover:border-emerald-300'
                             }`}
                           >
                             <div className="w-full flex items-center justify-between gap-1">
                               <span
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold ${
-                                  isToday ? 'bg-emerald-600 text-white' : 'text-slate-700'
+                                className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold transition-transform ${
+                                  isToday ? 'bg-emerald-600 text-white animate-status-halo' : 'text-slate-700'
                                 }`}
                               >
                                 {dayNum}
@@ -4146,6 +4167,7 @@ export function ClinicalStaffPortalShell({
                   </table>
                 </div>
               )}
+              </div>
             </div>
           )}
 

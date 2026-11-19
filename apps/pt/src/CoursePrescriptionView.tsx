@@ -91,7 +91,7 @@ export function CoursePrescriptionView({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-view-enter">
       {/* Case Handover: [ฝากเคสชั่วคราว] */}
       <div className="rounded-3xl bg-white p-6 shadow-md border border-slate-200 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -137,23 +137,24 @@ export function CoursePrescriptionView({
         </div>
 
         {isLockedForPt && (
-          <div className="flex items-center gap-2 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-2.5 text-xs font-bold text-amber-900">
+          <div className="flex items-center gap-2 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-2.5 text-xs font-bold text-amber-900 animate-toast-in">
             <Lock className="h-4 w-4 shrink-0" />
             ข้อจำกัด PT: สั่งจ่ายตารางฝึกได้เฉพาะ "มินิเกม" เท่านั้น (ท่ากายภาพถูกล็อกสถานะ "อยู่ระหว่างพัฒนา" จนกว่า Super Admin จะเปิดใช้งาน)
           </div>
         )}
 
         {notice && (
-          <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-2 text-xs font-bold text-emerald-800">
+          <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-2 text-xs font-bold text-emerald-800 animate-toast-in">
             {notice}
           </div>
         )}
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
-          {schedule.map((day) => (
+          {schedule.map((day, idx) => (
             <div
               key={day.dayIndex}
-              className={`rounded-2xl border p-4 space-y-2 ${
+              style={{ animationDelay: `${idx * 40}ms` }}
+              className={`rounded-2xl border p-4 space-y-2 card-hover-lift animate-card-enter ${
                 day.dayType === 'training' ? 'border-teal-200 bg-teal-50/40' : 'border-slate-200 bg-slate-50'
               }`}
             >

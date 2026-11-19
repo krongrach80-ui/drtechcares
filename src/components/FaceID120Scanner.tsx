@@ -2332,8 +2332,8 @@ export default function FaceID120Scanner({
 
           {/* Apple Face ID Checkmark Burst on Completion */}
           {phase === 'completed' && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-emerald-50/92 p-4 text-center backdrop-blur-xs animate-in fade-in zoom-in duration-300">
-              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-[#10B981] to-[#0284C7] shadow-[0_0_32px_rgba(16,185,129,0.5)]">
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-emerald-50/92 p-4 text-center backdrop-blur-xs animate-popup-spring">
+              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-[#10B981] to-[#0284C7] shadow-[0_0_32px_rgba(16,185,129,0.5)] animate-rep-pop">
                 <CheckCircle2 className="h-12 w-12 text-white" />
               </div>
               <div className="mt-3 text-sm font-black text-emerald-800">
@@ -2359,7 +2359,7 @@ export default function FaceID120Scanner({
         {phase === 'scanning' && wrongDirCue && (
           <div
             role="status"
-            className="mx-auto mt-1.5 inline-flex items-center gap-1.5 rounded-full border border-rose-300 bg-rose-50 px-3 py-1 text-xs font-extrabold text-rose-700"
+            className="mx-auto mt-1.5 inline-flex items-center gap-1.5 rounded-full border border-rose-300 bg-rose-50 px-3 py-1 text-xs font-extrabold text-rose-700 animate-toast-in animate-gentle-shake"
           >
             {wrongDirCue}
           </div>
@@ -2367,7 +2367,7 @@ export default function FaceID120Scanner({
         {phase === 'scanning' && !wrongDirCue && transitionBanner && (
           <div
             role="status"
-            className="mx-auto mt-1.5 inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-emerald-50 px-3 py-1 text-xs font-extrabold text-emerald-800"
+            className="mx-auto mt-1.5 inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-emerald-50 px-3 py-1 text-xs font-extrabold text-emerald-800 animate-toast-in"
           >
             {transitionBanner}
           </div>
@@ -2449,7 +2449,7 @@ export default function FaceID120Scanner({
             return (
               <div
                 key={`thumb-${bucketKey}`}
-                className={`overflow-hidden rounded-xl border bg-white shadow-xs ${
+                className={`overflow-hidden rounded-xl border bg-white shadow-xs card-hover-lift animate-card-enter ${
                   thumb ? 'border-emerald-400' : 'border-slate-200'
                 }`}
               >

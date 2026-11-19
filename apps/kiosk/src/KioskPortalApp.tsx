@@ -489,7 +489,7 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
       >
         <div
           className={`flex items-center justify-center rounded-3xl bg-gradient-to-br from-teal-400 to-emerald-600 shadow-xl transition-all duration-700 ${
-            flowState === 'STANDBY' ? 'h-28 w-28 animate-pulse' : 'h-11 w-11'
+            flowState === 'STANDBY' ? 'h-28 w-28 animate-float-gentle animate-status-halo' : 'h-11 w-11'
           }`}
         >
           <HeartPulse className={flowState === 'STANDBY' ? 'h-16 w-16 text-white' : 'h-6 w-6 text-white'} />
@@ -512,7 +512,7 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
 
       {/* STATE 2: FACIAL_AUTH */}
       {flowState === 'FACIAL_AUTH' && (
-        <div className="my-auto mx-auto w-full max-w-3xl space-y-4">
+        <div className="my-auto mx-auto w-full max-w-3xl space-y-4 animate-view-enter">
           <div className="relative overflow-hidden rounded-3xl bg-slate-900 aspect-video border border-slate-800">
             <video ref={videoRef} playsInline muted className="h-full w-full object-cover -scale-x-100" />
             <FaceIdCircularOverlay
@@ -529,14 +529,14 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
 
       {/* STATE 2B: NOT_FOUND */}
       {flowState === 'NOT_FOUND' && (
-        <div className="my-auto mx-auto max-w-md rounded-3xl bg-white p-8 text-center text-slate-900 shadow-2xl">
+        <div className="my-auto mx-auto max-w-md rounded-3xl bg-white p-8 text-center text-slate-900 shadow-2xl animate-popup-spring animate-gentle-shake">
           <AlertCircle className="mx-auto h-14 w-14 text-rose-500" />
           <h2 className="mt-4 text-2xl font-extrabold text-slate-900">ไม่พบบัญชี</h2>
           <p className="mt-2 text-sm text-slate-600">
             สแกนไม่ผ่านหรือไม่พบข้อมูลผู้ป่วยในระบบ กรุณากดปุ่มมุมขวาล่างเพื่อเรียกเจ้าหน้าที่
           </p>
           {staffCalled && (
-            <div className="mt-4 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-xs font-bold text-amber-800">
+            <div className="mt-4 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-xs font-bold text-amber-800 animate-toast-in">
               ส่งสัญญาณเรียกเจ้าหน้าที่แล้ว กรุณารอสักครู่
             </div>
           )}
@@ -553,7 +553,7 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
 
       {/* STATE 3: GESTURE_CONTROL ("ยก 2 มือขึ้นเพื่อเริ่ม") */}
       {flowState === 'GESTURE_CONTROL' && verifiedPatient && (
-        <div className="my-auto mx-auto w-full max-w-4xl grid grid-cols-1 gap-6 lg:grid-cols-2 items-center">
+        <div className="my-auto mx-auto w-full max-w-4xl grid grid-cols-1 gap-6 lg:grid-cols-2 items-center animate-view-enter">
           <div className="rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-4">
             <span className="inline-block rounded-full bg-teal-500/20 px-3 py-1 text-xs font-bold text-teal-300">
               สแกนผ่าน • HN: {verifiedPatient.hn}
@@ -612,7 +612,7 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
                 }}
               />
             ) : (
-              <div className="mx-auto max-w-xl rounded-3xl bg-amber-50 p-10 text-center shadow-2xl border-2 border-amber-300">
+              <div className="mx-auto max-w-xl rounded-3xl bg-amber-50 p-10 text-center shadow-2xl border-2 border-amber-300 animate-popup-spring">
                 <Wrench className="mx-auto h-16 w-16 text-amber-600" />
                 <h2 className="mt-4 text-2xl font-extrabold text-amber-950">
                   ยังไม่ได้เพิ่มระบบดีเทคกายภาพ โปรดรอการพัฒนา
@@ -651,8 +651,8 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
 
       {/* STATE 5: SUMMARY_AND_RESET */}
       {flowState === 'SUMMARY_AND_RESET' && verifiedPatient && (
-        <div className="my-auto mx-auto max-w-lg rounded-3xl bg-white p-10 text-center text-slate-900 shadow-2xl">
-          <CheckCircle2 className="mx-auto h-16 w-16 text-emerald-500" />
+        <div className="my-auto mx-auto max-w-lg rounded-3xl bg-white p-10 text-center text-slate-900 shadow-2xl animate-popup-spring">
+          <CheckCircle2 className="mx-auto h-16 w-16 text-emerald-500 animate-rep-pop" />
           <h2 className="mt-4 text-3xl font-extrabold text-slate-900">{summaryText}</h2>
           <div className="mt-6 rounded-2xl bg-teal-50 border border-teal-200 p-4">
             <p className="text-xs font-semibold text-teal-700 flex items-center justify-center gap-1.5">

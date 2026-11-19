@@ -56,7 +56,7 @@ export function PatientScheduleDashboard({
   };
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-5xl space-y-6 animate-view-enter">
       {/* Patient Welcome Banner */}
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-3xl bg-white p-6 shadow-lg border border-slate-200">
         <div>
@@ -85,7 +85,7 @@ export function PatientScheduleDashboard({
       </div>
 
       {staffCalled && (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900 animate-toast-in">
           {t('staffCalledConfirm')}
         </div>
       )}
@@ -104,9 +104,10 @@ export function PatientScheduleDashboard({
             return (
               <div
                 key={dayName}
-                className={`rounded-2xl border p-3 text-center transition ${
+                style={{ animationDelay: `${idx * 45}ms` }}
+                className={`calendar-day-tile animate-card-enter rounded-2xl border p-3 text-center ${
                   isToday
-                    ? 'border-teal-500 bg-teal-50/70 ring-2 ring-teal-200'
+                    ? 'border-teal-500 bg-teal-50/70 ring-2 ring-teal-200 animate-status-halo'
                     : isTraining
                       ? 'border-sky-200 bg-sky-50/40'
                       : 'border-slate-200 bg-slate-50/60'

@@ -64,7 +64,7 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
   }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 p-4">
+    <div className="mx-auto max-w-6xl space-y-6 p-4 animate-view-enter">
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-3xl bg-white p-5 shadow-sm border border-slate-200">
         <div>
           <span className="inline-block rounded-full bg-sky-50 px-3 py-1 text-xs font-bold text-sky-700">
@@ -86,14 +86,14 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
       </div>
 
       {notice && (
-        <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-2 text-xs font-bold text-emerald-800">
+        <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-2 text-xs font-bold text-emerald-800 animate-toast-in">
           {notice}
         </div>
       )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* ข้อมูลส่วนตัว & เปลี่ยนรหัสผ่าน */}
-        <div className="rounded-3xl bg-white p-6 shadow-md border border-slate-200 space-y-4">
+        <div className="rounded-3xl bg-white p-6 shadow-md border border-slate-200 space-y-4 card-hover-lift animate-card-enter">
           <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
             <User className="h-5 w-5 text-sky-600" />
             ข้อมูลส่วนตัว (แก้ไขเบอร์โทร / เปลี่ยนรหัสผ่าน)
@@ -155,7 +155,10 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
         </div>
 
         {/* แผนการรักษา & ฝึกผ่านกล้อง */}
-        <div className="rounded-3xl bg-white p-6 shadow-md border border-slate-200 space-y-4">
+        <div
+          style={{ animationDelay: '60ms' }}
+          className="rounded-3xl bg-white p-6 shadow-md border border-slate-200 space-y-4 card-hover-lift animate-card-enter"
+        >
           <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
             <Calendar className="h-5 w-5 text-teal-600" />
             ข้อมูลการรักษา & ตารางฝึกของฉัน

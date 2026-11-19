@@ -77,7 +77,7 @@ export function PatientProgressRealtimeView({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-view-enter">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white p-4 shadow-sm border border-slate-200">
         <span className="text-sm font-bold text-slate-700">เลือกคนไข้ในความดูแล:</span>
         <select
@@ -125,8 +125,12 @@ export function PatientProgressRealtimeView({
 
           <div className="space-y-2.5">
             {notes.length === 0 && <p className="text-xs text-slate-500">ยังไม่มีบันทึกเวชระเบียน</p>}
-            {notes.map((n) => (
-              <div key={n.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+            {notes.map((n, idx) => (
+              <div
+                key={n.id}
+                style={{ animationDelay: `${Math.min(idx, 10) * 35}ms` }}
+                className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm card-hover-lift animate-card-enter"
+              >
                 <div className="flex justify-between text-xs text-slate-500 mb-1">
                   <span className="font-bold text-slate-700">{n.authorName}</span>
                   <span>{new Date(n.createdAt).toLocaleString()}</span>
@@ -148,10 +152,11 @@ export function PatientProgressRealtimeView({
             </h3>
             <div className="mt-3 space-y-2">
               {calls.length === 0 && <p className="text-xs text-slate-500">ไม่มีรายการเรียกเจ้าหน้าที่ค้างอยู่</p>}
-              {calls.map((call) => (
+              {calls.map((call, idx) => (
                 <div
                   key={call.id}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-2.5 text-xs"
+                  style={{ animationDelay: `${Math.min(idx, 10) * 35}ms` }}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-amber-200 bg-amber-50/70 px-4 py-2.5 text-xs card-hover-lift animate-card-enter"
                 >
                   <div>
                     <span className="font-bold text-amber-900">{call.kioskId}</span> — {call.reason}
@@ -179,8 +184,12 @@ export function PatientProgressRealtimeView({
             </h3>
             <div className="space-y-3">
               {sessions.length === 0 && <p className="text-xs text-slate-500">ยังไม่มีประวัติการฝึกของคนไข้รายนี้</p>}
-              {sessions.map((s) => (
-                <div key={s.id} className="rounded-2xl border border-slate-200 p-4 text-xs">
+              {sessions.map((s, idx) => (
+                <div
+                  key={s.id}
+                  style={{ animationDelay: `${Math.min(idx, 10) * 35}ms` }}
+                  className="rounded-2xl border border-slate-200 p-4 text-xs card-hover-lift animate-card-enter"
+                >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="font-bold text-slate-900 flex items-center gap-1.5">
                       <Activity className="h-4 w-4 text-teal-600" />

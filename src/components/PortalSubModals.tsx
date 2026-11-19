@@ -1179,7 +1179,7 @@ export function PatientProfileAndHistoryModal({
                   return (
                     <div
                       key={key}
-                      className="rounded-xl border border-emerald-200 bg-white overflow-hidden flex flex-col items-center"
+                      className="rounded-xl border border-emerald-200 bg-white overflow-hidden flex flex-col items-center card-hover-lift animate-card-enter"
                     >
                       {src ? (
                         <a href={src} target="_blank" rel="noreferrer" className="w-full block">
@@ -2516,7 +2516,7 @@ export function ScheduleCreatorAndDayModal({
 
         {/* Section A: Existing Scheduled Items on Clicked Date */}
         {mode === 'day_detail' && activePatient && selectedDateIso && (
-          <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 space-y-3">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 space-y-3 animate-toast-in">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="font-extrabold text-slate-800">
                 รายการที่กำหนดไว้ในวันที่ <span className="text-emerald-700 font-mono">{selectedDateIso}</span> •{' '}
@@ -2564,7 +2564,10 @@ export function ScheduleCreatorAndDayModal({
                     : null;
                   const sideMeta = getSideBadgeMeta(parsedItem.side);
                   return (
-                    <div key={item.id} className="rounded-2xl border border-slate-200 bg-white p-3 space-y-2 shadow-xs">
+                    <div
+                      key={item.id}
+                      className="rounded-2xl border border-slate-200 bg-white p-3 space-y-2 shadow-xs card-hover-lift animate-card-enter"
+                    >
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <div className="font-extrabold text-slate-900 truncate flex items-center gap-1.5">
@@ -2741,7 +2744,7 @@ export function ScheduleCreatorAndDayModal({
             />
 
             {selectedEntries.length > 0 && (
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-2.5 flex flex-wrap gap-1.5">
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-2.5 flex flex-wrap gap-1.5 animate-toast-in">
                 {selectedEntries.map(([baseCode, side]) => {
                   const found = unifiedExercises.find(
                     (ex) => parseExerciseCodeAndSide(ex.code || ex.id).baseCode === baseCode,
@@ -2758,7 +2761,7 @@ export function ScheduleCreatorAndDayModal({
                           return next;
                         })
                       }
-                      className="inline-flex items-center gap-1 rounded-full bg-white border border-emerald-300 px-2.5 py-0.5 text-[11px] font-bold text-emerald-900 hover:bg-rose-50 hover:border-rose-300 cursor-pointer"
+                      className="inline-flex items-center gap-1 rounded-full bg-white border border-emerald-300 px-2.5 py-0.5 text-[11px] font-bold text-emerald-900 hover:bg-rose-50 hover:border-rose-300 cursor-pointer animate-card-enter"
                     >
                       <span>{found ? found.name[lang] || found.name.th : baseCode}</span>
                       <span
@@ -2815,7 +2818,7 @@ export function ScheduleCreatorAndDayModal({
                         toggleExercise(ex);
                       }
                     }}
-                    className={`rounded-2xl border p-3 text-left transition cursor-pointer flex items-start gap-2.5 ${
+                    className={`rounded-2xl border p-3 text-left transition-all duration-200 cursor-pointer flex items-start gap-2.5 card-hover-lift ${
                       checked
                         ? 'border-emerald-500 bg-emerald-50/70 ring-1 ring-emerald-500/40 shadow-xs'
                         : 'border-slate-200 bg-white hover:border-emerald-300 hover:bg-slate-50/60'
@@ -2985,7 +2988,7 @@ export function ScheduleCreatorAndDayModal({
 
             {/* Weekly Mode Controls (2.2: จันทร์ - อาทิตย์ ต่อเดือน) */}
             {dateSelectMode === 'weekly' && (
-              <div className="rounded-2xl border border-blue-200 bg-blue-50/40 p-3.5 space-y-3">
+              <div className="rounded-2xl border border-blue-200 bg-blue-50/40 p-3.5 space-y-3 animate-popup-spring">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="font-extrabold text-slate-800">
                     เลือกวันใน 1 สัปดาห์ที่ต้องการทำกายภาพ (จันทร์ – อาทิตย์):
@@ -3016,7 +3019,7 @@ export function ScheduleCreatorAndDayModal({
                         key={w.dayIndex}
                         type="button"
                         onClick={() => toggleWeekday(w.dayIndex)}
-                        className={`rounded-xl border-2 py-2.5 px-2 text-center font-extrabold transition cursor-pointer ${
+                        className={`calendar-day-tile animate-card-enter rounded-xl border-2 py-2.5 px-2 text-center font-extrabold cursor-pointer ${
                           active
                             ? 'border-blue-600 bg-blue-600 text-white shadow-sm'
                             : 'border-slate-200 bg-white text-slate-700 hover:border-blue-300'
@@ -3081,7 +3084,10 @@ export function ScheduleCreatorAndDayModal({
                   >
                     <ChevronLeft className="h-4 w-4" />
                   </button>
-                  <span className="text-sm font-black text-slate-900 min-w-[160px] text-center">
+                  <span
+                    key={`picker-title-${viewMonthDate.year}-${viewMonthDate.month}`}
+                    className="text-sm font-black text-slate-900 min-w-[160px] text-center animate-toast-in"
+                  >
                     {lang === 'th'
                       ? `${MONTH_LABELS.th[viewMonthDate.month]} ${viewMonthDate.year + 543}`
                       : `${MONTH_LABELS[lang][viewMonthDate.month]} ${viewMonthDate.year}`}
@@ -3134,7 +3140,10 @@ export function ScheduleCreatorAndDayModal({
                 ))}
               </div>
 
-              <div className="grid grid-cols-7 gap-1.5">
+              <div
+                key={`picker-grid-${viewMonthDate.year}-${viewMonthDate.month}-${dateSelectMode}`}
+                className="grid grid-cols-7 gap-1.5 animate-calendar-month"
+              >
                 {monthCells.map((dayNum, idx) => {
                   if (dayNum === null) {
                     return <div key={`blank-${idx}`} className="h-12 rounded-xl bg-slate-100/60" />;
@@ -3151,11 +3160,12 @@ export function ScheduleCreatorAndDayModal({
                     <button
                       key={cellIso}
                       type="button"
+                      style={{ animationDelay: `${Math.min(idx, 35) * 12}ms` }}
                       onClick={() => {
                         if (dateSelectMode === 'daily') toggleManualDate(cellIso);
                         else toggleWeeklyException(cellIso);
                       }}
-                      className={`h-12 rounded-xl border px-1.5 py-1 flex flex-col items-center justify-between transition cursor-pointer ${
+                      className={`calendar-day-tile animate-card-enter h-12 rounded-xl border px-1.5 py-1 flex flex-col items-center justify-between cursor-pointer ${
                         isSelected
                           ? dateSelectMode === 'daily'
                             ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm'
@@ -3183,7 +3193,7 @@ export function ScheduleCreatorAndDayModal({
                   {finalSelectedDates.map((iso) => (
                     <span
                       key={iso}
-                      className="inline-flex items-center gap-1 rounded-full bg-white border border-slate-200 px-2 py-0.5 font-mono text-[10px] font-bold text-slate-700"
+                      className="inline-flex items-center gap-1 rounded-full bg-white border border-slate-200 px-2 py-0.5 font-mono text-[10px] font-bold text-slate-700 animate-card-enter"
                     >
                       {iso}
                       <button

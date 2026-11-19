@@ -473,7 +473,7 @@ export function RandomHandStartPrompt({
 
   return (
     <div
-      className={`mt-5 rounded-2xl border-2 p-4 text-center space-y-3 transition-colors ${
+      className={`mt-5 rounded-2xl border-2 p-4 text-center space-y-3 transition-colors animate-card-enter ${
         isLeft
           ? 'border-orange-300 bg-orange-50/60'
           : 'border-emerald-300 bg-emerald-50/70'
@@ -507,13 +507,13 @@ export function RandomHandStartPrompt({
 
         <div className="absolute inset-x-3 bottom-3 flex items-center justify-center">
           <span
-            className={`px-3.5 py-1.5 rounded-full text-xs font-extrabold backdrop-blur border shadow ${
+            className={`px-3.5 py-1.5 rounded-full text-xs font-extrabold backdrop-blur border shadow transition-all duration-200 ${
               evalState.targetMatched
                 ? isLeft
-                  ? 'bg-[#0284C7] text-white border-sky-200 animate-pulse'
-                  : 'bg-emerald-600 text-white border-emerald-200 animate-pulse'
+                  ? 'bg-[#0284C7] text-white border-sky-200 animate-rep-pop'
+                  : 'bg-emerald-600 text-white border-emerald-200 animate-rep-pop'
                 : evalState.wrongSideRaised
-                  ? 'bg-amber-500 text-white border-amber-200'
+                  ? 'bg-amber-500 text-white border-amber-200 animate-gentle-shake'
                   : 'bg-white/95 text-[#0F4C81] border-emerald-300'
             }`}
           >

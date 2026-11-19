@@ -3415,6 +3415,34 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(portalHtml).toContain('animate-view-enter');
     expect(portalHtml).toContain('animate-status-halo');
     expect(emojiPattern.test(portalHtml)).toBe(false);
+
+    const schedulePortalHtml = renderToStaticMarkup(
+      React.createElement(
+        ClinicalI18nProvider,
+        null,
+        React.createElement(ClinicalStaffPortalShell, {
+          apiClient: mockApi,
+          currentUser: {
+            id: 'user-super-1',
+            username: 'admin',
+            role: 'super_admin',
+            fullName: 'ผอ.สมชาย ทดสอบ',
+            phone: '0810000000',
+            active: true,
+            createdAt: new Date().toISOString(),
+          },
+          initialTab: 'schedules',
+          onLogout: () => {},
+          onReturnToKiosk: () => {},
+          onOpenPoseTestMode: () => {},
+        }),
+      ),
+    );
+    expect(schedulePortalHtml).toContain('animate-calendar-month');
+    expect(schedulePortalHtml).toContain('calendar-day-tile');
+    expect(schedulePortalHtml).toContain('animate-card-enter');
+    expect(schedulePortalHtml).toContain('card-hover-lift');
+    expect(emojiPattern.test(schedulePortalHtml)).toBe(false);
   });
 
   it('renders synchronized 60FPS AnimatedRehabCoachModel for all 15 clinical exercises and LEFT/RIGHT/BOTH across all 4 timeline phases', () => {
@@ -3517,6 +3545,9 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     const css = fs.readFileSync(cssPath, 'utf8');
     for (const token of [
       '@keyframes popupSpringIn',
+      '@keyframes cardPopIn',
+      '@keyframes calendarMonthEnter',
+      '@keyframes floatGentle',
       '@keyframes backdropFadeIn',
       '@keyframes repScorePop',
       '@keyframes viewSlideFadeIn',
@@ -3524,12 +3555,17 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       '@keyframes gentleShake',
       '@keyframes statusHaloPulse',
       '.animate-popup-spring',
+      '.animate-card-enter',
+      '.animate-calendar-month',
+      '.animate-float-gentle',
       '.animate-backdrop-fade',
       '.animate-rep-pop',
       '.animate-view-enter',
       '.animate-toast-in',
       '.animate-gentle-shake',
       '.animate-status-halo',
+      '.card-hover-lift',
+      '.calendar-day-tile',
       '.btn-tactile',
       '@media (prefers-reduced-motion: reduce)',
     ]) {

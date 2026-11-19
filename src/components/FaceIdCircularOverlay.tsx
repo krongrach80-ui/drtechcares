@@ -109,11 +109,11 @@ export function FaceIdCircularOverlay({
             return (
               <div
                 key={cp.key}
-                className={`rounded-lg px-2 py-1 text-center text-[10px] font-bold border inline-flex items-center justify-center gap-1 ${
+                className={`rounded-lg px-2 py-1 text-center text-[10px] font-bold border inline-flex items-center justify-center gap-1 transition-all duration-200 ${
                   !inspection
                     ? 'bg-white/90 border-sky-200 text-[#0F4C81]'
                     : ok
-                      ? 'bg-emerald-50/95 border-emerald-400 text-emerald-800'
+                      ? 'bg-emerald-50/95 border-emerald-400 text-emerald-800 scale-[1.02]'
                       : 'bg-rose-50/95 border-rose-400 text-rose-700'
                 }`}
               >

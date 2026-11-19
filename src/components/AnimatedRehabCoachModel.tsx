@@ -1338,7 +1338,7 @@ export function Zone4CoachStageAndSteps({
   return (
     <>
       {/* Left 3 Columns: Live Animated Coach Stage */}
-      <div className="col-span-3 bg-gradient-to-b from-sky-50 to-emerald-50/70 border-2 border-emerald-400 rounded-2xl p-2 flex flex-col items-center justify-between relative overflow-hidden">
+      <div className="col-span-3 bg-gradient-to-b from-sky-50 to-emerald-50/70 border-2 border-emerald-400 rounded-2xl p-2 flex flex-col items-center justify-between relative overflow-hidden card-hover-lift">
         <div className="w-full flex items-center justify-between gap-1 shrink-0 z-10">
           <span className="inline-flex items-center gap-1 bg-emerald-600 text-white text-[10px] md:text-xs font-black px-2 py-0.5 rounded-full truncate">
             <span className="inline-block w-2 h-2 rounded-full bg-white animate-pulse shrink-0" />
@@ -1387,7 +1387,7 @@ export function Zone4CoachStageAndSteps({
                   {item.title}
                 </span>
                 {isActiveStep && (
-                  <span className="inline-flex items-center gap-1 bg-emerald-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full animate-pulse whitespace-nowrap">
+                  <span className="inline-flex items-center gap-1 bg-emerald-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full animate-toast-in animate-status-halo whitespace-nowrap">
                     <Play className="w-2.5 h-2.5 fill-current shrink-0" />
                     <span>กำลังทำขั้นนี้</span>
                   </span>

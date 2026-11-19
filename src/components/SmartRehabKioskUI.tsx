@@ -4488,7 +4488,13 @@ export function SmartRehabKioskUI({
         className="shrink-0 grid grid-cols-3 gap-2.5"
       >
         {/* Card 1: Completed Reps */}
-        <div className="relative overflow-hidden bg-white border-2 border-blue-200 rounded-2xl px-3 py-2 text-center shadow-sm flex flex-col items-center justify-between">
+        <div
+          className={`relative overflow-hidden bg-white border-2 rounded-2xl px-3 py-2 text-center shadow-sm flex flex-col items-center justify-between transition-all duration-300 ${
+            isRepCelebration
+              ? 'border-emerald-500 ring-2 ring-emerald-300 shadow-md scale-[1.01]'
+              : 'border-blue-200'
+          }`}
+        >
           <AnimatePresence>
             {isRepCelebration && (
               <motion.div
@@ -4529,13 +4535,23 @@ export function SmartRehabKioskUI({
         </div>
 
         {/* Card 2: Target Hold Timer */}
-        <div className="bg-emerald-50/90 border-2 border-emerald-400 rounded-2xl px-3 py-2 text-center shadow-sm flex flex-col items-center justify-between">
+        <div
+          className={`bg-emerald-50/90 border-2 rounded-2xl px-3 py-2 text-center shadow-sm flex flex-col items-center justify-between transition-all duration-300 ${
+            isWaitLowerArmUi || holdPct >= 100
+              ? 'border-emerald-500 ring-2 ring-emerald-300 shadow-md'
+              : 'border-emerald-400'
+          }`}
+        >
           <p className="inline-flex items-center justify-center gap-1.5 text-emerald-950 font-extrabold text-sm md:text-base leading-tight">
             <Timer className="w-4 h-4 text-emerald-700 shrink-0" />
             <span>ค้างท่าเป้าหมาย</span>
           </p>
           <div className="text-emerald-700 font-black text-2xl md:text-3xl tabular-mono leading-tight my-0.5 flex items-baseline justify-center gap-1">
-            <span ref={holdTimerTextRef} data-testid="kiosk-hold-timer-display">
+            <span
+              ref={holdTimerTextRef}
+              data-testid="kiosk-hold-timer-display"
+              className={isWaitLowerArmUi || holdPct >= 100 ? 'animate-rep-pop' : ''}
+            >
               {isWaitLowerArmUi || holdPct >= 100
                 ? `${holdTargetSec.toFixed(1)}s (ครบ!)`
                 : `${liveHoldElapsed.toFixed(1)}s`}
@@ -4563,7 +4579,11 @@ export function SmartRehabKioskUI({
         </div>
 
         {/* Card 3: ROM Semi-Circular Gauge */}
-        <div className="bg-white border-2 border-teal-200 rounded-2xl px-3 py-2 text-center shadow-sm flex flex-col items-center justify-center">
+        <div
+          className={`bg-white border-2 rounded-2xl px-3 py-2 text-center shadow-sm flex flex-col items-center justify-center transition-all duration-300 ${
+            romPct >= 100 ? 'border-emerald-500 ring-2 ring-emerald-200 shadow-md' : 'border-teal-200'
+          }`}
+        >
           <p className="text-teal-950 font-extrabold text-sm md:text-base leading-tight">
             มุมการเคลื่อนไหว ROM
           </p>
@@ -4610,7 +4630,10 @@ export function SmartRehabKioskUI({
         aria-label="ขั้นตอนการฝึกและตารางตรวจสอบเช็คลิสต์"
         className="shrink-0 bg-white border-2 border-sky-100 rounded-2xl px-3.5 py-2 shadow-sm"
       >
-        <h2 className="flex items-center gap-1.5 text-sm md:text-base font-extrabold text-blue-950 mb-1.5 truncate">
+        <h2
+          key={`${selectedExercise.exercise_id}-${currentUiSide}`}
+          className="flex items-center gap-1.5 text-sm md:text-base font-extrabold text-blue-950 mb-1.5 truncate animate-view-enter"
+        >
           <Activity className="w-4 h-4 text-blue-700 shrink-0" />
           <span className="truncate">{selectedExercise.name_th} — {targetSideLabel}</span>
         </h2>
