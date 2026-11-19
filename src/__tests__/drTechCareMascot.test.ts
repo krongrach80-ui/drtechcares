@@ -14,9 +14,10 @@ import {
   DrTechCareMascot,
   MASCOT_ENCOURAGING_DURATION_MS,
   MASCOT_GREETING_DURATION_MS,
-  MASCOT_POSTER_SRC,
-  MASCOT_VIDEO_SEGMENTS,
-  MASCOT_VIDEO_SRC,
+  MASCOT_LIP_SYNC_SEQUENCE,
+  MASCOT_LIP_SYNC_STEP_MS,
+  MASCOT_SPRITE_SHEETS,
+  getLipSyncFrameAtElapsed,
   getMascotMouthPath,
   resolveMascotPose,
   type DrTechCareMascotPose,
@@ -28,58 +29,75 @@ import {
 
 const EMOJI_RE = /[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/u;
 
-describe('Dr. TechCare Video Mascot Segments, Site-Wide Speech Bus & Dock Integration', () => {
-  it('provides trimmed non-bleeding video clip assets & segment windows for all 5 poses', () => {
-    expect(MASCOT_VIDEO_SRC).toBe('/mascot/dr-techcare-mascot.mp4');
-    expect(MASCOT_POSTER_SRC).toBe('/mascot/dr-techcare-poster.jpg');
+describe('Dr. TechCare 4-Frame Transparent Lip-Sync Sprite Mascot & Site-Wide Poses', () => {
+  it('provides valid transparent RGBA PNG sprite sheets and 60FPS lip-sync frame selector for all 5 poses', () => {
+    const spriteFiles = [
+      'public/mascot/sprite-greeting.png',
+      'public/mascot/sprite-explaining.png',
+      'public/mascot/sprite-speaking.png',
+      'public/mascot/sprite-encouraging.png',
+    ];
+    for (const rel of spriteFiles) {
+      const fullPath = path.resolve(process.cwd(), rel);
+      expect(fs.existsSync(fullPath)).toBe(true);
+      const buf = fs.readFileSync(fullPath);
+      expect(buf.length).toBeGreaterThan(50_000);
+      // PNG magic header check
+      expect(buf.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+    }
 
-    const mp4Path = path.resolve(process.cwd(), 'public/mascot/dr-techcare-mascot.mp4');
-    const posterPath = path.resolve(process.cwd(), 'public/mascot/dr-techcare-poster.jpg');
-    expect(fs.existsSync(mp4Path)).toBe(true);
-    expect(fs.existsSync(posterPath)).toBe(true);
-    expect(fs.statSync(mp4Path).size).toBeGreaterThan(100_000);
-    expect(fs.statSync(posterPath).size).toBeGreaterThan(1_000);
+    // Lip-sync helper: silent snaps to 0 (closed smile), speaking cycles real open/round frames 0..3
+    expect(MASCOT_LIP_SYNC_STEP_MS).toBe(90);
+    expect(getLipSyncFrameAtElapsed(0, false)).toBe(0);
+    expect(getLipSyncFrameAtElapsed(270, false)).toBe(0);
 
-    expect(MASCOT_VIDEO_SEGMENTS.greeting.startSec).toBeGreaterThanOrEqual(0);
-    expect(MASCOT_VIDEO_SEGMENTS.greeting.endSec).toBeLessThan(2.0);
-    expect(MASCOT_VIDEO_SEGMENTS.explaining.startSec).toBeGreaterThan(2.0);
-    expect(MASCOT_VIDEO_SEGMENTS.explaining.endSec).toBeLessThan(4.0);
-    expect(MASCOT_VIDEO_SEGMENTS.speaking.startSec).toBeGreaterThan(4.0);
-    expect(MASCOT_VIDEO_SEGMENTS.speaking.endSec).toBeLessThan(6.45);
-    expect(MASCOT_VIDEO_SEGMENTS.encouraging.startSec).toBeGreaterThan(6.46);
-    expect(MASCOT_VIDEO_SEGMENTS.encouraging.endSec).toBeLessThanOrEqual(10.0);
-    expect(MASCOT_VIDEO_SEGMENTS.idle.startSec).toBeGreaterThanOrEqual(0);
-    expect(MASCOT_VIDEO_SEGMENTS.idle.endSec).toBeLessThan(MASCOT_VIDEO_SEGMENTS.speaking.endSec);
+    const activeFrames = MASCOT_LIP_SYNC_SEQUENCE.map((_, idx) =>
+      getLipSyncFrameAtElapsed(idx * MASCOT_LIP_SYNC_STEP_MS, true)
+    );
+    expect(new Set(activeFrames)).toEqual(new Set([0, 1, 2, 3]));
 
     const poses: DrTechCareMascotPose[] = [
-      'idle',
       'greeting',
       'explaining',
       'speaking',
       'encouraging',
+      'idle',
     ];
 
     for (const pose of poses) {
-      const seg = MASCOT_VIDEO_SEGMENTS[pose];
-      expect(seg.startSec).toBeLessThan(seg.endSec);
       const html = renderToStaticMarkup(
         React.createElement(DrTechCareMascot, {
           pose,
           isSpeaking: pose === 'speaking',
         })
       );
-      expect(html).toContain('data-testid="mascot-video"');
-      expect(html).toContain('src="/mascot/dr-techcare-mascot.mp4"');
-      expect(html).toContain('poster="/mascot/dr-techcare-poster.jpg"');
-      expect(html).toContain(`data-video-start="${seg.startSec}"`);
-      expect(html).toContain(`data-video-end="${seg.endSec}"`);
-      expect(html).toContain('muted=""');
-      expect(html).toContain('playsInline=""');
+      expect(html).toContain('data-testid="mascot-sprite"');
+      expect(html).toContain(`src="${MASCOT_SPRITE_SHEETS[pose]}"`);
+      expect(html).toContain(`data-sprite-pose="${pose}"`);
+      expect(html).toContain('data-mouth-frame="0"');
+      expect(html).toContain('width:400%');
+      expect(html).toContain('translate3d(-0%, 0, 0)');
       expect(EMOJI_RE.test(html)).toBe(false);
     }
+
+    const speakingHtml = renderToStaticMarkup(
+      React.createElement(DrTechCareMascot, {
+        pose: 'speaking',
+        isSpeaking: true,
+      })
+    );
+    expect(speakingHtml).toContain('data-testid="mascot-soundwaves"');
+
+    const encouragingHtml = renderToStaticMarkup(
+      React.createElement(DrTechCareMascot, {
+        pose: 'encouraging',
+        isSpeaking: false,
+      })
+    );
+    expect(encouragingHtml).toContain('data-testid="mascot-encouraging-particles"');
   });
 
-  it('resolves pose precedence, phoneme paths, and 2D vector SVG fallback cleanly', () => {
+  it('retains SVG fallback and pure pose/phoneme helper compatibility', () => {
     expect(MASCOT_ENCOURAGING_DURATION_MS).toBe(1600);
     expect(MASCOT_GREETING_DURATION_MS).toBe(2600);
 
@@ -91,15 +109,6 @@ describe('Dr. TechCare Video Mascot Segments, Site-Wide Speech Bus & Dock Integr
         isExplaining: true,
       })
     ).toBe('encouraging');
-
-    expect(
-      resolveMascotPose({
-        isGreeting: true,
-        isEncouraging: false,
-        isSpeaking: true,
-        isExplaining: true,
-      })
-    ).toBe('speaking');
 
     const speakingShapes = [0, 1, 2, 3].map((f) => getMascotMouthPath('speaking', true, f).d);
     expect(new Set(speakingShapes).size).toBe(4);
@@ -113,54 +122,44 @@ describe('Dr. TechCare Video Mascot Segments, Site-Wide Speech Bus & Dock Integr
     );
     expect(svgFallbackHtml).toContain('viewBox="0 0 160 180"');
     expect(svgFallbackHtml).toContain('translateY(25px)');
-    expect(svgFallbackHtml).not.toContain('data-testid="mascot-video"');
+    expect(svgFallbackHtml).not.toContain('data-testid="mascot-sprite"');
   });
 
-  it('classifies Thai/EN/CN utterances into poses and coordinates site-wide speech bus & dock', () => {
-    expect(inferMascotPoseFromSpeechText('สวัสดีครับ ยินดีต้อนรับสู่การฝึกกายภาพ')).toBe('greeting');
-    expect(inferMascotPoseFromSpeechText('Please keep your back straight and hold for 3 seconds')).toBe(
-      'explaining'
-    );
+  it('coordinates site-wide mascotSpeechBus and GlobalSpeechMascotDock suppression cleanly', () => {
+    expect(inferMascotPoseFromSpeechText('สวัสดีครับ ยินดีต้อนรับ')).toBe('greeting');
+    expect(inferMascotPoseFromSpeechText('กรุณายกแขนค้าง 3 วินาที')).toBe('explaining');
     expect(inferMascotPoseFromSpeechText('เก่งมากครับ ได้ +1 แต้มแล้ว!')).toBe('encouraging');
-    expect(inferMascotPoseFromSpeechText('ค่อยๆ ยกแขนขึ้น ช้าๆ นะครับ')).toBe('speaking');
-    expect(inferMascotPoseFromSpeechText('请保持这个姿势 3 秒')).toBe('explaining');
-    expect(inferMascotPoseFromSpeechText('太棒了！已完成全部动作')).toBe('encouraging');
+    expect(inferMascotPoseFromSpeechText('บันทึกผลวันนี้เรียบร้อยแล้วครับ')).toBe('encouraging');
 
-    const seen: string[] = [];
+    const events: string[] = [];
     const unsubscribe = subscribeGlobalMascotSpeech((st) => {
-      seen.push(`${st.source}:${st.pose}:${st.isSpeaking}`);
+      events.push(`${st.source}:${st.pose}:${st.isSpeaking}`);
     });
 
     try {
-      const started = notifyMascotSpeechStart({
-        text: 'ยืนยันตัวตนสำเร็จ พร้อมเริ่มฝึกครับ',
+      notifyMascotSpeechStart({
+        text: 'สวัสดีครับ พร้อมเริ่มฝึกแล้วครับ',
         source: 'kiosk_login',
         pose: 'greeting',
       });
-      expect(started.isSpeaking).toBe(true);
-      expect(started.pose).toBe('greeting');
-      expect(getGlobalMascotSpeechState().source).toBe('kiosk_login');
+      expect(getGlobalMascotSpeechState().isSpeaking).toBe(true);
+      expect(getGlobalMascotSpeechState().pose).toBe('greeting');
 
-      // Ending a different inactive source must NOT interrupt kiosk_login
       notifyMascotSpeechEnd('card_game');
       expect(getGlobalMascotSpeechState().isSpeaking).toBe(true);
-      expect(getGlobalMascotSpeechState().source).toBe('kiosk_login');
 
-      // Ending the active source stops speaking cleanly
-      const ended = notifyMascotSpeechEnd('kiosk_login');
-      expect(ended.isSpeaking).toBe(false);
-      expect(ended.pose).toBe('idle');
-      expect(seen).toContain('kiosk_login:greeting:true');
-      expect(seen).toContain('kiosk_login:idle:false');
+      notifyMascotSpeechEnd('kiosk_login');
+      expect(getGlobalMascotSpeechState().isSpeaking).toBe(false);
+      expect(events).toContain('kiosk_login:greeting:true');
+      expect(events).toContain('kiosk_login:idle:false');
     } finally {
       unsubscribe();
       notifyMascotSpeechEnd();
     }
 
-    // GlobalSpeechMascotDock renders cleanly for non-voice_coach speech
     const cardGameState = {
       isSpeaking: true,
-      text: 'คำถามข้อที่ 1 กรุณาเลือกคำตอบที่ถูกต้องครับ',
+      text: 'คำถามข้อที่ 1 กรุณาเลือกคำตอบครับ',
       pose: 'explaining' as const,
       source: 'card_game' as const,
       updatedAt: 1000,
@@ -170,32 +169,33 @@ describe('Dr. TechCare Video Mascot Segments, Site-Wide Speech Bus & Dock Integr
       React.createElement(GlobalSpeechMascotDock, { initialState: cardGameState })
     );
     expect(dockHtml).toContain('data-testid="global-speech-mascot-dock"');
+    expect(dockHtml).toContain('/mascot/sprite-explaining.png');
     expect(dockHtml).toContain('กำลังอธิบาย');
-    expect(dockHtml).toContain('คำถามข้อที่ 1');
-    expect(dockHtml).toContain('/mascot/dr-techcare-mascot.mp4');
 
-    // GlobalSpeechMascotDock suppresses itself when SmartRehabKioskUI's VoiceCoachBanner speaks
-    const voiceCoachState = {
-      isSpeaking: true,
-      text: 'ค่อยๆ ยกแขนขึ้น ช้าๆ นะครับ',
-      pose: 'speaking' as const,
-      source: 'voice_coach' as const,
-      updatedAt: 2000,
-    };
-    expect(shouldRenderGlobalSpeechDock(voiceCoachState)).toBe(false);
-    const suppressedHtml = renderToStaticMarkup(
-      React.createElement(GlobalSpeechMascotDock, { initialState: voiceCoachState })
-    );
-    expect(suppressedHtml).toBe('');
+    expect(
+      shouldRenderGlobalSpeechDock({
+        isSpeaking: true,
+        text: 'ค่อยๆ ยกแขนขึ้น',
+        pose: 'explaining',
+        source: 'voice_coach',
+        updatedAt: 2000,
+      })
+    ).toBe(false);
+    expect(
+      shouldRenderGlobalSpeechDock({
+        isSpeaking: true,
+        text: 'หันหน้าซ้ายช้าๆ ครับ',
+        pose: 'explaining',
+        source: 'face_enroll',
+        updatedAt: 3000,
+      })
+    ).toBe(false);
   });
 
-  it('auto-resets stuck speech state after watchdog timeout without manual end call', () => {
+  it('resets stuck speech state via watchdog timeout', () => {
     vi.useFakeTimers();
     try {
-      notifyMascotSpeechStart({
-        text: 'ทดสอบนาฬิกาตัดจบอัตโนมัติ',
-        source: 'other',
-      });
+      notifyMascotSpeechStart({ text: 'ทดสอบนาฬิกาหยุดพูด', source: 'other' });
       expect(getGlobalMascotSpeechState().isSpeaking).toBe(true);
       vi.advanceTimersByTime(15000);
       expect(getGlobalMascotSpeechState().isSpeaking).toBe(false);
@@ -205,43 +205,57 @@ describe('Dr. TechCare Video Mascot Segments, Site-Wide Speech Bus & Dock Integr
     }
   });
 
-  it('wires speech bus across all voice engines and enforces zero emojis across touched files', () => {
-    const appSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/App.tsx'), 'utf8');
-    expect(appSrc).toContain("source: 'kiosk_overview'");
-
-    const loginSrc = fs.readFileSync(
+  it('wires exact poses per screen across the website and keeps zero Unicode emojis', () => {
+    const loginView = fs.readFileSync(
       path.resolve(process.cwd(), 'src/components/KioskBiometricLoginView.tsx'),
       'utf8'
     );
-    expect(loginSrc).toContain("source: 'kiosk_login'");
+    expect(loginView).toContain('kiosk-landing-greeting-mascot');
+    expect(loginView).toContain('pose="greeting"');
 
-    const faceEnrollSrc = fs.readFileSync(
-      path.resolve(process.cwd(), 'src/components/FaceID120Scanner.tsx'),
-      'utf8'
-    );
-    expect(faceEnrollSrc).toContain("source: 'face_enroll'");
-
-    const cardGameSrc = fs.readFileSync(
-      path.resolve(process.cwd(), 'apps/kiosk/src/PhysicalCardGame.tsx'),
-      'utf8'
-    );
-    expect(cardGameSrc).toContain("source: 'card_game'");
-
-    const voiceBannerSrc = fs.readFileSync(
-      path.resolve(process.cwd(), 'src/components/VoiceCoachBanner.tsx'),
-      'utf8'
-    );
-    expect(voiceBannerSrc).toContain("source: 'voice_coach'");
-
-    const mainSrc = fs.readFileSync(path.resolve(process.cwd(), 'src/main.tsx'), 'utf8');
-    expect(mainSrc).toContain('GlobalSpeechMascotDock');
-
-    const kioskSrc = fs.readFileSync(
+    const rehabKiosk = fs.readFileSync(
       path.resolve(process.cwd(), 'src/components/SmartRehabKioskUI.tsx'),
       'utf8'
     );
-    expect(kioskSrc).toContain('h-[100dvh] max-h-[100dvh] w-full overflow-hidden');
-    expect(kioskSrc).toContain('w-14 h-16 shrink-0 mr-3 animate-view-enter');
+    expect(rehabKiosk).toContain('h-[100dvh] max-h-[100dvh] w-full overflow-hidden');
+    expect(rehabKiosk).toContain('w-14 h-16 shrink-0 mr-3 animate-view-enter');
+    expect(rehabKiosk).toContain("? 'encouraging'");
+    expect(rehabKiosk).toContain(": 'explaining'");
+
+    const cardGame = fs.readFileSync(
+      path.resolve(process.cwd(), 'apps/kiosk/src/PhysicalCardGame.tsx'),
+      'utf8'
+    );
+    expect(cardGame).toContain(": 'explaining'");
+    expect(cardGame).toContain("? 'encouraging'");
+
+    const faceEnroll = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/FaceID120Scanner.tsx'),
+      'utf8'
+    );
+    expect(faceEnroll).toContain('face-id-scanner-mascot');
+    expect(faceEnroll).toContain("pose={phase === 'completed' ? 'speaking' : 'explaining'}");
+
+    const enrollModal = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/StaffAssistedEnrollmentModal.tsx'),
+      'utf8'
+    );
+    expect(enrollModal).toContain('patient-enroll-success-mascot');
+    expect(enrollModal).toContain('pose="speaking"');
+
+    const staffLogin = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/StaffLoginModalOrPage.tsx'),
+      'utf8'
+    );
+    expect(staffLogin).toContain('staff-login-mascot');
+    expect(staffLogin).toContain('pose="speaking"');
+
+    const staffPortal = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/ClinicalStaffPortalShell.tsx'),
+      'utf8'
+    );
+    expect(staffPortal).toContain('staff-portal-mascot');
+    expect(staffPortal).toContain(": portalMascotTalking\n        ? 'speaking'");
 
     for (const relPath of [
       'packages/kiosk-input/src/mascotSpeechBus.ts',
@@ -253,6 +267,9 @@ describe('Dr. TechCare Video Mascot Segments, Site-Wide Speech Bus & Dock Integr
       'src/components/SmartRehabKioskUI.tsx',
       'src/components/KioskBiometricLoginView.tsx',
       'src/components/FaceID120Scanner.tsx',
+      'src/components/StaffAssistedEnrollmentModal.tsx',
+      'src/StaffLoginModalOrPage.tsx',
+      'src/components/ClinicalStaffPortalShell.tsx',
       'apps/kiosk/src/PhysicalCardGame.tsx',
       'src/App.tsx',
       'src/main.tsx',

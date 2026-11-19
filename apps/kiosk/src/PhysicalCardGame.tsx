@@ -912,7 +912,11 @@ export function PhysicalCardGame({
             blockedByAutoplayRef.current = false;
             isSpeakingRef.current = true;
             setIsSpeaking(true);
-            notifyMascotSpeechStart({ text: clean, source: 'card_game' });
+            const cardPose =
+              activeFeedbackMetaRef.current?.correct || Boolean(completedSummaryRef.current)
+                ? 'encouraging'
+                : 'explaining';
+            notifyMascotSpeechStart({ text: clean, source: 'card_game', pose: cardPose });
           };
           utterance.onend = () => {
             if (activeUtteranceRef.current === utterance) {
@@ -1001,7 +1005,11 @@ export function PhysicalCardGame({
             blockedByAutoplayRef.current = false;
             isSpeakingRef.current = true;
             setIsSpeaking(true);
-            notifyMascotSpeechStart({ text: clean, source: 'card_game' });
+            const cardPose =
+              activeFeedbackMetaRef.current?.correct || Boolean(completedSummaryRef.current)
+                ? 'encouraging'
+                : 'explaining';
+            notifyMascotSpeechStart({ text: clean, source: 'card_game', pose: cardPose });
           };
           audio.onended = () => {
             onMinigameSpeechEndedRef.current(seq);

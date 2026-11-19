@@ -47,6 +47,7 @@ import {
   X,
 } from 'lucide-react';
 import FaceID120Scanner, { type FaceID120Result } from './FaceID120Scanner';
+import { DrTechCareMascot } from './DrTechCareMascot';
 import { syncPatientBiometricEverywhere } from '../lib/biometricEngine';
 
 interface StaffAssistedEnrollmentModalProps {
@@ -238,7 +239,20 @@ export function StaffAssistedEnrollmentModal({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [createdPatient, setCreatedPatient] = useState<PatientRecord | null>(null);
+  const [enrollSuccessTalking, setEnrollSuccessTalking] = useState<boolean>(false);
   const triggerFinalizeRef = useRef<(() => Promise<FaceID120Result | null>) | null>(null);
+
+  useEffect(() => {
+    if (step !== 4 || !createdPatient) {
+      setEnrollSuccessTalking(false);
+      return;
+    }
+    setEnrollSuccessTalking(true);
+    const tid = window.setTimeout(() => {
+      setEnrollSuccessTalking(false);
+    }, 3600);
+    return () => window.clearTimeout(tid);
+  }, [step, createdPatient?.id]);
 
   useEffect(() => {
     if (!open) {
@@ -1675,8 +1689,14 @@ export function StaffAssistedEnrollmentModal({
 
           {step === 4 && createdPatient && (
             <div className="py-5 text-center space-y-4">
-              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
-                <CheckCircle2 className="h-9 w-9" />
+              <div className="pt-4">
+                <DrTechCareMascot
+                  pose="speaking"
+                  isSpeaking={enrollSuccessTalking}
+                  speechText="ลงทะเบียนคนไข้สำเร็จ พร้อมใช้งานแล้วครับ!"
+                  className="w-28 h-28 mx-auto animate-popup-spring"
+                  testId="patient-enroll-success-mascot"
+                />
               </div>
               <div>
                 <h3 className="text-lg font-extrabold text-slate-900">

@@ -103,8 +103,6 @@ import {
 import {
   DrTechCareMascot,
   MASCOT_ENCOURAGING_DURATION_MS,
-  MASCOT_GREETING_DURATION_MS,
-  resolveMascotPose,
 } from './DrTechCareMascot';
 import { resolveExercisePostureSpec } from './ExercisePostureGuide';
 import { FaceScanOverlay } from './FaceScanOverlay';
@@ -2487,18 +2485,9 @@ export function SmartRehabKioskUI({
   });
 
   const [voiceCoachSpeaking, setVoiceCoachSpeaking] = useState<boolean>(false);
-  const [mascotGreetingActive, setMascotGreetingActive] = useState<boolean>(true);
   const [mascotEncouragingActive, setMascotEncouragingActive] = useState<boolean>(false);
   const prevMascotRepsRef = useRef<number>(rep_counter.valid_reps);
   const encouragingTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    setMascotGreetingActive(true);
-    const greetTimer = window.setTimeout(() => {
-      setMascotGreetingActive(false);
-    }, MASCOT_GREETING_DURATION_MS);
-    return () => window.clearTimeout(greetTimer);
-  }, [patient?.id]);
 
   useEffect(() => {
     prevMascotRepsRef.current = 0;
@@ -4117,22 +4106,11 @@ export function SmartRehabKioskUI({
   const cleanSpeechText = sanitizeSpeechText(rawVoiceTextTh);
   const displayedVoiceSubtitle = sanitizeSpeechText(translateVoiceCoachText(cleanSpeechText, zone5VoiceLang));
   const isMascotSpeaking = !voiceMuted && voiceCoachSpeaking;
-  const isMascotExplaining =
-    coachModalOpen ||
-    kiosk_state === 'ACTIVE_REP' ||
-    kiosk_state === 'HOLD_PHASE' ||
-    kiosk_state === 'CALIBRATING' ||
-    Boolean(unifiedCoachingBanner?.titleTh);
-  const baseMascotPose = resolveMascotPose({
-    isGreeting: mascotGreetingActive,
-    isEncouraging: mascotEncouragingActive,
-    isSpeaking: isMascotSpeaking,
-    isExplaining: isMascotExplaining,
-  });
+  const inferredSpeechPose = inferMascotPoseFromSpeechText(cleanSpeechText);
   const mascotPose =
-    !mascotEncouragingActive && isMascotSpeaking
-      ? inferMascotPoseFromSpeechText(cleanSpeechText)
-      : baseMascotPose;
+    mascotEncouragingActive || (isMascotSpeaking && inferredSpeechPose === 'encouraging')
+      ? 'encouraging'
+      : 'explaining';
 
   return (
     <div className="h-[100dvh] max-h-[100dvh] w-full overflow-hidden bg-gradient-to-b from-slate-50 via-white to-emerald-50/40 text-slate-800 flex flex-col justify-between p-2.5 md:p-3 gap-2 select-none">

@@ -18,7 +18,7 @@ const POSE_BADGE_LABELS_TH: Record<MascotSpeechPose, string> = {
 };
 
 export function shouldRenderGlobalSpeechDock(state: GlobalMascotSpeechState): boolean {
-  if (state.source === 'voice_coach') {
+  if (state.source === 'voice_coach' || state.source === 'face_enroll') {
     return false;
   }
   return Boolean(state.text && state.text.trim().length > 0);
@@ -54,7 +54,7 @@ export const GlobalSpeechMascotDock: React.FC<GlobalSpeechMascotDockProps> = ({
         hideTimerRef.current = null;
       }
 
-      if (next.source === 'voice_coach') {
+      if (next.source === 'voice_coach' || next.source === 'face_enroll') {
         setVisible(false);
         return;
       }
@@ -113,7 +113,7 @@ export const GlobalSpeechMascotDock: React.FC<GlobalSpeechMascotDockProps> = ({
         videoFit="stage"
         useVideo={useVideo}
         showSpeechBubble={false}
-        className="w-32 h-24 sm:w-40 sm:h-28 shrink-0"
+        className="w-24 h-24 sm:w-28 sm:h-28 shrink-0"
         testId="global-speech-mascot"
       />
 

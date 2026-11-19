@@ -74,7 +74,6 @@ import { PhysicalCardGame } from '../../apps/kiosk/src/PhysicalCardGame';
 import { POSE_TEST_PATIENT, buildAll15ClinicalExercisePrescriptions } from '../hooks/useKioskSocket';
 import {
   DrTechCareMascot,
-  MASCOT_GREETING_DURATION_MS,
   type DrTechCareMascotPose,
 } from './DrTechCareMascot';
 import { SmartRehabKioskUI } from './SmartRehabKioskUI';
@@ -2378,26 +2377,26 @@ export function ClinicalStaffPortalShell({
       ? scheduleStats.total || totalScheduledAppointmentDays
       : totalScheduledAppointmentDays;
 
-  const [portalMascotGreeting, setPortalMascotGreeting] = useState<boolean>(true);
+  const [portalMascotTalking, setPortalMascotTalking] = useState<boolean>(true);
   useEffect(() => {
-    setPortalMascotGreeting(true);
+    setPortalMascotTalking(true);
     const greetTimer = window.setTimeout(() => {
-      setPortalMascotGreeting(false);
-    }, MASCOT_GREETING_DURATION_MS);
+      setPortalMascotTalking(false);
+    }, 3000);
     return () => window.clearTimeout(greetTimer);
   }, []);
 
   const portalMascotPose: DrTechCareMascotPose =
     bannerMessage?.kind === 'success'
       ? 'encouraging'
-      : portalMascotGreeting
-        ? 'greeting'
+      : portalMascotTalking
+        ? 'speaking'
         : activeTab === 'exercises' ||
             activeTab === 'schedules' ||
             activeTab === 'patients' ||
             activeTab === 'security'
           ? 'explaining'
-          : 'idle';
+          : 'speaking';
 
   return (
     <div className="min-h-screen flex bg-gradient-to-br from-[#F0FDF9] via-[#F0F7FF] to-[#F8FAFC] text-[#0F4C81]">
@@ -2606,10 +2605,10 @@ export function ClinicalStaffPortalShell({
           <div className="flex items-center gap-3 min-w-0">
             <DrTechCareMascot
               pose={portalMascotPose}
-              isSpeaking={false}
+              isSpeaking={portalMascotTalking || bannerMessage?.kind === 'success'}
               size="sm"
               showSpeechBubble={false}
-              className="w-12 h-14 shrink-0 animate-view-enter"
+              className="w-12 h-12 shrink-0 animate-view-enter"
               testId="staff-portal-mascot"
             />
             <div className="min-h-[56px] flex flex-col justify-center min-w-0">

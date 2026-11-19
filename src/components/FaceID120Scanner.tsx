@@ -33,6 +33,7 @@ import {
   type ClinicalLang,
 } from '@drtechcares/clinical-i18n';
 import { notifyMascotSpeechEnd, notifyMascotSpeechStart } from '@drtechcares/kiosk-input';
+import { DrTechCareMascot } from './DrTechCareMascot';
 import {
   buildTtsProxyUrl,
   pickSpeechVoice,
@@ -812,6 +813,7 @@ export default function FaceID120Scanner({
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [voiceEnabled, setVoiceEnabled] = useState<boolean>(() => !readStoredKioskVoiceMuted());
+  const [isVoiceSpeaking, setIsVoiceSpeaking] = useState<boolean>(false);
   const [phase, setPhase] = useState<'scanning' | 'computing' | 'completed'>('scanning');
 
   const [capturedCount, setCapturedCount] = useState(0);
@@ -1024,6 +1026,7 @@ export default function FaceID120Scanner({
       if (muted) {
         speakSeqRef.current += 1;
         isSpeakingRef.current = false;
+        setIsVoiceSpeaking(false);
         queuedSpeechRef.current = null;
         cancelAllKioskVoiceSpeech(audioRef.current);
       }
@@ -1033,6 +1036,7 @@ export default function FaceID120Scanner({
   const stopVoicePlayback = useCallback((clearQueue = true) => {
     speakSeqRef.current += 1;
     isSpeakingRef.current = false;
+    setIsVoiceSpeaking(false);
     if (clearQueue) {
       queuedSpeechRef.current = null;
     }
@@ -1106,6 +1110,7 @@ export default function FaceID120Scanner({
         webFallbackTimerRef.current = null;
       }
       isSpeakingRef.current = false;
+      setIsVoiceSpeaking(false);
       notifyMascotSpeechEnd('face_enroll');
       const queued = queuedSpeechRef.current;
       queuedSpeechRef.current = null;
@@ -1150,7 +1155,12 @@ export default function FaceID120Scanner({
         }
         utter.onstart = () => {
           if (seq === speakSeqRef.current) {
-            notifyMascotSpeechStart({ text: cleanSpeechText, source: 'face_enroll' });
+            setIsVoiceSpeaking(true);
+            notifyMascotSpeechStart({
+              text: cleanSpeechText,
+              source: 'face_enroll',
+              pose: 'explaining',
+            });
           }
         };
         utter.onend = handleFinished;
@@ -1172,7 +1182,8 @@ export default function FaceID120Scanner({
         window.clearTimeout(webFallbackTimerRef.current);
         webFallbackTimerRef.current = null;
       }
-      notifyMascotSpeechStart({ text: trimmed, source: 'face_enroll' });
+      setIsVoiceSpeaking(true);
+      notifyMascotSpeechStart({ text: trimmed, source: 'face_enroll', pose: 'explaining' });
     };
     audio.onended = handleFinished;
     audio.onerror = triggerWebSpeech;
@@ -2356,15 +2367,25 @@ export default function FaceID120Scanner({
         </div>
       </div>
 
-      {/* Live Counter & Dynamic Multi-Language Guidance */}
-      <div className="mt-3 text-center">
-        <div className="inline-flex items-baseline gap-2 rounded-full border border-emerald-300 bg-white px-4 py-1 shadow-xs">
-          <span className="font-mono text-2xl font-black text-emerald-600">{capturedCount}</span>
-          <span className="text-xs font-bold text-[#0F4C81]">/ 120 {ui.framesUnit} ({progressPct}%)</span>
+      {/* Live Counter & Dynamic Multi-Language Guidance with Explaining Dr. TechCare Mascot */}
+      <div className="mt-3 flex flex-col items-center">
+        <div className="inline-flex items-center justify-center gap-3">
+          <DrTechCareMascot
+            pose={phase === 'completed' ? 'speaking' : 'explaining'}
+            isSpeaking={isVoiceSpeaking}
+            showSpeechBubble={false}
+            className="w-16 h-16 sm:w-20 sm:h-20 shrink-0 animate-view-enter"
+            testId="face-id-scanner-mascot"
+          />
+          <div className="text-left">
+            <div className="inline-flex items-baseline gap-2 rounded-full border border-emerald-300 bg-white px-4 py-1 shadow-xs">
+              <span className="font-mono text-2xl font-black text-emerald-600">{capturedCount}</span>
+              <span className="text-xs font-bold text-[#0F4C81]">/ 120 {ui.framesUnit} ({progressPct}%)</span>
+            </div>
+            <h4 className="mt-1.5 text-base font-black text-[#0F4C81]">{guidanceText}</h4>
+            <p className="mt-0.5 text-xs font-semibold text-[#0284C7]">{subCueText}</p>
+          </div>
         </div>
-
-        <h4 className="mt-2 text-base font-black text-[#0F4C81]">{guidanceText}</h4>
-        <p className="mt-0.5 text-xs font-semibold text-[#0284C7]">{subCueText}</p>
         {phase === 'scanning' && wrongDirCue && (
           <div
             role="status"

@@ -101,6 +101,7 @@ import {
   KineticAuthStatusBadge,
   KineticEmblemSvg,
 } from './KineticAuthStatusBadge';
+import { DrTechCareMascot } from './DrTechCareMascot';
 import {
   Bell,
   CameraOff,
@@ -1271,6 +1272,58 @@ export function KioskBiometricLoginView({
     }, KIOSK_AUTH_HOLD_DELAY_MS);
     return () => window.clearTimeout(timerId);
   }, [verifiedModalPayload]);
+
+  const [landingGreetingTalking, setLandingGreetingTalking] = useState<boolean>(true);
+  const landingGreetingTimerRef = useRef<number | null>(null);
+  const triggerLandingGreetingAnim = useCallback((durationMs = 3400) => {
+    setLandingGreetingTalking(true);
+    if (landingGreetingTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(landingGreetingTimerRef.current);
+    }
+    if (typeof window !== 'undefined') {
+      landingGreetingTimerRef.current = window.setTimeout(() => {
+        landingGreetingTimerRef.current = null;
+        setLandingGreetingTalking(false);
+      }, durationMs);
+    }
+  }, []);
+
+  useEffect(() => {
+    triggerLandingGreetingAnim(3600);
+    return () => {
+      if (landingGreetingTimerRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(landingGreetingTimerRef.current);
+        landingGreetingTimerRef.current = null;
+      }
+    };
+  }, [lang, triggerLandingGreetingAnim]);
+
+  const handleReplayLandingGreeting = useCallback(() => {
+    triggerLandingGreetingAnim(3000);
+    if (voiceMuted || typeof window === 'undefined') return;
+    const greetingLine =
+      lang === 'en'
+        ? 'Hello! Welcome to Dr.Tech.Care. Please look at the camera to begin.'
+        : lang === 'cn'
+          ? '您好！欢迎使用 Dr.Tech.Care，请直视摄像头自动识别。'
+          : 'สวัสดีครับ ยินดีต้อนรับสู่คลินิก Dr.Tech.Care มองกล้องเพื่อเริ่มใช้งานได้เลยครับ';
+    const ttsLang = lang === 'en' ? 'en' : lang === 'cn' ? 'zh' : 'th';
+    try {
+      const a = new Audio(buildTtsProxyUrl(greetingLine, ttsLang));
+      a.onplay = () => {
+        notifyMascotSpeechStart({ text: greetingLine, source: 'kiosk_login', pose: 'greeting' });
+      };
+      a.onended = () => {
+        notifyMascotSpeechEnd('kiosk_login');
+      };
+      a.onerror = () => {
+        notifyMascotSpeechEnd('kiosk_login');
+      };
+      void a.play().catch(() => {});
+    } catch {
+      // Ignore audio playback errors
+    }
+  }, [lang, triggerLandingGreetingAnim, voiceMuted]);
   const onPatientAuthenticatedRef = useRef(onPatientAuthenticated);
   onPatientAuthenticatedRef.current = onPatientAuthenticated;
   const presenceRef = useRef(new FacePresenceTracker());
@@ -3403,6 +3456,38 @@ export function KioskBiometricLoginView({
                       <span className="truncate">{bottomPillText}</span>
                     </div>
                   </div>
+                )}
+
+                {!verifiedModalPayload && scanStage !== 'not_found' && (
+                  <button
+                    type="button"
+                    onClick={handleReplayLandingGreeting}
+                    data-testid="kiosk-landing-greeting-mascot"
+                    className="absolute bottom-16 left-3 z-20 flex items-end gap-2 rounded-2xl border border-teal-200/90 bg-white/92 px-2.5 py-1.5 shadow-lg backdrop-blur-md hover:bg-white transition cursor-pointer"
+                  >
+                    <DrTechCareMascot
+                      pose="greeting"
+                      isSpeaking={landingGreetingTalking}
+                      showSpeechBubble={false}
+                      className="w-16 h-16 sm:w-20 sm:h-20 shrink-0"
+                      testId="kiosk-opening-mascot"
+                    />
+                    <div className="text-left pr-1 pb-1">
+                      <div className="text-[10px] font-black uppercase tracking-wide text-[#0284C7]">
+                        Dr. TechCare
+                      </div>
+                      <div className="text-xs sm:text-sm font-black text-[#0F4C81] leading-tight">
+                        {lang === 'en' ? 'Hello! Welcome!' : lang === 'cn' ? '您好！欢迎使用' : 'สวัสดีครับ!'}
+                      </div>
+                      <div className="text-[10px] font-bold text-slate-500 leading-tight">
+                        {lang === 'en'
+                          ? 'Look at camera to sign in'
+                          : lang === 'cn'
+                            ? '请看镜头自动识别'
+                            : 'มองกล้องเพื่อเข้าใช้งานครับ'}
+                      </div>
+                    </div>
+                  </button>
                 )}
               </>
             ) : (

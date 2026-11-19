@@ -8,9 +8,38 @@ export type DrTechCareMascotPose =
   | 'encouraging';
 
 export type DrTechCareMascotSize = 'sm' | 'md' | 'lg';
+export type DrTechCareRenderMode = 'sprite' | 'video' | 'svg';
 
 export const MASCOT_ENCOURAGING_DURATION_MS = 1600;
 export const MASCOT_GREETING_DURATION_MS = 2600;
+
+export const MASCOT_LIP_SYNC_STEP_MS = 90;
+export const MASCOT_LIP_SYNC_SEQUENCE = [1, 2, 1, 3, 2, 1, 3, 2, 0, 1] as const;
+
+export const MASCOT_SPRITE_SHEETS: Record<DrTechCareMascotPose, string> = {
+  greeting: '/mascot/sprite-greeting.png',
+  explaining: '/mascot/sprite-explaining.png',
+  speaking: '/mascot/sprite-speaking.png',
+  encouraging: '/mascot/sprite-encouraging.png',
+  idle: '/mascot/sprite-speaking.png',
+};
+
+/**
+ * Returns the active 4-frame sprite column (`0..3`) for real mouth lip-sync.
+ * Snaps cleanly to Frame 0 (closed smile) when not speaking.
+ */
+export function getLipSyncFrameAtElapsed(
+  elapsedMs: number,
+  isSpeaking: boolean
+): 0 | 1 | 2 | 3 {
+  if (!isSpeaking) {
+    return 0;
+  }
+  const idx =
+    Math.floor(Math.max(0, elapsedMs) / MASCOT_LIP_SYNC_STEP_MS) %
+    MASCOT_LIP_SYNC_SEQUENCE.length;
+  return MASCOT_LIP_SYNC_SEQUENCE[idx];
+}
 
 export const MASCOT_VIDEO_SRC = '/mascot/dr-techcare-mascot.mp4';
 export const MASCOT_POSTER_SRC = '/mascot/dr-techcare-poster.jpg';
@@ -47,6 +76,7 @@ export interface DrTechCareMascotProps {
   className?: string;
   speechText?: string;
   showSpeechBubble?: boolean;
+  renderMode?: DrTechCareRenderMode;
   useVideo?: boolean;
   videoFit?: 'avatar' | 'stage';
   testId?: string;
@@ -149,16 +179,54 @@ export const DrTechCareMascot: React.FC<DrTechCareMascotProps> = ({
   className,
   speechText,
   showSpeechBubble = true,
-  useVideo = true,
+  renderMode,
+  useVideo,
   videoFit = 'avatar',
   testId = 'dr-techcare-mascot',
 }) => {
+  const [mouthFrame, setMouthFrame] = useState<0 | 1 | 2 | 3>(0);
+  const [spriteFailed, setSpriteFailed] = useState<boolean>(false);
   const [speakFrame, setSpeakFrame] = useState<number>(0);
   const [videoFailed, setVideoFailed] = useState<boolean>(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const activeSegment = MASCOT_VIDEO_SEGMENTS[pose];
-  const shouldPlayVideo = useVideo && !videoFailed;
-  const lipSyncActive = !shouldPlayVideo && (isSpeaking || pose === 'speaking');
+
+  const requestedMode: DrTechCareRenderMode =
+    renderMode ?? (useVideo === false ? 'svg' : 'sprite');
+  const effectiveMode: DrTechCareRenderMode =
+    requestedMode === 'sprite' && spriteFailed
+      ? videoFailed
+        ? 'svg'
+        : 'video'
+      : requestedMode === 'video' && videoFailed
+        ? 'svg'
+        : requestedMode;
+
+  const shouldPlaySprite = effectiveMode === 'sprite';
+  const shouldPlayVideo = effectiveMode === 'video';
+  const lipSyncActive = effectiveMode === 'svg' && (isSpeaking || pose === 'speaking');
+
+  // 60FPS real mouth lip-sync frame driver for 4-column transparent sprite sheets
+  useEffect(() => {
+    if (!shouldPlaySprite || !isSpeaking || typeof window === 'undefined') {
+      setMouthFrame(0);
+      return;
+    }
+    let rafId = 0;
+    const startedAt = performance.now();
+    setMouthFrame(getLipSyncFrameAtElapsed(0, true));
+
+    const tick = (now: number) => {
+      const nextFrame = getLipSyncFrameAtElapsed(now - startedAt, true);
+      setMouthFrame((prev) => (prev === nextFrame ? prev : nextFrame));
+      rafId = window.requestAnimationFrame(tick);
+    };
+
+    rafId = window.requestAnimationFrame(tick);
+    return () => {
+      if (rafId) window.cancelAnimationFrame(rafId);
+    };
+  }, [shouldPlaySprite, isSpeaking, pose]);
 
   // 60FPS requestAnimationFrame phoneme cadence when SVG fallback is speaking
   useEffect(() => {
@@ -182,7 +250,7 @@ export const DrTechCareMascot: React.FC<DrTechCareMascotProps> = ({
     };
   }, [lipSyncActive, isSpeaking]);
 
-  // 60FPS requestAnimationFrame video segment trimmer preventing cross-cut bleed
+  // 60FPS requestAnimationFrame video segment trimmer when video fallback mode is active
   useEffect(() => {
     if (!shouldPlayVideo || typeof window === 'undefined') {
       return;
@@ -232,7 +300,7 @@ export const DrTechCareMascot: React.FC<DrTechCareMascotProps> = ({
   const mouth = getMascotMouthPath(pose, isSpeaking, speakFrame);
   const resolvedBubbleText =
     speechText !== undefined ? speechText.trim() : (MASCOT_DEFAULT_SPEECH_BUBBLES[pose] ?? '');
-  const showWaveOverlay = isSpeaking || pose === 'speaking';
+  const showWaveOverlay = isSpeaking || (effectiveMode === 'svg' && pose === 'speaking');
   const bodyMotionClass =
     pose === 'encouraging' ? 'animate-fist-pump' : 'animate-mascot-breath';
   const rootClassName = className
@@ -270,7 +338,59 @@ export const DrTechCareMascot: React.FC<DrTechCareMascotProps> = ({
         </div>
       )}
 
-      {shouldPlayVideo ? (
+      {shouldPlaySprite ? (
+        <div className={`relative w-full aspect-square overflow-hidden ${bodyMotionClass}`}>
+          <img
+            src={MASCOT_SPRITE_SHEETS[pose]}
+            alt=""
+            draggable={false}
+            onError={() => setSpriteFailed(true)}
+            data-testid="mascot-sprite"
+            data-sprite-pose={pose}
+            data-mouth-frame={mouthFrame}
+            style={{
+              width: '400%',
+              maxWidth: 'none',
+              height: '100%',
+              transform: `translate3d(-${mouthFrame * 25}%, 0, 0)`,
+            }}
+            className="block select-none pointer-events-none object-contain"
+          />
+          {isSpeaking && (
+            <div
+              aria-hidden="true"
+              data-testid="mascot-soundwaves"
+              className="pointer-events-none absolute bottom-0.5 right-0.5 flex items-end gap-0.5 rounded-full bg-white/90 px-1.5 py-0.5 shadow-xs"
+            >
+              <span className="w-0.5 h-2 rounded-full bg-emerald-500 animate-mascot-eq" />
+              <span
+                className="w-0.5 h-3 rounded-full bg-teal-500 animate-mascot-eq"
+                style={{ animationDelay: '120ms' }}
+              />
+              <span
+                className="w-0.5 h-2.5 rounded-full bg-sky-500 animate-mascot-eq"
+                style={{ animationDelay: '240ms' }}
+              />
+            </div>
+          )}
+          {pose === 'encouraging' && (
+            <svg
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+              data-testid="mascot-encouraging-particles"
+              className="pointer-events-none absolute top-0 right-0 h-4 w-4 animate-mascot-sparkle"
+              fill="none"
+            >
+              <path
+                d="M12 2 L14.2 9.2 L21.5 11.5 L14.2 13.8 L12 21 L9.8 13.8 L2.5 11.5 L9.8 9.2 Z"
+                fill="#facc15"
+                stroke="#ca8a04"
+                strokeWidth="1.2"
+              />
+            </svg>
+          )}
+        </div>
+      ) : shouldPlayVideo ? (
         <div
           className={`relative h-full w-full overflow-hidden rounded-2xl border-2 bg-[#eaf6f3] shadow-sm transition-all duration-300 ease-in-out ${videoBorderClass}`}
         >

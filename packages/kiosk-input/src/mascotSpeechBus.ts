@@ -32,7 +32,7 @@ function cleanSpeechTextInternal(rawText: string): string {
 }
 
 const ENCOURAGING_RE =
-  /เก่งมาก|เยี่ยมมาก|ยอดเยี่ยม|ดีมาก|สู้ๆ|ถูกต้อง|ยินดีด้วย|ครบแล้ว|ครบเซ็ต|จบเซ็ต|สำเร็จ|ได้ \+1|คะแนน|excellent|great job|congratulations|well done|correct|completed|finished|太棒了|非常好|恭喜|答对了|已完成|成功/i;
+  /เก่งมาก|เยี่ยมมาก|ยอดเยี่ยม|ดีมาก|สู้ๆ|ถูกต้อง|ยินดีด้วย|ครบแล้ว|ครบเซ็ต|จบเซ็ต|สำเร็จ|เรียบร้อยแล้ว|ได้ \+1|คะแนน|excellent|great job|congratulations|well done|correct|completed|finished|太棒了|非常好|恭喜|答对了|已完成|成功/i;
 
 const GREETING_RE =
   /สวัสดี|ยินดีต้อนรับ|พร้อมเริ่ม|พบกันใหม่|วันพักผ่อน|hello|welcome|good morning|see you|rest day|ready to begin|您好|欢迎|你好|休息日|准备就绪/i;
