@@ -291,7 +291,7 @@ export function StaffLoginModalOrPage({
   };
 
   const wrapperClass = asModal
-    ? 'fixed inset-0 z-[70] flex items-center justify-center p-2 sm:p-4 bg-[#0F4C81]/35 backdrop-blur-md'
+    ? 'fixed inset-0 z-[70] flex items-center justify-center p-2 sm:p-4 bg-[#0F4C81]/35 backdrop-blur-md animate-backdrop-fade'
     : 'min-h-screen flex items-center justify-center p-2 sm:p-4 bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-white';
 
   return (
@@ -303,7 +303,7 @@ export function StaffLoginModalOrPage({
     >
       <div
         style={{ boxShadow: '0 25px 60px -15px rgba(6, 57, 50, 0.35)' }}
-        className="w-full max-w-lg sm:max-w-xl bg-white rounded-3xl border-2 border-emerald-500/25 overflow-hidden shadow-2xl relative max-h-[92dvh] overflow-y-auto"
+        className="w-full max-w-lg sm:max-w-xl bg-white rounded-3xl border-2 border-emerald-500/25 overflow-hidden shadow-2xl relative max-h-[92dvh] overflow-y-auto animate-popup-spring"
       >
         {/* Top-Right Language Switcher */}
         <div className="sm:absolute sm:top-5 sm:right-5 z-10 flex justify-end px-6 pt-4 sm:p-0">
@@ -394,7 +394,7 @@ export function StaffLoginModalOrPage({
           <div
             id="staff-login-error"
             data-testid="staff-login-error"
-            className="mx-6 sm:mx-10 mt-2 p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-sm flex items-center gap-2.5 font-medium"
+            className="mx-6 sm:mx-10 mt-2 p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-sm flex items-center gap-2.5 font-medium animate-toast-in animate-gentle-shake"
           >
             <AlertCircle className="w-5 h-5 shrink-0 text-rose-600" />
             <span>{error}</span>

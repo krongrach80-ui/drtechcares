@@ -3052,7 +3052,7 @@ export function KioskBiometricLoginView({
 
               {/* Cloud Online + Clock Pill */}
               <div className="hidden sm:inline-flex h-9 px-3 items-center gap-2 rounded-xl bg-white/15 border border-white/25 text-xs font-semibold text-white whitespace-nowrap">
-                <span className="w-2 h-2 rounded-full bg-emerald-300 animate-pulse shrink-0 shadow-[0_0_8px_#34d399]" />
+                <span className="w-2 h-2 rounded-full bg-emerald-300 animate-status-halo shrink-0 shadow-[0_0_8px_#34d399]" />
                 <span>{edgeConnected ? 'Cloud + Edge 3D' : 'Cloud Online'}</span>
                 <span className="text-white/60">•</span>
                 <span className="font-mono tabular-nums font-bold text-white">{clockText}</span>
@@ -3135,7 +3135,7 @@ export function KioskBiometricLoginView({
         <div className="pointer-events-none absolute bottom-2 right-2 w-5 h-5 border-b-2 border-r-2 border-cyan-400/45 rounded-br-md" />
 
         {toastMsg && (
-          <div className="mb-3 w-full rounded-2xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs sm:text-sm font-bold text-amber-900 shadow-md flex items-center justify-between">
+          <div className="mb-3 w-full rounded-2xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs sm:text-sm font-bold text-amber-900 shadow-md flex items-center justify-between animate-toast-in">
             <span>{toastMsg}</span>
             <button type="button" onClick={() => setToastMsg(null)} className="text-amber-700 hover:text-amber-950">
               <X className="w-4 h-4" />
@@ -3222,7 +3222,7 @@ export function KioskBiometricLoginView({
 
                 {/* Optional Calibration Telemetry HUD */}
                 {showCalibHud && (
-                  <div className="absolute top-12 left-3 right-3 sm:right-auto sm:w-80 z-30 rounded-xl bg-white/95 border border-sky-300 p-3 text-[11px] font-mono text-[#0F4C81] shadow-2xl space-y-1">
+                  <div className="absolute top-12 left-3 right-3 sm:right-auto sm:w-80 z-30 rounded-xl bg-white/95 border border-sky-300 p-3 text-[11px] font-mono text-[#0F4C81] shadow-2xl space-y-1 animate-toast-in">
                     <div className="flex items-center justify-between border-b border-sky-200 pb-1">
                       <span className="font-bold text-[#0F4C81]">Staff Biometric HUD</span>
                       <button
@@ -3506,8 +3506,8 @@ export function KioskBiometricLoginView({
 
       {/* 4-Digit PIN Login Modal */}
       {showPinModal && (
-        <div className="fixed inset-0 z-50 bg-[#0F4C81]/35 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="w-full max-w-sm rounded-3xl bg-white border border-emerald-500/30 p-6 text-center shadow-2xl relative">
+        <div className="fixed inset-0 z-50 bg-[#0F4C81]/35 backdrop-blur-md flex items-center justify-center p-4 animate-backdrop-fade">
+          <div className="w-full max-w-sm rounded-3xl bg-white border border-emerald-500/30 p-6 text-center shadow-2xl relative animate-popup-spring">
             <button
               type="button"
               onClick={() => setShowPinModal(false)}
@@ -3535,7 +3535,7 @@ export function KioskBiometricLoginView({
             </div>
 
             {pinError && (
-              <div className="mb-3 rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700">
+              <div className="mb-3 rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700 animate-toast-in animate-gentle-shake">
                 {pinError}
               </div>
             )}
@@ -3582,8 +3582,8 @@ export function KioskBiometricLoginView({
 
       {/* Account Not Found Modal */}
       {scanStage === 'not_found' && !staffModalOpen && (
-        <div className="fixed inset-0 z-50 bg-[#0F4C81]/40 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="w-full max-w-md rounded-3xl bg-white border-2 border-rose-500/45 shadow-2xl p-6 text-center">
+        <div className="fixed inset-0 z-50 bg-[#0F4C81]/40 backdrop-blur-md flex items-center justify-center p-4 animate-backdrop-fade">
+          <div className="w-full max-w-md rounded-3xl bg-white border-2 border-rose-500/45 shadow-2xl p-6 text-center animate-popup-spring animate-gentle-shake">
             <div className="w-16 h-16 rounded-full bg-rose-50 border border-rose-200 flex items-center justify-center mx-auto mb-3">
               <AlertCircle className="w-8 h-8 text-rose-500" />
             </div>
@@ -3626,8 +3626,8 @@ export function KioskBiometricLoginView({
 
       {/* Verified Patient Confirmation Modal */}
       {verifiedModalPayload && modalCopy && (
-        <div className="fixed inset-0 z-50 bg-[#0F4C81]/40 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="w-full max-w-md rounded-3xl bg-white border-2 border-emerald-500/50 shadow-2xl p-6 text-center">
+        <div className="fixed inset-0 z-50 bg-[#0F4C81]/40 backdrop-blur-md flex items-center justify-center p-4 animate-backdrop-fade">
+          <div className="w-full max-w-md rounded-3xl bg-white border-2 border-emerald-500/50 shadow-2xl p-6 text-center animate-popup-spring">
             {/* 3-Language Selector Bar & Senior Voice Toggle inside Verified Patient Modal */}
             <div className="mb-4 flex flex-col items-center gap-2.5">
               <div
@@ -3676,7 +3676,7 @@ export function KioskBiometricLoginView({
             <div className="w-20 h-20 rounded-full mx-auto bg-gradient-to-tr from-emerald-500 to-teal-400 text-white flex items-center justify-center text-3xl font-black shadow-lg mb-3">
               {verifiedModalPayload.patient.fullName?.[0] || 'P'}
             </div>
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-bold border border-emerald-200 mb-2">
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-bold border border-emerald-200 mb-2 animate-rep-pop">
               <CheckCircle2 className="w-4 h-4 text-emerald-600" />
               <span>{modalCopy.confidenceBadge}</span>
             </div>
@@ -3921,8 +3921,8 @@ export function KioskBiometricLoginView({
 
       {/* About System Modal */}
       {showAboutModal && (
-        <div className="fixed inset-0 z-50 bg-[#0F4C81]/35 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="w-full max-w-md rounded-3xl bg-white border border-emerald-500/30 p-6 shadow-2xl relative">
+        <div className="fixed inset-0 z-50 bg-[#0F4C81]/35 backdrop-blur-md flex items-center justify-center p-4 animate-backdrop-fade">
+          <div className="w-full max-w-md rounded-3xl bg-white border border-emerald-500/30 p-6 shadow-2xl relative animate-popup-spring">
             <button
               type="button"
               onClick={() => setShowAboutModal(false)}

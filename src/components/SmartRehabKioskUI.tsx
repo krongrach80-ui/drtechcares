@@ -4093,7 +4093,7 @@ export function SmartRehabKioskUI({
             >
               <span
                 className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${
-                  isOnlineReady ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
+                  isOnlineReady ? 'bg-emerald-500 animate-status-halo' : 'bg-amber-500'
                 }`}
               />
               <span>
@@ -4265,7 +4265,7 @@ export function SmartRehabKioskUI({
       {!isDemoMode && !isEdgeDirectCamera && cameraError && (
         <div
           role="alert"
-          className="shrink-0 flex items-center justify-between gap-2 rounded-xl border-2 border-rose-300 bg-rose-50 px-3 py-1.5 text-rose-900 shadow-xs"
+          className="shrink-0 flex items-center justify-between gap-2 rounded-xl border-2 border-rose-300 bg-rose-50 px-3 py-1.5 text-rose-900 shadow-xs animate-toast-in animate-gentle-shake"
         >
           <div className="flex min-w-0 items-center gap-2">
             <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600" />
@@ -4289,7 +4289,7 @@ export function SmartRehabKioskUI({
       )}
 
       {allExercisesCompleted && onAllExercisesCompleted && (
-        <div className="shrink-0 flex items-center justify-between gap-2 rounded-xl border-2 border-emerald-400 bg-emerald-50 px-3 py-1.5 shadow-xs">
+        <div className="shrink-0 flex items-center justify-between gap-2 rounded-xl border-2 border-emerald-400 bg-emerald-50 px-3 py-1.5 shadow-xs animate-toast-in">
           <div className="flex items-center gap-2 min-w-0">
             <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
             <p className="text-xs md:text-sm font-extrabold text-emerald-950 truncate">
@@ -4426,7 +4426,7 @@ export function SmartRehabKioskUI({
             <div
               role="status"
               data-testid="kiosk-unified-coaching-banner"
-              className={`rounded-xl border-2 px-4 py-1.5 shadow-lg text-center transition-colors ${
+              className={`rounded-xl border-2 px-4 py-1.5 shadow-lg text-center transition-all duration-200 ${
                 unifiedCoachingBanner.tone === 'rose'
                   ? 'bg-rose-50/95 border-rose-500 text-rose-900'
                   : unifiedCoachingBanner.tone === 'amber'
@@ -4504,15 +4504,24 @@ export function SmartRehabKioskUI({
           <p className="text-blue-900 font-extrabold text-sm md:text-base leading-tight">
             จำนวนครั้งสำเร็จ
           </p>
-          <div className="text-blue-700 font-black text-2xl md:text-3xl tabular-mono leading-tight my-0.5">
+          <div
+            key={`rep-readout-${rep_counter.valid_reps}`}
+            className={`text-blue-700 font-black text-2xl md:text-3xl tabular-mono leading-tight my-0.5 ${
+              rep_counter.valid_reps > 0 ? 'animate-rep-pop' : ''
+            }`}
+          >
             {rep_counter.valid_reps} / {selectedExercise.target_reps} ครั้ง
           </div>
           <div className="w-full flex items-center justify-center gap-1">
             {Array.from({ length: Math.min(10, Math.max(1, selectedExercise.target_reps)) }).map((_, idx) => (
               <span
                 key={idx}
-                className={`h-2 flex-1 max-w-[16px] rounded-full transition-colors ${
-                  idx < rep_counter.valid_reps ? 'bg-emerald-500' : 'bg-sky-100'
+                className={`h-2 flex-1 max-w-[16px] rounded-full transition-all duration-300 ${
+                  idx < rep_counter.valid_reps
+                    ? `bg-emerald-500 scale-110 shadow-xs ${
+                        idx === rep_counter.valid_reps - 1 && isRepCelebration ? 'animate-rep-pop' : ''
+                      }`
+                    : 'bg-sky-100'
                 }`}
               />
             ))}
@@ -4535,11 +4544,15 @@ export function SmartRehabKioskUI({
               / {holdTargetSec.toFixed(1)}s
             </span>
           </div>
-          <div className="w-full h-2 bg-emerald-200 rounded-full overflow-hidden">
+          <div
+            className={`w-full h-2 bg-emerald-200 rounded-full overflow-hidden transition-shadow duration-200 ${
+              isWaitLowerArmUi || holdPct >= 100 ? 'animate-status-halo' : ''
+            }`}
+          >
             <div
               ref={holdProgressBarRef}
-              className={`h-full rounded-full transition-[width] duration-75 ${
-                isWaitLowerArmUi || holdPct >= 100 ? 'bg-emerald-600 animate-pulse' : 'bg-emerald-600'
+              className={`h-full rounded-full transition-[width,background-color] duration-150 ease-linear ${
+                isWaitLowerArmUi || holdPct >= 100 ? 'bg-emerald-500' : 'bg-emerald-600'
               }`}
               style={{
                 width: `${holdPct}%`,
@@ -4577,6 +4590,7 @@ export function SmartRehabKioskUI({
                 strokeLinecap="round"
                 strokeDasharray="150.8"
                 strokeDashoffset={150.8 * (1 - romPct / 100)}
+                className="transition-[stroke-dashoffset,stroke] duration-200 ease-out"
               />
             </svg>
             <div className="text-left leading-tight">
@@ -4771,7 +4785,7 @@ export function SmartRehabKioskUI({
 
         {/* Floating Staff Utility & Demo Popover (Zero Impact on 100dvh Layout Height) */}
         {toolsPopoverOpen && (
-          <div className="fixed bottom-14 right-3 z-40 w-[min(94vw,680px)] rounded-2xl border-2 border-sky-200 bg-white/98 p-3 text-slate-800 shadow-2xl backdrop-blur-md space-y-2.5">
+          <div className="fixed bottom-14 right-3 z-40 w-[min(94vw,680px)] rounded-2xl border-2 border-sky-200 bg-white/98 p-3 text-slate-800 shadow-2xl backdrop-blur-md space-y-2.5 animate-popup-spring">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
               <span className="inline-flex items-center gap-1.5 text-xs font-extrabold text-blue-950">
                 <SlidersHorizontal className="w-3.5 h-3.5 text-blue-700" />

@@ -2541,7 +2541,11 @@ export function ClinicalStaffPortalShell({
                   cloudHealth.dbConnected ? 'text-emerald-200' : 'text-rose-200'
                 }`}
               >
-                <span className={`h-2 w-2 rounded-full ${cloudHealth.dbConnected ? 'bg-emerald-300' : 'bg-rose-300'}`} />
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    cloudHealth.dbConnected ? 'bg-emerald-300 animate-status-halo' : 'bg-rose-300'
+                  }`}
+                />
                 {cloudHealth.dbConnected ? locale.sidebar.dbNormal : locale.sidebar.dbOffline}
               </span>
             </div>
@@ -2614,7 +2618,10 @@ export function ClinicalStaffPortalShell({
               }`}
             >
               {cloudHealth.online ? (
-                <Wifi className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                <>
+                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-status-halo shrink-0" />
+                  <Wifi className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                </>
               ) : (
                 <WifiOff className="h-3.5 w-3.5 shrink-0" />
               )}
@@ -2666,10 +2673,11 @@ export function ClinicalStaffPortalShell({
         <main className="flex-1 p-5 sm:p-6 overflow-y-auto space-y-5">
           {bannerMessage && (
             <div
-              className={`rounded-2xl border px-4 py-3 text-xs font-bold flex items-center justify-between shadow-sm ${
+              key={bannerMessage.text}
+              className={`rounded-2xl border px-4 py-3 text-xs font-bold flex items-center justify-between shadow-sm animate-toast-in ${
                 bannerMessage.kind === 'success'
                   ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                  : 'border-rose-200 bg-rose-50 text-rose-800'
+                  : 'border-rose-200 bg-rose-50 text-rose-800 animate-gentle-shake'
               }`}
             >
               <span>{bannerMessage.text}</span>
@@ -2679,6 +2687,7 @@ export function ClinicalStaffPortalShell({
             </div>
           )}
 
+          <div key={activeTab} className="animate-view-enter">
           {/* TAB 1: STAFF MANAGEMENT */}
           {activeTab === 'staff' && (
             <div className="space-y-4">
@@ -2760,7 +2769,7 @@ export function ClinicalStaffPortalShell({
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {filteredStaff.map((u) => (
-                      <tr key={u.id} className="hover:bg-slate-50/80 transition">
+                      <tr key={u.id} className="hover:bg-slate-50/80 transition-colors duration-150">
                         <td className="px-5 py-3.5">
                           <div className="flex items-center gap-3 min-w-0">
                             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-indigo-50 text-xs font-extrabold text-indigo-700">
@@ -2965,7 +2974,7 @@ export function ClinicalStaffPortalShell({
                       const verified = isPatientFaceVerified(p);
                       const ptLabel = ptNameMap.get(p.delegatedToPtId || p.assignedPtId) || 'กภ. ประจำคลินิก';
                       return (
-                        <tr key={p.id} className="hover:bg-slate-50/80 transition">
+                        <tr key={p.id} className="hover:bg-slate-50/80 transition-colors duration-150">
                           <td className="px-5 py-3.5">
                             <span className="inline-block whitespace-nowrap rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 font-mono text-[11px] font-extrabold text-sky-700">
                               {p.hn}
@@ -3131,7 +3140,7 @@ export function ClinicalStaffPortalShell({
                   return (
                     <div
                       key={pt.id}
-                      className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-col justify-between space-y-4"
+                      className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-col justify-between space-y-4 transition-colors duration-150 hover:border-emerald-200 hover:shadow-md"
                     >
                       <div className="space-y-3">
                         <div className="flex items-start justify-between gap-2">
@@ -3335,7 +3344,7 @@ export function ClinicalStaffPortalShell({
                     {modpacks.map((m) => (
                       <div
                         key={m.id}
-                        className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs"
+                        className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs transition-colors duration-150 hover:bg-emerald-50/40 hover:border-emerald-200"
                       >
                         <div className="min-w-0">
                           <div className="font-bold text-slate-900 truncate">{m.name}</div>
@@ -3467,7 +3476,7 @@ export function ClinicalStaffPortalShell({
                     {mergeDuplicateSideExercises(sortExercisesStrokeUpperFirst(exercises)).map((ex) => (
                       <div
                         key={ex.id}
-                        className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs"
+                        className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs transition-colors duration-150 hover:bg-sky-50/40 hover:border-sky-200"
                       >
                         <div className="min-w-0">
                           <div className="font-bold text-slate-900 truncate">
@@ -4109,7 +4118,7 @@ export function ClinicalStaffPortalShell({
                             todayIso: todayIsoStr,
                           }) || '-';
                         return (
-                          <tr key={p.id}>
+                          <tr key={p.id} className="hover:bg-slate-50/80 transition-colors duration-150">
                             <td className="px-5 py-3 font-mono font-bold text-sky-700 whitespace-nowrap">{p.hn}</td>
                             <td className="px-4 py-3 font-bold text-slate-900 truncate">{p.fullName}</td>
                             <td className="px-4 py-3 text-slate-600 truncate">
@@ -4415,7 +4424,7 @@ export function ClinicalStaffPortalShell({
                               ? patientNameMap.get(call.patientId) ?? call.patientId
                               : null;
                             return (
-                              <tr key={call.id}>
+                              <tr key={call.id} className="hover:bg-slate-50/80 transition-colors duration-150">
                                 <td className="px-5 py-3 text-slate-600 whitespace-nowrap truncate">
                                   {lang === 'th'
                                     ? formatThaiDateTime(call.createdAt)
@@ -4577,7 +4586,7 @@ export function ClinicalStaffPortalShell({
                         {filteredAuditLogs.map((log) => (
                           <div
                             key={log.id}
-                            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-2.5 text-xs"
+                            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-2.5 text-xs transition-colors duration-150 hover:bg-white hover:border-slate-200"
                           >
                             <div className="min-w-0">
                               <span className="font-mono font-extrabold text-indigo-700 mr-2">{log.eventType}</span>
@@ -5401,6 +5410,7 @@ export function ClinicalStaffPortalShell({
               </div>
             </div>
           )}
+          </div>
         </main>
       </div>
 
@@ -5502,8 +5512,8 @@ export function ClinicalStaffPortalShell({
 
       {/* Add Staff Modal */}
       {addStaffModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm animate-backdrop-fade">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 animate-popup-spring">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-extrabold text-slate-900">+ เพิ่มเจ้าหน้าที่ใหม่</h3>
               <button type="button" onClick={() => setAddStaffModalOpen(false)} className="text-slate-400">
@@ -5618,8 +5628,8 @@ export function ClinicalStaffPortalShell({
       {selectedPtDetailModal && (() => {
         const modalPtProfile = resolveUserProfile(selectedPtDetailModal, profileOverrides);
         return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm animate-backdrop-fade">
+          <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs animate-popup-spring">
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-3 min-w-0">
                 <img
@@ -5727,8 +5737,8 @@ export function ClinicalStaffPortalShell({
 
       {/* Admin Staff Profile & License Edit Modal */}
       {editingStaffUser && isAdminUser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm animate-backdrop-fade">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs animate-popup-spring">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Pencil className="h-4 w-4 text-amber-600" />
@@ -5829,8 +5839,8 @@ export function ClinicalStaffPortalShell({
 
       {/* Quick Check-in Modal */}
       {quickCheckinModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm animate-backdrop-fade">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs animate-popup-spring">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Zap className="h-5 w-5 text-amber-500" />
@@ -5893,8 +5903,8 @@ export function ClinicalStaffPortalShell({
 
       {/* Register Kiosk Modal */}
       {registerKioskModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm animate-backdrop-fade">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs animate-popup-spring">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-black text-slate-900">+ ลงทะเบียนตู้ Kiosk ใหม่</h3>
               <button type="button" onClick={() => setRegisterKioskModalOpen(false)} className="text-slate-400">
@@ -5947,7 +5957,7 @@ export function ClinicalStaffPortalShell({
 
       {/* Physical Card Game Modal — Ultra-Compact Header + Full-Size Kiosk View */}
       {cardGameModalOpen && (
-        <div className="fixed inset-0 z-50 flex flex-col w-screen h-screen bg-slate-100 overflow-y-auto overflow-x-hidden">
+        <div className="fixed inset-0 z-50 flex flex-col w-screen h-screen bg-slate-100 overflow-y-auto overflow-x-hidden animate-backdrop-fade">
           <div className="flex items-center justify-between gap-2 bg-white border-b border-slate-200 px-4 py-2 shrink-0 shadow-xs">
             <div className="flex items-center gap-2 min-w-0">
               <Gamepad2 className="h-5 w-5 text-emerald-600 shrink-0" />
@@ -6015,7 +6025,7 @@ export function ClinicalStaffPortalShell({
       {poseTestOverlayExerciseCode !== undefined && (
         <div
           data-testid="standalone-pose-test-modal"
-          className="fixed inset-0 z-50 w-screen h-screen bg-slate-100 overflow-y-auto overflow-x-hidden"
+          className="fixed inset-0 z-50 w-screen h-screen bg-slate-100 overflow-y-auto overflow-x-hidden animate-backdrop-fade"
         >
           <SmartRehabKioskUI
             isPoseTestMode

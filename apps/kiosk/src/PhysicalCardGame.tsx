@@ -1912,7 +1912,7 @@ export function PhysicalCardGame({
 
   if (completedSummary) {
     return (
-      <div className="w-full flex-1 flex flex-col items-center justify-center rounded-3xl bg-white p-6 sm:p-12 shadow-xl border-2 border-slate-200 text-center space-y-6">
+      <div className="w-full flex-1 flex flex-col items-center justify-center rounded-3xl bg-white p-6 sm:p-12 shadow-xl border-2 border-slate-200 text-center space-y-6 animate-popup-spring">
         <div className="flex justify-center">
           <MinigameVoiceBar
             voiceLang={voiceLang}
@@ -2005,7 +2005,12 @@ export function PhysicalCardGame({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
-          <span className="rounded-lg bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#10B981] px-3 py-1 text-xs md:text-sm font-bold text-white shadow-xs whitespace-nowrap">
+          <span
+            key={score}
+            className={`rounded-lg bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#10B981] px-3 py-1 text-xs md:text-sm font-bold text-white shadow-xs whitespace-nowrap ${
+              score > 0 ? 'animate-rep-pop' : ''
+            }`}
+          >
             ข้อที่ {index + 1} / {cards.length} • คะแนน {score}
           </span>
           <MinigameVoiceBar
@@ -2019,10 +2024,23 @@ export function PhysicalCardGame({
         </div>
       </div>
 
+      {/* Smooth 10-Question Progress Bar */}
+      <div className="w-full h-1.5 shrink-0 rounded-full bg-slate-100 overflow-hidden">
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-[#0284C7] to-[#10B981] transition-[width] duration-300 ease-out"
+          style={{
+            width: `${Math.min(100, Math.round(((index + (feedback ? 1 : 0)) / Math.max(1, cards.length)) * 100))}%`,
+          }}
+        />
+      </div>
+
       {/* Main Vertical Stack: Top = Artwork + Giant Question Spotlight, Middle = Camera, Bottom = Answer Buttons */}
       <div className="flex-1 flex flex-col justify-between gap-2.5 sm:gap-3 min-h-0">
         {/* Question Card + Giant Elderly-First Question Spotlight Banner */}
-        <div className="w-full shrink-0 p-2.5 sm:p-3.5 flex flex-col items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-b from-white to-emerald-50/30 border border-indigo-200 text-center shadow-xs">
+        <div
+          key={index}
+          className="w-full shrink-0 p-2.5 sm:p-3.5 flex flex-col items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-b from-white to-emerald-50/30 border border-indigo-200 text-center shadow-xs animate-view-enter"
+        >
           <div
             data-testid="minigame-card-visual-frame"
             className="relative w-full h-[230px] sm:h-[270px] md:h-[310px] rounded-2xl flex items-center justify-center p-2 sm:p-3 overflow-hidden border-2 border-indigo-200 bg-gradient-to-br from-amber-50/60 via-white to-sky-50/60 shadow-inner"
@@ -2132,14 +2150,14 @@ export function PhysicalCardGame({
           )}
 
           {bothHandsWarn && (
-            <div className="pointer-events-none mg-cam-status absolute inset-x-6 top-1/2 -translate-y-1/2 z-20 flex items-center justify-center gap-3 rounded-3xl bg-red-600/95 border-2 border-white px-7 py-5 font-black text-white shadow-2xl text-center">
+            <div className="pointer-events-none mg-cam-status absolute inset-x-6 top-1/2 -translate-y-1/2 z-20 flex items-center justify-center gap-3 rounded-3xl bg-red-600/95 border-2 border-white px-7 py-5 font-black text-white shadow-2xl text-center animate-toast-in animate-gentle-shake">
               <AlertTriangle className="h-10 w-10 shrink-0" />
               <span className="text-lg sm:text-xl">ห้ามยก 2 มือพร้อมกัน! กรุณาลดมือลง 1 ข้างเพื่อตอบ</span>
             </div>
           )}
 
           {cropWarn && !bothHandsWarn && (
-            <div className="mg-cam-status absolute top-20 inset-x-4 z-10 flex items-center gap-3 rounded-2xl bg-sky-500/95 px-6 py-3.5 font-black text-white shadow-xl">
+            <div className="mg-cam-status absolute top-20 inset-x-4 z-10 flex items-center gap-3 rounded-2xl bg-sky-500/95 px-6 py-3.5 font-black text-white shadow-xl animate-toast-in">
               <AlertTriangle className="h-8 w-8 shrink-0" />
               <span>{t('portraitCropWarning')}</span>
             </div>
@@ -2165,7 +2183,7 @@ export function PhysicalCardGame({
               <div className="h-7 sm:h-8 w-full overflow-hidden rounded-full bg-sky-100 border border-sky-200">
                 <div
                   ref={progressBarFillRef}
-                  className={`h-full will-change-[width] ${
+                  className={`h-full will-change-[width] transition-[width,background-color] duration-150 ease-linear ${
                     pendingChoice === 'yes' ? 'bg-emerald-400' : 'bg-rose-500'
                   }`}
                   style={{ width: '0%' }}
@@ -2179,10 +2197,11 @@ export function PhysicalCardGame({
         <div className="shrink-0">
           {feedback ? (
             <div
-              className={`mg-feedback-banner min-h-[108px] sm:min-h-[132px] flex items-center justify-center gap-4 rounded-3xl border-4 p-6 font-black text-center ${
+              key={`feedback-${index}-${feedback.correct ? 'ok' : 'err'}`}
+              className={`mg-feedback-banner min-h-[108px] sm:min-h-[132px] flex items-center justify-center gap-4 rounded-3xl border-4 p-6 font-black text-center animate-toast-in ${
                 feedback.correct
-                  ? 'border-emerald-300 bg-emerald-100 text-emerald-950'
-                  : 'border-rose-300 bg-rose-100 text-rose-950'
+                  ? 'border-emerald-300 bg-emerald-100 text-emerald-950 animate-rep-pop'
+                  : 'border-rose-300 bg-rose-100 text-rose-950 animate-gentle-shake'
               }`}
             >
               {feedback.correct ? (

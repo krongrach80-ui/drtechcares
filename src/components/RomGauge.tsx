@@ -106,6 +106,7 @@ export function RomGauge({
                 strokeWidth="7"
                 strokeLinecap="round"
                 strokeDasharray={outerSemi}
+                className="transition-[stroke-dashoffset,stroke] duration-200 ease-out"
                 style={{
                   strokeDashoffset: outerSemi * (1 - holdRatio),
                   willChange: 'stroke-dashoffset',
@@ -131,6 +132,7 @@ export function RomGauge({
             strokeWidth="18"
             strokeLinecap="round"
             strokeDasharray={semiCircumference}
+            className="transition-[stroke-dashoffset,stroke] duration-200 ease-out"
             style={{
               strokeDashoffset: dashOffset,
               willChange: 'stroke-dashoffset',

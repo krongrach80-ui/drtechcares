@@ -3374,6 +3374,10 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(testUiHtml).toContain('THAI AI VOICE COACH:');
     expect(testUiHtml).toContain('เสียงพากย์');
     expect(testUiHtml).toContain('kiosk-voice-mute-toggle');
+    expect(testUiHtml).toContain('animate-status-halo');
+    expect(testUiHtml).toContain('animate-popup-spring');
+    expect(testUiHtml).toContain('transition-[stroke-dashoffset,stroke]');
+    expect(testUiHtml).toContain('transition-[width,background-color]');
     const emojiPattern = /[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/u;
     expect(emojiPattern.test(testUiHtml)).toBe(false);
 
@@ -3408,6 +3412,8 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(portalHtml).toContain('tab4-pose-test-btn');
     expect(portalHtml).toContain('exercise-card-pose-test-STROKE_SH_FLEX');
     expect(portalHtml).toContain('ทดลองทำท่านี้ด้วยกล้องทันที');
+    expect(portalHtml).toContain('animate-view-enter');
+    expect(portalHtml).toContain('animate-status-halo');
     expect(emojiPattern.test(portalHtml)).toBe(false);
   });
 
@@ -3504,6 +3510,31 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     }
 
     expect(violations).toEqual([]);
+  });
+
+  it('defines GPU clinical motion keyframes, tactile button states, and reduced-motion safeguards in index.css', () => {
+    const cssPath = path.resolve(process.cwd(), 'src', 'index.css');
+    const css = fs.readFileSync(cssPath, 'utf8');
+    for (const token of [
+      '@keyframes popupSpringIn',
+      '@keyframes backdropFadeIn',
+      '@keyframes repScorePop',
+      '@keyframes viewSlideFadeIn',
+      '@keyframes toastSlideDown',
+      '@keyframes gentleShake',
+      '@keyframes statusHaloPulse',
+      '.animate-popup-spring',
+      '.animate-backdrop-fade',
+      '.animate-rep-pop',
+      '.animate-view-enter',
+      '.animate-toast-in',
+      '.animate-gentle-shake',
+      '.animate-status-halo',
+      '.btn-tactile',
+      '@media (prefers-reduced-motion: reduce)',
+    ]) {
+      expect(css).toContain(token);
+    }
   });
 });
 

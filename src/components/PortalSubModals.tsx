@@ -749,8 +749,8 @@ export function WelcomeFaceScanModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm animate-backdrop-fade">
+      <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs animate-popup-spring">
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
           <div className="flex items-center gap-2 min-w-0">
             <ScanFace className="h-5 w-5 text-emerald-600 shrink-0" />
@@ -846,7 +846,7 @@ export function WelcomeFaceScanModal({
 
         {matchResult && (
           <div
-            className={`rounded-2xl border p-4 space-y-2 ${
+            className={`rounded-2xl border p-4 space-y-2 animate-toast-in ${
               matchResult.matched && matchResult.patient
                 ? 'border-emerald-200 bg-emerald-50 text-emerald-950'
                 : 'border-amber-200 bg-amber-50 text-amber-950'
@@ -942,8 +942,8 @@ export function ResetPasswordModal({
   if (!user) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm animate-backdrop-fade">
+      <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs animate-popup-spring">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 min-w-0">
             <KeyRound className="h-4 w-4 text-sky-600 shrink-0" />
@@ -955,7 +955,7 @@ export function ResetPasswordModal({
             <X className="h-4 w-4" />
           </button>
         </div>
-        {errMsg && <div className="rounded-xl bg-rose-50 px-3 py-2 text-rose-700 font-semibold">{errMsg}</div>}
+        {errMsg && <div className="rounded-xl bg-rose-50 px-3 py-2 text-rose-700 font-semibold animate-toast-in animate-gentle-shake">{errMsg}</div>}
         <form
           onSubmit={async (e) => {
             e.preventDefault();
@@ -1091,8 +1091,8 @@ export function PatientProfileAndHistoryModal({
   const ptNameMap = new Map(ptUsers.map((p) => [p.id, p.fullName]));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-5 text-xs">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm animate-backdrop-fade">
+      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-5 text-xs animate-popup-spring">
         <div className="flex items-start justify-between border-b border-slate-100 pb-4">
           <div className="flex items-center gap-3 min-w-0">
             {patient.faceImageUrl ? (
@@ -1243,6 +1243,7 @@ export function PatientProfileAndHistoryModal({
           </button>
         </div>
 
+        <div key={modalTab} className="animate-view-enter space-y-5">
         {modalTab === 'profile' ? (
           <>
             <form
@@ -1786,6 +1787,7 @@ export function PatientProfileAndHistoryModal({
             </button>
           </div>
         )}
+        </div>
       </div>
     </div>
   );
@@ -1904,8 +1906,8 @@ export function UniversalEhrLinkModal({
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#0F4C81]/40 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl border border-indigo-200 space-y-5 text-xs">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#0F4C81]/40 p-4 backdrop-blur-sm animate-backdrop-fade">
+      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl border border-indigo-200 space-y-5 text-xs animate-popup-spring">
         <div className="flex items-start justify-between border-b border-slate-100 pb-3">
           <div>
             <h3 className="flex items-center gap-2 text-base font-black text-[#0F4C81]">
@@ -2013,7 +2015,7 @@ export function UniversalEhrLinkModal({
           />
 
           {lookupPreview && (
-            <div className="rounded-xl border border-emerald-300 bg-white p-3 text-[11px] space-y-1">
+            <div className="rounded-xl border border-emerald-300 bg-white p-3 text-[11px] space-y-1 animate-toast-in">
               <div className="font-black text-emerald-900">
                 พบข้อมูลจาก: {lookupPreview.facilityName} • คนไข้ {lookupPreview.patientProfile.fullName} ({lookupPreview.patientProfile.hn})
               </div>
@@ -2026,7 +2028,7 @@ export function UniversalEhrLinkModal({
           )}
 
           {errorMsg && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 font-bold text-rose-700">
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 font-bold text-rose-700 animate-toast-in animate-gentle-shake">
               {errorMsg}
             </div>
           )}
@@ -2484,8 +2486,8 @@ export function ScheduleCreatorAndDayModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-3 sm:p-4 backdrop-blur-sm">
-      <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto rounded-3xl bg-white p-5 sm:p-7 shadow-2xl border border-slate-200 space-y-5 text-xs">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-3 sm:p-4 backdrop-blur-sm animate-backdrop-fade">
+      <div className="w-full max-w-4xl max-h-[92vh] overflow-y-auto rounded-3xl bg-white p-5 sm:p-7 shadow-2xl border border-slate-200 space-y-5 text-xs animate-popup-spring">
         {/* Modal Header */}
         <div className="flex items-center justify-between border-b border-slate-100 pb-3.5">
           <div className="flex items-center gap-2.5 min-w-0">

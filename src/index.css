@@ -32,6 +32,158 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ============================================================================
+ * Clinical UI Motion & Tactile Micro-Interactions (GPU Transform & Opacity Only)
+ * ============================================================================ */
+@keyframes popupSpringIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.93) translateY(14px);
+  }
+  70% {
+    opacity: 1;
+    transform: scale(1.01) translateY(-2px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes backdropFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes repScorePop {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.18);
+  }
+  75% {
+    transform: scale(0.96);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes viewSlideFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes toastSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-16px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes gentleShake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-6px);
+  }
+  75% {
+    transform: translateX(6px);
+  }
+}
+
+@keyframes statusHaloPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(16, 185, 129, 0);
+  }
+}
+
+.animate-popup-spring {
+  animation: popupSpringIn 280ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-backdrop-fade {
+  animation: backdropFadeIn 200ms ease-out forwards;
+}
+
+.animate-rep-pop {
+  animation: repScorePop 420ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.animate-view-enter {
+  animation: viewSlideFadeIn 260ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-toast-in {
+  animation: toastSlideDown 240ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-gentle-shake {
+  animation: gentleShake 280ms ease-in-out;
+}
+
+.animate-status-halo {
+  animation: statusHaloPulse 2s infinite;
+}
+
+@layer base {
+  button:not(:disabled),
+  .btn-tactile:not(:disabled) {
+    transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease, background-color 180ms ease, border-color 180ms ease;
+  }
+
+  @media (hover: hover) {
+    button:not(:disabled):hover,
+    .btn-tactile:not(:disabled):hover {
+      transform: translateY(-2px);
+    }
+  }
+
+  button:not(:disabled):active,
+  .btn-tactile:not(:disabled):active {
+    transform: scale(0.96) translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-popup-spring,
+  .animate-backdrop-fade,
+  .animate-rep-pop,
+  .animate-view-enter,
+  .animate-toast-in,
+  .animate-gentle-shake,
+  .animate-status-halo {
+    animation: none !important;
+  }
+
+  button:not(:disabled),
+  .btn-tactile:not(:disabled) {
+    transition: background-color 120ms ease, border-color 120ms ease !important;
+    transform: none !important;
+  }
+}
+
 /* 2-Meter Kiosk Minigame Giant Typography (Full-Size Viewport) */
 .mg-modal-title {
   font-size: clamp(1.5rem, 2.3vmin, 2.2rem);

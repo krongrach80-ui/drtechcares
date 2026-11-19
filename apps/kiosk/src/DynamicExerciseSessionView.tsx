@@ -537,8 +537,8 @@ export function DynamicExerciseSessionView({
       </div>
 
       {pinOverrideOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4">
-          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 animate-backdrop-fade">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl animate-popup-spring">
             <h3 className="text-lg font-bold text-slate-900">Staff Override PIN</h3>
             <input
               type="password"

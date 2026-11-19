@@ -1256,13 +1256,13 @@ export function Zone2PipCoachOverlay({
 
   if (!visible) {
     return (
-      <div className="absolute top-14 left-3 z-20">
+      <div className="absolute top-14 left-3 z-20 animate-toast-in transition-all duration-250 ease-out">
         <button
           type="button"
           onClick={onToggleVisible}
           data-testid="kiosk-pip-coach-toggle"
           aria-label="ซ่อน/แสดงหุ่นโค้ชบนจอ"
-          className="inline-flex items-center gap-1.5 bg-white/90 backdrop-blur-md border-2 border-emerald-500 text-emerald-900 font-extrabold text-xs px-3 py-1 rounded-full shadow-lg hover:bg-emerald-50 cursor-pointer active:scale-95 transition"
+          className="inline-flex items-center gap-1.5 bg-white/90 backdrop-blur-md border-2 border-emerald-500 text-emerald-900 font-extrabold text-xs px-3 py-1 rounded-full shadow-lg hover:bg-emerald-50 cursor-pointer active:scale-95 transition-all duration-250 ease-out"
         >
           <Eye className="w-3.5 h-3.5 shrink-0" />
           <span>ซ่อน/แสดงหุ่นโค้ชบนจอ</span>
@@ -1274,11 +1274,11 @@ export function Zone2PipCoachOverlay({
   return (
     <div
       data-testid="kiosk-pip-coach-box"
-      className="absolute top-14 left-3 z-20 w-28 h-32 md:w-36 md:h-40 bg-white/90 backdrop-blur-md border-2 border-emerald-500 rounded-2xl shadow-xl p-1.5 flex flex-col items-center justify-between"
+      className="absolute top-14 left-3 z-20 w-28 h-32 md:w-36 md:h-40 bg-white/90 backdrop-blur-md border-2 border-emerald-500 rounded-2xl shadow-xl p-1.5 flex flex-col items-center justify-between animate-popup-spring transition-all duration-250 ease-out"
     >
       <div className="w-full flex items-center justify-between gap-1 shrink-0">
         <span className="inline-flex items-center gap-1 text-[10px] font-black text-emerald-900 truncate">
-          <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+          <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-status-halo shrink-0" />
           <span className="truncate">{frame.phaseLabelTh}</span>
         </span>
         <button
@@ -1372,9 +1372,9 @@ export function Zone4CoachStageAndSteps({
               key={item.stepNum}
               data-testid={`kiosk-step-card-${item.stepNum}`}
               data-active-step={isActiveStep ? 'true' : 'false'}
-              className={`rounded-2xl p-2 flex flex-col justify-between transition-all duration-200 ${
+              className={`rounded-2xl p-2 flex flex-col justify-between transition-all duration-300 ${
                 isActiveStep
-                  ? 'bg-gradient-to-b from-emerald-50 to-sky-50 border-2 border-emerald-500 ring-2 ring-emerald-300/60 shadow-md scale-[1.01]'
+                  ? '-translate-y-0.5 shadow-md border-2 border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-300/60'
                   : 'bg-slate-50 border border-sky-200 opacity-90'
               }`}
             >
@@ -1431,9 +1431,9 @@ export function ExpandedCoachModal({
       role="dialog"
       aria-modal="true"
       aria-label={`ตัวอย่างหุ่นโค้ชท่า ${exercise.name_th}`}
-      className="fixed inset-0 z-50 bg-slate-900/65 backdrop-blur-sm flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 bg-slate-900/65 backdrop-blur-sm flex items-center justify-center p-4 animate-backdrop-fade"
     >
-      <div className="w-full max-w-2xl bg-white border-2 border-emerald-400 rounded-3xl p-5 shadow-2xl space-y-3">
+      <div className="w-full max-w-2xl bg-white border-2 border-emerald-400 rounded-3xl p-5 shadow-2xl space-y-3 animate-popup-spring">
         <div className="flex items-center justify-between gap-3 border-b border-slate-200 pb-2.5">
           <div className="min-w-0">
             <p className="text-xs font-extrabold text-emerald-700">
@@ -1468,9 +1468,9 @@ export function ExpandedCoachModal({
             return (
               <div
                 key={idx}
-                className={`rounded-xl p-2.5 border ${
+                className={`rounded-xl p-2.5 border transition-all duration-300 ${
                   active
-                    ? 'bg-emerald-50 border-emerald-500 ring-2 ring-emerald-300'
+                    ? '-translate-y-0.5 bg-emerald-50/70 border-emerald-500 ring-2 ring-emerald-300 shadow-md'
                     : 'bg-slate-50 border-sky-200'
                 }`}
               >

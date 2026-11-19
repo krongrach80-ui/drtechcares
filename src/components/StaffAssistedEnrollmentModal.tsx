@@ -669,9 +669,9 @@ export function StaffAssistedEnrollmentModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-3 sm:p-6 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-3 sm:p-6 backdrop-blur-sm animate-backdrop-fade">
       <div
-        className={`relative flex max-h-[94vh] w-full flex-col overflow-hidden rounded-[24px] bg-white shadow-2xl border border-slate-200 transition-all ${
+        className={`relative flex max-h-[94vh] w-full flex-col overflow-hidden rounded-[24px] bg-white shadow-2xl border border-slate-200 transition-all animate-popup-spring ${
           step === 3 ? 'max-w-3xl' : 'max-w-2xl'
         }`}
       >
@@ -799,12 +799,12 @@ export function StaffAssistedEnrollmentModal({
         {/* Scrollable Content */}
         <div ref={modalBodyRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
           {errorMsg && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-700">
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-700 animate-toast-in animate-gentle-shake">
               {errorMsg}
             </div>
           )}
           {toastMsg && (
-            <div className="rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-bold text-emerald-800 flex items-center gap-2 shadow-xs">
+            <div className="rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-bold text-emerald-800 flex items-center gap-2 shadow-xs animate-toast-in">
               <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
               <span>{toastMsg}</span>
             </div>

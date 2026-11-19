@@ -936,7 +936,7 @@ export function App() {
               </div>
             </div>
             <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
-              <div className="w-full max-w-2xl rounded-3xl bg-white border-2 border-emerald-400 shadow-2xl p-6 sm:p-10 text-center">
+              <div className="w-full max-w-2xl rounded-3xl bg-white border-2 border-emerald-400 shadow-2xl p-6 sm:p-10 text-center animate-popup-spring">
                 <div className="mx-auto w-20 h-20 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center shadow-inner mb-5">
                   <CheckCircle2 className="h-11 w-11" />
                 </div>
@@ -1039,7 +1039,7 @@ export function App() {
               </div>
             </div>
             <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
-              <div className="w-full max-w-xl rounded-3xl bg-white border-2 border-amber-300 shadow-2xl p-6 sm:p-8 text-center">
+              <div className="w-full max-w-xl rounded-3xl bg-white border-2 border-amber-300 shadow-2xl p-6 sm:p-8 text-center animate-popup-spring">
                 <div className="mx-auto w-16 h-16 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center mb-4">
                   <Leaf className="w-8 h-8" />
                 </div>
@@ -1111,7 +1111,7 @@ export function App() {
               </div>
             </div>
             <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
-              <div className="w-full max-w-3xl rounded-3xl bg-white border-2 border-emerald-400 shadow-2xl p-6 sm:p-8 text-center">
+              <div className="w-full max-w-3xl rounded-3xl bg-white border-2 border-emerald-400 shadow-2xl p-6 sm:p-8 text-center animate-popup-spring">
                 <div className="mx-auto w-16 h-16 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mb-4">
                   <Calendar className="w-8 h-8" />
                 </div>
@@ -1346,7 +1346,7 @@ export function App() {
             </div>
           </div>
           <div className="flex-1 flex flex-col gap-2 p-2 sm:p-3">
-            <div className="rounded-xl border border-emerald-200 bg-gradient-to-r from-emerald-50 via-teal-50 to-sky-50 px-3 py-1.5 text-[#0F4C81] text-xs font-semibold flex flex-wrap items-center justify-between gap-2">
+            <div className="rounded-xl border border-emerald-200 bg-gradient-to-r from-emerald-50 via-teal-50 to-sky-50 px-3 py-1.5 text-[#0F4C81] text-xs font-semibold flex flex-wrap items-center justify-between gap-2 animate-toast-in">
               <span>{kc.minigameBanner}</span>
             </div>
             <PhysicalCardGame
