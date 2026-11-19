@@ -72,6 +72,11 @@ import {
 } from 'lucide-react';
 import { PhysicalCardGame } from '../../apps/kiosk/src/PhysicalCardGame';
 import { POSE_TEST_PATIENT, buildAll15ClinicalExercisePrescriptions } from '../hooks/useKioskSocket';
+import {
+  DrTechCareMascot,
+  MASCOT_GREETING_DURATION_MS,
+  type DrTechCareMascotPose,
+} from './DrTechCareMascot';
 import { SmartRehabKioskUI } from './SmartRehabKioskUI';
 import { notifyBiometricIndexChanged } from '../lib/faceMatcher';
 import { removeProfileFromLocalBiometricVault } from '../lib/biometricEngine';
@@ -2373,6 +2378,27 @@ export function ClinicalStaffPortalShell({
       ? scheduleStats.total || totalScheduledAppointmentDays
       : totalScheduledAppointmentDays;
 
+  const [portalMascotGreeting, setPortalMascotGreeting] = useState<boolean>(true);
+  useEffect(() => {
+    setPortalMascotGreeting(true);
+    const greetTimer = window.setTimeout(() => {
+      setPortalMascotGreeting(false);
+    }, MASCOT_GREETING_DURATION_MS);
+    return () => window.clearTimeout(greetTimer);
+  }, []);
+
+  const portalMascotPose: DrTechCareMascotPose =
+    bannerMessage?.kind === 'success'
+      ? 'encouraging'
+      : portalMascotGreeting
+        ? 'greeting'
+        : activeTab === 'exercises' ||
+            activeTab === 'schedules' ||
+            activeTab === 'patients' ||
+            activeTab === 'security'
+          ? 'explaining'
+          : 'idle';
+
   return (
     <div className="min-h-screen flex bg-gradient-to-br from-[#F0FDF9] via-[#F0F7FF] to-[#F8FAFC] text-[#0F4C81]">
       {/* Clinical Blue-Teal Left Sidebar */}
@@ -2577,13 +2603,23 @@ export function ClinicalStaffPortalShell({
       <div className="flex-1 flex flex-col min-w-0">
         {/* Top White Header */}
         <header className="h-[72px] shrink-0 bg-white border-b border-slate-200 px-5 flex items-center justify-between gap-3">
-          <div className="min-h-[56px] flex flex-col justify-center min-w-0">
-            <h1 className="text-base sm:text-lg font-black text-slate-900 leading-tight truncate">
-              {currentHeader.title}
-            </h1>
-            <p className="text-[10px] font-bold tracking-wider text-slate-400 uppercase mt-0.5 truncate">
-              {currentHeader.subtitle}
-            </p>
+          <div className="flex items-center gap-3 min-w-0">
+            <DrTechCareMascot
+              pose={portalMascotPose}
+              isSpeaking={false}
+              size="sm"
+              showSpeechBubble={false}
+              className="w-12 h-14 shrink-0 animate-view-enter"
+              testId="staff-portal-mascot"
+            />
+            <div className="min-h-[56px] flex flex-col justify-center min-w-0">
+              <h1 className="text-base sm:text-lg font-black text-slate-900 leading-tight truncate">
+                {currentHeader.title}
+              </h1>
+              <p className="text-[10px] font-bold tracking-wider text-slate-400 uppercase mt-0.5 truncate">
+                {currentHeader.subtitle}
+              </p>
+            </div>
           </div>
 
           <div className="flex items-center gap-2 text-xs shrink-0 overflow-x-auto">

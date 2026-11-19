@@ -9,6 +9,7 @@ import type {
   UserAccount,
 } from '@drtechcares/api-client';
 import { Activity, Calendar, KeyRound, LogOut, Sparkles, User } from 'lucide-react';
+import { DrTechCareMascot } from './components/DrTechCareMascot';
 
 interface PatientPersonalPortalProps {
   apiClient: DrTechCaresApiClient;
@@ -66,16 +67,26 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-4 animate-view-enter">
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-3xl bg-white p-5 shadow-sm border border-slate-200">
-        <div>
-          <span className="inline-block rounded-full bg-sky-50 px-3 py-1 text-xs font-bold text-sky-700">
-            PATIENT PORTAL (ดูได้เฉพาะข้อมูลของตัวเอง)
-          </span>
-          <h1 className="mt-1 text-xl font-extrabold text-slate-900">{currentUser.fullName}</h1>
-          {patient && (
-            <p className="text-xs text-slate-500">
-              HN: {patient.hn} • การวินิจฉัย: {patient.diagnosis} • นัดหมายครั้งต่อไป: {patient.nextAppointmentDate}
-            </p>
-          )}
+        <div className="flex items-center gap-3.5">
+          <DrTechCareMascot
+            pose={notice ? 'encouraging' : 'greeting'}
+            isSpeaking={false}
+            size="md"
+            showSpeechBubble={false}
+            className="w-16 h-[72px] shrink-0 animate-view-enter"
+            testId="patient-portal-mascot"
+          />
+          <div>
+            <span className="inline-block rounded-full bg-sky-50 px-3 py-1 text-xs font-bold text-sky-700">
+              PATIENT PORTAL (ดูได้เฉพาะข้อมูลของตัวเอง)
+            </span>
+            <h1 className="mt-1 text-xl font-extrabold text-slate-900">{currentUser.fullName}</h1>
+            {patient && (
+              <p className="text-xs text-slate-500">
+                HN: {patient.hn} • การวินิจฉัย: {patient.diagnosis} • นัดหมายครั้งต่อไป: {patient.nextAppointmentDate}
+              </p>
+            )}
+          </div>
         </div>
         <button
           onClick={onLogout}

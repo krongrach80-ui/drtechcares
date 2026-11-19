@@ -516,6 +516,128 @@
   }
 }
 
+/* ============================================================================
+ * Dr. TechCare Chibi Mascot 60FPS Keyframes (Breath, Blink, Wave, Fist, Audio)
+ * ============================================================================ */
+@keyframes mascotBreath {
+  0%,
+  100% {
+    transform: translateY(0px) scaleY(1);
+  }
+  50% {
+    transform: translateY(-2.2px) scaleY(1.012);
+  }
+}
+
+@keyframes mascotBlink {
+  0%,
+  44%,
+  52%,
+  100% {
+    transform: scaleY(1);
+  }
+  47%,
+  49% {
+    transform: scaleY(0.08);
+  }
+}
+
+@keyframes gentleWave {
+  0%,
+  100% {
+    transform: rotate(-10deg) translateY(0px);
+  }
+  50% {
+    transform: rotate(16deg) translateY(-1.5px);
+  }
+}
+
+@keyframes fistCelebration {
+  0%,
+  100% {
+    transform: translateY(1px) scale(1.03, 0.96);
+  }
+  50% {
+    transform: translateY(-5px) scale(0.97, 1.04);
+  }
+}
+
+@keyframes audioWaveCascade {
+  0%,
+  100% {
+    opacity: 0.28;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
+@keyframes mascotSparkleTwinkle {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.86) rotate(-6deg);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.12) rotate(6deg);
+  }
+}
+
+@keyframes mascotEqualizerBar {
+  0%,
+  100% {
+    transform: scaleY(0.45);
+  }
+  50% {
+    transform: scaleY(1.08);
+  }
+}
+
+.animate-mascot-breath {
+  transform-box: fill-box;
+  transform-origin: bottom center;
+  animation: mascotBreath 2.6s ease-in-out infinite;
+}
+
+.animate-mascot-blink {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: mascotBlink 4.2s ease-in-out infinite;
+}
+
+.animate-gentle-wave {
+  transform-box: fill-box;
+  transform-origin: 20% 85%;
+  animation: gentleWave 680ms ease-in-out infinite;
+}
+
+.animate-fist-pump {
+  transform-box: fill-box;
+  transform-origin: bottom center;
+  animation: fistCelebration 620ms cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
+}
+
+.animate-audio-waves {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: audioWaveCascade 950ms ease-in-out infinite;
+}
+
+.animate-mascot-sparkle {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: mascotSparkleTwinkle 900ms ease-in-out infinite;
+}
+
+.animate-mascot-eq {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: mascotEqualizerBar 760ms ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-popup-spring,
   .animate-card-enter,

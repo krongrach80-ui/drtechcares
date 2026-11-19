@@ -630,6 +630,7 @@ interface VoiceCoachBannerProps {
   highlightColor: HighlightColor;
   muted: boolean;
   onToggleMute: () => void;
+  onSpeakingChange?: (speaking: boolean) => void;
 }
 
 export function VoiceCoachBanner({
@@ -638,9 +639,22 @@ export function VoiceCoachBanner({
   highlightColor,
   muted,
   onToggleMute,
+  onSpeakingChange,
 }: VoiceCoachBannerProps) {
   const [voiceLang, setVoiceLang] = useState<VoiceCoachLanguage>(() => readStoredVoiceLang());
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const onSpeakingChangeRef = useRef(onSpeakingChange);
+  onSpeakingChangeRef.current = onSpeakingChange;
+
+  useEffect(() => {
+    onSpeakingChangeRef.current?.(isSpeaking);
+  }, [isSpeaking]);
+
+  useEffect(() => {
+    return () => {
+      onSpeakingChangeRef.current?.(false);
+    };
+  }, []);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
 
   const isSpeakingRef = useRef<boolean>(false);
