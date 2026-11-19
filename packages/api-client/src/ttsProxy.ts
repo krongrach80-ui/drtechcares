@@ -1,5 +1,9 @@
 export type SupportedTtsLang = 'th' | 'en' | 'zh-CN';
 
+const TTS_UPSTREAM_TIMEOUT_MS = 2800;
+const MAX_TTS_CACHE_ENTRIES = 96;
+const ttsMemoryCache = new Map<string, SynthesizedTtsAudio>();
+
 /** Normalize frontend/BCP-47 language codes into canonical Google/Cloud TTS language tags. */
 export function normalizeTtsLang(rawLang?: string | null): SupportedTtsLang {
   const lower = (rawLang ?? 'th').trim().toLowerCase();
@@ -8,7 +12,7 @@ export function normalizeTtsLang(rawLang?: string | null): SupportedTtsLang {
   return 'en';
 }
 
-/** Strip emojis/dingbats, collapse whitespace, and clamp so TTS requests stay clean & within ~200 char limits. */
+/** Strip emojis/dingbats, collapse whitespace, and clamp at word/clause boundaries within ~200 char limits. */
 export function clampTtsText(text: string, maxLen = 190): string {
   const collapsed = text
     .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/gu, '')
@@ -19,9 +23,37 @@ export function clampTtsText(text: string, maxLen = 190): string {
 
   const sliced = collapsed.slice(0, maxLen);
   const lastSpace = sliced.lastIndexOf(' ');
-  if (lastSpace >= Math.floor(maxLen * 0.5)) {
+  if (lastSpace >= Math.floor(maxLen * 0.65)) {
     return sliced.slice(0, lastSpace).trim();
   }
+
+  // Fallback for spaceless Thai/CJK scripts: use Intl.Segmenter word boundaries when available
+  try {
+    const IntlObj = globalThis.Intl as unknown as {
+      Segmenter?: new (
+        locales?: string,
+        options?: { granularity: 'word' | 'grapheme' | 'sentence' },
+      ) => { segment(input: string): Iterable<{ segment: string; index: number }> };
+    };
+    if (typeof IntlObj?.Segmenter === 'function') {
+      const segmenter = new IntlObj.Segmenter('th', { granularity: 'word' });
+      let endOffset = 0;
+      for (const seg of segmenter.segment(collapsed)) {
+        const nextEnd = seg.index + seg.segment.length;
+        if (nextEnd <= maxLen) {
+          endOffset = nextEnd;
+        } else {
+          break;
+        }
+      }
+      if (endOffset >= Math.floor(maxLen * 0.5)) {
+        return collapsed.slice(0, endOffset).trim();
+      }
+    }
+  } catch {
+    // Fall back to hard slice below
+  }
+
   return sliced.trim();
 }
 
@@ -42,8 +74,8 @@ export interface SynthesizedTtsAudio {
 }
 
 /**
- * Fetch synthesized speech MP3 audio server-side (no Referer header) so browsers without
- * local OS Thai/Chinese voices can play natural voice prompts on every platform.
+ * Fetch synthesized speech MP3 audio server-side (no Referer header) with bounded timeout
+ * and LRU caching so repeated prompts play quickly without stalling browsers.
  */
 export async function synthesizeTtsAudio(
   rawLang: string | undefined | null,
@@ -55,12 +87,33 @@ export async function synthesizeTtsAudio(
     return null;
   }
   const lang = normalizeTtsLang(rawLang);
+  const cacheKey = `${lang}::${clean}`;
+  if (fetchImpl === globalThis.fetch) {
+    const cached = ttsMemoryCache.get(cacheKey);
+    if (cached) {
+      // Touch for LRU ordering and return a fresh buffer slice copy
+      ttsMemoryCache.delete(cacheKey);
+      ttsMemoryCache.set(cacheKey, cached);
+      return {
+        audio: cached.audio.slice(0),
+        contentType: cached.contentType,
+        provider: `${cached.provider}-cached`,
+      };
+    }
+  }
+
   const urls = buildUpstreamTtsUrls(lang, clean);
 
   for (const upstreamUrl of urls) {
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer =
+      controller && typeof setTimeout === 'function'
+        ? setTimeout(() => controller.abort(), TTS_UPSTREAM_TIMEOUT_MS)
+        : null;
     try {
       const res = await fetchImpl(upstreamUrl, {
         method: 'GET',
+        ...(controller ? { signal: controller.signal } : {}),
         headers: {
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -72,13 +125,29 @@ export async function synthesizeTtsAudio(
       if (contentType.includes('text/html')) continue;
       const audio = await res.arrayBuffer();
       if (audio.byteLength <= 128) continue;
-      return {
+      const entry: SynthesizedTtsAudio = {
         audio,
         contentType: contentType.startsWith('audio/') ? contentType : 'audio/mpeg',
         provider: upstreamUrl.includes('client=tw-ob') ? 'google-tw-ob' : 'google-gtx',
       };
+      if (fetchImpl === globalThis.fetch) {
+        if (ttsMemoryCache.size >= MAX_TTS_CACHE_ENTRIES) {
+          const oldestKey = ttsMemoryCache.keys().next().value;
+          if (oldestKey) ttsMemoryCache.delete(oldestKey);
+        }
+        ttsMemoryCache.set(cacheKey, {
+          audio: audio.slice(0),
+          contentType: entry.contentType,
+          provider: entry.provider,
+        });
+      }
+      return entry;
     } catch {
       // Try next upstream provider
+    } finally {
+      if (timer !== null && typeof clearTimeout === 'function') {
+        clearTimeout(timer);
+      }
     }
   }
   return null;

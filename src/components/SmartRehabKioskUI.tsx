@@ -65,7 +65,6 @@ import {
   mapVideoPointToCoverCanvas,
   validateTetheredHandLandmarks21,
 } from '../lib/poseSkeletonSafety';
-import { inferMascotPoseFromSpeechText } from '@drtechcares/kiosk-input';
 import {
   Activity,
   AlertOctagon,
@@ -100,20 +99,19 @@ import {
   Zone2PipCoachOverlay,
   Zone4CoachStageAndSteps,
 } from './AnimatedRehabCoachModel';
-import {
-  DrTechCareMascot,
-  MASCOT_ENCOURAGING_DURATION_MS,
-} from './DrTechCareMascot';
 import { resolveExercisePostureSpec } from './ExercisePostureGuide';
 import { FaceScanOverlay } from './FaceScanOverlay';
 import { SkeletonCanvas } from './SkeletonCanvas';
 import {
   VoiceCoachBanner,
   cancelAllKioskVoiceSpeech,
+  readStoredKioskVoiceLang,
   readStoredKioskVoiceMuted,
   sanitizeSpeechText,
+  subscribeKioskVoiceLang,
   subscribeKioskVoiceMuted,
   translateVoiceCoachText,
+  writeStoredKioskVoiceLang,
   writeStoredKioskVoiceMuted,
   type VoiceCoachLanguage,
 } from './VoiceCoachBanner';
@@ -548,6 +546,7 @@ export function measureLiveJointAngleAndTilt(
     };
     baseline?: StrokeAnatomyBaseline;
     targetRomDeg?: number;
+    videoAspect?: number;
   },
 ): LiveJointMeasurement {
   const UPPER_MIN_VIS = 0.02;
@@ -564,6 +563,7 @@ export function measureLiveJointAngleAndTilt(
       targetRomDeg: strokeOptions?.targetRomDeg,
       jointMode,
       baseline: strokeOptions?.baseline,
+      videoAspect: strokeOptions?.videoAspect,
     });
     if (solved.wrongSideRaised) {
       solved.wrongSideBannerTh =
@@ -2083,34 +2083,24 @@ export function SmartRehabKioskUI({
   sendClientLandmarksRef.current = sendClientLandmarks;
 
   const [voiceMuted, setVoiceMuted] = useState<boolean>(() => readStoredKioskVoiceMuted());
+  const voiceMutedRef = useRef(voiceMuted);
+  voiceMutedRef.current = voiceMuted;
   useEffect(() => subscribeKioskVoiceMuted(setVoiceMuted), []);
   const handleToggleVoiceMute = () => {
-    setVoiceMuted((prev) => {
-      const next = writeStoredKioskVoiceMuted(!prev);
-      if (next) {
-        cancelAllKioskVoiceSpeech();
-      }
-      return next;
-    });
-  };
-  const [zone5VoiceLang, setZone5VoiceLang] = useState<VoiceCoachLanguage>(() => {
-    if (typeof window === 'undefined') return 'th';
-    try {
-      const saved = window.localStorage.getItem('drtechcares_voice_coach_lang_v1');
-      return saved === 'en' || saved === 'zh' ? saved : 'th';
-    } catch {
-      return 'th';
+    const next = writeStoredKioskVoiceMuted(!voiceMutedRef.current);
+    voiceMutedRef.current = next;
+    setVoiceMuted(next);
+    if (next) {
+      cancelAllKioskVoiceSpeech();
     }
-  });
+  };
+  const [zone5VoiceLang, setZone5VoiceLang] = useState<VoiceCoachLanguage>(() =>
+    readStoredKioskVoiceLang(),
+  );
+  useEffect(() => subscribeKioskVoiceLang(setZone5VoiceLang), []);
   const handleSelectZone5VoiceLang = (nextLang: VoiceCoachLanguage) => {
     setZone5VoiceLang(nextLang);
-    if (typeof window !== 'undefined') {
-      try {
-        window.localStorage.setItem('drtechcares_voice_coach_lang_v1', nextLang);
-      } catch {
-        // Ignore storage errors in restricted contexts
-      }
-    }
+    writeStoredKioskVoiceLang(nextLang);
   };
   const [toolsPopoverOpen, setToolsPopoverOpen] = useState<boolean>(false);
   const [showPipCoach, setShowPipCoach] = useState<boolean>(true);
@@ -2484,49 +2474,6 @@ export function SmartRehabKioskUI({
           : null,
   });
 
-  const [voiceCoachSpeaking, setVoiceCoachSpeaking] = useState<boolean>(false);
-  const [mascotEncouragingActive, setMascotEncouragingActive] = useState<boolean>(false);
-  const prevMascotRepsRef = useRef<number>(rep_counter.valid_reps);
-  const encouragingTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    prevMascotRepsRef.current = 0;
-  }, [selectedExercise.exercise_id]);
-
-  useEffect(() => {
-    const scoredToast =
-      typeof repSuccessToastTh === 'string' &&
-      (repSuccessToastTh.includes('+1') || repSuccessToastTh.includes('สำเร็จ'));
-    const gainedRep = rep_counter.valid_reps > prevMascotRepsRef.current;
-    if (
-      gainedRep ||
-      kiosk_state === 'REP_COMPLETED' ||
-      kiosk_state === 'SET_FINISHED' ||
-      scoredToast
-    ) {
-      prevMascotRepsRef.current = rep_counter.valid_reps;
-      setMascotEncouragingActive(true);
-      if (encouragingTimerRef.current !== null) {
-        window.clearTimeout(encouragingTimerRef.current);
-      }
-      encouragingTimerRef.current = window.setTimeout(() => {
-        encouragingTimerRef.current = null;
-        setMascotEncouragingActive(false);
-      }, MASCOT_ENCOURAGING_DURATION_MS);
-    } else if (rep_counter.valid_reps < prevMascotRepsRef.current) {
-      prevMascotRepsRef.current = rep_counter.valid_reps;
-    }
-  }, [rep_counter.valid_reps, kiosk_state, repSuccessToastTh]);
-
-  useEffect(() => {
-    return () => {
-      if (encouragingTimerRef.current !== null) {
-        window.clearTimeout(encouragingTimerRef.current);
-        encouragingTimerRef.current = null;
-      }
-    };
-  }, []);
-
   const handleEmergencyStopClick = (customReason?: string) => {
     const reasonMsg =
       typeof customReason === 'string' && customReason.trim().length > 0
@@ -2719,6 +2666,7 @@ export function SmartRehabKioskUI({
     let wrongSideStreak = 0;
     let wrongPlaneStreak = 0;
     let sustainedSwayFrames = 0;
+    let sustainedDropFrames = 0;
     let consecutiveCompEvents = 0;
     let prevHeadY: number | null = null;
     let prevShoulderMidY: number | null = null;
@@ -2858,7 +2806,6 @@ export function SmartRehabKioskUI({
           cleanup();
           return;
         }
-        setCameraReady(true);
 
         let vision;
         for (const wasmBase of [
@@ -2873,12 +2820,18 @@ export function SmartRehabKioskUI({
             // Try next WASM base URL
           }
         }
-        if (!vision || !active) return;
+        if (!vision || !active) {
+          if (active) {
+            setCameraError('ไม่สามารถโหลด MediaPipe WASM ได้ (กรุณารีเฟรชหน้าจอ)');
+          }
+          cleanup();
+          return;
+        }
 
         const POSE_MODEL_PATHS = [
-          'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task',
           '/models/pose_landmarker_full.task',
           '/models/pose_landmarker.task',
+          'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task',
         ];
         for (const minConf of [0.7, 0.5] as const) {
           for (const modelPath of POSE_MODEL_PATHS) {
@@ -2897,6 +2850,7 @@ export function SmartRehabKioskUI({
                 });
                 if (!active) {
                   created.close();
+                  cleanup();
                   return;
                 }
                 poseLandmarker = created;
@@ -2909,7 +2863,14 @@ export function SmartRehabKioskUI({
           }
           if (poseLandmarker) break;
         }
-        if (!poseLandmarker || !active) return;
+        if (!poseLandmarker || !active) {
+          if (active) {
+            setCameraError('ไม่สามารถโหลดโมเดลตรวจจับท่าทางกายภาพได้');
+          }
+          cleanup();
+          return;
+        }
+        setCameraReady(true);
 
         // Lightweight FaceLandmarker for Continuous 1:1 Account Owner Face Lock every 5 frames
         try {
@@ -2992,6 +2953,7 @@ export function SmartRehabKioskUI({
           wrongSideStreak = 0;
           wrongPlaneStreak = 0;
           sustainedSwayFrames = 0;
+          sustainedDropFrames = 0;
           consecutiveCompEvents = 0;
           prevHeadY = null;
           prevShoulderMidY = null;
@@ -3281,19 +3243,43 @@ export function SmartRehabKioskUI({
                     const nextHands: { left?: NormalizedLandmark[]; right?: NormalizedLandmark[] } = {};
                     const poseLWrist = landmarks[POSE_INDEX.LEFT_WRIST];
                     const poseRWrist = landmarks[POSE_INDEX.RIGHT_WRIST];
+                    const poseLVis = (poseLWrist?.visibility ?? 0) >= 0.15;
+                    const poseRVis = (poseRWrist?.visibility ?? 0) >= 0.15;
+                    const assignedSides: Array<'left' | 'right'> = [];
+
+                    if (detectedHands.length >= 2 && poseLVis && poseRVis && detectedHands[0]?.[0] && detectedHands[1]?.[0]) {
+                      const h0 = detectedHands[0][0];
+                      const h1 = detectedHands[1][0];
+                      const costLR =
+                        Math.hypot(h0.x - poseLWrist.x, h0.y - poseLWrist.y) +
+                        Math.hypot(h1.x - poseRWrist.x, h1.y - poseRWrist.y);
+                      const costRL =
+                        Math.hypot(h0.x - poseRWrist.x, h0.y - poseRWrist.y) +
+                        Math.hypot(h1.x - poseLWrist.x, h1.y - poseLWrist.y);
+                      if (costLR <= costRL) {
+                        assignedSides[0] = 'left';
+                        assignedSides[1] = 'right';
+                      } else {
+                        assignedSides[0] = 'right';
+                        assignedSides[1] = 'left';
+                      }
+                    }
 
                     detectedHands.forEach((rawHand, hi) => {
                       if (!rawHand || rawHand.length < 21) return;
                       const hWrist = rawHand[0];
-                      let side: 'left' | 'right' = hi === 0 ? 'right' : 'left';
-                      if (poseLWrist && poseRWrist && hWrist) {
-                        const dLeft = Math.hypot(hWrist.x - poseLWrist.x, hWrist.y - poseLWrist.y);
-                        const dRight = Math.hypot(hWrist.x - poseRWrist.x, hWrist.y - poseRWrist.y);
-                        side = dLeft <= dRight ? 'left' : 'right';
-                      } else {
-                        const cat = detectedHandedness[hi]?.[0]?.categoryName?.toLowerCase();
-                        if (cat === 'left' || cat === 'right') {
-                          side = cat;
+                      let side: 'left' | 'right' =
+                        assignedSides[hi] ?? (hi === 0 ? 'right' : 'left');
+                      if (!assignedSides[hi]) {
+                        if (poseLWrist && poseRWrist && poseLVis && poseRVis && hWrist) {
+                          const dLeft = Math.hypot(hWrist.x - poseLWrist.x, hWrist.y - poseLWrist.y);
+                          const dRight = Math.hypot(hWrist.x - poseRWrist.x, hWrist.y - poseRWrist.y);
+                          side = dLeft <= dRight ? 'left' : 'right';
+                        } else {
+                          const cat = detectedHandedness[hi]?.[0]?.categoryName?.toLowerCase();
+                          if (cat === 'left' || cat === 'right') {
+                            side = cat;
+                          }
                         }
                       }
                       const smoothedHand = enableCustomSmooth
@@ -3328,6 +3314,7 @@ export function SmartRehabKioskUI({
                     handLandmarksBySide: latestHandLandmarksBySide,
                     baseline: boneBaselineCalibrator.getBaseline() ?? undefined,
                     targetRomDeg: curEx.target_rom_deg,
+                    videoAspect: v.videoWidth > 0 && v.videoHeight > 0 ? v.videoWidth / v.videoHeight : 1.22,
                   },
                 );
                 latestKinematicsRef.current = measured;
@@ -3388,7 +3375,14 @@ export function SmartRehabKioskUI({
                 } else {
                   sustainedSwayFrames = 0;
                 }
-                if (sustainedSwayFrames >= 4 || headDropVel > 0.72 || shDropVel > 0.72) {
+                if (headDropVel > 0.72 || shDropVel > 0.72) {
+                  sustainedDropFrames += 1;
+                } else {
+                  sustainedDropFrames = 0;
+                }
+                if (!isPoseTestMode && (sustainedSwayFrames >= 4 || sustainedDropFrames >= 3)) {
+                  sustainedSwayFrames = 0;
+                  sustainedDropFrames = 0;
                   triggerBalanceEmergencyRef.current('POSTURAL_SWAY_AND_FALL_GUARD: ตรวจพบการเสียสมดุล กรุณานั่งพักและจับราวจับ');
                   return;
                 }
@@ -3415,6 +3409,12 @@ export function SmartRehabKioskUI({
               } else {
                 wrongSideStreak = 0;
                 wrongPlaneStreak = 0;
+                sustainedSwayFrames = 0;
+                sustainedDropFrames = 0;
+                prevHeadY = null;
+                prevShoulderMidY = null;
+                prevSafetySampleAt = 0;
+                prevVelocityRom = null;
                 occludedFrames = 0;
                 latestSideViolation = 'NONE';
                 latestWrongSideRaised = false;
@@ -3601,18 +3601,23 @@ export function SmartRehabKioskUI({
             const curLoopJointMode = classifyExerciseJointMode(curEx);
             const curExSide = resolveExerciseSideFromMeta(curEx, curEx.target_joint, curExpectedPlane);
             const isSmallRomEx =
-              effectiveTargetRomRef.current <= 70 ||
               curLoopJointMode === 'neck' ||
               curLoopJointMode === 'neck_turn' ||
               curLoopJointMode === 'wrist_finger' ||
               curLoopJointMode === 'forearm_turn' ||
-              curLoopJointMode === 'thumb_pinch';
+              curLoopJointMode === 'thumb_pinch' ||
+              (effectiveTargetRomRef.current <= 70 && curLoopJointMode !== 'shoulder_rotation');
             const activeLms = smoothedRenderKeypointsRef.current ?? rawKeypointsRef.current;
             const armWristLowered = evaluateActiveWristsLowered({
               landmarks: activeLms,
               exerciseSide: curExSide,
               targetJoint: curEx.target_joint,
-              isSmallRomOrKnee: isSmallRomEx || curEx.target_joint.includes('knee'),
+              isSmallRomOrKnee:
+                curEx.target_joint.includes('knee') ||
+                curLoopJointMode === 'neck' ||
+                curLoopJointMode === 'neck_turn' ||
+                curLoopJointMode === 'wrist_finger' ||
+                curLoopJointMode === 'thumb_pinch',
             });
 
             // Detect raised arm whose wrist temporarily clipped above/outside camera frame edge ("มืออยู่นอกกรอบกล้อง")
@@ -3622,8 +3627,8 @@ export function SmartRehabKioskUI({
               const wr = activeLms[side === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
               if (!sh || (sh.visibility ?? 0) < 0.3) return false;
               const armElevated =
-                Boolean(el && (el.visibility ?? 0) >= 0.3 && el.y <= sh.y + 0.14) ||
-                (targetRomDeg ?? 0) >= effectiveTargetRomRef.current * 0.55;
+                Boolean(el && (el.visibility ?? 0) >= 0.3 && el.y <= sh.y + 0.08) ||
+                (targetRomDeg ?? 0) >= effectiveTargetRomRef.current * 0.72;
               const wristOutOrHigh =
                 !wr ||
                 (wr.visibility ?? 0) < 0.45 ||
@@ -3635,6 +3640,7 @@ export function SmartRehabKioskUI({
             const handsOutOfFrameRaised =
               !curEx.target_joint.includes('knee') &&
               curEx.target_joint !== 'spine' &&
+              curLoopJointMode !== 'shoulder_rotation' &&
               (curExSide === 'LEFT'
                 ? isSideWristClippedRaised('left')
                 : curExSide === 'RIGHT'
@@ -3740,7 +3746,13 @@ export function SmartRehabKioskUI({
                 repSuccessToastRef.current = waitMsg;
                 setRepSuccessToastTh(waitMsg);
               }
-              emitPresetState('HOLD_PHASE');
+              emitPresetState(
+                repStep.nextState.completedReps >= curEx.target_reps
+                  ? 'SET_FINISHED'
+                  : now < repCelebrateUntilRef.current
+                    ? 'REP_COMPLETED'
+                    : 'HOLD_PHASE',
+              );
             } else {
               if (repSuccessToastRef.current !== null) {
                 repSuccessToastRef.current = null;
@@ -4105,12 +4117,6 @@ export function SmartRehabKioskUI({
     strokeSafetyAlert?.messageTh ?? telemetry_analysis.safety_guard_banner_th ?? tts_voice_th;
   const cleanSpeechText = sanitizeSpeechText(rawVoiceTextTh);
   const displayedVoiceSubtitle = sanitizeSpeechText(translateVoiceCoachText(cleanSpeechText, zone5VoiceLang));
-  const isMascotSpeaking = !voiceMuted && voiceCoachSpeaking;
-  const inferredSpeechPose = inferMascotPoseFromSpeechText(cleanSpeechText);
-  const mascotPose =
-    mascotEncouragingActive || (isMascotSpeaking && inferredSpeechPose === 'encouraging')
-      ? 'encouraging'
-      : 'explaining';
 
   return (
     <div className="h-[100dvh] max-h-[100dvh] w-full overflow-hidden bg-gradient-to-b from-slate-50 via-white to-emerald-50/40 text-slate-800 flex flex-col justify-between p-2.5 md:p-3 gap-2 select-none">
@@ -4776,16 +4782,9 @@ export function SmartRehabKioskUI({
       </section>
 
       {/* ZONE 5: Compact Accessible Voice Coach Footer */}
-      <footer className="shrink-0 relative bg-gradient-to-r from-teal-700 via-emerald-700 to-blue-800 text-white rounded-2xl px-4 py-1.5 flex items-center justify-between gap-3 shadow-sm">
-        {/* Left: Dr. TechCare Mascot + Microphone badge + Label + Live Spoken Subtitle */}
+      <footer className="shrink-0 relative bg-gradient-to-r from-teal-700 via-emerald-700 to-blue-800 text-white rounded-2xl px-4 py-2 flex items-center justify-between gap-3 shadow-sm">
+        {/* Left: Microphone badge + Label + Live Spoken Subtitle */}
         <div className="flex items-center gap-2.5 min-w-0 flex-1">
-          <DrTechCareMascot
-            pose={mascotPose}
-            isSpeaking={isMascotSpeaking}
-            size="sm"
-            className="w-14 h-16 shrink-0 mr-3 animate-view-enter"
-            testId="kiosk-voice-coach-mascot"
-          />
           <span
             aria-hidden="true"
             className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/15"
@@ -4793,7 +4792,11 @@ export function SmartRehabKioskUI({
             <Mic className="w-4 h-4 text-white" />
           </span>
           <span className="text-emerald-200 font-extrabold text-xs md:text-sm shrink-0">
-            THAI AI VOICE COACH:
+            {zone5VoiceLang === 'en'
+              ? 'EN AI VOICE COACH:'
+              : zone5VoiceLang === 'zh'
+                ? 'ZH AI VOICE COACH:'
+                : 'THAI AI VOICE COACH:'}
           </span>
           <p className="text-white font-bold text-sm md:text-base truncate">
             &ldquo;{displayedVoiceSubtitle}&rdquo;
@@ -4855,16 +4858,14 @@ export function SmartRehabKioskUI({
           </button>
         </div>
 
-        {/* Preserve live TTS & Speech Queue Engine invisibly without altering layout height */}
-        <div className="sr-only" aria-hidden="true">
+        {/* Preserve live TTS & Speech Queue Engine invisibly without altering layout height or Tab focus order */}
+        <div className="sr-only" aria-hidden="true" {...({ inert: true } as Record<string, unknown>)}>
           <VoiceCoachBanner
-            key={zone5VoiceLang}
             textTh={cleanSpeechText}
             kioskState={kiosk_state}
             highlightColor={ui_directives.highlight_color}
             muted={voiceMuted}
             onToggleMute={handleToggleVoiceMute}
-            onSpeakingChange={setVoiceCoachSpeaking}
           />
         </div>
 

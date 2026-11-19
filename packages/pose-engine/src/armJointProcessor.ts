@@ -97,20 +97,35 @@ function jointLabel(
  * Computes 3D (or 2D fallback) joint angle at vertex B formed by A-B-C in degrees [0..180].
  */
 export function computeJointAngle3D(a: PoseLandmark, b: PoseLandmark, c: PoseLandmark): number {
+  if (
+    !Number.isFinite(a?.x) ||
+    !Number.isFinite(a?.y) ||
+    !Number.isFinite(b?.x) ||
+    !Number.isFinite(b?.y) ||
+    !Number.isFinite(c?.x) ||
+    !Number.isFinite(c?.y)
+  ) {
+    return 0;
+  }
+  const az = Number.isFinite(a.z) ? (a.z as number) : 0;
+  const bz = Number.isFinite(b.z) ? (b.z as number) : 0;
+  const cz = Number.isFinite(c.z) ? (c.z as number) : 0;
+
   const bax = a.x - b.x;
   const bay = a.y - b.y;
-  const baz = (a.z ?? 0) - (b.z ?? 0);
+  const baz = az - bz;
 
   const bcx = c.x - b.x;
   const bcy = c.y - b.y;
-  const bcz = (c.z ?? 0) - (b.z ?? 0);
+  const bcz = cz - bz;
 
   const magBA = Math.hypot(bax, bay, baz);
   const magBC = Math.hypot(bcx, bcy, bcz);
-  if (magBA < 1e-6 || magBC < 1e-6) return 0;
+  if (!Number.isFinite(magBA) || !Number.isFinite(magBC) || magBA < 1e-6 || magBC < 1e-6) return 0;
 
   const cos = Math.max(-1, Math.min(1, (bax * bcx + bay * bcy + baz * bcz) / (magBA * magBC)));
-  return Number(((Math.acos(cos) * 180) / Math.PI).toFixed(2));
+  const deg = (Math.acos(cos) * 180) / Math.PI;
+  return Number.isFinite(deg) ? Number(deg.toFixed(2)) : 0;
 }
 
 /**
@@ -206,7 +221,6 @@ export function evaluateArmKinematics(
     { index: shoulderIdx, side, joint: 'shoulder' },
     { index: elbowIdx, side, joint: 'elbow' },
     { index: wristIdx, side, joint: 'wrist' },
-    { index: hipIdx, side, joint: 'hip' },
   ]);
 
   if (!gate.valid) {
@@ -222,7 +236,12 @@ export function evaluateArmKinematics(
   const shoulder = landmarks[shoulderIdx];
   const elbow = landmarks[elbowIdx];
   const wrist = landmarks[wristIdx];
-  const hip = landmarks[hipIdx];
+  const rawHip = landmarks[hipIdx];
+  // In seated / wheelchair upper-body framing, hip may be cropped below frame; fall back to vertical torso axis
+  const hip: PoseLandmark =
+    rawHip && isVisible(rawHip) && isInFrame(rawHip)
+      ? rawHip
+      : { x: shoulder.x, y: Math.min(0.99, shoulder.y + 0.35), z: shoulder.z ?? 0, visibility: 1 };
 
   const elbowAngleDeg = computeJointAngle3D(shoulder, elbow, wrist);
   const jointGroup = options.jointGroup ?? 'shoulder';

@@ -106,12 +106,25 @@ export class ClinicalOneEuroLandmarkFilter {
       });
     }
 
-    return landmarks.map((lm, i) => ({
-      x: this.filters[i].x.filter(lm.x, timestampMs),
-      y: this.filters[i].y.filter(lm.y, timestampMs),
-      z: lm.z !== undefined ? this.filters[i].z.filter(lm.z, timestampMs) : undefined,
-      visibility: lm.visibility,
-    }));
+    return landmarks.map((lm, i) => {
+      const f = this.filters[i];
+      const valid =
+        Number.isFinite(lm.x) &&
+        Number.isFinite(lm.y) &&
+        (lm.visibility === undefined || lm.visibility >= 0.05);
+      if (!valid) {
+        f.x.reset();
+        f.y.reset();
+        f.z.reset();
+        return { ...lm };
+      }
+      return {
+        x: f.x.filter(lm.x, timestampMs),
+        y: f.y.filter(lm.y, timestampMs),
+        z: lm.z !== undefined && Number.isFinite(lm.z) ? f.z.filter(lm.z, timestampMs) : lm.z,
+        visibility: lm.visibility,
+      };
+    });
   }
 }
 

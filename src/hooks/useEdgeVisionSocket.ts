@@ -916,8 +916,15 @@ export function useEdgeVisionSocket(options?: {
     return false;
   }, []);
 
+  const resetLastMatch = useCallback(() => {
+    lastMatchedIdRef.current = null;
+  }, []);
+
   useEffect(() => {
-    if (!enabled || typeof window === 'undefined') return;
+    if (!enabled || typeof window === 'undefined') {
+      lastMatchedIdRef.current = null;
+      return;
+    }
     let disposed = false;
     let reconnectTimer: number | null = null;
     let attempt = 0;
@@ -943,10 +950,9 @@ export function useEdgeVisionSocket(options?: {
             const payload = JSON.parse(evt.data) as EdgeKioskTelemetryPayload;
             if (payload && payload.kiosk_state && payload.telemetry_analysis) {
               setTelemetry(payload);
-              if (
-                payload.patient?.id &&
-                payload.patient.id !== lastMatchedIdRef.current
-              ) {
+              if (!payload.patient?.id) {
+                lastMatchedIdRef.current = null;
+              } else if (payload.patient.id !== lastMatchedIdRef.current) {
                 lastMatchedIdRef.current = payload.patient.id;
                 onMatchRef.current?.(payload.patient);
               }
@@ -961,6 +967,7 @@ export function useEdgeVisionSocket(options?: {
         };
 
         ws.onclose = () => {
+          lastMatchedIdRef.current = null;
           if (disposed) return;
           wsRef.current = null;
           setConnected(false);
@@ -976,6 +983,7 @@ export function useEdgeVisionSocket(options?: {
     connect();
     return () => {
       disposed = true;
+      lastMatchedIdRef.current = null;
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       if (wsRef.current) {
         wsRef.current.close();
@@ -988,6 +996,7 @@ export function useEdgeVisionSocket(options?: {
     connected,
     telemetry,
     sendCommand,
+    resetLastMatch,
   };
 }
 

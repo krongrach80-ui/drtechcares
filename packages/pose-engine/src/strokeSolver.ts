@@ -137,6 +137,7 @@ export interface StrokePoseSolveInput {
   targetRomDeg?: number;
   jointMode: StrokeJointMode;
   baseline?: StrokeAnatomyBaseline;
+  videoAspect?: number;
 }
 
 export interface StrokePoseSolveResult {
@@ -443,6 +444,7 @@ export function solveStrokeClinicalJointBiomechanics(
     jointMode,
   } = input;
   const baseline = input.baseline ?? computeDefaultAnatomyBaseline(landmarks);
+  const aspectScale = clamp(input.videoAspect ?? 1.22, 0.55, 2.4);
   const UPPER_MIN_VIS = 0.02;
 
   const lSh = landmarks[POSE_INDEX.LEFT_SHOULDER];
@@ -542,10 +544,12 @@ export function solveStrokeClinicalJointBiomechanics(
       pt: PoseLandmark | undefined,
       isWrist: boolean,
     ): { angleDeg: number; xyzVector: { x: number; y: number; z: number } } | null => {
-      if (!pt || (pt.visibility ?? 0) < UPPER_MIN_VIS) return null;
-      const dx = (pt.x - sh.x) * 1.22;
+      if (!pt || (pt.visibility ?? 0) < UPPER_MIN_VIS || !Number.isFinite(pt.x) || !Number.isFinite(pt.y)) {
+        return null;
+      }
+      const dx = (pt.x - sh.x) * aspectScale;
       const dy = pt.y - sh.y;
-      const dzSensor = ((pt.z ?? 0) - (sh.z ?? 0)) * 1.22;
+      const dzSensor = ((Number.isFinite(pt.z) ? (pt.z as number) : 0) - (Number.isFinite(sh.z) ? (sh.z as number) : 0)) * aspectScale;
 
       const refLen = isWrist ? wristUpRef : wristUpRef * 0.54;
       const len2D = Math.hypot(dx, dy);
@@ -601,12 +605,19 @@ export function solveStrokeClinicalJointBiomechanics(
       if (worldLandmarks) {
         const wSh = worldLandmarks[shIdx];
         const wPt = worldLandmarks[isWrist ? wrIdx : elIdx];
-        if (wSh && wPt) {
+        if (
+          wSh &&
+          wPt &&
+          Number.isFinite(wSh.x) &&
+          Number.isFinite(wSh.y) &&
+          Number.isFinite(wPt.x) &&
+          Number.isFinite(wPt.y)
+        ) {
           const wDx = wPt.x - wSh.x;
           const wDy = wPt.y - wSh.y;
-          const wDz = (wPt.z ?? 0) - (wSh.z ?? 0);
+          const wDz = (Number.isFinite(wPt.z) ? (wPt.z as number) : 0) - (Number.isFinite(wSh.z) ? (wSh.z as number) : 0);
           const wLen3D = Math.hypot(wDx, wDy, wDz);
-          if (wLen3D >= 0.08) {
+          if (Number.isFinite(wLen3D) && wLen3D >= 0.08) {
             const worldAngleDeg = (Math.atan2(Math.hypot(wDx, wDz), wDy) * 180) / Math.PI;
             const stronglyForeshortenedFront =
               expectedPlane !== 'abduction' &&
@@ -776,9 +787,16 @@ export function solveStrokeClinicalJointBiomechanics(
     };
   };
 
-  const primarySide: 'left' | 'right' = targetJoint === 'left_shoulder' ? 'left' : 'right';
+  const primarySide: 'left' | 'right' =
+    exerciseSide === 'LEFT'
+      ? 'left'
+      : exerciseSide === 'RIGHT'
+        ? 'right'
+        : targetJoint === 'left_shoulder'
+          ? 'left'
+          : 'right';
   const oppositeSide: 'left' | 'right' = primarySide === 'left' ? 'right' : 'left';
-  const activeHand21 = handLandmarksBySide?.[primarySide];
+  const activeHand21 = handLandmarksBySide?.[primarySide] ?? (exerciseSide === 'BOTH' ? (handLandmarksBySide?.right ?? handLandmarksBySide?.left) : undefined);
 
   let romDeg: number | null = null;
   let rawPrimaryRomDeg: number | null = null;
@@ -1205,6 +1223,32 @@ export function solveStrokeClinicalJointBiomechanics(
         const noseTiltDeg = ((Math.abs(lateralTiltRad) * 180) / Math.PI) * 1.25;
         tiltDeg = Math.max(tiltDeg, noseTiltDeg);
       }
+      // Enforce directional isolation when staff/selector specifies LEFT or RIGHT neck tilt
+      if (
+        (exerciseSide === 'LEFT' || exerciseSide === 'RIGHT') &&
+        nose &&
+        (nose.visibility ?? 0) >= UPPER_MIN_VIS &&
+        tiltDeg >= 6
+      ) {
+        const neckMidX = (lSh.x + rSh.x) / 2;
+        const neckMidY = (lSh.y + rSh.y) / 2;
+        const shAxisX = lSh.x - rSh.x;
+        const shAxisY = lSh.y - rSh.y;
+        const lateralProj = (nose.x - neckMidX) * shAxisX + (nose.y - neckMidY) * shAxisY;
+        if (exerciseSide === 'LEFT' && lateralProj < -0.002) {
+          tiltDeg = 0;
+          wrongSideRaised = true;
+          sideViolation = 'RIGHT_ARM_RAISED_IN_LEFT_MODE';
+          wrongSideBannerTh = 'ท่านี้เอียงคอไปทางซ้าย กรุณาเอียงศีรษะไปข้างซ้ายครับ';
+          sideViolationBannerTh = wrongSideBannerTh;
+        } else if (exerciseSide === 'RIGHT' && lateralProj > 0.002) {
+          tiltDeg = 0;
+          wrongSideRaised = true;
+          sideViolation = 'LEFT_ARM_RAISED_IN_RIGHT_MODE';
+          wrongSideBannerTh = 'ท่านี้เอียงคอไปทางขวา กรุณาเอียงศีรษะไปข้างขวาครับ';
+          sideViolationBannerTh = wrongSideBannerTh;
+        }
+      }
       // Apply 1.6x clinical sensitivity gain above neutral jitter threshold so natural 12-15 deg reaches target
       const gainedNeckTilt = tiltDeg >= 3.5 ? tiltDeg * 1.6 : tiltDeg;
       rawPrimaryRomDeg = Number(clamp(gainedNeckTilt, 0, 65).toFixed(1));
@@ -1406,6 +1450,10 @@ export function solveStrokeClinicalJointBiomechanics(
   }
 
   // --- Strict Side Isolation Engine (LEFT / RIGHT / BOTH) ---
+  const isDistalFineMotorMode =
+    jointMode === 'wrist_finger' ||
+    jointMode === 'forearm_turn' ||
+    jointMode === 'thumb_pinch';
   const isUpperLimbIsolatedExercise =
     jointMode !== 'neck' &&
     jointMode !== 'neck_turn' &&
@@ -1416,13 +1464,13 @@ export function solveStrokeClinicalJointBiomechanics(
     targetJoint !== 'none';
 
   if (isUpperLimbIsolatedExercise) {
-    if (leftArmRom === null) {
+    if (leftArmRom === null && !isDistalFineMotorMode) {
       leftArmRom = computeForwardFlexionWithForeshortening('left').angleDeg;
     }
-    if (rightArmRom === null) {
+    if (rightArmRom === null && !isDistalFineMotorMode) {
       rightArmRom = computeForwardFlexionWithForeshortening('right').angleDeg;
     }
-    if (oppositeRomDeg === null) {
+    if (oppositeRomDeg === null && !isDistalFineMotorMode) {
       oppositeRomDeg = primarySide === 'left' ? rightArmRom : leftArmRom;
     }
 
@@ -1433,6 +1481,12 @@ export function solveStrokeClinicalJointBiomechanics(
         : targetJoint === 'left_shoulder'
           ? 'LEFT'
           : 'RIGHT');
+
+    if (isDistalFineMotorMode && effectiveSideMode === 'BOTH') {
+      // Distal fine-motor exercises keep hand/wrist ROM intact instead of falsely triggering shoulder-lift BOTH check
+      leftArmRom = rawPrimaryRomDeg;
+      rightArmRom = rawPrimaryRomDeg;
+    }
 
     const isOppositeWristRaisedAboveShoulder = (side: 'left' | 'right'): boolean => {
       const shP = landmarks[side === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER];
@@ -1467,7 +1521,7 @@ export function solveStrokeClinicalJointBiomechanics(
         wrongSideBannerTh = sideViolationBannerTh;
         romDeg = 0;
       }
-    } else if (effectiveSideMode === 'BOTH') {
+    } else if (effectiveSideMode === 'BOTH' && !isDistalFineMotorMode) {
       const lVal = leftArmRom ?? 0;
       const rVal = rightArmRom ?? 0;
       const oneArmRaisedOnly = (lVal >= 65 && rVal < 35) || (rVal >= 65 && lVal < 35);
@@ -1630,11 +1684,8 @@ export function evaluateActiveWristsLowered(params: {
   const checkSide = (side: 'left' | 'right'): boolean => {
     const sh = side === 'left' ? lSh : rSh;
     const wrist = lms[side === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST];
-    if (!wrist) return true;
+    if (!wrist || (wrist.visibility ?? 0) < 0.45) return false;
     const thresholdY = sh.y + 0.15 * shoulderWidth;
-    if ((wrist.visibility ?? 0) < 0.45) {
-      return wrist.y > thresholdY;
-    }
     return wrist.y > thresholdY;
   };
   const side =

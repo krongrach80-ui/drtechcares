@@ -19,7 +19,6 @@ import {
   KINETIC_AUTH_HOLD_DELAY_MS,
   KineticAuthStatusBadge,
 } from './components/KineticAuthStatusBadge';
-import { DrTechCareMascot } from './components/DrTechCareMascot';
 
 export type StaffLoginAnimStatus = 'idle' | 'checking' | 'success' | 'not_found';
 
@@ -265,17 +264,8 @@ export function StaffLoginModalOrPage({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(initialLoginAnimStatus === 'checking');
   const [loginAnimStatus, setLoginAnimStatus] = useState<StaffLoginAnimStatus>(initialLoginAnimStatus);
-  const [staffIntroTalking, setStaffIntroTalking] = useState<boolean>(true);
   const successTimerRef = useRef<number | null>(null);
   const usernameInputRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    setStaffIntroTalking(true);
-    const tid = window.setTimeout(() => {
-      setStaffIntroTalking(false);
-    }, 2800);
-    return () => window.clearTimeout(tid);
-  }, [mode]);
 
   const clearPendingSuccessTimer = useCallback(() => {
     if (successTimerRef.current !== null) {
@@ -425,15 +415,9 @@ export function StaffLoginModalOrPage({
 
         {/* Header Section */}
         <div className="pt-6 sm:pt-9 pb-3 px-6 sm:px-10 text-center flex flex-col items-center">
-          <DrTechCareMascot
-            pose="speaking"
-            isSpeaking={
-              staffIntroTalking || loginAnimStatus === 'checking' || loginAnimStatus === 'success'
-            }
-            showSpeechBubble={false}
-            className="w-20 h-20 mb-2 animate-view-enter"
-            testId="staff-login-mascot"
-          />
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-white shadow-xl shadow-emerald-950/20 mb-3.5">
+            {mode === 'register' ? <UserPlus className="w-8 h-8" /> : <Shield className="w-8 h-8" />}
+          </div>
 
           <span className="inline-block px-3.5 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold tracking-wide mb-2.5">
             {isRegistrationMode ? copy.registrationBadge : copy.badge}

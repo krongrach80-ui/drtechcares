@@ -1153,22 +1153,24 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       bypassTtl ||
       (force && now - lastHydratedAt >= HYDRATE_TTL_MS);
     if (!shouldHydrate) return;
-    // Mark hydrated BEFORE awaiting and never cache a pending Promise across separate Worker
-    // requests (in workerd, awaiting another request's I/O promise causes script hang errors).
-    hydrated = true;
-    lastHydratedAt = now;
+    // Never cache a pending Promise across separate Worker requests (in workerd, awaiting
+    // another request's I/O promise causes script hang errors). Only flip `hydrated = true`
+    // after hydration settles without timing out or tripping the circuit breaker.
+    let timedOut = false;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
         hydrateStateFromSupabase(supabase, state, { force: true }),
         new Promise<void>((resolve) => {
           timeoutId = setTimeout(() => {
+            timedOut = true;
             markSupabaseDown('ensure_hydrated_timeout', supabase);
             resolve();
           }, 1500);
         }),
       ]);
-      if (!isSupabaseCircuitOpen(supabase)) {
+      if (!timedOut && !isSupabaseCircuitOpen(supabase)) {
+        hydrated = true;
         lastHydratedAt = Date.now();
       }
     } catch {
@@ -1393,7 +1395,14 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
   return async function handleApiRequest(request: Request): Promise<Response> {
     if (request.method === 'OPTIONS') {
-      return jsonResponse({ ok: true }, 204);
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'access-control-allow-origin': '*',
+          'access-control-allow-headers': 'Content-Type, Authorization, X-Staff-Token, x-device-id',
+          'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+        },
+      });
     }
 
     const reqUrl = new URL(request.url);
@@ -1424,8 +1433,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     }
 
     const clientIp =
+      request.headers.get('cf-connecting-ip')?.trim() ||
       request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-      request.headers.get('cf-connecting-ip') ||
       '127.0.0.1';
     const clientDeviceId = request.headers.get('x-device-id') || 'kiosk-browser';
 
@@ -2591,6 +2600,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         face_embedding?: unknown;
         exemplarEmbeddings?: unknown;
         biometricEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
+        geometricRatios?: GeometricAnthropometricRatios;
         framesCaptured?: number;
         qualityScore?: number;
         faceImageUrl?: string;
@@ -2661,6 +2671,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       patient.angleEmbeddings = resolvedAngles;
       patient.exemplarEmbeddings = exemplarList.length > 0 ? exemplarList : undefined;
       patient.biometricEngine = resolvedEngine;
+      if (body.geometricRatios) {
+        patient.geometricRatios = body.geometricRatios;
+      }
       patient.biometricHistory = {
         frontal_centroid: resolvedAngles.center,
         overall_centroid: masterVec,
@@ -3671,7 +3684,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       if (!note) return jsonResponse({ error: 'NOTE_NOT_FOUND' }, 404);
       const body = await readJsonBody<{ content?: string }>(request);
       note.content = String(body?.content ?? note.content);
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db.from('medical_notes').update({ content: note.content }).eq('id', note.id),
       );
       return jsonResponse({ note });
@@ -3690,7 +3703,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         );
       }
       state.medical_notes = state.medical_notes.filter((n) => n.id !== noteItemMatch[2]);
-      persistToSupabase(supabase, (db) => db.from('medical_notes').delete().eq('id', noteItemMatch[2]));
+      await persistToSupabase(supabase, (db) => db.from('medical_notes').delete().eq('id', noteItemMatch[2]));
       return jsonResponse({ deleted: true });
     }
 
@@ -3717,10 +3730,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         createdAt: new Date().toISOString(),
       };
       state.medical_notes.push(note);
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db.from('medical_notes').insert({
-          patient_id: note.patientId,
-          author_id: note.authorId,
+          patient_id: toSafeUuidOrNull(note.patientId) ?? note.patientId,
+          author_id: toSafeUuidOrNull(note.authorId),
           author_name: note.authorName,
           content: note.content,
         }),
@@ -5171,11 +5184,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         updatedAt: now,
       };
       state.treatment_reports.unshift(report);
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db.from('treatment_reports').insert({
           id: report.id,
-          patient_id: report.patientId,
-          pt_id: report.ptId,
+          patient_id: toSafeUuidOrNull(report.patientId) ?? report.patientId,
+          pt_id: toSafeUuidOrNull(report.ptId),
           pt_name: report.ptName,
           summary: report.summary,
           ai_recommendation: report.aiRecommendation,
@@ -5196,7 +5209,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       if (body.aiRecommendation) rep.aiRecommendation = String(body.aiRecommendation);
       if (body.scoreSummary) rep.scoreSummary = String(body.scoreSummary);
       rep.updatedAt = new Date().toISOString();
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db
           .from('treatment_reports')
           .update({
@@ -5496,9 +5509,16 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       target.status = 'acknowledged';
       target.reason = target.reason.replace(/^\[ACKNOWLEDGED\]\s*/, '');
       const ackReason = `[ACKNOWLEDGED] ${target.reason}`;
-      await persistToSupabase(supabase, (db) =>
-        db.from('staff_calls').update({ status: 'open', reason: ackReason }).eq('id', target!.id),
-      );
+      await persistToSupabase(supabase, async (db) => {
+        const res = await db
+          .from('staff_calls')
+          .update({ status: 'acknowledged', reason: target!.reason })
+          .eq('id', target!.id);
+        if (res?.error) {
+          return db.from('staff_calls').update({ status: 'open', reason: ackReason }).eq('id', target!.id);
+        }
+        return res;
+      });
       recordAudit({
         eventType: 'STAFF_CALL_ACKNOWLEDGED',
         actorRole: authUser!.role,
@@ -5598,7 +5618,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         createdAt: new Date().toISOString(),
       };
       state.banned_targets.unshift(ban);
-      persistToSupabase(supabase, (db) =>
+      await persistToSupabase(supabase, (db) =>
         db.from('banned_targets').insert({
           id: ban.id,
           target_type: ban.targetType,
@@ -5739,10 +5759,25 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const err = requireAuth(authUser, ['super_admin']);
       if (err) return err;
       const patch = (await readJsonBody<Partial<SystemSettingsRecord>>(request)) ?? {};
-      state.system_settings = {
-        ...state.system_settings,
-        ...patch,
+      const nextSettings: SystemSettingsRecord = {
+        aiFaceScanEnabled:
+          typeof patch.aiFaceScanEnabled === 'boolean'
+            ? patch.aiFaceScanEnabled
+            : state.system_settings.aiFaceScanEnabled,
+        aiFaceThreshold:
+          typeof patch.aiFaceThreshold === 'number' && Number.isFinite(patch.aiFaceThreshold)
+            ? Math.max(0.5, Math.min(0.99, patch.aiFaceThreshold))
+            : state.system_settings.aiFaceThreshold,
+        aiPoseDetectionEnabled:
+          typeof patch.aiPoseDetectionEnabled === 'boolean'
+            ? patch.aiPoseDetectionEnabled
+            : state.system_settings.aiPoseDetectionEnabled,
+        kioskAutoResetSec:
+          typeof patch.kioskAutoResetSec === 'number' && Number.isFinite(patch.kioskAutoResetSec)
+            ? Math.max(5, Math.min(300, Math.round(patch.kioskAutoResetSec)))
+            : state.system_settings.kioskAutoResetSec,
       };
+      state.system_settings = nextSettings;
       await persistToSupabase(supabase, (db) =>
         db
           .from('system_settings')

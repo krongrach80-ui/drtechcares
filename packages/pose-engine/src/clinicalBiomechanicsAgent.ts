@@ -138,7 +138,7 @@ export function evaluateClinicalBiomechanicsPacket(
   const { auth_status, spatial_framing, exercise_prescription, live_telemetry } = packet;
   const dtSec = Math.max(0.01, live_telemetry.dt_sec ?? 0.25);
   const targetRom = Math.max(10, exercise_prescription.target_rom_deg);
-  const maxSafeRom = exercise_prescription.max_safe_rom_deg ?? Math.min(185, targetRom + 25);
+  const maxSafeRom = exercise_prescription.max_safe_rom_deg ?? Math.max(195, targetRom + 45);
   const maxSafeVelocity = exercise_prescription.max_safe_velocity_deg_per_sec ?? 95;
   const romPct = Math.max(0, Math.min(120, Math.round((live_telemetry.primary_angle_deg / targetRom) * 100)));
   const inferredJoint =

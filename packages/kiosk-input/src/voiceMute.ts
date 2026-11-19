@@ -1,7 +1,62 @@
-import { notifyMascotSpeechEnd } from './mascotSpeechBus';
-
 export const KIOSK_VOICE_MUTED_STORAGE_KEY = 'drtech_kiosk_voice_muted';
 export const KIOSK_VOICE_MUTED_EVENT = 'drtech-kiosk-voice-muted-change';
+export const KIOSK_VOICE_LANG_STORAGE_KEY = 'drtechcares_voice_coach_lang_v1';
+export const KIOSK_VOICE_LANG_EVENT = 'drtech-kiosk-voice-lang-change';
+
+export type StoredKioskVoiceLang = 'th' | 'en' | 'zh';
+
+/** Reads persisted kiosk voice language across screens and reloads. */
+export function readStoredKioskVoiceLang(): StoredKioskVoiceLang {
+  if (typeof window === 'undefined') return 'th';
+  try {
+    const raw = window.localStorage.getItem(KIOSK_VOICE_LANG_STORAGE_KEY);
+    return raw === 'en' || raw === 'zh' ? raw : raw === 'cn' ? 'zh' : 'th';
+  } catch {
+    return 'th';
+  }
+}
+
+/** Persists kiosk voice language and notifies mounted kiosk components immediately. */
+export function writeStoredKioskVoiceLang(lang: StoredKioskVoiceLang | 'cn'): StoredKioskVoiceLang {
+  const next: StoredKioskVoiceLang = lang === 'en' || lang === 'zh' ? lang : lang === 'cn' ? 'zh' : 'th';
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(KIOSK_VOICE_LANG_STORAGE_KEY, next);
+    } catch {
+      // Ignore storage errors
+    }
+    try {
+      window.dispatchEvent(new CustomEvent(KIOSK_VOICE_LANG_EVENT, { detail: { lang: next } }));
+    } catch {
+      // Ignore custom event dispatch failures
+    }
+  }
+  return next;
+}
+
+/** Subscribes to same-tab and cross-tab changes to the persisted kiosk voice language. */
+export function subscribeKioskVoiceLang(onChange: (lang: StoredKioskVoiceLang) => void): () => void {
+  if (typeof window === 'undefined') return () => {};
+  const handleCustom = (ev: Event) => {
+    const customEv = ev as CustomEvent<{ lang?: StoredKioskVoiceLang }>;
+    if (customEv.detail?.lang === 'th' || customEv.detail?.lang === 'en' || customEv.detail?.lang === 'zh') {
+      onChange(customEv.detail.lang);
+    } else {
+      onChange(readStoredKioskVoiceLang());
+    }
+  };
+  const handleStorage = (ev: StorageEvent) => {
+    if (ev.key === KIOSK_VOICE_LANG_STORAGE_KEY) {
+      onChange(readStoredKioskVoiceLang());
+    }
+  };
+  window.addEventListener(KIOSK_VOICE_LANG_EVENT, handleCustom);
+  window.addEventListener('storage', handleStorage);
+  return () => {
+    window.removeEventListener(KIOSK_VOICE_LANG_EVENT, handleCustom);
+    window.removeEventListener('storage', handleStorage);
+  };
+}
 
 /** Reads persisted kiosk voice mute state across screens and reloads. */
 export function readStoredKioskVoiceMuted(): boolean {
@@ -57,7 +112,6 @@ export function subscribeKioskVoiceMuted(onChange: (muted: boolean) => void): ()
 
 /** Immediately halts Web Speech API utterances and any playing HTML5 audio tracks. */
 export function cancelAllKioskVoiceSpeech(extraAudio?: HTMLAudioElement | null): void {
-  notifyMascotSpeechEnd();
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
     try {
       window.speechSynthesis.cancel();

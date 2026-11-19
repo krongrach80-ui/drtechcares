@@ -72,10 +72,6 @@ import {
 } from 'lucide-react';
 import { PhysicalCardGame } from '../../apps/kiosk/src/PhysicalCardGame';
 import { POSE_TEST_PATIENT, buildAll15ClinicalExercisePrescriptions } from '../hooks/useKioskSocket';
-import {
-  DrTechCareMascot,
-  type DrTechCareMascotPose,
-} from './DrTechCareMascot';
 import { SmartRehabKioskUI } from './SmartRehabKioskUI';
 import { notifyBiometricIndexChanged } from '../lib/faceMatcher';
 import { removeProfileFromLocalBiometricVault } from '../lib/biometricEngine';
@@ -1500,9 +1496,21 @@ export function ClinicalStaffPortalShell({
     [apiClient],
   );
 
+  const bannerTimerRef = useRef<number | null>(null);
+  const thresholdTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (bannerTimerRef.current !== null) window.clearTimeout(bannerTimerRef.current);
+      if (thresholdTimerRef.current !== null) window.clearTimeout(thresholdTimerRef.current);
+    };
+  }, []);
+
   const flashBanner = useCallback((kind: 'success' | 'error', text: string) => {
     setBannerMessage({ kind, text });
-    window.setTimeout(() => {
+    if (bannerTimerRef.current !== null) window.clearTimeout(bannerTimerRef.current);
+    bannerTimerRef.current = window.setTimeout(() => {
+      bannerTimerRef.current = null;
       setBannerMessage((prev) => (prev?.text === text ? null : prev));
     }, 4500);
   }, []);
@@ -2377,27 +2385,6 @@ export function ClinicalStaffPortalShell({
       ? scheduleStats.total || totalScheduledAppointmentDays
       : totalScheduledAppointmentDays;
 
-  const [portalMascotTalking, setPortalMascotTalking] = useState<boolean>(true);
-  useEffect(() => {
-    setPortalMascotTalking(true);
-    const greetTimer = window.setTimeout(() => {
-      setPortalMascotTalking(false);
-    }, 3000);
-    return () => window.clearTimeout(greetTimer);
-  }, []);
-
-  const portalMascotPose: DrTechCareMascotPose =
-    bannerMessage?.kind === 'success'
-      ? 'encouraging'
-      : portalMascotTalking
-        ? 'speaking'
-        : activeTab === 'exercises' ||
-            activeTab === 'schedules' ||
-            activeTab === 'patients' ||
-            activeTab === 'security'
-          ? 'explaining'
-          : 'speaking';
-
   return (
     <div className="min-h-screen flex bg-gradient-to-br from-[#F0FDF9] via-[#F0F7FF] to-[#F8FAFC] text-[#0F4C81]">
       {/* Clinical Blue-Teal Left Sidebar */}
@@ -2602,23 +2589,13 @@ export function ClinicalStaffPortalShell({
       <div className="flex-1 flex flex-col min-w-0">
         {/* Top White Header */}
         <header className="h-[72px] shrink-0 bg-white border-b border-slate-200 px-5 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <DrTechCareMascot
-              pose={portalMascotPose}
-              isSpeaking={portalMascotTalking || bannerMessage?.kind === 'success'}
-              size="sm"
-              showSpeechBubble={false}
-              className="w-12 h-12 shrink-0 animate-view-enter"
-              testId="staff-portal-mascot"
-            />
-            <div className="min-h-[56px] flex flex-col justify-center min-w-0">
-              <h1 className="text-base sm:text-lg font-black text-slate-900 leading-tight truncate">
-                {currentHeader.title}
-              </h1>
-              <p className="text-[10px] font-bold tracking-wider text-slate-400 uppercase mt-0.5 truncate">
-                {currentHeader.subtitle}
-              </p>
-            </div>
+          <div className="min-h-[56px] flex flex-col justify-center min-w-0">
+            <h1 className="text-base sm:text-lg font-black text-slate-900 leading-tight truncate">
+              {currentHeader.title}
+            </h1>
+            <p className="text-[10px] font-bold tracking-wider text-slate-400 uppercase mt-0.5 truncate">
+              {currentHeader.subtitle}
+            </p>
           </div>
 
           <div className="flex items-center gap-2 text-xs shrink-0 overflow-x-auto">
@@ -4885,20 +4862,24 @@ export function ClinicalStaffPortalShell({
                     <label className="flex items-center justify-between rounded-xl border border-slate-200 px-3.5 py-2.5">
                       <span className="font-bold text-slate-700">
                         {lang === 'cn'
-                          ? '启用 AI 人脸识别 (512D)'
+                          ? '启用 AI 人脸识别 (1024D)'
                           : lang === 'en'
-                            ? 'Enable AI Face Scan (512D)'
-                            : 'เปิดใช้งาน AI Face Scan (512D)'}
+                            ? 'Enable AI Face Scan (1024D)'
+                            : 'เปิดใช้งาน AI Face Scan (1024D)'}
                       </span>
                       <input
                         type="checkbox"
                         disabled={!isAdmin}
                         checked={systemSettings.aiFaceScanEnabled}
                         onChange={async (e) => {
-                          const updated = await apiClient.updateSystemSettings({
-                            aiFaceScanEnabled: e.target.checked,
-                          });
-                          setSystemSettings(updated);
+                          try {
+                            const updated = await apiClient.updateSystemSettings({
+                              aiFaceScanEnabled: e.target.checked,
+                            });
+                            setSystemSettings(updated);
+                          } catch (err) {
+                            flashBanner('error', err instanceof Error ? err.message : 'อัปเดตการตั้งค่าไม่สำเร็จ');
+                          }
                         }}
                       />
                     </label>
@@ -4914,11 +4895,19 @@ export function ClinicalStaffPortalShell({
                         max={0.95}
                         step={0.01}
                         value={systemSettings.aiFaceThreshold}
-                        onChange={async (e) => {
-                          const updated = await apiClient.updateSystemSettings({
-                            aiFaceThreshold: Number(e.target.value),
-                          });
-                          setSystemSettings(updated);
+                        onChange={(e) => {
+                          const nextVal = Number(e.target.value);
+                          setSystemSettings((prev) => ({ ...prev, aiFaceThreshold: nextVal }));
+                          if (thresholdTimerRef.current !== null) window.clearTimeout(thresholdTimerRef.current);
+                          thresholdTimerRef.current = window.setTimeout(() => {
+                            thresholdTimerRef.current = null;
+                            void apiClient
+                              .updateSystemSettings({ aiFaceThreshold: nextVal })
+                              .then((updated) => setSystemSettings(updated))
+                              .catch((err) => {
+                                flashBanner('error', err instanceof Error ? err.message : 'บันทึก Threshold ไม่สำเร็จ');
+                              });
+                          }, 250);
                         }}
                         className="w-full"
                       />
@@ -5943,6 +5932,8 @@ export function ClinicalStaffPortalShell({
                           setActiveTab('schedules');
                           flashBanner('success', `เช็คอินคนไข้ ${p.fullName} (${p.hn}) และบันทึก Audit Log สำเร็จ`);
                           await refreshAll();
+                        } catch (err) {
+                          flashBanner('error', err instanceof Error ? err.message : 'เช็คอินไม่สำเร็จ');
                         } finally {
                           setSubmitting(false);
                         }
@@ -5971,13 +5962,17 @@ export function ClinicalStaffPortalShell({
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                const created = await apiClient.registerKiosk({
-                  kioskId: newKioskCode,
-                  location: newKioskLocation,
-                });
-                setRegisterKioskModalOpen(false);
-                flashBanner('success', `ลงทะเบียน ${created.kioskId} สำเร็จ (Token: ${created.pairingToken})`);
-                await refreshAll();
+                try {
+                  const created = await apiClient.registerKiosk({
+                    kioskId: newKioskCode,
+                    location: newKioskLocation,
+                  });
+                  setRegisterKioskModalOpen(false);
+                  flashBanner('success', `ลงทะเบียน ${created.kioskId} สำเร็จ (Token: ${created.pairingToken})`);
+                  await refreshAll();
+                } catch (err) {
+                  flashBanner('error', err instanceof Error ? err.message : 'ลงทะเบียนตู้ Kiosk ไม่สำเร็จ');
+                }
               }}
               className="space-y-3"
             >

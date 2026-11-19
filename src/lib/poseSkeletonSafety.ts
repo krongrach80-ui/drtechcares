@@ -218,15 +218,27 @@ export function evaluatePoseCanvasSkeletonSafety(params: {
     const elOk = validMask[elIdx] ?? false;
     const wrOk = validMask[wrIdx] ?? false;
 
+    const shLm = landmarks[shIdx];
+    const elLm = landmarks[elIdx];
+    const wrLm = landmarks[wrIdx];
     const shPt = points[shIdx];
     const elPt = points[elIdx];
     const wrPt = points[wrIdx];
 
+    const isForeshortenedTowardLens = (a: ScoredLandmark | undefined, b: ScoredLandmark | undefined) => {
+      if (!a || !b) return false;
+      const confB = Math.min(b.visibility ?? 1, b.score ?? 1);
+      const insideFrame = b.x >= 0.06 && b.x <= 0.94 && b.y >= 0.06 && b.y <= 0.94;
+      const depthDz = Math.abs((b.z ?? 0) - (a.z ?? 0));
+      return confB >= 0.55 && insideFrame && depthDz >= 0.1;
+    };
+
     const upperLen = shPt && elPt ? Math.hypot(elPt.x - shPt.x, elPt.y - shPt.y) : 0;
+    const upperForeshortened = isForeshortenedTowardLens(shLm, elLm);
     const upperRatioOk =
       shOk &&
       elOk &&
-      upperLen >= UPPER_ARM_MIN_RATIO * shoulderWidthPx &&
+      (upperForeshortened || upperLen >= UPPER_ARM_MIN_RATIO * shoulderWidthPx) &&
       upperLen <= UPPER_ARM_MAX_RATIO * shoulderWidthPx;
 
     if (!upperRatioOk) {
@@ -237,9 +249,10 @@ export function evaluatePoseCanvasSkeletonSafety(params: {
     }
 
     const foreLen = elPt && wrPt ? Math.hypot(wrPt.x - elPt.x, wrPt.y - elPt.y) : 0;
+    const foreForeshortened = isForeshortenedTowardLens(elLm, wrLm);
     const foreRatioOk =
       wrOk &&
-      foreLen >= FOREARM_MIN_RATIO * shoulderWidthPx &&
+      (foreForeshortened || foreLen >= FOREARM_MIN_RATIO * shoulderWidthPx) &&
       foreLen <= FOREARM_MAX_RATIO * shoulderWidthPx;
 
     if (!foreRatioOk) {

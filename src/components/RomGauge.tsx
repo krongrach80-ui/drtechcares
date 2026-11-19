@@ -22,25 +22,31 @@ export function RomGauge({
   holdTargetSec,
   embedded = false,
 }: RomGaugeProps) {
-  const clampedInputRom = Math.max(0, Math.min(180, currentRomDeg));
+  const safeCurrentRom = Number.isFinite(currentRomDeg) ? currentRomDeg : 0;
+  const safeTargetRom = Number.isFinite(targetRomDeg) ? targetRomDeg : 90;
+  const safeCompletionPct = Number.isFinite(completionPct) ? completionPct : 0;
+  const safeHoldRemaining = Number.isFinite(holdRemainingSec) ? holdRemainingSec : 0;
+  const safeHoldTarget = Number.isFinite(holdTargetSec) ? holdTargetSec : 0;
+
+  const clampedInputRom = Math.max(0, Math.min(180, safeCurrentRom));
   const displayedRomInt = Math.round(clampedInputRom);
 
   const radius = 104;
   const semiCircumference = Math.PI * radius;
-  const clampedRatio = Math.max(0, Math.min(1, clampedInputRom / Math.max(10, targetRomDeg)));
+  const clampedRatio = Math.max(0, Math.min(1, clampedInputRom / Math.max(10, safeTargetRom)));
   const dashOffset = semiCircumference * (1 - clampedRatio);
   const exactPct = Math.max(
-    completionPct,
-    Math.round((displayedRomInt / Math.max(10, targetRomDeg)) * 100),
+    safeCompletionPct,
+    Math.round((displayedRomInt / Math.max(10, safeTargetRom)) * 100),
   );
 
   const outerRadius = 122;
   const outerSemi = Math.PI * outerRadius;
   const holdRatio =
-    kioskState === 'HOLD_PHASE' && holdTargetSec > 0
-      ? Math.max(0, Math.min(1, (holdTargetSec - holdRemainingSec) / holdTargetSec))
-      : holdTargetSec > 0 && holdRemainingSec > 0 && holdRemainingSec < holdTargetSec
-        ? Math.max(0, Math.min(1, (holdTargetSec - holdRemainingSec) / holdTargetSec))
+    kioskState === 'HOLD_PHASE' && safeHoldTarget > 0
+      ? Math.max(0, Math.min(1, (safeHoldTarget - safeHoldRemaining) / safeHoldTarget))
+      : safeHoldTarget > 0 && safeHoldRemaining > 0 && safeHoldRemaining < safeHoldTarget
+        ? Math.max(0, Math.min(1, (safeHoldTarget - safeHoldRemaining) / safeHoldTarget))
         : 0;
 
   const barColorClass =
@@ -146,7 +152,7 @@ export function RomGauge({
             {displayedRomInt}°
           </div>
           <p className="mt-1 text-xs font-semibold text-[#0F4C81]/70">
-            เป้าหมาย <span className="tabular-mono font-bold text-[#0D9488]">{targetRomDeg.toFixed(0)}°</span>
+            เป้าหมาย <span className="tabular-mono font-bold text-[#0D9488]">{safeTargetRom.toFixed(0)}°</span>
           </p>
         </div>
       </div>

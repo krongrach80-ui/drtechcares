@@ -699,9 +699,23 @@ export class DrTechCaresApiClient {
     }
     const res = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
     const text = await res.text();
-    const data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+    let data: Record<string, unknown> = {};
+    if (text) {
+      try {
+        data = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        data = {
+          error: res.ok ? 'INVALID_JSON' : 'HTTP_ERROR',
+          message: `Non-JSON response (${res.status})`,
+        };
+      }
+    }
     if (!res.ok) {
-      if (res.status === 401 && path === '/api/auth/me') {
+      if (
+        res.status === 401 &&
+        path !== '/api/auth/login' &&
+        path !== '/api/biometric/verify'
+      ) {
         this.setSession(null, null);
         if (typeof globalThis.dispatchEvent === 'function' && typeof globalThis.CustomEvent === 'function') {
           globalThis.dispatchEvent(new globalThis.CustomEvent('drtech:auth-expired'));
@@ -925,8 +939,9 @@ export class DrTechCaresApiClient {
     } catch (err) {
       if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
         this.setSession(null, null);
+        return null;
       }
-      return null;
+      return this.getStoredUser();
     }
   }
 
@@ -2426,13 +2441,37 @@ export function resolveTodayPatientSchedule(input: {
         nextAppointmentAfterToday,
       };
     }
-    const allScheduledCompleted = scheduledToday.every((item) => item.status === 'COMPLETED');
+    const sessionsToday = (input.rehabSessions ?? []).filter(
+      (s) =>
+        s.exerciseId !== 'CLINIC_CHECKIN' &&
+        isSameCalendarDate(s.createdAt, todayIso) &&
+        (s.activityType === 'minigame' || (s.completedReps ?? 0) > 0 || (s.completedSets ?? 0) > 0),
+    );
+    const completedExerciseIdsToday = new Set(
+      sessionsToday.map((s) => (s.exerciseId ?? '').trim().toLowerCase()).filter(Boolean),
+    );
+    const hasMinigameDoneToday = sessionsToday.some(
+      (s) =>
+        s.activityType === 'minigame' ||
+        (typeof s.minigameScore === 'number' ? s.minigameScore : s.minigameScore?.correct ?? 0) > 0,
+    );
+    const isScheduleItemCompleted = (item: RehabScheduleItem): boolean => {
+      if (item.status === 'COMPLETED') return true;
+      const candidates = [item.effectiveCode, item.exerciseCode, item.exerciseId, item.modpackId]
+        .map((v) => (v ?? '').trim().toLowerCase())
+        .filter(Boolean);
+      return candidates.some((c) => completedExerciseIdsToday.has(c));
+    };
+    const allScheduledCompleted =
+      scheduledToday.every(isScheduleItemCompleted) ||
+      (scheduledToday.length === 1 && hasCompletedSessionToday);
     const completedToday = Boolean(
-      input.completedTodayOverride || hasCompletedSessionToday || allScheduledCompleted,
+      input.completedTodayOverride || allScheduledCompleted || (scheduledToday.length <= 1 && hasMinigameDoneToday),
     );
     const todayExercises: TodayPrescribedExerciseItem[] = scheduledToday.map((item) => {
       const exId = item.effectiveCode || item.exerciseId || item.exerciseCode || item.modpackId || 'minigame';
       const meta = buildExerciseSummary(exId, catalog, fallbackById, item.modpackId, item.side);
+      const itemCompleted = Boolean(input.completedTodayOverride || isScheduleItemCompleted(item));
       return {
         id: item.id,
         exerciseId: item.exerciseId || exId,
@@ -2448,7 +2487,7 @@ export function resolveTodayPatientSchedule(input: {
         sets: item.sets,
         reps: item.reps,
         holdSec: meta.holdSec,
-        status: completedToday || item.status === 'COMPLETED' ? 'COMPLETED' : 'ACTIVE',
+        status: itemCompleted ? 'COMPLETED' : 'ACTIVE',
         notes: item.notes,
       };
     });

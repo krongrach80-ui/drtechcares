@@ -565,7 +565,8 @@ export function captureCanonicalFaceSnapshot(
         const maxX = Math.max(...xs);
         const minY = Math.min(...ys);
         const maxY = Math.max(...ys);
-        const faceSpan = Math.max(36, Math.max((maxX - minX) * 1.18, (maxY - minY) * 1.15));
+        // Include moderate head contour padding (1.32x) so @vladmandic/human BlazeFace reliably detects turned yaw/pitch faces
+        const faceSpan = Math.max(42, Math.max((maxX - minX) * 1.32, (maxY - minY) * 1.32));
         const cx = (minX + maxX) * 0.5;
         const cy = minY + (maxY - minY) * 0.48;
 
@@ -1809,6 +1810,7 @@ export async function loadEnrolledPatientsWithBiometrics(
                 avatarUrl: typeof p.faceImageUrl === 'string' ? p.faceImageUrl : undefined,
                 framesCaptured: typeof p.faceFramesCount === 'number' ? p.faceFramesCount : 120,
                 biometricEngine: p.biometricEngine as PatientRecord['biometricEngine'],
+                geometricRatios: (p.geometricRatios as PatientRecord['geometricRatios']) ?? undefined,
               },
             ),
             true,

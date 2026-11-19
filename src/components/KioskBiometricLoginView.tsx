@@ -79,11 +79,7 @@ import {
   type BiometricVerificationJson,
   type LivenessAndPoseReport,
 } from '@drtechcares/face-client';
-import {
-  FacePresenceTracker,
-  notifyMascotSpeechEnd,
-  notifyMascotSpeechStart,
-} from '@drtechcares/kiosk-input';
+import { FacePresenceTracker } from '@drtechcares/kiosk-input';
 import { POSE_INDEX } from '@drtechcares/pose-engine';
 import {
   STRICT_LOGIN_MAX_PITCH_DEG,
@@ -101,7 +97,6 @@ import {
   KineticAuthStatusBadge,
   KineticEmblemSvg,
 } from './KineticAuthStatusBadge';
-import { DrTechCareMascot } from './DrTechCareMascot';
 import {
   Bell,
   CameraOff,
@@ -723,7 +718,7 @@ const COPY: Record<
     pinClearBtn: 'ล้าง',
     pinNotFoundError: 'ไม่พบข้อมูลผู้ป่วยสำหรับรหัส PIN นี้ (หรือต้องให้เจ้าหน้าที่เข้าสู่ระบบก่อน)',
     pinAuthError: 'การค้นหารหัส PIN 4 หลักต้องใช้สิทธิ์เจ้าหน้าที่ หรือติดต่อเคาน์เตอร์พยาบาล',
-    aboutBullet1: '• ระบบยืนยันตัวตนชีวมาตร 512 มิติ พร้อม Anti-Spoofing 3D Liveness Detection',
+    aboutBullet1: '• ระบบยืนยันตัวตนชีวมาตร 1024 มิติ พร้อม Anti-Spoofing 3D Liveness Detection',
     aboutBullet2Prefix: '• เชื่อมต่อฐานข้อมูล Supabase Cloud (',
     aboutBullet2Suffix: ') แบบเรียลไทม์',
     aboutBullet3: '• รองรับการใช้งาน 3 ภาษา (ไทย / 中文 / English) และการควบคุมไร้สัมผัส',
@@ -1015,7 +1010,6 @@ export function KioskBiometricLoginView({
       finished = true;
       clearTimers();
       activeUtteranceRef.current = null;
-      notifyMascotSpeechEnd('kiosk_login');
       isSpeechDoneRef.current = true;
       setIsWelcomeSpeechDone(true);
       setRaisedDuringSpeech(false);
@@ -1026,11 +1020,9 @@ export function KioskBiometricLoginView({
       finished = true;
       clearTimers();
       activeUtteranceRef.current = null;
-      notifyMascotSpeechEnd('kiosk_login');
       const audio = modalAudioRef.current;
       if (audio) {
         try {
-          audio.onplay = null;
           audio.onended = null;
           audio.onerror = null;
           audio.pause();
@@ -1085,8 +1077,23 @@ export function KioskBiometricLoginView({
     };
     startSafetyMonitor();
 
+    let fallbackTriggered = false;
+    let startWatchdog: number | null = window.setTimeout(() => {
+      if (!finished && modalSpeakSeqRef.current === seq) {
+        markSpeechDone();
+      }
+    }, 2200);
+    const clearStartWatchdog = () => {
+      if (startWatchdog !== null) {
+        window.clearTimeout(startWatchdog);
+        startWatchdog = null;
+      }
+    };
+
     const speakWebFallback = () => {
-      if (finished || modalSpeakSeqRef.current !== seq) return;
+      if (fallbackTriggered || finished || modalSpeakSeqRef.current !== seq) return;
+      fallbackTriggered = true;
+      clearStartWatchdog();
       if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') {
         return;
       }
@@ -1104,19 +1111,10 @@ export function KioskBiometricLoginView({
           utterance.lang = matchedVoice?.lang || langOpt.bcp47;
           if (matchedVoice) utterance.voice = matchedVoice;
           utterance.rate = VERIFIED_MODAL_SPEECH_RATE;
-          utterance.onstart = () => {
-            if (!finished && modalSpeakSeqRef.current === seq) {
-              notifyMascotSpeechStart({
-                text: cleanSpeechText,
-                source: 'kiosk_login',
-                pose: 'greeting',
-              });
-            }
-          };
           utterance.onend = () => markSpeechDone();
           utterance.onerror = () => {
-            // Keep locked until fallback timer if speech engine errors/is muted
             activeUtteranceRef.current = null;
+            markSpeechDone();
           };
           activeUtteranceRef.current = utterance;
           synth.speak(utterance);
@@ -1142,16 +1140,11 @@ export function KioskBiometricLoginView({
           audio.preload = 'auto';
           modalAudioRef.current = audio;
         }
-        audio.onplay = () => {
-          if (!finished && modalSpeakSeqRef.current === seq) {
-            notifyMascotSpeechStart({
-              text: greeting,
-              source: 'kiosk_login',
-              pose: 'greeting',
-            });
-          }
+        audio.onplaying = () => clearStartWatchdog();
+        audio.onended = () => {
+          clearStartWatchdog();
+          markSpeechDone();
         };
-        audio.onended = () => markSpeechDone();
         audio.onerror = () => speakWebFallback();
         audio.defaultPlaybackRate = VERIFIED_MODAL_SPEECH_RATE;
         audio.src = buildTtsProxyUrl(greeting, langOpt.ttsLang);
@@ -1163,6 +1156,8 @@ export function KioskBiometricLoginView({
               err && typeof err === 'object' && 'name' in err ? String((err as { name: string }).name) : '';
             if (name !== 'AbortError') {
               speakWebFallback();
+            } else {
+              clearStartWatchdog();
             }
           });
         }
@@ -1173,7 +1168,10 @@ export function KioskBiometricLoginView({
       speakWebFallback();
     }
 
-    return stopSpeech;
+    return () => {
+      clearStartWatchdog();
+      stopSpeech();
+    };
   }, [verifiedModalPayload?.patient.id, lang, modalCopy?.voiceGreeting, voiceMuted]);
 
   const [showPinModal, setShowPinModal] = useState(false);
@@ -1272,58 +1270,6 @@ export function KioskBiometricLoginView({
     }, KIOSK_AUTH_HOLD_DELAY_MS);
     return () => window.clearTimeout(timerId);
   }, [verifiedModalPayload]);
-
-  const [landingGreetingTalking, setLandingGreetingTalking] = useState<boolean>(true);
-  const landingGreetingTimerRef = useRef<number | null>(null);
-  const triggerLandingGreetingAnim = useCallback((durationMs = 3400) => {
-    setLandingGreetingTalking(true);
-    if (landingGreetingTimerRef.current !== null && typeof window !== 'undefined') {
-      window.clearTimeout(landingGreetingTimerRef.current);
-    }
-    if (typeof window !== 'undefined') {
-      landingGreetingTimerRef.current = window.setTimeout(() => {
-        landingGreetingTimerRef.current = null;
-        setLandingGreetingTalking(false);
-      }, durationMs);
-    }
-  }, []);
-
-  useEffect(() => {
-    triggerLandingGreetingAnim(3600);
-    return () => {
-      if (landingGreetingTimerRef.current !== null && typeof window !== 'undefined') {
-        window.clearTimeout(landingGreetingTimerRef.current);
-        landingGreetingTimerRef.current = null;
-      }
-    };
-  }, [lang, triggerLandingGreetingAnim]);
-
-  const handleReplayLandingGreeting = useCallback(() => {
-    triggerLandingGreetingAnim(3000);
-    if (voiceMuted || typeof window === 'undefined') return;
-    const greetingLine =
-      lang === 'en'
-        ? 'Hello! Welcome to Dr.Tech.Care. Please look at the camera to begin.'
-        : lang === 'cn'
-          ? '您好！欢迎使用 Dr.Tech.Care，请直视摄像头自动识别。'
-          : 'สวัสดีครับ ยินดีต้อนรับสู่คลินิก Dr.Tech.Care มองกล้องเพื่อเริ่มใช้งานได้เลยครับ';
-    const ttsLang = lang === 'en' ? 'en' : lang === 'cn' ? 'zh' : 'th';
-    try {
-      const a = new Audio(buildTtsProxyUrl(greetingLine, ttsLang));
-      a.onplay = () => {
-        notifyMascotSpeechStart({ text: greetingLine, source: 'kiosk_login', pose: 'greeting' });
-      };
-      a.onended = () => {
-        notifyMascotSpeechEnd('kiosk_login');
-      };
-      a.onerror = () => {
-        notifyMascotSpeechEnd('kiosk_login');
-      };
-      void a.play().catch(() => {});
-    } catch {
-      // Ignore audio playback errors
-    }
-  }, [lang, triggerLandingGreetingAnim, voiceMuted]);
   const onPatientAuthenticatedRef = useRef(onPatientAuthenticated);
   onPatientAuthenticatedRef.current = onPatientAuthenticated;
   const presenceRef = useRef(new FacePresenceTracker());
@@ -1382,6 +1328,17 @@ export function KioskBiometricLoginView({
   const mirroredRef = useRef(mirrored);
   mirroredRef.current = mirrored;
   const lastCandidatesSyncAtRef = useRef<number>(0);
+  const candidatesLoadedRef = useRef<boolean>(false);
+  const humanWarmupReadyRef = useRef<boolean>(false);
+  const toastTimerRef = useRef<number | null>(null);
+  const pinSubmitTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+      if (pinSubmitTimerRef.current !== null) window.clearTimeout(pinSubmitTimerRef.current);
+    };
+  }, []);
 
   const refreshBiometricCandidates = useCallback(async (force = false) => {
     const now = Date.now();
@@ -1391,6 +1348,7 @@ export function KioskBiometricLoginView({
     lastCandidatesSyncAtRef.current = now;
     try {
       const loaded = await fetchLiveBiometricsFromSupabase(apiClient);
+      candidatesLoadedRef.current = true;
       biometricCandidatesRef.current = loaded.compatibleCandidates;
       biometricIndexRef.current = loaded.candidates.map((c) => c.sourceEntry);
       accountCountsRef.current = {
@@ -1417,6 +1375,7 @@ export function KioskBiometricLoginView({
         reason: prev?.reason ?? (loaded.validAccounts === 0 ? 'NO_CANDIDATES' : 'READY'),
       }));
     } catch (err) {
+      candidatesLoadedRef.current = true;
       setSupabaseSyncError(err instanceof Error ? err.message : 'Supabase sync unavailable');
     }
   }, [apiClient]);
@@ -1433,7 +1392,9 @@ export function KioskBiometricLoginView({
 
   const showToast = useCallback((msg: string) => {
     setToastMsg(msg);
-    window.setTimeout(() => {
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => {
+      toastTimerRef.current = null;
       setToastMsg((prev) => (prev === msg ? null : prev));
     }, 4500);
   }, []);
@@ -1569,6 +1530,7 @@ export function KioskBiometricLoginView({
     let lastDetectTs = 0;
     let lastPoseDetectTs = 0;
     let lastProcessedVideoTime = -1;
+    let lastProcessedWallMs = 0;
     let lastTelemetryUiSyncAt = 0;
     let lastBioVerifiedUi = false;
     let lastSpoofUi = false;
@@ -1603,13 +1565,21 @@ export function KioskBiometricLoginView({
 
     const stopMediaAndDetectors = () => {
       cancelAnimationFrame(rafId);
-      landmarker?.close();
+      const safeClose = (det: { close?: () => void } | null) => {
+        if (!det) return;
+        try {
+          det.close?.();
+        } catch {
+          // Ignore WASM teardown exception so remaining detectors & stream still release
+        }
+      };
+      safeClose(landmarker);
       landmarker = null;
-      roiLandmarker?.close();
+      safeClose(roiLandmarker);
       roiLandmarker = null;
-      handLandmarker?.close();
+      safeClose(handLandmarker);
       handLandmarker = null;
-      poseLandmarker?.close();
+      safeClose(poseLandmarker);
       poseLandmarker = null;
       stream?.getTracks().forEach((track) => track.stop());
       stream = null;
@@ -1687,7 +1657,9 @@ export function KioskBiometricLoginView({
         setTwoHandDetected(false);
         setTwoHandCameraReady(false);
         // Eagerly warm up shared @vladmandic/human faceres (1024-D) engine & load biometric vault
-        void warmupBiometricEngine();
+        void warmupBiometricEngine().then((ready) => {
+          humanWarmupReadyRef.current = Boolean(ready);
+        });
         void refreshBiometricCandidates();
         if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
           setCameraError('Browser does not support camera access');
@@ -1725,7 +1697,13 @@ export function KioskBiometricLoginView({
             // Try next WASM base path
           }
         }
-        if (!vision || !active) return;
+        if (!vision || !active) {
+          if (active && !vision) {
+            setCameraError('ไม่สามารถโหลดระบบตรวจจับใบหน้า (MediaPipe WASM) ได้');
+          }
+          stopMediaAndDetectors();
+          return;
+        }
 
         // Pre-warm HandLandmarker + PoseLandmarker in parallel while face scanning runs
         void warmupGestureDetectors(vision);
@@ -1749,6 +1727,10 @@ export function KioskBiometricLoginView({
         }
         if (!createdLandmarker || !active) {
           createdLandmarker?.close();
+          if (active && !createdLandmarker) {
+            setCameraError('ไม่สามารถเริ่มตัวตรวจจับใบหน้า (FaceLandmarker) ได้');
+          }
+          stopMediaAndDetectors();
           return;
         }
         landmarker = createdLandmarker;
@@ -1917,7 +1899,13 @@ export function KioskBiometricLoginView({
                   reason: 'NO_CANDIDATES',
                 });
 
-                if (params.snapBioVerified && !params.snapIsSpoof) {
+                if (
+                  params.snapBioVerified &&
+                  !params.snapIsSpoof &&
+                  candidatesLoadedRef.current &&
+                  humanWarmupReadyRef.current &&
+                  !(typeof document !== 'undefined' && document.hidden)
+                ) {
                   if (bioVerifiedUnmatchedStartAt === 0) {
                     bioVerifiedUnmatchedStartAt = params.snapNow;
                   }
@@ -1930,7 +1918,7 @@ export function KioskBiometricLoginView({
                   setScanStage('burst');
                 } else {
                   bioVerifiedUnmatchedStartAt = 0;
-                  setScanStage('scanning');
+                  setScanStage(candidatesLoadedRef.current ? 'scanning' : 'burst');
                 }
                 return;
               }
@@ -2153,7 +2141,14 @@ export function KioskBiometricLoginView({
 
               const unmatchedElapsed =
                 bioVerifiedUnmatchedStartAt > 0 ? params.snapNow - bioVerifiedUnmatchedStartAt : 0;
-              if (!isLastVerifyAmbiguous && stepRes.streak === 0 && unmatchedElapsed >= 4500) {
+              if (
+                candidatesLoadedRef.current &&
+                humanWarmupReadyRef.current &&
+                !(typeof document !== 'undefined' && document.hidden) &&
+                !isLastVerifyAmbiguous &&
+                stepRes.streak === 0 &&
+                unmatchedElapsed >= 4500
+              ) {
                 shouldContinueLoop = false;
                 setScanStage('not_found');
                 return;
@@ -2607,14 +2602,15 @@ export function KioskBiometricLoginView({
               return;
             }
 
-            if (videoRef.current.readyState >= 2) {
+            if (videoRef.current.readyState >= 2 && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
               const now = performance.now();
               const currentVideoTime = videoRef.current.currentTime;
-              // Skip duplicate RAF ticks on identical webcam frames so microMotion & tracking stay 1:1 with camera
-              if (currentVideoTime === lastProcessedVideoTime) {
+              // Skip duplicate RAF ticks unless webcam videoTime stalled >120ms while stream stays live
+              if (currentVideoTime === lastProcessedVideoTime && now - lastProcessedWallMs < 120) {
                 return;
               }
               lastProcessedVideoTime = currentVideoTime;
+              lastProcessedWallMs = now;
 
               const detectTs = Math.max(lastDetectTs + 1, Math.round(now));
               lastDetectTs = detectTs;
@@ -3080,7 +3076,9 @@ export function KioskBiometricLoginView({
     setPinDigits(next);
     setPinError(null);
     if (next.length === 4) {
-      window.setTimeout(() => {
+      if (pinSubmitTimerRef.current !== null) window.clearTimeout(pinSubmitTimerRef.current);
+      pinSubmitTimerRef.current = window.setTimeout(() => {
+        pinSubmitTimerRef.current = null;
         void handlePinSubmit(next);
       }, 180);
     }
@@ -3456,38 +3454,6 @@ export function KioskBiometricLoginView({
                       <span className="truncate">{bottomPillText}</span>
                     </div>
                   </div>
-                )}
-
-                {!verifiedModalPayload && scanStage !== 'not_found' && (
-                  <button
-                    type="button"
-                    onClick={handleReplayLandingGreeting}
-                    data-testid="kiosk-landing-greeting-mascot"
-                    className="absolute bottom-16 left-3 z-20 flex items-end gap-2 rounded-2xl border border-teal-200/90 bg-white/92 px-2.5 py-1.5 shadow-lg backdrop-blur-md hover:bg-white transition cursor-pointer"
-                  >
-                    <DrTechCareMascot
-                      pose="greeting"
-                      isSpeaking={landingGreetingTalking}
-                      showSpeechBubble={false}
-                      className="w-16 h-16 sm:w-20 sm:h-20 shrink-0"
-                      testId="kiosk-opening-mascot"
-                    />
-                    <div className="text-left pr-1 pb-1">
-                      <div className="text-[10px] font-black uppercase tracking-wide text-[#0284C7]">
-                        Dr. TechCare
-                      </div>
-                      <div className="text-xs sm:text-sm font-black text-[#0F4C81] leading-tight">
-                        {lang === 'en' ? 'Hello! Welcome!' : lang === 'cn' ? '您好！欢迎使用' : 'สวัสดีครับ!'}
-                      </div>
-                      <div className="text-[10px] font-bold text-slate-500 leading-tight">
-                        {lang === 'en'
-                          ? 'Look at camera to sign in'
-                          : lang === 'cn'
-                            ? '请看镜头自动识别'
-                            : 'มองกล้องเพื่อเข้าใช้งานครับ'}
-                      </div>
-                    </div>
-                  </button>
                 )}
               </>
             ) : (

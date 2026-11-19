@@ -104,25 +104,45 @@ export default {
             const slashIdx = url.pathname.lastIndexOf('/');
             const baseDir = slashIdx >= 0 ? url.pathname.slice(0, slashIdx) : '';
             const origin = url.origin;
+            let activeReader = null;
+            let streamCancelled = false;
             const stream = new ReadableStream({
               async start(controller) {
                 try {
                   for (const partName of meta.parts) {
+                    if (streamCancelled) break;
                     const partUrl = new URL(`${baseDir}/${partName}`, origin);
                     const partRes = await env.ASSETS.fetch(new Request(partUrl.toString()));
                     if (!partRes.ok || !partRes.body) {
                       throw new Error(`Missing model chunk ${partName} (${partRes.status})`);
                     }
-                    const reader = partRes.body.getReader();
-                    while (true) {
-                      const { done, value } = await reader.read();
+                    activeReader = partRes.body.getReader();
+                    while (!streamCancelled) {
+                      const { done, value } = await activeReader.read();
                       if (done) break;
                       if (value) controller.enqueue(value);
                     }
+                    activeReader.releaseLock();
+                    activeReader = null;
                   }
-                  controller.close();
+                  if (!streamCancelled) {
+                    controller.close();
+                  }
                 } catch (err) {
-                  controller.error(err);
+                  if (!streamCancelled) {
+                    controller.error(err);
+                  }
+                }
+              },
+              async cancel() {
+                streamCancelled = true;
+                if (activeReader) {
+                  try {
+                    await activeReader.cancel();
+                  } catch {
+                    // Ignore reader cancel errors
+                  }
+                  activeReader = null;
                 }
               },
             });
@@ -143,15 +163,20 @@ export default {
         });
       }
 
-      // SPA fallback for /, /kiosk, /login, /pt, /admin, /patient
+      // SPA fallback for /, /kiosk, /login, /pt, /admin, /patient (GET/HEAD only)
       const spaRoutes = ['/', '/kiosk', '/login', '/pt', '/admin', '/patient'];
-      if (spaRoutes.some((prefix) => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`))) {
+      if (
+        (request.method === 'GET' || request.method === 'HEAD') &&
+        spaRoutes.some((prefix) => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`))
+      ) {
         const indexUrl = new URL('/index.html', url.origin);
-        const spaRes = await env.ASSETS.fetch(new Request(indexUrl.toString(), request));
+        const spaRes = await env.ASSETS.fetch(
+          new Request(indexUrl.toString(), { method: 'GET', headers: request.headers }),
+        );
         const headers = new Headers(spaRes.headers);
         headers.set('X-Robots-Tag', 'noindex, nofollow');
         headers.set('X-Content-Type-Options', 'nosniff');
-        return new Response(spaRes.body, {
+        return new Response(request.method === 'HEAD' ? null : spaRes.body, {
           status: spaRes.status,
           statusText: spaRes.statusText,
           headers,

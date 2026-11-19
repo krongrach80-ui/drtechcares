@@ -13,13 +13,23 @@ const FORBIDDEN_BIOMETRIC_STORAGE_PATTERNS = [
   /centroid/i,
 ];
 
+const EXEMPT_ACTIVE_STORAGE_KEYS = new Set<string>([
+  'drtech_biometric_vault_v3',
+  'drtech_face_templates',
+]);
+
+function isForbiddenLegacyKey(key: string | null): key is string {
+  if (!key || EXEMPT_ACTIVE_STORAGE_KEYS.has(key)) return false;
+  return FORBIDDEN_BIOMETRIC_STORAGE_PATTERNS.some((re) => re.test(key));
+}
+
 export function purgeLegacyBiometricCache(): string[] {
   const purgedKeys: string[] = [];
   if (typeof globalThis.localStorage !== 'undefined') {
     const keysToRemove: string[] = [];
     for (let i = 0; i < globalThis.localStorage.length; i += 1) {
       const key = globalThis.localStorage.key(i);
-      if (key && FORBIDDEN_BIOMETRIC_STORAGE_PATTERNS.some((re) => re.test(key))) {
+      if (isForbiddenLegacyKey(key)) {
         keysToRemove.push(key);
       }
     }
@@ -32,7 +42,7 @@ export function purgeLegacyBiometricCache(): string[] {
     const keysToRemove: string[] = [];
     for (let i = 0; i < globalThis.sessionStorage.length; i += 1) {
       const key = globalThis.sessionStorage.key(i);
-      if (key && FORBIDDEN_BIOMETRIC_STORAGE_PATTERNS.some((re) => re.test(key))) {
+      if (isForbiddenLegacyKey(key)) {
         keysToRemove.push(key);
       }
     }
@@ -49,7 +59,7 @@ export function assertZeroGhostLocalCache(): { clean: boolean; leakedKeys: strin
   if (typeof globalThis.localStorage !== 'undefined') {
     for (let i = 0; i < globalThis.localStorage.length; i += 1) {
       const key = globalThis.localStorage.key(i);
-      if (key && FORBIDDEN_BIOMETRIC_STORAGE_PATTERNS.some((re) => re.test(key))) {
+      if (isForbiddenLegacyKey(key)) {
         leakedKeys.push(key);
       }
     }

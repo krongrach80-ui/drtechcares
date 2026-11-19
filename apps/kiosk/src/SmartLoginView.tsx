@@ -61,109 +61,169 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
           video: deviceId ? { deviceId: { exact: deviceId }, width: 640, height: 480 } : { width: 640, height: 480 },
           audio: false,
         });
-        if (!active || !videoRef.current) return;
+        if (!active || !videoRef.current) {
+          stream.getTracks().forEach((tr) => tr.stop());
+          stream = null;
+          return;
+        }
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
+        if (!active) {
+          stream.getTracks().forEach((tr) => tr.stop());
+          stream = null;
+          return;
+        }
 
-        const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
-        landmarker = await FaceLandmarker.createFromOptions(vision, {
-          baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
-          runningMode: 'VIDEO',
-          numFaces: 2,
-        });
+        let vision;
+        for (const wasmBase of [
+          '/mediapipe/wasm',
+          '/models/wasm',
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
+        ]) {
+          try {
+            vision = await FilesetResolver.forVisionTasks(wasmBase);
+            break;
+          } catch {
+            // Try next WASM base path
+          }
+        }
+        if (!vision || !active) {
+          stream.getTracks().forEach((tr) => tr.stop());
+          stream = null;
+          return;
+        }
+        let createdLandmarker: FaceLandmarker | null = null;
+        for (const delegate of ['GPU', 'CPU'] as const) {
+          try {
+            createdLandmarker = await FaceLandmarker.createFromOptions(vision, {
+              baseOptions: { modelAssetPath: '/models/face_landmarker.task', delegate },
+              runningMode: 'VIDEO',
+              numFaces: 2,
+            });
+            break;
+          } catch {
+            // Try CPU fallback
+          }
+        }
+        if (!createdLandmarker || !active) {
+          createdLandmarker?.close();
+          stream.getTracks().forEach((tr) => tr.stop());
+          stream = null;
+          return;
+        }
+        landmarker = createdLandmarker;
 
+        let lastDetectTs = 0;
+        let lastVideoTime = -1;
         const tick = async () => {
           if (!active || !videoRef.current || !landmarker) return;
-          if (videoRef.current.readyState >= 2) {
-            const now = performance.now();
-            const res = landmarker.detectForVideo(videoRef.current, now);
-            const faceCount = res.faceLandmarks?.length ?? 0;
-            const landmarks = res.faceLandmarks?.[0] ?? [];
-            const liveness = evaluateLivenessAndPose(landmarks, prevLandmarks, faceCount);
-            prevLandmarks = landmarks;
+          try {
+            if (
+              videoRef.current.readyState >= 2 &&
+              videoRef.current.videoWidth > 0 &&
+              videoRef.current.videoHeight > 0 &&
+              videoRef.current.currentTime !== lastVideoTime
+            ) {
+              lastVideoTime = videoRef.current.currentTime;
+              const now = performance.now();
+              const detectTs = Math.max(lastDetectTs + 1, Math.round(now));
+              lastDetectTs = detectTs;
+              const res = landmarker.detectForVideo(videoRef.current, detectTs);
+              const faceCount = res.faceLandmarks?.length ?? 0;
+              const landmarks = res.faceLandmarks?.[0] ?? [];
+              const liveness = evaluateLivenessAndPose(landmarks, prevLandmarks, faceCount);
+              prevLandmarks = landmarks;
 
-            const faceBoxRatio =
-              landmarks.length > 400
-                ? Math.abs(landmarks[454].x - landmarks[234].x)
-                : 0;
-            const presence = presenceRef.current.update({
-              facePresent: faceCount === 1,
-              faceSizeRatio: faceBoxRatio,
-              timestampMs: now,
-            });
+              const faceBoxRatio =
+                landmarks.length > 400
+                  ? Math.abs(landmarks[454].x - landmarks[234].x)
+                  : 0;
+              const presence = presenceRef.current.update({
+                facePresent: faceCount === 1,
+                faceSizeRatio: faceBoxRatio,
+                timestampMs: now,
+              });
 
-            if (presence.awake && countdownStartedAt === null) {
-              countdownStartedAt = now;
-              setStatus('countdown');
-            }
+              if (presence.awake && countdownStartedAt === null) {
+                countdownStartedAt = now;
+                setStatus('countdown');
+              }
 
-            if (countdownStartedAt !== null && status !== 'not_found') {
-              const elapsedSec = Math.floor((now - countdownStartedAt) / 1000);
-              const rem = Math.max(0, 3 - elapsedSec);
-              setCountdown(rem);
+              if (countdownStartedAt !== null && status !== 'not_found') {
+                const elapsedSec = Math.floor((now - countdownStartedAt) / 1000);
+                const rem = Math.max(0, 3 - elapsedSec);
+                setCountdown(rem);
 
-              if (rem === 0 && liveness.isLive) {
-                if (!alignCanvasRef.current) alignCanvasRef.current = document.createElement('canvas');
-                const crop = alignFaceTo112(videoRef.current, landmarks, alignCanvasRef.current);
-                if (crop) {
-                  const q = evaluateFrameQuality(crop, {
-                    yawDeg: liveness.yawDeg,
-                    pitchDeg: liveness.pitchDeg,
-                    rollDeg: liveness.rollDeg,
-                  });
-                  if (q.acceptable) {
-                    setStatus('burst');
-                    loginCtrlRef.current.startCountdownComplete();
-                    const snap = captureCanonicalFaceSnapshot(
-                      videoRef.current,
-                      null,
-                      undefined,
-                      landmarks,
-                    );
-                    const extracted = snap ? await extractCanonicalFaceDescriptor(snap) : null;
-                    if (!extracted?.embedding) {
-                      rafId = requestAnimationFrame(tick);
-                      return;
-                    }
-                    const push = loginCtrlRef.current.pushFrame({
-                      vector: extracted.embedding,
-                      qualityScore: q.sharpness,
-                      capturedAfterCountdown: true,
-                      pose: 'front',
-                      sharpness: q.sharpness,
-                      yaw: liveness.yawDeg,
-                      pitch: liveness.pitchDeg,
+                if (rem === 0 && liveness.isLive) {
+                  if (!alignCanvasRef.current) alignCanvasRef.current = document.createElement('canvas');
+                  const crop = alignFaceTo112(videoRef.current, landmarks, alignCanvasRef.current);
+                  if (crop) {
+                    const q = evaluateFrameQuality(crop, {
+                      yawDeg: liveness.yawDeg,
+                      pitchDeg: liveness.pitchDeg,
+                      rollDeg: liveness.rollDeg,
                     });
-                    setBurstCount(push.collected);
+                    if (q.acceptable) {
+                      setStatus('burst');
+                      loginCtrlRef.current.startCountdownComplete();
+                      const snap = captureCanonicalFaceSnapshot(
+                        videoRef.current,
+                        null,
+                        undefined,
+                        landmarks,
+                      );
+                      const extracted = snap ? await extractCanonicalFaceDescriptor(snap) : null;
+                      if (!active) return;
+                      if (!extracted?.embedding) {
+                        rafId = requestAnimationFrame(tick);
+                        return;
+                      }
+                      const push = loginCtrlRef.current.pushFrame({
+                        vector: extracted.embedding,
+                        qualityScore: q.sharpness,
+                        capturedAfterCountdown: true,
+                        pose: 'front',
+                        sharpness: q.sharpness,
+                        yaw: liveness.yawDeg,
+                        pitch: liveness.pitchDeg,
+                      });
+                      setBurstCount(push.collected);
 
-                    if (push.readyToVerify) {
-                      setStatus('verifying');
-                      const probe = loginCtrlRef.current.buildProbeCentroid();
-                      const verifyRes = await apiClient.verifyFaceLogin(probe);
-                      if (verifyRes.matched && verifyRes.patientId) {
-                        const patients = await apiClient.listPatients();
-                        const found = patients.find((p) => p.id === verifyRes.patientId);
-                        if (found) {
-                          onAuthenticated(found);
+                      if (push.readyToVerify) {
+                        setStatus('verifying');
+                        const probe = loginCtrlRef.current.buildProbeCentroid();
+                        const verifyRes = await apiClient.verifyFaceLogin(probe);
+                        if (!active) return;
+                        if (verifyRes.matched && verifyRes.patientId) {
+                          const patients = await apiClient.listPatients();
+                          if (!active) return;
+                          const found = patients.find((p) => p.id === verifyRes.patientId);
+                          if (found) {
+                            onAuthenticated(found);
+                            return;
+                          }
+                        }
+                        // NOT_FOUND_CONFIRM_ROUNDS = 1 -> pause camera & show modal immediately
+                        const miss = loginCtrlRef.current.recordUnmatchedRound();
+                        if (miss.shouldShowNotFoundModal) {
+                          setStatus('not_found');
+                          stream?.getTracks().forEach((tr) => tr.stop());
                           return;
                         }
                       }
-                      // NOT_FOUND_CONFIRM_ROUNDS = 1 -> pause camera & show modal immediately
-                      const miss = loginCtrlRef.current.recordUnmatchedRound();
-                      if (miss.shouldShowNotFoundModal) {
-                        setStatus('not_found');
-                        stream?.getTracks().forEach((tr) => tr.stop());
-                        return;
-                      }
+                    } else {
+                      setQualityMsg(q.reasons.join(', '));
                     }
-                  } else {
-                    setQualityMsg(q.reasons.join(', '));
                   }
                 }
               }
             }
+          } catch {
+            // Keep RAF alive across transient frame errors
           }
-          rafId = requestAnimationFrame(tick);
+          if (active) {
+            rafId = requestAnimationFrame(tick);
+          }
         };
         rafId = requestAnimationFrame(tick);
       } catch {

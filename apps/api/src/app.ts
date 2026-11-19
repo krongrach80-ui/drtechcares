@@ -31,7 +31,11 @@ import {
   type UserRole,
 } from './db';
 
-const vectorSchema = z.array(z.number().finite()).length(FACE_EMBEDDING_DIM);
+const vectorSchema = z
+  .array(z.number().finite())
+  .refine((v) => v.length >= 128 && v.length <= 2048, {
+    message: 'Embedding vector must contain between 128 and 2048 elements',
+  });
 
 const loginSchema = z.object({
   username: z.string().min(1),
@@ -50,15 +54,27 @@ const enrollSchema = z.object({
   password: z.string().optional(),
   frontalCentroid: vectorSchema,
   overallCentroid: vectorSchema,
+  angleEmbeddings: z
+    .object({
+      center: vectorSchema,
+      left: vectorSchema,
+      right: vectorSchema,
+      up: vectorSchema,
+      down: vectorSchema,
+    })
+    .optional(),
+  exemplarEmbeddings: z.array(vectorSchema).max(24).optional(),
+  biometricEngine: z.enum(['human-faceres-1024d', 'arcface-onnx', 'hybrid-512d']).optional(),
   rawFrames: z
     .array(
       z.object({
-        pose: z.enum(['front', 'left', 'right', 'nod']),
+        pose: z.enum(['front', 'left', 'right', 'nod', 'center', 'up', 'down']),
         vector: vectorSchema,
         qualityScore: z.number().positive(),
       }),
     )
-    .length(10),
+    .min(1)
+    .max(120),
 });
 
 const verifySchema = z.object({
@@ -698,6 +714,16 @@ export function createDrTechCaresApiApp(
       d.nextAppointmentDate ||
       new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
+    const normalizedRawFrames = d.rawFrames.map((f) => ({
+      pose: (f.pose === 'center' ? 'front' : f.pose === 'up' || f.pose === 'down' ? 'nod' : f.pose) as
+        | 'front'
+        | 'left'
+        | 'right'
+        | 'nod',
+      vector: f.vector,
+      qualityScore: f.qualityScore,
+    }));
+
     const patient: PatientRecord = {
       id: patientId,
       hn: d.hn,
@@ -714,7 +740,7 @@ export function createDrTechCaresApiApp(
       biometricHistory: {
         frontal_centroid: d.frontalCentroid,
         overall_centroid: d.overallCentroid,
-        raw_frames: d.rawFrames,
+        raw_frames: normalizedRawFrames,
       },
     };
 
@@ -731,7 +757,7 @@ export function createDrTechCaresApiApp(
       pose: 'overall_centroid',
       vector: d.overallCentroid,
     });
-    for (const f of d.rawFrames) {
+    for (const f of normalizedRawFrames) {
       db.state.face_templates.push({
         patientId,
         patientName: d.fullName,

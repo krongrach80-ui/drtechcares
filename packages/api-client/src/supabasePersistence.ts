@@ -664,7 +664,7 @@ async function runHydrateStateFromSupabaseInternal(
   }
   const totalDeadlineMs = Date.now() + 1500;
 
-  // Stage 1 (Priority Clinical Directory): fetch patients & staff_users FIRST with explicit base-schema columns & limit(50)
+  // Stage 1 (Priority Clinical Directory): fetch patients & staff_users FIRST with explicit base-schema columns
   const stage1Tasks: ReadonlyArray<() => PromiseLike<unknown>> = [
     () =>
       selectExplicitWithFallback(
@@ -672,7 +672,7 @@ async function runHydrateStateFromSupabaseInternal(
         (cols) => supabase.from('staff_users').select(cols),
         STAFF_USERS_BASE_COLS,
         STAFF_USERS_BASE_COLS,
-        50,
+        250,
       ),
     () =>
       selectExplicitWithFallback(
@@ -680,7 +680,7 @@ async function runHydrateStateFromSupabaseInternal(
         (cols) => supabase.from('patients').select(cols),
         PATIENTS_BASE_COLS,
         PATIENTS_MINIMAL_SAFE_COLS,
-        50,
+        250,
       ),
     () =>
       supabase
@@ -694,7 +694,7 @@ async function runHydrateStateFromSupabaseInternal(
           .from('banned_targets')
           .select('id,target_type,value,reason,banned_by,created_at')
           .order('created_at', { ascending: false }),
-        50,
+        100,
       ),
     () =>
       withQueryLimit(
@@ -703,11 +703,11 @@ async function runHydrateStateFromSupabaseInternal(
           .select('token,user_id,role,ip_address,device_id,created_at,revoked')
           .eq('revoked', false)
           .order('created_at', { ascending: false }),
-        50,
+        100,
       ),
   ];
 
-  // Stage 2 (Biometric Embeddings & Clinical Config): explicit base-schema columns + limit(50)
+  // Stage 2 (Biometric Embeddings & Clinical Config): explicit base-schema columns
   const stage2Tasks: ReadonlyArray<() => PromiseLike<unknown>> = [
     () =>
       selectExplicitWithFallback(
@@ -715,7 +715,7 @@ async function runHydrateStateFromSupabaseInternal(
         (cols) => supabase.from('face_templates').select(cols),
         'patient_id,pose,embedding,quality_score',
         'patient_id,pose,embedding',
-        50,
+        250,
       ),
     () =>
       selectExplicitWithFallback(
@@ -723,12 +723,12 @@ async function runHydrateStateFromSupabaseInternal(
         (cols) => supabase.from('patient_biometrics').select(cols),
         PATIENT_BIOMETRICS_BASE_COLS,
         PATIENT_BIOMETRICS_MINIMAL_SAFE_COLS,
-        50,
+        250,
       ),
     () =>
       withQueryLimit(
         supabase.from('patient_courses').select('id,patient_id,title,weekly_schedule,cognitive_modpack_id,updated_at'),
-        50,
+        250,
       ),
     () =>
       selectExplicitWithFallback(

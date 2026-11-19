@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DynamicExerciseSessionView } from '@apps/kiosk';
+import { CLINICAL_EXERCISES } from '@drtechcares/pose-engine';
 import type {
   DrTechCaresApiClient,
   PatientCourseRecord,
@@ -9,7 +10,6 @@ import type {
   UserAccount,
 } from '@drtechcares/api-client';
 import { Activity, Calendar, KeyRound, LogOut, Sparkles, User } from 'lucide-react';
-import { DrTechCareMascot } from './components/DrTechCareMascot';
 
 interface PatientPersonalPortalProps {
   apiClient: DrTechCaresApiClient;
@@ -26,38 +26,69 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
   const [currentPw, setCurrentPw] = useState('');
   const [newPw, setNewPw] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [savingPhone, setSavingPhone] = useState(false);
+  const [savingPw, setSavingPw] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
+  const mountedRef = useRef(true);
 
-  const loadOwnData = async () => {
-    const [pts, sess, reps] = await Promise.all([
-      apiClient.listPatients(),
-      apiClient.listRehabSessions(),
-      apiClient.listTreatmentReports(),
-    ]);
-    const own = pts[0] ?? null;
-    setPatient(own);
-    if (own) {
-      setPhone(own.phone);
-      const c = await apiClient.getPatientCourse(own.id);
-      setCourse(c);
+  const loadOwnData = useCallback(async () => {
+    try {
+      setErrorMsg(null);
+      const [pts, sess, reps] = await Promise.all([
+        apiClient.listPatients(),
+        apiClient.listRehabSessions(),
+        apiClient.listTreatmentReports(),
+      ]);
+      if (!mountedRef.current) return;
+      const own = pts[0] ?? null;
+      setPatient(own);
+      if (own) {
+        setPhone(own.phone);
+        const c = await apiClient.getPatientCourse(own.id);
+        if (!mountedRef.current) return;
+        setCourse(c);
+      }
+      setSessions(sess);
+      setReports(reps);
+    } catch (err) {
+      if (mountedRef.current) {
+        setErrorMsg(err instanceof Error ? err.message : 'ไม่สามารถโหลดข้อมูลส่วนตัวได้');
+      }
     }
-    setSessions(sess);
-    setReports(reps);
-  };
+  }, [apiClient]);
 
   useEffect(() => {
-    loadOwnData();
-  }, [apiClient]);
+    mountedRef.current = true;
+    void loadOwnData();
+    return () => {
+      mountedRef.current = false;
+    };
+  }, [loadOwnData]);
+
+  const prescribedExercise = useMemo(() => {
+    const todayIdx = new Date().getDay();
+    const days = course?.weeklySchedule ?? [];
+    const todayRoutine = days.find((d) => d.dayIndex === todayIdx && d.dayType === 'training' && d.exercises.length > 0);
+    const anyRoutine = days.find((d) => d.dayType === 'training' && d.exercises.length > 0);
+    const firstId = todayRoutine?.exercises[0]?.exerciseId ?? anyRoutine?.exercises[0]?.exerciseId;
+    if (firstId) {
+      const matched = CLINICAL_EXERCISES.find((ex) => ex.id === firstId || ex.code === firstId);
+      if (matched) return matched;
+    }
+    return CLINICAL_EXERCISES[0];
+  }, [course]);
 
   if (cameraActive && patient) {
     return (
       <div className="mx-auto max-w-6xl p-4">
         <DynamicExerciseSessionView
           patient={patient}
+          exercise={prescribedExercise}
           apiClient={apiClient}
           onFinished={() => {
             setCameraActive(false);
-            loadOwnData();
+            void loadOwnData();
           }}
         />
       </div>
@@ -67,26 +98,16 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-4 animate-view-enter">
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-3xl bg-white p-5 shadow-sm border border-slate-200">
-        <div className="flex items-center gap-3.5">
-          <DrTechCareMascot
-            pose={notice ? 'encouraging' : 'greeting'}
-            isSpeaking={false}
-            size="md"
-            showSpeechBubble={false}
-            className="w-16 h-[72px] shrink-0 animate-view-enter"
-            testId="patient-portal-mascot"
-          />
-          <div>
-            <span className="inline-block rounded-full bg-sky-50 px-3 py-1 text-xs font-bold text-sky-700">
-              PATIENT PORTAL (ดูได้เฉพาะข้อมูลของตัวเอง)
-            </span>
-            <h1 className="mt-1 text-xl font-extrabold text-slate-900">{currentUser.fullName}</h1>
-            {patient && (
-              <p className="text-xs text-slate-500">
-                HN: {patient.hn} • การวินิจฉัย: {patient.diagnosis} • นัดหมายครั้งต่อไป: {patient.nextAppointmentDate}
-              </p>
-            )}
-          </div>
+        <div>
+          <span className="inline-block rounded-full bg-sky-50 px-3 py-1 text-xs font-bold text-sky-700">
+            PATIENT PORTAL (ดูได้เฉพาะข้อมูลของตัวเอง)
+          </span>
+          <h1 className="mt-1 text-xl font-extrabold text-slate-900">{currentUser.fullName}</h1>
+          {patient && (
+            <p className="text-xs text-slate-500">
+              HN: {patient.hn} • การวินิจฉัย: {patient.diagnosis} • นัดหมายครั้งต่อไป: {patient.nextAppointmentDate}
+            </p>
+          )}
         </div>
         <button
           onClick={onLogout}
@@ -99,6 +120,11 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
       {notice && (
         <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-2 text-xs font-bold text-emerald-800 animate-toast-in">
           {notice}
+        </div>
+      )}
+      {errorMsg && (
+        <div className="rounded-xl bg-rose-50 border border-rose-200 px-4 py-2 text-xs font-bold text-rose-700 animate-toast-in">
+          {errorMsg}
         </div>
       )}
 
@@ -121,14 +147,27 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
               className="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm"
             />
             <button
+              type="button"
+              disabled={savingPhone}
               onClick={async () => {
-                if (patient) await apiClient.updatePatient(patient.id, { phone });
-                await apiClient.updateUser(currentUser.id, { phone });
-                setNotice('บันทึกเบอร์โทรศัพท์เรียบร้อย');
+                setErrorMsg(null);
+                setNotice(null);
+                setSavingPhone(true);
+                try {
+                  if (patient) await apiClient.updatePatient(patient.id, { phone });
+                  await apiClient.updateUser(currentUser.id, { phone });
+                  if (mountedRef.current) setNotice('บันทึกเบอร์โทรศัพท์เรียบร้อย');
+                } catch (err) {
+                  if (mountedRef.current) {
+                    setErrorMsg(err instanceof Error ? err.message : 'ไม่สามารถบันทึกเบอร์โทรศัพท์ได้');
+                  }
+                } finally {
+                  if (mountedRef.current) setSavingPhone(false);
+                }
               }}
-              className="rounded-xl bg-sky-600 px-4 py-2 text-xs font-bold text-white"
+              className="rounded-xl bg-sky-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
             >
-              บันทึก
+              {savingPhone ? 'กำลังบันทึก...' : 'บันทึก'}
             </button>
           </div>
           <div className="pt-2 border-t border-slate-100 space-y-2">
@@ -151,15 +190,34 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
                 className="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-xs"
               />
               <button
+                type="button"
+                disabled={savingPw}
                 onClick={async () => {
-                  await apiClient.changePassword(currentPw, newPw);
-                  setCurrentPw('');
-                  setNewPw('');
-                  setNotice('เปลี่ยนรหัสผ่านเรียบร้อย');
+                  setErrorMsg(null);
+                  setNotice(null);
+                  if (!currentPw || newPw.length < 6) {
+                    setErrorMsg('กรุณากรอกรหัสผ่านเดิมและรหัสผ่านใหม่อย่างน้อย 6 ตัวอักษร');
+                    return;
+                  }
+                  setSavingPw(true);
+                  try {
+                    await apiClient.changePassword(currentPw, newPw);
+                    if (mountedRef.current) {
+                      setCurrentPw('');
+                      setNewPw('');
+                      setNotice('เปลี่ยนรหัสผ่านเรียบร้อย');
+                    }
+                  } catch (err) {
+                    if (mountedRef.current) {
+                      setErrorMsg(err instanceof Error ? err.message : 'เปลี่ยนรหัสผ่านไม่สำเร็จ');
+                    }
+                  } finally {
+                    if (mountedRef.current) setSavingPw(false);
+                  }
                 }}
-                className="rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] px-3 py-2 text-xs font-bold text-white"
+                className="rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] px-3 py-2 text-xs font-bold text-white disabled:opacity-50"
               >
-                เปลี่ยนรหัส
+                {savingPw ? 'กำลังเปลี่ยน...' : 'เปลี่ยนรหัส'}
               </button>
             </div>
           </div>

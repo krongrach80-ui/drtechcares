@@ -1208,8 +1208,14 @@ export function useKioskSocket(
   const wsRef = useRef<WebSocket | null>(null);
   const userToggledModeRef = useRef<boolean>(false);
 
+  const patientOverrideRef = useRef(options?.patientOverride);
+  patientOverrideRef.current = options?.patientOverride;
+  const selectedExerciseRef = useRef(selectedExercise);
+  selectedExerciseRef.current = selectedExercise;
+
   const sendExercisePrescription = useCallback((rx: ExercisePrescriptionOption) => {
     const ws = wsRef.current;
+    const pOverride = patientOverrideRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(
         JSON.stringify({
@@ -1228,22 +1234,22 @@ export function useKioskSocket(
             exercise_name: `${rx.name_en} (${rx.name_th})`,
             target_joint: rx.target_joint,
             target_rom_deg:
-              typeof options?.patientOverride?.max_safe_rom_deg === 'number' &&
-                options.patientOverride.max_safe_rom_deg > 0 &&
+              typeof pOverride?.max_safe_rom_deg === 'number' &&
+                pOverride.max_safe_rom_deg > 0 &&
                 !rx.target_joint.includes('knee')
-                ? Math.min(rx.target_rom_deg, options.patientOverride.max_safe_rom_deg)
+                ? Math.min(rx.target_rom_deg, pOverride.max_safe_rom_deg)
                 : rx.target_rom_deg,
             hold_sec: rx.hold_sec,
             target_reps: rx.target_reps,
-            max_safe_rom_deg: options?.patientOverride?.max_safe_rom_deg ?? undefined,
-            affected_side: options?.patientOverride?.affected_side ?? undefined,
-            stroke_type: options?.patientOverride?.stroke_type ?? undefined,
-            motor_assessment_score: options?.patientOverride?.motor_assessment_score ?? undefined,
+            max_safe_rom_deg: pOverride?.max_safe_rom_deg ?? undefined,
+            affected_side: pOverride?.affected_side ?? undefined,
+            stroke_type: pOverride?.stroke_type ?? undefined,
+            motor_assessment_score: pOverride?.motor_assessment_score ?? undefined,
           },
         }),
       );
     }
-  }, [options?.patientOverride]);
+  }, []);
 
   useEffect(() => {
     if (options?.initialSelectedExerciseId !== lastAppliedInitialExRef.current) {
@@ -1290,9 +1296,20 @@ export function useKioskSocket(
 
   // WebSocket client with automatic exponential backoff reconnect
   useEffect(() => {
+    if (
+      typeof window !== 'undefined' &&
+      window.location.protocol === 'https:' &&
+      /^ws:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(wsUrl) &&
+      !(import.meta.env.VITE_EDGE_VISION_WS as string | undefined)?.trim()
+    ) {
+      // Avoid mixed-content WebSocket blocks and reconnect loops on remote HTTPS cloud deployments
+      setConnectionStatus('offline');
+      return;
+    }
     let disposed = false;
     let attempt = 0;
     let reconnectTimer: number | null = null;
+    let healthAbortController: AbortController | null = null;
 
     const connect = () => {
       if (disposed) return;
@@ -1306,7 +1323,12 @@ export function useKioskSocket(
           .replace(/^ws:/i, 'http:')
           .replace(/^wss:/i, 'https:')
           .replace(/\/ws\/kiosk.*$/i, '/health');
-        void fetch(healthUrl, { mode: 'cors' }).catch(() => undefined);
+        healthAbortController?.abort();
+        healthAbortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        void fetch(
+          healthUrl,
+          healthAbortController ? { mode: 'cors', signal: healthAbortController.signal } : { mode: 'cors' },
+        ).catch(() => undefined);
         const ws = new WebSocket(targetWsUrl);
         wsRef.current = ws;
 
@@ -1318,20 +1340,21 @@ export function useKioskSocket(
             setIsDemoMode(false);
           }
           ws.send(JSON.stringify({ type: 'config', stream_video: true }));
-          if (options?.patientOverride?.id) {
+          const pOverride = patientOverrideRef.current;
+          if (pOverride?.id) {
             ws.send(
               JSON.stringify({
                 type: 'lock_patient',
                 patient: {
-                  id: options.patientOverride.id,
-                  hn: options.patientOverride.hn ?? '',
-                  full_name: options.patientOverride.name ?? options.patientOverride.id,
+                  id: pOverride.id,
+                  hn: pOverride.hn ?? '',
+                  full_name: pOverride.name ?? pOverride.id,
                 },
                 start_calibration: false,
               }),
             );
           }
-          sendExercisePrescription(selectedExercise);
+          sendExercisePrescription(selectedExerciseRef.current);
         };
 
         ws.onmessage = (event) => {
@@ -1370,6 +1393,7 @@ export function useKioskSocket(
     connect();
     return () => {
       disposed = true;
+      healthAbortController?.abort();
       if (reconnectTimer !== null) {
         window.clearTimeout(reconnectTimer);
       }

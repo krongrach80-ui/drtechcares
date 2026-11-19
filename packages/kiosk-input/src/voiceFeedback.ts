@@ -79,6 +79,9 @@ export class AudioChimeSynthesizer {
     const ctx = this.getContext();
     if (!ctx) return;
     try {
+      if (ctx.state === 'suspended') {
+        void ctx.resume().catch(() => {});
+      }
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       const now = ctx.currentTime;

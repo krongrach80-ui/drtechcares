@@ -225,8 +225,14 @@ export class RehabExercisePipeline {
     const raw = this.computeModeRawMetric(landmarks, side);
     const smoothedOut = this.smoother.update(side, raw.angleDeg, timestampMs);
 
-    // If landmarks failed visibility/boundary gating -> angleDeg is null, pause hold, retain last reliable
+    // If landmarks failed visibility/boundary gating -> angleDeg is null, pause hold, decay if tracking dropped >500ms
     if (smoothedOut.smoothed === null) {
+      if (smoothedOut.lastReliable === null && this.holdAccumMs > 0) {
+        this.holdAccumMs = Math.max(0, this.holdAccumMs - dtMs * 0.25);
+        if (this.holdAccumMs === 0 && this.state === 'HOLDING_TARGET') {
+          this.state = 'MOVING_TO_TARGET';
+        }
+      }
       return this.snapshot(
         null,
         smoothedOut.lastReliable,
@@ -244,6 +250,8 @@ export class RehabExercisePipeline {
 
     const det = this.exercise.detection;
     const inTargetZone = angle >= det.targetMinDeg && angle <= det.targetMaxDeg;
+    const inExtendedHoldZone =
+      angle >= det.targetMinDeg && angle <= Math.min(185, det.targetMaxDeg + 20);
     const inRestZone = angle <= det.startRestMaxDeg;
     const blockedByElbow = raw.elbowGuardFailed;
 
@@ -281,6 +289,7 @@ export class RehabExercisePipeline {
           this.state = 'IDLE';
         }
       } else {
+        this.holdAccumMs = Math.max(0, this.holdAccumMs - dtMs * 0.15);
         this.state = 'MOVING_TO_TARGET';
       }
     } else {
@@ -302,11 +311,11 @@ export class RehabExercisePipeline {
           break;
         }
         case 'HOLDING_TARGET': {
-          if (!inTargetZone) {
-            // Hysteresis: small dip resets hold progress back to moving
-            if (angle < det.targetMinDeg - 8) {
+          if (!inExtendedHoldZone) {
+            // Soft hysteresis: decay slightly on brief dips, reset to moving if well below threshold
+            this.holdAccumMs = Math.max(0, this.holdAccumMs - dtMs * 0.25);
+            if (angle < det.targetMinDeg - 8 && this.holdAccumMs === 0) {
               this.state = 'MOVING_TO_TARGET';
-              this.holdAccumMs = 0;
             }
           } else {
             this.holdAccumMs += dtMs;

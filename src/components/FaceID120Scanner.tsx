@@ -32,8 +32,6 @@ import {
   useClinicalI18n,
   type ClinicalLang,
 } from '@drtechcares/clinical-i18n';
-import { notifyMascotSpeechEnd, notifyMascotSpeechStart } from '@drtechcares/kiosk-input';
-import { DrTechCareMascot } from './DrTechCareMascot';
 import {
   buildTtsProxyUrl,
   pickSpeechVoice,
@@ -813,7 +811,6 @@ export default function FaceID120Scanner({
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [voiceEnabled, setVoiceEnabled] = useState<boolean>(() => !readStoredKioskVoiceMuted());
-  const [isVoiceSpeaking, setIsVoiceSpeaking] = useState<boolean>(false);
   const [phase, setPhase] = useState<'scanning' | 'computing' | 'completed'>('scanning');
 
   const [capturedCount, setCapturedCount] = useState(0);
@@ -1026,7 +1023,6 @@ export default function FaceID120Scanner({
       if (muted) {
         speakSeqRef.current += 1;
         isSpeakingRef.current = false;
-        setIsVoiceSpeaking(false);
         queuedSpeechRef.current = null;
         cancelAllKioskVoiceSpeech(audioRef.current);
       }
@@ -1036,11 +1032,9 @@ export default function FaceID120Scanner({
   const stopVoicePlayback = useCallback((clearQueue = true) => {
     speakSeqRef.current += 1;
     isSpeakingRef.current = false;
-    setIsVoiceSpeaking(false);
     if (clearQueue) {
       queuedSpeechRef.current = null;
     }
-    notifyMascotSpeechEnd('face_enroll');
     if (typeof window !== 'undefined') {
       if (webFallbackTimerRef.current !== null) {
         window.clearTimeout(webFallbackTimerRef.current);
@@ -1110,8 +1104,6 @@ export default function FaceID120Scanner({
         webFallbackTimerRef.current = null;
       }
       isSpeakingRef.current = false;
-      setIsVoiceSpeaking(false);
-      notifyMascotSpeechEnd('face_enroll');
       const queued = queuedSpeechRef.current;
       queuedSpeechRef.current = null;
       if (queued && voiceEnabledRef.current && !unmountedRef.current) {
@@ -1139,6 +1131,7 @@ export default function FaceID120Scanner({
         return;
       }
       try {
+        const wasSpeaking = window.speechSynthesis.speaking || window.speechSynthesis.pending;
         window.speechSynthesis.cancel();
         const cleanSpeechText = sanitizeSpeechText(trimmed);
         if (!cleanSpeechText) {
@@ -1153,19 +1146,17 @@ export default function FaceID120Scanner({
         if (matched) {
           utter.voice = matched;
         }
-        utter.onstart = () => {
-          if (seq === speakSeqRef.current) {
-            setIsVoiceSpeaking(true);
-            notifyMascotSpeechStart({
-              text: cleanSpeechText,
-              source: 'face_enroll',
-              pose: 'explaining',
-            });
-          }
-        };
         utter.onend = handleFinished;
         utter.onerror = handleFinished;
-        window.speechSynthesis.speak(utter);
+        if (wasSpeaking) {
+          webFallbackTimerRef.current = window.setTimeout(() => {
+            if (seq === speakSeqRef.current) {
+              window.speechSynthesis.speak(utter);
+            }
+          }, 55);
+        } else {
+          window.speechSynthesis.speak(utter);
+        }
       } catch {
         handleFinished();
       }
@@ -1182,8 +1173,6 @@ export default function FaceID120Scanner({
         window.clearTimeout(webFallbackTimerRef.current);
         webFallbackTimerRef.current = null;
       }
-      setIsVoiceSpeaking(true);
-      notifyMascotSpeechStart({ text: trimmed, source: 'face_enroll', pose: 'explaining' });
     };
     audio.onended = handleFinished;
     audio.onerror = triggerWebSpeech;
@@ -1487,15 +1476,26 @@ export default function FaceID120Scanner({
     onReadyStateChangeRef.current?.(false, finalizeScan);
   }, [finalizeScan]);
 
-  useEffect(() => {
+    const captureAngleFrameToCanvasRef = useRef(captureAngleFrameToCanvas);
+    captureAngleFrameToCanvasRef.current = captureAngleFrameToCanvas;
+    const finalizeScanRef = useRef(finalizeScan);
+    finalizeScanRef.current = finalizeScan;
+    const resetScannerStateRef = useRef(resetScannerState);
+    resetScannerStateRef.current = resetScannerState;
+    const speakGuidanceRef = useRef(speakGuidance);
+    speakGuidanceRef.current = speakGuidance;
+    const stopHardwareRef = useRef(stopHardware);
+    stopHardwareRef.current = stopHardware;
+
+    useEffect(() => {
     unmountedRef.current = false;
     if (!active) {
-      stopHardware();
+      stopHardwareRef.current();
       return;
     }
 
     let cancelled = false;
-    resetScannerState();
+    resetScannerStateRef.current();
 
     const startEngineAndCamera = async () => {
       try {
@@ -1523,9 +1523,18 @@ export default function FaceID120Scanner({
 
         streamRef.current = stream;
         const video = videoRef.current;
-        if (!video) return;
+        if (!video) {
+          stream.getTracks().forEach((t) => t.stop());
+          streamRef.current = null;
+          return;
+        }
         video.srcObject = stream;
         await video.play();
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          streamRef.current = null;
+          return;
+        }
         setCameraReady(true);
 
         const snapCanvas = snapshotCanvasRef.current || document.createElement('canvas');
@@ -1537,9 +1546,24 @@ export default function FaceID120Scanner({
         const loadCopy = FACE_ID_120_UI_COPY[langRef.current] ?? FACE_ID_120_UI_COPY.th;
         setModelProgressMsg(loadCopy.loadingWasm);
 
+        const resolveVision = async () => {
+          for (const wasmBase of [
+            '/mediapipe/wasm',
+            '/models/wasm',
+            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
+          ]) {
+            try {
+              return await FilesetResolver.forVisionTasks(wasmBase);
+            } catch {
+              // Try next WASM base path
+            }
+          }
+          throw new Error('Failed to load MediaPipe WASM files');
+        };
+
         const [humanReady, vision] = await Promise.all([
           humanWarmupPromise,
-          FilesetResolver.forVisionTasks('/mediapipe/wasm'),
+          resolveVision(),
         ]);
         if (cancelled) return;
         if (!humanReady) {
@@ -1715,11 +1739,12 @@ export default function FaceID120Scanner({
           return true;
         };
 
+        let lastDetectTs = 0;
         const tickLoop = () => {
           if (cancelled || completedRef.current) return;
           const vid = videoRef.current;
           const lm = landmarkerRef.current;
-          if (!vid || !lm || vid.readyState < 2) {
+          if (!vid || !lm || vid.readyState < 2 || vid.videoWidth === 0 || vid.videoHeight === 0) {
             rafRef.current = requestAnimationFrame(tickLoop);
             return;
           }
@@ -1731,9 +1756,11 @@ export default function FaceID120Scanner({
           lastVideoTimeRef.current = vid.currentTime;
 
           const now = performance.now();
+          const detectTs = Math.max(lastDetectTs + 1, Math.round(now));
+          lastDetectTs = detectTs;
           let result;
           try {
-            result = lm.detectForVideo(vid, now);
+            result = lm.detectForVideo(vid, detectTs);
           } catch {
             rafRef.current = requestAnimationFrame(tickLoop);
             return;
@@ -1827,15 +1854,17 @@ export default function FaceID120Scanner({
 
           if (
             isCenterStage &&
-            centerPoseSamplesRef.current.count === 0 &&
+            centerPoseSamplesRef.current.count < 6 &&
             inCircleGuide &&
             Math.abs(normPose.normYawRatio) <= 0.16 &&
             Math.abs(normPose.pitchDeg) <= 18
           ) {
-            baselineCenterYawRef.current = normPose.yawDeg;
-            baselineCenterPitchRef.current = normPose.pitchDeg;
-            baselineNoseToEyeRatioRef.current = normPose.eyeToNoseRatio;
-            baselineCenterNoseRatioRef.current = normPose.eyeToNoseRatio;
+            const c = centerPoseSamplesRef.current;
+            const n = c.count + 1;
+            baselineCenterYawRef.current = (c.yawSum + normPose.yawDeg) / n;
+            baselineCenterPitchRef.current = (c.pitchSum + normPose.pitchDeg) / n;
+            baselineNoseToEyeRatioRef.current = (c.eyeToNoseSum + normPose.eyeToNoseRatio) / n;
+            baselineCenterNoseRatioRef.current = (c.eyeToNoseSum + normPose.eyeToNoseRatio) / n;
           }
 
           const yawDeg = Math.max(
@@ -2088,17 +2117,9 @@ export default function FaceID120Scanner({
     return () => {
       cancelled = true;
       unmountedRef.current = true;
-      stopHardware();
+      stopHardwareRef.current();
     };
-  }, [
-    active,
-    captureAngleFrameToCanvas,
-    finalizeScan,
-    resetScannerState,
-    retryNonce,
-    speakGuidance,
-    stopHardware,
-  ]);
+  }, [active, retryNonce]);
 
   // Compute which of the 120 ticks are lit based on 5-angle capture progress (40+20+20+20+20)
   const tickStates = useMemo(() => {
@@ -2190,22 +2211,20 @@ export default function FaceID120Scanner({
           <button
             type="button"
             onClick={() => {
-              setVoiceEnabled((prev) => {
-                const next = !prev;
-                voiceEnabledRef.current = next;
-                writeStoredKioskVoiceMuted(!next);
-                if (!next) {
-                  stopVoicePlayback(true);
-                  cancelAllKioskVoiceSpeech(audioRef.current);
-                } else {
-                  const phrase =
-                    phase === 'completed'
-                      ? ui.completedVoice
-                      : getFaceId120TargetGuidance(lang, targetBucketHint).voice;
-                  speakGuidance(phrase, { force: true, interrupt: true, speakLang: lang });
-                }
-                return next;
-              });
+              const next = !voiceEnabledRef.current;
+              voiceEnabledRef.current = next;
+              setVoiceEnabled(next);
+              writeStoredKioskVoiceMuted(!next);
+              if (!next) {
+                stopVoicePlayback(true);
+                cancelAllKioskVoiceSpeech(audioRef.current);
+              } else {
+                const phrase =
+                  phase === 'completed'
+                    ? ui.completedVoice
+                    : getFaceId120TargetGuidance(lang, targetBucketHint).voice;
+                speakGuidance(phrase, { force: true, interrupt: true, speakLang: lang });
+              }
             }}
             aria-pressed={!voiceEnabled}
             className={`inline-flex items-center gap-1.5 rounded-xl border-2 px-3 py-1.5 text-xs font-extrabold shadow-xs transition-all cursor-pointer ${
@@ -2367,25 +2386,15 @@ export default function FaceID120Scanner({
         </div>
       </div>
 
-      {/* Live Counter & Dynamic Multi-Language Guidance with Explaining Dr. TechCare Mascot */}
-      <div className="mt-3 flex flex-col items-center">
-        <div className="inline-flex items-center justify-center gap-3">
-          <DrTechCareMascot
-            pose={phase === 'completed' ? 'speaking' : 'explaining'}
-            isSpeaking={isVoiceSpeaking}
-            showSpeechBubble={false}
-            className="w-16 h-16 sm:w-20 sm:h-20 shrink-0 animate-view-enter"
-            testId="face-id-scanner-mascot"
-          />
-          <div className="text-left">
-            <div className="inline-flex items-baseline gap-2 rounded-full border border-emerald-300 bg-white px-4 py-1 shadow-xs">
-              <span className="font-mono text-2xl font-black text-emerald-600">{capturedCount}</span>
-              <span className="text-xs font-bold text-[#0F4C81]">/ 120 {ui.framesUnit} ({progressPct}%)</span>
-            </div>
-            <h4 className="mt-1.5 text-base font-black text-[#0F4C81]">{guidanceText}</h4>
-            <p className="mt-0.5 text-xs font-semibold text-[#0284C7]">{subCueText}</p>
-          </div>
+      {/* Live Counter & Dynamic Multi-Language Guidance */}
+      <div className="mt-3 text-center">
+        <div className="inline-flex items-baseline gap-2 rounded-full border border-emerald-300 bg-white px-4 py-1 shadow-xs">
+          <span className="font-mono text-2xl font-black text-emerald-600">{capturedCount}</span>
+          <span className="text-xs font-bold text-[#0F4C81]">/ 120 {ui.framesUnit} ({progressPct}%)</span>
         </div>
+
+        <h4 className="mt-2 text-base font-black text-[#0F4C81]">{guidanceText}</h4>
+        <p className="mt-0.5 text-xs font-semibold text-[#0284C7]">{subCueText}</p>
         {phase === 'scanning' && wrongDirCue && (
           <div
             role="status"

@@ -15,8 +15,13 @@ import {
   type UserAccount,
 } from '@drtechcares/api-client';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
-import { notifyMascotSpeechEnd, notifyMascotSpeechStart } from '@drtechcares/kiosk-input';
-import { buildTtsProxyUrl, pickSpeechVoice } from './components/VoiceCoachBanner';
+import {
+  buildTtsProxyUrl,
+  pickSpeechVoice,
+  readStoredKioskVoiceMuted,
+  subscribeKioskVoiceMuted,
+  writeStoredKioskVoiceLang,
+} from './components/VoiceCoachBanner';
 import { PatientPersonalPortal } from './PatientPersonalPortal';
 import { StaffLoginModalOrPage, type StaffAuthIntent } from './StaffLoginModalOrPage';
 import {
@@ -318,7 +323,6 @@ export function App() {
   const stopKioskOverviewSpeech = useCallback(() => {
     overviewSpeakSeqRef.current += 1;
     overviewPendingAudioRef.current = null;
-    notifyMascotSpeechEnd('kiosk_overview');
     if (typeof window !== 'undefined') {
       if (overviewEntryTimerRef.current !== null) {
         window.clearTimeout(overviewEntryTimerRef.current);
@@ -369,21 +373,6 @@ export function App() {
           utterance.lang = matchedVoice?.lang || opt.bcp47;
           if (matchedVoice) utterance.voice = matchedVoice;
           utterance.rate = targetLang === 'th' ? 0.96 : targetLang === 'cn' ? 0.98 : 1.0;
-          utterance.onstart = () => {
-            if (overviewSpeakSeqRef.current === seq) {
-              notifyMascotSpeechStart({ text, source: 'kiosk_overview' });
-            }
-          };
-          utterance.onend = () => {
-            if (overviewSpeakSeqRef.current === seq) {
-              notifyMascotSpeechEnd('kiosk_overview');
-            }
-          };
-          utterance.onerror = () => {
-            if (overviewSpeakSeqRef.current === seq) {
-              notifyMascotSpeechEnd('kiosk_overview');
-            }
-          };
           synth.speak(utterance);
         };
         if (wasBusy) {
@@ -401,10 +390,18 @@ export function App() {
     [],
   );
 
+  useEffect(() => {
+    return subscribeKioskVoiceMuted((muted) => {
+      if (muted) {
+        stopKioskOverviewSpeech();
+      }
+    });
+  }, [stopKioskOverviewSpeech]);
+
   const speakKioskOverview = useCallback(
     (spokenText: string, targetLang: ClinicalLang) => {
       const clean = spokenText.trim();
-      if (!clean || typeof window === 'undefined') return;
+      if (!clean || typeof window === 'undefined' || readStoredKioskVoiceMuted()) return;
       stopKioskOverviewSpeech();
       const seq = overviewSpeakSeqRef.current;
       lastSpokenOverviewKeyRef.current = `${targetLang}:${clean}`;
@@ -418,23 +415,19 @@ export function App() {
             audio.preload = 'auto';
             overviewAudioRef.current = audio;
           }
+          let fallbackTriggered = false;
+          const triggerFallbackOnce = () => {
+            if (fallbackTriggered || overviewSpeakSeqRef.current !== seq) return;
+            fallbackTriggered = true;
+            speakWithWebSpeechFallback(clean, targetLang, seq);
+          };
           audio.playbackRate = targetLang === 'th' ? 1.0 : targetLang === 'cn' ? 0.98 : 1.0;
           audio.onplay = () => {
             if (overviewSpeakSeqRef.current === seq) {
               overviewPendingAudioRef.current = null;
-              notifyMascotSpeechStart({ text: clean, source: 'kiosk_overview' });
             }
           };
-          audio.onended = () => {
-            if (overviewSpeakSeqRef.current === seq) {
-              notifyMascotSpeechEnd('kiosk_overview');
-            }
-          };
-          audio.onerror = () => {
-            if (overviewSpeakSeqRef.current === seq) {
-              speakWithWebSpeechFallback(clean, targetLang, seq);
-            }
-          };
+          audio.onerror = triggerFallbackOnce;
           audio.src = buildTtsProxyUrl(clean, opt.ttsLang);
           const playPromise = audio.play();
           if (playPromise && typeof playPromise.catch === 'function') {
@@ -448,7 +441,7 @@ export function App() {
               if (errName === 'NotAllowedError') {
                 overviewPendingAudioRef.current = { text: clean, lang: targetLang };
               }
-              speakWithWebSpeechFallback(clean, targetLang, seq);
+              triggerFallbackOnce();
             });
           }
           return;
@@ -463,18 +456,9 @@ export function App() {
 
   const handleSelectKioskLang = (nextLang: ClinicalLang, spokenText?: string) => {
     setLang(nextLang);
-    if (typeof window !== 'undefined') {
-      try {
-        window.localStorage.setItem(
-          'drtechcares_voice_coach_lang_v1',
-          nextLang === 'cn' ? 'zh' : nextLang,
-        );
-      } catch {
-        // Ignore storage error
-      }
-      if (spokenText) {
-        speakKioskOverview(spokenText, nextLang);
-      }
+    writeStoredKioskVoiceLang(nextLang === 'cn' ? 'zh' : nextLang);
+    if (spokenText) {
+      speakKioskOverview(spokenText, nextLang);
     }
   };
 
@@ -525,6 +509,19 @@ export function App() {
   const [randomHandSide, setRandomHandSide] = useState<HandChallengeSide>(() => pickRandomHandSide());
   const [completedTodaySession, setCompletedTodaySession] = useState(false);
   const [completedTodayExerciseIds, setCompletedTodayExerciseIds] = useState<string[]>([]);
+
+  const rehabPatientProp = useMemo(() => {
+    if (!authenticatedPatient) return undefined;
+    const p = authenticatedPatient.patient;
+    return {
+      id: p.hn,
+      name: p.fullName,
+      max_safe_rom_deg: p.maxSafeRomDeg,
+      affected_side: p.affectedSide,
+      stroke_type: p.strokeType,
+      motor_assessment_score: p.motorAssessmentScore,
+    };
+  }, [authenticatedPatient]);
 
   useEffect(() => {
     setAllowRestDayPractice(false);
@@ -669,8 +666,19 @@ export function App() {
   const [kioskModpacks, setKioskModpacks] = useState<ModpackRecord[]>([]);
 
   useEffect(() => {
-    if (!kioskEnrollModalOpen || !currentUser) return;
+    if ((!kioskEnrollModalOpen || !currentUser) && !isPoseTestMode) return;
     let cancelled = false;
+    if (isPoseTestMode && (!kioskEnrollModalOpen || !currentUser)) {
+      void apiClient
+        .listExercises()
+        .then((exercisesList) => {
+          if (!cancelled) setKioskExercises(exercisesList);
+        })
+        .catch(() => {});
+      return () => {
+        cancelled = true;
+      };
+    }
     void Promise.all([
       apiClient.listUsers().catch(() => [] as UserAccount[]),
       apiClient.listExercises().catch(() => [] as ManagedExerciseRecord[]),
@@ -684,7 +692,7 @@ export function App() {
           ? activePts
           : fallbackPts.length > 0
             ? fallbackPts
-            : currentUser.role === 'pt'
+            : currentUser && currentUser.role === 'pt'
               ? [currentUser]
               : [],
       );
@@ -694,7 +702,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [kioskEnrollModalOpen, currentUser, apiClient]);
+  }, [kioskEnrollModalOpen, isPoseTestMode, currentUser, apiClient]);
 
   const navigate = (next: AppRoute) => {
     setRoute(next);
@@ -1104,7 +1112,7 @@ export function App() {
         );
       }
 
-      if (hasAppointmentToday && trainingStage === 'overview') {
+      if (trainingStage === 'overview') {
         return (
           <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
             <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm border-b border-white/20">
@@ -1269,15 +1277,13 @@ export function App() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {renderKioskLangSwitcher()}
-                {hasAppointmentToday && (
-                  <button
-                    type="button"
-                    onClick={() => setTrainingStage('overview')}
-                    className="rounded-xl border border-white/30 bg-white/15 px-3 py-1.5 font-bold text-white hover:bg-white/25 cursor-pointer"
-                  >
-                    {kc.backToOverviewBtn}
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => setTrainingStage('overview')}
+                  className="rounded-xl border border-white/30 bg-white/15 px-3 py-1.5 font-bold text-white hover:bg-white/25 cursor-pointer"
+                >
+                  {kc.backToOverviewBtn}
+                </button>
                 <button
                   type="button"
                   onClick={() => setTrainingStage('minigame')}
@@ -1295,14 +1301,7 @@ export function App() {
               </div>
             </div>
             <SmartRehabKioskUI
-              patient={{
-                id: authenticatedPatient.patient.hn,
-                name: authenticatedPatient.patient.fullName,
-                max_safe_rom_deg: authenticatedPatient.patient.maxSafeRomDeg,
-                affected_side: authenticatedPatient.patient.affectedSide,
-                stroke_type: authenticatedPatient.patient.strokeType,
-                motor_assessment_score: authenticatedPatient.patient.motorAssessmentScore,
-              }}
+              patient={rehabPatientProp}
               ownerBiometrics={authenticatedPatient.biometricTemplate ?? null}
               prescribedExercises={prescribedOptions}
               isStaffAuthorized={Boolean(
@@ -1577,9 +1576,25 @@ export function App() {
   if (route === '/pt') {
     if (currentUser.role !== 'pt' && currentUser.role !== 'super_admin') {
       return (
-        <div className="min-h-screen flex flex-col items-center justify-center bg-rose-50 p-6 text-center">
+        <div className="min-h-screen flex flex-col items-center justify-center bg-rose-50 p-6 text-center gap-4">
           <h1 className="text-3xl font-black text-rose-900">403 Forbidden</h1>
-          <p className="mt-2 text-sm text-rose-700">ไม่มีสิทธิ์เข้าถึงพอร์ทัลนักกายภาพบำบัด</p>
+          <p className="text-sm text-rose-700">ไม่มีสิทธิ์เข้าถึงพอร์ทัลนักกายภาพบำบัด</p>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <button
+              type="button"
+              onClick={() => navigate('/')}
+              className="rounded-xl bg-[#0F4C81] px-4 py-2 text-xs font-bold text-white hover:bg-[#0284C7] cursor-pointer"
+            >
+              กลับหน้าตู้ Kiosk
+            </button>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="rounded-xl border border-rose-300 bg-white px-4 py-2 text-xs font-bold text-rose-800 hover:bg-rose-100 cursor-pointer"
+            >
+              ออกจากระบบ
+            </button>
+          </div>
         </div>
       );
     }

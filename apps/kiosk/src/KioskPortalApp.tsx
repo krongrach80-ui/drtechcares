@@ -133,110 +133,169 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
           video: deviceId ? { deviceId: { exact: deviceId }, width: 640, height: 480 } : { width: 640, height: 480 },
           audio: false,
         });
-        if (!active || !videoRef.current) return;
+        if (!active || !videoRef.current) {
+          stream.getTracks().forEach((tr) => tr.stop());
+          stream = null;
+          return;
+        }
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
+        if (!active) {
+          stream.getTracks().forEach((tr) => tr.stop());
+          stream = null;
+          return;
+        }
 
-        const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
-        landmarker = await FaceLandmarker.createFromOptions(vision, {
-          baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
-          runningMode: 'VIDEO',
-          numFaces: 2,
-        });
+        let vision;
+        for (const wasmBase of [
+          '/mediapipe/wasm',
+          '/models/wasm',
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
+        ]) {
+          try {
+            vision = await FilesetResolver.forVisionTasks(wasmBase);
+            break;
+          } catch {
+            // Try next WASM base path
+          }
+        }
+        if (!vision || !active) {
+          stream.getTracks().forEach((tr) => tr.stop());
+          stream = null;
+          return;
+        }
+        let createdLandmarker: FaceLandmarker | null = null;
+        for (const delegate of ['GPU', 'CPU'] as const) {
+          try {
+            createdLandmarker = await FaceLandmarker.createFromOptions(vision, {
+              baseOptions: { modelAssetPath: '/models/face_landmarker.task', delegate },
+              runningMode: 'VIDEO',
+              numFaces: 2,
+            });
+            break;
+          } catch {
+            // Try CPU fallback
+          }
+        }
+        if (!createdLandmarker || !active) {
+          createdLandmarker?.close();
+          stream.getTracks().forEach((tr) => tr.stop());
+          stream = null;
+          return;
+        }
+        landmarker = createdLandmarker;
 
+        let lastDetectTs = 0;
+        let lastVideoTime = -1;
         const loop = async () => {
           if (!active || !videoRef.current || !landmarker) return;
-          if (videoRef.current.readyState >= 2) {
-            const now = performance.now();
-            const res = landmarker.detectForVideo(videoRef.current, now);
-            const faceCount = res.faceLandmarks?.length ?? 0;
-            const landmarks = res.faceLandmarks?.[0] ?? [];
-            const faceRatio = landmarks.length > 400 ? Math.abs(landmarks[454].x - landmarks[234].x) : 0;
+          try {
+            if (
+              videoRef.current.readyState >= 2 &&
+              videoRef.current.videoWidth > 0 &&
+              videoRef.current.videoHeight > 0 &&
+              videoRef.current.currentTime !== lastVideoTime
+            ) {
+              lastVideoTime = videoRef.current.currentTime;
+              const now = performance.now();
+              const detectTs = Math.max(lastDetectTs + 1, Math.round(now));
+              lastDetectTs = detectTs;
+              const res = landmarker.detectForVideo(videoRef.current, detectTs);
+              const faceCount = res.faceLandmarks?.length ?? 0;
+              const landmarks = res.faceLandmarks?.[0] ?? [];
+              const faceRatio = landmarks.length > 400 ? Math.abs(landmarks[454].x - landmarks[234].x) : 0;
 
-            // Standby -> Motion/Presence wake-up
-            const presence = presenceRef.current.update({
-              facePresent: faceCount >= 1,
-              faceSizeRatio: faceRatio,
-              timestampMs: now,
-            });
-
-            if (flowState === 'STANDBY' && presence.awake) {
-              setFlowState('FACIAL_AUTH');
-              return;
-            }
-
-            if (flowState === 'FACIAL_AUTH') {
-              if (authStartedAt === null) authStartedAt = now;
-              const rem = Math.max(0, 3 - Math.floor((now - authStartedAt) / 1000));
-              setCountdownSec(rem);
-
-              const liveness = evaluateLivenessAndPose(landmarks, prevLandmarks, faceCount);
-              prevLandmarks = landmarks;
-
-              if (!alignCanvasRef.current) alignCanvasRef.current = document.createElement('canvas');
-              const crop =
-                landmarks.length >= 300 ? alignFaceTo112(videoRef.current, landmarks, alignCanvasRef.current) : null;
-
-              const inspection = inspectBiometricFrame3D({
-                landmarks3D: landmarks,
-                prevLandmarks3D: prevLandmarks,
-                faceCount,
-                image: crop,
-                requestedPose: 'CENTER',
+              // Standby -> Motion/Presence wake-up
+              const presence = presenceRef.current.update({
+                facePresent: faceCount >= 1,
+                faceSizeRatio: faceRatio,
+                timestampMs: now,
               });
-              setLiveInspection(inspection);
-              setScanHint(inspection.user_instruction_th);
 
-              if (rem === 0 && inspection.scan_status === 'PASS' && liveness.isLive && crop) {
-                const q = evaluateFrameQuality(crop, {
-                  yawDeg: liveness.yawDeg,
-                  pitchDeg: liveness.pitchDeg,
-                  rollDeg: liveness.rollDeg,
+              if (flowState === 'STANDBY' && presence.awake) {
+                setFlowState('FACIAL_AUTH');
+                return;
+              }
+
+              if (flowState === 'FACIAL_AUTH') {
+                if (authStartedAt === null) authStartedAt = now;
+                const rem = Math.max(0, 3 - Math.floor((now - authStartedAt) / 1000));
+                setCountdownSec(rem);
+
+                const liveness = evaluateLivenessAndPose(landmarks, prevLandmarks, faceCount);
+
+                if (!alignCanvasRef.current) alignCanvasRef.current = document.createElement('canvas');
+                const crop =
+                  landmarks.length >= 300 ? alignFaceTo112(videoRef.current, landmarks, alignCanvasRef.current) : null;
+
+                const inspection = inspectBiometricFrame3D({
+                  landmarks3D: landmarks,
+                  prevLandmarks3D: prevLandmarks,
+                  faceCount,
+                  image: crop,
+                  requestedPose: 'CENTER',
                 });
-                if (q.acceptable) {
-                  loginCtrlRef.current.startCountdownComplete();
-                  const snap = captureCanonicalFaceSnapshot(
-                    videoRef.current,
-                    null,
-                    undefined,
-                    landmarks,
-                  );
-                  const extracted = snap ? await extractCanonicalFaceDescriptor(snap) : null;
-                  if (!extracted?.embedding) {
-                    rafId = requestAnimationFrame(loop);
-                    return;
-                  }
-                  const vector = extracted.embedding;
-                  const push = loginCtrlRef.current.pushFrame({
-                    vector,
-                    qualityScore: q.sharpness,
-                    capturedAfterCountdown: true,
-                    pose: 'front',
-                    sharpness: q.sharpness,
-                    yaw: liveness.yawDeg,
-                    pitch: liveness.pitchDeg,
-                  });
-                  setBurstCollected(push.collected);
-                  setScanHint('กำลังยืนยันตัวตนกับฐานข้อมูลกลาง...');
+                prevLandmarks = landmarks;
+                setLiveInspection(inspection);
+                setScanHint(inspection.user_instruction_th);
 
-                  if (push.readyToVerify) {
-                    const probe = loginCtrlRef.current.buildProbeCentroid();
-                    const verifyRes = await apiClient.verifyFaceLogin(probe);
-                    if (verifyRes.matched && verifyRes.patient) {
-                      setVerifiedPatient(verifyRes.patient);
-                      setTodayRoutine(verifyRes.todayRoutine ?? null);
-                      setFlowState('GESTURE_CONTROL');
+                if (rem === 0 && inspection.scan_status === 'PASS' && liveness.isLive && crop) {
+                  const q = evaluateFrameQuality(crop, {
+                    yawDeg: liveness.yawDeg,
+                    pitchDeg: liveness.pitchDeg,
+                    rollDeg: liveness.rollDeg,
+                  });
+                  if (q.acceptable) {
+                    loginCtrlRef.current.startCountdownComplete();
+                    const snap = captureCanonicalFaceSnapshot(
+                      videoRef.current,
+                      null,
+                      undefined,
+                      landmarks,
+                    );
+                    const extracted = snap ? await extractCanonicalFaceDescriptor(snap) : null;
+                    if (!active) return;
+                    if (!extracted?.embedding) {
+                      rafId = requestAnimationFrame(loop);
                       return;
                     }
-                    loginCtrlRef.current.recordUnmatchedRound();
-                    setFlowState('NOT_FOUND');
-                    return;
+                    const vector = extracted.embedding;
+                    const push = loginCtrlRef.current.pushFrame({
+                      vector,
+                      qualityScore: q.sharpness,
+                      capturedAfterCountdown: true,
+                      pose: 'front',
+                      sharpness: q.sharpness,
+                      yaw: liveness.yawDeg,
+                      pitch: liveness.pitchDeg,
+                    });
+                    setBurstCollected(push.collected);
+                    setScanHint('กำลังยืนยันตัวตนกับฐานข้อมูลกลาง...');
+
+                    if (push.readyToVerify) {
+                      const probe = loginCtrlRef.current.buildProbeCentroid();
+                      const verifyRes = await apiClient.verifyFaceLogin(probe);
+                      if (!active) return;
+                      if (verifyRes.matched && verifyRes.patient) {
+                        setVerifiedPatient(verifyRes.patient);
+                        setTodayRoutine(verifyRes.todayRoutine ?? null);
+                        setFlowState('GESTURE_CONTROL');
+                        return;
+                      }
+                      loginCtrlRef.current.recordUnmatchedRound();
+                      setFlowState('NOT_FOUND');
+                      return;
+                    }
                   }
                 }
               }
             }
+          } catch {
+            // Keep RAF loop alive across transient frame errors
           }
-          rafId = requestAnimationFrame(loop);
+          if (active) {
+            rafId = requestAnimationFrame(loop);
+          }
         };
         rafId = requestAnimationFrame(loop);
       } catch (err) {
@@ -287,12 +346,37 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
           if (!active) return;
           stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
         }
-        if (!active || !videoRef.current) return;
+        if (!active || !videoRef.current) {
+          stream?.getTracks().forEach((tr) => tr.stop());
+          stream = null;
+          return;
+        }
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
+        if (!active) {
+          stream.getTracks().forEach((tr) => tr.stop());
+          stream = null;
+          return;
+        }
 
-        const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
-        if (!active) return;
+        let vision;
+        for (const wasmBase of [
+          '/mediapipe/wasm',
+          '/models/wasm',
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
+        ]) {
+          try {
+            vision = await FilesetResolver.forVisionTasks(wasmBase);
+            break;
+          } catch {
+            // Try next WASM base path
+          }
+        }
+        if (!vision || !active) {
+          stream?.getTracks().forEach((tr) => tr.stop());
+          stream = null;
+          return;
+        }
 
         for (const delegate of ['CPU', undefined] as const) {
           try {

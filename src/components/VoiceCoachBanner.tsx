@@ -2,28 +2,35 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion';
 import { Languages, RotateCcw, Volume2, VolumeX } from 'lucide-react';
 import {
+  KIOSK_VOICE_LANG_EVENT,
+  KIOSK_VOICE_LANG_STORAGE_KEY,
   KIOSK_VOICE_MUTED_EVENT,
   KIOSK_VOICE_MUTED_STORAGE_KEY,
   cancelAllKioskVoiceSpeech,
   getSeniorVoiceToggleLabel,
-  inferMascotPoseFromSpeechText,
-  notifyMascotSpeechEnd,
-  notifyMascotSpeechStart,
+  readStoredKioskVoiceLang,
   readStoredKioskVoiceMuted,
   sanitizeSpeechText,
+  subscribeKioskVoiceLang,
   subscribeKioskVoiceMuted,
+  writeStoredKioskVoiceLang,
   writeStoredKioskVoiceMuted,
 } from '@drtechcares/kiosk-input';
 import type { HighlightColor, KioskState } from '../hooks/useKioskSocket';
 
 export {
+  KIOSK_VOICE_LANG_EVENT,
+  KIOSK_VOICE_LANG_STORAGE_KEY,
   KIOSK_VOICE_MUTED_EVENT,
   KIOSK_VOICE_MUTED_STORAGE_KEY,
   cancelAllKioskVoiceSpeech,
   getSeniorVoiceToggleLabel,
+  readStoredKioskVoiceLang,
   readStoredKioskVoiceMuted,
   sanitizeSpeechText,
+  subscribeKioskVoiceLang,
   subscribeKioskVoiceMuted,
+  writeStoredKioskVoiceLang,
   writeStoredKioskVoiceMuted,
 };
 
@@ -633,7 +640,6 @@ interface VoiceCoachBannerProps {
   highlightColor: HighlightColor;
   muted: boolean;
   onToggleMute: () => void;
-  onSpeakingChange?: (speaking: boolean) => void;
 }
 
 export function VoiceCoachBanner({
@@ -642,23 +648,10 @@ export function VoiceCoachBanner({
   highlightColor,
   muted,
   onToggleMute,
-  onSpeakingChange,
 }: VoiceCoachBannerProps) {
-  const [voiceLang, setVoiceLang] = useState<VoiceCoachLanguage>(() => readStoredVoiceLang());
+  const [voiceLang, setVoiceLang] = useState<VoiceCoachLanguage>(() => readStoredKioskVoiceLang());
+  useEffect(() => subscribeKioskVoiceLang(setVoiceLang), []);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const onSpeakingChangeRef = useRef(onSpeakingChange);
-  onSpeakingChangeRef.current = onSpeakingChange;
-
-  useEffect(() => {
-    onSpeakingChangeRef.current?.(isSpeaking);
-  }, [isSpeaking]);
-
-  useEffect(() => {
-    return () => {
-      onSpeakingChangeRef.current?.(false);
-      notifyMascotSpeechEnd('voice_coach');
-    };
-  }, []);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
 
   const isSpeakingRef = useRef<boolean>(false);
@@ -694,22 +687,6 @@ export function VoiceCoachBanner({
     muted,
   });
   latestDisplayRef.current = { text: displayedText, lang: voiceLang, muted };
-
-  useEffect(() => {
-    if (isSpeaking) {
-      const resolvedPose =
-        kioskState === 'REP_COMPLETED' || kioskState === 'SET_FINISHED'
-          ? 'encouraging'
-          : inferMascotPoseFromSpeechText(displayedText);
-      notifyMascotSpeechStart({
-        text: displayedText,
-        source: 'voice_coach',
-        pose: resolvedPose,
-      });
-    } else {
-      notifyMascotSpeechEnd('voice_coach');
-    }
-  }, [isSpeaking, displayedText, kioskState]);
 
   const clearPendingSpeakTimer = useCallback(() => {
     if (pendingSpeakTimerRef.current !== null && typeof window !== 'undefined') {
@@ -942,6 +919,15 @@ export function VoiceCoachBanner({
             audio.preload = 'auto';
             audioRef.current = audio;
           }
+          let webFallbackTriggered = false;
+          const triggerWebFallbackOnce = () => {
+            if (webFallbackTriggered || speakSeqRef.current !== seq) return;
+            webFallbackTriggered = true;
+            clearSpeakingWatchdog();
+            isSpeakingRef.current = false;
+            setIsSpeaking(false);
+            speakWithWebSpeech(clean, targetLang, seq);
+          };
           audio.playbackRate = targetLang === 'th' ? 1.0 : targetLang === 'zh' ? 0.98 : 1.0;
 
           audio.onplay = () => {
@@ -953,13 +939,7 @@ export function VoiceCoachBanner({
           audio.onended = () => {
             onSpeechEndedRef.current(seq);
           };
-          audio.onerror = () => {
-            if (speakSeqRef.current !== seq) return;
-            clearSpeakingWatchdog();
-            isSpeakingRef.current = false;
-            setIsSpeaking(false);
-            speakWithWebSpeech(clean, targetLang, seq);
-          };
+          audio.onerror = triggerWebFallbackOnce;
 
           audio.src = buildTtsProxyUrl(clean, targetLang);
           const playPromise = audio.play();
@@ -968,27 +948,42 @@ export function VoiceCoachBanner({
           clearSpeakingWatchdog();
           speakingWatchdogRef.current = window.setTimeout(() => {
             speakingWatchdogRef.current = null;
+            if (audioRef.current) {
+              try {
+                audioRef.current.pause();
+                audioRef.current.currentTime = 0;
+              } catch {
+                // ignore pause errors
+              }
+            }
+            if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+              try {
+                window.speechSynthesis.cancel();
+              } catch {
+                // ignore cancel errors
+              }
+            }
             onSpeechEndedRef.current(seq);
           }, 11000);
 
           if (playPromise && typeof playPromise.catch === 'function') {
             playPromise.catch((err: unknown) => {
               if (speakSeqRef.current !== seq) return;
-              clearSpeakingWatchdog();
-              isSpeakingRef.current = false;
-              setIsSpeaking(false);
               const errName =
                 err && typeof err === 'object' && 'name' in err
                   ? String((err as { name: string }).name)
                   : '';
               if (errName === 'NotAllowedError') {
+                clearSpeakingWatchdog();
+                isSpeakingRef.current = false;
+                setIsSpeaking(false);
                 blockedByAutoplayRef.current = true;
                 return;
               }
               if (errName === 'AbortError') {
                 return;
               }
-              speakWithWebSpeech(clean, targetLang, seq);
+              triggerWebFallbackOnce();
             });
           }
           return;

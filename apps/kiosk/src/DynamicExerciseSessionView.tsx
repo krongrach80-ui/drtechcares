@@ -49,6 +49,7 @@ export function DynamicExerciseSessionView({
   const [staffPin, setStaffPin] = useState('');
   const [strokeWarningTh, setStrokeWarningTh] = useState<string | null>(null);
   const [strokeClinicalAngleDeg, setStrokeClinicalAngleDeg] = useState<number | null>(null);
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pipelineRef = useRef(new RehabExercisePipeline(selectedExercise));
@@ -60,8 +61,14 @@ export function DynamicExerciseSessionView({
   const chimeRef = useRef(new AudioChimeSynthesizer());
   const replayLogRef = useRef<{ tMs: number; angleDeg: number }[]>([]);
   const lastMultiPersonTtsAtRef = useRef<number>(0);
+  const recordedSessionRef = useRef<boolean>(false);
 
   useEffect(() => {
+    setSelectedExercise(exercise);
+  }, [exercise]);
+
+  useEffect(() => {
+    recordedSessionRef.current = false;
     pipelineRef.current.reset(selectedExercise);
     agentRef.current.reset();
     filterRef.current.reset();
@@ -89,211 +96,288 @@ export function DynamicExerciseSessionView({
     const startedAt = performance.now();
 
     async function initPoseCamera() {
+      const releaseInitResources = () => {
+        try {
+          poseLandmarker?.close();
+        } catch {
+          // ignore
+        }
+        poseLandmarker = null;
+        stream?.getTracks().forEach((tr) => tr.stop());
+        stream = null;
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+        }
+      };
+
       try {
+        setCameraError(null);
         const deviceId = await selectClinicalCameraDeviceId();
+        if (!active) return;
         stream = await navigator.mediaDevices.getUserMedia({
           video: deviceId ? { deviceId: { exact: deviceId }, width: 640, height: 480 } : { width: 640, height: 480 },
           audio: false,
         });
-        if (!active || !videoRef.current) return;
+        if (!active || !videoRef.current) {
+          releaseInitResources();
+          return;
+        }
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
+        if (!active) {
+          releaseInitResources();
+          return;
+        }
 
-        const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
+        let vision;
+        for (const wasmBase of [
+          '/mediapipe/wasm',
+          '/models/wasm',
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
+        ]) {
+          try {
+            vision = await FilesetResolver.forVisionTasks(wasmBase);
+            break;
+          } catch {
+            // Try next WASM base
+          }
+        }
+        if (!vision || !active) {
+          if (active) setCameraError('ไม่สามารถโหลด MediaPipe WASM สำหรับตรวจจับท่าทางได้');
+          releaseInitResources();
+          return;
+        }
+
         const POSE_MODEL_PATHS = [
-          'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task',
           '/models/pose_landmarker_full.task',
+          '/models/pose_landmarker.task',
+          'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task',
         ];
         for (const minConf of [0.7, 0.5] as const) {
           for (const modelAssetPath of POSE_MODEL_PATHS) {
-            try {
-              const created = await PoseLandmarker.createFromOptions(vision, {
-                baseOptions: { modelAssetPath },
-                runningMode: 'VIDEO',
-                numPoses: 2,
-                minPoseDetectionConfidence: minConf,
-                minPosePresenceConfidence: minConf,
-                minTrackingConfidence: minConf,
-              });
-              if (!active) {
-                created.close();
-                return;
+            for (const delegate of ['GPU', 'CPU', undefined] as const) {
+              try {
+                const created = await PoseLandmarker.createFromOptions(vision, {
+                  baseOptions: delegate ? { modelAssetPath, delegate } : { modelAssetPath },
+                  runningMode: 'VIDEO',
+                  numPoses: 2,
+                  minPoseDetectionConfidence: minConf,
+                  minPosePresenceConfidence: minConf,
+                  minTrackingConfidence: minConf,
+                });
+                if (!active) {
+                  created.close();
+                  releaseInitResources();
+                  return;
+                }
+                poseLandmarker = created;
+                break;
+              } catch {
+                // Try next model / delegate / confidence tier
               }
-              poseLandmarker = created;
-              break;
-            } catch {
-              // Try next model / confidence tier
             }
+            if (poseLandmarker) break;
           }
           if (poseLandmarker) break;
         }
-        if (!poseLandmarker || !active) return;
+        if (!poseLandmarker || !active) {
+          if (active) setCameraError('ไม่สามารถเริ่มโมเดลตรวจจับท่าทางกายภาพได้');
+          releaseInitResources();
+          return;
+        }
 
+        let lastVideoTime = -1;
         const loop = () => {
           if (!active || !videoRef.current || !poseLandmarker) return;
-          if (videoRef.current.readyState >= 2) {
-            const now = performance.now();
-            const detectTsMs = Math.max(lastDetectTsMs + 1, Math.round(now));
-            lastDetectTsMs = detectTsMs;
-            const res = poseLandmarker.detectForVideo(videoRef.current, detectTsMs);
-            const detectedPeople = res.landmarks?.length ?? 0;
+          try {
+            const vid = videoRef.current;
+            if (vid.readyState >= 2 && vid.videoWidth > 0 && vid.videoHeight > 0 && vid.currentTime !== lastVideoTime) {
+              lastVideoTime = vid.currentTime;
+              const now = performance.now();
+              const detectTsMs = Math.max(lastDetectTsMs + 1, Math.round(now));
+              lastDetectTsMs = detectTsMs;
+              const res = poseLandmarker.detectForVideo(vid, detectTsMs);
+              const detectedPeople = res.landmarks?.length ?? 0;
 
-            if (detectedPeople > 1) {
-              singlePersonStreak = 0;
-              setMultiPersonPaused(true);
-              setContinuousGuardOk(false);
-              if (now - lastMultiPersonTtsAtRef.current >= 4000) {
-                lastMultiPersonTtsAtRef.current = now;
-                voiceRef.current.speak(
-                  'ตรวจพบมีบุคคลอยู่หลายคนในเฟรม กรุณาให้คนไข้ยืนหน้ากล้องเพียงลำพัง ระบบจึงจะนับรอบการฝึกต่อครับ',
-                  'th',
-                );
-              }
-              rafId = requestAnimationFrame(loop);
-              return;
-            }
-
-            if (detectedPeople === 1) {
-              singlePersonStreak += 1;
-              if (singlePersonStreak >= 3) {
-                setMultiPersonPaused(false);
-                setContinuousGuardOk(true);
-              }
-            }
-
-            const subject = selectSubjectPoseWithIdentity(res.landmarks ?? []);
-            if (subject) {
-              const stabilized = stabilizeArmIdentity(subject, prevPose);
-              const smoothedLandmarks = filterRef.current.filterLandmarks(stabilized, now);
-              const rawWorld = res.worldLandmarks?.[0];
-              const smoothedWorld = rawWorld
-                ? worldFilterRef.current.filterLandmarks(rawWorld, now)
-                : undefined;
-              baselineRef.current.update(smoothedLandmarks);
-
-              const det = selectedExercise.detection;
-              const strokeTargetJoint =
-                det.jointGroup === 'neck' || det.expectedPlane === 'shrug_roll'
-                  ? 'spine'
-                  : det.side === 'left'
-                    ? 'left_shoulder'
-                    : 'right_shoulder';
-              const strokeJointMode: StrokeJointMode =
-                det.jointGroup === 'elbow'
-                  ? 'elbow'
-                  : det.expectedPlane === 'cross_body'
-                    ? 'cross_body'
-                    : det.expectedPlane === 'scap_protract'
-                      ? 'scap_protract'
-                      : det.expectedPlane === 'bilateral_push'
-                        ? 'bobath_push'
-                        : det.expectedPlane === 'hand_to_head'
-                          ? 'hand_to_head'
-                          : det.expectedPlane === 'forearm_turn'
-                            ? 'forearm_turn'
-                            : det.expectedPlane === 'wrist_finger'
-                              ? 'wrist_finger'
-                              : det.expectedPlane === 'thumb_pinch'
-                                ? 'thumb_pinch'
-                                : det.expectedPlane === 'rotation'
-                                  ? 'shoulder_rotation'
-                                  : det.expectedPlane === 'shrug_roll'
-                                    ? 'shoulder_shrug'
-                                    : det.expectedPlane === 'bilateral'
-                                      ? 'bilateral_raise'
-                                      : det.expectedPlane === 'neck_turn'
-                                        ? 'neck_turn'
-                                        : det.jointGroup === 'neck'
-                                          ? 'neck'
-                                          : 'default';
-              const strokeSolved = solveStrokeClinicalJointBiomechanics({
-                landmarks: smoothedLandmarks,
-                worldLandmarks: smoothedWorld,
-                targetJoint: strokeTargetJoint,
-                exerciseSide:
-                  det.side === 'left'
-                    ? 'LEFT'
-                    : det.side === 'right'
-                      ? 'RIGHT'
-                      : det.side === 'both'
-                        ? 'BOTH'
-                        : undefined,
-                expectedPlane: det.expectedPlane ?? 'any',
-                targetRomDeg: det.targetRomDeg ?? det.targetMinDeg,
-                jointMode: strokeJointMode,
-                baseline: baselineRef.current.getBaseline() ?? undefined,
-              });
-              setStrokeWarningTh(
-                strokeSolved.sideViolationBannerTh ??
-                  strokeSolved.wrongPlaneBannerTh ??
-                  strokeSolved.postureBannerTh,
-              );
-              setStrokeClinicalAngleDeg(strokeSolved.romDeg);
-
-              const snap = pipelineRef.current.step(smoothedLandmarks, now);
-              setSnapshot(snap);
-
-              const dtSec = Math.max(0.03, (now - lastTickAt) / 1000);
-              const rawAngle = strokeSolved.romDeg ?? snap.currentAngleDeg ?? snap.lastReliableAngleDeg ?? 0;
-              const packet = buildTelemetryPacketFromLandmarks({
-                landmarks: smoothedLandmarks,
-                prevLandmarks: prevPose,
-                exercise: selectedExercise,
-                primaryAngleDeg: rawAngle,
-                prevAngleDeg: prevAngle,
-                dtSec,
-              });
-              const decision = agentRef.current.evaluate(packet);
-              setAiDecision(decision);
-              prevPose = smoothedLandmarks;
-              prevAngle = rawAngle;
-              lastTickAt = now;
-
-              if (decision.kiosk_state === 'EMERGENCY_HALT') {
-                voiceRef.current.speak(decision.tts_voice_th, 'th');
-                chimeRef.current.playTone('alert');
-                setPainStopped(true);
+              if (detectedPeople > 1) {
+                singlePersonStreak = 0;
+                setMultiPersonPaused(true);
+                setContinuousGuardOk(false);
+                if (now - lastMultiPersonTtsAtRef.current >= 4000) {
+                  lastMultiPersonTtsAtRef.current = now;
+                  voiceRef.current.speak(
+                    'ตรวจพบมีบุคคลอยู่หลายคนในเฟรม กรุณาให้คนไข้ยืนหน้ากล้องเพียงลำพัง ระบบจึงจะนับรอบการฝึกต่อครับ',
+                    'th',
+                  );
+                }
+                rafId = requestAnimationFrame(loop);
                 return;
               }
 
-              if (snap.currentAngleDeg !== null) {
-                replayLogRef.current.push({
-                  tMs: Math.round(now - startedAt),
-                  angleDeg: snap.currentAngleDeg,
-                });
+              if (detectedPeople === 1) {
+                singlePersonStreak += 1;
+                if (singlePersonStreak >= 3) {
+                  setMultiPersonPaused(false);
+                  setContinuousGuardOk(true);
+                }
               }
 
-              if (snap.repJustCompleted) {
-                chimeRef.current.playTone('rep');
-              }
-              if (decision.telemetry_analysis.compensation_detected[0] !== 'NONE' && decision.tts_voice_th) {
-                voiceRef.current.speak(decision.tts_voice_th, 'th');
-              } else if (snap.warningMessage) {
-                voiceRef.current.speak(pick(snap.warningMessage), lang);
-              }
-              if (snap.sessionCompleted) {
-                chimeRef.current.playTone('confirm');
-                apiClient.recordRehabSession({
-                  patientId: patient.id,
-                  activityType: 'physio_exercise',
-                  exerciseId: selectedExercise.id,
-                  exerciseName: pick(selectedExercise.name),
-                  completedSets: snap.targetSets,
-                  completedReps: snap.targetReps,
-                  accuracyPercent: snap.accuracyPercent,
-                  maxRomDeg: snap.maxRomDeg,
-                  painStopTriggered: false,
-                  aiFeedback: `Max ROM ${snap.maxRomDeg}°, Accuracy ${snap.accuracyPercent}%`,
-                  kinematicsReplay: replayLogRef.current.slice(-180),
+              const candidates = res.landmarks ?? [];
+              const subject = selectSubjectPoseWithIdentity(candidates);
+              if (subject) {
+                const subjectIdx = Math.max(
+                  0,
+                  candidates.findIndex(
+                    (c) =>
+                      c === subject ||
+                      (c.length > 12 &&
+                        subject.length > 12 &&
+                        Math.abs((c[11]?.x ?? 0) - (subject[11]?.x ?? 0)) < 1e-5 &&
+                        Math.abs((c[12]?.x ?? 0) - (subject[12]?.x ?? 0)) < 1e-5),
+                  ),
+                );
+                const stabilized = stabilizeArmIdentity(subject, prevPose);
+                const smoothedLandmarks = filterRef.current.filterLandmarks(stabilized, now);
+                const rawWorld = res.worldLandmarks?.[subjectIdx] ?? res.worldLandmarks?.[0];
+                const smoothedWorld = rawWorld
+                  ? worldFilterRef.current.filterLandmarks(rawWorld, now)
+                  : undefined;
+                baselineRef.current.update(smoothedLandmarks);
+
+                const det = selectedExercise.detection;
+                const strokeTargetJoint =
+                  det.jointGroup === 'neck' || det.expectedPlane === 'shrug_roll'
+                    ? 'spine'
+                    : det.side === 'left'
+                      ? 'left_shoulder'
+                      : 'right_shoulder';
+                const strokeJointMode: StrokeJointMode =
+                  det.jointGroup === 'elbow'
+                    ? 'elbow'
+                    : det.expectedPlane === 'cross_body'
+                      ? 'cross_body'
+                      : det.expectedPlane === 'scap_protract'
+                        ? 'scap_protract'
+                        : det.expectedPlane === 'bilateral_push'
+                          ? 'bobath_push'
+                          : det.expectedPlane === 'hand_to_head'
+                            ? 'hand_to_head'
+                            : det.expectedPlane === 'forearm_turn'
+                              ? 'forearm_turn'
+                              : det.expectedPlane === 'wrist_finger'
+                                ? 'wrist_finger'
+                                : det.expectedPlane === 'thumb_pinch'
+                                  ? 'thumb_pinch'
+                                  : det.expectedPlane === 'rotation'
+                                    ? 'shoulder_rotation'
+                                    : det.expectedPlane === 'shrug_roll'
+                                      ? 'shoulder_shrug'
+                                      : det.expectedPlane === 'bilateral'
+                                        ? 'bilateral_raise'
+                                        : det.expectedPlane === 'neck_turn'
+                                          ? 'neck_turn'
+                                          : det.jointGroup === 'neck'
+                                            ? 'neck'
+                                            : 'default';
+                const strokeSolved = solveStrokeClinicalJointBiomechanics({
+                  landmarks: smoothedLandmarks,
+                  worldLandmarks: smoothedWorld,
+                  targetJoint: strokeTargetJoint,
+                  exerciseSide:
+                    det.side === 'left'
+                      ? 'LEFT'
+                      : det.side === 'right'
+                        ? 'RIGHT'
+                        : det.side === 'both'
+                          ? 'BOTH'
+                          : undefined,
+                  expectedPlane: det.expectedPlane ?? 'any',
+                  targetRomDeg: det.targetRomDeg ?? det.targetMinDeg,
+                  jointMode: strokeJointMode,
+                  baseline: baselineRef.current.getBaseline() ?? undefined,
+                  videoAspect: vid.videoWidth / vid.videoHeight,
                 });
+                setStrokeWarningTh(
+                  strokeSolved.sideViolationBannerTh ??
+                    strokeSolved.wrongPlaneBannerTh ??
+                    strokeSolved.postureBannerTh,
+                );
+                setStrokeClinicalAngleDeg(strokeSolved.romDeg);
+
+                const snap = pipelineRef.current.step(smoothedLandmarks, now);
+                setSnapshot(snap);
+
+                const dtSec = Math.max(0.03, (now - lastTickAt) / 1000);
+                const rawAngle = strokeSolved.romDeg ?? snap.currentAngleDeg ?? snap.lastReliableAngleDeg ?? 0;
+                const packet = buildTelemetryPacketFromLandmarks({
+                  landmarks: smoothedLandmarks,
+                  prevLandmarks: prevPose,
+                  exercise: selectedExercise,
+                  primaryAngleDeg: rawAngle,
+                  prevAngleDeg: prevAngle,
+                  dtSec,
+                });
+                const decision = agentRef.current.evaluate(packet);
+                setAiDecision(decision);
+                prevPose = smoothedLandmarks;
+                prevAngle = rawAngle;
+                lastTickAt = now;
+
+                if (decision.kiosk_state === 'EMERGENCY_HALT') {
+                  voiceRef.current.speak(decision.tts_voice_th, 'th');
+                  chimeRef.current.playTone('alert');
+                  setPainStopped(true);
+                  return;
+                }
+
+                if (snap.currentAngleDeg !== null) {
+                  replayLogRef.current.push({
+                    tMs: Math.round(now - startedAt),
+                    angleDeg: snap.currentAngleDeg,
+                  });
+                }
+
+                if (snap.repJustCompleted) {
+                  chimeRef.current.playTone('rep');
+                }
+                if (decision.telemetry_analysis.compensation_detected[0] !== 'NONE' && decision.tts_voice_th) {
+                  voiceRef.current.speak(decision.tts_voice_th, 'th');
+                } else if (snap.warningMessage) {
+                  voiceRef.current.speak(pick(snap.warningMessage), lang);
+                }
+                if (snap.sessionCompleted && !recordedSessionRef.current) {
+                  recordedSessionRef.current = true;
+                  chimeRef.current.playTone('confirm');
+                  void apiClient.recordRehabSession({
+                    patientId: patient.id,
+                    activityType: 'physio_exercise',
+                    exerciseId: selectedExercise.id,
+                    exerciseName: pick(selectedExercise.name),
+                    completedSets: snap.targetSets,
+                    completedReps: snap.targetReps,
+                    accuracyPercent: snap.accuracyPercent,
+                    maxRomDeg: snap.maxRomDeg,
+                    painStopTriggered: false,
+                    aiFeedback: `Max ROM ${snap.maxRomDeg}°, Accuracy ${snap.accuracyPercent}%`,
+                    kinematicsReplay: replayLogRef.current.slice(-180),
+                  }).catch(() => {});
+                  return;
+                }
               }
             }
+          } catch {
+            // Keep pose RAF loop resilient across transient frame failures
           }
-          rafId = requestAnimationFrame(loop);
+          if (active && !recordedSessionRef.current) {
+            rafId = requestAnimationFrame(loop);
+          }
         };
         rafId = requestAnimationFrame(loop);
-      } catch {
-        // Camera fallback mode
+      } catch (err) {
+        if (active) {
+          setCameraError(err instanceof Error ? err.message : 'ไม่สามารถเปิดกล้องสำหรับกายภาพบำบัดได้');
+        }
+        releaseInitResources();
       }
     }
 
@@ -371,6 +455,12 @@ export function DynamicExerciseSessionView({
 
           {/* Clean Framing Guide Box */}
           <div className="pointer-events-none absolute inset-6 rounded-3xl border-2 border-dashed border-white/25" />
+
+          {cameraError && (
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-slate-950/85 p-6 text-center text-white">
+              <p className="text-sm font-bold text-rose-300">{cameraError}</p>
+            </div>
+          )}
 
           {multiPersonPaused && (
             <div className="absolute top-4 inset-x-4 z-20 rounded-2xl border-2 border-amber-300 bg-amber-500/95 px-4 py-3 text-slate-950 shadow-xl">

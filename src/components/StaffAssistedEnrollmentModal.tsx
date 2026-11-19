@@ -47,7 +47,6 @@ import {
   X,
 } from 'lucide-react';
 import FaceID120Scanner, { type FaceID120Result } from './FaceID120Scanner';
-import { DrTechCareMascot } from './DrTechCareMascot';
 import { syncPatientBiometricEverywhere } from '../lib/biometricEngine';
 
 interface StaffAssistedEnrollmentModalProps {
@@ -239,20 +238,7 @@ export function StaffAssistedEnrollmentModal({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [createdPatient, setCreatedPatient] = useState<PatientRecord | null>(null);
-  const [enrollSuccessTalking, setEnrollSuccessTalking] = useState<boolean>(false);
   const triggerFinalizeRef = useRef<(() => Promise<FaceID120Result | null>) | null>(null);
-
-  useEffect(() => {
-    if (step !== 4 || !createdPatient) {
-      setEnrollSuccessTalking(false);
-      return;
-    }
-    setEnrollSuccessTalking(true);
-    const tid = window.setTimeout(() => {
-      setEnrollSuccessTalking(false);
-    }, 3600);
-    return () => window.clearTimeout(tid);
-  }, [step, createdPatient?.id]);
 
   useEffect(() => {
     if (!open) {
@@ -1221,7 +1207,7 @@ export function StaffAssistedEnrollmentModal({
                     className="mt-0.5 h-4 w-4 rounded border-emerald-400 text-emerald-600 focus:ring-emerald-500"
                   />
                   <span className="text-xs font-semibold leading-relaxed text-emerald-950">
-                    คนไข้ยินยอมให้จัดเก็บแม่แบบใบหน้า 120 เฟรม (เวกเตอร์ 3D Multi-Angle 512 มิติ) และเข้าใจว่าข้อมูลเวชระเบียนที่เปิดประวัติแล้วเป็นเอกสารทางการแพทย์ถาวรตามกฎหมายสถานพยาบาล ไม่สามารถลบบัญชีได้ (PDPA Biometric Consent)
+                    คนไข้ยินยอมให้จัดเก็บแม่แบบใบหน้า 120 เฟรม (เวกเตอร์ 3D Multi-Angle 1024 มิติ) และเข้าใจว่าข้อมูลเวชระเบียนที่เปิดประวัติแล้วเป็นเอกสารทางการแพทย์ถาวรตามกฎหมายสถานพยาบาล ไม่สามารถลบบัญชีได้ (PDPA Biometric Consent)
                   </span>
                 </label>
 
@@ -1281,6 +1267,10 @@ export function StaffAssistedEnrollmentModal({
                     type="button"
                     onClick={() => {
                       setErrorMsg(null);
+                      setBiometric120Result(null);
+                      setCapturedSnapshotUrl(undefined);
+                      setAllFiveAnglesReady(false);
+                      triggerFinalizeRef.current = null;
                       setCapturing(true);
                     }}
                     className="mt-4 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-extrabold text-white shadow hover:bg-emerald-500"
@@ -1689,14 +1679,8 @@ export function StaffAssistedEnrollmentModal({
 
           {step === 4 && createdPatient && (
             <div className="py-5 text-center space-y-4">
-              <div className="pt-4">
-                <DrTechCareMascot
-                  pose="speaking"
-                  isSpeaking={enrollSuccessTalking}
-                  speechText="ลงทะเบียนคนไข้สำเร็จ พร้อมใช้งานแล้วครับ!"
-                  className="w-28 h-28 mx-auto animate-popup-spring"
-                  testId="patient-enroll-success-mascot"
-                />
+              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+                <CheckCircle2 className="h-9 w-9" />
               </div>
               <div>
                 <h3 className="text-lg font-extrabold text-slate-900">

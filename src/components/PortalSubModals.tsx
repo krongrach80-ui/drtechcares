@@ -340,6 +340,10 @@ export function WelcomeFaceScanModal({
     reason?: string;
     patient?: { id: string; hn: string; fullName: string; nextAppointmentDate: string } | null;
   } | null>(null);
+  const latestDetectedLandmarksRef = useRef<Array<{ x: number; y: number; z?: number }> | null>(null);
+  const latestDetectedBoxRef = useRef<{ x: number; y: number; width: number; height: number } | undefined>(
+    undefined,
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -376,6 +380,8 @@ export function WelcomeFaceScanModal({
     const roiCanvas = document.createElement('canvas');
     const contextCanvas = document.createElement('canvas');
     const neuralSnapCanvas = document.createElement('canvas');
+    latestDetectedLandmarksRef.current = null;
+    latestDetectedBoxRef.current = undefined;
 
     void warmupBiometricEngine();
     bioLivenessRef.current.reset();
@@ -401,13 +407,34 @@ export function WelcomeFaceScanModal({
             : { width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: 'user' },
           audio: false,
         });
-        if (!active || !videoRef.current) return;
+        if (!active || !videoRef.current) {
+          stream.getTracks().forEach((t) => t.stop());
+          stream = null;
+          return;
+        }
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
-
-        const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
         if (!active) return;
-        landmarker = await FaceLandmarker.createFromOptions(vision, {
+
+        let vision;
+        for (const wasmBase of [
+          '/mediapipe/wasm',
+          '/models/wasm',
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
+        ]) {
+          try {
+            vision = await FilesetResolver.forVisionTasks(wasmBase);
+            break;
+          } catch {
+            // Try next WASM base path
+          }
+        }
+        if (!vision || !active) {
+          stream?.getTracks().forEach((t) => t.stop());
+          stream = null;
+          return;
+        }
+        const createdLandmarker = await FaceLandmarker.createFromOptions(vision, {
           baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
           runningMode: 'VIDEO',
           numFaces: 2,
@@ -416,6 +443,13 @@ export function WelcomeFaceScanModal({
           minFacePresenceConfidence: 0.45,
           minTrackingConfidence: 0.45,
         });
+        if (!active) {
+          createdLandmarker.close();
+          stream?.getTracks().forEach((t) => t.stop());
+          stream = null;
+          return;
+        }
+        landmarker = createdLandmarker;
 
         const loop = async () => {
           if (!active || !videoRef.current || !landmarker) return;
@@ -436,7 +470,9 @@ export function WelcomeFaceScanModal({
               const faceCount = selection.effectiveFaceCount;
               const lms = selection.primaryFace ? [...selection.primaryFace] : [];
 
-                if (faceCount !== 1 || lms.length < 300) {
+              if (faceCount !== 1 || lms.length < 300) {
+                latestDetectedLandmarksRef.current = null;
+                latestDetectedBoxRef.current = undefined;
                 setHudBox(null);
                 if (!confirmedLockRef.current) {
                   setLiveMatchHud(null);
@@ -450,6 +486,8 @@ export function WelcomeFaceScanModal({
                 prevLandmarks = null;
               } else {
                 const rawBox = computeBoundingBoxFromLandmarks(lms);
+                latestDetectedLandmarksRef.current = lms;
+                latestDetectedBoxRef.current = rawBox ?? undefined;
                 if (rawBox) {
                   setHudBox({
                     xPct: Math.max(2, (1 - rawBox.x - rawBox.width) * 100),
@@ -697,7 +735,12 @@ export function WelcomeFaceScanModal({
     try {
       let probeVector: number[] | null = null;
       if (videoRef.current && videoRef.current.readyState >= 2) {
-        const snap = captureCanonicalFaceSnapshot(videoRef.current);
+        const snap = captureCanonicalFaceSnapshot(
+          videoRef.current,
+          latestDetectedBoxRef.current ?? null,
+          null,
+          latestDetectedLandmarksRef.current,
+        );
         const extracted = snap ? await extractCanonicalFaceDescriptor(snap) : null;
         probeVector = extracted?.embedding ?? null;
       }
@@ -939,6 +982,12 @@ export function ResetPasswordModal({
   const [saving, setSaving] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
 
+  useEffect(() => {
+    setNewPassword('Staff@2026');
+    setErrMsg(null);
+    setSaving(false);
+  }, [user?.id]);
+
   if (!user) return null;
 
   return (
@@ -1061,6 +1110,7 @@ export function PatientProfileAndHistoryModal({
   useEffect(() => {
     setModalTab(initialTab);
     if (!patient) return;
+    let cancelled = false;
     setFullName(patient.fullName);
     setAge(patient.age);
     setGender(patient.gender || 'ชาย');
@@ -1077,12 +1127,23 @@ export function PatientProfileAndHistoryModal({
     setDelegateNote(patient.delegationNote || '');
     apiClient
       .listMedicalNotes(patient.id)
-      .then((n) => setNotes(n))
-      .catch(() => setNotes([]));
+      .then((n) => {
+        if (!cancelled) setNotes(n);
+      })
+      .catch(() => {
+        if (!cancelled) setNotes([]);
+      });
     apiClient
       .listRehabSessionHistory(patient.id)
-      .then((h) => setSessionHistory(h))
-      .catch(() => setSessionHistory(patient.rehabSessionHistory ?? []));
+      .then((h) => {
+        if (!cancelled) setSessionHistory(h);
+      })
+      .catch(() => {
+        if (!cancelled) setSessionHistory(patient.rehabSessionHistory ?? []);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [patient, initialTab, apiClient]);
 
   if (!patient) return null;
@@ -1857,8 +1918,9 @@ export function UniversalEhrLinkModal({
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  useEffect(() => {
+    useEffect(() => {
     if (!patient) return;
+    let cancelled = false;
     setLookupInput('');
     setLookupPreview(null);
     setRawJsonInput('');
@@ -1866,8 +1928,15 @@ export function UniversalEhrLinkModal({
     const code = patient.universalHealthLinkCode || patient.hn;
     apiClient
       .lookupUniversalEhr(code)
-      .then((pkg) => setExportBundle(pkg))
-      .catch(() => setExportBundle(null));
+      .then((pkg) => {
+        if (!cancelled) setExportBundle(pkg);
+      })
+      .catch(() => {
+        if (!cancelled) setExportBundle(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [patient, apiClient]);
 
   if (!patient) return null;
@@ -1901,7 +1970,7 @@ export function UniversalEhrLinkModal({
     a.href = url;
     a.download = `drtechcares-ehr-${patient.hn}-${linkCode}.json`;
     a.click();
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     onFlash('success', `ส่งออกไฟล์ Universal EHR JSON (${linkCode}) แล้ว`);
   };
 
@@ -2267,9 +2336,11 @@ export function ScheduleCreatorAndDayModal({
   const [startFromAnchorOnly, setStartFromAnchorOnly] = useState<boolean>(false);
   const [weeklyExcludedDates, setWeeklyExcludedDates] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [scheduleErrMsg, setScheduleErrMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (!mode) return;
+    setScheduleErrMsg(null);
     const anchorIso = selectedDateIso || todayIso;
     const parsed = parseIsoYmd(anchorIso);
     if (patient?.id) setTargetPatientId(patient.id);
@@ -2437,6 +2508,7 @@ export function ScheduleCreatorAndDayModal({
     e.preventDefault();
     if (!activePatient || selectedEntries.length === 0 || finalSelectedDates.length === 0) return;
     setSaving(true);
+    setScheduleErrMsg(null);
     try {
       const finalSelectedDateSet = new Set(finalSelectedDates);
       const generated: RehabScheduleItem[] = [];
@@ -2480,6 +2552,8 @@ export function ScheduleCreatorAndDayModal({
         `บันทึกตารางกายภาพ ${selectedEntries.length} ท่า จำนวน ${finalSelectedDates.length} วัน (${generated.length} รายการ) ให้ ${activePatient.fullName} แล้ว`,
       );
       onClose();
+    } catch (err) {
+      setScheduleErrMsg(err instanceof Error ? err.message : 'ไม่สามารถบันทึกตารางฝึกได้ กรุณาลองใหม่อีกครั้ง');
     } finally {
       setSaving(false);
     }
@@ -2605,32 +2679,50 @@ export function ScheduleCreatorAndDayModal({
                           <button
                             key={btn.status}
                             type="button"
+                            disabled={saving}
                             onClick={async () => {
-                              const nextList = (activePatient.rehabSchedules ?? []).map((s) =>
-                                s.id === item.id ? { ...s, status: btn.status } : s,
-                              );
-                              await apiClient.updatePatient(activePatient.id, {
-                                nextAppointmentDate: computeNextAppointmentDate(nextList, todayIso),
-                                rehabSchedules: nextList,
-                              });
-                              await onSaved(`เปลี่ยนสถานะวันที่ ${selectedDateIso} เป็น ${btn.label}`);
+                              setSaving(true);
+                              setScheduleErrMsg(null);
+                              try {
+                                const nextList = (activePatient.rehabSchedules ?? []).map((s) =>
+                                  s.id === item.id ? { ...s, status: btn.status } : s,
+                                );
+                                await apiClient.updatePatient(activePatient.id, {
+                                  nextAppointmentDate: computeNextAppointmentDate(nextList, todayIso),
+                                  rehabSchedules: nextList,
+                                });
+                                await onSaved(`เปลี่ยนสถานะวันที่ ${selectedDateIso} เป็น ${btn.label}`);
+                              } catch (err) {
+                                setScheduleErrMsg(err instanceof Error ? err.message : 'เปลี่ยนสถานะไม่สำเร็จ');
+                              } finally {
+                                setSaving(false);
+                              }
                             }}
-                            className={`whitespace-nowrap rounded-lg px-2 py-1 text-[10px] font-bold cursor-pointer ${btn.cls}`}
+                            className={`whitespace-nowrap rounded-lg px-2 py-1 text-[10px] font-bold cursor-pointer disabled:opacity-50 ${btn.cls}`}
                           >
                             {btn.label}
                           </button>
                         ))}
                         <button
                           type="button"
+                          disabled={saving}
                           onClick={async () => {
-                            const nextList = (activePatient.rehabSchedules ?? []).filter((s) => s.id !== item.id);
-                            await apiClient.updatePatient(activePatient.id, {
-                              nextAppointmentDate: computeNextAppointmentDate(nextList, todayIso),
-                              rehabSchedules: nextList,
-                            });
-                            await onSaved(`ลบนัดหมายวันที่ ${selectedDateIso} แล้ว`);
+                            setSaving(true);
+                            setScheduleErrMsg(null);
+                            try {
+                              const nextList = (activePatient.rehabSchedules ?? []).filter((s) => s.id !== item.id);
+                              await apiClient.updatePatient(activePatient.id, {
+                                nextAppointmentDate: computeNextAppointmentDate(nextList, todayIso),
+                                rehabSchedules: nextList,
+                              });
+                              await onSaved(`ลบนัดหมายวันที่ ${selectedDateIso} แล้ว`);
+                            } catch (err) {
+                              setScheduleErrMsg(err instanceof Error ? err.message : 'ลบนัดหมายไม่สำเร็จ');
+                            } finally {
+                              setSaving(false);
+                            }
                           }}
-                          className="whitespace-nowrap rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-bold text-rose-700 cursor-pointer"
+                          className="whitespace-nowrap rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-bold text-rose-700 cursor-pointer disabled:opacity-50"
                         >
                           <Trash2 className="inline h-3 w-3 mr-0.5" /> {sm.deleteBtn}
                         </button>
@@ -2640,6 +2732,12 @@ export function ScheduleCreatorAndDayModal({
                 })}
               </div>
             )}
+          </div>
+        )}
+
+        {scheduleErrMsg && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-bold text-rose-700 animate-toast-in">
+            {scheduleErrMsg}
           </div>
         )}
 

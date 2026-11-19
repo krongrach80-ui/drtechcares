@@ -4,10 +4,10 @@ import { useClinicalI18n } from '@drtechcares/clinical-i18n';
 import {
   AudioChimeSynthesizer,
   cancelAllKioskVoiceSpeech,
-  notifyMascotSpeechEnd,
-  notifyMascotSpeechStart,
   readStoredKioskVoiceMuted,
+  subscribeKioskVoiceLang,
   subscribeKioskVoiceMuted,
+  writeStoredKioskVoiceLang,
   writeStoredKioskVoiceMuted,
 } from '@drtechcares/kiosk-input';
 import { selectClinicalCameraDeviceId } from '@drtechcares/face-client';
@@ -729,7 +729,7 @@ export function PhysicalCardGame({
   onSessionFinished,
   allowReplay = true,
 }: PhysicalCardGameProps) {
-  const { lang, t } = useClinicalI18n();
+  const { lang, setLang, t } = useClinicalI18n();
   const [cards, setCards] = useState<CognitiveCardQuestion[]>(() => sampleTenCognitiveCards());
   const [index, setIndex] = useState(0);
   const [score, setScore] = useState(0);
@@ -860,7 +860,6 @@ export function PhysicalCardGame({
       }
       isSpeakingRef.current = false;
       setIsSpeaking(false);
-      notifyMascotSpeechEnd('card_game');
     },
     [clearPendingSpeakTimer, clearSpeakingWatchdog],
   );
@@ -912,11 +911,6 @@ export function PhysicalCardGame({
             blockedByAutoplayRef.current = false;
             isSpeakingRef.current = true;
             setIsSpeaking(true);
-            const cardPose =
-              activeFeedbackMetaRef.current?.correct || Boolean(completedSummaryRef.current)
-                ? 'encouraging'
-                : 'explaining';
-            notifyMascotSpeechStart({ text: clean, source: 'card_game', pose: cardPose });
           };
           utterance.onend = () => {
             if (activeUtteranceRef.current === utterance) {
@@ -998,6 +992,15 @@ export function PhysicalCardGame({
             audio.preload = 'auto';
             ttsAudioRef.current = audio;
           }
+          let fallbackTriggered = false;
+          const triggerWebFallbackOnce = () => {
+            if (fallbackTriggered || speakSeqRef.current !== seq) return;
+            fallbackTriggered = true;
+            clearSpeakingWatchdog();
+            isSpeakingRef.current = false;
+            setIsSpeaking(false);
+            speakWithWebSpeechFallback(clean, targetLang, seq);
+          };
           audio.playbackRate = targetLang === 'th' ? MINIGAME_THAI_SPEECH_RATE : targetLang === 'zh' ? 0.98 : 1.0;
 
           audio.onplay = () => {
@@ -1005,22 +1008,11 @@ export function PhysicalCardGame({
             blockedByAutoplayRef.current = false;
             isSpeakingRef.current = true;
             setIsSpeaking(true);
-            const cardPose =
-              activeFeedbackMetaRef.current?.correct || Boolean(completedSummaryRef.current)
-                ? 'encouraging'
-                : 'explaining';
-            notifyMascotSpeechStart({ text: clean, source: 'card_game', pose: cardPose });
           };
           audio.onended = () => {
             onMinigameSpeechEndedRef.current(seq);
           };
-          audio.onerror = () => {
-            if (speakSeqRef.current !== seq) return;
-            clearSpeakingWatchdog();
-            isSpeakingRef.current = false;
-            setIsSpeaking(false);
-            speakWithWebSpeechFallback(clean, targetLang, seq);
-          };
+          audio.onerror = triggerWebFallbackOnce;
 
           audio.src = buildMinigameTtsUrl(clean, targetLang);
           const playPromise = audio.play();
@@ -1030,20 +1022,35 @@ export function PhysicalCardGame({
           const audioWatchdogMs = Math.min(7500, Math.max(2200, clean.length * 80));
           speakingWatchdogRef.current = window.setTimeout(() => {
             speakingWatchdogRef.current = null;
+            if (ttsAudioRef.current) {
+              try {
+                ttsAudioRef.current.pause();
+                ttsAudioRef.current.currentTime = 0;
+              } catch {
+                // ignore pause error
+              }
+            }
+            if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+              try {
+                window.speechSynthesis.cancel();
+              } catch {
+                // ignore cancel error
+              }
+            }
             onMinigameSpeechEndedRef.current(seq);
           }, audioWatchdogMs);
 
           if (playPromise && typeof playPromise.catch === 'function') {
             playPromise.catch((err: unknown) => {
               if (speakSeqRef.current !== seq) return;
-              clearSpeakingWatchdog();
-              isSpeakingRef.current = false;
-              setIsSpeaking(false);
               const errName =
                 err && typeof err === 'object' && 'name' in err
                   ? String((err as { name: string }).name)
                   : '';
               if (errName === 'NotAllowedError') {
+                clearSpeakingWatchdog();
+                isSpeakingRef.current = false;
+                setIsSpeaking(false);
                 blockedByAutoplayRef.current = true;
                 questionPhaseRef.current = 'READY_TO_ANSWER';
                 setQuestionPhase('READY_TO_ANSWER');
@@ -1052,7 +1059,7 @@ export function PhysicalCardGame({
               if (errName === 'AbortError') {
                 return;
               }
-              speakWithWebSpeechFallback(clean, targetLang, seq);
+              triggerWebFallbackOnce();
             });
           }
           return;
@@ -1071,7 +1078,6 @@ export function PhysicalCardGame({
     clearSpeakingWatchdog();
     isSpeakingRef.current = false;
     setIsSpeaking(false);
-    notifyMascotSpeechEnd('card_game');
 
     if (!activeFeedbackMetaRef.current && !completedSummaryRef.current) {
       questionPhaseRef.current = 'READY_TO_ANSWER';
@@ -1222,19 +1228,23 @@ export function PhysicalCardGame({
     }
   }, [completedSummary, speakMinigameText]);
 
+  useEffect(() => {
+    return subscribeKioskVoiceLang((next) => {
+      voiceLangRef.current = next;
+      setVoiceLang(next);
+    });
+  }, []);
+
   const handleSelectVoiceLang = useCallback(
     (nextLang: MinigameVoiceLang) => {
       voiceLangRef.current = nextLang;
       setVoiceLang(nextLang);
+      setLang(nextLang === 'zh' ? 'cn' : nextLang);
+      writeStoredKioskVoiceLang(nextLang);
       if (voiceMutedRef.current) {
         voiceMutedRef.current = false;
         setVoiceMuted(false);
         writeStoredKioskVoiceMuted(false);
-      }
-      try {
-        window.localStorage.setItem(VOICE_LANG_STORAGE_KEY, nextLang);
-      } catch {
-        // Ignore storage failure
       }
 
       if (activeFeedbackMetaRef.current) {
@@ -1256,7 +1266,7 @@ export function PhysicalCardGame({
         speakMinigameText(nextText, nextLang, { forceInterrupt: true });
       }
     },
-    [getActiveVoiceText, speakMinigameText],
+    [getActiveVoiceText, setLang, speakMinigameText],
   );
 
   const handleReplayVoice = useCallback(() => {
@@ -1409,28 +1419,36 @@ export function PhysicalCardGame({
 
     // Optional Edge Vision WS accepting ONLY strict 21-point hand landmarks
     try {
-      const wsUrl = (import.meta.env.VITE_EDGE_VISION_WS as string | undefined)?.trim() || 'ws://localhost:8000/ws/kiosk';
-      edgeWs = new WebSocket(wsUrl);
-      edgeWs.onmessage = (evt) => {
-        if (!active) return;
-        try {
-          const msg = JSON.parse(evt.data) as { hand_status?: EdgeHandTelemetry };
-          const hs = msg?.hand_status;
-          const hasStrictHand =
-            (hs?.left_hand_landmarks && isValidStrict21HandLandmarks(hs.left_hand_landmarks)) ||
-            (hs?.right_hand_landmarks && isValidStrict21HandLandmarks(hs.right_hand_landmarks));
-          if (hs && hasStrictHand) {
-            edgeHandStatus = hs;
-            edgeHandTs = Date.now();
-            setDetectorReady(true);
+      const configuredWs = (import.meta.env.VITE_EDGE_VISION_WS as string | undefined)?.trim();
+      const wsUrl = configuredWs || 'ws://localhost:8000/ws/kiosk';
+      const skipMixedLoopback =
+        typeof window !== 'undefined' &&
+        window.location.protocol === 'https:' &&
+        !configuredWs &&
+        /^ws:\/\/(localhost|127\.0\.0\.1)/i.test(wsUrl);
+      if (!skipMixedLoopback) {
+        edgeWs = new WebSocket(wsUrl);
+        edgeWs.onmessage = (evt) => {
+          if (!active) return;
+          try {
+            const msg = JSON.parse(evt.data) as { hand_status?: EdgeHandTelemetry };
+            const hs = msg?.hand_status;
+            const hasStrictHand =
+              (hs?.left_hand_landmarks && isValidStrict21HandLandmarks(hs.left_hand_landmarks)) ||
+              (hs?.right_hand_landmarks && isValidStrict21HandLandmarks(hs.right_hand_landmarks));
+            if (hs && hasStrictHand) {
+              edgeHandStatus = hs;
+              edgeHandTs = Date.now();
+              setDetectorReady(true);
+            }
+          } catch {
+            // ignore malformed frames
           }
-        } catch {
-          // ignore malformed frames
-        }
-      };
-      edgeWs.onerror = () => {
-        edgeWs?.close();
-      };
+        };
+        edgeWs.onerror = () => {
+          edgeWs?.close();
+        };
+      }
     } catch {
       edgeWs = null;
     }
@@ -1503,10 +1521,15 @@ export function PhysicalCardGame({
       }
 
       const mode = await createPureHandDetector();
-      if (!active) return;
+      if (!active) {
+        stopCameraTracks();
+        return;
+      }
 
       const edgeAlive = () => Boolean(edgeHandStatus && Date.now() - edgeHandTs < 450);
       if (mode === 'none' && !edgeAlive()) {
+        edgeWs?.close();
+        stopCameraTracks();
         setCameraError('ระบบตรวจจับมือ (21 จุด) ไม่พร้อมใช้งาน กรุณาคลิกเลือกคำตอบด้านล่างแทน');
         return;
       }
@@ -1894,9 +1917,8 @@ export function PhysicalCardGame({
       edgeWs?.close();
       handLandmarker?.close();
       stopCameraTracks();
-      stopMinigameSpeech();
     };
-  }, [completedSummary, resetTrackingRefs, sessionKey, stopCameraTracks, stopMinigameSpeech]);
+  }, [completedSummary, resetTrackingRefs, sessionKey, stopCameraTracks]);
 
   useEffect(() => {
     return () => {
