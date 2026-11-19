@@ -16,13 +16,11 @@ import {
   UserPlus,
 } from 'lucide-react';
 import {
-  AUTH_SUCCESS_REDIRECT_DELAY_MS,
-  AuthNotFoundFeedbackPanel,
-  AuthSuccessFeedbackPanel,
-  type StaffLoginAnimStatus,
-} from './components/AuthStatusAnimationPanel';
+  KINETIC_AUTH_HOLD_DELAY_MS,
+  KineticAuthStatusBadge,
+} from './components/KineticAuthStatusBadge';
 
-export type { StaffLoginAnimStatus };
+export type StaffLoginAnimStatus = 'idle' | 'checking' | 'success' | 'not_found';
 
 export async function executeStaffAuthSubmission(params: {
   runRequest: () => Promise<UserAccount>;
@@ -44,7 +42,7 @@ export async function executeStaffAuthSubmission(params: {
     params.setAnimStatus('success');
     params.scheduleTimer(() => {
       params.onSuccess(user);
-    }, params.redirectDelayMs ?? AUTH_SUCCESS_REDIRECT_DELAY_MS);
+    }, params.redirectDelayMs ?? KINETIC_AUTH_HOLD_DELAY_MS);
     return 'success';
   } catch (err) {
     params.setLoading(false);
@@ -474,7 +472,8 @@ export function StaffLoginModalOrPage({
         {/* Success Animation Panel */}
         {loginAnimStatus === 'success' ? (
           <div className="p-6 sm:p-10 sm:pt-5">
-            <AuthSuccessFeedbackPanel
+            <KineticAuthStatusBadge
+              status="success"
               testId="staff-login-success-panel"
               subtitle="เข้าสู่ระบบสำเร็จ กำลังเปิดหน้าจัดการคลินิก..."
             />
@@ -484,11 +483,12 @@ export function StaffLoginModalOrPage({
             {/* Not Found Animated Panel */}
             {loginAnimStatus === 'not_found' && (
               <div className="mx-6 sm:mx-10 mt-3">
-                <AuthNotFoundFeedbackPanel
+                <KineticAuthStatusBadge
+                  status="not_found"
                   id="staff-login-error"
                   testId="staff-login-not-found-panel"
                   heading="ไม่พบบัญชี"
-                  subtext="ไม่พบชื่อผู้ใช้หรือรหัสผ่านนี้ในระบบคลินิก"
+                  subtitle="ไม่พบชื่อผู้ใช้หรือรหัสผ่านนี้ในระบบ"
                   noAccountLabel="ไม่มีบัญชี"
                   secondaryLabel="สมัครสมาชิก (Admin / PT)"
                   onNoAccountClick={() => {

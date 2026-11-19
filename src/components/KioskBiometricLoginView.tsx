@@ -93,11 +93,9 @@ import {
   type EdgeKioskTelemetryPayload,
 } from '../hooks/useEdgeVisionSocket';
 import {
-  AnimatedCircleCheckmarkSvg,
-  AnimatedCircleCrossSvg,
-  AuthNotFoundFeedbackPanel,
-  AuthSuccessFeedbackPanel,
-} from './AuthStatusAnimationPanel';
+  KineticAuthStatusBadge,
+  KineticEmblemSvg,
+} from './KineticAuthStatusBadge';
 import {
   Bell,
   CameraOff,
@@ -3344,10 +3342,10 @@ export function KioskBiometricLoginView({
                       <div className={`absolute left-1/2 top-full mt-2.5 w-max max-w-[390px] -translate-x-1/2 rounded-2xl border-2 px-4 py-2.5 text-center backdrop-blur-md shadow-2xl ${pillClass}`}>
                         <div className="inline-flex items-center justify-center gap-2 text-sm font-black leading-snug">
                           {overlay.boxColor === 'emerald' && (
-                            <AnimatedCircleCheckmarkSvg className="w-5 h-5 shrink-0 animate-circle-pop" />
+                            <KineticEmblemSvg status="success" className="w-6 h-6 shrink-0 overflow-visible" />
                           )}
                           {overlay.boxColor === 'rose' && (
-                            <AnimatedCircleCrossSvg className="w-5 h-5 shrink-0 animate-circle-pop" />
+                            <KineticEmblemSvg status="not_found" className="w-6 h-6 shrink-0 overflow-visible" />
                           )}
                           <span>{overlay.label}</span>
                         </div>
@@ -3596,11 +3594,12 @@ export function KioskBiometricLoginView({
       {scanStage === 'not_found' && !staffModalOpen && (
         <div className="fixed inset-0 z-50 bg-[#0F4C81]/40 backdrop-blur-md flex items-center justify-center p-4 animate-backdrop-fade">
           <div className="w-full max-w-md rounded-3xl bg-white border-2 border-rose-500/45 shadow-2xl p-6 text-center animate-popup-spring">
-            <AuthNotFoundFeedbackPanel
+            <KineticAuthStatusBadge
+              status="not_found"
               compact
               testId="kiosk-not-found-feedback-panel"
               heading="ไม่พบบัญชี"
-              subtext={lang === 'th' ? c.notFoundDesc : `${c.notFoundTitle} — ${c.notFoundDesc}`}
+              subtitle={lang === 'th' ? c.notFoundDesc : `${c.notFoundTitle} — ${c.notFoundDesc}`}
               noAccountLabel="ไม่มีบัญชี"
               onNoAccountClick={handleRestartScan}
             />
@@ -3689,7 +3688,8 @@ export function KioskBiometricLoginView({
             </div>
 
             <div className="mb-3">
-              <AuthSuccessFeedbackPanel
+              <KineticAuthStatusBadge
+                status="success"
                 compact
                 testId="kiosk-face-success-panel"
                 subtitle={`${verifiedModalPayload.patient.fullName} • ${modalCopy.confidenceBadge}`}

@@ -6,13 +6,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { DrTechCaresApiClient, type UserAccount } from '@drtechcares/api-client';
 import { ClinicalI18nProvider } from '@drtechcares/clinical-i18n';
 import {
-  AUTH_SUCCESS_REDIRECT_DELAY_MS,
-  AUTH_SUCCESS_WORD,
-  AUTH_TYPEWRITER_STEP_MS,
-  AuthNotFoundFeedbackPanel,
-  AuthSuccessFeedbackPanel,
-  resolveSuccessTypewriterText,
-} from '../components/AuthStatusAnimationPanel';
+  KINETIC_AUTH_HOLD_DELAY_MS,
+  KINETIC_SUCCESS_WORD,
+  KINETIC_TYPEWRITER_START_DELAY_MS,
+  KINETIC_TYPEWRITER_STEP_MS,
+  KineticAuthStatusBadge,
+  KineticEmblemSvg,
+  resolveKineticTypewriterText,
+} from '../components/KineticAuthStatusBadge';
 import {
   StaffLoginModalOrPage,
   executeStaffAuthSubmission,
@@ -21,19 +22,28 @@ import {
 
 const EMOJI_RE = /[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/u;
 
-describe('Staff & Kiosk Login Feedback Animations (Circle Checkmark Success vs Circle Cross ไม่พบบัญชี)', () => {
-  it('defines SVG circle/check/cross keyframes and reduced-motion fallbacks in src/index.css', () => {
+describe('4-Stage Kinetic SVG Auth Badge & Staff/Kiosk Login Feedback Choreography', () => {
+  it('defines all 4-stage kinetic SVG keyframes, error-shake, and reduced-motion fallbacks in src/index.css', () => {
     const css = fs.readFileSync(path.resolve(process.cwd(), 'src', 'index.css'), 'utf8');
     for (const token of [
-      '@keyframes svgCircleDraw',
-      '@keyframes svgCheckDraw',
-      '@keyframes svgCrossDraw',
-      '@keyframes statusCirclePop',
-      '.animate-circle-pop',
-      '.animate-svg-circle',
-      '.animate-svg-check',
-      '.animate-svg-cross-1',
-      '.animate-svg-cross-2',
+      '@keyframes kineticDotBounceIn',
+      '@keyframes kineticCheckDraw',
+      '@keyframes kineticCrossDraw',
+      '@keyframes kineticTipDotPop',
+      '@keyframes kineticSparkBurst',
+      '@keyframes kineticRingSweep',
+      '@keyframes kineticOrbitSweep',
+      '@keyframes errorShake',
+      '.animate-kinetic-dot-bounce',
+      '.animate-kinetic-check',
+      '.animate-kinetic-cross-1',
+      '.animate-kinetic-cross-2',
+      '.animate-kinetic-tip-dot',
+      '.animate-kinetic-tip-spark',
+      '.animate-kinetic-ring',
+      '.animate-kinetic-orbit',
+      '.animate-kinetic-closure-spark',
+      '.animate-error-shake',
       'stroke-dashoffset: 0 !important',
     ]) {
       expect(css).toContain(token);
@@ -41,7 +51,7 @@ describe('Staff & Kiosk Login Feedback Animations (Circle Checkmark Success vs C
     expect(EMOJI_RE.test(css)).toBe(false);
   });
 
-  it('transitions checking -> success on valid staff login, waits 1150ms before completing login, and types "Success"', async () => {
+  it('transitions checking -> success, holds 1400ms for ring closure + typewriter "Success" (750ms delay, 55ms/char)', async () => {
     vi.useFakeTimers();
     try {
       const mockAdmin: UserAccount = {
@@ -73,17 +83,19 @@ describe('Staff & Kiosk Login Feedback Animations (Circle Checkmark Success vs C
       expect(loadingStates).toEqual([true, false]);
       expect(onSuccess).not.toHaveBeenCalled();
 
-      // Letter-by-letter typewriter progression across 65ms ticks
-      expect(AUTH_TYPEWRITER_STEP_MS).toBe(65);
-      expect(resolveSuccessTypewriterText(1)).toBe('S');
-      expect(resolveSuccessTypewriterText(2)).toBe('Su');
-      expect(resolveSuccessTypewriterText(3)).toBe('Suc');
-      expect(resolveSuccessTypewriterText(4)).toBe('Succ');
-      expect(resolveSuccessTypewriterText(5)).toBe('Succe');
-      expect(resolveSuccessTypewriterText(6)).toBe('Succes');
-      expect(resolveSuccessTypewriterText(7)).toBe(AUTH_SUCCESS_WORD);
+      expect(KINETIC_TYPEWRITER_START_DELAY_MS).toBe(750);
+      expect(KINETIC_TYPEWRITER_STEP_MS).toBe(55);
+      expect(KINETIC_AUTH_HOLD_DELAY_MS).toBe(1400);
+      expect(resolveKineticTypewriterText(0)).toBe('');
+      expect(resolveKineticTypewriterText(1)).toBe('S');
+      expect(resolveKineticTypewriterText(2)).toBe('Su');
+      expect(resolveKineticTypewriterText(3)).toBe('Suc');
+      expect(resolveKineticTypewriterText(4)).toBe('Succ');
+      expect(resolveKineticTypewriterText(5)).toBe('Succe');
+      expect(resolveKineticTypewriterText(6)).toBe('Succes');
+      expect(resolveKineticTypewriterText(7)).toBe(KINETIC_SUCCESS_WORD);
 
-      vi.advanceTimersByTime(AUTH_SUCCESS_REDIRECT_DELAY_MS - 1);
+      vi.advanceTimersByTime(1399);
       expect(onSuccess).not.toHaveBeenCalled();
       vi.advanceTimersByTime(1);
       expect(onSuccess).toHaveBeenCalledWith(mockAdmin);
@@ -92,20 +104,19 @@ describe('Staff & Kiosk Login Feedback Animations (Circle Checkmark Success vs C
     }
   });
 
-  it('transitions checking -> not_found when username/password does not exist and never calls onSuccess', async () => {
+  it('transitions checking -> not_found when username/password is invalid and never calls onSuccess', async () => {
     const statuses: StaffLoginAnimStatus[] = [];
     const onSuccess = vi.fn();
-    const setError = vi.fn();
 
     const status = await executeStaffAuthSubmission({
       runRequest: async () => {
-        throw new Error('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง');
+        throw new Error('Invalid credentials');
       },
       setAnimStatus: (next) => statuses.push(next),
       setLoading: () => {},
-      setError,
+      setError: () => {},
       onSuccess,
-      scheduleTimer: (fn, ms) => window.setTimeout(fn, ms) as unknown as number,
+      scheduleTimer: (fn, ms) => setTimeout(fn, ms) as unknown as number,
     });
 
     expect(status).toBe('not_found');
@@ -113,7 +124,58 @@ describe('Staff & Kiosk Login Feedback Animations (Circle Checkmark Success vs C
     expect(onSuccess).not.toHaveBeenCalled();
   });
 
-  it('renders StaffLoginModalOrPage checking, success (SVG circle checkmark + Success), and not_found (SVG cross + ไม่พบบัญชี + ไม่มีบัญชี) states', () => {
+  it('renders KineticAuthStatusBadge status="success" (dot bounce, M32 52 L45 65 L69 37 checkmark, orbit r=38 ring, micro-sparks, typewriter)', () => {
+    const successBadgeHtml = renderToStaticMarkup(
+      React.createElement(KineticAuthStatusBadge, {
+        status: 'success',
+        testId: 'test-kinetic-success',
+      }),
+    );
+    expect(successBadgeHtml).toContain('test-kinetic-success');
+    expect(successBadgeHtml).toContain('viewBox="0 0 100 100"');
+    expect(successBadgeHtml).toContain('animate-kinetic-dot-bounce');
+    expect(successBadgeHtml).toContain('d="M32 52 L45 65 L69 37"');
+    expect(successBadgeHtml).toContain('animate-kinetic-check');
+    expect(successBadgeHtml).toContain('cx="69" cy="29" r="4.5"');
+    expect(successBadgeHtml).toContain('animate-kinetic-tip-spark');
+    expect(successBadgeHtml).toContain('r="38"');
+    expect(successBadgeHtml).toContain('transform="rotate(-45 50 50)"');
+    expect(successBadgeHtml).toContain('animate-kinetic-ring');
+    expect(successBadgeHtml).toContain('animate-kinetic-orbit');
+    expect(successBadgeHtml).toContain('animate-kinetic-closure-spark');
+    expect(successBadgeHtml).toContain('kinetic-success-typewriter');
+    expect(successBadgeHtml).toContain('aria-label="Success"');
+    expect(successBadgeHtml).toContain('เข้าสู่ระบบสำเร็จ กำลังเปิดหน้าจัดการคลินิก...');
+    expect(EMOJI_RE.test(successBadgeHtml)).toBe(false);
+  });
+
+  it('renders KineticAuthStatusBadge status="not_found" (red dot, M36 36 L64 64 / M64 36 L36 64 cross, orbit ring, shake, ไม่พบบัญชี, ไม่มีบัญชี button)', () => {
+    const notFoundHtml = renderToStaticMarkup(
+      React.createElement(KineticAuthStatusBadge, {
+        status: 'not_found',
+        testId: 'test-kinetic-not-found',
+        secondaryLabel: 'สมัครสมาชิก (Admin / PT)',
+        onNoAccountClick: () => {},
+        onSecondaryClick: () => {},
+      }),
+    );
+    expect(notFoundHtml).toContain('test-kinetic-not-found');
+    expect(notFoundHtml).toContain('animate-error-shake');
+    expect(notFoundHtml).toContain('animate-kinetic-dot-bounce');
+    expect(notFoundHtml).toContain('d="M36 36 L64 64"');
+    expect(notFoundHtml).toContain('d="M64 36 L36 64"');
+    expect(notFoundHtml).toContain('animate-kinetic-cross-1');
+    expect(notFoundHtml).toContain('animate-kinetic-cross-2');
+    expect(notFoundHtml).toContain('animate-kinetic-ring');
+    expect(notFoundHtml).toContain('animate-kinetic-orbit');
+    expect(notFoundHtml).toContain('ไม่พบบัญชี');
+    expect(notFoundHtml).toContain('ไม่พบชื่อผู้ใช้หรือรหัสผ่านนี้ในระบบ');
+    expect(notFoundHtml).toContain('ไม่มีบัญชี');
+    expect(notFoundHtml).toContain('สมัครสมาชิก (Admin / PT)');
+    expect(EMOJI_RE.test(notFoundHtml)).toBe(false);
+  });
+
+  it('wires KineticAuthStatusBadge cleanly inside StaffLoginModalOrPage across checking, success, and not_found states with zero emojis', () => {
     const apiClient = new DrTechCaresApiClient();
 
     const checkingHtml = renderToStaticMarkup(
@@ -131,7 +193,7 @@ describe('Staff & Kiosk Login Feedback Animations (Circle Checkmark Success vs C
     expect(checkingHtml).toContain('animate-spin');
     expect(EMOJI_RE.test(checkingHtml)).toBe(false);
 
-    const successHtml = renderToStaticMarkup(
+    const successModalHtml = renderToStaticMarkup(
       React.createElement(
         ClinicalI18nProvider,
         null,
@@ -142,14 +204,12 @@ describe('Staff & Kiosk Login Feedback Animations (Circle Checkmark Success vs C
         }),
       ),
     );
-    expect(successHtml).toContain('staff-login-success-panel');
-    expect(successHtml).toContain('animate-svg-circle');
-    expect(successHtml).toContain('animate-svg-check');
-    expect(successHtml).toContain('aria-label="Success"');
-    expect(successHtml).toContain('เข้าสู่ระบบสำเร็จ กำลังเปิดหน้าจัดการคลินิก...');
-    expect(EMOJI_RE.test(successHtml)).toBe(false);
+    expect(successModalHtml).toContain('staff-login-success-panel');
+    expect(successModalHtml).toContain('animate-kinetic-check');
+    expect(successModalHtml).toContain('animate-kinetic-orbit');
+    expect(EMOJI_RE.test(successModalHtml)).toBe(false);
 
-    const notFoundHtml = renderToStaticMarkup(
+    const notFoundModalHtml = renderToStaticMarkup(
       React.createElement(
         ClinicalI18nProvider,
         null,
@@ -160,49 +220,20 @@ describe('Staff & Kiosk Login Feedback Animations (Circle Checkmark Success vs C
         }),
       ),
     );
-    expect(notFoundHtml).toContain('staff-login-not-found-panel');
-    expect(notFoundHtml).toContain('animate-svg-circle');
-    expect(notFoundHtml).toContain('animate-svg-cross-1');
-    expect(notFoundHtml).toContain('animate-svg-cross-2');
-    expect(notFoundHtml).toContain('ไม่พบบัญชี');
-    expect(notFoundHtml).toContain('ไม่พบชื่อผู้ใช้หรือรหัสผ่านนี้ในระบบคลินิก');
-    expect(notFoundHtml).toContain('ไม่มีบัญชี');
-    expect(notFoundHtml).toContain('สมัครสมาชิก (Admin / PT)');
-    expect(EMOJI_RE.test(notFoundHtml)).toBe(false);
-  });
+    expect(notFoundModalHtml).toContain('staff-login-not-found-panel');
+    expect(notFoundModalHtml).toContain('animate-error-shake');
+    expect(notFoundModalHtml).toContain('ไม่พบบัญชี');
+    expect(notFoundModalHtml).toContain('ไม่มีบัญชี');
+    expect(EMOJI_RE.test(notFoundModalHtml)).toBe(false);
 
-  it('mirrors compact animated checkmark Success and crimson cross ไม่พบบัญชี panels cleanly with zero emojis', () => {
-    const kioskOkHtml = renderToStaticMarkup(
-      React.createElement(AuthSuccessFeedbackPanel, {
-        compact: true,
-        testId: 'kiosk-face-success-panel',
-        subtitle: 'คุณสมชาย ทดสอบ • 97%',
-      }),
+    const emblemMini = renderToStaticMarkup(
+      React.createElement(KineticEmblemSvg, { status: 'success', className: 'w-6 h-6' }),
     );
-    expect(kioskOkHtml).toContain('kiosk-face-success-panel');
-    expect(kioskOkHtml).toContain('animate-svg-circle');
-    expect(kioskOkHtml).toContain('animate-svg-check');
-    expect(kioskOkHtml).toContain('aria-label="Success"');
-    expect(EMOJI_RE.test(kioskOkHtml)).toBe(false);
-
-    const kioskNotFoundHtml = renderToStaticMarkup(
-      React.createElement(AuthNotFoundFeedbackPanel, {
-        compact: true,
-        testId: 'kiosk-not-found-feedback-panel',
-        heading: 'ไม่พบบัญชี',
-        noAccountLabel: 'ไม่มีบัญชี',
-      }),
-    );
-    expect(kioskNotFoundHtml).toContain('kiosk-not-found-feedback-panel');
-    expect(kioskNotFoundHtml).toContain('animate-svg-cross-1');
-    expect(kioskNotFoundHtml).toContain('animate-svg-cross-2');
-    expect(kioskNotFoundHtml).toContain('ไม่พบบัญชี');
-    expect(kioskNotFoundHtml).toContain('ไม่มีบัญชี');
-    expect(EMOJI_RE.test(kioskNotFoundHtml)).toBe(false);
+    expect(emblemMini).toContain('animate-kinetic-orbit');
 
     for (const relPath of [
       'src/StaffLoginModalOrPage.tsx',
-      'src/components/AuthStatusAnimationPanel.tsx',
+      'src/components/KineticAuthStatusBadge.tsx',
       'src/components/KioskBiometricLoginView.tsx',
       'src/index.css',
     ]) {
