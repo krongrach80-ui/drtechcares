@@ -79,7 +79,11 @@ import {
   type BiometricVerificationJson,
   type LivenessAndPoseReport,
 } from '@drtechcares/face-client';
-import { FacePresenceTracker } from '@drtechcares/kiosk-input';
+import {
+  FacePresenceTracker,
+  notifyMascotSpeechEnd,
+  notifyMascotSpeechStart,
+} from '@drtechcares/kiosk-input';
 import { POSE_INDEX } from '@drtechcares/pose-engine';
 import {
   STRICT_LOGIN_MAX_PITCH_DEG,
@@ -1010,6 +1014,7 @@ export function KioskBiometricLoginView({
       finished = true;
       clearTimers();
       activeUtteranceRef.current = null;
+      notifyMascotSpeechEnd('kiosk_login');
       isSpeechDoneRef.current = true;
       setIsWelcomeSpeechDone(true);
       setRaisedDuringSpeech(false);
@@ -1020,9 +1025,11 @@ export function KioskBiometricLoginView({
       finished = true;
       clearTimers();
       activeUtteranceRef.current = null;
+      notifyMascotSpeechEnd('kiosk_login');
       const audio = modalAudioRef.current;
       if (audio) {
         try {
+          audio.onplay = null;
           audio.onended = null;
           audio.onerror = null;
           audio.pause();
@@ -1096,6 +1103,15 @@ export function KioskBiometricLoginView({
           utterance.lang = matchedVoice?.lang || langOpt.bcp47;
           if (matchedVoice) utterance.voice = matchedVoice;
           utterance.rate = VERIFIED_MODAL_SPEECH_RATE;
+          utterance.onstart = () => {
+            if (!finished && modalSpeakSeqRef.current === seq) {
+              notifyMascotSpeechStart({
+                text: cleanSpeechText,
+                source: 'kiosk_login',
+                pose: 'greeting',
+              });
+            }
+          };
           utterance.onend = () => markSpeechDone();
           utterance.onerror = () => {
             // Keep locked until fallback timer if speech engine errors/is muted
@@ -1125,6 +1141,15 @@ export function KioskBiometricLoginView({
           audio.preload = 'auto';
           modalAudioRef.current = audio;
         }
+        audio.onplay = () => {
+          if (!finished && modalSpeakSeqRef.current === seq) {
+            notifyMascotSpeechStart({
+              text: greeting,
+              source: 'kiosk_login',
+              pose: 'greeting',
+            });
+          }
+        };
         audio.onended = () => markSpeechDone();
         audio.onerror = () => speakWebFallback();
         audio.defaultPlaybackRate = VERIFIED_MODAL_SPEECH_RATE;

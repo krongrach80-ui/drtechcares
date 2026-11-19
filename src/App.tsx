@@ -15,6 +15,7 @@ import {
   type UserAccount,
 } from '@drtechcares/api-client';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
+import { notifyMascotSpeechEnd, notifyMascotSpeechStart } from '@drtechcares/kiosk-input';
 import { buildTtsProxyUrl, pickSpeechVoice } from './components/VoiceCoachBanner';
 import { PatientPersonalPortal } from './PatientPersonalPortal';
 import { StaffLoginModalOrPage, type StaffAuthIntent } from './StaffLoginModalOrPage';
@@ -317,6 +318,7 @@ export function App() {
   const stopKioskOverviewSpeech = useCallback(() => {
     overviewSpeakSeqRef.current += 1;
     overviewPendingAudioRef.current = null;
+    notifyMascotSpeechEnd('kiosk_overview');
     if (typeof window !== 'undefined') {
       if (overviewEntryTimerRef.current !== null) {
         window.clearTimeout(overviewEntryTimerRef.current);
@@ -367,6 +369,21 @@ export function App() {
           utterance.lang = matchedVoice?.lang || opt.bcp47;
           if (matchedVoice) utterance.voice = matchedVoice;
           utterance.rate = targetLang === 'th' ? 0.96 : targetLang === 'cn' ? 0.98 : 1.0;
+          utterance.onstart = () => {
+            if (overviewSpeakSeqRef.current === seq) {
+              notifyMascotSpeechStart({ text, source: 'kiosk_overview' });
+            }
+          };
+          utterance.onend = () => {
+            if (overviewSpeakSeqRef.current === seq) {
+              notifyMascotSpeechEnd('kiosk_overview');
+            }
+          };
+          utterance.onerror = () => {
+            if (overviewSpeakSeqRef.current === seq) {
+              notifyMascotSpeechEnd('kiosk_overview');
+            }
+          };
           synth.speak(utterance);
         };
         if (wasBusy) {
@@ -405,6 +422,12 @@ export function App() {
           audio.onplay = () => {
             if (overviewSpeakSeqRef.current === seq) {
               overviewPendingAudioRef.current = null;
+              notifyMascotSpeechStart({ text: clean, source: 'kiosk_overview' });
+            }
+          };
+          audio.onended = () => {
+            if (overviewSpeakSeqRef.current === seq) {
+              notifyMascotSpeechEnd('kiosk_overview');
             }
           };
           audio.onerror = () => {

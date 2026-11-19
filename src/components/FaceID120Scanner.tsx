@@ -32,6 +32,7 @@ import {
   useClinicalI18n,
   type ClinicalLang,
 } from '@drtechcares/clinical-i18n';
+import { notifyMascotSpeechEnd, notifyMascotSpeechStart } from '@drtechcares/kiosk-input';
 import {
   buildTtsProxyUrl,
   pickSpeechVoice,
@@ -1035,6 +1036,7 @@ export default function FaceID120Scanner({
     if (clearQueue) {
       queuedSpeechRef.current = null;
     }
+    notifyMascotSpeechEnd('face_enroll');
     if (typeof window !== 'undefined') {
       if (webFallbackTimerRef.current !== null) {
         window.clearTimeout(webFallbackTimerRef.current);
@@ -1104,6 +1106,7 @@ export default function FaceID120Scanner({
         webFallbackTimerRef.current = null;
       }
       isSpeakingRef.current = false;
+      notifyMascotSpeechEnd('face_enroll');
       const queued = queuedSpeechRef.current;
       queuedSpeechRef.current = null;
       if (queued && voiceEnabledRef.current && !unmountedRef.current) {
@@ -1145,6 +1148,11 @@ export default function FaceID120Scanner({
         if (matched) {
           utter.voice = matched;
         }
+        utter.onstart = () => {
+          if (seq === speakSeqRef.current) {
+            notifyMascotSpeechStart({ text: cleanSpeechText, source: 'face_enroll' });
+          }
+        };
         utter.onend = handleFinished;
         utter.onerror = handleFinished;
         window.speechSynthesis.speak(utter);
@@ -1164,6 +1172,7 @@ export default function FaceID120Scanner({
         window.clearTimeout(webFallbackTimerRef.current);
         webFallbackTimerRef.current = null;
       }
+      notifyMascotSpeechStart({ text: trimmed, source: 'face_enroll' });
     };
     audio.onended = handleFinished;
     audio.onerror = triggerWebSpeech;

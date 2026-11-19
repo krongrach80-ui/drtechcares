@@ -65,6 +65,7 @@ import {
   mapVideoPointToCoverCanvas,
   validateTetheredHandLandmarks21,
 } from '../lib/poseSkeletonSafety';
+import { inferMascotPoseFromSpeechText } from '@drtechcares/kiosk-input';
 import {
   Activity,
   AlertOctagon,
@@ -4122,12 +4123,16 @@ export function SmartRehabKioskUI({
     kiosk_state === 'HOLD_PHASE' ||
     kiosk_state === 'CALIBRATING' ||
     Boolean(unifiedCoachingBanner?.titleTh);
-  const mascotPose = resolveMascotPose({
+  const baseMascotPose = resolveMascotPose({
     isGreeting: mascotGreetingActive,
     isEncouraging: mascotEncouragingActive,
     isSpeaking: isMascotSpeaking,
     isExplaining: isMascotExplaining,
   });
+  const mascotPose =
+    !mascotEncouragingActive && isMascotSpeaking
+      ? inferMascotPoseFromSpeechText(cleanSpeechText)
+      : baseMascotPose;
 
   return (
     <div className="h-[100dvh] max-h-[100dvh] w-full overflow-hidden bg-gradient-to-b from-slate-50 via-white to-emerald-50/40 text-slate-800 flex flex-col justify-between p-2.5 md:p-3 gap-2 select-none">

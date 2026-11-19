@@ -6,4 +6,5 @@ export * from './touchlessGestureStarter';
 export * from './handGestureVerifier';
 export * from './voiceFeedback';
 export * from './voiceMute';
+export * from './mascotSpeechBus';
 

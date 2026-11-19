@@ -6,6 +6,9 @@ import {
   KIOSK_VOICE_MUTED_STORAGE_KEY,
   cancelAllKioskVoiceSpeech,
   getSeniorVoiceToggleLabel,
+  inferMascotPoseFromSpeechText,
+  notifyMascotSpeechEnd,
+  notifyMascotSpeechStart,
   readStoredKioskVoiceMuted,
   sanitizeSpeechText,
   subscribeKioskVoiceMuted,
@@ -653,6 +656,7 @@ export function VoiceCoachBanner({
   useEffect(() => {
     return () => {
       onSpeakingChangeRef.current?.(false);
+      notifyMascotSpeechEnd('voice_coach');
     };
   }, []);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
@@ -690,6 +694,22 @@ export function VoiceCoachBanner({
     muted,
   });
   latestDisplayRef.current = { text: displayedText, lang: voiceLang, muted };
+
+  useEffect(() => {
+    if (isSpeaking) {
+      const resolvedPose =
+        kioskState === 'REP_COMPLETED' || kioskState === 'SET_FINISHED'
+          ? 'encouraging'
+          : inferMascotPoseFromSpeechText(displayedText);
+      notifyMascotSpeechStart({
+        text: displayedText,
+        source: 'voice_coach',
+        pose: resolvedPose,
+      });
+    } else {
+      notifyMascotSpeechEnd('voice_coach');
+    }
+  }, [isSpeaking, displayedText, kioskState]);
 
   const clearPendingSpeakTimer = useCallback(() => {
     if (pendingSpeakTimerRef.current !== null && typeof window !== 'undefined') {

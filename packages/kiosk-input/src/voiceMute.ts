@@ -1,3 +1,5 @@
+import { notifyMascotSpeechEnd } from './mascotSpeechBus';
+
 export const KIOSK_VOICE_MUTED_STORAGE_KEY = 'drtech_kiosk_voice_muted';
 export const KIOSK_VOICE_MUTED_EVENT = 'drtech-kiosk-voice-muted-change';
 
@@ -55,6 +57,7 @@ export function subscribeKioskVoiceMuted(onChange: (muted: boolean) => void): ()
 
 /** Immediately halts Web Speech API utterances and any playing HTML5 audio tracks. */
 export function cancelAllKioskVoiceSpeech(extraAudio?: HTMLAudioElement | null): void {
+  notifyMascotSpeechEnd();
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
     try {
       window.speechSynthesis.cancel();

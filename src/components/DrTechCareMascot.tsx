@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 export type DrTechCareMascotPose =
   | 'idle'
@@ -11,6 +11,28 @@ export type DrTechCareMascotSize = 'sm' | 'md' | 'lg';
 
 export const MASCOT_ENCOURAGING_DURATION_MS = 1600;
 export const MASCOT_GREETING_DURATION_MS = 2600;
+
+export const MASCOT_VIDEO_SRC = '/mascot/dr-techcare-mascot.mp4';
+export const MASCOT_POSTER_SRC = '/mascot/dr-techcare-poster.jpg';
+
+export interface MascotVideoSegment {
+  startSec: number;
+  endSec: number;
+  playbackRate: number;
+  loop: boolean;
+}
+
+/**
+ * Verified non-bleed clip windows inside `gemini_generated_video_4603d38c.mp4`
+ * (hard scene cuts occur at 2.000s, 4.000s, 6.458s, 10.000s).
+ */
+export const MASCOT_VIDEO_SEGMENTS: Record<DrTechCareMascotPose, MascotVideoSegment> = {
+  greeting: { startSec: 0.06, endSec: 1.9, playbackRate: 1.0, loop: true },
+  explaining: { startSec: 2.08, endSec: 3.9, playbackRate: 1.0, loop: true },
+  speaking: { startSec: 4.08, endSec: 6.32, playbackRate: 1.08, loop: true },
+  encouraging: { startSec: 6.54, endSec: 9.88, playbackRate: 1.0, loop: true },
+  idle: { startSec: 4.82, endSec: 5.75, playbackRate: 0.52, loop: true },
+};
 
 export const MASCOT_DEFAULT_SPEECH_BUBBLES: Partial<Record<DrTechCareMascotPose, string>> = {
   greeting: 'สวัสดีครับ!',
@@ -25,6 +47,8 @@ export interface DrTechCareMascotProps {
   className?: string;
   speechText?: string;
   showSpeechBubble?: boolean;
+  useVideo?: boolean;
+  videoFit?: 'avatar' | 'stage';
   testId?: string;
 }
 
@@ -125,12 +149,18 @@ export const DrTechCareMascot: React.FC<DrTechCareMascotProps> = ({
   className,
   speechText,
   showSpeechBubble = true,
+  useVideo = true,
+  videoFit = 'avatar',
   testId = 'dr-techcare-mascot',
 }) => {
   const [speakFrame, setSpeakFrame] = useState<number>(0);
-  const lipSyncActive = isSpeaking || pose === 'speaking';
+  const [videoFailed, setVideoFailed] = useState<boolean>(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const activeSegment = MASCOT_VIDEO_SEGMENTS[pose];
+  const shouldPlayVideo = useVideo && !videoFailed;
+  const lipSyncActive = !shouldPlayVideo && (isSpeaking || pose === 'speaking');
 
-  // 60FPS requestAnimationFrame phoneme cadence when speaking
+  // 60FPS requestAnimationFrame phoneme cadence when SVG fallback is speaking
   useEffect(() => {
     if (!lipSyncActive || typeof window === 'undefined') {
       setSpeakFrame(0);
@@ -152,6 +182,53 @@ export const DrTechCareMascot: React.FC<DrTechCareMascotProps> = ({
     };
   }, [lipSyncActive, isSpeaking]);
 
+  // 60FPS requestAnimationFrame video segment trimmer preventing cross-cut bleed
+  useEffect(() => {
+    if (!shouldPlayVideo || typeof window === 'undefined') {
+      return;
+    }
+    const videoEl = videoRef.current;
+    if (!videoEl) return;
+
+    const targetRate = isSpeaking && pose === 'speaking' ? 1.12 : activeSegment.playbackRate;
+    videoEl.muted = true;
+    videoEl.playbackRate = targetRate;
+
+    if (videoEl.readyState >= 1) {
+      if (
+        videoEl.currentTime < activeSegment.startSec - 0.06 ||
+        videoEl.currentTime >= activeSegment.endSec - 0.04
+      ) {
+        videoEl.currentTime = activeSegment.startSec;
+      }
+      if (videoEl.paused) {
+        void videoEl.play().catch(() => {});
+      }
+    }
+
+    let rafId = 0;
+    const watchFrame = () => {
+      const el = videoRef.current;
+      if (el && el.readyState >= 2) {
+        if (
+          el.currentTime >= activeSegment.endSec - 0.04 ||
+          el.currentTime < activeSegment.startSec - 0.06
+        ) {
+          el.currentTime = activeSegment.startSec;
+        }
+        if (el.paused) {
+          void el.play().catch(() => {});
+        }
+      }
+      rafId = window.requestAnimationFrame(watchFrame);
+    };
+
+    rafId = window.requestAnimationFrame(watchFrame);
+    return () => {
+      if (rafId) window.cancelAnimationFrame(rafId);
+    };
+  }, [shouldPlayVideo, pose, isSpeaking, activeSegment.startSec, activeSegment.endSec, activeSegment.playbackRate]);
+
   const mouth = getMascotMouthPath(pose, isSpeaking, speakFrame);
   const resolvedBubbleText =
     speechText !== undefined ? speechText.trim() : (MASCOT_DEFAULT_SPEECH_BUBBLES[pose] ?? '');
@@ -161,6 +238,17 @@ export const DrTechCareMascot: React.FC<DrTechCareMascotProps> = ({
   const rootClassName = className
     ? `relative inline-flex items-center justify-center select-none ${className}`
     : `relative inline-flex items-center justify-center select-none ${SIZE_CLASSES[size]}`;
+
+  const videoBorderClass = isSpeaking
+    ? 'border-emerald-300 ring-2 ring-emerald-300/60 shadow-emerald-500/25'
+    : pose === 'encouraging'
+      ? 'border-amber-300 ring-2 ring-amber-300/60 shadow-amber-400/25'
+      : 'border-sky-200 shadow-sky-900/15';
+
+  const videoObjectClass =
+    videoFit === 'stage'
+      ? 'h-full w-full object-cover object-center pointer-events-none'
+      : 'h-full w-full object-cover object-[50%_42%] scale-[1.08] pointer-events-none';
 
   return (
     <div
@@ -182,6 +270,68 @@ export const DrTechCareMascot: React.FC<DrTechCareMascotProps> = ({
         </div>
       )}
 
+      {shouldPlayVideo ? (
+        <div
+          className={`relative h-full w-full overflow-hidden rounded-2xl border-2 bg-[#eaf6f3] shadow-sm transition-all duration-300 ease-in-out ${videoBorderClass}`}
+        >
+          <video
+            ref={videoRef}
+            src={MASCOT_VIDEO_SRC}
+            poster={MASCOT_POSTER_SRC}
+            muted
+            autoPlay
+            playsInline
+            preload="auto"
+            disablePictureInPicture
+            onLoadedMetadata={(e) => {
+              const el = e.currentTarget;
+              el.muted = true;
+              el.playbackRate =
+                isSpeaking && pose === 'speaking' ? 1.12 : activeSegment.playbackRate;
+              el.currentTime = activeSegment.startSec;
+              void el.play().catch(() => {});
+            }}
+            onError={() => setVideoFailed(true)}
+            data-testid="mascot-video"
+            data-video-start={activeSegment.startSec}
+            data-video-end={activeSegment.endSec}
+            className={videoObjectClass}
+          />
+          {showWaveOverlay && (
+            <div
+              aria-hidden="true"
+              data-testid="mascot-soundwaves"
+              className="pointer-events-none absolute bottom-1 right-1 flex items-end gap-0.5 rounded-full bg-white/90 px-1.5 py-1 shadow-xs"
+            >
+              <span className="w-0.5 h-2 rounded-full bg-emerald-500 animate-mascot-eq" />
+              <span
+                className="w-0.5 h-3 rounded-full bg-teal-500 animate-mascot-eq"
+                style={{ animationDelay: '120ms' }}
+              />
+              <span
+                className="w-0.5 h-2.5 rounded-full bg-sky-500 animate-mascot-eq"
+                style={{ animationDelay: '240ms' }}
+              />
+            </div>
+          )}
+          {pose === 'encouraging' && (
+            <svg
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+              data-testid="mascot-encouraging-particles"
+              className="pointer-events-none absolute top-0.5 right-0.5 h-4 w-4 animate-mascot-sparkle"
+              fill="none"
+            >
+              <path
+                d="M12 2 L14.2 9.2 L21.5 11.5 L14.2 13.8 L12 21 L9.8 13.8 L2.5 11.5 L9.8 9.2 Z"
+                fill="#facc15"
+                stroke="#ca8a04"
+                strokeWidth="1.2"
+              />
+            </svg>
+          )}
+        </div>
+      ) : (
       <svg
         viewBox="0 0 160 180"
         className="w-full h-full overflow-visible"
@@ -1029,6 +1179,7 @@ export const DrTechCareMascot: React.FC<DrTechCareMascotProps> = ({
           </g>
         )}
       </svg>
+      )}
     </div>
   );
 };

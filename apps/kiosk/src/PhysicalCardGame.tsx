@@ -4,6 +4,8 @@ import { useClinicalI18n } from '@drtechcares/clinical-i18n';
 import {
   AudioChimeSynthesizer,
   cancelAllKioskVoiceSpeech,
+  notifyMascotSpeechEnd,
+  notifyMascotSpeechStart,
   readStoredKioskVoiceMuted,
   subscribeKioskVoiceMuted,
   writeStoredKioskVoiceMuted,
@@ -858,6 +860,7 @@ export function PhysicalCardGame({
       }
       isSpeakingRef.current = false;
       setIsSpeaking(false);
+      notifyMascotSpeechEnd('card_game');
     },
     [clearPendingSpeakTimer, clearSpeakingWatchdog],
   );
@@ -909,6 +912,7 @@ export function PhysicalCardGame({
             blockedByAutoplayRef.current = false;
             isSpeakingRef.current = true;
             setIsSpeaking(true);
+            notifyMascotSpeechStart({ text: clean, source: 'card_game' });
           };
           utterance.onend = () => {
             if (activeUtteranceRef.current === utterance) {
@@ -997,6 +1001,7 @@ export function PhysicalCardGame({
             blockedByAutoplayRef.current = false;
             isSpeakingRef.current = true;
             setIsSpeaking(true);
+            notifyMascotSpeechStart({ text: clean, source: 'card_game' });
           };
           audio.onended = () => {
             onMinigameSpeechEndedRef.current(seq);
@@ -1058,6 +1063,7 @@ export function PhysicalCardGame({
     clearSpeakingWatchdog();
     isSpeakingRef.current = false;
     setIsSpeaking(false);
+    notifyMascotSpeechEnd('card_game');
 
     if (!activeFeedbackMetaRef.current && !completedSummaryRef.current) {
       questionPhaseRef.current = 'READY_TO_ANSWER';
