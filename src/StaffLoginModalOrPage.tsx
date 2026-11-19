@@ -488,7 +488,7 @@ export function StaffLoginModalOrPage({
                   id="staff-login-error"
                   testId="staff-login-not-found-panel"
                   heading="ไม่พบบัญชี"
-                  subtitle="ไม่พบชื่อผู้ใช้หรือรหัสผ่านนี้ในระบบ"
+                  subtitle="ไม่พบชื่อผู้ใช้หรือรหัสผ่านนี้ในระบบคลินิก"
                   noAccountLabel="ไม่มีบัญชี"
                   secondaryLabel="สมัครสมาชิก (Admin / PT)"
                   onNoAccountClick={() => {

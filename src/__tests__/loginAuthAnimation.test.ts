@@ -8,11 +8,14 @@ import { ClinicalI18nProvider } from '@drtechcares/clinical-i18n';
 import {
   KINETIC_AUTH_HOLD_DELAY_MS,
   KINETIC_SUCCESS_WORD,
+  KINETIC_TOTAL_DURATION_MS,
   KINETIC_TYPEWRITER_START_DELAY_MS,
   KINETIC_TYPEWRITER_STEP_MS,
+  KIOSK_AUTH_HOLD_DELAY_MS,
   KineticAuthStatusBadge,
   KineticEmblemSvg,
-  resolveKineticTypewriterText,
+  computeKineticAuthFrame,
+  getKineticTypewriterText,
 } from '../components/KineticAuthStatusBadge';
 import {
   StaffLoginModalOrPage,
@@ -22,36 +25,101 @@ import {
 
 const EMOJI_RE = /[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/u;
 
-describe('4-Stage Kinetic SVG Auth Badge & Staff/Kiosk Login Feedback Choreography', () => {
-  it('defines all 4-stage kinetic SVG keyframes, error-shake, and reduced-motion fallbacks in src/index.css', () => {
-    const css = fs.readFileSync(path.resolve(process.cwd(), 'src', 'index.css'), 'utf8');
-    for (const token of [
-      '@keyframes kineticDotBounceIn',
-      '@keyframes kineticCheckDraw',
-      '@keyframes kineticCrossDraw',
-      '@keyframes kineticTipDotPop',
-      '@keyframes kineticSparkBurst',
-      '@keyframes kineticRingSweep',
-      '@keyframes kineticOrbitSweep',
-      '@keyframes errorShake',
-      '.animate-kinetic-dot-bounce',
-      '.animate-kinetic-check',
-      '.animate-kinetic-cross-1',
-      '.animate-kinetic-cross-2',
-      '.animate-kinetic-tip-dot',
-      '.animate-kinetic-tip-spark',
-      '.animate-kinetic-ring',
-      '.animate-kinetic-orbit',
-      '.animate-kinetic-closure-spark',
-      '.animate-error-shake',
-      'stroke-dashoffset: 0 !important',
-    ]) {
-      expect(css).toContain(token);
-    }
-    expect(EMOJI_RE.test(css)).toBe(false);
+describe('Frame-Accurate 60FPS Kinetic SVG Auth Badge & Staff/Kiosk Login Choreography', () => {
+  it('computes all 5 rAF choreography phases cleanly with two-tone contrast (success & not_found)', () => {
+    expect(KINETIC_TOTAL_DURATION_MS).toBe(2350);
+    expect(KINETIC_AUTH_HOLD_DELAY_MS).toBe(2800);
+    expect(KIOSK_AUTH_HOLD_DELAY_MS).toBe(2400);
+    expect(KINETIC_TYPEWRITER_START_DELAY_MS).toBe(1450);
+    expect(KINETIC_TYPEWRITER_STEP_MS).toBe(55);
+    expect(KINETIC_SUCCESS_WORD).toBe('Success');
+
+    // Phase 1 (0 - 450ms): hop-up from (50, 56) -> (42, 35) then straight drop to (50, 50)
+    const f0 = computeKineticAuthFrame(0, 'success');
+    expect(f0.phase).toBe(1);
+    expect(f0.innerColor).toBe('#10b981');
+    expect(f0.ringColor).toBe('#0ea5e9');
+    expect(f0.innerOpacity).toBe(0);
+    expect(f0.dotX).toBeCloseTo(50, 1);
+    expect(f0.dotY).toBeCloseTo(56, 1);
+
+    const fPeak = computeKineticAuthFrame(240, 'success');
+    expect(fPeak.phase).toBe(1);
+    expect(fPeak.dotX).toBeCloseTo(42, 1);
+    expect(fPeak.dotY).toBeCloseTo(35, 1);
+    expect(fPeak.hopTailOpacity).toBeGreaterThan(0);
+
+    // Phase 2 (430 - 680ms): checkmark draws smoothly & dot lifts above tip toward (68, 26)
+    const fImpact = computeKineticAuthFrame(430, 'success');
+    expect(fImpact.phase).toBe(2);
+    expect(fImpact.sparks.length).toBeGreaterThanOrEqual(1);
+
+    const fDrawMid = computeKineticAuthFrame(540, 'success');
+    expect(fDrawMid.innerOpacity).toBe(1);
+    expect(fDrawMid.checkDashOffset).toBeLessThan(100);
+    expect(fDrawMid.checkDashOffset).toBeGreaterThanOrEqual(0);
+
+    // Phase 3 (680 - 1020ms): hover bounce around (68, 25) + 2 tip micro-sparks
+    const fHover = computeKineticAuthFrame(850, 'success');
+    expect(fHover.phase).toBe(3);
+    expect(fHover.checkDashOffset).toBe(0);
+    expect(fHover.dotX).toBe(68);
+    expect(fHover.dotY).toBeCloseTo(24, 0.6);
+    expect(fHover.sparks.length).toBe(2);
+
+    // Phase 4 (1020 - 1920ms): leading dot dives to -42deg & sweeps 360deg clockwise pulling r=34 ring
+    const fSweepStart = computeKineticAuthFrame(1140, 'success');
+    expect(fSweepStart.phase).toBe(4);
+    expect(Math.hypot(fSweepStart.dotX - 50, fSweepStart.dotY - 50)).toBeCloseTo(34, 1);
+    expect(fSweepStart.sweepProgress).toBeCloseTo(0, 3);
+
+    const fSweepMid = computeKineticAuthFrame(1530, 'success');
+    expect(fSweepMid.phase).toBe(4);
+    expect(Math.hypot(fSweepMid.dotX - 50, fSweepMid.dotY - 50)).toBeCloseTo(34, 1);
+    expect(fSweepMid.sweepProgress).toBeGreaterThan(0.4);
+    expect(fSweepMid.sweepProgress).toBeLessThan(0.6);
+    expect(fSweepMid.ringDashOffset).toBeGreaterThan(35);
+    expect(fSweepMid.ringDashOffset).toBeLessThan(65);
+    expect(fSweepMid.typedText.length).toBeGreaterThanOrEqual(2);
+
+    // Phase 5 (1920 - 2350ms): ring closes clockwise 100%, dot shrinks & merges, 3 celebration sparks pop, "Success" done
+    const fCloseStart = computeKineticAuthFrame(1920, 'success');
+    expect(fCloseStart.phase).toBe(5);
+    expect(fCloseStart.sweepProgress).toBe(1);
+    expect(fCloseStart.ringDashOffset).toBe(0);
+    expect(fCloseStart.sparks.length).toBe(3);
+    expect(fCloseStart.typedText).toBe('Success');
+
+    const fDone = computeKineticAuthFrame(2350, 'success');
+    expect(fDone.phase).toBe(5);
+    expect(fDone.dotVisible).toBe(false);
+    expect(fDone.ringDashOffset).toBe(0);
+    expect(fDone.typedText).toBe('Success');
+
+    // Account Not Found two-tone palette + subtle impact shake
+    const fErr = computeKineticAuthFrame(540, 'not_found');
+    expect(fErr.innerColor).toBe('#e11d48');
+    expect(fErr.ringColor).toBe('#ef4444');
+    expect(fErr.crossDashOffset1).toBeLessThan(100);
+    expect(Math.abs(fErr.shakeX)).toBeGreaterThan(0);
+    expect(fErr.typedText).toBe('');
   });
 
-  it('transitions checking -> success, holds 1400ms for ring closure + typewriter "Success" (750ms delay, 55ms/char)', async () => {
+  it('reveals visible typewriter "Success" from 1450ms at 55ms per character finishing by 1835ms', () => {
+    expect(getKineticTypewriterText(0).typedText).toBe('');
+    expect(getKineticTypewriterText(1449).typedText).toBe('');
+    expect(getKineticTypewriterText(1450).typedText).toBe('S');
+    expect(getKineticTypewriterText(1505).typedText).toBe('Su');
+    expect(getKineticTypewriterText(1560).typedText).toBe('Suc');
+    expect(getKineticTypewriterText(1615).typedText).toBe('Succ');
+    expect(getKineticTypewriterText(1670).typedText).toBe('Succe');
+    expect(getKineticTypewriterText(1725).typedText).toBe('Succes');
+    expect(getKineticTypewriterText(1780).typedText).toBe('Success');
+    expect(getKineticTypewriterText(1835).typedText).toBe('Success');
+    expect(getKineticTypewriterText(2350).typedText).toBe('Success');
+  });
+
+  it('transitions checking -> success and holds KINETIC_AUTH_HOLD_DELAY_MS (2800ms) before closing modal', async () => {
     vi.useFakeTimers();
     try {
       const mockAdmin: UserAccount = {
@@ -83,28 +151,17 @@ describe('4-Stage Kinetic SVG Auth Badge & Staff/Kiosk Login Feedback Choreograp
       expect(loadingStates).toEqual([true, false]);
       expect(onSuccess).not.toHaveBeenCalled();
 
-      expect(KINETIC_TYPEWRITER_START_DELAY_MS).toBe(750);
-      expect(KINETIC_TYPEWRITER_STEP_MS).toBe(55);
-      expect(KINETIC_AUTH_HOLD_DELAY_MS).toBe(1400);
-      expect(resolveKineticTypewriterText(0)).toBe('');
-      expect(resolveKineticTypewriterText(1)).toBe('S');
-      expect(resolveKineticTypewriterText(2)).toBe('Su');
-      expect(resolveKineticTypewriterText(3)).toBe('Suc');
-      expect(resolveKineticTypewriterText(4)).toBe('Succ');
-      expect(resolveKineticTypewriterText(5)).toBe('Succe');
-      expect(resolveKineticTypewriterText(6)).toBe('Succes');
-      expect(resolveKineticTypewriterText(7)).toBe(KINETIC_SUCCESS_WORD);
-
-      vi.advanceTimersByTime(1399);
+      vi.advanceTimersByTime(2799);
       expect(onSuccess).not.toHaveBeenCalled();
       vi.advanceTimersByTime(1);
+      expect(onSuccess).toHaveBeenCalledTimes(1);
       expect(onSuccess).toHaveBeenCalledWith(mockAdmin);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('transitions checking -> not_found when username/password is invalid and never calls onSuccess', async () => {
+  it('transitions checking -> not_found on invalid credentials without calling onSuccess', async () => {
     const statuses: StaffLoginAnimStatus[] = [];
     const onSuccess = vi.fn();
 
@@ -124,32 +181,30 @@ describe('4-Stage Kinetic SVG Auth Badge & Staff/Kiosk Login Feedback Choreograp
     expect(onSuccess).not.toHaveBeenCalled();
   });
 
-  it('renders KineticAuthStatusBadge status="success" (dot bounce, M32 52 L45 65 L69 37 checkmark, orbit r=38 ring, micro-sparks, typewriter)', () => {
-    const successBadgeHtml = renderToStaticMarkup(
+  it('renders KineticAuthStatusBadge SVG phases & visible emerald #047857 "Success" vs crimson "ไม่พบบัญชี" UI', () => {
+    const completedSuccessHtml = renderToStaticMarkup(
       React.createElement(KineticAuthStatusBadge, {
         status: 'success',
         testId: 'test-kinetic-success',
+        initialElapsedMs: 1950,
+        animate: false,
       }),
     );
-    expect(successBadgeHtml).toContain('test-kinetic-success');
-    expect(successBadgeHtml).toContain('viewBox="0 0 100 100"');
-    expect(successBadgeHtml).toContain('animate-kinetic-dot-bounce');
-    expect(successBadgeHtml).toContain('d="M32 52 L45 65 L69 37"');
-    expect(successBadgeHtml).toContain('animate-kinetic-check');
-    expect(successBadgeHtml).toContain('cx="69" cy="29" r="4.5"');
-    expect(successBadgeHtml).toContain('animate-kinetic-tip-spark');
-    expect(successBadgeHtml).toContain('r="38"');
-    expect(successBadgeHtml).toContain('transform="rotate(-45 50 50)"');
-    expect(successBadgeHtml).toContain('animate-kinetic-ring');
-    expect(successBadgeHtml).toContain('animate-kinetic-orbit');
-    expect(successBadgeHtml).toContain('animate-kinetic-closure-spark');
-    expect(successBadgeHtml).toContain('kinetic-success-typewriter');
-    expect(successBadgeHtml).toContain('aria-label="Success"');
-    expect(successBadgeHtml).toContain('เข้าสู่ระบบสำเร็จ กำลังเปิดหน้าจัดการคลินิก...');
-    expect(EMOJI_RE.test(successBadgeHtml)).toBe(false);
-  });
+    expect(completedSuccessHtml).toContain('test-kinetic-success');
+    expect(completedSuccessHtml).toContain('viewBox="0 0 100 100"');
+    expect(completedSuccessHtml).toContain('stroke="#10b981"');
+    expect(completedSuccessHtml).toContain('stroke="#0ea5e9"');
+    expect(completedSuccessHtml).toContain('d="M33 51 L45 63 L68 38"');
+    expect(completedSuccessHtml).toContain('stroke-width="8.5"');
+    expect(completedSuccessHtml).toContain('stroke-width="4.5"');
+    expect(completedSuccessHtml).toContain('r="34"');
+    expect(completedSuccessHtml).toContain('rotate(-42 50 50)');
+    expect(completedSuccessHtml).toContain('data-testid="kinetic-success-word"');
+    expect(completedSuccessHtml).toContain('color:#047857');
+    expect(completedSuccessHtml).toContain('>Success<');
+    expect(completedSuccessHtml).toContain('เข้าสู่ระบบสำเร็จ กำลังเปิดหน้าจัดการคลินิก...');
+    expect(EMOJI_RE.test(completedSuccessHtml)).toBe(false);
 
-  it('renders KineticAuthStatusBadge status="not_found" (red dot, M36 36 L64 64 / M64 36 L36 64 cross, orbit ring, shake, ไม่พบบัญชี, ไม่มีบัญชี button)', () => {
     const notFoundHtml = renderToStaticMarkup(
       React.createElement(KineticAuthStatusBadge, {
         status: 'not_found',
@@ -157,25 +212,23 @@ describe('4-Stage Kinetic SVG Auth Badge & Staff/Kiosk Login Feedback Choreograp
         secondaryLabel: 'สมัครสมาชิก (Admin / PT)',
         onNoAccountClick: () => {},
         onSecondaryClick: () => {},
+        initialElapsedMs: 1950,
+        animate: false,
       }),
     );
     expect(notFoundHtml).toContain('test-kinetic-not-found');
-    expect(notFoundHtml).toContain('animate-error-shake');
-    expect(notFoundHtml).toContain('animate-kinetic-dot-bounce');
+    expect(notFoundHtml).toContain('stroke="#e11d48"');
+    expect(notFoundHtml).toContain('stroke="#ef4444"');
     expect(notFoundHtml).toContain('d="M36 36 L64 64"');
     expect(notFoundHtml).toContain('d="M64 36 L36 64"');
-    expect(notFoundHtml).toContain('animate-kinetic-cross-1');
-    expect(notFoundHtml).toContain('animate-kinetic-cross-2');
-    expect(notFoundHtml).toContain('animate-kinetic-ring');
-    expect(notFoundHtml).toContain('animate-kinetic-orbit');
     expect(notFoundHtml).toContain('ไม่พบบัญชี');
-    expect(notFoundHtml).toContain('ไม่พบชื่อผู้ใช้หรือรหัสผ่านนี้ในระบบ');
+    expect(notFoundHtml).toContain('ไม่พบชื่อผู้ใช้หรือรหัสผ่านนี้ในระบบคลินิก');
     expect(notFoundHtml).toContain('ไม่มีบัญชี');
     expect(notFoundHtml).toContain('สมัครสมาชิก (Admin / PT)');
     expect(EMOJI_RE.test(notFoundHtml)).toBe(false);
   });
 
-  it('wires KineticAuthStatusBadge cleanly inside StaffLoginModalOrPage across checking, success, and not_found states with zero emojis', () => {
+  it('wires rAF KineticAuthStatusBadge inside StaffLoginModalOrPage & maintains zero emojis project-wide', () => {
     const apiClient = new DrTechCaresApiClient();
 
     const checkingHtml = renderToStaticMarkup(
@@ -205,8 +258,9 @@ describe('4-Stage Kinetic SVG Auth Badge & Staff/Kiosk Login Feedback Choreograp
       ),
     );
     expect(successModalHtml).toContain('staff-login-success-panel');
-    expect(successModalHtml).toContain('animate-kinetic-check');
-    expect(successModalHtml).toContain('animate-kinetic-orbit');
+    expect(successModalHtml).toContain('data-testid="kinetic-svg-success"');
+    expect(successModalHtml).toContain('data-testid="kinetic-success-word"');
+    expect(successModalHtml).toContain('color:#047857');
     expect(EMOJI_RE.test(successModalHtml)).toBe(false);
 
     const notFoundModalHtml = renderToStaticMarkup(
@@ -221,21 +275,34 @@ describe('4-Stage Kinetic SVG Auth Badge & Staff/Kiosk Login Feedback Choreograp
       ),
     );
     expect(notFoundModalHtml).toContain('staff-login-not-found-panel');
-    expect(notFoundModalHtml).toContain('animate-error-shake');
     expect(notFoundModalHtml).toContain('ไม่พบบัญชี');
+    expect(notFoundModalHtml).toContain('ไม่พบชื่อผู้ใช้หรือรหัสผ่านนี้ในระบบคลินิก');
     expect(notFoundModalHtml).toContain('ไม่มีบัญชี');
     expect(EMOJI_RE.test(notFoundModalHtml)).toBe(false);
 
     const emblemMini = renderToStaticMarkup(
-      React.createElement(KineticEmblemSvg, { status: 'success', className: 'w-6 h-6' }),
+      React.createElement(KineticEmblemSvg, {
+        status: 'success',
+        className: 'w-6 h-6',
+        initialElapsedMs: 2100,
+        animate: false,
+      }),
     );
-    expect(emblemMini).toContain('animate-kinetic-orbit');
+    expect(emblemMini).toContain('stroke="#10b981"');
+    expect(emblemMini).toContain('stroke="#0ea5e9"');
+
+    const badgeSource = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/KineticAuthStatusBadge.tsx'),
+      'utf8',
+    );
+    expect(badgeSource).toContain('requestAnimationFrame');
 
     for (const relPath of [
       'src/StaffLoginModalOrPage.tsx',
       'src/components/KineticAuthStatusBadge.tsx',
       'src/components/KioskBiometricLoginView.tsx',
       'src/index.css',
+      'src/__tests__/loginAuthAnimation.test.ts',
     ]) {
       const content = fs.readFileSync(path.resolve(process.cwd(), relPath), 'utf8');
       expect(EMOJI_RE.test(content)).toBe(false);

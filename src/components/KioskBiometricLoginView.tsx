@@ -93,6 +93,7 @@ import {
   type EdgeKioskTelemetryPayload,
 } from '../hooks/useEdgeVisionSocket';
 import {
+  KIOSK_AUTH_HOLD_DELAY_MS,
   KineticAuthStatusBadge,
   KineticEmblemSvg,
 } from './KineticAuthStatusBadge';
@@ -1233,6 +1234,18 @@ export function KioskBiometricLoginView({
     verifiedModalPayloadRef.current = payload;
     setVerifiedModalPayload(payload);
   }, []);
+  const [verifiedAnimDone, setVerifiedAnimDone] = useState(false);
+  useEffect(() => {
+    if (!verifiedModalPayload) {
+      setVerifiedAnimDone(false);
+      return;
+    }
+    setVerifiedAnimDone(false);
+    const timerId = window.setTimeout(() => {
+      setVerifiedAnimDone(true);
+    }, KIOSK_AUTH_HOLD_DELAY_MS);
+    return () => window.clearTimeout(timerId);
+  }, [verifiedModalPayload]);
   const onPatientAuthenticatedRef = useRef(onPatientAuthenticated);
   onPatientAuthenticatedRef.current = onPatientAuthenticated;
   const presenceRef = useRef(new FacePresenceTracker());
@@ -3342,10 +3355,10 @@ export function KioskBiometricLoginView({
                       <div className={`absolute left-1/2 top-full mt-2.5 w-max max-w-[390px] -translate-x-1/2 rounded-2xl border-2 px-4 py-2.5 text-center backdrop-blur-md shadow-2xl ${pillClass}`}>
                         <div className="inline-flex items-center justify-center gap-2 text-sm font-black leading-snug">
                           {overlay.boxColor === 'emerald' && (
-                            <KineticEmblemSvg status="success" className="w-6 h-6 shrink-0 overflow-visible" />
+                            <KineticEmblemSvg key={`hud-success-${scanGeneration}`} status="success" className="w-6 h-6 shrink-0 overflow-visible" />
                           )}
                           {overlay.boxColor === 'rose' && (
-                            <KineticEmblemSvg status="not_found" className="w-6 h-6 shrink-0 overflow-visible" />
+                            <KineticEmblemSvg key={`hud-not-found-${scanGeneration}`} status="not_found" className="w-6 h-6 shrink-0 overflow-visible" />
                           )}
                           <span>{overlay.label}</span>
                         </div>
@@ -3595,6 +3608,7 @@ export function KioskBiometricLoginView({
         <div className="fixed inset-0 z-50 bg-[#0F4C81]/40 backdrop-blur-md flex items-center justify-center p-4 animate-backdrop-fade">
           <div className="w-full max-w-md rounded-3xl bg-white border-2 border-rose-500/45 shadow-2xl p-6 text-center animate-popup-spring">
             <KineticAuthStatusBadge
+              key={`not-found-${scanGeneration}`}
               status="not_found"
               compact
               testId="kiosk-not-found-feedback-panel"
@@ -3687,8 +3701,9 @@ export function KioskBiometricLoginView({
               </button>
             </div>
 
-            <div className="mb-3">
+            <div className="mb-3" data-anim-complete={verifiedAnimDone ? 'true' : 'false'}>
               <KineticAuthStatusBadge
+                key={`kiosk-success-${verifiedModalPayload.patient.id}-${scanGeneration}`}
                 status="success"
                 compact
                 testId="kiosk-face-success-panel"
