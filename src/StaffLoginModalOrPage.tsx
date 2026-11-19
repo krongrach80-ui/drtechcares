@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { DrTechCaresApiClient, UserAccount } from '@drtechcares/api-client';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import {
@@ -9,13 +9,56 @@ import {
   Briefcase,
   Globe,
   Info,
-  Loader2,
   Lock,
   Phone,
   Shield,
   User,
   UserPlus,
 } from 'lucide-react';
+import {
+  AUTH_SUCCESS_REDIRECT_DELAY_MS,
+  AuthNotFoundFeedbackPanel,
+  AuthSuccessFeedbackPanel,
+  type StaffLoginAnimStatus,
+} from './components/AuthStatusAnimationPanel';
+
+export type { StaffLoginAnimStatus };
+
+export async function executeStaffAuthSubmission(params: {
+  runRequest: () => Promise<UserAccount>;
+  setAnimStatus: (next: StaffLoginAnimStatus) => void;
+  setLoading: (loading: boolean) => void;
+  setError: (msg: string | null) => void;
+  onSuccess: (user: UserAccount) => void;
+  scheduleTimer: (fn: () => void, ms: number) => number;
+  redirectDelayMs?: number;
+  treatErrorAsNotFound?: boolean;
+  fallbackErrorMsg?: string;
+}): Promise<StaffLoginAnimStatus> {
+  params.setError(null);
+  params.setLoading(true);
+  params.setAnimStatus('checking');
+  try {
+    const user = await params.runRequest();
+    params.setLoading(false);
+    params.setAnimStatus('success');
+    params.scheduleTimer(() => {
+      params.onSuccess(user);
+    }, params.redirectDelayMs ?? AUTH_SUCCESS_REDIRECT_DELAY_MS);
+    return 'success';
+  } catch (err) {
+    params.setLoading(false);
+    if (params.treatErrorAsNotFound !== false) {
+      params.setAnimStatus('not_found');
+      return 'not_found';
+    }
+    params.setAnimStatus('idle');
+    params.setError(
+      err instanceof Error && err.message ? err.message : (params.fallbackErrorMsg ?? 'Auth error'),
+    );
+    return 'idle';
+  }
+}
 
 export type StaffAuthIntent = 'general' | 'kiosk_patient_registration';
 
@@ -25,6 +68,7 @@ interface StaffLoginModalOrPageProps {
   onReturnToKiosk?: () => void;
   authIntent?: StaffAuthIntent;
   asModal?: boolean;
+  initialLoginAnimStatus?: StaffLoginAnimStatus;
 }
 
 const LANG_OPTIONS: { code: ClinicalLang; prefix: string; label: string }[] = [
@@ -205,6 +249,7 @@ export function StaffLoginModalOrPage({
   onReturnToKiosk,
   authIntent = 'general',
   asModal = false,
+  initialLoginAnimStatus = 'idle',
 }: StaffLoginModalOrPageProps) {
   const { lang, setLang } = useClinicalI18n();
   const copy = STAFF_LOGIN_COPY[lang];
@@ -219,9 +264,22 @@ export function StaffLoginModalOrPage({
   const [regSpecialty, setRegSpecialty] = useState('');
   const [regLicenseNo, setRegLicenseNo] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(initialLoginAnimStatus === 'checking');
+  const [loginAnimStatus, setLoginAnimStatus] = useState<StaffLoginAnimStatus>(initialLoginAnimStatus);
+  const successTimerRef = useRef<number | null>(null);
+  const usernameInputRef = useRef<HTMLInputElement | null>(null);
+
+  const clearPendingSuccessTimer = useCallback(() => {
+    if (successTimerRef.current !== null) {
+      window.clearTimeout(successTimerRef.current);
+      successTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearPendingSuccessTimer(), [clearPendingSuccessTimer]);
 
   const handleReturn = useCallback(() => {
+    clearPendingSuccessTimer();
     if (onReturnToKiosk) {
       onReturnToKiosk();
       return;
@@ -230,7 +288,7 @@ export function StaffLoginModalOrPage({
       window.history.pushState({}, '', '/');
       window.dispatchEvent(new PopStateEvent('popstate'));
     }
-  }, [onReturnToKiosk]);
+  }, [clearPendingSuccessTimer, onReturnToKiosk]);
 
   useEffect(() => {
     if (!asModal) return;
@@ -242,35 +300,48 @@ export function StaffLoginModalOrPage({
   }, [asModal, handleReturn]);
 
   const switchMode = (nextMode: 'login' | 'register') => {
+    clearPendingSuccessTimer();
     setMode(nextMode);
     setError(null);
+    setLoginAnimStatus('idle');
+    setLoading(false);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading || loginAnimStatus === 'checking' || loginAnimStatus === 'success') return;
+
     if (mode === 'register') {
       if (!regFullName.trim() || !username.trim() || password.length < 4) {
         setError(copy.registerRequiredFields);
         return;
       }
-      setError(null);
-      setLoading(true);
-      try {
-        const res = await apiClient.registerStaff({
-          username: username.trim(),
-          password,
-          role: regRole,
-          fullName: regFullName.trim(),
-          phone: regPhone.trim() || undefined,
-          specialty: regSpecialty.trim() || undefined,
-          licenseNo: regLicenseNo.trim() || undefined,
-        });
-        onSuccess(res.user);
-      } catch (err) {
-        setError(err instanceof Error && err.message ? err.message : copy.invalidCreds);
-      } finally {
-        setLoading(false);
-      }
+      await executeStaffAuthSubmission({
+        runRequest: async () => {
+          const res = await apiClient.registerStaff({
+            username: username.trim(),
+            password,
+            role: regRole,
+            fullName: regFullName.trim(),
+            phone: regPhone.trim() || undefined,
+            specialty: regSpecialty.trim() || undefined,
+            licenseNo: regLicenseNo.trim() || undefined,
+          });
+          return res.user;
+        },
+        setAnimStatus: setLoginAnimStatus,
+        setLoading,
+        setError,
+        onSuccess,
+        scheduleTimer: (fn, ms) => {
+          clearPendingSuccessTimer();
+          const tid = window.setTimeout(fn, ms);
+          successTimerRef.current = tid;
+          return tid;
+        },
+        treatErrorAsNotFound: false,
+        fallbackErrorMsg: copy.invalidCreds,
+      });
       return;
     }
 
@@ -278,17 +349,28 @@ export function StaffLoginModalOrPage({
       setError(copy.requiredFields);
       return;
     }
-    setError(null);
-    setLoading(true);
-    try {
-      const res = await apiClient.login(username.trim(), password);
-      onSuccess(res.user);
-    } catch (err) {
-      setError(err instanceof Error && err.message ? err.message : copy.invalidCreds);
-    } finally {
-      setLoading(false);
-    }
+
+    await executeStaffAuthSubmission({
+      runRequest: async () => {
+        const res = await apiClient.login(username.trim(), password);
+        return res.user;
+      },
+      setAnimStatus: setLoginAnimStatus,
+      setLoading,
+      setError,
+      onSuccess,
+      scheduleTimer: (fn, ms) => {
+        clearPendingSuccessTimer();
+        const tid = window.setTimeout(fn, ms);
+        successTimerRef.current = tid;
+        return tid;
+      },
+      treatErrorAsNotFound: true,
+      fallbackErrorMsg: copy.invalidCreds,
+    });
   };
+
+  const isCheckingOrSuccess = loading || loginAnimStatus === 'checking' || loginAnimStatus === 'success';
 
   const wrapperClass = asModal
     ? 'fixed inset-0 z-[70] flex items-center justify-center p-2 sm:p-4 bg-[#0F4C81]/35 backdrop-blur-md animate-backdrop-fade'
@@ -389,20 +471,50 @@ export function StaffLoginModalOrPage({
           </div>
         </div>
 
-        {/* Error Alert */}
-        {error && (
-          <div
-            id="staff-login-error"
-            data-testid="staff-login-error"
-            className="mx-6 sm:mx-10 mt-2 p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-sm flex items-center gap-2.5 font-medium animate-toast-in animate-gentle-shake"
-          >
-            <AlertCircle className="w-5 h-5 shrink-0 text-rose-600" />
-            <span>{error}</span>
+        {/* Success Animation Panel */}
+        {loginAnimStatus === 'success' ? (
+          <div className="p-6 sm:p-10 sm:pt-5">
+            <AuthSuccessFeedbackPanel
+              testId="staff-login-success-panel"
+              subtitle="เข้าสู่ระบบสำเร็จ กำลังเปิดหน้าจัดการคลินิก..."
+            />
           </div>
-        )}
+        ) : (
+          <>
+            {/* Not Found Animated Panel */}
+            {loginAnimStatus === 'not_found' && (
+              <div className="mx-6 sm:mx-10 mt-3">
+                <AuthNotFoundFeedbackPanel
+                  id="staff-login-error"
+                  testId="staff-login-not-found-panel"
+                  heading="ไม่พบบัญชี"
+                  subtext="ไม่พบชื่อผู้ใช้หรือรหัสผ่านนี้ในระบบคลินิก"
+                  noAccountLabel="ไม่มีบัญชี"
+                  secondaryLabel="สมัครสมาชิก (Admin / PT)"
+                  onNoAccountClick={() => {
+                    setLoginAnimStatus('idle');
+                    setError(null);
+                    usernameInputRef.current?.focus();
+                  }}
+                  onSecondaryClick={() => switchMode('register')}
+                />
+              </div>
+            )}
 
-        {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-6 sm:p-10 sm:pt-5 space-y-4">
+            {/* Validation / Non-Credential Error Alert */}
+            {error && loginAnimStatus !== 'not_found' && (
+              <div
+                id="staff-login-error"
+                data-testid="staff-login-error"
+                className="mx-6 sm:mx-10 mt-2 p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-sm flex items-center gap-2.5 font-medium animate-toast-in animate-gentle-shake"
+              >
+                <AlertCircle className="w-5 h-5 shrink-0 text-rose-600" />
+                <span>{error}</span>
+              </div>
+            )}
+
+            {/* Form Body */}
+            <form onSubmit={handleSubmit} className="p-6 sm:p-10 sm:pt-5 space-y-4">
           {mode === 'register' && (
             <>
               <div>
@@ -476,16 +588,24 @@ export function StaffLoginModalOrPage({
                 <User className="w-5 h-5" />
               </div>
               <input
+                ref={usernameInputRef}
                 id="staff-login-username"
                 data-testid="staff-login-username"
                 name="username"
                 type="text"
                 required
+                disabled={isCheckingOrSuccess}
                 autoComplete="username"
                 placeholder={copy.usernamePlaceholder}
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="w-full h-13 pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-base text-slate-800 placeholder-slate-400 focus:bg-white focus:outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 transition shadow-xs"
+                onChange={(e) => {
+                  setUsername(e.target.value);
+                  if (loginAnimStatus === 'not_found') {
+                    setLoginAnimStatus('idle');
+                    setError(null);
+                  }
+                }}
+                className="w-full h-13 pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-base text-slate-800 placeholder-slate-400 focus:bg-white focus:outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 transition shadow-xs disabled:opacity-60"
               />
             </div>
           </div>
@@ -507,12 +627,19 @@ export function StaffLoginModalOrPage({
                 name="password"
                 type="password"
                 required
+                disabled={isCheckingOrSuccess}
                 minLength={mode === 'register' ? 4 : undefined}
                 autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
                 placeholder={mode === 'register' ? copy.registerPasswordHint : copy.passwordPlaceholder}
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full h-13 pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-base text-slate-800 placeholder-slate-400 focus:bg-white focus:outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 transition shadow-xs"
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (loginAnimStatus === 'not_found') {
+                    setLoginAnimStatus('idle');
+                    setError(null);
+                  }
+                }}
+                className="w-full h-13 pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-base text-slate-800 placeholder-slate-400 focus:bg-white focus:outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 transition shadow-xs disabled:opacity-60"
               />
             </div>
           </div>
@@ -611,13 +738,33 @@ export function StaffLoginModalOrPage({
             id="staff-login-submit-btn"
             data-testid="staff-login-submit-btn"
             type="submit"
-            disabled={loading}
+            disabled={isCheckingOrSuccess}
             className="w-full h-13 py-3.5 px-6 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 active:scale-[0.98] text-white font-bold text-base sm:text-lg shadow-lg shadow-emerald-950/20 transition flex items-center justify-center gap-2.5 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            {loading ? (
+            {isCheckingOrSuccess ? (
               <>
-                <Loader2 className="w-5 h-5 animate-spin text-white shrink-0" />
-                <span>{mode === 'register' ? copy.registering : copy.loggingIn}</span>
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  className="w-5 h-5 animate-spin text-white shrink-0"
+                  aria-hidden="true"
+                >
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="9"
+                    stroke="currentColor"
+                    strokeWidth="2.8"
+                    className="opacity-30"
+                  />
+                  <path
+                    d="M21 12a9 9 0 0 0-9-9"
+                    stroke="currentColor"
+                    strokeWidth="2.8"
+                    strokeLinecap="round"
+                  />
+                </svg>
+                <span>{mode === 'register' ? copy.registering : 'กำลังตรวจสอบบัญชี...'}</span>
               </>
             ) : (
               <>
@@ -651,6 +798,8 @@ export function StaffLoginModalOrPage({
             <span>{copy.returnToPatientMain}</span>
           </button>
         </form>
+          </>
+        )}
 
         {/* Bottom Security Notice */}
         <div className="py-3.5 px-8 bg-slate-50 border-t border-slate-100 text-center text-xs text-slate-500 font-medium">

@@ -93,10 +93,14 @@ import {
   type EdgeKioskTelemetryPayload,
 } from '../hooks/useEdgeVisionSocket';
 import {
-  AlertCircle,
+  AnimatedCircleCheckmarkSvg,
+  AnimatedCircleCrossSvg,
+  AuthNotFoundFeedbackPanel,
+  AuthSuccessFeedbackPanel,
+} from './AuthStatusAnimationPanel';
+import {
   Bell,
   CameraOff,
-  CheckCircle2,
   FlipHorizontal2,
   HeartPulse,
   Info,
@@ -3338,7 +3342,15 @@ export function KioskBiometricLoginView({
                       </div>
 
                       <div className={`absolute left-1/2 top-full mt-2.5 w-max max-w-[390px] -translate-x-1/2 rounded-2xl border-2 px-4 py-2.5 text-center backdrop-blur-md shadow-2xl ${pillClass}`}>
-                        <div className="text-sm font-black leading-snug">{overlay.label}</div>
+                        <div className="inline-flex items-center justify-center gap-2 text-sm font-black leading-snug">
+                          {overlay.boxColor === 'emerald' && (
+                            <AnimatedCircleCheckmarkSvg className="w-5 h-5 shrink-0 animate-circle-pop" />
+                          )}
+                          {overlay.boxColor === 'rose' && (
+                            <AnimatedCircleCrossSvg className="w-5 h-5 shrink-0 animate-circle-pop" />
+                          )}
+                          <span>{overlay.label}</span>
+                        </div>
                         {overlay.subLabel && (
                           <div className="mt-0.5 text-xs font-bold opacity-90">{overlay.subLabel}</div>
                         )}
@@ -3583,13 +3595,16 @@ export function KioskBiometricLoginView({
       {/* Account Not Found Modal */}
       {scanStage === 'not_found' && !staffModalOpen && (
         <div className="fixed inset-0 z-50 bg-[#0F4C81]/40 backdrop-blur-md flex items-center justify-center p-4 animate-backdrop-fade">
-          <div className="w-full max-w-md rounded-3xl bg-white border-2 border-rose-500/45 shadow-2xl p-6 text-center animate-popup-spring animate-gentle-shake">
-            <div className="w-16 h-16 rounded-full bg-rose-50 border border-rose-200 flex items-center justify-center mx-auto mb-3">
-              <AlertCircle className="w-8 h-8 text-rose-500" />
-            </div>
-            <h3 className="text-xl font-extrabold text-slate-900">{c.notFoundTitle}</h3>
-            <p className="text-sm text-slate-600 mt-2 leading-relaxed">{c.notFoundDesc}</p>
-            <div className="mt-5 flex flex-col gap-2.5">
+          <div className="w-full max-w-md rounded-3xl bg-white border-2 border-rose-500/45 shadow-2xl p-6 text-center animate-popup-spring">
+            <AuthNotFoundFeedbackPanel
+              compact
+              testId="kiosk-not-found-feedback-panel"
+              heading="ไม่พบบัญชี"
+              subtext={lang === 'th' ? c.notFoundDesc : `${c.notFoundTitle} — ${c.notFoundDesc}`}
+              noAccountLabel="ไม่มีบัญชี"
+              onNoAccountClick={handleRestartScan}
+            />
+            <div className="mt-4 flex flex-col gap-2.5">
               <button
                 type="button"
                 onClick={onOpenStaffRegister}
@@ -3673,12 +3688,12 @@ export function KioskBiometricLoginView({
               </button>
             </div>
 
-            <div className="w-20 h-20 rounded-full mx-auto bg-gradient-to-tr from-emerald-500 to-teal-400 text-white flex items-center justify-center text-3xl font-black shadow-lg mb-3">
-              {verifiedModalPayload.patient.fullName?.[0] || 'P'}
-            </div>
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-bold border border-emerald-200 mb-2 animate-rep-pop">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              <span>{modalCopy.confidenceBadge}</span>
+            <div className="mb-3">
+              <AuthSuccessFeedbackPanel
+                compact
+                testId="kiosk-face-success-panel"
+                subtitle={`${verifiedModalPayload.patient.fullName} • ${modalCopy.confidenceBadge}`}
+              />
             </div>
             <h2 className="text-2xl font-extrabold text-slate-900">
               {verifiedModalPayload.patient.fullName}
