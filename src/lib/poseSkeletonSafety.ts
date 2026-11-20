@@ -38,8 +38,11 @@ export function mapVideoPointToCoverCanvas(
   const ch = canvasH > 0 ? canvasH : 480;
   const vw = videoW > 0 ? videoW : cw;
   const vh = videoH > 0 ? videoH : ch;
-  const px = vx <= 1.05 ? vx * vw : vx;
-  const py = vy <= 1.05 ? vy * vh : vy;
+  // Normalized MediaPipe landmarks may extend slightly beyond [0..1] (e.g., 1.06..1.50 when limbs leave frame);
+  // only interpret inputs as raw pixels when magnitude clearly exceeds normalized range (> 2.5).
+  const isRawPixel = Math.abs(vx) > 2.5 || Math.abs(vy) > 2.5;
+  const px = isRawPixel ? vx : vx * vw;
+  const py = isRawPixel ? vy : vy * vh;
   const scale = Math.max(cw / vw, ch / vh);
   const scaledW = vw * scale;
   const scaledH = vh * scale;

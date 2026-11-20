@@ -115,7 +115,7 @@ export function SkeletonCanvas({
 
   useEffect(() => {
     const canvas = edgeCanvasRef.current;
-    if (isDemoMode || !showSkeletonOverlay) {
+    if (isDemoMode || !showSkeletonOverlay || (hasLiveCamera && Boolean(liveVideoOverlay))) {
       if (canvas) {
         const ctx = canvas.getContext('2d');
         ctx?.clearRect(0, 0, canvas.width, canvas.height);
@@ -175,7 +175,7 @@ export function SkeletonCanvas({
     };
     rafId = requestAnimationFrame(renderFrame);
     return () => cancelAnimationFrame(rafId);
-  }, [isDemoMode, isPrivacyMode, showSkeletonOverlay, hasEdge3D]);
+  }, [isDemoMode, isPrivacyMode, showSkeletonOverlay, hasEdge3D, hasLiveCamera, Boolean(liveVideoOverlay)]);
 
   const currentRom = telemetry_analysis.current_rom_deg;
   const targetRom = telemetry_analysis.target_rom_deg || exercise.target_rom_deg;

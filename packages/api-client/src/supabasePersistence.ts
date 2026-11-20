@@ -184,6 +184,14 @@ export function filterSelectColsForTable(table: string, colsCsv: string): string
 const lastHydratedAtByState = new WeakMap<CloudRouterState, number>();
 const hydrationInFlightByState = new WeakMap<CloudRouterState, Promise<void>>();
 
+function isCloudflareWorkerRuntime(): boolean {
+  return (
+    typeof navigator !== 'undefined' &&
+    typeof navigator.userAgent === 'string' &&
+    navigator.userAgent.includes('Cloudflare-Workers')
+  );
+}
+
 export function getLastHydratedAt(state: CloudRouterState): number {
   return lastHydratedAtByState.get(state) ?? 0;
 }
@@ -641,11 +649,16 @@ export async function hydrateStateFromSupabase(
   if (!options?.force && lastHydratedAt > 0 && now - lastHydratedAt < HYDRATE_TTL_MS) {
     return;
   }
+  // Never share in-flight I/O Promises across Cloudflare Worker requests (workerd throws
+  // "Cannot perform I/O on behalf of a different request" if request B awaits request A's fetch).
+  if (isCloudflareWorkerRuntime()) {
+    await runHydrateStateFromSupabaseInternal(supabase, state);
+    return;
+  }
   const existingFlight = hydrationInFlightByState.get(state);
   if (existingFlight) {
     return existingFlight;
   }
-
   const runPromise = runHydrateStateFromSupabaseInternal(supabase, state).finally(() => {
     if (hydrationInFlightByState.get(state) === runPromise) {
       hydrationInFlightByState.delete(state);
@@ -2121,19 +2134,30 @@ export async function purgeUserInSupabaseBestEffort(
       ),
     );
 
-    const tasks: Array<() => PromiseLike<unknown>> = [];
+    // Stage 1: Clear child foreign-key references BEFORE deleting parent staff_users row
+    const childTasks: Array<() => PromiseLike<unknown>> = [];
     for (const uid of userUuids) {
-      tasks.push(
+      childTasks.push(
         () => supabase.from('active_sessions').delete().eq('user_id', uid),
         () => supabase.from('patients').update({ assigned_pt_id: null }).eq('assigned_pt_id', uid),
         () => supabase.from('patients').update({ delegated_to_pt_id: null }).eq('delegated_to_pt_id', uid),
-        () => supabase.from('staff_users').delete().eq('id', uid),
+        () => supabase.from('medical_notes').update({ author_id: null }).eq('author_id', uid),
+        () => supabase.from('treatment_reports').update({ pt_id: null }).eq('pt_id', uid),
+        () => supabase.from('face_enrollments').update({ enrolled_by: null }).eq('enrolled_by', uid),
       );
     }
-    for (const uname of usernames) {
-      tasks.push(() => supabase.from('staff_users').delete().eq('username', uname));
+    if (childTasks.length > 0) {
+      await settleDeleteWithTimeout(childTasks, 750);
     }
-    await settleDeleteWithTimeout(tasks, 1000);
+
+    // Stage 2: Delete parent staff_users rows after FK children are cleared
+    const parentTasks: Array<() => PromiseLike<unknown>> = [
+      ...userUuids.map((uid) => () => supabase.from('staff_users').delete().eq('id', uid)),
+      ...usernames.map((uname) => () => supabase.from('staff_users').delete().eq('username', uname)),
+    ];
+    if (parentTasks.length > 0) {
+      await settleDeleteWithTimeout(parentTasks, 650);
+    }
 
     if (params.linkedPatientId || params.linkedHn) {
       await purgePatientInSupabaseBestEffort(supabase, {

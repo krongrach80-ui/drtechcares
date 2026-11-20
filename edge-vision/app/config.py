@@ -188,7 +188,8 @@ class EdgeVisionSettings(BaseModel):
                 try:
                     heavy_target.parent.mkdir(parents=True, exist_ok=True)
                     tmp_target = heavy_target.with_suffix(".task.tmp")
-                    urllib.request.urlretrieve(heavy_url, str(tmp_target))
+                    with urllib.request.urlopen(heavy_url, timeout=15) as resp, open(tmp_target, "wb") as fh:
+                        fh.write(resp.read())
                     tmp_target.replace(heavy_target)
                 except Exception:
                     try:
@@ -257,14 +258,14 @@ class EdgeVisionSettings(BaseModel):
             MEDIAPIPE_POSE_MODEL_PATH=mp_model_val,
             MIN_LANDMARK_VISIBILITY=float(os.getenv("MIN_LANDMARK_VISIBILITY", "0.70")),
             RTMW3D_MODE=os.getenv("RTMW3D_MODE", "performance"),
-            ONE_EURO_MIN_CUTOFF=float(os.getenv("ONE_EURO_MIN_CUTOFF", "1.2")),
-            ONE_EURO_BETA=float(os.getenv("ONE_EURO_BETA", "0.08")),
+            ONE_EURO_MIN_CUTOFF=float(os.getenv("ONE_EURO_MIN_CUTOFF", "1.15")),
+            ONE_EURO_BETA=float(os.getenv("ONE_EURO_BETA", "0.06")),
             ONE_EURO_D_CUTOFF=float(os.getenv("ONE_EURO_D_CUTOFF", "1.0")),
-            ONE_EURO_2D_MIN_CUTOFF=float(os.getenv("ONE_EURO_2D_MIN_CUTOFF", "1.5")),
-            ONE_EURO_2D_BETA=float(os.getenv("ONE_EURO_2D_BETA", "0.08")),
+            ONE_EURO_2D_MIN_CUTOFF=float(os.getenv("ONE_EURO_2D_MIN_CUTOFF", "1.15")),
+            ONE_EURO_2D_BETA=float(os.getenv("ONE_EURO_2D_BETA", "0.06")),
             CALIBRATION_DURATION_SEC=float(os.getenv("CALIBRATION_DURATION_SEC", "2.0")),
             CALIBRATION_MIN_VISIBILITY=float(os.getenv("CALIBRATION_MIN_VISIBILITY", "0.70")),
-            TRUNK_LEAN_MAX_DEG=float(os.getenv("TRUNK_LEAN_MAX_DEG", "10.0")),
+            TRUNK_LEAN_MAX_DEG=float(os.getenv("TRUNK_LEAN_MAX_DEG", "12.0")),
             SHOULDER_TILT_MAX_DEG=float(os.getenv("SHOULDER_TILT_MAX_DEG", "12.0")),
             PELVIC_TILT_MAX_DEG=float(os.getenv("PELVIC_TILT_MAX_DEG", "10.0")),
             SHOULDER_HIKE_MAX_CM=float(os.getenv("SHOULDER_HIKE_MAX_CM", "3.0")),

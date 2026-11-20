@@ -50,7 +50,12 @@ class OneEuroScalar {
       return this.xFilter.filter(value, 1);
     }
 
-    const dtSec = Math.max(0.001, (timestampMs - this.lastTimestampMs) / 1000);
+    // Guard duplicate / non-monotonic timestamps (prevents dt=0.001s 1000x velocity spike)
+    if (timestampMs <= this.lastTimestampMs) {
+      return this.xFilter.filter(value, 0);
+    }
+
+    const dtSec = Math.max(0.004, (timestampMs - this.lastTimestampMs) / 1000);
     this.lastTimestampMs = timestampMs;
 
     const dx = (value - this.prevRaw) / dtSec;
@@ -118,10 +123,16 @@ export class ClinicalOneEuroLandmarkFilter {
         f.z.reset();
         return { ...lm };
       }
+      let filteredZ = lm.z;
+      if (lm.z !== undefined && Number.isFinite(lm.z)) {
+        filteredZ = f.z.filter(lm.z, timestampMs);
+      } else {
+        f.z.reset();
+      }
       return {
         x: f.x.filter(lm.x, timestampMs),
         y: f.y.filter(lm.y, timestampMs),
-        z: lm.z !== undefined && Number.isFinite(lm.z) ? f.z.filter(lm.z, timestampMs) : lm.z,
+        z: filteredZ,
         visibility: lm.visibility,
       };
     });

@@ -982,11 +982,19 @@ function isPatientFaceVerified(p: PatientRecord): boolean {
   return Boolean(p.biometricHistory?.raw_frames?.length);
 }
 
+let sharedEmergencyAudioCtx: AudioContext | null = null;
+
 function playEmergencyChime() {
   try {
     const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AudioCtx) return;
-    const ctx = new AudioCtx();
+    if (!sharedEmergencyAudioCtx || sharedEmergencyAudioCtx.state === 'closed') {
+      sharedEmergencyAudioCtx = new AudioCtx();
+    }
+    const ctx = sharedEmergencyAudioCtx;
+    if (ctx.state === 'suspended') {
+      void ctx.resume().catch(() => {});
+    }
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'sine';
@@ -1674,13 +1682,16 @@ export function ClinicalStaffPortalShell({
     };
   }, [refreshAll, pingCloudHealth, apiClient]);
 
+  const exerciseLibrarySyncAttemptedRef = useRef(false);
   useEffect(() => {
     if (activeTab !== 'exercises') return;
+    if (exerciseLibrarySyncAttemptedRef.current) return;
     const needsSync =
       exercises.some((ex) => isDeprecatedExerciseRecord(ex)) ||
       mergeDuplicateSideExercises(exercises).filter((ex) => STROKE_CANONICAL_EXERCISE_SET.has(ex.code)).length <
         CLINICAL_EXERCISES.length;
     if (!needsSync) return;
+    exerciseLibrarySyncAttemptedRef.current = true;
     let cancelled = false;
     void syncStrokeExerciseLibrary(apiClient).then((synced) => {
       if (!cancelled) {
@@ -6029,33 +6040,8 @@ export function ClinicalStaffPortalShell({
           <div className="flex-1 flex flex-col w-full min-h-0 p-2 sm:p-3">
             <PhysicalCardGame
               patientName={selectedSchedulePatient?.fullName ?? currentUser.fullName}
-              onSessionFinished={async (summary) => {
-                const targetPatient = selectedSchedulePatient ?? patients[0];
-                if (targetPatient?.id) {
-                  try {
-                    const created = await apiClient.recordRehabSession({
-                      patientId: targetPatient.id,
-                      activityType: 'minigame',
-                      exerciseId: 'cognitive-card-game',
-                      exerciseName: 'มินิเกมฝึกสมอง (การ์ดกายภาพ 10 ข้อ)',
-                      completedSets: 1,
-                      completedReps: summary.total,
-                      accuracyPercent: summary.accuracyPct,
-                      maxRomDeg: 0,
-                      painStopTriggered: false,
-                      aiFeedback: `Cognitive Accuracy ${summary.accuracyPct}% (${summary.correct}/${summary.total}) in ${summary.durationSec}s`,
-                      kinematicsReplay: [],
-                      minigameScore: {
-                        correct: summary.correct,
-                        total: summary.total,
-                        category: summary.category,
-                      },
-                    });
-                    setSessions((prev) => [created, ...prev]);
-                  } catch {
-                    // ignore background session sync failure
-                  }
-                }
+              onSessionFinished={(summary) => {
+                // Staff sandbox test mode: display summary only — NEVER write synthetic test rows into a real patient's clinical record
                 flashBanner(
                   'success',
                   `ทดสอบการ์ดกายภาพเสร็จสิ้น (${summary.correct}/${summary.total} คะแนน • ${summary.accuracyPct}% • ${summary.durationSec} วินาที)`,

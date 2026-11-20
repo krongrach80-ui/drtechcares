@@ -3071,7 +3071,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               .filter((s) => !(topName && normalizePatientName(s.fullName) === topName))
           : [];
         const runner = distinctRunners[0] ?? null;
-        const runnerScore = runner ? Math.max(runner.bestRawSim, runner.bestCentroidCosine) : 0;
+        const runnerScore = runner ? runner.bestRawSim : 0;
         const margin = top && runner ? top.bestRawSim - runnerScore : 1;
 
         const passesCohortGuard = Boolean(

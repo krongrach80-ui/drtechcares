@@ -398,8 +398,8 @@ class ClinicalRehabFSM:
             max_safe_rom_deg=self.prescription.max_safe_rom_deg,
         )
 
-        # Safety fall override (active once exercising or calibrating)
-        if emergency_reason and self.fsm_state not in ("FACE_AUTH", "EMERGENCY"):
+        # Safety fall override (active only during verified patient exercise/calibration, never during bystander pause)
+        if emergency_reason and self.fsm_state not in ("FACE_AUTH", "EMERGENCY", "PAUSED_MULTI_PERSON", "PAUSED_IMPOSTOR"):
             self.trigger_emergency(emergency_reason)
             analysis.pain_alert = True
             self._last_tts = analysis.safety_guard_banner_th or "ตรวจพบการเสียสมดุล กรุณานั่งพักและจับราวจับ"

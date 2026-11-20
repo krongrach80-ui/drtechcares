@@ -755,6 +755,7 @@ export function App() {
         [authenticatedPatient.patient.id, authenticatedPatient.patient.hn],
         todaySchedule.todayIso,
       );
+      setBypassDailyLimit(false);
       setCompletedTodaySession(true);
       setAuthenticatedPatient((prev) => {
         if (!prev) return prev;
@@ -1529,9 +1530,14 @@ export function App() {
   }
 
   const handleLogout = async () => {
-    await apiClient.logout();
-    setCurrentUser(null);
-    navigate('/login');
+    try {
+      await apiClient.logout();
+    } catch {
+      // Always clear local session and exit even if backend/network fails
+    } finally {
+      setCurrentUser(null);
+      navigate('/login');
+    }
   };
 
   // Strict Role Routing Guard
@@ -1618,6 +1624,24 @@ export function App() {
         autoOpenEnroll={pendingAutoOpenEnroll}
         onAutoOpenEnrollConsumed={() => setPendingAutoOpenEnroll(false)}
       />
+    );
+  }
+
+  if (route === '/patient' && currentUser.role !== 'patient') {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-sky-50 p-6 text-center gap-3">
+        <h1 className="text-2xl font-black text-[#0F4C81]">หน้าพอร์ทัลผู้ป่วย (Patient Portal)</h1>
+        <p className="text-sm text-slate-600">
+          บัญชีปัจจุบันของคุณคือสิทธิ์บุคลากร ({currentUser.role}) กรุณาเข้าใช้งานผ่านพอร์ทัลบุคลากร
+        </p>
+        <button
+          type="button"
+          onClick={() => navigate(currentUser.role === 'super_admin' ? '/admin' : '/pt')}
+          className="rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] px-4 py-2 text-xs font-bold text-white shadow-sm cursor-pointer"
+        >
+          ไปที่พอร์ทัลของคุณ
+        </button>
+      </div>
     );
   }
 

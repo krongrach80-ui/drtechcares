@@ -1019,7 +1019,10 @@ export function synthesizeDemoPayload({
     };
   }
 
-  const trunkLeaning = preset === 'TRUNK_LEAN' || Math.abs(trunkTiltDeg) > 10.0;
+  const trunkLeaning =
+    preset === 'TRUNK_LEAN' ||
+    (preset !== 'HOLD_PHASE' && Math.abs(trunkTiltDeg) > 10.0) ||
+    (preset === 'HOLD_PHASE' && Math.abs(trunkTiltDeg) > 18.0);
   if (trunkLeaning) {
     const compensations: CompensationCode[] =
       clampedRom < targetRom * 0.95 ? ['TRUNK_LEAN', 'INCOMPLETE_ROM'] : ['TRUNK_LEAN'];
@@ -1030,6 +1033,7 @@ export function synthesizeDemoPayload({
         current_rom_deg: clampedRom,
         target_rom_deg: targetRom,
         rom_completion_pct: romPct,
+        trunk_tilt_deg: Number(trunkTiltDeg.toFixed(1)),
         is_form_valid: false,
         compensation_detected: compensations,
         pain_alert: false,
@@ -1059,6 +1063,7 @@ export function synthesizeDemoPayload({
         current_rom_deg: clampedRom,
         target_rom_deg: targetRom,
         rom_completion_pct: romPct,
+        trunk_tilt_deg: Number(trunkTiltDeg.toFixed(1)),
         is_form_valid: true,
         compensation_detected: ['NONE'],
         pain_alert: false,
@@ -1289,6 +1294,20 @@ export function useKioskSocket(
       setDemoInvalidReps(0);
       setDemoPresetState('ACTIVE_REP');
       setDemoHoldRemainingSec(rx.hold_sec);
+      // Clear stale rep counter on livePayload so switching exercises in Edge mode never cascade-completes
+      setLivePayload((prev) =>
+        prev
+          ? {
+              ...prev,
+              kiosk_state: 'ACTIVE_REP',
+              rep_counter: {
+                valid_reps: 0,
+                invalid_reps: 0,
+                hold_remaining_sec: rx.hold_sec,
+              },
+            }
+          : prev,
+      );
       sendExercisePrescription(rx);
     },
     [sendExercisePrescription],
@@ -1300,7 +1319,8 @@ export function useKioskSocket(
       typeof window !== 'undefined' &&
       window.location.protocol === 'https:' &&
       /^ws:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(wsUrl) &&
-      !(import.meta.env.VITE_EDGE_VISION_WS as string | undefined)?.trim()
+      !(import.meta.env.VITE_EDGE_VISION_WS as string | undefined)?.trim() &&
+      !(import.meta.env.VITE_KIOSK_WS_URL as string | undefined)?.trim()
     ) {
       // Avoid mixed-content WebSocket blocks and reconnect loops on remote HTTPS cloud deployments
       setConnectionStatus('offline');

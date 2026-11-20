@@ -474,11 +474,17 @@ export function normalizeImageDataLuminance(
   const stdY = Math.sqrt(varY / validPixels);
   const gain = stdY > 4 ? Math.max(0.55, Math.min(2.3, targetStd / stdY)) : 1;
 
+  const chromaGain = Math.max(0.85, Math.min(1.15, gain));
   for (let i = 0; i < data.length; i += 4) {
     if (data[i + 3] === 0) continue;
-    data[i] = Math.max(0, Math.min(255, Math.round(targetMean + (data[i] - meanY) * gain)));
-    data[i + 1] = Math.max(0, Math.min(255, Math.round(targetMean + (data[i + 1] - meanY) * gain)));
-    data[i + 2] = Math.max(0, Math.min(255, Math.round(targetMean + (data[i + 2] - meanY) * gain)));
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const y = 0.299 * r + 0.587 * g + 0.114 * b;
+    const targetY = targetMean + (y - meanY) * gain;
+    data[i] = Math.max(0, Math.min(255, Math.round(targetY + (r - y) * chromaGain)));
+    data[i + 1] = Math.max(0, Math.min(255, Math.round(targetY + (g - y) * chromaGain)));
+    data[i + 2] = Math.max(0, Math.min(255, Math.round(targetY + (b - y) * chromaGain)));
   }
   return imageData;
 }
@@ -595,20 +601,18 @@ export function captureCanonicalFaceSnapshot(
   }
 
   if (faceBox && faceBox.height > 0 && faceBox.width > 0) {
-    const cx = faceBox.x + faceBox.width * 0.5;
-    const cy = faceBox.y + faceBox.height * 0.48;
-    // Tight inner-face crop (brows to chin, cheekbones) eliminating background wall/lights
+    const cxPx = (faceBox.x + faceBox.width * 0.5) * vw;
+    const cyPx = (faceBox.y + faceBox.height * 0.48) * vh;
+    // Tight 1:1 pixel-square inner-face crop (avoiding 16:9 aspect distortion into 224x224)
     const padScale = faceBox.height < 0.18 ? 1.45 : 1.18;
-    const sideNorm = Math.min(1, Math.max(faceBox.width, faceBox.height) * padScale);
-    const halfNorm = sideNorm * 0.5;
-    const rx = Math.max(0, Math.min(1 - halfNorm * 2, cx - halfNorm));
-    const ry = Math.max(0, Math.min(1 - halfNorm * 2, cy - halfNorm));
-    const rw = Math.min(1 - rx, halfNorm * 2);
-    const rh = Math.min(1 - ry, halfNorm * 2);
-    const sx = Math.max(0, Math.floor(rx * vw));
-    const sy = Math.max(0, Math.floor(ry * vh));
-    const sw = Math.max(32, Math.min(vw - sx, Math.ceil(rw * vw)));
-    const sh = Math.max(32, Math.min(vh - sy, Math.ceil(rh * vh)));
+    const sidePx = Math.max(
+      32,
+      Math.min(Math.min(vw, vh), Math.round(Math.max(faceBox.width * vw, faceBox.height * vh) * padScale)),
+    );
+    const sx = Math.max(0, Math.min(vw - sidePx, Math.round(cxPx - sidePx * 0.5)));
+    const sy = Math.max(0, Math.min(vh - sidePx, Math.round(cyPx - sidePx * 0.5)));
+    const sw = Math.max(32, Math.min(vw - sx, sidePx));
+    const sh = Math.max(32, Math.min(vh - sy, sidePx));
 
     if (canvas.width !== TARGET_CANONICAL_CROP_SIZE || canvas.height !== TARGET_CANONICAL_CROP_SIZE) {
       canvas.width = TARGET_CANONICAL_CROP_SIZE;
@@ -952,6 +956,7 @@ export function saveProfileToLocalBiometricVault(profile: BiometricProfile): voi
             faceEmbedding: cleanProfile.master_embedding,
             face_embedding: cleanProfile.master_embedding,
             exemplarEmbeddings: cleanProfile.exemplar_embeddings,
+            ...(cleanProfile.geometricRatios ? { geometricRatios: cleanProfile.geometricRatios } : {}),
             ...(cleanProfile.avatarUrl ? { faceImageUrl: cleanProfile.avatarUrl } : {}),
           });
         }
@@ -1132,6 +1137,7 @@ export async function syncPatientBiometricEverywhere(input: {
         master_embedding: masterNorm,
         angle_embeddings: angleNorm,
         exemplar_embeddings: dbExemplars,
+        ...(profile.geometricRatios ? { geometric_ratios: profile.geometricRatios } : {}),
         frames_captured: profile.framesCaptured,
         updated_at: profile.updatedAt,
       };
@@ -1155,6 +1161,7 @@ export async function syncPatientBiometricEverywhere(input: {
         masterEmbedding: masterNorm,
         angleEmbeddings: angleNorm,
         exemplarEmbeddings: dbExemplars,
+        ...(profile.geometricRatios ? { geometricRatios: profile.geometricRatios } : {}),
         biometricUpdatedAt: profile.updatedAt,
       };
 
@@ -1207,6 +1214,7 @@ export async function syncPatientBiometricEverywhere(input: {
         master_embedding: masterNorm,
         angle_embeddings: angleNorm,
         exemplar_embeddings: dbExemplars,
+        ...(profile.geometricRatios ? { geometric_ratios: profile.geometricRatios } : {}),
         biometric_engine: BIOMETRIC_ENGINE_ID,
         model_version: BIOMETRIC_ENGINE_ID,
         embedding_dim: dim,
@@ -1393,9 +1401,22 @@ export async function loadEnrolledPatientsWithBiometrics(
     }
     const prevMatches = prev.dimension === expectedDim;
     const nextMatches = cand.dimension === expectedDim;
+    const pickBestRatios = (
+      a?: GeometricAnthropometricRatios,
+      b?: GeometricAnthropometricRatios,
+    ): GeometricAnthropometricRatios | undefined => {
+      if (a?.appearancePatch384?.length) return a;
+      if (b?.appearancePatch384?.length) return b;
+      return a ?? b;
+    };
+    const mergedRatios = pickBestRatios(
+      cand.geometricRatios ?? cand.sourceEntry?.geometricRatios,
+      prev.geometricRatios ?? prev.sourceEntry?.geometricRatios,
+    );
     if ((!prevMatches && nextMatches) || (preferIfExpectedDim && nextMatches)) {
       byPatientId.set(cand.patientId, {
         ...cand,
+        ...(mergedRatios ? { geometricRatios: mergedRatios } : {}),
         exemplar_embeddings:
           cand.exemplar_embeddings.length > 0
             ? cand.exemplar_embeddings
@@ -1405,6 +1426,7 @@ export async function loadEnrolledPatientsWithBiometrics(
         sourceEntry: {
           ...prev.sourceEntry,
           ...cand.sourceEntry,
+          ...(mergedRatios ? { geometricRatios: mergedRatios } : {}),
           todayRoutine: prev.sourceEntry.todayRoutine ?? cand.sourceEntry.todayRoutine,
           todayExercises: prev.sourceEntry.todayExercises ?? cand.sourceEntry.todayExercises,
           rehabSchedules:
@@ -1416,13 +1438,28 @@ export async function loadEnrolledPatientsWithBiometrics(
             prev.sourceEntry.hasAppointmentToday ?? cand.sourceEntry.hasAppointmentToday,
         },
       });
-    } else if (prevMatches && nextMatches && cand.exemplar_embeddings.length > prev.exemplar_embeddings.length) {
+    } else if (prevMatches && nextMatches) {
+      const nextExemplars =
+        cand.exemplar_embeddings.length > prev.exemplar_embeddings.length
+          ? cand.exemplar_embeddings
+          : prev.exemplar_embeddings;
       byPatientId.set(cand.patientId, {
         ...prev,
-        exemplar_embeddings: cand.exemplar_embeddings,
+        ...(mergedRatios ? { geometricRatios: mergedRatios } : {}),
+        exemplar_embeddings: nextExemplars,
         sourceEntry: {
           ...prev.sourceEntry,
-          exemplarEmbeddings: cand.exemplar_embeddings,
+          ...(mergedRatios ? { geometricRatios: mergedRatios } : {}),
+          exemplarEmbeddings: nextExemplars,
+          todayRoutine: prev.sourceEntry.todayRoutine ?? cand.sourceEntry.todayRoutine,
+          todayExercises: prev.sourceEntry.todayExercises ?? cand.sourceEntry.todayExercises,
+          rehabSchedules:
+            (prev.sourceEntry.rehabSchedules ?? []).length > 0
+              ? prev.sourceEntry.rehabSchedules
+              : cand.sourceEntry.rehabSchedules,
+          completedToday: prev.sourceEntry.completedToday ?? cand.sourceEntry.completedToday,
+          hasAppointmentToday:
+            prev.sourceEntry.hasAppointmentToday ?? cand.sourceEntry.hasAppointmentToday,
         },
       });
     }
@@ -1492,6 +1529,9 @@ export async function loadEnrolledPatientsWithBiometrics(
                   avatarUrl: typeof p.faceImageUrl === 'string' ? p.faceImageUrl : undefined,
                   framesCaptured: typeof p.faceFramesCount === 'number' ? p.faceFramesCount : 120,
                   biometricEngine: p.biometricEngine as PatientRecord['biometricEngine'],
+                  geometricRatios: (p.geometricRatios ?? p.geometric_ratios) as
+                    | GeometricAnthropometricRatios
+                    | undefined,
                 },
               ),
             );
@@ -2036,7 +2076,13 @@ export function evaluateLiveMatch1toN(
 
   const scored = eligible
     .map((c) => computePatientMatchScore(liveEmbedding, c, humanOverride, liveBucket, probeRatios))
-    .sort((a, b) => b.bestSim - a.bestSim || b.centeredSimilarity - a.centeredSimilarity || b.consensusTop3Avg - a.consensusTop3Avg);
+    .sort(
+      (a, b) =>
+        Number(b.passesMultiExemplarGate) - Number(a.passesMultiExemplarGate) ||
+        b.bestSim - a.bestSim ||
+        b.centeredSimilarity - a.centeredSimilarity ||
+        b.consensusTop3Avg - a.consensusTop3Avg,
+    );
 
   const top = scored[0];
   const topName = normalizeNameForIdentity(top.candidate.fullName);

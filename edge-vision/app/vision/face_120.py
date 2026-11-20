@@ -123,6 +123,7 @@ class FaceEnrollmentSession:
     sharpness_scores: List[float] = field(default_factory=list)
     best_frontal_avatar: str = ""
     best_frontal_score: float = -1.0
+    created_at: float = field(default_factory=time.time)
     last_capture_at: float = 0.0
 
 
@@ -183,7 +184,12 @@ class InsightFace120Manager:
             except Exception:
                 pass
 
-        for prov_list in ([providers[0], "CPUExecutionProvider"] if providers[0] != "CPUExecutionProvider" else [["CPUExecutionProvider"]]):
+        candidate_providers = (
+            [providers, ["CPUExecutionProvider"]]
+            if providers[0] != "CPUExecutionProvider"
+            else [["CPUExecutionProvider"]]
+        )
+        for prov_list in candidate_providers:
             try:
                 app = FaceAnalysis(name=self.settings.INSIGHTFACE_MODEL_NAME, providers=prov_list)
                 ctx_id = 0 if "CUDAExecutionProvider" in prov_list else -1
@@ -233,9 +239,9 @@ class InsightFace120Manager:
             for row in bio_res.data or []:
                 pid = str(row.get("patient_id") or "")
                 master = row.get("master_embedding")
-                if not pid or not isinstance(master, list) or len(master) != 512:
+                if not pid or pid not in patient_map or not isinstance(master, list) or len(master) != 512:
                     continue
-                p_info = patient_map.get(pid, {})
+                p_info = patient_map[pid]
                 raw_angles = row.get("angle_embeddings") or {}
                 angle_vecs: Dict[str, np.ndarray] = {}
                 for bucket in BUCKET_ORDER:
@@ -786,15 +792,37 @@ class InsightFace120Manager:
         """
         self._guard_frame_counter += 1
         skel_boxes = skeleton_bboxes or [[320, 80, 640, 680]]
-        faces_info = self._detect_valid_faces(frame_bgr, primary_xyz, mock_override, face_detections_override)
-        face_count = len(faces_info)
-        person_count = max(skeleton_count, face_count)
-
         auth_label = (
             f"{self.active_patient.hn} {self.active_patient.full_name}".strip()
             if self.active_patient is not None
             else "คนไข้หลัก"
         )
+
+        # Avoid crushing CPU by running InsightFace 1280x1280 on all 60Hz frames when single-person VERIFIED
+        interval = max(1, self.settings.IDENTITY_CHECK_FRAME_INTERVAL)
+        should_run_face_detect = (
+            force_identity_check
+            or self._locked_guard_status != "VERIFIED"
+            or skeleton_count > 1
+            or mock_override is not None
+            or face_detections_override is not None
+            or (self._guard_frame_counter % interval == 1)
+        )
+        if not should_run_face_detect:
+            return IdentityGuardSchema(
+                status="VERIFIED",
+                person_count=max(1, skeleton_count),
+                face_count=1,
+                match_confidence=round(max(0.0, self._last_verified_sim), 3),
+                is_counting_allowed=True,
+                detected_boxes=[
+                    IdentityDetectedBoxSchema(bbox=skel_boxes[0], label=auth_label, is_authorized=True)
+                ],
+            )
+
+        faces_info = self._detect_valid_faces(frame_bgr, primary_xyz, mock_override, face_detections_override)
+        face_count = len(faces_info)
+        person_count = max(skeleton_count, face_count)
 
         # Rule 1: Multi-person dual-detector verification
         if skeleton_count > 1 or face_count > 1 or mock_override == "multi_person":
@@ -823,8 +851,26 @@ class InsightFace120Manager:
                 detected_boxes=boxes,
             )
 
-        # If no patient is locked yet, stay verified while still guarding Rule 1 above
-        if self.active_patient is None:
+        # If no patient is locked yet, or locked patient only has a placeholder without a 512-D ArcFace
+        # template (e.g. web-enrolled 1024-D patient), stay verified while still guarding Rule 1 (MULTI_PERSON).
+        if self.active_patient is None or not self.active_patient.has_biometric_template:
+            if self._locked_guard_status == "MULTI_PERSON" and skeleton_count <= 1 and face_count <= 1:
+                self._consecutive_unlock_matches += 1
+                if self._consecutive_unlock_matches >= self.settings.UNLOCK_CONSECUTIVE_MATCHES:
+                    self._locked_guard_status = "VERIFIED"
+            if self._locked_guard_status == "MULTI_PERSON":
+                return IdentityGuardSchema(
+                    status="MULTI_PERSON",
+                    person_count=person_count,
+                    face_count=face_count,
+                    match_confidence=round(max(0.0, self._last_verified_sim), 3),
+                    is_counting_allowed=False,
+                    alert_title_th="ตรวจพบมีบุคคลอยู่หลายคนในเฟรม",
+                    alert_subtitle_th=f"กำลังยืนยันตัวตนคนไข้หลัก ({self._consecutive_unlock_matches}/{self.settings.UNLOCK_CONSECUTIVE_MATCHES} เฟรม)",
+                    detected_boxes=[
+                        IdentityDetectedBoxSchema(bbox=skel_boxes[0], label=auth_label, is_authorized=True)
+                    ],
+                )
             return IdentityGuardSchema(
                 status="VERIFIED",
                 person_count=person_count,
@@ -950,6 +996,18 @@ class InsightFace120Manager:
     def start_enrollment(
         self, patient_id: Optional[str] = None, hn: Optional[str] = None, full_name: Optional[str] = None
     ) -> FaceEnrollmentStateSchema:
+        # Evict abandoned enrollment sessions (> 15 min inactive) to prevent unbounded RAM growth
+        now_ts = time.time()
+        stale_ids = [
+            sid
+            for sid, sess in self._enroll_sessions.items()
+            if (now_ts - (sess.last_capture_at or sess.created_at)) > 900.0
+        ]
+        for sid in stale_ids:
+            self._enroll_sessions.pop(sid, None)
+            if self._active_session_id == sid:
+                self._active_session_id = None
+
         session_id = f"enroll-{uuid.uuid4().hex[:10]}"
         session = FaceEnrollmentSession(
             session_id=session_id,
@@ -1122,6 +1180,8 @@ class InsightFace120Manager:
 
         if self._active_session_id == session_id:
             self._active_session_id = None
+        # Evict finalized session from memory (releases 120 embedding arrays & base64 avatar)
+        self._enroll_sessions.pop(session_id, None)
 
         return FaceID120Response(
             session_id=session_id,

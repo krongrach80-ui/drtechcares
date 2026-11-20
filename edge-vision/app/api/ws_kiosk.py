@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from typing import Any, Dict, Optional, Set, Tuple
 
@@ -59,6 +60,7 @@ class KioskRuntimeCoordinator:
         self._client_vis_33: Optional[np.ndarray] = None
         self._client_person_count: int = 1
         self._client_landmarks_at: float = -999.0
+        self._state_lock = threading.RLock()
 
     @property
     def effective_fps(self) -> float:
@@ -185,6 +187,7 @@ class KioskRuntimeCoordinator:
                     feat["embedding"],
                     yaw_deg=float(feat["yaw_deg"]),
                     pitch_deg=float(feat["pitch_deg"]),
+                    roll_deg=float(feat.get("roll_deg", 0.0)),
                 )
                 if match.id:
                     self.fsm.set_patient_matched(match, auto_start_calibration=True)
@@ -312,6 +315,48 @@ class KioskRuntimeCoordinator:
                 if isinstance(msg.get("prescription"), dict)
                 else msg
             )
+            def _safe_float(val: Any, default: float) -> float:
+                if val is None or val == "":
+                    return default
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    return default
+
+            def _safe_opt_float(val: Any) -> Optional[float]:
+                if val is None or val == "":
+                    return None
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    return None
+
+            def _safe_int(val: Any, default: int) -> int:
+                if val is None or val == "":
+                    return default
+                try:
+                    return int(val)
+                except (TypeError, ValueError):
+                    return default
+
+            def _safe_opt_int(val: Any) -> Optional[int]:
+                if val is None or val == "":
+                    return None
+                try:
+                    return int(val)
+                except (TypeError, ValueError):
+                    return None
+
+            target_rom_raw = rx_raw.get("target_rom_deg")
+            if target_rom_raw is None:
+                target_rom_raw = rx_raw.get("minAngleDeg")
+            hold_sec_raw = rx_raw.get("hold_sec")
+            if hold_sec_raw is None:
+                hold_sec_raw = rx_raw.get("holdDurationSec")
+            reps_raw = rx_raw.get("target_reps")
+            if reps_raw is None:
+                reps_raw = rx_raw.get("reps")
+
             rx = ExercisePrescriptionSchema(
                 exercise_id=str(rx_raw.get("exercise_id") or rx_raw.get("base_code") or rx_raw.get("id") or "STROKE_SH_ABD"),
                 exercise_name=str(rx_raw.get("exercise_name") or rx_raw.get("name") or "Clinical Exercise"),
@@ -321,12 +366,17 @@ class KioskRuntimeCoordinator:
                     if (rx_raw.get("prescribed_side") or rx_raw.get("side"))
                     else None
                 ),
-                target_rom_deg=float(rx_raw.get("target_rom_deg") or rx_raw.get("minAngleDeg") or 110.0),
-                hold_sec=float(rx_raw.get("hold_sec") or rx_raw.get("holdDurationSec") or 3.0),
-                target_reps=int(rx_raw.get("target_reps") or rx_raw.get("reps") or 5),
+                target_rom_deg=_safe_float(target_rom_raw, 110.0),
+                hold_sec=_safe_float(hold_sec_raw, 3.0),
+                target_reps=max(1, _safe_int(reps_raw, 5)),
+                max_safe_rom_deg=_safe_opt_float(rx_raw.get("max_safe_rom_deg")),
+                affected_side=(str(rx_raw.get("affected_side")).strip() if rx_raw.get("affected_side") else None),
+                stroke_type=(str(rx_raw.get("stroke_type")).strip() if rx_raw.get("stroke_type") else None),
+                motor_assessment_score=_safe_opt_int(rx_raw.get("motor_assessment_score")),
             )
             start_calib = bool(msg.get("start_calibration", True))
-            self.fsm.set_prescription(rx, start_calibration=start_calib)
+            with self._state_lock:
+                self.fsm.set_prescription(rx, start_calibration=start_calib)
             await ws.send_json({"type": "ack", "command": "prescription", "fsm_state": self.fsm.fsm_state})
             return
 
@@ -351,7 +401,7 @@ class KioskRuntimeCoordinator:
                     angle_embeddings=angle_embs,
                 )
                 self.fsm.set_patient_matched(
-                    PatientMatchSchema(id=pid, hn=hn_val, full_name=name_val, similarity=1.0),
+                    PatientMatchSchema(id=pid, hn=hn_val, name=name_val, similarity=1.0),
                     auto_start_calibration=bool(msg.get("start_calibration", False)),
                 )
             await ws.send_json(
@@ -394,11 +444,12 @@ class KioskRuntimeCoordinator:
         if cmd == "client_landmarks":
             parsed_2d = self._parse_mediapipe_landmark_array(msg.get("pose_landmarks"))
             if parsed_2d is not None:
-                self._client_pose_2d, self._client_vis_33 = parsed_2d
                 parsed_world = self._parse_mediapipe_landmark_array(msg.get("pose_world_landmarks"))
-                self._client_pose_world_3d = parsed_world[0] if parsed_world is not None else None
-                self._client_person_count = max(1, int(msg.get("person_count") or 1))
-                self._client_landmarks_at = time.perf_counter() - self._started_at
+                with self._state_lock:
+                    self._client_pose_2d, self._client_vis_33 = parsed_2d
+                    self._client_pose_world_3d = parsed_world[0] if parsed_world is not None else None
+                    self._client_person_count = max(1, int(msg.get("person_count") or 1))
+                    self._client_landmarks_at = time.perf_counter() - self._started_at
             return
 
         if cmd == "start_face_enroll":

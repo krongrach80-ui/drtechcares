@@ -169,19 +169,37 @@ export async function extractArcFaceOnnxEmbedding(
     ARCFACE_INPUT_SIZE,
     ARCFACE_INPUT_SIZE,
   ]);
-  // Serialize inference calls so concurrent frames never collide inside ORT session
-  const runTask = arcfaceRunQueue.then(() => session.run({ [inputName]: tensor }));
-  arcfaceRunQueue = runTask.catch(() => {});
-  const results = await runTask;
-  const output = results[outputName] as ort.Tensor | undefined;
-  if (!output) {
-    throw new Error('ArcFace ONNX inference returned empty output');
+  let results: Record<string, ort.Tensor> | null = null;
+  try {
+    // Serialize inference calls so concurrent frames never collide inside ORT session
+    const runTask = arcfaceRunQueue.then(() => session.run({ [inputName]: tensor }));
+    arcfaceRunQueue = runTask.catch(() => {});
+    results = await runTask;
+    const output = results[outputName] as ort.Tensor | undefined;
+    if (!output) {
+      throw new Error('ArcFace ONNX inference returned empty output');
+    }
+    const arr = Array.from(output.data as Float32Array);
+    if (arr.length !== FACE_EMBEDDING_DIM) {
+      throw new Error(`Expected ${FACE_EMBEDDING_DIM}-D output, got ${arr.length}`);
+    }
+    return l2Normalize(arr);
+  } finally {
+    try {
+      (tensor as unknown as { dispose?: () => void }).dispose?.();
+    } catch {
+      // Ignore disposal errors in runtimes without explicit tensor disposal
+    }
+    if (results) {
+      for (const outTensor of Object.values(results)) {
+        try {
+          (outTensor as unknown as { dispose?: () => void }).dispose?.();
+        } catch {
+          // Ignore disposal errors
+        }
+      }
+    }
   }
-  const arr = Array.from(output.data as Float32Array);
-  if (arr.length !== FACE_EMBEDDING_DIM) {
-    throw new Error(`Expected ${FACE_EMBEDDING_DIM}-D output, got ${arr.length}`);
-  }
-  return l2Normalize(arr);
 }
 
 export interface Landmark3D {

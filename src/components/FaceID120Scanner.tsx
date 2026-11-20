@@ -1319,6 +1319,12 @@ export default function FaceID120Scanner({
         fullName: patientName,
       });
       if (!profile) {
+        completedRef.current = false;
+        finalizePromiseRef.current = null;
+        if (!unmountedRef.current) {
+          setPhase('scanning');
+          setCameraError('ไม่สามารถสร้างโปรไฟล์ใบหน้าจากภาพที่เก็บได้ กรุณาสแกนใหม่อีกครั้ง');
+        }
         return null;
       }
 
@@ -1662,12 +1668,13 @@ export default function FaceID120Scanner({
         let lastRegRoiBox: { x: number; y: number; width: number; height: number } | null = null;
         let regSweepIdx = 0;
 
-        const recordAcceptedSample = (sample: CapturedSample) => {
+        const recordAcceptedSample = (sample: CapturedSample, isRealNeural = false) => {
           if (cancelled || completedRef.current || unmountedRef.current) return false;
           if (samplesRef.current.length >= TOTAL_TICKS) return false;
           const nowRec = performance.now();
           if (nowRec < stageTransitionLockUntilRef.current) return false;
-          if (nowRec - lastCaptureAtRef.current < 70) return false;
+          // Never discard a genuine async neural embedding because a companion frame recently recorded
+          if (!isRealNeural && nowRec - lastCaptureAtRef.current < 70) return false;
           const activeStageNow = getActiveEnrollmentStage(bucketCountsRef.current);
           if (!activeStageNow || sample.bucket !== activeStageNow.key) {
             return false;
@@ -1740,6 +1747,7 @@ export default function FaceID120Scanner({
         };
 
         let lastDetectTs = 0;
+        let lastDetectWallMs = 0;
         const tickLoop = () => {
           if (cancelled || completedRef.current) return;
           const vid = videoRef.current;
@@ -1749,13 +1757,14 @@ export default function FaceID120Scanner({
             return;
           }
 
-          if (vid.currentTime === lastVideoTimeRef.current) {
+          const now = performance.now();
+          if (vid.currentTime === lastVideoTimeRef.current && now - lastDetectWallMs < 120) {
             rafRef.current = requestAnimationFrame(tickLoop);
             return;
           }
           lastVideoTimeRef.current = vid.currentTime;
+          lastDetectWallMs = now;
 
-          const now = performance.now();
           const detectTs = Math.max(lastDetectTs + 1, Math.round(now));
           lastDetectTs = detectTs;
           let result;
@@ -2018,17 +2027,20 @@ export default function FaceID120Scanner({
                       arrivedAt: resolvedAt,
                       companionsUsed: 0,
                     };
-                    recordAcceptedSample({
-                      yawDeg: snapYaw,
-                      pitchDeg: snapPitch,
-                      rawYawDeg: snapRawYaw,
-                      rawPitchDeg: snapRawPitch,
-                      noseBoxRatio: snapEyeToNoseRatio,
-                      sharpness: snapSharpness,
-                      bucket: targetBkt,
-                      embedding: desc.embedding,
-                      geometricRatios: snapGeom,
-                    });
+                    recordAcceptedSample(
+                      {
+                        yawDeg: snapYaw,
+                        pitchDeg: snapPitch,
+                        rawYawDeg: snapRawYaw,
+                        rawPitchDeg: snapRawPitch,
+                        noseBoxRatio: snapEyeToNoseRatio,
+                        sharpness: snapSharpness,
+                        bucket: targetBkt,
+                        embedding: desc.embedding,
+                        geometricRatios: snapGeom,
+                      },
+                      true,
+                    );
                   })
                   .catch(() => {})
                   .finally(() => {
@@ -2039,11 +2051,11 @@ export default function FaceID120Scanner({
             if (
               latestRealAnchor &&
               latestRealAnchor.bucket === captureBucket &&
-              now - lastCaptureAtRef.current >= 72 &&
-              now - latestRealAnchor.arrivedAt <= 900 &&
-              latestRealAnchor.companionsUsed < 6 &&
-              Math.abs(yawDeg - latestRealAnchor.yawDeg) <= 6 &&
-              Math.abs(pitchDeg - latestRealAnchor.pitchDeg) <= 6
+              now - lastCaptureAtRef.current >= 90 &&
+              now - latestRealAnchor.arrivedAt <= 650 &&
+              latestRealAnchor.companionsUsed < 2 &&
+              Math.abs(yawDeg - latestRealAnchor.yawDeg) <= 5 &&
+              Math.abs(pitchDeg - latestRealAnchor.pitchDeg) <= 5
             ) {
               latestRealAnchor.companionsUsed += 1;
               recordAcceptedSample({

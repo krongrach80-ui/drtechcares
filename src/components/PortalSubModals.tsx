@@ -51,6 +51,11 @@ import {
   subscribeBiometricIndex,
 } from '../lib/faceMatcher';
 import {
+  computeCraniofacialRatios12,
+  computeGeometricAnthropometricRatios,
+  type GeometricAnthropometricRatios,
+} from '@drtechcares/smart-biometric-core';
+import {
   BIOMETRIC_ENGINE_ID,
   BIOMETRIC_FINAL_SCORE_THRESHOLD,
   BIOMETRIC_MATCH_THRESHOLD,
@@ -59,6 +64,7 @@ import {
   captureCanonicalFaceSnapshot,
   evaluateLiveMatch1toN,
   extractCanonicalFaceDescriptor,
+  extractFacePatchSignature384,
   fetchLiveBiometricsFromSupabase,
   warmupBiometricEngine,
   type EnrolledBiometricCandidate,
@@ -401,12 +407,34 @@ export function WelcomeFaceScanModal({
     async function startLiveVerification() {
       try {
         const deviceId = await selectClinicalCameraDeviceId();
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: deviceId
-            ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: 'user' }
-            : { width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: 'user' },
-          audio: false,
-        });
+        const videoConstraintsChain: MediaTrackConstraints[] = deviceId
+          ? [
+              { deviceId: { ideal: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+              { deviceId: { ideal: deviceId } },
+              { width: { ideal: 1280 }, height: { ideal: 720 } },
+            ]
+          : [
+              { width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: 'user' },
+              { width: { ideal: 1280 }, height: { ideal: 720 } },
+            ];
+        let openedStream: MediaStream | null = null;
+        let lastCamErr: unknown = null;
+        for (const vc of videoConstraintsChain) {
+          try {
+            openedStream = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
+            break;
+          } catch (camErr) {
+            lastCamErr = camErr;
+          }
+        }
+        if (!openedStream) {
+          try {
+            openedStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          } catch (camErr) {
+            throw lastCamErr ?? camErr;
+          }
+        }
+        stream = openedStream;
         if (!active || !videoRef.current) {
           stream.getTracks().forEach((t) => t.stop());
           stream = null;
@@ -434,17 +462,27 @@ export function WelcomeFaceScanModal({
           stream = null;
           return;
         }
-        const createdLandmarker = await FaceLandmarker.createFromOptions(vision, {
-          baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
-          runningMode: 'VIDEO',
-          numFaces: 2,
-          outputFaceBlendshapes: true,
-          minFaceDetectionConfidence: 0.45,
-          minFacePresenceConfidence: 0.45,
-          minTrackingConfidence: 0.45,
-        });
-        if (!active) {
-          createdLandmarker.close();
+        let createdLandmarker: FaceLandmarker | null = null;
+        for (const delegate of ['GPU', 'CPU', undefined] as const) {
+          try {
+            createdLandmarker = await FaceLandmarker.createFromOptions(vision, {
+              baseOptions: delegate
+                ? { modelAssetPath: '/models/face_landmarker.task', delegate }
+                : { modelAssetPath: '/models/face_landmarker.task' },
+              runningMode: 'VIDEO',
+              numFaces: 2,
+              outputFaceBlendshapes: true,
+              minFaceDetectionConfidence: 0.45,
+              minFacePresenceConfidence: 0.45,
+              minTrackingConfidence: 0.45,
+            });
+            break;
+          } catch {
+            // Try next delegate
+          }
+        }
+        if (!createdLandmarker || !active) {
+          createdLandmarker?.close();
           stream?.getTracks().forEach((t) => t.stop());
           stream = null;
           return;
@@ -489,11 +527,25 @@ export function WelcomeFaceScanModal({
                 latestDetectedLandmarksRef.current = lms;
                 latestDetectedBoxRef.current = rawBox ?? undefined;
                 if (rawBox) {
+                  const vidEl = videoRef.current;
+                  const cw = vidEl.clientWidth || 640;
+                  const ch = vidEl.clientHeight || 480;
+                  const vw = vidEl.videoWidth || cw;
+                  const vh = vidEl.videoHeight || ch;
+                  const scale = Math.max(cw / vw, ch / vh);
+                  const renderedW = vw * scale;
+                  const renderedH = vh * scale;
+                  const offsetX = (renderedW - cw) * 0.5;
+                  const offsetY = (renderedH - ch) * 0.5;
+                  const mirroredLeft = (1 - rawBox.x - rawBox.width) * renderedW - offsetX;
+                  const topPx = rawBox.y * renderedH - offsetY;
+                  const wPx = rawBox.width * renderedW;
+                  const hPx = rawBox.height * renderedH;
                   setHudBox({
-                    xPct: Math.max(2, (1 - rawBox.x - rawBox.width) * 100),
-                    yPct: rawBox.y * 100,
-                    wPct: rawBox.width * 100,
-                    hPct: rawBox.height * 100,
+                    xPct: Math.max(1, Math.min(95, (mirroredLeft / cw) * 100)),
+                    yPct: Math.max(1, Math.min(95, (topPx / ch) * 100)),
+                    wPct: Math.max(8, Math.min(98, (wPx / cw) * 100)),
+                    hPct: Math.max(8, Math.min(98, (hPx / ch) * 100)),
                   });
                 }
                 const liveness = evaluateLivenessAndPose(lms, prevLandmarks, faceCount, false);
@@ -556,6 +608,23 @@ export function WelcomeFaceScanModal({
                   const vector = extracted?.embedding;
                   if (vector) {
                     const portalFaceH = rawBox?.height ?? bio.faceScale;
+                    const rawGeom = computeGeometricAnthropometricRatios(lms);
+                    const patch384 = snap ? extractFacePatchSignature384(snap) : null;
+                    const ratios12 = computeCraniofacialRatios12(
+                      lms,
+                      (videoRef.current.videoWidth || 1280) / (videoRef.current.videoHeight || 720),
+                    );
+                    const probeRatios: GeometricAnthropometricRatios | undefined =
+                      rawGeom || patch384 || ratios12
+                        ? {
+                            eyeToNoseRatio: rawGeom?.eyeToNoseRatio ?? 1,
+                            faceWidthToUpperHeight: rawGeom?.faceWidthToUpperHeight ?? 1,
+                            mouthToEyeRatio: rawGeom?.mouthToEyeRatio ?? 1,
+                            noseToChinRatio: rawGeom?.noseToChinRatio ?? 1,
+                            ...(patch384 ? { appearancePatch384: patch384 } : {}),
+                            ...(ratios12 ? { craniofacialRatios12: ratios12 } : {}),
+                          }
+                        : undefined;
                     const livenessEvidence = {
                       biologicalVerified: bio.biologicalVerified,
                       blinkCount: bio.blinkCount,
@@ -564,10 +633,18 @@ export function WelcomeFaceScanModal({
                       rppgScore: bio.rppgScore,
                       faceHeightRatio: portalFaceH,
                       engine: BIOMETRIC_ENGINE_ID,
+                      ...(probeRatios ? { geometricRatios: probeRatios } : {}),
                     };
 
                     if (!confirmedLockRef.current && biometricCandidatesRef.current.length > 0) {
-                      const evalRes = evaluateLiveMatch1toN(vector, biometricCandidatesRef.current);
+                      const evalRes = evaluateLiveMatch1toN(
+                        vector,
+                        biometricCandidatesRef.current,
+                        [],
+                        undefined,
+                        undefined,
+                        probeRatios,
+                      );
                       const streakRes = streakTrackerRef.current.step(evalRes, {
                         spoofDetected: isSpoofFrame,
                         biologicalVerified: bio.biologicalVerified,
@@ -619,7 +696,7 @@ export function WelcomeFaceScanModal({
                           } else if (
                             verified.matched &&
                             verified.patient &&
-                            verified.confidencePercent >= 76
+                            verified.confidencePercent >= Math.round(BIOMETRIC_MATCH_THRESHOLD * 100)
                           ) {
                             matchedNow = true;
                             shouldContinueLoop = false;
@@ -711,6 +788,9 @@ export function WelcomeFaceScanModal({
       cancelAnimationFrame(rafId);
       landmarker?.close();
       stream?.getTracks().forEach((tr) => tr.stop());
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
     };
   }, [open, apiClient]);
 
@@ -734,6 +814,7 @@ export function WelcomeFaceScanModal({
     streakTrackerRef.current.reset();
     try {
       let probeVector: number[] | null = null;
+      let manualRatios: GeometricAnthropometricRatios | undefined;
       if (videoRef.current && videoRef.current.readyState >= 2) {
         const snap = captureCanonicalFaceSnapshot(
           videoRef.current,
@@ -743,6 +824,25 @@ export function WelcomeFaceScanModal({
         );
         const extracted = snap ? await extractCanonicalFaceDescriptor(snap) : null;
         probeVector = extracted?.embedding ?? null;
+        const lmsNow = latestDetectedLandmarksRef.current;
+        const rawGeom = lmsNow ? computeGeometricAnthropometricRatios(lmsNow) : null;
+        const patch384 = snap ? extractFacePatchSignature384(snap) : null;
+        const ratios12 = lmsNow
+          ? computeCraniofacialRatios12(
+              lmsNow,
+              (videoRef.current.videoWidth || 1280) / (videoRef.current.videoHeight || 720),
+            )
+          : null;
+        if (rawGeom || patch384 || ratios12) {
+          manualRatios = {
+            eyeToNoseRatio: rawGeom?.eyeToNoseRatio ?? 1,
+            faceWidthToUpperHeight: rawGeom?.faceWidthToUpperHeight ?? 1,
+            mouthToEyeRatio: rawGeom?.mouthToEyeRatio ?? 1,
+            noseToChinRatio: rawGeom?.noseToChinRatio ?? 1,
+            ...(patch384 ? { appearancePatch384: patch384 } : {}),
+            ...(ratios12 ? { craniofacialRatios12: ratios12 } : {}),
+          };
+        }
       }
       if (!probeVector) {
         setMatchResult({
@@ -752,34 +852,51 @@ export function WelcomeFaceScanModal({
         });
         return;
       }
-      const localEval = evaluateLiveMatch1toN(probeVector, biometricCandidatesRef.current);
-      if (localEval.matched && localEval.topCandidate) {
-        setMatchResult({
-          matched: true,
-          confidencePercent: localEval.confidencePercent,
-          patient: {
-            id: localEval.topCandidate.patientId,
-            hn: localEval.topCandidate.hn,
-            fullName: localEval.topCandidate.fullName,
-            nextAppointmentDate: localEval.topCandidate.nextAppointmentDate,
-          },
+      const localEval = evaluateLiveMatch1toN(
+        probeVector,
+        biometricCandidatesRef.current,
+        [],
+        undefined,
+        undefined,
+        manualRatios,
+      );
+      try {
+        const verified = await apiClient.verifyFaceLogin(probeVector, {
+          biologicalVerified: bioNow.biologicalVerified,
+          blinkCount: bioNow.blinkCount,
+          spoofRisk: bioNow.spoofScore,
+          nonRigidScore: bioNow.nonRigidScore,
+          rppgScore: bioNow.rppgScore,
+          engine: BIOMETRIC_ENGINE_ID,
+          ...(manualRatios ? { geometricRatios: manualRatios } : {}),
         });
-        return;
+        setMatchResult({
+          matched: Boolean(
+            verified.matched &&
+              verified.patient &&
+              verified.confidencePercent >= Math.round(BIOMETRIC_MATCH_THRESHOLD * 100),
+          ),
+          confidencePercent: verified.confidencePercent,
+          reason: verified.failureReasons?.[0],
+          patient: verified.patient,
+        });
+      } catch {
+        // Offline fallback only when local strict triple-gate passed
+        if (localEval.matched && localEval.topCandidate) {
+          setMatchResult({
+            matched: true,
+            confidencePercent: localEval.confidencePercent,
+            patient: {
+              id: localEval.topCandidate.patientId,
+              hn: localEval.topCandidate.hn,
+              fullName: localEval.topCandidate.fullName,
+              nextAppointmentDate: localEval.topCandidate.nextAppointmentDate,
+            },
+          });
+          return;
+        }
+        throw new Error('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ยืนยันใบหน้าได้');
       }
-      const verified = await apiClient.verifyFaceLogin(probeVector, {
-        biologicalVerified: bioNow.biologicalVerified,
-        blinkCount: bioNow.blinkCount,
-        spoofRisk: bioNow.spoofScore,
-        nonRigidScore: bioNow.nonRigidScore,
-        rppgScore: bioNow.rppgScore,
-        engine: BIOMETRIC_ENGINE_ID,
-      });
-      setMatchResult({
-        matched: verified.matched,
-        confidencePercent: verified.confidencePercent,
-        reason: verified.failureReasons?.[0],
-        patient: verified.patient,
-      });
     } catch (err) {
       setMatchResult({
         matched: false,

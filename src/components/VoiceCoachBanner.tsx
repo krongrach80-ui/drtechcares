@@ -1139,11 +1139,7 @@ export function VoiceCoachBanner({
 
   const handleSelectLanguage = (nextLang: VoiceCoachLanguage) => {
     setVoiceLang(nextLang);
-    try {
-      window.localStorage.setItem(VOICE_LANG_STORAGE_KEY, nextLang);
-    } catch {
-      // Ignore storage failure
-    }
+    writeStoredKioskVoiceLang(nextLang);
     clearPendingSpeakTimer();
     const nextText = translateVoiceCoachText(textTh, nextLang);
     if (!muted) {
@@ -1252,7 +1248,7 @@ export function VoiceCoachBanner({
 
         <button
           type="button"
-          onClick={() => speakNow(displayedText, voiceLang)}
+          onClick={() => speakNow(displayedText, voiceLang, { forceInterrupt: true })}
           disabled={muted}
           title={langOption.replayTitle}
           className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-sky-200 bg-white px-3 py-2 text-xs font-bold text-[#0F4C81] transition-colors hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50"

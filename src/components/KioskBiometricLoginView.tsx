@@ -769,7 +769,7 @@ const COPY: Record<
     pinClearBtn: 'Clear',
     pinNotFoundError: 'No patient matched that PIN (or staff login may be required first)',
     pinAuthError: 'PIN lookup requires clinical authorization. Please ask staff for assistance.',
-    aboutBullet1: '• 512-D facial biometric authentication with 3D Anti-Spoofing Liveness Detection',
+    aboutBullet1: '• 1024-D facial biometric authentication with 3D Anti-Spoofing Liveness Detection',
     aboutBullet2Prefix: '• Connected in real time to Supabase Cloud (',
     aboutBullet2Suffix: ')',
     aboutBullet3: '• Full trilingual support (Thai / English / 中文) & touchless gesture control',
@@ -819,7 +819,7 @@ const COPY: Record<
     pinClearBtn: '清空',
     pinNotFoundError: '未找到匹配该 PIN 码的患者档案（或需医护人员先登录）',
     pinAuthError: '查询 4 位 PIN 码需要医护权限，请联系护士台协助。',
-    aboutBullet1: '• 512 维面部生物识别认证，配备 3D 防伪活体检测',
+    aboutBullet1: '• 1024 维面部生物识别认证，配备 3D 防伪活体检测',
     aboutBullet2Prefix: '• 实时连接 Supabase 云端数据库（',
     aboutBullet2Suffix: '）',
     aboutBullet3: '• 支持三语界面（泰语 / 英语 / 中文）及无接触手势控制',
@@ -1241,8 +1241,9 @@ export function KioskBiometricLoginView({
   const verifiedModalPayloadRef = useRef<KioskLoginSuccessPayload | null>(null);
   verifiedModalPayloadRef.current = verifiedModalPayload;
   const openVerifiedModal = useCallback((payload: KioskLoginSuccessPayload) => {
-    isSpeechDoneRef.current = false;
-    setIsWelcomeSpeechDone(false);
+    const startUnlocked = Boolean(voiceMutedRef.current);
+    isSpeechDoneRef.current = startUnlocked;
+    setIsWelcomeSpeechDone(startUnlocked);
     setRaisedDuringSpeech(false);
     setTwoHandProgress(0);
     setTwoHandDetected(false);
@@ -1276,6 +1277,11 @@ export function KioskBiometricLoginView({
   const verifyingLockRef = useRef(false);
   const edgeTelemetryRef = useRef<EdgeKioskTelemetryPayload | null>(null);
 
+  const edgeMatchStreakRef = useRef<{ patientId: string | null; count: number }>({
+    patientId: null,
+    count: 0,
+  });
+
   const { connected: edgeConnected, telemetry: edgeTelemetry } = useEdgeVisionSocket({
     enabled: !cameraPaused && !staffModalOpen && !showPinModal,
     onPatientMatch: (edgeMatch) => {
@@ -1284,10 +1290,24 @@ export function KioskBiometricLoginView({
         excludedPatientIdsRef.current.includes(edgeMatch.id) ||
         (edgeMatch.hn && excludedPatientIdsRef.current.includes(edgeMatch.hn))
       ) {
+        edgeMatchStreakRef.current = { patientId: null, count: 0 };
         return;
       }
-      if (!bioReportRef.current?.biologicalVerified || bioReportRef.current?.spoofDetected) return;
-      if (typeof edgeMatch.similarity !== 'number' || edgeMatch.similarity < 0.76) return;
+      if (!bioReportRef.current?.biologicalVerified || bioReportRef.current?.spoofDetected) {
+        edgeMatchStreakRef.current = { patientId: null, count: 0 };
+        return;
+      }
+      if (typeof edgeMatch.similarity !== 'number' || edgeMatch.similarity < BIOMETRIC_MATCH_THRESHOLD) {
+        edgeMatchStreakRef.current = { patientId: null, count: 0 };
+        return;
+      }
+      // Require 3 consecutive high-confidence Edge matches for the exact same patient (prevents single-frame bypass)
+      if (edgeMatchStreakRef.current.patientId === edgeMatch.id) {
+        edgeMatchStreakRef.current.count += 1;
+      } else {
+        edgeMatchStreakRef.current = { patientId: edgeMatch.id, count: 1 };
+      }
+      if (edgeMatchStreakRef.current.count < 3) return;
       const candActive = biometricCandidatesRef.current.some((c) => c.patientId === edgeMatch.id);
       const entry = candActive
         ? biometricIndexRef.current.find(
@@ -1295,6 +1315,7 @@ export function KioskBiometricLoginView({
           )
         : undefined;
       if (entry) {
+        edgeMatchStreakRef.current = { patientId: null, count: 0 };
         const nextPayload = buildKioskLoginSuccessPayload({
           patient: {
             id: entry.patientId,
@@ -1310,7 +1331,7 @@ export function KioskBiometricLoginView({
         return;
       }
       // Refresh live Supabase biometric index strictly rather than trusting uncached list calls
-      void refreshBiometricCandidates();
+      void refreshBiometricCandidates(true);
     },
   });
   edgeTelemetryRef.current = edgeTelemetry;
@@ -1401,7 +1422,7 @@ export function KioskBiometricLoginView({
 
   useEffect(() => {
     return subscribeBiometricIndex(apiClient, () => {
-      void refreshBiometricCandidates(false);
+      void refreshBiometricCandidates(true);
     });
   }, [apiClient, refreshBiometricCandidates]);
 
@@ -1455,7 +1476,8 @@ export function KioskBiometricLoginView({
     setCameraPaused(false);
     setScanStage('scanning');
     setScanGeneration((g) => g + 1);
-    void refreshBiometricCandidates();
+    edgeMatchStreakRef.current = { patientId: null, count: 0 };
+    void refreshBiometricCandidates(true);
   }, [refreshBiometricCandidates]);
 
   const handleRejectWrongMatchAndRescan = useCallback(() => {
@@ -1554,7 +1576,8 @@ export function KioskBiometricLoginView({
     let twoHandCameraReadySent = false;
     let gestureTriggered = false;
     let confirmFaceCycle = 0;
-    let cachedConfirmOwnerVerified = true;
+    let lastConfirmedPatientId: string | null = null;
+    let cachedConfirmOwnerVerified = false;
     let cachedConfirmFaceCount = 0;
     let cachedConfirmFaceBox: OwnerFaceBoxMetrics | null = null;
     let cachedConfirmExtraFaceBoxes: OwnerFaceBoxMetrics[] = [];
@@ -1668,12 +1691,34 @@ export function KioskBiometricLoginView({
         }
         const deviceId = await selectClinicalCameraDeviceId();
         if (!active) return;
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: deviceId
-            ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: 'user' }
-            : { width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: 'user' },
-          audio: false,
-        });
+        const videoConstraintsChain: MediaTrackConstraints[] = deviceId
+          ? [
+              { deviceId: { ideal: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+              { deviceId: { ideal: deviceId } },
+              { width: { ideal: 1280 }, height: { ideal: 720 } },
+            ]
+          : [
+              { width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: 'user' },
+              { width: { ideal: 1280 }, height: { ideal: 720 } },
+            ];
+        let openedStream: MediaStream | null = null;
+        let lastCamErr: unknown = null;
+        for (const vc of videoConstraintsChain) {
+          try {
+            openedStream = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
+            break;
+          } catch (camErr) {
+            lastCamErr = camErr;
+          }
+        }
+        if (!openedStream) {
+          try {
+            openedStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          } catch (camErr) {
+            throw lastCamErr ?? camErr;
+          }
+        }
+        stream = openedStream;
         if (!active || !videoRef.current) {
           stream.getTracks().forEach((track) => track.stop());
           stream = null;
@@ -1806,9 +1851,20 @@ export function KioskBiometricLoginView({
           asyncMatchInFlight = true;
           try {
             // Single Shared Neural Extractor (@vladmandic/human faceres 1024-D) — ZERO fake geometric/pixel fallbacks
-            const extracted = await extractCanonicalFaceDescriptor(params.snapCanvas);
+            let extracted = await extractCanonicalFaceDescriptor(params.snapCanvas);
+            humanWarmupReadyRef.current = true;
             if (!active || !shouldContinueLoop || verifiedModalPayloadRef.current) {
               return;
+            }
+            if (!extracted.embedding && videoRef.current && videoRef.current.readyState >= 2 && videoRef.current.videoWidth > 0) {
+              // Secondary full-frame neural retry when tight rotated 224x224 crop fails BlazeFace detection
+              const fallbackExtracted = await extractCanonicalFaceDescriptor(videoRef.current);
+              if (!active || !shouldContinueLoop || verifiedModalPayloadRef.current) {
+                return;
+              }
+              if (fallbackExtracted.embedding) {
+                extracted = fallbackExtracted;
+              }
             }
             if (!extracted.embedding) {
               return;
@@ -2166,6 +2222,17 @@ export function KioskBiometricLoginView({
           try {
             const verifiedPayload = verifiedModalPayloadRef.current;
             if (verifiedPayload) {
+              if (lastConfirmedPatientId !== verifiedPayload.patient.id) {
+                lastConfirmedPatientId = verifiedPayload.patient.id;
+                confirmFaceCycle = 0;
+                cachedConfirmOwnerVerified = false;
+                cachedConfirmFaceCount = 0;
+                cachedConfirmFaceBox = null;
+                cachedConfirmExtraFaceBoxes = [];
+                lastOwnerGuardKey = '';
+                gestureHoldMs = 0;
+                gestureTriggered = false;
+              }
               if (confirmVideoRef.current && stream) {
                 if (confirmVideoRef.current.srcObject !== stream) {
                   confirmVideoRef.current.srcObject = stream;
@@ -2244,9 +2311,9 @@ export function KioskBiometricLoginView({
                       if (!gestureOffscreenCanvas) {
                         gestureOffscreenCanvas = document.createElement('canvas');
                       }
-                      const offW = 192;
+                      const offW = 320;
                       const offH = Math.max(
-                        108,
+                        180,
                         Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))),
                       );
                       if (
@@ -2409,9 +2476,9 @@ export function KioskBiometricLoginView({
                   if (!gestureOffscreenCanvas) {
                     gestureOffscreenCanvas = document.createElement('canvas');
                   }
-                  const offW = 192;
+                  const offW = 320;
                   const offH = Math.max(
-                    108,
+                    180,
                     Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))),
                   );
                   if (

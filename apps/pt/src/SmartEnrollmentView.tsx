@@ -79,19 +79,34 @@ export function SmartEnrollmentView({
       try {
         const deviceId = await selectClinicalCameraDeviceId();
         stream = await navigator.mediaDevices.getUserMedia({
-          video: deviceId ? { deviceId: { exact: deviceId }, width: 640, height: 480 } : { width: 640, height: 480 },
+          video: deviceId ? { deviceId: { ideal: deviceId }, width: 640, height: 480 } : { width: 640, height: 480 },
           audio: false,
         });
-        if (!active || !videoRef.current) return;
+        if (!active || !videoRef.current) {
+          stream.getTracks().forEach((tr) => tr.stop());
+          stream = null;
+          return;
+        }
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
+        if (!active) {
+          stream.getTracks().forEach((tr) => tr.stop());
+          stream = null;
+          return;
+        }
 
         const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
-        landmarker = await FaceLandmarker.createFromOptions(vision, {
+        if (!active) return;
+        const createdLm = await FaceLandmarker.createFromOptions(vision, {
           baseOptions: { modelAssetPath: '/models/face_landmarker.task' },
           runningMode: 'VIDEO',
           numFaces: 1,
         });
+        if (!active) {
+          createdLm.close();
+          return;
+        }
+        landmarker = createdLm;
 
         const tick = async () => {
           if (!active || !videoRef.current || !landmarker || enrollRef.current.isComplete) return;
@@ -100,8 +115,8 @@ export function SmartEnrollmentView({
             const res = landmarker.detectForVideo(videoRef.current, now);
             const faceCount = res.faceLandmarks?.length ?? 0;
             const landmarks = res.faceLandmarks?.[0] ?? [];
-            const liveness = evaluateLivenessAndPose(landmarks, prevLandmarks, faceCount);
-            prevLandmarks = landmarks;
+            const priorLandmarks = prevLandmarks;
+            const liveness = evaluateLivenessAndPose(landmarks, priorLandmarks, faceCount);
 
             if (!canvasRef.current) canvasRef.current = document.createElement('canvas');
             const crop =
@@ -111,11 +126,12 @@ export function SmartEnrollmentView({
             const requested3DPose = enrollRef.current.expected3DPose;
             const inspection = inspectBiometricFrame3D({
               landmarks3D: landmarks,
-              prevLandmarks3D: prevLandmarks,
+              prevLandmarks3D: priorLandmarks,
               faceCount,
               image: crop,
               requestedPose: requested3DPose,
             });
+            prevLandmarks = landmarks;
             setLiveInspection(inspection);
 
             if (inspection.scan_status === 'SPOOF_DETECTED') {

@@ -552,15 +552,19 @@ class Biomechanics3DSolver:
         head_drop_vel = 0.0
         sh_drop_vel = 0.0
         if self._prev_ts is not None and timestamp_sec > self._prev_ts:
-            dt = max(timestamp_sec - self._prev_ts, 1e-3)
-            if self._prev_rom_deg is not None:
-                ang_vel = abs(rom_deg - self._prev_rom_deg) / dt
-            if hips_visible and self._prev_hip_y is not None:
-                hip_drop_vel = (hip_y - self._prev_hip_y) / dt
-            if self._prev_head_y is not None and visibility_ok:
-                head_drop_vel = (head_y - self._prev_head_y) / dt
-            if self._prev_shoulder_y is not None and visibility_ok:
-                sh_drop_vel = (shoulder_y - self._prev_shoulder_y) / dt
+            raw_dt = timestamp_sec - self._prev_ts
+            # Ignore stale gaps (> 2.5s after pause/reconnect) and clamp sub-frame bursts (>= 0.025s)
+            # so micro-jitter across duplicate timestamps never triggers false TOO_FAST or FALL alerts.
+            if raw_dt <= 2.5:
+                dt = max(raw_dt, 0.025)
+                if self._prev_rom_deg is not None:
+                    ang_vel = abs(rom_deg - self._prev_rom_deg) / dt
+                if hips_visible and self._prev_hip_y is not None:
+                    hip_drop_vel = (hip_y - self._prev_hip_y) / dt
+                if self._prev_head_y is not None and visibility_ok:
+                    head_drop_vel = (head_y - self._prev_head_y) / dt
+                if self._prev_shoulder_y is not None and visibility_ok:
+                    sh_drop_vel = (shoulder_y - self._prev_shoulder_y) / dt
 
         self._prev_rom_deg = rom_deg
         self._prev_hip_y = hip_y if hips_visible else None

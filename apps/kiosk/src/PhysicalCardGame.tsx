@@ -1734,7 +1734,13 @@ export function PhysicalCardGame({
                   const nowMs = Date.now();
                   if (!voiceMutedRef.current && nowMs - bothHandsWarnSpeechTsRef.current >= 3600) {
                     bothHandsWarnSpeechTsRef.current = nowMs;
-                    speakMinigameText('ห้ามยก 2 มือพร้อมกัน กรุณาลดมือลง 1 ข้างเพื่อตอบ', voiceLangRef.current, {
+                    const warnText =
+                      voiceLangRef.current === 'en'
+                        ? 'Please do not raise both hands at the same time. Lower one hand to answer.'
+                        : voiceLangRef.current === 'zh'
+                          ? '请勿同时举起双手，请放下一只手来作答。'
+                          : 'ห้ามยก 2 มือพร้อมกัน กรุณาลดมือลง 1 ข้างเพื่อตอบ';
+                    speakMinigameText(warnText, voiceLangRef.current, {
                       forceInterrupt: true,
                     });
                   }

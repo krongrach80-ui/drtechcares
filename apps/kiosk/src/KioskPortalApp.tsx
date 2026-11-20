@@ -274,17 +274,23 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
 
                     if (push.readyToVerify) {
                       const probe = loginCtrlRef.current.buildProbeCentroid();
-                      const verifyRes = await apiClient.verifyFaceLogin(probe);
-                      if (!active) return;
-                      if (verifyRes.matched && verifyRes.patient) {
-                        setVerifiedPatient(verifyRes.patient);
-                        setTodayRoutine(verifyRes.todayRoutine ?? null);
-                        setFlowState('GESTURE_CONTROL');
+                      try {
+                        const verifyRes = await apiClient.verifyFaceLogin(probe);
+                        if (!active) return;
+                        if (verifyRes.matched && verifyRes.patient) {
+                          setVerifiedPatient(verifyRes.patient);
+                          setTodayRoutine(verifyRes.todayRoutine ?? null);
+                          setFlowState('GESTURE_CONTROL');
+                          return;
+                        }
+                        loginCtrlRef.current.recordUnmatchedRound();
+                        setFlowState('NOT_FOUND');
                         return;
+                      } catch {
+                        // Reset burst on network failure so RAF never storms verifyFaceLogin at 60 req/s
+                        loginCtrlRef.current.reset();
+                        setBurstCollected(0);
                       }
-                      loginCtrlRef.current.recordUnmatchedRound();
-                      setFlowState('NOT_FOUND');
-                      return;
                     }
                   }
                 }
@@ -380,7 +386,7 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
 
         for (const delegate of ['CPU', undefined] as const) {
           try {
-            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            const createdHand = await HandLandmarker.createFromOptions(vision, {
               baseOptions: delegate
                 ? { modelAssetPath: '/models/hand_landmarker.task', delegate }
                 : { modelAssetPath: '/models/hand_landmarker.task' },
@@ -390,6 +396,11 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
               minHandPresenceConfidence: 0.35,
               minTrackingConfidence: 0.35,
             });
+            if (!active) {
+              createdHand.close();
+              return;
+            }
+            handLandmarker = createdHand;
             break;
           } catch {
             // Try fallback delegate
@@ -399,7 +410,7 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
         for (const modelAssetPath of ['/models/pose_landmarker.task', '/models/pose_landmarker_full.task']) {
           for (const delegate of ['CPU', undefined] as const) {
             try {
-              poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+              const createdPose = await PoseLandmarker.createFromOptions(vision, {
                 baseOptions: delegate ? { modelAssetPath, delegate } : { modelAssetPath },
                 runningMode: 'VIDEO',
                 numPoses: 1,
@@ -407,6 +418,11 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
                 minPosePresenceConfidence: 0.35,
                 minTrackingConfidence: 0.35,
               });
+              if (!active) {
+                createdPose.close();
+                return;
+              }
+              poseLandmarker = createdPose;
               break;
             } catch {
               // Try fallback pose model
@@ -711,20 +727,24 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
               patientName={verifiedPatient.fullName}
               onComplete={async (summary) => {
                 const accuracy = Math.round((summary.correct / summary.total) * 100);
-                await apiClient.recordRehabSession({
-                  patientId: verifiedPatient.id,
-                  activityType: 'minigame',
-                  exerciseId: 'cognitive-card-game',
-                  exerciseName: 'มินิเกมฝึกสมอง (การ์ดกายภาพ)',
-                  completedSets: 1,
-                  completedReps: summary.total,
-                  accuracyPercent: accuracy,
-                  maxRomDeg: 0,
-                  painStopTriggered: false,
-                  aiFeedback: `Cognitive Accuracy ${accuracy}% (${summary.correct}/${summary.total})`,
-                  kinematicsReplay: [],
-                  minigameScore: summary,
-                });
+                try {
+                  await apiClient.recordRehabSession({
+                    patientId: verifiedPatient.id,
+                    activityType: 'minigame',
+                    exerciseId: 'cognitive-card-game',
+                    exerciseName: 'มินิเกมฝึกสมอง (การ์ดกายภาพ)',
+                    completedSets: 1,
+                    completedReps: summary.total,
+                    accuracyPercent: accuracy,
+                    maxRomDeg: 0,
+                    painStopTriggered: false,
+                    aiFeedback: `Cognitive Accuracy ${accuracy}% (${summary.correct}/${summary.total})`,
+                    kinematicsReplay: [],
+                    minigameScore: summary,
+                  });
+                } catch {
+                  // Always proceed to summary screen even if background cloud save fails
+                }
                 setSummaryText(`วันนี้คุณทำได้ดีมาก! ได้คะแนน ${summary.correct}/${summary.total} (${accuracy}%)`);
                 setFlowState('SUMMARY_AND_RESET');
               }}

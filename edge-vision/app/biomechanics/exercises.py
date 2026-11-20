@@ -95,12 +95,16 @@ class ClinicalExerciseRule:
         return rom_deg >= thresh
 
     def is_in_rest_zone(self, rom_deg: float, target_override: Optional[float] = None) -> bool:
-        """Hysteresis-stabilized return-to-rest boundary (< 45% of target ROM) required before next rep."""
+        """Hysteresis-stabilized return-to-rest boundary required before next rep."""
         rest = float(self.rest_angle_deg)
         margin = float(self.rest_hysteresis_margin_deg)
         if self.is_descending_target:
             return rom_deg >= rest - margin
         target = float(target_override) if target_override is not None else float(self.min_angle_deg)
+        # Ascending exercises with elevated rest posture (e.g. STROKE_BOBATH_FORWARD_PUSH rest=95 vs target=135)
+        # must allow returning to rest_angle_deg + margin; standard 0-start exercises enforce strict < 45% target.
+        if rest >= 50.0 and target > rest:
+            return rom_deg <= max(target * 0.45, rest + margin)
         return rom_deg < target * 0.45
 
     def required_landmark_indices(self) -> Tuple[int, ...]:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Dict, List, Literal, Optional, Tuple
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class Keypoint3D(BaseModel):
@@ -158,7 +158,7 @@ class PatientMatchSchema(BaseModel):
 
     id: Optional[str] = None
     hn: Optional[str] = None
-    name: Optional[str] = None
+    name: Optional[str] = Field(default=None, validation_alias=AliasChoices("name", "full_name"))
     similarity: float = 0.0
     latency_ms: float = 0.0
 

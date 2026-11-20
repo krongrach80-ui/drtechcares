@@ -349,15 +349,19 @@ export function isUpperBodyVisibleInFrame(
 
   if (getConf(lSh) < 0.45 || getConf(rSh) < 0.45) return false;
 
+  const hasElbowInBounds =
+    (getConf(landmarks[13]) >= 0.4 && landmarks[13] && landmarks[13].y <= 0.96) ||
+    (getConf(landmarks[14]) >= 0.4 && landmarks[14] && landmarks[14].y <= 0.96);
+  const maxShoulderY = hasElbowInBounds ? 0.85 : 0.78;
   const shouldersInBounds =
     lSh.x >= 0.03 &&
     lSh.x <= 0.97 &&
     rSh.x >= 0.03 &&
     rSh.x <= 0.97 &&
     lSh.y >= 0.04 &&
-    lSh.y <= 0.78 &&
+    lSh.y <= maxShoulderY &&
     rSh.y >= 0.04 &&
-    rSh.y <= 0.78;
+    rSh.y <= maxShoulderY;
   if (!shouldersInBounds) return false;
 
   const shoulderSpanX = Math.abs(lSh.x - rSh.x);

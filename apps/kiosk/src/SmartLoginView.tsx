@@ -38,6 +38,9 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
   const alignCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const loginCtrlRef = useRef(new SingleScanLoginController());
   const presenceRef = useRef(new FacePresenceTracker());
+  const statusRef = useRef(status);
+  statusRef.current = status;
+  const isNotFound = status === 'not_found';
 
   useEffect(() => {
     // Zero Ghost Cache: wipe any stale biometric entries on Kiosk mount
@@ -45,7 +48,7 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
   }, []);
 
   useEffect(() => {
-    if (status === 'not_found') return;
+    if (isNotFound) return;
 
     let active = true;
     let stream: MediaStream | null = null;
@@ -149,7 +152,7 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
                 setStatus('countdown');
               }
 
-              if (countdownStartedAt !== null && status !== 'not_found') {
+              if (countdownStartedAt !== null && statusRef.current !== 'not_found') {
                 const elapsedSec = Math.floor((now - countdownStartedAt) / 1000);
                 const rem = Math.max(0, 3 - elapsedSec);
                 setCountdown(rem);
@@ -238,7 +241,7 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
       landmarker?.close();
       stream?.getTracks().forEach((tr) => tr.stop());
     };
-  }, [status, apiClient, onAuthenticated]);
+  }, [isNotFound, apiClient, onAuthenticated]);
 
   const handleCallStaff = async () => {
     await apiClient.createStaffCall('KIOSK-OPD-01', 'Patient needs assistance on Face Login');

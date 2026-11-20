@@ -404,7 +404,9 @@ function computePoseDistalFallbackRom(params: {
     if (thumb && index && (thumb.visibility ?? 0) >= 0.15 && (index.visibility ?? 0) >= 0.15) {
       const pinchSpan = dist2D(thumb, index) / Math.max(0.04, shoulderSpanX * 0.32);
       const liftBonus = el.y > wr.y ? clamp((el.y - wr.y) / safeFore, 0, 0.5) * 20 : 0;
-      const pinchClosePct = clamp(1.35 - pinchSpan, 0, 1.05);
+      const handLifted =
+        wr.y <= el.y + safeFore * 0.45 && (!sh || wr.y <= sh.y + safeFore * 1.15);
+      const pinchClosePct = clamp(1.35 - pinchSpan, 0, 1.05) * (handLifted ? 1 : 0.15);
       return Number(clamp(pinchClosePct * targetGoalDeg * 1.05 + liftBonus, 0, Math.max(targetGoalDeg * 1.15, 75)).toFixed(1));
     }
   }
@@ -580,11 +582,11 @@ export function solveStrokeClinicalJointBiomechanics(
             )
           : 0;
       const downForwardWeight =
-        dy > 0
-          ? expectedPlane === 'abduction'
-            ? 0
-            : Math.max(clamp(Math.abs(dzSensor) / 0.14, 0, 1), foreshortenedForward)
-          : 1;
+        expectedPlane === 'abduction'
+          ? 0
+          : dy > 0
+            ? Math.max(clamp(Math.abs(dzSensor) / 0.14, 0, 1), foreshortenedForward)
+            : 1;
       const absDz = Math.max(
         Math.abs(dzSensor),
         dzSphere * sagittalWeight * downForwardWeight,
@@ -893,14 +895,22 @@ export function solveStrokeClinicalJointBiomechanics(
     }
     const driftRatio = Math.abs(elPt.x - sPt.x) / Math.max(0.08, shoulderSpanX);
     const dx = Math.abs(wPt.x - elPt.x);
+    const dyDown = Math.max(0, wPt.y - elPt.y);
     const safeFore = Math.max(0.07, baseline.forearmLen);
+    // Attenuate relaxed arms hanging vertically down so resting hands never falsely trigger external rotation
+    const verticalRestGate =
+      dyDown > safeFore * 0.45
+        ? clamp(1 - (dyDown - safeFore * 0.45) / (safeFore * 0.45), 0.15, 1)
+        : 1;
     const sweepRatio = clamp(dx / safeFore, 0, 1);
     const dz = Math.abs((wPt.z ?? 0) - (elPt.z ?? 0));
     const rotBySin = ((Math.asin(sweepRatio) * 180) / Math.PI) * 0.92;
-    const rotByAtan = ((Math.atan2(dx, Math.max(0.03, dz)) * 180) / Math.PI) * 0.95;
+    const rotByAtan = ((Math.atan2(dx, Math.max(0.03, dz, dyDown * 0.65)) * 180) / Math.PI) * 0.95;
     const sweepTarget = sweepRatio * Math.max(targetRomGoal, 55) * 1.25;
     return {
-      deg: Number(clamp(Math.max(rotBySin, rotByAtan, sweepTarget), 0, Math.max(85, targetRomGoal * 1.15)).toFixed(1)),
+      deg: Number(
+        clamp(Math.max(rotBySin, rotByAtan, sweepTarget) * verticalRestGate, 0, Math.max(85, targetRomGoal * 1.15)).toFixed(1),
+      ),
       driftRatio,
     };
   };
@@ -1014,7 +1024,15 @@ export function solveStrokeClinicalJointBiomechanics(
         : null;
     elbowAngleDeg =
       lExt !== null && rExt !== null ? 0.5 * (lExt + rExt) : (lExt ?? rExt ?? null);
-    if (lPush !== null && rPush !== null) {
+    if (exerciseSide === 'LEFT') {
+      rawPrimaryRomDeg = lPush !== null ? Number(clamp(lPush, 0, 145).toFixed(1)) : null;
+      oppositeRomDeg = rPush;
+      xyzVector = lElev.xyzVector;
+    } else if (exerciseSide === 'RIGHT') {
+      rawPrimaryRomDeg = rPush !== null ? Number(clamp(rPush, 0, 145).toFixed(1)) : null;
+      oppositeRomDeg = lPush;
+      xyzVector = rElev.xyzVector;
+    } else if (lPush !== null && rPush !== null) {
       rawPrimaryRomDeg = Number(clamp(0.5 * (lPush + rPush), 0, 145).toFixed(1));
       xyzVector = rElev.xyzVector ?? lElev.xyzVector;
     } else if (lPush !== null || rPush !== null) {
@@ -1036,18 +1054,16 @@ export function solveStrokeClinicalJointBiomechanics(
   } else if (jointMode === 'elbow') {
     const primaryRes = computeElbowFlexionRom(primarySide);
     const oppRes = computeElbowFlexionRom(oppositeSide);
-    const lRaiseRes = computeForwardFlexionWithForeshortening('left');
-    const rRaiseRes = computeForwardFlexionWithForeshortening('right');
+    const lEl = primarySide === 'left' ? primaryRes.flexionDeg : oppRes.flexionDeg;
+    const rEl = primarySide === 'right' ? primaryRes.flexionDeg : oppRes.flexionDeg;
+    leftArmRom = lEl;
+    rightArmRom = rEl;
     if (exerciseSide === 'BOTH') {
-      const lEl = primarySide === 'left' ? primaryRes.flexionDeg : oppRes.flexionDeg;
-      const rEl = primarySide === 'right' ? primaryRes.flexionDeg : oppRes.flexionDeg;
       if (lEl !== null && rEl !== null) {
         rawPrimaryRomDeg = Number((0.5 * (lEl + rEl)).toFixed(1));
       } else {
         rawPrimaryRomDeg = Number(((lEl ?? rEl ?? 0)).toFixed(1));
       }
-      leftArmRom = lEl;
-      rightArmRom = rEl;
     } else {
       rawPrimaryRomDeg = primaryRes.flexionDeg;
       oppositeRomDeg = oppRes.flexionDeg;
@@ -1265,26 +1281,61 @@ export function solveStrokeClinicalJointBiomechanics(
   } else if (jointMode === 'neck_turn') {
     if (nose && (nose.visibility ?? 0) >= UPPER_MIN_VIS) {
       const gain = 1.6;
+      let signedOffsetX = 0;
       if (lEar && rEar && (lEar.visibility ?? 0) >= UPPER_MIN_VIS && (rEar.visibility ?? 0) >= UPPER_MIN_VIS) {
         const midEarX = (lEar.x + rEar.x) / 2;
         const earSpan = Math.max(0.04, dist2D(lEar, rEar));
-        const yawRatio = Math.abs(nose.x - midEarX) / (earSpan * 0.5);
+        signedOffsetX = nose.x - midEarX;
+        const yawRatio = Math.abs(signedOffsetX) / (earSpan * 0.5);
         rawPrimaryRomDeg = Number(clamp(yawRatio * 58 * (yawRatio >= 0.08 ? gain : 1), 0, 75).toFixed(1));
       } else if (lEye && rEye && (lEye.visibility ?? 0) >= 0.25 && (rEye.visibility ?? 0) >= 0.25) {
         const midEyeX = (lEye.x + rEye.x) / 2;
         const eyeSpan = Math.max(0.03, dist2D(lEye, rEye));
-        const yawRatio = Math.abs(nose.x - midEyeX) / (eyeSpan * 0.8);
+        signedOffsetX = nose.x - midEyeX;
+        const yawRatio = Math.abs(signedOffsetX) / (eyeSpan * 0.8);
         rawPrimaryRomDeg = Number(clamp(yawRatio * 55 * (yawRatio >= 0.08 ? gain : 1), 0, 75).toFixed(1));
       } else if (lSh && rSh) {
         const midShX = (lSh.x + rSh.x) / 2;
-        const yawRatio = Math.abs(nose.x - midShX) / (shoulderSpanX * 0.35);
+        signedOffsetX = nose.x - midShX;
+        const yawRatio = Math.abs(signedOffsetX) / (shoulderSpanX * 0.35);
         rawPrimaryRomDeg = Number(clamp(yawRatio * 55 * (yawRatio >= 0.08 ? gain : 1), 0, 75).toFixed(1));
+      }
+      // Enforce directional isolation when staff/selector explicitly specifies LEFT or RIGHT neck turn
+      if (
+        (exerciseSide === 'LEFT' || exerciseSide === 'RIGHT') &&
+        rawPrimaryRomDeg !== null &&
+        rawPrimaryRomDeg >= 12 &&
+        lSh &&
+        rSh
+      ) {
+        const leftDirSign = lSh.x >= rSh.x ? 1 : -1;
+        const towardLeft = signedOffsetX * leftDirSign;
+        if (exerciseSide === 'LEFT' && towardLeft < -0.008) {
+          rawPrimaryRomDeg = 0;
+          wrongSideRaised = true;
+          sideViolation = 'RIGHT_ARM_RAISED_IN_LEFT_MODE';
+          wrongSideBannerTh = 'ท่านี้หันศีรษะไปทางซ้าย กรุณาหันหน้าไปข้างซ้ายครับ';
+          sideViolationBannerTh = wrongSideBannerTh;
+        } else if (exerciseSide === 'RIGHT' && towardLeft > 0.008) {
+          rawPrimaryRomDeg = 0;
+          wrongSideRaised = true;
+          sideViolation = 'LEFT_ARM_RAISED_IN_RIGHT_MODE';
+          wrongSideBannerTh = 'ท่านี้หันศีรษะไปทางขวา กรุณาหันหน้าไปข้างขวาครับ';
+          sideViolationBannerTh = wrongSideBannerTh;
+        }
       }
       romDeg = rawPrimaryRomDeg;
       if (lSh && rSh) {
+        const leftDirSign = lSh.x >= rSh.x ? 1 : -1;
+        const targetDx =
+          exerciseSide === 'LEFT'
+            ? 0.08 * leftDirSign
+            : exerciseSide === 'RIGHT'
+              ? -0.08 * leftDirSign
+              : 0.08;
         overlayHint = {
           pivotNorm: { x: (lSh.x + rSh.x) / 2, y: nose.y },
-          targetNorm: { x: clamp(nose.x + 0.08, 0.1, 0.9), y: nose.y },
+          targetNorm: { x: clamp(nose.x + targetDx, 0.1, 0.9), y: nose.y },
           inTargetZone: (rawPrimaryRomDeg ?? 0) >= targetRomGoal * 0.82,
           labelTh: 'หันศีรษะซ้าย-ขวา',
         };
@@ -1323,7 +1374,15 @@ export function solveStrokeClinicalJointBiomechanics(
     const rBoost = enhanceSideElevationRom('right', rRes.angleDeg);
     leftArmRom = lBoost;
     rightArmRom = rBoost;
-    if (lBoost !== null && rBoost !== null) {
+    if (exerciseSide === 'LEFT') {
+      rawPrimaryRomDeg = lBoost !== null ? Number(lBoost.toFixed(1)) : null;
+      oppositeRomDeg = rBoost;
+      xyzVector = lRes.xyzVector;
+    } else if (exerciseSide === 'RIGHT') {
+      rawPrimaryRomDeg = rBoost !== null ? Number(rBoost.toFixed(1)) : null;
+      oppositeRomDeg = lBoost;
+      xyzVector = rRes.xyzVector;
+    } else if (lBoost !== null && rBoost !== null) {
       rawPrimaryRomDeg = Number((0.5 * (lBoost + rBoost)).toFixed(1));
       xyzVector = rRes.xyzVector ?? lRes.xyzVector;
     } else if (lBoost !== null || rBoost !== null) {
@@ -1352,10 +1411,14 @@ export function solveStrokeClinicalJointBiomechanics(
         ? computeCoronalAbduction(oppositeSide)
         : computeForwardFlexionWithForeshortening(oppositeSide);
     const boostedPrimary = enhanceSideElevationRom(primarySide, pRes.angleDeg);
+    const effectiveOpposite =
+      exerciseSide === 'BOTH'
+        ? enhanceSideElevationRom(oppositeSide, oRes.angleDeg)
+        : oRes.angleDeg;
     rawPrimaryRomDeg = boostedPrimary;
-    oppositeRomDeg = oRes.angleDeg;
-    leftArmRom = primarySide === 'left' ? boostedPrimary : oRes.angleDeg;
-    rightArmRom = primarySide === 'right' ? boostedPrimary : oRes.angleDeg;
+    oppositeRomDeg = effectiveOpposite;
+    leftArmRom = primarySide === 'left' ? boostedPrimary : effectiveOpposite;
+    rightArmRom = primarySide === 'right' ? boostedPrimary : effectiveOpposite;
     xyzVector = pRes.xyzVector;
     elbowAngleDeg = pRes.elbowAngleDeg;
 

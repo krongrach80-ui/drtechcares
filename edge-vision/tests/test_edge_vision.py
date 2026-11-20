@@ -1216,6 +1216,81 @@ class TestClinicalEdgeVision(unittest.TestCase):
         shrug_res, _ = solver.analyze(shrug_pts, shrug_rule, cal, timestamp_sec=4.0, scores=scores)
         self.assertNotIn("SHOULDER_HIKE", shrug_res.compensation_detected)
 
+    def test_21_second_pass_face_and_pose_stability_hardening(self) -> None:
+        """Verify second-pass edge-vision fixes: PatientMatchSchema alias, placeholder template guard, session eviction, Bobath rest zone, config defaults & dt burst guard."""
+        # 1. PatientMatchSchema accepts both full_name and name without dropping patient name
+        pm = PatientMatchSchema(id="p-alias", hn="HN-A1", full_name="Somying Alias", similarity=1.0)
+        self.assertEqual(pm.name, "Somying Alias")
+
+        # 2. Locking a web-enrolled patient without a 512-D template must NOT trigger false IMPOSTOR lockout
+        mgr = InsightFace120Manager(self.settings)
+        mgr.lock_active_patient(patient_id="p-web-1024", hn="HN-1024", full_name="Web 1024 Patient")
+        self.assertIsNotNone(mgr.active_patient)
+        self.assertFalse(mgr.active_patient.has_biometric_template)  # type: ignore[union-attr]
+
+        stand_pts, scores = generate_synthetic_133_pose(0.0, is_calibrating=True)
+        rng = np.random.default_rng(99)
+        real_face = [
+            {
+                "embedding": l2_normalize(rng.normal(size=512)).tolist(),
+                "det_score": 0.95,
+                "bbox_1280": [540, 40, 740, 220],
+                "bbox_norm": (0.42, 0.05, 0.58, 0.30),
+            }
+        ]
+        for _ in range(7):
+            g = mgr.evaluate_identity_guard(
+                frame_bgr=None,
+                primary_xyz=stand_pts,
+                primary_scores=scores,
+                skeleton_count=1,
+                face_detections_override=real_face,
+                force_identity_check=True,
+            )
+            self.assertEqual(g.status, "VERIFIED")
+            self.assertTrue(g.is_counting_allowed)
+
+        # Multi-person rule MUST still lock out even without a 512-D template
+        g_mp = mgr.evaluate_identity_guard(
+            frame_bgr=None,
+            primary_xyz=stand_pts,
+            primary_scores=scores,
+            skeleton_count=2,
+            force_identity_check=True,
+        )
+        self.assertEqual(g_mp.status, "MULTI_PERSON")
+        self.assertFalse(g_mp.is_counting_allowed)
+
+        # 3. Enrollment session is evicted from RAM after finalization
+        sess = mgr.start_enrollment(patient_id="p-evict", hn="HN-EV", full_name="Evict Test")
+        probe = np.full((120, 120, 3), 120, dtype=np.uint8)
+        mgr.process_enrollment_frame(sess.session_id, probe, forced_bucket="center")
+        mgr.finalize_enrollment(sess.session_id, patient_id="p-evict", hn="HN-EV", persist_to_supabase=False)
+        self.assertNotIn(sess.session_id, mgr._enroll_sessions)
+
+        # 4. STROKE_BOBATH_FORWARD_PUSH rest zone accepts folded-elbow resting angle (~95-100 deg)
+        bobath_push = resolve_exercise_rule("STROKE_BOBATH_FORWARD_PUSH")
+        self.assertTrue(bobath_push.is_in_rest_zone(98.0))
+        self.assertFalse(bobath_push.is_in_rest_zone(135.0))
+
+        # 5. EdgeVisionSettings.from_env() matches upgraded Stroke clinical defaults
+        env_cfg = EdgeVisionSettings.from_env()
+        self.assertAlmostEqual(env_cfg.ONE_EURO_MIN_CUTOFF, 1.15, places=2)
+        self.assertAlmostEqual(env_cfg.ONE_EURO_BETA, 0.06, places=2)
+        self.assertAlmostEqual(env_cfg.TRUNK_LEAN_MAX_DEG, 12.0, places=2)
+
+        # 6. Sub-frame duplicate timestamp jitter (dt=0.001s) never triggers false FALL emergency
+        solver = Biomechanics3DSolver(self.settings)
+        cal = StandingCalibrator(duration_sec=0.2)
+        cal.force_calibrate_from_pose(stand_pts)
+        rule_sh = resolve_exercise_rule("STROKE_SH_ABD_R")
+        _, emerg1 = solver.analyze(stand_pts, rule_sh, cal, timestamp_sec=1.0, scores=scores)
+        self.assertIsNone(emerg1)
+        jittered = stand_pts.copy()
+        jittered[0, 1] += 0.004  # tiny 4px sensor jitter over 1ms burst
+        _, emerg2 = solver.analyze(jittered, rule_sh, cal, timestamp_sec=1.001, scores=scores)
+        self.assertIsNone(emerg2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

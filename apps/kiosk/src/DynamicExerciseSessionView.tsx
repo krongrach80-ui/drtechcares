@@ -252,14 +252,14 @@ export function DynamicExerciseSessionView({
                       ? 'left_shoulder'
                       : 'right_shoulder';
                 const strokeJointMode: StrokeJointMode =
-                  det.jointGroup === 'elbow'
-                    ? 'elbow'
-                    : det.expectedPlane === 'cross_body'
-                      ? 'cross_body'
-                      : det.expectedPlane === 'scap_protract'
-                        ? 'scap_protract'
-                        : det.expectedPlane === 'bilateral_push'
-                          ? 'bobath_push'
+                  det.expectedPlane === 'bilateral_push'
+                    ? 'bobath_push'
+                    : det.jointGroup === 'elbow'
+                      ? 'elbow'
+                      : det.expectedPlane === 'cross_body'
+                        ? 'cross_body'
+                        : det.expectedPlane === 'scap_protract'
+                          ? 'scap_protract'
                           : det.expectedPlane === 'hand_to_head'
                             ? 'hand_to_head'
                             : det.expectedPlane === 'forearm_turn'
@@ -327,10 +327,17 @@ export function DynamicExerciseSessionView({
                   voiceRef.current.speak(decision.tts_voice_th, 'th');
                   chimeRef.current.playTone('alert');
                   setPainStopped(true);
+                  void apiClient
+                    .createStaffCall(
+                      'KIOSK-OPD-01',
+                      `EMERGENCY_HALT during ${selectedExercise.code}: ${decision.tts_voice_th}`,
+                      patient.id,
+                    )
+                    .catch(() => {});
                   return;
                 }
 
-                if (snap.currentAngleDeg !== null) {
+                if (snap.currentAngleDeg !== null && replayLogRef.current.length < 600) {
                   replayLogRef.current.push({
                     tMs: Math.round(now - startedAt),
                     angleDeg: snap.currentAngleDeg,

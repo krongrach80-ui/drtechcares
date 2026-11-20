@@ -210,40 +210,9 @@ export function alignFaceTo112(
     }
   }
 
-  // Explicit Roll Tilt Compensation when |rollAngle| > 2.5°: level eyes horizontally before 5-pt warp
-  const rawRollDeg = computeEyeRollAngleDeg(mappedLandmarks, srcW, srcH);
-  if (Math.abs(rawRollDeg) > 2.5 && typeof document !== 'undefined') {
-    const eyes = resolveEyeCentersFromLandmarks(mappedLandmarks);
-    if (eyes) {
-      const eyeMidNormX = (eyes.leftEye.x + eyes.rightEye.x) / 2;
-      const eyeMidNormY = (eyes.leftEye.y + eyes.rightEye.y) / 2;
-      const rollCompRad = (-rawRollDeg * Math.PI) / 180;
-      const levelCanvas = document.createElement('canvas');
-      levelCanvas.width = srcW;
-      levelCanvas.height = srcH;
-      const lCtx = levelCanvas.getContext('2d', { willReadFrequently: true });
-      if (lCtx) {
-        const cx = eyeMidNormX * srcW;
-        const cy = eyeMidNormY * srcH;
-        lCtx.imageSmoothingEnabled = true;
-        lCtx.imageSmoothingQuality = 'high';
-        lCtx.translate(cx, cy);
-        lCtx.rotate(rollCompRad);
-        lCtx.translate(-cx, -cy);
-        lCtx.drawImage(warpSource, 0, 0, srcW, srcH);
-        lCtx.setTransform(1, 0, 0, 1, 0, 0);
-        warpSource = levelCanvas;
-        mappedLandmarks = rotateNormalizedLandmarksForRoll(
-          mappedLandmarks,
-          eyeMidNormX,
-          eyeMidNormY,
-          rollCompRad,
-          srcW,
-          srcH,
-        );
-      }
-    }
-  }
+  // Note: estimateUmeyamaSimilarity2D solves exact closed-form 2D similarity (rotation + uniform scale + translation)
+  // directly into 112x112 targetCanvas in a single high-quality warp pass — avoiding per-frame full-HD canvas
+  // allocations and double bilinear resampling blur on tilted heads.
 
   // MediaPipe FaceLandmarker 468/478 indices:
   // Left eye center ~ 468 or avg(33,133), Right eye ~ 473 or avg(362,263), Nose tip 1, Mouth corners 61 & 291
@@ -401,10 +370,17 @@ export function renderUpscaledRoi256(
   const srcH = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
   if (!srcW || !srcH) return null;
 
-  const sx = Math.max(0, Math.floor(roiNorm.x * srcW));
-  const sy = Math.max(0, Math.floor(roiNorm.y * srcH));
-  const sw = Math.max(24, Math.min(srcW - sx, Math.round(roiNorm.width * srcW)));
-  const sh = Math.max(24, Math.min(srcH - sy, Math.round(roiNorm.height * srcH)));
+  // Enforce a true 1:1 square crop in source PIXEL space (avoiding 1.78x horizontal squashing
+  // when a normalized square ROI is sampled from a 16:9 camera feed into a square outSize canvas).
+  const rawSw = Math.max(24, Math.round(roiNorm.width * srcW));
+  const rawSh = Math.max(24, Math.round(roiNorm.height * srcH));
+  const cxPx = (roiNorm.x + roiNorm.width * 0.5) * srcW;
+  const cyPx = (roiNorm.y + roiNorm.height * 0.5) * srcH;
+  const sidePx = Math.max(24, Math.min(Math.min(srcW, srcH), Math.max(rawSw, rawSh)));
+  const sx = Math.max(0, Math.min(srcW - sidePx, Math.round(cxPx - sidePx * 0.5)));
+  const sy = Math.max(0, Math.min(srcH - sidePx, Math.round(cyPx - sidePx * 0.5)));
+  const sw = Math.max(24, Math.min(srcW - sx, sidePx));
+  const sh = Math.max(24, Math.min(srcH - sy, sidePx));
 
   const canvas = targetCanvas ?? (typeof document !== 'undefined' ? document.createElement('canvas') : null);
   if (!canvas) return null;

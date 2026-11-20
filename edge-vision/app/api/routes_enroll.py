@@ -106,6 +106,7 @@ async def verify_face(body: VerifyFaceRequest, request: Request) -> VerifyFaceRe
         feat["embedding"],
         yaw_deg=float(feat["yaw_deg"]),
         pitch_deg=float(feat["pitch_deg"]),
+        roll_deg=float(feat.get("roll_deg", 0.0)),
     )
     if match.id:
         coordinator.fsm.set_patient_matched(match, auto_start_calibration=True)

@@ -1694,12 +1694,15 @@ export function evaluateTripleGateNeuralCandidate(
   }
 
   const gate2 = evaluateAppearanceAndCraniofacialGate(probeRatios, candidate.geometricRatios);
+  // 1024-D ReLU6 unit vectors have theoretical max std <= 1/sqrt(1024) = 0.03125 (real faces ~0.012-0.022),
+  // whereas 512-D zero-mean vectors have max std = 0.0442. Use dimension-aware minimum variance floor.
+  const minVectorStd = probeNorm.length >= 1024 ? 0.008 : STRICT_MIN_VECTOR_STD;
   if (
     !gate2.patchAvailable &&
-    (masterMetrics.stdB < STRICT_MIN_VECTOR_STD || masterMetrics.stdA < STRICT_MIN_VECTOR_STD)
+    (masterMetrics.stdB < minVectorStd || masterMetrics.stdA < minVectorStd)
   ) {
     failureReasons.push(
-      `LOW_VARIANCE_VECTOR_REENROLL_REQUIRED (std=${Math.min(masterMetrics.stdA, masterMetrics.stdB).toFixed(4)} < ${STRICT_MIN_VECTOR_STD})`,
+      `LOW_VARIANCE_VECTOR_REENROLL_REQUIRED (std=${Math.min(masterMetrics.stdA, masterMetrics.stdB).toFixed(4)} < ${minVectorStd})`,
     );
   }
   if (!gate2.passed && gate2.failureReason) {
