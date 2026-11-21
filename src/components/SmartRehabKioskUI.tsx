@@ -46,6 +46,7 @@ import {
   computeJointAngle3D,
   evaluateActiveWristsLowered,
   formatRepScoredBannerTh,
+  parseExerciseCodeAndSide,
   resolveActiveExerciseSide,
   solveStrokeClinicalJointBiomechanics,
   stepStrokeHoldAndRepStateMachine,
@@ -129,6 +130,7 @@ import {
   type PatientSummary,
 } from '../hooks/useKioskSocket';
 import { isUpperBodyVisibleInFrame } from '../hooks/useEdgeVisionSocket';
+import { syncKioskSessionToAssessment } from '../lib/clinicalAssessmentStore';
 
 export {
   isUpperBodyVisibleInFrame,
@@ -148,7 +150,10 @@ interface SmartRehabKioskUIProps {
   isPoseTestMode?: boolean;
   initialExerciseCode?: string | null;
   onBackToAdminPortal?: () => void;
-  onExerciseCompleted?: (exercise: ExercisePrescriptionOption) => void;
+  onExerciseCompleted?: (
+    exercise: ExercisePrescriptionOption,
+    metrics?: { peakRomDeg?: number },
+  ) => void;
   onAllExercisesCompleted?: () => void;
   onEmergencyStop?: (info: { reason: string; patientId?: string; exerciseNameTh?: string }) => void;
   onOpenStaffPortal?: () => void;
@@ -2531,15 +2536,52 @@ export function SmartRehabKioskUI({
   const triggerBalanceEmergencyRef = useRef(handleEmergencyStopClick);
   triggerBalanceEmergencyRef.current = handleEmergencyStopClick;
 
+  const sessionPeakRomRef = useRef<number>(0);
+
+  useEffect(() => {
+    sessionPeakRomRef.current = 0;
+  }, [selectedExercise.exercise_id]);
+
+  if (
+    Number.isFinite(telemetry_analysis.current_rom_deg) &&
+    telemetry_analysis.current_rom_deg > sessionPeakRomRef.current
+  ) {
+    sessionPeakRomRef.current = telemetry_analysis.current_rom_deg;
+  }
+
+  const syncCompletedExerciseHistory = (completedRepsCount: number, peakRomDeg: number) => {
+    const pid = patient?.id ?? patientProp?.id;
+    if (isPoseTestMode || !pid) return;
+    const parsed = parseExerciseCodeAndSide(
+      selectedExercise.effective_code || selectedExercise.base_code || selectedExercise.exercise_id,
+      selectedExercise.prescribed_side,
+    );
+    const targetSide = parsed.side === 'LEFT' ? 'LEFT' : parsed.side === 'BOTH' ? 'BOTH' : 'RIGHT';
+    void syncKioskSessionToAssessment({
+      patientId: pid,
+      patientHn: patient?.hn ?? patientProp?.hn ?? '',
+      exerciseCode: parsed.baseCode,
+      exerciseNameTh: selectedExercise.name_th,
+      targetSide,
+      measuredRomDeg: peakRomDeg,
+      targetRomDeg: selectedExercise.target_rom_deg,
+      completedReps: completedRepsCount,
+    });
+  };
+
   const markCurrentExerciseCompleted = () => {
     completeCurrentExercise();
     if (!completedIds.includes(selectedExercise.exercise_id)) {
+      const peakRomDeg = Number(
+        Math.max(sessionPeakRomRef.current, telemetry_analysis.current_rom_deg || 0).toFixed(1),
+      );
       setCompletedIds((prev) =>
         prev.includes(selectedExercise.exercise_id)
           ? prev
           : [...prev, selectedExercise.exercise_id],
       );
-      onExerciseCompletedRef.current?.(selectedExercise);
+      onExerciseCompletedRef.current?.(selectedExercise, { peakRomDeg });
+      syncCompletedExerciseHistory(selectedExercise.target_reps, peakRomDeg);
     }
   };
 
@@ -2571,10 +2613,14 @@ export function SmartRehabKioskUI({
   useEffect(() => {
     if (rep_counter.valid_reps < selectedExercise.target_reps) return;
     if (completedIds.includes(selectedExercise.exercise_id)) return;
+    const peakRomDeg = Number(
+      Math.max(sessionPeakRomRef.current, telemetry_analysis.current_rom_deg || 0).toFixed(1),
+    );
     setCompletedIds((prev) =>
       prev.includes(selectedExercise.exercise_id) ? prev : [...prev, selectedExercise.exercise_id],
     );
-    onExerciseCompletedRef.current?.(selectedExercise);
+    onExerciseCompletedRef.current?.(selectedExercise, { peakRomDeg });
+    syncCompletedExerciseHistory(rep_counter.valid_reps, peakRomDeg);
   }, [rep_counter.valid_reps, selectedExercise, completedIds]);
 
   // Auto-advance to the next uncompleted exercise after completing one set (disabled in staff Pose Test sandbox)

@@ -39,6 +39,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  ClipboardList,
   Clock,
   FileText,
   Gamepad2,
@@ -73,6 +74,7 @@ import {
 } from 'lucide-react';
 import { PhysicalCardGame } from '../../apps/kiosk/src/PhysicalCardGame';
 import { POSE_TEST_PATIENT, buildAll15ClinicalExercisePrescriptions } from '../hooks/useKioskSocket';
+import { PatientClinicalRecordPanel } from './PatientClinicalRecordPanel';
 import { SmartRehabKioskUI } from './SmartRehabKioskUI';
 import { notifyBiometricIndexChanged } from '../lib/faceMatcher';
 import { removeProfileFromLocalBiometricVault } from '../lib/biometricEngine';
@@ -96,7 +98,7 @@ export interface ClinicalStaffPortalShellProps {
   onAutoOpenEnrollConsumed?: () => void;
 }
 
-type PortalTab = 'staff' | 'patients' | 'pts' | 'exercises' | 'schedules' | 'security' | 'profile';
+type PortalTab = 'staff' | 'patients' | 'assessments' | 'pts' | 'exercises' | 'schedules' | 'security' | 'profile';
 type SecuritySubTab = 'calls' | 'audit' | 'sessions' | 'bans' | 'kiosks';
 
 interface PortalSectionCopy {
@@ -284,6 +286,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
     nav: {
       staff: '1. จัดการผู้ใช้ staff',
       patients: '2. ข้อมูลคนไข้',
+      assessments: 'เวชระเบียนรายบุคคล (ประเมิน 0-6)',
       pts: '3. ข้อมูลนักกายภาพ',
       exercises: '4. ท่ากายภาพและมินิเกม/modpack',
       schedules: '5. ตารางนัด',
@@ -298,6 +301,10 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       patients: {
         title: 'ทะเบียนประวัติและเวชระเบียนคนไข้',
         subtitle: 'PATIENT DIRECTORY & ELECTRONIC HEALTH RECORDS',
+      },
+      assessments: {
+        title: 'เวชระเบียนรายบุคคลและเกณฑ์ประเมิน 0-6 คะแนน',
+        subtitle: 'LONGITUDINAL ROM PROGRESSION & CROSS-FACILITY CLINICAL ASSESSMENTS',
       },
       pts: {
         title: 'ข้อมูลนักกายภาพบำบัดและการกำกับดูแล',
@@ -500,6 +507,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
     nav: {
       staff: '1. Staff Management',
       patients: '2. Patients Directory',
+      assessments: 'Clinical Assessment (0-6)',
       pts: '3. PT Directory',
       exercises: '4. Exercises & Modpacks',
       schedules: '5. Rehab Schedules',
@@ -514,6 +522,10 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       patients: {
         title: 'Patients Directory & Medical Records',
         subtitle: 'PATIENT DIRECTORY & ELECTRONIC HEALTH RECORDS',
+      },
+      assessments: {
+        title: 'Individual Clinical Assessment (0-6 Scale) & ROM Tracking',
+        subtitle: 'LONGITUDINAL ROM PROGRESSION & CROSS-FACILITY CLINICAL ASSESSMENTS',
       },
       pts: {
         title: 'Physiotherapist Directory & Governance',
@@ -716,6 +728,7 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
     nav: {
       staff: '1. 医护人员管理',
       patients: '2. 患者档案目录',
+      assessments: '个人康复评估档案 (0-6分)',
       pts: '3. 康复师团队',
       exercises: '4. 康复动作与题库',
       schedules: '5. 康复日程安排',
@@ -730,6 +743,10 @@ const PORTAL_TEXT: Record<ClinicalLang, PortalSectionCopy> = {
       patients: {
         title: '患者电子健康档案目录',
         subtitle: 'PATIENT DIRECTORY & ELECTRONIC HEALTH RECORDS',
+      },
+      assessments: {
+        title: '个人临床康复评估档案 (0-6级) 与跨院区随访记录',
+        subtitle: 'LONGITUDINAL ROM PROGRESSION & CROSS-FACILITY CLINICAL ASSESSMENTS',
       },
       pts: {
         title: '物理治疗师名录与临床督导',
@@ -1312,6 +1329,7 @@ export function ClinicalStaffPortalShell({
   const isAdmin = isAdminUser;
 
   const [activeTab, setActiveTab] = useState<PortalTab>(() => initialTab ?? (isAdmin ? 'staff' : 'patients'));
+  const [selectedAssessmentPatientId, setSelectedAssessmentPatientId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const [profileOverrides, setProfileOverrides] = useState<Record<string, StoredStaffProfileOverride>>(
@@ -2460,6 +2478,7 @@ export function ClinicalStaffPortalShell({
               [
                 { id: 'staff', label: locale.nav.staff, icon: Users },
                 { id: 'patients', label: locale.nav.patients, icon: Activity },
+                { id: 'assessments', label: locale.nav.assessments, icon: ClipboardList },
                 { id: 'pts', label: locale.nav.pts, icon: UserCheck },
                 { id: 'exercises', label: locale.nav.exercises, icon: Gamepad2 },
                 { id: 'schedules', label: locale.nav.schedules, icon: Calendar, badge: scheduledBadgeCount || undefined },
@@ -3076,7 +3095,18 @@ export function ClinicalStaffPortalShell({
                             )}
                           </td>
                           <td className="px-5 py-3.5 text-right">
-                            <div className="inline-flex items-center justify-end gap-1.5">
+                            <div className="inline-flex flex-wrap items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedAssessmentPatientId(p.id);
+                                  setActiveTab('assessments');
+                                }}
+                                className="btn-tactile whitespace-nowrap inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
+                              >
+                                <ClipboardList className="h-3.5 w-3.5 shrink-0" />
+                                <span>เปิดแฟ้มประวัติและประเมินผล</span>
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => setPatientModalState({ patient: p, tab: 'profile' })}
@@ -3144,6 +3174,18 @@ export function ClinicalStaffPortalShell({
                 </table>
               </div>
             </div>
+          )}
+
+          {/* TAB 2B: INDIVIDUAL CLINICAL ASSESSMENT (0-6) & LONGITUDINAL ROM RECORD */}
+          {activeTab === 'assessments' && (
+            <PatientClinicalRecordPanel
+              patients={patients}
+              sessions={sessions}
+              currentUser={currentUser}
+              selectedPatientId={selectedAssessmentPatientId}
+              onSelectPatientId={setSelectedAssessmentPatientId}
+              onOpenUniversalEhrModal={(pat) => setEhrLinkPatient(pat)}
+            />
           )}
 
           {/* TAB 3: PT DIRECTORY */}

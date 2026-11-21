@@ -821,7 +821,10 @@ export function App() {
       setTrainingStage('rehab_exercises');
     };
 
-    const handleExerciseCompleted = async (ex: ExercisePrescriptionOption) => {
+    const handleExerciseCompleted = async (
+      ex: ExercisePrescriptionOption,
+      metrics?: { peakRomDeg?: number },
+    ) => {
       if (!authenticatedPatient || !overviewScheduleState) return;
       const nextIds = completedTodayExerciseIds.includes(ex.exercise_id)
         ? completedTodayExerciseIds
@@ -832,6 +835,10 @@ export function App() {
       if (allDoneNow) {
         markDailyRehabDone();
       }
+      const peakRom =
+        metrics?.peakRomDeg && metrics.peakRomDeg > 0
+          ? Number(metrics.peakRomDeg.toFixed(1))
+          : ex.target_rom_deg;
       try {
         await apiClient.recordRehabSession({
           patientId: authenticatedPatient.patient.id,
@@ -841,7 +848,7 @@ export function App() {
           completedSets: ex.target_sets ?? 1,
           completedReps: ex.target_reps,
           accuracyPercent: 100,
-          maxRomDeg: ex.target_rom_deg,
+          maxRomDeg: peakRom,
           painStopTriggered: false,
           aiFeedback: `Completed prescribed ${ex.name_th} (${ex.target_reps} reps)`,
           kinematicsReplay: [],
