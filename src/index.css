@@ -9,6 +9,10 @@
 }
 
 @layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
   body {
     font-family: 'Inter', 'IBM Plex Sans Thai', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
     line-height: 1.5;
@@ -57,15 +61,15 @@
 @keyframes cardPopIn {
   0% {
     opacity: 0;
-    transform: translateY(12px) scale(0.96);
+    transform: translate3d(0, 12px, 0) scale(0.96);
   }
   70% {
     opacity: 1;
-    transform: translateY(-2px) scale(1.01);
+    transform: translate3d(0, -2px, 0) scale(1.01);
   }
   100% {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translate3d(0, 0, 0) scale(1);
   }
 }
 
@@ -117,11 +121,36 @@
 @keyframes viewSlideFadeIn {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translate3d(0, 12px, 0) scale(0.992);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes panelSwitchIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes drtechClickRipple {
+  0% {
+    opacity: 0.44;
+    transform: translate3d(-50%, -50%, 0) scale(0.08);
+  }
+  65% {
+    opacity: 0.22;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(-50%, -50%, 0) scale(1);
   }
 }
 
@@ -164,7 +193,8 @@
 }
 
 .animate-card-enter {
-  animation: cardPopIn 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: cardPopIn 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
 }
 
 .animate-calendar-month {
@@ -176,7 +206,7 @@
 }
 
 .animate-backdrop-fade {
-  animation: backdropFadeIn 200ms ease-out forwards;
+  animation: backdropFadeIn 220ms ease-out forwards;
 }
 
 .animate-rep-pop {
@@ -184,8 +214,83 @@
 }
 
 .animate-view-enter {
-  animation: viewSlideFadeIn 260ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: viewSlideFadeIn 300ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: transform, opacity;
 }
+
+.animate-panel-switch {
+  animation: panelSwitchIn 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+
+#drtech-motion-ripple-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  overflow: hidden;
+}
+
+.drtech-ripple-clip {
+  position: fixed;
+  pointer-events: none;
+  overflow: hidden;
+  will-change: opacity;
+}
+
+.drtech-click-ripple {
+  position: absolute;
+  border-radius: 9999px;
+  pointer-events: none;
+  will-change: transform, opacity;
+  animation: drtechClickRipple 520ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.btn-primary-sheen {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.btn-primary-sheen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    110deg,
+    transparent 22%,
+    rgba(255, 255, 255, 0.34) 50%,
+    transparent 78%
+  );
+  transform: translate3d(-130%, 0, 0);
+  transition: transform 620ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (hover: hover) {
+  .btn-primary-sheen:not(:disabled):hover::after,
+  .btn-primary-sheen:not(:disabled):focus-visible::after {
+    transform: translate3d(130%, 0, 0);
+  }
+}
+
+.animate-stagger-children > * {
+  animation: cardPopIn 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+
+.animate-stagger-children > *:nth-child(1) { animation-delay: 0ms; }
+.animate-stagger-children > *:nth-child(2) { animation-delay: 35ms; }
+.animate-stagger-children > *:nth-child(3) { animation-delay: 70ms; }
+.animate-stagger-children > *:nth-child(4) { animation-delay: 105ms; }
+.animate-stagger-children > *:nth-child(5) { animation-delay: 140ms; }
+.animate-stagger-children > *:nth-child(6) { animation-delay: 175ms; }
+.animate-stagger-children > *:nth-child(7) { animation-delay: 210ms; }
+.animate-stagger-children > *:nth-child(8) { animation-delay: 245ms; }
+.animate-stagger-children > *:nth-child(9) { animation-delay: 280ms; }
+.animate-stagger-children > *:nth-child(10) { animation-delay: 315ms; }
+.animate-stagger-children > *:nth-child(11) { animation-delay: 350ms; }
+.animate-stagger-children > *:nth-child(12) { animation-delay: 385ms; }
 
 .animate-toast-in {
   animation: toastSlideDown 240ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
@@ -462,14 +567,47 @@
 }
 
 .card-hover-lift {
-  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 200ms ease, border-color 200ms ease, background-color 180ms ease;
+  transition:
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 240ms ease,
+    border-color 200ms ease,
+    background-color 200ms ease;
+  will-change: transform;
 }
 
 @media (hover: hover) {
   .card-hover-lift:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 10px 24px -10px rgba(15, 76, 129, 0.14);
+    transform: translate3d(0, -3px, 0);
+    box-shadow: 0 14px 28px -12px rgba(15, 76, 129, 0.18);
   }
+}
+
+/* Global unlayered GPU spring transitions so Tailwind utility `transition-colors` / `transition` cannot kill transform springs */
+button:not(:disabled):not([data-no-lift="true"]),
+.btn-tactile:not(:disabled),
+[role="button"]:not([aria-disabled="true"]):not([data-no-lift="true"]),
+a[href]:not([data-no-lift="true"]) {
+  transition-property: transform, box-shadow, background-color, border-color, color, opacity, filter;
+  transition-duration: 240ms;
+  transition-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@media (hover: hover) {
+  button:not(:disabled):not([data-no-lift="true"]):hover,
+  .btn-tactile:not(:disabled):hover,
+  [role="button"]:not([aria-disabled="true"]):not([data-no-lift="true"]):hover,
+  a[href]:not([data-no-lift="true"]):hover {
+    transform: translate3d(0, -2px, 0) scale(1.012);
+  }
+}
+
+button:not(:disabled):not([data-no-lift="true"]):active,
+.btn-tactile:not(:disabled):active,
+[role="button"]:not([aria-disabled="true"]):not([data-no-lift="true"]):active,
+a[href]:not([data-no-lift="true"]):active {
+  transition-duration: 95ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  transform: translate3d(0, 0.5px, 0) scale(0.955);
 }
 
 .calendar-day-tile {
@@ -478,41 +616,25 @@
 
 @media (hover: hover) {
   .calendar-day-tile:not(:disabled):hover {
-    transform: translateY(-3px) scale(1.015);
+    transform: translate3d(0, -3px, 0) scale(1.015);
     box-shadow: 0 10px 22px -10px rgba(16, 185, 129, 0.32);
   }
 }
 
 .calendar-day-tile:not(:disabled):active {
-  transform: scale(0.95) translateY(0);
+  transition-duration: 95ms;
+  transform: translate3d(0, 0, 0) scale(0.95);
 }
 
 @layer base {
-  button:not(:disabled),
-  .btn-tactile:not(:disabled) {
-    transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease, background-color 180ms ease, border-color 180ms ease;
-  }
-
-  @media (hover: hover) {
-    button:not(:disabled):hover,
-    .btn-tactile:not(:disabled):hover {
-      transform: translateY(-2px);
-    }
-  }
-
-  button:not(:disabled):active,
-  .btn-tactile:not(:disabled):active {
-    transform: scale(0.95) translateY(0);
-  }
-
   input,
   select,
   textarea {
-    transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+    transition: border-color 200ms ease, box-shadow 200ms ease, background-color 200ms ease;
   }
 
   tbody tr {
-    transition: background-color 160ms ease;
+    transition: background-color 180ms ease;
   }
 }
 
@@ -652,52 +774,39 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .animate-popup-spring,
-  .animate-card-enter,
-  .animate-calendar-month,
   .animate-float-gentle,
-  .animate-backdrop-fade,
-  .animate-rep-pop,
-  .animate-view-enter,
-  .animate-toast-in,
-  .animate-gentle-shake,
   .animate-status-halo,
-  .animate-circle-pop,
-  .animate-svg-circle,
-  .animate-svg-check,
-  .animate-svg-cross-1,
-  .animate-svg-cross-2,
+  .animate-gentle-shake,
+  .animate-error-shake,
   .animate-auth-cursor,
-  .animate-kinetic-dot-bounce,
-  .animate-kinetic-check,
-  .animate-kinetic-cross-1,
-  .animate-kinetic-cross-2,
-  .animate-kinetic-tip-dot,
   .animate-kinetic-tip-spark,
-  .animate-kinetic-ring,
-  .animate-kinetic-orbit,
-  .animate-kinetic-closure-spark,
-  .animate-error-shake {
+  .animate-kinetic-closure-spark {
     animation: none !important;
   }
 
-  .animate-svg-circle,
-  .animate-svg-check,
-  .animate-svg-cross-1,
-  .animate-svg-cross-2,
-  .animate-kinetic-check,
-  .animate-kinetic-cross-1,
-  .animate-kinetic-cross-2,
-  .animate-kinetic-ring {
-    stroke-dashoffset: 0 !important;
+  .animate-popup-spring,
+  .animate-card-enter,
+  .animate-calendar-month,
+  .animate-backdrop-fade,
+  .animate-view-enter,
+  .animate-panel-switch,
+  .animate-toast-in,
+  .animate-stagger-children > * {
+    animation-duration: 180ms !important;
   }
 
-  button:not(:disabled),
+  button:not(:disabled):not([data-no-lift="true"]),
   .btn-tactile:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]):not([data-no-lift="true"]),
+  a[href]:not([data-no-lift="true"]),
   .card-hover-lift,
   .calendar-day-tile {
-    transition: background-color 120ms ease, border-color 120ms ease !important;
-    transform: none !important;
+    transition: transform 150ms cubic-bezier(0.22, 1, 0.36, 1), background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+  }
+
+  button:not(:disabled):not([data-no-lift="true"]):active,
+  .btn-tactile:not(:disabled):active {
+    transform: scale(0.97);
   }
 }
 

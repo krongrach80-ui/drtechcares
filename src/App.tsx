@@ -875,7 +875,10 @@ export function App() {
     if (isPoseTestMode) {
       const poseTestPrescriptions = buildAll15ClinicalExercisePrescriptions(kioskExercises);
       return (
-        <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
+        <div
+          key="kiosk-pose-test"
+          className="animate-view-enter min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col"
+        >
           <SmartRehabKioskUI
             isPoseTestMode
             initialExerciseCode={poseTestInitialExerciseCode}
@@ -901,7 +904,10 @@ export function App() {
 
     if (kioskMode === 'classic') {
       return (
-        <div className="min-h-screen bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] p-4">
+        <div
+          key="kiosk-classic"
+          className="animate-view-enter min-h-screen bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] p-4"
+        >
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <button
               type="button"
@@ -960,7 +966,10 @@ export function App() {
         })
       ) {
         return (
-          <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
+          <div
+            key="kiosk-completed-today"
+            className="animate-view-enter min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col"
+          >
             <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm border-b border-white/20">
               <div className="flex items-center gap-2 font-bold">
                 <span className="px-2.5 py-0.5 rounded-full bg-emerald-400/25 border border-emerald-200/40 text-white">
@@ -1008,11 +1017,11 @@ export function App() {
                 </p>
 
                 {todayExercises.length > 0 && (
-                  <div className="mt-6 space-y-2.5 text-left max-h-60 overflow-y-auto pr-1">
+                  <div className="mt-6 space-y-2.5 text-left max-h-60 overflow-y-auto pr-1 animate-stagger-children">
                     {todayExercises.map((item, idx) => (
                       <div
                         key={item.id}
-                        className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 flex items-center justify-between gap-3"
+                        className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 flex items-center justify-between gap-3 card-hover-lift"
                       >
                         <div className="flex items-center gap-3 min-w-0">
                           <span className="shrink-0 w-7 h-7 rounded-full bg-emerald-600 text-white text-xs font-black flex items-center justify-center">
@@ -1039,7 +1048,7 @@ export function App() {
                   <button
                     type="button"
                     onClick={handleExitToLogin}
-                    className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#10B981] hover:opacity-95 text-white font-black text-sm sm:text-base shadow-lg cursor-pointer transition"
+                    className="btn-primary-sheen w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#10B981] hover:opacity-95 text-white font-black text-sm sm:text-base shadow-lg cursor-pointer transition"
                   >
                     {kc.backToLogin}
                   </button>
@@ -1063,7 +1072,10 @@ export function App() {
 
       if (!hasAppointmentToday && !allowRestDayPractice && !bypassDailyLimit) {
         return (
-          <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
+          <div
+            key="kiosk-rest-day"
+            className="animate-view-enter min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col"
+          >
             <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm border-b border-white/20">
               <div className="flex items-center gap-2 font-bold">
                 <span className="px-2.5 py-0.5 rounded-full bg-white/20 text-white border border-white/25">
@@ -1111,7 +1123,7 @@ export function App() {
                   <button
                     type="button"
                     onClick={handleExitToLogin}
-                    className="w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg cursor-pointer"
+                    className="btn-primary-sheen w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg cursor-pointer"
                   >
                     {kc.backToLogin}
                   </button>
@@ -1134,7 +1146,10 @@ export function App() {
 
       if (trainingStage === 'overview') {
         return (
-          <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
+          <div
+            key="kiosk-overview"
+            className="animate-view-enter min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col"
+          >
             <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm border-b border-white/20">
               <div className="flex items-center gap-2 font-bold">
                 <span className="px-2.5 py-0.5 rounded-full bg-emerald-400/25 border border-emerald-200/40 text-white">
@@ -1217,11 +1232,11 @@ export function App() {
                   </button>
                 </div>
 
-                <div className="mt-5 space-y-2.5 text-left max-h-72 overflow-y-auto pr-1">
+                <div className="mt-5 space-y-2.5 text-left max-h-72 overflow-y-auto pr-1 animate-stagger-children">
                   {todayExercises.map((item, idx) => (
                     <div
                       key={item.id}
-                      className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 flex items-center justify-between gap-3"
+                      className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 flex items-center justify-between gap-3 card-hover-lift"
                     >
                       <div className="flex items-start gap-3 min-w-0">
                         <span className="shrink-0 w-7 h-7 rounded-full bg-emerald-600 text-white text-xs font-black flex items-center justify-center mt-0.5">
@@ -1282,7 +1297,10 @@ export function App() {
 
       if (trainingStage === 'rehab_exercises') {
         return (
-          <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
+          <div
+            key="kiosk-rehab-exercises"
+            className="animate-view-enter min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col"
+          >
             <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-2.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm border-b border-white/20">
               <div className="flex flex-wrap items-center gap-2 font-bold">
                 <span className="px-2.5 py-0.5 rounded-full bg-white/20 border border-white/25 text-white">
@@ -1349,7 +1367,10 @@ export function App() {
       }
 
       return (
-        <div className="min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col">
+        <div
+          key="kiosk-minigame"
+          className="animate-view-enter min-h-screen w-full bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC] flex flex-col"
+        >
           <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-1.5 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-xs border-b border-white/20">
             <div className="flex items-center gap-2 font-bold">
               <span className="px-2 py-0.5 rounded-full bg-white/20 border border-white/25 text-white">
@@ -1407,7 +1428,10 @@ export function App() {
 
     if (kioskMode === 'rehab') {
       return (
-        <div className="relative min-h-screen bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC]">
+        <div
+          key="kiosk-rehab"
+          className="animate-view-enter relative min-h-screen bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-[#F8FAFC]"
+        >
           <div className="bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] px-4 py-2 text-white flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm">
             <div className="flex items-center gap-2 font-bold">
               <span className="px-2 py-0.5 rounded-full bg-white/20 text-white">AI Kiosk Session</span>
@@ -1531,7 +1555,7 @@ export function App() {
 
   if (!authChecked) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-100 text-sm font-bold text-slate-600">
+      <div className="animate-view-enter min-h-screen flex items-center justify-center bg-slate-100 text-sm font-bold text-slate-600">
         กำลังตรวจสอบสิทธิ์การเข้าใช้งาน...
       </div>
     );
@@ -1568,7 +1592,7 @@ export function App() {
   if (route === '/admin') {
     if (currentUser.role !== 'super_admin') {
       return (
-        <div className="min-h-screen flex flex-col items-center justify-center bg-rose-50 p-6 text-center">
+        <div className="animate-view-enter min-h-screen flex flex-col items-center justify-center bg-rose-50 p-6 text-center">
           <h1 className="text-3xl font-black text-rose-900">403 Forbidden</h1>
           <p className="mt-2 text-sm text-rose-700">เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) เท่านั้นที่เข้าถึงหน้านี้ได้</p>
           <button
@@ -1607,7 +1631,7 @@ export function App() {
   if (route === '/pt') {
     if (currentUser.role !== 'pt' && currentUser.role !== 'super_admin') {
       return (
-        <div className="min-h-screen flex flex-col items-center justify-center bg-rose-50 p-6 text-center gap-4">
+        <div className="animate-view-enter min-h-screen flex flex-col items-center justify-center bg-rose-50 p-6 text-center gap-4">
           <h1 className="text-3xl font-black text-rose-900">403 Forbidden</h1>
           <p className="text-sm text-rose-700">ไม่มีสิทธิ์เข้าถึงพอร์ทัลนักกายภาพบำบัด</p>
           <div className="flex flex-wrap items-center justify-center gap-2">
@@ -1655,7 +1679,7 @@ export function App() {
 
   if (route === '/patient' && currentUser.role !== 'patient') {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-sky-50 p-6 text-center gap-3">
+      <div className="animate-view-enter min-h-screen flex flex-col items-center justify-center bg-sky-50 p-6 text-center gap-3">
         <h1 className="text-2xl font-black text-[#0F4C81]">หน้าพอร์ทัลผู้ป่วย (Patient Portal)</h1>
         <p className="text-sm text-slate-600">
           บัญชีปัจจุบันของคุณคือสิทธิ์บุคลากร ({currentUser.role}) กรุณาเข้าใช้งานผ่านพอร์ทัลบุคลากร
@@ -1672,7 +1696,7 @@ export function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100">
+    <div className="animate-view-enter min-h-screen bg-slate-100">
       <PatientPersonalPortal apiClient={apiClient} currentUser={currentUser} onLogout={handleLogout} />
     </div>
   );

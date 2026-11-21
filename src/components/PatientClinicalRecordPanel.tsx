@@ -1004,7 +1004,7 @@ export function PatientClinicalRecordPanel({
                   return (
                     <div
                       key={record.id}
-                      className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 space-y-2 hover:border-sky-300 transition-colors"
+                      className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 space-y-2 hover:border-sky-300 transition-colors card-hover-lift animate-card-enter"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex flex-wrap items-center gap-2">

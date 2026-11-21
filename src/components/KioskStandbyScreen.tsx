@@ -398,6 +398,8 @@ export function KioskStandbyView({
   return (
     <div
       data-testid="kiosk-standby-screen"
+      data-no-ripple="true"
+      data-no-lift="true"
       onClick={(e) => onWake(e)}
       aria-label={copy.ariaWake}
       className={`animate-view-enter standby-gpu-layer min-h-screen w-full relative overflow-hidden flex flex-col items-center justify-between px-6 py-10 sm:py-12 select-none cursor-pointer text-white transition-all duration-250 ease-out ${

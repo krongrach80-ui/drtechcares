@@ -441,7 +441,7 @@ export function DynamicExerciseSessionView({
   };
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4">
+    <div className="mx-auto max-w-6xl space-y-4 animate-view-enter">
       {/* Top Clinical Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl bg-white p-4 shadow border border-slate-200">
         <div>

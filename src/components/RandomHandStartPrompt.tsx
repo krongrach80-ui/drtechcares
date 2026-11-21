@@ -487,7 +487,7 @@ export function RandomHandStartPrompt({
       <button
         type="button"
         onClick={handleManualConfirm}
-        className={`relative overflow-hidden w-full py-3.5 px-5 rounded-2xl text-white font-extrabold text-sm shadow-lg cursor-pointer transition-colors ${
+        className={`btn-primary-sheen relative overflow-hidden w-full py-3.5 px-5 rounded-2xl text-white font-extrabold text-sm shadow-lg cursor-pointer transition-colors ${
           isLeft
             ? 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-400 hover:to-amber-400'
             : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500'

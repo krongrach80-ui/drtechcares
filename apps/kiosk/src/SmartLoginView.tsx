@@ -249,7 +249,7 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
   };
 
   return (
-    <div className="mx-auto max-w-4xl rounded-3xl bg-white p-6 shadow-xl border border-slate-200">
+    <div className="mx-auto max-w-4xl rounded-3xl bg-white p-6 shadow-xl border border-slate-200 animate-view-enter">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4">
         <div className="min-w-0">
           <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">

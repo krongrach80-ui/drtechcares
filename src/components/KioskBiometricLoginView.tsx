@@ -267,7 +267,7 @@ export function UnregisteredFaceSignupPopup({
             type="button"
             data-testid="unregistered-signup-btn"
             onClick={onRegisterNewPatient}
-            className="btn-tactile bg-emerald-600 hover:bg-emerald-700 text-white font-black text-lg md:text-xl px-6 py-4 rounded-2xl shadow-lg flex-1 inline-flex items-center justify-center gap-2.5 cursor-pointer"
+            className="btn-tactile btn-primary-sheen bg-emerald-600 hover:bg-emerald-700 text-white font-black text-lg md:text-xl px-6 py-4 rounded-2xl shadow-lg flex-1 inline-flex items-center justify-center gap-2.5 cursor-pointer"
           >
             <UserPlus className="w-6 h-6 shrink-0" />
             <span>สมัครบัญชี / ลงทะเบียนคนไข้ใหม่</span>
@@ -4197,7 +4197,7 @@ export function KioskBiometricLoginView({
               id="header-open-new-patient-btn"
               data-testid="header-open-new-patient-btn"
               onClick={onOpenStaffRegister}
-              className="h-10 w-full inline-flex items-center justify-center gap-2 px-3 rounded-xl bg-white hover:bg-emerald-50 text-[#0F4C81] text-xs sm:text-sm font-bold whitespace-nowrap active:scale-[0.99] transition shadow-sm cursor-pointer"
+              className="btn-primary-sheen h-10 w-full inline-flex items-center justify-center gap-2 px-3 rounded-xl bg-white hover:bg-emerald-50 text-[#0F4C81] text-xs sm:text-sm font-bold whitespace-nowrap active:scale-[0.99] transition shadow-sm cursor-pointer"
             >
               <UserPlus className="w-4 h-4 shrink-0 text-emerald-600" />
               <span>{c.registerNewPatient}</span>

@@ -2585,7 +2585,7 @@ export function ClinicalStaffPortalShell({
             type="button"
             onClick={() => handleLaunchPoseTest()}
             data-testid="sidebar-pose-test-btn"
-            className="w-full h-10 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-400 hover:to-teal-400 px-3 font-extrabold shadow-md border border-white/25 whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer transition"
+            className="btn-primary-sheen w-full h-10 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-400 hover:to-teal-400 px-3 font-extrabold shadow-md border border-white/25 whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer transition"
           >
             <Activity className="h-4 w-4 shrink-0" />
             {!sidebarCollapsed && <span className="truncate">ทดลองท่าทางกายภาพ (15 ท่า)</span>}
@@ -3221,7 +3221,7 @@ export function ClinicalStaffPortalShell({
                 />
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-stagger-children">
                 {filteredPts.map((pt) => {
                   const ptProfile = resolveUserProfile(pt, profileOverrides);
                   const ptPatients = patients.filter(
@@ -3362,7 +3362,7 @@ export function ClinicalStaffPortalShell({
                   <button
                     type="button"
                     onClick={() => setCardGameModalOpen(true)}
-                    className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-2 shrink-0 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
+                    className="btn-primary-sheen whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-2 shrink-0 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
                   >
                     <Gamepad2 className="h-4 w-4 shrink-0" />
                     {locale.exercises.playCardBtn}
@@ -3424,7 +3424,7 @@ export function ClinicalStaffPortalShell({
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-stagger-children">
                 {/* Cognitive Modpacks */}
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
                   <h3 className="text-sm font-extrabold text-slate-900">
@@ -3959,7 +3959,7 @@ export function ClinicalStaffPortalShell({
               <div key={scheduleSubTab} className="animate-view-enter space-y-4">
               {scheduleSubTab === 'individual' ? (
                 <>
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 animate-stagger-children">
                     <div className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2 card-hover-lift animate-card-enter">
                       <div className="min-w-0">
                         <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statTotal}</div>

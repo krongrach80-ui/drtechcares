@@ -118,7 +118,7 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
 
   if (cameraActive && patient) {
     return (
-      <div className="mx-auto max-w-6xl p-4">
+      <div className="mx-auto max-w-6xl p-4 animate-view-enter">
         <DynamicExerciseSessionView
           patient={patient}
           exercise={prescribedExercise}
@@ -165,7 +165,7 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 animate-stagger-children">
         {/* ข้อมูลส่วนตัว & เปลี่ยนรหัสผ่าน */}
         <div className="rounded-3xl bg-white p-6 shadow-md border border-slate-200 space-y-4 card-hover-lift animate-card-enter">
           <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
@@ -252,7 +252,7 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
                     if (mountedRef.current) setSavingPw(false);
                   }
                 }}
-                className="rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] px-3 py-2 text-xs font-bold text-white disabled:opacity-50"
+                className="btn-primary-sheen rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] px-3 py-2 text-xs font-bold text-white disabled:opacity-50"
               >
                 {savingPw ? 'กำลังเปลี่ยน...' : 'เปลี่ยนรหัส'}
               </button>

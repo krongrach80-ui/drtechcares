@@ -259,8 +259,8 @@ export function SmartEnrollmentView({
   };
 
   return (
-    <form onSubmit={handleSaveEnrollment} className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-      <div className="rounded-3xl bg-white p-6 shadow-md border border-slate-200 space-y-4">
+    <form onSubmit={handleSaveEnrollment} className="grid grid-cols-1 gap-6 lg:grid-cols-2 animate-view-enter">
+      <div className="rounded-3xl bg-white p-6 shadow-md border border-slate-200 space-y-4 card-hover-lift animate-card-enter">
         <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
           <UserPlus className="h-5 w-5 text-teal-600" />
           ลงทะเบียนคนไข้ใหม่ + สแกนใบหน้า 10 เฟรม (กล้องจริงเท่านั้น)

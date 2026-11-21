@@ -372,7 +372,7 @@ export function StaffLoginModalOrPage({
 
   const wrapperClass = asModal
     ? 'fixed inset-0 z-[70] flex items-center justify-center p-2 sm:p-4 bg-[#0F4C81]/35 backdrop-blur-md animate-backdrop-fade'
-    : 'min-h-screen flex items-center justify-center p-2 sm:p-4 bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-white';
+    : 'animate-view-enter min-h-screen flex items-center justify-center p-2 sm:p-4 bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-white';
 
   return (
     <div
@@ -415,7 +415,10 @@ export function StaffLoginModalOrPage({
 
         {/* Header Section */}
         <div className="pt-6 sm:pt-9 pb-3 px-6 sm:px-10 text-center flex flex-col items-center">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-white shadow-xl shadow-emerald-950/20 mb-3.5">
+          <div
+            key={mode}
+            className="animate-card-enter w-16 h-16 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-white shadow-xl shadow-emerald-950/20 mb-3.5"
+          >
             {mode === 'register' ? <UserPlus className="w-8 h-8" /> : <Shield className="w-8 h-8" />}
           </div>
 
@@ -514,7 +517,7 @@ export function StaffLoginModalOrPage({
             )}
 
             {/* Form Body */}
-            <form onSubmit={handleSubmit} className="p-6 sm:p-10 sm:pt-5 space-y-4">
+            <form key={mode} onSubmit={handleSubmit} className="p-6 sm:p-10 sm:pt-5 space-y-4 animate-panel-switch">
           {mode === 'register' && (
             <>
               <div>
@@ -739,7 +742,7 @@ export function StaffLoginModalOrPage({
             data-testid="staff-login-submit-btn"
             type="submit"
             disabled={isCheckingOrSuccess}
-            className="w-full h-13 py-3.5 px-6 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 active:scale-[0.98] text-white font-bold text-base sm:text-lg shadow-lg shadow-emerald-950/20 transition flex items-center justify-center gap-2.5 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+            className="btn-primary-sheen w-full h-13 py-3.5 px-6 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 active:scale-[0.98] text-white font-bold text-base sm:text-lg shadow-lg shadow-emerald-950/20 transition flex items-center justify-center gap-2.5 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {isCheckingOrSuccess ? (
               <>
