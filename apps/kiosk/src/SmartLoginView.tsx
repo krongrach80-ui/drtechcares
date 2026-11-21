@@ -198,13 +198,30 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
                         const verifyRes = await apiClient.verifyFaceLogin(probe);
                         if (!active) return;
                         if (verifyRes.matched && verifyRes.patientId) {
-                          const patients = await apiClient.listPatients();
-                          if (!active) return;
-                          const found = patients.find((p) => p.id === verifyRes.patientId);
-                          if (found) {
-                            onAuthenticated(found);
-                            return;
-                          }
+                          const matchedPat = verifyRes.patient;
+                          const found: PatientRecord = {
+                            id: matchedPat?.id ?? verifyRes.patientId,
+                            hn: matchedPat?.hn ?? verifyRes.patientId,
+                            fullName: matchedPat?.fullName ?? verifyRes.patientName ?? 'ผู้ป่วย',
+                            age: 65,
+                            phone: '',
+                            diagnosis: 'กำลังฟื้นฟูสมรรถภาพ',
+                            assignedPtId: 'user-pt-1',
+                            delegatedToPtId: null,
+                            delegationNote: null,
+                            nextAppointmentDate: matchedPat?.nextAppointmentDate ?? '',
+                            registrationStatus: 'active',
+                            enrolledAt: new Date().toISOString(),
+                            strokeType: matchedPat?.strokeType,
+                            affectedSide: matchedPat?.affectedSide,
+                            motorAssessmentScore: matchedPat?.motorAssessmentScore,
+                            adlDressingScore: matchedPat?.adlDressingScore,
+                            maxSafeRomDeg: matchedPat?.maxSafeRomDeg,
+                            universalHealthLinkCode: matchedPat?.universalHealthLinkCode,
+                            rehabSchedules: verifyRes.rehabSchedules,
+                          };
+                          onAuthenticated(found);
+                          return;
                         }
                         // NOT_FOUND_CONFIRM_ROUNDS = 1 -> pause camera & show modal immediately
                         const miss = loginCtrlRef.current.recordUnmatchedRound();

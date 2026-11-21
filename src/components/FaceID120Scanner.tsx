@@ -11,7 +11,8 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
+import { FaceLandmarker } from '@mediapipe/tasks-vision';
+import { getCachedVisionResolver } from '../lib/biometricVisionCache';
 import {
   alignFaceTo112,
   computeHeadZoneRoiFromFaceBox,
@@ -1312,119 +1313,133 @@ export default function FaceID120Scanner({
     setSubCueText(copy.computingSub);
 
     const run = async (): Promise<FaceID120Result | null> => {
-      const samples = [...samplesRef.current];
-      if (unmountedRef.current) return null;
+      try {
+        const samples = [...samplesRef.current];
+        if (unmountedRef.current) return null;
 
-      const profile = buildBiometricProfileFromSamples(samples, {
-        hn,
-        fullName: patientName,
-      });
-      if (!profile) {
+        const profile = buildBiometricProfileFromSamples(samples, {
+          hn,
+          fullName: patientName,
+        });
+        if (!profile) {
+          completedRef.current = false;
+          finalizePromiseRef.current = null;
+          if (!unmountedRef.current) {
+            setPhase('scanning');
+            setCameraError('ไม่สามารถสร้างโปรไฟล์ใบหน้าจากภาพที่เก็บได้ กรุณาสแกนใหม่อีกครั้ง');
+          }
+          return null;
+        }
+
+        const masterEmbedding = profile.master_embedding;
+        const angleEmbeddings = profile.angle_embeddings;
+        const exemplarEmbeddings = profile.exemplar_embeddings;
+
+        const centerRatios = samples
+          .filter((s) => s.bucket === 'center' && s.geometricRatios)
+          .map((s) => s.geometricRatios!);
+        const fallbackRatios = samples
+          .filter((s) => s.geometricRatios)
+          .map((s) => s.geometricRatios!);
+        const ratioPool = centerRatios.length >= 3 ? centerRatios : fallbackRatios;
+        const r12Pool = ratioPool
+          .map((r) => r.craniofacialRatios12)
+          .filter((arr): arr is number[] => Array.isArray(arr) && arr.length === 12);
+        const avgCranio12 =
+          r12Pool.length > 0
+            ? Array.from({ length: 12 }, (_, idx) =>
+                Number((r12Pool.reduce((acc, a) => acc + a[idx], 0) / r12Pool.length).toFixed(4)),
+              )
+            : undefined;
+        const centerPatch384 = profile.geometricRatios?.appearancePatch384;
+        const centerOcularPatch256 = profile.geometricRatios?.ocularIrisPatch256;
+        const centerIrisRatios8 = profile.geometricRatios?.irisOcularRatios8;
+        const geometricRatios: GeometricAnthropometricRatios | undefined =
+          ratioPool.length > 0 || centerPatch384 || centerOcularPatch256 || centerIrisRatios8
+            ? {
+                eyeToNoseRatio:
+                  ratioPool.length > 0
+                    ? Number((ratioPool.reduce((acc, r) => acc + r.eyeToNoseRatio, 0) / ratioPool.length).toFixed(4))
+                    : 1,
+                faceWidthToUpperHeight:
+                  ratioPool.length > 0
+                    ? Number((ratioPool.reduce((acc, r) => acc + r.faceWidthToUpperHeight, 0) / ratioPool.length).toFixed(4))
+                    : 1,
+                mouthToEyeRatio:
+                  ratioPool.length > 0
+                    ? Number((ratioPool.reduce((acc, r) => acc + r.mouthToEyeRatio, 0) / ratioPool.length).toFixed(4))
+                    : 1,
+                noseToChinRatio:
+                  ratioPool.length > 0
+                    ? Number((ratioPool.reduce((acc, r) => acc + r.noseToChinRatio, 0) / ratioPool.length).toFixed(4))
+                    : 1,
+                ...(centerPatch384 ? { appearancePatch384: centerPatch384 } : {}),
+                ...(avgCranio12 ? { craniofacialRatios12: avgCranio12 } : {}),
+                ...(centerOcularPatch256 ? { ocularIrisPatch256: centerOcularPatch256 } : {}),
+                ...(centerIrisRatios8 ? { irisOcularRatios8: centerIrisRatios8 } : {}),
+              }
+            : undefined;
+
+        const meanSharpness =
+          samples.length > 0
+            ? samples.reduce((acc, s) => acc + s.sharpness, 0) / samples.length
+            : 60;
+        const diversityCount = (Object.keys(bucketCountsRef.current) as Bucket5Key[]).filter(
+          (k) => bucketCountsRef.current[k] > 0,
+        ).length;
+        const qualityScore = Number(
+          Math.min(0.99, 0.72 + Math.min(0.18, meanSharpness / 350) + diversityCount * 0.02).toFixed(3),
+        );
+        const pct = Math.round(qualityScore * 100);
+        setFinalQualityPct(pct);
+
+        const visualBundle = await buildFinalAngleBundle(samples.length, qualityScore);
+        if (unmountedRef.current) return null;
+        setCompletedAngleSnapshots(visualBundle.angleSnapshots);
+
+        const resultPayload: FaceID120Result = {
+          masterEmbedding,
+          angleEmbeddings,
+          exemplarEmbeddings,
+          biometricEngine: BIOMETRIC_ENGINE_ID,
+          ...(geometricRatios ? { geometricRatios } : {}),
+          framesCaptured: samples.length,
+          qualityScore,
+          avatarDataUrl: visualBundle.avatarDataUrl,
+          compositeSheetDataUrl: visualBundle.compositeSheetDataUrl,
+          angleSnapshots: visualBundle.angleSnapshots,
+          faceImageUrls: visualBundle.faceImageUrls,
+        };
+        finalizedResultRef.current = resultPayload;
+
+        const doneLang = langRef.current;
+        const doneCopy = FACE_ID_120_UI_COPY[doneLang] ?? FACE_ID_120_UI_COPY.th;
+        setPhase('completed');
+        setGuidanceText(doneCopy.completedHeading(samples.length));
+        setSubCueText(doneCopy.completedSub(pct));
+        playSuccessChime();
+        speakGuidanceRef.current(doneCopy.completedVoice, { force: true, speakLang: doneLang });
+
+        stopCameraHardware();
+
+        if (!unmountedRef.current) {
+          onCompleteRef.current(resultPayload);
+          onReadyStateChangeRef.current?.(true, async () => resultPayload);
+        }
+        return resultPayload;
+      } catch (err) {
         completedRef.current = false;
         finalizePromiseRef.current = null;
         if (!unmountedRef.current) {
           setPhase('scanning');
-          setCameraError('ไม่สามารถสร้างโปรไฟล์ใบหน้าจากภาพที่เก็บได้ กรุณาสแกนใหม่อีกครั้ง');
+          setCameraError(
+            err instanceof Error
+              ? err.message
+              : 'เกิดข้อผิดพลาดในการสร้างข้อมูลใบหน้า กรุณาสแกนใหม่อีกครั้ง',
+          );
         }
         return null;
       }
-
-      const masterEmbedding = profile.master_embedding;
-      const angleEmbeddings = profile.angle_embeddings;
-      const exemplarEmbeddings = profile.exemplar_embeddings;
-
-      const centerRatios = samples
-        .filter((s) => s.bucket === 'center' && s.geometricRatios)
-        .map((s) => s.geometricRatios!);
-      const fallbackRatios = samples
-        .filter((s) => s.geometricRatios)
-        .map((s) => s.geometricRatios!);
-      const ratioPool = centerRatios.length >= 3 ? centerRatios : fallbackRatios;
-      const r12Pool = ratioPool
-        .map((r) => r.craniofacialRatios12)
-        .filter((arr): arr is number[] => Array.isArray(arr) && arr.length === 12);
-      const avgCranio12 =
-        r12Pool.length > 0
-          ? Array.from({ length: 12 }, (_, idx) =>
-              Number((r12Pool.reduce((acc, a) => acc + a[idx], 0) / r12Pool.length).toFixed(4)),
-            )
-          : undefined;
-      const centerPatch384 = profile.geometricRatios?.appearancePatch384;
-      const centerOcularPatch256 = profile.geometricRatios?.ocularIrisPatch256;
-      const centerIrisRatios8 = profile.geometricRatios?.irisOcularRatios8;
-      const geometricRatios: GeometricAnthropometricRatios | undefined =
-        ratioPool.length > 0 || centerPatch384 || centerOcularPatch256 || centerIrisRatios8
-          ? {
-              eyeToNoseRatio:
-                ratioPool.length > 0
-                  ? Number((ratioPool.reduce((acc, r) => acc + r.eyeToNoseRatio, 0) / ratioPool.length).toFixed(4))
-                  : 1,
-              faceWidthToUpperHeight:
-                ratioPool.length > 0
-                  ? Number((ratioPool.reduce((acc, r) => acc + r.faceWidthToUpperHeight, 0) / ratioPool.length).toFixed(4))
-                  : 1,
-              mouthToEyeRatio:
-                ratioPool.length > 0
-                  ? Number((ratioPool.reduce((acc, r) => acc + r.mouthToEyeRatio, 0) / ratioPool.length).toFixed(4))
-                  : 1,
-              noseToChinRatio:
-                ratioPool.length > 0
-                  ? Number((ratioPool.reduce((acc, r) => acc + r.noseToChinRatio, 0) / ratioPool.length).toFixed(4))
-                  : 1,
-              ...(centerPatch384 ? { appearancePatch384: centerPatch384 } : {}),
-              ...(avgCranio12 ? { craniofacialRatios12: avgCranio12 } : {}),
-              ...(centerOcularPatch256 ? { ocularIrisPatch256: centerOcularPatch256 } : {}),
-              ...(centerIrisRatios8 ? { irisOcularRatios8: centerIrisRatios8 } : {}),
-            }
-          : undefined;
-
-      const meanSharpness =
-        samples.length > 0
-          ? samples.reduce((acc, s) => acc + s.sharpness, 0) / samples.length
-          : 60;
-      const diversityCount = (Object.keys(bucketCountsRef.current) as Bucket5Key[]).filter(
-        (k) => bucketCountsRef.current[k] > 0,
-      ).length;
-      const qualityScore = Number(
-        Math.min(0.99, 0.72 + Math.min(0.18, meanSharpness / 350) + diversityCount * 0.02).toFixed(3),
-      );
-      const pct = Math.round(qualityScore * 100);
-      setFinalQualityPct(pct);
-
-      const visualBundle = await buildFinalAngleBundle(samples.length, qualityScore);
-      if (unmountedRef.current) return null;
-      setCompletedAngleSnapshots(visualBundle.angleSnapshots);
-
-      const resultPayload: FaceID120Result = {
-        masterEmbedding,
-        angleEmbeddings,
-        exemplarEmbeddings,
-        biometricEngine: BIOMETRIC_ENGINE_ID,
-        ...(geometricRatios ? { geometricRatios } : {}),
-        framesCaptured: samples.length,
-        qualityScore,
-        avatarDataUrl: visualBundle.avatarDataUrl,
-        compositeSheetDataUrl: visualBundle.compositeSheetDataUrl,
-        angleSnapshots: visualBundle.angleSnapshots,
-        faceImageUrls: visualBundle.faceImageUrls,
-      };
-      finalizedResultRef.current = resultPayload;
-
-      const doneLang = langRef.current;
-      const doneCopy = FACE_ID_120_UI_COPY[doneLang] ?? FACE_ID_120_UI_COPY.th;
-      setPhase('completed');
-      setGuidanceText(doneCopy.completedHeading(samples.length));
-      setSubCueText(doneCopy.completedSub(pct));
-      playSuccessChime();
-      speakGuidance(doneCopy.completedVoice, { force: true, speakLang: doneLang });
-
-      stopCameraHardware();
-
-      if (!unmountedRef.current) {
-        onCompleteRef.current(resultPayload);
-        onReadyStateChangeRef.current?.(true, async () => resultPayload);
-      }
-      return resultPayload;
     };
 
     finalizePromiseRef.current = run();
@@ -1511,6 +1526,7 @@ export default function FaceID120Scanner({
     const startEngineAndCamera = async () => {
       try {
         const initCopy = FACE_ID_120_UI_COPY[langRef.current] ?? FACE_ID_120_UI_COPY.th;
+        setCameraReady(false);
         setModelStatus('loading');
         setCameraError(null);
         setModelProgressMsg(initCopy.checkingEdge);
@@ -1557,24 +1573,9 @@ export default function FaceID120Scanner({
         const loadCopy = FACE_ID_120_UI_COPY[langRef.current] ?? FACE_ID_120_UI_COPY.th;
         setModelProgressMsg(loadCopy.loadingWasm);
 
-        const resolveVision = async () => {
-          for (const wasmBase of [
-            '/mediapipe/wasm',
-            '/models/wasm',
-            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
-          ]) {
-            try {
-              return await FilesetResolver.forVisionTasks(wasmBase);
-            } catch {
-              // Try next WASM base path
-            }
-          }
-          throw new Error('Failed to load MediaPipe WASM files');
-        };
-
         const [humanReady, vision] = await Promise.all([
           humanWarmupPromise,
-          resolveVision(),
+          getCachedVisionResolver(),
         ]);
         if (cancelled) return;
         if (!humanReady) {
@@ -1647,7 +1648,7 @@ export default function FaceID120Scanner({
         setGuidanceText(`${firstCue.stepTitle} (0/120)`);
         setSubCueText(firstCue.turnCue);
         lastGuidedTargetRef.current = 'center';
-        speakGuidance(firstCue.voice, { force: true, interrupt: true, speakLang: readyLang });
+        speakGuidanceRef.current(firstCue.voice, { force: true, interrupt: true, speakLang: readyLang });
 
         const workCanvas = workCanvasRef.current || document.createElement('canvas');
         workCanvas.width = 112;
@@ -1718,7 +1719,7 @@ export default function FaceID120Scanner({
           );
           if (allFilled || nextTotalCount >= TOTAL_TICKS) {
             readyNotifiedRef.current = true;
-            void finalizeScan();
+            void finalizeScanRef.current();
             return true;
           }
 
@@ -1748,7 +1749,7 @@ export default function FaceID120Scanner({
             setTransitionBanner(nextCue.turnCue);
             setGuidanceText(`${nextCue.stepTitle} (${nextTotalCount}/120)`);
             setSubCueText(nextCue.turnCue);
-            speakGuidance(nextCue.voice, { force: true, interrupt: true, speakLang: transLang });
+            speakGuidanceRef.current(nextCue.voice, { force: true, interrupt: true, speakLang: transLang });
           }
           return true;
         };
@@ -1909,16 +1910,27 @@ export default function FaceID120Scanner({
           }
           const currentSharpness = lastSharpnessVal;
 
-          setLivePose({
-            yaw: Math.round(yawDeg),
-            pitch: Math.round(pitchDeg),
-            roll: Math.round(rollDeg),
-            sharpness: currentSharpness,
-            faceDetected: true,
-          });
+          const rYaw = Math.round(yawDeg);
+          const rPitch = Math.round(pitchDeg);
+          const rRoll = Math.round(rollDeg);
+          setLivePose((prev) =>
+            prev.faceDetected &&
+            prev.yaw === rYaw &&
+            prev.pitch === rPitch &&
+            prev.roll === rRoll &&
+            prev.sharpness === currentSharpness
+              ? prev
+              : {
+                  yaw: rYaw,
+                  pitch: rPitch,
+                  roll: rRoll,
+                  sharpness: currentSharpness,
+                  faceDetected: true,
+                },
+          );
 
           const displayBucket = classifyDisplayBucket(yawDeg, pitchDeg);
-          setActiveBucket(displayBucket);
+          setActiveBucket((prev) => (prev === displayBucket ? prev : displayBucket));
 
           // Draw crispest frontal snapshot onto offscreen snapCanvas ONLY while looking centered
           if (
@@ -1967,7 +1979,7 @@ export default function FaceID120Scanner({
               !angleCanvasesRef.current[captureBucket] ||
               (peakScore > prevBest && (now - lastAngleSnapAt >= 160 || peakScore > prevBest + 2));
             if (needsInitialOrPeak) {
-              captureAngleFrameToCanvas(vid, captureBucket, peakScore, normBox);
+              captureAngleFrameToCanvasRef.current(vid, captureBucket, peakScore, normBox);
               lastAngleSnapAt = now;
             }
           }
@@ -2096,9 +2108,9 @@ export default function FaceID120Scanner({
 
           if (lastGuidedTargetRef.current !== nextTarget) {
             lastGuidedTargetRef.current = nextTarget;
-            speakGuidance(cue.voice, { force: true, speakLang: activeLang });
+            speakGuidanceRef.current(cue.voice, { force: true, speakLang: activeLang });
           } else if (!captureBucket && !inTransitionLock) {
-            speakGuidance(cue.voice, { speakLang: activeLang });
+            speakGuidanceRef.current(cue.voice, { speakLang: activeLang });
           }
 
           if (inTransitionLock) {
@@ -2128,6 +2140,7 @@ export default function FaceID120Scanner({
 
         rafRef.current = requestAnimationFrame(tickLoop);
       } catch (err) {
+        stopHardwareRef.current();
         if (!cancelled) {
           setModelStatus('error');
           setCameraError(
@@ -2284,15 +2297,6 @@ export default function FaceID120Scanner({
           className="pointer-events-none absolute inset-0"
           aria-label="120 radial biometric scan progress ring"
         >
-          <defs>
-            <filter id="emeraldGlow" x="-40%" y="-40%" width="180%" height="180%">
-              <feGaussianBlur stdDeviation="2.5" result="blur" />
-              <feMerge>
-                <feMergeNode in="blur" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
-            </filter>
-          </defs>
           {Array.from({ length: TOTAL_TICKS }).map((_, idx) => {
             const deg = idx * 3 - 90; // 0 tick at 12 o'clock
             const rad = (deg * Math.PI) / 180;
@@ -2318,8 +2322,6 @@ export default function FaceID120Scanner({
                 strokeWidth={isLit ? 2.8 : 1.9}
                 strokeLinecap="round"
                 opacity={opacity}
-                filter={isLit ? 'url(#emeraldGlow)' : undefined}
-                style={{ transition: 'all 100ms ease-out' }}
               />
             );
           })}
@@ -2365,7 +2367,7 @@ export default function FaceID120Scanner({
 
           {/* Model Loading / Camera Error Overlay */}
           {(modelStatus === 'loading' || (!cameraReady && !cameraError)) && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/90 p-5 text-center backdrop-blur-xs">
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/95 p-5 text-center">
               <Loader2 className="mb-2 h-8 w-8 animate-spin text-emerald-600" />
               <div className="text-xs font-extrabold text-[#0F4C81]">{modelProgressMsg}</div>
               <div className="mt-1 text-[11px] text-[#0284C7]">{ui.waitMoment}</div>
@@ -2389,7 +2391,7 @@ export default function FaceID120Scanner({
 
           {/* Computing Phase Overlay */}
           {phase === 'computing' && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/88 p-4 text-center backdrop-blur-xs">
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/95 p-4 text-center">
               <Loader2 className="mb-2 h-9 w-9 animate-spin text-[#0284C7]" />
               <div className="text-sm font-black text-[#0F4C81]">{ui.computingTitle}</div>
               <div className="mt-1 text-[11px] text-[#0284C7]">{ui.computingSub}</div>
@@ -2398,7 +2400,7 @@ export default function FaceID120Scanner({
 
           {/* Apple Face ID Checkmark Burst on Completion */}
           {phase === 'completed' && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-emerald-50/92 p-4 text-center backdrop-blur-xs animate-popup-spring">
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-emerald-50/95 p-4 text-center animate-popup-spring">
               <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-[#10B981] to-[#0284C7] shadow-[0_0_32px_rgba(16,185,129,0.5)] animate-rep-pop">
                 <CheckCircle2 className="h-12 w-12 text-white" />
               </div>

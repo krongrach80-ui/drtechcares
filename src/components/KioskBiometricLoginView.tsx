@@ -45,9 +45,12 @@ import {
   type OcularIrisCaptureResult,
 } from '../lib/biometricEngine';
 import {
+  getCachedHandLandmarker,
+  getCachedPoseLandmarker,
   getCachedPrimaryFaceLandmarker,
   getCachedRoiFaceLandmarker,
-  getCachedVisionResolver,
+  getNextMonotonicHandDetectTs,
+  getNextMonotonicPoseDetectTs,
   getNextMonotonicVideoDetectTs,
   getPreloadedBiometricVault,
   setPreloadedBiometricVault,
@@ -1126,10 +1129,13 @@ export function KioskBiometricLoginView({
       return null;
     }
   });
+  const [activeCameraId, setActiveCameraId] = useState<string | null>(selectedCameraId);
   const [availableCameras, setAvailableCameras] = useState<ClinicalCameraDevice[]>([]);
   const [rotationDeg, setRotationDeg] = useState<0 | 90 | 180 | 270>(0);
   const [mirrored, setMirrored] = useState(true);
   const [showCalibHud, setShowCalibHud] = useState(false);
+  const showCalibHudRef = useRef(showCalibHud);
+  showCalibHudRef.current = showCalibHud;
 
   useEffect(() => {
     let active = true;
@@ -1154,9 +1160,11 @@ export function KioskBiometricLoginView({
 
   const handleCycleCamera = useCallback(() => {
     if (availableCameras.length < 2) return;
-    const currentIdx = availableCameras.findIndex((d) => d.deviceId === selectedCameraId);
+    const activeId = activeCameraId ?? selectedCameraId;
+    const currentIdx = availableCameras.findIndex((d) => d.deviceId === activeId);
     const nextCam = availableCameras[(currentIdx + 1) % availableCameras.length];
     if (!nextCam?.deviceId) return;
+    setActiveCameraId(nextCam.deviceId);
     setSelectedCameraId(nextCam.deviceId);
     try {
       if (typeof window !== 'undefined') {
@@ -1165,7 +1173,7 @@ export function KioskBiometricLoginView({
     } catch {
       // Ignore storage write errors
     }
-  }, [availableCameras, selectedCameraId]);
+  }, [activeCameraId, availableCameras, selectedCameraId]);
 
   const [scanStage, setScanStage] = useState<'scanning' | 'burst' | 'verifying' | 'not_found'>('scanning');
   const [burstCount, setBurstCount] = useState(0);
@@ -1522,6 +1530,19 @@ export function KioskBiometricLoginView({
     verifiedModalPayloadRef.current = payload;
     setVerifiedModalPayload(payload);
   }, []);
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !v.srcObject) return;
+    if (verifiedModalPayload) {
+      try {
+        v.pause();
+      } catch {
+        // Ignore video pause error
+      }
+    } else if (!cameraPaused) {
+      void v.play().catch(() => {});
+    }
+  }, [verifiedModalPayload, cameraPaused]);
   const [verifiedAnimDone, setVerifiedAnimDone] = useState(false);
   useEffect(() => {
     if (!verifiedModalPayload) {
@@ -2042,20 +2063,10 @@ export function KioskBiometricLoginView({
         window.clearTimeout(gestureWarmupTimerId);
         gestureWarmupTimerId = null;
       }
-      const safeClose = (det: { close?: () => void } | null) => {
-        if (!det) return;
-        try {
-          det.close?.();
-        } catch {
-          // Ignore WASM teardown exception so remaining detectors & stream still release
-        }
-      };
-      // Shared cached FaceLandmarker & ROI Landmarker stay alive in RAM for 0ms next-scan resume
+      // Shared cached Face/ROI/Hand/Pose landmarkers stay alive in RAM for 0ms next-scan resume
       landmarker = null;
       roiLandmarker = null;
-      safeClose(handLandmarker);
       handLandmarker = null;
-      safeClose(poseLandmarker);
       poseLandmarker = null;
       stream?.getTracks().forEach((track) => track.stop());
       stream = null;
@@ -2067,64 +2078,25 @@ export function KioskBiometricLoginView({
       }
     };
 
-    async function warmupGestureDetectors(vision: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>) {
+    async function warmupGestureDetectors() {
       setTwoHandDetectorReady(false);
-      const tryCreateHand = async () => {
-        for (const modelAssetPath of [
-          '/models/hand_landmarker.task',
-          'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-        ]) {
-          for (const delegate of ['GPU', 'CPU', undefined] as const) {
-            try {
-              const created = await HandLandmarker.createFromOptions(vision, {
-                baseOptions: delegate ? { modelAssetPath, delegate } : { modelAssetPath },
-                runningMode: 'VIDEO',
-                numHands: 4,
-                minHandDetectionConfidence: 0.35,
-                minHandPresenceConfidence: 0.35,
-                minTrackingConfidence: 0.35,
-              });
-              if (!active) {
-                created.close();
-                return;
-              }
-              handLandmarker = created;
-              setTwoHandDetectorReady(true);
-              return;
-            } catch {
-              // Try next delegate or URL
-            }
-          }
-        }
-      };
-
-      const tryCreatePose = async () => {
-        for (const modelAssetPath of ['/models/pose_landmarker.task', '/models/pose_landmarker_full.task']) {
-          for (const delegate of ['GPU', 'CPU', undefined] as const) {
-            try {
-              const created = await PoseLandmarker.createFromOptions(vision, {
-                baseOptions: delegate ? { modelAssetPath, delegate } : { modelAssetPath },
-                runningMode: 'VIDEO',
-                numPoses: 1,
-                minPoseDetectionConfidence: 0.35,
-                minPosePresenceConfidence: 0.35,
-                minTrackingConfidence: 0.35,
-              });
-              if (!active) {
-                created.close();
-                return;
-              }
-              poseLandmarker = created;
-              setTwoHandDetectorReady(true);
-              return;
-            } catch {
-              // Try next delegate or pose model
-            }
-          }
-        }
-      };
-
-      await Promise.all([tryCreateHand(), tryCreatePose()]);
+      const [handResult, poseResult] = await Promise.allSettled([
+        getCachedHandLandmarker({ numHands: 4, minConfidence: 0.35 }),
+        getCachedPoseLandmarker({ numPoses: 1 }),
+      ]);
+      if (!active) return;
+      let anyReady = false;
+      if (handResult.status === 'fulfilled') {
+        handLandmarker = handResult.value.instance;
+        anyReady = true;
+      }
+      if (poseResult.status === 'fulfilled') {
+        poseLandmarker = poseResult.value.instance;
+        anyReady = true;
+      }
+      if (anyReady) {
+        setTwoHandDetectorReady(true);
+      }
     }
 
     async function startFacePipeline() {
@@ -2155,8 +2127,8 @@ export function KioskBiometricLoginView({
         if (opened.devices.length > 0) {
           setAvailableCameras(opened.devices);
         }
-        if (opened.activeDeviceId && opened.activeDeviceId !== selectedCameraId) {
-          setSelectedCameraId(opened.activeDeviceId);
+        if (opened.activeDeviceId) {
+          setActiveCameraId(opened.activeDeviceId);
         }
         if (!active || !videoRef.current) {
           stream.getTracks().forEach((track) => track.stop());
@@ -2186,12 +2158,7 @@ export function KioskBiometricLoginView({
           gestureWarmupTimerId = null;
           if (!active || gestureWarmupStarted) return;
           gestureWarmupStarted = true;
-          void getCachedVisionResolver()
-            .then((vision) => {
-              if (active) return warmupGestureDetectors(vision);
-              return undefined;
-            })
-            .catch(() => {});
+          void warmupGestureDetectors().catch(() => {});
         }, 1200);
 
         let lastEmbedCheckAt = 0;
@@ -2996,12 +2963,9 @@ export function KioskBiometricLoginView({
                   window.clearTimeout(gestureWarmupTimerId);
                   gestureWarmupTimerId = null;
                 }
-                void getCachedVisionResolver()
-                  .then((vision) => {
-                    if (active) return warmupGestureDetectors(vision);
-                    return undefined;
-                  })
-                  .catch(() => {});
+                if (active) {
+                  void warmupGestureDetectors().catch(() => {});
+                }
               }
               if (lastConfirmedPatientId !== verifiedPayload.patient.id) {
                 lastConfirmedPatientId = verifiedPayload.patient.id;
@@ -3108,8 +3072,7 @@ export function KioskBiometricLoginView({
                       if (offCtx) {
                         offCtx.drawImage(v, 0, 0, offW, offH);
                       }
-                      const handTs = Math.max(lastDetectTs + 1, Math.round(now));
-                      lastDetectTs = handTs;
+                      const handTs = getNextMonotonicHandDetectTs(now);
                       const handRes = handLandmarker.detectForVideo(
                         offCtx ? gestureOffscreenCanvas : v,
                         handTs,
@@ -3155,8 +3118,7 @@ export function KioskBiometricLoginView({
                   // 1. Run FaceLandmarker + Continuous 1:1 Account Owner Verification every 4 frames (and immediately on cycle 1)
                   if (landmarker) {
                     try {
-                      const faceTs = Math.max(lastDetectTs + 1, Math.round(now));
-                      lastDetectTs = faceTs;
+                      const faceTs = getNextMonotonicVideoDetectTs(now);
                       const fRes = landmarker.detectForVideo(v, faceTs);
                       const rawFaces = fRes.faceLandmarks ?? [];
                       const faceSelection = selectPrimaryFace(rawFaces);
@@ -3280,8 +3242,7 @@ export function KioskBiometricLoginView({
                   let detectedPoseCount = 0;
                   if (handLandmarker) {
                     try {
-                      const handTs = Math.max(lastDetectTs + 1, Math.round(now));
-                      lastDetectTs = handTs;
+                      const handTs = getNextMonotonicHandDetectTs(now);
                       const handRes = handLandmarker.detectForVideo(inferenceSource, handTs);
                       detectedHands = handRes.landmarks ?? [];
                     } catch {
@@ -3296,9 +3257,7 @@ export function KioskBiometricLoginView({
                   ) {
                     lastPoseFallbackAt = now;
                     try {
-                      const poseTs = Math.max(lastPoseDetectTs + 1, lastDetectTs + 1, Math.round(now));
-                      lastPoseDetectTs = poseTs;
-                      lastDetectTs = Math.max(lastDetectTs, poseTs);
+                      const poseTs = getNextMonotonicPoseDetectTs(now);
                       const poseRes = poseLandmarker.detectForVideo(inferenceSource, poseTs);
                       detectedPoseCount = (poseRes.landmarks ?? []).length;
                       detectedPose = poseRes.landmarks?.[0] ?? null;
@@ -3647,7 +3606,7 @@ export function KioskBiometricLoginView({
                 bioVerifiedNow !== lastBioVerifiedUi ||
                 isFrameSpoof !== lastSpoofUi ||
                 bioModeNow !== lastBioModeUi;
-              if (bioModeChanged || now - lastTelemetryUiSyncAt >= 90) {
+              if (bioModeChanged || (showCalibHudRef.current && now - lastTelemetryUiSyncAt >= 90)) {
                 lastTelemetryUiSyncAt = now;
                 lastBioVerifiedUi = bioVerifiedNow;
                 lastSpoofUi = isFrameSpoof;
@@ -3852,8 +3811,7 @@ export function KioskBiometricLoginView({
                       mCtx.restore();
                       const dotRadius = Math.max(1.3, Math.min(2.6, pxH * 0.015));
                       mCtx.fillStyle = dotFillRgba;
-                      mCtx.shadowColor = strokeHex;
-                      mCtx.shadowBlur = 4;
+                      mCtx.shadowBlur = 0;
                       mCtx.beginPath();
                       for (let i = 0; i < KEY_MESH_LANDMARK_INDICES.length; i++) {
                         const pt = landmarks[KEY_MESH_LANDMARK_INDICES[i]];
@@ -3997,7 +3955,7 @@ export function KioskBiometricLoginView({
       await apiClient.createStaffCall(kioskId, 'ผู้ป่วยกดเรียกเจ้าหน้าที่จากหน้าตู้ Kiosk');
       showToast(c.staffCalledToast);
     } catch {
-      showToast(c.staffCalledToast);
+      showToast('ไม่สามารถส่งคำขอเรียกเจ้าหน้าที่ได้ กรุณาลองใหม่อีกครั้ง');
     }
   };
 
@@ -4005,15 +3963,41 @@ export function KioskBiometricLoginView({
     setPinSubmitting(true);
     setPinError(null);
     try {
-      const patients: PatientRecord[] = await apiClient.listPatients();
       const normalized = digits.trim();
+      const pinRes = await apiClient.verifyKioskPinLogin(normalized).catch(() => null);
+      if (pinRes?.matched && pinRes.patient) {
+        const matchedEntry =
+          biometricIndexRef.current.find(
+            (e) => e.patientId === pinRes.patient!.id || (e.hn && e.hn === pinRes.patient!.hn),
+          ) ?? null;
+        const pinPayload = buildKioskLoginSuccessPayload({
+          patient: {
+            id: pinRes.patient.id,
+            hn: pinRes.patient.hn,
+            fullName: pinRes.patient.fullName,
+            nextAppointmentDate: pinRes.patient.nextAppointmentDate,
+          },
+          todayRoutine: pinRes.todayRoutine ?? matchedEntry?.todayRoutine ?? null,
+          confidencePercent: 100,
+          rehabSchedules: pinRes.rehabSchedules,
+          indexEntry: matchedEntry,
+        });
+        setShowPinModal(false);
+        setCameraPaused(false);
+        setPinDigits('');
+        openVerifiedModal(pinPayload);
+        return;
+      }
+
+      // Fallback to authenticated patient list only when staff session already exists in browser
+      const patients: PatientRecord[] = await apiClient.listPatients();
       const matched = patients.find((p) => {
-        const cleanPhone = p.phone.replace(/\D/g, '');
-        const cleanHn = p.hn.replace(/\D/g, '');
+        const cleanPhone = (p.phone ?? '').replace(/\D/g, '');
+        const cleanHn = (p.hn ?? '').replace(/\D/g, '');
         return (
           cleanPhone.endsWith(normalized) ||
           cleanHn.endsWith(normalized) ||
-          p.hn.toLowerCase() === normalized.toLowerCase()
+          (p.hn ?? '').toLowerCase() === normalized.toLowerCase()
         );
       });
       if (matched) {
@@ -4282,15 +4266,15 @@ export function KioskBiometricLoginView({
                     <button
                       type="button"
                       onClick={handleCycleCamera}
-                      className="px-2.5 py-1 rounded-lg bg-white/90 hover:bg-white border border-sky-200 text-[#0F4C81] text-[11px] font-bold flex items-center gap-1 backdrop-blur-sm shadow-xs cursor-pointer"
+                      className="px-2.5 py-1 rounded-lg bg-white/95 hover:bg-white border border-sky-200 text-[#0F4C81] text-[11px] font-bold flex items-center gap-1 shadow-xs cursor-pointer"
                       title={
-                        availableCameras.find((d) => d.deviceId === selectedCameraId)?.label ||
+                        availableCameras.find((d) => d.deviceId === (activeCameraId ?? selectedCameraId))?.label ||
                         'สลับกล้อง'
                       }
                     >
                       <Camera className="w-3 h-3 text-emerald-600" />
                       <span>
-                        กล้อง {(availableCameras.findIndex((d) => d.deviceId === selectedCameraId) + 1) || 1}/
+                        กล้อง {(availableCameras.findIndex((d) => d.deviceId === (activeCameraId ?? selectedCameraId)) + 1) || 1}/
                         {availableCameras.length}
                       </span>
                     </button>
@@ -4298,7 +4282,7 @@ export function KioskBiometricLoginView({
                   <button
                     type="button"
                     onClick={() => setRotationDeg((prev) => (((prev + 90) % 360) as 0 | 90 | 180 | 270))}
-                    className="px-2.5 py-1 rounded-lg bg-white/90 hover:bg-white border border-sky-200 text-[#0F4C81] text-[11px] font-bold flex items-center gap-1 backdrop-blur-sm shadow-xs cursor-pointer"
+                    className="px-2.5 py-1 rounded-lg bg-white/95 hover:bg-white border border-sky-200 text-[#0F4C81] text-[11px] font-bold flex items-center gap-1 shadow-xs cursor-pointer"
                     title="หมุนภาพกล้อง"
                   >
                     <RotateCw className="w-3 h-3 text-[#0284C7]" />
@@ -4319,10 +4303,10 @@ export function KioskBiometricLoginView({
                   <button
                     type="button"
                     onClick={() => setShowCalibHud((v) => !v)}
-                    className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1 backdrop-blur-sm transition cursor-pointer shadow-xs ${
+                    className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1 transition cursor-pointer shadow-xs ${
                       showCalibHud
                         ? 'bg-[#0284C7] border-sky-300 text-white'
-                        : 'bg-white/90 hover:bg-white border-sky-200 text-[#0F4C81]'
+                        : 'bg-white/95 hover:bg-white border-sky-200 text-[#0F4C81]'
                     }`}
                     title="โหมดสอบเทียบชีวมาตร (Calibration HUD)"
                   >
@@ -4382,7 +4366,7 @@ export function KioskBiometricLoginView({
                     className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 z-25 max-w-[90%]"
                     data-testid="kiosk-scan-progress-pill"
                   >
-                    <div className="rounded-2xl bg-white/95 border border-emerald-300 shadow-lg px-4 py-2 text-center backdrop-blur-md">
+                    <div className="rounded-2xl bg-white/95 border border-emerald-300 shadow-lg px-4 py-2 text-center">
                       <div className="text-xs sm:text-sm font-black text-[#0F4C81] whitespace-nowrap">
                         {scanStage === 'verifying'
                           ? c.verifying
@@ -4534,7 +4518,7 @@ export function KioskBiometricLoginView({
                         )}
                       </div>
 
-                      <div className={`absolute left-1/2 top-full mt-2.5 w-max max-w-[390px] -translate-x-1/2 rounded-2xl border-2 px-4 py-2.5 text-center backdrop-blur-md shadow-2xl ${pillClass}`}>
+                      <div className={`absolute left-1/2 top-full mt-2.5 w-max max-w-[390px] -translate-x-1/2 rounded-2xl border-2 px-4 py-2.5 text-center shadow-2xl ${pillClass}`}>
                         <div className="inline-flex items-center justify-center gap-2 text-sm font-black leading-snug">
                           {overlay.boxColor === 'emerald' && (
                             <KineticEmblemSvg key={`hud-success-${scanGeneration}`} status="success" className="w-6 h-6 shrink-0 overflow-visible" />
@@ -4715,7 +4699,13 @@ export function KioskBiometricLoginView({
           <div className="w-full max-w-sm rounded-3xl bg-white border border-emerald-500/30 p-6 text-center shadow-2xl relative animate-popup-spring">
             <button
               type="button"
-              onClick={() => setShowPinModal(false)}
+              onClick={() => {
+                if (pinSubmitTimerRef.current !== null) {
+                  window.clearTimeout(pinSubmitTimerRef.current);
+                  pinSubmitTimerRef.current = null;
+                }
+                setShowPinModal(false);
+              }}
               className="absolute top-4 right-4 p-1.5 rounded-full text-slate-400 hover:text-slate-700 bg-slate-100 cursor-pointer"
             >
               <X className="w-4 h-4" />
@@ -4759,6 +4749,10 @@ export function KioskBiometricLoginView({
               <button
                 type="button"
                 onClick={() => {
+                  if (pinSubmitTimerRef.current !== null) {
+                    window.clearTimeout(pinSubmitTimerRef.current);
+                    pinSubmitTimerRef.current = null;
+                  }
                   setPinDigits('');
                   setPinError(null);
                 }}
@@ -4775,7 +4769,13 @@ export function KioskBiometricLoginView({
               </button>
               <button
                 type="button"
-                onClick={() => setPinDigits((d) => d.slice(0, -1))}
+                onClick={() => {
+                  if (pinSubmitTimerRef.current !== null) {
+                    window.clearTimeout(pinSubmitTimerRef.current);
+                    pinSubmitTimerRef.current = null;
+                  }
+                  setPinDigits((d) => d.slice(0, -1));
+                }}
                 className="h-12 rounded-xl bg-slate-100 border border-slate-200 text-slate-600 font-bold text-sm hover:bg-slate-200 cursor-pointer"
               >
                 ⌫

@@ -519,12 +519,14 @@ export function App() {
     if (!authenticatedPatient) return undefined;
     const p = authenticatedPatient.patient;
     return {
-      id: p.hn,
+      id: p.id,
+      hn: p.hn,
       name: p.fullName,
       max_safe_rom_deg: p.maxSafeRomDeg,
       affected_side: p.affectedSide,
       stroke_type: p.strokeType,
       motor_assessment_score: p.motorAssessmentScore,
+      universalHealthLinkCode: p.universalHealthLinkCode,
     };
   }, [authenticatedPatient]);
 
@@ -754,11 +756,21 @@ export function App() {
     }
   }, [route, authenticatedPatient, isPoseTestMode]);
 
+  const prescribedOptions = useMemo(
+    () =>
+      overviewScheduleState
+        ? mapTodayExercisesToPrescriptions(overviewScheduleState.effectiveKioskExercises)
+        : mapTodayExercisesToPrescriptions([]),
+    [overviewScheduleState],
+  );
+
+  const poseTestPrescriptions = useMemo(
+    () => buildAll15ClinicalExercisePrescriptions(kioskExercises),
+    [kioskExercises],
+  );
+
   // Locked Kiosk Mode (/) — Exact Kiosk Biometric Login UI by default, transitioning into Rehab / Classic Kiosk
   if (route === '/') {
-    const prescribedOptions = overviewScheduleState
-      ? mapTodayExercisesToPrescriptions(overviewScheduleState.effectiveKioskExercises)
-      : mapTodayExercisesToPrescriptions([]);
 
     const markDailyRehabDone = () => {
       if (!authenticatedPatient || !overviewScheduleState) return;
@@ -873,7 +885,6 @@ export function App() {
     };
 
     if (isPoseTestMode) {
-      const poseTestPrescriptions = buildAll15ClinicalExercisePrescriptions(kioskExercises);
       return (
         <div
           key="kiosk-pose-test"
@@ -1455,18 +1466,7 @@ export function App() {
             </div>
           </div>
           <SmartRehabKioskUI
-            patient={
-              authenticatedPatient
-                ? {
-                    id: authenticatedPatient.patient.hn,
-                    name: authenticatedPatient.patient.fullName,
-                    max_safe_rom_deg: authenticatedPatient.patient.maxSafeRomDeg,
-                    affected_side: authenticatedPatient.patient.affectedSide,
-                    stroke_type: authenticatedPatient.patient.strokeType,
-                    motor_assessment_score: authenticatedPatient.patient.motorAssessmentScore,
-                  }
-                : undefined
-            }
+            patient={rehabPatientProp}
             ownerBiometrics={authenticatedPatient?.biometricTemplate ?? null}
             prescribedExercises={authenticatedPatient ? prescribedOptions : undefined}
             isStaffAuthorized={Boolean(

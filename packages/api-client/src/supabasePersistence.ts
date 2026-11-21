@@ -578,7 +578,7 @@ const EXERCISES_BASE_COLS =
   'id,code,category,name_i18n,instruction_i18n,detection_config,active';
 
 const MODPACKS_BASE_COLS =
-  'id,name,categories,active';
+  'id,name,categories,questions,active';
 
 const KIOSKS_BASE_COLS =
   'kiosk_id,location,online,current_state,last_heartbeat_at';
@@ -714,9 +714,8 @@ async function runHydrateStateFromSupabaseInternal(
         supabase
           .from('active_sessions')
           .select('token,user_id,role,ip_address,device_id,created_at,revoked')
-          .eq('revoked', false)
           .order('created_at', { ascending: false }),
-        100,
+        200,
       ),
   ];
 
@@ -935,11 +934,7 @@ async function runHydrateStateFromSupabaseInternal(
 
   if (templatesRes.status === 'fulfilled' && !templatesRes.value.error && Array.isArray(templatesRes.value.data)) {
     for (const row of templatesRes.value.data as Record<string, unknown>[]) {
-      const vec = Array.isArray(row.embedding)
-        ? (row.embedding as number[])
-        : typeof row.embedding === 'string' && row.embedding.startsWith('[')
-          ? (JSON.parse(row.embedding) as number[])
-          : null;
+      const vec = parseEmbeddingVector(row.embedding);
       if (!vec) continue;
       const pid = String(row.patient_id);
       if (deletedPatientSet.has(pid) || deletedPatientLower.has(pid.toLowerCase())) continue;
@@ -1360,13 +1355,18 @@ async function runHydrateStateFromSupabaseInternal(
       };
     });
 
-    // Preserve active in-memory patients that haven't been flushed to Postgres yet (e.g. during HTTP 544/timeout)
+    // Preserve ONLY recently created in-memory patients that failed Postgres flush (e.g. HTTP 544 outage),
+    // never resurrecting patients deleted on another Worker isolate.
+    const nowMs = Date.now();
     const dbSeenIds = new Set(state.patients.map((p) => p.id.trim().toLowerCase()));
     const dbSeenHns = new Set(state.patients.map((p) => p.hn.trim().toLowerCase()).filter(Boolean));
     for (const [prevId, prevP] of prevPatientsById.entries()) {
       const pidLo = prevId.trim().toLowerCase();
       const hnLo = (prevP.hn ?? '').trim().toLowerCase();
+      const pendingFlushAt = (prevP as { pendingDbFlushAt?: number }).pendingDbFlushAt;
+      const isPendingFlush = typeof pendingFlushAt === 'number' && nowMs - pendingFlushAt < 120_000;
       if (
+        !isPendingFlush ||
         (prevP.registrationStatus ?? 'active') !== 'active' ||
         deletedPatientSet.has(prevId) ||
         deletedPatientLower.has(pidLo) ||
@@ -1484,22 +1484,30 @@ async function runHydrateStateFromSupabaseInternal(
   }
 
   if (sessionsRes.status === 'fulfilled' && Array.isArray(sessionsRes.value.data)) {
-    state.rehab_sessions = sessionsRes.value.data.map((r: Record<string, unknown>) => ({
-      id: String(r.id),
-      patientId: String(r.patient_id),
-      activityType: 'physio_exercise',
-      exerciseId: String(r.exercise_id),
-      exerciseName: String(r.exercise_id),
-      completedSets: Number(r.completed_sets ?? 0),
-      completedReps: Number(r.completed_reps ?? 0),
-      accuracyPercent: Number(r.accuracy_percent ?? 100),
-      maxRomDeg: Number(r.max_rom_deg ?? 0),
-      painStopTriggered: Boolean(r.pain_stop_triggered),
-      aiFeedback: 'Synced from Supabase',
-      kinematicsReplay: (r.kinematics_replay as { tMs: number; angleDeg: number }[]) ?? [],
-      minigameScore: r.minigame_score as { correct: number; total: number; category: string } | undefined,
-      createdAt: String(r.created_at),
-    }));
+    state.rehab_sessions = sessionsRes.value.data.map((r: Record<string, unknown>) => {
+      const exId = String(r.exercise_id ?? '');
+      const hasMinigameScore = r.minigame_score !== null && r.minigame_score !== undefined;
+      const isMinigame = hasMinigameScore || /minigame|cognitive-card-game|\bcard\b/i.test(exId);
+      const matchedCatalog = CLINICAL_EXERCISES.find(
+        (ex) => ex.id === exId || ex.code === exId,
+      );
+      return {
+        id: String(r.id),
+        patientId: String(r.patient_id),
+        activityType: isMinigame ? 'minigame' : 'physio_exercise',
+        exerciseId: exId,
+        exerciseName: matchedCatalog?.name?.th ?? (isMinigame ? 'มินิเกมฝึกสมอง (การ์ดกายภาพ)' : exId),
+        completedSets: Number(r.completed_sets ?? 0),
+        completedReps: Number(r.completed_reps ?? 0),
+        accuracyPercent: Number(r.accuracy_percent ?? 100),
+        maxRomDeg: Number(r.max_rom_deg ?? 0),
+        painStopTriggered: Boolean(r.pain_stop_triggered),
+        aiFeedback: 'Synced from Supabase',
+        kinematicsReplay: (r.kinematics_replay as { tMs: number; angleDeg: number }[]) ?? [],
+        minigameScore: r.minigame_score as { correct: number; total: number; category: string } | undefined,
+        createdAt: String(r.created_at),
+      };
+    });
   }
 
   const mergedHistoryMap = new Map<string, RehabSessionHistoryEntry>();
@@ -1629,14 +1637,21 @@ async function runHydrateStateFromSupabaseInternal(
   }
 
   if (modpacksRes.status === 'fulfilled' && Array.isArray(modpacksRes.value.data) && modpacksRes.value.data.length > 0) {
-    state.modpacks = modpacksRes.value.data.map((r: Record<string, unknown>) => ({
-      id: String(r.id),
-      name: String(r.name),
-      categories: Array.isArray(r.categories) ? (r.categories as string[]) : [String(r.category ?? 'cognitive')],
-      questionCount: Number(r.card_count ?? (Array.isArray(r.questions) && r.questions.length > 0 ? r.questions.length : 10)),
-      createdBy: 'system',
-      active: Boolean(r.active ?? true),
-    }));
+    state.modpacks = modpacksRes.value.data.map((r: Record<string, unknown>) => {
+      const id = String(r.id);
+      const seededDefaultCount =
+        id === 'modpack-core-99' ? 99 : id === 'modpack-memory-safety' ? 42 : 10;
+      const rawQuestionsCount =
+        Array.isArray(r.questions) && r.questions.length > 0 ? r.questions.length : null;
+      return {
+        id,
+        name: String(r.name),
+        categories: Array.isArray(r.categories) ? (r.categories as string[]) : [String(r.category ?? 'cognitive')],
+        questionCount: Number(r.card_count ?? rawQuestionsCount ?? seededDefaultCount),
+        createdBy: 'system',
+        active: Boolean(r.active ?? true),
+      };
+    });
   }
 
   const callStatusRank: Record<StaffCallRecord['status'], number> = {

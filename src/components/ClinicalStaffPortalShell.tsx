@@ -1389,9 +1389,9 @@ export function ClinicalStaffPortalShell({
     setPoseTestOverlayExerciseCode(initialExerciseCode ?? null);
   };
   const [patientModalState, setPatientModalState] = useState<{
-    patient: PatientRecord | null;
+    patientId: string | null;
     tab: 'profile' | 'history';
-  }>({ patient: null, tab: 'profile' });
+  }>({ patientId: null, tab: 'profile' });
   const [ehrLinkPatient, setEhrLinkPatient] = useState<PatientRecord | null>(null);
   const [selectedPtDetailModal, setSelectedPtDetailModal] = useState<UserAccount | null>(null);
   const [editingStaffUser, setEditingStaffUser] = useState<UserAccount | null>(null);
@@ -1487,7 +1487,7 @@ export function ClinicalStaffPortalShell({
 
   // Patient Case Delegation form state (Tab 7: ระบบการฝากเคสคนไข้)
   const [delegationPatientId, setDelegationPatientId] = useState('');
-  const [delegationDate, setDelegationDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [delegationDate, setDelegationDate] = useState(() => formatLocalIsoDate());
   const [delegationTargetPtId, setDelegationTargetPtId] = useState('');
   const [delegationNote, setDelegationNote] = useState('');
 
@@ -1648,11 +1648,11 @@ export function ClinicalStaffPortalShell({
         setActiveSessions(sortNewestFirst(secRes.activeSessions));
       }
 
-      if (!selectedSchedulePatientId && pRes.length > 0) {
-        setSelectedSchedulePatientId(pRes[0].id);
+      if (pRes.length > 0) {
+        setSelectedSchedulePatientId((prev) => prev || pRes[0].id);
       }
-      if (!courseModpackId && mpRes.length > 0) {
-        setCourseModpackId(mpRes[0].id);
+      if (mpRes.length > 0) {
+        setCourseModpackId((prev) => prev || mpRes[0].id);
       }
     } finally {
       setLoading(false);
@@ -1663,8 +1663,6 @@ export function ClinicalStaffPortalShell({
     currentUser,
     handleAuthFailureIfExpired,
     flashBanner,
-    selectedSchedulePatientId,
-    courseModpackId,
   ]);
 
   useEffect(() => {
@@ -1722,16 +1720,22 @@ export function ClinicalStaffPortalShell({
     };
   }, [activeTab, exercises, apiClient]);
 
+  const defaultModpackId = modpacks[0]?.id ?? 'modpack-core-99';
+
   useEffect(() => {
-    if (!selectedSchedulePatientId) return;
+    if (!selectedSchedulePatientId) {
+      setPatientCourse(null);
+      return;
+    }
+    let cancelled = false;
     apiClient
       .getPatientCourse(selectedSchedulePatientId)
       .then((course) => {
+        if (cancelled) return;
         setPatientCourse(course);
-        const fallbackModpackId = modpacks[0]?.id ?? 'modpack-core-99';
         if (course) {
           setCourseTitle(course.title);
-          setCourseModpackId(course.cognitiveModpackId || fallbackModpackId);
+          setCourseModpackId(course.cognitiveModpackId || defaultModpackId);
           setWeeklySchedule(
             course.weeklySchedule.length === 7
               ? course.weeklySchedule
@@ -1742,15 +1746,45 @@ export function ClinicalStaffPortalShell({
                   difficulty: 'easy',
                   label: 'พักฟื้น',
                   exercises: [],
-                  cognitiveModpackId: fallbackModpackId,
+                  cognitiveModpackId: defaultModpackId,
                 })),
           );
         }
       })
-      .catch(() => {});
-  }, [selectedSchedulePatientId, apiClient, modpacks]);
+      .catch(() => {
+        if (!cancelled) {
+          setPatientCourse(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSchedulePatientId, apiClient, defaultModpackId]);
 
   const ptUsers = useMemo(() => users.filter((u) => u.role === 'pt'), [users]);
+  const superAdminCount = useMemo(
+    () => users.filter((acc) => acc.role === 'super_admin').length,
+    [users],
+  );
+  const sortedMergedExercises = useMemo(
+    () => mergeDuplicateSideExercises(sortExercisesStrokeUpperFirst(exercises)),
+    [exercises],
+  );
+  const activeModalPatient = useMemo(
+    () =>
+      patientModalState.patientId
+        ? patients.find((p) => p.id === patientModalState.patientId) ?? null
+        : null,
+    [patientModalState.patientId, patients],
+  );
+  const activeEhrLinkPatient = useMemo(
+    () =>
+      ehrLinkPatient
+        ? patients.find((p) => p.id === ehrLinkPatient.id) ?? ehrLinkPatient
+        : null,
+    [ehrLinkPatient, patients],
+  );
+  const todayIsoStr = formatLocalIsoDate();
 
   useEffect(() => {
     if (!delegationPatientId && patients.length > 0) {
@@ -2108,7 +2142,7 @@ export function ClinicalStaffPortalShell({
       flashBanner('error', 'กรุณาเลือกนักกายภาพบำบัดผู้รับฝากเคส');
       return;
     }
-    const cleanDate = delegationDate || new Date().toISOString().slice(0, 10);
+    const cleanDate = delegationDate || formatLocalIsoDate();
     const cleanNote = delegationNote.trim();
     const targetPatient = patients.find((p) => p.id === delegationPatientId);
     const targetPt = ptUsers.find((pt) => pt.id === delegationTargetPtId);
@@ -2914,6 +2948,11 @@ export function ClinicalStaffPortalShell({
                                         u.active ? `ระงับสิทธิ์ @${u.username} แล้ว` : `เปิดใช้งาน @${u.username} แล้ว`,
                                       );
                                       await refreshAll();
+                                    } catch (err) {
+                                      flashBanner(
+                                        'error',
+                                        err instanceof Error ? err.message : 'อัปเดตสถานะบัญชีไม่สำเร็จ',
+                                      );
                                     } finally {
                                       setSubmitting(false);
                                     }
@@ -2931,7 +2970,7 @@ export function ClinicalStaffPortalShell({
                               >
                                 <KeyRound className="h-3.5 w-3.5" />
                               </button>
-                              {(u.role !== 'super_admin' || users.filter((acc) => acc.role === 'super_admin').length > 1) && (
+                              {(u.role !== 'super_admin' || superAdminCount > 1) && (
                                 <button
                                   type="button"
                                   disabled={submitting}
@@ -3109,7 +3148,7 @@ export function ClinicalStaffPortalShell({
                               </button>
                               <button
                                 type="button"
-                                onClick={() => setPatientModalState({ patient: p, tab: 'profile' })}
+                                onClick={() => setPatientModalState({ patientId: p.id, tab: 'profile' })}
                                 className="whitespace-nowrap inline-flex items-center gap-1 rounded-xl bg-blue-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-blue-500 cursor-pointer"
                               >
                                 <FileText className="h-3.5 w-3.5 shrink-0" />
@@ -3133,7 +3172,7 @@ export function ClinicalStaffPortalShell({
                               </button>
                               <button
                                 type="button"
-                                onClick={() => setPatientModalState({ patient: p, tab: 'history' })}
+                                onClick={() => setPatientModalState({ patientId: p.id, tab: 'history' })}
                                 className="whitespace-nowrap rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
                               >
                                 {locale.patients.historyBtn}
@@ -3552,6 +3591,11 @@ export function ClinicalStaffPortalShell({
                             'success',
                             `ซิงก์คลังท่ากายภาพมาตรฐาน Stroke / สธ. ${synced.exercises.length} ท่าเรียบร้อย`,
                           );
+                        } catch (err) {
+                          flashBanner(
+                            'error',
+                            err instanceof Error ? err.message : 'ซิงก์คลังท่ากายภาพไม่สำเร็จ',
+                          );
                         } finally {
                           setSubmitting(false);
                         }
@@ -3563,7 +3607,7 @@ export function ClinicalStaffPortalShell({
                     </button>
                   </div>
                   <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
-                    {mergeDuplicateSideExercises(sortExercisesStrokeUpperFirst(exercises)).map((ex) => (
+                    {sortedMergedExercises.map((ex) => (
                       <div
                         key={ex.id}
                         className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs transition-colors duration-150 hover:bg-sky-50/40 hover:border-sky-200"
@@ -3799,7 +3843,7 @@ export function ClinicalStaffPortalShell({
                     <button
                       type="button"
                       onClick={() => {
-                        setSelectedCalendarDateIso(new Date().toISOString().slice(0, 10));
+                        setSelectedCalendarDateIso(formatLocalIsoDate());
                         setScheduleModalMode('create');
                       }}
                       className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer shrink-0"
@@ -4205,8 +4249,6 @@ export function ClinicalStaffPortalShell({
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {patients.map((p) => {
-                        const nowObj = new Date();
-                        const todayIsoStr = `${nowObj.getFullYear()}-${String(nowObj.getMonth() + 1).padStart(2, '0')}-${String(nowObj.getDate()).padStart(2, '0')}`;
                         const scheduledDates = Array.from(
                           new Set(
                             (p.rehabSchedules ?? [])
@@ -4758,12 +4800,24 @@ export function ClinicalStaffPortalShell({
                           </div>
                           <button
                             type="button"
+                            disabled={submitting}
                             onClick={async () => {
-                              await apiClient.forceLogoutUser(s.userId);
-                              flashBanner('success', 'เตะเซสชันออกจากระบบเรียบร้อย');
-                              await refreshAll();
+                              if (submitting) return;
+                              setSubmitting(true);
+                              try {
+                                await apiClient.forceLogoutUser(s.userId);
+                                flashBanner('success', 'เตะเซสชันออกจากระบบเรียบร้อย');
+                                await refreshAll();
+                              } catch (err) {
+                                flashBanner(
+                                  'error',
+                                  err instanceof Error ? err.message : 'ไม่สามารถเตะเซสชันออกจากระบบได้',
+                                );
+                              } finally {
+                                setSubmitting(false);
+                              }
                             }}
-                            className="whitespace-nowrap h-9 px-3.5 inline-flex items-center justify-center rounded-xl bg-rose-600 text-[11px] font-bold text-white hover:bg-rose-500 cursor-pointer shrink-0"
+                            className="whitespace-nowrap h-9 px-3.5 inline-flex items-center justify-center rounded-xl bg-rose-600 text-[11px] font-bold text-white hover:bg-rose-500 disabled:opacity-50 cursor-pointer shrink-0"
                           >
                             {lang === 'cn'
                               ? '强制注销 (Force Kick)'
@@ -4803,12 +4857,22 @@ export function ClinicalStaffPortalShell({
                       <form
                         onSubmit={async (e) => {
                           e.preventDefault();
-                          if (!banValue.trim()) return;
-                          await apiClient.banTarget(banType, banValue.trim(), banReason.trim() || 'Security block');
-                          setBanValue('');
-                          setBanReason('');
-                          flashBanner('success', 'เพิ่มรายการแบนเรียบร้อยแล้ว');
-                          await refreshAll();
+                          if (!banValue.trim() || submitting) return;
+                          setSubmitting(true);
+                          try {
+                            await apiClient.banTarget(banType, banValue.trim(), banReason.trim() || 'Security block');
+                            setBanValue('');
+                            setBanReason('');
+                            flashBanner('success', 'เพิ่มรายการแบนเรียบร้อยแล้ว');
+                            await refreshAll();
+                          } catch (err) {
+                            flashBanner(
+                              'error',
+                              err instanceof Error ? err.message : 'เพิ่มรายการแบนไม่สำเร็จ',
+                            );
+                          } finally {
+                            setSubmitting(false);
+                          }
                         }}
                         className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs"
                       >
@@ -4835,7 +4899,8 @@ export function ClinicalStaffPortalShell({
                         />
                         <button
                           type="submit"
-                          className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1 rounded-xl bg-rose-600 font-bold text-white hover:bg-rose-500 cursor-pointer"
+                          disabled={submitting}
+                          className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1 rounded-xl bg-rose-600 font-bold text-white hover:bg-rose-500 disabled:opacity-50 cursor-pointer"
                         >
                           <Ban className="h-3.5 w-3.5 shrink-0" />{' '}
                           {lang === 'cn' ? '封禁目标' : lang === 'en' ? 'Ban Target' : 'แบนเป้าหมาย'}
@@ -4856,12 +4921,24 @@ export function ClinicalStaffPortalShell({
                             </div>
                             <button
                               type="button"
+                              disabled={submitting}
                               onClick={async () => {
-                                await apiClient.unbanTarget(b.id);
-                                flashBanner('success', `ปลดแบน ${b.value} แล้ว`);
-                                await refreshAll();
+                                if (submitting) return;
+                                setSubmitting(true);
+                                try {
+                                  await apiClient.unbanTarget(b.id);
+                                  flashBanner('success', `ปลดแบน ${b.value} แล้ว`);
+                                  await refreshAll();
+                                } catch (err) {
+                                  flashBanner(
+                                    'error',
+                                    err instanceof Error ? err.message : 'ปลดแบนไม่สำเร็จ',
+                                  );
+                                } finally {
+                                  setSubmitting(false);
+                                }
                               }}
-                              className="whitespace-nowrap h-8 px-3 rounded-lg border border-slate-200 bg-white font-bold text-slate-700 hover:bg-slate-100 cursor-pointer shrink-0"
+                              className="whitespace-nowrap h-8 px-3 rounded-lg border border-slate-200 bg-white font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50 cursor-pointer shrink-0"
                             >
                               {lang === 'cn' ? '解除封禁 (Unban)' : lang === 'en' ? 'Unban' : 'ปลดแบน (Unban)'}
                             </button>
@@ -4921,11 +4998,24 @@ export function ClinicalStaffPortalShell({
                           {isAdmin && k.kioskId !== 'KIOSK-OPD-01' && (
                             <button
                               type="button"
+                              disabled={submitting}
                               onClick={async () => {
-                                await apiClient.deleteKiosk(k.kioskId);
-                                await refreshAll();
+                                if (submitting) return;
+                                setSubmitting(true);
+                                try {
+                                  await apiClient.deleteKiosk(k.kioskId);
+                                  flashBanner('success', `ลบ Kiosk ${k.kioskId} แล้ว`);
+                                  await refreshAll();
+                                } catch (err) {
+                                  flashBanner(
+                                    'error',
+                                    err instanceof Error ? err.message : 'ลบ Kiosk ไม่สำเร็จ',
+                                  );
+                                } finally {
+                                  setSubmitting(false);
+                                }
                               }}
-                              className="text-rose-500 hover:text-rose-700"
+                              className="text-rose-500 hover:text-rose-700 disabled:opacity-50 cursor-pointer"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>
@@ -5506,7 +5596,7 @@ export function ClinicalStaffPortalShell({
                                   type="button"
                                   onClick={() => {
                                     setDelegationPatientId(p.id);
-                                    setDelegationDate(p.delegationDate || new Date().toISOString().slice(0, 10));
+                                    setDelegationDate(p.delegationDate || formatLocalIsoDate());
                                     setDelegationTargetPtId(p.delegatedToPtId || '');
                                     setDelegationNote(p.delegationNote || '');
                                   }}
@@ -5590,27 +5680,27 @@ export function ClinicalStaffPortalShell({
 
       {/* Patient Profile, Medical Notes & Rehab History Modal */}
       <PatientProfileAndHistoryModal
-        patient={patientModalState.patient}
+        patient={activeModalPatient}
         initialTab={patientModalState.tab}
         apiClient={apiClient}
         currentUser={currentUser}
         ptUsers={ptUsers}
         sessions={sessions}
-        onClose={() => setPatientModalState({ patient: null, tab: 'profile' })}
+        onClose={() => setPatientModalState({ patientId: null, tab: 'profile' })}
         onRefresh={refreshAll}
         onOpenFaceScan={(p) => {
           setEnrollTargetPatient(p);
           setEnrollModalOpen(true);
         }}
         onOpenLinkEhr={(p) => {
-          setPatientModalState({ patient: null, tab: 'profile' });
+          setPatientModalState({ patientId: null, tab: 'profile' });
           setEhrLinkPatient(p);
         }}
         onFlash={flashBanner}
       />
 
       <UniversalEhrLinkModal
-        patient={ehrLinkPatient}
+        patient={activeEhrLinkPatient}
         apiClient={apiClient}
         onClose={() => setEhrLinkPatient(null)}
         onLinked={refreshAll}
@@ -5816,6 +5906,11 @@ export function ClinicalStaffPortalShell({
                         });
                         flashBanner('success', `มอบหมายคนไข้ให้ ${selectedPtDetailModal.fullName} เรียบร้อย`);
                         await refreshAll();
+                      } catch (err) {
+                        flashBanner(
+                          'error',
+                          err instanceof Error ? err.message : 'มอบหมายคนไข้ไม่สำเร็จ',
+                        );
                       } finally {
                         setSubmitting(false);
                       }

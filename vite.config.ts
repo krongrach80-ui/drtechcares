@@ -43,6 +43,30 @@ export default defineConfig({
     sourcemap: false,
     minify: 'esbuild',
     chunkSizeWarningLimit: 1500,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined;
+          const normalized = id.replace(/\\/g, '/');
+          if (normalized.includes('/node_modules/react-dom/') || normalized.includes('/node_modules/react/')) {
+            return 'vendor-react';
+          }
+          if (normalized.includes('/node_modules/framer-motion/')) {
+            return 'vendor-motion';
+          }
+          if (normalized.includes('/node_modules/@mediapipe/tasks-vision/')) {
+            return 'vendor-mediapipe';
+          }
+          if (normalized.includes('/node_modules/@supabase/')) {
+            return 'vendor-supabase';
+          }
+          if (normalized.includes('/node_modules/lucide-react/')) {
+            return 'vendor-icons';
+          }
+          return undefined;
+        },
+      },
+    },
   },
 });
 

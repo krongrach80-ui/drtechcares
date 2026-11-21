@@ -246,13 +246,23 @@ function normalizeSupabaseRow(row: Record<string, unknown>): PatientClinicalAsse
   };
 }
 
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 5000): Promise<Response> {
+  if (typeof AbortController === 'undefined') {
+    return fetch(url, init);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function listPatientAssessments(
   patient: DemoSeedPatientInfo,
   options?: { includeCrossFacility?: boolean; seedDemoIfEmpty?: boolean },
 ): Promise<PatientClinicalAssessmentRecord[]> {
-  if (options?.seedDemoIfEmpty) {
-    ensureDemoAssessmentsForPatient(patient);
-  }
   const localAll = readStorageRecords();
   const byId = new Map<string, PatientClinicalAssessmentRecord>();
   for (const item of localAll) {
@@ -268,7 +278,7 @@ export async function listPatientAssessments(
       const filterExpr = options?.includeCrossFacility === false
         ? `patient_id=eq.${pidEnc}`
         : `or=(patient_id.eq.${pidEnc},universal_link_code.eq.${linkEnc})`;
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `${supa.url}/rest/v1/patient_clinical_assessments?${filterExpr}&order=assessed_at.asc,visit_number.asc`,
         {
           method: 'GET',
@@ -278,6 +288,7 @@ export async function listPatientAssessments(
             'Content-Type': 'application/json',
           },
         },
+        5000,
       );
       if (res.ok) {
         const remoteRows = (await res.json()) as Record<string, unknown>[];
@@ -300,7 +311,11 @@ export async function listPatientAssessments(
     }
   }
 
-  const merged = Array.from(byId.values());
+  let merged = Array.from(byId.values());
+  if (options?.seedDemoIfEmpty && filterAssessmentsForPatient(merged, patient).length === 0) {
+    ensureDemoAssessmentsForPatient(patient);
+    merged = readStorageRecords();
+  }
   if (options?.includeCrossFacility === false) {
     return merged
       .filter((r) => r.patient_id === patient.id)
@@ -375,16 +390,23 @@ export async function createPatientAssessment(
   const supa = getSupabaseRestConfig();
   if (supa && typeof fetch === 'function') {
     try {
-      await fetch(`${supa.url}/rest/v1/patient_clinical_assessments`, {
-        method: 'POST',
-        headers: {
-          apikey: supa.key,
-          Authorization: `Bearer ${supa.key}`,
-          'Content-Type': 'application/json',
-          Prefer: 'return=minimal',
+      const res = await fetchWithTimeout(
+        `${supa.url}/rest/v1/patient_clinical_assessments`,
+        {
+          method: 'POST',
+          headers: {
+            apikey: supa.key,
+            Authorization: `Bearer ${supa.key}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal',
+          },
+          body: JSON.stringify(newRecord),
         },
-        body: JSON.stringify(newRecord),
-      });
+        5000,
+      );
+      if (!res.ok) {
+        // Local persistence already committed; remote sync rejection does not crash UI flow
+      }
     } catch {
       // Local persistence already committed; remote sync failure does not break UI flow
     }

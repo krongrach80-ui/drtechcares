@@ -54,6 +54,7 @@ export interface PatientSummary {
   id: string | null;
   name: string | null;
   hn?: string | null;
+  universalHealthLinkCode?: string | null;
   similarity?: number;
   latency_ms?: number;
   max_safe_rom_deg?: number;
@@ -1315,28 +1316,43 @@ export function useKioskSocket(
 
   // WebSocket client with automatic exponential backoff reconnect
   useEffect(() => {
-    if (
+    const isRemoteHttps =
       typeof window !== 'undefined' &&
       window.location.protocol === 'https:' &&
-      /^ws:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(wsUrl) &&
-      !(import.meta.env.VITE_EDGE_VISION_WS as string | undefined)?.trim() &&
-      !(import.meta.env.VITE_KIOSK_WS_URL as string | undefined)?.trim()
-    ) {
+      !/^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname);
+
+    const allowedWsCandidates = wsCandidates.filter(
+      (candidate) => !isRemoteHttps || !/^ws:\/\//i.test(candidate.trim()),
+    );
+    if (allowedWsCandidates.length === 0) {
       // Avoid mixed-content WebSocket blocks and reconnect loops on remote HTTPS cloud deployments
       setConnectionStatus('offline');
       return;
     }
+
+    const MAX_RECONNECT_ATTEMPTS = 5;
     let disposed = false;
     let attempt = 0;
     let reconnectTimer: number | null = null;
     let healthAbortController: AbortController | null = null;
+
+    const scheduleReconnect = () => {
+      if (disposed || attempt >= MAX_RECONNECT_ATTEMPTS) return;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      const delayMs = Math.min(10000, 1500 * Math.pow(1.6, attempt));
+      attempt += 1;
+      reconnectTimer = window.setTimeout(connect, delayMs);
+    };
 
     const connect = () => {
       if (disposed) return;
       setConnectionStatus('connecting');
 
       try {
-        const targetWsUrl = wsCandidates[attempt % wsCandidates.length] ?? wsUrl;
+        const targetWsUrl = allowedWsCandidates[attempt % allowedWsCandidates.length] ?? wsUrl;
         setActiveWsUrl(targetWsUrl);
         // Trigger CORS + Private Network Access preflight prior to loopback WebSocket upgrade
         const healthUrl = targetWsUrl
@@ -1353,7 +1369,7 @@ export function useKioskSocket(
         wsRef.current = ws;
 
         ws.onopen = () => {
-          if (disposed) return;
+          if (disposed || wsRef.current !== ws) return;
           attempt = 0;
           setConnectionStatus('connected');
           if (!userToggledModeRef.current) {
@@ -1378,7 +1394,7 @@ export function useKioskSocket(
         };
 
         ws.onmessage = (event) => {
-          if (disposed) return;
+          if (disposed || wsRef.current !== ws) return;
           try {
             const data = JSON.parse(event.data) as KioskDecisionPayload;
             if (data && data.kiosk_state && data.telemetry_analysis) {
@@ -1390,23 +1406,19 @@ export function useKioskSocket(
         };
 
         ws.onerror = () => {
-          if (disposed) return;
+          if (disposed || wsRef.current !== ws) return;
           ws.close();
         };
 
         ws.onclose = () => {
-          if (disposed) return;
+          if (wsRef.current !== ws) return;
           wsRef.current = null;
           setConnectionStatus('offline');
-          const delayMs = Math.min(10000, 1500 * Math.pow(1.6, attempt));
-          attempt += 1;
-          reconnectTimer = window.setTimeout(connect, delayMs);
+          scheduleReconnect();
         };
       } catch {
         setConnectionStatus('offline');
-        const delayMs = Math.min(10000, 1500 * Math.pow(1.6, attempt));
-        attempt += 1;
-        reconnectTimer = window.setTimeout(connect, delayMs);
+        scheduleReconnect();
       }
     };
 
@@ -1416,10 +1428,12 @@ export function useKioskSocket(
       healthAbortController?.abort();
       if (reconnectTimer !== null) {
         window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
       }
       if (wsRef.current) {
-        wsRef.current.close();
+        const activeWs = wsRef.current;
         wsRef.current = null;
+        activeWs.close();
       }
     };
   }, [wsCandidates, wsUrl, sendExercisePrescription]);

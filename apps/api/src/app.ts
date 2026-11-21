@@ -20,7 +20,7 @@ import {
   clampTtsText,
   synthesizeTtsAudio,
 } from '../../../packages/api-client/src/ttsProxy';
-import { isAdminRole } from '../../../packages/api-client/src/index';
+import { isAdminRole, resolveTodayPatientSchedule } from '../../../packages/api-client/src/index';
 import {
   ClinicalDatabase,
   hashPassword,
@@ -636,7 +636,13 @@ export function createDrTechCaresApiApp(
 
   app.delete('/api/users/:id', requireAuth(['super_admin']), (req: AuthenticatedRequest, res: Response) => {
     const paramId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const rawKey = decodeURIComponent(String(paramId || '')).trim();
+    let rawKey = String(paramId || '');
+    try {
+      rawKey = decodeURIComponent(rawKey);
+    } catch {
+      // Keep raw segment if malformed percent encoding
+    }
+    rawKey = rawKey.trim();
     const keyLower = rawKey.replace(/^@/, '').toLowerCase();
     const idx = db.state.users.findIndex(
       (u) => u.id === rawKey || (keyLower.length > 0 && u.username.toLowerCase() === keyLower),
@@ -893,6 +899,74 @@ export function createDrTechCaresApiApp(
     });
   });
 
+  app.post('/api/kiosk/pin-login', (req: AuthenticatedRequest, res: Response) => {
+    const rawPin = String((req.body as { pin?: string } | undefined)?.pin ?? '').trim();
+    const digits = rawPin.replace(/\D/g, '');
+    const normalized = rawPin.toLowerCase();
+    if (rawPin.length < 4 && digits.length < 4) {
+      res.status(400).json({ matched: false, error: 'VALIDATION_ERROR' });
+      return;
+    }
+
+    const matchedPatient =
+      db.state.patients.find((p) => {
+        if ((p.registrationStatus ?? 'active') !== 'active') return false;
+        const cleanPhone = (p.phone ?? '').replace(/\D/g, '');
+        const cleanHn = (p.hn ?? '').replace(/\D/g, '');
+        return (
+          (digits.length >= 4 && cleanPhone.length >= 4 && cleanPhone.endsWith(digits)) ||
+          (digits.length >= 4 && cleanHn.length >= 4 && cleanHn.endsWith(digits)) ||
+          (p.hn ?? '').trim().toLowerCase() === normalized
+        );
+      }) ?? null;
+
+    if (!matchedPatient) {
+      res.status(404).json({ matched: false, error: 'PATIENT_NOT_FOUND' });
+      return;
+    }
+
+    const course = db.state.patient_courses.find((c) => c.patientId === matchedPatient.id) ?? null;
+    const todayIdx = new Date().getDay();
+    const todayRoutine = course?.weeklySchedule.find((d) => d.dayIndex === todayIdx) ?? null;
+    const todaySchedule = resolveTodayPatientSchedule({
+      rehabSchedules: (matchedPatient as unknown as { rehabSchedules?: [] }).rehabSchedules,
+      rehabSessions: db.state.rehab_sessions.filter((s) => s.patientId === matchedPatient.id),
+      todayRoutine,
+      weeklySchedule: course?.weeklySchedule,
+      nextAppointmentDate: matchedPatient.nextAppointmentDate,
+      fallbackNextAppointmentDate: matchedPatient.nextAppointmentDate,
+      exercisesCatalog: db.state.exercises as never[],
+    });
+
+    db.recordAudit({
+      eventType: 'KIOSK_PIN_LOGIN',
+      actorRole: 'patient_kiosk',
+      actorId: matchedPatient.id,
+      actorName: matchedPatient.fullName,
+      ipAddress: req.clientIp ?? 'unknown',
+      deviceId: req.clientDeviceId ?? 'unknown',
+      targetId: matchedPatient.id,
+      detail: `Kiosk PIN login for ${matchedPatient.fullName} (${matchedPatient.hn})`,
+    });
+
+    res.json({
+      matched: true,
+      patientId: matchedPatient.id,
+      patientName: matchedPatient.fullName,
+      patient: {
+        id: matchedPatient.id,
+        hn: matchedPatient.hn,
+        fullName: matchedPatient.fullName,
+        nextAppointmentDate: todaySchedule.nextAppointmentDate,
+      },
+      todayRoutine,
+      rehabSchedules: (matchedPatient as unknown as { rehabSchedules?: unknown[] }).rehabSchedules ?? [],
+      todayExercises: todaySchedule.todayExercises,
+      hasAppointmentToday: todaySchedule.hasAppointmentToday,
+      completedToday: todaySchedule.completedToday,
+    });
+  });
+
   // ========================
   // 4. PATIENTS, DELEGATION & APPEND-ONLY NOTES
   // ========================
@@ -914,7 +988,7 @@ export function createDrTechCaresApiApp(
       return;
     }
     const actor = req.authUser!;
-    if (actor.role === 'pt' && patient.assignedPtId !== actor.id) {
+    if (actor.role === 'pt' && patient.assignedPtId !== actor.id && patient.delegatedToPtId !== actor.id) {
       res.status(403).json({ error: 'FORBIDDEN', message: 'PT can only edit own assigned patients' });
       return;
     }
@@ -950,7 +1024,13 @@ export function createDrTechCaresApiApp(
 
   app.delete('/api/patients/:id', requireAuth(['super_admin', 'pt']), (req: AuthenticatedRequest, res: Response) => {
     const paramId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const rawPid = decodeURIComponent(String(paramId || '')).trim();
+    let rawPid = String(paramId || '');
+    try {
+      rawPid = decodeURIComponent(rawPid);
+    } catch {
+      // Keep raw segment if malformed percent encoding
+    }
+    rawPid = rawPid.trim();
     const rawLower = rawPid.toLowerCase();
     const patient = db.state.patients.find(
       (p) => p.id === rawPid || (rawLower.length > 0 && p.hn.toLowerCase() === rawLower),

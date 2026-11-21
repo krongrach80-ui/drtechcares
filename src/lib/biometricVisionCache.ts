@@ -28,7 +28,7 @@ let cachedVisionPromise: Promise<Awaited<ReturnType<typeof FilesetResolver.forVi
 let cachedPrimaryLandmarkerPromise: Promise<FaceLandmarker> | null = null;
 let cachedRoiLandmarkerPromise: Promise<FaceLandmarker | null> | null = null;
 let cachedPoseLandmarkerPromises: Partial<Record<1 | 2, Promise<CachedVisionTaskHandle<PoseLandmarker>>>> = {};
-let cachedHandLandmarkerPromise: Promise<CachedVisionTaskHandle<HandLandmarker>> | null = null;
+let cachedHandLandmarkerPromises: Partial<Record<2 | 4, Promise<CachedVisionTaskHandle<HandLandmarker>>>> = {};
 let cachedRehabFaceLandmarkerPromise: Promise<CachedVisionTaskHandle<FaceLandmarker> | null> | null = null;
 let cachedVaultResult: {
   apiClient: DrTechCaresApiClient;
@@ -184,9 +184,14 @@ export async function getCachedPoseLandmarker(options?: {
   return cachedPoseLandmarkerPromises[numPoses]!;
 }
 
-export async function getCachedHandLandmarker(): Promise<CachedVisionTaskHandle<HandLandmarker>> {
-  if (!cachedHandLandmarkerPromise) {
-    cachedHandLandmarkerPromise = (async () => {
+export async function getCachedHandLandmarker(options?: {
+  numHands?: 2 | 4;
+  minConfidence?: number;
+}): Promise<CachedVisionTaskHandle<HandLandmarker>> {
+  const numHands: 2 | 4 = options?.numHands === 4 ? 4 : 2;
+  const minConfidence = options?.minConfidence ?? (numHands === 4 ? 0.35 : 0.45);
+  if (!cachedHandLandmarkerPromises[numHands]) {
+    cachedHandLandmarkerPromises[numHands] = (async () => {
       const vision = await getCachedVisionResolver();
       const modelPaths = [
         '/models/hand_landmarker.task',
@@ -198,10 +203,10 @@ export async function getCachedHandLandmarker(): Promise<CachedVisionTaskHandle<
             const instance = await HandLandmarker.createFromOptions(vision, {
               baseOptions: { modelAssetPath, delegate },
               runningMode: 'VIDEO',
-              numHands: 2,
-              minHandDetectionConfidence: 0.45,
-              minHandPresenceConfidence: 0.45,
-              minTrackingConfidence: 0.45,
+              numHands,
+              minHandDetectionConfidence: minConfidence,
+              minHandPresenceConfidence: minConfidence,
+              minTrackingConfidence: minConfidence,
             });
             return { instance, delegate };
           } catch {
@@ -211,11 +216,11 @@ export async function getCachedHandLandmarker(): Promise<CachedVisionTaskHandle<
       }
       throw new Error('Unable to create shared HandLandmarker');
     })().catch((err) => {
-      cachedHandLandmarkerPromise = null;
+      delete cachedHandLandmarkerPromises[numHands];
       throw err;
     });
   }
-  return cachedHandLandmarkerPromise;
+  return cachedHandLandmarkerPromises[numHands]!;
 }
 
 export async function getCachedRehabFaceLandmarker(): Promise<
@@ -320,7 +325,7 @@ export function resetBiometricVisionCacheForTests(): void {
   cachedPrimaryLandmarkerPromise = null;
   cachedRoiLandmarkerPromise = null;
   cachedPoseLandmarkerPromises = {};
-  cachedHandLandmarkerPromise = null;
+  cachedHandLandmarkerPromises = {};
   cachedRehabFaceLandmarkerPromise = null;
   cachedVaultResult = null;
   inflightPreloadPromise = null;

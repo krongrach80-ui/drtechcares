@@ -822,11 +822,16 @@ export function drawOwnerBiometricOverlayOnCanvas(
   ) => {
     const { xMin, yMin, width, height, xMax } = box.rawPx;
     ctx.save();
+    ctx.shadowBlur = 0;
+    if (dashed) ctx.setLineDash([7, 5]);
+    ctx.strokeStyle = 'rgba(15, 23, 42, 0.48)';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.roundRect(xMin, yMin, width, height, 14);
+    ctx.stroke();
+
     ctx.strokeStyle = color;
     ctx.lineWidth = 3;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 10;
-    if (dashed) ctx.setLineDash([7, 5]);
     ctx.beginPath();
     ctx.roundRect(xMin, yMin, width, height, 14);
     ctx.stroke();
@@ -866,11 +871,17 @@ export function drawOwnerBiometricOverlayOnCanvas(
       ) => {
         if (!palm) return;
         ctx.save();
+        ctx.shadowBlur = 0;
+        ctx.setLineDash([7, 5]);
+        ctx.strokeStyle = 'rgba(15, 23, 42, 0.45)';
+        ctx.lineWidth = 4.5;
+        ctx.beginPath();
+        ctx.moveTo(anchorX, anchorY);
+        ctx.lineTo(palm.rawX, palm.rawY);
+        ctx.stroke();
+
         ctx.strokeStyle = '#10B981';
         ctx.lineWidth = 2.5;
-        ctx.shadowColor = '#10B981';
-        ctx.shadowBlur = 10;
-        ctx.setLineDash([7, 5]);
         ctx.beginPath();
         ctx.moveTo(anchorX, anchorY);
         ctx.lineTo(palm.rawX, palm.rawY);
@@ -895,14 +906,17 @@ export function drawOwnerBiometricOverlayOnCanvas(
     // Intruder hand markers (#EF4444)
     for (const bad of handEval.intruderPalms) {
       ctx.save();
-      ctx.strokeStyle = '#EF4444';
-      ctx.lineWidth = 3.5;
-      ctx.shadowColor = '#EF4444';
-      ctx.shadowBlur = 10;
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = 'rgba(15, 23, 42, 0.48)';
+      ctx.lineWidth = 5.5;
       ctx.beginPath();
       ctx.arc(bad.rawX, bad.rawY, 18, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(239,68,68,0.28)';
       ctx.fill();
+      ctx.stroke();
+
+      ctx.strokeStyle = '#EF4444';
+      ctx.lineWidth = 3.5;
       ctx.stroke();
       ctx.restore();
       drawUprightLabelOnMirroredCanvas(

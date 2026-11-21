@@ -23,7 +23,7 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
   const [course, setCourse] = useState<PatientCourseRecord | null>(null);
   const [sessions, setSessions] = useState<RehabSessionRecord[]>([]);
   const [reports, setReports] = useState<TreatmentReportRecord[]>([]);
-  const [phone, setPhone] = useState(currentUser.phone);
+  const [phone, setPhone] = useState(currentUser.phone ?? '');
   const [currentPw, setCurrentPw] = useState('');
   const [newPw, setNewPw] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
@@ -42,22 +42,27 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
         apiClient.listTreatmentReports(),
       ]);
       if (!mountedRef.current) return;
-      const own = pts[0] ?? null;
+      const own =
+        pts.find((p) => p.id === currentUser.patientId || p.hn === currentUser.username) ??
+        pts[0] ??
+        null;
       setPatient(own);
-      if (own) {
-        setPhone(own.phone);
-        const c = await apiClient.getPatientCourse(own.id);
-        if (!mountedRef.current) return;
-        setCourse(c);
-      }
       setSessions(sess);
       setReports(reps);
+      if (own) {
+        setPhone(own.phone ?? '');
+        const c = await apiClient.getPatientCourse(own.id).catch(() => null);
+        if (!mountedRef.current) return;
+        setCourse(c);
+      } else {
+        setCourse(null);
+      }
     } catch (err) {
       if (mountedRef.current) {
         setErrorMsg(err instanceof Error ? err.message : 'ไม่สามารถโหลดข้อมูลส่วนตัวได้');
       }
     }
-  }, [apiClient]);
+  }, [apiClient, currentUser.patientId, currentUser.username]);
 
   useEffect(() => {
     mountedRef.current = true;

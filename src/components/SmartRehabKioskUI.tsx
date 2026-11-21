@@ -2574,6 +2574,8 @@ export function SmartRehabKioskUI({
     void syncKioskSessionToAssessment({
       patientId: pid,
       patientHn: patient?.hn ?? patientProp?.hn ?? '',
+      universalHealthLinkCode:
+        patient?.universalHealthLinkCode ?? patientProp?.universalHealthLinkCode,
       exerciseCode: parsed.baseCode,
       exerciseNameTh: selectedExercise.name_th,
       targetSide,
@@ -4297,7 +4299,7 @@ export function SmartRehabKioskUI({
               </h1>
               {patientRevealed && patient && (
                 <span className="hidden sm:inline text-xs md:text-sm font-bold text-sky-700 truncate">
-                  {patient.name} ({patient.id})
+                  {patient.name} ({patient.hn || patient.id})
                 </span>
               )}
             </div>

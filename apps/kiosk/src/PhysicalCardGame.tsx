@@ -543,13 +543,15 @@ function drawHandPillLabel(
   label: string,
   bgColor: string,
   textColor: string = '#ffffff',
+  cssWidthPx?: number,
 ) {
   ctx.save();
   ctx.font = '800 13px "Sarabun", sans-serif';
   const tw = ctx.measureText(label).width;
   const pillW = tw + 20;
   const pillH = 26;
-  const pillX = Math.max(8, Math.min(ctx.canvas.width - pillW - 8, px - pillW / 2));
+  const maxW = cssWidthPx && cssWidthPx > 0 ? cssWidthPx : ctx.canvas.width;
+  const pillX = Math.max(8, Math.min(maxW - pillW - 8, px - pillW / 2));
   const pillY = Math.max(8, topPy - pillH - 12);
   ctx.fillStyle = bgColor;
   ctx.beginPath();
@@ -868,6 +870,7 @@ export function PhysicalCardGame({
         !('speechSynthesis' in window) ||
         typeof SpeechSynthesisUtterance === 'undefined'
       ) {
+        onMinigameSpeechEndedRef.current(seq);
         return;
       }
 
@@ -954,6 +957,7 @@ export function PhysicalCardGame({
         clearSpeakingWatchdog();
         isSpeakingRef.current = false;
         setIsSpeaking(false);
+        onMinigameSpeechEndedRef.current(seq);
       }
     },
     [clearSpeakingWatchdog],
@@ -1185,7 +1189,7 @@ export function PhysicalCardGame({
     pendingChoiceRef.current = null;
     bothHandsWarnRef.current = false;
     cropWarnRef.current = false;
-    if (progressBarFillRef.current) progressBarFillRef.current.style.width = '0%';
+    if (progressBarFillRef.current) progressBarFillRef.current.style.transform = 'scaleX(0)';
     if (progressPctRef.current) progressPctRef.current.textContent = '0%';
     if (badgePctRef.current) badgePctRef.current.textContent = '0%';
   }, []);
@@ -1483,6 +1487,8 @@ export function PhysicalCardGame({
           });
         }
       } catch {
+        edgeWs?.close();
+        edgeWs = null;
         if (active) {
           setCameraError('ไม่สามารถเปิดกล้องได้ กรุณาอนุญาตการใช้กล้อง หรือคลิกปุ่มคำตอบด้านล่างได้เลย');
         }
@@ -1490,6 +1496,8 @@ export function PhysicalCardGame({
       }
 
       if (!active || !videoRef.current) {
+        edgeWs?.close();
+        edgeWs = null;
         stream.getTracks().forEach((tr) => tr.stop());
         return;
       }
@@ -1598,7 +1606,7 @@ export function PhysicalCardGame({
             pendingChoiceRef.current = null;
             setPendingChoice(null);
           }
-          if (progressBarFillRef.current) progressBarFillRef.current.style.width = '0%';
+          if (progressBarFillRef.current) progressBarFillRef.current.style.transform = 'scaleX(0)';
           if (progressPctRef.current) progressPctRef.current.textContent = '0%';
           if (badgePctRef.current) badgePctRef.current.textContent = '0%';
         }
@@ -1673,12 +1681,20 @@ export function PhysicalCardGame({
               const inferenceTs = getNextMonotonicHandDetectTs(now);
               const isPortrait = typeof window !== 'undefined' && window.innerHeight > window.innerWidth;
 
-              const res = handLandmarker.detectForVideo(inferenceSource, inferenceTs);
+              let landmarksList: NormalizedLandmark[][] = [];
+              let handednessList: Array<Array<{ score?: number }>> = [];
+              try {
+                const res = handLandmarker.detectForVideo(inferenceSource, inferenceTs);
+                landmarksList = res.landmarks ?? [];
+                handednessList = (res.handedness as Array<Array<{ score?: number }>> | undefined) ?? [];
+              } catch {
+                // Keep rAF hand-tracking loop resilient across transient MediaPipe/WebGL frame errors
+              }
               // Strictly validate 21-point hand skeleton (NEVER treat face/head/shoulders as hands)
-              const validHands = (res.landmarks ?? [])
+              const validHands = landmarksList
                 .slice(0, 2)
                 .filter((lms, idx) => {
-                  const score = res.handedness?.[idx]?.[0]?.score;
+                  const score = handednessList[idx]?.[0]?.score;
                   return isValidStrict21HandLandmarks(lms, score);
                 });
 
@@ -1708,7 +1724,7 @@ export function PhysicalCardGame({
                     pendingChoiceRef.current = null;
                     setPendingChoice(null);
                   }
-                  if (progressBarFillRef.current) progressBarFillRef.current.style.width = '0%';
+                  if (progressBarFillRef.current) progressBarFillRef.current.style.transform = 'scaleX(0)';
                   if (progressPctRef.current) progressPctRef.current.textContent = '0%';
                   if (badgePctRef.current) badgePctRef.current.textContent = '0%';
                   if (!bothHandsWarnRef.current) {
@@ -1802,7 +1818,7 @@ export function PhysicalCardGame({
             : Math.min(100, Math.max(0, holdProgressRef.current * 100));
           const pctRounded = `${Math.round(pctFloat)}%`;
           if (progressBarFillRef.current) {
-            progressBarFillRef.current.style.width = `${pctFloat.toFixed(1)}%`;
+            progressBarFillRef.current.style.transform = `scaleX(${(pctFloat / 100).toFixed(4)})`;
           }
           if (progressPctRef.current) {
             progressPctRef.current.textContent = pctRounded;
@@ -1845,6 +1861,8 @@ export function PhysicalCardGame({
                   handSample.topPx,
                   'ยก 2 มือพร้อมกัน!',
                   'rgba(220, 38, 38, 0.94)',
+                  '#ffffff',
+                  cw,
                 );
               } else if (isRaised && !isSpeechLocked) {
                 const raisedColor = handSample.zone === 'RIGHT' ? '#10b981' : '#f43f5e';
@@ -1855,6 +1873,8 @@ export function PhysicalCardGame({
                   handSample.topPx,
                   handSample.zone === 'RIGHT' ? 'มือขวา (ใช่ / YES)' : 'มือซ้าย (ไม่ใช่ / NO)',
                   handSample.zone === 'RIGHT' ? 'rgba(5, 150, 105, 0.92)' : 'rgba(225, 29, 72, 0.92)',
+                  '#ffffff',
+                  cw,
                 );
               } else {
                 drawHandSkeletonOnCanvas(ctx, smoothed, tf, '#38bdf8');
@@ -1864,6 +1884,8 @@ export function PhysicalCardGame({
                   handSample.topPx,
                   handSample.zone === 'LEFT' ? 'มือซ้าย (เตรียมพร้อม)' : 'มือขวา (เตรียมพร้อม)',
                   'rgba(2, 132, 199, 0.88)',
+                  '#ffffff',
+                  cw,
                 );
               }
             });
@@ -2132,7 +2154,7 @@ export function PhysicalCardGame({
           {!cameraError && (
             <div className="pointer-events-none absolute top-4 inset-x-4 z-10 flex flex-wrap items-center justify-between gap-2">
               <span
-                className={`mg-cam-status inline-flex items-center gap-2 rounded-full px-5 py-2.5 font-black shadow-xl backdrop-blur border-2 ${
+                className={`mg-cam-status inline-flex items-center gap-2 rounded-full px-5 py-2.5 font-black shadow-xl border-2 ${
                   bothHandsWarn
                     ? 'border-red-200 bg-red-600/95 text-white animate-pulse'
                     : questionPhase === 'READING_QUESTION'
@@ -2148,19 +2170,19 @@ export function PhysicalCardGame({
               </span>
 
               {questionPhase === 'READY_TO_ANSWER' && pendingChoice === 'yes' && !bothHandsWarn ? (
-                <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-emerald-600/95 px-6 py-3 font-black text-white shadow-xl backdrop-blur">
+                <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-emerald-600/95 px-6 py-3 font-black text-white shadow-xl">
                   <span className="h-4 w-4 rounded-full bg-white animate-pulse shrink-0" />
                   <span>ตรวจพบมือขวา (ใช่)... </span>
                   <span ref={badgePctRef}>0%</span>
                 </span>
               ) : questionPhase === 'READY_TO_ANSWER' && pendingChoice === 'no' && !bothHandsWarn ? (
-                <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-rose-600/95 px-6 py-3 font-black text-white shadow-xl backdrop-blur">
+                <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-rose-600/95 px-6 py-3 font-black text-white shadow-xl">
                   <span className="h-4 w-4 rounded-full bg-white animate-pulse shrink-0" />
                   <span>ตรวจพบมือซ้าย (ไม่ใช่)... </span>
                   <span ref={badgePctRef}>0%</span>
                 </span>
               ) : (
-                <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-white/95 px-5 py-2.5 font-black text-[#0F4C81] shadow-xl backdrop-blur border-2 border-emerald-300">
+                <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-white/95 px-5 py-2.5 font-black text-[#0F4C81] shadow-xl border-2 border-emerald-300">
                   <span className={`h-4 w-4 rounded-full shrink-0 ${detectorReady ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'}`} />
                   {detectorReady ? 'ตรวจจับมือ 21 จุด 2 ข้าง (เกณฑ์ y < 0.58)' : 'กำลังเตรียมระบบตรวจจับมือ...'}
                 </span>
@@ -2201,7 +2223,7 @@ export function PhysicalCardGame({
           )}
 
           {pendingChoice && (
-            <div className="absolute bottom-4 inset-x-4 z-10 rounded-2xl bg-white/95 p-5 sm:p-6 text-[#0F4C81] backdrop-blur border-2 border-sky-300 shadow-2xl">
+            <div className="absolute bottom-4 inset-x-4 z-10 rounded-2xl bg-white/95 p-5 sm:p-6 text-[#0F4C81] border-2 border-sky-300 shadow-2xl">
               <div className="mg-hold-label flex items-center justify-between font-black mb-2.5">
                 <span>{pendingChoice === 'yes' ? t('minigameRightYes') : t('minigameLeftNo')}</span>
                 <span ref={progressPctRef}>0%</span>
@@ -2209,10 +2231,10 @@ export function PhysicalCardGame({
               <div className="h-7 sm:h-8 w-full overflow-hidden rounded-full bg-sky-100 border border-sky-200">
                 <div
                   ref={progressBarFillRef}
-                  className={`h-full will-change-[width] transition-[width,background-color] duration-150 ease-linear ${
+                  className={`h-full w-full origin-left transition-colors duration-150 ${
                     pendingChoice === 'yes' ? 'bg-emerald-400' : 'bg-rose-500'
                   }`}
-                  style={{ width: '0%' }}
+                  style={{ transform: 'scaleX(0)' }}
                 />
               </div>
             </div>

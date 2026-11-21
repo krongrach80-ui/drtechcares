@@ -63,7 +63,7 @@ export default {
     if (url.pathname.startsWith('/api/')) {
       try {
         const router = getOrCreateRouter(env);
-        return await router(request);
+        return await router(request, ctx);
       } catch (err) {
         return new Response(
           JSON.stringify({

@@ -882,7 +882,20 @@ export class DrTechCaresApiClient {
       });
       if (res.status === 401 || res.status === 403) {
         const text = await res.text().catch(() => '');
-        const data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+        let data: Record<string, unknown> = {};
+        if (text) {
+          try {
+            data = JSON.parse(text) as Record<string, unknown>;
+          } catch {
+            data = { error: 'HTTP_ERROR', message: `Request failed (${res.status})` };
+          }
+        }
+        if (res.status === 401) {
+          this.setSession(null, null);
+          if (typeof globalThis.dispatchEvent === 'function' && typeof globalThis.CustomEvent === 'function') {
+            globalThis.dispatchEvent(new globalThis.CustomEvent('drtech:auth-expired'));
+          }
+        }
         throw new ApiError(
           res.status,
           String(data.error ?? 'FORBIDDEN'),
@@ -980,7 +993,7 @@ export class DrTechCaresApiClient {
   }
 
   async updateUser(id: string, patch: Partial<UserAccount>): Promise<UserAccount> {
-    const res = await this.request<{ user: UserAccount }>(`/api/users/${id}`, {
+    const res = await this.request<{ user: UserAccount }>(`/api/users/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify(patch),
     });
@@ -998,7 +1011,7 @@ export class DrTechCaresApiClient {
   }
 
   async resetUserPassword(id: string, newPassword: string): Promise<void> {
-    await this.request(`/api/users/${id}/reset-password`, {
+    await this.request(`/api/users/${encodeURIComponent(id)}/reset-password`, {
       method: 'POST',
       body: JSON.stringify({ newPassword }),
     });
@@ -1221,11 +1234,42 @@ export class DrTechCaresApiClient {
             : { probeVector },
         ),
       });
-      const body = (await res.json()) as KioskFaceVerifyResponse;
+      const rawText = await res.text().catch(() => '');
+      let body: KioskFaceVerifyResponse;
+      try {
+        body = (rawText ? JSON.parse(rawText) : {}) as KioskFaceVerifyResponse;
+      } catch {
+        throw new ApiError(res.status, 'INVALID_JSON', `Non-JSON response (${res.status})`);
+      }
       return body;
     } catch (err) {
       throw err;
     }
+  }
+
+  async verifyKioskPinLogin(pin: string): Promise<KioskFaceVerifyResponse> {
+    const res = await fetch(`${this.baseUrl}/api/kiosk/pin-login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-device-id': this.deviceId },
+      body: JSON.stringify({ pin }),
+    });
+    const rawText = await res.text().catch(() => '');
+    let data: Record<string, unknown> = {};
+    if (rawText) {
+      try {
+        data = JSON.parse(rawText) as Record<string, unknown>;
+      } catch {
+        data = { error: 'INVALID_JSON', message: `Non-JSON response (${res.status})` };
+      }
+    }
+    if (!res.ok) {
+      throw new ApiError(
+        res.status,
+        String(data.error ?? 'PATIENT_NOT_FOUND'),
+        String(data.message ?? `PIN lookup failed (${res.status})`),
+      );
+    }
+    return data as unknown as KioskFaceVerifyResponse;
   }
 
   static clearRecentEnrolledEntries(): void {
@@ -1512,10 +1556,13 @@ export class DrTechCaresApiClient {
     },
   ): Promise<PatientRecord> {
     try {
-      const res = await this.request<{ patient: PatientRecord }>(`/api/patients/${patientId}/enroll-face`, {
-        method: 'POST',
-        body: JSON.stringify(input),
-      });
+      const res = await this.request<{ patient: PatientRecord }>(
+        `/api/patients/${encodeURIComponent(patientId)}/enroll-face`,
+        {
+          method: 'POST',
+          body: JSON.stringify(input),
+        },
+      );
       this.saveRecentEnrolledEntry(res.patient, input);
       this.saveLocalPatientRecord(res.patient);
       return res.patient;
@@ -1624,10 +1671,13 @@ export class DrTechCaresApiClient {
 
   async updatePatient(id: string, patch: Partial<PatientRecord>): Promise<PatientRecord> {
     try {
-      const res = await this.request<{ patient: PatientRecord }>(`/api/patients/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify(patch),
-      });
+      const res = await this.request<{ patient: PatientRecord }>(
+        `/api/patients/${encodeURIComponent(id)}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify(patch),
+        },
+      );
       this.saveLocalPatientRecord(res.patient);
       return res.patient;
     } catch (err) {
@@ -1676,10 +1726,13 @@ export class DrTechCaresApiClient {
     note?: string,
     delegationDate?: string,
   ): Promise<PatientRecord> {
-    const res = await this.request<{ patient: PatientRecord }>(`/api/patients/${patientId}/delegate`, {
-      method: 'POST',
-      body: JSON.stringify({ targetPtId, note, delegationDate }),
-    });
+    const res = await this.request<{ patient: PatientRecord }>(
+      `/api/patients/${encodeURIComponent(patientId)}/delegate`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ targetPtId, note, delegationDate }),
+      },
+    );
     if (targetPtId) {
       this.writeCaseDelegationOverride(patientId, {
         delegatedToPtId: res.patient.delegatedToPtId ?? targetPtId,
@@ -1803,10 +1856,13 @@ export class DrTechCaresApiClient {
   }
 
   async updateTreatmentReport(id: string, patch: Partial<TreatmentReportRecord>): Promise<TreatmentReportRecord> {
-    const res = await this.request<{ report: TreatmentReportRecord }>(`/api/reports/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(patch),
-    });
+    const res = await this.request<{ report: TreatmentReportRecord }>(
+      `/api/reports/${encodeURIComponent(id)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(patch),
+      },
+    );
     return res.report;
   }
 

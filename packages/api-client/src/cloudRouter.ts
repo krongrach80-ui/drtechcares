@@ -561,7 +561,7 @@ function normalizeAngleUrlMap(
 
 function generateUniversalLinkCode(patientId: string): string {
   const cleaned = patientId.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-  const suffix = (cleaned.slice(-8) || randomHex(4).toUpperCase()).padStart(8, '0');
+  const suffix = (cleaned.slice(0, 8) || randomHex(4).toUpperCase()).padStart(8, '0');
   return `DTC-EHR-${suffix}`;
 }
 
@@ -1087,12 +1087,21 @@ function createBoundedSupabaseFetch(
       );
     }
     try {
+      const urlStr =
+        typeof input === 'string'
+          ? input
+          : typeof URL !== 'undefined' && input instanceof URL
+            ? input.toString()
+            : typeof (input as { url?: unknown })?.url === 'string'
+              ? String((input as { url: string }).url)
+              : '';
+      const isAuthEndpoint = urlStr.includes('/auth/v1/');
       let res = await runOnce(input, init);
-      if (res.status === 401 && anonFallbackKey && anonFallbackKey !== primaryKey) {
+      if (!isAuthEndpoint && res.status === 401 && anonFallbackKey && anonFallbackKey !== primaryKey) {
         res = await runOnce(input, init, anonFallbackKey);
       }
       if (
-        res.status === 401 ||
+        (!isAuthEndpoint && res.status === 401) ||
         res.status === 500 ||
         res.status === 502 ||
         res.status === 503 ||
@@ -1185,6 +1194,16 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     }
   };
 
+  let latestWaitUntil: ((p: Promise<unknown>) => void) | undefined;
+  const runWaitUntil = (p: Promise<unknown>): void => {
+    try {
+      latestWaitUntil?.(p);
+    } catch {
+      // Ignore waitUntil outside Cloudflare Worker execution context
+    }
+    void p;
+  };
+
   const recordAudit = (entry: Omit<AuditLogRecord, 'id' | 'createdAt'>): AuditLogRecord => {
     const log: AuditLogRecord = {
       id: newRecordId(Boolean(supabase), 'audit'),
@@ -1196,25 +1215,27 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       state.audit_logs.length = 1000;
     }
     if (supabase) {
-      void persistToSupabase(supabase, async (db) => {
-        const res = (await db.from('audit_logs').insert(
-          stripUnsupportedColumnsForWrite('audit_logs', {
-            id: log.id,
-            event_type: log.eventType,
-            actor_role: log.actorRole,
-            actor_id: log.actorId,
-            actor_name: log.actorName,
-            ip_address: log.ipAddress,
-            device_id: log.deviceId,
-            target_id: log.targetId ?? null,
-            detail: { message: log.detail },
-          }),
-        )) as { error?: unknown } | undefined;
-        if (res?.error) {
-          recordUnsupportedColumn('audit_logs', res.error);
-        }
-        return res;
-      });
+      runWaitUntil(
+        persistToSupabase(supabase, async (db) => {
+          const res = (await db.from('audit_logs').insert(
+            stripUnsupportedColumnsForWrite('audit_logs', {
+              id: log.id,
+              event_type: log.eventType,
+              actor_role: log.actorRole,
+              actor_id: log.actorId,
+              actor_name: log.actorName,
+              ip_address: log.ipAddress,
+              device_id: log.deviceId,
+              target_id: log.targetId ?? null,
+              detail: { message: log.detail },
+            }),
+          )) as { error?: unknown } | undefined;
+          if (res?.error) {
+            recordUnsupportedColumn('audit_logs', res.error);
+          }
+          return res;
+        }),
+      );
     }
     return log;
   };
@@ -1285,7 +1306,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     }
 
     // 3. Fallback: verify Supabase Auth JWT if a Supabase session token was sent directly
-    if (supabase && token.includes('.')) {
+    if (supabase && !token.startsWith('stf.') && token.split('.').length === 3) {
       try {
         const { data } = await supabase.auth.getUser(token);
         const sbUser = data?.user;
@@ -1396,7 +1417,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     return { patient, pid, linkedUserIds, linkedUsernames };
   };
 
-  return async function handleApiRequest(request: Request): Promise<Response> {
+  return async function handleApiRequest(
+    request: Request,
+    execCtx?: { waitUntil?: (promise: Promise<unknown>) => void },
+  ): Promise<Response> {
+    if (execCtx?.waitUntil) {
+      latestWaitUntil = execCtx.waitUntil.bind(execCtx);
+    }
     if (request.method === 'OPTIONS') {
       return new Response(null, {
         status: 204,
@@ -1482,8 +1509,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       await probeSupabaseHealth(supabase, 1500);
     }
 
-    // Fast-path exercise library: immediately serve the seeded 15 unified stroke exercises without 17-table hydration
-    if (pathname === '/api/exercises' && method === 'GET' && state.exercises.length > 0) {
+    // Fast-path exercise library: immediately serve seeded exercises when offline or already hydrated
+    if (
+      pathname === '/api/exercises' &&
+      method === 'GET' &&
+      state.exercises.length > 0 &&
+      (hydrated || !supabase || isSupabaseCircuitOpen(supabase))
+    ) {
       const merged = mergeDuplicateSideExercises(state.exercises);
       return jsonResponse({
         exercises: merged.map((ex) => ({
@@ -1556,15 +1588,17 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             if (persistTimerId !== undefined) clearTimeout(persistTimerId);
           }
         } else {
-          void persistToSupabase(supabase, (db) =>
-            db.from('active_sessions').insert({
-              token: sessionRow.token,
-              user_id: sessionRow.userId,
-              role: sessionRow.role,
-              ip_address: sessionRow.ipAddress,
-              device_id: sessionRow.deviceId,
-              revoked: false,
-            }),
+          runWaitUntil(
+            persistToSupabase(supabase, (db) =>
+              db.from('active_sessions').insert({
+                token: sessionRow.token,
+                user_id: sessionRow.userId,
+                role: sessionRow.role,
+                ip_address: sessionRow.ipAddress,
+                device_id: sessionRow.deviceId,
+                revoked: false,
+              }),
+            ),
           );
         }
       }
@@ -1585,6 +1619,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     const shouldHydrateRequest =
       forceSupabaseProbe ||
       pathname === '/api/biometric/verify' ||
+      pathname === '/api/kiosk/pin-login' ||
       (method === 'GET' && pathname !== '/api/exercises' && pathname !== '/api/health');
 
     await ensureHydrated(shouldHydrateRequest, forceSupabaseProbe);
@@ -1700,11 +1735,33 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (pathname === '/api/auth/logout' && method === 'POST') {
       const err = requireAuth(authUser);
       if (err) return err;
-      const session = state.active_sessions.find((s) => s.token === authToken);
-      if (session) {
-        session.revoked = true;
+      const existingSession = state.active_sessions.find((s) => s.token === authToken);
+      if (existingSession) {
+        existingSession.revoked = true;
+      } else if (authToken) {
+        state.active_sessions.unshift({
+          token: authToken,
+          userId: authUser!.id,
+          role: authUser!.role,
+          ipAddress: clientIp,
+          deviceId: clientDeviceId,
+          createdAt: new Date().toISOString(),
+          revoked: true,
+        });
+      }
+      if (authToken) {
         await persistToSupabase(supabase, (db) =>
-          db.from('active_sessions').update({ revoked: true }).eq('token', session.token),
+          db.from('active_sessions').upsert(
+            {
+              token: authToken,
+              user_id: authUser!.id,
+              role: authUser!.role,
+              ip_address: clientIp,
+              device_id: clientDeviceId,
+              revoked: true,
+            },
+            { onConflict: 'token' },
+          ),
         );
       }
       return jsonResponse({ ok: true });
@@ -2445,6 +2502,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         2400,
         'biometric_enroll',
       );
+
+      if (!persistRes.persisted) {
+        (patient as { pendingDbFlushAt?: number }).pendingDbFlushAt = Date.now();
+      } else {
+        delete (patient as { pendingDbFlushAt?: number }).pendingDbFlushAt;
+      }
 
       recordAudit({
         eventType: isPendingSkip ? 'PATIENT_REGISTERED_PENDING_FACE' : 'PATIENT_ENROLLED_120_FACE_ID',
@@ -3615,6 +3678,106 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       });
     }
 
+    // Public Kiosk PIN Login (matches active patient server-side without exposing listPatients PHI)
+    if (pathname === '/api/kiosk/pin-login' && method === 'POST') {
+      const body = await readJsonBody<{ pin?: string }>(request);
+      const rawPin = String(body?.pin ?? '').trim();
+      const digits = rawPin.replace(/\D/g, '');
+      const normalized = rawPin.toLowerCase();
+      if (rawPin.length < 4 && digits.length < 4) {
+        return jsonResponse(
+          { matched: false, error: 'VALIDATION_ERROR', message: 'กรุณาระบุเลข HN หรือเบอร์โทร 4 ตัวท้าย' },
+          400,
+        );
+      }
+
+      const deletedSet = new Set((state.deleted_patient_ids ?? []).map((x) => x.trim().toLowerCase()));
+      const activeList = state.patients.filter(
+        (p) =>
+          (p.registrationStatus ?? 'active') === 'active' &&
+          !deletedSet.has(p.id.trim().toLowerCase()) &&
+          (!p.hn || !deletedSet.has(p.hn.trim().toLowerCase())),
+      );
+
+      const matchedPatient =
+        activeList.find((p) => {
+          const cleanPhone = (p.phone ?? '').replace(/\D/g, '');
+          const cleanHn = (p.hn ?? '').replace(/\D/g, '');
+          return (
+            (digits.length >= 4 && cleanPhone.length >= 4 && cleanPhone.endsWith(digits)) ||
+            (digits.length >= 4 && cleanHn.length >= 4 && cleanHn.endsWith(digits)) ||
+            (p.hn ?? '').trim().toLowerCase() === normalized
+          );
+        }) ?? null;
+
+      if (!matchedPatient) {
+        return jsonResponse(
+          { matched: false, error: 'PATIENT_NOT_FOUND', message: 'ไม่พบบัญชีผู้ป่วยที่ตรงกับเลขยืนยันนี้' },
+          404,
+        );
+      }
+
+      const course = state.patient_courses.find((c) => c.patientId === matchedPatient.id) ?? null;
+      const todayIdx = new Date().getDay();
+      const todayRoutine = course?.weeklySchedule.find((d) => d.dayIndex === todayIdx) ?? null;
+      const todaySchedule = resolveTodayPatientSchedule({
+        rehabSchedules: matchedPatient.rehabSchedules,
+        rehabSessions: state.rehab_sessions.filter((s) => s.patientId === matchedPatient.id),
+        todayRoutine,
+        weeklySchedule: course?.weeklySchedule,
+        nextAppointmentDate: matchedPatient.nextAppointmentDate,
+        fallbackNextAppointmentDate: matchedPatient.nextAppointmentDate,
+        exercisesCatalog: state.exercises,
+      });
+
+      recordAudit({
+        eventType: 'KIOSK_PIN_LOGIN',
+        actorRole: 'patient_kiosk',
+        actorId: matchedPatient.id,
+        actorName: matchedPatient.fullName,
+        ipAddress: clientIp,
+        deviceId: clientDeviceId,
+        targetId: matchedPatient.id,
+        detail: `Kiosk PIN fallback login for ${matchedPatient.fullName} (${matchedPatient.hn})`,
+      });
+
+      return jsonResponse({
+        matched: true,
+        patientId: matchedPatient.id,
+        patientName: matchedPatient.fullName,
+        patient: {
+          id: matchedPatient.id,
+          hn: matchedPatient.hn,
+          fullName: matchedPatient.fullName,
+          nextAppointmentDate: todaySchedule.nextAppointmentDate,
+          strokeType: matchedPatient.strokeType,
+          affectedSide: matchedPatient.affectedSide,
+          motorAssessmentScore: matchedPatient.motorAssessmentScore,
+          adlDressingScore: matchedPatient.adlDressingScore,
+          maxSafeRomDeg: matchedPatient.maxSafeRomDeg,
+          universalHealthLinkCode: matchedPatient.universalHealthLinkCode,
+        },
+        biometricTemplate:
+          matchedPatient.masterEmbedding && matchedPatient.masterEmbedding.length > 0
+            ? {
+                patientId: matchedPatient.id,
+                hn: matchedPatient.hn,
+                fullName: matchedPatient.fullName,
+                masterEmbedding: matchedPatient.masterEmbedding,
+                angleEmbeddings: matchedPatient.angleEmbeddings,
+                exemplarEmbeddings: matchedPatient.exemplarEmbeddings,
+                biometricEngine: matchedPatient.biometricEngine,
+                geometricRatios: matchedPatient.geometricRatios,
+              }
+            : null,
+        todayRoutine,
+        rehabSchedules: matchedPatient.rehabSchedules ?? [],
+        todayExercises: todaySchedule.todayExercises,
+        hasAppointmentToday: todaySchedule.hasAppointmentToday,
+        completedToday: todaySchedule.completedToday,
+      });
+    }
+
     // ========================
     // 4. PATIENTS, DELEGATION & APPEND-ONLY NOTES
     // ========================
@@ -3781,7 +3944,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const content = body?.content?.trim();
       if (!content) return jsonResponse({ error: 'EMPTY_NOTE' }, 400);
       const note: MedicalNoteRecord = {
-        id: `note-${Date.now()}-${randomHex(2)}`,
+        id: newRecordId(Boolean(supabase), 'note'),
         patientId: notesMatch[1],
         authorId: authUser!.id,
         authorName: authUser!.fullName,
@@ -3791,8 +3954,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       state.medical_notes.push(note);
       await persistToSupabase(supabase, (db) =>
         db.from('medical_notes').insert({
+          id: note.id,
           patient_id: toSafeUuidOrNull(note.patientId) ?? note.patientId,
-          author_id: toSafeUuidOrNull(note.authorId),
+          author_id: toSafeUuidOrNull(note.authorId, state.users) ?? note.authorId,
           author_name: note.authorName,
           content: note.content,
         }),
@@ -4048,8 +4212,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       if (err) return err;
       const patient = state.patients.find((p) => p.id === checkinMatch[1]);
       if (!patient) return jsonResponse({ error: 'PATIENT_NOT_FOUND' }, 404);
-      const body = await readJsonBody<{ note?: string }>(request);
-      const todayIso = new Date().toISOString().slice(0, 10);
+      const body = await readJsonBody<{ note?: string; scheduledDate?: string }>(request);
+      const clientDate =
+        typeof body?.scheduledDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.scheduledDate.trim())
+          ? body.scheduledDate.trim()
+          : '';
+      const todayIso = clientDate || new Date().toISOString().slice(0, 10);
       patient.nextAppointmentDate = todayIso;
 
       const existingSchedules = [...(patient.rehabSchedules ?? [])];
@@ -5247,7 +5415,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         db.from('treatment_reports').insert({
           id: report.id,
           patient_id: toSafeUuidOrNull(report.patientId) ?? report.patientId,
-          pt_id: toSafeUuidOrNull(report.ptId),
+          pt_id: toSafeUuidOrNull(report.ptId, state.users) ?? report.ptId,
           pt_name: report.ptName,
           summary: report.summary,
           ai_recommendation: report.aiRecommendation,
@@ -5552,7 +5720,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (staffCallAckMatch && method === 'PATCH') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
-      const callId = decodeURIComponent(staffCallAckMatch[1]);
+      const callId = decodePathSegment(staffCallAckMatch[1]);
       let target = state.staff_calls.find((c) => c.id === callId);
       if (!target) {
         target = {
@@ -5568,16 +5736,18 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       target.status = 'acknowledged';
       target.reason = target.reason.replace(/^\[ACKNOWLEDGED\]\s*/, '');
       const ackReason = `[ACKNOWLEDGED] ${target.reason}`;
-      await persistToSupabase(supabase, async (db) => {
-        const res = await db
-          .from('staff_calls')
-          .update({ status: 'acknowledged', reason: target!.reason })
-          .eq('id', target!.id);
-        if (res?.error) {
-          return db.from('staff_calls').update({ status: 'open', reason: ackReason }).eq('id', target!.id);
-        }
-        return res;
-      });
+      if (isUuidString(target.id)) {
+        await persistToSupabase(supabase, async (db) => {
+          const res = await db
+            .from('staff_calls')
+            .update({ status: 'acknowledged', reason: target!.reason })
+            .eq('id', target!.id);
+          if (res?.error) {
+            return db.from('staff_calls').update({ status: 'open', reason: ackReason }).eq('id', target!.id);
+          }
+          return res;
+        });
+      }
       recordAudit({
         eventType: 'STAFF_CALL_ACKNOWLEDGED',
         actorRole: authUser!.role,
@@ -5595,7 +5765,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (staffCallResolveMatch && method === 'PATCH') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
-      const callId = decodeURIComponent(staffCallResolveMatch[1]);
+      const callId = decodePathSegment(staffCallResolveMatch[1]);
       let target = state.staff_calls.find((c) => c.id === callId);
       if (!target) {
         target = {
@@ -5610,9 +5780,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
       target.status = 'resolved';
       target.reason = target.reason.replace(/^\[ACKNOWLEDGED\]\s*/, '');
-      await persistToSupabase(supabase, (db) =>
-        db.from('staff_calls').update({ status: 'resolved', reason: target!.reason }).eq('id', target!.id),
-      );
+      if (isUuidString(target.id)) {
+        await persistToSupabase(supabase, (db) =>
+          db.from('staff_calls').update({ status: 'resolved', reason: target!.reason }).eq('id', target!.id),
+        );
+      }
       recordAudit({
         eventType: 'STAFF_CALL_RESOLVED',
         actorRole: authUser!.role,

@@ -237,3 +237,4 @@ export function installGlobalTactileMotion(doc?: Document): () => void {
   installedDocs.set(targetDoc, dispose);
   return dispose;
 }
+

@@ -270,9 +270,28 @@ export function StaffAssistedEnrollmentModal({
       setStep(2);
       setCapturing(true);
     } else {
+      setHn(`HN-${Math.floor(100000 + Math.random() * 899999)}`);
+      setFullName('');
+      setAge(45);
+      setGender('ชาย');
+      setPhone('');
+      setStrokeType('ISCHEMIC');
+      setAffectedSide('RIGHT');
+      setMotorAssessmentScore(3);
+      setAdlDressingScore(3);
+      setMaxSafeRomDeg(120);
+      setClinicalDiagnosis('');
+      setContraindications('');
+      setUnderlyingDiseases('');
+      setAllergies('');
+      setDoctorNotes('');
+      setPinCode('1234');
+      setEmergencyName('');
+      setEmergencyRelation('');
+      setEmergencyPhone('');
       setStep(1);
     }
-  }, [open, targetPatient, catalogExercises, todayIso]);
+  }, [open, targetPatient, todayIso]);
 
   useEffect(() => {
     if (!open || targetPatient) return;
@@ -389,6 +408,13 @@ export function StaffAssistedEnrollmentModal({
           setBiometric120Result(finalized);
           setCapturedSnapshotUrl(finalized.avatarDataUrl);
         }
+      } catch (err) {
+        setErrorMsg(
+          err instanceof Error
+            ? err.message
+            : 'ไม่สามารถประมวลผลโปรไฟล์ใบหน้า 120 เฟรมได้ กรุณาสแกนใหม่อีกครั้ง',
+        );
+        return;
       } finally {
         setSaving(false);
       }
@@ -1249,6 +1275,10 @@ export function StaffAssistedEnrollmentModal({
                   onReadyStateChange={(ready, triggerFinalize) => {
                     setAllFiveAnglesReady(ready);
                     triggerFinalizeRef.current = triggerFinalize;
+                    if (!ready) {
+                      setBiometric120Result(null);
+                      setCapturedSnapshotUrl(undefined);
+                    }
                   }}
                   onCancel={() => setCapturing(false)}
                 />
@@ -1776,7 +1806,12 @@ export function StaffAssistedEnrollmentModal({
                     </div>
                     <div className="max-h-36 overflow-y-auto space-y-1 pr-1">
                       {createdPatient.rehabSchedules!.map((sched) => {
-                        const exMeta = catalogExercises.find((e) => e.id === sched.exerciseId);
+                        const schedBase = parseExerciseCodeAndSide(sched.exerciseId || '').baseCode;
+                        const exMeta = catalogExercises.find(
+                          (e) =>
+                            e.id === sched.exerciseId ||
+                            parseExerciseCodeAndSide(e.code || e.id).baseCode === schedBase,
+                        );
                         return (
                           <div
                             key={sched.id}

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PatientRecord, RehabSessionRecord, UserAccount } from '@drtechcares/api-client';
 import { CLINICAL_EXERCISES, parseExerciseCodeAndSide } from '@drtechcares/pose-engine';
 import {
@@ -100,6 +100,17 @@ export function PatientClinicalRecordPanel({
   const [toast, setToast] = useState<{ kind: 'success' | 'error' | 'info'; message: string } | null>(
     null,
   );
+  const toastTimerRef = useRef<number | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
+  const latestLoadReqIdRef = useRef(0);
+  const selectedPatientIdRef = useRef<string | null>(selectedPatientId ?? null);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+    };
+  }, []);
 
   const filteredPatients = useMemo(() => {
     const q = patientQuery.trim().toLowerCase();
@@ -122,6 +133,8 @@ export function PatientClinicalRecordPanel({
     return filteredPatients[0] ?? patients[0] ?? null;
   }, [patients, filteredPatients, selectedPatientId]);
 
+  selectedPatientIdRef.current = selectedPatient?.id ?? null;
+
   useEffect(() => {
     if (selectedPatient && selectedPatient.id !== selectedPatientId) {
       onSelectPatientId(selectedPatient.id);
@@ -129,18 +142,27 @@ export function PatientClinicalRecordPanel({
   }, [selectedPatient, selectedPatientId, onSelectPatientId]);
 
   const showToast = useCallback((kind: 'success' | 'error' | 'info', message: string) => {
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
     setToast({ kind, message });
-    window.setTimeout(() => {
+    toastTimerRef.current = window.setTimeout(() => {
+      toastTimerRef.current = null;
       setToast((prev) => (prev?.message === message ? null : prev));
     }, 4500);
   }, []);
 
   const loadPatientHistory = useCallback(
     async (patient: PatientRecord | null, showSyncBanner = false) => {
+      const reqId = ++latestLoadReqIdRef.current;
       if (!patient) {
         setRecords([]);
+        setLoadingRecords(false);
+        setSyncingCrossFacility(false);
         return;
       }
+      const targetPatientId = patient.id;
       if (showSyncBanner) {
         setSyncingCrossFacility(true);
       } else {
@@ -151,6 +173,12 @@ export function PatientClinicalRecordPanel({
           includeCrossFacility: true,
           seedDemoIfEmpty: true,
         });
+        if (
+          reqId !== latestLoadReqIdRef.current ||
+          selectedPatientIdRef.current !== targetPatientId
+        ) {
+          return;
+        }
         setRecords(list);
         if (showSyncBanner) {
           const facilitiesCount = new Set(list.map((r) => r.facility_name)).size;
@@ -160,13 +188,21 @@ export function PatientClinicalRecordPanel({
           );
         }
       } catch (err) {
+        if (
+          reqId !== latestLoadReqIdRef.current ||
+          selectedPatientIdRef.current !== targetPatientId
+        ) {
+          return;
+        }
         showToast(
           'error',
           err instanceof Error ? err.message : 'ไม่สามารถโหลดเวชระเบียนผู้ป่วยได้',
         );
       } finally {
-        setLoadingRecords(false);
-        setSyncingCrossFacility(false);
+        if (reqId === latestLoadReqIdRef.current) {
+          setLoadingRecords(false);
+          setSyncingCrossFacility(false);
+        }
       }
     },
     [showToast],
@@ -177,6 +213,12 @@ export function PatientClinicalRecordPanel({
   }, [selectedPatient?.id, loadPatientHistory]);
 
   useEffect(() => {
+    setRecords([]);
+    setExerciseFilter('ALL');
+    setChiefComplaint('');
+    setHandoverNote('');
+    setNextGoal('');
+    setMeasuredRomInput('');
     if (!selectedPatient) return;
     setTargetSide(normalizeDefaultSide(selectedPatient, exerciseCode));
     const score = selectedPatient.motorAssessmentScore;
@@ -259,7 +301,11 @@ export function PatientClinicalRecordPanel({
       }
       setCopiedCode(true);
       showToast('success', `คัดลอกรหัสส่งต่อ ${universalLinkCode} แล้ว`);
-      window.setTimeout(() => setCopiedCode(false), 2000);
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = window.setTimeout(() => {
+        copyTimerRef.current = null;
+        setCopiedCode(false);
+      }, 2000);
     } catch {
       showToast('info', `รหัสส่งต่อ: ${universalLinkCode}`);
     }
@@ -284,10 +330,11 @@ export function PatientClinicalRecordPanel({
         ? Math.max(0, Math.min(10, Math.round(painParsed)))
         : null;
 
+    const submitPatientId = selectedPatient.id;
     setSaving(true);
     try {
       const saved = await createPatientAssessment({
-        patient_id: selectedPatient.id,
+        patient_id: submitPatientId,
         patient_hn: selectedPatient.hn,
         universal_link_code: universalLinkCode,
         facility_name: facilityName,
@@ -308,14 +355,18 @@ export function PatientClinicalRecordPanel({
         source_channel: 'STAFF_MANUAL_ASSESSMENT',
       });
 
-      const refreshed = await listPatientAssessments(selectedPatient, {
-        includeCrossFacility: true,
-        seedDemoIfEmpty: false,
-      });
-      setRecords(refreshed);
-      setChiefComplaint('');
-      setHandoverNote('');
-      setNextGoal('');
+      if (selectedPatientIdRef.current === submitPatientId) {
+        const refreshed = await listPatientAssessments(selectedPatient, {
+          includeCrossFacility: true,
+          seedDemoIfEmpty: false,
+        });
+        if (selectedPatientIdRef.current === submitPatientId) {
+          setRecords(refreshed);
+          setChiefComplaint('');
+          setHandoverNote('');
+          setNextGoal('');
+        }
+      }
       showToast(
         'success',
         `บันทึกผลประเมินครั้งที่ ${saved.visit_number} (ระดับ ${saved.initial_score_0_to_6}/6, ROM ${saved.measured_rom_deg.toFixed(1)}°) เข้าแฟ้ม ${selectedPatient.fullName} แล้ว`,
@@ -371,6 +422,7 @@ export function PatientClinicalRecordPanel({
       const ratio = Math.max(0, Math.min(1, item.record.measured_rom_deg / maxRom));
       const y = padT + plotH - ratio * plotH;
       return {
+        id: item.record.id,
         x,
         y,
         visitNumber: item.record.visit_number,
@@ -925,7 +977,7 @@ export function PatientClinicalRecordPanel({
                   )}
 
                   {chartData.nodes.map((node) => (
-                    <g key={node.visitNumber}>
+                    <g key={node.id}>
                       <circle
                         cx={node.x}
                         cy={node.y}

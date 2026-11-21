@@ -1,5 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
+import type { FaceLandmarker } from '@mediapipe/tasks-vision';
+import {
+  getCachedPrimaryFaceLandmarker,
+  getNextMonotonicVideoDetectTs,
+} from '../lib/biometricVisionCache';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import {
   MAHIDOL_MOTOR_SCALE,
@@ -329,6 +333,8 @@ export function WelcomeFaceScanModal({
 
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [checkingIn, setCheckingIn] = useState(false);
+  const [checkInErr, setCheckInErr] = useState<string | null>(null);
   const [autoScanCount, setAutoScanCount] = useState(0);
   const [lastRawCosine, setLastRawCosine] = useState(0);
   const [bioStatus, setBioStatus] = useState<BiologicalLivenessReport | null>(null);
@@ -379,7 +385,6 @@ export function WelcomeFaceScanModal({
     let rafId = 0;
     let prevLandmarks: Array<{ x: number; y: number; z?: number }> | null = null;
     let lastEmbedAt = 0;
-    let lastDetectTs = 0;
     let lastProcessedVideoTime = -1;
     let lastFaceDetectWallMs = 0;
     const alignCanvas = document.createElement('canvas');
@@ -398,6 +403,8 @@ export function WelcomeFaceScanModal({
     streakTrackerRef.current = new LiveIdentityStreakTracker(BIOMETRIC_REQUIRED_STREAK);
     streakTrackerRef.current.reset();
     setMatchResult(null);
+    setCheckingIn(false);
+    setCheckInErr(null);
     setCameraError(null);
     setHudBox(null);
     setLiveMatchHud(null);
@@ -444,50 +451,13 @@ export function WelcomeFaceScanModal({
         await videoRef.current.play();
         if (!active) return;
 
-        let vision;
-        for (const wasmBase of [
-          '/mediapipe/wasm',
-          '/models/wasm',
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
-        ]) {
-          try {
-            vision = await FilesetResolver.forVisionTasks(wasmBase);
-            break;
-          } catch {
-            // Try next WASM base path
-          }
-        }
-        if (!vision || !active) {
+        const cachedLandmarker = await getCachedPrimaryFaceLandmarker();
+        if (!active) {
           stream?.getTracks().forEach((t) => t.stop());
           stream = null;
           return;
         }
-        let createdLandmarker: FaceLandmarker | null = null;
-        for (const delegate of ['GPU', 'CPU', undefined] as const) {
-          try {
-            createdLandmarker = await FaceLandmarker.createFromOptions(vision, {
-              baseOptions: delegate
-                ? { modelAssetPath: '/models/face_landmarker.task', delegate }
-                : { modelAssetPath: '/models/face_landmarker.task' },
-              runningMode: 'VIDEO',
-              numFaces: 2,
-              outputFaceBlendshapes: true,
-              minFaceDetectionConfidence: 0.45,
-              minFacePresenceConfidence: 0.45,
-              minTrackingConfidence: 0.45,
-            });
-            break;
-          } catch {
-            // Try next delegate
-          }
-        }
-        if (!createdLandmarker || !active) {
-          createdLandmarker?.close();
-          stream?.getTracks().forEach((t) => t.stop());
-          stream = null;
-          return;
-        }
-        landmarker = createdLandmarker;
+        landmarker = cachedLandmarker;
 
         const loop = async () => {
           if (!active || !videoRef.current || !landmarker) return;
@@ -501,8 +471,7 @@ export function WelcomeFaceScanModal({
               }
               lastProcessedVideoTime = currentVideoTime;
               lastFaceDetectWallMs = now;
-              const detectTs = Math.max(lastDetectTs + 1, Math.round(now));
-              lastDetectTs = detectTs;
+              const detectTs = getNextMonotonicVideoDetectTs(now);
               const res = landmarker.detectForVideo(videoRef.current, detectTs);
               const selection = selectPrimaryFace(res.faceLandmarks ?? []);
               const faceCount = selection.effectiveFaceCount;
@@ -786,7 +755,7 @@ export function WelcomeFaceScanModal({
     return () => {
       active = false;
       cancelAnimationFrame(rafId);
-      landmarker?.close();
+      landmarker = null;
       stream?.getTracks().forEach((tr) => tr.stop());
       if (videoRef.current) {
         videoRef.current.srcObject = null;
@@ -870,12 +839,16 @@ export function WelcomeFaceScanModal({
           engine: BIOMETRIC_ENGINE_ID,
           ...(manualRatios ? { geometricRatios: manualRatios } : {}),
         });
+        const manualMatched = Boolean(
+          verified.matched &&
+            verified.patient &&
+            verified.confidencePercent >= Math.round(BIOMETRIC_MATCH_THRESHOLD * 100),
+        );
+        if (manualMatched) {
+          confirmedLockRef.current = true;
+        }
         setMatchResult({
-          matched: Boolean(
-            verified.matched &&
-              verified.patient &&
-              verified.confidencePercent >= Math.round(BIOMETRIC_MATCH_THRESHOLD * 100),
-          ),
+          matched: manualMatched,
           confidencePercent: verified.confidencePercent,
           reason: verified.failureReasons?.[0],
           patient: verified.patient,
@@ -883,6 +856,7 @@ export function WelcomeFaceScanModal({
       } catch {
         // Offline fallback only when local strict triple-gate passed
         if (localEval.matched && localEval.topCandidate) {
+          confirmedLockRef.current = true;
           setMatchResult({
             matched: true,
             confidencePercent: localEval.confidencePercent,
@@ -960,19 +934,19 @@ export function WelcomeFaceScanModal({
               </div>
 
               {spoofDetectedNow ? (
-                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[290px] -translate-x-1/2 rounded-lg border border-rose-400 bg-rose-50/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
+                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[290px] -translate-x-1/2 rounded-lg border border-rose-400 bg-rose-50/95 px-3 py-1.5 text-center shadow-xl">
                   <div className="text-[11px] font-black text-rose-700">
                     ตรวจพบภาพถ่ายหรือหน้าจอมือถือ — กรุณากะพริบตาหรือขยับศีรษะด้วยใบหน้าจริง
                   </div>
                 </div>
               ) : !bioStatus?.biologicalVerified ? (
-                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[290px] -translate-x-1/2 rounded-lg border border-sky-300 bg-white/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
+                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[290px] -translate-x-1/2 rounded-lg border border-sky-300 bg-white/95 px-3 py-1.5 text-center shadow-xl">
                   <div className="text-[10px] font-extrabold text-[#0F4C81]">
                     กรุณากะพริบตาหรือขยับศีรษะเล็กน้อยเพื่อยืนยันตัวตน
                   </div>
                 </div>
               ) : liveMatchHud?.confirmed && liveMatchHud?.candidate ? (
-                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-emerald-400 bg-white/95 px-3 py-1.5 text-center backdrop-blur-md shadow-xl">
+                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-emerald-400 bg-white/95 px-3 py-1.5 text-center shadow-xl">
                   <div className="text-[11px] font-black text-emerald-700">
                     ยืนยันเจ้าของบัญชี: {liveMatchHud.candidate.fullName} ({liveMatchHud.candidate.hn})
                   </div>
@@ -981,13 +955,13 @@ export function WelcomeFaceScanModal({
                   </div>
                 </div>
               ) : lastRawCosine >= BIOMETRIC_MATCH_THRESHOLD && autoScanCount > 0 ? (
-                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-blue-400 bg-blue-50/95 px-3 py-1 text-center backdrop-blur-md shadow-xl">
+                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[260px] -translate-x-1/2 rounded-lg border border-blue-400 bg-blue-50/95 px-3 py-1 text-center shadow-xl">
                   <div className="text-[10px] font-extrabold text-blue-800">
                     กำลังยืนยันตัวตน... ({autoScanCount}/{BIOMETRIC_REQUIRED_STREAK})
                   </div>
                 </div>
               ) : (
-                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[290px] -translate-x-1/2 rounded-lg border border-amber-400 bg-amber-50/95 px-3 py-1 text-center backdrop-blur-md shadow-xl">
+                <div className="absolute left-1/2 top-full mt-1.5 w-max max-w-[290px] -translate-x-1/2 rounded-lg border border-amber-400 bg-amber-50/95 px-3 py-1 text-center shadow-xl">
                   <div className="text-[10px] font-extrabold text-amber-800">
                     กำลังตรวจสอบใบหน้า...
                   </div>
@@ -1021,18 +995,35 @@ export function WelcomeFaceScanModal({
                   <span className="font-mono text-sky-700">{matchResult.patient.hn}</span>
                 </div>
                 <div className="text-sm font-black">{matchResult.patient.fullName}</div>
+                {checkInErr && (
+                  <div className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[11px] font-bold text-rose-700">
+                    {checkInErr}
+                  </div>
+                )}
                 <button
                   type="button"
+                  disabled={checkingIn}
                   onClick={async () => {
+                    if (checkingIn) return;
                     const pid = matchResult.patient!.id;
                     const pname = matchResult.patient!.fullName;
-                    await apiClient.quickCheckInPatient(pid, 'เช็คอินผ่านต้อนรับ & สแกนหน้า');
-                    onCheckInSuccess(pid, pname);
-                    onClose();
+                    setCheckingIn(true);
+                    setCheckInErr(null);
+                    try {
+                      await apiClient.quickCheckInPatient(pid, 'เช็คอินผ่านต้อนรับ & สแกนหน้า');
+                      onCheckInSuccess(pid, pname);
+                      onClose();
+                    } catch (err) {
+                      setCheckInErr(
+                        err instanceof Error ? err.message : 'เช็คอินไม่สำเร็จ กรุณาลองใหม่อีกครั้ง',
+                      );
+                    } finally {
+                      setCheckingIn(false);
+                    }
                   }}
-                  className="w-full whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-emerald-600 font-extrabold text-white hover:bg-emerald-500"
+                  className="w-full whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-emerald-600 font-extrabold text-white hover:bg-emerald-500 disabled:opacity-50 cursor-pointer"
                 >
-                  {sm.checkInTodayBtn}
+                  {checkingIn ? sm.savingBtn : sm.checkInTodayBtn}
                 </button>
               </>
             ) : (
@@ -1175,6 +1166,11 @@ export function ResetPasswordModal({
   );
 }
 
+function getTodayLocalIso(): string {
+  const now = new Date();
+  return formatIsoYmd(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
 export function PatientProfileAndHistoryModal({
   patient,
   initialTab = 'profile',
@@ -1216,7 +1212,7 @@ export function PatientProfileAndHistoryModal({
   const [sessionHistory, setSessionHistory] = useState<RehabSessionHistoryEntry[]>([]);
   const [assignedPtId, setAssignedPtId] = useState('');
   const [delegatePtId, setDelegatePtId] = useState('');
-  const [delegateDate, setDelegateDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [delegateDate, setDelegateDate] = useState(() => getTodayLocalIso());
   const [delegateNote, setDelegateNote] = useState('');
   const [notes, setNotes] = useState<MedicalNoteRecord[]>([]);
   const [newNote, setNewNote] = useState('');
@@ -1226,7 +1222,14 @@ export function PatientProfileAndHistoryModal({
 
   useEffect(() => {
     setModalTab(initialTab);
-    if (!patient) return;
+  }, [initialTab, patient?.id]);
+
+  useEffect(() => {
+    if (!patient) {
+      setNotes([]);
+      setSessionHistory([]);
+      return;
+    }
     let cancelled = false;
     setFullName(patient.fullName);
     setAge(patient.age);
@@ -1240,7 +1243,7 @@ export function PatientProfileAndHistoryModal({
     setMaxSafeRomDeg(patient.maxSafeRomDeg ?? 150);
     setAssignedPtId(patient.assignedPtId || '');
     setDelegatePtId(patient.delegatedToPtId || patient.assignedPtId || '');
-    setDelegateDate(patient.delegationDate || new Date().toISOString().slice(0, 10));
+    setDelegateDate(patient.delegationDate || getTodayLocalIso());
     setDelegateNote(patient.delegationNote || '');
     apiClient
       .listMedicalNotes(patient.id)
@@ -1261,12 +1264,35 @@ export function PatientProfileAndHistoryModal({
     return () => {
       cancelled = true;
     };
-  }, [patient, initialTab, apiClient]);
+  }, [patient?.id, apiClient]);
+
+  const patientSessions = useMemo(
+    () => (patient ? sessions.filter((s) => s.patientId === patient.id) : []),
+    [sessions, patient?.id],
+  );
+  const ptNameMap = useMemo(() => new Map(ptUsers.map((p) => [p.id, p.fullName])), [ptUsers]);
+  const historyTrend = useMemo(() => {
+    const timeline = [...sessionHistory].sort(
+      (a, b) => new Date(a.sessionDate).getTime() - new Date(b.sessionDate).getTime(),
+    );
+    const byExercise = new Map<string, RehabSessionHistoryEntry[]>();
+    for (const row of timeline) {
+      const list = byExercise.get(row.exerciseCode) ?? [];
+      list.push(row);
+      byExercise.set(row.exerciseCode, list);
+    }
+    const comparisons = Array.from(byExercise.entries()).map(([code, list]) => {
+      const first = list[0];
+      const latest = list[list.length - 1];
+      const base = first.baselineRomDeg || first.achievedMaxRomDeg;
+      const delta = Number((latest.achievedMaxRomDeg - base).toFixed(1));
+      return { code, name: latest.exerciseName || code, first, latest, base, delta, count: list.length };
+    });
+    const chartPts = timeline.slice(-10);
+    return { comparisons, chartPts };
+  }, [sessionHistory]);
 
   if (!patient) return null;
-
-  const patientSessions = sessions.filter((s) => s.patientId === patient.id);
-  const ptNameMap = new Map(ptUsers.map((p) => [p.id, p.fullName]));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm animate-backdrop-fade">
@@ -1636,19 +1662,31 @@ export function PatientProfileAndHistoryModal({
                 />
                 <button
                   type="button"
+                  disabled={saving}
                   onClick={async () => {
-                    await apiClient.delegatePatientCase(
-                      patient.id,
-                      delegatePtId || null,
-                      delegateNote || undefined,
-                      delegatePtId ? delegateDate : undefined,
-                    );
-                    onFlash('success', 'อัปเดตการฝากเคส PT เรียบร้อยแล้ว');
-                    await onRefresh();
+                    if (saving) return;
+                    setSaving(true);
+                    try {
+                      await apiClient.delegatePatientCase(
+                        patient.id,
+                        delegatePtId || null,
+                        delegateNote || undefined,
+                        delegatePtId ? delegateDate : undefined,
+                      );
+                      onFlash('success', 'อัปเดตการฝากเคส PT เรียบร้อยแล้ว');
+                      await onRefresh();
+                    } catch (err) {
+                      onFlash(
+                        'error',
+                        err instanceof Error ? err.message : 'อัปเดตการฝากเคส PT ไม่สำเร็จ',
+                      );
+                    } finally {
+                      setSaving(false);
+                    }
                   }}
-                  className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-blue-600 font-bold text-white hover:bg-blue-500 cursor-pointer"
+                  className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-blue-600 font-bold text-white hover:bg-blue-500 disabled:opacity-50 cursor-pointer"
                 >
-                  {sm.updatePtBtn}
+                  {saving ? sm.savingBtn : sm.updatePtBtn}
                 </button>
               </div>
             </div>
@@ -1680,15 +1718,26 @@ export function PatientProfileAndHistoryModal({
                 />
                 <button
                   type="button"
+                  disabled={saving}
                   onClick={async () => {
-                    if (!newNote.trim()) return;
-                    const created = await apiClient.appendMedicalNote(patient.id, newNote.trim());
-                    setNotes((prev) => [created, ...prev]);
-                    setNewNote('');
+                    if (!newNote.trim() || saving) return;
+                    setSaving(true);
+                    try {
+                      const created = await apiClient.appendMedicalNote(patient.id, newNote.trim());
+                      setNotes((prev) => [created, ...prev]);
+                      setNewNote('');
+                    } catch (err) {
+                      onFlash(
+                        'error',
+                        err instanceof Error ? err.message : 'บันทึกอาการเพิ่มเติมไม่สำเร็จ',
+                      );
+                    } finally {
+                      setSaving(false);
+                    }
                   }}
-                  className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-emerald-600 font-bold text-white"
+                  className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-emerald-600 font-bold text-white disabled:opacity-50 cursor-pointer"
                 >
-                  {sm.addNoteBtn}
+                  {saving ? sm.savingBtn : sm.addNoteBtn}
                 </button>
               </div>
             </div>
@@ -1712,21 +1761,32 @@ export function PatientProfileAndHistoryModal({
               </div>
               <button
                 type="button"
+                disabled={saving}
                 onClick={async () => {
-                  if (!reportSummary.trim()) return;
-                  await apiClient.createTreatmentReport({
-                    patientId: patient.id,
-                    summary: reportSummary.trim(),
-                    aiRecommendation: reportRec.trim() || 'ฝึกต่อเนื่องตามนัดหมาย',
-                    scoreSummary: `บันทึกโดย ${currentUser.fullName}`,
-                  });
-                  setReportSummary('');
-                  setReportRec('');
-                  onFlash('success', 'ออกใบสรุปผลการรักษาเรียบร้อยแล้ว');
+                  if (!reportSummary.trim() || saving) return;
+                  setSaving(true);
+                  try {
+                    await apiClient.createTreatmentReport({
+                      patientId: patient.id,
+                      summary: reportSummary.trim(),
+                      aiRecommendation: reportRec.trim() || 'ฝึกต่อเนื่องตามนัดหมาย',
+                      scoreSummary: `บันทึกโดย ${currentUser.fullName}`,
+                    });
+                    setReportSummary('');
+                    setReportRec('');
+                    onFlash('success', 'ออกใบสรุปผลการรักษาเรียบร้อยแล้ว');
+                  } catch (err) {
+                    onFlash(
+                      'error',
+                      err instanceof Error ? err.message : 'ออกใบสรุปผลการรักษาไม่สำเร็จ',
+                    );
+                  } finally {
+                    setSaving(false);
+                  }
                 }}
-                className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] font-bold text-white shadow-xs"
+                className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] font-bold text-white shadow-xs disabled:opacity-50 cursor-pointer"
               >
-                {sm.saveReportBtn}
+                {saving ? sm.savingBtn : sm.saveReportBtn}
               </button>
             </div>
           </>
@@ -1765,23 +1825,7 @@ export function PatientProfileAndHistoryModal({
 
             {/* Historical ROM Progress Comparison & Inline SVG Trend Chart */}
             {(() => {
-              const timeline = [...sessionHistory].sort(
-                (a, b) => new Date(a.sessionDate).getTime() - new Date(b.sessionDate).getTime(),
-              );
-              const byExercise = new Map<string, RehabSessionHistoryEntry[]>();
-              for (const row of timeline) {
-                const list = byExercise.get(row.exerciseCode) ?? [];
-                list.push(row);
-                byExercise.set(row.exerciseCode, list);
-              }
-              const comparisons = Array.from(byExercise.entries()).map(([code, list]) => {
-                const first = list[0];
-                const latest = list[list.length - 1];
-                const base = first.baselineRomDeg || first.achievedMaxRomDeg;
-                const delta = Number((latest.achievedMaxRomDeg - base).toFixed(1));
-                return { code, name: latest.exerciseName || code, first, latest, base, delta, count: list.length };
-              });
-              const chartPts = timeline.slice(-10);
+              const { comparisons, chartPts } = historyTrend;
               return (
                 <div className="rounded-2xl border border-emerald-200 bg-emerald-50/35 p-3.5 space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1972,7 +2016,7 @@ export function PatientProfileAndHistoryModal({
 }
 
 /** Deterministic lightweight QR SVG matrix generator for Universal EHR Link Codes */
-function UniversalEhrQrSvg({ value }: { value: string }) {
+const UniversalEhrQrSvg = React.memo(function UniversalEhrQrSvg({ value }: { value: string }) {
   const size = 21;
   const cells: boolean[][] = Array.from({ length: size }, () => Array(size).fill(false));
   const markFinder = (ox: number, oy: number) => {
@@ -2013,7 +2057,7 @@ function UniversalEhrQrSvg({ value }: { value: string }) {
       )}
     </svg>
   );
-}
+});
 
 export function UniversalEhrLinkModal({
   patient,
@@ -2035,13 +2079,16 @@ export function UniversalEhrLinkModal({
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-    useEffect(() => {
-    if (!patient) return;
-    let cancelled = false;
+  useEffect(() => {
     setLookupInput('');
     setLookupPreview(null);
     setRawJsonInput('');
     setErrorMsg(null);
+    if (!patient) {
+      setExportBundle(null);
+      return;
+    }
+    let cancelled = false;
     const code = patient.universalHealthLinkCode || patient.hn;
     apiClient
       .lookupUniversalEhr(code)
@@ -2054,7 +2101,7 @@ export function UniversalEhrLinkModal({
     return () => {
       cancelled = true;
     };
-  }, [patient, apiClient]);
+  }, [patient?.id, patient?.universalHealthLinkCode, patient?.hn, apiClient]);
 
   if (!patient) return null;
 
@@ -2228,7 +2275,29 @@ export function UniversalEhrLinkModal({
               try {
                 let parsedPkg: UniversalEhrPackage | undefined;
                 if (rawJsonInput.trim()) {
-                  parsedPkg = JSON.parse(rawJsonInput.trim()) as UniversalEhrPackage;
+                  let rawParsed: unknown;
+                  try {
+                    rawParsed = JSON.parse(rawJsonInput.trim());
+                  } catch {
+                    setErrorMsg('รูปแบบ JSON ของ Universal EHR Package ไม่ถูกต้อง');
+                    setBusy(false);
+                    return;
+                  }
+                  if (
+                    !rawParsed ||
+                    typeof rawParsed !== 'object' ||
+                    Array.isArray(rawParsed) ||
+                    !(
+                      'patientProfile' in rawParsed ||
+                      'sessionHistory' in rawParsed ||
+                      'universalHealthLinkCode' in rawParsed
+                    )
+                  ) {
+                    setErrorMsg('ข้อมูล JSON ไม่ใช่รูปแบบ Universal EHR Package ที่รองรับ');
+                    setBusy(false);
+                    return;
+                  }
+                  parsedPkg = rawParsed as UniversalEhrPackage;
                 } else if (lookupPreview) {
                   parsedPkg = lookupPreview;
                 }
@@ -2480,7 +2549,7 @@ export function ScheduleCreatorAndDayModal({
       nextSideMap[parsed.baseCode] = parsed.side;
     }
     setSelectedSideByBaseCode(nextSideMap);
-  }, [patient, selectedDateIso, mode, todayIso]);
+  }, [patient?.id, selectedDateIso, mode, todayIso]);
 
   const activePatient = patients.find((p) => p.id === targetPatientId) || patient;
   const existingScheduleDatesSet = useMemo(() => {

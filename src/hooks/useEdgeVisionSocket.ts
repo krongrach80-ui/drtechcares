@@ -211,13 +211,29 @@ export function getEdgeVisionWsUrl(): string {
   return 'ws://localhost:8000/ws/kiosk';
 }
 
+function isRemoteHttpsOrigin(): boolean {
+  if (typeof window === 'undefined') return false;
+  return (
+    window.location.protocol === 'https:' &&
+    !/^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname)
+  );
+}
+
+function isLocalhostLoopbackEndpoint(url: string): boolean {
+  return /^(https?|wss?):\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(url.trim());
+}
+
 export async function probeEdgeVisionHealth(timeoutMs = 650): Promise<EdgeHealthInfo | null> {
   if (typeof window === 'undefined' || typeof fetch === 'undefined') return null;
-  // Skip localhost probe if user explicitly disables it or running non-local without tunnel
+  const httpBase = getEdgeVisionHttpBase();
+  // Skip localhost probe when deployed on remote HTTPS without a custom public tunnel
+  if (isRemoteHttpsOrigin() && isLocalhostLoopbackEndpoint(httpBase)) {
+    return null;
+  }
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${getEdgeVisionHttpBase()}/health`, {
+    const res = await fetch(`${httpBase}/health`, {
       method: 'GET',
       signal: controller.signal,
     });
@@ -643,8 +659,7 @@ export function drawMediaPipe33OnCanvas(
 
     ctx.strokeStyle = palette.bone;
     ctx.lineWidth = lineW;
-    ctx.shadowColor = palette.glow;
-    ctx.shadowBlur = 8;
+    ctx.shadowBlur = 0;
     ctx.beginPath();
     ctx.moveTo(a.px, a.py);
     ctx.lineTo(b.px, b.py);
@@ -692,8 +707,7 @@ export function drawMediaPipe33OnCanvas(
 
       ctx.strokeStyle = palette.bone;
       ctx.lineWidth = 3.5;
-      ctx.shadowColor = palette.glow;
-      ctx.shadowBlur = 8;
+      ctx.shadowBlur = 0;
       ctx.beginPath();
       ctx.moveTo(neckX, neckY);
       ctx.lineTo(stopX, stopY);
@@ -709,8 +723,7 @@ export function drawMediaPipe33OnCanvas(
 
     ctx.strokeStyle = palette.bone;
     ctx.lineWidth = 3.2;
-    ctx.shadowColor = palette.glow;
-    ctx.shadowBlur = 10;
+    ctx.shadowBlur = 0;
     ctx.beginPath();
     ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
     ctx.stroke();
@@ -927,20 +940,32 @@ export function useEdgeVisionSocket(options?: {
   useEffect(() => {
     if (!enabled || typeof window === 'undefined') {
       lastMatchedIdRef.current = null;
+      setConnected(false);
       return;
     }
+    // Avoid HTTPS mixed-content console errors and infinite reconnect loops when deployed remotely
+    if (isRemoteHttpsOrigin() && isLocalhostLoopbackEndpoint(wsUrl)) {
+      lastMatchedIdRef.current = null;
+      setConnected(false);
+      return;
+    }
+    const MAX_RECONNECT_ATTEMPTS = 5;
     let disposed = false;
     let reconnectTimer: number | null = null;
     let attempt = 0;
 
     const connect = () => {
       if (disposed) return;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       try {
         const ws = new WebSocket(wsUrl);
         wsRef.current = ws;
 
         ws.onopen = () => {
-          if (disposed) return;
+          if (disposed || wsRef.current !== ws) return;
           attempt = 0;
           setConnected(true);
           if (streamVideo) {
@@ -949,7 +974,7 @@ export function useEdgeVisionSocket(options?: {
         };
 
         ws.onmessage = (evt) => {
-          if (disposed) return;
+          if (disposed || wsRef.current !== ws) return;
           try {
             const payload = JSON.parse(evt.data) as EdgeKioskTelemetryPayload;
             if (payload && payload.kiosk_state && payload.telemetry_analysis) {
@@ -967,14 +992,16 @@ export function useEdgeVisionSocket(options?: {
         };
 
         ws.onerror = () => {
+          if (disposed || wsRef.current !== ws) return;
           ws.close();
         };
 
         ws.onclose = () => {
+          if (wsRef.current !== ws) return;
           lastMatchedIdRef.current = null;
-          if (disposed) return;
           wsRef.current = null;
           setConnected(false);
+          if (disposed || attempt >= MAX_RECONNECT_ATTEMPTS) return;
           const delayMs = Math.min(12000, 1500 * Math.pow(1.6, attempt));
           attempt += 1;
           reconnectTimer = window.setTimeout(connect, delayMs);
@@ -988,10 +1015,14 @@ export function useEdgeVisionSocket(options?: {
     return () => {
       disposed = true;
       lastMatchedIdRef.current = null;
-      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       if (wsRef.current) {
-        wsRef.current.close();
+        const activeWs = wsRef.current;
         wsRef.current = null;
+        activeWs.close();
       }
     };
   }, [enabled, streamVideo, wsUrl]);

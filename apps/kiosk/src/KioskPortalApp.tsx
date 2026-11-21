@@ -1,11 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
-import {
+import type {
   FaceLandmarker,
-  FilesetResolver,
   HandLandmarker,
   PoseLandmarker,
-  type NormalizedLandmark,
+  NormalizedLandmark,
 } from '@mediapipe/tasks-vision';
+import {
+  getCachedHandLandmarker,
+  getCachedPoseLandmarker,
+  getCachedRehabFaceLandmarker,
+  getNextMonotonicHandDetectTs,
+  getNextMonotonicPoseDetectTs,
+  getNextMonotonicRehabFaceDetectTs,
+  type VisionDelegate,
+} from '../../../src/lib/biometricVisionCache';
 import type {
   DailyScheduleDay,
   DrTechCaresApiClient,
@@ -87,7 +95,11 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
   const [summaryText, setSummaryText] = useState('วันนี้คุณทำได้ดีมาก!');
   const [autoResetLeft, setAutoResetLeft] = useState(6);
   const [physioWaitLeft, setPhysioWaitLeft] = useState(4);
+  const [gestureCameraError, setGestureCameraError] = useState<string | null>(null);
+  const [staffCalling, setStaffCalling] = useState(false);
 
+  const flowStateRef = useRef(flowState);
+  flowStateRef.current = flowState;
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const alignCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const presenceRef = useRef(new FacePresenceTracker());
@@ -146,46 +158,14 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
           return;
         }
 
-        let vision;
-        for (const wasmBase of [
-          '/mediapipe/wasm',
-          '/models/wasm',
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
-        ]) {
-          try {
-            vision = await FilesetResolver.forVisionTasks(wasmBase);
-            break;
-          } catch {
-            // Try next WASM base path
-          }
-        }
-        if (!vision || !active) {
+        const cachedFace = await getCachedRehabFaceLandmarker();
+        if (!cachedFace || !active) {
           stream.getTracks().forEach((tr) => tr.stop());
           stream = null;
           return;
         }
-        let createdLandmarker: FaceLandmarker | null = null;
-        for (const delegate of ['GPU', 'CPU'] as const) {
-          try {
-            createdLandmarker = await FaceLandmarker.createFromOptions(vision, {
-              baseOptions: { modelAssetPath: '/models/face_landmarker.task', delegate },
-              runningMode: 'VIDEO',
-              numFaces: 2,
-            });
-            break;
-          } catch {
-            // Try CPU fallback
-          }
-        }
-        if (!createdLandmarker || !active) {
-          createdLandmarker?.close();
-          stream.getTracks().forEach((tr) => tr.stop());
-          stream = null;
-          return;
-        }
-        landmarker = createdLandmarker;
+        landmarker = cachedFace.instance;
 
-        let lastDetectTs = 0;
         let lastVideoTime = -1;
         const loop = async () => {
           if (!active || !videoRef.current || !landmarker) return;
@@ -198,8 +178,7 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
             ) {
               lastVideoTime = videoRef.current.currentTime;
               const now = performance.now();
-              const detectTs = Math.max(lastDetectTs + 1, Math.round(now));
-              lastDetectTs = detectTs;
+              const detectTs = getNextMonotonicRehabFaceDetectTs(now);
               const res = landmarker.detectForVideo(videoRef.current, detectTs);
               const faceCount = res.faceLandmarks?.length ?? 0;
               const landmarks = res.faceLandmarks?.[0] ?? [];
@@ -313,8 +292,11 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
     return () => {
       active = false;
       cancelAnimationFrame(rafId);
-      landmarker?.close();
+      landmarker = null;
       stream?.getTracks().forEach((tr) => tr.stop());
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
     };
   }, [flowState, apiClient]);
 
@@ -328,7 +310,6 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
     let poseLandmarker: PoseLandmarker | null = null;
     let handLandmarker: HandLandmarker | null = null;
     let offscreenCanvas: HTMLCanvasElement | null = null;
-    let lastTs = 0;
     let lastFrameAt = 0;
     let lastVideoTime = -1;
     let lastInferenceAt = 0;
@@ -365,71 +346,17 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
           return;
         }
 
-        let vision;
-        for (const wasmBase of [
-          '/mediapipe/wasm',
-          '/models/wasm',
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
-        ]) {
-          try {
-            vision = await FilesetResolver.forVisionTasks(wasmBase);
-            break;
-          } catch {
-            // Try next WASM base path
-          }
-        }
-        if (!vision || !active) {
+        const [handHandle, poseHandle] = await Promise.all([
+          getCachedHandLandmarker({ numHands: 2, minConfidence: 0.35 }).catch(() => null),
+          getCachedPoseLandmarker({ numPoses: 1 }).catch(() => null),
+        ]);
+        if (!active) {
           stream?.getTracks().forEach((tr) => tr.stop());
           stream = null;
           return;
         }
-
-        for (const delegate of ['CPU', undefined] as const) {
-          try {
-            const createdHand = await HandLandmarker.createFromOptions(vision, {
-              baseOptions: delegate
-                ? { modelAssetPath: '/models/hand_landmarker.task', delegate }
-                : { modelAssetPath: '/models/hand_landmarker.task' },
-              runningMode: 'VIDEO',
-              numHands: 2,
-              minHandDetectionConfidence: 0.35,
-              minHandPresenceConfidence: 0.35,
-              minTrackingConfidence: 0.35,
-            });
-            if (!active) {
-              createdHand.close();
-              return;
-            }
-            handLandmarker = createdHand;
-            break;
-          } catch {
-            // Try fallback delegate
-          }
-        }
-
-        for (const modelAssetPath of ['/models/pose_landmarker.task', '/models/pose_landmarker_full.task']) {
-          for (const delegate of ['CPU', undefined] as const) {
-            try {
-              const createdPose = await PoseLandmarker.createFromOptions(vision, {
-                baseOptions: delegate ? { modelAssetPath, delegate } : { modelAssetPath },
-                runningMode: 'VIDEO',
-                numPoses: 1,
-                minPoseDetectionConfidence: 0.35,
-                minPosePresenceConfidence: 0.35,
-                minTrackingConfidence: 0.35,
-              });
-              if (!active) {
-                createdPose.close();
-                return;
-              }
-              poseLandmarker = createdPose;
-              break;
-            } catch {
-              // Try fallback pose model
-            }
-          }
-          if (poseLandmarker) break;
-        }
+        handLandmarker = handHandle?.instance ?? null;
+        poseLandmarker = poseHandle?.instance ?? null;
 
         const loop = () => {
           if (!active || !videoRef.current || (!poseLandmarker && !handLandmarker)) return;
@@ -459,8 +386,7 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
                 let detectedPose: NormalizedLandmark[] | null = null;
                 if (handLandmarker) {
                   try {
-                    const detectTs = Math.max(lastTs + 1, Math.round(now));
-                    lastTs = detectTs;
+                    const detectTs = getNextMonotonicHandDetectTs(now);
                     const handRes = handLandmarker.detectForVideo(inferenceSource, detectTs);
                     detectedHands = handRes.landmarks ?? [];
                   } catch {
@@ -469,8 +395,7 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
                 }
                 if (poseLandmarker) {
                   try {
-                    const poseTs = Math.max(lastTs + 1, Math.round(now));
-                    lastTs = poseTs;
+                    const poseTs = getNextMonotonicPoseDetectTs(now);
                     const poseRes = poseLandmarker.detectForVideo(inferenceSource, poseTs);
                     detectedPose = poseRes.landmarks?.[0] ?? null;
                   } catch {
@@ -520,9 +445,12 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
     return () => {
       active = false;
       cancelAnimationFrame(rafId);
-      poseLandmarker?.close();
-      handLandmarker?.close();
+      poseLandmarker = null;
+      handLandmarker = null;
       stream?.getTracks().forEach((tr) => tr.stop());
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
     };
   }, [flowState]);
 
@@ -667,15 +595,34 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
                   : 'มินิเกมฝึกสมองและการตัดสินใจ'}
               </p>
             </div>
-            <div className="rounded-2xl bg-teal-600/20 border border-teal-500/40 p-4">
+            <div className="rounded-2xl bg-teal-600/20 border border-teal-500/40 p-4 space-y-3">
               <p className="text-lg font-bold text-teal-300 flex items-center gap-2">
                 <Hand className="h-6 w-6" /> ยก 2 มือขึ้นเพื่อเริ่ม
               </p>
               <div className="mt-3 h-3 w-full overflow-hidden rounded-full bg-slate-800">
                 <div
-                  className="h-full bg-teal-400 transition-all duration-100"
-                  style={{ width: `${Math.round(raiseProgress * 100)}%` }}
+                  className="h-full bg-teal-400 transition-transform duration-100 origin-left"
+                  style={{ transform: `scaleX(${Math.min(1, Math.max(0, raiseProgress))})` }}
                 />
+              </div>
+              {gestureCameraError && (
+                <p className="text-xs font-semibold text-amber-300">{gestureCameraError}</p>
+              )}
+              <div className="flex flex-wrap gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setFlowState('CONDITIONAL_EXECUTION')}
+                  className="btn-tactile btn-primary-sheen rounded-xl bg-teal-500 hover:bg-teal-400 px-4 py-2 text-xs font-extrabold text-slate-950 cursor-pointer"
+                >
+                  เริ่มฝึกทันที (แตะหน้าจอ)
+                </button>
+                <button
+                  type="button"
+                  onClick={resetToStandby}
+                  className="btn-tactile rounded-xl border border-slate-600 bg-slate-800 hover:bg-slate-700 px-3 py-2 text-xs font-bold text-slate-200 cursor-pointer"
+                >
+                  กลับหน้า Standby
+                </button>
               </div>
             </div>
           </div>
@@ -726,7 +673,8 @@ export function KioskPortalApp({ apiClient }: KioskPortalAppProps) {
             <PhysicalCardGame
               patientName={verifiedPatient.fullName}
               onComplete={async (summary) => {
-                const accuracy = Math.round((summary.correct / summary.total) * 100);
+                const accuracy =
+                  summary.total > 0 ? Math.round((summary.correct / summary.total) * 100) : 100;
                 try {
                   await apiClient.recordRehabSession({
                     patientId: verifiedPatient.id,
