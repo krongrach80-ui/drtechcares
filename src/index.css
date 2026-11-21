@@ -516,7 +516,131 @@
   }
 }
 
+@keyframes standbyPlusFloat {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.88;
+  }
+  50% {
+    transform: translate3d(0, -10px, 0) scale(1.045);
+    opacity: 1;
+  }
+}
+
+@keyframes standbyWaveDrift {
+  0%,
+  100% {
+    transform: translate3d(-1.5%, -4px, 0);
+  }
+  50% {
+    transform: translate3d(1.5%, 6px, 0);
+  }
+}
+
+@keyframes standbyEcgSweep {
+  0%,
+  100% {
+    opacity: 0.72;
+    filter: drop-shadow(0 0 8px rgba(103, 232, 249, 0.55));
+  }
+  50% {
+    opacity: 1;
+    filter: drop-shadow(0 0 16px rgba(165, 243, 252, 0.92));
+  }
+}
+
+@keyframes standbyCtaGlow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px rgba(224, 242, 254, 0.45),
+      0 14px 36px rgba(2, 132, 199, 0.32),
+      inset 0 1px 1px rgba(255, 255, 255, 0.45);
+  }
+  50% {
+    box-shadow:
+      0 0 28px rgba(165, 243, 252, 0.42),
+      0 18px 44px rgba(14, 165, 233, 0.44),
+      inset 0 1px 2px rgba(255, 255, 255, 0.65);
+  }
+}
+
+@keyframes standbyTapRipple {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.95);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
+@keyframes standbyColonPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.animate-standby-float-1 {
+  animation: standbyPlusFloat 6.2s ease-in-out infinite;
+}
+
+.animate-standby-float-2 {
+  animation: standbyPlusFloat 7.4s ease-in-out -1.8s infinite;
+}
+
+.animate-standby-float-3 {
+  animation: standbyPlusFloat 5.8s ease-in-out -3.1s infinite;
+}
+
+.animate-standby-float-4 {
+  animation: standbyPlusFloat 6.8s ease-in-out -2.4s infinite;
+}
+
+.animate-standby-wave-a {
+  animation: standbyWaveDrift 14s ease-in-out infinite;
+}
+
+.animate-standby-wave-b {
+  animation: standbyWaveDrift 18s ease-in-out reverse infinite;
+}
+
+.animate-standby-ecg {
+  animation: standbyEcgSweep 4.5s ease-in-out infinite;
+}
+
+.animate-standby-cta-glow {
+  animation: standbyCtaGlow 3.2s ease-in-out infinite;
+}
+
+.animate-standby-tap-ripple {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: standbyTapRipple 2.2s ease-in-out infinite;
+}
+
+.animate-standby-colon {
+  animation: standbyColonPulse 1.6s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .animate-standby-float-1,
+  .animate-standby-float-2,
+  .animate-standby-float-3,
+  .animate-standby-float-4,
+  .animate-standby-wave-a,
+  .animate-standby-wave-b,
+  .animate-standby-ecg,
+  .animate-standby-cta-glow,
+  .animate-standby-tap-ripple,
+  .animate-standby-colon,
   .animate-popup-spring,
   .animate-card-enter,
   .animate-calendar-month,

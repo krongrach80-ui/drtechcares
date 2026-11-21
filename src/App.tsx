@@ -28,6 +28,7 @@ import {
   KioskBiometricLoginView,
   type KioskLoginSuccessPayload,
 } from './components/KioskBiometricLoginView';
+import { KioskStandbyScreen } from './components/KioskStandbyScreen';
 import { StaffAssistedEnrollmentModal } from './components/StaffAssistedEnrollmentModal';
 import { ArrowRight, Calendar, CheckCircle2, Gamepad2, Hand, Leaf, RotateCcw, Shuffle, Volume2 } from 'lucide-react';
 import {
@@ -44,7 +45,7 @@ import {
 } from './hooks/useKioskSocket';
 
 type AppRoute = '/' | '/login' | '/admin' | '/pt' | '/patient';
-type KioskViewMode = 'login' | 'training' | 'rehab' | 'classic';
+type KioskViewMode = 'standby' | 'login' | 'training' | 'rehab' | 'classic';
 
 function resolveRoute(pathname: string): AppRoute {
   if (pathname.startsWith('/admin')) return '/admin';
@@ -496,7 +497,7 @@ export function App() {
   const [route, setRoute] = useState<AppRoute>(() =>
     typeof window !== 'undefined' ? resolveRoute(window.location.pathname) : '/',
   );
-  const [kioskMode, setKioskMode] = useState<KioskViewMode>('login');
+  const [kioskMode, setKioskMode] = useState<KioskViewMode>('standby');
   const [isPoseTestMode, setIsPoseTestMode] = useState(false);
   const [poseTestInitialExerciseCode, setPoseTestInitialExerciseCode] = useState<string | null>(null);
   const [poseTestReturnRoute, setPoseTestReturnRoute] = useState<'/admin' | '/pt'>('/admin');
@@ -1458,6 +1459,10 @@ export function App() {
       );
     }
 
+    if (kioskMode === 'standby') {
+      return <KioskStandbyScreen onStart={() => setKioskMode('login')} />;
+    }
+
     return (
       <>
         <KioskBiometricLoginView
@@ -1473,6 +1478,7 @@ export function App() {
             setStaffModalIntent('kiosk_patient_registration');
           }}
           onOpenTelemetrySimulator={() => setKioskMode('rehab')}
+          onReturnToStandby={() => setKioskMode('standby')}
         />
         {staffModalIntent !== null && (
           <StaffLoginModalOrPage
@@ -1570,6 +1576,7 @@ export function App() {
         onLogout={handleLogout}
         onReturnToKiosk={() => {
           setIsPoseTestMode(false);
+          setKioskMode('standby');
           navigate('/');
         }}
         onOpenPoseTestMode={(exerciseCode) => {
@@ -1618,6 +1625,7 @@ export function App() {
         onLogout={handleLogout}
         onReturnToKiosk={() => {
           setIsPoseTestMode(false);
+          setKioskMode('standby');
           navigate('/');
         }}
         onOpenPoseTestMode={(exerciseCode) => {

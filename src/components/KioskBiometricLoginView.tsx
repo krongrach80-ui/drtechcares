@@ -115,6 +115,7 @@ import {
   HeartPulse,
   Info,
   KeyRound,
+  Moon,
   RefreshCw,
   RotateCw,
   ShieldCheck,
@@ -130,8 +131,30 @@ export const KIOSK_FAST_UNREGISTERED_FRAMES = 3;
 export const KIOSK_FAST_UNREGISTERED_TIMEOUT_MS = 1100;
 export const KIOSK_NO_FACE_GUIDANCE_DELAY_MS = 1500;
 export const KIOSK_RESCAN_COOLDOWN_MS = 1500;
+export const KIOSK_IDLE_STANDBY_TIMEOUT_MS = 45000;
+export const KIOSK_NOT_FOUND_IDLE_STANDBY_MS = 60000;
 export const KIOSK_NOT_FOUND_VOICE_PROMPT_TH =
   'ไม่พบบัญชีในระบบครับ กรุณากดปุ่มสมัครบัญชี เพื่อลงทะเบียนคนไข้ใหม่ก่อนใช้งานนะครับ';
+
+export function shouldAutoReturnToStandby(params: {
+  hasCallback: boolean;
+  staffModalOpen: boolean;
+  hasVerifiedModal: boolean;
+  isFaceDetected: boolean;
+  scanStage: string;
+  idleElapsedMs: number;
+}): boolean {
+  if (!params.hasCallback || params.staffModalOpen || params.hasVerifiedModal) {
+    return false;
+  }
+  if (params.scanStage === 'not_found') {
+    return params.idleElapsedMs >= KIOSK_NOT_FOUND_IDLE_STANDBY_MS;
+  }
+  if (params.isFaceDetected) {
+    return false;
+  }
+  return params.idleElapsedMs >= KIOSK_IDLE_STANDBY_TIMEOUT_MS;
+}
 
 export function shouldTriggerFastNotFoundVerdict(params: {
   candidatesLoaded: boolean;
@@ -351,6 +374,7 @@ interface KioskBiometricLoginViewProps {
   onOpenStaffLogin: () => void;
   onOpenStaffRegister: () => void;
   onOpenTelemetrySimulator?: () => void;
+  onReturnToStandby?: () => void;
 }
 
 type LangButtonOption = {
@@ -970,6 +994,7 @@ export function KioskBiometricLoginView({
   onOpenStaffLogin,
   onOpenStaffRegister,
   onOpenTelemetrySimulator,
+  onReturnToStandby,
 }: KioskBiometricLoginViewProps) {
   const { lang, setLang } = useClinicalI18n();
   const c = COPY[lang];
@@ -1708,6 +1733,59 @@ export function KioskBiometricLoginView({
 
   const isNotFoundStage = scanStage === 'not_found';
   const prevStaffModalOpenRef = useRef(staffModalOpen);
+
+  const onReturnToStandbyRef = useRef(onReturnToStandby);
+  onReturnToStandbyRef.current = onReturnToStandby;
+  const lastStandbyActivityAtRef = useRef<number>(Date.now());
+  const idleStandbyStateRef = useRef({
+    hasCallback: Boolean(onReturnToStandby),
+    staffModalOpen,
+    hasVerifiedModal: Boolean(verifiedModalPayload),
+    isFaceDetected: Boolean(hudBox),
+    scanStage,
+  });
+  idleStandbyStateRef.current = {
+    hasCallback: Boolean(onReturnToStandby),
+    staffModalOpen,
+    hasVerifiedModal: Boolean(verifiedModalPayload),
+    isFaceDetected: Boolean(hudBox),
+    scanStage,
+  };
+  if (hudBox || staffModalOpen || verifiedModalPayload) {
+    lastStandbyActivityAtRef.current = Date.now();
+  }
+
+  useEffect(() => {
+    if (!onReturnToStandby || typeof window === 'undefined') return;
+    lastStandbyActivityAtRef.current = Date.now();
+    const touchActivity = () => {
+      lastStandbyActivityAtRef.current = Date.now();
+    };
+    window.addEventListener('pointerdown', touchActivity, { passive: true });
+    window.addEventListener('touchstart', touchActivity, { passive: true });
+    window.addEventListener('keydown', touchActivity);
+
+    const intervalId = window.setInterval(() => {
+      const state = idleStandbyStateRef.current;
+      const idleElapsedMs = Date.now() - lastStandbyActivityAtRef.current;
+      if (
+        shouldAutoReturnToStandby({
+          ...state,
+          idleElapsedMs,
+        })
+      ) {
+        cancelAllKioskVoiceSpeech(modalAudioRef.current);
+        onReturnToStandbyRef.current?.();
+      }
+    }, 1000);
+
+    return () => {
+      window.removeEventListener('pointerdown', touchActivity);
+      window.removeEventListener('touchstart', touchActivity);
+      window.removeEventListener('keydown', touchActivity);
+      window.clearInterval(intervalId);
+    };
+  }, [Boolean(onReturnToStandby)]);
 
   useEffect(() => {
     if (!isNotFoundStage || staffModalOpen || voiceMuted || typeof window === 'undefined') {
@@ -3695,7 +3773,7 @@ export function KioskBiometricLoginView({
       : c.alignFace;
 
   return (
-    <div className="min-h-screen flex flex-col bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-white text-[#0F4C81] font-sans select-none overflow-x-hidden">
+    <div className="animate-view-enter min-h-screen flex flex-col bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-white text-[#0F4C81] font-sans select-none overflow-x-hidden">
       {/* Top Clinical Blue-Teal Header Bar — Balanced, Uncluttered 2-Tier Header */}
       <header className="w-full px-5 py-3 bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] border-b border-sky-200/30 shadow-md text-white z-40">
         <div className="max-w-6xl mx-auto w-full flex flex-col gap-2.5">
@@ -3741,6 +3819,21 @@ export function KioskBiometricLoginView({
                 )}
                 <span>{getSeniorVoiceToggleLabel(lang, voiceMuted)}</span>
               </button>
+
+              {onReturnToStandby && (
+                <button
+                  type="button"
+                  data-testid="kiosk-enter-standby-btn"
+                  onClick={() => {
+                    cancelAllKioskVoiceSpeech(modalAudioRef.current);
+                    onReturnToStandby();
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-white/30 bg-white/15 hover:bg-white/25 px-3 py-1.5 text-xs sm:text-sm font-bold text-white shadow-xs transition-all cursor-pointer active:scale-95 whitespace-nowrap"
+                >
+                  <Moon className="h-4 w-4 shrink-0 text-cyan-200" />
+                  <span>{lang === 'en' ? 'Standby' : lang === 'cn' ? '待机' : 'พักหน้าจอ'}</span>
+                </button>
+              )}
 
               {/* Cloud Online + Clock Pill */}
               <div className="hidden sm:inline-flex h-9 px-3 items-center gap-2 rounded-xl bg-white/15 border border-white/25 text-xs font-semibold text-white whitespace-nowrap">
