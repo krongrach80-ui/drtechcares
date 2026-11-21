@@ -630,17 +630,28 @@
   animation: standbyColonPulse 1.6s ease-in-out infinite;
 }
 
+@keyframes standbyWakeRippleExpand {
+  0% {
+    transform: translate(-50%, -50%) scale(0.08);
+    opacity: 0.9;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(2.8);
+    opacity: 0;
+  }
+}
+
+.animate-standby-wake-ripple {
+  animation: standbyWakeRippleExpand 460ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.standby-gpu-layer {
+  will-change: transform, opacity;
+  transform: translate3d(0, 0, 0);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .animate-standby-float-1,
-  .animate-standby-float-2,
-  .animate-standby-float-3,
-  .animate-standby-float-4,
-  .animate-standby-wave-a,
-  .animate-standby-wave-b,
-  .animate-standby-ecg,
-  .animate-standby-cta-glow,
-  .animate-standby-tap-ripple,
-  .animate-standby-colon,
   .animate-popup-spring,
   .animate-card-enter,
   .animate-calendar-month,

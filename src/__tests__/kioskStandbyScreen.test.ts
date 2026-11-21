@@ -7,8 +7,12 @@ import {
   KioskStandbyScreen,
   KioskStandbyView,
   SevenSegmentClock,
+  computeEcgSweepProgress,
+  computeHeartbeatScale,
+  computeStandbyFloatTransform,
   createSingleFireStandbyWake,
   formatStandbyClockHHMM,
+  sampleStandbySilkWaveY,
 } from '../components/KioskStandbyScreen';
 import {
   KIOSK_IDLE_STANDBY_TIMEOUT_MS,
@@ -40,8 +44,11 @@ describe('Dr.Tech.Care AI Kiosk Standby Screen & Auto-Idle Return', () => {
     expect(html).toContain('data-testid="kiosk-standby-clock"');
     expect(html).toContain('data-time="20:54"');
     expect(html).toContain('data-testid="kiosk-standby-start-btn"');
+    expect(html).toContain('data-testid="standby-fluid-wave-canvas"');
     expect(html).toContain('data-testid="standby-ecg-waveform-top"');
     expect(html).toContain('data-testid="standby-ecg-waveform-bottom"');
+    expect(html).toContain('data-testid="standby-ecg-comet-top"');
+    expect(html).toContain('data-testid="standby-ecg-comet-bottom"');
 
     const plusMatches = html.match(/data-testid="standby-glow-plus"/g) ?? [];
     expect(plusMatches).toHaveLength(4);
@@ -205,6 +212,64 @@ describe('Dr.Tech.Care AI Kiosk Standby Screen & Auto-Idle Return', () => {
         idleElapsedMs: 60000,
       }),
     ).toBe(true);
+  });
+
+  it('computes smooth bounded 60FPS fluid wave, float, heartbeat, and ECG sweep kinematics', () => {
+    const y0 = sampleStandbySilkWaveY(0.5, 4, 16, 0, 320, 180, false);
+    const y1 = sampleStandbySilkWaveY(0.5, 4, 16, 1.25, 320, 180, false);
+    const y2 = sampleStandbySilkWaveY(0.5, 4, 16, 1.25, 320, 180, true);
+    expect(Number.isFinite(y0)).toBe(true);
+    expect(Number.isFinite(y1)).toBe(true);
+    expect(y0).not.toBe(y1);
+    expect(y1).not.toBe(y2);
+    expect(Math.abs(y0 - 320)).toBeLessThan(180);
+
+    const f0 = computeStandbyFloatTransform(0, {
+      ampX: 8,
+      ampY: 12,
+      ampRotDeg: 5,
+      ampScale: 0.05,
+      freqX: 0.4,
+      freqY: 0.55,
+      phase: 1,
+    });
+    const f1 = computeStandbyFloatTransform(1.4, {
+      ampX: 8,
+      ampY: 12,
+      ampRotDeg: 5,
+      ampScale: 0.05,
+      freqX: 0.4,
+      freqY: 0.55,
+      phase: 1,
+    });
+    expect(Math.abs(f0.x)).toBeLessThanOrEqual(8);
+    expect(Math.abs(f0.y)).toBeLessThanOrEqual(12);
+    expect(Math.abs(f0.rotDeg)).toBeLessThanOrEqual(5);
+    expect(f0.scale).toBeGreaterThanOrEqual(0.95);
+    expect(f0.scale).toBeLessThanOrEqual(1.05);
+    expect(f0.opacity).toBeGreaterThanOrEqual(0.82);
+    expect(f0.opacity).toBeLessThanOrEqual(1);
+    expect(f0.y).not.toBe(f1.y);
+
+    const hbBase = computeHeartbeatScale(0, 2.4);
+    const hbPeak = computeHeartbeatScale(2.4 * 0.14, 2.4);
+    expect(hbBase).toBeGreaterThanOrEqual(1);
+    expect(hbPeak).toBeGreaterThan(hbBase);
+    expect(hbPeak).toBeLessThanOrEqual(1.08);
+
+    const ecgA = computeEcgSweepProgress(0.5, 4.0, 0.25);
+    const ecgB = computeEcgSweepProgress(4.5, 4.0, 0.25);
+    expect(ecgA).toBeGreaterThanOrEqual(0);
+    expect(ecgA).toBeLessThan(1);
+    expect(ecgA).toBeCloseTo(ecgB, 6);
+  });
+
+  it('keeps standby animations active even under Windows prefers-reduced-motion: reduce', () => {
+    const css = fs.readFileSync(path.join(process.cwd(), 'src/index.css'), 'utf8');
+    const reducedMotionStart = css.indexOf('@media (prefers-reduced-motion: reduce)');
+    expect(reducedMotionStart).toBeGreaterThan(-1);
+    const reducedMotionSection = css.slice(reducedMotionStart);
+    expect(reducedMotionSection).not.toContain('.animate-standby-');
   });
 
   it('audits all standby-related files for zero Unicode emojis', () => {
