@@ -106,6 +106,7 @@ import {
   KineticAuthStatusBadge,
   KineticEmblemSvg,
 } from './KineticAuthStatusBadge';
+import { DrTechCareMascot } from './DrTechCareMascot';
 import {
   Bell,
   Camera,
@@ -123,6 +124,129 @@ import {
   VolumeX,
   X,
 } from 'lucide-react';
+
+export const KIOSK_FAST_MATCH_STREAK = 2;
+export const KIOSK_FAST_UNREGISTERED_FRAMES = 3;
+export const KIOSK_FAST_UNREGISTERED_TIMEOUT_MS = 1100;
+export const KIOSK_NO_FACE_GUIDANCE_DELAY_MS = 1500;
+export const KIOSK_RESCAN_COOLDOWN_MS = 1500;
+export const KIOSK_NOT_FOUND_VOICE_PROMPT_TH =
+  'ไม่พบบัญชีในระบบครับ กรุณากดปุ่มสมัครบัญชี เพื่อลงทะเบียนคนไข้ใหม่ก่อนใช้งานนะครับ';
+
+export function shouldTriggerFastNotFoundVerdict(params: {
+  candidatesLoaded: boolean;
+  humanWarmupReady: boolean;
+  documentHidden: boolean;
+  isAmbiguous: boolean;
+  isSpoof: boolean;
+  bioVerified: boolean;
+  matchStreak: number;
+  unmatchedClearFrames: number;
+  unmatchedElapsedMs: number;
+  inRescanCooldown: boolean;
+  hasZeroCandidates: boolean;
+}): boolean {
+  if (
+    !params.candidatesLoaded ||
+    !params.humanWarmupReady ||
+    params.documentHidden ||
+    params.isAmbiguous ||
+    params.isSpoof ||
+    params.inRescanCooldown ||
+    params.matchStreak > 0
+  ) {
+    return false;
+  }
+  if (params.hasZeroCandidates) {
+    return (
+      params.unmatchedClearFrames >= 2 ||
+      params.unmatchedElapsedMs >= KIOSK_FAST_UNREGISTERED_TIMEOUT_MS
+    );
+  }
+  return (
+    params.unmatchedClearFrames >= KIOSK_FAST_UNREGISTERED_FRAMES ||
+    params.unmatchedElapsedMs >= KIOSK_FAST_UNREGISTERED_TIMEOUT_MS
+  );
+}
+
+export interface UnregisteredFaceSignupPopupProps {
+  scanKey: number;
+  isSpeaking?: boolean;
+  onRegisterNewPatient: () => void;
+  onRescan: () => void;
+  onCallStaff: () => void;
+}
+
+export function UnregisteredFaceSignupPopup({
+  scanKey,
+  isSpeaking = false,
+  onRegisterNewPatient,
+  onRescan,
+  onCallStaff,
+}: UnregisteredFaceSignupPopupProps) {
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-[#0F4C81]/45 backdrop-blur-md flex items-center justify-center p-4 animate-backdrop-fade"
+      data-testid="unregistered-face-signup-modal"
+    >
+      <div className="w-full max-w-xl rounded-3xl bg-white border-2 border-red-500/45 shadow-2xl p-6 sm:p-8 text-center animate-popup-spring">
+        <KineticAuthStatusBadge
+          key={`not-found-${scanKey}`}
+          status="not_found"
+          compact
+          testId="kiosk-not-found-feedback-panel"
+          heading="ไม่พบบัญชี"
+          subtitle="ผลการสแกนใบหน้าไม่ตรงกับบัญชีใดในฐานข้อมูล"
+        />
+
+        <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50/75 p-4 flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
+          <DrTechCareMascot pose="explaining" isSpeaking={isSpeaking} size="sm" />
+          <div className="min-w-0 flex-1">
+            <h2 className="text-2xl md:text-3xl font-black text-red-700 leading-tight">
+              ไม่พบบัญชีผู้ป่วยในระบบ
+            </h2>
+            <p className="text-base md:text-lg font-bold text-slate-700 mt-1 leading-snug">
+              ใบหน้านี้ยังไม่ได้ลงทะเบียนใช้งานตู้กายภาพบำบัด Dr.Tech.Care กรุณาสมัครบัญชีใหม่ก่อนเริ่มฝึก
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-3 mt-5">
+          <button
+            type="button"
+            data-testid="unregistered-signup-btn"
+            onClick={onRegisterNewPatient}
+            className="btn-tactile bg-emerald-600 hover:bg-emerald-700 text-white font-black text-lg md:text-xl px-6 py-4 rounded-2xl shadow-lg flex-1 inline-flex items-center justify-center gap-2.5 cursor-pointer"
+          >
+            <UserPlus className="w-6 h-6 shrink-0" />
+            <span>สมัครบัญชี / ลงทะเบียนคนไข้ใหม่</span>
+          </button>
+          <button
+            type="button"
+            data-testid="unregistered-rescan-btn"
+            onClick={onRescan}
+            className="btn-tactile bg-slate-100 hover:bg-slate-200 border-2 border-slate-300 text-slate-800 font-extrabold text-base md:text-lg px-5 py-4 rounded-2xl inline-flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <RefreshCw className="w-5 h-5 shrink-0" />
+            <span>สแกนใหม่อีกครั้ง</span>
+          </button>
+        </div>
+
+        <div className="mt-3 flex justify-center">
+          <button
+            type="button"
+            data-testid="unregistered-call-staff-btn"
+            onClick={onCallStaff}
+            className="btn-tactile inline-flex items-center justify-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 hover:bg-amber-100 px-4 py-2.5 text-sm font-bold text-amber-900 cursor-pointer"
+          >
+            <Bell className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>เรียกเจ้าหน้าที่ช่วยเหลือ</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export interface KioskLoginSuccessPayload {
   patient: {
@@ -992,6 +1116,8 @@ export function KioskBiometricLoginView({
 
   const [scanStage, setScanStage] = useState<'scanning' | 'burst' | 'verifying' | 'not_found'>('scanning');
   const [burstCount, setBurstCount] = useState(0);
+  const [showNoFaceGuidance, setShowNoFaceGuidance] = useState(false);
+  const [isNotFoundVoiceSpeaking, setIsNotFoundVoiceSpeaking] = useState(false);
   const [livenessInfo, setLivenessInfo] = useState<LivenessAndPoseReport | null>(null);
   const [bioReport, setBioReport] = useState<BiologicalLivenessReport | null>(null);
   const [inspectionInfo, setInspectionInfo] = useState<BiometricVerificationJson | null>(null);
@@ -1417,7 +1543,10 @@ export function KioskBiometricLoginView({
     total: 0,
     legacy: 0,
   });
-  const streakTrackerRef = useRef(new LiveIdentityStreakTracker(BIOMETRIC_REQUIRED_STREAK));
+  const streakTrackerRef = useRef(new LiveIdentityStreakTracker(KIOSK_FAST_MATCH_STREAK));
+  const rescanCooldownUntilRef = useRef<number>(0);
+  const unmatchedClearFramesRef = useRef<number>(0);
+  const noFaceSinceRef = useRef<number | null>(null);
   const excludedPatientIdsRef = useRef<string[]>([]);
   const [turningHintPct, setTurningHintPct] = useState<number | null>(null);
   const [ambiguousCloseHint, setAmbiguousCloseHint] = useState(false);
@@ -1467,7 +1596,7 @@ export function KioskBiometricLoginView({
         runnerUpName: prev?.runnerUpName ?? null,
         runnerUpPct: prev?.runnerUpPct ?? 0,
         streak: prev?.streak ?? 0,
-        requiredStreak: BIOMETRIC_REQUIRED_STREAK,
+        requiredStreak: KIOSK_FAST_MATCH_STREAK,
         reason: prev?.reason ?? (loaded.validAccounts === 0 ? 'NO_CANDIDATES' : 'READY'),
       }));
     } catch (err) {
@@ -1507,6 +1636,12 @@ export function KioskBiometricLoginView({
     streakTrackerRef.current.reset();
     bioLivenessRef.current.reset();
     probeWindowRef.current = [];
+    unmatchedClearFramesRef.current = 0;
+    noFaceSinceRef.current = null;
+    rescanCooldownUntilRef.current = Date.now() + KIOSK_RESCAN_COOLDOWN_MS;
+    setShowNoFaceGuidance(false);
+    setIsNotFoundVoiceSpeaking(false);
+    cancelAllKioskVoiceSpeech(modalAudioRef.current);
     setBurstCount(0);
     setInspectionInfo(null);
     setLivenessInfo(null);
@@ -1573,6 +1708,83 @@ export function KioskBiometricLoginView({
 
   const isNotFoundStage = scanStage === 'not_found';
   const prevStaffModalOpenRef = useRef(staffModalOpen);
+
+  useEffect(() => {
+    if (!isNotFoundStage || staffModalOpen || voiceMuted || typeof window === 'undefined') {
+      setIsNotFoundVoiceSpeaking(false);
+      return;
+    }
+
+    let cancelled = false;
+    const speakText = sanitizeSpeechText(KIOSK_NOT_FOUND_VOICE_PROMPT_TH);
+    if (!speakText) return;
+
+    const finishSpeaking = () => {
+      if (!cancelled) setIsNotFoundVoiceSpeaking(false);
+    };
+
+    const runWebFallback = () => {
+      if (cancelled || !('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') {
+        finishSpeaking();
+        return;
+      }
+      try {
+        const synth = window.speechSynthesis;
+        synth.cancel();
+        const voices = synth.getVoices();
+        const voice = pickSpeechVoice(voices, 'th-TH');
+        const utt = new SpeechSynthesisUtterance(speakText);
+        utt.lang = voice?.lang || 'th-TH';
+        if (voice) utt.voice = voice;
+        utt.rate = VERIFIED_MODAL_SPEECH_RATE;
+        utt.onstart = () => {
+          if (!cancelled) setIsNotFoundVoiceSpeaking(true);
+        };
+        utt.onend = finishSpeaking;
+        utt.onerror = finishSpeaking;
+        activeUtteranceRef.current = utt;
+        setIsNotFoundVoiceSpeaking(true);
+        synth.speak(utt);
+      } catch {
+        finishSpeaking();
+      }
+    };
+
+    if (typeof Audio !== 'undefined') {
+      try {
+        let audio = modalAudioRef.current;
+        if (!audio) {
+          audio = new Audio();
+          audio.preload = 'auto';
+          modalAudioRef.current = audio;
+        }
+        audio.onplaying = () => {
+          if (!cancelled) setIsNotFoundVoiceSpeaking(true);
+        };
+        audio.onended = finishSpeaking;
+        audio.onerror = runWebFallback;
+        audio.defaultPlaybackRate = VERIFIED_MODAL_SPEECH_RATE;
+        audio.src = buildTtsProxyUrl(speakText, 'th');
+        audio.playbackRate = VERIFIED_MODAL_SPEECH_RATE;
+        const p = audio.play();
+        if (p && typeof p.catch === 'function') {
+          p.catch(() => {
+            if (!cancelled) runWebFallback();
+          });
+        }
+      } catch {
+        runWebFallback();
+      }
+    } else {
+      runWebFallback();
+    }
+
+    return () => {
+      cancelled = true;
+      setIsNotFoundVoiceSpeaking(false);
+      cancelAllKioskVoiceSpeech(modalAudioRef.current);
+    };
+  }, [isNotFoundStage, staffModalOpen, voiceMuted]);
 
   useEffect(() => {
     const wasOpen = prevStaffModalOpenRef.current;
@@ -2105,7 +2317,7 @@ export function KioskBiometricLoginView({
                   isBioVerified: params.snapBioVerified,
                   rawCosine: 0,
                   streak: 0,
-                  requiredStreak: BIOMETRIC_REQUIRED_STREAK,
+                  requiredStreak: KIOSK_FAST_MATCH_STREAK,
                   confirmedCandidateName: null,
                   distanceM: bioReportRef.current?.estimatedDistanceM ?? 1.8,
                   isLongRange: bioReportRef.current?.livenessMode === 'LONG_RANGE',
@@ -2121,13 +2333,14 @@ export function KioskBiometricLoginView({
                   runnerUpName: null,
                   runnerUpPct: 0,
                   streak: 0,
-                  requiredStreak: BIOMETRIC_REQUIRED_STREAK,
+                  requiredStreak: KIOSK_FAST_MATCH_STREAK,
                   reason: 'NO_CANDIDATES',
                 });
 
+                const inCooldown = Date.now() < rescanCooldownUntilRef.current;
                 if (
-                  params.snapBioVerified &&
                   !params.snapIsSpoof &&
+                  !inCooldown &&
                   candidatesLoadedRef.current &&
                   humanWarmupReadyRef.current &&
                   !(typeof document !== 'undefined' && document.hidden)
@@ -2135,8 +2348,23 @@ export function KioskBiometricLoginView({
                   if (bioVerifiedUnmatchedStartAt === 0) {
                     bioVerifiedUnmatchedStartAt = params.snapNow;
                   }
+                  unmatchedClearFramesRef.current += 1;
                   const noCandidateElapsed = params.snapNow - bioVerifiedUnmatchedStartAt;
-                  if (noCandidateElapsed >= 3000) {
+                  if (
+                    shouldTriggerFastNotFoundVerdict({
+                      candidatesLoaded: candidatesLoadedRef.current,
+                      humanWarmupReady: humanWarmupReadyRef.current,
+                      documentHidden: typeof document !== 'undefined' && document.hidden,
+                      isAmbiguous: false,
+                      isSpoof: params.snapIsSpoof,
+                      bioVerified: params.snapBioVerified,
+                      matchStreak: 0,
+                      unmatchedClearFrames: unmatchedClearFramesRef.current,
+                      unmatchedElapsedMs: noCandidateElapsed,
+                      inRescanCooldown: inCooldown,
+                      hasZeroCandidates: true,
+                    })
+                  ) {
                     shouldContinueLoop = false;
                     setScanStage('not_found');
                     return;
@@ -2144,6 +2372,7 @@ export function KioskBiometricLoginView({
                   setScanStage('burst');
                 } else {
                   bioVerifiedUnmatchedStartAt = 0;
+                  unmatchedClearFramesRef.current = 0;
                   setScanStage(candidatesLoadedRef.current ? 'scanning' : 'burst');
                 }
                 return;
@@ -2279,27 +2508,60 @@ export function KioskBiometricLoginView({
                   : null,
               );
 
-              if (!params.snapBioVerified || params.snapIsSpoof) {
+              const inCooldown = Date.now() < rescanCooldownUntilRef.current;
+              const isHidden = typeof document !== 'undefined' && document.hidden;
+
+              if (params.snapIsSpoof) {
                 bioVerifiedUnmatchedStartAt = 0;
+                unmatchedClearFramesRef.current = 0;
                 setTurningHintPct(null);
                 setScanStage('scanning');
                 return;
               }
 
-              if (isAmbiguous) {
+              if (isAmbiguous || stepRes.confirmed || stepRes.streak > 0) {
                 bioVerifiedUnmatchedStartAt = 0;
-                setTurningHintPct(null);
-                setScanStage('burst');
-              } else if (stepRes.confirmed || stepRes.streak > 0) {
-                bioVerifiedUnmatchedStartAt = 0;
+                unmatchedClearFramesRef.current = 0;
                 setTurningHintPct(null);
                 setScanStage(stepRes.confirmed ? 'verifying' : 'burst');
               } else {
-                if (bioVerifiedUnmatchedStartAt === 0) {
-                  bioVerifiedUnmatchedStartAt = params.snapNow;
+                if (!inCooldown) {
+                  if (bioVerifiedUnmatchedStartAt === 0) {
+                    bioVerifiedUnmatchedStartAt = params.snapNow;
+                  }
+                  unmatchedClearFramesRef.current += 1;
+                } else {
+                  bioVerifiedUnmatchedStartAt = 0;
+                  unmatchedClearFramesRef.current = 0;
                 }
                 setTurningHintPct(null);
                 setScanStage('burst');
+
+                const unmatchedElapsed =
+                  bioVerifiedUnmatchedStartAt > 0 ? params.snapNow - bioVerifiedUnmatchedStartAt : 0;
+                if (
+                  shouldTriggerFastNotFoundVerdict({
+                    candidatesLoaded: candidatesLoadedRef.current,
+                    humanWarmupReady: humanWarmupReadyRef.current,
+                    documentHidden: isHidden,
+                    isAmbiguous,
+                    isSpoof: params.snapIsSpoof,
+                    bioVerified: params.snapBioVerified,
+                    matchStreak: stepRes.streak,
+                    unmatchedClearFrames: unmatchedClearFramesRef.current,
+                    unmatchedElapsedMs: unmatchedElapsed,
+                    inRescanCooldown: inCooldown,
+                    hasZeroCandidates: false,
+                  })
+                ) {
+                  shouldContinueLoop = false;
+                  setScanStage('not_found');
+                  return;
+                }
+              }
+
+              if (!params.snapBioVerified) {
+                return;
               }
 
               if (
@@ -2384,7 +2646,7 @@ export function KioskBiometricLoginView({
                   }
                 }
 
-                // Local offline-only fallback strictly when Worker HTTP call itself failed/timed out AND all 3 local Triple-Gates passed 6/6
+                // Local offline-only fallback strictly when Worker HTTP call itself failed/timed out AND all 3 local Triple-Gates passed
                 if (
                   verifyNetworkFailed &&
                   !serverRejected &&
@@ -2397,7 +2659,7 @@ export function KioskBiometricLoginView({
                   evalRes.topSimilarity >= BIOMETRIC_MATCH_THRESHOLD &&
                   evalRes.topCenteredSimilarity >= BIOMETRIC_CENTERED_COSINE_THRESHOLD &&
                   evalRes.topFinalScore >= BIOMETRIC_FINAL_SCORE_THRESHOLD &&
-                  stepRes.streak >= BIOMETRIC_REQUIRED_STREAK &&
+                  stepRes.streak >= KIOSK_FAST_MATCH_STREAK &&
                   !excludedPatientIdsRef.current.includes(cand.patientId)
                 ) {
                   didAuthenticate = true;
@@ -2427,21 +2689,6 @@ export function KioskBiometricLoginView({
                 setLiveOverlay(null);
                 void refreshBiometricCandidates();
                 setScanStage('burst');
-                return;
-              }
-
-              const unmatchedElapsed =
-                bioVerifiedUnmatchedStartAt > 0 ? params.snapNow - bioVerifiedUnmatchedStartAt : 0;
-              if (
-                candidatesLoadedRef.current &&
-                humanWarmupReadyRef.current &&
-                !(typeof document !== 'undefined' && document.hidden) &&
-                !isLastVerifyAmbiguous &&
-                stepRes.streak === 0 &&
-                unmatchedElapsed >= 4500
-              ) {
-                shouldContinueLoop = false;
-                setScanStage('not_found');
                 return;
               }
             }
@@ -2996,6 +3243,11 @@ export function KioskBiometricLoginView({
 
               if (faceCount !== 1 || landmarks.length < 300) {
                 clearFaceMeshCanvas();
+                if (noFaceSinceRef.current === null) {
+                  noFaceSinceRef.current = now;
+                } else if (now - noFaceSinceRef.current >= KIOSK_NO_FACE_GUIDANCE_DELAY_MS) {
+                  setShowNoFaceGuidance(true);
+                }
                 unreadyFrameStreak += 1;
                 if (unreadyFrameStreak >= 2 && hudBoxMounted) {
                   hudBoxMounted = false;
@@ -3011,11 +3263,15 @@ export function KioskBiometricLoginView({
                   bioLivenessRef.current.reset();
                   probeWindowRef.current = [];
                   bioVerifiedUnmatchedStartAt = 0;
+                  unmatchedClearFramesRef.current = 0;
                   isLastVerifyAmbiguous = false;
                   setBioReport(null);
                   setBurstCount(0);
                   setScanStage('scanning');
                 }
+              } else {
+                noFaceSinceRef.current = null;
+                setShowNoFaceGuidance(false);
               }
 
               if (!alignCanvasRef.current) {
@@ -3697,7 +3953,7 @@ export function KioskBiometricLoginView({
                       <div>YawΔ: {bioReport?.deltaYawDeg.toFixed(1) ?? '0.0'}°</div>
                       <div>Spoof: {Math.round((bioReport?.spoofScore ?? 0) * 100)}%</div>
                       <div>rPPG: {Math.round((bioReport?.rppgScore ?? 0) * 100)}%</div>
-                      <div>Burst: {burstCount}/{BIOMETRIC_REQUIRED_STREAK}</div>
+                      <div>Burst: {burstCount}/{KIOSK_FAST_MATCH_STREAK}</div>
                     </div>
                     {lastVerifyResult?.matched && lastVerifyResult.confidencePercent >= 84 && lastVerifyResult?.topCandidate && (
                       <div className="text-[10px] text-emerald-300 pt-1 border-t border-slate-800">
@@ -3705,6 +3961,52 @@ export function KioskBiometricLoginView({
                         {lastVerifyResult.confidencePercent}%)
                       </div>
                     )}
+                  </div>
+                )}
+
+                {/* Top-Center Live Scan Progress Pill / 1.5s No-Face Framing Guidance Pill */}
+                {!verifiedModalPayload && scanStage !== 'not_found' && isFaceDetected && !isSpoof && (
+                  <div
+                    className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 z-25 max-w-[90%]"
+                    data-testid="kiosk-scan-progress-pill"
+                  >
+                    <div className="rounded-2xl bg-white/95 border border-emerald-300 shadow-lg px-4 py-2 text-center backdrop-blur-md">
+                      <div className="text-xs sm:text-sm font-black text-[#0F4C81] whitespace-nowrap">
+                        {scanStage === 'verifying'
+                          ? c.verifying
+                          : `กำลังตรวจสอบใบหน้า... (${Math.min(burstCount, KIOSK_FAST_MATCH_STREAK)}/${KIOSK_FAST_MATCH_STREAK})`}
+                      </div>
+                      <div className="mt-1.5 h-1.5 w-44 max-w-full mx-auto overflow-hidden rounded-full bg-slate-200">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-sky-500 transition-all duration-150"
+                          style={{
+                            width: `${
+                              scanStage === 'verifying'
+                                ? 100
+                                : Math.max(
+                                    18,
+                                    Math.round(
+                                      (Math.min(burstCount, KIOSK_FAST_MATCH_STREAK) /
+                                        KIOSK_FAST_MATCH_STREAK) *
+                                        100,
+                                    ),
+                                  )
+                            }%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {!verifiedModalPayload && scanStage !== 'not_found' && !isFaceDetected && showNoFaceGuidance && (
+                  <div
+                    className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 z-25 max-w-[92%]"
+                    data-testid="kiosk-no-face-guidance-pill"
+                  >
+                    <div className="rounded-full bg-white/95 border-2 border-sky-400 shadow-lg px-4 py-2 text-xs sm:text-sm font-extrabold text-[#0F4C81] whitespace-nowrap animate-toast-in">
+                      กรุณามองตรงที่กล้องและจัดใบหน้าให้อยู่ในกรอบ
+                    </div>
                   </div>
                 )}
 
@@ -3729,7 +4031,7 @@ export function KioskBiometricLoginView({
                           hasEvaluatedMatch: Boolean(liveDebugHud?.hasEvaluatedMatch),
                           gatePassed: Boolean(liveDebugHud?.gatePassed ?? liveDebugHud?.topName),
                           streak: burstCount,
-                          requiredStreak: BIOMETRIC_REQUIRED_STREAK,
+                          requiredStreak: KIOSK_FAST_MATCH_STREAK,
                           confirmedCandidateName:
                             liveMatchHud?.confirmed && liveMatchHud?.candidate
                               ? liveMatchHud.candidate.fullName
@@ -3901,7 +4203,7 @@ export function KioskBiometricLoginView({
                 </span>
               ) : (
                 <span className="text-slate-300">
-                  กำลังตรวจสอบใบหน้า... (0/{BIOMETRIC_REQUIRED_STREAK})
+                  กำลังตรวจสอบใบหน้า... (0/{KIOSK_FAST_MATCH_STREAK})
                 </span>
               )}
             </div>
@@ -4041,53 +4343,23 @@ export function KioskBiometricLoginView({
         </div>
       )}
 
-      {/* Account Not Found Modal */}
+      {/* Account Not Found -> Automatic Registration Prompt Popup */}
       {scanStage === 'not_found' && !staffModalOpen && (
-        <div className="fixed inset-0 z-50 bg-[#0F4C81]/40 backdrop-blur-md flex items-center justify-center p-4 animate-backdrop-fade">
-          <div className="w-full max-w-md rounded-3xl bg-white border-2 border-rose-500/45 shadow-2xl p-6 text-center animate-popup-spring">
-            <KineticAuthStatusBadge
-              key={`not-found-${scanGeneration}`}
-              status="not_found"
-              compact
-              testId="kiosk-not-found-feedback-panel"
-              heading="ไม่พบบัญชี"
-              subtitle={lang === 'th' ? c.notFoundDesc : `${c.notFoundTitle} — ${c.notFoundDesc}`}
-              noAccountLabel="ไม่มีบัญชี"
-              onNoAccountClick={handleRestartScan}
-            />
-            <div className="mt-4 flex flex-col gap-2.5">
-              <button
-                type="button"
-                onClick={onOpenStaffRegister}
-                className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-sm shadow-lg flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <UserPlus className="w-4 h-4" />
-                <span>{c.staffAssistBtn}</span>
-              </button>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={handleRestartScan}
-                  className="py-3 px-3 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>{c.retryScanBtn}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void handleCallStaff();
-                    handleRestartScan();
-                  }}
-                  className="py-3 px-3 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-900 font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
-                >
-                  <Bell className="w-3.5 h-3.5 text-amber-600" />
-                  <span>{c.callStaff}</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <UnregisteredFaceSignupPopup
+          scanKey={scanGeneration}
+          isSpeaking={isNotFoundVoiceSpeaking}
+          onRegisterNewPatient={() => {
+            cancelAllKioskVoiceSpeech(modalAudioRef.current);
+            setIsNotFoundVoiceSpeaking(false);
+            setScanStage('scanning');
+            onOpenStaffRegister();
+          }}
+          onRescan={handleRestartScan}
+          onCallStaff={() => {
+            void handleCallStaff();
+            handleRestartScan();
+          }}
+        />
       )}
 
       {/* Verified Patient Confirmation Modal */}
