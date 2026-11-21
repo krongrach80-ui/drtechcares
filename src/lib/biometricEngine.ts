@@ -1956,6 +1956,7 @@ export function computePatientMatchScore(
       geometricRatios: candidate.geometricRatios ?? candidate.sourceEntry?.geometricRatios ?? null,
     },
     probeRatios,
+    liveBucket,
   );
 
   const scoredVecs = uniqueStored

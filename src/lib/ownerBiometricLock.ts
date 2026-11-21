@@ -4,8 +4,10 @@ import {
   classifyLivePoseZone,
   computeArcFaceBiometricScore,
   computeDualFactorBiometricScore,
+  computeVectorPairMetrics,
   cosineSimilarity,
   detectBiometricVectorEngine,
+  evaluateAppearanceAndCraniofacialGate,
   isLegacyV1HybridVector,
   l2Normalize,
   mirrorPoseZone,
@@ -276,32 +278,50 @@ export function verifyOwnerFace1to1(input: {
   if (ownerEngine === 'human-faceres-1024d') {
     const probeNorm = l2Normalize(input.probeVector);
     let bestSim = cosineSimilarity(probeNorm, normMaster);
+    let bestMatchVec: readonly number[] = normMaster;
     let bestAngle: 'master' | FacePoseZone5 = 'master';
     const zones: FacePoseZone5[] = ['center', 'left', 'right', 'up', 'down'];
     for (const z of zones) {
       const av = template.angleEmbeddings?.[z];
       if (Array.isArray(av) && av.length === normMaster.length) {
-        const sim = cosineSimilarity(probeNorm, l2Normalize(av));
+        const normAv = l2Normalize(av);
+        const sim = cosineSimilarity(probeNorm, normAv);
         if (sim > bestSim) {
           bestSim = sim;
+          bestMatchVec = normAv;
           bestAngle = z;
         }
       }
     }
     for (const ex of template.exemplarEmbeddings ?? []) {
       if (Array.isArray(ex) && ex.length === normMaster.length) {
-        const sim = cosineSimilarity(probeNorm, l2Normalize(ex));
+        const normEx = l2Normalize(ex);
+        const sim = cosineSimilarity(probeNorm, normEx);
         if (sim > bestSim) {
           bestSim = sim;
+          bestMatchVec = normEx;
           bestAngle = 'master';
         }
       }
     }
+    const bestPair = computeVectorPairMetrics(probeNorm, bestMatchVec);
+    const hasPatchPair = Boolean(
+      input.probeRatios?.appearancePatch384?.length === 384 &&
+        template.geometricRatios?.appearancePatch384?.length === 384,
+    );
+    const gate2Passed = hasPatchPair
+      ? evaluateAppearanceAndCraniofacialGate(input.probeRatios, template.geometricRatios).passed
+      : true;
     const owner1024Threshold = 0.76;
+    const owner1024CenteredThreshold = 0.70;
     const ownerEuclideanDist = Math.sqrt(Math.max(0, 2 - 2 * Math.max(-1, Math.min(1, bestSim))));
     return {
       hasTemplate: true,
-      matched: bestSim >= owner1024Threshold && ownerEuclideanDist <= 0.69,
+      matched:
+        bestSim >= owner1024Threshold &&
+        bestPair.centeredCosine >= owner1024CenteredThreshold &&
+        ownerEuclideanDist <= 0.69 &&
+        gate2Passed,
       similarity: Math.max(0, bestSim),
       livePoseZone,
       bestAngle,

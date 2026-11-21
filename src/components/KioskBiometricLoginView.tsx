@@ -84,7 +84,9 @@ import { POSE_INDEX } from '@drtechcares/pose-engine';
 import {
   STRICT_LOGIN_MAX_PITCH_DEG,
   STRICT_LOGIN_MAX_YAW_DEG,
+  classifyLivePoseZone,
   computeCraniofacialRatios12,
+  l2Normalize,
   purgeLegacyBiometricCache,
   type GeometricAnthropometricRatios,
 } from '@drtechcares/smart-biometric-core';
@@ -1213,6 +1215,7 @@ export function KioskBiometricLoginView({
     legacyAccounts: number;
     syncedFromSupabase?: boolean;
     hasEvaluatedMatch?: boolean;
+    gatePassed?: boolean;
     topName: string | null;
     topPct: number;
     centeredPct?: number;
@@ -1222,6 +1225,16 @@ export function KioskBiometricLoginView({
     requiredStreak: number;
     reason: string;
   } | null>(null);
+  const probeWindowRef = useRef<
+    Array<{
+      ts: number;
+      embedding: number[];
+      appearancePatch384?: number[];
+      craniofacialRatios12?: number[];
+      yawDeg: number;
+      pitchDeg: number;
+    }>
+  >([]);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const confirmVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -1250,6 +1263,7 @@ export function KioskBiometricLoginView({
     setLeftHandUpState(false);
     setRightHandUpState(false);
     setOwnerGuardBanner(null);
+    probeWindowRef.current = [];
     if (confirmProgressFillRef.current) {
       confirmProgressFillRef.current.style.transform = 'scaleX(0)';
     }
@@ -1431,6 +1445,7 @@ export function KioskBiometricLoginView({
     presenceRef.current.reset();
     streakTrackerRef.current.reset();
     bioLivenessRef.current.reset();
+    probeWindowRef.current = [];
     setBurstCount(0);
     setInspectionInfo(null);
     setLivenessInfo(null);
@@ -1506,6 +1521,7 @@ export function KioskBiometricLoginView({
       presenceRef.current.reset();
       streakTrackerRef.current.reset();
       bioLivenessRef.current.reset();
+      probeWindowRef.current = [];
       setScanStage('scanning');
       setHudBox(null);
       clearFaceMeshCanvas();
@@ -1820,6 +1836,21 @@ export function KioskBiometricLoginView({
           // Cheekbones & jawline
           234, 454, 172, 397, 152,
         ];
+        const FACE_MESH_CONTOURS: ReadonlyArray<readonly number[]> = [
+          // Face oval contour
+          [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 10],
+          // Left & right eyes
+          [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246, 33],
+          [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466, 263],
+          // Left & right eyebrows
+          [70, 63, 105, 66, 107, 55, 65, 52, 53, 46],
+          [300, 293, 334, 296, 336, 285, 295, 282, 283, 276],
+          // Nose bridge & base
+          [168, 6, 197, 195, 5, 4, 1],
+          [98, 97, 2, 326, 327],
+          // Outer lip contour
+          [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146, 61],
+        ];
 
         let shouldContinueLoop = true;
         const ROI_SWEEP_ZONES = [
@@ -1881,11 +1912,13 @@ export function KioskBiometricLoginView({
               Math.abs(canonicalYawDeg) > STRICT_LOGIN_MAX_YAW_DEG ||
               Math.abs(params.snapPitchDeg) > STRICT_LOGIN_MAX_PITCH_DEG
             ) {
+              probeWindowRef.current = [];
               streakTrackerRef.current.reset();
               setBurstCount(0);
               setLiveMatchHud(null);
               return;
             }
+            const liveBucket = classifyLivePoseZone(canonicalYawDeg, params.snapPitchDeg);
             const rawGeom = extractGeometricAnthropometricRatios(params.snapLandmarks);
             const patch384 = extractFacePatchSignature384(params.snapCanvas);
             const ratios12 = computeCraniofacialRatios12(
@@ -1903,6 +1936,65 @@ export function KioskBiometricLoginView({
                     ...(ratios12 ? { craniofacialRatios12: ratios12 } : {}),
                   }
                 : undefined;
+
+            // Rolling 3-frame sharp probe denoising across consecutive frontal frames within 1.5s
+            let activeEmbedding = extracted.embedding;
+            let activeGeometricRatios = geometricRatios;
+            if (params.snapIsSpoof) {
+              probeWindowRef.current = [];
+            } else {
+              const validWindow = probeWindowRef.current.filter(
+                (item) =>
+                  params.snapNow - item.ts <= 1500 &&
+                  item.embedding.length === extracted.embedding!.length &&
+                  Math.abs(item.yawDeg - canonicalYawDeg) <= 12 &&
+                  Math.abs(item.pitchDeg - params.snapPitchDeg) <= 10,
+              );
+              validWindow.push({
+                ts: params.snapNow,
+                embedding: extracted.embedding,
+                appearancePatch384: patch384 ?? undefined,
+                craniofacialRatios12: ratios12 ?? undefined,
+                yawDeg: canonicalYawDeg,
+                pitchDeg: params.snapPitchDeg,
+              });
+              const rolling = validWindow.slice(-3);
+              probeWindowRef.current = rolling;
+
+              if (rolling.length >= 2) {
+                const dim = extracted.embedding.length;
+                const embSum = new Array<number>(dim).fill(0);
+                for (const item of rolling) {
+                  for (let i = 0; i < dim; i += 1) {
+                    embSum[i] += item.embedding[i];
+                  }
+                }
+                activeEmbedding = l2Normalize(embSum);
+
+                const p384Len = patch384?.length ?? 0;
+                const averagedPatch =
+                  p384Len === 384 && rolling.every((item) => item.appearancePatch384?.length === 384)
+                    ? rolling[0].appearancePatch384!.map(
+                        (_, idx) => rolling.reduce((acc, item) => acc + item.appearancePatch384![idx], 0) / rolling.length,
+                      )
+                    : geometricRatios?.appearancePatch384;
+                const r12Len = ratios12?.length ?? 0;
+                const averagedRatios12 =
+                  r12Len === 12 && rolling.every((item) => item.craniofacialRatios12?.length === 12)
+                    ? rolling[0].craniofacialRatios12!.map(
+                        (_, idx) => rolling.reduce((acc, item) => acc + item.craniofacialRatios12![idx], 0) / rolling.length,
+                      )
+                    : geometricRatios?.craniofacialRatios12;
+                if (geometricRatios) {
+                  activeGeometricRatios = {
+                    ...geometricRatios,
+                    ...(averagedPatch ? { appearancePatch384: averagedPatch } : {}),
+                    ...(averagedRatios12 ? { craniofacialRatios12: averagedRatios12 } : {}),
+                  };
+                }
+              }
+            }
+
             const livenessEvidence = {
               biologicalVerified: params.snapBioVerified,
               blinkCount: params.snapBioBlinkCount,
@@ -1914,7 +2006,7 @@ export function KioskBiometricLoginView({
               pitchDeg: params.snapPitchDeg,
               rollDeg,
               engine: BIOMETRIC_ENGINE_ID,
-              ...(geometricRatios ? { geometricRatios } : {}),
+              ...(activeGeometricRatios ? { geometricRatios: activeGeometricRatios } : {}),
               ...(excludedPatientIdsRef.current.length > 0
                 ? { excludedPatientIds: excludedPatientIdsRef.current }
                 : {}),
@@ -1925,6 +2017,7 @@ export function KioskBiometricLoginView({
 
             if (!verifyingLockRef.current) {
               if (candidates.length === 0) {
+                probeWindowRef.current = [];
                 streakTrackerRef.current.reset();
                 setBurstCount(0);
                 setLiveMatchHud(null);
@@ -1980,12 +2073,12 @@ export function KioskBiometricLoginView({
               }
 
               const evalRes: Live1toNMatchEvaluation = evaluateLiveMatch1toN(
-                extracted.embedding,
+                activeEmbedding,
                 candidates,
                 excludedPatientIdsRef.current,
                 undefined,
-                undefined,
-                geometricRatios,
+                liveBucket,
+                activeGeometricRatios,
               );
               const stepRes = streakTrackerRef.current.step(evalRes, {
                 spoofDetected: params.snapIsSpoof,
@@ -2032,6 +2125,7 @@ export function KioskBiometricLoginView({
                 totalAccounts: counts.total,
                 legacyAccounts: counts.legacy,
                 hasEvaluatedMatch: true,
+                gatePassed: evalRes.matched,
                 // Strict zero-leak rule: never expose any candidate name while < 0.84 or < 6/6 streak
                 topName: isConfirmedReady && stepRes.candidate ? stepRes.candidate.fullName : null,
                 topPct,
@@ -2097,7 +2191,7 @@ export function KioskBiometricLoginView({
                 let serverRejected = false;
                 try {
                   const verifyRes = await apiClient.verifyFaceLogin(
-                    extracted.embedding,
+                    activeEmbedding,
                     livenessEvidence,
                   );
                   if (!active || !shouldContinueLoop || verifiedModalPayloadRef.current) {
@@ -2774,6 +2868,7 @@ export function KioskBiometricLoginView({
                   setTurningHintPct(null);
                   streakTrackerRef.current.reset();
                   bioLivenessRef.current.reset();
+                  probeWindowRef.current = [];
                   bioVerifiedUnmatchedStartAt = 0;
                   isLastVerifyAmbiguous = false;
                   setBioReport(null);
@@ -2940,6 +3035,44 @@ export function KioskBiometricLoginView({
                         Math.min(cw - 4, pxW),
                         Math.min(ch - 4, pxH),
                       );
+                      // Fine-grained 478-point anatomical contours (oval, eyes, brows, nose, lips + iris reticles)
+                      mCtx.strokeStyle = dotFillRgba;
+                      mCtx.globalAlpha = 0.42;
+                      mCtx.lineWidth = 1.15;
+                      mCtx.beginPath();
+                      for (let cIdx = 0; cIdx < FACE_MESH_CONTOURS.length; cIdx += 1) {
+                        const ring = FACE_MESH_CONTOURS[cIdx];
+                        let started = false;
+                        for (let pIdx = 0; pIdx < ring.length; pIdx += 1) {
+                          const pt = landmarks[ring[pIdx]];
+                          if (!pt) continue;
+                          const nx = mirroredRef.current ? 1 - pt.x : pt.x;
+                          const lx = nx * renderedW - offsetX;
+                          const ly = pt.y * renderedH - offsetY;
+                          if (!started) {
+                            mCtx.moveTo(lx, ly);
+                            started = true;
+                          } else {
+                            mCtx.lineTo(lx, ly);
+                          }
+                        }
+                      }
+                      mCtx.stroke();
+                      if (landmarks.length >= 474) {
+                        mCtx.globalAlpha = 0.85;
+                        mCtx.lineWidth = 1.3;
+                        const irisR = Math.max(3, Math.min(7, pxW * 0.028));
+                        for (const irisIdx of [468, 473]) {
+                          const ipt = landmarks[irisIdx];
+                          if (!ipt) continue;
+                          const nx = mirroredRef.current ? 1 - ipt.x : ipt.x;
+                          const ix = nx * renderedW - offsetX;
+                          const iy = ipt.y * renderedH - offsetY;
+                          mCtx.beginPath();
+                          mCtx.arc(ix, iy, irisR, 0, Math.PI * 2);
+                          mCtx.stroke();
+                        }
+                      }
                       mCtx.restore();
                       const dotRadius = Math.max(1.3, Math.min(2.6, pxH * 0.015));
                       mCtx.fillStyle = dotFillRgba;
@@ -2967,6 +3100,9 @@ export function KioskBiometricLoginView({
                   unreadyFrameStreak += 1;
                   // Immediately wipe matchStreak when head leaves +/-14° frontal window, frame blurs, or spoof is flagged
                   if (!verifyingLockRef.current && !asyncMatchInFlight) {
+                    if (isFrameSpoof) {
+                      probeWindowRef.current = [];
+                    }
                     streakTrackerRef.current.reset();
                     setBurstCount(0);
                     setLiveMatchHud(null);
@@ -3432,7 +3568,7 @@ export function KioskBiometricLoginView({
                               ? liveDebugHud.centeredPct / 100
                               : undefined,
                           hasEvaluatedMatch: Boolean(liveDebugHud?.hasEvaluatedMatch),
-                          gatePassed: Boolean(liveDebugHud?.topName),
+                          gatePassed: Boolean(liveDebugHud?.gatePassed ?? liveDebugHud?.topName),
                           streak: burstCount,
                           requiredStreak: BIOMETRIC_REQUIRED_STREAK,
                           confirmedCandidateName:

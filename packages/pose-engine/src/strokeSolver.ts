@@ -838,9 +838,9 @@ export function solveStrokeClinicalJointBiomechanics(
     // Keep hanging/lap-rest arms below trigger threshold until wrist elevates out of resting hang
     const armLiftedOutOfRest = wPt.y <= sPt.y + effTorsoSpan * 0.72;
     const rawReach =
-      distToOpp <= 1.15
-        ? 1.0 + clamp((1.15 - distToOpp) / 0.85, 0, 0.08)
-        : clamp((1.65 - distToOpp) / (1.65 - 1.15), 0, 1);
+      distToOpp <= 0.85
+        ? 1.0 + clamp((0.85 - distToOpp) / 0.85, 0, 0.08)
+        : clamp((1.45 - distToOpp) / (1.45 - 0.85), 0, 1);
     const reachScore = armLiftedOutOfRest ? rawReach : rawReach * 0.25;
     return Number(clamp(reachScore * Math.max(targetRomGoal, 90), 0, Math.max(120, targetRomGoal * 1.1)).toFixed(1));
   };
@@ -855,11 +855,11 @@ export function solveStrokeClinicalJointBiomechanics(
     };
     const noseAnchor = nose ?? crownNorm;
     const headDistRatio = Math.min(dist2D(wPt, crownNorm), dist2D(wPt, noseAnchor)) / Math.max(0.10, shoulderSpanX);
-    const armLifted = wPt.y <= sPt.y + effTorsoSpan * 0.65;
+    const armLifted = wPt.y <= sPt.y + effTorsoSpan * 0.20;
     const proxScore = armLifted
-      ? headDistRatio <= 1.15
-        ? 1.0 + clamp((1.15 - headDistRatio) / 0.85, 0, 0.08)
-        : clamp((1.68 - headDistRatio) / (1.68 - 1.15), 0, 1)
+      ? headDistRatio <= 0.90
+        ? 1.0 + clamp((0.90 - headDistRatio) / 0.90, 0, 0.08)
+        : clamp((1.48 - headDistRatio) / (1.48 - 0.90), 0, 1)
       : 0;
     const liftRes = computeForwardFlexionWithForeshortening(side);
     const goalScale = Math.max(targetRomGoal, 95);
@@ -946,7 +946,7 @@ export function solveStrokeClinicalJointBiomechanics(
     const rHead = computeHandToHeadSide('right');
     leftArmRom = lHead;
     rightArmRom = rHead;
-    if (nose && lEar && rEar && lSh && rSh) {
+    if (nose && lEar && rEar && lSh && rSh && (lEar.visibility ?? 1) >= 0.25 && (rEar.visibility ?? 1) >= 0.25) {
       const earMidY = (lEar.y + rEar.y) / 2;
       const eyeMidY = lEye && rEye ? (lEye.y + rEye.y) / 2 : earMidY;
       const dropTan = (nose.y - eyeMidY) / Math.max(0.05, shoulderSpanX * 0.35);
@@ -1345,15 +1345,19 @@ export function solveStrokeClinicalJointBiomechanics(
     if (lSh && rSh) {
       const curMidShY = (lSh.y + rSh.y) / 2;
       const liftVsBaseline = Math.max(0, baseline.restingMidShoulderY - curMidShY) / Math.max(0.08, shoulderSpanX);
+      const earGaps: number[] = [];
+      if (lEar && (lEar.visibility ?? 1) >= 0.25) {
+        earGaps.push(Math.max(0, lSh.y - lEar.y));
+      }
+      if (rEar && (rEar.visibility ?? 1) >= 0.25) {
+        earGaps.push(Math.max(0, rSh.y - rEar.y));
+      }
       const earLift =
-        lEar || rEar
+        earGaps.length > 0
           ? Math.max(
               0,
               baseline.restingEarShoulderGapRatio -
-                (((lEar ? Math.max(0, lSh.y - lEar.y) : 0.1) +
-                  (rEar ? Math.max(0, rSh.y - rEar.y) : 0.1)) /
-                  2) /
-                  Math.max(0.08, shoulderSpanX),
+                (earGaps.reduce((a, b) => a + b, 0) / earGaps.length) / Math.max(0.08, shoulderSpanX),
             )
           : 0;
       const baseShrug = Math.max(liftVsBaseline * 240, earLift * 210);

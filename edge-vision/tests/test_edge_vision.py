@@ -1291,6 +1291,33 @@ class TestClinicalEdgeVision(unittest.TestCase):
         _, emerg2 = solver.analyze(jittered, rule_sh, cal, timestamp_sec=1.001, scores=scores)
         self.assertIsNone(emerg2)
 
+    def test_22_extract_hand_raise_telemetry_neutral_vs_raised(self) -> None:
+        """Neutral standing hands (below shoulders, even at y=0.55) must report zone='NONE' instead of false BOTH."""
+        xyz = np.zeros((TOTAL_WHOLEBODY_KEYPOINTS, 3), dtype=np.float64)
+        sc = np.ones((TOTAL_WHOLEBODY_KEYPOINTS,), dtype=np.float64)
+        # Shoulders at y=0.30, wrists/palms resting down around y=0.55
+        xyz[5] = [0.60, 0.30, 0.0]
+        xyz[6] = [0.40, 0.30, 0.0]
+        xyz[9] = [0.62, 0.55, 0.0]
+        xyz[10] = [0.38, 0.55, 0.0]
+        xyz[91:112] = [0.62, 0.55, 0.0]
+        xyz[112:133] = [0.38, 0.55, 0.0]
+        neutral = RTMW3DPoseEstimator.extract_hand_raise_telemetry(xyz, sc)
+        self.assertFalse(neutral.left_raised)
+        self.assertFalse(neutral.right_raised)
+        self.assertEqual(neutral.active_card_zone, "NONE")
+
+        # Lifting both palms near shoulder level (y=0.32 < 0.30 + 0.08) triggers active_card_zone='BOTH'
+        xyz_up = xyz.copy()
+        xyz_up[9] = [0.62, 0.32, 0.0]
+        xyz_up[10] = [0.38, 0.32, 0.0]
+        xyz_up[91:112] = [0.62, 0.32, 0.0]
+        xyz_up[112:133] = [0.38, 0.32, 0.0]
+        raised = RTMW3DPoseEstimator.extract_hand_raise_telemetry(xyz_up, sc)
+        self.assertTrue(raised.left_raised)
+        self.assertTrue(raised.right_raised)
+        self.assertEqual(raised.active_card_zone, "BOTH")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

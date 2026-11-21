@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DynamicExerciseSessionView } from '@apps/kiosk';
-import { CLINICAL_EXERCISES } from '@drtechcares/pose-engine';
-import type {
-  DrTechCaresApiClient,
-  PatientCourseRecord,
-  PatientRecord,
-  RehabSessionRecord,
-  TreatmentReportRecord,
-  UserAccount,
+import { CLINICAL_EXERCISES, parseExerciseCodeAndSide, type BodySide } from '@drtechcares/pose-engine';
+import {
+  formatLocalIsoDate,
+  type DrTechCaresApiClient,
+  type PatientCourseRecord,
+  type PatientRecord,
+  type RehabSessionRecord,
+  type TreatmentReportRecord,
+  type UserAccount,
 } from '@drtechcares/api-client';
 import { Activity, Calendar, KeyRound, LogOut, Sparkles, User } from 'lucide-react';
 
@@ -67,17 +68,53 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
   }, [loadOwnData]);
 
   const prescribedExercise = useMemo(() => {
+    const resolveExerciseWithSide = (rawId: string | undefined, explicitSide?: string | null) => {
+      if (!rawId) return null;
+      const { baseCode, side, hasExplicitSide } = parseExerciseCodeAndSide(rawId, explicitSide);
+      const matched = CLINICAL_EXERCISES.find(
+        (ex) =>
+          ex.id === rawId ||
+          ex.code === rawId ||
+          ex.code === baseCode ||
+          parseExerciseCodeAndSide(ex.code || ex.id).baseCode === baseCode,
+      );
+      if (!matched) return null;
+      if (!hasExplicitSide && !explicitSide) return matched;
+      const nextSide: BodySide | 'both' = side === 'LEFT' ? 'left' : side === 'RIGHT' ? 'right' : 'both';
+      return {
+        ...matched,
+        detection: {
+          ...matched.detection,
+          side: nextSide,
+        },
+      };
+    };
+
+    const todayIso = formatLocalIsoDate(new Date());
+    const schedules = patient?.rehabSchedules ?? [];
+    const todayCustom =
+      schedules.find((s) => s.scheduledDate === todayIso && s.status === 'ACTIVE') ??
+      schedules.find((s) => s.scheduledDate === todayIso && s.status === 'COMPLETED') ??
+      schedules.find((s) => s.status === 'ACTIVE');
+    if (todayCustom) {
+      const fromSchedule = resolveExerciseWithSide(
+        todayCustom.effectiveCode || todayCustom.exerciseCode || todayCustom.exerciseId,
+        todayCustom.side,
+      );
+      if (fromSchedule) return fromSchedule;
+    }
+
     const todayIdx = new Date().getDay();
     const days = course?.weeklySchedule ?? [];
     const todayRoutine = days.find((d) => d.dayIndex === todayIdx && d.dayType === 'training' && d.exercises.length > 0);
     const anyRoutine = days.find((d) => d.dayType === 'training' && d.exercises.length > 0);
     const firstId = todayRoutine?.exercises[0]?.exerciseId ?? anyRoutine?.exercises[0]?.exerciseId;
     if (firstId) {
-      const matched = CLINICAL_EXERCISES.find((ex) => ex.id === firstId || ex.code === firstId);
-      if (matched) return matched;
+      const fromCourse = resolveExerciseWithSide(firstId);
+      if (fromCourse) return fromCourse;
     }
     return CLINICAL_EXERCISES[0];
-  }, [course]);
+  }, [patient, course]);
 
   if (cameraActive && patient) {
     return (

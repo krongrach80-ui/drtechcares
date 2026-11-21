@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ApiError, isAdminRole, resolveNextAppointmentDate } from '@drtechcares/api-client';
+import { ApiError, formatLocalIsoDate, isAdminRole, resolveNextAppointmentDate } from '@drtechcares/api-client';
 import type {
   ActiveSessionRecord,
   AuditLogRecord,
@@ -24,6 +24,7 @@ import {
   STROKE_CANONICAL_EXERCISE_SET,
   isDeprecatedExerciseRecord,
   mergeDuplicateSideExercises,
+  parseExerciseCodeAndSide,
   sortExercisesStrokeUpperFirst,
   type BodySide,
   type ExerciseConfig,
@@ -2279,8 +2280,19 @@ export function ClinicalStaffPortalShell({
     const completedSessionDates = new Set(
       selectedSchedulePatient
         ? sessions
-            .filter((s) => s.patientId === selectedSchedulePatient.id)
-            .map((s) => (s.createdAt || '').slice(0, 10))
+            .filter(
+              (s) =>
+                s.patientId === selectedSchedulePatient.id &&
+                s.exerciseId !== 'CLINIC_CHECKIN' &&
+                !s.painStopTriggered &&
+                (s.activityType === 'minigame' || (s.completedReps ?? 0) > 0 || (s.completedSets ?? 0) > 0),
+            )
+            .map((s) => {
+              if (!s.createdAt) return '';
+              const d = new Date(s.createdAt);
+              return Number.isNaN(d.getTime()) ? (s.createdAt || '').slice(0, 10) : formatLocalIsoDate(d);
+            })
+            .filter(Boolean)
         : [],
     );
 
@@ -2300,8 +2312,21 @@ export function ClinicalStaffPortalShell({
       const dateIso = `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
       const weekday = new Date(year, month, dayNum).getDay();
       const customForDay = customList.filter((s) => s.scheduledDate === dateIso);
-      const firstCustomEx =
-        customForDay.length > 0 ? exercises.find((ex) => ex.id === customForDay[0].exerciseId) : undefined;
+      const firstCustomBaseCode =
+        customForDay.length > 0
+          ? parseExerciseCodeAndSide(
+              customForDay[0].effectiveCode || customForDay[0].exerciseCode || customForDay[0].exerciseId,
+              customForDay[0].side,
+            ).baseCode
+          : null;
+      const firstCustomEx = firstCustomBaseCode
+        ? exercises.find(
+            (ex) =>
+              ex.id === customForDay[0].exerciseId ||
+              ex.code === firstCustomBaseCode ||
+              parseExerciseCodeAndSide(ex.code || ex.id).baseCode === firstCustomBaseCode,
+          )
+        : undefined;
       const firstCustomName = firstCustomEx ? firstCustomEx.name[lang] || firstCustomEx.name.th : null;
       const planDay = weeklySchedule[weekday];
       const isTraining =

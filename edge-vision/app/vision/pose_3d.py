@@ -1125,14 +1125,14 @@ class RTMW3DPoseEstimator:
         l_hand_sc = scores[91:112]
         l_valid = bool(float(scores[9]) > 0.2 or float(np.mean(l_hand_sc)) > 0.25)
         l_palm = np.mean(l_hand_pts[[0, 5, 9, 13, 17]], axis=0) if np.mean(l_hand_sc) > 0.25 else xyz[9]
-        l_raised = bool(l_valid and (float(l_palm[1]) < l_sh_y + 0.08 or float(l_palm[1]) < 0.62))
+        l_raised = bool(l_valid and float(l_palm[1]) < l_sh_y + 0.08)
 
         # Right hand centroid (112..132)
         r_hand_pts = xyz[112:133]
         r_hand_sc = scores[112:133]
         r_valid = bool(float(scores[10]) > 0.2 or float(np.mean(r_hand_sc)) > 0.25)
         r_palm = np.mean(r_hand_pts[[0, 5, 9, 13, 17]], axis=0) if np.mean(r_hand_sc) > 0.25 else xyz[10]
-        r_raised = bool(r_valid and (float(r_palm[1]) < r_sh_y + 0.08 or float(r_palm[1]) < 0.62))
+        r_raised = bool(r_valid and float(r_palm[1]) < r_sh_y + 0.08)
 
         zone = "NONE"
         if l_raised and r_raised:

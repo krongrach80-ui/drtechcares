@@ -1577,6 +1577,7 @@ export function evaluateTripleGateNeuralCandidate(
   probeVec: readonly number[],
   candidate: TripleGateCandidateInput,
   probeRatios?: GeometricAnthropometricRatios | null,
+  liveBucket?: FacePoseZone5 | null,
 ): TripleGateResult {
   const emptyFail = (reason: string): TripleGateResult => ({
     passed: false,
@@ -1616,6 +1617,21 @@ export function evaluateTripleGateNeuralCandidate(
   const centerMetrics = hasExplicitCenter
     ? computeVectorPairMetrics(probeNorm, centerNorm)
     : masterMetrics;
+  const hasPoseZoneVec =
+    Boolean(liveBucket) &&
+    liveBucket !== 'center' &&
+    Array.isArray(candidate.angleEmbeddings?.[liveBucket!]) &&
+    candidate.angleEmbeddings![liveBucket!]!.length === probeNorm.length;
+  const poseMetrics = hasPoseZoneVec
+    ? computeVectorPairMetrics(probeNorm, l2Normalize(candidate.angleEmbeddings![liveBucket!]!))
+    : null;
+  const zoneMetrics = poseMetrics
+    ? {
+        rawCosine: Math.max(centerMetrics.rawCosine, poseMetrics.rawCosine),
+        centeredCosine: Math.max(centerMetrics.centeredCosine, poseMetrics.centeredCosine),
+        l2Dist: Math.min(centerMetrics.l2Dist, poseMetrics.l2Dist),
+      }
+    : centerMetrics;
 
   const failureReasons: string[] = [];
 
@@ -1631,22 +1647,27 @@ export function evaluateTripleGateNeuralCandidate(
     failureReasons.push(`masterL2 ${masterMetrics.l2Dist.toFixed(4)} > ${STRICT_MAX_EUCLIDEAN_DISTANCE}`);
   }
 
-  if (centerMetrics.rawCosine < STRICT_RAW_COSINE_THRESHOLD) {
-    failureReasons.push(`centerRawCos ${centerMetrics.rawCosine.toFixed(4)} < ${STRICT_RAW_COSINE_THRESHOLD}`);
+  const zoneLabel = poseMetrics && liveBucket ? `pose(${liveBucket})` : 'center';
+  if (zoneMetrics.rawCosine < STRICT_RAW_COSINE_THRESHOLD) {
+    failureReasons.push(`${zoneLabel}RawCos ${zoneMetrics.rawCosine.toFixed(4)} < ${STRICT_RAW_COSINE_THRESHOLD}`);
   }
-  if (centerMetrics.centeredCosine < STRICT_CENTERED_COSINE_THRESHOLD) {
+  if (zoneMetrics.centeredCosine < STRICT_CENTERED_COSINE_THRESHOLD) {
     failureReasons.push(
-      `centerCenteredCos ${centerMetrics.centeredCosine.toFixed(4)} < ${STRICT_CENTERED_COSINE_THRESHOLD}`,
+      `${zoneLabel}CenteredCos ${zoneMetrics.centeredCosine.toFixed(4)} < ${STRICT_CENTERED_COSINE_THRESHOLD}`,
     );
   }
-  if (centerMetrics.l2Dist > STRICT_MAX_EUCLIDEAN_DISTANCE) {
-    failureReasons.push(`centerL2 ${centerMetrics.l2Dist.toFixed(4)} > ${STRICT_MAX_EUCLIDEAN_DISTANCE}`);
+  if (zoneMetrics.l2Dist > STRICT_MAX_EUCLIDEAN_DISTANCE) {
+    failureReasons.push(`${zoneLabel}L2 ${zoneMetrics.l2Dist.toFixed(4)} > ${STRICT_MAX_EUCLIDEAN_DISTANCE}`);
   }
 
-  // Evaluate all stored pose centroids: require center + at least 1 other stored centroid >= 0.82
-  let bestCentroidCosine = Math.max(masterMetrics.rawCosine, centerMetrics.rawCosine);
+  // Evaluate all stored pose centroids: require center (or active pose zone) + at least 1 other stored centroid >= 0.82
+  let bestCentroidCosine = Math.max(masterMetrics.rawCosine, zoneMetrics.rawCosine);
   let bestAngle: 'master' | FacePoseZone5 | 'extra' =
-    centerMetrics.rawCosine >= masterMetrics.rawCosine ? 'center' : 'master';
+    poseMetrics && poseMetrics.rawCosine > centerMetrics.rawCosine && poseMetrics.rawCosine >= masterMetrics.rawCosine
+      ? liveBucket!
+      : centerMetrics.rawCosine >= masterMetrics.rawCosine
+        ? 'center'
+        : 'master';
   let centroidsAbove082Count = centerMetrics.rawCosine >= STRICT_MIN_CENTROID_COSINE ? 1 : 0;
 
   const secondaryZones: FacePoseZone5[] = ['left', 'right', 'up', 'down'];
@@ -1685,7 +1706,7 @@ export function evaluateTripleGateNeuralCandidate(
   }
 
   if (
-    centerMetrics.rawCosine < STRICT_MIN_CENTROID_COSINE ||
+    zoneMetrics.rawCosine < STRICT_MIN_CENTROID_COSINE ||
     centroidsAbove082Count < STRICT_MIN_CENTROID_COUNT
   ) {
     failureReasons.push(
@@ -1709,21 +1730,21 @@ export function evaluateTripleGateNeuralCandidate(
     failureReasons.push(gate2.failureReason);
   }
 
-  const pairedRaw = Math.min(masterMetrics.rawCosine, centerMetrics.rawCosine);
-  const pairedCentered = Math.min(masterMetrics.centeredCosine, centerMetrics.centeredCosine);
-  const pairedL2 = Math.max(masterMetrics.l2Dist, centerMetrics.l2Dist);
+  const pairedRaw = Math.min(masterMetrics.rawCosine, zoneMetrics.rawCosine);
+  const pairedCentered = Math.min(masterMetrics.centeredCosine, zoneMetrics.centeredCosine);
+  const pairedL2 = Math.max(masterMetrics.l2Dist, zoneMetrics.l2Dist);
 
   const gate1And2Passed = failureReasons.length === 0;
   return {
     passed: gate1And2Passed,
     rawCosine: gate1And2Passed
-      ? Math.max(masterMetrics.rawCosine, centerMetrics.rawCosine)
+      ? Math.max(masterMetrics.rawCosine, zoneMetrics.rawCosine)
       : Math.max(0, pairedRaw),
     centeredCosine: gate1And2Passed
-      ? Math.max(masterMetrics.centeredCosine, centerMetrics.centeredCosine)
+      ? Math.max(masterMetrics.centeredCosine, zoneMetrics.centeredCosine)
       : Math.max(0, pairedCentered),
     l2Dist: gate1And2Passed
-      ? Math.min(masterMetrics.l2Dist, centerMetrics.l2Dist)
+      ? Math.min(masterMetrics.l2Dist, zoneMetrics.l2Dist)
       : pairedL2,
     bestCentroidCosine: Math.max(0, bestCentroidCosine),
     masterRawCosine: Math.max(0, masterMetrics.rawCosine),

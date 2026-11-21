@@ -572,34 +572,49 @@ export function buildTelemetryPacketFromLandmarks(params: {
   const lKnee = landmarks[POSE_INDEX.LEFT_KNEE];
   const rKnee = landmarks[POSE_INDEX.RIGHT_KNEE];
 
+  const lShVis = (lSh?.visibility ?? 1) >= 0.45;
+  const rShVis = (rSh?.visibility ?? 1) >= 0.45;
+  const lHipVis = (lHip?.visibility ?? 1) >= 0.45;
+  const rHipVis = (rHip?.visibility ?? 1) >= 0.45;
+  const lKneeVis = (lKnee?.visibility ?? 1) >= 0.45;
+  const rKneeVis = (rKnee?.visibility ?? 1) >= 0.45;
+  const lAnkleVis = (lAnkle?.visibility ?? 1) >= 0.45;
+  const rAnkleVis = (rAnkle?.visibility ?? 1) >= 0.45;
+
   let trunkTiltDeg = 0;
   let shoulderElevCm = 0;
-  if (lSh && rSh && lHip && rHip) {
-    const midShX = (lSh.x + rSh.x) / 2;
-    const midShY = (lSh.y + rSh.y) / 2;
-    const midHipX = (lHip.x + rHip.x) / 2;
-    const midHipY = (lHip.y + rHip.y) / 2;
-    trunkTiltDeg =
-      (Math.atan2(midShX - midHipX, Math.max(0.05, midHipY - midShY)) * 180) / Math.PI;
+  if (lSh && rSh && lShVis && rShVis) {
     // Approximate cm from normalized body height (~165cm full body)
     shoulderElevCm = Math.abs(lSh.y - rSh.y) * 140;
+    if (lHip && rHip && lHipVis && rHipVis) {
+      const midShX = (lSh.x + rSh.x) / 2;
+      const midShY = (lSh.y + rSh.y) / 2;
+      const midHipX = (lHip.x + rHip.x) / 2;
+      const midHipY = (lHip.y + rHip.y) / 2;
+      trunkTiltDeg =
+        (Math.atan2(midShX - midHipX, Math.max(0.05, midHipY - midShY)) * 180) / Math.PI;
+    }
   }
 
   let kneeValgusDeg = 0;
-  if (lHip && lKnee && lAnkle) {
+  if (lHip && lKnee && lAnkle && lHipVis && lKneeVis && lAnkleVis) {
     kneeValgusDeg = Math.abs((lKnee.x - (lHip.x + lAnkle.x) / 2) * 90);
   }
-  if (rHip && rKnee && rAnkle) {
+  if (rHip && rKnee && rAnkle && rHipVis && rKneeVis && rAnkleVis) {
     const rValgus = Math.abs((rKnee.x - (rHip.x + rAnkle.x) / 2) * 90);
     kneeValgusDeg = Math.max(kneeValgusDeg, rValgus);
   }
 
   let rapidDrop = false;
-  if (prevLandmarks && nose && lHip && rHip) {
+  const effDtSec = Math.max(0.016, Math.min(0.25, dtSec));
+  if (prevLandmarks && nose && lHip && rHip && lHipVis && rHipVis && (nose.visibility ?? 1) >= 0.45) {
     const prevHip = prevLandmarks[POSE_INDEX.LEFT_HIP];
-    const currHipY = (lHip.y + rHip.y) / 2;
-    if (prevHip && currHipY - prevHip.y > 0.22) {
-      rapidDrop = true;
+    if (prevHip && (prevHip.visibility ?? 1) >= 0.45) {
+      const currHipY = (lHip.y + rHip.y) / 2;
+      const deltaY = currHipY - prevHip.y;
+      if (deltaY > 0.18 && deltaY / effDtSec > 0.88) {
+        rapidDrop = true;
+      }
     }
   }
 

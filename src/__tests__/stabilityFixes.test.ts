@@ -15,15 +15,19 @@ import {
   createCloudDelegatedRouter,
 } from '@drtechcares/api-client';
 import {
+  CLINICAL_EXERCISES,
   ClinicalBiomechanicsAgent,
   ClinicalOneEuroLandmarkFilter,
   POSE_INDEX,
+  buildTelemetryPacketFromLandmarks,
   computeJointAngle3D,
   evaluateArmKinematics,
   evaluateActiveWristsLowered,
+  evaluateCompensations,
   solveStrokeClinicalJointBiomechanics,
   type PoseLandmark,
 } from '@drtechcares/pose-engine';
+import { BiologicalLivenessTracker } from '@drtechcares/face-client';
 import { RomGauge } from '../components/RomGauge';
 import { classifyExerciseJointMode } from '../components/SmartRehabKioskUI';
 import {
@@ -496,5 +500,138 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
     expect(ySum / (16 * 16)).toBeLessThan(136);
     // Original R - B was 30; chroma-preserving normalization must stay well below 2.3x explosion (69)
     expect(rMinusBSum / (16 * 16)).toBeLessThan(40);
+  });
+
+  it('supports pose-synchronized liveBucket in Triple-Gate matching and blocks bezel spoofs even during head sway', () => {
+    const mkVec = (seed: number, dim = 512): number[] => {
+      const out = new Array<number>(dim);
+      let s = seed >>> 0;
+      for (let i = 0; i < dim; i += 1) {
+        s = (s * 1664525 + 1013904223 + i * 17) >>> 0;
+        out[i] = ((s % 2000) / 1000) - 1;
+      }
+      return l2Normalize(out);
+    };
+    const master = mkVec(701);
+    const ortho = mkVec(999);
+    // Rotate center vector slightly (~cos 0.81) while left and up centroids match probe cleanly
+    const slightlyTurnedCenter = l2Normalize(master.map((v, i) => 0.81 * v + 0.586 * ortho[i]));
+    const leftCentroid = l2Normalize(master.map((v, i) => 0.96 * v + 0.28 * ortho[i]));
+    const impostor = mkVec(1337);
+
+    const cand = {
+      masterEmbedding: master,
+      angleEmbeddings: {
+        center: slightlyTurnedCenter,
+        left: leftCentroid,
+        up: master,
+      },
+    };
+    // Without liveBucket, turned center (~0.81) fails center threshold; with liveBucket='left' it passes cleanly
+    expect(evaluateTripleGateNeuralCandidate(master, cand, null).passed).toBe(false);
+    const synced = evaluateTripleGateNeuralCandidate(master, cand, null, 'left');
+    expect(synced.passed).toBe(true);
+    expect(evaluateTripleGateNeuralCandidate(impostor, cand, null, 'left').passed).toBe(false);
+
+    // Handheld phone bezel + subpixel stripes must still be caught during yaw sway
+    const ctxW = 160;
+    const ctxH = 120;
+    const ctxData = new Uint8ClampedArray(ctxW * ctxH * 4);
+    const faceBox = { x: 0.35, y: 0.25, width: 0.30, height: 0.40 };
+    for (let y = 0; y < ctxH; y += 1) {
+      for (let x = 0; x < ctxW; x += 1) {
+        const idx = (y * ctxW + x) * 4;
+        const nx = x / ctxW;
+        const ny = y / ctxH;
+        const inScreen = nx >= 0.31 && nx <= 0.69 && ny >= 0.20 && ny <= 0.70;
+        const luma = inScreen ? 240 : 12;
+        ctxData[idx] = luma;
+        ctxData[idx + 1] = luma;
+        ctxData[idx + 2] = luma;
+        ctxData[idx + 3] = 255;
+      }
+    }
+    const cropW = 112;
+    const cropH = 112;
+    const cropData = new Uint8ClampedArray(cropW * cropH * 4);
+    for (let y = 0; y < cropH; y += 1) {
+      for (let x = 0; x < cropW; x += 1) {
+        const idx = (y * cropW + x) * 4;
+        const stripe = x % 2 === 0 ? 254 : 130;
+        cropData[idx] = Math.max(0, stripe - 40);
+        cropData[idx + 1] = stripe;
+        cropData[idx + 2] = Math.min(255, stripe + 35);
+        cropData[idx + 3] = 255;
+      }
+    }
+    const baseLms = Array.from({ length: 468 }, (_, i) => ({
+      x: 0.5 + ((i % 10) - 5) * 0.005,
+      y: 0.45 + (Math.floor(i / 50) - 4) * 0.005,
+      z: 0,
+    }));
+    baseLms[10] = { x: 0.5, y: 0.25, z: 0 };
+    baseLms[152] = { x: 0.5, y: 0.65, z: 0 };
+    const tracker = new BiologicalLivenessTracker();
+    let lastReport = null;
+    for (let f = 0; f < 6; f += 1) {
+      lastReport = tracker.update({
+        landmarks3D: baseLms,
+        earLeft: 0.28,
+        earRight: 0.28,
+        yawDeg: f * 2.0, // Rigid 10 deg total sway simulating tilted handheld phone
+        pitchDeg: 0,
+        frameWidth: 640,
+        frameHeight: 480,
+        faceCrop: { width: cropW, height: cropH, data: cropData },
+        contextFrame: { width: ctxW, height: ctxH, data: ctxData },
+        faceBox,
+        timestampMs: 1000 + f * 120,
+      });
+    }
+    expect(lastReport).not.toBeNull();
+    expect(lastReport!.screenReport.bezelScore).toBeGreaterThanOrEqual(0.72);
+    expect(lastReport!.screenSpoofDetected).toBe(true);
+    expect(lastReport!.biologicalVerified).toBe(false);
+  });
+
+  it('guards seated occluded hips/knees against false trunk_lean or knee_valgus and rejects non-crossing cross_body hold', () => {
+    const seatedOccludedPose = makeBasePose({
+      [POSE_INDEX.LEFT_HIP]: { x: 0.92, y: 1.05, z: 0, visibility: 0.08 },
+      [POSE_INDEX.RIGHT_HIP]: { x: 0.85, y: 1.05, z: 0, visibility: 0.08 },
+      [POSE_INDEX.LEFT_KNEE]: { x: 0.20, y: 1.15, z: 0, visibility: 0.05 },
+      [POSE_INDEX.LEFT_ANKLE]: { x: 0.85, y: 1.25, z: 0, visibility: 0.05 },
+    });
+    const pkt = buildTelemetryPacketFromLandmarks({
+      landmarks: seatedOccludedPose,
+      prevLandmarks: makeBasePose(),
+      exercise: CLINICAL_EXERCISES[0],
+      primaryAngleDeg: 45,
+      dtSec: 0.016,
+    });
+    expect(pkt.live_telemetry.trunk_tilt_deg).toBe(0);
+    expect(pkt.live_telemetry.knee_valgus_deg).toBe(0);
+    expect(pkt.live_telemetry.rapid_vertical_drop_detected).toBe(false);
+
+    const compAlerts = evaluateCompensations(seatedOccludedPose, 'right', {
+      elbowAngleDeg: 170,
+      requireStraightElbow: false,
+    });
+    expect(compAlerts.some((a) => a.type === 'trunk_lean')).toBe(false);
+
+    // Same-side shoulder hold must NOT hit 100% of 110 deg target in cross_body mode
+    const sameSideHold = makeBasePose({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.60, y: 0.25, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.40, y: 0.25, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_ELBOW]: { x: 0.60, y: 0.36, z: -0.1, visibility: 0.99 },
+      [POSE_INDEX.LEFT_WRIST]: { x: 0.58, y: 0.34, z: -0.15, visibility: 0.99 },
+    });
+    const nonCrossRes = solveStrokeClinicalJointBiomechanics({
+      landmarks: sameSideHold,
+      targetJoint: 'left_shoulder',
+      exerciseSide: 'LEFT',
+      targetRomDeg: 110,
+      jointMode: 'cross_body',
+    });
+    expect(nonCrossRes.romDeg ?? 0).toBeLessThan(90);
   });
 });

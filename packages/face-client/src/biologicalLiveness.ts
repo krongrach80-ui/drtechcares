@@ -389,6 +389,13 @@ export class BiologicalLivenessTracker {
     this.rppgPulseAlive = false;
   }
 
+  private clearPlanarSpoofOnly(now: number): void {
+    this.planarSpoofDetected = false;
+    this.staticInjectionDetected = false;
+    this.rigidMovingStreak = 0;
+    this.liveVerifiedUntilMs = Math.max(this.liveVerifiedUntilMs, now + this.blinkExpiryMs);
+  }
+
   private clearSpoofStateImmediately(now: number): void {
     this.planarSpoofDetected = false;
     this.staticInjectionDetected = false;
@@ -562,14 +569,15 @@ export class BiologicalLivenessTracker {
 
     if (deltaYawDeg >= 2.5 || deltaPitchDeg >= 2.5) {
       this.headPoseVerified = true;
-      this.clearSpoofStateImmediately(now);
+      // Rigid head sway clears static-planar uncertainty ONLY — keep phone/bezel streak intact
+      this.clearPlanarSpoofOnly(now);
     }
     if (deltaLip >= 0.045 || nonRigidMotion >= 0.022) {
       this.lipMotionVerified = true;
       this.clearSpoofStateImmediately(now);
     }
     // Distance-Aware Multi-Mode Liveness: at 1.5-4.5m (< 0.22 faceHeight), do NOT require blinking;
-    // pass within 0.6s on natural body/head sway (> 1.5px shift or > 1.2° tilt) or non-frozen posture
+    // pass within 0.6s on natural body/head sway (> 1.5px shift or > 1.2 deg tilt) or non-frozen posture
     if (
       livenessMode === 'LONG_RANGE' &&
       (centerShiftPx > 1.5 ||
@@ -578,7 +586,7 @@ export class BiologicalLivenessTracker {
         (this.frameCount >= 12 && (centerShiftPx > 0.4 || nonRigidMotion >= 0.002)))
     ) {
       this.longRangeMotionVerified = true;
-      this.clearSpoofStateImmediately(now);
+      this.clearPlanarSpoofOnly(now);
     }
 
     // 4.5s window variance for static 2D planar check
@@ -591,10 +599,12 @@ export class BiologicalLivenessTracker {
       now - this.lastBlinkAtMs <= this.blinkExpiryMs;
 
     const liveVerifiedNow = blinkVerified || now <= this.liveVerifiedUntilMs;
+    const genuineNonRigidVerified = blinkVerified || this.lipMotionVerified;
 
     // 3. Enclosed Phone Bezel Check + Strict 4.5s Static Planar Rule
+    // Evaluate bezel/screen artifacts even during rigid sway so tilting a phone cannot bypass bezel inspection.
     let clearBezelSpoof = false;
-    if ((input.faceCrop || input.contextFrame) && !liveVerifiedNow) {
+    if (input.faceCrop || input.contextFrame) {
       const screenReport = analyzeScreenAndBezelArtifacts({
         faceCrop: input.faceCrop,
         contextFrame: input.contextFrame,
@@ -609,10 +619,13 @@ export class BiologicalLivenessTracker {
         if (this.screenSpoofStreak >= 4) {
           clearBezelSpoof = true;
         }
+      } else if (genuineNonRigidVerified) {
+        this.screenSpoofStreak = 0;
+        this.latestScreenReport = DEFAULT_SCREEN_REPORT;
       } else {
         this.screenSpoofStreak = Math.max(0, this.screenSpoofStreak - 1);
       }
-    } else if (liveVerifiedNow) {
+    } else if (genuineNonRigidVerified) {
       this.latestScreenReport = DEFAULT_SCREEN_REPORT;
       this.screenSpoofStreak = 0;
     }
@@ -682,10 +695,10 @@ export class BiologicalLivenessTracker {
       }
     }
 
-    const screenSpoofDetected = !liveVerifiedNow && clearBezelSpoof;
+    const screenSpoofDetected = clearBezelSpoof;
     const spoofDetected =
-      !liveVerifiedNow &&
-      (screenSpoofDetected || this.planarSpoofDetected || this.staticInjectionDetected);
+      screenSpoofDetected ||
+      (!liveVerifiedNow && (this.planarSpoofDetected || this.staticInjectionDetected));
 
     const spoofScore = spoofDetected
       ? Number(

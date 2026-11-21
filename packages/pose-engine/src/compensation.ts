@@ -24,25 +24,32 @@ export function evaluateCompensations(
   const lHip = landmarks[POSE_INDEX.LEFT_HIP];
   const rHip = landmarks[POSE_INDEX.RIGHT_HIP];
 
-  if (lShoulder && rShoulder && lHip && rHip) {
-    const midShoulderX = (lShoulder.x + rShoulder.x) / 2;
-    const midShoulderY = (lShoulder.y + rShoulder.y) / 2;
-    const midHipX = (lHip.x + rHip.x) / 2;
-    const midHipY = (lHip.y + rHip.y) / 2;
+  const lHipVis = (lHip?.visibility ?? 1) >= 0.45;
+  const rHipVis = (rHip?.visibility ?? 1) >= 0.45;
+  const lShVis = (lShoulder?.visibility ?? 1) >= 0.45;
+  const rShVis = (rShoulder?.visibility ?? 1) >= 0.45;
 
-    const trunkAngleDeg = Math.abs(
-      (Math.atan2(midShoulderX - midHipX, Math.max(0.05, midHipY - midShoulderY)) * 180) / Math.PI,
-    );
-    if (trunkAngleDeg > 14) {
-      alerts.push({
-        type: 'trunk_lean',
-        severity: 'warning',
-        message: {
-          th: 'กรุณาตั้งลำตัวให้ตรง อย่าเอียงตัวช่วยยก',
-          en: 'Keep your torso upright; avoid leaning to lift.',
-          cn: '请保持躯干直立，不要借力侧倾。',
-        },
-      });
+  if (lShoulder && rShoulder && lShVis && rShVis) {
+    if (lHip && rHip && lHipVis && rHipVis) {
+      const midShoulderX = (lShoulder.x + rShoulder.x) / 2;
+      const midShoulderY = (lShoulder.y + rShoulder.y) / 2;
+      const midHipX = (lHip.x + rHip.x) / 2;
+      const midHipY = (lHip.y + rHip.y) / 2;
+
+      const trunkAngleDeg = Math.abs(
+        (Math.atan2(midShoulderX - midHipX, Math.max(0.05, midHipY - midShoulderY)) * 180) / Math.PI,
+      );
+      if (trunkAngleDeg > 14) {
+        alerts.push({
+          type: 'trunk_lean',
+          severity: 'warning',
+          message: {
+            th: 'กรุณาตั้งลำตัวให้ตรง อย่าเอียงตัวช่วยยก',
+            en: 'Keep your torso upright; avoid leaning to lift.',
+            cn: '请保持躯干直立，不要借力侧倾。',
+          },
+        });
+      }
     }
 
     const shoulderTilt = Math.abs(lShoulder.y - rShoulder.y);
