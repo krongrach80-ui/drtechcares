@@ -46,6 +46,7 @@ import {
 import {
   BIOMETRIC_ENGINE_ID,
   buildBiometricProfileFromSamples,
+  captureAndExtractOcularIris256,
   captureCanonicalFaceSnapshot,
   extractCanonicalFaceDescriptor,
   extractFacePatchSignature384,
@@ -1349,8 +1350,10 @@ export default function FaceID120Scanner({
             )
           : undefined;
       const centerPatch384 = profile.geometricRatios?.appearancePatch384;
+      const centerOcularPatch256 = profile.geometricRatios?.ocularIrisPatch256;
+      const centerIrisRatios8 = profile.geometricRatios?.irisOcularRatios8;
       const geometricRatios: GeometricAnthropometricRatios | undefined =
-        ratioPool.length > 0 || centerPatch384
+        ratioPool.length > 0 || centerPatch384 || centerOcularPatch256 || centerIrisRatios8
           ? {
               eyeToNoseRatio:
                 ratioPool.length > 0
@@ -1370,6 +1373,8 @@ export default function FaceID120Scanner({
                   : 1,
               ...(centerPatch384 ? { appearancePatch384: centerPatch384 } : {}),
               ...(avgCranio12 ? { craniofacialRatios12: avgCranio12 } : {}),
+              ...(centerOcularPatch256 ? { ocularIrisPatch256: centerOcularPatch256 } : {}),
+              ...(centerIrisRatios8 ? { irisOcularRatios8: centerIrisRatios8 } : {}),
             }
           : undefined;
 
@@ -1650,6 +1655,8 @@ export default function FaceID120Scanner({
         workCanvasRef.current = workCanvas;
         const roiZoomCanvas = document.createElement('canvas');
         const neuralExtractCanvas = document.createElement('canvas');
+        const irisLeftCanvas = document.createElement('canvas');
+        const irisRightCanvas = document.createElement('canvas');
         let neuralExtractInFlight = false;
         let lastExtractDispatchedAt = 0;
         let lastSharpnessAt = 0;
@@ -1991,8 +1998,14 @@ export default function FaceID120Scanner({
                   landmarks3D,
                   (vid.videoWidth || 1280) / (vid.videoHeight || 720),
                 );
+                const snapOcularIris = captureAndExtractOcularIris256(
+                  vid,
+                  landmarks3D,
+                  irisLeftCanvas,
+                  irisRightCanvas,
+                );
                 const snapGeom: GeometricAnthropometricRatios | undefined =
-                  rawSnapGeom || snapPatch384 || snapRatios12
+                  rawSnapGeom || snapPatch384 || snapRatios12 || snapOcularIris
                     ? {
                         eyeToNoseRatio: rawSnapGeom?.eyeToNoseRatio ?? 1,
                         faceWidthToUpperHeight: rawSnapGeom?.faceWidthToUpperHeight ?? 1,
@@ -2000,6 +2013,8 @@ export default function FaceID120Scanner({
                         noseToChinRatio: rawSnapGeom?.noseToChinRatio ?? 1,
                         ...(snapPatch384 ? { appearancePatch384: snapPatch384 } : {}),
                         ...(snapRatios12 ? { craniofacialRatios12: snapRatios12 } : {}),
+                        ...(snapOcularIris?.patch256 ? { ocularIrisPatch256: snapOcularIris.patch256 } : {}),
+                        ...(snapOcularIris?.ratios8 ? { irisOcularRatios8: snapOcularIris.ratios8 } : {}),
                       }
                     : undefined;
                 void extractCanonicalFaceDescriptor(snapInput)

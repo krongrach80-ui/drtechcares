@@ -68,6 +68,9 @@ export interface BiologicalLivenessReport {
   rppgScore: number;
   rppgPulseAlive: boolean;
   screenReport: ScreenAntiSpoofReport;
+  irisLocked: boolean;
+  irisLivenessVerified: boolean;
+  gazeShiftScore: number;
 }
 
 interface AnatomicalState {
@@ -95,6 +98,83 @@ interface RppgSample {
   tMs: number;
   chrom: number;
   luma: number;
+}
+
+interface OcularGazeSample {
+  tMs: number;
+  gazeXL: number;
+  gazeYL: number;
+  gazeXR: number;
+  gazeYR: number;
+}
+
+function extractIrisGazeSample(
+  landmarks: readonly Landmark3D[],
+): Omit<OcularGazeSample, 'tMs'> | null {
+  if (landmarks.length < 478) return null;
+  const lIrisC = landmarks[468];
+  const lIrisR = landmarks[469];
+  const lIrisT = landmarks[470];
+  const lIrisL = landmarks[471];
+  const lIrisB = landmarks[472];
+  const rIrisC = landmarks[473];
+  const rIrisR = landmarks[474];
+  const rIrisT = landmarks[475];
+  const rIrisL = landmarks[476];
+  const rIrisB = landmarks[477];
+
+  const lOuter = landmarks[33];
+  const lInner = landmarks[133];
+  const lTop = landmarks[159];
+  const lBot = landmarks[145];
+  const rInner = landmarks[362];
+  const rOuter = landmarks[263];
+  const rTop = landmarks[386];
+  const rBot = landmarks[374];
+
+  if (
+    !lIrisC || !lIrisR || !lIrisT || !lIrisL || !lIrisB ||
+    !rIrisC || !rIrisR || !rIrisT || !rIrisL || !rIrisB ||
+    !lOuter || !lInner || !lTop || !lBot ||
+    !rInner || !rOuter || !rTop || !rBot
+  ) {
+    return null;
+  }
+
+  const leftMinX = Math.min(lOuter.x, lInner.x);
+  const leftMaxX = Math.max(lOuter.x, lInner.x);
+  const rightMinX = Math.min(rInner.x, rOuter.x);
+  const rightMaxX = Math.max(rInner.x, rOuter.x);
+  if (
+    lIrisC.x <= leftMinX ||
+    lIrisC.x >= leftMaxX ||
+    rIrisC.x <= rightMinX ||
+    rIrisC.x >= rightMaxX
+  ) {
+    return null;
+  }
+
+  const lIrisDiam = Math.max(dist2D(lIrisR, lIrisL), dist2D(lIrisT, lIrisB));
+  const rIrisDiam = Math.max(dist2D(rIrisR, rIrisL), dist2D(rIrisT, rIrisB));
+  const leftW = Math.abs(lInner.x - lOuter.x);
+  const leftH = Math.max(1e-4, Math.abs(lBot.y - lTop.y));
+  const rightW = Math.abs(rOuter.x - rInner.x);
+  const rightH = Math.max(1e-4, Math.abs(rBot.y - rTop.y));
+  if (lIrisDiam < 0.002 || rIrisDiam < 0.002 || leftW < 0.004 || rightW < 0.004) {
+    return null;
+  }
+
+  const leftCenterX = (lOuter.x + lInner.x) * 0.5;
+  const leftCenterY = (lTop.y + lBot.y) * 0.5;
+  const rightCenterX = (rInner.x + rOuter.x) * 0.5;
+  const rightCenterY = (rTop.y + rBot.y) * 0.5;
+
+  return {
+    gazeXL: (lIrisC.x - leftCenterX) / leftW,
+    gazeYL: (lIrisC.y - leftCenterY) / leftH,
+    gazeXR: (rIrisC.x - rightCenterX) / rightW,
+    gazeYR: (rIrisC.y - rightCenterY) / rightH,
+  };
 }
 
 const DEFAULT_SCREEN_REPORT: ScreenAntiSpoofReport = {
@@ -356,6 +436,8 @@ export class BiologicalLivenessTracker {
   private staticInjectionDetected = false;
   private latestRppgScore = 0;
   private rppgPulseAlive = false;
+  private irisLivenessVerified = false;
+  private ocularHistory: OcularGazeSample[] = [];
 
   constructor(options?: { blinkExpiryMs?: number; staticSpoofWindowMs?: number }) {
     this.blinkExpiryMs = options?.blinkExpiryMs ?? 15_000;
@@ -387,6 +469,8 @@ export class BiologicalLivenessTracker {
     this.staticInjectionDetected = false;
     this.latestRppgScore = 0;
     this.rppgPulseAlive = false;
+    this.irisLivenessVerified = false;
+    this.ocularHistory = [];
   }
 
   private clearPlanarSpoofOnly(now: number): void {
@@ -589,6 +673,33 @@ export class BiologicalLivenessTracker {
       this.clearPlanarSpoofOnly(now);
     }
 
+    // Ocular-Iris Micro-Saccade Liveness (fast natural gaze fluctuation while staring at Kiosk camera)
+    const gazeSample = extractIrisGazeSample(input.landmarks3D);
+    const irisLocked = Boolean(gazeSample);
+    let gazeShiftScore = 0;
+    if (gazeSample) {
+      this.ocularHistory.push({ tMs: now, ...gazeSample });
+      while (this.ocularHistory.length > 0 && now - this.ocularHistory[0].tMs > 2200) {
+        this.ocularHistory.shift();
+      }
+      if (this.ocularHistory.length >= 2) {
+        const xLs = this.ocularHistory.map((s) => s.gazeXL);
+        const yLs = this.ocularHistory.map((s) => s.gazeYL);
+        const xRs = this.ocularHistory.map((s) => s.gazeXR);
+        const yRs = this.ocularHistory.map((s) => s.gazeYR);
+        const span =
+          Math.max(...xLs) - Math.min(...xLs) +
+          Math.max(...yLs) - Math.min(...yLs) +
+          Math.max(...xRs) - Math.min(...xRs) +
+          Math.max(...yRs) - Math.min(...yRs);
+        gazeShiftScore = Number(clamp01(span * 0.45).toFixed(3));
+      }
+      if (this.frameCount >= 4 && gazeShiftScore >= 0.028) {
+        this.irisLivenessVerified = true;
+        this.clearPlanarSpoofOnly(now);
+      }
+    }
+
     // 4.5s window variance for static 2D planar check
     const yawVariance = Number(stdDev(this.poseHistory.map((s) => s.yawDeg)).toFixed(3));
     const pitchVariance = Number(stdDev(this.poseHistory.map((s) => s.pitchDeg)).toFixed(3));
@@ -754,6 +865,9 @@ export class BiologicalLivenessTracker {
       rppgScore: this.latestRppgScore,
       rppgPulseAlive: this.rppgPulseAlive,
       screenReport: this.latestScreenReport,
+      irisLocked,
+      irisLivenessVerified: this.irisLivenessVerified,
+      gazeShiftScore,
     };
   }
 }

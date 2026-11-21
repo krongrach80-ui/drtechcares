@@ -29,6 +29,7 @@ import {
   type KioskLoginSuccessPayload,
 } from './components/KioskBiometricLoginView';
 import { KioskStandbyScreen } from './components/KioskStandbyScreen';
+import { preloadKioskBiometricPipeline } from './lib/biometricVisionCache';
 import { StaffAssistedEnrollmentModal } from './components/StaffAssistedEnrollmentModal';
 import { ArrowRight, Calendar, CheckCircle2, Gamepad2, Hand, Leaf, RotateCcw, Shuffle, Volume2 } from 'lucide-react';
 import {
@@ -729,6 +730,7 @@ export function App() {
   useEffect(() => {
     if (route === '/') {
       setAuthChecked(true);
+      void preloadKioskBiometricPipeline(apiClient);
       return;
     }
     let cancelled = false;

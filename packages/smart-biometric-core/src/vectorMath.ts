@@ -15,6 +15,8 @@ export const STRICT_MIN_CENTROID_COSINE = 0.82;
 export const STRICT_MIN_CENTROID_COUNT = 2;
 export const STRICT_PATCH_ZNCC_THRESHOLD = 0.76;
 export const STRICT_CRANIOFACIAL_MAX_DEVIATION = 0.065;
+export const STRICT_OCULAR_IRIS_ZNCC_THRESHOLD = 0.66;
+export const STRICT_IRIS_RATIO_MAX_DEVIATION = 0.085;
 export const STRICT_MIN_VECTOR_STD = 0.02;
 export const STRICT_DISTINCTIVENESS_MARGIN = 0.08;
 export const STRICT_COHORT_MARGIN = 0.08;
@@ -37,6 +39,10 @@ export interface GeometricAnthropometricRatios {
   appearancePatch384?: number[];
   /** 12 IOD-normalized craniofacial anatomical ratios for Gate-2 skeletal verification */
   craniofacialRatios12?: number[];
+  /** Zero-mean unit-std 256-D dual-eye iris + periocular descriptor (128 left + 128 right) */
+  ocularIrisPatch256?: number[];
+  /** 8 IPD-normalized anatomical iris diameter, fissure & inter-canthal ratios */
+  irisOcularRatios8?: number[];
 }
 
 export interface GeometricRatioMatchResult {
@@ -1465,6 +1471,454 @@ export function computeCraniofacialRatios12(
   return ratios.map((r) => Number(Math.min(6, Math.max(0.05, r)).toFixed(4)));
 }
 
+function normalizeZeroMeanUnitStdArray(vals: readonly number[]): number[] | null {
+  const n = vals.length;
+  if (n === 0) return null;
+  let sum = 0;
+  for (let i = 0; i < n; i += 1) sum += vals[i];
+  const mean = sum / n;
+  let varSum = 0;
+  for (let i = 0; i < n; i += 1) {
+    const d = vals[i] - mean;
+    varSum += d * d;
+  }
+  const std = Math.sqrt(varSum / n);
+  if (std < 1e-4) return null;
+  return vals.map((v) => Number(((v - mean) / std).toFixed(4)));
+}
+
+/**
+ * Re-normalizes each anatomical sub-block inside a 256-D dual-eye iris + periocular descriptor
+ * after multi-frame averaging (left 128-D + right 128-D).
+ */
+export function normalizeOcularIrisPatch256(raw: readonly number[]): number[] | null {
+  if (!Array.isArray(raw) || raw.length !== 256) return null;
+  const out = new Array<number>(256).fill(0);
+  for (const eyeOffset of [0, 128]) {
+    const luma = normalizeZeroMeanUnitStdArray(raw.slice(eyeOffset, eyeOffset + 64));
+    if (!luma) return null;
+    const gx = normalizeZeroMeanUnitStdArray(raw.slice(eyeOffset + 64, eyeOffset + 80)) ?? new Array<number>(16).fill(0);
+    const gy = normalizeZeroMeanUnitStdArray(raw.slice(eyeOffset + 80, eyeOffset + 96)) ?? new Array<number>(16).fill(0);
+    const radY0 = normalizeZeroMeanUnitStdArray(raw.slice(eyeOffset + 96, eyeOffset + 104)) ?? new Array<number>(8).fill(0);
+    const radY1 = normalizeZeroMeanUnitStdArray(raw.slice(eyeOffset + 104, eyeOffset + 112)) ?? new Array<number>(8).fill(0);
+    const radCb = normalizeZeroMeanUnitStdArray(raw.slice(eyeOffset + 112, eyeOffset + 120)) ?? new Array<number>(8).fill(0);
+    const radCr = normalizeZeroMeanUnitStdArray(raw.slice(eyeOffset + 120, eyeOffset + 128)) ?? new Array<number>(8).fill(0);
+    for (let i = 0; i < 64; i += 1) out[eyeOffset + i] = luma[i];
+    for (let i = 0; i < 16; i += 1) out[eyeOffset + 64 + i] = gx[i];
+    for (let i = 0; i < 16; i += 1) out[eyeOffset + 80 + i] = gy[i];
+    for (let i = 0; i < 8; i += 1) out[eyeOffset + 96 + i] = radY0[i];
+    for (let i = 0; i < 8; i += 1) out[eyeOffset + 104 + i] = radY1[i];
+    for (let i = 0; i < 8; i += 1) out[eyeOffset + 112 + i] = radCb[i];
+    for (let i = 0; i < 8; i += 1) out[eyeOffset + 120 + i] = radCr[i];
+  }
+  return out;
+}
+
+/**
+ * Extracts 8 IPD-normalized anatomical iris diameter, fissure width, and inter-canthal ratios
+ * from 478-point MediaPipe landmarks (`468..477` iris contours + eye corners + brows).
+ */
+export function computeIrisOcularRatios8(
+  landmarks3D: readonly { x: number; y: number; z?: number }[],
+  aspectRatio = 16 / 9,
+): number[] | undefined {
+  if (!landmarks3D || landmarks3D.length < 478) return undefined;
+  const safeAspect = Number.isFinite(aspectRatio) && aspectRatio > 0.2 ? aspectRatio : 16 / 9;
+
+  const lIrisC = landmarks3D[468];
+  const lIrisR = landmarks3D[469];
+  const lIrisT = landmarks3D[470];
+  const lIrisL = landmarks3D[471];
+  const lIrisB = landmarks3D[472];
+
+  const rIrisC = landmarks3D[473];
+  const rIrisR = landmarks3D[474];
+  const rIrisT = landmarks3D[475];
+  const rIrisL = landmarks3D[476];
+  const rIrisB = landmarks3D[477];
+
+  const lOuter = landmarks3D[33];
+  const lInner = landmarks3D[133];
+  const rInner = landmarks3D[362];
+  const rOuter = landmarks3D[263];
+  const lBrow = landmarks3D[105];
+  const rBrow = landmarks3D[334];
+
+  if (
+    !lIrisC || !lIrisR || !lIrisT || !lIrisL || !lIrisB ||
+    !rIrisC || !rIrisR || !rIrisT || !rIrisL || !rIrisB ||
+    !lOuter || !lInner || !rInner || !rOuter || !lBrow || !rBrow
+  ) {
+    return undefined;
+  }
+
+  const leftMinX = Math.min(lOuter.x, lInner.x);
+  const leftMaxX = Math.max(lOuter.x, lInner.x);
+  const rightMinX = Math.min(rInner.x, rOuter.x);
+  const rightMaxX = Math.max(rInner.x, rOuter.x);
+  if (
+    lIrisC.x <= leftMinX ||
+    lIrisC.x >= leftMaxX ||
+    rIrisC.x <= rightMinX ||
+    rIrisC.x >= rightMaxX
+  ) {
+    return undefined;
+  }
+
+  const dist = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    Math.hypot((a.x - b.x) * safeAspect, a.y - b.y);
+
+  const ipd = dist(lIrisC, rIrisC);
+  if (ipd < 0.015) return undefined;
+
+  const leftSpan = dist(lOuter, lInner);
+  const rightSpan = dist(rInner, rOuter);
+  const leftIrisDiam = Math.max(dist(lIrisR, lIrisL), dist(lIrisT, lIrisB));
+  const rightIrisDiam = Math.max(dist(rIrisR, rIrisL), dist(rIrisT, rIrisB));
+  if (
+    leftSpan < 0.005 ||
+    rightSpan < 0.005 ||
+    leftIrisDiam < 0.002 ||
+    rightIrisDiam < 0.002 ||
+    leftIrisDiam > leftSpan * 1.35 ||
+    rightIrisDiam > rightSpan * 1.35
+  ) {
+    return undefined;
+  }
+
+  const interCanthal = dist(lInner, rInner);
+  const outerCanthal = dist(lOuter, rOuter);
+  const lBrowToIris = dist(lBrow, lIrisC);
+  const rBrowToIris = dist(rBrow, rIrisC);
+
+  const rawRatios = [
+    leftIrisDiam / ipd,
+    rightIrisDiam / ipd,
+    interCanthal / ipd,
+    outerCanthal / ipd,
+    leftSpan / ipd,
+    rightSpan / ipd,
+    lBrowToIris / ipd,
+    rBrowToIris / ipd,
+  ];
+  return rawRatios.map((r) => Number(Math.min(4, Math.max(0.02, r)).toFixed(4)));
+}
+
+function extractSingleEyeOcular128FromRgba(image: {
+  width: number;
+  height: number;
+  data: ArrayLike<number>;
+}): number[] | null {
+  const { width, height, data } = image;
+  if (!width || !height || width < 16 || height < 12 || data.length < width * height * 4) {
+    return null;
+  }
+
+  const lumaAt = (px: number, py: number): number => {
+    const cx = Math.max(0, Math.min(width - 1, px));
+    const cy = Math.max(0, Math.min(height - 1, py));
+    const idx = (cy * width + cx) * 4;
+    return 0.299 * (data[idx] ?? 0) + 0.587 * (data[idx + 1] ?? 0) + 0.114 * (data[idx + 2] ?? 0);
+  };
+
+  // 1. 8x8 periocular + iris luminance grid (64-D)
+  const rawGrid8 = new Array<number>(64).fill(0);
+  for (let gy = 0; gy < 8; gy += 1) {
+    const py0 = Math.floor((gy * height) / 8);
+    const py1 = Math.max(py0 + 1, Math.floor(((gy + 1) * height) / 8));
+    for (let gx = 0; gx < 8; gx += 1) {
+      const px0 = Math.floor((gx * width) / 8);
+      const px1 = Math.max(px0 + 1, Math.floor(((gx + 1) * width) / 8));
+      let sum = 0;
+      let cnt = 0;
+      for (let py = py0; py < py1 && py < height; py += 1) {
+        for (let px = px0; px < px1 && px < width; px += 1) {
+          sum += lumaAt(px, py);
+          cnt += 1;
+        }
+      }
+      rawGrid8[gy * 8 + gx] = cnt > 0 ? sum / cnt : 0;
+    }
+  }
+  const normLuma64 = normalizeZeroMeanUnitStdArray(rawGrid8);
+  if (!normLuma64) return null;
+
+  // 2. 4x4 directional iris limbus & eyelid Sobel-style gradients: Gx (16-D) + Gy (16-D)
+  const rawGx16 = new Array<number>(16).fill(0);
+  const rawGy16 = new Array<number>(16).fill(0);
+  for (let gy = 0; gy < 4; gy += 1) {
+    const py0 = Math.floor((gy * height) / 4);
+    const py1 = Math.max(py0 + 2, Math.floor(((gy + 1) * height) / 4));
+    const pyMid = Math.floor((py0 + py1) * 0.5);
+    for (let gx = 0; gx < 4; gx += 1) {
+      const px0 = Math.floor((gx * width) / 4);
+      const px1 = Math.max(px0 + 2, Math.floor(((gx + 1) * width) / 4));
+      const pxMid = Math.floor((px0 + px1) * 0.5);
+      let leftSum = 0;
+      let leftCnt = 0;
+      let rightSum = 0;
+      let rightCnt = 0;
+      let topSum = 0;
+      let topCnt = 0;
+      let botSum = 0;
+      let botCnt = 0;
+      for (let py = py0; py < py1 && py < height; py += 1) {
+        for (let px = px0; px < px1 && px < width; px += 1) {
+          const yVal = lumaAt(px, py);
+          if (px < pxMid) {
+            leftSum += yVal;
+            leftCnt += 1;
+          } else {
+            rightSum += yVal;
+            rightCnt += 1;
+          }
+          if (py < pyMid) {
+            topSum += yVal;
+            topCnt += 1;
+          } else {
+            botSum += yVal;
+            botCnt += 1;
+          }
+        }
+      }
+      const cellIdx = gy * 4 + gx;
+      rawGx16[cellIdx] = (rightCnt > 0 ? rightSum / rightCnt : 0) - (leftCnt > 0 ? leftSum / leftCnt : 0);
+      rawGy16[cellIdx] = (botCnt > 0 ? botSum / botCnt : 0) - (topCnt > 0 ? topSum / topCnt : 0);
+    }
+  }
+  const normGx16 = normalizeZeroMeanUnitStdArray(rawGx16) ?? new Array<number>(16).fill(0);
+  const normGy16 = normalizeZeroMeanUnitStdArray(rawGy16) ?? new Array<number>(16).fill(0);
+
+  // 3. Radial 8-sector × 2-ring concentric iris Y (16-D) + radial 8-sector iris Cb/Cr chroma (16-D)
+  const radSumY = new Array<number>(16).fill(0);
+  const radCntY = new Array<number>(16).fill(0);
+  const radSumCb = new Array<number>(8).fill(0);
+  const radSumCr = new Array<number>(8).fill(0);
+  const radCntC = new Array<number>(8).fill(0);
+
+  const cx = (width - 1) * 0.5;
+  const cy = (height - 1) * 0.5;
+  const maxR = Math.max(4, height * 0.45);
+
+  for (let py = 0; py < height; py += 1) {
+    for (let px = 0; px < width; px += 1) {
+      const dx = px - cx;
+      const dy = py - cy;
+      const rNorm = Math.hypot(dx, dy) / maxR;
+      if (rNorm > 1.0) continue;
+      let ang = Math.atan2(dy, dx);
+      if (ang < 0) ang += Math.PI * 2;
+      const sector = Math.min(7, Math.floor((ang / (Math.PI * 2)) * 8));
+      const ring = rNorm <= 0.52 ? 0 : 1;
+      const idx = (py * width + px) * 4;
+      const r = data[idx] ?? 0;
+      const g = data[idx + 1] ?? 0;
+      const b = data[idx + 2] ?? 0;
+      const yVal = 0.299 * r + 0.587 * g + 0.114 * b;
+      const cbVal = -0.1687 * r - 0.3313 * g + 0.5 * b + 128;
+      const crVal = 0.5 * r - 0.4187 * g - 0.0813 * b + 128;
+
+      const radIdx = ring * 8 + sector;
+      radSumY[radIdx] += yVal;
+      radCntY[radIdx] += 1;
+      radSumCb[sector] += cbVal;
+      radSumCr[sector] += crVal;
+      radCntC[sector] += 1;
+    }
+  }
+
+  const rawRadY0 = radSumY.slice(0, 8).map((s, i) => (radCntY[i] > 0 ? s / radCntY[i] : 0));
+  const rawRadY1 = radSumY.slice(8, 16).map((s, i) => (radCntY[8 + i] > 0 ? s / radCntY[8 + i] : 0));
+  const rawRadCb = radSumCb.map((s, i) => (radCntC[i] > 0 ? s / radCntC[i] : 128));
+  const rawRadCr = radSumCr.map((s, i) => (radCntC[i] > 0 ? s / radCntC[i] : 128));
+  const normRadY0 = normalizeZeroMeanUnitStdArray(rawRadY0) ?? new Array<number>(8).fill(0);
+  const normRadY1 = normalizeZeroMeanUnitStdArray(rawRadY1) ?? new Array<number>(8).fill(0);
+  const normRadCb8 = normalizeZeroMeanUnitStdArray(rawRadCb) ?? new Array<number>(8).fill(0);
+  const normRadCr8 = normalizeZeroMeanUnitStdArray(rawRadCr) ?? new Array<number>(8).fill(0);
+
+  return [
+    ...normLuma64,
+    ...normGx16,
+    ...normGy16,
+    ...normRadY0,
+    ...normRadY1,
+    ...normRadCb8,
+    ...normRadCr8,
+  ];
+}
+
+/**
+ * Extracts a lighting-invariant 256-D dual-eye iris + periocular biometric descriptor
+ * (128-D left eye + 128-D right eye: 8x8 Y grid, 4x4 Sobel Gx/Gy, radial concentric iris Y + Cb/Cr).
+ */
+export function extractOcularIrisPatch256FromRgba(
+  leftEye: { width: number; height: number; data: ArrayLike<number> },
+  rightEye: { width: number; height: number; data: ArrayLike<number> },
+): number[] | null {
+  const left128 = extractSingleEyeOcular128FromRgba(leftEye);
+  const right128 = extractSingleEyeOcular128FromRgba(rightEye);
+  if (!left128 || !right128) return null;
+  return [...left128, ...right128];
+}
+
+/**
+ * Horizontally mirrors a 256-D dual-eye iris patch (swaps left <-> right eye blocks
+ * and reflects grids, directional Gx signs, and angular iris sectors cleanly).
+ */
+export function flipOcularIrisPatch256Horizontally(patch256: readonly number[]): number[] {
+  if (patch256.length !== 256) return [...patch256];
+  const out = new Array<number>(256).fill(0);
+  const mirrorSector = (s: number) => (s < 4 ? 3 - s : 11 - s);
+
+  const flipSingleEye128 = (srcOffset: number, dstOffset: number) => {
+    for (let y = 0; y < 8; y += 1) {
+      for (let x = 0; x < 8; x += 1) {
+        out[dstOffset + y * 8 + x] = patch256[srcOffset + y * 8 + (7 - x)];
+      }
+    }
+    for (let y = 0; y < 4; y += 1) {
+      for (let x = 0; x < 4; x += 1) {
+        const valGx = patch256[srcOffset + 64 + y * 4 + (3 - x)];
+        out[dstOffset + 64 + y * 4 + x] = valGx === 0 ? 0 : -valGx;
+        out[dstOffset + 80 + y * 4 + x] = patch256[srcOffset + 80 + y * 4 + (3 - x)];
+      }
+    }
+    for (let s = 0; s < 8; s += 1) {
+      const ms = mirrorSector(s);
+      out[dstOffset + 96 + s] = patch256[srcOffset + 96 + ms];
+      out[dstOffset + 104 + s] = patch256[srcOffset + 104 + ms];
+      out[dstOffset + 112 + s] = patch256[srcOffset + 112 + ms];
+      out[dstOffset + 120 + s] = patch256[srcOffset + 120 + ms];
+    }
+  };
+
+  flipSingleEye128(0, 128);
+  flipSingleEye128(128, 0);
+  return out;
+}
+
+/**
+ * Horizontally mirrors 8 IPD-normalized ocular-iris ratios by swapping left <-> right eye pairs.
+ */
+export function flipIrisOcularRatios8Horizontally(ratios8: readonly number[]): number[] {
+  if (ratios8.length !== 8) return [...ratios8];
+  return [
+    ratios8[1],
+    ratios8[0],
+    ratios8[2],
+    ratios8[3],
+    ratios8[5],
+    ratios8[4],
+    ratios8[7],
+    ratios8[6],
+  ];
+}
+
+/**
+ * Weighted ZNCC similarity for 256-D dual-eye iris + periocular descriptors.
+ */
+export function computeOcularIrisZnccScore(patchA: readonly number[], patchB: readonly number[]): number {
+  if (patchA.length !== 256 || patchB.length !== 256) return 0;
+  let eyeSum = 0;
+  let validEyes = 0;
+  for (const offset of [0, 128]) {
+    const zLuma = sliceZncc(patchA, patchB, offset, 64);
+    if (zLuma === null) continue;
+    const zGx = sliceZncc(patchA, patchB, offset + 64, 16);
+    const zGy = sliceZncc(patchA, patchB, offset + 80, 16);
+    const effGrad =
+      zGx !== null && zGy !== null
+        ? (zGx + zGy) * 0.5
+        : (zGx ?? zGy ?? zLuma);
+    const zRad0 = sliceZncc(patchA, patchB, offset + 96, 8);
+    const zRad1 = sliceZncc(patchA, patchB, offset + 104, 8);
+    const effRadY =
+      zRad0 !== null && zRad1 !== null
+        ? 0.45 * zRad0 + 0.55 * zRad1
+        : (zRad1 ?? zRad0 ?? zLuma);
+    const zRadCb = sliceZncc(patchA, patchB, offset + 112, 8);
+    const zRadCr = sliceZncc(patchA, patchB, offset + 120, 8);
+    const effRadial =
+      zRadCb !== null && zRadCr !== null
+        ? 0.7 * effRadY + 0.15 * zRadCb + 0.15 * zRadCr
+        : effRadY;
+
+    eyeSum += 0.25 * zLuma + 0.3 * effGrad + 0.45 * effRadial;
+    validEyes += 1;
+  }
+  if (validEyes === 0) return 0;
+  return Number(Math.max(-1, Math.min(1, eyeSum / validEyes)).toFixed(4));
+}
+
+export function evaluateOcularIrisGate(
+  probeRatios?: GeometricAnthropometricRatios | null,
+  candidateRatios?: GeometricAnthropometricRatios | null,
+): {
+  available: boolean;
+  passed: boolean;
+  ocularIrisZncc: number | null;
+  irisRatioDeviation: number | null;
+  failureReason?: string;
+} {
+  const pPatch = probeRatios?.ocularIrisPatch256;
+  const cPatch = candidateRatios?.ocularIrisPatch256;
+  const patchAvailable = Boolean(
+    Array.isArray(pPatch) && Array.isArray(cPatch) && pPatch.length === 256 && cPatch.length === 256,
+  );
+  const ocularIrisZncc = patchAvailable ? computeOcularIrisZnccScore(pPatch!, cPatch!) : null;
+
+  const p8 = probeRatios?.irisOcularRatios8;
+  const c8 = candidateRatios?.irisOcularRatios8;
+  const ratioAvailable = Boolean(
+    Array.isArray(p8) && Array.isArray(c8) && p8.length === 8 && c8.length === 8,
+  );
+  let irisRatioDeviation: number | null = null;
+  if (ratioAvailable) {
+    let sumRel = 0;
+    for (let i = 0; i < 8; i += 1) {
+      const a = p8![i];
+      const b = c8![i];
+      sumRel += Math.abs(a - b) / Math.max(0.2, (Math.abs(a) + Math.abs(b)) * 0.5);
+    }
+    irisRatioDeviation = Number((sumRel / 8).toFixed(4));
+  }
+
+  if (!patchAvailable && !ratioAvailable) {
+    return {
+      available: false,
+      passed: true,
+      ocularIrisZncc: null,
+      irisRatioDeviation: null,
+    };
+  }
+
+  if (patchAvailable && ocularIrisZncc !== null && ocularIrisZncc < STRICT_OCULAR_IRIS_ZNCC_THRESHOLD) {
+    return {
+      available: true,
+      passed: false,
+      ocularIrisZncc,
+      irisRatioDeviation,
+      failureReason: `OCULAR_IRIS_ZNCC_BELOW_THRESHOLD (${ocularIrisZncc.toFixed(3)} < ${STRICT_OCULAR_IRIS_ZNCC_THRESHOLD})`,
+    };
+  }
+  if (irisRatioDeviation !== null && irisRatioDeviation > STRICT_IRIS_RATIO_MAX_DEVIATION) {
+    return {
+      available: true,
+      passed: false,
+      ocularIrisZncc,
+      irisRatioDeviation,
+      failureReason: `IRIS_RATIO_MISMATCH (${irisRatioDeviation.toFixed(3)} > ${STRICT_IRIS_RATIO_MAX_DEVIATION})`,
+    };
+  }
+
+  return {
+    available: true,
+    passed: true,
+    ocularIrisZncc,
+    irisRatioDeviation,
+  };
+}
+
 export function computeCraniofacialRatioDeviation(
   probeRatios?: GeometricAnthropometricRatios | null,
   candidateRatios?: GeometricAnthropometricRatios | null,
@@ -1524,6 +1978,9 @@ export function evaluateAppearanceAndCraniofacialGate(
   patchZncc: number | null;
   ratioAvailable: boolean;
   ratioMeanDeviation: number | null;
+  ocularIrisAvailable: boolean;
+  ocularIrisZncc: number | null;
+  irisRatioDeviation: number | null;
   failureReason?: string;
 } {
   const pPatch = probeRatios?.appearancePatch384;
@@ -1533,6 +1990,7 @@ export function evaluateAppearanceAndCraniofacialGate(
   );
   const patchZncc = patchAvailable ? computePatchZnccScore(pPatch!, cPatch!) : null;
   const ratioRes = computeCraniofacialRatioDeviation(probeRatios, candidateRatios);
+  const ocularGate = evaluateOcularIrisGate(probeRatios, candidateRatios);
 
   if (patchAvailable && patchZncc !== null && patchZncc < STRICT_PATCH_ZNCC_THRESHOLD) {
     return {
@@ -1541,6 +1999,9 @@ export function evaluateAppearanceAndCraniofacialGate(
       patchZncc,
       ratioAvailable: ratioRes.available,
       ratioMeanDeviation: ratioRes.available ? ratioRes.meanDeviation : null,
+      ocularIrisAvailable: ocularGate.available,
+      ocularIrisZncc: ocularGate.ocularIrisZncc,
+      irisRatioDeviation: ocularGate.irisRatioDeviation,
       failureReason: `PATCH_ZNCC_BELOW_THRESHOLD (${patchZncc.toFixed(3)} < ${STRICT_PATCH_ZNCC_THRESHOLD})`,
     };
   }
@@ -1551,7 +2012,23 @@ export function evaluateAppearanceAndCraniofacialGate(
       patchZncc,
       ratioAvailable: true,
       ratioMeanDeviation: ratioRes.meanDeviation,
+      ocularIrisAvailable: ocularGate.available,
+      ocularIrisZncc: ocularGate.ocularIrisZncc,
+      irisRatioDeviation: ocularGate.irisRatioDeviation,
       failureReason: `CRANIOFACIAL_RATIO_MISMATCH (${ratioRes.meanDeviation.toFixed(3)} > ${STRICT_CRANIOFACIAL_MAX_DEVIATION})`,
+    };
+  }
+  if (ocularGate.available && !ocularGate.passed) {
+    return {
+      passed: false,
+      patchAvailable,
+      patchZncc,
+      ratioAvailable: ratioRes.available,
+      ratioMeanDeviation: ratioRes.available ? ratioRes.meanDeviation : null,
+      ocularIrisAvailable: true,
+      ocularIrisZncc: ocularGate.ocularIrisZncc,
+      irisRatioDeviation: ocularGate.irisRatioDeviation,
+      failureReason: ocularGate.failureReason,
     };
   }
   return {
@@ -1560,6 +2037,9 @@ export function evaluateAppearanceAndCraniofacialGate(
     patchZncc,
     ratioAvailable: ratioRes.available,
     ratioMeanDeviation: ratioRes.available ? ratioRes.meanDeviation : null,
+    ocularIrisAvailable: ocularGate.available,
+    ocularIrisZncc: ocularGate.ocularIrisZncc,
+    irisRatioDeviation: ocularGate.irisRatioDeviation,
   };
 }
 
@@ -1585,6 +2065,8 @@ export interface TripleGateResult {
   centroidsAbove082Count: number;
   patchZncc: number | null;
   craniofacialDeviation: number | null;
+  ocularIrisZncc: number | null;
+  irisRatioDeviation: number | null;
   bestAngle: 'master' | FacePoseZone5 | 'extra';
   failureReasons: string[];
 }
@@ -1615,6 +2097,8 @@ export function evaluateTripleGateNeuralCandidate(
     centroidsAbove082Count: 0,
     patchZncc: null,
     craniofacialDeviation: null,
+    ocularIrisZncc: null,
+    irisRatioDeviation: null,
     bestAngle: 'master',
     failureReasons: [reason],
   });
@@ -1777,6 +2261,8 @@ export function evaluateTripleGateNeuralCandidate(
     centroidsAbove082Count,
     patchZncc: gate2.patchZncc,
     craniofacialDeviation: gate2.ratioMeanDeviation,
+    ocularIrisZncc: gate2.ocularIrisZncc,
+    irisRatioDeviation: gate2.irisRatioDeviation,
     bestAngle,
     failureReasons,
   };

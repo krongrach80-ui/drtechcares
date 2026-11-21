@@ -26,6 +26,8 @@ import {
   euclideanDistance,
   evaluateAppearanceAndCraniofacialGate,
   evaluateTripleGateNeuralCandidate,
+  flipIrisOcularRatios8Horizontally,
+  flipOcularIrisPatch256Horizontally,
   flipPatch384Horizontally,
   isLegacyV1HybridVector,
   l2Normalize,
@@ -3009,6 +3011,16 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
                 ...probeRatios,
                 ...(probeRatios.appearancePatch384?.length === 384
                   ? { appearancePatch384: flipPatch384Horizontally(probeRatios.appearancePatch384) }
+                  : {}),
+                ...(probeRatios.ocularIrisPatch256?.length === 256
+                  ? {
+                      ocularIrisPatch256: flipOcularIrisPatch256Horizontally(
+                        probeRatios.ocularIrisPatch256,
+                      ),
+                    }
+                  : {}),
+                ...(probeRatios.irisOcularRatios8?.length === 8
+                  ? { irisOcularRatios8: flipIrisOcularRatios8Horizontally(probeRatios.irisOcularRatios8) }
                   : {}),
               }
             : null;

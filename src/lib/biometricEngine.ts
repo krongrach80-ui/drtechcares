@@ -16,9 +16,12 @@ import {
   STRICT_MAX_EUCLIDEAN_DISTANCE,
   STRICT_MIN_CENTROID_COSINE,
   STRICT_RAW_COSINE_THRESHOLD,
+  computeIrisOcularRatios8,
   computeMaxImposterCohortScore,
   evaluateTripleGateNeuralCandidate,
   extractFacePatchSignature384FromRgba,
+  extractOcularIrisPatch256FromRgba,
+  normalizeOcularIrisPatch256,
   type GeometricAnthropometricRatios,
 } from '@drtechcares/smart-biometric-core';
 
@@ -170,6 +173,8 @@ export interface PatientMatchScoreResult {
   uniqueVectorCount: number;
   patchZncc: number | null;
   craniofacialDeviation: number | null;
+  ocularIrisZncc: number | null;
+  irisRatioDeviation: number | null;
   passesMultiExemplarGate: boolean;
   tripleGateFailureReasons: string[];
   bestSource: string;
@@ -189,6 +194,8 @@ export interface Live1toNMatchEvaluation {
   topConsensusTop3Avg: number;
   topPatchZncc: number | null;
   topCraniofacialDeviation: number | null;
+  topOcularIrisZncc?: number | null;
+  topIrisRatioDeviation?: number | null;
   cohortMargin: number;
   runnerUpSimilarity: number;
   runnerUpFinalScore: number;
@@ -627,6 +634,127 @@ export function extractFacePatchSignature384(
   return null;
 }
 
+export interface OcularIrisCaptureResult {
+  patch256: number[] | null;
+  ratios8: number[] | null;
+  ipdPx: number;
+  ocularSharpness: number;
+}
+
+const OCULAR_EYE_CROP_W = 48;
+const OCULAR_EYE_CROP_H = 32;
+
+/**
+ * Crops aligned native-HD left and right periocular + iris strips (`48x32` per eye, eye-roll
+ * leveled to `0 deg`) directly from the live video frame and extracts the lighting-invariant
+ * 256-D dual-iris descriptor plus 8 IPD-normalized anatomical ocular ratios.
+ */
+export function captureAndExtractOcularIris256(
+  video: HTMLVideoElement,
+  landmarks: readonly { x: number; y: number; z?: number }[],
+  leftCanvas?: HTMLCanvasElement | null,
+  rightCanvas?: HTMLCanvasElement | null,
+): OcularIrisCaptureResult | null {
+  if (
+    typeof document === 'undefined' ||
+    !video ||
+    video.videoWidth <= 0 ||
+    video.videoHeight <= 0 ||
+    !landmarks ||
+    landmarks.length < 478
+  ) {
+    return null;
+  }
+
+  const lIris = landmarks[468];
+  const rIris = landmarks[473];
+  const lOuter = landmarks[33];
+  const lInner = landmarks[133];
+  const rInner = landmarks[362];
+  const rOuter = landmarks[263];
+  if (!lIris || !rIris || !lOuter || !lInner || !rInner || !rOuter) {
+    return null;
+  }
+
+  const leftMinX = Math.min(lOuter.x, lInner.x);
+  const leftMaxX = Math.max(lOuter.x, lInner.x);
+  const rightMinX = Math.min(rInner.x, rOuter.x);
+  const rightMaxX = Math.max(rInner.x, rOuter.x);
+  if (
+    lIris.x <= leftMinX ||
+    lIris.x >= leftMaxX ||
+    rIris.x <= rightMinX ||
+    rIris.x >= rightMaxX
+  ) {
+    return null;
+  }
+
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  const lx = lIris.x * vw;
+  const ly = lIris.y * vh;
+  const rx = rIris.x * vw;
+  const ry = rIris.y * vh;
+  const ipdPx = Math.hypot(rx - lx, ry - ly);
+  if (ipdPx < 18) {
+    return null;
+  }
+
+  const rollRad = Math.atan2(ry - ly, rx - lx);
+  const spanW = Math.max(24, ipdPx * 0.46);
+  const spanH = Math.max(16, ipdPx * 0.305);
+  const scaleX = OCULAR_EYE_CROP_W / spanW;
+  const scaleY = OCULAR_EYE_CROP_H / spanH;
+
+  const extractEyeImage = (cx: number, cy: number, scratch?: HTMLCanvasElement | null): ImageData | null => {
+    const cvs = scratch || document.createElement('canvas');
+    if (cvs.width !== OCULAR_EYE_CROP_W || cvs.height !== OCULAR_EYE_CROP_H) {
+      cvs.width = OCULAR_EYE_CROP_W;
+      cvs.height = OCULAR_EYE_CROP_H;
+    }
+    const ctx = cvs.getContext('2d', { alpha: false, willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.save();
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, OCULAR_EYE_CROP_W, OCULAR_EYE_CROP_H);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.translate(OCULAR_EYE_CROP_W * 0.5, OCULAR_EYE_CROP_H * 0.5);
+    ctx.rotate(-rollRad);
+    ctx.scale(scaleX, scaleY);
+    ctx.translate(-cx, -cy);
+    ctx.drawImage(video, 0, 0, vw, vh);
+    ctx.restore();
+    applyCanonicalLuminanceToCanvas(cvs);
+    try {
+      return ctx.getImageData(0, 0, OCULAR_EYE_CROP_W, OCULAR_EYE_CROP_H);
+    } catch {
+      return null;
+    }
+  };
+
+  const leftCanvasEl = leftCanvas || document.createElement('canvas');
+  const rightCanvasEl = rightCanvas || document.createElement('canvas');
+  const leftImg = extractEyeImage(lx, ly, leftCanvasEl);
+  const rightImg = extractEyeImage(rx, ry, rightCanvasEl);
+  if (!leftImg || !rightImg) return null;
+
+  const patch256 = extractOcularIrisPatch256FromRgba(leftImg, rightImg);
+  const ratios8 = computeIrisOcularRatios8(landmarks, vw / vh) ?? null;
+  if (!patch256 && !ratios8) return null;
+
+  const leftSharp = computeCanvasSharpness(leftCanvasEl);
+  const rightSharp = computeCanvasSharpness(rightCanvasEl);
+  const ocularSharpness = Number(((leftSharp + rightSharp) * 0.5).toFixed(2));
+
+  return {
+    patch256,
+    ratios8,
+    ipdPx: Number(ipdPx.toFixed(1)),
+    ocularSharpness,
+  };
+}
+
 /**
  * Captures a race-free, illumination-invariant inner-face snapshot (`224x224`, Mean Luminance `128`):
  * - When `landmarks` (FaceMesh/Human) are provided: levels eye-roll to 0 deg and tightly crops
@@ -922,6 +1050,79 @@ export function buildBiometricProfileFromSamples(
         noseToChinRatio: 1,
       }),
       craniofacialRatios12: avgCranio,
+    };
+  }
+
+  const centerOcularPatches = normalizedSamples
+    .filter(
+      (s) =>
+        s.bucket === 'center' &&
+        Array.isArray(s.geometricRatios?.ocularIrisPatch256) &&
+        s.geometricRatios!.ocularIrisPatch256!.length === 256,
+    )
+    .map((s) => s.geometricRatios!.ocularIrisPatch256!);
+  const fallbackOcularPatches = normalizedSamples
+    .filter(
+      (s) =>
+        Array.isArray(s.geometricRatios?.ocularIrisPatch256) &&
+        s.geometricRatios!.ocularIrisPatch256!.length === 256,
+    )
+    .map((s) => s.geometricRatios!.ocularIrisPatch256!);
+  const ocularPatchPool =
+    centerOcularPatches.length > 0 ? centerOcularPatches : fallbackOcularPatches;
+  if (ocularPatchPool.length > 0 && !resolvedGeometricRatios?.ocularIrisPatch256) {
+    const rawAvgOcular = new Array<number>(256).fill(0);
+    for (const p of ocularPatchPool) {
+      for (let i = 0; i < 256; i += 1) rawAvgOcular[i] += p[i];
+    }
+    for (let i = 0; i < 256; i += 1) rawAvgOcular[i] /= ocularPatchPool.length;
+    const normAvgOcular = normalizeOcularIrisPatch256(rawAvgOcular);
+    if (normAvgOcular) {
+      resolvedGeometricRatios = {
+        ...(resolvedGeometricRatios ?? {
+          eyeToNoseRatio: 1,
+          faceWidthToUpperHeight: 1,
+          mouthToEyeRatio: 1,
+          noseToChinRatio: 1,
+        }),
+        ocularIrisPatch256: normAvgOcular,
+      };
+    }
+  }
+
+  const centerIrisRatios = normalizedSamples
+    .filter(
+      (s) =>
+        s.bucket === 'center' &&
+        Array.isArray(s.geometricRatios?.irisOcularRatios8) &&
+        s.geometricRatios!.irisOcularRatios8!.length === 8,
+    )
+    .map((s) => s.geometricRatios!.irisOcularRatios8!);
+  const fallbackIrisRatios = normalizedSamples
+    .filter(
+      (s) =>
+        Array.isArray(s.geometricRatios?.irisOcularRatios8) &&
+        s.geometricRatios!.irisOcularRatios8!.length === 8,
+    )
+    .map((s) => s.geometricRatios!.irisOcularRatios8!);
+  const irisRatioPool =
+    centerIrisRatios.length > 0 ? centerIrisRatios : fallbackIrisRatios;
+  if (irisRatioPool.length > 0 && !resolvedGeometricRatios?.irisOcularRatios8) {
+    const avgIris8 = new Array<number>(8).fill(0);
+    for (const r of irisRatioPool) {
+      for (let i = 0; i < 8; i += 1) avgIris8[i] += r[i];
+    }
+    for (let i = 0; i < 8; i += 1) {
+      avgIris8[i] = Number((avgIris8[i] / irisRatioPool.length).toFixed(4));
+    }
+    resolvedGeometricRatios = {
+      ...(resolvedGeometricRatios ?? {
+        eyeToNoseRatio: 1,
+        faceWidthToUpperHeight: 1,
+        mouthToEyeRatio: 1,
+        noseToChinRatio: 1,
+      }),
+      irisOcularRatios8: avgIris8,
     };
   }
 
@@ -2041,6 +2242,8 @@ export function computePatientMatchScore(
       uniqueVectorCount: 0,
       patchZncc: null,
       craniofacialDeviation: null,
+      ocularIrisZncc: null,
+      irisRatioDeviation: null,
       passesMultiExemplarGate: false,
       tripleGateFailureReasons: ['NO_STORED_VECTORS'],
       bestSource: 'none',
@@ -2089,6 +2292,8 @@ export function computePatientMatchScore(
     uniqueVectorCount: scoredVecs.length,
     patchZncc: tg.patchZncc,
     craniofacialDeviation: tg.craniofacialDeviation,
+    ocularIrisZncc: tg.ocularIrisZncc,
+    irisRatioDeviation: tg.irisRatioDeviation,
     passesMultiExemplarGate: tg.passed,
     tripleGateFailureReasons: tg.failureReasons,
     bestSource: tg.bestAngle,
@@ -2136,6 +2341,8 @@ export function evaluateLiveMatch1toN(
       topConsensusTop3Avg: 0,
       topPatchZncc: null,
       topCraniofacialDeviation: null,
+      topOcularIrisZncc: null,
+      topIrisRatioDeviation: null,
       cohortMargin: 0,
       runnerUpSimilarity: 0,
       runnerUpFinalScore: 0,
@@ -2163,6 +2370,8 @@ export function evaluateLiveMatch1toN(
       topConsensusTop3Avg: 0,
       topPatchZncc: null,
       topCraniofacialDeviation: null,
+      topOcularIrisZncc: null,
+      topIrisRatioDeviation: null,
       cohortMargin: 0,
       runnerUpSimilarity: 0,
       runnerUpFinalScore: 0,
@@ -2239,6 +2448,8 @@ export function evaluateLiveMatch1toN(
     topConsensusTop3Avg: top.consensusTop3Avg,
     topPatchZncc: top.patchZncc,
     topCraniofacialDeviation: top.craniofacialDeviation,
+    topOcularIrisZncc: top.ocularIrisZncc,
+    topIrisRatioDeviation: top.irisRatioDeviation,
     cohortMargin,
     runnerUpSimilarity: runnerUpSim,
     runnerUpFinalScore,
