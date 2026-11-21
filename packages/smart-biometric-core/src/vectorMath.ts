@@ -1348,6 +1348,27 @@ function sliceZncc(a: readonly number[], b: readonly number[], start: number, le
 }
 
 /**
+ * Horizontally mirrors a 384-D inner-face appearance patch (`16x16` Y, `8x8` Cb, `8x8` Cr)
+ * so cross-camera horizontally flipped streams still match the enrolled ZNCC appearance signature.
+ */
+export function flipPatch384Horizontally(patch: readonly number[]): number[] {
+  if (patch.length !== 384) return [...patch];
+  const out = new Array<number>(384);
+  const flipGrid = (offset: number, grid: number) => {
+    for (let y = 0; y < grid; y += 1) {
+      const rowStart = offset + y * grid;
+      for (let x = 0; x < grid; x += 1) {
+        out[rowStart + x] = patch[rowStart + (grid - 1 - x)];
+      }
+    }
+  };
+  flipGrid(0, 16);
+  flipGrid(256, 8);
+  flipGrid(320, 8);
+  return out;
+}
+
+/**
  * Zero-Mean Normalized Cross-Correlation (ZNCC) for the 384-D inner-face patch
  * (256 luminance + 64 Cb + 64 Cr). Grayscale-only channels fall back smoothly to luminance ZNCC.
  */

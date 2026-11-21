@@ -63,6 +63,13 @@ export function resetClinicalAssessmentStoreForTests(): void {
 function getSupabaseRestConfig(): { url: string; key: string } | null {
   try {
     const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
+    const isTestRuntime =
+      env?.MODE === 'test' ||
+      (typeof process !== 'undefined' &&
+        Boolean(process.env?.VITEST || process.env?.NODE_ENV === 'test'));
+    if (isTestRuntime) {
+      return null;
+    }
     const url = (env?.VITE_SUPABASE_URL ?? '').trim().replace(/\/+$/, '');
     const key = (env?.VITE_SUPABASE_ANON_KEY ?? '').trim();
     if (!url || !key) return null;

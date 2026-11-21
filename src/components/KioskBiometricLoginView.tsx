@@ -32,6 +32,8 @@ import {
   LiveIdentityStreakTracker,
   REQUIRED_MATCH_STREAK,
   captureCanonicalFaceSnapshot,
+  computeCanvasSharpness,
+  createMirroredCanvasSnapshot,
   evaluateLiveMatch1toN,
   extractCanonicalFaceDescriptor,
   extractFacePatchSignature384,
@@ -71,12 +73,15 @@ import {
   evaluateLivenessAndPose,
   extractGeometricAnthropometricRatios,
   inspectBiometricFrame3D,
+  listClinicalCameraDevices,
+  openBestAvailableCameraStream,
   remapRoiLandmarksToFrame,
   renderUpscaledRoi256,
   selectClinicalCameraDeviceId,
   selectPrimaryFace,
   type BiologicalLivenessReport,
   type BiometricVerificationJson,
+  type ClinicalCameraDevice,
   type LivenessAndPoseReport,
 } from '@drtechcares/face-client';
 import { FacePresenceTracker } from '@drtechcares/kiosk-input';
@@ -86,7 +91,9 @@ import {
   STRICT_LOGIN_MAX_YAW_DEG,
   classifyLivePoseZone,
   computeCraniofacialRatios12,
+  flipPatch384Horizontally,
   l2Normalize,
+  mirrorPoseZone,
   purgeLegacyBiometricCache,
   type GeometricAnthropometricRatios,
 } from '@drtechcares/smart-biometric-core';
@@ -101,6 +108,7 @@ import {
 } from './KineticAuthStatusBadge';
 import {
   Bell,
+  Camera,
   CameraOff,
   FlipHorizontal2,
   HeartPulse,
@@ -932,9 +940,55 @@ export function KioskBiometricLoginView({
     return () => window.clearInterval(timer);
   }, []);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [selectedCameraId, setSelectedCameraId] = useState<string | null>(() => {
+    try {
+      return typeof window !== 'undefined'
+        ? window.localStorage.getItem('drtech_preferred_camera_id')
+        : null;
+    } catch {
+      return null;
+    }
+  });
+  const [availableCameras, setAvailableCameras] = useState<ClinicalCameraDevice[]>([]);
   const [rotationDeg, setRotationDeg] = useState<0 | 90 | 180 | 270>(0);
   const [mirrored, setMirrored] = useState(true);
   const [showCalibHud, setShowCalibHud] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const syncDevices = async () => {
+      const list = await listClinicalCameraDevices();
+      if (active) {
+        setAvailableCameras(list);
+      }
+    };
+    void syncDevices();
+    const md = typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined;
+    if (md?.addEventListener) {
+      md.addEventListener('devicechange', syncDevices);
+    }
+    return () => {
+      active = false;
+      if (md?.removeEventListener) {
+        md.removeEventListener('devicechange', syncDevices);
+      }
+    };
+  }, []);
+
+  const handleCycleCamera = useCallback(() => {
+    if (availableCameras.length < 2) return;
+    const currentIdx = availableCameras.findIndex((d) => d.deviceId === selectedCameraId);
+    const nextCam = availableCameras[(currentIdx + 1) % availableCameras.length];
+    if (!nextCam?.deviceId) return;
+    setSelectedCameraId(nextCam.deviceId);
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem('drtech_preferred_camera_id', nextCam.deviceId);
+      }
+    } catch {
+      // Ignore storage write errors
+    }
+  }, [availableCameras, selectedCameraId]);
 
   const [scanStage, setScanStage] = useState<'scanning' | 'burst' | 'verifying' | 'not_found'>('scanning');
   const [burstCount, setBurstCount] = useState(0);
@@ -1229,6 +1283,7 @@ export function KioskBiometricLoginView({
     Array<{
       ts: number;
       embedding: number[];
+      sharpness: number;
       appearancePatch384?: number[];
       craniofacialRatios12?: number[];
       yawDeg: number;
@@ -1311,17 +1366,23 @@ export function KioskBiometricLoginView({
         edgeMatchStreakRef.current = { patientId: null, count: 0 };
         return;
       }
-      if (typeof edgeMatch.similarity !== 'number' || edgeMatch.similarity < BIOMETRIC_MATCH_THRESHOLD) {
+      if (typeof edgeMatch.similarity !== 'number' || edgeMatch.similarity < 0.88) {
         edgeMatchStreakRef.current = { patientId: null, count: 0 };
         return;
       }
-      // Require 3 consecutive high-confidence Edge matches for the exact same patient (prevents single-frame bypass)
+      // Require 4 consecutive high-confidence Edge matches + local agreement to prevent single-frame bypass
       if (edgeMatchStreakRef.current.patientId === edgeMatch.id) {
         edgeMatchStreakRef.current.count += 1;
       } else {
         edgeMatchStreakRef.current = { patientId: edgeMatch.id, count: 1 };
       }
-      if (edgeMatchStreakRef.current.count < 3) return;
+      if (edgeMatchStreakRef.current.count < 4) return;
+      if (
+        biometricCandidatesRef.current.length > 0 &&
+        streakTrackerRef.current.activeCandidateId !== edgeMatch.id
+      ) {
+        return;
+      }
       const candActive = biometricCandidatesRef.current.some((c) => c.patientId === edgeMatch.id);
       const entry = candActive
         ? biometricIndexRef.current.find(
@@ -1578,6 +1639,7 @@ export function KioskBiometricLoginView({
     let lastKnownRoiBox: { x: number; y: number; width: number; height: number } | null = null;
     let roiSweepIdx = 0;
     let unreadyFrameStreak = 0;
+    let blurryFrameStreak = 0;
     let bioVerifiedUnmatchedStartAt = 0;
     let isLastVerifyAmbiguous = false;
     let lastGestureVideoTime = -1;
@@ -1705,36 +1767,18 @@ export function KioskBiometricLoginView({
           setCameraPaused(true);
           return;
         }
-        const deviceId = await selectClinicalCameraDeviceId();
-        if (!active) return;
-        const videoConstraintsChain: MediaTrackConstraints[] = deviceId
-          ? [
-              { deviceId: { ideal: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-              { deviceId: { ideal: deviceId } },
-              { width: { ideal: 1280 }, height: { ideal: 720 } },
-            ]
-          : [
-              { width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: 'user' },
-              { width: { ideal: 1280 }, height: { ideal: 720 } },
-            ];
-        let openedStream: MediaStream | null = null;
-        let lastCamErr: unknown = null;
-        for (const vc of videoConstraintsChain) {
-          try {
-            openedStream = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
-            break;
-          } catch (camErr) {
-            lastCamErr = camErr;
-          }
+        const opened = await openBestAvailableCameraStream(selectedCameraId);
+        if (!active) {
+          opened.stream.getTracks().forEach((track) => track.stop());
+          return;
         }
-        if (!openedStream) {
-          try {
-            openedStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-          } catch (camErr) {
-            throw lastCamErr ?? camErr;
-          }
+        stream = opened.stream;
+        if (opened.devices.length > 0) {
+          setAvailableCameras(opened.devices);
         }
-        stream = openedStream;
+        if (opened.activeDeviceId && opened.activeDeviceId !== selectedCameraId) {
+          setSelectedCameraId(opened.activeDeviceId);
+        }
         if (!active || !videoRef.current) {
           stream.getTracks().forEach((track) => track.stop());
           stream = null;
@@ -1919,6 +1963,17 @@ export function KioskBiometricLoginView({
               return;
             }
             const liveBucket = classifyLivePoseZone(canonicalYawDeg, params.snapPitchDeg);
+            const frameSharpness = computeCanvasSharpness(params.snapCanvas);
+            if (frameSharpness < 6.5) {
+              blurryFrameStreak += 1;
+              if (blurryFrameStreak >= 3) {
+                streakTrackerRef.current.reset();
+                setBurstCount(0);
+              }
+              return;
+            }
+            blurryFrameStreak = 0;
+
             const rawGeom = extractGeometricAnthropometricRatios(params.snapLandmarks);
             const patch384 = extractFacePatchSignature384(params.snapCanvas);
             const ratios12 = computeCraniofacialRatios12(
@@ -1937,7 +1992,7 @@ export function KioskBiometricLoginView({
                   }
                 : undefined;
 
-            // Rolling 3-frame sharp probe denoising across consecutive frontal frames within 1.5s
+            // Sharpness-weighted rolling 4-frame centroid across consecutive frontal frames within 1.8s
             let activeEmbedding = extracted.embedding;
             let activeGeometricRatios = geometricRatios;
             if (params.snapIsSpoof) {
@@ -1945,7 +2000,7 @@ export function KioskBiometricLoginView({
             } else {
               const validWindow = probeWindowRef.current.filter(
                 (item) =>
-                  params.snapNow - item.ts <= 1500 &&
+                  params.snapNow - item.ts <= 1800 &&
                   item.embedding.length === extracted.embedding!.length &&
                   Math.abs(item.yawDeg - canonicalYawDeg) <= 12 &&
                   Math.abs(item.pitchDeg - params.snapPitchDeg) <= 10,
@@ -1953,36 +2008,58 @@ export function KioskBiometricLoginView({
               validWindow.push({
                 ts: params.snapNow,
                 embedding: extracted.embedding,
+                sharpness: frameSharpness,
                 appearancePatch384: patch384 ?? undefined,
                 craniofacialRatios12: ratios12 ?? undefined,
                 yawDeg: canonicalYawDeg,
                 pitchDeg: params.snapPitchDeg,
               });
-              const rolling = validWindow.slice(-3);
+              const rolling = validWindow.slice(-4);
               probeWindowRef.current = rolling;
 
               if (rolling.length >= 2) {
                 const dim = extracted.embedding.length;
                 const embSum = new Array<number>(dim).fill(0);
+                let totalWeight = 0;
                 for (const item of rolling) {
+                  const weight = 1 + Math.min(2, Math.max(0, item.sharpness) / 60);
+                  totalWeight += weight;
                   for (let i = 0; i < dim; i += 1) {
-                    embSum[i] += item.embedding[i];
+                    embSum[i] += item.embedding[i] * weight;
                   }
                 }
                 activeEmbedding = l2Normalize(embSum);
 
                 const p384Len = patch384?.length ?? 0;
                 const averagedPatch =
-                  p384Len === 384 && rolling.every((item) => item.appearancePatch384?.length === 384)
+                  p384Len === 384 &&
+                  totalWeight > 0 &&
+                  rolling.every((item) => item.appearancePatch384?.length === 384)
                     ? rolling[0].appearancePatch384!.map(
-                        (_, idx) => rolling.reduce((acc, item) => acc + item.appearancePatch384![idx], 0) / rolling.length,
+                        (_, idx) =>
+                          rolling.reduce(
+                            (acc, item) =>
+                              acc +
+                              item.appearancePatch384![idx] *
+                                (1 + Math.min(2, Math.max(0, item.sharpness) / 60)),
+                            0,
+                          ) / totalWeight,
                       )
                     : geometricRatios?.appearancePatch384;
                 const r12Len = ratios12?.length ?? 0;
                 const averagedRatios12 =
-                  r12Len === 12 && rolling.every((item) => item.craniofacialRatios12?.length === 12)
+                  r12Len === 12 &&
+                  totalWeight > 0 &&
+                  rolling.every((item) => item.craniofacialRatios12?.length === 12)
                     ? rolling[0].craniofacialRatios12!.map(
-                        (_, idx) => rolling.reduce((acc, item) => acc + item.craniofacialRatios12![idx], 0) / rolling.length,
+                        (_, idx) =>
+                          rolling.reduce(
+                            (acc, item) =>
+                              acc +
+                              item.craniofacialRatios12![idx] *
+                                (1 + Math.min(2, Math.max(0, item.sharpness) / 60)),
+                            0,
+                          ) / totalWeight,
                       )
                     : geometricRatios?.craniofacialRatios12;
                 if (geometricRatios) {
@@ -2072,7 +2149,7 @@ export function KioskBiometricLoginView({
                 return;
               }
 
-              const evalRes: Live1toNMatchEvaluation = evaluateLiveMatch1toN(
+              let finalEvalRes: Live1toNMatchEvaluation = evaluateLiveMatch1toN(
                 activeEmbedding,
                 candidates,
                 excludedPatientIdsRef.current,
@@ -2080,6 +2157,57 @@ export function KioskBiometricLoginView({
                 liveBucket,
                 activeGeometricRatios,
               );
+              let finalEmbedding = activeEmbedding;
+              let finalMirroredEmbedding: number[] | undefined;
+              let finalGeometricRatios = activeGeometricRatios;
+              let finalYawDeg = canonicalYawDeg;
+
+              // If a webcam outputs a horizontally flipped image vs enrollment, safely retry under mirrored orientation
+              if (
+                !finalEvalRes.matched &&
+                finalEvalRes.topSimilarity >= 0.72 &&
+                params.snapBioVerified &&
+                !params.snapIsSpoof
+              ) {
+                const mirroredCanvas = createMirroredCanvasSnapshot(params.snapCanvas);
+                if (mirroredCanvas) {
+                  const mirroredExt = await extractCanonicalFaceDescriptor(mirroredCanvas);
+                  if (!active || !shouldContinueLoop || verifiedModalPayloadRef.current) {
+                    return;
+                  }
+                  if (mirroredExt.embedding) {
+                    const flippedPatch = activeGeometricRatios?.appearancePatch384
+                      ? flipPatch384Horizontally(activeGeometricRatios.appearancePatch384)
+                      : undefined;
+                    const mirroredRatios: GeometricAnthropometricRatios | undefined =
+                      activeGeometricRatios
+                        ? {
+                            ...activeGeometricRatios,
+                            ...(flippedPatch ? { appearancePatch384: flippedPatch } : {}),
+                          }
+                        : undefined;
+                    const mirroredEval = evaluateLiveMatch1toN(
+                      mirroredExt.embedding,
+                      candidates,
+                      excludedPatientIdsRef.current,
+                      undefined,
+                      mirrorPoseZone(liveBucket),
+                      mirroredRatios,
+                    );
+                    if (mirroredEval.matched) {
+                      finalEvalRes = mirroredEval;
+                      finalEmbedding = mirroredExt.embedding;
+                      finalMirroredEmbedding = activeEmbedding;
+                      finalGeometricRatios = mirroredRatios;
+                      finalYawDeg = -canonicalYawDeg;
+                    } else {
+                      finalMirroredEmbedding = mirroredExt.embedding;
+                    }
+                  }
+                }
+              }
+
+              const evalRes = finalEvalRes;
               const stepRes = streakTrackerRef.current.step(evalRes, {
                 spoofDetected: params.snapIsSpoof,
                 biologicalVerified: params.snapBioVerified,
@@ -2190,10 +2318,12 @@ export function KioskBiometricLoginView({
                 let verifyNetworkFailed = false;
                 let serverRejected = false;
                 try {
-                  const verifyRes = await apiClient.verifyFaceLogin(
-                    activeEmbedding,
-                    livenessEvidence,
-                  );
+                  const verifyRes = await apiClient.verifyFaceLogin(finalEmbedding, {
+                    ...livenessEvidence,
+                    yawDeg: finalYawDeg,
+                    ...(finalGeometricRatios ? { geometricRatios: finalGeometricRatios } : {}),
+                    ...(finalMirroredEmbedding ? { mirroredProbeVector: finalMirroredEmbedding } : {}),
+                  });
                   if (!active || !shouldContinueLoop || verifiedModalPayloadRef.current) {
                     return;
                   }
@@ -2204,12 +2334,18 @@ export function KioskBiometricLoginView({
                   } else {
                     isLastVerifyAmbiguous = false;
                   }
+                  const matchesLocalCandidate = Boolean(
+                    verifyRes.patient &&
+                      (verifyRes.patient.id === cand.patientId ||
+                        (Boolean(verifyRes.patient.hn) && verifyRes.patient.hn === cand.hn)),
+                  );
                   if (verifyRes.failureReasons?.includes('BIOLOGICAL_SPOOF_BLOCKED')) {
                     blockedBySpoof = true;
                     serverRejected = true;
                   } else if (
                     verifyRes.matched &&
                     verifyRes.patient &&
+                    matchesLocalCandidate &&
                     verifyRes.confidencePercent >= 84 &&
                     !excludedPatientIdsRef.current.includes(verifyRes.patient.id)
                   ) {
@@ -2229,7 +2365,12 @@ export function KioskBiometricLoginView({
                     openVerifiedModal(nextPayload);
                     return;
                   } else {
-                    // Explicit server rejection (matched: false / 401 / AMBIGUOUS_CLOSE_CANDIDATES) MUST NEVER fall through to local login!
+                    if (verifyRes.matched && verifyRes.patient && !matchesLocalCandidate) {
+                      probeWindowRef.current = [];
+                      streakTrackerRef.current.reset();
+                      void refreshBiometricCandidates(true);
+                    }
+                    // Explicit server rejection (matched: false / 401 / AMBIGUOUS_CLOSE_CANDIDATES / Dual-Consensus mismatch) MUST NEVER fall through to local login!
                     serverRejected = true;
                   }
                 } catch {
@@ -3193,6 +3334,7 @@ export function KioskBiometricLoginView({
     isNotFoundStage,
     refreshBiometricCandidates,
     scanGeneration,
+    selectedCameraId,
     showPinModal,
     staffModalOpen,
   ]);
@@ -3468,6 +3610,23 @@ export function KioskBiometricLoginView({
 
                 {/* Top-Left Camera Controls */}
                 <div className="absolute top-3 left-3 z-20 flex items-center gap-1.5">
+                  {availableCameras.length >= 2 && (
+                    <button
+                      type="button"
+                      onClick={handleCycleCamera}
+                      className="px-2.5 py-1 rounded-lg bg-white/90 hover:bg-white border border-sky-200 text-[#0F4C81] text-[11px] font-bold flex items-center gap-1 backdrop-blur-sm shadow-xs cursor-pointer"
+                      title={
+                        availableCameras.find((d) => d.deviceId === selectedCameraId)?.label ||
+                        'สลับกล้อง'
+                      }
+                    >
+                      <Camera className="w-3 h-3 text-emerald-600" />
+                      <span>
+                        กล้อง {(availableCameras.findIndex((d) => d.deviceId === selectedCameraId) + 1) || 1}/
+                        {availableCameras.length}
+                      </span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => setRotationDeg((prev) => (((prev + 90) % 360) as 0 | 90 | 180 | 270))}

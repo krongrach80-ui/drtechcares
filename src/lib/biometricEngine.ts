@@ -453,25 +453,59 @@ export function normalizeImageDataLuminance(
   const pixelCount = data.length >>> 2;
   if (pixelCount === 0) return imageData;
 
+  let sumR = 0;
+  let sumG = 0;
+  let sumB = 0;
   let sumY = 0;
   let validPixels = 0;
   for (let i = 0; i < data.length; i += 4) {
     if (data[i + 3] === 0) continue;
-    const y = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-    sumY += y;
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    sumR += r;
+    sumG += g;
+    sumB += b;
+    sumY += 0.299 * r + 0.587 * g + 0.114 * b;
     validPixels += 1;
   }
   if (validPixels === 0) return imageData;
+
+  const meanR = sumR / validPixels;
+  const meanG = sumG / validPixels;
+  const meanB = sumB / validPixels;
   const meanY = sumY / validPixels;
 
-  let varY = 0;
+  // Bounded 50% Gray-World chromatic white balance across warm/cool/USB sensors + mild exposure gamma
+  const clampGain = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+  const wbR = clampGain(1 + 0.5 * (meanY / Math.max(12, meanR) - 1), 0.80, 1.25);
+  const wbG = clampGain(1 + 0.5 * (meanY / Math.max(12, meanG) - 1), 0.80, 1.25);
+  const wbB = clampGain(1 + 0.5 * (meanY / Math.max(12, meanB) - 1), 0.80, 1.25);
+  const gamma = meanY < 75 ? 0.82 : meanY > 185 ? 1.20 : 1.0;
+
+  let sumY2 = 0;
+  let sumSqY2 = 0;
   for (let i = 0; i < data.length; i += 4) {
     if (data[i + 3] === 0) continue;
-    const y = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-    const d = y - meanY;
-    varY += d * d;
+    let r = clampGain(data[i] * wbR, 0, 255);
+    let g = clampGain(data[i + 1] * wbG, 0, 255);
+    let b = clampGain(data[i + 2] * wbB, 0, 255);
+    if (gamma !== 1.0) {
+      r = Math.pow(r / 255, gamma) * 255;
+      g = Math.pow(g / 255, gamma) * 255;
+      b = Math.pow(b / 255, gamma) * 255;
+    }
+    data[i] = Math.round(r);
+    data[i + 1] = Math.round(g);
+    data[i + 2] = Math.round(b);
+    const y2 = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    sumY2 += y2;
+    sumSqY2 += y2 * y2;
   }
-  const stdY = Math.sqrt(varY / validPixels);
+
+  const meanY2 = sumY2 / validPixels;
+  const varY2 = Math.max(0, sumSqY2 / validPixels - meanY2 * meanY2);
+  const stdY = Math.sqrt(varY2);
   const gain = stdY > 4 ? Math.max(0.55, Math.min(2.3, targetStd / stdY)) : 1;
 
   const chromaGain = Math.max(0.85, Math.min(1.15, gain));
@@ -481,7 +515,7 @@ export function normalizeImageDataLuminance(
     const g = data[i + 1];
     const b = data[i + 2];
     const y = 0.299 * r + 0.587 * g + 0.114 * b;
-    const targetY = targetMean + (y - meanY) * gain;
+    const targetY = targetMean + (y - meanY2) * gain;
     data[i] = Math.max(0, Math.min(255, Math.round(targetY + (r - y) * chromaGain)));
     data[i + 1] = Math.max(0, Math.min(255, Math.round(targetY + (g - y) * chromaGain)));
     data[i + 2] = Math.max(0, Math.min(255, Math.round(targetY + (b - y) * chromaGain)));
@@ -499,6 +533,72 @@ function applyCanonicalLuminanceToCanvas(canvas: HTMLCanvasElement): void {
   } catch {
     // Ignore tainted canvas edge cases gracefully
   }
+}
+
+/**
+ * Computes fast Laplacian-variance sharpness across the inner face region [15%..85%]
+ * to filter out motion-blurred or autofocus-hunting webcam frames before embedding.
+ */
+export function computeCanvasSharpness(canvas: HTMLCanvasElement | null | undefined): number {
+  if (!canvas || canvas.width < 24 || canvas.height < 24) return 0;
+  try {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return 0;
+    const w = canvas.width;
+    const h = canvas.height;
+    const img = ctx.getImageData(0, 0, w, h);
+    const { data } = img;
+    const luma = (x: number, y: number) => {
+      const idx = (y * w + x) * 4;
+      return 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+    };
+    const xStart = Math.max(2, Math.floor(w * 0.15));
+    const xEnd = Math.min(w - 3, Math.floor(w * 0.85));
+    const yStart = Math.max(2, Math.floor(h * 0.15));
+    const yEnd = Math.min(h - 3, Math.floor(h * 0.85));
+    let sum = 0;
+    let sumSq = 0;
+    let count = 0;
+    for (let y = yStart; y <= yEnd; y += 4) {
+      for (let x = xStart; x <= xEnd; x += 4) {
+        const lap =
+          4 * luma(x, y) - luma(x - 1, y) - luma(x + 1, y) - luma(x, y - 1) - luma(x, y + 1);
+        sum += lap;
+        sumSq += lap * lap;
+        count += 1;
+      }
+    }
+    if (count === 0) return 0;
+    const mean = sum / count;
+    return Number(Math.max(0, sumSq / count - mean * mean).toFixed(2));
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Produces a horizontally flipped copy of an aligned canonical snapshot so mirror-mismatched
+ * webcams can be evaluated safely under the exact same strict Triple-Gate thresholds.
+ */
+export function createMirroredCanvasSnapshot(
+  source: HTMLCanvasElement,
+  targetCanvas?: HTMLCanvasElement | null,
+): HTMLCanvasElement | null {
+  if (typeof document === 'undefined' || !source || source.width <= 0 || source.height <= 0) {
+    return null;
+  }
+  const out = targetCanvas || document.createElement('canvas');
+  if (out.width !== source.width || out.height !== source.height) {
+    out.width = source.width;
+    out.height = source.height;
+  }
+  const ctx = out.getContext('2d', { alpha: false, willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.save();
+  ctx.setTransform(-1, 0, 0, 1, source.width, 0);
+  ctx.drawImage(source, 0, 0);
+  ctx.restore();
+  return out;
 }
 
 /**
@@ -563,7 +663,7 @@ export function captureCanonicalFaceSnapshot(
       const ry = ((rEyeInner.y + rEyeOuter.y) * 0.5) * vh;
       const eyeDist = Math.hypot(rx - lx, ry - ly);
 
-      if (eyeDist >= 12) {
+      if (eyeDist >= 8) {
         const rollRad = Math.atan2(ry - ly, rx - lx);
         const xs = [leftCheek.x * vw, rightCheek.x * vw, lx, rx];
         const ys = [browForehead.y * vh, chin.y * vh, ly, ry];
@@ -2107,13 +2207,17 @@ export function evaluateLiveMatch1toN(
     top.minEuclideanDist <= BIOMETRIC_MAX_EUCLIDEAN_DISTANCE &&
     top.passesMultiExemplarGate;
   const passesMargin = distinctRunners.length === 0 || margin >= BIOMETRIC_MARGIN_THRESHOLD;
-  const matched = passesThreshold && passesCohort && passesMargin;
+  const passesCenteredMargin =
+    distinctRunners.length === 0 ||
+    runnerUp!.centeredSimilarity < 0.72 ||
+    top.centeredSimilarity - runnerUp!.centeredSimilarity >= 0.05;
+  const matched = passesThreshold && passesCohort && passesMargin && passesCenteredMargin;
 
   const reason: Live1toNMatchEvaluation['reason'] = matched
     ? 'OK'
     : passesThreshold && !passesCohort
       ? 'IMPOSTER_COHORT_REJECTED'
-      : passesThreshold && !passesMargin
+      : passesThreshold && (!passesMargin || !passesCenteredMargin)
         ? 'AMBIGUOUS_CLOSE_CANDIDATES'
         : top.tripleGateFailureReasons.some((r) => r.includes('LOW_VARIANCE'))
           ? 'LOW_VARIANCE_REENROLL_REQUIRED'
@@ -2163,6 +2267,10 @@ export class LiveIdentityStreakTracker {
 
   get currentStreak(): number {
     return this.streakScores.length;
+  }
+
+  get activeCandidateId(): string | null {
+    return this.activePatientId;
   }
 
   reset(): void {

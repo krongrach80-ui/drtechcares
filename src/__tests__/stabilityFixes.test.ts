@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assertZeroGhostLocalCache,
   evaluateTripleGateNeuralCandidate,
+  flipPatch384Horizontally,
   l2Normalize,
   purgeLegacyBiometricCache,
 } from '@drtechcares/smart-biometric-core';
@@ -27,7 +28,11 @@ import {
   solveStrokeClinicalJointBiomechanics,
   type PoseLandmark,
 } from '@drtechcares/pose-engine';
-import { BiologicalLivenessTracker } from '@drtechcares/face-client';
+import {
+  BiologicalLivenessTracker,
+  listClinicalCameraDevices,
+  openBestAvailableCameraStream,
+} from '@drtechcares/face-client';
 import { RomGauge } from '../components/RomGauge';
 import { classifyExerciseJointMode } from '../components/SmartRehabKioskUI';
 import {
@@ -633,5 +638,259 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
       jointMode: 'cross_body',
     });
     expect(nonCrossRes.romDeg ?? 0).toBeLessThan(90);
+  });
+
+  it('normalizes cross-camera white balance, flips 384-D patches cleanly, and cascades across multiple cameras', async () => {
+    // Warm dim camera vs cool bright camera must converge in mean luminance & reduced cast
+    const warmDim = new Uint8ClampedArray(16 * 16 * 4);
+    const coolBright = new Uint8ClampedArray(16 * 16 * 4);
+    for (let i = 0; i < 16 * 16; i += 1) {
+      const mod = (i % 4) * 8;
+      warmDim[i * 4] = 85 + mod;
+      warmDim[i * 4 + 1] = 60 + mod;
+      warmDim[i * 4 + 2] = 40 + mod;
+      warmDim[i * 4 + 3] = 255;
+
+      coolBright[i * 4] = 165 + mod;
+      coolBright[i * 4 + 1] = 185 + mod;
+      coolBright[i * 4 + 2] = 215 + mod;
+      coolBright[i * 4 + 3] = 255;
+    }
+    const normWarm = normalizeImageDataLuminance({ width: 16, height: 16, data: warmDim } as ImageData, 128);
+    const normCool = normalizeImageDataLuminance({ width: 16, height: 16, data: coolBright } as ImageData, 128);
+    const avgLuma = (buf: Uint8ClampedArray) => {
+      let s = 0;
+      for (let i = 0; i < buf.length; i += 4) {
+        s += 0.299 * buf[i] + 0.587 * buf[i + 1] + 0.114 * buf[i + 2];
+      }
+      return s / (buf.length / 4);
+    };
+    expect(avgLuma(normWarm.data)).toBeGreaterThan(118);
+    expect(avgLuma(normWarm.data)).toBeLessThan(138);
+    expect(avgLuma(normCool.data)).toBeGreaterThan(118);
+    expect(avgLuma(normCool.data)).toBeLessThan(138);
+
+    // Horizontal mirror involution across 16x16 Y and 8x8 Cb/Cr
+    const patch = Array.from({ length: 384 }, (_, idx) => idx);
+    const flipped = flipPatch384Horizontally(patch);
+    expect(flipped[0]).toBe(15);
+    expect(flipped[15]).toBe(0);
+    expect(flipped[256]).toBe(263);
+    expect(flipped[320]).toBe(327);
+    expect(flipPatch384Horizontally(flipped)).toEqual(patch);
+
+    // Multi-camera selection prioritizes real USB webcam over IR camera and recovers from NotReadableError
+    const origNavDesc = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    let callCount = 0;
+    const fakeStream = {
+      getVideoTracks: () => [{ stop: () => {}, getSettings: () => ({ deviceId: 'usb-cam-1' }) }],
+      getTracks: () => [{ stop: () => {} }],
+    } as unknown as MediaStream;
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: {
+        mediaDevices: {
+          enumerateDevices: async () => [
+            { kind: 'videoinput', deviceId: 'ir-cam', label: 'Integrated IR Camera' },
+            { kind: 'videoinput', deviceId: 'builtin-cam', label: 'Integrated Webcam' },
+            { kind: 'videoinput', deviceId: 'usb-cam-1', label: 'Logitech USB HD Pro Webcam C920' },
+          ],
+          getUserMedia: async () => {
+            callCount += 1;
+            if (callCount === 1) {
+              throw new DOMException('Device busy', 'NotReadableError');
+            }
+            return fakeStream;
+          },
+        },
+      },
+    });
+    try {
+      const devices = await listClinicalCameraDevices();
+      expect(devices.map((d) => d.deviceId)).toEqual(['usb-cam-1', 'builtin-cam']);
+      const opened = await openBestAvailableCameraStream('usb-cam-1');
+      expect(opened.activeDeviceId).toBe('usb-cam-1');
+      expect(callCount).toBe(2);
+    } finally {
+      if (origNavDesc) {
+        Object.defineProperty(globalThis, 'navigator', origNavDesc);
+      } else {
+        delete (globalThis as { navigator?: unknown }).navigator;
+      }
+    }
+  });
+
+  it('enforces strict centered-cosine ambiguity blocking and server /api/biometric/verify mirrored + pose match with impostor rejection', async () => {
+    const mkRelu1024 = (seed: number): number[] => {
+      const out = new Array<number>(1024);
+      let s = seed >>> 0;
+      for (let i = 0; i < 1024; i += 1) {
+        s = (s * 1664525 + 1013904223 + i * 29) >>> 0;
+        const base = 0.015 + ((s % 1000) / 1000) * 0.03;
+        out[i] = i % 3 === seed % 3 ? base * 1.45 : base * 0.45;
+      }
+      return l2Normalize(out);
+    };
+
+    const ownerVec = mkRelu1024(11);
+    const orthoVec = mkRelu1024(77);
+    const twinLikeVec = l2Normalize(ownerVec.map((v, i) => 0.992 * v + 0.125 * orthoVec[i]));
+    const impostorVec = mkRelu1024(503);
+    const centerRotated = l2Normalize(ownerVec.map((v, i) => 0.81 * v + 0.586 * orthoVec[i]));
+    const leftCentroid = l2Normalize(ownerVec.map((v, i) => 0.965 * v + 0.26 * orthoVec[i]));
+
+    const patchA = Array.from({ length: 384 }, (_, i) => Number(Math.sin(i * 0.25).toFixed(4)));
+    const mkCand = (patientId: string, fullName: string, vec: number[]): EnrolledBiometricCandidate => ({
+      patientId,
+      hn: `HN-${patientId}`,
+      fullName,
+      diagnosis: 'Stroke',
+      assignedPtId: 'user-pt-1',
+      nextAppointmentDate: '2026-12-01',
+      dimension: 1024,
+      master_embedding: vec,
+      angle_embeddings: { center: vec, left: vec, right: vec, up: vec, down: vec },
+      exemplar_embeddings: [vec],
+      geometricRatios: {
+        eyeToNoseRatio: 1,
+        faceWidthToUpperHeight: 1,
+        mouthToEyeRatio: 1,
+        noseToChinRatio: 1,
+        appearancePatch384: patchA,
+      },
+      framesCaptured: 120,
+      qualityScore: 0.96,
+      sourceEntry: {
+        patientId,
+        hn: `HN-${patientId}`,
+        fullName,
+        diagnosis: 'Stroke',
+        assignedPtId: 'user-pt-1',
+        nextAppointmentDate: '2026-12-01',
+        framesCaptured: 120,
+        qualityScore: 0.96,
+        masterEmbedding: vec,
+        angleEmbeddings: { center: vec, left: vec, right: vec, up: vec, down: vec },
+      },
+    });
+
+    // Ambiguous close twin-like account must block auto-login rather than guessing
+    const ambiguousEval = evaluateLiveMatch1toN(
+      ownerVec,
+      [mkCand('owner-1', 'Owner One', ownerVec), mkCand('twin-2', 'Twin Two', twinLikeVec)],
+      [],
+      undefined,
+      'center',
+      {
+        eyeToNoseRatio: 1,
+        faceWidthToUpperHeight: 1,
+        mouthToEyeRatio: 1,
+        noseToChinRatio: 1,
+        appearancePatch384: patchA,
+      },
+    );
+    expect(ambiguousEval.matched).toBe(false);
+    expect(ambiguousEval.reason).toBe('AMBIGUOUS_CLOSE_CANDIDATES');
+
+    // Server /api/biometric/verify supports pose-turned mirrored owner & strictly blocks impostors
+    const router = createCloudDelegatedRouter({});
+    const loginRes = await router(
+      new Request('https://example.com/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'pt_somchai', password: 'Pt@2026' }),
+      }),
+    );
+    const { token: ptToken } = (await loginRes.json()) as { token: string };
+
+    const enrollRes = await router(
+      new Request('https://example.com/api/biometric/enroll', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ptToken}`,
+        },
+        body: JSON.stringify({
+          hn: 'HN-OWNER-1024',
+          fullName: 'Owner Only Patient',
+          age: 62,
+          diagnosis: 'Stroke',
+          biometricEngine: 'human-faceres-1024d',
+          masterEmbedding: ownerVec,
+          angleEmbeddings: {
+            center: centerRotated,
+            left: leftCentroid,
+            right: ownerVec,
+            up: ownerVec,
+            down: ownerVec,
+          },
+          exemplarEmbeddings: [ownerVec, leftCentroid],
+          geometricRatios: {
+            eyeToNoseRatio: 1,
+            faceWidthToUpperHeight: 1,
+            mouthToEyeRatio: 1,
+            noseToChinRatio: 1,
+            appearancePatch384: patchA,
+          },
+        }),
+      }),
+    );
+    expect(enrollRes.status).toBe(201);
+    const enrolledBody = (await enrollRes.json()) as { patient: { id: string } };
+
+    // Turned right yawDeg=+10 with mirrored probe vector -> mirroredBucket becomes 'left' & flipped patch matches patchA
+    const verifyMirroredOwner = await router(
+      new Request('https://example.com/api/biometric/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          probeVector: impostorVec,
+          mirroredProbeVector: ownerVec,
+          yawDeg: 10,
+          pitchDeg: 0,
+          engine: 'human-faceres-1024d',
+          geometricRatios: {
+            eyeToNoseRatio: 1,
+            faceWidthToUpperHeight: 1,
+            mouthToEyeRatio: 1,
+            noseToChinRatio: 1,
+            appearancePatch384: flipPatch384Horizontally(patchA),
+          },
+          livenessEvidence: {
+            biologicalVerified: true,
+            blinkCount: 1,
+            spoofRisk: 0,
+            nonRigidScore: 0.4,
+          },
+        }),
+      }),
+    );
+    expect(verifyMirroredOwner.status).toBe(200);
+    const matchedJson = (await verifyMirroredOwner.json()) as { matched: boolean; patientId: string | null };
+    expect(matchedJson.matched).toBe(true);
+    expect(matchedJson.patientId).toBe(enrolledBody.patient.id);
+
+    // Real impostor MUST be rejected even in a 1-patient DB
+    const verifyImpostor = await router(
+      new Request('https://example.com/api/biometric/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          probeVector: impostorVec,
+          yawDeg: 0,
+          pitchDeg: 0,
+          engine: 'human-faceres-1024d',
+          livenessEvidence: {
+            biologicalVerified: true,
+            blinkCount: 1,
+            spoofRisk: 0,
+            nonRigidScore: 0.4,
+          },
+        }),
+      }),
+    );
+    const impostorJson = (await verifyImpostor.json()) as { matched: boolean; patientId: string | null };
+    expect(impostorJson.matched).toBe(false);
+    expect(impostorJson.patientId).toBeNull();
   });
 });

@@ -26,6 +26,7 @@ import {
   euclideanDistance,
   evaluateAppearanceAndCraniofacialGate,
   evaluateTripleGateNeuralCandidate,
+  flipPatch384Horizontally,
   isLegacyV1HybridVector,
   l2Normalize,
   mirrorPoseZone,
@@ -2991,6 +2992,27 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         const expectedDim = probeNorm.length;
         const normalizePatientName = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
         const maxCohortScore = computeMaxImposterCohortScore(probeNorm);
+        const yawDegVal = body.yawDeg ?? body.livenessEvidence?.yawDeg ?? 0;
+        const pitchDegVal = body.pitchDeg ?? body.livenessEvidence?.pitchDeg ?? 0;
+        const liveBucket = classifyLivePoseZone(yawDegVal, pitchDegVal);
+
+        const rawMirrored = body.mirroredProbeVector ?? body.livenessEvidence?.mirroredProbeVector;
+        const mirroredProbeNorm =
+          Array.isArray(rawMirrored) &&
+          rawMirrored.length === expectedDim &&
+          rawMirrored.every((n) => typeof n === 'number' && Number.isFinite(n))
+            ? l2Normalize(rawMirrored as number[])
+            : null;
+        const flippedRatios: GeometricAnthropometricRatios | null =
+          mirroredProbeNorm && probeRatios
+            ? {
+                ...probeRatios,
+                ...(probeRatios.appearancePatch384?.length === 384
+                  ? { appearancePatch384: flipPatch384Horizontally(probeRatios.appearancePatch384) }
+                  : {}),
+              }
+            : null;
+        const mirroredBucket = mirrorPoseZone(liveBucket);
 
         const resolveAngleVec = (p: PatientRecord, zone: FacePoseZone5): number[] | undefined => {
           const direct = parseEmbeddingVector(p.angleEmbeddings?.[zone]);
@@ -3008,6 +3030,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           fullName: string;
           orderIdx: number;
           bestRawSim: number;
+          centeredCosine: number;
           bestCentroidCosine: number;
           gatePassed: boolean;
         }[] = [];
@@ -3027,30 +3050,49 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           );
           if (!parsedMaster) continue;
 
-          const gate = evaluateTripleGateNeuralCandidate(
-            probeNorm,
-            {
-              masterEmbedding: parsedMaster,
-              angleEmbeddings: {
-                center: resolveAngleVec(p, 'center'),
-                left: resolveAngleVec(p, 'left'),
-                right: resolveAngleVec(p, 'right'),
-                up: resolveAngleVec(p, 'up'),
-                down: resolveAngleVec(p, 'down'),
-              },
-              exemplarEmbeddings: (p.exemplarEmbeddings ?? []).filter(
-                (ex) => Array.isArray(ex) && ex.length === expectedDim,
-              ),
-              geometricRatios: p.geometricRatios ?? null,
+          const candidateInput = {
+            masterEmbedding: parsedMaster,
+            angleEmbeddings: {
+              center: resolveAngleVec(p, 'center'),
+              left: resolveAngleVec(p, 'left'),
+              right: resolveAngleVec(p, 'right'),
+              up: resolveAngleVec(p, 'up'),
+              down: resolveAngleVec(p, 'down'),
             },
+            exemplarEmbeddings: (p.exemplarEmbeddings ?? []).filter(
+              (ex) => Array.isArray(ex) && ex.length === expectedDim,
+            ),
+            geometricRatios: p.geometricRatios ?? null,
+          };
+
+          const primaryGate = evaluateTripleGateNeuralCandidate(
+            probeNorm,
+            candidateInput,
             probeRatios,
+            liveBucket,
           );
+          const mirroredGate = mirroredProbeNorm
+            ? evaluateTripleGateNeuralCandidate(
+                mirroredProbeNorm,
+                candidateInput,
+                flippedRatios,
+                mirroredBucket,
+              )
+            : null;
+          const gate =
+            mirroredGate &&
+            ((mirroredGate.passed && !primaryGate.passed) ||
+              (mirroredGate.passed === primaryGate.passed &&
+                mirroredGate.rawCosine > primaryGate.rawCosine))
+              ? mirroredGate
+              : primaryGate;
 
           knnScores.push({
             patientId: p.id,
             fullName: p.fullName,
             orderIdx,
             bestRawSim: gate.rawCosine,
+            centeredCosine: gate.centeredCosine,
             bestCentroidCosine: gate.bestCentroidCosine,
             gatePassed: gate.passed,
           });
@@ -3060,6 +3102,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           (a, b) =>
             Number(b.gatePassed) - Number(a.gatePassed) ||
             b.bestRawSim - a.bestRawSim ||
+            b.centeredCosine - a.centeredCosine ||
             b.bestCentroidCosine - a.bestCentroidCosine ||
             b.orderIdx - a.orderIdx,
         );
@@ -3079,12 +3122,17 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         );
         const passesMargin =
           distinctRunners.length === 0 || margin >= STRICT_DISTINCTIVENESS_MARGIN;
+        const passesCenteredMargin =
+          distinctRunners.length === 0 ||
+          !runner ||
+          runner.centeredCosine < 0.72 ||
+          (top ? top.centeredCosine - runner.centeredCosine >= 0.05 : false);
 
-        if (top && top.gatePassed && passesCohortGuard && passesMargin) {
+        if (top && top.gatePassed && passesCohortGuard && passesMargin && passesCenteredMargin) {
           matchedPatientId = top.patientId;
           matchedPatientName = top.fullName;
           matchedConfidence = Number((Math.max(0, Math.min(1, top.bestRawSim)) * 100).toFixed(1));
-        } else if (top && top.gatePassed && passesCohortGuard && !passesMargin) {
+        } else if (top && top.gatePassed && passesCohortGuard && (!passesMargin || !passesCenteredMargin)) {
           verifyErrorCode = 'AMBIGUOUS_CLOSE_CANDIDATES';
           matchedConfidence = Number((Math.max(0, Math.min(1, top.bestRawSim)) * 100).toFixed(1));
         } else if (top) {
