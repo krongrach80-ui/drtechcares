@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
+import type { PoseLandmarker } from '@mediapipe/tasks-vision';
 import { useClinicalI18n } from '@drtechcares/clinical-i18n';
 import type { DrTechCaresApiClient, PatientRecord } from '@drtechcares/api-client';
 import { selectClinicalCameraDeviceId } from '@drtechcares/face-client';
@@ -10,6 +10,7 @@ import {
 import {
   AutoBoneBaselineCalibrator,
   CLINICAL_EXERCISES,
+  CLINICAL_POSE_ONE_EURO_PRESET,
   ClinicalBiomechanicsAgent,
   ClinicalOneEuroLandmarkFilter,
   RehabExercisePipeline,
@@ -23,6 +24,11 @@ import {
   type SessionProgressSnapshot,
   type StrokeJointMode,
 } from '@drtechcares/pose-engine';
+import {
+  getCachedPoseLandmarker,
+  getNextMonotonicPoseDetectTs,
+  type VisionDelegate,
+} from '../../../src/lib/biometricVisionCache';
 import { AlertOctagon, CheckCircle2, PhoneCall, RotateCcw, ShieldAlert } from 'lucide-react';
 
 interface DynamicExerciseSessionViewProps {
@@ -54,14 +60,34 @@ export function DynamicExerciseSessionView({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pipelineRef = useRef(new RehabExercisePipeline(selectedExercise));
   const agentRef = useRef(new ClinicalBiomechanicsAgent());
-  const filterRef = useRef(new ClinicalOneEuroLandmarkFilter(1.15, 0.06, 1.0));
-  const worldFilterRef = useRef(new ClinicalOneEuroLandmarkFilter(1.15, 0.06, 1.0));
+  const filterRef = useRef(
+    new ClinicalOneEuroLandmarkFilter(
+      CLINICAL_POSE_ONE_EURO_PRESET.minCutoff,
+      CLINICAL_POSE_ONE_EURO_PRESET.beta,
+      CLINICAL_POSE_ONE_EURO_PRESET.dCutoff,
+    ),
+  );
+  const worldFilterRef = useRef(
+    new ClinicalOneEuroLandmarkFilter(
+      CLINICAL_POSE_ONE_EURO_PRESET.minCutoff,
+      CLINICAL_POSE_ONE_EURO_PRESET.beta,
+      CLINICAL_POSE_ONE_EURO_PRESET.dCutoff,
+    ),
+  );
   const baselineRef = useRef(new AutoBoneBaselineCalibrator());
   const voiceRef = useRef(new VoiceFeedbackController());
   const chimeRef = useRef(new AudioChimeSynthesizer());
   const replayLogRef = useRef<{ tMs: number; angleDeg: number }[]>([]);
   const lastMultiPersonTtsAtRef = useRef<number>(0);
   const recordedSessionRef = useRef<boolean>(false);
+  const prevPoseRef = useRef<PoseLandmark[] | null>(null);
+  const prevAngleRef = useRef<number | null>(null);
+  const selectedExerciseRef = useRef<ExerciseConfig>(selectedExercise);
+  selectedExerciseRef.current = selectedExercise;
+  const langRef = useRef(lang);
+  langRef.current = lang;
+  const pickRef = useRef(pick);
+  pickRef.current = pick;
 
   useEffect(() => {
     setSelectedExercise(exercise);
@@ -69,6 +95,8 @@ export function DynamicExerciseSessionView({
 
   useEffect(() => {
     recordedSessionRef.current = false;
+    prevPoseRef.current = null;
+    prevAngleRef.current = null;
     pipelineRef.current.reset(selectedExercise);
     agentRef.current.reset();
     filterRef.current.reset();
@@ -88,20 +116,18 @@ export function DynamicExerciseSessionView({
     let stream: MediaStream | null = null;
     let rafId = 0;
     let poseLandmarker: PoseLandmarker | null = null;
-    let prevPose: PoseLandmark[] | null = null;
-    let prevAngle: number | null = null;
+    let poseDelegate: VisionDelegate = 'CPU';
+    let cpuCanvas: HTMLCanvasElement | null = null;
     let lastTickAt = performance.now();
-    let lastDetectTsMs = 0;
+    let lastUiSyncAt = 0;
+    let lastWarningBanner: string | null = null;
+    let lastMultiPersonPaused = false;
     let singlePersonStreak = 0;
     const startedAt = performance.now();
 
     async function initPoseCamera() {
       const releaseInitResources = () => {
-        try {
-          poseLandmarker?.close();
-        } catch {
-          // ignore
-        }
+        // Shared cached PoseLandmarker stays warm across exercises/views; only clear local ref & stream.
         poseLandmarker = null;
         stream?.getTracks().forEach((tr) => tr.stop());
         stream = null;
@@ -112,10 +138,13 @@ export function DynamicExerciseSessionView({
 
       try {
         setCameraError(null);
+        const warmPosePromise = getCachedPoseLandmarker({ numPoses: 2 });
         const deviceId = await selectClinicalCameraDeviceId();
         if (!active) return;
         stream = await navigator.mediaDevices.getUserMedia({
-          video: deviceId ? { deviceId: { exact: deviceId }, width: 640, height: 480 } : { width: 640, height: 480 },
+          video: deviceId
+            ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 60 } }
+            : { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 60 } },
           audio: false,
         });
         if (!active || !videoRef.current) {
@@ -129,62 +158,37 @@ export function DynamicExerciseSessionView({
           return;
         }
 
-        let vision;
-        for (const wasmBase of [
-          '/mediapipe/wasm',
-          '/models/wasm',
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
-        ]) {
-          try {
-            vision = await FilesetResolver.forVisionTasks(wasmBase);
-            break;
-          } catch {
-            // Try next WASM base
+        try {
+          const cached = await warmPosePromise;
+          if (!active) {
+            releaseInitResources();
+            return;
           }
-        }
-        if (!vision || !active) {
-          if (active) setCameraError('ไม่สามารถโหลด MediaPipe WASM สำหรับตรวจจับท่าทางได้');
-          releaseInitResources();
-          return;
-        }
-
-        const POSE_MODEL_PATHS = [
-          '/models/pose_landmarker_full.task',
-          '/models/pose_landmarker.task',
-          'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task',
-        ];
-        for (const minConf of [0.7, 0.5] as const) {
-          for (const modelAssetPath of POSE_MODEL_PATHS) {
-            for (const delegate of ['GPU', 'CPU', undefined] as const) {
-              try {
-                const created = await PoseLandmarker.createFromOptions(vision, {
-                  baseOptions: delegate ? { modelAssetPath, delegate } : { modelAssetPath },
-                  runningMode: 'VIDEO',
-                  numPoses: 2,
-                  minPoseDetectionConfidence: minConf,
-                  minPosePresenceConfidence: minConf,
-                  minTrackingConfidence: minConf,
-                });
-                if (!active) {
-                  created.close();
-                  releaseInitResources();
-                  return;
-                }
-                poseLandmarker = created;
-                break;
-              } catch {
-                // Try next model / delegate / confidence tier
-              }
-            }
-            if (poseLandmarker) break;
-          }
-          if (poseLandmarker) break;
-        }
-        if (!poseLandmarker || !active) {
+          poseLandmarker = cached.instance;
+          poseDelegate = cached.delegate;
+        } catch {
           if (active) setCameraError('ไม่สามารถเริ่มโมเดลตรวจจับท่าทางกายภาพได้');
           releaseInitResources();
           return;
         }
+
+        const getCpuInferenceSource = (vid: HTMLVideoElement): HTMLVideoElement | HTMLCanvasElement => {
+          if (!cpuCanvas) {
+            cpuCanvas = document.createElement('canvas');
+          }
+          const targetW = 384;
+          const targetH = Math.max(216, Math.round(targetW * ((vid.videoHeight || 480) / (vid.videoWidth || 640))));
+          if (cpuCanvas.width !== targetW || cpuCanvas.height !== targetH) {
+            cpuCanvas.width = targetW;
+            cpuCanvas.height = targetH;
+          }
+          const ctx = cpuCanvas.getContext('2d', { alpha: false });
+          if (ctx) {
+            ctx.drawImage(vid, 0, 0, targetW, targetH);
+            return cpuCanvas;
+          }
+          return vid;
+        };
 
         let lastVideoTime = -1;
         const loop = () => {
@@ -194,15 +198,18 @@ export function DynamicExerciseSessionView({
             if (vid.readyState >= 2 && vid.videoWidth > 0 && vid.videoHeight > 0 && vid.currentTime !== lastVideoTime) {
               lastVideoTime = vid.currentTime;
               const now = performance.now();
-              const detectTsMs = Math.max(lastDetectTsMs + 1, Math.round(now));
-              lastDetectTsMs = detectTsMs;
-              const res = poseLandmarker.detectForVideo(vid, detectTsMs);
+              const detectTsMs = getNextMonotonicPoseDetectTs(now);
+              const inferenceSource = poseDelegate === 'GPU' ? vid : getCpuInferenceSource(vid);
+              const res = poseLandmarker.detectForVideo(inferenceSource, detectTsMs);
               const detectedPeople = res.landmarks?.length ?? 0;
 
               if (detectedPeople > 1) {
                 singlePersonStreak = 0;
-                setMultiPersonPaused(true);
-                setContinuousGuardOk(false);
+                if (!lastMultiPersonPaused) {
+                  lastMultiPersonPaused = true;
+                  setMultiPersonPaused(true);
+                  setContinuousGuardOk(false);
+                }
                 if (now - lastMultiPersonTtsAtRef.current >= 4000) {
                   lastMultiPersonTtsAtRef.current = now;
                   voiceRef.current.speak(
@@ -216,12 +223,14 @@ export function DynamicExerciseSessionView({
 
               if (detectedPeople === 1) {
                 singlePersonStreak += 1;
-                if (singlePersonStreak >= 3) {
+                if (singlePersonStreak >= 3 && lastMultiPersonPaused) {
+                  lastMultiPersonPaused = false;
                   setMultiPersonPaused(false);
                   setContinuousGuardOk(true);
                 }
               }
 
+              const activeExercise = selectedExerciseRef.current;
               const candidates = res.landmarks ?? [];
               const subject = selectSubjectPoseWithIdentity(candidates);
               if (subject) {
@@ -236,7 +245,7 @@ export function DynamicExerciseSessionView({
                         Math.abs((c[12]?.x ?? 0) - (subject[12]?.x ?? 0)) < 1e-5),
                   ),
                 );
-                const stabilized = stabilizeArmIdentity(subject, prevPose);
+                const stabilized = stabilizeArmIdentity(subject, prevPoseRef.current);
                 const smoothedLandmarks = filterRef.current.filterLandmarks(stabilized, now);
                 const rawWorld = res.worldLandmarks?.[subjectIdx] ?? res.worldLandmarks?.[0];
                 const smoothedWorld = rawWorld
@@ -244,7 +253,7 @@ export function DynamicExerciseSessionView({
                   : undefined;
                 baselineRef.current.update(smoothedLandmarks);
 
-                const det = selectedExercise.detection;
+                const det = activeExercise.detection;
                 const strokeTargetJoint =
                   det.jointGroup === 'neck' || det.expectedPlane === 'shrug_roll'
                     ? 'spine'
@@ -297,31 +306,44 @@ export function DynamicExerciseSessionView({
                   baseline: baselineRef.current.getBaseline() ?? undefined,
                   videoAspect: vid.videoWidth / vid.videoHeight,
                 });
-                setStrokeWarningTh(
+                const nextWarningBanner =
                   strokeSolved.sideViolationBannerTh ??
-                    strokeSolved.wrongPlaneBannerTh ??
-                    strokeSolved.postureBannerTh,
-                );
-                setStrokeClinicalAngleDeg(strokeSolved.romDeg);
+                  strokeSolved.wrongPlaneBannerTh ??
+                  strokeSolved.postureBannerTh ??
+                  null;
 
                 const snap = pipelineRef.current.step(smoothedLandmarks, now);
-                setSnapshot(snap);
 
-                const dtSec = Math.max(0.03, (now - lastTickAt) / 1000);
+                const dtSec = Math.max(0.016, (now - lastTickAt) / 1000);
                 const rawAngle = strokeSolved.romDeg ?? snap.currentAngleDeg ?? snap.lastReliableAngleDeg ?? 0;
                 const packet = buildTelemetryPacketFromLandmarks({
                   landmarks: smoothedLandmarks,
-                  prevLandmarks: prevPose,
-                  exercise: selectedExercise,
+                  prevLandmarks: prevPoseRef.current,
+                  exercise: activeExercise,
                   primaryAngleDeg: rawAngle,
-                  prevAngleDeg: prevAngle,
+                  prevAngleDeg: prevAngleRef.current,
                   dtSec,
                 });
                 const decision = agentRef.current.evaluate(packet);
-                setAiDecision(decision);
-                prevPose = smoothedLandmarks;
-                prevAngle = rawAngle;
+                prevPoseRef.current = smoothedLandmarks;
+                prevAngleRef.current = rawAngle;
                 lastTickAt = now;
+
+                const warningChanged = nextWarningBanner !== lastWarningBanner;
+                if (
+                  now - lastUiSyncAt >= 100 ||
+                  snap.repJustCompleted ||
+                  snap.sessionCompleted ||
+                  decision.kiosk_state === 'EMERGENCY_HALT' ||
+                  warningChanged
+                ) {
+                  lastUiSyncAt = now;
+                  lastWarningBanner = nextWarningBanner;
+                  setStrokeWarningTh(nextWarningBanner);
+                  setStrokeClinicalAngleDeg(strokeSolved.romDeg);
+                  setSnapshot(snap);
+                  setAiDecision(decision);
+                }
 
                 if (decision.kiosk_state === 'EMERGENCY_HALT') {
                   voiceRef.current.speak(decision.tts_voice_th, 'th');
@@ -330,7 +352,7 @@ export function DynamicExerciseSessionView({
                   void apiClient
                     .createStaffCall(
                       'KIOSK-OPD-01',
-                      `EMERGENCY_HALT during ${selectedExercise.code}: ${decision.tts_voice_th}`,
+                      `EMERGENCY_HALT during ${activeExercise.code}: ${decision.tts_voice_th}`,
                       patient.id,
                     )
                     .catch(() => {});
@@ -350,7 +372,7 @@ export function DynamicExerciseSessionView({
                 if (decision.telemetry_analysis.compensation_detected[0] !== 'NONE' && decision.tts_voice_th) {
                   voiceRef.current.speak(decision.tts_voice_th, 'th');
                 } else if (snap.warningMessage) {
-                  voiceRef.current.speak(pick(snap.warningMessage), lang);
+                  voiceRef.current.speak(pickRef.current(snap.warningMessage), langRef.current);
                 }
                 if (snap.sessionCompleted && !recordedSessionRef.current) {
                   recordedSessionRef.current = true;
@@ -358,8 +380,8 @@ export function DynamicExerciseSessionView({
                   void apiClient.recordRehabSession({
                     patientId: patient.id,
                     activityType: 'physio_exercise',
-                    exerciseId: selectedExercise.id,
-                    exerciseName: pick(selectedExercise.name),
+                    exerciseId: activeExercise.id,
+                    exerciseName: pickRef.current(activeExercise.name),
                     completedSets: snap.targetSets,
                     completedReps: snap.targetReps,
                     accuracyPercent: snap.accuracyPercent,
@@ -392,11 +414,11 @@ export function DynamicExerciseSessionView({
     return () => {
       active = false;
       cancelAnimationFrame(rafId);
-      poseLandmarker?.close();
+      poseLandmarker = null;
       stream?.getTracks().forEach((tr) => tr.stop());
       voiceRef.current.flush();
     };
-  }, [selectedExercise, painStopped, apiClient, patient.id, lang, pick]);
+  }, [painStopped, apiClient, patient.id]);
 
   const handlePainStop = async () => {
     setPainStopped(true);

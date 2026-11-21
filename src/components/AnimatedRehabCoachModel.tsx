@@ -95,6 +95,7 @@ type CoachClockListener = (cycleElapsedSec: number) => void;
 const coachClockListeners = new Set<CoachClockListener>();
 let coachRafHandle = 0;
 let coachEpochMs = 0;
+let lastCoachEmitMs = 0;
 
 function runSharedCoachClock(nowMs: number) {
   if (coachClockListeners.size === 0) {
@@ -104,8 +105,12 @@ function runSharedCoachClock(nowMs: number) {
   if (coachEpochMs === 0) {
     coachEpochMs = nowMs;
   }
-  const elapsedSec = ((nowMs - coachEpochMs) / 1000) % COACH_CYCLE_DURATION_SEC;
-  coachClockListeners.forEach((listener) => listener(elapsedSec));
+  // Cap SVG coach updates to ~30FPS to prevent 60Hz React reconciliation from competing with pose tracking
+  if (lastCoachEmitMs === 0 || nowMs - lastCoachEmitMs >= 33) {
+    lastCoachEmitMs = nowMs;
+    const elapsedSec = ((nowMs - coachEpochMs) / 1000) % COACH_CYCLE_DURATION_SEC;
+    coachClockListeners.forEach((listener) => listener(elapsedSec));
+  }
   coachRafHandle = window.requestAnimationFrame(runSharedCoachClock);
 }
 
@@ -572,7 +577,7 @@ export interface AnimatedRehabCoachModelProps {
   className?: string;
 }
 
-export function AnimatedRehabCoachModel({
+function AnimatedRehabCoachModelInner({
   exercise,
   targetSide,
   cycleElapsedSec,
@@ -1238,6 +1243,8 @@ export function AnimatedRehabCoachModel({
   );
 }
 
+export const AnimatedRehabCoachModel = React.memo(AnimatedRehabCoachModelInner);
+
 export interface Zone2PipCoachOverlayProps {
   exercise: ExercisePrescriptionOption;
   targetSide: ExerciseSideCode;
@@ -1262,7 +1269,7 @@ export function Zone2PipCoachOverlay({
           onClick={onToggleVisible}
           data-testid="kiosk-pip-coach-toggle"
           aria-label="ซ่อน/แสดงหุ่นโค้ชบนจอ"
-          className="inline-flex items-center gap-1.5 bg-white/90 backdrop-blur-md border-2 border-emerald-500 text-emerald-900 font-extrabold text-xs px-3 py-1 rounded-full shadow-lg hover:bg-emerald-50 cursor-pointer active:scale-95 transition-all duration-250 ease-out"
+          className="inline-flex items-center gap-1.5 bg-white/95 border-2 border-emerald-500 text-emerald-900 font-extrabold text-xs px-3 py-1 rounded-full shadow-lg hover:bg-emerald-50 cursor-pointer active:scale-95 transition-all duration-250 ease-out"
         >
           <Eye className="w-3.5 h-3.5 shrink-0" />
           <span>ซ่อน/แสดงหุ่นโค้ชบนจอ</span>
@@ -1274,7 +1281,7 @@ export function Zone2PipCoachOverlay({
   return (
     <div
       data-testid="kiosk-pip-coach-box"
-      className="absolute top-14 left-3 z-20 w-28 h-32 md:w-36 md:h-40 bg-white/90 backdrop-blur-md border-2 border-emerald-500 rounded-2xl shadow-xl p-1.5 flex flex-col items-center justify-between animate-popup-spring transition-all duration-250 ease-out"
+      className="absolute top-14 left-3 z-20 w-28 h-32 md:w-36 md:h-40 bg-white/95 border-2 border-emerald-500 rounded-2xl shadow-xl p-1.5 flex flex-col items-center justify-between animate-popup-spring transition-all duration-250 ease-out"
     >
       <div className="w-full flex items-center justify-between gap-1 shrink-0">
         <span className="inline-flex items-center gap-1 text-[10px] font-black text-emerald-900 truncate">

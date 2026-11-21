@@ -1,10 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
-import {
-  FilesetResolver,
+import type {
   HandLandmarker,
+  NormalizedLandmark,
   PoseLandmarker,
-  type NormalizedLandmark,
 } from '@mediapipe/tasks-vision';
+import {
+  getCachedHandLandmarker,
+  getCachedPoseLandmarker,
+  getNextMonotonicHandDetectTs,
+  getNextMonotonicPoseDetectTs,
+  type VisionDelegate,
+} from '../lib/biometricVisionCache';
 import { selectClinicalCameraDeviceId } from '@drtechcares/face-client';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import { extractRaisedHandSides } from '@drtechcares/kiosk-input';
@@ -170,11 +176,12 @@ export function RandomHandStartPrompt({
     let stream: MediaStream | null = null;
     let rafId = 0;
     let handLandmarker: HandLandmarker | null = null;
+    let handDelegate: VisionDelegate = 'CPU';
     let poseLandmarker: PoseLandmarker | null = null;
+    let poseDelegate: VisionDelegate = 'CPU';
     let offscreenCanvas: HTMLCanvasElement | null = null;
     let lastVideoTime = -1;
     let lastInferenceAt = 0;
-    let lastDetectTs = 0;
     let lastFrameAt = 0;
     let holdMs = 0;
     let lastReportedProgress = -1;
@@ -197,22 +204,9 @@ export function RandomHandStartPrompt({
         stream.getTracks().forEach((track) => track.stop());
         stream = null;
       }
-      if (handLandmarker) {
-        try {
-          handLandmarker.close();
-        } catch {
-          // ignore close errors
-        }
-        handLandmarker = null;
-      }
-      if (poseLandmarker) {
-        try {
-          poseLandmarker.close();
-        } catch {
-          // ignore close errors
-        }
-        poseLandmarker = null;
-      }
+      // Shared cached landmarkers stay warm across screens; only release local refs and camera stream.
+      handLandmarker = null;
+      poseLandmarker = null;
     };
 
     async function initHandChallengeCamera() {
@@ -222,6 +216,8 @@ export function RandomHandStartPrompt({
           return;
         }
 
+        const warmHandPromise = getCachedHandLandmarker();
+        const warmPosePromise = getCachedPoseLandmarker({ numPoses: 1 });
         const deviceId = await selectClinicalCameraDeviceId();
         if (!active) return;
 
@@ -229,15 +225,17 @@ export function RandomHandStartPrompt({
           video: deviceId
             ? {
                 deviceId: { exact: deviceId },
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
+                width: { ideal: 640 },
+                height: { ideal: 360 },
                 aspectRatio: { ideal: 16 / 9 },
+                frameRate: { ideal: 60 },
                 facingMode: 'user',
               }
             : {
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
+                width: { ideal: 640 },
+                height: { ideal: 360 },
                 aspectRatio: { ideal: 16 / 9 },
+                frameRate: { ideal: 60 },
                 facingMode: 'user',
               },
           audio: false,
@@ -266,78 +264,46 @@ export function RandomHandStartPrompt({
         }
         setCameraReady(true);
 
-        let vision;
-        for (const wasmBase of [
-          '/mediapipe/wasm',
-          '/models/wasm',
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
-        ]) {
-          try {
-            vision = await FilesetResolver.forVisionTasks(wasmBase);
-            break;
-          } catch {
-            // Try next WASM base URL
-          }
-        }
-        if (!vision || !active) return;
-
-        const initHand = async () => {
-          for (const delegate of ['CPU', undefined] as const) {
-            try {
-              const created = await HandLandmarker.createFromOptions(vision, {
-                baseOptions: delegate
-                  ? { modelAssetPath: '/models/hand_landmarker.task', delegate }
-                  : { modelAssetPath: '/models/hand_landmarker.task' },
-                runningMode: 'VIDEO',
-                numHands: 2,
-                minHandDetectionConfidence: 0.35,
-                minHandPresenceConfidence: 0.35,
-                minTrackingConfidence: 0.35,
-              });
-              if (!active) {
-                created.close();
-                return;
-              }
-              handLandmarker = created;
-              setDetectorReady(true);
-              return;
-            } catch {
-              // Try fallback delegate
-            }
-          }
-        };
-
-        const initPose = async () => {
-          for (const modelAssetPath of ['/models/pose_landmarker.task', '/models/pose_landmarker_full.task']) {
-            for (const delegate of ['CPU', undefined] as const) {
-              try {
-                const created = await PoseLandmarker.createFromOptions(vision, {
-                  baseOptions: delegate ? { modelAssetPath, delegate } : { modelAssetPath },
-                  runningMode: 'VIDEO',
-                  numPoses: 1,
-                  minPoseDetectionConfidence: 0.35,
-                  minPosePresenceConfidence: 0.35,
-                  minTrackingConfidence: 0.35,
-                });
-                if (!active) {
-                  created.close();
-                  return;
-                }
-                poseLandmarker = created;
-                setDetectorReady(true);
-                return;
-              } catch {
-                // Try next pose model / delegate
-              }
-            }
-          }
-        };
-
-        await Promise.all([initHand(), initPose()]);
+        const [handResult, poseResult] = await Promise.allSettled([
+          warmHandPromise,
+          warmPosePromise,
+        ]);
         if (!active) {
           cleanupMedia();
           return;
         }
+
+        if (handResult.status === 'fulfilled') {
+          handLandmarker = handResult.value.instance;
+          handDelegate = handResult.value.delegate;
+        }
+        if (poseResult.status === 'fulfilled') {
+          poseLandmarker = poseResult.value.instance;
+          poseDelegate = poseResult.value.delegate;
+        }
+        if (handLandmarker || poseLandmarker) {
+          setDetectorReady(true);
+        } else {
+          return;
+        }
+
+        const getCpuInferenceSource = (v: HTMLVideoElement): HTMLVideoElement | HTMLCanvasElement => {
+          if (!offscreenCanvas) {
+            offscreenCanvas = document.createElement('canvas');
+          }
+          const offW = OFF_CANVAS_WIDTH;
+          const offH = Math.max(144, Math.round(offW * ((v.videoHeight || 360) / (v.videoWidth || 640))));
+          if (offscreenCanvas.width !== offW || offscreenCanvas.height !== offH) {
+            offscreenCanvas.width = offW;
+            offscreenCanvas.height = offH;
+          }
+          const offCtx = offscreenCanvas.getContext('2d', { alpha: false });
+          if (offCtx) {
+            offCtx.drawImage(v, 0, 0, offW, offH);
+            return offscreenCanvas;
+          }
+          return v;
+        };
 
         const loop = () => {
           if (!active || confirmedRef.current || !videoRef.current) return;
@@ -354,33 +320,23 @@ export function RandomHandStartPrompt({
           lastFrameAt = now;
 
           if (v.readyState >= 2 && v.videoWidth > 0 && (handLandmarker || poseLandmarker)) {
-            if (v.currentTime !== lastVideoTime || now - lastInferenceAt >= 33) {
+            if (v.currentTime !== lastVideoTime || now - lastInferenceAt >= 20) {
               lastVideoTime = v.currentTime;
               lastInferenceAt = now;
 
-              if (!offscreenCanvas) {
-                offscreenCanvas = document.createElement('canvas');
-              }
-              const offW = OFF_CANVAS_WIDTH;
-              const offH = Math.max(144, Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))));
-              if (offscreenCanvas.width !== offW || offscreenCanvas.height !== offH) {
-                offscreenCanvas.width = offW;
-                offscreenCanvas.height = offH;
-              }
-              const offCtx = offscreenCanvas.getContext('2d', { alpha: false });
-              if (offCtx) {
-                offCtx.drawImage(v, 0, 0, offW, offH);
-              }
-              const inferenceSource = offCtx ? offscreenCanvas : v;
+              const needCpuCanvas =
+                (handLandmarker !== null && handDelegate !== 'GPU') ||
+                (poseLandmarker !== null && poseDelegate !== 'GPU');
+              const cpuSource = needCpuCanvas ? getCpuInferenceSource(v) : v;
 
               let detectedHands: NormalizedLandmark[][] = [];
               let detectedPose: NormalizedLandmark[] | null = null;
 
               if (handLandmarker) {
                 try {
-                  const ts = Math.max(lastDetectTs + 1, Math.round(now));
-                  lastDetectTs = ts;
-                  detectedHands = handLandmarker.detectForVideo(inferenceSource, ts).landmarks ?? [];
+                  const ts = getNextMonotonicHandDetectTs(now);
+                  const handSource = handDelegate === 'GPU' ? v : cpuSource;
+                  detectedHands = handLandmarker.detectForVideo(handSource, ts).landmarks ?? [];
                 } catch {
                   // Ignore transient hand inference error
                 }
@@ -388,9 +344,9 @@ export function RandomHandStartPrompt({
 
               if (poseLandmarker) {
                 try {
-                  const ts = Math.max(lastDetectTs + 1, Math.round(now));
-                  lastDetectTs = ts;
-                  detectedPose = poseLandmarker.detectForVideo(inferenceSource, ts).landmarks?.[0] ?? null;
+                  const ts = getNextMonotonicPoseDetectTs(now);
+                  const poseSource = poseDelegate === 'GPU' ? v : cpuSource;
+                  detectedPose = poseLandmarker.detectForVideo(poseSource, ts).landmarks?.[0] ?? null;
                 } catch {
                   // Ignore transient pose inference error
                 }

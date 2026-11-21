@@ -1,10 +1,22 @@
-import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
+import {
+  FaceLandmarker,
+  FilesetResolver,
+  HandLandmarker,
+  PoseLandmarker,
+} from '@mediapipe/tasks-vision';
 import type { DrTechCaresApiClient } from '@drtechcares/api-client';
 import {
   fetchLiveBiometricsFromSupabase,
   warmupBiometricEngine,
   type LoadedBiometricVaultResult,
 } from './biometricEngine';
+
+export type VisionDelegate = 'GPU' | 'CPU';
+
+export interface CachedVisionTaskHandle<T> {
+  instance: T;
+  delegate: VisionDelegate;
+}
 
 const WASM_PATHS = [
   '/mediapipe/wasm',
@@ -15,13 +27,20 @@ const WASM_PATHS = [
 let cachedVisionPromise: Promise<Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>> | null = null;
 let cachedPrimaryLandmarkerPromise: Promise<FaceLandmarker> | null = null;
 let cachedRoiLandmarkerPromise: Promise<FaceLandmarker | null> | null = null;
+let cachedPoseLandmarkerPromises: Partial<Record<1 | 2, Promise<CachedVisionTaskHandle<PoseLandmarker>>>> = {};
+let cachedHandLandmarkerPromise: Promise<CachedVisionTaskHandle<HandLandmarker>> | null = null;
+let cachedRehabFaceLandmarkerPromise: Promise<CachedVisionTaskHandle<FaceLandmarker> | null> | null = null;
 let cachedVaultResult: {
   apiClient: DrTechCaresApiClient;
   vault: LoadedBiometricVaultResult;
   fetchedAt: number;
 } | null = null;
 let inflightPreloadPromise: Promise<void> | null = null;
+let inflightPosePreloadPromise: Promise<void> | null = null;
 let lastCachedVideoDetectTs = 0;
+let lastCachedPoseDetectTs = 0;
+let lastCachedHandDetectTs = 0;
+let lastCachedRehabFaceDetectTs = 0;
 
 /**
  * Ensures strictly monotonically increasing `detectForVideo` timestamps even when
@@ -31,6 +50,27 @@ export function getNextMonotonicVideoDetectTs(candidateMs: number): number {
   const rounded = Number.isFinite(candidateMs) ? Math.round(candidateMs) : Date.now();
   const next = Math.max(lastCachedVideoDetectTs + 1, rounded);
   lastCachedVideoDetectTs = next;
+  return next;
+}
+
+export function getNextMonotonicPoseDetectTs(candidateMs: number): number {
+  const rounded = Number.isFinite(candidateMs) ? Math.round(candidateMs) : Date.now();
+  const next = Math.max(lastCachedPoseDetectTs + 1, rounded);
+  lastCachedPoseDetectTs = next;
+  return next;
+}
+
+export function getNextMonotonicHandDetectTs(candidateMs: number): number {
+  const rounded = Number.isFinite(candidateMs) ? Math.round(candidateMs) : Date.now();
+  const next = Math.max(lastCachedHandDetectTs + 1, rounded);
+  lastCachedHandDetectTs = next;
+  return next;
+}
+
+export function getNextMonotonicRehabFaceDetectTs(candidateMs: number): number {
+  const rounded = Number.isFinite(candidateMs) ? Math.round(candidateMs) : Date.now();
+  const next = Math.max(lastCachedRehabFaceDetectTs + 1, rounded);
+  lastCachedRehabFaceDetectTs = next;
   return next;
 }
 
@@ -110,6 +150,119 @@ export async function getCachedRoiFaceLandmarker(): Promise<FaceLandmarker | nul
   return cachedRoiLandmarkerPromise;
 }
 
+export async function getCachedPoseLandmarker(options?: {
+  numPoses?: 1 | 2;
+}): Promise<CachedVisionTaskHandle<PoseLandmarker>> {
+  const numPoses: 1 | 2 = options?.numPoses === 2 ? 2 : 1;
+  if (!cachedPoseLandmarkerPromises[numPoses]) {
+    cachedPoseLandmarkerPromises[numPoses] = (async () => {
+      const vision = await getCachedVisionResolver();
+      const modelPaths = ['/models/pose_landmarker_full.task', '/models/pose_landmarker.task'] as const;
+      for (const modelAssetPath of modelPaths) {
+        for (const delegate of ['GPU', 'CPU'] as const) {
+          try {
+            const instance = await PoseLandmarker.createFromOptions(vision, {
+              baseOptions: { modelAssetPath, delegate },
+              runningMode: 'VIDEO',
+              numPoses,
+              minPoseDetectionConfidence: 0.5,
+              minPosePresenceConfidence: 0.5,
+              minTrackingConfidence: 0.5,
+            });
+            return { instance, delegate };
+          } catch {
+            // Try next delegate or fallback model
+          }
+        }
+      }
+      throw new Error('Unable to create shared PoseLandmarker');
+    })().catch((err) => {
+      delete cachedPoseLandmarkerPromises[numPoses];
+      throw err;
+    });
+  }
+  return cachedPoseLandmarkerPromises[numPoses]!;
+}
+
+export async function getCachedHandLandmarker(): Promise<CachedVisionTaskHandle<HandLandmarker>> {
+  if (!cachedHandLandmarkerPromise) {
+    cachedHandLandmarkerPromise = (async () => {
+      const vision = await getCachedVisionResolver();
+      const modelPaths = [
+        '/models/hand_landmarker.task',
+        'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+      ] as const;
+      for (const modelAssetPath of modelPaths) {
+        for (const delegate of ['GPU', 'CPU'] as const) {
+          try {
+            const instance = await HandLandmarker.createFromOptions(vision, {
+              baseOptions: { modelAssetPath, delegate },
+              runningMode: 'VIDEO',
+              numHands: 2,
+              minHandDetectionConfidence: 0.45,
+              minHandPresenceConfidence: 0.45,
+              minTrackingConfidence: 0.45,
+            });
+            return { instance, delegate };
+          } catch {
+            // Try next delegate or model path
+          }
+        }
+      }
+      throw new Error('Unable to create shared HandLandmarker');
+    })().catch((err) => {
+      cachedHandLandmarkerPromise = null;
+      throw err;
+    });
+  }
+  return cachedHandLandmarkerPromise;
+}
+
+export async function getCachedRehabFaceLandmarker(): Promise<
+  CachedVisionTaskHandle<FaceLandmarker> | null
+> {
+  if (!cachedRehabFaceLandmarkerPromise) {
+    cachedRehabFaceLandmarkerPromise = (async () => {
+      const vision = await getCachedVisionResolver();
+      for (const delegate of ['GPU', 'CPU'] as const) {
+        try {
+          const instance = await FaceLandmarker.createFromOptions(vision, {
+            baseOptions: { modelAssetPath: '/models/face_landmarker.task', delegate },
+            runningMode: 'VIDEO',
+            numFaces: 2,
+            outputFaceBlendshapes: false,
+            minFaceDetectionConfidence: 0.45,
+            minFacePresenceConfidence: 0.45,
+            minTrackingConfidence: 0.45,
+          });
+          return { instance, delegate };
+        } catch {
+          // Try next delegate
+        }
+      }
+      return null;
+    })().catch(() => {
+      cachedRehabFaceLandmarkerPromise = null;
+      return null;
+    });
+  }
+  return cachedRehabFaceLandmarkerPromise;
+}
+
+export async function preloadRehabPosePipeline(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  if (inflightPosePreloadPromise) return inflightPosePreloadPromise;
+
+  inflightPosePreloadPromise = getCachedPoseLandmarker({ numPoses: 1 })
+    .then(() => undefined)
+    .catch(() => undefined)
+    .finally(() => {
+      inflightPosePreloadPromise = null;
+    });
+
+  return inflightPosePreloadPromise;
+}
+
 export function getPreloadedBiometricVault(
   apiClient: DrTechCaresApiClient,
   maxAgeMs = 20000,
@@ -166,7 +319,15 @@ export function resetBiometricVisionCacheForTests(): void {
   cachedVisionPromise = null;
   cachedPrimaryLandmarkerPromise = null;
   cachedRoiLandmarkerPromise = null;
+  cachedPoseLandmarkerPromises = {};
+  cachedHandLandmarkerPromise = null;
+  cachedRehabFaceLandmarkerPromise = null;
   cachedVaultResult = null;
   inflightPreloadPromise = null;
+  inflightPosePreloadPromise = null;
   lastCachedVideoDetectTs = 0;
+  lastCachedPoseDetectTs = 0;
+  lastCachedHandDetectTs = 0;
+  lastCachedRehabFaceDetectTs = 0;
 }
+

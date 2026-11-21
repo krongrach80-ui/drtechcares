@@ -29,7 +29,10 @@ import {
   type KioskLoginSuccessPayload,
 } from './components/KioskBiometricLoginView';
 import { KioskStandbyScreen } from './components/KioskStandbyScreen';
-import { preloadKioskBiometricPipeline } from './lib/biometricVisionCache';
+import {
+  preloadKioskBiometricPipeline,
+  preloadRehabPosePipeline,
+} from './lib/biometricVisionCache';
 import { StaffAssistedEnrollmentModal } from './components/StaffAssistedEnrollmentModal';
 import { ArrowRight, Calendar, CheckCircle2, Gamepad2, Hand, Leaf, RotateCcw, Shuffle, Volume2 } from 'lucide-react';
 import {
@@ -744,6 +747,12 @@ export function App() {
       cancelled = true;
     };
   }, [route, apiClient]);
+
+  useEffect(() => {
+    if (route === '/' && (authenticatedPatient || isPoseTestMode)) {
+      void preloadRehabPosePipeline();
+    }
+  }, [route, authenticatedPatient, isPoseTestMode]);
 
   // Locked Kiosk Mode (/) — Exact Kiosk Biometric Login UI by default, transitioning into Rehab / Classic Kiosk
   if (route === '/') {

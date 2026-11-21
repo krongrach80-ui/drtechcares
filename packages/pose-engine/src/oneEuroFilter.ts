@@ -5,6 +5,16 @@ export const MAX_DELTA_DEG_PER_FRAME = 28;
 export const SPIKE_WINDOW_MS = 150;
 export const MISSING_RESET_MS = 500;
 
+// Properly scaled speed-adaptive presets for normalized [0..1] pose & 21-pt hand coordinates
+export const CLINICAL_POSE_ONE_EURO_PRESET = { minCutoff: 1.8, beta: 16.0, dCutoff: 1.0 } as const;
+export const CLINICAL_HAND_ONE_EURO_PRESET = { minCutoff: 2.2, beta: 20.0, dCutoff: 1.0 } as const;
+
+export function computeDtNormalizedLerpAlpha(dtMs: number, tauMs = 16): number {
+  const safeDt = Math.max(1, Math.min(100, Number.isFinite(dtMs) ? dtMs : 16.7));
+  const safeTau = Math.max(4, Number.isFinite(tauMs) ? tauMs : 16);
+  return Math.max(0.12, Math.min(1, 1 - Math.exp(-safeDt / safeTau)));
+}
+
 class LowPassFilter {
   private initialized = false;
   private yPrev = 0;

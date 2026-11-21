@@ -1,5 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { FilesetResolver, HandLandmarker, type NormalizedLandmark } from '@mediapipe/tasks-vision';
+import type { HandLandmarker, NormalizedLandmark } from '@mediapipe/tasks-vision';
+import {
+  getCachedHandLandmarker,
+  getNextMonotonicHandDetectTs,
+  type VisionDelegate,
+} from '../../../src/lib/biometricVisionCache';
 import { useClinicalI18n } from '@drtechcares/clinical-i18n';
 import {
   AudioChimeSynthesizer,
@@ -633,16 +638,6 @@ function drawDwellHalo(
   ctx.arc(px, py, 54, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, progress));
   ctx.stroke();
   ctx.restore();
-}
-
-async function resolveVisionTasks() {
-  try {
-    return await FilesetResolver.forVisionTasks('/mediapipe/wasm');
-  } catch {
-    return await FilesetResolver.forVisionTasks(
-      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
-    );
-  }
 }
 
 interface MinigameVoiceBarProps {
@@ -1406,6 +1401,7 @@ export function PhysicalCardGame({
     let active = true;
     let rafId = 0;
     let handLandmarker: HandLandmarker | null = null;
+    let handDelegate: VisionDelegate = 'CPU';
     let edgeWs: WebSocket | null = null;
     type EdgeHandTelemetry = {
       left_hand_landmarks?: Array<{ x: number; y: number; z?: number }>;
@@ -1454,33 +1450,19 @@ export function PhysicalCardGame({
     }
 
     async function createPureHandDetector() {
-      const vision = await resolveVisionTasks();
-      const handUrls = [
-        '/models/hand_landmarker.task',
-        'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-      ];
-      // Pure Hand-Only Mode (numHands=2, minConfidence=0.55): NO face, pose, body, or object models
-      for (const modelAssetPath of handUrls) {
-        for (const delegate of ['GPU', 'CPU'] as const) {
-          try {
-            handLandmarker = await HandLandmarker.createFromOptions(vision, {
-              baseOptions: { modelAssetPath, delegate },
-              runningMode: 'VIDEO',
-              numHands: 2,
-              minHandDetectionConfidence: MINIGAME_MIN_HAND_CONFIDENCE,
-              minHandPresenceConfidence: MINIGAME_MIN_HAND_CONFIDENCE,
-              minTrackingConfidence: MINIGAME_MIN_HAND_CONFIDENCE,
-            });
-            return 'hand' as const;
-          } catch {
-            // try CPU delegate or next model path
-          }
-        }
+      try {
+        const cached = await getCachedHandLandmarker();
+        if (!active) return 'none' as const;
+        handLandmarker = cached.instance;
+        handDelegate = cached.delegate;
+        return 'hand' as const;
+      } catch {
+        return 'none' as const;
       }
-      return 'none' as const;
     }
 
     async function init() {
+      const handDetectorPromise = createPureHandDetector();
       let stream: MediaStream | null = null;
       try {
         const deviceId = await selectClinicalCameraDeviceId();
@@ -1520,7 +1502,7 @@ export function PhysicalCardGame({
         // video play settles shortly after metadata loads
       }
 
-      const mode = await createPureHandDetector();
+      const mode = await handDetectorPromise;
       if (!active) {
         stopCameraTracks();
         return;
@@ -1670,23 +1652,25 @@ export function PhysicalCardGame({
             if (isNewVideoFrame) {
               lastVideoTimeRef.current = video.currentTime;
 
-              let offscreen = offscreenCanvasRef.current;
-              if (!offscreen) {
-                offscreen = document.createElement('canvas');
-                offscreenCanvasRef.current = offscreen;
+              let inferenceSource: HTMLVideoElement | HTMLCanvasElement = video;
+              if (handDelegate !== 'GPU') {
+                let offscreen = offscreenCanvasRef.current;
+                if (!offscreen) {
+                  offscreen = document.createElement('canvas');
+                  offscreenCanvasRef.current = offscreen;
+                }
+                const offH = Math.max(144, Math.round(OFF_CANVAS_WIDTH * (vh / vw)));
+                if (offscreen.width !== OFF_CANVAS_WIDTH || offscreen.height !== offH) {
+                  offscreen.width = OFF_CANVAS_WIDTH;
+                  offscreen.height = offH;
+                }
+                const offCtx = offscreen.getContext('2d', { alpha: false });
+                if (offCtx) {
+                  offCtx.drawImage(video, 0, 0, offscreen.width, offscreen.height);
+                  inferenceSource = offscreen;
+                }
               }
-              const offH = Math.max(144, Math.round(OFF_CANVAS_WIDTH * (vh / vw)));
-              if (offscreen.width !== OFF_CANVAS_WIDTH || offscreen.height !== offH) {
-                offscreen.width = OFF_CANVAS_WIDTH;
-                offscreen.height = offH;
-              }
-              const offCtx = offscreen.getContext('2d', { alpha: false });
-              if (offCtx) {
-                offCtx.drawImage(video, 0, 0, offscreen.width, offscreen.height);
-              }
-              const inferenceSource = offCtx ? offscreen : video;
-              const inferenceTs = Math.max(lastInferenceTsRef.current + 1, Math.round(now));
-              lastInferenceTsRef.current = inferenceTs;
+              const inferenceTs = getNextMonotonicHandDetectTs(now);
               const isPortrait = typeof window !== 'undefined' && window.innerHeight > window.innerWidth;
 
               const res = handLandmarker.detectForVideo(inferenceSource, inferenceTs);
@@ -1921,7 +1905,7 @@ export function PhysicalCardGame({
       active = false;
       cancelAnimationFrame(rafId);
       edgeWs?.close();
-      handLandmarker?.close();
+      handLandmarker = null;
       stopCameraTracks();
     };
   }, [completedSummary, resetTrackingRefs, sessionKey, stopCameraTracks]);
