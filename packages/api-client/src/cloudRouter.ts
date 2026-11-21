@@ -3137,8 +3137,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         const passesCenteredMargin =
           distinctRunners.length === 0 ||
           !runner ||
-          runner.centeredCosine < 0.72 ||
-          (top ? top.centeredCosine - runner.centeredCosine >= 0.05 : false);
+          (top ? top.centeredCosine - runner.centeredCosine >= 0.06 : false);
 
         if (top && top.gatePassed && passesCohortGuard && passesMargin && passesCenteredMargin) {
           matchedPatientId = top.patientId;

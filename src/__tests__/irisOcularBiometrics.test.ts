@@ -2,15 +2,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  STRICT_CRANIOFACIAL_MAX_SINGLE_DEVIATION,
   STRICT_IRIS_RATIO_MAX_DEVIATION,
   STRICT_OCULAR_IRIS_ZNCC_THRESHOLD,
+  STRICT_PATCH_GRAD_ZNCC_THRESHOLD,
+  STRICT_RELU6_RAW_COSINE_THRESHOLD,
+  computeCraniofacialRatioDeviation,
   computeIrisOcularRatios8,
   computeOcularIrisZnccScore,
+  computePatchGradientZnccScore,
+  evaluateAppearanceAndCraniofacialGate,
   evaluateOcularIrisGate,
   evaluateTripleGateNeuralCandidate,
   extractOcularIrisPatch256FromRgba,
   flipIrisOcularRatios8Horizontally,
   flipOcularIrisPatch256Horizontally,
+  isNonNegativeRelu6Vector,
   l2Normalize,
   normalizeOcularIrisPatch256,
   type GeometricAnthropometricRatios,
@@ -294,6 +301,124 @@ describe('Dual-Iris & Periocular Precision Biometrics + Vision Cache', () => {
     expect(t3).toBeGreaterThan(t2);
   });
 
+  it('rejects non-negative ReLU6 strangers at 0.86 raw cosine while accepting enrolled owners around 0.94', () => {
+    // Construct two orthogonal non-negative unit vectors in positive ReLU6 orthant (negCnt === 0)
+    const ownerBase = l2Normalize(
+      Array.from({ length: 1024 }, (_, i) => (i < 512 ? 0.02 + Math.abs(Math.sin((i + 1) * 0.23)) : 0)),
+    );
+    const orthoBase = l2Normalize(
+      Array.from({ length: 1024 }, (_, i) => (i >= 512 ? 0.02 + Math.abs(Math.cos((i + 1) * 0.31)) : 0)),
+    );
+    const sameHalfPerturb = l2Normalize(
+      Array.from({ length: 1024 }, (_, i) => (i < 512 ? 0.02 + Math.abs(Math.cos((i + 1) * 0.37)) : 0)),
+    );
+    expect(isNonNegativeRelu6Vector(ownerBase)).toBe(true);
+
+    // Enrolled owner shifts slightly within own ReLU6 manifold (~0.95+ cosine)
+    const ownerLive = l2Normalize(ownerBase.map((v, i) => 0.92 * v + 0.14 * sameHalfPerturb[i]));
+    const ownerMaster = l2Normalize(ownerBase.map((v, i) => 0.96 * v + 0.06 * sameHalfPerturb[i]));
+    const candidate = {
+      masterEmbedding: ownerMaster,
+      angleEmbeddings: { center: ownerMaster, left: ownerMaster, right: ownerMaster },
+      geometricRatios: null,
+    };
+
+    const ownerRes = evaluateTripleGateNeuralCandidate(ownerLive, candidate, null, 'center');
+    expect(ownerRes.passed).toBe(true);
+    expect(ownerRes.rawCosine).toBeGreaterThanOrEqual(STRICT_RELU6_RAW_COSINE_THRESHOLD);
+
+    // Unregistered stranger blended at exact 0.86 raw cosine against ownerMaster must be rejected
+    const strangerWeight = Math.sqrt(1 - 0.86 * 0.86);
+    const strangerProbe = l2Normalize(
+      ownerMaster.map((v, i) => 0.86 * v + strangerWeight * orthoBase[i]),
+    );
+    expect(isNonNegativeRelu6Vector(strangerProbe)).toBe(true);
+
+    const strangerRes = evaluateTripleGateNeuralCandidate(strangerProbe, candidate, null, 'center');
+    expect(strangerRes.passed).toBe(false);
+    expect(strangerRes.rawCosine).toBeCloseTo(0.86, 2);
+    expect(strangerRes.rawCosine).toBeLessThan(STRICT_RELU6_RAW_COSINE_THRESHOLD);
+    expect(strangerRes.failureReasons.length).toBeGreaterThan(0);
+  });
+
+  it('validates lighting-invariant 16x16 high-pass gradient ZNCC and rejects smooth-toned imposters', () => {
+    const buildStructuredPatch = (detailSign: number, shift = 0, gain = 1): number[] => {
+      const out = new Array<number>(384).fill(0);
+      for (let y = 0; y < 16; y += 1) {
+        for (let x = 0; x < 16; x += 1) {
+          const base = 0.22 + 0.52 * (y / 15);
+          const detail = detailSign * 0.065 * Math.sin(x * 2.2) * Math.cos(y * 2.2);
+          const val = Math.max(0, Math.min(1, (base + detail) * gain + shift));
+          out[y * 16 + x] = Number(val.toFixed(4));
+        }
+      }
+      for (let i = 256; i < 384; i += 1) {
+        out[i] = Number((0.45 + 0.08 * Math.sin(i * 0.15)).toFixed(4));
+      }
+      return out;
+    };
+
+    const ownerPatch = buildStructuredPatch(1);
+    const litOwnerPatch = buildStructuredPatch(1, 0.08, 0.85);
+    const differentStructurePatch = buildStructuredPatch(-1);
+
+    const sameGradZncc = computePatchGradientZnccScore(ownerPatch, litOwnerPatch);
+    const diffGradZncc = computePatchGradientZnccScore(ownerPatch, differentStructurePatch);
+    expect(sameGradZncc).toBeGreaterThanOrEqual(0.85);
+    expect(diffGradZncc).toBeLessThan(STRICT_PATCH_GRAD_ZNCC_THRESHOLD);
+
+    const gateRes = evaluateAppearanceAndCraniofacialGate(
+      {
+        eyeToNoseRatio: 1.5,
+        faceWidthToUpperHeight: 1.9,
+        mouthToEyeRatio: 0.78,
+        noseToChinRatio: 1.15,
+        appearancePatch384: differentStructurePatch,
+      },
+      {
+        eyeToNoseRatio: 1.5,
+        faceWidthToUpperHeight: 1.9,
+        mouthToEyeRatio: 0.78,
+        noseToChinRatio: 1.15,
+        appearancePatch384: ownerPatch,
+      },
+    );
+    expect(gateRes.passed).toBe(false);
+    expect(gateRes.failureReason).toContain('PATCH_GRAD_ZNCC_BELOW_THRESHOLD');
+  });
+
+  it('rejects single-bone craniofacial outlier even when 12-D mean deviation stays below 0.065', () => {
+    const enrolledRatios12 = Array.from({ length: 12 }, (_, i) => Number((1.0 + i * 0.04).toFixed(4)));
+    const outlierProbe12 = [...enrolledRatios12];
+    // Perturb ONLY bone 0 by +0.22: meanDeviation = 0.22/12 (~0.0183 <= 0.065), maxSingleDeviation = 0.22 (> 0.145)
+    outlierProbe12[0] = Number((outlierProbe12[0] + 0.22).toFixed(4));
+
+    const outlierGeom: GeometricAnthropometricRatios = {
+      eyeToNoseRatio: 1.5,
+      faceWidthToUpperHeight: 1.9,
+      mouthToEyeRatio: 0.78,
+      noseToChinRatio: 1.15,
+      craniofacialRatios12: outlierProbe12,
+    };
+    const enrolledGeom: GeometricAnthropometricRatios = {
+      eyeToNoseRatio: 1.5,
+      faceWidthToUpperHeight: 1.9,
+      mouthToEyeRatio: 0.78,
+      noseToChinRatio: 1.15,
+      craniofacialRatios12: enrolledRatios12,
+    };
+
+    const dev = computeCraniofacialRatioDeviation(outlierGeom, enrolledGeom);
+    expect(dev.available).toBe(true);
+    expect(dev.meanDeviation).toBeLessThanOrEqual(0.065);
+    expect(dev.maxSingleDeviation).toBeGreaterThan(STRICT_CRANIOFACIAL_MAX_SINGLE_DEVIATION);
+    expect(dev.passed).toBe(false);
+
+    const gateRes = evaluateAppearanceAndCraniofacialGate(outlierGeom, enrolledGeom);
+    expect(gateRes.passed).toBe(false);
+    expect(gateRes.failureReason).toContain('CRANIOFACIAL_RATIO_MISMATCH');
+  });
+
   it('audits all iris biometric and cache files for zero Unicode emojis', () => {
     const root = process.cwd();
     const files = [
@@ -306,6 +431,7 @@ describe('Dual-Iris & Periocular Precision Biometrics + Vision Cache', () => {
       'src/components/KioskBiometricLoginView.tsx',
       'src/App.tsx',
       'src/__tests__/irisOcularBiometrics.test.ts',
+      'src/__tests__/kioskBiometricLogin.test.ts',
     ];
     for (const rel of files) {
       const content = fs.readFileSync(path.join(root, rel), 'utf8');
@@ -313,3 +439,4 @@ describe('Dual-Iris & Periocular Precision Biometrics + Vision Cache', () => {
     }
   });
 });
+

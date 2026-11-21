@@ -1706,9 +1706,38 @@ export async function loadEnrolledPatientsWithBiometrics(
       a?: GeometricAnthropometricRatios,
       b?: GeometricAnthropometricRatios,
     ): GeometricAnthropometricRatios | undefined => {
-      if (a?.appearancePatch384?.length) return a;
-      if (b?.appearancePatch384?.length) return b;
-      return a ?? b;
+      if (!a && !b) return undefined;
+      if (!a) return b;
+      if (!b) return a;
+      return {
+        eyeToNoseRatio: Number.isFinite(a.eyeToNoseRatio) && a.eyeToNoseRatio !== 1 ? a.eyeToNoseRatio : b.eyeToNoseRatio,
+        faceWidthToUpperHeight:
+          Number.isFinite(a.faceWidthToUpperHeight) && a.faceWidthToUpperHeight !== 1
+            ? a.faceWidthToUpperHeight
+            : b.faceWidthToUpperHeight,
+        mouthToEyeRatio: Number.isFinite(a.mouthToEyeRatio) && a.mouthToEyeRatio !== 1 ? a.mouthToEyeRatio : b.mouthToEyeRatio,
+        noseToChinRatio: Number.isFinite(a.noseToChinRatio) && a.noseToChinRatio !== 1 ? a.noseToChinRatio : b.noseToChinRatio,
+        ...(a.appearancePatch384?.length === 384
+          ? { appearancePatch384: a.appearancePatch384 }
+          : b.appearancePatch384?.length === 384
+            ? { appearancePatch384: b.appearancePatch384 }
+            : {}),
+        ...(a.craniofacialRatios12?.length === 12
+          ? { craniofacialRatios12: a.craniofacialRatios12 }
+          : b.craniofacialRatios12?.length === 12
+            ? { craniofacialRatios12: b.craniofacialRatios12 }
+            : {}),
+        ...(a.ocularIrisPatch256?.length === 256
+          ? { ocularIrisPatch256: a.ocularIrisPatch256 }
+          : b.ocularIrisPatch256?.length === 256
+            ? { ocularIrisPatch256: b.ocularIrisPatch256 }
+            : {}),
+        ...(a.irisOcularRatios8?.length === 8
+          ? { irisOcularRatios8: a.irisOcularRatios8 }
+          : b.irisOcularRatios8?.length === 8
+            ? { irisOcularRatios8: b.irisOcularRatios8 }
+            : {}),
+      };
     };
     const mergedRatios = pickBestRatios(
       cand.geometricRatios ?? cand.sourceEntry?.geometricRatios,
@@ -2010,9 +2039,18 @@ export async function loadEnrolledPatientsWithBiometrics(
                   ? BIOMETRIC_ENGINE_ID
                   : (history.biometricEngine as PatientRecord['biometricEngine']),
               geometricRatios:
-                history.geometricRatios && typeof history.geometricRatios === 'object'
+                (bio?.geometric_ratios && typeof bio.geometric_ratios === 'object'
+                  ? (bio.geometric_ratios as GeometricAnthropometricRatios)
+                  : undefined) ??
+                (bioDataObj.geometric_ratios && typeof bioDataObj.geometric_ratios === 'object'
+                  ? (bioDataObj.geometric_ratios as GeometricAnthropometricRatios)
+                  : undefined) ??
+                (faceBlob.geometric_ratios && typeof faceBlob.geometric_ratios === 'object'
+                  ? (faceBlob.geometric_ratios as GeometricAnthropometricRatios)
+                  : undefined) ??
+                (history.geometricRatios && typeof history.geometricRatios === 'object'
                   ? (history.geometricRatios as GeometricAnthropometricRatios)
-                  : undefined,
+                  : undefined),
             },
           );
           if (prevCloud) {
@@ -2418,8 +2456,7 @@ export function evaluateLiveMatch1toN(
   const passesMargin = distinctRunners.length === 0 || margin >= BIOMETRIC_MARGIN_THRESHOLD;
   const passesCenteredMargin =
     distinctRunners.length === 0 ||
-    runnerUp!.centeredSimilarity < 0.72 ||
-    top.centeredSimilarity - runnerUp!.centeredSimilarity >= 0.05;
+    top.centeredSimilarity - runnerUp!.centeredSimilarity >= 0.06;
   const matched = passesThreshold && passesCohort && passesMargin && passesCenteredMargin;
 
   const reason: Live1toNMatchEvaluation['reason'] = matched

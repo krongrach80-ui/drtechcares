@@ -16,6 +16,8 @@ import {
   KIOSK_FAST_MATCH_STREAK,
   KIOSK_FAST_UNREGISTERED_FRAMES,
   KIOSK_FAST_UNREGISTERED_TIMEOUT_MS,
+  KIOSK_MAX_DECISION_EVAL_FRAMES,
+  KIOSK_MAX_DECISION_WINDOW_MS,
   KIOSK_NO_FACE_GUIDANCE_DELAY_MS,
   KIOSK_NOT_FOUND_VOICE_PROMPT_TH,
   KIOSK_RESCAN_COOLDOWN_MS,
@@ -125,8 +127,12 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
 
     const f2 = tracker.step(strictPassEval, { biologicalVerified: true, spoofDetected: false });
     expect(f2.streak).toBe(2);
-    expect(f2.confirmed).toBe(true);
-    expect(f2.candidate?.patientId).toBe('pat-fast-1');
+    expect(f2.confirmed).toBe(false);
+
+    const f3 = tracker.step(strictPassEval, { biologicalVerified: true, spoofDetected: false });
+    expect(f3.streak).toBe(3);
+    expect(f3.confirmed).toBe(true);
+    expect(f3.candidate?.patientId).toBe('pat-fast-1');
   });
 
   it('triggers fast not_found verdict within <= 3 clear frames / ~1.1s while respecting rescan cooldown and guards', () => {
@@ -198,6 +204,48 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
         isAmbiguous: true,
       }),
     ).toBe(false);
+
+    // Explicit server rejection triggers immediate decisive not_found even with prior streak/ambiguity
+    expect(
+      shouldTriggerFastNotFoundVerdict({
+        ...base,
+        unmatchedClearFrames: 0,
+        unmatchedElapsedMs: 200,
+        matchStreak: 2,
+        serverRejectedCount: 1,
+      }),
+    ).toBe(true);
+    expect(
+      shouldTriggerFastNotFoundVerdict({
+        ...base,
+        unmatchedClearFrames: 0,
+        unmatchedElapsedMs: 200,
+        isAmbiguous: true,
+        serverRejectedCount: 1,
+      }),
+    ).toBe(true);
+
+    // Anti-flicker hard ceiling breaks out cleanly when flickering/ambiguous frames exceed decision window
+    expect(
+      shouldTriggerFastNotFoundVerdict({
+        ...base,
+        unmatchedClearFrames: 0,
+        unmatchedElapsedMs: 0,
+        matchStreak: 1,
+        totalEvaluatedFrames: KIOSK_MAX_DECISION_EVAL_FRAMES,
+        totalDecisionElapsedMs: KIOSK_MAX_DECISION_WINDOW_MS,
+      }),
+    ).toBe(true);
+    expect(
+      shouldTriggerFastNotFoundVerdict({
+        ...base,
+        unmatchedClearFrames: 0,
+        unmatchedElapsedMs: 0,
+        isAmbiguous: true,
+        totalEvaluatedFrames: KIOSK_MAX_DECISION_EVAL_FRAMES,
+        totalDecisionElapsedMs: KIOSK_MAX_DECISION_WINDOW_MS,
+      }),
+    ).toBe(true);
   });
 
   it('renders UnregisteredFaceSignupPopup with mascot, Thai headings, buttons, and wires action handlers cleanly', () => {

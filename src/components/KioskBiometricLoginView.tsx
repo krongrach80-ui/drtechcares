@@ -139,9 +139,11 @@ import {
   X,
 } from 'lucide-react';
 
-export const KIOSK_FAST_MATCH_STREAK = 2;
+export const KIOSK_FAST_MATCH_STREAK = 3;
 export const KIOSK_FAST_UNREGISTERED_FRAMES = 3;
 export const KIOSK_FAST_UNREGISTERED_TIMEOUT_MS = 1100;
+export const KIOSK_MAX_DECISION_WINDOW_MS = 2600;
+export const KIOSK_MAX_DECISION_EVAL_FRAMES = 6;
 export const KIOSK_NO_FACE_GUIDANCE_DELAY_MS = 1500;
 export const KIOSK_RESCAN_COOLDOWN_MS = 1500;
 export const KIOSK_IDLE_STANDBY_TIMEOUT_MS = 45000;
@@ -181,16 +183,29 @@ export function shouldTriggerFastNotFoundVerdict(params: {
   unmatchedElapsedMs: number;
   inRescanCooldown: boolean;
   hasZeroCandidates: boolean;
+  totalEvaluatedFrames?: number;
+  totalDecisionElapsedMs?: number;
+  serverRejectedCount?: number;
 }): boolean {
   if (
     !params.candidatesLoaded ||
     !params.humanWarmupReady ||
     params.documentHidden ||
-    params.isAmbiguous ||
     params.isSpoof ||
-    params.inRescanCooldown ||
-    params.matchStreak > 0
+    params.inRescanCooldown
   ) {
+    return false;
+  }
+  if ((params.serverRejectedCount ?? 0) >= 1) {
+    return true;
+  }
+  if (
+    (params.totalEvaluatedFrames ?? 0) >= KIOSK_MAX_DECISION_EVAL_FRAMES &&
+    (params.totalDecisionElapsedMs ?? 0) >= KIOSK_MAX_DECISION_WINDOW_MS
+  ) {
+    return true;
+  }
+  if (params.isAmbiguous || params.matchStreak > 0) {
     return false;
   }
   if (params.hasZeroCandidates) {
@@ -1541,51 +1556,21 @@ export function KioskBiometricLoginView({
         edgeMatchStreakRef.current = { patientId: null, count: 0 };
         return;
       }
-      if (!bioReportRef.current?.biologicalVerified || bioReportRef.current?.spoofDetected) {
-        edgeMatchStreakRef.current = { patientId: null, count: 0 };
-        return;
+      // Edge Python socket is telemetry/index-sync only: NEVER bypass Client Triple-Gate + Worker /api/kiosk/verify-face
+      const entryKnown = biometricIndexRef.current.some(
+        (e) => e.patientId === edgeMatch.id || (edgeMatch.hn && e.hn === edgeMatch.hn),
+      );
+      if (!entryKnown && typeof edgeMatch.similarity === 'number' && edgeMatch.similarity >= 0.88) {
+        if (edgeMatchStreakRef.current.patientId === edgeMatch.id) {
+          edgeMatchStreakRef.current.count += 1;
+        } else {
+          edgeMatchStreakRef.current = { patientId: edgeMatch.id, count: 1 };
+        }
+        if (edgeMatchStreakRef.current.count >= 4) {
+          edgeMatchStreakRef.current = { patientId: null, count: 0 };
+          void refreshBiometricCandidates(true);
+        }
       }
-      if (typeof edgeMatch.similarity !== 'number' || edgeMatch.similarity < 0.88) {
-        edgeMatchStreakRef.current = { patientId: null, count: 0 };
-        return;
-      }
-      // Require 4 consecutive high-confidence Edge matches + local agreement to prevent single-frame bypass
-      if (edgeMatchStreakRef.current.patientId === edgeMatch.id) {
-        edgeMatchStreakRef.current.count += 1;
-      } else {
-        edgeMatchStreakRef.current = { patientId: edgeMatch.id, count: 1 };
-      }
-      if (edgeMatchStreakRef.current.count < 4) return;
-      if (
-        biometricCandidatesRef.current.length > 0 &&
-        streakTrackerRef.current.activeCandidateId !== edgeMatch.id
-      ) {
-        return;
-      }
-      const candActive = biometricCandidatesRef.current.some((c) => c.patientId === edgeMatch.id);
-      const entry = candActive
-        ? biometricIndexRef.current.find(
-            (e) => e.patientId === edgeMatch.id || (edgeMatch.hn && e.hn === edgeMatch.hn),
-          )
-        : undefined;
-      if (entry) {
-        edgeMatchStreakRef.current = { patientId: null, count: 0 };
-        const nextPayload = buildKioskLoginSuccessPayload({
-          patient: {
-            id: entry.patientId,
-            hn: entry.hn,
-            fullName: entry.fullName,
-            nextAppointmentDate: entry.nextAppointmentDate,
-          },
-          todayRoutine: entry.todayRoutine ?? null,
-          confidencePercent: Math.round(edgeMatch.similarity * 100),
-          indexEntry: entry,
-        });
-        openVerifiedModal(nextPayload);
-        return;
-      }
-      // Refresh live Supabase biometric index strictly rather than trusting uncached list calls
-      void refreshBiometricCandidates(true);
     },
   });
   edgeTelemetryRef.current = edgeTelemetry;
@@ -1600,6 +1585,9 @@ export function KioskBiometricLoginView({
   const rescanCooldownUntilRef = useRef<number>(0);
   const unmatchedClearFramesRef = useRef<number>(0);
   const noFaceSinceRef = useRef<number | null>(null);
+  const scanDecisionStartAtRef = useRef<number>(0);
+  const totalEvaluatedFramesRef = useRef<number>(0);
+  const serverRejectCountRef = useRef<number>(0);
   const excludedPatientIdsRef = useRef<string[]>([]);
   const [turningHintPct, setTurningHintPct] = useState<number | null>(null);
   const [ambiguousCloseHint, setAmbiguousCloseHint] = useState(false);
@@ -1747,6 +1735,9 @@ export function KioskBiometricLoginView({
     probeWindowRef.current = [];
     unmatchedClearFramesRef.current = 0;
     noFaceSinceRef.current = null;
+    scanDecisionStartAtRef.current = 0;
+    totalEvaluatedFramesRef.current = 0;
+    serverRejectCountRef.current = 0;
     rescanCooldownUntilRef.current = Date.now() + KIOSK_RESCAN_COOLDOWN_MS;
     setShowNoFaceGuidance(false);
     setIsNotFoundVoiceSpeaking(false);
@@ -1958,6 +1949,10 @@ export function KioskBiometricLoginView({
       streakTrackerRef.current.reset();
       bioLivenessRef.current.reset();
       probeWindowRef.current = [];
+      unmatchedClearFramesRef.current = 0;
+      scanDecisionStartAtRef.current = 0;
+      totalEvaluatedFramesRef.current = 0;
+      serverRejectCountRef.current = 0;
       setScanStage('scanning');
       setHudBox(null);
       clearFaceMeshCanvas();
@@ -2515,8 +2510,13 @@ export function KioskBiometricLoginView({
                   if (bioVerifiedUnmatchedStartAt === 0) {
                     bioVerifiedUnmatchedStartAt = params.snapNow;
                   }
+                  if (scanDecisionStartAtRef.current === 0) {
+                    scanDecisionStartAtRef.current = params.snapNow;
+                  }
+                  totalEvaluatedFramesRef.current += 1;
                   unmatchedClearFramesRef.current += 1;
                   const noCandidateElapsed = params.snapNow - bioVerifiedUnmatchedStartAt;
+                  const totalDecisionElapsed = params.snapNow - scanDecisionStartAtRef.current;
                   if (
                     shouldTriggerFastNotFoundVerdict({
                       candidatesLoaded: candidatesLoadedRef.current,
@@ -2530,6 +2530,9 @@ export function KioskBiometricLoginView({
                       unmatchedElapsedMs: noCandidateElapsed,
                       inRescanCooldown: inCooldown,
                       hasZeroCandidates: true,
+                      totalEvaluatedFrames: totalEvaluatedFramesRef.current,
+                      totalDecisionElapsedMs: totalDecisionElapsed,
+                      serverRejectedCount: serverRejectCountRef.current,
                     })
                   ) {
                     shouldContinueLoop = false;
@@ -2540,19 +2543,48 @@ export function KioskBiometricLoginView({
                 } else {
                   bioVerifiedUnmatchedStartAt = 0;
                   unmatchedClearFramesRef.current = 0;
+                  scanDecisionStartAtRef.current = 0;
+                  totalEvaluatedFramesRef.current = 0;
                   setScanStage(candidatesLoadedRef.current ? 'scanning' : 'burst');
                 }
                 return;
               }
 
-              let finalEvalRes: Live1toNMatchEvaluation = evaluateLiveMatch1toN(
-                activeEmbedding,
+              // Require BOTH un-averaged single-frame descriptor AND rolling centroid to agree on the exact same patient
+              const rawSingleEval: Live1toNMatchEvaluation = evaluateLiveMatch1toN(
+                extracted.embedding,
                 candidates,
                 excludedPatientIdsRef.current,
                 undefined,
                 liveBucket,
-                activeGeometricRatios,
+                geometricRatios,
               );
+              const rollingEval: Live1toNMatchEvaluation =
+                activeEmbedding === extracted.embedding && activeGeometricRatios === geometricRatios
+                  ? rawSingleEval
+                  : evaluateLiveMatch1toN(
+                      activeEmbedding,
+                      candidates,
+                      excludedPatientIdsRef.current,
+                      undefined,
+                      liveBucket,
+                      activeGeometricRatios,
+                    );
+              const rawRollingAgrees = Boolean(
+                rollingEval.matched &&
+                  rollingEval.topCandidate &&
+                  rawSingleEval.matched &&
+                  rawSingleEval.topCandidate?.patientId === rollingEval.topCandidate.patientId,
+              );
+              let finalEvalRes: Live1toNMatchEvaluation =
+                rollingEval.matched && !rawRollingAgrees
+                  ? {
+                      ...rollingEval,
+                      matched: false,
+                      topCandidate: null,
+                      reason: 'BELOW_THRESHOLD', // Raw un-averaged frame disagreed with rolling centroid
+                    }
+                  : rollingEval;
               let finalEmbedding = activeEmbedding;
               let finalMirroredEmbedding: number[] | undefined;
               let finalGeometricRatios = activeGeometricRatios;
@@ -2598,7 +2630,7 @@ export function KioskBiometricLoginView({
                       mirrorPoseZone(liveBucket),
                       mirroredRatios,
                     );
-                    if (mirroredEval.matched) {
+                    if (mirroredEval.matched && mirroredEval.topCandidate) {
                       finalEvalRes = mirroredEval;
                       finalEmbedding = mirroredExt.embedding;
                       finalMirroredEmbedding = activeEmbedding;
@@ -2698,14 +2730,51 @@ export function KioskBiometricLoginView({
               if (params.snapIsSpoof) {
                 bioVerifiedUnmatchedStartAt = 0;
                 unmatchedClearFramesRef.current = 0;
+                scanDecisionStartAtRef.current = 0;
+                totalEvaluatedFramesRef.current = 0;
                 setTurningHintPct(null);
                 setScanStage('scanning');
                 return;
               }
 
+              if (!inCooldown && candidatesLoadedRef.current && humanWarmupReadyRef.current && !isHidden) {
+                if (scanDecisionStartAtRef.current === 0) {
+                  scanDecisionStartAtRef.current = params.snapNow;
+                }
+                totalEvaluatedFramesRef.current += 1;
+              } else {
+                scanDecisionStartAtRef.current = 0;
+                totalEvaluatedFramesRef.current = 0;
+              }
+              const totalDecisionElapsed =
+                scanDecisionStartAtRef.current > 0 ? params.snapNow - scanDecisionStartAtRef.current : 0;
+
               if (isAmbiguous || stepRes.confirmed || stepRes.streak > 0) {
                 bioVerifiedUnmatchedStartAt = 0;
                 unmatchedClearFramesRef.current = 0;
+                if (
+                  !stepRes.confirmed &&
+                  shouldTriggerFastNotFoundVerdict({
+                    candidatesLoaded: candidatesLoadedRef.current,
+                    humanWarmupReady: humanWarmupReadyRef.current,
+                    documentHidden: isHidden,
+                    isAmbiguous,
+                    isSpoof: params.snapIsSpoof,
+                    bioVerified: params.snapBioVerified,
+                    matchStreak: stepRes.streak,
+                    unmatchedClearFrames: 0,
+                    unmatchedElapsedMs: 0,
+                    inRescanCooldown: inCooldown,
+                    hasZeroCandidates: false,
+                    totalEvaluatedFrames: totalEvaluatedFramesRef.current,
+                    totalDecisionElapsedMs: totalDecisionElapsed,
+                    serverRejectedCount: serverRejectCountRef.current,
+                  })
+                ) {
+                  shouldContinueLoop = false;
+                  setScanStage('not_found');
+                  return;
+                }
                 setTurningHintPct(null);
                 setScanStage(stepRes.confirmed ? 'verifying' : 'burst');
               } else {
@@ -2736,6 +2805,9 @@ export function KioskBiometricLoginView({
                     unmatchedElapsedMs: unmatchedElapsed,
                     inRescanCooldown: inCooldown,
                     hasZeroCandidates: false,
+                    totalEvaluatedFrames: totalEvaluatedFramesRef.current,
+                    totalDecisionElapsedMs: totalDecisionElapsed,
+                    serverRejectedCount: serverRejectCountRef.current,
                   })
                 ) {
                   shouldContinueLoop = false;
@@ -2763,6 +2835,7 @@ export function KioskBiometricLoginView({
                 let blockedBySpoof = false;
                 let verifyNetworkFailed = false;
                 let serverRejected = false;
+                let hardServerRejected = false;
                 try {
                   const verifyRes = await apiClient.verifyFaceLogin(finalEmbedding, {
                     ...livenessEvidence,
@@ -2815,6 +2888,8 @@ export function KioskBiometricLoginView({
                       probeWindowRef.current = [];
                       streakTrackerRef.current.reset();
                       void refreshBiometricCandidates(true);
+                    } else {
+                      hardServerRejected = true;
                     }
                     // Explicit server rejection (matched: false / 401 / AMBIGUOUS_CLOSE_CANDIDATES / Dual-Consensus mismatch) MUST NEVER fall through to local login!
                     serverRejected = true;
@@ -2866,11 +2941,38 @@ export function KioskBiometricLoginView({
                   return;
                 }
 
+                if (hardServerRejected && !blockedBySpoof) {
+                  serverRejectCountRef.current += 1;
+                }
                 streakTrackerRef.current.reset();
                 setBurstCount(0);
                 setLiveMatchHud(null);
                 liveOverlayRef.current = null;
                 setLiveOverlay(null);
+                if (
+                  hardServerRejected &&
+                  !blockedBySpoof &&
+                  shouldTriggerFastNotFoundVerdict({
+                    candidatesLoaded: candidatesLoadedRef.current,
+                    humanWarmupReady: humanWarmupReadyRef.current,
+                    documentHidden: isHidden,
+                    isAmbiguous: isLastVerifyAmbiguous,
+                    isSpoof: params.snapIsSpoof,
+                    bioVerified: params.snapBioVerified,
+                    matchStreak: 0,
+                    unmatchedClearFrames: unmatchedClearFramesRef.current,
+                    unmatchedElapsedMs: 0,
+                    inRescanCooldown: inCooldown,
+                    hasZeroCandidates: false,
+                    totalEvaluatedFrames: totalEvaluatedFramesRef.current,
+                    totalDecisionElapsedMs: totalDecisionElapsed,
+                    serverRejectedCount: serverRejectCountRef.current,
+                  })
+                ) {
+                  shouldContinueLoop = false;
+                  setScanStage('not_found');
+                  return;
+                }
                 void refreshBiometricCandidates();
                 setScanStage('burst');
                 return;
@@ -3461,6 +3563,9 @@ export function KioskBiometricLoginView({
                   probeWindowRef.current = [];
                   bioVerifiedUnmatchedStartAt = 0;
                   unmatchedClearFramesRef.current = 0;
+                  scanDecisionStartAtRef.current = 0;
+                  totalEvaluatedFramesRef.current = 0;
+                  serverRejectCountRef.current = 0;
                   isLastVerifyAmbiguous = false;
                   setBioReport(null);
                   setBurstCount(0);
@@ -3785,6 +3890,10 @@ export function KioskBiometricLoginView({
                     !asyncMatchInFlight
                   ) {
                     bioVerifiedUnmatchedStartAt = 0;
+                    unmatchedClearFramesRef.current = 0;
+                    scanDecisionStartAtRef.current = 0;
+                    totalEvaluatedFramesRef.current = 0;
+                    serverRejectCountRef.current = 0;
                     isLastVerifyAmbiguous = false;
                     liveOverlayRef.current = null;
                     setLiveOverlay(null);

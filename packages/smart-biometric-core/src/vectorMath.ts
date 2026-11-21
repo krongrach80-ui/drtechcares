@@ -14,9 +14,16 @@ export const STRICT_MAX_EUCLIDEAN_DISTANCE = 0.56;
 export const STRICT_MIN_CENTROID_COSINE = 0.82;
 export const STRICT_MIN_CENTROID_COUNT = 2;
 export const STRICT_PATCH_ZNCC_THRESHOLD = 0.76;
+export const STRICT_PATCH_GRAD_ZNCC_THRESHOLD = 0.58;
 export const STRICT_CRANIOFACIAL_MAX_DEVIATION = 0.065;
+export const STRICT_CRANIOFACIAL_MAX_SINGLE_DEVIATION = 0.145;
 export const STRICT_OCULAR_IRIS_ZNCC_THRESHOLD = 0.66;
 export const STRICT_IRIS_RATIO_MAX_DEVIATION = 0.085;
+export const STRICT_RELU6_RAW_COSINE_THRESHOLD = 0.89;
+export const STRICT_RELU6_CENTERED_COSINE_THRESHOLD = 0.85;
+export const STRICT_RELU6_MAX_EUCLIDEAN_DISTANCE = 0.47;
+export const STRICT_RELU6_MIN_CENTROID_COSINE = 0.85;
+export const STRICT_RELU6_MIN_EXEMPLAR_TOP3_AVG = 0.86;
 export const STRICT_MIN_VECTOR_STD = 0.02;
 export const STRICT_DISTINCTIVENESS_MARGIN = 0.08;
 export const STRICT_COHORT_MARGIN = 0.08;
@@ -1220,9 +1227,45 @@ export const IMPOSTER_COHORT_VECTORS: readonly (readonly number[])[] = buildSynt
   12,
 );
 
-/** Deterministic 12-face baseline Imposter Cohort (1024-D) for `@vladmandic/human` faceres. */
+/** Deterministic 12-face baseline Imposter Cohort (1024-D) for signed embeddings. */
 export const IMPOSTER_COHORT_VECTORS_1024: readonly (readonly number[])[] =
   buildSyntheticCohortVectors(1024, 12);
+
+/**
+ * Identifies non-negative ReLU6 positive-orthant embeddings (>= 1024-D) produced by
+ * `@vladmandic/human` `faceres.json` where positive orthant geometry raises baseline cosine.
+ */
+export function isNonNegativeRelu6Vector(vec: readonly number[]): boolean {
+  if (!Array.isArray(vec) || vec.length < 1024) return false;
+  let nonNeg = 0;
+  let sum = 0;
+  for (let i = 0; i < vec.length; i += 1) {
+    const v = vec[i];
+    if (!Number.isFinite(v)) return false;
+    if (v >= -1e-6) nonNeg += 1;
+    sum += v;
+  }
+  const mean = sum / vec.length;
+  return nonNeg / vec.length >= 0.98 && mean > 0.008;
+}
+
+/** Deterministic 12-face Non-Negative ReLU6 Imposter Cohort matching real `faceres` orthant sparsity. */
+export const IMPOSTER_COHORT_VECTORS_RELU6_1024: readonly (readonly number[])[] = (() => {
+  const out: (readonly number[])[] = [];
+  for (let k = 0; k < 12; k += 1) {
+    const raw = new Array<number>(1024);
+    const fA = 0.3713 + k * 0.1137;
+    const fB = 0.7191 + k * 0.1733;
+    const ph = 1.93 + k * 2.41;
+    for (let i = 0; i < 1024; i += 1) {
+      const b = 0.36 + 0.12 * Math.cos(i * 0.031) + 0.06 * Math.sin(i * 0.017);
+      const rv = Math.sin((i + 1) * fA + ph) * 0.65 + Math.cos((i + 7) * fB - ph * 0.5) * 0.35;
+      raw[i] = Math.max(0, b + rv);
+    }
+    out.push(Object.freeze(l2Normalize(raw)));
+  }
+  return Object.freeze(out);
+})();
 
 const dynamicCohortCache = new Map<number, readonly (readonly number[])[]>();
 
@@ -1240,7 +1283,9 @@ export function getImposterCohortVectors(dim: number): readonly (readonly number
 export function computeMaxImposterCohortScore(probeVector: readonly number[]): number {
   if (probeVector.length === 0) return 0;
   const probeUnit = l2Normalize(probeVector);
-  const cohort = getImposterCohortVectors(probeUnit.length);
+  const cohort = isNonNegativeRelu6Vector(probeUnit)
+    ? IMPOSTER_COHORT_VECTORS_RELU6_1024
+    : getImposterCohortVectors(probeUnit.length);
   let maxScore = -1;
   for (let i = 0; i < cohort.length; i += 1) {
     const sim = cosineSimilarity(probeUnit, cohort[i]);
@@ -1388,6 +1433,40 @@ export function computePatchZnccScore(patchA: readonly number[], patchB: readonl
   const effCb = znccCb ?? znccY;
   const effCr = znccCr ?? znccY;
   return Number((0.7 * znccY + 0.15 * effCb + 0.15 * effCr).toFixed(4));
+}
+
+/**
+ * Computes structural high-pass spatial gradient ZNCC (horizontal 16x15 Gx + vertical 15x16 Gy)
+ * across the `16x16` luminance grid inside `appearancePatch384`, separating distinct facial contours
+ * even under identical room illumination. Returns `null` when either gradient map has zero variance.
+ */
+export function computePatchGradientZnccScore(
+  patchA: readonly number[],
+  patchB: readonly number[],
+): number | null {
+  if (patchA.length !== 384 || patchB.length !== 384) return null;
+  const gxA: number[] = [];
+  const gxB: number[] = [];
+  const gyA: number[] = [];
+  const gyB: number[] = [];
+  for (let y = 0; y < 16; y += 1) {
+    for (let x = 0; x < 15; x += 1) {
+      gxA.push(patchA[y * 16 + x + 1] - patchA[y * 16 + x]);
+      gxB.push(patchB[y * 16 + x + 1] - patchB[y * 16 + x]);
+    }
+  }
+  for (let y = 0; y < 15; y += 1) {
+    for (let x = 0; x < 16; x += 1) {
+      gyA.push(patchA[(y + 1) * 16 + x] - patchA[y * 16 + x]);
+      gyB.push(patchB[(y + 1) * 16 + x] - patchB[y * 16 + x]);
+    }
+  }
+  const zGx = sliceZncc(gxA, gxB, 0, gxA.length);
+  const zGy = sliceZncc(gyA, gyB, 0, gyA.length);
+  if (zGx === null && zGy === null) return null;
+  const combined =
+    zGx !== null && zGy !== null ? (zGx + zGy) * 0.5 : (zGx ?? zGy ?? 0);
+  return Number(Math.max(-1, Math.min(1, combined)).toFixed(4));
 }
 
 /**
@@ -1922,25 +2001,32 @@ export function evaluateOcularIrisGate(
 export function computeCraniofacialRatioDeviation(
   probeRatios?: GeometricAnthropometricRatios | null,
   candidateRatios?: GeometricAnthropometricRatios | null,
-): { available: boolean; meanDeviation: number; passed: boolean } {
+): { available: boolean; meanDeviation: number; maxSingleDeviation: number; passed: boolean } {
   if (!probeRatios || !candidateRatios) {
-    return { available: false, meanDeviation: 0, passed: true };
+    return { available: false, meanDeviation: 0, maxSingleDeviation: 0, passed: true };
   }
   const p12 = probeRatios.craniofacialRatios12;
   const c12 = candidateRatios.craniofacialRatios12;
   if (Array.isArray(p12) && Array.isArray(c12) && p12.length === 12 && c12.length === 12) {
     let sumRel = 0;
+    let maxRel = 0;
     for (let i = 0; i < 12; i += 1) {
       const a = p12[i];
       const b = c12[i];
       const denom = Math.max(0.2, (Math.abs(a) + Math.abs(b)) * 0.5);
-      sumRel += Math.abs(a - b) / denom;
+      const rel = Math.abs(a - b) / denom;
+      sumRel += rel;
+      if (rel > maxRel) maxRel = rel;
     }
     const meanDeviation = Number((sumRel / 12).toFixed(4));
+    const maxSingleDeviation = Number(maxRel.toFixed(4));
     return {
       available: true,
       meanDeviation,
-      passed: meanDeviation <= STRICT_CRANIOFACIAL_MAX_DEVIATION,
+      maxSingleDeviation,
+      passed:
+        meanDeviation <= STRICT_CRANIOFACIAL_MAX_DEVIATION &&
+        maxSingleDeviation <= STRICT_CRANIOFACIAL_MAX_SINGLE_DEVIATION,
     };
   }
 
@@ -1955,17 +2041,24 @@ export function computeCraniofacialRatioDeviation(
     number,
   ][];
   if (pairs.length === 0) {
-    return { available: false, meanDeviation: 0, passed: true };
+    return { available: false, meanDeviation: 0, maxSingleDeviation: 0, passed: true };
   }
   let sumRel = 0;
+  let maxRel = 0;
   for (const [a, b] of pairs) {
-    sumRel += Math.abs(a - b) / Math.max(0.2, (Math.abs(a) + Math.abs(b)) * 0.5);
+    const rel = Math.abs(a - b) / Math.max(0.2, (Math.abs(a) + Math.abs(b)) * 0.5);
+    sumRel += rel;
+    if (rel > maxRel) maxRel = rel;
   }
   const meanDeviation = Number((sumRel / pairs.length).toFixed(4));
+  const maxSingleDeviation = Number(maxRel.toFixed(4));
   return {
     available: true,
     meanDeviation,
-    passed: meanDeviation <= STRICT_CRANIOFACIAL_MAX_DEVIATION,
+    maxSingleDeviation,
+    passed:
+      meanDeviation <= STRICT_CRANIOFACIAL_MAX_DEVIATION &&
+      maxSingleDeviation <= STRICT_CRANIOFACIAL_MAX_SINGLE_DEVIATION,
   };
 }
 
@@ -1976,8 +2069,10 @@ export function evaluateAppearanceAndCraniofacialGate(
   passed: boolean;
   patchAvailable: boolean;
   patchZncc: number | null;
+  patchGradZncc: number | null;
   ratioAvailable: boolean;
   ratioMeanDeviation: number | null;
+  ratioMaxDeviation: number | null;
   ocularIrisAvailable: boolean;
   ocularIrisZncc: number | null;
   irisRatioDeviation: number | null;
@@ -1989,6 +2084,7 @@ export function evaluateAppearanceAndCraniofacialGate(
     Array.isArray(pPatch) && Array.isArray(cPatch) && pPatch.length === 384 && cPatch.length === 384,
   );
   const patchZncc = patchAvailable ? computePatchZnccScore(pPatch!, cPatch!) : null;
+  const patchGradZncc = patchAvailable ? computePatchGradientZnccScore(pPatch!, cPatch!) : null;
   const ratioRes = computeCraniofacialRatioDeviation(probeRatios, candidateRatios);
   const ocularGate = evaluateOcularIrisGate(probeRatios, candidateRatios);
 
@@ -1997,12 +2093,29 @@ export function evaluateAppearanceAndCraniofacialGate(
       passed: false,
       patchAvailable: true,
       patchZncc,
+      patchGradZncc,
       ratioAvailable: ratioRes.available,
       ratioMeanDeviation: ratioRes.available ? ratioRes.meanDeviation : null,
+      ratioMaxDeviation: ratioRes.available ? ratioRes.maxSingleDeviation : null,
       ocularIrisAvailable: ocularGate.available,
       ocularIrisZncc: ocularGate.ocularIrisZncc,
       irisRatioDeviation: ocularGate.irisRatioDeviation,
       failureReason: `PATCH_ZNCC_BELOW_THRESHOLD (${patchZncc.toFixed(3)} < ${STRICT_PATCH_ZNCC_THRESHOLD})`,
+    };
+  }
+  if (patchAvailable && patchGradZncc !== null && patchGradZncc < STRICT_PATCH_GRAD_ZNCC_THRESHOLD) {
+    return {
+      passed: false,
+      patchAvailable: true,
+      patchZncc,
+      patchGradZncc,
+      ratioAvailable: ratioRes.available,
+      ratioMeanDeviation: ratioRes.available ? ratioRes.meanDeviation : null,
+      ratioMaxDeviation: ratioRes.available ? ratioRes.maxSingleDeviation : null,
+      ocularIrisAvailable: ocularGate.available,
+      ocularIrisZncc: ocularGate.ocularIrisZncc,
+      irisRatioDeviation: ocularGate.irisRatioDeviation,
+      failureReason: `PATCH_GRAD_ZNCC_BELOW_THRESHOLD (${patchGradZncc.toFixed(3)} < ${STRICT_PATCH_GRAD_ZNCC_THRESHOLD})`,
     };
   }
   if (ratioRes.available && !ratioRes.passed) {
@@ -2010,12 +2123,14 @@ export function evaluateAppearanceAndCraniofacialGate(
       passed: false,
       patchAvailable,
       patchZncc,
+      patchGradZncc,
       ratioAvailable: true,
       ratioMeanDeviation: ratioRes.meanDeviation,
+      ratioMaxDeviation: ratioRes.maxSingleDeviation,
       ocularIrisAvailable: ocularGate.available,
       ocularIrisZncc: ocularGate.ocularIrisZncc,
       irisRatioDeviation: ocularGate.irisRatioDeviation,
-      failureReason: `CRANIOFACIAL_RATIO_MISMATCH (${ratioRes.meanDeviation.toFixed(3)} > ${STRICT_CRANIOFACIAL_MAX_DEVIATION})`,
+      failureReason: `CRANIOFACIAL_RATIO_MISMATCH (mean=${ratioRes.meanDeviation.toFixed(3)} > ${STRICT_CRANIOFACIAL_MAX_DEVIATION} or max=${ratioRes.maxSingleDeviation.toFixed(3)} > ${STRICT_CRANIOFACIAL_MAX_SINGLE_DEVIATION})`,
     };
   }
   if (ocularGate.available && !ocularGate.passed) {
@@ -2023,8 +2138,10 @@ export function evaluateAppearanceAndCraniofacialGate(
       passed: false,
       patchAvailable,
       patchZncc,
+      patchGradZncc,
       ratioAvailable: ratioRes.available,
       ratioMeanDeviation: ratioRes.available ? ratioRes.meanDeviation : null,
+      ratioMaxDeviation: ratioRes.available ? ratioRes.maxSingleDeviation : null,
       ocularIrisAvailable: true,
       ocularIrisZncc: ocularGate.ocularIrisZncc,
       irisRatioDeviation: ocularGate.irisRatioDeviation,
@@ -2035,8 +2152,10 @@ export function evaluateAppearanceAndCraniofacialGate(
     passed: true,
     patchAvailable,
     patchZncc,
+    patchGradZncc,
     ratioAvailable: ratioRes.available,
     ratioMeanDeviation: ratioRes.available ? ratioRes.meanDeviation : null,
+    ratioMaxDeviation: ratioRes.available ? ratioRes.maxSingleDeviation : null,
     ocularIrisAvailable: ocularGate.available,
     ocularIrisZncc: ocularGate.ocularIrisZncc,
     irisRatioDeviation: ocularGate.irisRatioDeviation,
@@ -2138,34 +2257,49 @@ export function evaluateTripleGateNeuralCandidate(
       }
     : centerMetrics;
 
+  const isRelu6Pair =
+    isNonNegativeRelu6Vector(probeNorm) && isNonNegativeRelu6Vector(masterNorm);
+  const rawFloor = isRelu6Pair
+    ? STRICT_RELU6_RAW_COSINE_THRESHOLD
+    : STRICT_RAW_COSINE_THRESHOLD;
+  const centeredFloor = isRelu6Pair
+    ? STRICT_RELU6_CENTERED_COSINE_THRESHOLD
+    : STRICT_CENTERED_COSINE_THRESHOLD;
+  const maxL2 = isRelu6Pair
+    ? STRICT_RELU6_MAX_EUCLIDEAN_DISTANCE
+    : STRICT_MAX_EUCLIDEAN_DISTANCE;
+  const centroidFloor = isRelu6Pair
+    ? STRICT_RELU6_MIN_CENTROID_COSINE
+    : STRICT_MIN_CENTROID_COSINE;
+
   const failureReasons: string[] = [];
 
-  if (masterMetrics.rawCosine < STRICT_RAW_COSINE_THRESHOLD) {
-    failureReasons.push(`masterRawCos ${masterMetrics.rawCosine.toFixed(4)} < ${STRICT_RAW_COSINE_THRESHOLD}`);
+  if (masterMetrics.rawCosine < rawFloor) {
+    failureReasons.push(`masterRawCos ${masterMetrics.rawCosine.toFixed(4)} < ${rawFloor}`);
   }
-  if (masterMetrics.centeredCosine < STRICT_CENTERED_COSINE_THRESHOLD) {
+  if (masterMetrics.centeredCosine < centeredFloor) {
     failureReasons.push(
-      `masterCenteredCos ${masterMetrics.centeredCosine.toFixed(4)} < ${STRICT_CENTERED_COSINE_THRESHOLD}`,
+      `masterCenteredCos ${masterMetrics.centeredCosine.toFixed(4)} < ${centeredFloor}`,
     );
   }
-  if (masterMetrics.l2Dist > STRICT_MAX_EUCLIDEAN_DISTANCE) {
-    failureReasons.push(`masterL2 ${masterMetrics.l2Dist.toFixed(4)} > ${STRICT_MAX_EUCLIDEAN_DISTANCE}`);
+  if (masterMetrics.l2Dist > maxL2) {
+    failureReasons.push(`masterL2 ${masterMetrics.l2Dist.toFixed(4)} > ${maxL2}`);
   }
 
   const zoneLabel = poseMetrics && liveBucket ? `pose(${liveBucket})` : 'center';
-  if (zoneMetrics.rawCosine < STRICT_RAW_COSINE_THRESHOLD) {
-    failureReasons.push(`${zoneLabel}RawCos ${zoneMetrics.rawCosine.toFixed(4)} < ${STRICT_RAW_COSINE_THRESHOLD}`);
+  if (zoneMetrics.rawCosine < rawFloor) {
+    failureReasons.push(`${zoneLabel}RawCos ${zoneMetrics.rawCosine.toFixed(4)} < ${rawFloor}`);
   }
-  if (zoneMetrics.centeredCosine < STRICT_CENTERED_COSINE_THRESHOLD) {
+  if (zoneMetrics.centeredCosine < centeredFloor) {
     failureReasons.push(
-      `${zoneLabel}CenteredCos ${zoneMetrics.centeredCosine.toFixed(4)} < ${STRICT_CENTERED_COSINE_THRESHOLD}`,
+      `${zoneLabel}CenteredCos ${zoneMetrics.centeredCosine.toFixed(4)} < ${centeredFloor}`,
     );
   }
-  if (zoneMetrics.l2Dist > STRICT_MAX_EUCLIDEAN_DISTANCE) {
-    failureReasons.push(`${zoneLabel}L2 ${zoneMetrics.l2Dist.toFixed(4)} > ${STRICT_MAX_EUCLIDEAN_DISTANCE}`);
+  if (zoneMetrics.l2Dist > maxL2) {
+    failureReasons.push(`${zoneLabel}L2 ${zoneMetrics.l2Dist.toFixed(4)} > ${maxL2}`);
   }
 
-  // Evaluate all stored pose centroids: require center (or active pose zone) + at least 1 other stored centroid >= 0.82
+  // Evaluate all stored pose centroids: require center (or active pose zone) + at least 1 other stored centroid >= centroidFloor
   let bestCentroidCosine = Math.max(masterMetrics.rawCosine, zoneMetrics.rawCosine);
   let bestAngle: 'master' | FacePoseZone5 | 'extra' =
     poseMetrics && poseMetrics.rawCosine > centerMetrics.rawCosine && poseMetrics.rawCosine >= masterMetrics.rawCosine
@@ -2173,7 +2307,7 @@ export function evaluateTripleGateNeuralCandidate(
       : centerMetrics.rawCosine >= masterMetrics.rawCosine
         ? 'center'
         : 'master';
-  let centroidsAbove082Count = centerMetrics.rawCosine >= STRICT_MIN_CENTROID_COSINE ? 1 : 0;
+  let centroidsAboveFloorCount = centerMetrics.rawCosine >= centroidFloor ? 1 : 0;
 
   const secondaryZones: FacePoseZone5[] = ['left', 'right', 'up', 'down'];
   let otherCentroidsFound = 0;
@@ -2182,8 +2316,8 @@ export function evaluateTripleGateNeuralCandidate(
     if (Array.isArray(rawZ) && rawZ.length === probeNorm.length) {
       otherCentroidsFound += 1;
       const simZ = cosineSimilarity(probeNorm, l2Normalize(rawZ));
-      if (simZ >= STRICT_MIN_CENTROID_COSINE) {
-        centroidsAbove082Count += 1;
+      if (simZ >= centroidFloor) {
+        centroidsAboveFloorCount += 1;
       }
       if (simZ > bestCentroidCosine) {
         bestCentroidCosine = simZ;
@@ -2196,8 +2330,8 @@ export function evaluateTripleGateNeuralCandidate(
       if (Array.isArray(ex) && ex.length === probeNorm.length) {
         otherCentroidsFound += 1;
         const simEx = cosineSimilarity(probeNorm, l2Normalize(ex));
-        if (simEx >= STRICT_MIN_CENTROID_COSINE) {
-          centroidsAbove082Count += 1;
+        if (simEx >= centroidFloor) {
+          centroidsAboveFloorCount += 1;
         }
         if (simEx > bestCentroidCosine) {
           bestCentroidCosine = simEx;
@@ -2205,18 +2339,36 @@ export function evaluateTripleGateNeuralCandidate(
         }
       }
     }
-    if (otherCentroidsFound === 0 && masterMetrics.rawCosine >= STRICT_MIN_CENTROID_COSINE) {
-      centroidsAbove082Count += 1;
+    if (otherCentroidsFound === 0 && masterMetrics.rawCosine >= centroidFloor) {
+      centroidsAboveFloorCount += 1;
     }
   }
 
   if (
-    zoneMetrics.rawCosine < STRICT_MIN_CENTROID_COSINE ||
-    centroidsAbove082Count < STRICT_MIN_CENTROID_COUNT
+    zoneMetrics.rawCosine < centroidFloor ||
+    centroidsAboveFloorCount < STRICT_MIN_CENTROID_COUNT
   ) {
     failureReasons.push(
-      `angleCentroids>=${STRICT_MIN_CENTROID_COSINE}: ${centroidsAbove082Count} < ${STRICT_MIN_CENTROID_COUNT}`,
+      `angleCentroids>=${centroidFloor}: ${centroidsAboveFloorCount} < ${STRICT_MIN_CENTROID_COUNT}`,
     );
+  }
+
+  if (isRelu6Pair) {
+    const validExemplarSims: number[] = [];
+    for (const ex of candidate.exemplarEmbeddings ?? []) {
+      if (Array.isArray(ex) && ex.length === probeNorm.length) {
+        validExemplarSims.push(cosineSimilarity(probeNorm, l2Normalize(ex)));
+      }
+    }
+    if (validExemplarSims.length >= 3) {
+      validExemplarSims.sort((a, b) => b - a);
+      const top3Avg = (validExemplarSims[0] + validExemplarSims[1] + validExemplarSims[2]) / 3;
+      if (top3Avg < STRICT_RELU6_MIN_EXEMPLAR_TOP3_AVG) {
+        failureReasons.push(
+          `EXEMPLAR_TOP3_AVG_BELOW_THRESHOLD (${top3Avg.toFixed(4)} < ${STRICT_RELU6_MIN_EXEMPLAR_TOP3_AVG})`,
+        );
+      }
+    }
   }
 
   const gate2 = evaluateAppearanceAndCraniofacialGate(probeRatios, candidate.geometricRatios);
@@ -2258,7 +2410,7 @@ export function evaluateTripleGateNeuralCandidate(
     centerRawCosine: Math.max(0, centerMetrics.rawCosine),
     centerCenteredCosine: Math.max(0, centerMetrics.centeredCosine),
     centerL2Dist: centerMetrics.l2Dist,
-    centroidsAbove082Count,
+    centroidsAbove082Count: centroidsAboveFloorCount,
     patchZncc: gate2.patchZncc,
     craniofacialDeviation: gate2.ratioMeanDeviation,
     ocularIrisZncc: gate2.ocularIrisZncc,
