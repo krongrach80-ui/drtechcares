@@ -1164,6 +1164,33 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
   let hydrated = false;
   let lastHydratedAt = 0;
+  // Sliding-window failed biometric verify rate limiter per (clientIp, deviceId)
+  const BIOMETRIC_VERIFY_RATE_WINDOW_MS = 60_000;
+  const BIOMETRIC_VERIFY_MAX_FAILED_PER_WINDOW = 15;
+  const failedBiometricVerifyLog = new Map<string, number[]>();
+  const recordFailedBiometricVerify = (rateKey: string, nowMs: number): number => {
+    const list = (failedBiometricVerifyLog.get(rateKey) ?? []).filter(
+      (ts) => nowMs - ts < BIOMETRIC_VERIFY_RATE_WINDOW_MS,
+    );
+    list.push(nowMs);
+    failedBiometricVerifyLog.set(rateKey, list);
+    if (failedBiometricVerifyLog.size > 500) {
+      const oldestKey = failedBiometricVerifyLog.keys().next().value;
+      if (oldestKey) failedBiometricVerifyLog.delete(oldestKey);
+    }
+    return list.length;
+  };
+  const isBiometricVerifyRateLimited = (rateKey: string, nowMs: number): boolean => {
+    const list = (failedBiometricVerifyLog.get(rateKey) ?? []).filter(
+      (ts) => nowMs - ts < BIOMETRIC_VERIFY_RATE_WINDOW_MS,
+    );
+    if (list.length === 0) {
+      failedBiometricVerifyLog.delete(rateKey);
+      return false;
+    }
+    failedBiometricVerifyLog.set(rateKey, list);
+    return list.length >= BIOMETRIC_VERIFY_MAX_FAILED_PER_WINDOW;
+  };
   const ensureHydrated = async (force = false, bypassTtl = false) => {
     if (!supabase || isSupabaseCircuitOpen(supabase)) return;
     const now = Date.now();
@@ -2843,6 +2870,31 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           503,
         );
       }
+      const verifyRateKey = `${clientIp}|${clientDeviceId}`;
+      const verifyNowMs = Date.now();
+      if (isBiometricVerifyRateLimited(verifyRateKey, verifyNowMs)) {
+        recordAudit({
+          eventType: 'BIOMETRIC_RATE_LIMITED',
+          actorRole: authUser?.role ?? 'patient_kiosk',
+          actorId: authUser?.id ?? clientDeviceId,
+          actorName: authUser?.fullName ?? 'Kiosk Face Sensor',
+          ipAddress: clientIp,
+          deviceId: clientDeviceId,
+          detail: 'Rate-limited repeated failed biometric verify requests',
+        });
+        return jsonResponse(
+          {
+            matched: false,
+            patientId: null,
+            patientName: null,
+            confidencePercent: 0,
+            error: 'RATE_LIMITED',
+            failureReasons: ['TOO_MANY_FAILED_ATTEMPTS'],
+            message: 'สแกนไม่ผ่านหลายครั้งเกินกำหนด กรุณารอสักครู่หรือติดต่อเจ้าหน้าที่',
+          },
+          429,
+        );
+      }
       const body = await readJsonBody<{
         probeVector?: unknown;
         mirroredProbeVector?: unknown;
@@ -3606,6 +3658,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
       const minConfidenceFloor = STRICT_RAW_COSINE_THRESHOLD * 100;
       if (!matchedPatientId || matchedConfidence < minConfidenceFloor) {
+        recordFailedBiometricVerify(verifyRateKey, verifyNowMs);
         return jsonResponse(
           {
             ...result,
@@ -3624,6 +3677,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const patient =
         state.patients.find((p) => p.id === matchedPatientId && activePatientIds.has(p.id)) ?? null;
       if (!patient) {
+        recordFailedBiometricVerify(verifyRateKey, verifyNowMs);
         return jsonResponse(
           {
             ...result,
@@ -3637,6 +3691,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           401,
         );
       }
+
+      failedBiometricVerifyLog.delete(verifyRateKey);
 
       const course = state.patient_courses.find((c) => c.patientId === matchedPatientId) ?? null;
       const todayIdx = new Date().getDay();

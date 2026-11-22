@@ -736,7 +736,21 @@ export function App() {
     if (route === '/') {
       setAuthChecked(true);
       void preloadKioskBiometricPipeline(apiClient);
-      return;
+      // Lightweight Worker + Supabase keep-alive during Standby/Kiosk idle (never opens camera!)
+      const keepAliveId =
+        typeof window !== 'undefined'
+          ? window.setInterval(() => {
+              if (typeof document !== 'undefined' && document.hidden) return;
+              if (typeof apiClient.checkHealth === 'function') {
+                void apiClient.checkHealth().catch(() => {});
+              }
+            }, 45_000)
+          : null;
+      return () => {
+        if (keepAliveId !== null) {
+          window.clearInterval(keepAliveId);
+        }
+      };
     }
     let cancelled = false;
     apiClient.getMe().then((u) => {

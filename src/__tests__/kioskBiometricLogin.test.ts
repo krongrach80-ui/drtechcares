@@ -22,17 +22,25 @@ import {
 } from '../lib/biometricTrackerSmoothing';
 import { MIN_SHARPNESS_LAPLACIAN } from '@drtechcares/smart-biometric-core';
 import {
+  KIOSK_DETECT_MAX_LONG_SIDE_PX,
   KIOSK_FAST_MATCH_STREAK,
   KIOSK_FAST_UNREGISTERED_FRAMES,
   KIOSK_FAST_UNREGISTERED_TIMEOUT_MS,
   KIOSK_MAX_DECISION_EVAL_FRAMES,
   KIOSK_MAX_DECISION_WINDOW_MS,
+  KIOSK_MAX_EXPOSURE_SETTLE_MS,
   KIOSK_NO_FACE_GUIDANCE_DELAY_MS,
   KIOSK_NOT_FOUND_VOICE_PROMPT_TH,
+  KIOSK_OVERLAY_MIN_INTERVAL_MS,
   KIOSK_RESCAN_COOLDOWN_MS,
   UnregisteredFaceSignupPopup,
   shouldTriggerFastNotFoundVerdict,
 } from '../components/KioskBiometricLoginView';
+import {
+  KioskBiometricScanProfiler,
+  computeTimingPercentiles,
+} from '../lib/biometricScanProfiler';
+import { openBestAvailableCameraStream } from '@drtechcares/face-client';
 
 const EMOJI_RE = /[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/u;
 
@@ -506,13 +514,146 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
     expect(EMOJI_RE.test(blurCue ?? '')).toBe(false);
   });
 
+  it('records 20-round Step 0 telemetry percentiles (avg/p50/p95) cleanly without storing PII or face vectors', () => {
+    expect(KIOSK_MAX_EXPOSURE_SETTLE_MS).toBeLessThanOrEqual(800);
+    expect(KIOSK_DETECT_MAX_LONG_SIDE_PX).toBe(480);
+    expect(KIOSK_OVERLAY_MIN_INTERVAL_MS).toBeGreaterThanOrEqual(30);
+
+    const summary = computeTimingPercentiles(Array.from({ length: 20 }, (_, i) => (i + 1) * 10));
+    expect(summary.count).toBe(20);
+    expect(summary.avgMs).toBe(105);
+    expect(summary.p50Ms).toBe(100);
+    expect(summary.p95Ms).toBe(190);
+    expect(summary.lastMs).toBe(200);
+
+    const profiler = new KioskBiometricScanProfiler();
+    profiler.clearStoredRounds();
+
+    for (let round = 0; round < 20; round += 1) {
+      const t0 = 1000 + round * 5000;
+      profiler.startSession(t0);
+      profiler.recordCameraOpen({
+        openDurationMs: 120 + round * 5,
+        probeCount: 1,
+        usedRememberedDevice: true,
+      });
+      profiler.recordModelsReady({
+        modelWarmupMs: round === 0 ? 420 : 0,
+        wasPrewarmed: round > 0,
+        faceDelegate: 'GPU',
+        humanBackend: 'webgl',
+      });
+      profiler.recordFirstVideoFrame(t0 + 180);
+      profiler.recordExposureSettled(40);
+      profiler.markFaceSeen(t0 + 300);
+      profiler.recordDetectFrame({
+        now: t0 + 320,
+        detectMs: 12 + (round % 4),
+        roiMs: 0,
+        livenessMs: 2.5,
+        inputWidth: 480,
+        inputHeight: 270,
+      });
+      profiler.recordOverlayDraw(t0 + 325, 1.8);
+      profiler.markFaceReady(t0 + 360);
+      profiler.markLivenessVerified(t0 + 520, 'iris_saccade');
+      profiler.recordEmbedStep({
+        irisMs: 3.1,
+        humanEmbedMs: 85 + round * 2,
+        localMatchMs: 0.4,
+      });
+      profiler.recordServerVerify(160 + round * 3, 110);
+      profiler.commitRound('matched', t0 + 950 + round * 10, 45);
+    }
+
+    const snap = profiler.getSnapshot(110_000);
+    expect(snap.roundsCount).toBe(20);
+    expect(snap.stats.cameraOpenMs.count).toBe(20);
+    expect(snap.stats.cameraOpenMs.p50Ms).toBeGreaterThanOrEqual(160);
+    expect(snap.stats.humanEmbedAvgMs.p95Ms).toBeGreaterThan(snap.stats.humanEmbedAvgMs.p50Ms);
+    expect(snap.stats.serverVerifyMs.count).toBe(20);
+    expect(snap.stats.totalFaceToVerifiedMs.count).toBe(20);
+    expect(snap.live.pipelinedOverlapSavedMs).toBe(110);
+    expect(snap.live.detectInputLabel).toBe('480x270');
+    expect(snap.topBottlenecks.length).toBeGreaterThan(0);
+
+    // Strictly numeric telemetry only: no patient names, HNs, or base64 data URLs
+    const serialized = JSON.stringify(snap);
+    expect(serialized).not.toContain('data:image');
+    expect(serialized).not.toContain('fullName');
+    expect(serialized).not.toContain('embedding');
+  });
+
+  it('opens remembered camera directly in 1 probe without scanning all 5 cameras, and falls back if unplugged', async () => {
+    const origNav = globalThis.navigator;
+    const enumerateDevices = vi.fn(async () => [
+      { kind: 'videoinput', deviceId: 'cam-1', label: 'Logitech USB HD' },
+      { kind: 'videoinput', deviceId: 'cam-2', label: 'USB Camera 2' },
+      { kind: 'videoinput', deviceId: 'cam-3', label: 'USB Camera 3' },
+      { kind: 'videoinput', deviceId: 'cam-4', label: 'Integrated Webcam' },
+      { kind: 'videoinput', deviceId: 'cam-5', label: 'Virtual Camera' },
+    ]);
+    const makeStream = (id: string) =>
+      ({
+        getVideoTracks: () => [{ getSettings: () => ({ deviceId: id }), stop: vi.fn() }],
+        getTracks: () => [{ stop: vi.fn() }],
+      }) as unknown as MediaStream;
+
+    const getUserMedia = vi.fn(async (constraints: MediaStreamConstraints) => {
+      const video = constraints.video as MediaTrackConstraints;
+      const exactId = (video?.deviceId as { exact?: string } | undefined)?.exact;
+      if (exactId === 'cam-unplugged') {
+        const err = new Error('Requested device not found');
+        err.name = 'NotFoundError';
+        throw err;
+      }
+      return makeStream(exactId ?? 'cam-1');
+    });
+
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: {
+        mediaDevices: {
+          enumerateDevices,
+          getUserMedia,
+        },
+      },
+    });
+
+    try {
+      // 1. Remembered camera opens directly on attempt 1 with ZERO enumerateDevices blocking calls!
+      const direct = await openBestAvailableCameraStream('cam-1', { skipPostEnumerate: true });
+      expect(direct.usedRememberedDevice).toBe(true);
+      expect(direct.probeCount).toBe(1);
+      expect(direct.activeDeviceId).toBe('cam-1');
+      expect(enumerateDevices).toHaveBeenCalledTimes(0);
+
+      // 2. If remembered camera was unplugged (NotFoundError), immediately falls back to ranked camera
+      const fallback = await openBestAvailableCameraStream('cam-unplugged', {
+        skipPostEnumerate: true,
+      });
+      expect(fallback.usedRememberedDevice).toBe(false);
+      expect(fallback.activeDeviceId).toBe('cam-1');
+      expect(fallback.probeCount).toBe(2);
+      expect(enumerateDevices).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        value: origNav,
+      });
+    }
+  });
+
   it('audits all mascot and kiosk login files for zero Unicode emojis', () => {
     const root = process.cwd();
     const files = [
       'src/components/DrTechCareMascot.tsx',
       'src/components/KioskBiometricLoginView.tsx',
       'src/lib/biometricEngine.ts',
+      'src/lib/biometricScanProfiler.ts',
       'src/lib/biometricTrackerSmoothing.ts',
+      'src/lib/biometricVisionCache.ts',
+      'packages/face-client/src/cameraSelector.ts',
       'src/__tests__/kioskBiometricLogin.test.ts',
     ];
     for (const rel of files) {

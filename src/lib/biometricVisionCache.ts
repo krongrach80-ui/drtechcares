@@ -42,6 +42,44 @@ let lastCachedPoseDetectTs = 0;
 let lastCachedHandDetectTs = 0;
 let lastCachedRehabFaceDetectTs = 0;
 
+let primaryFaceDelegate: VisionDelegate | 'unknown' = 'unknown';
+let primaryFaceWarmupMs = 0;
+let primaryFaceShaderCompiled = false;
+let prewarmCompleted = false;
+
+export interface VisionWarmupTelemetry {
+  primaryFaceDelegate: VisionDelegate | 'unknown';
+  primaryFaceWarmupMs: number;
+  primaryFaceShaderCompiled: boolean;
+  prewarmCompleted: boolean;
+}
+
+export function getVisionWarmupTelemetry(): VisionWarmupTelemetry {
+  return {
+    primaryFaceDelegate,
+    primaryFaceWarmupMs,
+    primaryFaceShaderCompiled,
+    prewarmCompleted,
+  };
+}
+
+function createBlankWarmupCanvas(width: number, height: number): HTMLCanvasElement | null {
+  if (typeof document === 'undefined') return null;
+  try {
+    const cvs = document.createElement('canvas');
+    cvs.width = width;
+    cvs.height = height;
+    const ctx = cvs.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = '#808080';
+      ctx.fillRect(0, 0, width, height);
+    }
+    return cvs;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Ensures strictly monotonically increasing `detectForVideo` timestamps even when
  * `KioskBiometricLoginView` unmounts and re-mounts against a shared cached `FaceLandmarker`.
@@ -97,11 +135,12 @@ export async function getCachedVisionResolver(): Promise<
 
 export async function getCachedPrimaryFaceLandmarker(): Promise<FaceLandmarker> {
   if (!cachedPrimaryLandmarkerPromise) {
+    const startMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
     cachedPrimaryLandmarkerPromise = (async () => {
       const vision = await getCachedVisionResolver();
       for (const delegate of ['GPU', 'CPU'] as const) {
         try {
-          return await FaceLandmarker.createFromOptions(vision, {
+          const instance = await FaceLandmarker.createFromOptions(vision, {
             baseOptions: { modelAssetPath: '/models/face_landmarker.task', delegate },
             runningMode: 'VIDEO',
             numFaces: 2,
@@ -110,6 +149,24 @@ export async function getCachedPrimaryFaceLandmarker(): Promise<FaceLandmarker> 
             minFacePresenceConfidence: 0.32,
             minTrackingConfidence: 0.32,
           });
+          primaryFaceDelegate = delegate;
+          // Pre-compile WebGL/WASM shaders on a tiny blank canvas during Standby idle
+          // so Frame 1 of real patient scanning has 0ms shader-compile stall!
+          const blank = createBlankWarmupCanvas(160, 120);
+          if (blank) {
+            try {
+              const warmTs = getNextMonotonicVideoDetectTs(
+                typeof performance !== 'undefined' ? performance.now() : Date.now(),
+              );
+              instance.detectForVideo(blank, warmTs);
+              primaryFaceShaderCompiled = true;
+            } catch {
+              // Shader warmup best-effort; ignore in headless/mock contexts
+            }
+          }
+          const endMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+          primaryFaceWarmupMs = Number(Math.max(0, endMs - startMs).toFixed(1));
+          return instance;
         } catch {
           // Fall back to CPU delegate
         }
@@ -129,7 +186,7 @@ export async function getCachedRoiFaceLandmarker(): Promise<FaceLandmarker | nul
       const vision = await getCachedVisionResolver();
       for (const delegate of ['GPU', 'CPU'] as const) {
         try {
-          return await FaceLandmarker.createFromOptions(vision, {
+          const instance = await FaceLandmarker.createFromOptions(vision, {
             baseOptions: { modelAssetPath: '/models/face_landmarker.task', delegate },
             runningMode: 'IMAGE',
             numFaces: 1,
@@ -137,6 +194,15 @@ export async function getCachedRoiFaceLandmarker(): Promise<FaceLandmarker | nul
             minFaceDetectionConfidence: 0.28,
             minFacePresenceConfidence: 0.28,
           });
+          const blank = createBlankWarmupCanvas(128, 128);
+          if (blank) {
+            try {
+              instance.detect(blank);
+            } catch {
+              // Best-effort shader warmup
+            }
+          }
+          return instance;
         } catch {
           // Try next delegate
         }
@@ -293,9 +359,9 @@ export function setPreloadedBiometricVault(
 }
 
 /**
- * Eagerly pre-warms @vladmandic/human faceres (1024-D), MediaPipe 478-pt FaceLandmarker,
- * and the enrolled patient vault in the background while on the Standby screen so Kiosk
- * begins matching on Frame 0 with zero waiting.
+ * Eagerly pre-warms @vladmandic/human faceres (1024-D), MediaPipe 478-pt FaceLandmarker
+ * (including GPU shader compilation on a blank canvas), Cloudflare Worker/Supabase connection,
+ * and the enrolled patient vault during Standby idle WITHOUT opening the camera.
  */
 export async function preloadKioskBiometricPipeline(
   apiClient: DrTechCaresApiClient,
@@ -304,15 +370,21 @@ export async function preloadKioskBiometricPipeline(
   if (inflightPreloadPromise) return inflightPreloadPromise;
 
   inflightPreloadPromise = (async () => {
+    const healthPing =
+      typeof apiClient.checkHealth === 'function'
+        ? apiClient.checkHealth().catch(() => undefined)
+        : Promise.resolve();
     await Promise.allSettled([
       warmupBiometricEngine(),
       getCachedPrimaryFaceLandmarker().then(() => {
         void getCachedRoiFaceLandmarker();
       }),
+      healthPing,
       fetchLiveBiometricsFromSupabase(apiClient).then((vault) => {
         setPreloadedBiometricVault(apiClient, vault);
       }),
     ]);
+    prewarmCompleted = true;
   })().finally(() => {
     inflightPreloadPromise = null;
   });
@@ -334,5 +406,9 @@ export function resetBiometricVisionCacheForTests(): void {
   lastCachedPoseDetectTs = 0;
   lastCachedHandDetectTs = 0;
   lastCachedRehabFaceDetectTs = 0;
+  primaryFaceDelegate = 'unknown';
+  primaryFaceWarmupMs = 0;
+  primaryFaceShaderCompiled = false;
+  prewarmCompleted = false;
 }
 

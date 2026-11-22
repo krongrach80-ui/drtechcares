@@ -3143,5 +3143,71 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       resetUnsupportedColumnsForTests();
     }
   });
+
+  it('enforces sliding-window failed-attempt rate limiting (429 RATE_LIMITED) on /api/biometric/verify while keeping valid patients unblocked', async () => {
+    const rlRouter = createCloudDelegatedRouter({});
+    const ptLogin = await callRouter(rlRouter, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const { token: ptToken } = (await ptLogin.json()) as { token: string };
+
+    const genuineVec = makeHybridEmbedding(3.41);
+    const imposterVec = makeHybridEmbedding(17.89);
+    const rawFrames = Array.from({ length: 10 }, (_, idx) => ({
+      pose: idx < 4 ? 'front' : idx < 6 ? 'left' : idx < 8 ? 'right' : 'nod',
+      vector: genuineVec,
+      qualityScore: 0.95,
+    }));
+    const enrollRes = await callRouter(rlRouter, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-RL-TEST',
+        fullName: 'คุณทดสอบ อัตราจำกัด',
+        age: 62,
+        diagnosis: 'Stroke Rehab',
+        frontalCentroid: genuineVec,
+        overallCentroid: genuineVec,
+        rawFrames,
+      },
+    });
+    expect(enrollRes.status).toBe(201);
+
+    // 15 consecutive failed imposter attempts from KIOSK-RL-A return 401
+    for (let i = 0; i < 15; i += 1) {
+      const failRes = await callRouter(rlRouter, '/api/biometric/verify', {
+        method: 'POST',
+        deviceId: 'KIOSK-RL-A',
+        body: { probeVector: imposterVec },
+      });
+      expect(failRes.status).toBe(401);
+    }
+
+    // 16th attempt from KIOSK-RL-A is strictly rate-limited with 429 RATE_LIMITED
+    const blockedRes = await callRouter(rlRouter, '/api/biometric/verify', {
+      method: 'POST',
+      deviceId: 'KIOSK-RL-A',
+      body: { probeVector: genuineVec },
+    });
+    expect(blockedRes.status).toBe(429);
+    const blockedJson = (await blockedRes.json()) as {
+      matched: boolean;
+      error: string;
+      failureReasons: string[];
+    };
+    expect(blockedJson.matched).toBe(false);
+    expect(blockedJson.error).toBe('RATE_LIMITED');
+    expect(blockedJson.failureReasons).toContain('TOO_MANY_FAILED_ATTEMPTS');
+
+    // Separate Kiosk device KIOSK-RL-B stays unaffected and authenticates genuine patient cleanly
+    const cleanRes = await callRouter(rlRouter, '/api/biometric/verify', {
+      method: 'POST',
+      deviceId: 'KIOSK-RL-B',
+      body: { probeVector: genuineVec },
+    });
+    expect(cleanRes.status).toBe(200);
+    expect(((await cleanRes.json()) as { matched: boolean }).matched).toBe(true);
+  });
 });
 
