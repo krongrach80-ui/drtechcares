@@ -91,6 +91,7 @@ import {
 } from './index';
 import {
   HYDRATE_TTL_MS,
+  fetchBiometricLibraryStatsFromSupabase,
   getSupabaseCircuitState,
   hydrateBiometricsLiveFromSupabase,
   hydrateStaffUsersOnly,
@@ -1660,14 +1661,19 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       return jsonResponse({ token, user: publicUser(user) });
     }
 
-    const shouldHydrateRequest =
-      forceSupabaseProbe ||
-      pathname === '/api/biometric/verify' ||
-      pathname === '/api/kiosk/pin-login' ||
-      pathname.includes('/assessments') ||
-      (method === 'GET' && pathname !== '/api/exercises' && pathname !== '/api/health');
+    const isLightweightBiometricEndpoint =
+      pathname === '/api/biometrics/stats' || pathname === '/api/biometric/verify';
 
-    await ensureHydrated(shouldHydrateRequest, forceSupabaseProbe);
+    const shouldHydrateRequest =
+      !isLightweightBiometricEndpoint &&
+      (forceSupabaseProbe ||
+        pathname === '/api/kiosk/pin-login' ||
+        pathname.includes('/assessments') ||
+        (method === 'GET' && pathname !== '/api/exercises' && pathname !== '/api/health'));
+
+    if (!isLightweightBiometricEndpoint) {
+      await ensureHydrated(shouldHydrateRequest, forceSupabaseProbe);
+    }
 
     const { user: authUser, token: authToken } = await authenticate(request, clientIp, clientDeviceId);
 
@@ -2568,35 +2574,41 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           : `Enrolled patient ${body.fullName} (${body.hn}) with ${framesCaptured}-frame 3D Face ID`,
       });
 
+      lastLiveBioHydratedAt = 0;
       return jsonResponse({ ok: true, patient, course: defaultCourse, persisted: persistRes.persisted }, 201);
     }
 
     if (pathname === '/api/biometrics/stats' && method === 'GET') {
-      let dbSynced = !supabase;
       if (supabase && !isSupabaseCircuitOpen(supabase)) {
-        const shouldRefreshLive =
-          forceSupabaseProbe ||
-          lastLiveBioHydratedAt === 0 ||
-          Date.now() - lastLiveBioHydratedAt >= LIVE_BIO_REFRESH_MS;
-        if (shouldRefreshLive) {
-          const liveRes = await hydrateBiometricsLiveFromSupabase(supabase, state, 1500);
-          if (liveRes.ok) {
-            lastLiveBioHydratedAt = Date.now();
-            dbSynced = true;
-          } else if (liveRes.errorCode === 'PERMISSION_DENIED') {
-            return jsonResponse(
-              {
-                error: 'PERMISSION_DENIED',
-                reasonCode: 'PERMISSION_DENIED',
-                message: 'Permission denied while reading biometric library stats',
-              },
-              403,
-            );
-          }
-        } else {
-          dbSynced = true;
+        const meta = await fetchBiometricLibraryStatsFromSupabase(supabase, state, 3500);
+        if (meta.ok) {
+          const payload: BiometricLibraryStatsResponse = {
+            totalActivePatients: meta.totalActivePatients,
+            compatibleTemplatesCount: meta.compatibleTemplatesCount,
+            versionMismatchCount: meta.versionMismatchCount,
+            missingTemplateCount: meta.missingTemplateCount,
+            filteredOutCount: meta.filteredOutCount,
+            activeEngine: 'human-faceres-1024d',
+            activeDimension: ACTIVE_BIOMETRIC_DIM,
+            activePipelineVersion: ACTIVE_BIOMETRIC_PIPELINE_VERSION,
+            dbSynced: true,
+            updatedAt: new Date().toISOString(),
+          };
+          return jsonResponse(payload);
+        }
+        if (meta.errorCode === 'PERMISSION_DENIED') {
+          return jsonResponse(
+            {
+              error: 'PERMISSION_DENIED',
+              reasonCode: 'PERMISSION_DENIED',
+              message: 'Permission denied while reading biometric library stats',
+            },
+            403,
+          );
         }
       }
+
+      const dbSynced = !supabase;
 
       const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
       const deletedPatientLower = new Set(
@@ -2930,6 +2942,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         'upsert_biometrics',
       );
 
+      lastLiveBioHydratedAt = 0;
       return jsonResponse({ ok: true, patient, persisted: persistRes.persisted }, 201);
     }
 
@@ -3071,12 +3084,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
       // Live DB refresh on verify so newly enrolled patients work immediately (without Kiosk reload)
       // and newly deleted patients are excluded immediately without waiting for the 60s full hydration TTL.
+      // Generous 4500ms budget avoids false timeouts when transferring 1024-D multi-angle rows on cold Worker isolates.
       let dbFresh = !supabase;
       if (supabase) {
         const needsLiveRefresh =
           lastLiveBioHydratedAt === 0 || Date.now() - lastLiveBioHydratedAt >= LIVE_BIO_REFRESH_MS;
         if (needsLiveRefresh) {
-          const liveSync = await hydrateBiometricsLiveFromSupabase(supabase, state, 1500);
+          const liveSync = await hydrateBiometricsLiveFromSupabase(supabase, state, 4500);
           if (liveSync.ok) {
             lastLiveBioHydratedAt = Date.now();
             dbFresh = true;
@@ -3100,28 +3114,33 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               },
               403,
             );
-          } else if (state.patients.length === 0) {
-            const errCode: BiometricVerifyReasonCode =
-              liveSync.errorCode === 'TIMEOUT' ? 'TIMEOUT' : 'SERVER_ERROR';
-            recordAudit({
-              eventType: 'BIOMETRIC_VERIFY_SYSTEM_ERROR',
-              actorRole: 'patient_kiosk',
-              actorId: clientDeviceId,
-              actorName: 'Kiosk Face Sensor',
-              ipAddress: clientIp,
-              deviceId: clientDeviceId,
-              detail: `Live biometric DB sync failed (${errCode})`,
-            });
-            return jsonResponse(
-              {
-                matched: false,
-                confidencePercent: 0,
-                error: errCode,
-                reasonCode: errCode,
-                message: 'ระบบตรวจสอบขัดข้องชั่วคราว กรุณาลองใหม่หรือเรียกเจ้าหน้าที่',
-              },
-              503,
-            );
+          } else {
+            const hasAnyCachedTemplate =
+              state.face_templates.length > 0 ||
+              state.patients.some((p) => Boolean(parseEmbeddingVector(p.masterEmbedding)));
+            if (!hasAnyCachedTemplate) {
+              const errCode: BiometricVerifyReasonCode =
+                liveSync.errorCode === 'TIMEOUT' ? 'TIMEOUT' : 'SERVER_ERROR';
+              recordAudit({
+                eventType: 'BIOMETRIC_VERIFY_SYSTEM_ERROR',
+                actorRole: 'patient_kiosk',
+                actorId: clientDeviceId,
+                actorName: 'Kiosk Face Sensor',
+                ipAddress: clientIp,
+                deviceId: clientDeviceId,
+                detail: `Live biometric DB sync failed (${errCode})`,
+              });
+              return jsonResponse(
+                {
+                  matched: false,
+                  confidencePercent: 0,
+                  error: errCode,
+                  reasonCode: errCode,
+                  message: 'ระบบตรวจสอบขัดข้องชั่วคราว กรุณาลองใหม่หรือเรียกเจ้าหน้าที่',
+                },
+                503,
+              );
+            }
           }
         } else {
           dbFresh = true;
@@ -3976,12 +3995,81 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
       failedBiometricVerifyLog.delete(verifyRateKey);
 
-      const course = state.patient_courses.find((c) => c.patientId === matchedPatientId) ?? null;
+      let course = state.patient_courses.find((c) => c.patientId === matchedPatientId) ?? null;
+      let patientSessions = state.rehab_sessions.filter((s) => s.patientId === patient.id);
+      if (supabase && !isSupabaseCircuitOpen(supabase) && !course) {
+        let schedTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const singleFetch = Promise.allSettled([
+            supabase
+              .from('patient_courses')
+              .select('id,patient_id,title,weekly_schedule,cognitive_modpack_id,updated_at')
+              .eq('patient_id', matchedPatientId)
+              .limit(1),
+            supabase
+              .from('rehab_sessions')
+              .select('id,patient_id,exercise_id,completed_sets,completed_reps,accuracy_percent,max_rom_deg,pain_stop_triggered,kinematics_replay,minigame_score,created_at')
+              .eq('patient_id', matchedPatientId)
+              .order('created_at', { ascending: false })
+              .limit(15),
+          ]);
+          const resTuple = await Promise.race([
+            singleFetch,
+            new Promise<null>((resolve) => {
+              schedTimer = setTimeout(() => resolve(null), 1000);
+            }),
+          ]);
+          if (Array.isArray(resTuple)) {
+            const [cRes, sRes] = resTuple;
+            if (
+              cRes.status === 'fulfilled' &&
+              !cRes.value.error &&
+              Array.isArray(cRes.value.data) &&
+              cRes.value.data[0]
+            ) {
+              const r = cRes.value.data[0] as Record<string, unknown>;
+              course = {
+                id: String(r.id),
+                patientId: String(r.patient_id),
+                title: String(r.title ?? ''),
+                weeklySchedule: Array.isArray(r.weekly_schedule) ? (r.weekly_schedule as DailyScheduleDay[]) : [],
+                cognitiveModpackId: String(r.cognitive_modpack_id ?? 'modpack-core-99'),
+                updatedAt: String(r.updated_at ?? new Date().toISOString()),
+              };
+              state.patient_courses = [
+                ...state.patient_courses.filter((c) => c.patientId !== matchedPatientId),
+                course,
+              ];
+            }
+            if (sRes.status === 'fulfilled' && !sRes.value.error && Array.isArray(sRes.value.data)) {
+              patientSessions = (sRes.value.data as Record<string, unknown>[]).map((s) => ({
+                id: String(s.id),
+                patientId: String(s.patient_id),
+                activityType: 'physio_exercise' as const,
+                exerciseId: String(s.exercise_id ?? ''),
+                exerciseName: String(s.exercise_id ?? ''),
+                completedSets: Number(s.completed_sets ?? 0),
+                completedReps: Number(s.completed_reps ?? 0),
+                accuracyPercent: Number(s.accuracy_percent ?? 0),
+                maxRomDeg: Number(s.max_rom_deg ?? 0),
+                painStopTriggered: Boolean(s.pain_stop_triggered),
+                aiFeedback: '',
+                kinematicsReplay: [],
+                createdAt: String(s.created_at ?? new Date().toISOString()),
+              }));
+            }
+          }
+        } catch {
+          // Best-effort schedule hydrate for matched patient
+        } finally {
+          if (schedTimer !== undefined) clearTimeout(schedTimer);
+        }
+      }
       const todayIdx = new Date().getDay();
       const todayRoutine = course?.weeklySchedule.find((d) => d.dayIndex === todayIdx) ?? null;
       const todaySchedule = resolveTodayPatientSchedule({
         rehabSchedules: patient.rehabSchedules,
-        rehabSessions: state.rehab_sessions.filter((s) => s.patientId === patient.id),
+        rehabSessions: patientSessions,
         todayRoutine,
         weeklySchedule: course?.weeklySchedule,
         nextAppointmentDate: patient.nextAppointmentDate,

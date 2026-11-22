@@ -635,7 +635,7 @@ export function resolveKioskFaceBoundingBoxOverlay(params: {
     return {
       variant: 'UNREGISTERED',
       boxColor: 'amber',
-      label: 'พบใบหน้าใกล้เคียงหลายคน — กรุณาขยับเข้าใกล้กล้อง',
+      label: 'พบใบหน้าตรงกับหลายบัญชีในระบบ — กรุณามองตรงหรือแจ้งเจ้าหน้าที่ตรวจสอบบัญชีซ้ำ',
       subLabel: null,
       displayName: null,
     };
@@ -1617,6 +1617,7 @@ export function KioskBiometricLoginView({
     patientId: null,
     scores: [],
   });
+  const ambiguousSeenInAttemptRef = useRef<boolean>(false);
   const [readinessHint, setReadinessHint] = useState<string | null>(null);
   const readinessHintRef = useRef<string | null>(null);
   const updateReadinessHint = useCallback((next: string | null) => {
@@ -1875,6 +1876,7 @@ export function KioskBiometricLoginView({
   const handleRestartScan = useCallback(() => {
     verifyingLockRef.current = false;
     serverStreakRef.current = { patientId: null, scores: [] };
+    ambiguousSeenInAttemptRef.current = false;
     qualityPassedFramesRef.current = 0;
     profilerRef.current.resetFaceAttempt();
     presenceRef.current.reset();
@@ -2597,6 +2599,9 @@ export function KioskBiometricLoginView({
                 !prevLatest ||
                 prevLatest.embedding.length !== extracted.embedding.length ||
                 cosineSimilarityNormalized(extracted.embedding, prevLatest.embedding) >= 0.86;
+              if (!samePersonContinuity) {
+                ambiguousSeenInAttemptRef.current = false;
+              }
               const baseWindow = samePersonContinuity ? probeWindowRef.current : [];
               const validWindow = baseWindow.filter(
                 (item) =>
@@ -2989,6 +2994,9 @@ export function KioskBiometricLoginView({
               // 3. Ambiguous Close Candidates -> calm neutral prompt, NEVER jump to "not_found"
               if (resolvedReason === 'AMBIGUOUS') {
                 isLastVerifyAmbiguous = true;
+                ambiguousSeenInAttemptRef.current = true;
+                bioVerifiedUnmatchedStartAt = 0;
+                unmatchedClearFramesRef.current = 0;
                 serverStreakRef.current = { patientId: null, scores: [] };
                 setBurstCount(0);
                 setLiveMatchHud(null);
@@ -3025,7 +3033,9 @@ export function KioskBiometricLoginView({
               }
 
               isLastVerifyAmbiguous = false;
-              setAmbiguousCloseHint(false);
+              if (!ambiguousSeenInAttemptRef.current) {
+                setAmbiguousCloseHint(false);
+              }
 
               // 4. Genuine Server-Verified Match -> Strict 3/3 Consecutive Same-Patient Voting with Low Variance!
               const matchedPat = verifyRes.patient;
@@ -3172,6 +3182,27 @@ export function KioskBiometricLoginView({
               serverStreakRef.current = { patientId: null, scores: [] };
               setBurstCount(0);
               setLiveMatchHud(null);
+              // If the exact same face just collided with multiple close accounts (AMBIGUOUS),
+              // do NOT mislabel them as "unregistered / account not found" on a subsequent jitter frame!
+              if (resolvedReason === 'BELOW_THRESHOLD' && ambiguousSeenInAttemptRef.current) {
+                setAmbiguousCloseHint(true);
+                const stayAmbigOverlay = resolveKioskFaceBoundingBoxOverlay({
+                  isSpoof: false,
+                  isBioVerified: true,
+                  rawCosine: (verifyRes.confidencePercent ?? 0) / 100,
+                  hasEvaluatedMatch: true,
+                  gatePassed: false,
+                  streak: 0,
+                  requiredStreak: KIOSK_FAST_MATCH_STREAK,
+                  confirmedCandidateName: null,
+                  distanceM: bioReportRef.current?.estimatedDistanceM ?? 1.8,
+                  isAmbiguous: true,
+                });
+                liveOverlayRef.current = stayAmbigOverlay;
+                setLiveOverlay(stayAmbigOverlay);
+                setScanStage('burst');
+                return;
+              }
               const noMatchOverlay = resolveKioskFaceBoundingBoxOverlay({
                 isSpoof: false,
                 isBioVerified: true,
@@ -4248,6 +4279,7 @@ export function KioskBiometricLoginView({
                 }
                 if (unreadyFrameStreak >= 18 && !verifyingLockRef.current && !asyncMatchInFlight) {
                   serverStreakRef.current = { patientId: null, scores: [] };
+                  ambiguousSeenInAttemptRef.current = false;
                   qualityPassedFramesRef.current = 0;
                   profilerRef.current.resetFaceAttempt();
                   setLiveMatchHud(null);

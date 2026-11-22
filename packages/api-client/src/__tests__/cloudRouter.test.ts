@@ -18,6 +18,7 @@ import {
 } from '../index';
 import {
   HYDRATE_TTL_MS,
+  fetchBiometricLibraryStatsFromSupabase,
   hydrateBiometricsLiveFromSupabase,
   hydrateStaffUsersOnly,
   hydrateStateFromSupabase,
@@ -3609,6 +3610,50 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     const timeoutRes = await hydrateBiometricsLiveFromSupabase(makeMockSb('timeout'), state, 1500);
     expect(timeoutRes.ok).toBe(false);
     expect(timeoutRes.errorCode).toBe('TIMEOUT');
+
+    // 4. Lightweight /api/biometrics/stats metadata fetch NEVER downloads history or embedding vectors!
+    const seenStatsCols: Record<string, string[]> = {};
+    const metaSb = {
+      from: (table: string) => {
+        const q: Record<string, unknown> = {};
+        q.select = (cols: string) => {
+          seenStatsCols[table] = [...(seenStatsCols[table] ?? []), cols];
+          return q;
+        };
+        q.limit = () => q;
+        q.then = (resolve: (val: unknown) => void) => {
+          if (table === 'patients') {
+            resolve({
+              data: [
+                { id: 'p-1', hn: 'HN-1', registration_status: 'active' },
+                { id: 'p-2', hn: 'HN-2', registration_status: 'archived' },
+              ],
+              error: null,
+            });
+            return;
+          }
+          if (table === 'patient_biometrics') {
+            resolve({
+              data: [
+                { patient_id: 'p-1', hn: 'HN-1', embedding_dim: 1024, biometric_engine: 'human-faceres-1024d' },
+                { patient_id: 'p-2', hn: 'HN-2', embedding_dim: 1024, biometric_engine: 'human-faceres-1024d' },
+              ],
+              error: null,
+            });
+            return;
+          }
+          resolve({ data: [], error: null });
+        };
+        return q;
+      },
+    } as unknown as SupabaseClient;
+    const statsMeta = await fetchBiometricLibraryStatsFromSupabase(metaSb, state, 2000);
+    expect(statsMeta.ok).toBe(true);
+    expect(statsMeta.totalActivePatients).toBe(1);
+    expect(statsMeta.compatibleTemplatesCount).toBe(1);
+    expect(statsMeta.filteredOutCount).toBe(1);
+    expect((seenStatsCols.patients ?? []).join(',')).not.toContain('history');
+    expect((seenStatsCols.patient_biometrics ?? []).join(',')).not.toContain('master_embedding');
   });
 });
 
