@@ -218,6 +218,69 @@ export interface UniversalEhrPackage {
   sessionHistory: RehabSessionHistoryEntry[];
 }
 
+export type ClinicalAssessmentTargetSide = 'LEFT' | 'RIGHT' | 'BOTH';
+
+export type ClinicalAssessmentSourceChannel =
+  | 'STAFF_MANUAL_ASSESSMENT'
+  | 'KIOSK_SESSION_AUTO_SYNC';
+
+export type ClinicalAssessmentMeasurementMethod =
+  | 'MANUAL_INPUT'
+  | 'CAMERA_AI_LIVE'
+  | 'KIOSK_SESSION_AUTO_SYNC';
+
+export interface ClinicalAssessmentRecord {
+  id: string;
+  patient_id: string;
+  patient_hn: string;
+  universal_link_code: string;
+  visit_number: number;
+  assessed_at: string;
+  facility_name: string;
+  assessor_staff_id: string;
+  assessor_staff_name: string;
+  exercise_code: string;
+  exercise_name_th: string;
+  target_side: ClinicalAssessmentTargetSide;
+  initial_score_0_to_6: 0 | 1 | 2 | 3 | 4 | 5 | 6;
+  measured_rom_deg: number;
+  target_rom_deg: number;
+  pain_vas_0_to_10?: number | null;
+  chief_complaint: string;
+  clinical_handover_note: string;
+  next_session_goal: string;
+  source_channel: ClinicalAssessmentSourceChannel;
+  measurement_method?: ClinicalAssessmentMeasurementMethod;
+  completed_reps?: number | null;
+  accuracy_percent?: number | null;
+  session_id?: string | null;
+  created_at?: string;
+}
+
+export interface CreateClinicalAssessmentPayload {
+  patient_hn?: string;
+  universal_link_code?: string;
+  assessed_at?: string;
+  facility_name: string;
+  assessor_staff_id?: string;
+  assessor_staff_name?: string;
+  exercise_code: string;
+  exercise_name_th: string;
+  target_side: ClinicalAssessmentTargetSide;
+  initial_score_0_to_6: number;
+  measured_rom_deg: number;
+  target_rom_deg: number;
+  pain_vas_0_to_10?: number | null;
+  chief_complaint: string;
+  clinical_handover_note: string;
+  next_session_goal: string;
+  source_channel?: ClinicalAssessmentSourceChannel;
+  measurement_method?: ClinicalAssessmentMeasurementMethod;
+  completed_reps?: number | null;
+  accuracy_percent?: number | null;
+  session_id?: string | null;
+}
+
 export interface PatientRecord {
   id: string;
   hn: string;
@@ -233,6 +296,7 @@ export interface PatientRecord {
   maxSafeRomDeg?: number;
   universalHealthLinkCode?: string;
   rehabSessionHistory?: RehabSessionHistoryEntry[];
+  clinicalAssessments?: ClinicalAssessmentRecord[];
   assignedPtId: string;
   delegatedToPtId: string | null;
   delegationNote: string | null;
@@ -1751,11 +1815,47 @@ export class DrTechCaresApiClient {
   }
 
   async appendMedicalNote(patientId: string, content: string): Promise<MedicalNoteRecord> {
-    const res = await this.request<{ note: MedicalNoteRecord }>(`/api/patients/${patientId}/notes`, {
+    const res = await this.request<{ note: MedicalNoteRecord }>(`/api/patients/${encodeURIComponent(patientId)}/notes`, {
       method: 'POST',
       body: JSON.stringify({ content }),
     });
     return res.note;
+  }
+
+  async listPatientClinicalAssessments(
+    patientId: string,
+    options?: { includeCrossFacility?: boolean },
+  ): Promise<ClinicalAssessmentRecord[]> {
+    const query =
+      options?.includeCrossFacility === false ? '?includeCrossFacility=false' : '?includeCrossFacility=true';
+    const res = await this.request<{ assessments: ClinicalAssessmentRecord[] }>(
+      `/api/patients/${encodeURIComponent(patientId)}/assessments${query}`,
+    );
+    return Array.isArray(res.assessments) ? res.assessments : [];
+  }
+
+  async createPatientClinicalAssessment(
+    patientId: string,
+    payload: CreateClinicalAssessmentPayload,
+  ): Promise<ClinicalAssessmentRecord> {
+    const res = await this.request<{ assessment: ClinicalAssessmentRecord }>(
+      `/api/patients/${encodeURIComponent(patientId)}/assessments`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    );
+    return res.assessment;
+  }
+
+  async deletePatientClinicalAssessment(
+    patientId: string,
+    assessmentId: string,
+  ): Promise<{ deleted: boolean }> {
+    return this.request<{ deleted: boolean }>(
+      `/api/patients/${encodeURIComponent(patientId)}/assessments/${encodeURIComponent(assessmentId)}`,
+      { method: 'DELETE' },
+    );
   }
 
   // Courses, Sessions, Reports

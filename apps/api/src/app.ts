@@ -9,6 +9,7 @@ import {
   verifyHybridBiometricIdentity,
 } from '@drtechcares/smart-biometric-core';
 import {
+  CLINICAL_EXERCISES,
   evaluateClinicalBiomechanicsPacket,
   isDeprecatedExerciseRecord,
 } from '@drtechcares/pose-engine';
@@ -1183,6 +1184,113 @@ export function createDrTechCaresApiApp(
       return;
     }
     db.state.medical_notes = db.state.medical_notes.filter((n) => n.id !== req.params.noteId);
+    db.save();
+    res.json({ deleted: true });
+  });
+
+  // Individual Patient Clinical Assessments (0-6 Scale) & Real Kiosk Session Merge
+  app.get('/api/patients/:id/assessments', requireAuth(), (req: AuthenticatedRequest, res: Response) => {
+    const pid = String(req.params.id);
+    const patient = db.state.patients.find((p) => p.id === pid || p.hn === pid);
+    const targetId = patient?.id ?? pid;
+    if (req.authUser!.role === 'patient' && req.authUser!.patientId !== targetId) {
+      res.status(403).json({ error: 'FORBIDDEN' });
+      return;
+    }
+    const list = (db.state.clinical_assessments ?? []).filter((a) => a.patient_id === targetId);
+    const byId = new Map(list.map((a) => [a.id, a]));
+    for (const s of db.state.rehab_sessions) {
+      if (s.patientId !== targetId || s.activityType !== 'physio_exercise' || s.maxRomDeg <= 0) continue;
+      const synthId = `kiosk-sess-${s.id}`;
+      if (byId.has(synthId)) continue;
+      const cat = CLINICAL_EXERCISES.find((e) => e.id === s.exerciseId || e.code === s.exerciseId);
+      const targetRom = cat?.detection.targetMinDeg ?? 120;
+      const ratio = targetRom > 0 ? s.maxRomDeg / targetRom : 0;
+      const derivedScore = (ratio >= 0.98 ? 6 : ratio >= 0.85 ? 5 : ratio >= 0.65 ? 4 : ratio >= 0.45 ? 3 : ratio >= 0.25 ? 2 : ratio > 0.05 ? 1 : 0) as 0 | 1 | 2 | 3 | 4 | 5 | 6;
+      byId.set(synthId, {
+        id: synthId,
+        patient_id: targetId,
+        patient_hn: patient?.hn ?? '',
+        universal_link_code: `DTC-EHR-${targetId.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 8)}`,
+        visit_number: 1,
+        assessed_at: s.createdAt,
+        facility_name: 'ตู้ Kiosk กายภาพอัจฉริยะ Dr.Tech.Care',
+        assessor_staff_id: 'SYSTEM_KIOSK_AUTO_SYNC',
+        assessor_staff_name: 'ระบบวัดผลอัตโนมัติ (Kiosk AI)',
+        exercise_code: (cat?.code || s.exerciseId).toUpperCase(),
+        exercise_name_th: cat?.name.th || s.exerciseName,
+        target_side: 'RIGHT',
+        initial_score_0_to_6: derivedScore,
+        measured_rom_deg: Number(s.maxRomDeg.toFixed(1)),
+        target_rom_deg: targetRom,
+        pain_vas_0_to_10: null,
+        chief_complaint: `ฝึกท่า ${cat?.name.th || s.exerciseName} ผ่านตู้ Kiosk (${s.completedReps} ครั้ง)`,
+        clinical_handover_note: s.aiFeedback || '',
+        next_session_goal: '',
+        source_channel: 'KIOSK_SESSION_AUTO_SYNC',
+        measurement_method: 'KIOSK_SESSION_AUTO_SYNC',
+        completed_reps: s.completedReps,
+        accuracy_percent: s.accuracyPercent,
+        session_id: s.id,
+        created_at: s.createdAt,
+      });
+    }
+    const sorted = Array.from(byId.values())
+      .sort((a, b) => new Date(a.assessed_at).getTime() - new Date(b.assessed_at).getTime())
+      .map((rec, idx) => ({ ...rec, visit_number: idx + 1 }));
+    res.json({ assessments: sorted });
+  });
+
+  app.post('/api/patients/:id/assessments', requireAuth(['super_admin', 'pt']), (req: AuthenticatedRequest, res: Response) => {
+    const pid = String(req.params.id);
+    const patient = db.state.patients.find((p) => p.id === pid || p.hn === pid);
+    if (!patient) {
+      res.status(404).json({ error: 'PATIENT_NOT_FOUND' });
+      return;
+    }
+    const rawScore = Number(req.body?.initial_score_0_to_6);
+    const rawRom = Number(req.body?.measured_rom_deg);
+    if (!Number.isInteger(rawScore) || rawScore < 0 || rawScore > 6 || !Number.isFinite(rawRom) || rawRom < 0 || rawRom > 220) {
+      res.status(400).json({ error: 'VALIDATION_ERROR' });
+      return;
+    }
+    const existing = (db.state.clinical_assessments ?? []).filter((a) => a.patient_id === patient.id);
+    const nextVisit = existing.reduce((m, r) => Math.max(m, r.visit_number), 0) + 1;
+    const assessedAt = typeof req.body?.assessed_at === 'string' && !Number.isNaN(new Date(req.body.assessed_at).getTime())
+      ? new Date(req.body.assessed_at).toISOString()
+      : new Date().toISOString();
+    const record = {
+      id: `assess-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+      patient_id: patient.id,
+      patient_hn: patient.hn,
+      universal_link_code: String(req.body?.universal_link_code || `DTC-EHR-${patient.id.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 8)}`),
+      visit_number: nextVisit,
+      assessed_at: assessedAt,
+      facility_name: String(req.body?.facility_name || 'ศูนย์กายภาพบำบัด Dr.Tech.Care สาขาหลัก'),
+      assessor_staff_id: String(req.body?.assessor_staff_id || req.authUser!.id),
+      assessor_staff_name: String(req.body?.assessor_staff_name || req.authUser!.fullName),
+      exercise_code: String(req.body?.exercise_code || 'STROKE_SHOULDER_FLEXION').toUpperCase(),
+      exercise_name_th: String(req.body?.exercise_name_th || ''),
+      target_side: (req.body?.target_side === 'LEFT' ? 'LEFT' : req.body?.target_side === 'BOTH' ? 'BOTH' : 'RIGHT') as 'LEFT' | 'RIGHT' | 'BOTH',
+      initial_score_0_to_6: rawScore as 0 | 1 | 2 | 3 | 4 | 5 | 6,
+      measured_rom_deg: Number(rawRom.toFixed(1)),
+      target_rom_deg: Number(Math.max(10, Math.min(220, Number(req.body?.target_rom_deg ?? 120))).toFixed(1)),
+      pain_vas_0_to_10: req.body?.pain_vas_0_to_10 === null || req.body?.pain_vas_0_to_10 === undefined ? null : Math.max(0, Math.min(10, Math.round(Number(req.body.pain_vas_0_to_10)))),
+      chief_complaint: String(req.body?.chief_complaint || ''),
+      clinical_handover_note: String(req.body?.clinical_handover_note || ''),
+      next_session_goal: String(req.body?.next_session_goal || ''),
+      source_channel: (req.body?.source_channel === 'KIOSK_SESSION_AUTO_SYNC' ? 'KIOSK_SESSION_AUTO_SYNC' : 'STAFF_MANUAL_ASSESSMENT') as 'STAFF_MANUAL_ASSESSMENT' | 'KIOSK_SESSION_AUTO_SYNC',
+      measurement_method: (req.body?.measurement_method === 'CAMERA_AI_LIVE' ? 'CAMERA_AI_LIVE' : req.body?.measurement_method === 'KIOSK_SESSION_AUTO_SYNC' ? 'KIOSK_SESSION_AUTO_SYNC' : 'MANUAL_INPUT') as 'MANUAL_INPUT' | 'CAMERA_AI_LIVE' | 'KIOSK_SESSION_AUTO_SYNC',
+      created_at: new Date().toISOString(),
+    };
+    db.state.clinical_assessments = [...(db.state.clinical_assessments ?? []), record];
+    db.save();
+    res.status(201).json({ assessment: record });
+  });
+
+  app.delete('/api/patients/:id/assessments/:assessmentId', requireAuth(['super_admin', 'pt']), (req: AuthenticatedRequest, res: Response) => {
+    const assessmentId = String(req.params.assessmentId);
+    db.state.clinical_assessments = (db.state.clinical_assessments ?? []).filter((a) => a.id !== assessmentId);
     db.save();
     res.json({ deleted: true });
   });

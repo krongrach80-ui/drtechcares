@@ -1,8 +1,12 @@
+import type { DrTechCaresApiClient, RehabSessionRecord } from '@drtechcares/api-client';
+import { CLINICAL_EXERCISES, parseExerciseCodeAndSide } from '@drtechcares/pose-engine';
 import {
   clampMahidolScore,
   filterAssessmentsForPatient,
+  isDemoSeedAssessment,
   isValidMahidolScore,
   resolvePatientUniversalLinkCode,
+  type AssessmentMeasurementMethod,
   type AssessmentTargetSide,
   type CreatePatientClinicalAssessmentInput,
   type MahidolScore0To6,
@@ -103,8 +107,8 @@ export interface DemoSeedPatientInfo extends PatientIdentityRef {
 }
 
 /**
- * Seeds realistic Thai longitudinal visits (2 linked branches, Visit 1 -> 2 -> 3)
- * for demo inspection ONLY when the selected patient currently has zero records.
+ * Seeds deterministic Thai longitudinal visits (2 linked branches, Visit 1 -> 2 -> 3)
+ * ONLY when explicitly requested via ensureDemoAssessmentsForPatient or seedDemoIfEmpty: true.
  */
 export function ensureDemoAssessmentsForPatient(
   patient: DemoSeedPatientInfo,
@@ -151,6 +155,7 @@ export function ensureDemoAssessmentsForPatient(
         'ประคองข้อไหล่ข้างที่อ่อนแรงระหว่างเริ่มยก แนะนำฝึกยกแนวราบต้านแรงโน้มถ่วงบางส่วน 2 เซต ระวังไม่ให้ยักไหล่หรือเอียงลำตัวช่วย',
       next_session_goal: 'เพิ่มมุมยกแขนด้านหน้าถึง 45 องศา และลดอาการตึงบ่า',
       source_channel: 'STAFF_MANUAL_ASSESSMENT',
+      measurement_method: 'MANUAL_INPUT',
       created_at: new Date(now - 14 * dayMs).toISOString(),
     },
     {
@@ -175,6 +180,7 @@ export function ensureDemoAssessmentsForPatient(
         'ดูประวัติส่งต่อผ่าน Universal Link แล้ว เพิ่มการฝึกค้างท่าที่มุม 45 องศา 3 วินาที เตือนให้ผู้ป่วยควบคุมศอกให้เหยียดตรงตลอดจังหวะยก',
       next_session_goal: 'ตั้งเป้าเพิ่มองศาข้อไหล่แตะ 60 องศา ในสัปดาห์ถัดไป',
       source_channel: 'STAFF_MANUAL_ASSESSMENT',
+      measurement_method: 'MANUAL_INPUT',
       created_at: new Date(now - 7 * dayMs).toISOString(),
     },
     {
@@ -199,6 +205,7 @@ export function ensureDemoAssessmentsForPatient(
         'สามารถต้านแรงต้านระดับปานกลางช่วงท้ายได้แล้ว ให้เริ่มฝึกเสริมผ่านตู้ Kiosk และเตรียมขยับสู่กิจกรรมหยิบจับสิ่งของบนชั้นระดับอก',
       next_session_goal: 'ขยับมุมข้อไหล่สู่ 85-90 องศา และประเมินระดับ 5 ในรอบหน้า',
       source_channel: 'STAFF_MANUAL_ASSESSMENT',
+      measurement_method: 'MANUAL_INPUT',
       created_at: new Date(now - 2 * dayMs).toISOString(),
     },
   ];
@@ -217,6 +224,13 @@ function normalizeSupabaseRow(row: Record<string, unknown>): PatientClinicalAsse
     channelRaw === 'KIOSK_SESSION_AUTO_SYNC'
       ? 'KIOSK_SESSION_AUTO_SYNC'
       : 'STAFF_MANUAL_ASSESSMENT';
+  const methodRaw = String(row.measurement_method ?? '');
+  const measurementMethod: AssessmentMeasurementMethod =
+    methodRaw === 'CAMERA_AI_LIVE'
+      ? 'CAMERA_AI_LIVE'
+      : methodRaw === 'KIOSK_SESSION_AUTO_SYNC' || sourceChannel === 'KIOSK_SESSION_AUTO_SYNC'
+        ? 'KIOSK_SESSION_AUTO_SYNC'
+        : 'MANUAL_INPUT';
 
   return {
     id: String(row.id ?? `assess-${Date.now()}`),
@@ -242,8 +256,117 @@ function normalizeSupabaseRow(row: Record<string, unknown>): PatientClinicalAsse
     clinical_handover_note: String(row.clinical_handover_note ?? ''),
     next_session_goal: String(row.next_session_goal ?? ''),
     source_channel: sourceChannel,
+    measurement_method: measurementMethod,
+    completed_reps:
+      typeof row.completed_reps === 'number' && Number.isFinite(row.completed_reps)
+        ? Math.round(row.completed_reps)
+        : null,
+    accuracy_percent:
+      typeof row.accuracy_percent === 'number' && Number.isFinite(row.accuracy_percent)
+        ? Math.round(row.accuracy_percent)
+        : null,
+    session_id: typeof row.session_id === 'string' ? row.session_id : null,
     created_at: row.created_at ? String(row.created_at) : undefined,
   };
+}
+
+export function deriveScore0To6FromRomRatio(
+  measuredRomDeg: number,
+  targetRomDeg: number,
+): MahidolScore0To6 {
+  const ratio = targetRomDeg > 0 ? measuredRomDeg / targetRomDeg : 0;
+  if (ratio >= 0.98) return 6;
+  if (ratio >= 0.85) return 5;
+  if (ratio >= 0.65) return 4;
+  if (ratio >= 0.45) return 3;
+  if (ratio >= 0.25) return 2;
+  if (ratio > 0.05) return 1;
+  return 0;
+}
+
+export function convertRehabSessionToAssessment(
+  session: RehabSessionRecord,
+  patient: DemoSeedPatientInfo,
+): PatientClinicalAssessmentRecord | null {
+  if (
+    session.activityType !== 'physio_exercise' ||
+    session.exerciseId === 'CLINIC_CHECKIN' ||
+    !(typeof session.maxRomDeg === 'number' && Number.isFinite(session.maxRomDeg) && session.maxRomDeg > 0)
+  ) {
+    return null;
+  }
+
+  const parsed = parseExerciseCodeAndSide(session.exerciseId, session.bodySide);
+  const catalog = CLINICAL_EXERCISES.find(
+    (e) => e.code === parsed.baseCode || e.id === session.exerciseId,
+  );
+  const exCode = (catalog?.code || parsed.baseCode || session.exerciseId).toUpperCase();
+  const targetRom = Number((catalog?.detection.targetMinDeg ?? 120).toFixed(1));
+  const romRounded = Number(session.maxRomDeg.toFixed(1));
+  const score =
+    typeof session.motorScoreAtSession === 'number' && Number.isFinite(session.motorScoreAtSession)
+      ? clampMahidolScore(session.motorScoreAtSession)
+      : deriveScore0To6FromRomRatio(romRounded, targetRom);
+  const side: AssessmentTargetSide =
+    parsed.side === 'LEFT' ? 'LEFT' : parsed.side === 'BOTH' ? 'BOTH' : 'RIGHT';
+
+  return {
+    id: `kiosk-sess-${session.id}`,
+    patient_id: session.patientId,
+    patient_hn: patient.hn ?? '',
+    universal_link_code: resolvePatientUniversalLinkCode(patient),
+    visit_number: 1,
+    assessed_at: session.createdAt,
+    facility_name: session.facilityName || 'ตู้ Kiosk กายภาพอัจฉริยะ Dr.Tech.Care',
+    assessor_staff_id: 'SYSTEM_KIOSK_AUTO_SYNC',
+    assessor_staff_name: session.recordedByPtName || 'ระบบวัดผลอัตโนมัติ (Kiosk AI)',
+    exercise_code: exCode,
+    exercise_name_th: catalog?.name.th || session.exerciseName || exCode,
+    target_side: side,
+    initial_score_0_to_6: score,
+    measured_rom_deg: romRounded,
+    target_rom_deg: targetRom,
+    pain_vas_0_to_10: null,
+    chief_complaint: `ฝึกท่า ${catalog?.name.th || session.exerciseName || exCode} ผ่านตู้ Kiosk (${session.completedReps} ครั้ง / ความแม่นยำ ${Math.round(session.accuracyPercent ?? 100)}%)`,
+    clinical_handover_note:
+      session.aiFeedback ||
+      `วัดมุมข้อต่อสูงสุดจริงได้ ${romRounded.toFixed(1)}° เทียบเป้าหมาย ${targetRom.toFixed(1)}°`,
+    next_session_goal: `ติดตามพัฒนาการท่า ${catalog?.name.th || session.exerciseName || exCode} ต่อเนื่อง`,
+    source_channel: 'KIOSK_SESSION_AUTO_SYNC',
+    measurement_method: 'KIOSK_SESSION_AUTO_SYNC',
+    completed_reps: session.completedReps ?? null,
+    accuracy_percent:
+      typeof session.accuracyPercent === 'number' ? Math.round(session.accuracyPercent) : null,
+    session_id: session.id,
+    created_at: session.createdAt,
+  };
+}
+
+function hasEquivalentAssessment(
+  map: Map<string, PatientClinicalAssessmentRecord>,
+  candidate: PatientClinicalAssessmentRecord,
+): boolean {
+  const candTs = new Date(candidate.assessed_at).getTime();
+  for (const existing of map.values()) {
+    if (existing.id === candidate.id) return true;
+    if (
+      candidate.session_id &&
+      (existing.session_id === candidate.session_id || existing.id === candidate.session_id)
+    ) {
+      return true;
+    }
+    if (existing.exercise_code.toUpperCase() !== candidate.exercise_code.toUpperCase()) continue;
+    const existTs = new Date(existing.assessed_at).getTime();
+    if (
+      Number.isFinite(candTs) &&
+      Number.isFinite(existTs) &&
+      Math.abs(candTs - existTs) <= 90_000 &&
+      Math.abs(existing.measured_rom_deg - candidate.measured_rom_deg) <= 0.6
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 5000): Promise<Response> {
@@ -261,15 +384,60 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 5000
 
 export async function listPatientAssessments(
   patient: DemoSeedPatientInfo,
-  options?: { includeCrossFacility?: boolean; seedDemoIfEmpty?: boolean },
+  options?: {
+    includeCrossFacility?: boolean;
+    seedDemoIfEmpty?: boolean;
+    excludeDemoRows?: boolean;
+    apiClient?: DrTechCaresApiClient;
+    sessions?: readonly RehabSessionRecord[];
+  },
 ): Promise<PatientClinicalAssessmentRecord[]> {
-  const localAll = readStorageRecords();
+  let localAll = readStorageRecords();
+  if (options?.excludeDemoRows) {
+    const cleanedLocal = localAll.filter((item) => !isDemoSeedAssessment(item));
+    if (cleanedLocal.length !== localAll.length) {
+      writeStorageRecords(cleanedLocal);
+      localAll = cleanedLocal;
+    }
+  }
+
   const byId = new Map<string, PatientClinicalAssessmentRecord>();
   for (const item of localAll) {
+    if (options?.excludeDemoRows && isDemoSeedAssessment(item)) continue;
     byId.set(item.id, item);
   }
 
-  const supa = getSupabaseRestConfig();
+  let loadedFromServerApi = false;
+  if (options?.apiClient) {
+    try {
+      const apiRows = await options.apiClient.listPatientClinicalAssessments(patient.id, {
+        includeCrossFacility: options.includeCrossFacility !== false,
+      });
+      if (Array.isArray(apiRows)) {
+        loadedFromServerApi = true;
+        const persistableToCache: PatientClinicalAssessmentRecord[] = [];
+        for (const row of apiRows) {
+          if (options.excludeDemoRows && isDemoSeedAssessment(row)) continue;
+          const norm = normalizeSupabaseRow(row as unknown as Record<string, unknown>);
+          byId.set(norm.id, norm);
+          if (!norm.id.startsWith('kiosk-sess-') && !norm.id.startsWith('hist-sess-')) {
+            persistableToCache.push(norm);
+          }
+        }
+        if (persistableToCache.length > 0) {
+          const cacheMap = new Map(localAll.map((r) => [r.id, r]));
+          for (const rec of persistableToCache) {
+            cacheMap.set(rec.id, rec);
+          }
+          writeStorageRecords(Array.from(cacheMap.values()));
+        }
+      }
+    } catch {
+      // Fall back safely to direct Supabase REST / local records
+    }
+  }
+
+  const supa = !loadedFromServerApi ? getSupabaseRestConfig() : null;
   if (supa && typeof fetch === 'function') {
     try {
       const linkCode = resolvePatientUniversalLinkCode(patient);
@@ -296,13 +464,18 @@ export async function listPatientAssessments(
           let updatedLocal = false;
           for (const rawRow of remoteRows) {
             const norm = normalizeSupabaseRow(rawRow);
+            if (options?.excludeDemoRows && isDemoSeedAssessment(norm)) continue;
             if (!byId.has(norm.id)) {
               byId.set(norm.id, norm);
               updatedLocal = true;
             }
           }
           if (updatedLocal) {
-            writeStorageRecords(Array.from(byId.values()));
+            writeStorageRecords(
+              Array.from(byId.values()).filter(
+                (r) => !r.id.startsWith('kiosk-sess-') && !r.id.startsWith('hist-sess-'),
+              ),
+            );
           }
         }
       }
@@ -311,21 +484,51 @@ export async function listPatientAssessments(
     }
   }
 
+  // Merge real Kiosk physio sessions provided by caller (deduplicated against persisted assessments)
+  if (options?.sessions && options.sessions.length > 0) {
+    for (const s of options.sessions) {
+      if (s.patientId !== patient.id) continue;
+      const converted = convertRehabSessionToAssessment(s, patient);
+      if (!converted) continue;
+      if (!hasEquivalentAssessment(byId, converted)) {
+        byId.set(converted.id, converted);
+      }
+    }
+  }
+
   let merged = Array.from(byId.values());
-  if (options?.seedDemoIfEmpty && filterAssessmentsForPatient(merged, patient).length === 0) {
+  if (
+    options?.seedDemoIfEmpty &&
+    !options?.excludeDemoRows &&
+    filterAssessmentsForPatient(merged, patient).length === 0
+  ) {
     ensureDemoAssessmentsForPatient(patient);
     merged = readStorageRecords();
   }
-  if (options?.includeCrossFacility === false) {
-    return merged
-      .filter((r) => r.patient_id === patient.id)
-      .sort((a, b) => new Date(a.assessed_at).getTime() - new Date(b.assessed_at).getTime());
+
+  const scoped =
+    options?.includeCrossFacility === false
+      ? merged
+          .filter((r) => r.patient_id === patient.id)
+          .sort((a, b) => new Date(a.assessed_at).getTime() - new Date(b.assessed_at).getTime())
+      : filterAssessmentsForPatient(merged, patient);
+
+  // Re-index visit numbers sequentially only when synthetic Kiosk session rows are merged in
+  const hasSyntheticKioskRows = scoped.some(
+    (r) => r.id.startsWith('kiosk-sess-') || r.id.startsWith('hist-sess-'),
+  );
+  if (hasSyntheticKioskRows) {
+    return scoped.map((rec, idx) => ({
+      ...rec,
+      visit_number: idx + 1,
+    }));
   }
-  return filterAssessmentsForPatient(merged, patient);
+  return scoped;
 }
 
 export async function createPatientAssessment(
   input: CreatePatientClinicalAssessmentInput,
+  apiClient?: DrTechCaresApiClient,
 ): Promise<PatientClinicalAssessmentRecord> {
   if (!isValidMahidolScore(input.initial_score_0_to_6)) {
     throw new Error(
@@ -354,6 +557,47 @@ export async function createPatientAssessment(
   const linkCode =
     input.universal_link_code.trim().toUpperCase() ||
     resolvePatientUniversalLinkCode({ id: input.patient_id, hn: input.patient_hn });
+  const sourceChannel = input.source_channel ?? 'STAFF_MANUAL_ASSESSMENT';
+  const measurementMethod: AssessmentMeasurementMethod =
+    input.measurement_method ??
+    (sourceChannel === 'KIOSK_SESSION_AUTO_SYNC' ? 'KIOSK_SESSION_AUTO_SYNC' : 'MANUAL_INPUT');
+
+  // Prefer server API persistence (Cloudflare Worker + Supabase service role) when available
+  if (apiClient) {
+    try {
+      const savedRemote = await apiClient.createPatientClinicalAssessment(input.patient_id.trim(), {
+        patient_hn: (input.patient_hn || '').trim(),
+        universal_link_code: linkCode,
+        assessed_at: nowIso,
+        facility_name: input.facility_name.trim() || CLINICAL_FACILITY_PRESETS[0],
+        assessor_staff_id: input.assessor_staff_id.trim(),
+        assessor_staff_name: input.assessor_staff_name.trim() || 'บุคลากรคลินิกกายภาพบำบัด',
+        exercise_code: input.exercise_code.trim().toUpperCase(),
+        exercise_name_th: input.exercise_name_th.trim(),
+        target_side: input.target_side,
+        initial_score_0_to_6: input.initial_score_0_to_6,
+        measured_rom_deg: safeRom,
+        target_rom_deg: targetRom,
+        pain_vas_0_to_10:
+          input.pain_vas_0_to_10 === null || input.pain_vas_0_to_10 === undefined
+            ? null
+            : Math.max(0, Math.min(10, Math.round(input.pain_vas_0_to_10))),
+        chief_complaint: input.chief_complaint.trim(),
+        clinical_handover_note: input.clinical_handover_note.trim(),
+        next_session_goal: input.next_session_goal.trim(),
+        source_channel: sourceChannel,
+        measurement_method: measurementMethod,
+        completed_reps: input.completed_reps ?? null,
+        accuracy_percent: input.accuracy_percent ?? null,
+        session_id: input.session_id ?? null,
+      });
+      const normalized = normalizeSupabaseRow(savedRemote as unknown as Record<string, unknown>);
+      writeStorageRecords([...existing.filter((r) => r.id !== normalized.id), normalized]);
+      return normalized;
+    } catch {
+      // Fall back to local + direct REST persistence if network/server unreachable
+    }
+  }
 
   const newRecord: PatientClinicalAssessmentRecord = {
     id:
@@ -381,7 +625,11 @@ export async function createPatientAssessment(
     chief_complaint: input.chief_complaint.trim(),
     clinical_handover_note: input.clinical_handover_note.trim(),
     next_session_goal: input.next_session_goal.trim(),
-    source_channel: input.source_channel ?? 'STAFF_MANUAL_ASSESSMENT',
+    source_channel: sourceChannel,
+    measurement_method: measurementMethod,
+    completed_reps: input.completed_reps ?? null,
+    accuracy_percent: input.accuracy_percent ?? null,
+    session_id: input.session_id ?? null,
     created_at: nowIso,
   };
 
@@ -415,18 +663,18 @@ export async function createPatientAssessment(
   return newRecord;
 }
 
-export function deriveScore0To6FromRomRatio(
-  measuredRomDeg: number,
-  targetRomDeg: number,
-): MahidolScore0To6 {
-  const ratio = targetRomDeg > 0 ? measuredRomDeg / targetRomDeg : 0;
-  if (ratio >= 0.98) return 6;
-  if (ratio >= 0.85) return 5;
-  if (ratio >= 0.65) return 4;
-  if (ratio >= 0.45) return 3;
-  if (ratio >= 0.25) return 2;
-  if (ratio > 0.05) return 1;
-  return 0;
+export async function deletePatientAssessment(
+  patientId: string,
+  assessmentId: string,
+  apiClient?: DrTechCaresApiClient,
+): Promise<boolean> {
+  if (apiClient) {
+    await apiClient.deletePatientClinicalAssessment(patientId, assessmentId);
+  }
+  const existing = readStorageRecords();
+  const next = existing.filter((r) => r.id !== assessmentId);
+  writeStorageRecords(next);
+  return true;
 }
 
 export async function syncKioskSessionToAssessment(params: {
@@ -479,6 +727,7 @@ export async function syncKioskSessionToAssessment(params: {
     clinical_handover_note: `ซิงก์ผลอัตโนมัติจากตู้ Kiosk: วัดมุมข้อต่อสูงสุดได้ ${safeMeasuredRom.toFixed(1)} องศา (เป้าหมาย ${params.targetRomDeg.toFixed(1)} องศา)`,
     next_session_goal: `ติดตามพัฒนาการท่า ${params.exerciseNameTh} และประเมินคะแนนมหิดลโดยนักกายภาพ`,
     source_channel: 'KIOSK_SESSION_AUTO_SYNC',
+    measurement_method: 'KIOSK_SESSION_AUTO_SYNC',
+    completed_reps: params.completedReps ?? null,
   });
 }
-

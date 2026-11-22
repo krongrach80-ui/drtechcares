@@ -1011,7 +1011,7 @@ function playEmergencyChime() {
     }
     const ctx = sharedEmergencyAudioCtx;
     if (ctx.state === 'suspended') {
-      void ctx.resume().catch(() => {});
+      void ctx.resume().catch(() => { });
     }
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
@@ -1687,7 +1687,7 @@ export function ClinicalStaffPortalShell({
           prevOpenCallCountRef.current = nextOpen;
           setStaffCalls(sortNewestFirst(calls));
         })
-        .catch(() => {});
+        .catch(() => { });
     }, 30_000);
 
     return () => {
@@ -1706,7 +1706,7 @@ export function ClinicalStaffPortalShell({
     const needsSync =
       exercises.some((ex) => isDeprecatedExerciseRecord(ex)) ||
       mergeDuplicateSideExercises(exercises).filter((ex) => STROKE_CANONICAL_EXERCISE_SET.has(ex.code)).length <
-        CLINICAL_EXERCISES.length;
+      CLINICAL_EXERCISES.length;
     if (!needsSync) return;
     exerciseLibrarySyncAttemptedRef.current = true;
     let cancelled = false;
@@ -1740,14 +1740,14 @@ export function ClinicalStaffPortalShell({
             course.weeklySchedule.length === 7
               ? course.weeklySchedule
               : Array.from({ length: 7 }, (_, dayIndex) => ({
-                  dayIndex,
-                  dayType: 'rest',
-                  activityType: 'minigame',
-                  difficulty: 'easy',
-                  label: 'พักฟื้น',
-                  exercises: [],
-                  cognitiveModpackId: defaultModpackId,
-                })),
+                dayIndex,
+                dayType: 'rest',
+                activityType: 'minigame',
+                difficulty: 'easy',
+                label: 'พักฟื้น',
+                exercises: [],
+                cognitiveModpackId: defaultModpackId,
+              })),
           );
         }
       })
@@ -2069,10 +2069,10 @@ export function ClinicalStaffPortalShell({
         prev.map((p) =>
           p.assignedPtId === target.id || p.delegatedToPtId === target.id
             ? {
-                ...p,
-                assignedPtId: p.assignedPtId === target.id ? '' : p.assignedPtId,
-                delegatedToPtId: p.delegatedToPtId === target.id ? null : p.delegatedToPtId,
-              }
+              ...p,
+              assignedPtId: p.assignedPtId === target.id ? '' : p.assignedPtId,
+              delegatedToPtId: p.delegatedToPtId === target.id ? null : p.delegatedToPtId,
+            }
             : p,
         ),
       );
@@ -2168,12 +2168,12 @@ export function ClinicalStaffPortalShell({
         prev.map((p) =>
           p.id === delegationPatientId
             ? {
-                ...p,
-                ...updated,
-                delegatedToPtId: updated.delegatedToPtId ?? delegationTargetPtId,
-                delegationDate: updated.delegationDate ?? cleanDate,
-                delegationNote: updated.delegationNote ?? (cleanNote || null),
-              }
+              ...p,
+              ...updated,
+              delegatedToPtId: updated.delegatedToPtId ?? delegationTargetPtId,
+              delegationDate: updated.delegationDate ?? cleanDate,
+              delegationNote: updated.delegationNote ?? (cleanNote || null),
+            }
             : p,
         ),
       );
@@ -2332,19 +2332,19 @@ export function ClinicalStaffPortalShell({
     const completedSessionDates = new Set(
       selectedSchedulePatient
         ? sessions
-            .filter(
-              (s) =>
-                s.patientId === selectedSchedulePatient.id &&
-                s.exerciseId !== 'CLINIC_CHECKIN' &&
-                !s.painStopTriggered &&
-                (s.activityType === 'minigame' || (s.completedReps ?? 0) > 0 || (s.completedSets ?? 0) > 0),
-            )
-            .map((s) => {
-              if (!s.createdAt) return '';
-              const d = new Date(s.createdAt);
-              return Number.isNaN(d.getTime()) ? (s.createdAt || '').slice(0, 10) : formatLocalIsoDate(d);
-            })
-            .filter(Boolean)
+          .filter(
+            (s) =>
+              s.patientId === selectedSchedulePatient.id &&
+              s.exerciseId !== 'CLINIC_CHECKIN' &&
+              !s.painStopTriggered &&
+              (s.activityType === 'minigame' || (s.completedReps ?? 0) > 0 || (s.completedSets ?? 0) > 0),
+          )
+          .map((s) => {
+            if (!s.createdAt) return '';
+            const d = new Date(s.createdAt);
+            return Number.isNaN(d.getTime()) ? (s.createdAt || '').slice(0, 10) : formatLocalIsoDate(d);
+          })
+          .filter(Boolean)
         : [],
     );
 
@@ -2367,17 +2367,17 @@ export function ClinicalStaffPortalShell({
       const firstCustomBaseCode =
         customForDay.length > 0
           ? parseExerciseCodeAndSide(
-              customForDay[0].effectiveCode || customForDay[0].exerciseCode || customForDay[0].exerciseId,
-              customForDay[0].side,
-            ).baseCode
+            customForDay[0].effectiveCode || customForDay[0].exerciseCode || customForDay[0].exerciseId,
+            customForDay[0].side,
+          ).baseCode
           : null;
       const firstCustomEx = firstCustomBaseCode
         ? exercises.find(
-            (ex) =>
-              ex.id === customForDay[0].exerciseId ||
-              ex.code === firstCustomBaseCode ||
-              parseExerciseCodeAndSide(ex.code || ex.id).baseCode === firstCustomBaseCode,
-          )
+          (ex) =>
+            ex.id === customForDay[0].exerciseId ||
+            ex.code === firstCustomBaseCode ||
+            parseExerciseCodeAndSide(ex.code || ex.id).baseCode === firstCustomBaseCode,
+        )
         : undefined;
       const firstCustomName = firstCustomEx ? firstCustomEx.name[lang] || firstCustomEx.name.th : null;
       const planDay = weeklySchedule[weekday];
@@ -2477,9 +2477,8 @@ export function ClinicalStaffPortalShell({
     <div className="min-h-screen flex bg-gradient-to-br from-[#F0FDF9] via-[#F0F7FF] to-[#F8FAFC] text-[#0F4C81]">
       {/* Clinical Blue-Teal Left Sidebar */}
       <aside
-        className={`${
-          sidebarCollapsed ? 'w-20 shrink-0' : 'w-64 shrink-0'
-        } bg-gradient-to-b from-[#0F4C81] via-[#0284C7] to-[#0D9488] text-white flex flex-col justify-between border-r border-sky-200/40 transition-all duration-200 select-none shadow-lg`}
+        className={`${sidebarCollapsed ? 'w-20 shrink-0' : 'w-64 shrink-0'
+          } bg-gradient-to-b from-[#0F4C81] via-[#0284C7] to-[#0D9488] text-white flex flex-col justify-between border-r border-sky-200/40 transition-all duration-200 select-none shadow-lg`}
       >
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="flex h-[72px] items-center justify-between gap-2 px-4 border-b border-white/20">
@@ -2537,11 +2536,10 @@ export function ClinicalStaffPortalShell({
                   key={item.id}
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`w-full h-11 flex items-center justify-between gap-3 rounded-xl px-3.5 text-left whitespace-nowrap overflow-hidden text-ellipsis transition cursor-pointer ${
-                    isActive
+                  className={`w-full h-11 flex items-center justify-between gap-3 rounded-xl px-3.5 text-left whitespace-nowrap overflow-hidden text-ellipsis transition cursor-pointer ${isActive
                       ? 'bg-white text-[#0F4C81] font-extrabold shadow-md'
                       : 'text-white/90 hover:bg-white/15 hover:text-white'
-                  }`}
+                    }`}
                 >
                   <span className="flex items-center gap-3 min-w-0 overflow-hidden">
                     <Icon className={`h-4 w-4 shrink-0 ${isActive ? 'text-[#0284C7]' : ''}`} />
@@ -2563,11 +2561,10 @@ export function ClinicalStaffPortalShell({
               <button
                 type="button"
                 onClick={() => setActiveTab('profile')}
-                className={`w-full rounded-2xl border p-3 text-left transition cursor-pointer ${
-                  activeTab === 'profile'
+                className={`w-full rounded-2xl border p-3 text-left transition cursor-pointer ${activeTab === 'profile'
                     ? 'border-white/70 bg-white/25 shadow-md'
                     : 'border-white/25 bg-white/15 hover:border-white/50 hover:bg-white/20'
-                }`}
+                  }`}
               >
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-200">
@@ -2638,14 +2635,12 @@ export function ClinicalStaffPortalShell({
             <div className="flex h-9 items-center justify-between rounded-xl border border-white/25 bg-white/15 px-3 text-[11px] whitespace-nowrap">
               <span className="text-white/90 truncate">{locale.sidebar.dbCloud}</span>
               <span
-                className={`inline-flex items-center gap-1 font-bold shrink-0 ${
-                  cloudHealth.dbConnected ? 'text-emerald-200' : 'text-rose-200'
-                }`}
+                className={`inline-flex items-center gap-1 font-bold shrink-0 ${cloudHealth.dbConnected ? 'text-emerald-200' : 'text-rose-200'
+                  }`}
               >
                 <span
-                  className={`h-2 w-2 rounded-full ${
-                    cloudHealth.dbConnected ? 'bg-emerald-300 animate-status-halo' : 'bg-rose-300'
-                  }`}
+                  className={`h-2 w-2 rounded-full ${cloudHealth.dbConnected ? 'bg-emerald-300 animate-status-halo' : 'bg-rose-300'
+                    }`}
                 />
                 {cloudHealth.dbConnected ? locale.sidebar.dbNormal : locale.sidebar.dbOffline}
               </span>
@@ -2695,9 +2690,8 @@ export function ClinicalStaffPortalShell({
                   key={code}
                   type="button"
                   onClick={() => setLang(code)}
-                  className={`w-[68px] h-8 inline-flex items-center justify-center whitespace-nowrap rounded-full text-[11px] transition cursor-pointer ${
-                    lang === code ? 'bg-white text-emerald-700 shadow-sm border border-emerald-200' : 'text-slate-500'
-                  }`}
+                  className={`w-[68px] h-8 inline-flex items-center justify-center whitespace-nowrap rounded-full text-[11px] transition cursor-pointer ${lang === code ? 'bg-white text-emerald-700 shadow-sm border border-emerald-200' : 'text-slate-500'
+                    }`}
                 >
                   {code === 'cn' ? 'CN 中文' : code === 'th' ? 'TH ไทย' : 'GB EN'}
                 </button>
@@ -2712,11 +2706,10 @@ export function ClinicalStaffPortalShell({
                   ? `Worker API Latency: ${cloudHealth.latencyMs}ms (คลิกเพื่อตรวจสอบใหม่)`
                   : 'Test Worker API & Cloud Health'
               }
-              className={`whitespace-nowrap h-9 min-w-[140px] inline-flex items-center justify-center gap-1.5 rounded-full border px-3.5 font-bold cursor-pointer transition shrink-0 ${
-                cloudHealth.online
+              className={`whitespace-nowrap h-9 min-w-[140px] inline-flex items-center justify-center gap-1.5 rounded-full border px-3.5 font-bold cursor-pointer transition shrink-0 ${cloudHealth.online
                   ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
                   : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
-              }`}
+                }`}
             >
               {cloudHealth.online ? (
                 <>
@@ -2775,11 +2768,10 @@ export function ClinicalStaffPortalShell({
           {bannerMessage && (
             <div
               key={bannerMessage.text}
-              className={`rounded-2xl border px-4 py-3 text-xs font-bold flex items-center justify-between shadow-sm animate-toast-in ${
-                bannerMessage.kind === 'success'
+              className={`rounded-2xl border px-4 py-3 text-xs font-bold flex items-center justify-between shadow-sm animate-toast-in ${bannerMessage.kind === 'success'
                   ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
                   : 'border-rose-200 bg-rose-50 text-rose-800 animate-gentle-shake'
-              }`}
+                }`}
             >
               <span>{bannerMessage.text}</span>
               <button type="button" onClick={() => setBannerMessage(null)}>
@@ -2789,22 +2781,457 @@ export function ClinicalStaffPortalShell({
           )}
 
           <div key={activeTab} className="animate-view-enter">
-          {/* TAB 1: STAFF MANAGEMENT */}
-          {activeTab === 'staff' && (
-            <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-start gap-2.5 min-w-0">
-                  <Users className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
-                  <div className="min-w-0">
-                    <h2 className="text-lg font-extrabold text-slate-900">
-                      {locale.staff.title}
-                    </h2>
-                    <p className="text-xs text-slate-500">
-                      {locale.staff.subtitle}
-                    </p>
+            {/* TAB 1: STAFF MANAGEMENT */}
+            {activeTab === 'staff' && (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <Users className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
+                    <div className="min-w-0">
+                      <h2 className="text-lg font-extrabold text-slate-900">
+                        {locale.staff.title}
+                      </h2>
+                      <p className="text-xs text-slate-500">
+                        {locale.staff.subtitle}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => void refreshAll()}
+                      className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer shrink-0"
+                      title={locale.staff.refreshTitle}
+                    >
+                      <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                    </button>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => setAddStaffModalOpen(true)}
+                        className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1.5 shrink-0 rounded-xl bg-emerald-600 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500 cursor-pointer"
+                      >
+                        <Plus className="h-4 w-4 shrink-0" />
+                        {locale.staff.addBtn.replace(/^\+\s*/, '')}
+                      </button>
+                    )}
                   </div>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <div className="relative flex-1 min-w-[240px]">
+                    <Search className="h-4 w-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      value={staffSearch}
+                      onChange={(e) => setStaffSearch(e.target.value)}
+                      placeholder={locale.staff.searchPlaceholder}
+                      className="w-full h-10 rounded-xl border border-slate-200 bg-white pl-10 pr-4 text-xs text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none"
+                    />
+                  </div>
+                  <select
+                    value={staffRoleFilter}
+                    onChange={(e) => setStaffRoleFilter(e.target.value as 'all' | UserRole)}
+                    className="h-10 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700"
+                  >
+                    <option value="all">{locale.staff.allRoles}</option>
+                    <option value="super_admin">{locale.staff.roleAdmin}</option>
+                    <option value="pt">{locale.staff.rolePt}</option>
+                    <option value="patient">{locale.staff.rolePatient}</option>
+                  </select>
+                  <select
+                    value={staffStatusFilter}
+                    onChange={(e) => setStaffStatusFilter(e.target.value as 'all' | 'active' | 'inactive')}
+                    className="h-10 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700"
+                  >
+                    <option value="all">{locale.staff.allStatus}</option>
+                    <option value="active">{locale.staff.statusActive}</option>
+                    <option value="inactive">{locale.staff.statusSuspended}</option>
+                  </select>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-x-auto">
+                  <table className="table-fixed w-full min-w-[820px] text-left text-xs">
+                    <thead className="border-b border-slate-100 bg-slate-50/70 text-[11px] font-bold text-slate-500 uppercase">
+                      <tr>
+                        <th className="w-[28%] px-5 py-3.5">{locale.staff.colName}</th>
+                        <th className="w-[18%] px-4 py-3.5">{locale.staff.colUsername}</th>
+                        <th className="w-[22%] px-4 py-3.5">{locale.staff.colRole}</th>
+                        <th className="w-[14%] px-4 py-3.5">{locale.staff.colStatus}</th>
+                        {isAdmin && <th className="w-[18%] px-5 py-3.5 text-right">{locale.staff.colActions}</th>}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredStaff.map((u) => (
+                        <tr key={u.id} className="hover:bg-slate-50/80 transition-colors duration-150">
+                          <td className="px-5 py-3.5">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-indigo-50 text-xs font-extrabold text-indigo-700">
+                                {u.fullName.trim().slice(0, 1) || 'U'}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="font-bold text-slate-900 truncate">{u.fullName}</div>
+                                <div className="text-[11px] text-slate-400 truncate">{u.phone || '08X-XXX-XXXX'}</div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3.5 font-mono font-bold text-sky-600 truncate">@{u.username}</td>
+                          <td className="px-4 py-3.5">
+                            {u.role === 'super_admin' && (
+                              <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-purple-200 bg-purple-50 px-2.5 py-1 text-[11px] font-bold text-purple-700">
+                                <Shield className="h-3 w-3 shrink-0" /> {locale.staff.roleAdmin}
+                              </span>
+                            )}
+                            {u.role === 'pt' && (
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
+                                  <UserCheck className="h-3 w-3 shrink-0" /> {locale.staff.rolePt}
+                                </span>
+                                {(u.licenseNo || profileOverrides[u.id]?.licenseNo) && (
+                                  <span className="whitespace-nowrap rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 font-mono text-[10px] font-bold text-amber-900">
+                                    {u.licenseNo || profileOverrides[u.id]?.licenseNo}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                            {u.role === 'patient' && (
+                              <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700">
+                                <Users className="h-3 w-3 shrink-0" /> {locale.staff.rolePatient}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3.5">
+                            <span
+                              className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-bold ${u.active
+                                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                  : 'border-rose-200 bg-rose-50 text-rose-700'
+                                }`}
+                            >
+                              <span
+                                className={`h-1.5 w-1.5 rounded-full shrink-0 ${u.active ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                              />
+                              {u.active ? locale.staff.statusBadgeActive : locale.staff.statusBadgeSuspended}
+                            </span>
+                          </td>
+                          {isAdmin && (
+                            <td className="px-5 py-3.5 text-right">
+                              <div className="inline-flex items-center justify-end gap-1.5">
+                                {u.role !== 'patient' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditStaffModal(u)}
+                                    className="whitespace-nowrap rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer inline-flex items-center gap-1"
+                                    title="แก้ไขข้อมูลและเลขที่ใบประกอบวิชาชีพ"
+                                  >
+                                    <Pencil className="h-3 w-3" />
+                                    <span>แก้ไข</span>
+                                  </button>
+                                )}
+                                {u.id !== currentUser.id && (
+                                  <button
+                                    type="button"
+                                    disabled={submitting}
+                                    onClick={async () => {
+                                      setSubmitting(true);
+                                      try {
+                                        await apiClient.updateUser(u.id, { active: !u.active });
+                                        flashBanner(
+                                          'success',
+                                          u.active ? `ระงับสิทธิ์ @${u.username} แล้ว` : `เปิดใช้งาน @${u.username} แล้ว`,
+                                        );
+                                        await refreshAll();
+                                      } catch (err) {
+                                        flashBanner(
+                                          'error',
+                                          err instanceof Error ? err.message : 'อัปเดตสถานะบัญชีไม่สำเร็จ',
+                                        );
+                                      } finally {
+                                        setSubmitting(false);
+                                      }
+                                    }}
+                                    className="whitespace-nowrap rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                                  >
+                                    {u.active ? locale.staff.suspendBtn : locale.staff.activateBtn}
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => setResetPassUser(u)}
+                                  className="whitespace-nowrap rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700 hover:bg-sky-100 cursor-pointer"
+                                  title={locale.staff.resetPwdTitle}
+                                >
+                                  <KeyRound className="h-3.5 w-3.5" />
+                                </button>
+                                {(u.role !== 'super_admin' || superAdminCount > 1) && (
+                                  <button
+                                    type="button"
+                                    disabled={submitting}
+                                    onClick={() => void handleDeleteStaffAccount(u)}
+                                    className="whitespace-nowrap rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-rose-600 hover:bg-rose-100 disabled:opacity-50 cursor-pointer"
+                                    title={locale.staff.deleteTitle}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                      {filteredStaff.length === 0 && (
+                        <tr>
+                          <td colSpan={isAdmin ? 5 : 4} className="px-6 py-10 text-center text-slate-400">
+                            {locale.staff.emptyStaff}
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 2: PATIENTS DIRECTORY */}
+            {activeTab === 'patients' && (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <Activity className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
+                    <div className="min-w-0">
+                      <h2 className="text-lg font-extrabold text-slate-900">{locale.patients.title}</h2>
+                      <p className="text-xs text-slate-500">
+                        {locale.patients.subtitle}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => void refreshAll()}
+                      className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer shrink-0"
+                      title={locale.staff.refreshTitle}
+                    >
+                      <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEnrollTargetPatient(null);
+                        setEnrollModalOpen(true);
+                      }}
+                      className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1.5 shrink-0 rounded-xl bg-emerald-600 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500 cursor-pointer"
+                    >
+                      <UserPlus className="h-4 w-4 shrink-0" />
+                      {locale.patients.addBtn}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <div className="flex flex-1 min-w-[260px] h-10 items-center rounded-xl border border-slate-200 bg-white p-1">
+                    <Search className="h-4 w-4 text-slate-400 ml-2.5 mr-2 shrink-0" />
+                    <input
+                      value={patientSearch}
+                      onChange={(e) => setPatientSearch(e.target.value)}
+                      placeholder={locale.patients.searchPlaceholder}
+                      className="w-full bg-transparent px-1 py-1 text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void refreshAll()}
+                      className="whitespace-nowrap h-8 px-3.5 inline-flex items-center justify-center shrink-0 rounded-lg bg-emerald-600 text-xs font-bold text-white hover:bg-emerald-500 cursor-pointer"
+                    >
+                      {locale.patients.searchBtn}
+                    </button>
+                  </div>
+                  <select
+                    value={patientFaceFilter}
+                    onChange={(e) => setPatientFaceFilter(e.target.value as 'all' | 'enrolled' | 'pending')}
+                    className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-700"
+                  >
+                    <option value="all">{locale.patients.allFace}</option>
+                    <option value="enrolled">{locale.patients.faceVerified}</option>
+                    <option value="pending">{locale.patients.facePending}</option>
+                  </select>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-x-auto">
+                  <table className="table-fixed w-full min-w-[940px] text-left text-xs">
+                    <thead className="border-b border-slate-100 bg-slate-50/70 text-[11px] font-bold text-slate-500">
+                      <tr>
+                        <th className="w-[11%] px-5 py-3.5">{locale.patients.colHn}</th>
+                        <th className="w-[22%] px-4 py-3.5">{locale.patients.colPatientName}</th>
+                        <th className="w-[11%] px-4 py-3.5">{locale.patients.colAgeGender}</th>
+                        <th className="w-[18%] px-4 py-3.5">{locale.patients.colPhonePt}</th>
+                        <th className="w-[15%] px-4 py-3.5">{locale.patients.colBiometric}</th>
+                        <th className="w-[23%] px-5 py-3.5 text-right">{locale.patients.colActions}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredPatients.map((p) => {
+                        const verified = isPatientFaceVerified(p);
+                        const ptLabel = ptNameMap.get(p.delegatedToPtId || p.assignedPtId) || 'กภ. ประจำคลินิก';
+                        return (
+                          <tr key={p.id} className="hover:bg-slate-50/80 transition-colors duration-150">
+                            <td className="px-5 py-3.5">
+                              <span className="inline-block whitespace-nowrap rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 font-mono text-[11px] font-extrabold text-sky-700">
+                                {p.hn}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3.5">
+                              <div className="font-bold text-slate-900 truncate">{p.fullName}</div>
+                              <div className="text-[11px] text-slate-400 truncate">{p.diagnosis}</div>
+                              <div className="mt-1 flex flex-wrap items-center gap-1">
+                                <span className="rounded bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 text-[10px] font-extrabold text-emerald-700">
+                                  Mahidol {p.motorAssessmentScore ?? 3}/6
+                                </span>
+                                {p.affectedSide && p.affectedSide !== 'NONE' && (
+                                  <span className="rounded bg-amber-50 border border-amber-200 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
+                                    เน้น: {p.affectedSide}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-4 py-3.5 font-medium text-slate-700 whitespace-nowrap">
+                              {p.age} {locale.patients.ageUnit} / {p.gender || 'ชาย'}
+                            </td>
+                            <td className="px-4 py-3.5">
+                              <div className="font-mono text-slate-700 truncate">{p.phone || '-'}</div>
+                              <div className="text-[11px] font-semibold text-emerald-700 truncate">{ptLabel}</div>
+                              {p.delegatedToPtId && (
+                                <div className="mt-1 inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800 max-w-full truncate">
+                                  <span>ฝากเคส{p.delegationDate ? ` (${p.delegationDate})` : ''}</span>
+                                  {p.delegationNote ? <span>• {p.delegationNote}</span> : null}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-4 py-3.5">
+                              {verified ? (
+                                <div className="space-y-1">
+                                  <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-bold text-emerald-700">
+                                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                                    {locale.patients.verifiedBadge}
+                                  </span>
+                                  {(!p.masterEmbedding || p.masterEmbedding.length < 768) && (
+                                    <div className="text-[10px] font-semibold text-amber-700">
+                                      แนะนำอัปเดต 1024-D
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-bold text-amber-800">
+                                  <Clock className="h-3.5 w-3.5 shrink-0" />
+                                  {locale.patients.pendingBadge}
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-5 py-3.5 text-right">
+                              <div className="inline-flex flex-wrap items-center justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedAssessmentPatientId(p.id);
+                                    setActiveTab('assessments');
+                                  }}
+                                  className="btn-tactile whitespace-nowrap inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
+                                >
+                                  <ClipboardList className="h-3.5 w-3.5 shrink-0" />
+                                  <span>เปิดแฟ้มประวัติและประเมินผล</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setPatientModalState({ patientId: p.id, tab: 'profile' })}
+                                  className="whitespace-nowrap inline-flex items-center gap-1 rounded-xl bg-blue-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-blue-500 cursor-pointer"
+                                >
+                                  <FileText className="h-3.5 w-3.5 shrink-0" />
+                                  {locale.patients.emrBtn}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEnrollTargetPatient(p);
+                                    setEnrollModalOpen(true);
+                                  }}
+                                  title="สแกนอัปเดตใบหน้าใหม่ (Re-enroll Face)"
+                                  className={`whitespace-nowrap inline-flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-[11px] font-bold cursor-pointer ${verified
+                                      ? 'border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100'
+                                      : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                                    }`}
+                                >
+                                  <ScanFace className="h-3.5 w-3.5 shrink-0" />
+                                  <span>{verified ? locale.patients.updateFaceBtn : locale.patients.scanFaceBtn}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setPatientModalState({ patientId: p.id, tab: 'history' })}
+                                  className="whitespace-nowrap rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                                >
+                                  {locale.patients.historyBtn}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEhrLinkPatient(p)}
+                                  title="เชื่อมโยง/ส่งต่อประวัติการรักษา (Universal EHR)"
+                                  className="whitespace-nowrap inline-flex items-center gap-1 rounded-xl border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-[11px] font-bold text-indigo-700 hover:bg-indigo-100 cursor-pointer"
+                                >
+                                  <Link2 className="h-3 w-3 shrink-0" />
+                                  <span>EHR</span>
+                                </button>
+                                {isAdmin && (
+                                  <button
+                                    type="button"
+                                    disabled={submitting}
+                                    onClick={() => void handleDeletePatientAccount(p)}
+                                    className="whitespace-nowrap rounded-xl border border-rose-200 bg-rose-50 p-1.5 text-rose-600 hover:bg-rose-100 disabled:opacity-50 cursor-pointer"
+                                    title={locale.patients.deleteTitle}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {filteredPatients.length === 0 && (
+                        <tr>
+                          <td colSpan={6} className="px-6 py-10 text-center text-slate-400">
+                            {locale.patients.emptyPatients}
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 2B: INDIVIDUAL CLINICAL ASSESSMENT (0-6) & LONGITUDINAL ROM RECORD */}
+            {activeTab === 'assessments' && (
+              <PatientClinicalRecordPanel
+                apiClient={apiClient}
+                patients={patients}
+                sessions={sessions}
+                currentUser={currentUser}
+                selectedPatientId={selectedAssessmentPatientId}
+                onSelectPatientId={setSelectedAssessmentPatientId}
+                onOpenUniversalEhrModal={(pat) => setEhrLinkPatient(pat)}
+                onAssessmentSaved={refreshAll}
+              />
+            )}
+
+            {/* TAB 3: PT DIRECTORY */}
+            {activeTab === 'pts' && (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <UserCheck className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
+                    <div className="min-w-0">
+                      <h2 className="text-lg font-extrabold text-slate-900">{locale.pts.title}</h2>
+                      <p className="text-xs text-slate-500">
+                        {locale.pts.subtitle}
+                      </p>
+                    </div>
+                  </div>
                   <button
                     type="button"
                     onClick={() => void refreshAll()}
@@ -2813,843 +3240,247 @@ export function ClinicalStaffPortalShell({
                   >
                     <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                   </button>
-                  {isAdmin && (
-                    <button
-                      type="button"
-                      onClick={() => setAddStaffModalOpen(true)}
-                      className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1.5 shrink-0 rounded-xl bg-emerald-600 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500 cursor-pointer"
-                    >
-                      <Plus className="h-4 w-4 shrink-0" />
-                      {locale.staff.addBtn.replace(/^\+\s*/, '')}
-                    </button>
-                  )}
                 </div>
-              </div>
 
-              <div className="flex flex-wrap items-center gap-2.5">
-                <div className="relative flex-1 min-w-[240px]">
+                <div className="relative max-w-md">
                   <Search className="h-4 w-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
-                    value={staffSearch}
-                    onChange={(e) => setStaffSearch(e.target.value)}
-                    placeholder={locale.staff.searchPlaceholder}
+                    value={ptSearch}
+                    onChange={(e) => setPtSearch(e.target.value)}
+                    placeholder={locale.pts.searchPlaceholder}
                     className="w-full h-10 rounded-xl border border-slate-200 bg-white pl-10 pr-4 text-xs text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none"
                   />
                 </div>
-                <select
-                  value={staffRoleFilter}
-                  onChange={(e) => setStaffRoleFilter(e.target.value as 'all' | UserRole)}
-                  className="h-10 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700"
-                >
-                  <option value="all">{locale.staff.allRoles}</option>
-                  <option value="super_admin">{locale.staff.roleAdmin}</option>
-                  <option value="pt">{locale.staff.rolePt}</option>
-                  <option value="patient">{locale.staff.rolePatient}</option>
-                </select>
-                <select
-                  value={staffStatusFilter}
-                  onChange={(e) => setStaffStatusFilter(e.target.value as 'all' | 'active' | 'inactive')}
-                  className="h-10 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700"
-                >
-                  <option value="all">{locale.staff.allStatus}</option>
-                  <option value="active">{locale.staff.statusActive}</option>
-                  <option value="inactive">{locale.staff.statusSuspended}</option>
-                </select>
-              </div>
 
-              <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-x-auto">
-                <table className="table-fixed w-full min-w-[820px] text-left text-xs">
-                  <thead className="border-b border-slate-100 bg-slate-50/70 text-[11px] font-bold text-slate-500 uppercase">
-                    <tr>
-                      <th className="w-[28%] px-5 py-3.5">{locale.staff.colName}</th>
-                      <th className="w-[18%] px-4 py-3.5">{locale.staff.colUsername}</th>
-                      <th className="w-[22%] px-4 py-3.5">{locale.staff.colRole}</th>
-                      <th className="w-[14%] px-4 py-3.5">{locale.staff.colStatus}</th>
-                      {isAdmin && <th className="w-[18%] px-5 py-3.5 text-right">{locale.staff.colActions}</th>}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {filteredStaff.map((u) => (
-                      <tr key={u.id} className="hover:bg-slate-50/80 transition-colors duration-150">
-                        <td className="px-5 py-3.5">
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-indigo-50 text-xs font-extrabold text-indigo-700">
-                              {u.fullName.trim().slice(0, 1) || 'U'}
-                            </div>
-                            <div className="min-w-0">
-                              <div className="font-bold text-slate-900 truncate">{u.fullName}</div>
-                              <div className="text-[11px] text-slate-400 truncate">{u.phone || '08X-XXX-XXXX'}</div>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3.5 font-mono font-bold text-sky-600 truncate">@{u.username}</td>
-                        <td className="px-4 py-3.5">
-                          {u.role === 'super_admin' && (
-                            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-purple-200 bg-purple-50 px-2.5 py-1 text-[11px] font-bold text-purple-700">
-                              <Shield className="h-3 w-3 shrink-0" /> {locale.staff.roleAdmin}
-                            </span>
-                          )}
-                          {u.role === 'pt' && (
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
-                                <UserCheck className="h-3 w-3 shrink-0" /> {locale.staff.rolePt}
-                              </span>
-                              {(u.licenseNo || profileOverrides[u.id]?.licenseNo) && (
-                                <span className="whitespace-nowrap rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 font-mono text-[10px] font-bold text-amber-900">
-                                  {u.licenseNo || profileOverrides[u.id]?.licenseNo}
-                                </span>
-                              )}
-                            </div>
-                          )}
-                          {u.role === 'patient' && (
-                            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700">
-                              <Users className="h-3 w-3 shrink-0" /> {locale.staff.rolePatient}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3.5">
-                          <span
-                            className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-bold ${
-                              u.active
-                                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                : 'border-rose-200 bg-rose-50 text-rose-700'
-                            }`}
-                          >
-                            <span
-                              className={`h-1.5 w-1.5 rounded-full shrink-0 ${u.active ? 'bg-emerald-500' : 'bg-rose-500'}`}
-                            />
-                            {u.active ? locale.staff.statusBadgeActive : locale.staff.statusBadgeSuspended}
-                          </span>
-                        </td>
-                        {isAdmin && (
-                          <td className="px-5 py-3.5 text-right">
-                            <div className="inline-flex items-center justify-end gap-1.5">
-                              {u.role !== 'patient' && (
-                                <button
-                                  type="button"
-                                  onClick={() => openEditStaffModal(u)}
-                                  className="whitespace-nowrap rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer inline-flex items-center gap-1"
-                                  title="แก้ไขข้อมูลและเลขที่ใบประกอบวิชาชีพ"
-                                >
-                                  <Pencil className="h-3 w-3" />
-                                  <span>แก้ไข</span>
-                                </button>
-                              )}
-                              {u.id !== currentUser.id && (
-                                <button
-                                  type="button"
-                                  disabled={submitting}
-                                  onClick={async () => {
-                                    setSubmitting(true);
-                                    try {
-                                      await apiClient.updateUser(u.id, { active: !u.active });
-                                      flashBanner(
-                                        'success',
-                                        u.active ? `ระงับสิทธิ์ @${u.username} แล้ว` : `เปิดใช้งาน @${u.username} แล้ว`,
-                                      );
-                                      await refreshAll();
-                                    } catch (err) {
-                                      flashBanner(
-                                        'error',
-                                        err instanceof Error ? err.message : 'อัปเดตสถานะบัญชีไม่สำเร็จ',
-                                      );
-                                    } finally {
-                                      setSubmitting(false);
-                                    }
-                                  }}
-                                  className="whitespace-nowrap rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-100 cursor-pointer"
-                                >
-                                  {u.active ? locale.staff.suspendBtn : locale.staff.activateBtn}
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => setResetPassUser(u)}
-                                className="whitespace-nowrap rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700 hover:bg-sky-100 cursor-pointer"
-                                title={locale.staff.resetPwdTitle}
-                              >
-                                <KeyRound className="h-3.5 w-3.5" />
-                              </button>
-                              {(u.role !== 'super_admin' || superAdminCount > 1) && (
-                                <button
-                                  type="button"
-                                  disabled={submitting}
-                                  onClick={() => void handleDeleteStaffAccount(u)}
-                                  className="whitespace-nowrap rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-rose-600 hover:bg-rose-100 disabled:opacity-50 cursor-pointer"
-                                  title={locale.staff.deleteTitle}
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        )}
-                      </tr>
-                    ))}
-                    {filteredStaff.length === 0 && (
-                      <tr>
-                        <td colSpan={isAdmin ? 5 : 4} className="px-6 py-10 text-center text-slate-400">
-                          {locale.staff.emptyStaff}
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 2: PATIENTS DIRECTORY */}
-          {activeTab === 'patients' && (
-            <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-start gap-2.5 min-w-0">
-                  <Activity className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
-                  <div className="min-w-0">
-                    <h2 className="text-lg font-extrabold text-slate-900">{locale.patients.title}</h2>
-                    <p className="text-xs text-slate-500">
-                      {locale.patients.subtitle}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => void refreshAll()}
-                    className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer shrink-0"
-                    title={locale.staff.refreshTitle}
-                  >
-                    <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEnrollTargetPatient(null);
-                      setEnrollModalOpen(true);
-                    }}
-                    className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1.5 shrink-0 rounded-xl bg-emerald-600 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500 cursor-pointer"
-                  >
-                    <UserPlus className="h-4 w-4 shrink-0" />
-                    {locale.patients.addBtn}
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2.5">
-                <div className="flex flex-1 min-w-[260px] h-10 items-center rounded-xl border border-slate-200 bg-white p-1">
-                  <Search className="h-4 w-4 text-slate-400 ml-2.5 mr-2 shrink-0" />
-                  <input
-                    value={patientSearch}
-                    onChange={(e) => setPatientSearch(e.target.value)}
-                    placeholder={locale.patients.searchPlaceholder}
-                    className="w-full bg-transparent px-1 py-1 text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void refreshAll()}
-                    className="whitespace-nowrap h-8 px-3.5 inline-flex items-center justify-center shrink-0 rounded-lg bg-emerald-600 text-xs font-bold text-white hover:bg-emerald-500 cursor-pointer"
-                  >
-                    {locale.patients.searchBtn}
-                  </button>
-                </div>
-                <select
-                  value={patientFaceFilter}
-                  onChange={(e) => setPatientFaceFilter(e.target.value as 'all' | 'enrolled' | 'pending')}
-                  className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-700"
-                >
-                  <option value="all">{locale.patients.allFace}</option>
-                  <option value="enrolled">{locale.patients.faceVerified}</option>
-                  <option value="pending">{locale.patients.facePending}</option>
-                </select>
-              </div>
-
-              <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-x-auto">
-                <table className="table-fixed w-full min-w-[940px] text-left text-xs">
-                  <thead className="border-b border-slate-100 bg-slate-50/70 text-[11px] font-bold text-slate-500">
-                    <tr>
-                      <th className="w-[11%] px-5 py-3.5">{locale.patients.colHn}</th>
-                      <th className="w-[22%] px-4 py-3.5">{locale.patients.colPatientName}</th>
-                      <th className="w-[11%] px-4 py-3.5">{locale.patients.colAgeGender}</th>
-                      <th className="w-[18%] px-4 py-3.5">{locale.patients.colPhonePt}</th>
-                      <th className="w-[15%] px-4 py-3.5">{locale.patients.colBiometric}</th>
-                      <th className="w-[23%] px-5 py-3.5 text-right">{locale.patients.colActions}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {filteredPatients.map((p) => {
-                      const verified = isPatientFaceVerified(p);
-                      const ptLabel = ptNameMap.get(p.delegatedToPtId || p.assignedPtId) || 'กภ. ประจำคลินิก';
-                      return (
-                        <tr key={p.id} className="hover:bg-slate-50/80 transition-colors duration-150">
-                          <td className="px-5 py-3.5">
-                            <span className="inline-block whitespace-nowrap rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 font-mono text-[11px] font-extrabold text-sky-700">
-                              {p.hn}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3.5">
-                            <div className="font-bold text-slate-900 truncate">{p.fullName}</div>
-                            <div className="text-[11px] text-slate-400 truncate">{p.diagnosis}</div>
-                            <div className="mt-1 flex flex-wrap items-center gap-1">
-                              <span className="rounded bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 text-[10px] font-extrabold text-emerald-700">
-                                Mahidol {p.motorAssessmentScore ?? 3}/6
-                              </span>
-                              {p.affectedSide && p.affectedSide !== 'NONE' && (
-                                <span className="rounded bg-amber-50 border border-amber-200 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
-                                  เน้น: {p.affectedSide}
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-4 py-3.5 font-medium text-slate-700 whitespace-nowrap">
-                            {p.age} {locale.patients.ageUnit} / {p.gender || 'ชาย'}
-                          </td>
-                          <td className="px-4 py-3.5">
-                            <div className="font-mono text-slate-700 truncate">{p.phone || '-'}</div>
-                            <div className="text-[11px] font-semibold text-emerald-700 truncate">{ptLabel}</div>
-                            {p.delegatedToPtId && (
-                              <div className="mt-1 inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800 max-w-full truncate">
-                                <span>ฝากเคส{p.delegationDate ? ` (${p.delegationDate})` : ''}</span>
-                                {p.delegationNote ? <span>• {p.delegationNote}</span> : null}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-stagger-children">
+                  {filteredPts.map((pt) => {
+                    const ptProfile = resolveUserProfile(pt, profileOverrides);
+                    const ptPatients = patients.filter(
+                      (p) => p.assignedPtId === pt.id || p.delegatedToPtId === pt.id,
+                    );
+                    return (
+                      <div
+                        key={pt.id}
+                        className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-col justify-between space-y-4 card-hover-lift animate-card-enter hover:border-emerald-200"
+                      >
+                        <div className="space-y-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <img
+                                src={ptProfile.avatarUrl}
+                                alt={ptProfile.fullName}
+                                className="h-14 w-14 shrink-0 rounded-2xl object-cover border-2 border-emerald-200 bg-white shadow-sm"
+                              />
+                              <div className="min-w-0">
+                                <h3 className="text-sm font-extrabold text-slate-900 truncate">{ptProfile.fullName}</h3>
+                                <p className="font-mono text-[11px] font-bold text-sky-600 truncate">@{pt.username}</p>
+                                <p className="flex items-center gap-1 text-[11px] font-mono text-slate-500 truncate mt-0.5">
+                                  <Phone className="h-3 w-3 text-emerald-600 shrink-0" />
+                                  <span className="truncate">{ptProfile.phone || locale.profile.noPhone}</span>
+                                </p>
                               </div>
-                            )}
-                          </td>
-                          <td className="px-4 py-3.5">
-                            {verified ? (
-                              <div className="space-y-1">
-                                <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-bold text-emerald-700">
-                                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-                                  {locale.patients.verifiedBadge}
-                                </span>
-                                {(!p.masterEmbedding || p.masterEmbedding.length < 768) && (
-                                  <div className="text-[10px] font-semibold text-amber-700">
-                                    แนะนำอัปเดต 1024-D
-                                  </div>
-                                )}
-                              </div>
-                            ) : (
-                              <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-bold text-amber-800">
-                                <Clock className="h-3.5 w-3.5 shrink-0" />
-                                {locale.patients.pendingBadge}
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span className="whitespace-nowrap rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
+                                PT
                               </span>
-                            )}
-                          </td>
-                          <td className="px-5 py-3.5 text-right">
-                            <div className="inline-flex flex-wrap items-center justify-end gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setSelectedAssessmentPatientId(p.id);
-                                  setActiveTab('assessments');
-                                }}
-                                className="btn-tactile whitespace-nowrap inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
-                              >
-                                <ClipboardList className="h-3.5 w-3.5 shrink-0" />
-                                <span>เปิดแฟ้มประวัติและประเมินผล</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setPatientModalState({ patientId: p.id, tab: 'profile' })}
-                                className="whitespace-nowrap inline-flex items-center gap-1 rounded-xl bg-blue-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-blue-500 cursor-pointer"
-                              >
-                                <FileText className="h-3.5 w-3.5 shrink-0" />
-                                {locale.patients.emrBtn}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setEnrollTargetPatient(p);
-                                  setEnrollModalOpen(true);
-                                }}
-                                title="สแกนอัปเดตใบหน้าใหม่ (Re-enroll Face)"
-                                className={`whitespace-nowrap inline-flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-[11px] font-bold cursor-pointer ${
-                                  verified
-                                    ? 'border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100'
-                                    : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                                }`}
-                              >
-                                <ScanFace className="h-3.5 w-3.5 shrink-0" />
-                                <span>{verified ? locale.patients.updateFaceBtn : locale.patients.scanFaceBtn}</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setPatientModalState({ patientId: p.id, tab: 'history' })}
-                                className="whitespace-nowrap rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
-                              >
-                                {locale.patients.historyBtn}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setEhrLinkPatient(p)}
-                                title="เชื่อมโยง/ส่งต่อประวัติการรักษา (Universal EHR)"
-                                className="whitespace-nowrap inline-flex items-center gap-1 rounded-xl border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-[11px] font-bold text-indigo-700 hover:bg-indigo-100 cursor-pointer"
-                              >
-                                <Link2 className="h-3 w-3 shrink-0" />
-                                <span>EHR</span>
-                              </button>
                               {isAdmin && (
                                 <button
                                   type="button"
                                   disabled={submitting}
-                                  onClick={() => void handleDeletePatientAccount(p)}
-                                  className="whitespace-nowrap rounded-xl border border-rose-200 bg-rose-50 p-1.5 text-rose-600 hover:bg-rose-100 disabled:opacity-50 cursor-pointer"
-                                  title={locale.patients.deleteTitle}
+                                  onClick={() => void handleDeleteStaffAccount(pt)}
+                                  className="rounded-lg p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50 cursor-pointer"
+                                  title={locale.staff.deleteTitle}
                                 >
-                                  <Trash2 className="h-3.5 w-3.5" />
+                                  <Trash2 className="h-4 w-4" />
                                 </button>
                               )}
                             </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {filteredPatients.length === 0 && (
-                      <tr>
-                        <td colSpan={6} className="px-6 py-10 text-center text-slate-400">
-                          {locale.patients.emptyPatients}
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+                          </div>
 
-          {/* TAB 2B: INDIVIDUAL CLINICAL ASSESSMENT (0-6) & LONGITUDINAL ROM RECORD */}
-          {activeTab === 'assessments' && (
-            <PatientClinicalRecordPanel
-              patients={patients}
-              sessions={sessions}
-              currentUser={currentUser}
-              selectedPatientId={selectedAssessmentPatientId}
-              onSelectPatientId={setSelectedAssessmentPatientId}
-              onOpenUniversalEhrModal={(pat) => setEhrLinkPatient(pat)}
-            />
-          )}
-
-          {/* TAB 3: PT DIRECTORY */}
-          {activeTab === 'pts' && (
-            <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-start gap-2.5 min-w-0">
-                  <UserCheck className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
-                  <div className="min-w-0">
-                    <h2 className="text-lg font-extrabold text-slate-900">{locale.pts.title}</h2>
-                    <p className="text-xs text-slate-500">
-                      {locale.pts.subtitle}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void refreshAll()}
-                  className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer shrink-0"
-                  title={locale.staff.refreshTitle}
-                >
-                  <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                </button>
-              </div>
-
-              <div className="relative max-w-md">
-                <Search className="h-4 w-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  value={ptSearch}
-                  onChange={(e) => setPtSearch(e.target.value)}
-                  placeholder={locale.pts.searchPlaceholder}
-                  className="w-full h-10 rounded-xl border border-slate-200 bg-white pl-10 pr-4 text-xs text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-stagger-children">
-                {filteredPts.map((pt) => {
-                  const ptProfile = resolveUserProfile(pt, profileOverrides);
-                  const ptPatients = patients.filter(
-                    (p) => p.assignedPtId === pt.id || p.delegatedToPtId === pt.id,
-                  );
-                  return (
-                    <div
-                      key={pt.id}
-                      className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-col justify-between space-y-4 card-hover-lift animate-card-enter hover:border-emerald-200"
-                    >
-                      <div className="space-y-3">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex items-center gap-3 min-w-0">
-                            <img
-                              src={ptProfile.avatarUrl}
-                              alt={ptProfile.fullName}
-                              className="h-14 w-14 shrink-0 rounded-2xl object-cover border-2 border-emerald-200 bg-white shadow-sm"
-                            />
-                            <div className="min-w-0">
-                              <h3 className="text-sm font-extrabold text-slate-900 truncate">{ptProfile.fullName}</h3>
-                              <p className="font-mono text-[11px] font-bold text-sky-600 truncate">@{pt.username}</p>
-                              <p className="flex items-center gap-1 text-[11px] font-mono text-slate-500 truncate mt-0.5">
-                                <Phone className="h-3 w-3 text-emerald-600 shrink-0" />
-                                <span className="truncate">{ptProfile.phone || locale.profile.noPhone}</span>
-                              </p>
+                          <div className="flex items-center justify-between gap-2 rounded-xl border border-amber-200/80 bg-amber-50/70 px-3.5 py-2 text-xs">
+                            <span className="font-semibold text-amber-900 whitespace-nowrap">{locale.pts.licenseLabel}</span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="whitespace-nowrap rounded-lg bg-white border border-amber-200 px-2.5 py-0.5 font-mono text-[11px] font-bold text-slate-800">
+                                {ptProfile.licenseNo}
+                              </span>
+                              {isAdminUser ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openEditStaffModal(pt)}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-0.5 text-[10px] font-extrabold text-amber-800 hover:bg-amber-100 cursor-pointer"
+                                  title="แก้ไขเลขที่ใบประกอบวิชาชีพ (Admin)"
+                                >
+                                  <Pencil className="h-3 w-3" />
+                                  <span>แก้ไข</span>
+                                </button>
+                              ) : (
+                                <span
+                                  className="inline-flex items-center gap-0.5 text-[10px] font-bold text-slate-500 whitespace-nowrap"
+                                  title="ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)"
+                                >
+                                  <Lock className="h-3 w-3" />
+                                </span>
+                              )}
                             </div>
                           </div>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <span className="whitespace-nowrap rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
-                              PT
-                            </span>
-                            {isAdmin && (
-                              <button
-                                type="button"
-                                disabled={submitting}
-                                onClick={() => void handleDeleteStaffAccount(pt)}
-                                className="rounded-lg p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50 cursor-pointer"
-                                title={locale.staff.deleteTitle}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                            )}
-                          </div>
-                        </div>
 
-                        <div className="flex items-center justify-between gap-2 rounded-xl border border-amber-200/80 bg-amber-50/70 px-3.5 py-2 text-xs">
-                          <span className="font-semibold text-amber-900 whitespace-nowrap">{locale.pts.licenseLabel}</span>
-                          <div className="flex items-center gap-1.5">
-                            <span className="whitespace-nowrap rounded-lg bg-white border border-amber-200 px-2.5 py-0.5 font-mono text-[11px] font-bold text-slate-800">
-                              {ptProfile.licenseNo}
-                            </span>
-                            {isAdminUser ? (
-                              <button
-                                type="button"
-                                onClick={() => openEditStaffModal(pt)}
-                                className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-white px-2 py-0.5 text-[10px] font-extrabold text-amber-800 hover:bg-amber-100 cursor-pointer"
-                                title="แก้ไขเลขที่ใบประกอบวิชาชีพ (Admin)"
-                              >
-                                <Pencil className="h-3 w-3" />
-                                <span>แก้ไข</span>
-                              </button>
-                            ) : (
-                              <span
-                                className="inline-flex items-center gap-0.5 text-[10px] font-bold text-slate-500 whitespace-nowrap"
-                                title="ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)"
-                              >
-                                <Lock className="h-3 w-3" />
+                          <div className="space-y-1.5 text-xs text-slate-600">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <FileText className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                              <span className="whitespace-nowrap">{locale.pts.specialtyLabel}</span>
+                              <span className="font-semibold text-slate-900 truncate">{ptProfile.specialty}</span>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="flex items-center gap-2 whitespace-nowrap">
+                                <Users className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                                {locale.pts.patientsCountLabel}
                               </span>
-                            )}
+                              <span className="font-extrabold text-sky-600 whitespace-nowrap">
+                                {ptPatients.length} {locale.pts.patientsUnit}
+                              </span>
+                            </div>
+                            <p className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-2 text-[11px] leading-relaxed text-slate-600 line-clamp-2">
+                              {ptProfile.bio}
+                            </p>
                           </div>
                         </div>
 
-                        <div className="space-y-1.5 text-xs text-slate-600">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <FileText className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                            <span className="whitespace-nowrap">{locale.pts.specialtyLabel}</span>
-                            <span className="font-semibold text-slate-900 truncate">{ptProfile.specialty}</span>
-                          </div>
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="flex items-center gap-2 whitespace-nowrap">
-                              <Users className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-                              {locale.pts.patientsCountLabel}
-                            </span>
-                            <span className="font-extrabold text-sky-600 whitespace-nowrap">
-                              {ptPatients.length} {locale.pts.patientsUnit}
-                            </span>
-                          </div>
-                          <p className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-2 text-[11px] leading-relaxed text-slate-600 line-clamp-2">
-                            {ptProfile.bio}
-                          </p>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedPtDetailModal(pt);
+                            const unassigned = patients.find((p) => p.assignedPtId !== pt.id) ?? patients[0];
+                            setAssignPatientIdForPt(unassigned?.id ?? '');
+                          }}
+                          className="flex w-full items-center justify-between border-t border-slate-100 pt-3 text-xs font-bold text-slate-700 hover:text-emerald-700 cursor-pointer whitespace-nowrap"
+                        >
+                          <span>{locale.pts.viewDetailBtn}</span>
+                          <ChevronRight className="h-4 w-4 shrink-0" />
+                        </button>
                       </div>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedPtDetailModal(pt);
-                          const unassigned = patients.find((p) => p.assignedPtId !== pt.id) ?? patients[0];
-                          setAssignPatientIdForPt(unassigned?.id ?? '');
-                        }}
-                        className="flex w-full items-center justify-between border-t border-slate-100 pt-3 text-xs font-bold text-slate-700 hover:text-emerald-700 cursor-pointer whitespace-nowrap"
-                      >
-                        <span>{locale.pts.viewDetailBtn}</span>
-                        <ChevronRight className="h-4 w-4 shrink-0" />
-                      </button>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* TAB 4: EXERCISES & MODPACKS */}
-          {activeTab === 'exercises' && (
-            <div className="space-y-6">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-start gap-2.5 min-w-0">
-                  <Gamepad2 className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
-                  <div className="min-w-0">
-                    <h2 className="text-lg font-extrabold text-slate-900">
-                      {locale.exercises.title}
-                    </h2>
-                    <p className="text-xs text-slate-500">
-                      {locale.exercises.subtitle}
+            {/* TAB 4: EXERCISES & MODPACKS */}
+            {activeTab === 'exercises' && (
+              <div className="space-y-6">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <Gamepad2 className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
+                    <div className="min-w-0">
+                      <h2 className="text-lg font-extrabold text-slate-900">
+                        {locale.exercises.title}
+                      </h2>
+                      <p className="text-xs text-slate-500">
+                        {locale.exercises.subtitle}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handleLaunchPoseTest()}
+                      data-testid="tab4-pose-test-btn"
+                      className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-2 shrink-0 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
+                    >
+                      <Activity className="h-4 w-4 shrink-0" />
+                      <span>ทดลองท่าทางกายภาพ (15 ท่า)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCardGameModalOpen(true)}
+                      className="btn-primary-sheen whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-2 shrink-0 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
+                    >
+                      <Gamepad2 className="h-4 w-4 shrink-0" />
+                      {locale.exercises.playCardBtn}
+                    </button>
+                  </div>
+                </div>
+
+                {/* AI Pose Safety Switch Banner */}
+                <div
+                  className={`rounded-2xl border p-4 flex flex-wrap items-center justify-between gap-3 ${systemSettings.aiPoseDetectionEnabled
+                      ? 'border-emerald-200 bg-emerald-50/70'
+                      : 'border-amber-200 bg-amber-50'
+                    }`}
+                >
+                  <div className="text-xs min-w-0 flex-1">
+                    <div className="font-extrabold text-slate-900">
+                      {locale.exercises.aiPoseTitle}{' '}
+                      <span className={systemSettings.aiPoseDetectionEnabled ? 'text-emerald-700' : 'text-amber-700'}>
+                        {systemSettings.aiPoseDetectionEnabled
+                          ? locale.exercises.aiPoseEnabled
+                          : locale.exercises.aiPoseLocked}
+                      </span>
+                    </div>
+                    <p className="text-slate-600 mt-0.5">
+                      {locale.exercises.aiPoseDesc}
                     </p>
                   </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-2 shrink-0">
                   <button
                     type="button"
-                    onClick={() => handleLaunchPoseTest()}
-                    data-testid="tab4-pose-test-btn"
-                    className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-2 shrink-0 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
-                  >
-                    <Activity className="h-4 w-4 shrink-0" />
-                    <span>ทดลองท่าทางกายภาพ (15 ท่า)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCardGameModalOpen(true)}
-                    className="btn-primary-sheen whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-2 shrink-0 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
-                  >
-                    <Gamepad2 className="h-4 w-4 shrink-0" />
-                    {locale.exercises.playCardBtn}
-                  </button>
-                </div>
-              </div>
-
-              {/* AI Pose Safety Switch Banner */}
-              <div
-                className={`rounded-2xl border p-4 flex flex-wrap items-center justify-between gap-3 ${
-                  systemSettings.aiPoseDetectionEnabled
-                    ? 'border-emerald-200 bg-emerald-50/70'
-                    : 'border-amber-200 bg-amber-50'
-                }`}
-              >
-                <div className="text-xs min-w-0 flex-1">
-                  <div className="font-extrabold text-slate-900">
-                    {locale.exercises.aiPoseTitle}{' '}
-                    <span className={systemSettings.aiPoseDetectionEnabled ? 'text-emerald-700' : 'text-amber-700'}>
-                      {systemSettings.aiPoseDetectionEnabled
-                        ? locale.exercises.aiPoseEnabled
-                        : locale.exercises.aiPoseLocked}
-                    </span>
-                  </div>
-                  <p className="text-slate-600 mt-0.5">
-                    {locale.exercises.aiPoseDesc}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  disabled={!isAdmin || submitting}
-                  title={!isAdmin ? 'ADMIN ONLY' : undefined}
-                  onClick={async () => {
-                    setSubmitting(true);
-                    try {
-                      const updated = await apiClient.updateSystemSettings({
-                        aiPoseDetectionEnabled: !systemSettings.aiPoseDetectionEnabled,
-                      });
-                      setSystemSettings(updated);
-                      flashBanner(
-                        'success',
-                        updated.aiPoseDetectionEnabled
-                          ? locale.exercises.aiPoseEnabled
-                          : locale.exercises.aiPoseLocked,
-                      );
-                    } finally {
-                      setSubmitting(false);
-                    }
-                  }}
-                  className={`whitespace-nowrap h-10 px-4 inline-flex items-center justify-center shrink-0 rounded-xl text-xs font-bold text-white shadow-sm disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer ${
-                    systemSettings.aiPoseDetectionEnabled
-                      ? 'bg-amber-600 hover:bg-amber-500'
-                      : 'bg-emerald-600 hover:bg-emerald-500'
-                  }`}
-                >
-                  {systemSettings.aiPoseDetectionEnabled
-                    ? locale.exercises.aiPoseToggleLock
-                    : locale.exercises.aiPoseToggleUnlock}
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-stagger-children">
-                {/* Cognitive Modpacks */}
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
-                  <h3 className="text-sm font-extrabold text-slate-900">
-                    {locale.exercises.modpackHeader} ({modpacks.length})
-                  </h3>
-                  <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
-                    {modpacks.map((m) => (
-                      <div
-                        key={m.id}
-                        className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs transition-colors duration-150 hover:bg-emerald-50/40 hover:border-emerald-200"
-                      >
-                        <div className="min-w-0">
-                          <div className="font-bold text-slate-900 truncate">{m.name}</div>
-                          <div className="text-[11px] text-slate-500 truncate">
-                            {m.categories.join(', ')} • {m.questionCount} Q
-                          </div>
-                        </div>
-                        {(isAdmin || m.createdBy === currentUser.id) && (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              try {
-                                await apiClient.deleteModpack(m.id);
-                                flashBanner('success', `ลบ Modpack "${m.name}" แล้ว`);
-                                await refreshAll();
-                              } catch (err) {
-                                flashBanner('error', err instanceof Error ? err.message : 'ไม่สามารถลบ Modpack กลางได้');
-                              }
-                            }}
-                            className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer shrink-0"
-                            title={locale.staff.deleteTitle}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  <form
-                    onSubmit={async (e) => {
-                      e.preventDefault();
-                      if (!mpName.trim()) return;
+                    disabled={!isAdmin || submitting}
+                    title={!isAdmin ? 'ADMIN ONLY' : undefined}
+                    onClick={async () => {
                       setSubmitting(true);
                       try {
-                        await apiClient.createModpack({
-                          name: mpName.trim(),
-                          categories: [mpCategory],
-                          questionCount: mpQuestionCount,
+                        const updated = await apiClient.updateSystemSettings({
+                          aiPoseDetectionEnabled: !systemSettings.aiPoseDetectionEnabled,
                         });
-                        setMpName('');
-                        flashBanner('success', 'บันทึกชุดมินิเกม Modpack ลง Supabase เรียบร้อย');
-                        await refreshAll();
-                      } catch (err) {
-                        flashBanner('error', err instanceof Error ? err.message : 'เพิ่ม Modpack ไม่สำเร็จ');
+                        setSystemSettings(updated);
+                        flashBanner(
+                          'success',
+                          updated.aiPoseDetectionEnabled
+                            ? locale.exercises.aiPoseEnabled
+                            : locale.exercises.aiPoseLocked,
+                        );
                       } finally {
                         setSubmitting(false);
                       }
                     }}
-                    className="border-t border-slate-100 pt-3 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs"
+                    className={`whitespace-nowrap h-10 px-4 inline-flex items-center justify-center shrink-0 rounded-xl text-xs font-bold text-white shadow-sm disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer ${systemSettings.aiPoseDetectionEnabled
+                        ? 'bg-amber-600 hover:bg-amber-500'
+                        : 'bg-emerald-600 hover:bg-emerald-500'
+                      }`}
                   >
-                    <input
-                      required
-                      value={mpName}
-                      onChange={(e) => setMpName(e.target.value)}
-                      placeholder={
-                        lang === 'cn'
-                          ? '输入新游戏题目包名称...'
-                          : lang === 'en'
-                            ? 'New modpack name...'
-                            : 'ชื่อ Modpack ใหม่...'
-                      }
-                      className="rounded-xl border border-slate-200 px-3 py-2 sm:col-span-2"
-                    />
-                    <select
-                      value={mpCategory}
-                      onChange={(e) => setMpCategory(e.target.value)}
-                      className="rounded-xl border border-slate-200 px-2.5 py-2"
-                    >
-                      <option value="ผลไม้">ผลไม้</option>
-                      <option value="ผัก">ผัก</option>
-                      <option value="สัตว์">สัตว์</option>
-                      <option value="ความปลอดภัยในบ้าน">ความปลอดภัยในบ้าน</option>
-                    </select>
-                    <input
-                      type="number"
-                      inputMode="numeric"
-                      min={5}
-                      max={99}
-                      value={mpQuestionCount}
-                      onKeyDown={(e) => {
-                        if (['e', 'E', '+', '-', '.'].includes(e.key)) e.preventDefault();
-                      }}
-                      onChange={(e) => {
-                        const digits = e.target.value.replace(/\D/g, '').slice(0, 2);
-                        setMpQuestionCount(digits ? Math.min(99, Math.max(5, Number(digits))) : 5);
-                      }}
-                      className="rounded-xl border border-slate-200 px-3 py-2"
-                    />
-                    <button
-                      type="submit"
-                      disabled={submitting}
-                      className="sm:col-span-2 whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-emerald-600 font-bold text-white hover:bg-emerald-500 disabled:opacity-50 cursor-pointer"
-                    >
-                      {locale.exercises.addModpackBtn}
-                    </button>
-                  </form>
+                    {systemSettings.aiPoseDetectionEnabled
+                      ? locale.exercises.aiPoseToggleLock
+                      : locale.exercises.aiPoseToggleUnlock}
+                  </button>
                 </div>
 
-                {/* Rehab Exercises Library */}
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-stagger-children">
+                  {/* Cognitive Modpacks */}
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
                     <h3 className="text-sm font-extrabold text-slate-900">
-                      {locale.exercises.exerciseHeader} ({exercises.length})
+                      {locale.exercises.modpackHeader} ({modpacks.length})
                     </h3>
-                    <button
-                      type="button"
-                      disabled={submitting}
-                      onClick={async () => {
-                        setSubmitting(true);
-                        try {
-                          const synced = await syncStrokeExerciseLibrary(apiClient);
-                          setExercises(synced.exercises);
-                          flashBanner(
-                            'success',
-                            `ซิงก์คลังท่ากายภาพมาตรฐาน Stroke / สธ. ${synced.exercises.length} ท่าเรียบร้อย`,
-                          );
-                        } catch (err) {
-                          flashBanner(
-                            'error',
-                            err instanceof Error ? err.message : 'ซิงก์คลังท่ากายภาพไม่สำเร็จ',
-                          );
-                        } finally {
-                          setSubmitting(false);
-                        }
-                      }}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-3 py-1.5 text-[11px] font-bold text-sky-800 hover:bg-sky-100 disabled:opacity-50 cursor-pointer"
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" />
-                      ซิงก์คลัง 15 ท่าหลัก Stroke/สธ.
-                    </button>
-                  </div>
-                  <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
-                    {sortedMergedExercises.map((ex) => (
-                      <div
-                        key={ex.id}
-                        className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs transition-colors duration-150 hover:bg-sky-50/40 hover:border-sky-200"
-                      >
-                        <div className="min-w-0">
-                          <div className="font-bold text-slate-900 truncate">
-                            {ex.name[lang] || ex.name.th}{' '}
-                            <span className="ml-1 rounded bg-sky-100 px-1.5 py-0.5 font-mono text-[10px] text-sky-800">
-                              {ex.code}
-                            </span>
-                            <span className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800 uppercase">
-                              {ex.detection.side === 'both' ||
-                              ex.code === 'STROKE_BOBATH_ARM_RAISE' ||
-                              ex.code === 'STROKE_BOBATH_FORWARD_PUSH' ||
-                              ex.code === 'MOPH_NECK_TURN' ||
-                              ex.code === 'MOPH_SHOULDER_SHRUG_ROLL'
-                                ? 'L+R (BOTH)'
-                                : 'L / R / BOTH'}
-                            </span>
+                    <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
+                      {modpacks.map((m) => (
+                        <div
+                          key={m.id}
+                          className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs transition-colors duration-150 hover:bg-emerald-50/40 hover:border-emerald-200"
+                        >
+                          <div className="min-w-0">
+                            <div className="font-bold text-slate-900 truncate">{m.name}</div>
+                            <div className="text-[11px] text-slate-500 truncate">
+                              {m.categories.join(', ')} • {m.questionCount} Q
+                            </div>
                           </div>
-                          <div className="text-[11px] text-slate-500 truncate">{ex.instruction[lang] || ex.instruction.th}</div>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => handleLaunchPoseTest(ex.code || ex.id)}
-                            data-testid={`exercise-card-pose-test-${ex.code || ex.id}`}
-                            className="inline-flex items-center gap-1 whitespace-nowrap rounded-xl border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-extrabold text-emerald-800 hover:bg-emerald-100 cursor-pointer transition"
-                          >
-                            <Play className="h-3 w-3 fill-current shrink-0" />
-                            <span>ทดลองทำท่านี้ด้วยกล้องทันที</span>
-                          </button>
-                          {(isAdmin || ex.createdBy === currentUser.id) && (
+                          {(isAdmin || m.createdBy === currentUser.id) && (
                             <button
                               type="button"
                               onClick={async () => {
                                 try {
-                                  await apiClient.deleteExercise(ex.id);
-                                  flashBanner('success', `ลบท่ากายภาพ "${ex.name.th}" แล้ว`);
+                                  await apiClient.deleteModpack(m.id);
+                                  flashBanner('success', `ลบ Modpack "${m.name}" แล้ว`);
                                   await refreshAll();
                                 } catch (err) {
-                                  flashBanner('error', err instanceof Error ? err.message : 'ไม่สามารถลบท่ากายภาพกลางได้');
+                                  flashBanner('error', err instanceof Error ? err.message : 'ไม่สามารถลบ Modpack กลางได้');
                                 }
                               }}
                               className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer shrink-0"
@@ -3659,1971 +3490,2120 @@ export function ClinicalStaffPortalShell({
                             </button>
                           )}
                         </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <form
-                    onSubmit={async (e) => {
-                      e.preventDefault();
-                      if (!exNameTh.trim()) return;
-                      setSubmitting(true);
-                      try {
-                        const cleanCode = (exCode.trim() || `CUSTOM_${Date.now()}`).toUpperCase();
-                        await apiClient.createExercise({
-                          id: cleanCode.toLowerCase(),
-                          code: cleanCode,
-                          category: exCategory,
-                          name: {
-                            th: exNameTh.trim(),
-                            en: exNameTh.trim(),
-                            cn: exNameTh.trim(),
-                          },
-                          instruction: {
-                            th: exInstructionTh.trim() || 'ทำตามคำแนะนำนักกายภาพบำบัด',
-                            en: exInstructionTh.trim() || 'Follow PT posture guide',
-                            cn: '请按照康复师指导完成动作',
-                          },
-                          detection: {
-                            mode: 'angle_rep_hold',
-                            jointGroup: exCategory === 'neck_trunk' ? 'neck' : 'shoulder',
-                            side: exDefaultSide,
-                            targetMinDeg: 30,
-                            targetMaxDeg: 135,
-                            startRestMaxDeg: 25,
-                            holdSec: 2,
-                            defaultSets: 2,
-                            defaultReps: 8,
-                          },
-                        });
-                        setExCode('');
-                        setExNameTh('');
-                        setExInstructionTh('');
-                        flashBanner('success', 'เพิ่มท่ากายภาพบำบัดลง Supabase เรียบร้อย');
-                        await refreshAll();
-                      } catch (err) {
-                        flashBanner('error', err instanceof Error ? err.message : 'เพิ่มท่ากายภาพไม่สำเร็จ');
-                      } finally {
-                        setSubmitting(false);
-                      }
-                    }}
-                    className="border-t border-slate-100 pt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs"
-                  >
-                    <input
-                      value={exCode}
-                      onChange={(e) => setExCode(e.target.value)}
-                      placeholder={
-                        lang === 'cn'
-                          ? '动作代码 (如 SHOULDER_LIFT)'
-                          : lang === 'en'
-                            ? 'Code (e.g. SHOULDER_LIFT)'
-                            : 'รหัสท่า (เช่น SHOULDER_LIFT)'
-                      }
-                      className="rounded-xl border border-slate-200 px-3 py-2"
-                    />
-                    <select
-                      value={exCategory}
-                      onChange={(e) => setExCategory(e.target.value as ExerciseConfig['category'])}
-                      className="rounded-xl border border-slate-200 px-2.5 py-2"
-                    >
-                      <option value="upper_limb">Upper Limb (แขน/ไหล่/ศอก/มือ Stroke)</option>
-                      <option value="neck_trunk">Neck &amp; Shoulders (คอ/บ่า สธ.)</option>
-                    </select>
-                    <input
-                      required
-                      value={exNameTh}
-                      onChange={(e) => setExNameTh(e.target.value)}
-                      placeholder={
-                        lang === 'cn'
-                          ? '康复动作名称...'
-                          : lang === 'en'
-                            ? 'Exercise name...'
-                            : 'ชื่อท่าภาษาไทย...'
-                      }
-                      className="rounded-xl border border-slate-200 px-3 py-2"
-                    />
-                    <select
-                      value={exDefaultSide}
-                      onChange={(e) => setExDefaultSide(e.target.value as BodySide | 'both')}
-                      className="rounded-xl border border-slate-200 px-2.5 py-2"
-                    >
-                      <option value="right">Right</option>
-                      <option value="left">Left</option>
-                      <option value="both">Both</option>
-                    </select>
-                    <input
-                      value={exInstructionTh}
-                      onChange={(e) => setExInstructionTh(e.target.value)}
-                      placeholder={
-                        lang === 'cn'
-                          ? '动作指导说明...'
-                          : lang === 'en'
-                            ? 'Patient guidance instruction...'
-                            : 'คำแนะนำผู้ป่วยขณะทำท่า...'
-                      }
-                      className="sm:col-span-2 rounded-xl border border-slate-200 px-3 py-2"
-                    />
-                    <button
-                      type="submit"
-                      disabled={submitting}
-                      className="sm:col-span-2 whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] font-bold text-white hover:brightness-105 disabled:opacity-50 cursor-pointer shadow-sm"
-                    >
-                      {locale.exercises.addExerciseBtn}
-                    </button>
-                  </form>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 5: SCHEDULES & CALENDAR */}
-          {activeTab === 'schedules' && (
-            <div className="space-y-4">
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-wrap items-center justify-between gap-4">
-                <div className="flex items-start gap-3.5 min-w-0">
-                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-700">
-                    <Users className="h-6 w-6" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="whitespace-nowrap rounded-lg bg-sky-50 border border-sky-200 px-2.5 py-0.5 font-mono text-[11px] font-extrabold text-sky-700">
-                        HN: {selectedSchedulePatient?.hn ?? '-'}
-                      </span>
-                      <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
-                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" />
-                        {locale.schedules.activeBadge}
-                      </span>
-                    </div>
-                    <h2 className="mt-1 text-lg font-black text-slate-900 truncate">
-                      {selectedSchedulePatient?.fullName ?? locale.schedules.noPatient}
-                    </h2>
-                    <p className="text-xs text-slate-500 truncate">
-                      {locale.schedules.diagLabel} {selectedSchedulePatient?.diagnosis ?? '-'} • {locale.schedules.ptLabel}{' '}
-                      <span className="font-semibold text-slate-700">
-                        {selectedSchedulePatient
-                          ? ptNameMap.get(selectedSchedulePatient.delegatedToPtId || selectedSchedulePatient.assignedPtId) ||
-                            'กภ. ประจำคลินิก'
-                          : '-'}
-                      </span>
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex flex-col items-stretch sm:items-end gap-2 shrink-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <select
-                      value={selectedSchedulePatient?.id ?? ''}
-                      onChange={(e) => setSelectedSchedulePatientId(e.target.value)}
-                      className="h-9 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
-                    >
-                      {patients.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.fullName} ({p.hn})
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      onClick={() => void handleClearSchedule()}
-                      className="whitespace-nowrap h-9 px-3 inline-flex items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-600 hover:bg-rose-50 hover:text-rose-700 cursor-pointer shrink-0"
-                    >
-                      <Trash2 className="h-3.5 w-3.5 shrink-0" />
-                      {locale.schedules.clearScheduleBtn}
-                    </button>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setWeeklyEditorOpen((v) => !v)}
-                      className="whitespace-nowrap h-10 px-3.5 inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 text-xs font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer shrink-0"
-                    >
-                      <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
-                      {locale.schedules.weeklyPlanBtn}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedCalendarDateIso(formatLocalIsoDate());
-                        setScheduleModalMode('create');
-                      }}
-                      className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer shrink-0"
-                    >
-                      <Plus className="h-4 w-4 shrink-0" />
-                      {locale.schedules.createScheduleBtn.replace(/^\+\s*/, '')}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between gap-2">
-                <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1 text-xs font-bold">
-                  <button
-                    type="button"
-                    onClick={() => setScheduleSubTab('individual')}
-                    className={`whitespace-nowrap h-8 px-4 inline-flex items-center justify-center rounded-lg transition cursor-pointer ${
-                      scheduleSubTab === 'individual' ? 'bg-emerald-50 text-emerald-700' : 'text-slate-500'
-                    }`}
-                  >
-                    {locale.schedules.subIndividual}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setScheduleSubTab('all')}
-                    className={`whitespace-nowrap h-8 px-4 inline-flex items-center justify-center rounded-lg transition cursor-pointer ${
-                      scheduleSubTab === 'all' ? 'bg-emerald-50 text-emerald-700' : 'text-slate-500'
-                    }`}
-                  >
-                    {locale.schedules.subAll} ({totalScheduledAppointmentDays})
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => void refreshAll()}
-                  className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer shrink-0"
-                  title={locale.staff.refreshTitle}
-                >
-                  <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                </button>
-              </div>
-
-              {weeklyEditorOpen && selectedSchedulePatient && (
-                <div className="rounded-2xl border-2 border-emerald-200 bg-white p-5 space-y-4 shadow-md animate-popup-spring">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-extrabold text-slate-900">
-                      {locale.schedules.weeklyPlanBtn} — {selectedSchedulePatient.fullName}
-                    </h3>
-                    <button
-                      type="button"
-                      onClick={() => setWeeklyEditorOpen(false)}
-                      className="text-slate-400 hover:text-slate-700"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                    <input
-                      value={courseTitle}
-                      onChange={(e) => setCourseTitle(e.target.value)}
-                      placeholder={
-                        lang === 'cn' ? '康复计划名称' : lang === 'en' ? 'Rehab plan title' : 'ชื่อแผนฟื้นฟู'
-                      }
-                      className="rounded-xl border border-slate-200 px-3 py-2 font-semibold"
-                    />
-                    <select
-                      value={courseModpackId}
-                      onChange={(e) => setCourseModpackId(e.target.value)}
-                      className="rounded-xl border border-slate-200 px-3 py-2 font-semibold"
-                    >
-                      {modpacks.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name} ({m.questionCount} Q)
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
-                    {weeklySchedule.map((day, idx) => (
-                      <div
-                        key={idx}
-                        style={{ animationDelay: `${idx * 35}ms` }}
-                        className="rounded-xl border border-slate-200 bg-slate-50/80 p-3 space-y-2 text-xs card-hover-lift animate-card-enter"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-extrabold text-slate-800">
-                            {lang === 'th' ? `วัน${WEEKDAY_NAMES_TH[idx]}` : locale.schedules.calendarHeaders[idx]}
-                          </span>
-                          <select
-                            value={day.dayType}
-                            onChange={(e) => {
-                              const next = [...weeklySchedule];
-                              next[idx] = {
-                                ...day,
-                                dayType: e.target.value as 'training' | 'rest',
-                                label: e.target.value === 'rest' ? 'วันพักฟื้น' : 'ฝึกตามโปรแกรม',
-                              };
-                              setWeeklySchedule(next);
-                            }}
-                            className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold"
-                          >
-                            <option value="training">
-                              {lang === 'cn' ? '训练日' : lang === 'en' ? 'Training' : 'วันฝึก'}
-                            </option>
-                            <option value="rest">
-                              {lang === 'cn' ? '休息日' : lang === 'en' ? 'Rest' : 'วันพัก'}
-                            </option>
-                          </select>
-                        </div>
-                        {day.dayType === 'training' && (
-                          <select
-                            value={day.activityType}
-                            onChange={(e) => {
-                              const val = e.target.value as 'minigame' | 'physio_exercise';
-                              const next = [...weeklySchedule];
-                              next[idx] = { ...day, activityType: val };
-                              setWeeklySchedule(next);
-                            }}
-                            className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold"
-                          >
-                            <option value="minigame">
-                              {lang === 'cn' ? '认知卡牌小游戏' : lang === 'en' ? 'Cognitive Minigame' : 'มินิเกมการ์ด'}
-                            </option>
-                            <option
-                              value="physio_exercise"
-                              disabled={!isAdmin && !systemSettings.aiPoseDetectionEnabled}
-                            >
-                              {lang === 'cn' ? 'AI 康复训练' : lang === 'en' ? 'AI Rehab Exercise' : 'ท่ากายภาพ AI'}{' '}
-                              {!isAdmin && !systemSettings.aiPoseDetectionEnabled ? '(Locked)' : ''}
-                            </option>
-                          </select>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setWeeklyEditorOpen(false)}
-                      className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl border border-slate-200 text-xs font-bold"
-                    >
-                      {lang === 'cn' ? '取消' : lang === 'en' ? 'Cancel' : 'ยกเลิก'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={submitting}
-                      onClick={() => void handleSaveWeeklyCourse()}
-                      className="whitespace-nowrap h-10 px-5 inline-flex items-center justify-center rounded-xl bg-emerald-600 text-xs font-extrabold text-white hover:bg-emerald-500"
-                    >
-                      {lang === 'cn' ? '保存 7 天计划' : lang === 'en' ? 'Save 7-Day Plan' : 'บันทึกตารางฝึก 7 วัน'}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <div key={scheduleSubTab} className="animate-view-enter space-y-4">
-              {scheduleSubTab === 'individual' ? (
-                <>
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 animate-stagger-children">
-                    <div className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2 card-hover-lift animate-card-enter">
-                      <div className="min-w-0">
-                        <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statTotal}</div>
-                        <div className="mt-1 text-xl font-black text-slate-900 whitespace-nowrap">
-                          {scheduleStats.total} {locale.schedules.unitAppt}
-                        </div>
-                      </div>
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
-                        <CalendarDays className="h-5 w-5" />
-                      </div>
-                    </div>
-                    <div
-                      style={{ animationDelay: '45ms' }}
-                      className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2 card-hover-lift animate-card-enter"
-                    >
-                      <div className="min-w-0">
-                        <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statActive}</div>
-                        <div className="mt-1 text-xl font-black text-emerald-600 whitespace-nowrap">
-                          {scheduleStats.active} {locale.schedules.unitAppt}
-                        </div>
-                      </div>
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
-                        <Activity className="h-5 w-5" />
-                      </div>
-                    </div>
-                    <div
-                      style={{ animationDelay: '90ms' }}
-                      className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2 card-hover-lift animate-card-enter"
-                    >
-                      <div className="min-w-0">
-                        <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statRest}</div>
-                        <div className="mt-1 text-xl font-black text-amber-600 whitespace-nowrap">
-                          {scheduleStats.paused} {locale.schedules.unitAppt}
-                        </div>
-                      </div>
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-500">
-                        <PauseCircle className="h-5 w-5" />
-                      </div>
-                    </div>
-                    <div
-                      style={{ animationDelay: '135ms' }}
-                      className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2 card-hover-lift animate-card-enter"
-                    >
-                      <div className="min-w-0">
-                        <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statCompleted}</div>
-                        <div className="mt-1 text-xl font-black text-blue-600 whitespace-nowrap">
-                          {scheduleStats.completed} {locale.schedules.unitAppt}
-                        </div>
-                      </div>
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-50 text-sky-600">
-                        <CheckCircle2 className="h-5 w-5" />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="flex items-center gap-2">
-                        <Calendar className="h-4 w-4 text-emerald-600 shrink-0" />
-                        <h3
-                          key={`cal-title-${calendarDate.getFullYear()}-${calendarDate.getMonth()}`}
-                          className="text-sm font-black text-slate-900 whitespace-nowrap animate-toast-in"
-                        >
-                          {lang === 'cn'
-                            ? `${calendarDate.getFullYear()}年 ${CN_MONTHS[calendarDate.getMonth()]}`
-                            : lang === 'en'
-                              ? `${EN_MONTHS[calendarDate.getMonth()]} ${calendarDate.getFullYear()}`
-                              : `${THAI_MONTHS[calendarDate.getMonth()]} ${calendarDate.getFullYear() + 543}`}{' '}
-                          {lang === 'th' && (
-                            <span className="font-normal text-slate-400">
-                              ({EN_MONTHS[calendarDate.getMonth()]} {calendarDate.getFullYear()})
-                            </span>
-                          )}
-                        </h3>
-                        <div className="flex items-center gap-1 ml-2">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() - 1, 1))
-                            }
-                            className="rounded-lg border border-slate-200 p-1 hover:bg-slate-50 cursor-pointer"
-                          >
-                            <ChevronLeft className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 1))
-                            }
-                            className="rounded-lg border border-slate-200 p-1 hover:bg-slate-50 cursor-pointer"
-                          >
-                            <ChevronRight className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold text-slate-600">
-                        <span className="inline-flex items-center gap-1 whitespace-nowrap">
-                          <span className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" /> {locale.schedules.legendActive}
-                        </span>
-                        <span className="inline-flex items-center gap-1 whitespace-nowrap">
-                          <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0" /> {locale.schedules.legendRest}
-                        </span>
-                        <span className="inline-flex items-center gap-1 whitespace-nowrap">
-                          <span className="h-2 w-2 rounded-full bg-blue-500 shrink-0" /> {locale.schedules.legendCompleted}
-                        </span>
-                        <span className="inline-flex items-center gap-1 whitespace-nowrap">
-                          <span className="h-2 w-2 rounded-full bg-rose-500 shrink-0" /> {locale.schedules.legendMissed}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-7 gap-2 text-center text-[11px] font-bold text-slate-400">
-                      {locale.schedules.calendarHeaders.map((h) => (
-                        <div key={h} className="py-1 whitespace-nowrap">
-                          {h}
-                        </div>
                       ))}
                     </div>
 
-                    <div
-                      key={`cal-grid-${calendarDate.getFullYear()}-${calendarDate.getMonth()}`}
-                      className="grid grid-cols-7 gap-2 animate-calendar-month"
-                    >
-                      {calendarDays.map((dayNum, idx) => {
-                        if (dayNum === null) {
-                          return <div key={`empty-${idx}`} className="min-h-[88px] sm:min-h-[96px] rounded-xl bg-slate-50/40" />;
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        if (!mpName.trim()) return;
+                        setSubmitting(true);
+                        try {
+                          await apiClient.createModpack({
+                            name: mpName.trim(),
+                            categories: [mpCategory],
+                            questionCount: mpQuestionCount,
+                          });
+                          setMpName('');
+                          flashBanner('success', 'บันทึกชุดมินิเกม Modpack ลง Supabase เรียบร้อย');
+                          await refreshAll();
+                        } catch (err) {
+                          flashBanner('error', err instanceof Error ? err.message : 'เพิ่ม Modpack ไม่สำเร็จ');
+                        } finally {
+                          setSubmitting(false);
                         }
-                        const year = calendarDate.getFullYear();
-                        const month = calendarDate.getMonth();
-                        const dateIso = `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
-                        const today = new Date();
-                        const isToday =
-                          dayNum === today.getDate() && month === today.getMonth() && year === today.getFullYear();
-
-                        const dayState = calendarDayStateByDate.get(dateIso);
-                        const customForDay = dayState?.customForDay ?? [];
-                        const firstCustomName = dayState?.firstCustomName ?? null;
-                        const planDay = dayState?.planDay;
-                        const isTraining = Boolean(dayState?.isTraining);
-                        const cellStatus = dayState?.cellStatus ?? 'REST';
-
-                        return (
-                          <button
-                            key={dateIso}
-                            type="button"
-                            style={{ animationDelay: `${Math.min(idx, 35) * 14}ms` }}
-                            onClick={() => {
-                              setSelectedCalendarDateIso(dateIso);
-                              setScheduleModalMode('day_detail');
-                            }}
-                            className={`calendar-day-tile animate-card-enter min-h-[88px] sm:min-h-[96px] rounded-xl border p-2 flex flex-col justify-between text-left text-xs cursor-pointer ${
-                              isToday
-                                ? 'border-emerald-500 bg-emerald-50/40 ring-1 ring-emerald-500/35'
-                                : 'border-slate-100 bg-white hover:border-emerald-300'
-                            }`}
-                          >
-                            <div className="w-full flex items-center justify-between gap-1">
-                              <span
-                                className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold transition-transform ${
-                                  isToday ? 'bg-emerald-600 text-white animate-status-halo' : 'text-slate-700'
-                                }`}
-                              >
-                                {dayNum}
-                              </span>
-                              {customForDay.length > 1 && (
-                                <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-extrabold text-slate-600">
-                                  +{customForDay.length - 1} ท่า
-                                </span>
-                              )}
-                            </div>
-                            <div className="w-full space-y-1">
-                              {customForDay.length > 0 ? (
-                                <>
-                                  <span
-                                    className={`inline-block whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                                      cellStatus === 'COMPLETED'
-                                        ? 'bg-blue-100 text-blue-800'
-                                        : cellStatus === 'REST'
-                                          ? 'bg-amber-100 text-amber-800'
-                                          : cellStatus === 'MISSED'
-                                            ? 'bg-rose-100 text-rose-800'
-                                            : 'bg-emerald-100 text-emerald-800'
-                                    }`}
-                                  >
-                                    {cellStatus === 'COMPLETED'
-                                      ? locale.schedules.statusCompleted
-                                      : cellStatus === 'REST'
-                                        ? locale.schedules.statusRest
-                                        : cellStatus === 'MISSED'
-                                          ? locale.schedules.statusMissed
-                                          : locale.schedules.statusActive}
-                                  </span>
-                                  {firstCustomName && (
-                                    <div className="w-full truncate text-[10px] font-bold text-slate-700">
-                                      {firstCustomName}
-                                    </div>
-                                  )}
-                                </>
-                              ) : isTraining && planDay ? (
-                                <span
-                                  className={`inline-block whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                                    cellStatus === 'COMPLETED'
-                                      ? 'bg-blue-100 text-blue-800'
-                                      : 'bg-emerald-100 text-emerald-800'
-                                  }`}
-                                >
-                                  {cellStatus === 'COMPLETED'
-                                    ? locale.schedules.statusCompleted
-                                    : lang === 'cn'
-                                      ? planDay.activityType === 'physio_exercise'
-                                        ? 'AI 训练'
-                                        : '认知游戏'
-                                      : lang === 'en'
-                                        ? planDay.activityType === 'physio_exercise'
-                                          ? 'AI Physio'
-                                          : 'Minigame'
-                                        : planDay.activityType === 'physio_exercise'
-                                          ? 'ฝึก AI'
-                                          : 'มินิเกม'}
-                                </span>
-                              ) : (
-                                <span className="text-[10px] text-slate-300">{locale.schedules.restDayLabel}</span>
-                              )}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
+                      }}
+                      className="border-t border-slate-100 pt-3 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs"
+                    >
+                      <input
+                        required
+                        value={mpName}
+                        onChange={(e) => setMpName(e.target.value)}
+                        placeholder={
+                          lang === 'cn'
+                            ? '输入新游戏题目包名称...'
+                            : lang === 'en'
+                              ? 'New modpack name...'
+                              : 'ชื่อ Modpack ใหม่...'
+                        }
+                        className="rounded-xl border border-slate-200 px-3 py-2 sm:col-span-2"
+                      />
+                      <select
+                        value={mpCategory}
+                        onChange={(e) => setMpCategory(e.target.value)}
+                        className="rounded-xl border border-slate-200 px-2.5 py-2"
+                      >
+                        <option value="ผลไม้">ผลไม้</option>
+                        <option value="ผัก">ผัก</option>
+                        <option value="สัตว์">สัตว์</option>
+                        <option value="ความปลอดภัยในบ้าน">ความปลอดภัยในบ้าน</option>
+                      </select>
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        min={5}
+                        max={99}
+                        value={mpQuestionCount}
+                        onKeyDown={(e) => {
+                          if (['e', 'E', '+', '-', '.'].includes(e.key)) e.preventDefault();
+                        }}
+                        onChange={(e) => {
+                          const digits = e.target.value.replace(/\D/g, '').slice(0, 2);
+                          setMpQuestionCount(digits ? Math.min(99, Math.max(5, Number(digits))) : 5);
+                        }}
+                        className="rounded-xl border border-slate-200 px-3 py-2"
+                      />
+                      <button
+                        type="submit"
+                        disabled={submitting}
+                        className="sm:col-span-2 whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-emerald-600 font-bold text-white hover:bg-emerald-500 disabled:opacity-50 cursor-pointer"
+                      >
+                        {locale.exercises.addModpackBtn}
+                      </button>
+                    </form>
                   </div>
-                </>
-              ) : (
-                <div className="rounded-2xl border border-slate-200 bg-white overflow-x-auto shadow-sm">
-                  <table className="table-fixed w-full min-w-[780px] text-left text-xs">
-                    <thead className="border-b border-slate-100 bg-slate-50 text-[11px] font-bold text-slate-500">
-                      <tr>
-                        <th className="w-[14%] px-5 py-3">{locale.schedules.colHn}</th>
-                        <th className="w-[26%] px-4 py-3">{locale.schedules.colPatientName}</th>
-                        <th className="w-[24%] px-4 py-3">{locale.schedules.colPt}</th>
-                        <th className="w-[22%] px-4 py-3">{locale.schedules.colNextAppt}</th>
-                        <th className="w-[14%] px-5 py-3 text-right">{locale.schedules.colActions}</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {patients.map((p) => {
-                        const scheduledDates = Array.from(
-                          new Set(
-                            (p.rehabSchedules ?? [])
-                              .filter((s) => s.status !== 'REST')
-                              .map((s) => s.scheduledDate),
-                          ),
-                        ).sort();
-                        const apptCount =
-                          scheduledDates.length > 0
-                            ? scheduledDates.length
-                            : p.id === selectedSchedulePatient?.id
-                              ? scheduleStats.total
-                              : p.nextAppointmentDate
-                                ? 1
-                                : 0;
-                        const nextAppt =
-                          resolveNextAppointmentDate({
-                            rehabSchedules: p.rehabSchedules,
-                            fallbackNextAppointmentDate: p.nextAppointmentDate,
-                            todayIso: todayIsoStr,
-                          }) || '-';
-                        return (
-                          <tr key={p.id} className="hover:bg-slate-50/80 transition-colors duration-150">
-                            <td className="px-5 py-3 font-mono font-bold text-sky-700 whitespace-nowrap">{p.hn}</td>
-                            <td className="px-4 py-3 font-bold text-slate-900 truncate">{p.fullName}</td>
-                            <td className="px-4 py-3 text-slate-600 truncate">
-                              {ptNameMap.get(p.delegatedToPtId || p.assignedPtId) || 'กภ. ประจำคลินิก'}
-                            </td>
-                            <td className="px-4 py-3 font-semibold text-emerald-700 whitespace-nowrap">
-                              {nextAppt} ({apptCount} {locale.schedules.unitAppt})
-                            </td>
-                            <td className="px-5 py-3 text-right">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setSelectedSchedulePatientId(p.id);
-                                  setScheduleSubTab('individual');
-                                }}
-                                className="whitespace-nowrap rounded-lg bg-emerald-50 px-3 py-1 font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer"
-                              >
-                                {locale.schedules.openCalendarBtn}
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              </div>
-            </div>
-          )}
 
-          {/* TAB 6: SECURITY & AUDIT */}
-          {activeTab === 'security' && (
-            <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-start gap-2.5 min-w-0">
-                  <ShieldAlert className="h-5 w-5 text-rose-600 mt-0.5 shrink-0" />
-                  <div className="min-w-0">
-                    <h2 className="text-lg font-extrabold text-slate-900">
-                      {locale.security.title}
-                    </h2>
-                    <p className="text-xs text-slate-500">
-                      {locale.security.subtitle}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    disabled={creatingCall}
-                    onClick={() => {
-                      void submitStaffCall(
-                        kiosks[0]?.kioskId || 'KIOSK-OPD-01',
-                        'ทดสอบสัญญาณเรียกเจ้าหน้าที่จากหน้าตู้ Kiosk',
-                      );
-                    }}
-                    className="whitespace-nowrap h-9 px-3.5 inline-flex items-center justify-center rounded-xl border border-amber-200 bg-amber-50 text-[11px] font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50 cursor-pointer shrink-0"
-                  >
-                    {locale.security.testAlertBtn}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void refreshAll()}
-                    className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] text-white hover:brightness-105 cursor-pointer shrink-0 shadow-xs"
-                    title={locale.staff.refreshTitle}
-                  >
-                    <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                  </button>
-                </div>
-              </div>
-
-              {openStaffCalls.length > 0 && (
-                <div className="rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 p-4 text-white shadow-md flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15">
-                      <Bell className="h-5 w-5 animate-bounce" />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-sm font-black">
-                        {locale.security.emergencyBannerTitle} ({openStaffCalls.length})!
-                      </div>
-                      <div className="text-[11px] text-blue-100">
-                        {locale.security.emergencyBannerDesc}
-                      </div>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setSecuritySubTab('calls')}
-                    className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center shrink-0 rounded-xl bg-white text-xs font-extrabold text-blue-700 shadow hover:bg-blue-50 cursor-pointer"
-                  >
-                    {locale.security.viewCallsBtn}
-                  </button>
-                </div>
-              )}
-
-              <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
-                {(
-                  [
-                    { id: 'calls', label: `${locale.security.tabCalls} (${staffCalls.length})`, Icon: Bell },
-                    { id: 'audit', label: `${locale.security.tabAudit} (${auditLogs.length})`, Icon: Clock },
-                    { id: 'sessions', label: `${locale.security.tabSessions} (${activeSessions.length})`, Icon: Users },
-                    { id: 'bans', label: `${locale.security.tabBans} (${bannedTargets.length})`, Icon: Ban },
-                    { id: 'kiosks', label: `${locale.security.tabKiosks} (${kiosks.length})`, Icon: Monitor },
-                  ] as const
-                ).map((sub) => (
-                  <button
-                    key={sub.id}
-                    type="button"
-                    onClick={() => setSecuritySubTab(sub.id)}
-                    className={`whitespace-nowrap h-9 px-4 inline-flex items-center justify-center gap-1.5 rounded-xl transition cursor-pointer ${
-                      securitySubTab === sub.id
-                        ? 'bg-blue-700 text-white shadow-sm'
-                        : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    <sub.Icon className="h-3.5 w-3.5 shrink-0" />
-                    <span>{sub.label}</span>
-                  </button>
-                ))}
-              </div>
-
-              {securitySubTab === 'calls' && (
-                <div className="space-y-3">
-                  {/* Quick Manual Staff Call / Dispatch Form */}
-                  <form
-                    onSubmit={async (e) => {
-                      e.preventDefault();
-                      const trimmed = callReason.trim();
-                      if (!trimmed) {
-                        flashBanner('error', 'กรุณาระบุสาเหตุหรือข้อความสำหรับเรียกเจ้าหน้าที่');
-                        return;
-                      }
-                      const ok = await submitStaffCall(
-                        callKioskId || kiosks[0]?.kioskId || 'KIOSK-OPD-01',
-                        trimmed,
-                        callPatientId || null,
-                      );
-                      if (ok) {
-                        setCallReason('');
-                      }
-                    }}
-                    className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-3"
-                  >
+                  {/* Rehab Exercises Library */}
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <h3 className="text-xs font-extrabold text-slate-900">
-                          {lang === 'cn'
-                            ? '发起 / 记录呼叫医护人员'
-                            : lang === 'en'
-                              ? 'Create / Log Staff Assistance Call'
-                              : 'สร้างคำเรียกเจ้าหน้าที่ / บันทึกเหตุขอความช่วยเหลือจากหน้าตู้'}
-                        </h3>
-                        <p className="text-[11px] text-slate-500">
-                          {lang === 'cn'
-                            ? '可选择设备与患者并立即向护士站及治疗师推送提醒'
-                            : lang === 'en'
-                              ? 'Select a kiosk and optional patient to dispatch an alert immediately'
-                              : 'เลือกตู้ Kiosk และคนไข้ (ถ้ามี) เพื่อส่งแจ้งเตือนเรียกเจ้าหน้าที่ทันที'}
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {[
-                          'ผู้ป่วยปวดหรือเวียนศีรษะระหว่างฝึก',
-                          'ขอความช่วยเหลือปรับระดับกล้อง / ระยะยืน',
-                          'ขอความช่วยเหลือสแกนใบหน้าเข้าใช้งาน',
-                        ].map((preset) => (
-                          <button
-                            key={preset}
-                            type="button"
-                            onClick={() => setCallReason(preset)}
-                            className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-800 hover:bg-sky-100 cursor-pointer"
-                          >
-                            + {preset}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5">
-                      <div className="md:col-span-3">
-                        <select
-                          value={callKioskId}
-                          onChange={(e) => setCallKioskId(e.target.value)}
-                          className="w-full h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
-                        >
-                          {kiosks.length > 0 ? (
-                            kiosks.map((k) => (
-                              <option key={k.kioskId} value={k.kioskId}>
-                                {k.kioskId} ({k.location})
-                              </option>
-                            ))
-                          ) : (
-                            <option value="KIOSK-OPD-01">KIOSK-OPD-01</option>
-                          )}
-                        </select>
-                      </div>
-                      <div className="md:col-span-3">
-                        <select
-                          value={callPatientId}
-                          onChange={(e) => setCallPatientId(e.target.value)}
-                          className="w-full h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
-                        >
-                          <option value="">
-                            {lang === 'cn'
-                              ? '— 未指定患者 —'
-                              : lang === 'en'
-                                ? '— Optional patient —'
-                                : '— ไม่ระบุชื่อคนไข้ —'}
-                          </option>
-                          {patients.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.fullName} ({p.hn})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="md:col-span-4">
-                        <input
-                          type="text"
-                          maxLength={240}
-                          value={callReason}
-                          onChange={(e) => setCallReason(e.target.value)}
-                          placeholder={
-                            lang === 'cn'
-                              ? '输入呼叫原因，例如：患者需要协助...'
-                              : lang === 'en'
-                                ? 'Enter call reason, e.g. Patient needs assistance...'
-                                : 'ระบุสาเหตุคำเรียกเจ้าหน้าที่ เช่น ผู้ป่วยขอความช่วยเหลือ...'
-                          }
-                          className="w-full h-10 rounded-xl border border-slate-200 px-3 text-xs"
-                        />
-                      </div>
-                      <div className="md:col-span-2">
-                        <button
-                          type="submit"
-                          disabled={creatingCall}
-                          className="w-full h-10 rounded-xl bg-rose-600 px-3 text-xs font-extrabold text-white shadow-sm hover:bg-rose-500 disabled:opacity-50 cursor-pointer"
-                        >
-                          {creatingCall
-                            ? '...'
-                            : lang === 'cn'
-                              ? '+ 呼叫医护'
-                              : lang === 'en'
-                                ? '+ Send Call'
-                                : '+ เรียกเจ้าหน้าที่'}
-                        </button>
-                      </div>
-                    </div>
-                  </form>
-
-                  <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-5 py-3.5 text-xs">
-                      <span className="font-extrabold text-slate-900">{locale.security.callsTableTitle}</span>
-                      <div className="flex items-center gap-3">
-                        {staffCalls.some((c) => c.status === 'resolved') && (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              const resolvedIds = staffCalls
-                                .filter((c) => c.status === 'resolved')
-                                .map((c) => c.id);
-                              setStaffCalls((prev) => prev.filter((c) => c.status !== 'resolved'));
-                              try {
-                                await Promise.all(resolvedIds.map((id) => apiClient.deleteStaffCall(id)));
-                                flashBanner('success', `ล้างรายการที่แก้ไขแล้วจำนวน ${resolvedIds.length} รายการ`);
-                              } catch (err) {
-                                flashBanner(
-                                  'error',
-                                  err instanceof Error ? err.message : 'ไม่สามารถล้างรายการได้',
-                                );
-                                await refreshAll();
-                              }
-                            }}
-                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
-                          >
-                            <Trash2 className="h-3.5 w-3.5 text-slate-500" />
-                            <span>
-                              {lang === 'cn'
-                                ? '清除已处理'
-                                : lang === 'en'
-                                  ? 'Clear Resolved'
-                                  : 'ล้างรายการที่แก้ไขแล้ว'}
-                            </span>
-                          </button>
-                        )}
-                        <span className="text-[11px] text-slate-400 whitespace-nowrap">{locale.security.callsPollNote}</span>
-                      </div>
-                    </div>
-                    <div className="overflow-x-auto">
-                      <table className="table-fixed w-full min-w-[760px] text-left text-xs">
-                        <thead className="bg-slate-50 text-[11px] font-bold text-slate-500">
-                          <tr>
-                            <th className="w-[18%] px-5 py-3">{locale.security.colTime}</th>
-                            <th className="w-[14%] px-4 py-3">{locale.security.colKiosk}</th>
-                            <th className="w-[34%] px-4 py-3">{locale.security.colReason}</th>
-                            <th className="w-[14%] px-4 py-3">{locale.security.colStatus}</th>
-                            <th className="w-[20%] px-5 py-3 text-right">{locale.security.colActions}</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {staffCalls.map((call) => {
-                            const patientLabel = call.patientId
-                              ? patientNameMap.get(call.patientId) ?? call.patientId
-                              : null;
-                            return (
-                              <tr key={call.id} className="hover:bg-slate-50/80 transition-colors duration-150">
-                                <td className="px-5 py-3 text-slate-600 whitespace-nowrap truncate">
-                                  {lang === 'th'
-                                    ? formatThaiDateTime(call.createdAt)
-                                    : new Date(call.createdAt).toLocaleString(lang === 'cn' ? 'zh-CN' : 'en-US')}
-                                </td>
-                                <td className="px-4 py-3">
-                                  <span className="inline-block whitespace-nowrap rounded-lg bg-sky-50 border border-sky-200 px-2.5 py-1 font-bold text-sky-700">
-                                    {call.kioskId}
-                                  </span>
-                                </td>
-                                <td className="px-4 py-3">
-                                  <div className="font-semibold text-rose-600 break-words">{call.reason}</div>
-                                  {patientLabel && (
-                                    <div className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-500 mt-0.5">
-                                      <User className="h-3 w-3 shrink-0" />
-                                      <span>{patientLabel}</span>
-                                    </div>
-                                  )}
-                                </td>
-                                <td className="px-4 py-3">
-                                  <span
-                                    className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-bold ${
-                                      call.status === 'resolved'
-                                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                        : call.status === 'acknowledged'
-                                          ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                                          : 'bg-sky-50 text-sky-700 border border-sky-200'
-                                    }`}
-                                  >
-                                    {call.status === 'resolved'
-                                      ? locale.security.statusResolved
-                                      : call.status === 'acknowledged'
-                                        ? locale.security.statusAck
-                                        : locale.security.statusOpen}
-                                  </span>
-                                </td>
-                                <td className="px-5 py-3 text-right">
-                                  <div className="inline-flex items-center justify-end gap-1.5">
-                                    {call.status === 'open' && (
-                                      <button
-                                        type="button"
-                                        onClick={async () => {
-                                          setStaffCalls((prev) =>
-                                            prev.map((c) =>
-                                              c.id === call.id ? { ...c, status: 'acknowledged' } : c,
-                                            ),
-                                          );
-                                          try {
-                                            await apiClient.acknowledgeStaffCall(call.id);
-                                            flashBanner('success', `รับเรื่องแจ้งเตือนจาก ${call.kioskId} แล้ว`);
-                                            void refreshAll();
-                                          } catch (err) {
-                                            flashBanner(
-                                              'error',
-                                              err instanceof Error ? err.message : 'ไม่สามารถรับเรื่องคำเรียกได้',
-                                            );
-                                            await refreshAll();
-                                          }
-                                        }}
-                                        className="whitespace-nowrap rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer"
-                                      >
-                                        {locale.security.ackBtn}
-                                      </button>
-                                    )}
-                                    {call.status !== 'resolved' && (
-                                      <button
-                                        type="button"
-                                        onClick={async () => {
-                                          setStaffCalls((prev) =>
-                                            prev.map((c) =>
-                                              c.id === call.id ? { ...c, status: 'resolved' } : c,
-                                            ),
-                                          );
-                                          try {
-                                            await apiClient.resolveStaffCall(call.id);
-                                            flashBanner('success', `ปิดเคสช่วยเหลือจาก ${call.kioskId} แล้ว`);
-                                            void refreshAll();
-                                          } catch (err) {
-                                            flashBanner(
-                                              'error',
-                                              err instanceof Error ? err.message : 'ไม่สามารถปิดเคสคำเรียกได้',
-                                            );
-                                            await refreshAll();
-                                          }
-                                        }}
-                                        className="whitespace-nowrap rounded-lg bg-emerald-600 px-3 py-1 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
-                                      >
-                                        {locale.security.resolveBtn}
-                                      </button>
-                                    )}
-                                    <button
-                                      type="button"
-                                      title="ลบรายการคำเรียกเจ้าหน้าที่"
-                                      onClick={async () => {
-                                        setStaffCalls((prev) => prev.filter((c) => c.id !== call.id));
-                                        try {
-                                          await apiClient.deleteStaffCall(call.id);
-                                          flashBanner('success', 'ลบรายการคำเรียกเจ้าหน้าที่เรียบร้อย');
-                                        } catch (err) {
-                                          flashBanner(
-                                            'error',
-                                            err instanceof Error ? err.message : 'ไม่สามารถลบรายการได้',
-                                          );
-                                          await refreshAll();
-                                        }
-                                      }}
-                                      className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 cursor-pointer"
-                                    >
-                                      <Trash2 className="h-3.5 w-3.5" />
-                                    </button>
-                                  </div>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                          {staffCalls.length === 0 && (
-                            <tr>
-                              <td colSpan={5} className="px-6 py-8 text-center text-slate-400">
-                                {locale.security.emptyCalls}
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {securitySubTab === 'audit' && (
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
-                  {!isAdmin ? (
-                    <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 text-xs font-bold text-amber-800">
-                      403 RBAC Policy:{' '}
-                      {lang === 'cn'
-                        ? '仅医院院长 (Super Admin) 可查看审计日志'
-                        : lang === 'en'
-                          ? 'Only Super Admin can access Audit Logs'
-                          : 'เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) เท่านั้นที่เข้าถึงบันทึก Audit Log ได้'}
-                    </div>
-                  ) : (
-                    <>
-                      <div className="relative max-w-md">
-                        <Search className="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                        <input
-                          value={auditSearch}
-                          onChange={(e) => setAuditSearch(e.target.value)}
-                          placeholder={
-                            lang === 'cn'
-                              ? '按操作、执行者或 IP 筛选审计日志...'
-                              : lang === 'en'
-                                ? 'Filter audit logs by action, actor, IP...'
-                                : 'กรอง Audit Log ตาม Action, ชื่อผู้ทำรายการ, IP...'
-                          }
-                          className="w-full h-10 rounded-xl border border-slate-200 pl-9 pr-3 text-xs"
-                        />
-                      </div>
-                      <div className="space-y-2 max-h-[420px] overflow-y-auto">
-                        {filteredAuditLogs.map((log) => (
-                          <div
-                            key={log.id}
-                            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-2.5 text-xs transition-colors duration-150 hover:bg-white hover:border-slate-200"
-                          >
-                            <div className="min-w-0">
-                              <span className="font-mono font-extrabold text-indigo-700 mr-2">{log.eventType}</span>
-                              <span className="font-bold text-slate-900">{log.actorName}</span>{' '}
-                              <span className="text-slate-500">({log.actorRole})</span>
-                              <div className="text-[11px] text-slate-600 mt-0.5">{log.detail}</div>
-                            </div>
-                            <div className="text-right text-[11px] text-slate-400 font-mono whitespace-nowrap">
-                              <div>
-                                IP: {log.ipAddress} • Dev: {log.deviceId}
-                              </div>
-                              <div>
-                                {lang === 'th'
-                                  ? formatThaiDateTime(log.createdAt)
-                                  : new Date(log.createdAt).toLocaleString(lang === 'cn' ? 'zh-CN' : 'en-US')}
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {securitySubTab === 'sessions' && (
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
-                  {!isAdmin ? (
-                    <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 text-xs font-bold text-amber-800">
-                      403 RBAC Policy:{' '}
-                      {lang === 'cn'
-                        ? '仅医院院长 (Super Admin) 可强制注销会话'
-                        : lang === 'en'
-                          ? 'Only Super Admin can terminate active sessions'
-                          : 'เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) เท่านั้นที่สั่งตัดเซสชันผู้ใช้ได้'}
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {activeSessions.map((s) => (
-                        <div
-                          key={s.token}
-                          className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 px-4 py-3 text-xs"
-                        >
-                          <div className="min-w-0">
-                            <div className="font-bold text-slate-900">
-                              {ptNameMap.get(s.userId) ?? s.userId}{' '}
-                              <span className="ml-1 rounded bg-slate-100 px-2 py-0.5 font-mono text-[10px] uppercase">
-                                {s.role}
-                              </span>
-                            </div>
-                            <div className="font-mono text-[11px] text-slate-500">
-                              IP: {s.ipAddress} • Device: {s.deviceId} • Login:{' '}
-                              {lang === 'th'
-                                ? formatThaiDateTime(s.createdAt)
-                                : new Date(s.createdAt).toLocaleString(lang === 'cn' ? 'zh-CN' : 'en-US')}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            disabled={submitting}
-                            onClick={async () => {
-                              if (submitting) return;
-                              setSubmitting(true);
-                              try {
-                                await apiClient.forceLogoutUser(s.userId);
-                                flashBanner('success', 'เตะเซสชันออกจากระบบเรียบร้อย');
-                                await refreshAll();
-                              } catch (err) {
-                                flashBanner(
-                                  'error',
-                                  err instanceof Error ? err.message : 'ไม่สามารถเตะเซสชันออกจากระบบได้',
-                                );
-                              } finally {
-                                setSubmitting(false);
-                              }
-                            }}
-                            className="whitespace-nowrap h-9 px-3.5 inline-flex items-center justify-center rounded-xl bg-rose-600 text-[11px] font-bold text-white hover:bg-rose-500 disabled:opacity-50 cursor-pointer shrink-0"
-                          >
-                            {lang === 'cn'
-                              ? '强制注销 (Force Kick)'
-                              : lang === 'en'
-                                ? 'Force Kick Session'
-                                : 'เตะออกจากระบบ (Force Kick)'}
-                          </button>
-                        </div>
-                      ))}
-                      {activeSessions.length === 0 && (
-                        <p className="text-center text-xs text-slate-400 py-6">
-                          {lang === 'cn'
-                            ? '当前暂无在线会话'
-                            : lang === 'en'
-                              ? 'No active online sessions'
-                              : 'ไม่มีเซสชันที่กำลังออนไลน์ในระบบ'}
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {securitySubTab === 'bans' && (
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
-                  {!isAdmin ? (
-                    <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 text-xs font-bold text-amber-800">
-                      403 RBAC Policy:{' '}
-                      {lang === 'cn'
-                        ? '仅医院院长 (Super Admin) 可封禁 IP/设备'
-                        : lang === 'en'
-                          ? 'Only Super Admin can ban IP/Devices'
-                          : 'เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) เท่านั้นที่แบน IP/Device ได้'}
-                    </div>
-                  ) : (
-                    <>
-                      <form
-                        onSubmit={async (e) => {
-                          e.preventDefault();
-                          if (!banValue.trim() || submitting) return;
+                      <h3 className="text-sm font-extrabold text-slate-900">
+                        {locale.exercises.exerciseHeader} ({exercises.length})
+                      </h3>
+                      <button
+                        type="button"
+                        disabled={submitting}
+                        onClick={async () => {
                           setSubmitting(true);
                           try {
-                            await apiClient.banTarget(banType, banValue.trim(), banReason.trim() || 'Security block');
-                            setBanValue('');
-                            setBanReason('');
-                            flashBanner('success', 'เพิ่มรายการแบนเรียบร้อยแล้ว');
-                            await refreshAll();
+                            const synced = await syncStrokeExerciseLibrary(apiClient);
+                            setExercises(synced.exercises);
+                            flashBanner(
+                              'success',
+                              `ซิงก์คลังท่ากายภาพมาตรฐาน Stroke / สธ. ${synced.exercises.length} ท่าเรียบร้อย`,
+                            );
                           } catch (err) {
                             flashBanner(
                               'error',
-                              err instanceof Error ? err.message : 'เพิ่มรายการแบนไม่สำเร็จ',
+                              err instanceof Error ? err.message : 'ซิงก์คลังท่ากายภาพไม่สำเร็จ',
                             );
                           } finally {
                             setSubmitting(false);
                           }
                         }}
-                        className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs"
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-3 py-1.5 text-[11px] font-bold text-sky-800 hover:bg-sky-100 disabled:opacity-50 cursor-pointer"
                       >
-                        <select
-                          value={banType}
-                          onChange={(e) => setBanType(e.target.value as 'ip' | 'device')}
-                          className="h-10 rounded-xl border border-slate-200 px-3 font-bold"
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        ซิงก์คลัง 15 ท่าหลัก Stroke/สธ.
+                      </button>
+                    </div>
+                    <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
+                      {sortedMergedExercises.map((ex) => (
+                        <div
+                          key={ex.id}
+                          className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 text-xs transition-colors duration-150 hover:bg-sky-50/40 hover:border-sky-200"
                         >
-                          <option value="ip">Ban IP Address</option>
-                          <option value="device">Ban Device ID</option>
-                        </select>
-                        <input
-                          required
-                          value={banValue}
-                          onChange={(e) => setBanValue(e.target.value)}
-                          placeholder={lang === 'cn' ? '如 192.168.1.50' : lang === 'en' ? 'e.g. 192.168.1.50' : 'เช่น 192.168.1.50'}
-                          className="h-10 rounded-xl border border-slate-200 px-3 font-mono"
-                        />
-                        <input
-                          value={banReason}
-                          onChange={(e) => setBanReason(e.target.value)}
-                          placeholder={lang === 'cn' ? '封禁原因...' : lang === 'en' ? 'Ban reason...' : 'สาเหตุการแบน...'}
-                          className="h-10 rounded-xl border border-slate-200 px-3"
-                        />
-                        <button
-                          type="submit"
-                          disabled={submitting}
-                          className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1 rounded-xl bg-rose-600 font-bold text-white hover:bg-rose-500 disabled:opacity-50 cursor-pointer"
-                        >
-                          <Ban className="h-3.5 w-3.5 shrink-0" />{' '}
-                          {lang === 'cn' ? '封禁目标' : lang === 'en' ? 'Ban Target' : 'แบนเป้าหมาย'}
-                        </button>
-                      </form>
-
-                      <div className="space-y-2">
-                        {bannedTargets.map((b) => (
-                          <div
-                            key={b.id}
-                            className="flex items-center justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50/50 px-4 py-2.5 text-xs"
-                          >
-                            <div className="min-w-0 truncate">
-                              <span className="font-mono font-bold text-rose-700 mr-2">
-                                [{b.targetType.toUpperCase()}] {b.value}
+                          <div className="min-w-0">
+                            <div className="font-bold text-slate-900 truncate">
+                              {ex.name[lang] || ex.name.th}{' '}
+                              <span className="ml-1 rounded bg-sky-100 px-1.5 py-0.5 font-mono text-[10px] text-sky-800">
+                                {ex.code}
                               </span>
-                              <span className="text-slate-600">{b.reason}</span>
+                              <span className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800 uppercase">
+                                {ex.detection.side === 'both' ||
+                                  ex.code === 'STROKE_BOBATH_ARM_RAISE' ||
+                                  ex.code === 'STROKE_BOBATH_FORWARD_PUSH' ||
+                                  ex.code === 'MOPH_NECK_TURN' ||
+                                  ex.code === 'MOPH_SHOULDER_SHRUG_ROLL'
+                                  ? 'L+R (BOTH)'
+                                  : 'L / R / BOTH'}
+                              </span>
                             </div>
+                            <div className="text-[11px] text-slate-500 truncate">{ex.instruction[lang] || ex.instruction.th}</div>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
                             <button
                               type="button"
-                              disabled={submitting}
-                              onClick={async () => {
-                                if (submitting) return;
-                                setSubmitting(true);
-                                try {
-                                  await apiClient.unbanTarget(b.id);
-                                  flashBanner('success', `ปลดแบน ${b.value} แล้ว`);
-                                  await refreshAll();
-                                } catch (err) {
-                                  flashBanner(
-                                    'error',
-                                    err instanceof Error ? err.message : 'ปลดแบนไม่สำเร็จ',
-                                  );
-                                } finally {
-                                  setSubmitting(false);
-                                }
-                              }}
-                              className="whitespace-nowrap h-8 px-3 rounded-lg border border-slate-200 bg-white font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50 cursor-pointer shrink-0"
+                              onClick={() => handleLaunchPoseTest(ex.code || ex.id)}
+                              data-testid={`exercise-card-pose-test-${ex.code || ex.id}`}
+                              className="inline-flex items-center gap-1 whitespace-nowrap rounded-xl border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-extrabold text-emerald-800 hover:bg-emerald-100 cursor-pointer transition"
                             >
-                              {lang === 'cn' ? '解除封禁 (Unban)' : lang === 'en' ? 'Unban' : 'ปลดแบน (Unban)'}
+                              <Play className="h-3 w-3 fill-current shrink-0" />
+                              <span>ทดลองทำท่านี้ด้วยกล้องทันที</span>
                             </button>
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {securitySubTab === 'kiosks' && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <h3 className="text-sm font-extrabold text-slate-900">{locale.security.kioskPanelTitle}</h3>
-                      {isAdmin && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setNewKioskCode(`KIOSK-OPD-0${kiosks.length + 1}`);
-                            setNewKioskLocation('OPD Rehab Zone B');
-                            setRegisterKioskModalOpen(true);
-                          }}
-                          className="whitespace-nowrap h-9 px-3.5 inline-flex items-center justify-center shrink-0 rounded-xl bg-emerald-600 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
-                        >
-                          {locale.security.registerKioskBtn}
-                        </button>
-                      )}
-                    </div>
-                    {kiosks.map((k) => (
-                      <div
-                        key={k.kioskId}
-                        className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-xs"
-                      >
-                        <div className="min-w-0">
-                          <div className="font-bold text-slate-900 truncate">
-                            {k.kioskId}{' '}
-                            {k.pairingToken && (
-                              <span className="ml-1 rounded bg-indigo-50 px-2 py-0.5 font-mono text-[10px] text-indigo-700">
-                                Token: {k.pairingToken}
-                              </span>
+                            {(isAdmin || ex.createdBy === currentUser.id) && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  try {
+                                    await apiClient.deleteExercise(ex.id);
+                                    flashBanner('success', `ลบท่ากายภาพ "${ex.name.th}" แล้ว`);
+                                    await refreshAll();
+                                  } catch (err) {
+                                    flashBanner('error', err instanceof Error ? err.message : 'ไม่สามารถลบท่ากายภาพกลางได้');
+                                  }
+                                }}
+                                className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer shrink-0"
+                                title={locale.staff.deleteTitle}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
                             )}
                           </div>
-                          <div className="text-[11px] text-slate-500 truncate">
-                            {k.location} • State: {k.currentState}
-                          </div>
                         </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span
-                            className={`whitespace-nowrap rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
-                              k.online ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
-                            }`}
-                          >
-                            {k.online ? '● Online' : 'Offline'}
-                          </span>
-                          {isAdmin && k.kioskId !== 'KIOSK-OPD-01' && (
-                            <button
-                              type="button"
-                              disabled={submitting}
-                              onClick={async () => {
-                                if (submitting) return;
-                                setSubmitting(true);
-                                try {
-                                  await apiClient.deleteKiosk(k.kioskId);
-                                  flashBanner('success', `ลบ Kiosk ${k.kioskId} แล้ว`);
-                                  await refreshAll();
-                                } catch (err) {
-                                  flashBanner(
-                                    'error',
-                                    err instanceof Error ? err.message : 'ลบ Kiosk ไม่สำเร็จ',
-                                  );
-                                } finally {
-                                  setSubmitting(false);
-                                }
-                              }}
-                              className="text-rose-500 hover:text-rose-700 disabled:opacity-50 cursor-pointer"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3 text-xs">
-                    <h3 className="text-sm font-extrabold text-slate-900">{locale.security.securitySettingsTitle}</h3>
-                    <label className="flex items-center justify-between rounded-xl border border-slate-200 px-3.5 py-2.5">
-                      <span className="font-bold text-slate-700">
-                        {lang === 'cn'
-                          ? '启用 AI 人脸识别 (1024D)'
-                          : lang === 'en'
-                            ? 'Enable AI Face Scan (1024D)'
-                            : 'เปิดใช้งาน AI Face Scan (1024D)'}
-                      </span>
-                      <input
-                        type="checkbox"
-                        disabled={!isAdmin}
-                        checked={systemSettings.aiFaceScanEnabled}
-                        onChange={async (e) => {
-                          try {
-                            const updated = await apiClient.updateSystemSettings({
-                              aiFaceScanEnabled: e.target.checked,
-                            });
-                            setSystemSettings(updated);
-                          } catch (err) {
-                            flashBanner('error', err instanceof Error ? err.message : 'อัปเดตการตั้งค่าไม่สำเร็จ');
-                          }
-                        }}
-                      />
-                    </label>
-                    <div className="rounded-xl border border-slate-200 px-3.5 py-2.5 space-y-1">
-                      <div className="flex justify-between font-bold text-slate-700">
-                        <span>Face Cosine Similarity Threshold</span>
-                        <span className="font-mono text-emerald-700">{systemSettings.aiFaceThreshold.toFixed(2)}</span>
-                      </div>
-                      <input
-                        type="range"
-                        disabled={!isAdmin}
-                        min={0.5}
-                        max={0.95}
-                        step={0.01}
-                        value={systemSettings.aiFaceThreshold}
-                        onChange={(e) => {
-                          const nextVal = Number(e.target.value);
-                          setSystemSettings((prev) => ({ ...prev, aiFaceThreshold: nextVal }));
-                          if (thresholdTimerRef.current !== null) window.clearTimeout(thresholdTimerRef.current);
-                          thresholdTimerRef.current = window.setTimeout(() => {
-                            thresholdTimerRef.current = null;
-                            void apiClient
-                              .updateSystemSettings({ aiFaceThreshold: nextVal })
-                              .then((updated) => setSystemSettings(updated))
-                              .catch((err) => {
-                                flashBanner('error', err instanceof Error ? err.message : 'บันทึก Threshold ไม่สำเร็จ');
-                              });
-                          }, 250);
-                        }}
-                        className="w-full"
-                      />
+                      ))}
                     </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
 
-          {/* TAB 7: PERSONAL PROFILE (รูปประกอบ, ชื่อ, เบอร์โทร, ประวัติส่วนตัว) */}
-          {activeTab === 'profile' && (
-            <div className="space-y-5">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-start gap-2.5 min-w-0">
-                  <User className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
-                  <div className="min-w-0">
-                    <h2 className="text-lg font-extrabold text-slate-900">{locale.headers.profile.title}</h2>
-                    <p className="text-xs text-slate-500">{locale.headers.profile.subtitle}</p>
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        if (!exNameTh.trim()) return;
+                        setSubmitting(true);
+                        try {
+                          const cleanCode = (exCode.trim() || `CUSTOM_${Date.now()}`).toUpperCase();
+                          await apiClient.createExercise({
+                            id: cleanCode.toLowerCase(),
+                            code: cleanCode,
+                            category: exCategory,
+                            name: {
+                              th: exNameTh.trim(),
+                              en: exNameTh.trim(),
+                              cn: exNameTh.trim(),
+                            },
+                            instruction: {
+                              th: exInstructionTh.trim() || 'ทำตามคำแนะนำนักกายภาพบำบัด',
+                              en: exInstructionTh.trim() || 'Follow PT posture guide',
+                              cn: '请按照康复师指导完成动作',
+                            },
+                            detection: {
+                              mode: 'angle_rep_hold',
+                              jointGroup: exCategory === 'neck_trunk' ? 'neck' : 'shoulder',
+                              side: exDefaultSide,
+                              targetMinDeg: 30,
+                              targetMaxDeg: 135,
+                              startRestMaxDeg: 25,
+                              holdSec: 2,
+                              defaultSets: 2,
+                              defaultReps: 8,
+                            },
+                          });
+                          setExCode('');
+                          setExNameTh('');
+                          setExInstructionTh('');
+                          flashBanner('success', 'เพิ่มท่ากายภาพบำบัดลง Supabase เรียบร้อย');
+                          await refreshAll();
+                        } catch (err) {
+                          flashBanner('error', err instanceof Error ? err.message : 'เพิ่มท่ากายภาพไม่สำเร็จ');
+                        } finally {
+                          setSubmitting(false);
+                        }
+                      }}
+                      className="border-t border-slate-100 pt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs"
+                    >
+                      <input
+                        value={exCode}
+                        onChange={(e) => setExCode(e.target.value)}
+                        placeholder={
+                          lang === 'cn'
+                            ? '动作代码 (如 SHOULDER_LIFT)'
+                            : lang === 'en'
+                              ? 'Code (e.g. SHOULDER_LIFT)'
+                              : 'รหัสท่า (เช่น SHOULDER_LIFT)'
+                        }
+                        className="rounded-xl border border-slate-200 px-3 py-2"
+                      />
+                      <select
+                        value={exCategory}
+                        onChange={(e) => setExCategory(e.target.value as ExerciseConfig['category'])}
+                        className="rounded-xl border border-slate-200 px-2.5 py-2"
+                      >
+                        <option value="upper_limb">Upper Limb (แขน/ไหล่/ศอก/มือ Stroke)</option>
+                        <option value="neck_trunk">Neck &amp; Shoulders (คอ/บ่า สธ.)</option>
+                      </select>
+                      <input
+                        required
+                        value={exNameTh}
+                        onChange={(e) => setExNameTh(e.target.value)}
+                        placeholder={
+                          lang === 'cn'
+                            ? '康复动作名称...'
+                            : lang === 'en'
+                              ? 'Exercise name...'
+                              : 'ชื่อท่าภาษาไทย...'
+                        }
+                        className="rounded-xl border border-slate-200 px-3 py-2"
+                      />
+                      <select
+                        value={exDefaultSide}
+                        onChange={(e) => setExDefaultSide(e.target.value as BodySide | 'both')}
+                        className="rounded-xl border border-slate-200 px-2.5 py-2"
+                      >
+                        <option value="right">Right</option>
+                        <option value="left">Left</option>
+                        <option value="both">Both</option>
+                      </select>
+                      <input
+                        value={exInstructionTh}
+                        onChange={(e) => setExInstructionTh(e.target.value)}
+                        placeholder={
+                          lang === 'cn'
+                            ? '动作指导说明...'
+                            : lang === 'en'
+                              ? 'Patient guidance instruction...'
+                              : 'คำแนะนำผู้ป่วยขณะทำท่า...'
+                        }
+                        className="sm:col-span-2 rounded-xl border border-slate-200 px-3 py-2"
+                      />
+                      <button
+                        type="submit"
+                        disabled={submitting}
+                        className="sm:col-span-2 whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] font-bold text-white hover:brightness-105 disabled:opacity-50 cursor-pointer shadow-sm"
+                      >
+                        {locale.exercises.addExerciseBtn}
+                      </button>
+                    </form>
                   </div>
                 </div>
               </div>
+            )}
 
-              <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
-                {/* Left Column: Live Clinician Profile Card */}
-                <div className="xl:col-span-5 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-700">
-                      {locale.profile.previewTitle}
-                    </span>
-                    <span className="rounded-full bg-emerald-50 border border-emerald-200 px-3 py-0.5 text-[11px] font-bold text-emerald-700">
-                      {isAdmin ? locale.sidebar.adminRole : locale.sidebar.ptRole}
-                    </span>
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row items-center sm:items-start gap-4">
-                    <img
-                      src={profileAvatarUrl}
-                      alt={profileFullName || activeUserRecord.fullName}
-                      className="h-36 w-36 shrink-0 rounded-3xl object-cover border-4 border-emerald-100 shadow-md bg-white"
-                    />
-                    <div className="min-w-0 flex-1 text-center sm:text-left space-y-1.5">
-                      <h3 className="text-xl font-black text-slate-900 break-words">
-                        {profileFullName || activeUserRecord.fullName}
-                      </h3>
-                      <p className="font-mono text-xs font-bold text-sky-600">@{activeUserRecord.username}</p>
-                      <div className="inline-flex items-center gap-1.5 rounded-xl bg-amber-50 border border-amber-200 px-3 py-1 text-xs font-bold text-amber-900">
-                        <Award className="h-3.5 w-3.5 text-amber-600 shrink-0" />
-                        <span className="font-mono">{profileLicenseNo || 'PT-44012'}</span>
-                      </div>
+            {/* TAB 5: SCHEDULES & CALENDAR */}
+            {activeTab === 'schedules' && (
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex items-start gap-3.5 min-w-0">
+                    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-700">
+                      <Users className="h-6 w-6" />
                     </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3.5">
-                      <div className="text-[11px] font-bold text-slate-400">{locale.profile.phoneLabel}</div>
-                      <div className="mt-1 flex items-center gap-1.5 font-mono text-sm font-extrabold text-slate-900">
-                        <Phone className="h-4 w-4 text-emerald-600 shrink-0" />
-                        <span>{profilePhone || locale.profile.noPhone}</span>
-                      </div>
-                    </div>
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3.5">
-                      <div className="text-[11px] font-bold text-slate-400">{locale.profile.patientsCountLabel}</div>
-                      <div className="mt-1 flex items-center gap-1.5 text-sm font-extrabold text-sky-700">
-                        <Users className="h-4 w-4 text-sky-600 shrink-0" />
-                        <span>
-                          {
-                            patients.filter(
-                              (p) => p.assignedPtId === activeUserRecord.id || p.delegatedToPtId === activeUserRecord.id,
-                            ).length
-                          }{' '}
-                          {locale.pts.patientsUnit}
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="whitespace-nowrap rounded-lg bg-sky-50 border border-sky-200 px-2.5 py-0.5 font-mono text-[11px] font-extrabold text-sky-700">
+                          HN: {selectedSchedulePatient?.hn ?? '-'}
+                        </span>
+                        <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" />
+                          {locale.schedules.activeBadge}
                         </span>
                       </div>
+                      <h2 className="mt-1 text-lg font-black text-slate-900 truncate">
+                        {selectedSchedulePatient?.fullName ?? locale.schedules.noPatient}
+                      </h2>
+                      <p className="text-xs text-slate-500 truncate">
+                        {locale.schedules.diagLabel} {selectedSchedulePatient?.diagnosis ?? '-'} • {locale.schedules.ptLabel}{' '}
+                        <span className="font-semibold text-slate-700">
+                          {selectedSchedulePatient
+                            ? ptNameMap.get(selectedSchedulePatient.delegatedToPtId || selectedSchedulePatient.assignedPtId) ||
+                            'กภ. ประจำคลินิก'
+                            : '-'}
+                        </span>
+                      </p>
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3.5 text-xs">
-                    <div className="text-[11px] font-bold text-slate-400">{locale.profile.specialtyLabel}</div>
-                    <div className="mt-1 font-bold text-slate-900">
-                      {profileSpecialty || 'เวชศาสตร์ฟื้นฟูกายภาพบำบัด'}
+                  <div className="flex flex-col items-stretch sm:items-end gap-2 shrink-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <select
+                        value={selectedSchedulePatient?.id ?? ''}
+                        onChange={(e) => setSelectedSchedulePatientId(e.target.value)}
+                        className="h-9 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
+                      >
+                        {patients.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.fullName} ({p.hn})
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => void handleClearSchedule()}
+                        className="whitespace-nowrap h-9 px-3 inline-flex items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-600 hover:bg-rose-50 hover:text-rose-700 cursor-pointer shrink-0"
+                      >
+                        <Trash2 className="h-3.5 w-3.5 shrink-0" />
+                        {locale.schedules.clearScheduleBtn}
+                      </button>
                     </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-emerald-100 bg-emerald-50/40 p-4 space-y-1.5">
-                    <div className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-900">
-                      <FileText className="h-4 w-4 text-emerald-600 shrink-0" />
-                      <span>{locale.profile.bioLabel}</span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setWeeklyEditorOpen((v) => !v)}
+                        className="whitespace-nowrap h-10 px-3.5 inline-flex items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 text-xs font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer shrink-0"
+                      >
+                        <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
+                        {locale.schedules.weeklyPlanBtn}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedCalendarDateIso(formatLocalIsoDate());
+                          setScheduleModalMode('create');
+                        }}
+                        className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer shrink-0"
+                      >
+                        <Plus className="h-4 w-4 shrink-0" />
+                        {locale.schedules.createScheduleBtn.replace(/^\+\s*/, '')}
+                      </button>
                     </div>
-                    <p className="text-xs leading-relaxed text-slate-700 whitespace-pre-line">
-                      {profileBio || getDefaultBioForUser(activeUserRecord)}
-                    </p>
                   </div>
                 </div>
 
-                {/* Right Column: Edit Personal Profile Form */}
-                <form
-                  onSubmit={handleSavePersonalProfile}
-                  className="xl:col-span-7 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-5 text-xs"
-                >
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                    <h3 className="text-sm font-extrabold text-slate-900">{locale.profile.editFormTitle}</h3>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="inline-flex rounded-xl border border-slate-200 bg-white p-1 text-xs font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setScheduleSubTab('individual')}
+                      className={`whitespace-nowrap h-8 px-4 inline-flex items-center justify-center rounded-lg transition cursor-pointer ${scheduleSubTab === 'individual' ? 'bg-emerald-50 text-emerald-700' : 'text-slate-500'
+                        }`}
+                    >
+                      {locale.schedules.subIndividual}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setScheduleSubTab('all')}
+                      className={`whitespace-nowrap h-8 px-4 inline-flex items-center justify-center rounded-lg transition cursor-pointer ${scheduleSubTab === 'all' ? 'bg-emerald-50 text-emerald-700' : 'text-slate-500'
+                        }`}
+                    >
+                      {locale.schedules.subAll} ({totalScheduledAppointmentDays})
+                    </button>
                   </div>
 
-                  {/* 1. รูปประกอบ */}
-                  <div className="space-y-3">
-                    <label className="block font-extrabold text-slate-700">
-                      {locale.profile.avatarSectionLabel}
-                    </label>
-                    <div className="flex flex-wrap items-center gap-4">
-                      <img
-                        src={profileAvatarUrl}
-                        alt={profileFullName}
-                        className="h-20 w-20 rounded-2xl object-cover border-2 border-slate-200 bg-white shrink-0"
+                  <button
+                    type="button"
+                    onClick={() => void refreshAll()}
+                    className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer shrink-0"
+                    title={locale.staff.refreshTitle}
+                  >
+                    <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+
+                {weeklyEditorOpen && selectedSchedulePatient && (
+                  <div className="rounded-2xl border-2 border-emerald-200 bg-white p-5 space-y-4 shadow-md animate-popup-spring">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-extrabold text-slate-900">
+                        {locale.schedules.weeklyPlanBtn} — {selectedSchedulePatient.fullName}
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => setWeeklyEditorOpen(false)}
+                        className="text-slate-400 hover:text-slate-700"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                      <input
+                        value={courseTitle}
+                        onChange={(e) => setCourseTitle(e.target.value)}
+                        placeholder={
+                          lang === 'cn' ? '康复计划名称' : lang === 'en' ? 'Rehab plan title' : 'ชื่อแผนฟื้นฟู'
+                        }
+                        className="rounded-xl border border-slate-200 px-3 py-2 font-semibold"
                       />
-                      <div className="space-y-2 flex-1 min-w-[200px]">
-                        <label className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer">
-                          <Upload className="h-4 w-4 shrink-0" />
-                          <span>{locale.profile.uploadPhotoBtn}</span>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            onChange={handleAvatarFileChange}
-                            className="hidden"
-                          />
-                        </label>
-                        <div className="text-[11px] font-semibold text-slate-500">{locale.profile.presetLabel}</div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          {PT_PRESET_AVATARS.map((preset) => (
-                            <button
-                              key={preset.id}
-                              type="button"
-                              onClick={() => {
-                                profileDirtyRef.current = true;
-                                setProfileAvatarUrl(preset.uri);
+                      <select
+                        value={courseModpackId}
+                        onChange={(e) => setCourseModpackId(e.target.value)}
+                        className="rounded-xl border border-slate-200 px-3 py-2 font-semibold"
+                      >
+                        {modpacks.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name} ({m.questionCount} Q)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                      {weeklySchedule.map((day, idx) => (
+                        <div
+                          key={idx}
+                          style={{ animationDelay: `${idx * 35}ms` }}
+                          className="rounded-xl border border-slate-200 bg-slate-50/80 p-3 space-y-2 text-xs card-hover-lift animate-card-enter"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-extrabold text-slate-800">
+                              {lang === 'th' ? `วัน${WEEKDAY_NAMES_TH[idx]}` : locale.schedules.calendarHeaders[idx]}
+                            </span>
+                            <select
+                              value={day.dayType}
+                              onChange={(e) => {
+                                const next = [...weeklySchedule];
+                                next[idx] = {
+                                  ...day,
+                                  dayType: e.target.value as 'training' | 'rest',
+                                  label: e.target.value === 'rest' ? 'วันพักฟื้น' : 'ฝึกตามโปรแกรม',
+                                };
+                                setWeeklySchedule(next);
                               }}
-                              className={`flex items-center gap-2 rounded-xl border p-1.5 pr-2.5 transition cursor-pointer ${
-                                profileAvatarUrl === preset.uri
-                                  ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-200'
-                                  : 'border-slate-200 bg-white hover:bg-slate-50'
-                              }`}
+                              className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-bold"
                             >
-                              <img
-                                src={preset.uri}
-                                alt={preset.label}
-                                className="h-9 w-9 rounded-lg object-cover bg-white"
-                              />
-                              <span className="text-[11px] font-bold text-slate-700">{preset.label}</span>
+                              <option value="training">
+                                {lang === 'cn' ? '训练日' : lang === 'en' ? 'Training' : 'วันฝึก'}
+                              </option>
+                              <option value="rest">
+                                {lang === 'cn' ? '休息日' : lang === 'en' ? 'Rest' : 'วันพัก'}
+                              </option>
+                            </select>
+                          </div>
+                          {day.dayType === 'training' && (
+                            <select
+                              value={day.activityType}
+                              onChange={(e) => {
+                                const val = e.target.value as 'minigame' | 'physio_exercise';
+                                const next = [...weeklySchedule];
+                                next[idx] = { ...day, activityType: val };
+                                setWeeklySchedule(next);
+                              }}
+                              className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold"
+                            >
+                              <option value="minigame">
+                                {lang === 'cn' ? '认知卡牌小游戏' : lang === 'en' ? 'Cognitive Minigame' : 'มินิเกมการ์ด'}
+                              </option>
+                              <option
+                                value="physio_exercise"
+                                disabled={!isAdmin && !systemSettings.aiPoseDetectionEnabled}
+                              >
+                                {lang === 'cn' ? 'AI 康复训练' : lang === 'en' ? 'AI Rehab Exercise' : 'ท่ากายภาพ AI'}{' '}
+                                {!isAdmin && !systemSettings.aiPoseDetectionEnabled ? '(Locked)' : ''}
+                              </option>
+                            </select>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setWeeklyEditorOpen(false)}
+                        className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center rounded-xl border border-slate-200 text-xs font-bold"
+                      >
+                        {lang === 'cn' ? '取消' : lang === 'en' ? 'Cancel' : 'ยกเลิก'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={submitting}
+                        onClick={() => void handleSaveWeeklyCourse()}
+                        className="whitespace-nowrap h-10 px-5 inline-flex items-center justify-center rounded-xl bg-emerald-600 text-xs font-extrabold text-white hover:bg-emerald-500"
+                      >
+                        {lang === 'cn' ? '保存 7 天计划' : lang === 'en' ? 'Save 7-Day Plan' : 'บันทึกตารางฝึก 7 วัน'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div key={scheduleSubTab} className="animate-view-enter space-y-4">
+                  {scheduleSubTab === 'individual' ? (
+                    <>
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 animate-stagger-children">
+                        <div className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2 card-hover-lift animate-card-enter">
+                          <div className="min-w-0">
+                            <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statTotal}</div>
+                            <div className="mt-1 text-xl font-black text-slate-900 whitespace-nowrap">
+                              {scheduleStats.total} {locale.schedules.unitAppt}
+                            </div>
+                          </div>
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
+                            <CalendarDays className="h-5 w-5" />
+                          </div>
+                        </div>
+                        <div
+                          style={{ animationDelay: '45ms' }}
+                          className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2 card-hover-lift animate-card-enter"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statActive}</div>
+                            <div className="mt-1 text-xl font-black text-emerald-600 whitespace-nowrap">
+                              {scheduleStats.active} {locale.schedules.unitAppt}
+                            </div>
+                          </div>
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
+                            <Activity className="h-5 w-5" />
+                          </div>
+                        </div>
+                        <div
+                          style={{ animationDelay: '90ms' }}
+                          className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2 card-hover-lift animate-card-enter"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statRest}</div>
+                            <div className="mt-1 text-xl font-black text-amber-600 whitespace-nowrap">
+                              {scheduleStats.paused} {locale.schedules.unitAppt}
+                            </div>
+                          </div>
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-500">
+                            <PauseCircle className="h-5 w-5" />
+                          </div>
+                        </div>
+                        <div
+                          style={{ animationDelay: '135ms' }}
+                          className="min-h-[84px] rounded-2xl border border-slate-200 bg-white p-4 flex items-center justify-between gap-2 card-hover-lift animate-card-enter"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-[11px] font-semibold text-slate-500 truncate">{locale.schedules.statCompleted}</div>
+                            <div className="mt-1 text-xl font-black text-blue-600 whitespace-nowrap">
+                              {scheduleStats.completed} {locale.schedules.unitAppt}
+                            </div>
+                          </div>
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-50 text-sky-600">
+                            <CheckCircle2 className="h-5 w-5" />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="flex items-center gap-2">
+                            <Calendar className="h-4 w-4 text-emerald-600 shrink-0" />
+                            <h3
+                              key={`cal-title-${calendarDate.getFullYear()}-${calendarDate.getMonth()}`}
+                              className="text-sm font-black text-slate-900 whitespace-nowrap animate-toast-in"
+                            >
+                              {lang === 'cn'
+                                ? `${calendarDate.getFullYear()}年 ${CN_MONTHS[calendarDate.getMonth()]}`
+                                : lang === 'en'
+                                  ? `${EN_MONTHS[calendarDate.getMonth()]} ${calendarDate.getFullYear()}`
+                                  : `${THAI_MONTHS[calendarDate.getMonth()]} ${calendarDate.getFullYear() + 543}`}{' '}
+                              {lang === 'th' && (
+                                <span className="font-normal text-slate-400">
+                                  ({EN_MONTHS[calendarDate.getMonth()]} {calendarDate.getFullYear()})
+                                </span>
+                              )}
+                            </h3>
+                            <div className="flex items-center gap-1 ml-2">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() - 1, 1))
+                                }
+                                className="rounded-lg border border-slate-200 p-1 hover:bg-slate-50 cursor-pointer"
+                              >
+                                <ChevronLeft className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 1))
+                                }
+                                className="rounded-lg border border-slate-200 p-1 hover:bg-slate-50 cursor-pointer"
+                              >
+                                <ChevronRight className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold text-slate-600">
+                            <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                              <span className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" /> {locale.schedules.legendActive}
+                            </span>
+                            <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                              <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0" /> {locale.schedules.legendRest}
+                            </span>
+                            <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                              <span className="h-2 w-2 rounded-full bg-blue-500 shrink-0" /> {locale.schedules.legendCompleted}
+                            </span>
+                            <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                              <span className="h-2 w-2 rounded-full bg-rose-500 shrink-0" /> {locale.schedules.legendMissed}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-7 gap-2 text-center text-[11px] font-bold text-slate-400">
+                          {locale.schedules.calendarHeaders.map((h) => (
+                            <div key={h} className="py-1 whitespace-nowrap">
+                              {h}
+                            </div>
+                          ))}
+                        </div>
+
+                        <div
+                          key={`cal-grid-${calendarDate.getFullYear()}-${calendarDate.getMonth()}`}
+                          className="grid grid-cols-7 gap-2 animate-calendar-month"
+                        >
+                          {calendarDays.map((dayNum, idx) => {
+                            if (dayNum === null) {
+                              return <div key={`empty-${idx}`} className="min-h-[88px] sm:min-h-[96px] rounded-xl bg-slate-50/40" />;
+                            }
+                            const year = calendarDate.getFullYear();
+                            const month = calendarDate.getMonth();
+                            const dateIso = `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+                            const today = new Date();
+                            const isToday =
+                              dayNum === today.getDate() && month === today.getMonth() && year === today.getFullYear();
+
+                            const dayState = calendarDayStateByDate.get(dateIso);
+                            const customForDay = dayState?.customForDay ?? [];
+                            const firstCustomName = dayState?.firstCustomName ?? null;
+                            const planDay = dayState?.planDay;
+                            const isTraining = Boolean(dayState?.isTraining);
+                            const cellStatus = dayState?.cellStatus ?? 'REST';
+
+                            return (
+                              <button
+                                key={dateIso}
+                                type="button"
+                                style={{ animationDelay: `${Math.min(idx, 35) * 14}ms` }}
+                                onClick={() => {
+                                  setSelectedCalendarDateIso(dateIso);
+                                  setScheduleModalMode('day_detail');
+                                }}
+                                className={`calendar-day-tile animate-card-enter min-h-[88px] sm:min-h-[96px] rounded-xl border p-2 flex flex-col justify-between text-left text-xs cursor-pointer ${isToday
+                                    ? 'border-emerald-500 bg-emerald-50/40 ring-1 ring-emerald-500/35'
+                                    : 'border-slate-100 bg-white hover:border-emerald-300'
+                                  }`}
+                              >
+                                <div className="w-full flex items-center justify-between gap-1">
+                                  <span
+                                    className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold transition-transform ${isToday ? 'bg-emerald-600 text-white animate-status-halo' : 'text-slate-700'
+                                      }`}
+                                  >
+                                    {dayNum}
+                                  </span>
+                                  {customForDay.length > 1 && (
+                                    <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-extrabold text-slate-600">
+                                      +{customForDay.length - 1} ท่า
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="w-full space-y-1">
+                                  {customForDay.length > 0 ? (
+                                    <>
+                                      <span
+                                        className={`inline-block whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-bold ${cellStatus === 'COMPLETED'
+                                            ? 'bg-blue-100 text-blue-800'
+                                            : cellStatus === 'REST'
+                                              ? 'bg-amber-100 text-amber-800'
+                                              : cellStatus === 'MISSED'
+                                                ? 'bg-rose-100 text-rose-800'
+                                                : 'bg-emerald-100 text-emerald-800'
+                                          }`}
+                                      >
+                                        {cellStatus === 'COMPLETED'
+                                          ? locale.schedules.statusCompleted
+                                          : cellStatus === 'REST'
+                                            ? locale.schedules.statusRest
+                                            : cellStatus === 'MISSED'
+                                              ? locale.schedules.statusMissed
+                                              : locale.schedules.statusActive}
+                                      </span>
+                                      {firstCustomName && (
+                                        <div className="w-full truncate text-[10px] font-bold text-slate-700">
+                                          {firstCustomName}
+                                        </div>
+                                      )}
+                                    </>
+                                  ) : isTraining && planDay ? (
+                                    <span
+                                      className={`inline-block whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-bold ${cellStatus === 'COMPLETED'
+                                          ? 'bg-blue-100 text-blue-800'
+                                          : 'bg-emerald-100 text-emerald-800'
+                                        }`}
+                                    >
+                                      {cellStatus === 'COMPLETED'
+                                        ? locale.schedules.statusCompleted
+                                        : lang === 'cn'
+                                          ? planDay.activityType === 'physio_exercise'
+                                            ? 'AI 训练'
+                                            : '认知游戏'
+                                          : lang === 'en'
+                                            ? planDay.activityType === 'physio_exercise'
+                                              ? 'AI Physio'
+                                              : 'Minigame'
+                                            : planDay.activityType === 'physio_exercise'
+                                              ? 'ฝึก AI'
+                                              : 'มินิเกม'}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] text-slate-300">{locale.schedules.restDayLabel}</span>
+                                  )}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="rounded-2xl border border-slate-200 bg-white overflow-x-auto shadow-sm">
+                      <table className="table-fixed w-full min-w-[780px] text-left text-xs">
+                        <thead className="border-b border-slate-100 bg-slate-50 text-[11px] font-bold text-slate-500">
+                          <tr>
+                            <th className="w-[14%] px-5 py-3">{locale.schedules.colHn}</th>
+                            <th className="w-[26%] px-4 py-3">{locale.schedules.colPatientName}</th>
+                            <th className="w-[24%] px-4 py-3">{locale.schedules.colPt}</th>
+                            <th className="w-[22%] px-4 py-3">{locale.schedules.colNextAppt}</th>
+                            <th className="w-[14%] px-5 py-3 text-right">{locale.schedules.colActions}</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {patients.map((p) => {
+                            const scheduledDates = Array.from(
+                              new Set(
+                                (p.rehabSchedules ?? [])
+                                  .filter((s) => s.status !== 'REST')
+                                  .map((s) => s.scheduledDate),
+                              ),
+                            ).sort();
+                            const apptCount =
+                              scheduledDates.length > 0
+                                ? scheduledDates.length
+                                : p.id === selectedSchedulePatient?.id
+                                  ? scheduleStats.total
+                                  : p.nextAppointmentDate
+                                    ? 1
+                                    : 0;
+                            const nextAppt =
+                              resolveNextAppointmentDate({
+                                rehabSchedules: p.rehabSchedules,
+                                fallbackNextAppointmentDate: p.nextAppointmentDate,
+                                todayIso: todayIsoStr,
+                              }) || '-';
+                            return (
+                              <tr key={p.id} className="hover:bg-slate-50/80 transition-colors duration-150">
+                                <td className="px-5 py-3 font-mono font-bold text-sky-700 whitespace-nowrap">{p.hn}</td>
+                                <td className="px-4 py-3 font-bold text-slate-900 truncate">{p.fullName}</td>
+                                <td className="px-4 py-3 text-slate-600 truncate">
+                                  {ptNameMap.get(p.delegatedToPtId || p.assignedPtId) || 'กภ. ประจำคลินิก'}
+                                </td>
+                                <td className="px-4 py-3 font-semibold text-emerald-700 whitespace-nowrap">
+                                  {nextAppt} ({apptCount} {locale.schedules.unitAppt})
+                                </td>
+                                <td className="px-5 py-3 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedSchedulePatientId(p.id);
+                                      setScheduleSubTab('individual');
+                                    }}
+                                    className="whitespace-nowrap rounded-lg bg-emerald-50 px-3 py-1 font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer"
+                                  >
+                                    {locale.schedules.openCalendarBtn}
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 6: SECURITY & AUDIT */}
+            {activeTab === 'security' && (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <ShieldAlert className="h-5 w-5 text-rose-600 mt-0.5 shrink-0" />
+                    <div className="min-w-0">
+                      <h2 className="text-lg font-extrabold text-slate-900">
+                        {locale.security.title}
+                      </h2>
+                      <p className="text-xs text-slate-500">
+                        {locale.security.subtitle}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      disabled={creatingCall}
+                      onClick={() => {
+                        void submitStaffCall(
+                          kiosks[0]?.kioskId || 'KIOSK-OPD-01',
+                          'ทดสอบสัญญาณเรียกเจ้าหน้าที่จากหน้าตู้ Kiosk',
+                        );
+                      }}
+                      className="whitespace-nowrap h-9 px-3.5 inline-flex items-center justify-center rounded-xl border border-amber-200 bg-amber-50 text-[11px] font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50 cursor-pointer shrink-0"
+                    >
+                      {locale.security.testAlertBtn}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void refreshAll()}
+                      className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-r from-[#0F4C81] to-[#0D9488] text-white hover:brightness-105 cursor-pointer shrink-0 shadow-xs"
+                      title={locale.staff.refreshTitle}
+                    >
+                      <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                    </button>
+                  </div>
+                </div>
+
+                {openStaffCalls.length > 0 && (
+                  <div className="rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 p-4 text-white shadow-md flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15">
+                        <Bell className="h-5 w-5 animate-bounce" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-black">
+                          {locale.security.emergencyBannerTitle} ({openStaffCalls.length})!
+                        </div>
+                        <div className="text-[11px] text-blue-100">
+                          {locale.security.emergencyBannerDesc}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSecuritySubTab('calls')}
+                      className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center shrink-0 rounded-xl bg-white text-xs font-extrabold text-blue-700 shadow hover:bg-blue-50 cursor-pointer"
+                    >
+                      {locale.security.viewCallsBtn}
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
+                  {(
+                    [
+                      { id: 'calls', label: `${locale.security.tabCalls} (${staffCalls.length})`, Icon: Bell },
+                      { id: 'audit', label: `${locale.security.tabAudit} (${auditLogs.length})`, Icon: Clock },
+                      { id: 'sessions', label: `${locale.security.tabSessions} (${activeSessions.length})`, Icon: Users },
+                      { id: 'bans', label: `${locale.security.tabBans} (${bannedTargets.length})`, Icon: Ban },
+                      { id: 'kiosks', label: `${locale.security.tabKiosks} (${kiosks.length})`, Icon: Monitor },
+                    ] as const
+                  ).map((sub) => (
+                    <button
+                      key={sub.id}
+                      type="button"
+                      onClick={() => setSecuritySubTab(sub.id)}
+                      className={`whitespace-nowrap h-9 px-4 inline-flex items-center justify-center gap-1.5 rounded-xl transition cursor-pointer ${securitySubTab === sub.id
+                          ? 'bg-blue-700 text-white shadow-sm'
+                          : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                        }`}
+                    >
+                      <sub.Icon className="h-3.5 w-3.5 shrink-0" />
+                      <span>{sub.label}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {securitySubTab === 'calls' && (
+                  <div className="space-y-3">
+                    {/* Quick Manual Staff Call / Dispatch Form */}
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        const trimmed = callReason.trim();
+                        if (!trimmed) {
+                          flashBanner('error', 'กรุณาระบุสาเหตุหรือข้อความสำหรับเรียกเจ้าหน้าที่');
+                          return;
+                        }
+                        const ok = await submitStaffCall(
+                          callKioskId || kiosks[0]?.kioskId || 'KIOSK-OPD-01',
+                          trimmed,
+                          callPatientId || null,
+                        );
+                        if (ok) {
+                          setCallReason('');
+                        }
+                      }}
+                      className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <h3 className="text-xs font-extrabold text-slate-900">
+                            {lang === 'cn'
+                              ? '发起 / 记录呼叫医护人员'
+                              : lang === 'en'
+                                ? 'Create / Log Staff Assistance Call'
+                                : 'สร้างคำเรียกเจ้าหน้าที่ / บันทึกเหตุขอความช่วยเหลือจากหน้าตู้'}
+                          </h3>
+                          <p className="text-[11px] text-slate-500">
+                            {lang === 'cn'
+                              ? '可选择设备与患者并立即向护士站及治疗师推送提醒'
+                              : lang === 'en'
+                                ? 'Select a kiosk and optional patient to dispatch an alert immediately'
+                                : 'เลือกตู้ Kiosk และคนไข้ (ถ้ามี) เพื่อส่งแจ้งเตือนเรียกเจ้าหน้าที่ทันที'}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {[
+                            'ผู้ป่วยปวดหรือเวียนศีรษะระหว่างฝึก',
+                            'ขอความช่วยเหลือปรับระดับกล้อง / ระยะยืน',
+                            'ขอความช่วยเหลือสแกนใบหน้าเข้าใช้งาน',
+                          ].map((preset) => (
+                            <button
+                              key={preset}
+                              type="button"
+                              onClick={() => setCallReason(preset)}
+                              className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-800 hover:bg-sky-100 cursor-pointer"
+                            >
+                              + {preset}
                             </button>
                           ))}
                         </div>
                       </div>
-                    </div>
-                  </div>
 
-                  {/* 2. ชื่อ + เบอร์โทร */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block font-extrabold text-slate-700 mb-1.5">
-                        {locale.profile.fullNameLabel} *
-                      </label>
-                      <input
-                        required
-                        value={profileFullName}
-                        onChange={(e) => {
-                          profileDirtyRef.current = true;
-                          setProfileFullName(e.target.value);
-                        }}
-                        className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block font-extrabold text-slate-700 mb-1.5">
-                        {locale.profile.phoneLabel}
-                      </label>
-                      <input
-                        type="tel"
-                        inputMode="numeric"
-                        pattern="[0-9]*"
-                        maxLength={10}
-                        value={profilePhone}
-                        onChange={(e) => {
-                          profileDirtyRef.current = true;
-                          setProfilePhone(e.target.value.replace(/\D/g, '').slice(0, 10));
-                        }}
-                        placeholder="08XXXXXXXX"
-                        className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-mono font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  {activeUserRecord.role !== 'patient' && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block font-extrabold text-slate-700 mb-1.5">
-                          {locale.profile.specialtyLabel}
-                        </label>
-                        <input
-                          value={profileSpecialty}
-                          onChange={(e) => {
-                            profileDirtyRef.current = true;
-                            setProfileSpecialty(e.target.value);
-                          }}
-                          className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none"
-                        />
+                      <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5">
+                        <div className="md:col-span-3">
+                          <select
+                            value={callKioskId}
+                            onChange={(e) => setCallKioskId(e.target.value)}
+                            className="w-full h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
+                          >
+                            {kiosks.length > 0 ? (
+                              kiosks.map((k) => (
+                                <option key={k.kioskId} value={k.kioskId}>
+                                  {k.kioskId} ({k.location})
+                                </option>
+                              ))
+                            ) : (
+                              <option value="KIOSK-OPD-01">KIOSK-OPD-01</option>
+                            )}
+                          </select>
+                        </div>
+                        <div className="md:col-span-3">
+                          <select
+                            value={callPatientId}
+                            onChange={(e) => setCallPatientId(e.target.value)}
+                            className="w-full h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
+                          >
+                            <option value="">
+                              {lang === 'cn'
+                                ? '— 未指定患者 —'
+                                : lang === 'en'
+                                  ? '— Optional patient —'
+                                  : '— ไม่ระบุชื่อคนไข้ —'}
+                            </option>
+                            {patients.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.fullName} ({p.hn})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="md:col-span-4">
+                          <input
+                            type="text"
+                            maxLength={240}
+                            value={callReason}
+                            onChange={(e) => setCallReason(e.target.value)}
+                            placeholder={
+                              lang === 'cn'
+                                ? '输入呼叫原因，例如：患者需要协助...'
+                                : lang === 'en'
+                                  ? 'Enter call reason, e.g. Patient needs assistance...'
+                                  : 'ระบุสาเหตุคำเรียกเจ้าหน้าที่ เช่น ผู้ป่วยขอความช่วยเหลือ...'
+                            }
+                            className="w-full h-10 rounded-xl border border-slate-200 px-3 text-xs"
+                          />
+                        </div>
+                        <div className="md:col-span-2">
+                          <button
+                            type="submit"
+                            disabled={creatingCall}
+                            className="w-full h-10 rounded-xl bg-rose-600 px-3 text-xs font-extrabold text-white shadow-sm hover:bg-rose-500 disabled:opacity-50 cursor-pointer"
+                          >
+                            {creatingCall
+                              ? '...'
+                              : lang === 'cn'
+                                ? '+ 呼叫医护'
+                                : lang === 'en'
+                                  ? '+ Send Call'
+                                  : '+ เรียกเจ้าหน้าที่'}
+                          </button>
+                        </div>
                       </div>
-                      <div>
-                        <label className="flex flex-wrap items-center justify-between gap-1.5 font-extrabold text-slate-700 mb-1.5">
-                          <span>{locale.profile.licenseLabel}</span>
-                          {!isAdminUser && (
-                            <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">
-                              <Lock className="h-3 w-3 shrink-0" />
-                              ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)
-                            </span>
+                    </form>
+
+                    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-5 py-3.5 text-xs">
+                        <span className="font-extrabold text-slate-900">{locale.security.callsTableTitle}</span>
+                        <div className="flex items-center gap-3">
+                          {staffCalls.some((c) => c.status === 'resolved') && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const resolvedIds = staffCalls
+                                  .filter((c) => c.status === 'resolved')
+                                  .map((c) => c.id);
+                                setStaffCalls((prev) => prev.filter((c) => c.status !== 'resolved'));
+                                try {
+                                  await Promise.all(resolvedIds.map((id) => apiClient.deleteStaffCall(id)));
+                                  flashBanner('success', `ล้างรายการที่แก้ไขแล้วจำนวน ${resolvedIds.length} รายการ`);
+                                } catch (err) {
+                                  flashBanner(
+                                    'error',
+                                    err instanceof Error ? err.message : 'ไม่สามารถล้างรายการได้',
+                                  );
+                                  await refreshAll();
+                                }
+                              }}
+                              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                            >
+                              <Trash2 className="h-3.5 w-3.5 text-slate-500" />
+                              <span>
+                                {lang === 'cn'
+                                  ? '清除已处理'
+                                  : lang === 'en'
+                                    ? 'Clear Resolved'
+                                    : 'ล้างรายการที่แก้ไขแล้ว'}
+                              </span>
+                            </button>
                           )}
-                        </label>
-                        <input
-                          type="text"
-                          value={!isAdminUser ? (activeUserRecord.licenseNo || myProfile.licenseNo) : profileLicenseNo}
-                          readOnly={!isAdminUser}
-                          disabled={!isAdminUser}
-                          onChange={(e) => {
-                            if (!isAdminUser) return;
-                            profileDirtyRef.current = true;
-                            setProfileLicenseNo(e.target.value);
-                          }}
-                          className={
-                            !isAdminUser
-                              ? 'w-full rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2.5 text-xs font-mono font-medium text-slate-600 cursor-not-allowed select-text focus:outline-none'
-                              : 'w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-mono font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none'
-                          }
-                        />
-                        {!isAdminUser && (
-                          <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500">
-                            <Lock className="h-3 w-3 shrink-0" />
-                            <span>ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)</span>
+                          <span className="text-[11px] text-slate-400 whitespace-nowrap">{locale.security.callsPollNote}</span>
+                        </div>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="table-fixed w-full min-w-[760px] text-left text-xs">
+                          <thead className="bg-slate-50 text-[11px] font-bold text-slate-500">
+                            <tr>
+                              <th className="w-[18%] px-5 py-3">{locale.security.colTime}</th>
+                              <th className="w-[14%] px-4 py-3">{locale.security.colKiosk}</th>
+                              <th className="w-[34%] px-4 py-3">{locale.security.colReason}</th>
+                              <th className="w-[14%] px-4 py-3">{locale.security.colStatus}</th>
+                              <th className="w-[20%] px-5 py-3 text-right">{locale.security.colActions}</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {staffCalls.map((call) => {
+                              const patientLabel = call.patientId
+                                ? patientNameMap.get(call.patientId) ?? call.patientId
+                                : null;
+                              return (
+                                <tr key={call.id} className="hover:bg-slate-50/80 transition-colors duration-150">
+                                  <td className="px-5 py-3 text-slate-600 whitespace-nowrap truncate">
+                                    {lang === 'th'
+                                      ? formatThaiDateTime(call.createdAt)
+                                      : new Date(call.createdAt).toLocaleString(lang === 'cn' ? 'zh-CN' : 'en-US')}
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <span className="inline-block whitespace-nowrap rounded-lg bg-sky-50 border border-sky-200 px-2.5 py-1 font-bold text-sky-700">
+                                      {call.kioskId}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <div className="font-semibold text-rose-600 break-words">{call.reason}</div>
+                                    {patientLabel && (
+                                      <div className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-500 mt-0.5">
+                                        <User className="h-3 w-3 shrink-0" />
+                                        <span>{patientLabel}</span>
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <span
+                                      className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-bold ${call.status === 'resolved'
+                                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                          : call.status === 'acknowledged'
+                                            ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                            : 'bg-sky-50 text-sky-700 border border-sky-200'
+                                        }`}
+                                    >
+                                      {call.status === 'resolved'
+                                        ? locale.security.statusResolved
+                                        : call.status === 'acknowledged'
+                                          ? locale.security.statusAck
+                                          : locale.security.statusOpen}
+                                    </span>
+                                  </td>
+                                  <td className="px-5 py-3 text-right">
+                                    <div className="inline-flex items-center justify-end gap-1.5">
+                                      {call.status === 'open' && (
+                                        <button
+                                          type="button"
+                                          onClick={async () => {
+                                            setStaffCalls((prev) =>
+                                              prev.map((c) =>
+                                                c.id === call.id ? { ...c, status: 'acknowledged' } : c,
+                                              ),
+                                            );
+                                            try {
+                                              await apiClient.acknowledgeStaffCall(call.id);
+                                              flashBanner('success', `รับเรื่องแจ้งเตือนจาก ${call.kioskId} แล้ว`);
+                                              void refreshAll();
+                                            } catch (err) {
+                                              flashBanner(
+                                                'error',
+                                                err instanceof Error ? err.message : 'ไม่สามารถรับเรื่องคำเรียกได้',
+                                              );
+                                              await refreshAll();
+                                            }
+                                          }}
+                                          className="whitespace-nowrap rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer"
+                                        >
+                                          {locale.security.ackBtn}
+                                        </button>
+                                      )}
+                                      {call.status !== 'resolved' && (
+                                        <button
+                                          type="button"
+                                          onClick={async () => {
+                                            setStaffCalls((prev) =>
+                                              prev.map((c) =>
+                                                c.id === call.id ? { ...c, status: 'resolved' } : c,
+                                              ),
+                                            );
+                                            try {
+                                              await apiClient.resolveStaffCall(call.id);
+                                              flashBanner('success', `ปิดเคสช่วยเหลือจาก ${call.kioskId} แล้ว`);
+                                              void refreshAll();
+                                            } catch (err) {
+                                              flashBanner(
+                                                'error',
+                                                err instanceof Error ? err.message : 'ไม่สามารถปิดเคสคำเรียกได้',
+                                              );
+                                              await refreshAll();
+                                            }
+                                          }}
+                                          className="whitespace-nowrap rounded-lg bg-emerald-600 px-3 py-1 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
+                                        >
+                                          {locale.security.resolveBtn}
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        title="ลบรายการคำเรียกเจ้าหน้าที่"
+                                        onClick={async () => {
+                                          setStaffCalls((prev) => prev.filter((c) => c.id !== call.id));
+                                          try {
+                                            await apiClient.deleteStaffCall(call.id);
+                                            flashBanner('success', 'ลบรายการคำเรียกเจ้าหน้าที่เรียบร้อย');
+                                          } catch (err) {
+                                            flashBanner(
+                                              'error',
+                                              err instanceof Error ? err.message : 'ไม่สามารถลบรายการได้',
+                                            );
+                                            await refreshAll();
+                                          }
+                                        }}
+                                        className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 cursor-pointer"
+                                      >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                            {staffCalls.length === 0 && (
+                              <tr>
+                                <td colSpan={5} className="px-6 py-8 text-center text-slate-400">
+                                  {locale.security.emptyCalls}
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {securitySubTab === 'audit' && (
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
+                    {!isAdmin ? (
+                      <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 text-xs font-bold text-amber-800">
+                        403 RBAC Policy:{' '}
+                        {lang === 'cn'
+                          ? '仅医院院长 (Super Admin) 可查看审计日志'
+                          : lang === 'en'
+                            ? 'Only Super Admin can access Audit Logs'
+                            : 'เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) เท่านั้นที่เข้าถึงบันทึก Audit Log ได้'}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="relative max-w-md">
+                          <Search className="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                          <input
+                            value={auditSearch}
+                            onChange={(e) => setAuditSearch(e.target.value)}
+                            placeholder={
+                              lang === 'cn'
+                                ? '按操作、执行者或 IP 筛选审计日志...'
+                                : lang === 'en'
+                                  ? 'Filter audit logs by action, actor, IP...'
+                                  : 'กรอง Audit Log ตาม Action, ชื่อผู้ทำรายการ, IP...'
+                            }
+                            className="w-full h-10 rounded-xl border border-slate-200 pl-9 pr-3 text-xs"
+                          />
+                        </div>
+                        <div className="space-y-2 max-h-[420px] overflow-y-auto">
+                          {filteredAuditLogs.map((log) => (
+                            <div
+                              key={log.id}
+                              className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-2.5 text-xs transition-colors duration-150 hover:bg-white hover:border-slate-200"
+                            >
+                              <div className="min-w-0">
+                                <span className="font-mono font-extrabold text-indigo-700 mr-2">{log.eventType}</span>
+                                <span className="font-bold text-slate-900">{log.actorName}</span>{' '}
+                                <span className="text-slate-500">({log.actorRole})</span>
+                                <div className="text-[11px] text-slate-600 mt-0.5">{log.detail}</div>
+                              </div>
+                              <div className="text-right text-[11px] text-slate-400 font-mono whitespace-nowrap">
+                                <div>
+                                  IP: {log.ipAddress} • Dev: {log.deviceId}
+                                </div>
+                                <div>
+                                  {lang === 'th'
+                                    ? formatThaiDateTime(log.createdAt)
+                                    : new Date(log.createdAt).toLocaleString(lang === 'cn' ? 'zh-CN' : 'en-US')}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {securitySubTab === 'sessions' && (
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
+                    {!isAdmin ? (
+                      <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 text-xs font-bold text-amber-800">
+                        403 RBAC Policy:{' '}
+                        {lang === 'cn'
+                          ? '仅医院院长 (Super Admin) 可强制注销会话'
+                          : lang === 'en'
+                            ? 'Only Super Admin can terminate active sessions'
+                            : 'เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) เท่านั้นที่สั่งตัดเซสชันผู้ใช้ได้'}
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {activeSessions.map((s) => (
+                          <div
+                            key={s.token}
+                            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 px-4 py-3 text-xs"
+                          >
+                            <div className="min-w-0">
+                              <div className="font-bold text-slate-900">
+                                {ptNameMap.get(s.userId) ?? s.userId}{' '}
+                                <span className="ml-1 rounded bg-slate-100 px-2 py-0.5 font-mono text-[10px] uppercase">
+                                  {s.role}
+                                </span>
+                              </div>
+                              <div className="font-mono text-[11px] text-slate-500">
+                                IP: {s.ipAddress} • Device: {s.deviceId} • Login:{' '}
+                                {lang === 'th'
+                                  ? formatThaiDateTime(s.createdAt)
+                                  : new Date(s.createdAt).toLocaleString(lang === 'cn' ? 'zh-CN' : 'en-US')}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={submitting}
+                              onClick={async () => {
+                                if (submitting) return;
+                                setSubmitting(true);
+                                try {
+                                  await apiClient.forceLogoutUser(s.userId);
+                                  flashBanner('success', 'เตะเซสชันออกจากระบบเรียบร้อย');
+                                  await refreshAll();
+                                } catch (err) {
+                                  flashBanner(
+                                    'error',
+                                    err instanceof Error ? err.message : 'ไม่สามารถเตะเซสชันออกจากระบบได้',
+                                  );
+                                } finally {
+                                  setSubmitting(false);
+                                }
+                              }}
+                              className="whitespace-nowrap h-9 px-3.5 inline-flex items-center justify-center rounded-xl bg-rose-600 text-[11px] font-bold text-white hover:bg-rose-500 disabled:opacity-50 cursor-pointer shrink-0"
+                            >
+                              {lang === 'cn'
+                                ? '强制注销 (Force Kick)'
+                                : lang === 'en'
+                                  ? 'Force Kick Session'
+                                  : 'เตะออกจากระบบ (Force Kick)'}
+                            </button>
+                          </div>
+                        ))}
+                        {activeSessions.length === 0 && (
+                          <p className="text-center text-xs text-slate-400 py-6">
+                            {lang === 'cn'
+                              ? '当前暂无在线会话'
+                              : lang === 'en'
+                                ? 'No active online sessions'
+                                : 'ไม่มีเซสชันที่กำลังออนไลน์ในระบบ'}
                           </p>
                         )}
                       </div>
+                    )}
+                  </div>
+                )}
+
+                {securitySubTab === 'bans' && (
+                  <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+                    {!isAdmin ? (
+                      <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 text-xs font-bold text-amber-800">
+                        403 RBAC Policy:{' '}
+                        {lang === 'cn'
+                          ? '仅医院院长 (Super Admin) 可封禁 IP/设备'
+                          : lang === 'en'
+                            ? 'Only Super Admin can ban IP/Devices'
+                            : 'เฉพาะผู้อำนวยการโรงพยาบาล (Super Admin) เท่านั้นที่แบน IP/Device ได้'}
+                      </div>
+                    ) : (
+                      <>
+                        <form
+                          onSubmit={async (e) => {
+                            e.preventDefault();
+                            if (!banValue.trim() || submitting) return;
+                            setSubmitting(true);
+                            try {
+                              await apiClient.banTarget(banType, banValue.trim(), banReason.trim() || 'Security block');
+                              setBanValue('');
+                              setBanReason('');
+                              flashBanner('success', 'เพิ่มรายการแบนเรียบร้อยแล้ว');
+                              await refreshAll();
+                            } catch (err) {
+                              flashBanner(
+                                'error',
+                                err instanceof Error ? err.message : 'เพิ่มรายการแบนไม่สำเร็จ',
+                              );
+                            } finally {
+                              setSubmitting(false);
+                            }
+                          }}
+                          className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-xs"
+                        >
+                          <select
+                            value={banType}
+                            onChange={(e) => setBanType(e.target.value as 'ip' | 'device')}
+                            className="h-10 rounded-xl border border-slate-200 px-3 font-bold"
+                          >
+                            <option value="ip">Ban IP Address</option>
+                            <option value="device">Ban Device ID</option>
+                          </select>
+                          <input
+                            required
+                            value={banValue}
+                            onChange={(e) => setBanValue(e.target.value)}
+                            placeholder={lang === 'cn' ? '如 192.168.1.50' : lang === 'en' ? 'e.g. 192.168.1.50' : 'เช่น 192.168.1.50'}
+                            className="h-10 rounded-xl border border-slate-200 px-3 font-mono"
+                          />
+                          <input
+                            value={banReason}
+                            onChange={(e) => setBanReason(e.target.value)}
+                            placeholder={lang === 'cn' ? '封禁原因...' : lang === 'en' ? 'Ban reason...' : 'สาเหตุการแบน...'}
+                            className="h-10 rounded-xl border border-slate-200 px-3"
+                          />
+                          <button
+                            type="submit"
+                            disabled={submitting}
+                            className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1 rounded-xl bg-rose-600 font-bold text-white hover:bg-rose-500 disabled:opacity-50 cursor-pointer"
+                          >
+                            <Ban className="h-3.5 w-3.5 shrink-0" />{' '}
+                            {lang === 'cn' ? '封禁目标' : lang === 'en' ? 'Ban Target' : 'แบนเป้าหมาย'}
+                          </button>
+                        </form>
+
+                        <div className="space-y-2">
+                          {bannedTargets.map((b) => (
+                            <div
+                              key={b.id}
+                              className="flex items-center justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50/50 px-4 py-2.5 text-xs"
+                            >
+                              <div className="min-w-0 truncate">
+                                <span className="font-mono font-bold text-rose-700 mr-2">
+                                  [{b.targetType.toUpperCase()}] {b.value}
+                                </span>
+                                <span className="text-slate-600">{b.reason}</span>
+                              </div>
+                              <button
+                                type="button"
+                                disabled={submitting}
+                                onClick={async () => {
+                                  if (submitting) return;
+                                  setSubmitting(true);
+                                  try {
+                                    await apiClient.unbanTarget(b.id);
+                                    flashBanner('success', `ปลดแบน ${b.value} แล้ว`);
+                                    await refreshAll();
+                                  } catch (err) {
+                                    flashBanner(
+                                      'error',
+                                      err instanceof Error ? err.message : 'ปลดแบนไม่สำเร็จ',
+                                    );
+                                  } finally {
+                                    setSubmitting(false);
+                                  }
+                                }}
+                                className="whitespace-nowrap h-8 px-3 rounded-lg border border-slate-200 bg-white font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50 cursor-pointer shrink-0"
+                              >
+                                {lang === 'cn' ? '解除封禁 (Unban)' : lang === 'en' ? 'Unban' : 'ปลดแบน (Unban)'}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {securitySubTab === 'kiosks' && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <h3 className="text-sm font-extrabold text-slate-900">{locale.security.kioskPanelTitle}</h3>
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setNewKioskCode(`KIOSK-OPD-0${kiosks.length + 1}`);
+                              setNewKioskLocation('OPD Rehab Zone B');
+                              setRegisterKioskModalOpen(true);
+                            }}
+                            className="whitespace-nowrap h-9 px-3.5 inline-flex items-center justify-center shrink-0 rounded-xl bg-emerald-600 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
+                          >
+                            {locale.security.registerKioskBtn}
+                          </button>
+                        )}
+                      </div>
+                      {kiosks.map((k) => (
+                        <div
+                          key={k.kioskId}
+                          className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-xs"
+                        >
+                          <div className="min-w-0">
+                            <div className="font-bold text-slate-900 truncate">
+                              {k.kioskId}{' '}
+                              {k.pairingToken && (
+                                <span className="ml-1 rounded bg-indigo-50 px-2 py-0.5 font-mono text-[10px] text-indigo-700">
+                                  Token: {k.pairingToken}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-slate-500 truncate">
+                              {k.location} • State: {k.currentState}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span
+                              className={`whitespace-nowrap rounded-full px-2.5 py-0.5 text-[11px] font-bold ${k.online ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
+                                }`}
+                            >
+                              {k.online ? '● Online' : 'Offline'}
+                            </span>
+                            {isAdmin && k.kioskId !== 'KIOSK-OPD-01' && (
+                              <button
+                                type="button"
+                                disabled={submitting}
+                                onClick={async () => {
+                                  if (submitting) return;
+                                  setSubmitting(true);
+                                  try {
+                                    await apiClient.deleteKiosk(k.kioskId);
+                                    flashBanner('success', `ลบ Kiosk ${k.kioskId} แล้ว`);
+                                    await refreshAll();
+                                  } catch (err) {
+                                    flashBanner(
+                                      'error',
+                                      err instanceof Error ? err.message : 'ลบ Kiosk ไม่สำเร็จ',
+                                    );
+                                  } finally {
+                                    setSubmitting(false);
+                                  }
+                                }}
+                                className="text-rose-500 hover:text-rose-700 disabled:opacity-50 cursor-pointer"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  )}
 
-                  {/* ประวัติส่วนตัว */}
-                  <div>
-                    <label className="block font-extrabold text-slate-700 mb-1.5">
-                      {locale.profile.bioLabel}
-                    </label>
-                    <textarea
-                      rows={5}
-                      value={profileBio}
-                      onChange={(e) => {
-                        profileDirtyRef.current = true;
-                        setProfileBio(e.target.value);
-                      }}
-                      placeholder={locale.profile.bioPlaceholder}
-                      className="w-full rounded-2xl border border-slate-200 bg-white px-3.5 py-3 text-xs leading-relaxed text-slate-900 focus:border-emerald-500 focus:outline-none"
-                    />
+                    <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-3 text-xs">
+                      <h3 className="text-sm font-extrabold text-slate-900">{locale.security.securitySettingsTitle}</h3>
+                      <label className="flex items-center justify-between rounded-xl border border-slate-200 px-3.5 py-2.5">
+                        <span className="font-bold text-slate-700">
+                          {lang === 'cn'
+                            ? '启用 AI 人脸识别 (1024D)'
+                            : lang === 'en'
+                              ? 'Enable AI Face Scan (1024D)'
+                              : 'เปิดใช้งาน AI Face Scan (1024D)'}
+                        </span>
+                        <input
+                          type="checkbox"
+                          disabled={!isAdmin}
+                          checked={systemSettings.aiFaceScanEnabled}
+                          onChange={async (e) => {
+                            try {
+                              const updated = await apiClient.updateSystemSettings({
+                                aiFaceScanEnabled: e.target.checked,
+                              });
+                              setSystemSettings(updated);
+                            } catch (err) {
+                              flashBanner('error', err instanceof Error ? err.message : 'อัปเดตการตั้งค่าไม่สำเร็จ');
+                            }
+                          }}
+                        />
+                      </label>
+                      <div className="rounded-xl border border-slate-200 px-3.5 py-2.5 space-y-1">
+                        <div className="flex justify-between font-bold text-slate-700">
+                          <span>Face Cosine Similarity Threshold</span>
+                          <span className="font-mono text-emerald-700">{systemSettings.aiFaceThreshold.toFixed(2)}</span>
+                        </div>
+                        <input
+                          type="range"
+                          disabled={!isAdmin}
+                          min={0.5}
+                          max={0.95}
+                          step={0.01}
+                          value={systemSettings.aiFaceThreshold}
+                          onChange={(e) => {
+                            const nextVal = Number(e.target.value);
+                            setSystemSettings((prev) => ({ ...prev, aiFaceThreshold: nextVal }));
+                            if (thresholdTimerRef.current !== null) window.clearTimeout(thresholdTimerRef.current);
+                            thresholdTimerRef.current = window.setTimeout(() => {
+                              thresholdTimerRef.current = null;
+                              void apiClient
+                                .updateSystemSettings({ aiFaceThreshold: nextVal })
+                                .then((updated) => setSystemSettings(updated))
+                                .catch((err) => {
+                                  flashBanner('error', err instanceof Error ? err.message : 'บันทึก Threshold ไม่สำเร็จ');
+                                });
+                            }, 250);
+                          }}
+                          className="w-full"
+                        />
+                      </div>
+                    </div>
                   </div>
-
-                  <div className="flex justify-end pt-2">
-                    <button
-                      type="submit"
-                      disabled={submitting}
-                      className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500 disabled:opacity-50 cursor-pointer"
-                    >
-                      <Save className="h-4 w-4 shrink-0" />
-                      <span>{submitting ? locale.profile.savingBtn : locale.profile.saveBtn}</span>
-                    </button>
-                  </div>
-                </form>
+                )}
               </div>
+            )}
 
-              {/* ระบบการฝากเคสคนไข้ (Patient Case Delegation / Handover) */}
-              <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-5">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
-                  <div className="flex items-start gap-2.5">
-                    <HeartHandshake className="h-5 w-5 text-sky-600 mt-0.5 shrink-0" />
-                    <div>
-                      <h3 className="text-base font-extrabold text-slate-900">
-                        ระบบการฝากเคสคนไข้ (Patient Case Handover)
-                      </h3>
-                      <p className="text-xs text-slate-500">
-                        ระบุชื่อคนไข้ วันที่ฝากเคส นักกายภาพบำบัดผู้รับฝากดูแล และหมายเหตุการส่งต่อเคส
-                      </p>
+            {/* TAB 7: PERSONAL PROFILE (รูปประกอบ, ชื่อ, เบอร์โทร, ประวัติส่วนตัว) */}
+            {activeTab === 'profile' && (
+              <div className="space-y-5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <User className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
+                    <div className="min-w-0">
+                      <h2 className="text-lg font-extrabold text-slate-900">{locale.headers.profile.title}</h2>
+                      <p className="text-xs text-slate-500">{locale.headers.profile.subtitle}</p>
                     </div>
                   </div>
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-bold text-sky-700">
-                    <Users className="h-3.5 w-3.5 shrink-0" />
-                    <span>เคสที่ฝากอยู่: {delegatedCases.length} เคส</span>
-                  </span>
                 </div>
 
                 <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
-                  {/* Left: ฟอร์มฝากเคสคนไข้ */}
-                  <form
-                    onSubmit={handleSubmitCaseDelegation}
-                    className="xl:col-span-5 rounded-2xl border border-slate-200 bg-slate-50/70 p-5 space-y-4 text-xs"
-                  >
-                    <div className="font-extrabold text-sm text-slate-900">บันทึกการฝากเคสคนไข้ใหม่</div>
-
-                    {/* 1. ชื่อคนไข้ให้เลือก */}
-                    <div>
-                      <label className="block font-extrabold text-slate-700 mb-1.5">
-                        1. ชื่อคนไข้ที่ต้องการฝากเคส *
-                      </label>
-                      <select
-                        required
-                        value={delegationPatientId}
-                        onChange={(e) => setDelegationPatientId(e.target.value)}
-                        className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-900 focus:border-sky-500 focus:outline-none"
-                      >
-                        {patients.length === 0 ? (
-                          <option value="">-- ยังไม่มีรายชื่อคนไข้ --</option>
-                        ) : (
-                          patients.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.fullName} ({p.hn}){p.delegatedToPtId ? ' • ฝากเคสอยู่' : ''}
-                            </option>
-                          ))
-                        )}
-                      </select>
-                      {(() => {
-                        const selP = patients.find((p) => p.id === delegationPatientId);
-                        if (!selP) return null;
-                        const ownerName = ptNameMap.get(selP.assignedPtId) || 'กภ. ประจำคลินิก';
-                        return (
-                          <div className="mt-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600 flex flex-wrap items-center justify-between gap-2">
-                            <span className="truncate">อาการ/วินิจฉัย: <strong className="text-slate-800">{selP.diagnosis || 'กายภาพฟื้นฟู'}</strong></span>
-                            <span className="text-sky-700 font-semibold">เจ้าของเคสหลัก: {ownerName}</span>
-                          </div>
-                        );
-                      })()}
+                  {/* Left Column: Live Clinician Profile Card */}
+                  <div className="xl:col-span-5 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-700">
+                        {locale.profile.previewTitle}
+                      </span>
+                      <span className="rounded-full bg-emerald-50 border border-emerald-200 px-3 py-0.5 text-[11px] font-bold text-emerald-700">
+                        {isAdmin ? locale.sidebar.adminRole : locale.sidebar.ptRole}
+                      </span>
                     </div>
 
-                    {/* 2. วันที่ฝากเคส */}
-                    <div>
-                      <label className="block font-extrabold text-slate-700 mb-1.5">
-                        2. วันที่ฝากเคส *
+                    <div className="flex flex-col sm:flex-row items-center sm:items-start gap-4">
+                      <img
+                        src={profileAvatarUrl}
+                        alt={profileFullName || activeUserRecord.fullName}
+                        className="h-36 w-36 shrink-0 rounded-3xl object-cover border-4 border-emerald-100 shadow-md bg-white"
+                      />
+                      <div className="min-w-0 flex-1 text-center sm:text-left space-y-1.5">
+                        <h3 className="text-xl font-black text-slate-900 break-words">
+                          {profileFullName || activeUserRecord.fullName}
+                        </h3>
+                        <p className="font-mono text-xs font-bold text-sky-600">@{activeUserRecord.username}</p>
+                        <div className="inline-flex items-center gap-1.5 rounded-xl bg-amber-50 border border-amber-200 px-3 py-1 text-xs font-bold text-amber-900">
+                          <Award className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                          <span className="font-mono">{profileLicenseNo || 'PT-44012'}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3.5">
+                        <div className="text-[11px] font-bold text-slate-400">{locale.profile.phoneLabel}</div>
+                        <div className="mt-1 flex items-center gap-1.5 font-mono text-sm font-extrabold text-slate-900">
+                          <Phone className="h-4 w-4 text-emerald-600 shrink-0" />
+                          <span>{profilePhone || locale.profile.noPhone}</span>
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3.5">
+                        <div className="text-[11px] font-bold text-slate-400">{locale.profile.patientsCountLabel}</div>
+                        <div className="mt-1 flex items-center gap-1.5 text-sm font-extrabold text-sky-700">
+                          <Users className="h-4 w-4 text-sky-600 shrink-0" />
+                          <span>
+                            {
+                              patients.filter(
+                                (p) => p.assignedPtId === activeUserRecord.id || p.delegatedToPtId === activeUserRecord.id,
+                              ).length
+                            }{' '}
+                            {locale.pts.patientsUnit}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3.5 text-xs">
+                      <div className="text-[11px] font-bold text-slate-400">{locale.profile.specialtyLabel}</div>
+                      <div className="mt-1 font-bold text-slate-900">
+                        {profileSpecialty || 'เวชศาสตร์ฟื้นฟูกายภาพบำบัด'}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-emerald-100 bg-emerald-50/40 p-4 space-y-1.5">
+                      <div className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-900">
+                        <FileText className="h-4 w-4 text-emerald-600 shrink-0" />
+                        <span>{locale.profile.bioLabel}</span>
+                      </div>
+                      <p className="text-xs leading-relaxed text-slate-700 whitespace-pre-line">
+                        {profileBio || getDefaultBioForUser(activeUserRecord)}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Right Column: Edit Personal Profile Form */}
+                  <form
+                    onSubmit={handleSavePersonalProfile}
+                    className="xl:col-span-7 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-5 text-xs"
+                  >
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                      <h3 className="text-sm font-extrabold text-slate-900">{locale.profile.editFormTitle}</h3>
+                    </div>
+
+                    {/* 1. รูปประกอบ */}
+                    <div className="space-y-3">
+                      <label className="block font-extrabold text-slate-700">
+                        {locale.profile.avatarSectionLabel}
                       </label>
-                      <div className="relative">
-                        <CalendarDays className="h-4 w-4 text-sky-600 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <div className="flex flex-wrap items-center gap-4">
+                        <img
+                          src={profileAvatarUrl}
+                          alt={profileFullName}
+                          className="h-20 w-20 rounded-2xl object-cover border-2 border-slate-200 bg-white shrink-0"
+                        />
+                        <div className="space-y-2 flex-1 min-w-[200px]">
+                          <label className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 font-bold text-emerald-700 hover:bg-emerald-100 cursor-pointer">
+                            <Upload className="h-4 w-4 shrink-0" />
+                            <span>{locale.profile.uploadPhotoBtn}</span>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={handleAvatarFileChange}
+                              className="hidden"
+                            />
+                          </label>
+                          <div className="text-[11px] font-semibold text-slate-500">{locale.profile.presetLabel}</div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {PT_PRESET_AVATARS.map((preset) => (
+                              <button
+                                key={preset.id}
+                                type="button"
+                                onClick={() => {
+                                  profileDirtyRef.current = true;
+                                  setProfileAvatarUrl(preset.uri);
+                                }}
+                                className={`flex items-center gap-2 rounded-xl border p-1.5 pr-2.5 transition cursor-pointer ${profileAvatarUrl === preset.uri
+                                    ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-200'
+                                    : 'border-slate-200 bg-white hover:bg-slate-50'
+                                  }`}
+                              >
+                                <img
+                                  src={preset.uri}
+                                  alt={preset.label}
+                                  className="h-9 w-9 rounded-lg object-cover bg-white"
+                                />
+                                <span className="text-[11px] font-bold text-slate-700">{preset.label}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 2. ชื่อ + เบอร์โทร */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block font-extrabold text-slate-700 mb-1.5">
+                          {locale.profile.fullNameLabel} *
+                        </label>
                         <input
                           required
-                          type="date"
-                          value={delegationDate}
-                          onChange={(e) => setDelegationDate(e.target.value)}
-                          className="w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3.5 py-2.5 text-sm font-mono font-semibold text-slate-900 focus:border-sky-500 focus:outline-none"
+                          value={profileFullName}
+                          onChange={(e) => {
+                            profileDirtyRef.current = true;
+                            setProfileFullName(e.target.value);
+                          }}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-extrabold text-slate-700 mb-1.5">
+                          {locale.profile.phoneLabel}
+                        </label>
+                        <input
+                          type="tel"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          maxLength={10}
+                          value={profilePhone}
+                          onChange={(e) => {
+                            profileDirtyRef.current = true;
+                            setProfilePhone(e.target.value.replace(/\D/g, '').slice(0, 10));
+                          }}
+                          placeholder="08XXXXXXXX"
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-mono font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none"
                         />
                       </div>
                     </div>
 
-                    {/* 3. ฝากเคสกับนักกายภาพคนไหน */}
-                    <div>
-                      <label className="block font-extrabold text-slate-700 mb-1.5">
-                        3. ฝากเคสกับนักกายภาพคนไหน *
-                      </label>
-                      <select
-                        required
-                        value={delegationTargetPtId}
-                        onChange={(e) => setDelegationTargetPtId(e.target.value)}
-                        className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-900 focus:border-sky-500 focus:outline-none"
-                      >
-                        {ptUsers.length === 0 ? (
-                          <option value="">-- ไม่พบรายชื่อนักกายภาพบำบัด --</option>
-                        ) : (
-                          ptUsers.map((pt) => {
-                            const ptProf = resolveUserProfile(pt, profileOverrides);
-                            return (
-                              <option key={pt.id} value={pt.id}>
-                                {ptProf.fullName} ({ptProf.licenseNo})
-                              </option>
-                            );
-                          })
-                        )}
-                      </select>
-                      {(() => {
-                        const targetPtObj = ptUsers.find((pt) => pt.id === delegationTargetPtId);
-                        if (!targetPtObj) return null;
-                        const targetPtProf = resolveUserProfile(targetPtObj, profileOverrides);
-                        return (
-                          <div className="mt-2.5 flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50/70 p-2.5">
-                            <img
-                              src={targetPtProf.avatarUrl}
-                              alt={targetPtProf.fullName}
-                              className="h-11 w-11 shrink-0 rounded-xl object-cover border border-emerald-200 bg-white"
-                            />
-                            <div className="min-w-0 flex-1">
-                              <div className="font-bold text-slate-900 truncate">{targetPtProf.fullName}</div>
-                              <div className="text-[11px] text-emerald-800 font-mono truncate">
-                                {targetPtProf.phone || locale.profile.noPhone} • {targetPtProf.specialty}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })()}
-                    </div>
+                    {activeUserRecord.role !== 'patient' && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block font-extrabold text-slate-700 mb-1.5">
+                            {locale.profile.specialtyLabel}
+                          </label>
+                          <input
+                            value={profileSpecialty}
+                            onChange={(e) => {
+                              profileDirtyRef.current = true;
+                              setProfileSpecialty(e.target.value);
+                            }}
+                            className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="flex flex-wrap items-center justify-between gap-1.5 font-extrabold text-slate-700 mb-1.5">
+                            <span>{locale.profile.licenseLabel}</span>
+                            {!isAdminUser && (
+                              <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">
+                                <Lock className="h-3 w-3 shrink-0" />
+                                ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)
+                              </span>
+                            )}
+                          </label>
+                          <input
+                            type="text"
+                            value={!isAdminUser ? (activeUserRecord.licenseNo || myProfile.licenseNo) : profileLicenseNo}
+                            readOnly={!isAdminUser}
+                            disabled={!isAdminUser}
+                            onChange={(e) => {
+                              if (!isAdminUser) return;
+                              profileDirtyRef.current = true;
+                              setProfileLicenseNo(e.target.value);
+                            }}
+                            className={
+                              !isAdminUser
+                                ? 'w-full rounded-xl border border-slate-200 bg-slate-100 px-3.5 py-2.5 text-xs font-mono font-medium text-slate-600 cursor-not-allowed select-text focus:outline-none'
+                                : 'w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-mono font-semibold text-slate-900 focus:border-emerald-500 focus:outline-none'
+                            }
+                          />
+                          {!isAdminUser && (
+                            <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500">
+                              <Lock className="h-3 w-3 shrink-0" />
+                              <span>ดูได้อย่างเดียว (แก้ไขได้เฉพาะผู้ดูแลระบบ Admin)</span>
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
-                    {/* 4. หมายเหตุ */}
+                    {/* ประวัติส่วนตัว */}
                     <div>
                       <label className="block font-extrabold text-slate-700 mb-1.5">
-                        4. หมายเหตุการฝากเคส
+                        {locale.profile.bioLabel}
                       </label>
                       <textarea
-                        rows={3}
-                        value={delegationNote}
-                        onChange={(e) => setDelegationNote(e.target.value)}
-                        placeholder="ระบุอาการที่ต้องติดตามเป็นพิเศษ ช่วงเวลาที่ฝาก หรือท่ากายภาพที่ต้องเฝ้าระวัง..."
-                        className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs leading-relaxed text-slate-900 focus:border-sky-500 focus:outline-none"
+                        rows={5}
+                        value={profileBio}
+                        onChange={(e) => {
+                          profileDirtyRef.current = true;
+                          setProfileBio(e.target.value);
+                        }}
+                        placeholder={locale.profile.bioPlaceholder}
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-3.5 py-3 text-xs leading-relaxed text-slate-900 focus:border-emerald-500 focus:outline-none"
                       />
                     </div>
 
-                    <button
-                      type="submit"
-                      disabled={submitting || patients.length === 0 || ptUsers.length === 0}
-                      className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 py-2.5 text-xs font-extrabold text-white shadow-sm hover:bg-sky-500 disabled:opacity-50 cursor-pointer"
-                    >
-                      <CheckCircle2 className="h-4 w-4 shrink-0" />
-                      <span>{submitting ? 'กำลังบันทึก...' : 'ยืนยันการฝากเคสคนไข้'}</span>
-                    </button>
-                  </form>
-
-                  {/* Right: รายการฝากเคสคนไข้ปัจจุบัน */}
-                  <div className="xl:col-span-7 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <h4 className="text-sm font-extrabold text-slate-900">
-                        รายการเคสคนไข้ที่ฝากดูแลอยู่ในขณะนี้
-                      </h4>
-                      <span className="text-[11px] font-semibold text-slate-500">
-                        แสดงข้อมูลคนไข้ วันที่ฝาก นักกายภาพผู้รับเคส และหมายเหตุ
-                      </span>
+                    <div className="flex justify-end pt-2">
+                      <button
+                        type="submit"
+                        disabled={submitting}
+                        className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500 disabled:opacity-50 cursor-pointer"
+                      >
+                        <Save className="h-4 w-4 shrink-0" />
+                        <span>{submitting ? locale.profile.savingBtn : locale.profile.saveBtn}</span>
+                      </button>
                     </div>
+                  </form>
+                </div>
 
-                    {delegatedCases.length === 0 ? (
-                      <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50/50 p-8 text-center space-y-2">
-                        <HeartHandshake className="h-8 w-8 text-slate-300 mx-auto" />
-                        <div className="text-sm font-bold text-slate-600">ยังไม่มีรายการฝากเคสคนไข้ในขณะนี้</div>
-                        <p className="text-xs text-slate-400">
-                          เลือกชื่อคนไข้ วันที่ฝากเคส นักกายภาพบำบัดผู้รับเคส และหมายเหตุจากฟอร์มด้านซ้ายเพื่อบันทึกการฝากเคส
+                {/* ระบบการฝากเคสคนไข้ (Patient Case Delegation / Handover) */}
+                <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                    <div className="flex items-start gap-2.5">
+                      <HeartHandshake className="h-5 w-5 text-sky-600 mt-0.5 shrink-0" />
+                      <div>
+                        <h3 className="text-base font-extrabold text-slate-900">
+                          ระบบการฝากเคสคนไข้ (Patient Case Handover)
+                        </h3>
+                        <p className="text-xs text-slate-500">
+                          ระบุชื่อคนไข้ วันที่ฝากเคส นักกายภาพบำบัดผู้รับฝากดูแล และหมายเหตุการส่งต่อเคส
                         </p>
                       </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {delegatedCases.map((p) => {
-                          const targetPtUser = ptUsers.find((pt) => pt.id === p.delegatedToPtId);
-                          const targetPtProf = targetPtUser
-                            ? resolveUserProfile(targetPtUser, profileOverrides)
-                            : null;
-                          const targetPtDisplayName =
-                            targetPtProf?.fullName ||
-                            ptNameMap.get(p.delegatedToPtId || '') ||
-                            'กภ. ผู้รับฝากเคส';
-                          const primaryPtDisplayName =
-                            ptNameMap.get(p.assignedPtId) || 'กภ. ประจำคลินิก';
+                    </div>
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-bold text-sky-700">
+                      <Users className="h-3.5 w-3.5 shrink-0" />
+                      <span>เคสที่ฝากอยู่: {delegatedCases.length} เคส</span>
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+                    {/* Left: ฟอร์มฝากเคสคนไข้ */}
+                    <form
+                      onSubmit={handleSubmitCaseDelegation}
+                      className="xl:col-span-5 rounded-2xl border border-slate-200 bg-slate-50/70 p-5 space-y-4 text-xs"
+                    >
+                      <div className="font-extrabold text-sm text-slate-900">บันทึกการฝากเคสคนไข้ใหม่</div>
+
+                      {/* 1. ชื่อคนไข้ให้เลือก */}
+                      <div>
+                        <label className="block font-extrabold text-slate-700 mb-1.5">
+                          1. ชื่อคนไข้ที่ต้องการฝากเคส *
+                        </label>
+                        <select
+                          required
+                          value={delegationPatientId}
+                          onChange={(e) => setDelegationPatientId(e.target.value)}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-900 focus:border-sky-500 focus:outline-none"
+                        >
+                          {patients.length === 0 ? (
+                            <option value="">-- ยังไม่มีรายชื่อคนไข้ --</option>
+                          ) : (
+                            patients.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.fullName} ({p.hn}){p.delegatedToPtId ? ' • ฝากเคสอยู่' : ''}
+                              </option>
+                            ))
+                          )}
+                        </select>
+                        {(() => {
+                          const selP = patients.find((p) => p.id === delegationPatientId);
+                          if (!selP) return null;
+                          const ownerName = ptNameMap.get(selP.assignedPtId) || 'กภ. ประจำคลินิก';
                           return (
-                            <div
-                              key={p.id}
-                              className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm hover:border-sky-200 transition space-y-3"
-                            >
-                              <div className="flex flex-wrap items-start justify-between gap-2">
-                                <div className="flex items-center gap-2.5 min-w-0">
-                                  <span className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 font-mono text-[11px] font-extrabold text-sky-700 shrink-0">
-                                    {p.hn}
-                                  </span>
-                                  <div className="min-w-0">
-                                    <div className="text-sm font-extrabold text-slate-900 truncate">
-                                      {p.fullName}
-                                    </div>
-                                    <div className="text-[11px] text-slate-500 truncate">
-                                      {p.diagnosis || 'กายภาพบำบัดฟื้นฟูสมรรถภาพ'} • เจ้าของเคสหลัก: {primaryPtDisplayName}
-                                    </div>
-                                  </div>
+                            <div className="mt-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600 flex flex-wrap items-center justify-between gap-2">
+                              <span className="truncate">อาการ/วินิจฉัย: <strong className="text-slate-800">{selP.diagnosis || 'กายภาพฟื้นฟู'}</strong></span>
+                              <span className="text-sky-700 font-semibold">เจ้าของเคสหลัก: {ownerName}</span>
+                            </div>
+                          );
+                        })()}
+                      </div>
+
+                      {/* 2. วันที่ฝากเคส */}
+                      <div>
+                        <label className="block font-extrabold text-slate-700 mb-1.5">
+                          2. วันที่ฝากเคส *
+                        </label>
+                        <div className="relative">
+                          <CalendarDays className="h-4 w-4 text-sky-600 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                          <input
+                            required
+                            type="date"
+                            value={delegationDate}
+                            onChange={(e) => setDelegationDate(e.target.value)}
+                            className="w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3.5 py-2.5 text-sm font-mono font-semibold text-slate-900 focus:border-sky-500 focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      {/* 3. ฝากเคสกับนักกายภาพคนไหน */}
+                      <div>
+                        <label className="block font-extrabold text-slate-700 mb-1.5">
+                          3. ฝากเคสกับนักกายภาพคนไหน *
+                        </label>
+                        <select
+                          required
+                          value={delegationTargetPtId}
+                          onChange={(e) => setDelegationTargetPtId(e.target.value)}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-900 focus:border-sky-500 focus:outline-none"
+                        >
+                          {ptUsers.length === 0 ? (
+                            <option value="">-- ไม่พบรายชื่อนักกายภาพบำบัด --</option>
+                          ) : (
+                            ptUsers.map((pt) => {
+                              const ptProf = resolveUserProfile(pt, profileOverrides);
+                              return (
+                                <option key={pt.id} value={pt.id}>
+                                  {ptProf.fullName} ({ptProf.licenseNo})
+                                </option>
+                              );
+                            })
+                          )}
+                        </select>
+                        {(() => {
+                          const targetPtObj = ptUsers.find((pt) => pt.id === delegationTargetPtId);
+                          if (!targetPtObj) return null;
+                          const targetPtProf = resolveUserProfile(targetPtObj, profileOverrides);
+                          return (
+                            <div className="mt-2.5 flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50/70 p-2.5">
+                              <img
+                                src={targetPtProf.avatarUrl}
+                                alt={targetPtProf.fullName}
+                                className="h-11 w-11 shrink-0 rounded-xl object-cover border border-emerald-200 bg-white"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="font-bold text-slate-900 truncate">{targetPtProf.fullName}</div>
+                                <div className="text-[11px] text-emerald-800 font-mono truncate">
+                                  {targetPtProf.phone || locale.profile.noPhone} • {targetPtProf.specialty}
                                 </div>
-
-                                <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-extrabold text-amber-900 shrink-0">
-                                  <CalendarDays className="h-3.5 w-3.5 text-amber-600 shrink-0" />
-                                  <span>วันที่ฝากเคส: {p.delegationDate || 'ไม่ระบุวันที่'}</span>
-                                </span>
-                              </div>
-
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                <div className="flex items-center gap-2.5 rounded-xl border border-emerald-100 bg-emerald-50/60 p-2.5">
-                                  {targetPtProf && (
-                                    <img
-                                      src={targetPtProf.avatarUrl}
-                                      alt={targetPtDisplayName}
-                                      className="h-10 w-10 shrink-0 rounded-xl object-cover border border-emerald-200 bg-white"
-                                    />
-                                  )}
-                                  <div className="min-w-0 flex-1 text-xs">
-                                    <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">
-                                      ฝากเคสกับนักกายภาพ
-                                    </div>
-                                    <div className="font-extrabold text-slate-900 truncate">
-                                      {targetPtDisplayName}
-                                    </div>
-                                    {targetPtProf?.phone && (
-                                      <div className="flex items-center gap-1 font-mono text-[11px] text-slate-600 truncate">
-                                        <Phone className="h-3 w-3 text-emerald-600 shrink-0" />
-                                        <span>{targetPtProf.phone}</span>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-
-                                <div className="rounded-xl border border-slate-100 bg-slate-50/80 p-2.5 text-xs">
-                                  <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                                    <FileText className="h-3 w-3 text-slate-400 shrink-0" />
-                                    <span>หมายเหตุ</span>
-                                  </div>
-                                  <div className="mt-1 text-slate-800 leading-relaxed break-words">
-                                    {p.delegationNote || 'ไม่มีหมายเหตุเพิ่มเติม'}
-                                  </div>
-                                </div>
-                              </div>
-
-                              <div className="flex flex-wrap items-center justify-end gap-2 pt-1 border-t border-slate-100">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setDelegationPatientId(p.id);
-                                    setDelegationDate(p.delegationDate || formatLocalIsoDate());
-                                    setDelegationTargetPtId(p.delegatedToPtId || '');
-                                    setDelegationNote(p.delegationNote || '');
-                                  }}
-                                  className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-1.5 text-[11px] font-bold text-sky-700 hover:bg-sky-100 cursor-pointer"
-                                >
-                                  แก้ไขข้อมูลฝากเคส
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={submitting}
-                                  onClick={() => void handleCancelCaseDelegation(p)}
-                                  className="inline-flex items-center gap-1 rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5 text-[11px] font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50 cursor-pointer"
-                                >
-                                  <X className="h-3.5 w-3.5 shrink-0" />
-                                  <span>ยกเลิกฝากเคส / รับเคสคืน</span>
-                                </button>
                               </div>
                             </div>
                           );
-                        })}
+                        })()}
                       </div>
-                    )}
+
+                      {/* 4. หมายเหตุ */}
+                      <div>
+                        <label className="block font-extrabold text-slate-700 mb-1.5">
+                          4. หมายเหตุการฝากเคส
+                        </label>
+                        <textarea
+                          rows={3}
+                          value={delegationNote}
+                          onChange={(e) => setDelegationNote(e.target.value)}
+                          placeholder="ระบุอาการที่ต้องติดตามเป็นพิเศษ ช่วงเวลาที่ฝาก หรือท่ากายภาพที่ต้องเฝ้าระวัง..."
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs leading-relaxed text-slate-900 focus:border-sky-500 focus:outline-none"
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={submitting || patients.length === 0 || ptUsers.length === 0}
+                        className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 py-2.5 text-xs font-extrabold text-white shadow-sm hover:bg-sky-500 disabled:opacity-50 cursor-pointer"
+                      >
+                        <CheckCircle2 className="h-4 w-4 shrink-0" />
+                        <span>{submitting ? 'กำลังบันทึก...' : 'ยืนยันการฝากเคสคนไข้'}</span>
+                      </button>
+                    </form>
+
+                    {/* Right: รายการฝากเคสคนไข้ปัจจุบัน */}
+                    <div className="xl:col-span-7 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-extrabold text-slate-900">
+                          รายการเคสคนไข้ที่ฝากดูแลอยู่ในขณะนี้
+                        </h4>
+                        <span className="text-[11px] font-semibold text-slate-500">
+                          แสดงข้อมูลคนไข้ วันที่ฝาก นักกายภาพผู้รับเคส และหมายเหตุ
+                        </span>
+                      </div>
+
+                      {delegatedCases.length === 0 ? (
+                        <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50/50 p-8 text-center space-y-2">
+                          <HeartHandshake className="h-8 w-8 text-slate-300 mx-auto" />
+                          <div className="text-sm font-bold text-slate-600">ยังไม่มีรายการฝากเคสคนไข้ในขณะนี้</div>
+                          <p className="text-xs text-slate-400">
+                            เลือกชื่อคนไข้ วันที่ฝากเคส นักกายภาพบำบัดผู้รับเคส และหมายเหตุจากฟอร์มด้านซ้ายเพื่อบันทึกการฝากเคส
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {delegatedCases.map((p) => {
+                            const targetPtUser = ptUsers.find((pt) => pt.id === p.delegatedToPtId);
+                            const targetPtProf = targetPtUser
+                              ? resolveUserProfile(targetPtUser, profileOverrides)
+                              : null;
+                            const targetPtDisplayName =
+                              targetPtProf?.fullName ||
+                              ptNameMap.get(p.delegatedToPtId || '') ||
+                              'กภ. ผู้รับฝากเคส';
+                            const primaryPtDisplayName =
+                              ptNameMap.get(p.assignedPtId) || 'กภ. ประจำคลินิก';
+                            return (
+                              <div
+                                key={p.id}
+                                className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm hover:border-sky-200 transition space-y-3"
+                              >
+                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                  <div className="flex items-center gap-2.5 min-w-0">
+                                    <span className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 font-mono text-[11px] font-extrabold text-sky-700 shrink-0">
+                                      {p.hn}
+                                    </span>
+                                    <div className="min-w-0">
+                                      <div className="text-sm font-extrabold text-slate-900 truncate">
+                                        {p.fullName}
+                                      </div>
+                                      <div className="text-[11px] text-slate-500 truncate">
+                                        {p.diagnosis || 'กายภาพบำบัดฟื้นฟูสมรรถภาพ'} • เจ้าของเคสหลัก: {primaryPtDisplayName}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-extrabold text-amber-900 shrink-0">
+                                    <CalendarDays className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                                    <span>วันที่ฝากเคส: {p.delegationDate || 'ไม่ระบุวันที่'}</span>
+                                  </span>
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                  <div className="flex items-center gap-2.5 rounded-xl border border-emerald-100 bg-emerald-50/60 p-2.5">
+                                    {targetPtProf && (
+                                      <img
+                                        src={targetPtProf.avatarUrl}
+                                        alt={targetPtDisplayName}
+                                        className="h-10 w-10 shrink-0 rounded-xl object-cover border border-emerald-200 bg-white"
+                                      />
+                                    )}
+                                    <div className="min-w-0 flex-1 text-xs">
+                                      <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                                        ฝากเคสกับนักกายภาพ
+                                      </div>
+                                      <div className="font-extrabold text-slate-900 truncate">
+                                        {targetPtDisplayName}
+                                      </div>
+                                      {targetPtProf?.phone && (
+                                        <div className="flex items-center gap-1 font-mono text-[11px] text-slate-600 truncate">
+                                          <Phone className="h-3 w-3 text-emerald-600 shrink-0" />
+                                          <span>{targetPtProf.phone}</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="rounded-xl border border-slate-100 bg-slate-50/80 p-2.5 text-xs">
+                                    <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                                      <FileText className="h-3 w-3 text-slate-400 shrink-0" />
+                                      <span>หมายเหตุ</span>
+                                    </div>
+                                    <div className="mt-1 text-slate-800 leading-relaxed break-words">
+                                      {p.delegationNote || 'ไม่มีหมายเหตุเพิ่มเติม'}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="flex flex-wrap items-center justify-end gap-2 pt-1 border-t border-slate-100">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setDelegationPatientId(p.id);
+                                      setDelegationDate(p.delegationDate || formatLocalIsoDate());
+                                      setDelegationTargetPtId(p.delegatedToPtId || '');
+                                      setDelegationNote(p.delegationNote || '');
+                                    }}
+                                    className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-1.5 text-[11px] font-bold text-sky-700 hover:bg-sky-100 cursor-pointer"
+                                  >
+                                    แก้ไขข้อมูลฝากเคส
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={submitting}
+                                    onClick={() => void handleCancelCaseDelegation(p)}
+                                    className="inline-flex items-center gap-1 rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5 text-[11px] font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-50 cursor-pointer"
+                                  >
+                                    <X className="h-3.5 w-3.5 shrink-0" />
+                                    <span>ยกเลิกฝากเคส / รับเคสคืน</span>
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
-          )}
+            )}
           </div>
         </main>
       </div>
@@ -5842,115 +5822,115 @@ export function ClinicalStaffPortalShell({
       {selectedPtDetailModal && (() => {
         const modalPtProfile = resolveUserProfile(selectedPtDetailModal, profileOverrides);
         return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm animate-backdrop-fade">
-          <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs animate-popup-spring">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-start gap-3 min-w-0">
-                <img
-                  src={modalPtProfile.avatarUrl}
-                  alt={modalPtProfile.fullName}
-                  className="h-16 w-16 shrink-0 rounded-2xl object-cover border-2 border-emerald-200 bg-white shadow-sm"
-                />
-                <div className="min-w-0">
-                  <h3 className="text-base font-black text-slate-900">{modalPtProfile.fullName}</h3>
-                  <p className="text-slate-500 flex flex-wrap items-center gap-1.5">
-                    <span>@{selectedPtDetailModal.username} • {modalPtProfile.licenseNo} • {modalPtProfile.specialty}</span>
-                    {isAdminUser && (
-                      <button
-                        type="button"
-                        onClick={() => openEditStaffModal(selectedPtDetailModal)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer"
-                      >
-                        <Pencil className="h-3 w-3" />
-                        <span>แก้ไขใบอนุญาต / ข้อมูล</span>
-                      </button>
-                    )}
-                  </p>
-                  <p className="mt-0.5 flex items-center gap-1 font-mono text-emerald-700 font-semibold">
-                    <Phone className="h-3 w-3 shrink-0" />
-                    <span>{modalPtProfile.phone || locale.profile.noPhone}</span>
-                  </p>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm animate-backdrop-fade">
+            <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl border border-slate-200 space-y-4 text-xs animate-popup-spring">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3 min-w-0">
+                  <img
+                    src={modalPtProfile.avatarUrl}
+                    alt={modalPtProfile.fullName}
+                    className="h-16 w-16 shrink-0 rounded-2xl object-cover border-2 border-emerald-200 bg-white shadow-sm"
+                  />
+                  <div className="min-w-0">
+                    <h3 className="text-base font-black text-slate-900">{modalPtProfile.fullName}</h3>
+                    <p className="text-slate-500 flex flex-wrap items-center gap-1.5">
+                      <span>@{selectedPtDetailModal.username} • {modalPtProfile.licenseNo} • {modalPtProfile.specialty}</span>
+                      {isAdminUser && (
+                        <button
+                          type="button"
+                          onClick={() => openEditStaffModal(selectedPtDetailModal)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800 hover:bg-amber-100 cursor-pointer"
+                        >
+                          <Pencil className="h-3 w-3" />
+                          <span>แก้ไขใบอนุญาต / ข้อมูล</span>
+                        </button>
+                      )}
+                    </p>
+                    <p className="mt-0.5 flex items-center gap-1 font-mono text-emerald-700 font-semibold">
+                      <Phone className="h-3 w-3 shrink-0" />
+                      <span>{modalPtProfile.phone || locale.profile.noPhone}</span>
+                    </p>
+                  </div>
                 </div>
+                <button type="button" onClick={() => setSelectedPtDetailModal(null)} className="text-slate-400">
+                  <X className="h-5 w-5" />
+                </button>
               </div>
-              <button type="button" onClick={() => setSelectedPtDetailModal(null)} className="text-slate-400">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <p className="rounded-xl border border-slate-100 bg-slate-50 px-3.5 py-2.5 text-xs leading-relaxed text-slate-700">
-              {modalPtProfile.bio}
-            </p>
+              <p className="rounded-xl border border-slate-100 bg-slate-50 px-3.5 py-2.5 text-xs leading-relaxed text-slate-700">
+                {modalPtProfile.bio}
+              </p>
 
-            {isAdmin && patients.length > 0 && (
-              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3.5 space-y-2">
-                <div className="font-bold text-emerald-900">มอบหมายคนไข้ให้ PT ท่านนี้ดูแล</div>
-                <div className="flex gap-2">
-                  <select
-                    value={assignPatientIdForPt}
-                    onChange={(e) => setAssignPatientIdForPt(e.target.value)}
-                    className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold"
-                  >
-                    {patients.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.fullName} ({p.hn})
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    disabled={!assignPatientIdForPt || submitting}
-                    onClick={async () => {
-                      setSubmitting(true);
-                      try {
-                        await apiClient.updatePatient(assignPatientIdForPt, {
-                          assignedPtId: selectedPtDetailModal.id,
-                        });
-                        flashBanner('success', `มอบหมายคนไข้ให้ ${selectedPtDetailModal.fullName} เรียบร้อย`);
-                        await refreshAll();
-                      } catch (err) {
-                        flashBanner(
-                          'error',
-                          err instanceof Error ? err.message : 'มอบหมายคนไข้ไม่สำเร็จ',
-                        );
-                      } finally {
-                        setSubmitting(false);
-                      }
-                    }}
-                    className="rounded-xl bg-emerald-600 px-3.5 py-2 font-bold text-white hover:bg-emerald-500 cursor-pointer"
-                  >
-                    มอบหมาย
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-2 max-h-60 overflow-y-auto">
-              <div className="font-bold text-slate-700">รายชื่อคนไข้ที่อยู่ภายใต้การดูแล</div>
-              {patients
-                .filter(
-                  (p) => p.assignedPtId === selectedPtDetailModal.id || p.delegatedToPtId === selectedPtDetailModal.id,
-                )
-                .map((p) => (
-                  <div key={p.id} className="flex items-center justify-between rounded-xl border border-slate-200 px-3.5 py-2.5">
-                    <div>
-                      <span className="font-mono font-bold text-sky-700 mr-2">{p.hn}</span>
-                      <span className="font-bold text-slate-900">{p.fullName}</span>
-                    </div>
+              {isAdmin && patients.length > 0 && (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3.5 space-y-2">
+                  <div className="font-bold text-emerald-900">มอบหมายคนไข้ให้ PT ท่านนี้ดูแล</div>
+                  <div className="flex gap-2">
+                    <select
+                      value={assignPatientIdForPt}
+                      onChange={(e) => setAssignPatientIdForPt(e.target.value)}
+                      className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold"
+                    >
+                      {patients.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.fullName} ({p.hn})
+                        </option>
+                      ))}
+                    </select>
                     <button
                       type="button"
-                      onClick={() => {
-                        setSelectedPtDetailModal(null);
-                        setSelectedSchedulePatientId(p.id);
-                        setActiveTab('schedules');
+                      disabled={!assignPatientIdForPt || submitting}
+                      onClick={async () => {
+                        setSubmitting(true);
+                        try {
+                          await apiClient.updatePatient(assignPatientIdForPt, {
+                            assignedPtId: selectedPtDetailModal.id,
+                          });
+                          flashBanner('success', `มอบหมายคนไข้ให้ ${selectedPtDetailModal.fullName} เรียบร้อย`);
+                          await refreshAll();
+                        } catch (err) {
+                          flashBanner(
+                            'error',
+                            err instanceof Error ? err.message : 'มอบหมายคนไข้ไม่สำเร็จ',
+                          );
+                        } finally {
+                          setSubmitting(false);
+                        }
                       }}
-                      className="rounded-lg bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700 cursor-pointer"
+                      className="rounded-xl bg-emerald-600 px-3.5 py-2 font-bold text-white hover:bg-emerald-500 cursor-pointer"
                     >
-                      ดูตารางนัด
+                      มอบหมาย
                     </button>
                   </div>
-                ))}
+                </div>
+              )}
+
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                <div className="font-bold text-slate-700">รายชื่อคนไข้ที่อยู่ภายใต้การดูแล</div>
+                {patients
+                  .filter(
+                    (p) => p.assignedPtId === selectedPtDetailModal.id || p.delegatedToPtId === selectedPtDetailModal.id,
+                  )
+                  .map((p) => (
+                    <div key={p.id} className="flex items-center justify-between rounded-xl border border-slate-200 px-3.5 py-2.5">
+                      <div>
+                        <span className="font-mono font-bold text-sky-700 mr-2">{p.hn}</span>
+                        <span className="font-bold text-slate-900">{p.fullName}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedPtDetailModal(null);
+                          setSelectedSchedulePatientId(p.id);
+                          setActiveTab('schedules');
+                        }}
+                        className="rounded-lg bg-emerald-50 px-2.5 py-1 font-bold text-emerald-700 cursor-pointer"
+                      >
+                        ดูตารางนัด
+                      </button>
+                    </div>
+                  ))}
+              </div>
             </div>
           </div>
-        </div>
         );
       })()}
 

@@ -61,6 +61,34 @@ export interface MedicalNoteRecord {
   createdAt: string;
 }
 
+export interface ClinicalAssessmentRecord {
+  id: string;
+  patient_id: string;
+  patient_hn: string;
+  universal_link_code: string;
+  visit_number: number;
+  assessed_at: string;
+  facility_name: string;
+  assessor_staff_id: string;
+  assessor_staff_name: string;
+  exercise_code: string;
+  exercise_name_th: string;
+  target_side: 'LEFT' | 'RIGHT' | 'BOTH';
+  initial_score_0_to_6: 0 | 1 | 2 | 3 | 4 | 5 | 6;
+  measured_rom_deg: number;
+  target_rom_deg: number;
+  pain_vas_0_to_10?: number | null;
+  chief_complaint: string;
+  clinical_handover_note: string;
+  next_session_goal: string;
+  source_channel: 'STAFF_MANUAL_ASSESSMENT' | 'KIOSK_SESSION_AUTO_SYNC';
+  measurement_method?: 'MANUAL_INPUT' | 'CAMERA_AI_LIVE' | 'KIOSK_SESSION_AUTO_SYNC';
+  completed_reps?: number | null;
+  accuracy_percent?: number | null;
+  session_id?: string | null;
+  created_at?: string;
+}
+
 export interface PrescribedExerciseItem {
   exerciseId: string;
   side: BodySide;
@@ -196,6 +224,7 @@ export interface DatabaseState {
   patients: PatientRecord[];
   face_templates: EnrolledTemplateCandidate[];
   medical_notes: MedicalNoteRecord[];
+  clinical_assessments?: ClinicalAssessmentRecord[];
   patient_courses: PatientCourseRecord[];
   rehab_sessions: RehabSessionRecord[];
   treatment_reports: TreatmentReportRecord[];
@@ -298,6 +327,7 @@ function createInitialState(): DatabaseState {
     audit_logs: [],
     banned_targets: [],
     active_sessions: [],
+    clinical_assessments: [],
     system_settings: {
       aiFaceScanEnabled: true,
       aiFaceThreshold: 0.925,
@@ -330,6 +360,9 @@ export class ClinicalDatabase {
       try {
         const raw = fs.readFileSync(this.filePath, 'utf-8');
         this.state = JSON.parse(raw) as DatabaseState;
+        if (!Array.isArray(this.state.clinical_assessments)) {
+          this.state.clinical_assessments = [];
+        }
         this.syncStrokeExerciseLibrary();
       } catch {
         this.state = createInitialState();

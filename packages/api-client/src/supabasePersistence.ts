@@ -16,6 +16,7 @@ import {
   sanitizeAccidentalDefaultKneePrefix,
   type ActiveSessionRecord,
   type AffectedSide,
+  type ClinicalAssessmentRecord,
   AngleEmbeddings5D,
   AuditLogRecord,
   BannedTargetRecord,
@@ -62,10 +63,12 @@ export interface CloudRouterState {
   deleted_patient_ids?: string[];
   deleted_ban_ids?: string[];
   deleted_staff_call_ids?: string[];
+  deleted_assessment_ids?: string[];
   delegation_overrides?: Record<string, DelegationOverrideEntry>;
   patients: PatientRecord[];
   face_templates: EnrolledTemplateCandidate[];
   medical_notes: MedicalNoteRecord[];
+  clinical_assessments?: ClinicalAssessmentRecord[];
   patient_courses: PatientCourseRecord[];
   rehab_sessions: RehabSessionRecord[];
   rehab_session_history?: RehabSessionHistoryEntry[];
@@ -826,6 +829,18 @@ async function runHydrateStateFromSupabaseInternal(
         'id,patient_id,hn,session_date,exercise_code,exercise_name,achieved_max_rom_deg,valid_reps,created_at',
         50,
       ),
+    () =>
+      selectExplicitWithFallback(
+        'patient_clinical_assessments',
+        (cols) =>
+          supabase
+            .from('patient_clinical_assessments')
+            .select(cols)
+            .order('assessed_at', { ascending: true }),
+        'id,patient_id,patient_hn,universal_link_code,visit_number,assessed_at,facility_name,assessor_staff_id,assessor_staff_name,exercise_code,exercise_name_th,target_side,initial_score_0_to_6,measured_rom_deg,target_rom_deg,pain_vas_0_to_10,chief_complaint,clinical_handover_note,next_session_goal,source_channel,created_at',
+        'id,patient_id,patient_hn,universal_link_code,visit_number,assessed_at,exercise_code,initial_score_0_to_6,measured_rom_deg,target_rom_deg',
+        120,
+      ),
   ];
 
   const [usersRes, patientsRes, settingsRes, bansRes, activeSessionsRes] =
@@ -847,8 +862,9 @@ async function runHydrateStateFromSupabaseInternal(
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
     ];
 
-  const [notesRes, sessionsRes, reportsRes, callsRes, auditRes, sessionHistoryRes] =
+  const [notesRes, sessionsRes, reportsRes, callsRes, auditRes, sessionHistoryRes, assessmentsRes] =
     (await settleStageInBatches(stage3Tasks, 3, totalDeadlineMs)) as [
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
@@ -1309,6 +1325,9 @@ async function runHydrateStateFromSupabaseInternal(
         rehabSessionHistory: Array.isArray(history.rehabSessionHistory)
           ? (history.rehabSessionHistory as RehabSessionHistoryEntry[])
           : prevPatient?.rehabSessionHistory,
+        clinicalAssessments: Array.isArray(history.clinicalAssessments)
+          ? (history.clinicalAssessments as ClinicalAssessmentRecord[])
+          : prevPatient?.clinicalAssessments,
         assignedPtId: String(r.assigned_pt_id ?? ''),
         delegatedToPtId: resolvedDelegatedToPtId,
         delegationNote: resolvedDelegationNote,
@@ -1553,6 +1572,89 @@ async function runHydrateStateFromSupabaseInternal(
   }
   state.rehab_session_history = Array.from(mergedHistoryMap.values()).sort(
     (a, b) => new Date(b.sessionDate).getTime() - new Date(a.sessionDate).getTime(),
+  );
+
+  // Merge persisted clinical assessments from BOTH `patients.history.clinicalAssessments` JSONB and `patient_clinical_assessments` table
+  const deletedAssessmentSet = new Set(state.deleted_assessment_ids ?? []);
+  const mergedAssessmentsMap = new Map<string, ClinicalAssessmentRecord>();
+  for (const prev of state.clinical_assessments ?? []) {
+    if (!prev?.id || deletedAssessmentSet.has(prev.id) || deletedPatientSet.has(prev.patient_id)) continue;
+    mergedAssessmentsMap.set(prev.id, prev);
+  }
+  for (const p of state.patients) {
+    for (const embedded of p.clinicalAssessments ?? []) {
+      if (!embedded?.id || deletedAssessmentSet.has(embedded.id) || deletedPatientSet.has(p.id)) continue;
+      mergedAssessmentsMap.set(embedded.id, {
+        ...embedded,
+        patient_id: embedded.patient_id || p.id,
+        patient_hn: embedded.patient_hn || p.hn,
+        universal_link_code: embedded.universal_link_code || p.universalHealthLinkCode || '',
+      });
+    }
+  }
+  if (
+    assessmentsRes.status === 'fulfilled' &&
+    !assessmentsRes.value.error &&
+    Array.isArray(assessmentsRes.value.data)
+  ) {
+    for (const r of assessmentsRes.value.data as Record<string, unknown>[]) {
+      const id = String(r.id ?? '');
+      const pid = String(r.patient_id ?? '');
+      if (!id || !pid || deletedAssessmentSet.has(id) || deletedPatientSet.has(pid)) continue;
+      const sideRaw = String(r.target_side ?? 'RIGHT').toUpperCase();
+      const targetSide: ClinicalAssessmentRecord['target_side'] =
+        sideRaw === 'LEFT' ? 'LEFT' : sideRaw === 'BOTH' ? 'BOTH' : 'RIGHT';
+      const channelRaw = String(r.source_channel ?? 'STAFF_MANUAL_ASSESSMENT');
+      const sourceChannel: ClinicalAssessmentRecord['source_channel'] =
+        channelRaw === 'KIOSK_SESSION_AUTO_SYNC' ? 'KIOSK_SESSION_AUTO_SYNC' : 'STAFF_MANUAL_ASSESSMENT';
+      const rawScore = Number(r.initial_score_0_to_6 ?? 0);
+      const clampedScore = Math.max(0, Math.min(6, Math.round(Number.isFinite(rawScore) ? rawScore : 0))) as
+        | 0
+        | 1
+        | 2
+        | 3
+        | 4
+        | 5
+        | 6;
+      const existingRec = mergedAssessmentsMap.get(id);
+      mergedAssessmentsMap.set(id, {
+        id,
+        patient_id: pid,
+        patient_hn: String(r.patient_hn ?? existingRec?.patient_hn ?? ''),
+        universal_link_code: String(r.universal_link_code ?? existingRec?.universal_link_code ?? ''),
+        visit_number: Math.max(1, Number(r.visit_number ?? existingRec?.visit_number ?? 1)),
+        assessed_at: String(r.assessed_at ?? r.created_at ?? existingRec?.assessed_at ?? new Date().toISOString()),
+        facility_name: String(
+          r.facility_name ?? existingRec?.facility_name ?? 'ศูนย์กายภาพบำบัด Dr.Tech.Care สาขาหลัก',
+        ),
+        assessor_staff_id: String(r.assessor_staff_id ?? existingRec?.assessor_staff_id ?? ''),
+        assessor_staff_name: String(r.assessor_staff_name ?? existingRec?.assessor_staff_name ?? ''),
+        exercise_code: String(r.exercise_code ?? existingRec?.exercise_code ?? 'STROKE_SHOULDER_FLEXION'),
+        exercise_name_th: String(r.exercise_name_th ?? existingRec?.exercise_name_th ?? ''),
+        target_side: targetSide,
+        initial_score_0_to_6: clampedScore,
+        measured_rom_deg: Number(Number(r.measured_rom_deg ?? 0).toFixed(1)),
+        target_rom_deg: Number(Number(r.target_rom_deg ?? 120).toFixed(1)),
+        pain_vas_0_to_10:
+          r.pain_vas_0_to_10 === null || r.pain_vas_0_to_10 === undefined
+            ? existingRec?.pain_vas_0_to_10 ?? null
+            : Number(r.pain_vas_0_to_10),
+        chief_complaint: String(r.chief_complaint ?? existingRec?.chief_complaint ?? ''),
+        clinical_handover_note: String(r.clinical_handover_note ?? existingRec?.clinical_handover_note ?? ''),
+        next_session_goal: String(r.next_session_goal ?? existingRec?.next_session_goal ?? ''),
+        source_channel: sourceChannel,
+        measurement_method:
+          existingRec?.measurement_method ??
+          (sourceChannel === 'KIOSK_SESSION_AUTO_SYNC' ? 'KIOSK_SESSION_AUTO_SYNC' : 'MANUAL_INPUT'),
+        completed_reps: existingRec?.completed_reps ?? null,
+        accuracy_percent: existingRec?.accuracy_percent ?? null,
+        session_id: existingRec?.session_id ?? null,
+        created_at: r.created_at ? String(r.created_at) : existingRec?.created_at,
+      });
+    }
+  }
+  state.clinical_assessments = Array.from(mergedAssessmentsMap.values()).sort(
+    (a, b) => new Date(a.assessed_at).getTime() - new Date(b.assessed_at).getTime(),
   );
 
   for (const patient of state.patients) {
