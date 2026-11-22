@@ -455,6 +455,7 @@ function buildPatientBiometricBlob(patient: PatientRecord): Record<string, unkno
     master_embedding: patient.masterEmbedding,
     angle_embeddings: patient.angleEmbeddings ?? null,
     exemplar_embeddings: patient.exemplarEmbeddings ?? [],
+    ...(patient.geometricRatios ? { geometric_ratios: patient.geometricRatios } : {}),
   };
 }
 
@@ -2445,6 +2446,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               master_embedding: masterVec,
               angle_embeddings: resolvedAngles,
               exemplar_embeddings: compactExemplars,
+              ...(patient.geometricRatios ? { geometric_ratios: patient.geometricRatios } : {}),
               biometric_engine: resolvedBiometricEngine ?? null,
               model_version: resolvedBiometricEngine ?? null,
               embedding_dim: masterVec.length,
@@ -2784,6 +2786,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             master_embedding: masterVec,
             angle_embeddings: resolvedAngles,
             exemplar_embeddings: normalizeCompactExemplars(exemplarList, masterVec.length, 9),
+            ...(patient!.geometricRatios ? { geometric_ratios: patient!.geometricRatios } : {}),
             biometric_engine: resolvedEngine,
             model_version: resolvedEngine,
             embedding_dim: masterVec.length,

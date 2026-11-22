@@ -445,36 +445,71 @@ export async function extractCanonicalFaceDescriptor(
 }
 
 export const TARGET_CANONICAL_CROP_SIZE = 224;
+export const TARGET_WIDE_FALLBACK_CROP_SIZE = 288;
 export const TARGET_MEAN_LUMINANCE = 128;
 
 /**
  * Illumination-Invariant Luminance Normalization (`Mean = 128`, contrast-stabilized)
- * so dark/backlit/clinic lighting produce consistent pixel distributions for deep neural extraction.
+ * with Inner-Face Ellipse Anchoring & Gentle Backlight/Side-Light Ramp Equalization.
+ *
+ * For face/eye crops (`>= 48x48`), white balance, gamma, and contrast statistics are
+ * sampled strictly inside the central anatomical ellipse so bright windows or dark walls
+ * behind the user cannot crush facial contrast or suppress dark-face shadow lift.
  */
 export function normalizeImageDataLuminance(
   imageData: ImageData,
   targetMean: number = TARGET_MEAN_LUMINANCE,
   targetStd: number = 42,
 ): ImageData {
-  const { data } = imageData;
+  const { data, width, height } = imageData;
   const pixelCount = data.length >>> 2;
   if (pixelCount === 0) return imageData;
+
+  const useInnerEllipse = width >= 48 && height >= 48;
+  const useSideLightEqualizer = width >= 96 && height >= 96;
+  const cx = (width - 1) * 0.5;
+  const cy = (height - 1) * 0.5;
+  const invRx = 1 / Math.max(1, width * 0.37);
+  const invRy = 1 / Math.max(1, height * 0.41);
 
   let sumR = 0;
   let sumG = 0;
   let sumB = 0;
   let sumY = 0;
   let validPixels = 0;
-  for (let i = 0; i < data.length; i += 4) {
-    if (data[i + 3] === 0) continue;
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-    sumR += r;
-    sumG += g;
-    sumB += b;
-    sumY += 0.299 * r + 0.587 * g + 0.114 * b;
-    validPixels += 1;
+  for (let y = 0; y < height; y += 1) {
+    const dyNorm = useInnerEllipse ? (y - cy) * invRy : 0;
+    const dySq = dyNorm * dyNorm;
+    for (let x = 0; x < width; x += 1) {
+      if (useInnerEllipse) {
+        const dxNorm = (x - cx) * invRx;
+        if (dxNorm * dxNorm + dySq > 1) continue;
+      }
+      const i = (y * width + x) * 4;
+      if (data[i + 3] === 0) continue;
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      sumR += r;
+      sumG += g;
+      sumB += b;
+      sumY += 0.299 * r + 0.587 * g + 0.114 * b;
+      validPixels += 1;
+    }
+  }
+  if (validPixels === 0) {
+    // Fallback to full frame if central ellipse was fully transparent
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] === 0) continue;
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      sumR += r;
+      sumG += g;
+      sumB += b;
+      sumY += 0.299 * r + 0.587 * g + 0.114 * b;
+      validPixels += 1;
+    }
   }
   if (validPixels === 0) return imageData;
 
@@ -483,46 +518,149 @@ export function normalizeImageDataLuminance(
   const meanB = sumB / validPixels;
   const meanY = sumY / validPixels;
 
-  // Bounded 50% Gray-World chromatic white balance across warm/cool/USB sensors + mild exposure gamma
+  // Bounded 50% Gray-World chromatic white balance across warm/cool/USB sensors + smooth exposure gamma
   const clampGain = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
   const wbR = clampGain(1 + 0.5 * (meanY / Math.max(12, meanR) - 1), 0.80, 1.25);
   const wbG = clampGain(1 + 0.5 * (meanY / Math.max(12, meanG) - 1), 0.80, 1.25);
   const wbB = clampGain(1 + 0.5 * (meanY / Math.max(12, meanB) - 1), 0.80, 1.25);
-  const gamma = meanY < 75 ? 0.82 : meanY > 185 ? 1.20 : 1.0;
+  const gamma =
+    meanY < 92
+      ? clampGain(0.76 + ((meanY - 30) / 62) * 0.24, 0.76, 1.0)
+      : meanY > 175
+        ? clampGain(1.0 + ((meanY - 175) / 60) * 0.22, 1.0, 1.22)
+        : 1.0;
+
+  // Precompute 256-entry gamma LUT to eliminate 150,000+ slow Math.pow calls per frame
+  const gammaLut = gamma !== 1.0 ? new Uint8Array(256) : null;
+  if (gammaLut) {
+    for (let v = 0; v < 256; v += 1) {
+      gammaLut[v] = Math.max(0, Math.min(255, Math.round(Math.pow(v / 255, gamma) * 255)));
+    }
+  }
+
+  let leftSum = 0;
+  let leftCnt = 0;
+  let rightSum = 0;
+  let rightCnt = 0;
+  let topSum = 0;
+  let topCnt = 0;
+  let botSum = 0;
+  let botCnt = 0;
 
   let sumY2 = 0;
   let sumSqY2 = 0;
-  for (let i = 0; i < data.length; i += 4) {
-    if (data[i + 3] === 0) continue;
-    let r = clampGain(data[i] * wbR, 0, 255);
-    let g = clampGain(data[i + 1] * wbG, 0, 255);
-    let b = clampGain(data[i + 2] * wbB, 0, 255);
-    if (gamma !== 1.0) {
-      r = Math.pow(r / 255, gamma) * 255;
-      g = Math.pow(g / 255, gamma) * 255;
-      b = Math.pow(b / 255, gamma) * 255;
+  let statsCnt = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    const dyNorm = useInnerEllipse ? (y - cy) * invRy : 0;
+    const dySq = dyNorm * dyNorm;
+    for (let x = 0; x < width; x += 1) {
+      const i = (y * width + x) * 4;
+      if (data[i + 3] === 0) continue;
+      let r = Math.max(0, Math.min(255, Math.round(data[i] * wbR)));
+      let g = Math.max(0, Math.min(255, Math.round(data[i + 1] * wbG)));
+      let b = Math.max(0, Math.min(255, Math.round(data[i + 2] * wbB)));
+      if (gammaLut) {
+        r = gammaLut[r];
+        g = gammaLut[g];
+        b = gammaLut[b];
+      }
+      data[i] = r;
+      data[i + 1] = g;
+      data[i + 2] = b;
+
+      const inCore = !useInnerEllipse || ((x - cx) * invRx) ** 2 + dySq <= 1;
+      if (inCore) {
+        const y2 = 0.299 * r + 0.587 * g + 0.114 * b;
+        sumY2 += y2;
+        sumSqY2 += y2 * y2;
+        statsCnt += 1;
+        if (useSideLightEqualizer) {
+          if (x < cx) {
+            leftSum += y2;
+            leftCnt += 1;
+          } else {
+            rightSum += y2;
+            rightCnt += 1;
+          }
+          if (y < cy) {
+            topSum += y2;
+            topCnt += 1;
+          } else {
+            botSum += y2;
+            botCnt += 1;
+          }
+        }
+      }
     }
-    data[i] = Math.round(r);
-    data[i + 1] = Math.round(g);
-    data[i + 2] = Math.round(b);
-    const y2 = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-    sumY2 += y2;
-    sumSqY2 += y2 * y2;
   }
 
-  const meanY2 = sumY2 / validPixels;
-  const varY2 = Math.max(0, sumSqY2 / validPixels - meanY2 * meanY2);
-  const stdY = Math.sqrt(varY2);
-  const gain = stdY > 4 ? Math.max(0.55, Math.min(2.3, targetStd / stdY)) : 1;
+  // Gentle 2D linear illumination ramp compensation for strong side-lit windows (zero effect under even light).
+  // Account for inner-ellipse half-centroid separation (~0.63 in normalized [-1..1] X and ~0.70 in Y).
+  let rampSlopeX = 0;
+  let rampSlopeY = 0;
+  if (useSideLightEqualizer && leftCnt > 0 && rightCnt > 0 && topCnt > 0 && botCnt > 0) {
+    const horizDiff = rightSum / rightCnt - leftSum / leftCnt;
+    const vertDiff = botSum / botCnt - topSum / topCnt;
+    if (Math.abs(horizDiff) > 8) {
+      const excessX = horizDiff - Math.sign(horizDiff) * 8;
+      rampSlopeX = clampGain((-excessX / 0.63) * 0.82, -68, 68);
+    }
+    if (Math.abs(vertDiff) > 12) {
+      const excessY = vertDiff - Math.sign(vertDiff) * 12;
+      rampSlopeY = clampGain((-excessY / 0.70) * 0.70, -52, 52);
+    }
+  }
 
-  const chromaGain = Math.max(0.85, Math.min(1.15, gain));
+  // Re-evaluate inner-face mean & std after ramp compensation when ramp is active
+  let effectiveMeanY = statsCnt > 0 ? sumY2 / statsCnt : targetMean;
+  let effectiveStdY =
+    statsCnt > 0 ? Math.sqrt(Math.max(0, sumSqY2 / statsCnt - effectiveMeanY * effectiveMeanY)) : targetStd;
+
+  if (rampSlopeX !== 0 || rampSlopeY !== 0) {
+    let rSum = 0;
+    let rSqSum = 0;
+    let rCnt = 0;
+    const halfW = Math.max(1, width * 0.5);
+    const halfH = Math.max(1, height * 0.5);
+    for (let y = 0; y < height; y += 1) {
+      const ny = clampGain((y - cy) / halfH, -1, 1);
+      const dySq = ((y - cy) * invRy) ** 2;
+      for (let x = 0; x < width; x += 1) {
+        const i = (y * width + x) * 4;
+        if (data[i + 3] === 0) continue;
+        const nx = clampGain((x - cx) / halfW, -1, 1);
+        const delta = rampSlopeX * nx + rampSlopeY * ny;
+        const r = Math.max(0, Math.min(255, Math.round(data[i] + delta)));
+        const g = Math.max(0, Math.min(255, Math.round(data[i + 1] + delta)));
+        const b = Math.max(0, Math.min(255, Math.round(data[i + 2] + delta)));
+        data[i] = r;
+        data[i + 1] = g;
+        data[i + 2] = b;
+        if (((x - cx) * invRx) ** 2 + dySq <= 1) {
+          const y3 = 0.299 * r + 0.587 * g + 0.114 * b;
+          rSum += y3;
+          rSqSum += y3 * y3;
+          rCnt += 1;
+        }
+      }
+    }
+    if (rCnt > 0) {
+      effectiveMeanY = rSum / rCnt;
+      effectiveStdY = Math.sqrt(Math.max(0, rSqSum / rCnt - effectiveMeanY * effectiveMeanY));
+    }
+  }
+
+  const gain = effectiveStdY > 4 ? clampGain(targetStd / effectiveStdY, 0.58, 2.35) : 1;
+  const chromaGain = clampGain(gain, 0.85, 1.15);
+
   for (let i = 0; i < data.length; i += 4) {
     if (data[i + 3] === 0) continue;
     const r = data[i];
     const g = data[i + 1];
     const b = data[i + 2];
     const y = 0.299 * r + 0.587 * g + 0.114 * b;
-    const targetY = targetMean + (y - meanY2) * gain;
+    const targetY = targetMean + (y - effectiveMeanY) * gain;
     data[i] = Math.max(0, Math.min(255, Math.round(targetY + (r - y) * chromaGain)));
     data[i + 1] = Math.max(0, Math.min(255, Math.round(targetY + (g - y) * chromaGain)));
     data[i + 2] = Math.max(0, Math.min(255, Math.round(targetY + (b - y) * chromaGain)));
@@ -530,15 +668,53 @@ export function normalizeImageDataLuminance(
   return imageData;
 }
 
-function applyCanonicalLuminanceToCanvas(canvas: HTMLCanvasElement): void {
+/**
+ * Computes fast Laplacian-variance sharpness directly on an in-memory ImageData buffer
+ * across the inner region [15%..85%], avoiding redundant canvas `getImageData` GPU stalls.
+ */
+export function computeImageDataSharpness(
+  imageData: { width: number; height: number; data: ArrayLike<number> } | null | undefined,
+): number {
+  if (!imageData || imageData.width < 24 || imageData.height < 24) return 0;
+  const { width: w, height: h, data } = imageData;
+  if (data.length < w * h * 4) return 0;
+  const luma = (x: number, y: number) => {
+    const idx = (y * w + x) * 4;
+    return 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+  };
+  const xStart = Math.max(2, Math.floor(w * 0.15));
+  const xEnd = Math.min(w - 3, Math.floor(w * 0.85));
+  const yStart = Math.max(2, Math.floor(h * 0.15));
+  const yEnd = Math.min(h - 3, Math.floor(h * 0.85));
+  const step = w >= 96 ? 4 : 2;
+  let sum = 0;
+  let sumSq = 0;
+  let count = 0;
+  for (let y = yStart; y <= yEnd; y += step) {
+    for (let x = xStart; x <= xEnd; x += step) {
+      const lap =
+        4 * luma(x, y) - luma(x - 1, y) - luma(x + 1, y) - luma(x, y - 1) - luma(x, y + 1);
+      sum += lap;
+      sumSq += lap * lap;
+      count += 1;
+    }
+  }
+  if (count === 0) return 0;
+  const mean = sum / count;
+  return Number(Math.max(0, sumSq / count - mean * mean).toFixed(2));
+}
+
+function applyCanonicalLuminanceToCanvas(canvas: HTMLCanvasElement): ImageData | null {
   const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
-  if (!ctx) return;
+  if (!ctx) return null;
   try {
     const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
     normalizeImageDataLuminance(img, TARGET_MEAN_LUMINANCE);
     ctx.putImageData(img, 0, 0);
+    return img;
   } catch {
     // Ignore tainted canvas edge cases gracefully
+    return null;
   }
 }
 
@@ -551,33 +727,8 @@ export function computeCanvasSharpness(canvas: HTMLCanvasElement | null | undefi
   try {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return 0;
-    const w = canvas.width;
-    const h = canvas.height;
-    const img = ctx.getImageData(0, 0, w, h);
-    const { data } = img;
-    const luma = (x: number, y: number) => {
-      const idx = (y * w + x) * 4;
-      return 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
-    };
-    const xStart = Math.max(2, Math.floor(w * 0.15));
-    const xEnd = Math.min(w - 3, Math.floor(w * 0.85));
-    const yStart = Math.max(2, Math.floor(h * 0.15));
-    const yEnd = Math.min(h - 3, Math.floor(h * 0.85));
-    let sum = 0;
-    let sumSq = 0;
-    let count = 0;
-    for (let y = yStart; y <= yEnd; y += 4) {
-      for (let x = xStart; x <= xEnd; x += 4) {
-        const lap =
-          4 * luma(x, y) - luma(x - 1, y) - luma(x + 1, y) - luma(x, y - 1) - luma(x, y + 1);
-        sum += lap;
-        sumSq += lap * lap;
-        count += 1;
-      }
-    }
-    if (count === 0) return 0;
-    const mean = sum / count;
-    return Number(Math.max(0, sumSq / count - mean * mean).toFixed(2));
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    return computeImageDataSharpness(img);
   } catch {
     return 0;
   }
@@ -725,7 +876,9 @@ export function captureAndExtractOcularIris256(
     ctx.translate(-cx, -cy);
     ctx.drawImage(video, 0, 0, vw, vh);
     ctx.restore();
-    applyCanonicalLuminanceToCanvas(cvs);
+    // Single GPU->CPU readback: normalize luminance in-memory without calling getImageData twice
+    const normalized = applyCanonicalLuminanceToCanvas(cvs);
+    if (normalized) return normalized;
     try {
       return ctx.getImageData(0, 0, OCULAR_EYE_CROP_W, OCULAR_EYE_CROP_H);
     } catch {
@@ -743,8 +896,8 @@ export function captureAndExtractOcularIris256(
   const ratios8 = computeIrisOcularRatios8(landmarks, vw / vh) ?? null;
   if (!patch256 && !ratios8) return null;
 
-  const leftSharp = computeCanvasSharpness(leftCanvasEl);
-  const rightSharp = computeCanvasSharpness(rightCanvasEl);
+  const leftSharp = computeImageDataSharpness(leftImg);
+  const rightSharp = computeImageDataSharpness(rightImg);
   const ocularSharpness = Number(((leftSharp + rightSharp) * 0.5).toFixed(2));
 
   return {
@@ -755,19 +908,20 @@ export function captureAndExtractOcularIris256(
   };
 }
 
-/**
- * Captures a race-free, illumination-invariant inner-face snapshot (`224x224`, Mean Luminance `128`):
- * - When `landmarks` (FaceMesh/Human) are provided: levels eye-roll to 0 deg and tightly crops
- *   eyebrows-to-chin and cheekbone-to-cheekbone without wall/background noise.
- * - When only `faceBox` is provided: tightens onto inner face at `224x224` with Mean Luminance `128`.
- * - Falls back to full scaled frame (`448px`) only when neither box nor landmarks are known yet.
- */
-export function captureCanonicalFaceSnapshot(
+export interface CanonicalFaceSnapshotMetrics {
+  canvas: HTMLCanvasElement;
+  sharpness: number;
+  patch384: number[] | null;
+}
+
+function renderCanonicalFaceToCanvas(
   video: HTMLVideoElement,
-  faceBox?: { x: number; y: number; width: number; height: number } | null,
-  targetCanvas?: HTMLCanvasElement | null,
-  landmarks?: readonly { x: number; y: number; z?: number }[] | null,
-): HTMLCanvasElement | null {
+  faceBox: { x: number; y: number; width: number; height: number } | null | undefined,
+  targetCanvas: HTMLCanvasElement | null | undefined,
+  landmarks: readonly { x: number; y: number; z?: number }[] | null | undefined,
+  cropSize: number,
+  landmarkPadScale: number,
+): { canvas: HTMLCanvasElement; normalizedImageData: ImageData | null } | null {
   if (typeof document === 'undefined' || !video || video.videoWidth <= 0 || video.videoHeight <= 0) {
     return null;
   }
@@ -799,31 +953,33 @@ export function captureCanonicalFaceSnapshot(
         const maxX = Math.max(...xs);
         const minY = Math.min(...ys);
         const maxY = Math.max(...ys);
-        // Include moderate head contour padding (1.32x) so @vladmandic/human BlazeFace reliably detects turned yaw/pitch faces
-        const faceSpan = Math.max(42, Math.max((maxX - minX) * 1.32, (maxY - minY) * 1.32));
+        const faceSpan = Math.max(
+          42,
+          Math.max((maxX - minX) * landmarkPadScale, (maxY - minY) * landmarkPadScale),
+        );
         const cx = (minX + maxX) * 0.5;
         const cy = minY + (maxY - minY) * 0.48;
 
-        if (canvas.width !== TARGET_CANONICAL_CROP_SIZE || canvas.height !== TARGET_CANONICAL_CROP_SIZE) {
-          canvas.width = TARGET_CANONICAL_CROP_SIZE;
-          canvas.height = TARGET_CANONICAL_CROP_SIZE;
+        if (canvas.width !== cropSize || canvas.height !== cropSize) {
+          canvas.width = cropSize;
+          canvas.height = cropSize;
         }
         const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
         if (!ctx) return null;
-        const scale = TARGET_CANONICAL_CROP_SIZE / faceSpan;
+        const scale = cropSize / faceSpan;
         ctx.save();
         ctx.fillStyle = '#808080';
-        ctx.fillRect(0, 0, TARGET_CANONICAL_CROP_SIZE, TARGET_CANONICAL_CROP_SIZE);
+        ctx.fillRect(0, 0, cropSize, cropSize);
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
-        ctx.translate(TARGET_CANONICAL_CROP_SIZE * 0.5, TARGET_CANONICAL_CROP_SIZE * 0.5);
+        ctx.translate(cropSize * 0.5, cropSize * 0.5);
         ctx.rotate(-rollRad);
         ctx.scale(scale, scale);
         ctx.translate(-cx, -cy);
         ctx.drawImage(video, 0, 0, vw, vh);
         ctx.restore();
-        applyCanonicalLuminanceToCanvas(canvas);
-        return canvas;
+        const normalizedImageData = applyCanonicalLuminanceToCanvas(canvas);
+        return { canvas, normalizedImageData };
       }
     }
   }
@@ -831,8 +987,7 @@ export function captureCanonicalFaceSnapshot(
   if (faceBox && faceBox.height > 0 && faceBox.width > 0) {
     const cxPx = (faceBox.x + faceBox.width * 0.5) * vw;
     const cyPx = (faceBox.y + faceBox.height * 0.48) * vh;
-    // Tight 1:1 pixel-square inner-face crop (avoiding 16:9 aspect distortion into 224x224)
-    const padScale = faceBox.height < 0.18 ? 1.45 : 1.18;
+    const padScale = faceBox.height < 0.18 ? Math.max(1.45, landmarkPadScale) : Math.max(1.18, landmarkPadScale - 0.14);
     const sidePx = Math.max(
       32,
       Math.min(Math.min(vw, vh), Math.round(Math.max(faceBox.width * vw, faceBox.height * vh) * padScale)),
@@ -842,17 +997,17 @@ export function captureCanonicalFaceSnapshot(
     const sw = Math.max(32, Math.min(vw - sx, sidePx));
     const sh = Math.max(32, Math.min(vh - sy, sidePx));
 
-    if (canvas.width !== TARGET_CANONICAL_CROP_SIZE || canvas.height !== TARGET_CANONICAL_CROP_SIZE) {
-      canvas.width = TARGET_CANONICAL_CROP_SIZE;
-      canvas.height = TARGET_CANONICAL_CROP_SIZE;
+    if (canvas.width !== cropSize || canvas.height !== cropSize) {
+      canvas.width = cropSize;
+      canvas.height = cropSize;
     }
     const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
     if (!ctx) return null;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, TARGET_CANONICAL_CROP_SIZE, TARGET_CANONICAL_CROP_SIZE);
-    applyCanonicalLuminanceToCanvas(canvas);
-    return canvas;
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, cropSize, cropSize);
+    const normalizedImageData = applyCanonicalLuminanceToCanvas(canvas);
+    return { canvas, normalizedImageData };
   }
 
   const maxW = 448;
@@ -868,7 +1023,85 @@ export function captureCanonicalFaceSnapshot(
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(video, 0, 0, outW, outH);
-  return canvas;
+  return { canvas, normalizedImageData: null };
+}
+
+/**
+ * Single-pass canonical face capture (`224x224`, inner-face luminance & backlight balanced)
+ * that returns the normalized canvas PLUS Laplacian sharpness & 384-D appearance patch from
+ * a single `getImageData` GPU readback instead of three separate stalls.
+ */
+export function captureCanonicalFaceSnapshotWithMetrics(
+  video: HTMLVideoElement,
+  faceBox?: { x: number; y: number; width: number; height: number } | null,
+  targetCanvas?: HTMLCanvasElement | null,
+  landmarks?: readonly { x: number; y: number; z?: number }[] | null,
+): CanonicalFaceSnapshotMetrics | null {
+  const rendered = renderCanonicalFaceToCanvas(
+    video,
+    faceBox,
+    targetCanvas,
+    landmarks,
+    TARGET_CANONICAL_CROP_SIZE,
+    1.32,
+  );
+  if (!rendered) return null;
+  const sharpness = rendered.normalizedImageData
+    ? computeImageDataSharpness(rendered.normalizedImageData)
+    : computeCanvasSharpness(rendered.canvas);
+  const patch384 = rendered.normalizedImageData
+    ? extractFacePatchSignature384FromRgba(rendered.normalizedImageData)
+    : extractFacePatchSignature384(rendered.canvas);
+  return {
+    canvas: rendered.canvas,
+    sharpness,
+    patch384,
+  };
+}
+
+/**
+ * Fast bounded `288x288` (`1.72x` padded, backlight-normalized) fallback crop used when
+ * BlazeFace misses on the tight `1.32x` `224x224` crop — avoiding 500-900ms full-1080p WebGL stalls.
+ */
+export function captureWideCanonicalFaceFallback(
+  video: HTMLVideoElement,
+  faceBox?: { x: number; y: number; width: number; height: number } | null,
+  targetCanvas?: HTMLCanvasElement | null,
+  landmarks?: readonly { x: number; y: number; z?: number }[] | null,
+): HTMLCanvasElement | null {
+  const rendered = renderCanonicalFaceToCanvas(
+    video,
+    faceBox,
+    targetCanvas,
+    landmarks,
+    TARGET_WIDE_FALLBACK_CROP_SIZE,
+    1.72,
+  );
+  return rendered?.canvas ?? null;
+}
+
+/**
+ * Captures a race-free, illumination-invariant inner-face snapshot (`224x224`, Mean Luminance `128`):
+ * - When `landmarks` (FaceMesh/Human) are provided: levels eye-roll to 0 deg and tightly crops
+ *   eyebrows-to-chin and cheekbone-to-cheekbone without wall/background noise.
+ * - When only `faceBox` is provided: tightens onto inner face at `224x224` with Mean Luminance `128`.
+ * - Falls back to full scaled frame (`448px`) only when neither box nor landmarks are known yet.
+ */
+export function captureCanonicalFaceSnapshot(
+  video: HTMLVideoElement,
+  faceBox?: { x: number; y: number; width: number; height: number } | null,
+  targetCanvas?: HTMLCanvasElement | null,
+  landmarks?: readonly { x: number; y: number; z?: number }[] | null,
+): HTMLCanvasElement | null {
+  const rendered = renderCanonicalFaceToCanvas(
+    video,
+    faceBox,
+    targetCanvas,
+    landmarks,
+    TARGET_CANONICAL_CROP_SIZE,
+    1.32,
+  );
+  return rendered?.canvas ?? null;
 }
 
 function qualityWeightedCentroid(samples: readonly NeuralSampleInput[], dim: number): number[] {

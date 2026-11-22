@@ -9,9 +9,18 @@ import {
   BIOMETRIC_MAX_EUCLIDEAN_DISTANCE,
   BIOMETRIC_REQUIRED_STREAK,
   LiveIdentityStreakTracker,
+  computeImageDataSharpness,
+  normalizeImageDataLuminance,
   type EnrolledBiometricCandidate,
   type Live1toNMatchEvaluation,
 } from '../lib/biometricEngine';
+import {
+  computeContrastNormalizedSharpness,
+  resolveKioskReadinessGuidance,
+  smoothBiometricBox,
+  smoothFacialLandmarks,
+} from '../lib/biometricTrackerSmoothing';
+import { MIN_SHARPNESS_LAPLACIAN } from '@drtechcares/smart-biometric-core';
 import {
   KIOSK_FAST_MATCH_STREAK,
   KIOSK_FAST_UNREGISTERED_FRAMES,
@@ -326,11 +335,184 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
     expect(onCallStaff).toHaveBeenCalledTimes(1);
   });
 
+  it('normalizes backlit side-lit face crops cleanly without border window contamination and distinguishes sharp dim faces from real blur', () => {
+    const w = 128;
+    const h = 128;
+    const backlitData = new Uint8ClampedArray(w * h * 4);
+    const cx = (w - 1) * 0.5;
+    const cy = (h - 1) * 0.5;
+    for (let y = 0; y < h; y += 1) {
+      for (let x = 0; x < w; x += 1) {
+        const idx = (y * w + x) * 4;
+        const ellip = ((x - cx) / (w * 0.37)) ** 2 + ((y - cy) / (h * 0.41)) ** 2;
+        if (ellip > 1.0) {
+          // Blinding sunlit window behind user's head in outer crop corners
+          backlitData[idx] = 250;
+          backlitData[idx + 1] = 250;
+          backlitData[idx + 2] = 250;
+          backlitData[idx + 3] = 255;
+        } else {
+          // Strong side-lit shadow across face (left cheek ~135, right cheek ~52) + fine facial edge detail
+          const sideRamp = 135 - ((x - (cx - w * 0.37)) / (w * 0.74)) * 83;
+          const texture = Math.sin(x * 0.65) * 9 + Math.cos(y * 0.55) * 9;
+          const v = Math.max(15, Math.min(230, Math.round(sideRamp + texture)));
+          backlitData[idx] = Math.min(255, v + 8);
+          backlitData[idx + 1] = v;
+          backlitData[idx + 2] = Math.max(0, v - 10);
+          backlitData[idx + 3] = 255;
+        }
+      }
+    }
+
+    const normalized = normalizeImageDataLuminance(
+      { width: w, height: h, data: backlitData, colorSpace: 'srgb' } as ImageData,
+      128,
+    );
+
+    let leftSum = 0;
+    let leftCnt = 0;
+    let rightSum = 0;
+    let rightCnt = 0;
+    let coreSum = 0;
+    let coreSq = 0;
+    let coreCnt = 0;
+    for (let y = 0; y < h; y += 1) {
+      for (let x = 0; x < w; x += 1) {
+        const ellip = ((x - cx) / (w * 0.35)) ** 2 + ((y - cy) / (h * 0.39)) ** 2;
+        if (ellip > 1.0) continue;
+        const idx = (y * w + x) * 4;
+        const yVal =
+          0.299 * normalized.data[idx] +
+          0.587 * normalized.data[idx + 1] +
+          0.114 * normalized.data[idx + 2];
+        coreSum += yVal;
+        coreSq += yVal * yVal;
+        coreCnt += 1;
+        if (x < cx) {
+          leftSum += yVal;
+          leftCnt += 1;
+        } else {
+          rightSum += yVal;
+          rightCnt += 1;
+        }
+      }
+    }
+    const coreMean = coreSum / coreCnt;
+    const coreStd = Math.sqrt(Math.max(0, coreSq / coreCnt - coreMean * coreMean));
+    const balancedSideDiff = Math.abs(leftSum / leftCnt - rightSum / rightCnt);
+
+    expect(coreMean).toBeGreaterThan(112);
+    expect(coreMean).toBeLessThan(144);
+    // Pure facial texture (originally std ~11 under shadow) is boosted cleanly without window-induced crushing
+    expect(coreStd).toBeGreaterThan(22);
+    expect(balancedSideDiff).toBeLessThan(35);
+    expect(computeImageDataSharpness(normalized)).toBeGreaterThan(8);
+
+    // Contrast-normalized sharpness passes sharp low-contrast shadowed faces while rejecting genuinely blurry frames
+    const sharpDim = new Uint8ClampedArray(112 * 112 * 4);
+    const flatBlurry = new Uint8ClampedArray(112 * 112 * 4);
+    for (let y = 0; y < 112; y += 1) {
+      for (let x = 0; x < 112; x += 1) {
+        const idx = (y * 112 + x) * 4;
+        const sharpVal = 60 + (((x >> 1) + (y >> 1)) % 2 === 0 ? 11 : -11);
+        sharpDim[idx] = sharpVal;
+        sharpDim[idx + 1] = sharpVal;
+        sharpDim[idx + 2] = sharpVal;
+        sharpDim[idx + 3] = 255;
+
+        const blurVal = Math.round(90 + Math.sin(x * 0.08) * 14);
+        flatBlurry[idx] = blurVal;
+        flatBlurry[idx + 1] = blurVal;
+        flatBlurry[idx + 2] = blurVal;
+        flatBlurry[idx + 3] = 255;
+      }
+    }
+    expect(computeContrastNormalizedSharpness({ width: 112, height: 112, data: sharpDim })).toBeGreaterThanOrEqual(
+      MIN_SHARPNESS_LAPLACIAN,
+    );
+    expect(computeContrastNormalizedSharpness({ width: 112, height: 112, data: flatBlurry })).toBeLessThan(
+      MIN_SHARPNESS_LAPLACIAN,
+    );
+  });
+
+  it('smooths 60FPS bounding boxes & 478-pt iris landmarks without lag and provides actionable Thai readiness cues', () => {
+    const baseBox = { left: 200, top: 120, width: 180, height: 220 };
+    // Tiny 0.8px MediaPipe micro-jitter is damped smoothly
+    const damped = smoothBiometricBox(baseBox, { left: 200.8, top: 120.6, width: 180, height: 220 }, 16);
+    expect(damped.left - baseBox.left).toBeGreaterThan(0.05);
+    expect(damped.left - baseBox.left).toBeLessThan(0.35);
+
+    // Large sudden movement snaps cleanly without sluggish drag
+    const snapped = smoothBiometricBox(baseBox, { left: 360, top: 140, width: 180, height: 220 }, 16);
+    expect(snapped.left).toBe(360);
+
+    // 478 landmarks + dual-iris points smooth cleanly
+    const lmsA = Array.from({ length: 478 }, () => ({ x: 0.5, y: 0.5, z: 0 }));
+    const lmsB = Array.from({ length: 478 }, (_, idx) => ({
+      x: 0.5 + (idx >= 468 ? 0.002 : 0.001),
+      y: 0.5,
+      z: 0,
+    }));
+    const smoothLms = smoothFacialLandmarks(lmsA, lmsB, 16);
+    expect(smoothLms).toHaveLength(478);
+    expect(smoothLms[1].x).toBeGreaterThan(0.5);
+    expect(smoothLms[1].x).toBeLessThan(0.501);
+    expect(smoothLms[468].x).toBeGreaterThan(0.5);
+    expect(smoothLms[468].x).toBeLessThan(0.502);
+
+    // Actionable zero-emoji guidance prevents silent (0/3) stalls
+    const yawCue = resolveKioskReadinessGuidance({
+      isSpoof: false,
+      isBioVerified: true,
+      yawDeg: 20,
+      pitchDeg: 0,
+      inspection: null,
+      blurryFrameStreak: 0,
+      lang: 'th',
+    });
+    const pitchUpCue = resolveKioskReadinessGuidance({
+      isSpoof: false,
+      isBioVerified: true,
+      yawDeg: 0,
+      pitchDeg: -19,
+      inspection: null,
+      blurryFrameStreak: 0,
+      lang: 'th',
+    });
+    const blurCue = resolveKioskReadinessGuidance({
+      isSpoof: false,
+      isBioVerified: true,
+      yawDeg: 0,
+      pitchDeg: 0,
+      inspection: { scan_status: 'RETRY', error_code: 'BLURRY' },
+      blurryFrameStreak: 2,
+      lang: 'th',
+    });
+    const readyCue = resolveKioskReadinessGuidance({
+      isSpoof: false,
+      isBioVerified: true,
+      yawDeg: 3,
+      pitchDeg: -2,
+      inspection: { scan_status: 'PASS', error_code: 'NONE' },
+      blurryFrameStreak: 0,
+      lang: 'th',
+    });
+    expect(yawCue).toContain('หันหน้าตรง');
+    expect(pitchUpCue).toContain('ก้มหน้า');
+    expect(blurCue).toContain('หยุดนิ่ง');
+    expect(readyCue).toBeNull();
+    expect(EMOJI_RE.test(yawCue ?? '')).toBe(false);
+    expect(EMOJI_RE.test(pitchUpCue ?? '')).toBe(false);
+    expect(EMOJI_RE.test(blurCue ?? '')).toBe(false);
+  });
+
   it('audits all mascot and kiosk login files for zero Unicode emojis', () => {
     const root = process.cwd();
     const files = [
       'src/components/DrTechCareMascot.tsx',
       'src/components/KioskBiometricLoginView.tsx',
+      'src/lib/biometricEngine.ts',
+      'src/lib/biometricTrackerSmoothing.ts',
       'src/__tests__/kioskBiometricLogin.test.ts',
     ];
     for (const rel of files) {

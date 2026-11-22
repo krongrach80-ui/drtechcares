@@ -48,9 +48,8 @@ import {
   BIOMETRIC_ENGINE_ID,
   buildBiometricProfileFromSamples,
   captureAndExtractOcularIris256,
-  captureCanonicalFaceSnapshot,
+  captureCanonicalFaceSnapshotWithMetrics,
   extractCanonicalFaceDescriptor,
-  extractFacePatchSignature384,
   normalizeVector,
   warmupBiometricEngine,
 } from '../lib/biometricEngine';
@@ -1992,8 +1991,14 @@ export default function FaceID120Scanner({
                 latestRealAnchor.bucket !== captureBucket ||
                 now - lastExtractDispatchedAt >= 95);
             if (shouldDispatchNeural) {
-              const snapInput = captureCanonicalFaceSnapshot(vid, lastRegRoiBox, neuralExtractCanvas, landmarks3D);
-              if (snapInput) {
+              const snapBundle = captureCanonicalFaceSnapshotWithMetrics(
+                vid,
+                lastRegRoiBox,
+                neuralExtractCanvas,
+                landmarks3D,
+              );
+              if (snapBundle) {
+                const snapInput = snapBundle.canvas;
                 neuralExtractInFlight = true;
                 lastExtractDispatchedAt = now;
                 const dispatchedStageKey = captureBucket;
@@ -2005,7 +2010,7 @@ export default function FaceID120Scanner({
                 const snapSharpness = currentSharpness;
                 const snapGateCtx = { ...gateCtx };
                 const rawSnapGeom = extractGeometricAnthropometricRatios(landmarks3D);
-                const snapPatch384 = extractFacePatchSignature384(snapInput);
+                const snapPatch384 = snapBundle.patch384;
                 const snapRatios12 = computeCraniofacialRatios12(
                   landmarks3D,
                   (vid.videoWidth || 1280) / (vid.videoHeight || 720),
