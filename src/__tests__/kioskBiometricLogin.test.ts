@@ -20,7 +20,11 @@ import {
   smoothBiometricBox,
   smoothFacialLandmarks,
 } from '../lib/biometricTrackerSmoothing';
-import { MIN_SHARPNESS_LAPLACIAN } from '@drtechcares/smart-biometric-core';
+import {
+  MIN_SHARPNESS_LAPLACIAN,
+  evaluateTripleGateNeuralCandidate,
+  l2Normalize,
+} from '@drtechcares/smart-biometric-core';
 import {
   KIOSK_DETECT_MAX_LONG_SIDE_PX,
   KIOSK_FAST_MATCH_STREAK,
@@ -33,7 +37,9 @@ import {
   KIOSK_NOT_FOUND_VOICE_PROMPT_TH,
   KIOSK_OVERLAY_MIN_INTERVAL_MS,
   KIOSK_RESCAN_COOLDOWN_MS,
+  KioskSystemErrorPopup,
   UnregisteredFaceSignupPopup,
+  shouldAutoReturnToStandby,
   shouldTriggerFastNotFoundVerdict,
 } from '../components/KioskBiometricLoginView';
 import {
@@ -644,15 +650,144 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
     }
   });
 
-  it('audits all mascot and kiosk login files for zero Unicode emojis', () => {
+  it('passes realistic 1024-D ReLU6 frontal self-match when turned centroids are ~0.77 while still rejecting strangers', () => {
+    const makeRelu6Vec = (seed: number, dim = 1024): number[] => {
+      const raw = new Array<number>(dim);
+      for (let i = 0; i < dim; i += 1) {
+        const v = Math.sin((i + 1) * seed * 0.13) + 0.55 * Math.cos((i + 7) * seed * 0.29) + 0.35;
+        raw[i] = v > 0 ? v : 0;
+      }
+      return l2Normalize(raw);
+    };
+    const mixRelu6 = (a: number[], b: number[], alpha: number): number[] =>
+      l2Normalize(a.map((v, i) => v * (1 - alpha) + b[i] * alpha));
+
+    const center = makeRelu6Vec(1.7);
+    const leftTurn = mixRelu6(center, makeRelu6Vec(9.1), 0.55);
+    const rightTurn = mixRelu6(center, makeRelu6Vec(11.3), 0.55);
+    const upTurn = mixRelu6(center, makeRelu6Vec(13.7), 0.55);
+    const downTurn = mixRelu6(center, makeRelu6Vec(15.9), 0.55);
+    // Master is the mean across all 5 poses (distinct from center, matching FaceID120Scanner)
+    const master = l2Normalize(
+      center.map((_, i) => center[i] * 0.4 + (leftTurn[i] + rightTurn[i] + upTurn[i] + downTurn[i]) * 0.15),
+    );
+    const candidate = {
+      masterEmbedding: master,
+      angleEmbeddings: {
+        center,
+        left: leftTurn,
+        right: rightTurn,
+        up: upTurn,
+        down: downTurn,
+      },
+      exemplarEmbeddings: [center, leftTurn, rightTurn, upTurn, downTurn],
+    };
+
+    // Genuine live frontal probe (slight webcam lighting/pose perturbation around center)
+    const genuineProbe = mixRelu6(center, makeRelu6Vec(4.2), 0.12);
+    const genuineEval = evaluateTripleGateNeuralCandidate(genuineProbe, candidate, null, 'center');
+    expect(genuineEval.passed).toBe(true);
+    expect(genuineEval.rawCosine).toBeGreaterThanOrEqual(0.89);
+    expect(genuineEval.centeredCosine).toBeGreaterThanOrEqual(0.85);
+
+    // Imposter stranger must still fail strictly (thresholds >= 0.89 raw / >= 0.85 centered untouched!)
+    const strangerProbe = makeRelu6Vec(42.5);
+    const strangerEval = evaluateTripleGateNeuralCandidate(strangerProbe, candidate, null, 'center');
+    expect(strangerEval.passed).toBe(false);
+
+    // Near-miss ReLU6 probe (~0.84 raw, below strict 0.89 ReLU6 threshold) must still fail!
+    const nearMissProbe = mixRelu6(center, makeRelu6Vec(31.4), 0.42);
+    const nearMissEval = evaluateTripleGateNeuralCandidate(nearMissProbe, candidate, null, 'center');
+    expect(nearMissEval.passed).toBe(false);
+  });
+
+  it('separates KioskSystemErrorPopup from UnregisteredFaceSignupPopup and enforces zero-vector-download privacy in Kiosk login', () => {
+    // 1. System error blocks not_found verdict cleanly
+    expect(
+      shouldTriggerFastNotFoundVerdict({
+        candidatesLoaded: true,
+        humanWarmupReady: true,
+        documentHidden: false,
+        isAmbiguous: false,
+        isSpoof: false,
+        bioVerified: true,
+        matchStreak: 0,
+        unmatchedClearFrames: 5,
+        unmatchedElapsedMs: 3000,
+        inRescanCooldown: false,
+        hasZeroCandidates: true,
+        serverRejectedCount: 2,
+        systemError: true,
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldAutoReturnToStandby({
+        hasCallback: true,
+        staffModalOpen: false,
+        hasVerifiedModal: false,
+        isFaceDetected: false,
+        scanStage: 'system_error',
+        idleElapsedMs: 65_000,
+      }),
+    ).toBe(true);
+
+    // 2. KioskSystemErrorPopup shows polite Thai system error copy (NEVER "ไม่พบบัญชี" or raw codes/scores/emojis)
+    const onRescan = vi.fn();
+    const onUsePin = vi.fn();
+    const onCallStaff = vi.fn();
+    const sysHtml = renderToStaticMarkup(
+      React.createElement(KioskSystemErrorPopup, {
+        reasonCode: 'TIMEOUT',
+        onRescan,
+        onUsePin,
+        onCallStaff,
+      }),
+    );
+    expect(sysHtml).toContain('ระบบตรวจสอบขัดข้องชั่วคราว กรุณาลองใหม่หรือเรียกเจ้าหน้าที่');
+    expect(sysHtml).not.toContain('ไม่พบบัญชี');
+    expect(sysHtml).not.toContain('TIMEOUT');
+    expect(EMOJI_RE.test(sysHtml)).toBe(false);
+
+    const rateHtml = renderToStaticMarkup(
+      React.createElement(KioskSystemErrorPopup, {
+        reasonCode: 'RATE_LIMITED',
+        onRescan,
+        onUsePin,
+        onCallStaff,
+      }),
+    );
+    expect(rateHtml).toContain('มีการลองสแกนไม่ผ่านหลายครั้งเกินกำหนด');
+    expect(rateHtml).not.toContain('ไม่พบบัญชี');
+    expect(rateHtml).not.toContain('RATE_LIMITED');
+    expect(EMOJI_RE.test(rateHtml)).toBe(false);
+
+    // 3. KioskBiometricLoginView never downloads other patients' face vectors to the browser
+    const root = process.cwd();
+    const kioskSrc = fs.readFileSync(path.join(root, 'src/components/KioskBiometricLoginView.tsx'), 'utf8');
+    expect(kioskSrc).toContain('getBiometricLibraryStats');
+    expect(kioskSrc).not.toContain('fetchLiveBiometricsFromSupabase');
+    expect(kioskSrc).not.toContain('getBiometricIndex');
+    expect(kioskSrc).not.toContain('evaluateLiveMatch1toN');
+    expect(kioskSrc).toContain('data-testid="staff-biometric-diagnostics"');
+    expect(kioskSrc).toContain('data-testid="kiosk-system-error-modal"');
+  });
+
+  it('audits all mascot, kiosk login, and biometric matcher files for zero Unicode emojis', () => {
     const root = process.cwd();
     const files = [
       'src/components/DrTechCareMascot.tsx',
       'src/components/KioskBiometricLoginView.tsx',
+      'src/components/ClinicalStaffPortalShell.tsx',
       'src/lib/biometricEngine.ts',
       'src/lib/biometricScanProfiler.ts',
       'src/lib/biometricTrackerSmoothing.ts',
       'src/lib/biometricVisionCache.ts',
+      'packages/smart-biometric-core/src/vectorMath.ts',
+      'packages/api-client/src/index.ts',
+      'packages/api-client/src/cloudRouter.ts',
+      'packages/api-client/src/supabasePersistence.ts',
+      'apps/api/src/app.ts',
       'packages/face-client/src/cameraSelector.ts',
       'src/__tests__/kioskBiometricLogin.test.ts',
     ];

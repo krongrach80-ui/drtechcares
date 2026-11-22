@@ -361,7 +361,8 @@ export function setPreloadedBiometricVault(
 /**
  * Eagerly pre-warms @vladmandic/human faceres (1024-D), MediaPipe 478-pt FaceLandmarker
  * (including GPU shader compilation on a blank canvas), Cloudflare Worker/Supabase connection,
- * and the enrolled patient vault during Standby idle WITHOUT opening the camera.
+ * and count-only library stats during Standby idle WITHOUT opening the camera and WITHOUT
+ * downloading any other patients' biometric vectors to the browser.
  */
 export async function preloadKioskBiometricPipeline(
   apiClient: DrTechCaresApiClient,
@@ -374,15 +375,17 @@ export async function preloadKioskBiometricPipeline(
       typeof apiClient.checkHealth === 'function'
         ? apiClient.checkHealth().catch(() => undefined)
         : Promise.resolve();
+    const statsPing =
+      typeof apiClient.getBiometricLibraryStats === 'function'
+        ? apiClient.getBiometricLibraryStats().catch(() => undefined)
+        : Promise.resolve();
     await Promise.allSettled([
       warmupBiometricEngine(),
       getCachedPrimaryFaceLandmarker().then(() => {
         void getCachedRoiFaceLandmarker();
       }),
       healthPing,
-      fetchLiveBiometricsFromSupabase(apiClient).then((vault) => {
-        setPreloadedBiometricVault(apiClient, vault);
-      }),
+      statsPing,
     ]);
     prewarmCompleted = true;
   })().finally(() => {

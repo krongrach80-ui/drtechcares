@@ -5,8 +5,11 @@ import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import { z } from 'zod';
 import {
+  ACTIVE_BIOMETRIC_DIM,
+  ACTIVE_BIOMETRIC_PIPELINE_VERSION,
   FACE_EMBEDDING_DIM,
   verifyHybridBiometricIdentity,
+  type BiometricVerifyReasonCode,
 } from '@drtechcares/smart-biometric-core';
 import {
   CLINICAL_EXERCISES,
@@ -21,7 +24,12 @@ import {
   clampTtsText,
   synthesizeTtsAudio,
 } from '../../../packages/api-client/src/ttsProxy';
-import { isAdminRole, resolveTodayPatientSchedule } from '../../../packages/api-client/src/index';
+import {
+  isAdminRole,
+  resolveTodayPatientSchedule,
+  type BiometricLibraryStatsResponse,
+  type BiometricVerifyDiagnostics,
+} from '../../../packages/api-client/src/index';
 import {
   ClinicalDatabase,
   hashPassword,
@@ -845,32 +853,180 @@ export function createDrTechCaresApiApp(
     res.json(inspection);
   });
 
+  // Count-only public biometric library stats (ZERO vectors, ZERO PII)
+  app.get('/api/biometrics/stats', (_req: AuthenticatedRequest, res: Response) => {
+    let totalActivePatients = 0;
+    let compatibleTemplatesCount = 0;
+    let versionMismatchCount = 0;
+    let missingTemplateCount = 0;
+    let filteredOutCount = 0;
+
+    for (const p of db.state.patients) {
+      const regLo = String(p.registrationStatus ?? '').trim().toLowerCase();
+      const isActive = regLo === '' || regLo === 'active';
+      const tpl = db.state.face_templates.find((t) => t.patientId === p.id);
+      const rawMaster =
+        p.biometricHistory?.overall_centroid ?? p.biometricHistory?.frontal_centroid ?? tpl?.vector;
+      if (!isActive) {
+        if (Array.isArray(rawMaster) && rawMaster.length >= 128) {
+          filteredOutCount += 1;
+        }
+        continue;
+      }
+      totalActivePatients += 1;
+      if (!Array.isArray(rawMaster) || rawMaster.length < 128) {
+        missingTemplateCount += 1;
+        continue;
+      }
+      if (rawMaster.length >= ACTIVE_BIOMETRIC_DIM) {
+        compatibleTemplatesCount += 1;
+      } else {
+        versionMismatchCount += 1;
+      }
+    }
+
+    const stats: BiometricLibraryStatsResponse = {
+      totalActivePatients,
+      compatibleTemplatesCount,
+      versionMismatchCount,
+      missingTemplateCount,
+      filteredOutCount,
+      activeEngine: 'human-faceres-1024d',
+      activeDimension: ACTIVE_BIOMETRIC_DIM,
+      activePipelineVersion: ACTIVE_BIOMETRIC_PIPELINE_VERSION,
+      dbSynced: true,
+      updatedAt: new Date().toISOString(),
+    };
+    res.json(stats);
+  });
+
   // Public Kiosk Face Verify (returns ONLY matched patient + today's routine; never exposes other patients)
   app.post('/api/biometric/verify', (req: AuthenticatedRequest, res: Response) => {
+    const maskCode = (pid: string | null | undefined): string | null => {
+      if (!pid) return null;
+      const clean = pid.replace(/[^a-zA-Z0-9]/g, '');
+      return clean ? `P#${clean.slice(0, 6)}` : 'P#anon';
+    };
+
     if (!db.state.system_settings.aiFaceScanEnabled) {
-      res.status(503).json({ error: 'FACE_SCAN_DISABLED', message: 'ระบบสแกนใบหน้าถูกปิดชั่วคราวโดยผู้ดูแลระบบ' });
+      res.status(503).json({
+        matched: false,
+        error: 'FACE_SCAN_DISABLED',
+        reasonCode: 'SERVER_ERROR' as BiometricVerifyReasonCode,
+        message: 'ระบบสแกนใบหน้าถูกปิดชั่วคราวโดยผู้ดูแลระบบ',
+      });
       return;
     }
     const parsed = verifySchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues });
+      res.status(400).json({
+        matched: false,
+        error: 'VALIDATION_ERROR',
+        reasonCode: 'QUALITY_TOO_LOW' as BiometricVerifyReasonCode,
+        issues: parsed.error.issues,
+      });
       return;
     }
 
-    const totalPatients = db.state.patients.filter((p) => p.registrationStatus === 'active').length;
-    const result = verifyHybridBiometricIdentity(parsed.data.probeVector, db.state.face_templates, {
-      totalEnrolledPatients: totalPatients,
+    const liveness = (req.body as { livenessEvidence?: { biologicalVerified?: boolean; spoofRisk?: number } })
+      ?.livenessEvidence;
+    if (
+      liveness &&
+      (liveness.biologicalVerified !== true ||
+        (typeof liveness.spoofRisk === 'number' && liveness.spoofRisk >= 0.62))
+    ) {
+      res.status(403).json({
+        matched: false,
+        confidencePercent: 0,
+        error: 'BIOMETRIC_SPOOF_DETECTED',
+        reasonCode: 'LIVENESS_FAILED' as BiometricVerifyReasonCode,
+        failureReasons: ['BIOLOGICAL_SPOOF_BLOCKED'],
+        message: 'ตรวจพบภาพถ่าย/หน้าจอ หรือยังไม่ผ่านการยืนยันชีววิทยา (กรุณากะพริบตา)',
+      });
+      return;
+    }
+
+    const activePatients = db.state.patients.filter((p) => {
+      const regLo = String(p.registrationStatus ?? '').trim().toLowerCase();
+      return regLo === '' || regLo === 'active';
+    });
+    const activeIds = new Set(activePatients.map((p) => p.id));
+    const filteredOutCount = db.state.patients.filter(
+      (p) => !activeIds.has(p.id) && db.state.face_templates.some((t) => t.patientId === p.id),
+    ).length;
+    const probeDim = parsed.data.probeVector.length;
+    const activeTemplates = db.state.face_templates.filter((t) => activeIds.has(t.patientId));
+    const compatibleTemplates = activeTemplates.filter((t) => t.vector.length === probeDim);
+    const compatPatientIds = new Set(compatibleTemplates.map((t) => t.patientId));
+    const mismatchPatientIds = new Set(
+      activeTemplates.filter((t) => t.vector.length !== probeDim).map((t) => t.patientId),
+    );
+    for (const id of compatPatientIds) mismatchPatientIds.delete(id);
+
+    const result = verifyHybridBiometricIdentity(parsed.data.probeVector, compatibleTemplates, {
+      totalEnrolledPatients: activePatients.length,
       thresholds: {
         minRawCosMulti: db.state.system_settings.aiFaceThreshold,
       },
     });
 
+    const buildDiag = (reasonCode: BiometricVerifyReasonCode): BiometricVerifyDiagnostics => ({
+      reasonCode,
+      evaluatedCandidatesCount: compatPatientIds.size,
+      totalActivePatients: activePatients.length,
+      compatibleTemplatesCount: compatPatientIds.size,
+      versionMismatchCount: mismatchPatientIds.size,
+      filteredOutCount,
+      thresholdPercent: Number(((db.state.system_settings.aiFaceThreshold || 0.84) * 100).toFixed(1)),
+      livenessPassed: liveness ? liveness.biologicalVerified === true : true,
+      top1Code: maskCode(result.topCandidate?.patientId),
+      top1ScorePercent: Number(((result.topCandidate?.metrics.rawCos ?? 0) * 100).toFixed(1)),
+      top1CenteredPercent: Number(((result.topCandidate?.metrics.whitenedCos ?? 0) * 100).toFixed(1)),
+      top2Code: maskCode(result.runnerUp?.patientId),
+      top2ScorePercent: Number(((result.runnerUp?.metrics.rawCos ?? 0) * 100).toFixed(1)),
+      marginPercent: Number(((result.rawMargin ?? 0) * 100).toFixed(1)),
+      gateFailCodes: result.failureReasons ?? [],
+      probeDim,
+      probeEngine: probeDim >= ACTIVE_BIOMETRIC_DIM ? 'human-faceres-1024d' : 'hybrid-512d',
+      dbFresh: true,
+    });
+
     if (!result.matched || !result.patientId) {
-      res.status(401).json(result);
+      const reasonCode: BiometricVerifyReasonCode =
+        compatPatientIds.size > 0
+          ? 'BELOW_THRESHOLD'
+          : mismatchPatientIds.size > 0
+            ? 'VERSION_MISMATCH'
+            : filteredOutCount > 0
+              ? 'PATIENT_FILTERED_OUT'
+              : 'NO_TEMPLATES_IN_LIBRARY';
+      res.status(401).json({
+        ...result,
+        matched: false,
+        patientId: null,
+        patientName: null,
+        topCandidate: null,
+        runnerUp: null,
+        reasonCode,
+        diagnostics: buildDiag(reasonCode),
+      });
       return;
     }
 
-    const patient = db.state.patients.find((p) => p.id === result.patientId) ?? null;
+    const patient = activePatients.find((p) => p.id === result.patientId) ?? null;
+    if (!patient) {
+      res.status(401).json({
+        ...result,
+        matched: false,
+        patientId: null,
+        patientName: null,
+        topCandidate: null,
+        runnerUp: null,
+        reasonCode: 'PATIENT_FILTERED_OUT' as BiometricVerifyReasonCode,
+        diagnostics: buildDiag('PATIENT_FILTERED_OUT'),
+      });
+      return;
+    }
     const course = db.state.patient_courses.find((c) => c.patientId === result.patientId) ?? null;
     const todayIdx = new Date().getDay();
     const todayRoutine = course?.weeklySchedule.find((d) => d.dayIndex === todayIdx) ?? null;
@@ -888,14 +1044,14 @@ export function createDrTechCaresApiApp(
 
     res.json({
       ...result,
-      patient: patient
-        ? {
-            id: patient.id,
-            hn: patient.hn,
-            fullName: patient.fullName,
-            nextAppointmentDate: patient.nextAppointmentDate,
-          }
-        : null,
+      reasonCode: 'MATCHED' as BiometricVerifyReasonCode,
+      diagnostics: buildDiag('MATCHED'),
+      patient: {
+        id: patient.id,
+        hn: patient.hn,
+        fullName: patient.fullName,
+        nextAppointmentDate: patient.nextAppointmentDate,
+      },
       todayRoutine,
     });
   });

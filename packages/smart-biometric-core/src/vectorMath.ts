@@ -30,6 +30,23 @@ export const STRICT_COHORT_MARGIN = 0.08;
 export const STRICT_LOGIN_MAX_YAW_DEG = 14;
 export const STRICT_LOGIN_MAX_PITCH_DEG = 14;
 
+export const ACTIVE_BIOMETRIC_DIM = 1024;
+export const ACTIVE_BIOMETRIC_PIPELINE_VERSION = 'v3-backlit-iris-1024d' as const;
+
+export type BiometricVerifyReasonCode =
+  | 'MATCHED'
+  | 'NO_TEMPLATES_IN_LIBRARY'
+  | 'PATIENT_FILTERED_OUT'
+  | 'VERSION_MISMATCH'
+  | 'BELOW_THRESHOLD'
+  | 'AMBIGUOUS'
+  | 'LIVENESS_FAILED'
+  | 'QUALITY_TOO_LOW'
+  | 'RATE_LIMITED'
+  | 'SERVER_ERROR'
+  | 'TIMEOUT'
+  | 'PERMISSION_DENIED';
+
 export type BiometricPose = 'frontal_centroid' | 'overall_centroid' | 'front' | 'left' | 'right' | 'nod';
 export type FacePoseZone5 = 'center' | 'left' | 'right' | 'up' | 'down';
 
@@ -2299,7 +2316,10 @@ export function evaluateTripleGateNeuralCandidate(
     failureReasons.push(`${zoneLabel}L2 ${zoneMetrics.l2Dist.toFixed(4)} > ${maxL2}`);
   }
 
-  // Evaluate all stored pose centroids: require center (or active pose zone) + at least 1 other stored centroid >= centroidFloor
+  // Evaluate all stored pose centroids: require center (or active pose zone) + at least 1 other distinct stored centroid >= centroidFloor.
+  // Include `masterEmbedding` when distinct from `center` (e.g. 120-frame 5-angle enrollment where `master` averages all 5 angles),
+  // so straight-facing genuine probes (>= 0.91 vs master AND >= 0.94 vs center) are not falsely rejected solely because
+  // sharp head-turn secondary centroids (`left`/`right`/`up`/`down`) naturally fall below 0.85 against a frontal probe.
   let bestCentroidCosine = Math.max(masterMetrics.rawCosine, zoneMetrics.rawCosine);
   let bestAngle: 'master' | FacePoseZone5 | 'extra' =
     poseMetrics && poseMetrics.rawCosine > centerMetrics.rawCosine && poseMetrics.rawCosine >= masterMetrics.rawCosine
@@ -2307,10 +2327,14 @@ export function evaluateTripleGateNeuralCandidate(
       : centerMetrics.rawCosine >= masterMetrics.rawCosine
         ? 'center'
         : 'master';
-  let centroidsAboveFloorCount = centerMetrics.rawCosine >= centroidFloor ? 1 : 0;
+  const masterDistinctFromCenter =
+    hasExplicitCenter && cosineSimilarity(masterNorm, centerNorm) < 0.9999;
+  let centroidsAboveFloorCount =
+    (centerMetrics.rawCosine >= centroidFloor ? 1 : 0) +
+    (masterDistinctFromCenter && masterMetrics.rawCosine >= centroidFloor ? 1 : 0);
 
   const secondaryZones: FacePoseZone5[] = ['left', 'right', 'up', 'down'];
-  let otherCentroidsFound = 0;
+  let otherCentroidsFound = masterDistinctFromCenter ? 1 : 0;
   for (const z of secondaryZones) {
     const rawZ = candidate.angleEmbeddings?.[z];
     if (Array.isArray(rawZ) && rawZ.length === probeNorm.length) {

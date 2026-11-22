@@ -994,10 +994,29 @@ function formatThaiDateTime(iso: string): string {
   return `${day} ${month} ${beYear} • ${hh}:${mm} น.`;
 }
 
+function getPatientBiometricStatusDetail(
+  p: PatientRecord,
+): 'VERIFIED' | 'PENDING' | 'REENROLL_REQUIRED' {
+  if (p.biometricStatusDetail) return p.biometricStatusDetail;
+  const dim =
+    typeof p.biometricEmbeddingDim === 'number' && p.biometricEmbeddingDim > 0
+      ? p.biometricEmbeddingDim
+      : Array.isArray(p.masterEmbedding)
+        ? p.masterEmbedding.length
+        : Array.isArray(p.biometricHistory?.overall_centroid)
+          ? p.biometricHistory.overall_centroid.length
+          : Array.isArray(p.biometricHistory?.frontal_centroid)
+            ? p.biometricHistory.frontal_centroid.length
+            : 0;
+  if (dim < 128) return 'PENDING';
+  if (dim < 1024 || (p.biometricEngine && p.biometricEngine !== 'human-faceres-1024d')) {
+    return 'REENROLL_REQUIRED';
+  }
+  return 'VERIFIED';
+}
+
 function isPatientFaceVerified(p: PatientRecord): boolean {
-  if (p.faceBiometricStatus === 'PENDING') return false;
-  if (p.faceBiometricStatus === 'VERIFIED') return true;
-  return Boolean(p.biometricHistory?.raw_frames?.length);
+  return getPatientBiometricStatusDetail(p) === 'VERIFIED';
 }
 
 let sharedEmergencyAudioCtx: AudioContext | null = null;
@@ -3054,6 +3073,26 @@ export function ClinicalStaffPortalShell({
                   </select>
                 </div>
 
+                {(() => {
+                  const reenrollCount = patients.filter(
+                    (item) => getPatientBiometricStatusDetail(item) === 'REENROLL_REQUIRED',
+                  ).length;
+                  if (reenrollCount <= 0) return null;
+                  return (
+                    <div
+                      data-testid="patients-reenroll-required-banner"
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50/90 px-4 py-2.5 text-xs font-bold text-rose-800"
+                    >
+                      <span>
+                        พบผู้ป่วยต้องลงทะเบียนใบหน้าใหม่ {reenrollCount} คน (ข้อมูลเวกเตอร์คนละรุ่นกับระบบ 1024-D ปัจจุบัน)
+                      </span>
+                      <span className="text-[11px] font-semibold text-rose-700">
+                        กรุณากดปุ่ม &quot;{locale.patients.scanFaceBtn}&quot; ในรายการผู้ป่วยที่เกี่ยวข้อง
+                      </span>
+                    </div>
+                  );
+                })()}
+
                 <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-x-auto">
                   <table className="table-fixed w-full min-w-[940px] text-left text-xs">
                     <thead className="border-b border-slate-100 bg-slate-50/70 text-[11px] font-bold text-slate-500">
@@ -3068,7 +3107,8 @@ export function ClinicalStaffPortalShell({
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {filteredPatients.map((p) => {
-                        const verified = isPatientFaceVerified(p);
+                        const bioStatus = getPatientBiometricStatusDetail(p);
+                        const verified = bioStatus === 'VERIFIED';
                         const ptLabel = ptNameMap.get(p.delegatedToPtId || p.assignedPtId) || 'กภ. ประจำคลินิก';
                         return (
                           <tr key={p.id} className="hover:bg-slate-50/80 transition-colors duration-150">
@@ -3105,17 +3145,27 @@ export function ClinicalStaffPortalShell({
                               )}
                             </td>
                             <td className="px-4 py-3.5">
-                              {verified ? (
+                              {bioStatus === 'VERIFIED' ? (
                                 <div className="space-y-1">
                                   <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-bold text-emerald-700">
                                     <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
                                     {locale.patients.verifiedBadge}
                                   </span>
-                                  {(!p.masterEmbedding || p.masterEmbedding.length < 768) && (
-                                    <div className="text-[10px] font-semibold text-amber-700">
-                                      แนะนำอัปเดต 1024-D
+                                  {p.biometricPipelineVersion === 'v2-pre-iris-1024d' && (
+                                    <div className="text-[10px] font-semibold text-sky-700">
+                                      1024-D (รุ่นก่อนอัปเดตม่านตา)
                                     </div>
                                   )}
+                                </div>
+                              ) : bioStatus === 'REENROLL_REQUIRED' ? (
+                                <div className="space-y-1">
+                                  <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-rose-200 bg-rose-50 px-3 py-1 text-[11px] font-bold text-rose-700">
+                                    <Clock className="h-3.5 w-3.5 shrink-0" />
+                                    ต้องลงทะเบียนหน้าใหม่
+                                  </span>
+                                  <div className="text-[10px] font-semibold text-rose-600">
+                                    เวกเตอร์คนละรุ่น ({p.biometricEmbeddingDim || p.masterEmbedding?.length || 512}-D)
+                                  </div>
                                 </div>
                               ) : (
                                 <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-bold text-amber-800">

@@ -6,6 +6,8 @@ import {
   sortExercisesStrokeUpperFirst,
 } from '@drtechcares/pose-engine';
 import {
+  ACTIVE_BIOMETRIC_DIM,
+  ACTIVE_BIOMETRIC_PIPELINE_VERSION,
   parseEmbeddingVector,
   type BiometricPose,
   type EnrolledTemplateCandidate,
@@ -64,6 +66,7 @@ export interface CloudRouterState {
   deleted_ban_ids?: string[];
   deleted_staff_call_ids?: string[];
   deleted_assessment_ids?: string[];
+  filtered_out_template_patients_count?: number;
   delegation_overrides?: Record<string, DelegationOverrideEntry>;
   patients: PatientRecord[];
   face_templates: EnrolledTemplateCandidate[];
@@ -639,6 +642,447 @@ export async function hydrateStaffUsersOnly(
   }
 }
 
+export interface LiveBiometricHydrationResult {
+  ok: boolean;
+  errorCode?: 'TIMEOUT' | 'PERMISSION_DENIED' | 'SERVER_ERROR';
+  filteredOutCount: number;
+}
+
+function isSupabasePermissionDeniedError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const obj = err as { code?: unknown; status?: unknown; message?: unknown };
+  const code = String(obj.code ?? '').trim();
+  const status = typeof obj.status === 'number' ? obj.status : 0;
+  const msg = String(obj.message ?? '').toLowerCase();
+  return (
+    code === '42501' ||
+    status === 401 ||
+    status === 403 ||
+    msg.includes('permission denied') ||
+    msg.includes('row-level security') ||
+    msg.includes('jwt expired') ||
+    msg.includes('invalid api key')
+  );
+}
+
+function isSupabaseTimeoutError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const rec = err as Record<string, unknown>;
+  const code = String(rec.code ?? '');
+  const status = Number(rec.status ?? rec.statusCode ?? 0);
+  const msg = String(rec.message ?? rec.details ?? '').toLowerCase();
+  return (
+    code === '57014' ||
+    status === 408 ||
+    status === 504 ||
+    msg.includes('statement timeout') ||
+    msg.includes('timed out') ||
+    msg.includes('timeout')
+  );
+}
+
+/**
+ * Lightweight 3-table live refresh (`patients`, `patient_biometrics`, `face_templates`)
+ * so server-side `/api/biometric/verify` and `/api/biometrics/stats` ALWAYS compare against
+ * live Supabase state (new enrollments work immediately without Kiosk refresh; deleted patients
+ * are blocked immediately without waiting for the 60s full-state hydration TTL).
+ */
+export async function hydrateBiometricsLiveFromSupabase(
+  supabase: SupabaseClient,
+  state: CloudRouterState,
+  timeoutMs = 1500,
+): Promise<LiveBiometricHydrationResult> {
+  if (isSupabaseCircuitOpen(supabase)) {
+    return { ok: false, errorCode: 'SERVER_ERROR', filteredOutCount: state.filtered_out_template_patients_count ?? 0 };
+  }
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const fetchAll = Promise.allSettled([
+      selectExplicitWithFallback(
+        'patients',
+        (cols) => supabase.from('patients').select(cols),
+        PATIENTS_BASE_COLS,
+        PATIENTS_MINIMAL_SAFE_COLS,
+        250,
+      ),
+      selectExplicitWithFallback(
+        'patient_biometrics',
+        (cols) => supabase.from('patient_biometrics').select(cols),
+        PATIENT_BIOMETRICS_BASE_COLS,
+        PATIENT_BIOMETRICS_MINIMAL_SAFE_COLS,
+        250,
+      ),
+      selectExplicitWithFallback(
+        'face_templates',
+        (cols) => supabase.from('face_templates').select(cols),
+        'patient_id,pose,embedding,quality_score',
+        'patient_id,pose,embedding',
+        250,
+      ),
+    ]);
+
+    const outcome = await Promise.race([
+      fetchAll.then((results) => ({ timedOut: false as const, results })),
+      new Promise<{ timedOut: true }>((resolve) => {
+        timerId = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+      }),
+    ]);
+
+    if (outcome.timedOut) {
+      markSupabaseDown('hydrate_biometrics_live_timeout', supabase);
+      return { ok: false, errorCode: 'TIMEOUT', filteredOutCount: state.filtered_out_template_patients_count ?? 0 };
+    }
+
+    const [patientsRes, biometrics120Res, templatesRes] = outcome.results as [
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+    ];
+
+    if (patientsRes.status === 'rejected') {
+      if (isSupabasePermissionDeniedError(patientsRes.reason)) {
+        return { ok: false, errorCode: 'PERMISSION_DENIED', filteredOutCount: 0 };
+      }
+      if (isSupabaseTimeoutError(patientsRes.reason)) {
+        markSupabaseDown('hydrate_biometrics_live_timeout', supabase);
+        return { ok: false, errorCode: 'TIMEOUT', filteredOutCount: 0 };
+      }
+      if (isSupabaseTransientFailure(patientsRes.reason)) {
+        markSupabaseDown('hydrate_biometrics_live_rejected', supabase);
+      }
+      return { ok: false, errorCode: 'SERVER_ERROR', filteredOutCount: 0 };
+    }
+    if (patientsRes.value.error || !Array.isArray(patientsRes.value.data)) {
+      if (isSupabasePermissionDeniedError(patientsRes.value.error)) {
+        return { ok: false, errorCode: 'PERMISSION_DENIED', filteredOutCount: 0 };
+      }
+      if (isSupabaseTimeoutError(patientsRes.value.error)) {
+        markSupabaseDown('hydrate_biometrics_live_timeout', supabase);
+        return { ok: false, errorCode: 'TIMEOUT', filteredOutCount: 0 };
+      }
+      if (isSupabaseTransientFailure(patientsRes.value.error)) {
+        markSupabaseDown('hydrate_biometrics_live_error', supabase);
+      }
+      return { ok: false, errorCode: 'SERVER_ERROR', filteredOutCount: 0 };
+    }
+
+    const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
+    const deletedPatientLower = new Set(
+      (state.deleted_patient_ids ?? []).map((x) => x.trim().toLowerCase()).filter(Boolean),
+    );
+    const filteredOutPatientIds = new Set<string>();
+    const rawPatientIds = new Set<string>();
+    for (const r of patientsRes.value.data) {
+      const pidRaw = String(r.id ?? '').trim();
+      const hnRaw = String(r.hn ?? '').trim();
+      const pidLo = pidRaw.toLowerCase();
+      const hnLo = hnRaw.toLowerCase();
+      if (pidRaw) rawPatientIds.add(pidRaw);
+      const rawReg = String(r.registration_status ?? '').trim().toLowerCase();
+      const isExcluded =
+        Boolean(r.deleted_at) ||
+        rawReg === 'deleted' ||
+        rawReg === 'rejected' ||
+        rawReg === 'inactive' ||
+        rawReg === 'archived';
+      if (isExcluded) {
+        if (pidRaw) filteredOutPatientIds.add(pidRaw);
+        state.deleted_patient_ids ??= [];
+        if (pidRaw && !deletedPatientSet.has(pidRaw)) {
+          deletedPatientSet.add(pidRaw);
+          state.deleted_patient_ids.push(pidRaw);
+        }
+        if (hnRaw && !deletedPatientSet.has(hnRaw)) {
+          deletedPatientSet.add(hnRaw);
+          state.deleted_patient_ids.push(hnRaw);
+        }
+        if (pidLo) deletedPatientLower.add(pidLo);
+        if (hnLo) deletedPatientLower.add(hnLo);
+      }
+    }
+
+    const parseVec = (raw: unknown): number[] | undefined => parseEmbeddingVector(raw);
+    const parseExemplarList = (raw: unknown): number[][] => {
+      let source: unknown = raw;
+      if (typeof source === 'string' && source.trim().startsWith('[')) {
+        try { source = JSON.parse(source); } catch { return []; }
+      } else if (typeof source === 'string' && source.trim().startsWith('{')) {
+        try {
+          const obj = JSON.parse(source) as Record<string, unknown>;
+          source = obj.exemplar_embeddings ?? obj.exemplarEmbeddings;
+        } catch { return []; }
+      } else if (source && typeof source === 'object' && !Array.isArray(source)) {
+        const obj = source as Record<string, unknown>;
+        source = obj.exemplar_embeddings ?? obj.exemplarEmbeddings;
+      }
+      if (!Array.isArray(source)) return [];
+      const out: number[][] = [];
+      for (const item of source) {
+        const vec = parseVec(item);
+        if (vec && vec.length >= 128) out.push(vec);
+      }
+      return out;
+    };
+    const parseAngleObject = (raw: unknown): AngleEmbeddings5D | undefined => {
+      let obj: Record<string, unknown> | undefined;
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        const rec = raw as Record<string, unknown>;
+        obj = (rec.angle_embeddings && typeof rec.angle_embeddings === 'object'
+          ? rec.angle_embeddings
+          : rec.angleEmbeddings && typeof rec.angleEmbeddings === 'object'
+            ? rec.angleEmbeddings
+            : rec) as Record<string, unknown>;
+      } else if (typeof raw === 'string' && raw.trim().startsWith('{')) {
+        try {
+          const rec = JSON.parse(raw) as Record<string, unknown>;
+          obj = (rec.angle_embeddings && typeof rec.angle_embeddings === 'object'
+            ? rec.angle_embeddings
+            : rec.angleEmbeddings && typeof rec.angleEmbeddings === 'object'
+              ? rec.angleEmbeddings
+              : rec) as Record<string, unknown>;
+        } catch { return undefined; }
+      }
+      if (!obj) return undefined;
+      const center = parseVec(obj.center);
+      const left = parseVec(obj.left);
+      const right = parseVec(obj.right);
+      const up = parseVec(obj.up);
+      const down = parseVec(obj.down);
+      const base = center ?? left ?? right ?? up ?? down;
+      if (!base) return undefined;
+      return { center: center ?? base, left: left ?? base, right: right ?? base, up: up ?? base, down: down ?? base };
+    };
+    const normalizeEngineTag = (
+      raw: unknown,
+      vec?: readonly number[],
+    ): 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d' | undefined => {
+      if (raw === 'human-faceres-1024d' || (vec && vec.length >= 768)) return 'human-faceres-1024d';
+      if (raw === 'arcface-onnx' || raw === 'hybrid-512d') return raw;
+      return undefined;
+    };
+
+    const filteredOutTemplateIds = new Set<string>();
+    const parsedTemplatesByPatient = new Map<
+      string,
+      { frontal?: number[]; overall?: number[]; raw: { pose: 'front' | 'left' | 'right' | 'nod'; vector: number[]; qualityScore: number }[] }
+    >();
+    const parsedTemplateCandidates: EnrolledTemplateCandidate[] = [];
+    if (templatesRes.status === 'fulfilled' && !templatesRes.value.error && Array.isArray(templatesRes.value.data)) {
+      for (const row of templatesRes.value.data) {
+        const vec = parseVec(row.embedding);
+        if (!vec) continue;
+        const pid = String(row.patient_id);
+        if (deletedPatientSet.has(pid) || deletedPatientLower.has(pid.toLowerCase()) || !rawPatientIds.has(pid)) {
+          filteredOutTemplateIds.add(pid);
+          continue;
+        }
+        const pose = (row.pose as BiometricPose) ?? 'frontal_centroid';
+        parsedTemplateCandidates.push({ patientId: pid, pose, vector: vec });
+        const entry = parsedTemplatesByPatient.get(pid) ?? { raw: [] };
+        if (pose === 'frontal_centroid') entry.frontal = vec;
+        else if (pose === 'overall_centroid') entry.overall = vec;
+        else if (pose === 'front' || pose === 'left' || pose === 'right' || pose === 'nod') {
+          entry.raw.push({ pose, vector: vec, qualityScore: Number(row.quality_score ?? 1.0) });
+        }
+        parsedTemplatesByPatient.set(pid, entry);
+      }
+    }
+
+    const biometrics120ByPatient = new Map<
+      string,
+      {
+        masterEmbedding?: number[];
+        angleEmbeddings?: AngleEmbeddings5D;
+        exemplarEmbeddings?: number[][];
+        biometricEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
+        framesCaptured?: number;
+        avatarUrl?: string;
+      }
+    >();
+    if (biometrics120Res.status === 'fulfilled' && !biometrics120Res.value.error && Array.isArray(biometrics120Res.value.data)) {
+      for (const row of biometrics120Res.value.data) {
+        const pid = String(row.patient_id);
+        const hnLo = String(row.hn ?? '').trim().toLowerCase();
+        if (
+          deletedPatientSet.has(pid) ||
+          deletedPatientLower.has(pid.toLowerCase()) ||
+          (hnLo && deletedPatientLower.has(hnLo)) ||
+          !rawPatientIds.has(pid)
+        ) {
+          filteredOutTemplateIds.add(pid);
+          continue;
+        }
+        const parsedAngles = parseAngleObject(row.angle_embeddings ?? row.biometric_data);
+        const parsedMaster =
+          parseVec(row.master_embedding) ??
+          parseVec(row.face_embedding) ??
+          parseVec(row.biometric_data) ??
+          parsedAngles?.center;
+        const parsedExemplars = parseExemplarList(row.exemplar_embeddings ?? row.biometric_data);
+        biometrics120ByPatient.set(pid, {
+          masterEmbedding: parsedMaster,
+          angleEmbeddings: parsedAngles,
+          exemplarEmbeddings: parsedExemplars.length > 0 ? parsedExemplars : undefined,
+          biometricEngine: normalizeEngineTag(row.model_version ?? row.biometric_engine, parsedMaster),
+          framesCaptured: Number(row.frame_count ?? row.frames_captured ?? 120),
+          avatarUrl: typeof row.avatar_url === 'string' ? row.avatar_url : undefined,
+        });
+      }
+    }
+
+    for (const r of patientsRes.value.data) {
+      const pid = String(r.id ?? '').trim();
+      if (!filteredOutPatientIds.has(pid)) continue;
+      const h = (r.history && typeof r.history === 'object' ? r.history : {}) as Record<string, unknown>;
+      if (parseVec(r.master_embedding) || parseVec(r.face_embedding) || parseVec(h.masterEmbedding)) {
+        filteredOutTemplateIds.add(pid);
+      }
+    }
+    state.filtered_out_template_patients_count = filteredOutTemplateIds.size;
+
+    const prevPatientsById = new Map(state.patients.map((p) => [p.id, p]));
+    state.patients = patientsRes.value.data
+      .filter((r) => {
+        const pidRaw = String(r.id ?? '').trim();
+        const hnRaw = String(r.hn ?? '').trim();
+        const pidLo = pidRaw.toLowerCase();
+        const hnLo = hnRaw.toLowerCase();
+        const rawReg = String(r.registration_status ?? '').trim().toLowerCase();
+        const isActive = !r.deleted_at && (rawReg === '' || rawReg === 'active');
+        return isActive && !deletedPatientLower.has(pidLo) && (!hnLo || !deletedPatientLower.has(hnLo));
+      })
+      .map((r) => {
+        const pid = String(r.id);
+        const prevPatient = prevPatientsById.get(pid);
+        const history = (r.history && typeof r.history === 'object' ? r.history : {}) as Record<string, unknown>;
+        const tpl = parsedTemplatesByPatient.get(pid);
+        const b120 = biometrics120ByPatient.get(pid);
+        const rowMasterVec =
+          parseVec(r.master_embedding) ??
+          parseVec(r.face_embedding) ??
+          parseVec(r.biometric_data);
+        const fallbackMaster =
+          b120?.masterEmbedding ??
+          rowMasterVec ??
+          parseVec(history.masterEmbedding) ??
+          tpl?.overall ??
+          tpl?.frontal;
+        const mergedMaster = fallbackMaster ?? prevPatient?.masterEmbedding;
+        let fallbackAngles =
+          b120?.angleEmbeddings ??
+          parseAngleObject(r.angle_embeddings ?? r.face_embedding ?? r.biometric_data) ??
+          parseAngleObject(history.angleEmbeddings);
+        if (!fallbackAngles && mergedMaster) {
+          const frontVec = tpl?.raw.find((f) => f.pose === 'front')?.vector ?? tpl?.frontal ?? mergedMaster;
+          const leftVec = tpl?.raw.find((f) => f.pose === 'left')?.vector ?? mergedMaster;
+          const rightVec = tpl?.raw.find((f) => f.pose === 'right')?.vector ?? mergedMaster;
+          const nodVec = tpl?.raw.find((f) => f.pose === 'nod')?.vector ?? mergedMaster;
+          fallbackAngles = { center: frontVec, left: leftVec, right: rightVec, up: nodVec, down: nodVec };
+        }
+        const mergedAngles = fallbackAngles ?? prevPatient?.angleEmbeddings;
+        const fallbackExemplars = (() => {
+          const fromB120 = b120?.exemplarEmbeddings ?? [];
+          const fromRow = parseExemplarList(r.face_embedding ?? r.biometric_data);
+          const fromHist = parseExemplarList(history.exemplarEmbeddings);
+          const chosen = fromB120.length > 0 ? fromB120 : fromRow.length > 0 ? fromRow : fromHist;
+          if (!mergedMaster || chosen.length === 0) return undefined;
+          const matchedDim = chosen.filter((v) => v.length === mergedMaster.length);
+          return matchedDim.length > 0 ? matchedDim : undefined;
+        })();
+        const mergedExemplars = fallbackExemplars ?? prevPatient?.exemplarEmbeddings;
+        const resolvedGeom =
+          history.geometricRatios && typeof history.geometricRatios === 'object'
+            ? (history.geometricRatios as GeometricAnthropometricRatios)
+            : prevPatient?.geometricRatios;
+        const hasRealVector = Boolean(mergedMaster && mergedMaster.length >= 128);
+        const embeddingDim = mergedMaster?.length ?? 0;
+        const resolvedEngine =
+          normalizeEngineTag(b120?.biometricEngine, mergedMaster) ??
+          normalizeEngineTag(history.biometricEngine, mergedMaster) ??
+          normalizeEngineTag(prevPatient?.biometricEngine, mergedMaster);
+        const isCompatibleCurrent =
+          hasRealVector &&
+          embeddingDim >= ACTIVE_BIOMETRIC_DIM &&
+          (!resolvedEngine || resolvedEngine === 'human-faceres-1024d');
+        const biometricStatusDetail: 'VERIFIED' | 'PENDING' | 'REENROLL_REQUIRED' = !hasRealVector
+          ? 'PENDING'
+          : isCompatibleCurrent
+            ? 'VERIFIED'
+            : 'REENROLL_REQUIRED';
+        const biometricPipelineVersion = !hasRealVector
+          ? undefined
+          : embeddingDim >= ACTIVE_BIOMETRIC_DIM
+            ? resolvedGeom?.ocularIrisPatch256?.length === 256
+              ? ACTIVE_BIOMETRIC_PIPELINE_VERSION
+              : 'v2-pre-iris-1024d'
+            : 'legacy-512d';
+
+        return {
+          ...(prevPatient ?? {
+            id: pid,
+            hn: String(r.hn),
+            fullName: String(r.full_name),
+            age: Number(r.age ?? 0),
+            phone: String(r.phone ?? ''),
+            diagnosis: String(r.diagnosis ?? ''),
+            assignedPtId: String(r.assigned_pt_id ?? ''),
+            delegatedToPtId: r.delegated_to_pt_id ? String(r.delegated_to_pt_id) : null,
+            delegationNote: r.delegation_note ? String(r.delegation_note) : null,
+            nextAppointmentDate: String(r.next_appointment_date ?? ''),
+            registrationStatus: 'active' as const,
+            enrolledAt: String(r.created_at ?? new Date().toISOString()),
+          }),
+          id: pid,
+          hn: String(r.hn),
+          fullName: String(r.full_name),
+          registrationStatus: 'active' as const,
+          faceBiometricStatus: isCompatibleCurrent ? ('VERIFIED' as const) : ('PENDING' as const),
+          biometricStatusDetail,
+          biometricEmbeddingDim: embeddingDim,
+          biometricPipelineVersion,
+          faceFramesCount: hasRealVector
+            ? Math.max(b120?.framesCaptured ?? 0, Number(r.face_frames_count ?? 0), prevPatient?.faceFramesCount ?? 0, 120)
+            : 0,
+          masterEmbedding: mergedMaster,
+          angleEmbeddings: mergedAngles,
+          ...(mergedExemplars ? { exemplarEmbeddings: mergedExemplars } : {}),
+          biometricEngine: resolvedEngine,
+          geometricRatios: resolvedGeom,
+          rehabSchedules: Array.isArray(history.rehabSchedules)
+            ? sanitizeAccidentalDefaultKneePrefix(history.rehabSchedules as RehabScheduleItem[])
+            : prevPatient?.rehabSchedules ?? [],
+          biometricHistory:
+            tpl && tpl.frontal && tpl.overall
+              ? { frontal_centroid: tpl.frontal, overall_centroid: tpl.overall, raw_frames: tpl.raw }
+              : mergedMaster
+                ? { frontal_centroid: mergedAngles?.center ?? mergedMaster, overall_centroid: mergedMaster, raw_frames: [] }
+                : undefined,
+        };
+      });
+
+    const activePatientMap = new Map(state.patients.map((p) => [p.id, p.fullName]));
+    if (templatesRes.status === 'fulfilled' && !templatesRes.value.error && Array.isArray(templatesRes.value.data)) {
+      state.face_templates = parsedTemplateCandidates
+        .filter((t) => activePatientMap.has(t.patientId))
+        .map((t) => ({ ...t, patientName: activePatientMap.get(t.patientId) }));
+    } else {
+      state.face_templates = state.face_templates.filter((t) => activePatientMap.has(t.patientId));
+    }
+
+    return { ok: true, filteredOutCount: filteredOutTemplateIds.size };
+  } catch (err) {
+    if (isSupabasePermissionDeniedError(err)) {
+      return { ok: false, errorCode: 'PERMISSION_DENIED', filteredOutCount: 0 };
+    }
+    if (isSupabaseTransientFailure(err)) {
+      markSupabaseDown('hydrate_biometrics_live_exception', supabase);
+    }
+    return { ok: false, errorCode: 'SERVER_ERROR', filteredOutCount: 0 };
+  } finally {
+    if (timerId !== undefined) clearTimeout(timerId);
+  }
+}
+
 export async function hydrateStateFromSupabase(
   supabase: SupabaseClient,
   state: CloudRouterState,
@@ -917,12 +1361,13 @@ async function runHydrateStateFromSupabaseInternal(
   if (patientsRes.status === 'fulfilled' && !patientsRes.value.error && Array.isArray(patientsRes.value.data)) {
     state.deleted_patient_ids ??= [];
     for (const r of patientsRes.value.data as Record<string, unknown>[]) {
-      const regStatus = String(r.registration_status ?? 'active').trim().toLowerCase();
+      const regStatus = String(r.registration_status ?? '').trim().toLowerCase();
       if (
         Boolean(r.deleted_at) ||
         regStatus === 'deleted' ||
         regStatus === 'rejected' ||
-        regStatus === 'inactive'
+        regStatus === 'inactive' ||
+        regStatus === 'archived'
       ) {
         const pidRaw = String(r.id ?? '').trim();
         const hnRaw = String(r.hn ?? '').trim();
@@ -1102,12 +1547,13 @@ async function runHydrateStateFromSupabaseInternal(
         const hnRaw = String(r.hn ?? '').trim();
         const pidLo = pidRaw.toLowerCase();
         const hnLo = hnRaw.toLowerCase();
-        const regStatus = String(r.registration_status ?? 'active').trim().toLowerCase();
+        const regStatus = String(r.registration_status ?? '').trim().toLowerCase();
         if (
           Boolean(r.deleted_at) ||
           regStatus === 'deleted' ||
           regStatus === 'rejected' ||
-          regStatus === 'inactive'
+          regStatus === 'inactive' ||
+          regStatus === 'archived'
         ) {
           state.deleted_patient_ids ??= [];
           if (pidRaw && !deletedPatientLower.has(pidLo)) {
@@ -1132,11 +1578,6 @@ async function runHydrateStateFromSupabaseInternal(
         parseVec(r.master_embedding) ??
         parseVec(r.face_embedding) ??
         parseVec(r.biometric_data);
-      const hasTemplates = Boolean((tpl && tpl.raw.length > 0) || b120?.masterEmbedding || rowMasterVec);
-      const historyStatus = history.faceBiometricStatus;
-      const colStatus = r.face_biometric_status;
-      const resolvedFaceStatus: 'PENDING' | 'VERIFIED' =
-        colStatus === 'VERIFIED' || historyStatus === 'VERIFIED' || hasTemplates ? 'VERIFIED' : 'PENDING';
 
       const fallbackMaster =
         b120?.masterEmbedding ??
@@ -1144,6 +1585,8 @@ async function runHydrateStateFromSupabaseInternal(
         parseVec(history.masterEmbedding) ??
         tpl?.overall ??
         tpl?.frontal;
+      const hasTemplates = Boolean((tpl && tpl.raw.length > 0) || fallbackMaster);
+      const resolvedFaceStatus: 'PENDING' | 'VERIFIED' = hasTemplates ? 'VERIFIED' : 'PENDING';
 
       let fallbackAngles: AngleEmbeddings5D | undefined =
         b120?.angleEmbeddings ??
@@ -1182,7 +1625,11 @@ async function runHydrateStateFromSupabaseInternal(
         (typeof history.faceFramesCount === 'number' && history.faceFramesCount > 0
           ? history.faceFramesCount
           : undefined) ??
-        (resolvedFaceStatus === 'VERIFIED' ? 120 : 0);
+        (resolvedFaceStatus === 'VERIFIED' ||
+        String(r.face_biometric_status ?? '').toUpperCase() === 'VERIFIED' ||
+        String(history.faceBiometricStatus ?? '').toUpperCase() === 'VERIFIED'
+          ? 120
+          : 0);
 
       const hydratedAngleImageUrls: PatientRecord['angleImageUrls'] = (() => {
         const raw = history.angleImageUrls;
@@ -1307,6 +1754,32 @@ async function runHydrateStateFromSupabaseInternal(
       const mergedMaster = fallbackMaster ?? prevPatient?.masterEmbedding;
       const mergedAngles = fallbackAngles ?? prevPatient?.angleEmbeddings;
       const mergedExemplars = fallbackExemplars ?? prevPatient?.exemplarEmbeddings;
+      const hydratedGeomRatios =
+        history.geometricRatios && typeof history.geometricRatios === 'object'
+          ? (history.geometricRatios as GeometricAnthropometricRatios)
+          : prevPatient?.geometricRatios;
+      const hasRealMergedVector = Boolean(mergedMaster && mergedMaster.length >= 128);
+      const mergedEmbeddingDim = mergedMaster?.length ?? 0;
+      const mergedEngine =
+        normalizeEngineTag(b120?.biometricEngine, mergedMaster) ??
+        normalizeEngineTag(history.biometricEngine, mergedMaster) ??
+        normalizeEngineTag(prevPatient?.biometricEngine, mergedMaster);
+      const isCompatibleCurrentDim =
+        hasRealMergedVector &&
+        mergedEmbeddingDim >= ACTIVE_BIOMETRIC_DIM &&
+        (!mergedEngine || mergedEngine === 'human-faceres-1024d');
+      const biometricStatusDetail: 'VERIFIED' | 'PENDING' | 'REENROLL_REQUIRED' = !hasRealMergedVector
+        ? 'PENDING'
+        : isCompatibleCurrentDim
+          ? 'VERIFIED'
+          : 'REENROLL_REQUIRED';
+      const biometricPipelineVersion = !hasRealMergedVector
+        ? undefined
+        : mergedEmbeddingDim >= ACTIVE_BIOMETRIC_DIM
+          ? hydratedGeomRatios?.ocularIrisPatch256?.length === 256
+            ? ACTIVE_BIOMETRIC_PIPELINE_VERSION
+            : 'v2-pre-iris-1024d'
+          : 'legacy-512d';
 
       return {
         id: pid,
@@ -1333,27 +1806,26 @@ async function runHydrateStateFromSupabaseInternal(
         delegationNote: resolvedDelegationNote,
         delegationDate: resolvedDelegationDate,
         nextAppointmentDate: String(r.next_appointment_date ?? ''),
-        registrationStatus: (r.registration_status as 'active' | 'archived') ?? 'active',
+        registrationStatus:
+          String(r.registration_status ?? '').trim().toLowerCase() === 'archived' ? 'archived' : 'active',
         enrolledAt: String(r.created_at ?? new Date().toISOString()),
-        faceBiometricStatus:
-          resolvedFaceStatus === 'VERIFIED' || prevPatient?.faceBiometricStatus === 'VERIFIED'
-            ? 'VERIFIED'
-            : resolvedFaceStatus,
-        faceFramesCount: Math.max(resolvedFramesCount, prevPatient?.faceFramesCount ?? 0),
+        faceBiometricStatus: isCompatibleCurrentDim ? 'VERIFIED' : 'PENDING',
+        biometricStatusDetail,
+        biometricEmbeddingDim: mergedEmbeddingDim,
+        biometricPipelineVersion,
+        faceFramesCount:
+          hasRealMergedVector ||
+          (mergedAngleImageUrls && Object.keys(mergedAngleImageUrls).length >= 5)
+            ? Math.max(resolvedFramesCount, prevPatient?.faceFramesCount ?? 0, 120)
+            : 0,
         faceImageUrl: mergedPrimaryFaceImageUrl,
         faceImageUrls: mergedFaceImageUrls,
         angleImageUrls: mergedAngleImageUrls,
         masterEmbedding: mergedMaster,
         angleEmbeddings: mergedAngles,
         ...(mergedExemplars ? { exemplarEmbeddings: mergedExemplars } : {}),
-        biometricEngine:
-          normalizeEngineTag(b120?.biometricEngine, mergedMaster) ??
-          normalizeEngineTag(history.biometricEngine, mergedMaster) ??
-          normalizeEngineTag(prevPatient?.biometricEngine, mergedMaster),
-        geometricRatios:
-          history.geometricRatios && typeof history.geometricRatios === 'object'
-            ? (history.geometricRatios as GeometricAnthropometricRatios)
-            : prevPatient?.geometricRatios,
+        biometricEngine: mergedEngine,
+        geometricRatios: hydratedGeomRatios,
         rehabSchedules: Array.isArray(history.rehabSchedules)
           ? sanitizeAccidentalDefaultKneePrefix(history.rehabSchedules as RehabScheduleItem[])
           : prevPatient?.rehabSchedules ?? [],

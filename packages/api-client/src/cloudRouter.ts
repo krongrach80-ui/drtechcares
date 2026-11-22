@@ -8,6 +8,8 @@ import {
   parseExerciseCodeAndSide,
 } from '@drtechcares/pose-engine';
 import {
+  ACTIVE_BIOMETRIC_DIM,
+  ACTIVE_BIOMETRIC_PIPELINE_VERSION,
   COMMON_MODE_ALPHA,
   FACE_EMBEDDING_DIM,
   CANONICAL_HUMAN_FACE_BASELINE_512,
@@ -16,6 +18,7 @@ import {
   STRICT_DISTINCTIVENESS_MARGIN,
   STRICT_MAX_EUCLIDEAN_DISTANCE,
   STRICT_RAW_COSINE_THRESHOLD,
+  STRICT_RELU6_RAW_COSINE_THRESHOLD,
   classifyLivePoseZone,
   computeArcFaceBiometricScore,
   computeDualFactorBiometricScore,
@@ -30,6 +33,7 @@ import {
   flipOcularIrisPatch256Horizontally,
   flipPatch384Horizontally,
   isLegacyV1HybridVector,
+  isNonNegativeRelu6Vector,
   l2Normalize,
   mirrorPoseZone,
   parseEmbeddingVector,
@@ -37,6 +41,7 @@ import {
   whitenEmbedding,
   type BiometricPose,
   type BiometricVectorEngine,
+  type BiometricVerifyReasonCode,
   type EnrolledTemplateCandidate,
   type FacePoseZone5,
   type GeometricAnthropometricRatios,
@@ -58,6 +63,8 @@ import {
   type AngleEmbeddings5D,
   type AuditLogRecord,
   type BannedTargetRecord,
+  type BiometricLibraryStatsResponse,
+  type BiometricVerifyDiagnostics,
   type ClinicalAssessmentMeasurementMethod,
   type ClinicalAssessmentRecord,
   type ClinicalAssessmentSourceChannel,
@@ -85,6 +92,7 @@ import {
 import {
   HYDRATE_TTL_MS,
   getSupabaseCircuitState,
+  hydrateBiometricsLiveFromSupabase,
   hydrateStaffUsersOnly,
   hydrateStateFromSupabase,
   isSupabaseCircuitOpen,
@@ -1164,6 +1172,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
   let hydrated = false;
   let lastHydratedAt = 0;
+  let lastLiveBioHydratedAt = 0;
+  const LIVE_BIO_REFRESH_MS = 2000;
   // Sliding-window failed biometric verify rate limiter per (clientIp, deviceId)
   const BIOMETRIC_VERIFY_RATE_WINDOW_MS = 60_000;
   const BIOMETRIC_VERIFY_MAX_FAILED_PER_WINDOW = 15;
@@ -2561,6 +2571,97 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       return jsonResponse({ ok: true, patient, course: defaultCourse, persisted: persistRes.persisted }, 201);
     }
 
+    if (pathname === '/api/biometrics/stats' && method === 'GET') {
+      let dbSynced = !supabase;
+      if (supabase && !isSupabaseCircuitOpen(supabase)) {
+        const shouldRefreshLive =
+          forceSupabaseProbe ||
+          lastLiveBioHydratedAt === 0 ||
+          Date.now() - lastLiveBioHydratedAt >= LIVE_BIO_REFRESH_MS;
+        if (shouldRefreshLive) {
+          const liveRes = await hydrateBiometricsLiveFromSupabase(supabase, state, 1500);
+          if (liveRes.ok) {
+            lastLiveBioHydratedAt = Date.now();
+            dbSynced = true;
+          } else if (liveRes.errorCode === 'PERMISSION_DENIED') {
+            return jsonResponse(
+              {
+                error: 'PERMISSION_DENIED',
+                reasonCode: 'PERMISSION_DENIED',
+                message: 'Permission denied while reading biometric library stats',
+              },
+              403,
+            );
+          }
+        } else {
+          dbSynced = true;
+        }
+      }
+
+      const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
+      const deletedPatientLower = new Set(
+        (state.deleted_patient_ids ?? []).map((x) => x.trim().toLowerCase()).filter(Boolean),
+      );
+      const inactiveUserPatientIds = new Set(
+        state.users.filter((u) => !u.active && u.patientId).map((u) => u.patientId as string),
+      );
+      let totalActivePatients = 0;
+      let compatibleTemplatesCount = 0;
+      let versionMismatchCount = 0;
+      let missingTemplateCount = 0;
+
+      for (const p of state.patients) {
+        const regLo = String(p.registrationStatus ?? '').trim().toLowerCase();
+        const isActive =
+          (regLo === '' || regLo === 'active') &&
+          !deletedPatientSet.has(p.id) &&
+          !deletedPatientLower.has(p.id.toLowerCase()) &&
+          (!p.hn || !deletedPatientLower.has(p.hn.toLowerCase())) &&
+          !inactiveUserPatientIds.has(p.id);
+        if (!isActive) continue;
+        totalActivePatients += 1;
+
+        const tplFront = parseEmbeddingVector(
+          state.face_templates.find((t) => t.patientId === p.id && t.pose === 'frontal_centroid')?.vector,
+        );
+        const tplOverall = parseEmbeddingVector(
+          state.face_templates.find((t) => t.patientId === p.id && t.pose === 'overall_centroid')?.vector,
+        );
+        const rawMaster =
+          parseEmbeddingVector(p.masterEmbedding) ??
+          tplOverall ??
+          tplFront ??
+          parseEmbeddingVector(p.biometricHistory?.overall_centroid) ??
+          parseEmbeddingVector(p.biometricHistory?.frontal_centroid);
+        if (!rawMaster || rawMaster.length < 128) {
+          missingTemplateCount += 1;
+          continue;
+        }
+        const isCompatible =
+          rawMaster.length >= ACTIVE_BIOMETRIC_DIM &&
+          (!p.biometricEngine || p.biometricEngine === 'human-faceres-1024d');
+        if (isCompatible) {
+          compatibleTemplatesCount += 1;
+        } else {
+          versionMismatchCount += 1;
+        }
+      }
+
+      const payload: BiometricLibraryStatsResponse = {
+        totalActivePatients,
+        compatibleTemplatesCount,
+        versionMismatchCount,
+        missingTemplateCount,
+        filteredOutCount: state.filtered_out_template_patients_count ?? 0,
+        activeEngine: 'human-faceres-1024d',
+        activeDimension: ACTIVE_BIOMETRIC_DIM,
+        activePipelineVersion: ACTIVE_BIOMETRIC_PIPELINE_VERSION,
+        dbSynced,
+        updatedAt: new Date().toISOString(),
+      };
+      return jsonResponse(payload);
+    }
+
     if ((pathname === '/api/biometrics/index' || pathname === '/api/biometrics') && method === 'GET') {
       const todayIdx = new Date().getDay();
       const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
@@ -2861,10 +2962,18 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     }
 
     if (pathname === '/api/biometric/verify' && method === 'POST') {
+      const maskCandidateCode = (pid: string | null | undefined): string | null => {
+        if (!pid) return null;
+        const clean = pid.replace(/[^a-zA-Z0-9]/g, '');
+        return clean ? `P#${clean.slice(0, 6)}` : 'P#anon';
+      };
+
       if (!state.system_settings.aiFaceScanEnabled) {
         return jsonResponse(
           {
+            matched: false,
             error: 'FACE_SCAN_DISABLED',
+            reasonCode: 'SERVER_ERROR' as BiometricVerifyReasonCode,
             message: 'ระบบสแกนใบหน้าถูกปิดชั่วคราวโดยผู้ดูแลระบบ',
           },
           503,
@@ -2889,6 +2998,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             patientName: null,
             confidencePercent: 0,
             error: 'RATE_LIMITED',
+            reasonCode: 'RATE_LIMITED' as BiometricVerifyReasonCode,
             failureReasons: ['TOO_MANY_FAILED_ATTEMPTS'],
             message: 'สแกนไม่ผ่านหลายครั้งเกินกำหนด กรุณารอสักครู่หรือติดต่อเจ้าหน้าที่',
           },
@@ -2929,7 +3039,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         };
       }>(request);
       if (!body || !isValidBiometricVector(body.probeVector)) {
-        return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
+        return jsonResponse({ error: 'VALIDATION_ERROR', reasonCode: 'QUALITY_TOO_LOW' }, 400);
       }
       if (
         body.livenessEvidence &&
@@ -2951,11 +3061,71 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             matched: false,
             confidencePercent: 0,
             error: 'BIOMETRIC_SPOOF_DETECTED',
+            reasonCode: 'LIVENESS_FAILED' as BiometricVerifyReasonCode,
             failureReasons: ['BIOLOGICAL_SPOOF_BLOCKED'],
             message: 'ตรวจพบภาพถ่าย/หน้าจอ หรือยังไม่ผ่านการยืนยันชีววิทยา (กรุณากะพริบตา)',
           },
           403,
         );
+      }
+
+      // Live DB refresh on verify so newly enrolled patients work immediately (without Kiosk reload)
+      // and newly deleted patients are excluded immediately without waiting for the 60s full hydration TTL.
+      let dbFresh = !supabase;
+      if (supabase) {
+        const needsLiveRefresh =
+          lastLiveBioHydratedAt === 0 || Date.now() - lastLiveBioHydratedAt >= LIVE_BIO_REFRESH_MS;
+        if (needsLiveRefresh) {
+          const liveSync = await hydrateBiometricsLiveFromSupabase(supabase, state, 1500);
+          if (liveSync.ok) {
+            lastLiveBioHydratedAt = Date.now();
+            dbFresh = true;
+          } else if (liveSync.errorCode === 'PERMISSION_DENIED') {
+            recordAudit({
+              eventType: 'BIOMETRIC_DB_PERMISSION_DENIED',
+              actorRole: 'patient_kiosk',
+              actorId: clientDeviceId,
+              actorName: 'Kiosk Face Sensor',
+              ipAddress: clientIp,
+              deviceId: clientDeviceId,
+              detail: 'Biometric verify blocked by Supabase RLS/permission error',
+            });
+            return jsonResponse(
+              {
+                matched: false,
+                confidencePercent: 0,
+                error: 'PERMISSION_DENIED',
+                reasonCode: 'PERMISSION_DENIED' as BiometricVerifyReasonCode,
+                message: 'ระบบตรวจสอบขัดข้องชั่วคราว กรุณาลองใหม่หรือเรียกเจ้าหน้าที่',
+              },
+              403,
+            );
+          } else if (state.patients.length === 0) {
+            const errCode: BiometricVerifyReasonCode =
+              liveSync.errorCode === 'TIMEOUT' ? 'TIMEOUT' : 'SERVER_ERROR';
+            recordAudit({
+              eventType: 'BIOMETRIC_VERIFY_SYSTEM_ERROR',
+              actorRole: 'patient_kiosk',
+              actorId: clientDeviceId,
+              actorName: 'Kiosk Face Sensor',
+              ipAddress: clientIp,
+              deviceId: clientDeviceId,
+              detail: `Live biometric DB sync failed (${errCode})`,
+            });
+            return jsonResponse(
+              {
+                matched: false,
+                confidencePercent: 0,
+                error: errCode,
+                reasonCode: errCode,
+                message: 'ระบบตรวจสอบขัดข้องชั่วคราว กรุณาลองใหม่หรือเรียกเจ้าหน้าที่',
+              },
+              503,
+            );
+          }
+        } else {
+          dbFresh = true;
+        }
       }
 
       const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
@@ -2970,20 +3140,27 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const inactiveUserPatientIds = new Set(
         state.users.filter((u) => !u.active && u.patientId).map((u) => u.patientId as string),
       );
-      const activePatientIds = new Set(
-        state.patients
-          .filter(
-            (p) =>
-              (p.registrationStatus ?? 'active') === 'active' &&
-              !deletedPatientSet.has(p.id) &&
-              !deletedPatientLower.has(p.id.toLowerCase()) &&
-              (!p.hn || !deletedPatientLower.has(p.hn.toLowerCase())) &&
-              !excludedPatientSet.has(p.id) &&
-              !excludedPatientSet.has(p.hn) &&
-              !inactiveUserPatientIds.has(p.id),
-          )
-          .map((p) => p.id),
-      );
+      let filteredOutByStatusOrExclude = state.filtered_out_template_patients_count ?? 0;
+      const activePatientIds = new Set<string>();
+      for (const p of state.patients) {
+        const regLo = String(p.registrationStatus ?? '').trim().toLowerCase();
+        const isActiveStatus = regLo === '' || regLo === 'active';
+        const isExcludedOrDeleted =
+          deletedPatientSet.has(p.id) ||
+          deletedPatientLower.has(p.id.toLowerCase()) ||
+          (Boolean(p.hn) && deletedPatientLower.has(p.hn.toLowerCase())) ||
+          excludedPatientSet.has(p.id) ||
+          excludedPatientSet.has(p.hn) ||
+          inactiveUserPatientIds.has(p.id);
+        if (isActiveStatus && !isExcludedOrDeleted) {
+          activePatientIds.add(p.id);
+        } else if (
+          parseEmbeddingVector(p.masterEmbedding) ||
+          state.face_templates.some((t) => t.patientId === p.id)
+        ) {
+          filteredOutByStatusOrExclude += 1;
+        }
+      }
 
       const probeNorm = l2Normalize(body.probeVector);
 
@@ -3091,6 +3268,39 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       let matchedPatientName = matchedPatientId ? result.patientName : null;
       let matchedConfidence = result.confidencePercent;
       let verifyErrorCode: string | undefined;
+      let diagEvaluatedCount = 0;
+      let diagVersionMismatchCount = 0;
+      let diagTop1Code: string | null = null;
+      let diagTop1RawPct = 0;
+      let diagTop1CenteredPct = 0;
+      let diagTop2Code: string | null = null;
+      let diagTop2RawPct = 0;
+      let diagMarginPct = 0;
+      let diagGateFailCodes: string[] = [];
+
+      // Count active patients with compatible vs mismatched vector dimensions/versions
+      let compatibleTemplatesCount = 0;
+      for (const p of state.patients) {
+        if (!activePatientIds.has(p.id)) continue;
+        const tplFront = parseEmbeddingVector(
+          state.face_templates.find((t) => t.patientId === p.id && t.pose === 'frontal_centroid')?.vector,
+        );
+        const tplOverall = parseEmbeddingVector(
+          state.face_templates.find((t) => t.patientId === p.id && t.pose === 'overall_centroid')?.vector,
+        );
+        const anyMaster =
+          parseEmbeddingVector(p.masterEmbedding) ??
+          tplOverall ??
+          tplFront ??
+          parseEmbeddingVector(p.biometricHistory?.overall_centroid) ??
+          parseEmbeddingVector(p.biometricHistory?.frontal_centroid);
+        if (!anyMaster || anyMaster.length < 128) continue;
+        if (anyMaster.length === probeNorm.length) {
+          compatibleTemplatesCount += 1;
+        } else {
+          diagVersionMismatchCount += 1;
+        }
+      }
 
       if (matchedPatientId) {
         const matchedPat = state.patients.find((p) => p.id === matchedPatientId);
@@ -3170,6 +3380,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           centeredCosine: number;
           bestCentroidCosine: number;
           gatePassed: boolean;
+          failureReasons: string[];
         }[] = [];
 
         for (let orderIdx = 0; orderIdx < state.patients.length; orderIdx += 1) {
@@ -3232,6 +3443,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             centeredCosine: gate.centeredCosine,
             bestCentroidCosine: gate.bestCentroidCosine,
             gatePassed: gate.passed,
+            failureReasons: gate.failureReasons,
           });
         }
 
@@ -3254,6 +3466,19 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         const runnerScore = runner ? runner.bestRawSim : 0;
         const margin = top && runner ? top.bestRawSim - runnerScore : 1;
 
+        diagEvaluatedCount = knnScores.length;
+        diagTop1Code = maskCandidateCode(top?.patientId);
+        diagTop1RawPct = top ? Number((Math.max(0, Math.min(1, top.bestRawSim)) * 100).toFixed(1)) : 0;
+        diagTop1CenteredPct = top
+          ? Number((Math.max(0, Math.min(1, top.centeredCosine)) * 100).toFixed(1))
+          : 0;
+        diagTop2Code = maskCandidateCode(runner?.patientId);
+        diagTop2RawPct = runner
+          ? Number((Math.max(0, Math.min(1, runner.bestRawSim)) * 100).toFixed(1))
+          : 0;
+        diagMarginPct = top && runner ? Number((margin * 100).toFixed(1)) : 100;
+        diagGateFailCodes = top ? top.failureReasons.slice(0, 4) : [];
+
         const passesCohortGuard = Boolean(
           top && top.bestRawSim > maxCohortScore + STRICT_COHORT_MARGIN,
         );
@@ -3271,8 +3496,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         } else if (top && top.gatePassed && passesCohortGuard && (!passesMargin || !passesCenteredMargin)) {
           verifyErrorCode = 'AMBIGUOUS_CLOSE_CANDIDATES';
           matchedConfidence = Number((Math.max(0, Math.min(1, top.bestRawSim)) * 100).toFixed(1));
+          diagGateFailCodes = [...diagGateFailCodes, 'AMBIGUOUS_MARGIN'];
         } else if (top) {
           matchedConfidence = Number((Math.max(0, Math.min(1, top.bestRawSim)) * 100).toFixed(1));
+          if (!passesCohortGuard) {
+            diagGateFailCodes = [...diagGateFailCodes, 'IMPOSTER_COHORT_MARGIN'];
+          }
         }
       }
 
@@ -3657,8 +3886,57 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
 
       const minConfidenceFloor = STRICT_RAW_COSINE_THRESHOLD * 100;
+      const effectiveThresholdPct = isNonNegativeRelu6Vector(probeNorm)
+        ? Number((STRICT_RELU6_RAW_COSINE_THRESHOLD * 100).toFixed(1))
+        : Number(minConfidenceFloor.toFixed(1));
+      const buildVerifyDiagnostics = (
+        reasonCode: BiometricVerifyReasonCode,
+      ): BiometricVerifyDiagnostics => ({
+        reasonCode,
+        evaluatedCandidatesCount:
+          diagEvaluatedCount > 0 ? diagEvaluatedCount : compatibleTemplatesCount,
+        totalActivePatients: activePatientIds.size,
+        compatibleTemplatesCount,
+        versionMismatchCount: diagVersionMismatchCount,
+        filteredOutCount: filteredOutByStatusOrExclude,
+        thresholdPercent: effectiveThresholdPct,
+        livenessPassed: body.livenessEvidence ? body.livenessEvidence.biologicalVerified === true : true,
+        top1Code: diagTop1Code,
+        top1ScorePercent: diagTop1RawPct || matchedConfidence,
+        top1CenteredPercent: diagTop1CenteredPct,
+        top2Code: diagTop2Code,
+        top2ScorePercent: diagTop2RawPct,
+        marginPercent: diagMarginPct,
+        gateFailCodes: diagGateFailCodes,
+        probeDim: probeNorm.length,
+        probeEngine,
+        dbFresh,
+      });
+
       if (!matchedPatientId || matchedConfidence < minConfidenceFloor) {
+        const computedReasonCode: BiometricVerifyReasonCode =
+          verifyErrorCode === 'AMBIGUOUS_CLOSE_CANDIDATES'
+            ? 'AMBIGUOUS'
+            : compatibleTemplatesCount > 0
+              ? 'BELOW_THRESHOLD'
+              : diagVersionMismatchCount > 0
+                ? 'VERSION_MISMATCH'
+                : filteredOutByStatusOrExclude > 0
+                  ? 'PATIENT_FILTERED_OUT'
+                  : 'NO_TEMPLATES_IN_LIBRARY';
+        const diagnostics = buildVerifyDiagnostics(computedReasonCode);
         recordFailedBiometricVerify(verifyRateKey, verifyNowMs);
+        if (computedReasonCode !== 'BELOW_THRESHOLD') {
+          recordAudit({
+            eventType: `BIOMETRIC_VERIFY_${computedReasonCode}`,
+            actorRole: 'patient_kiosk',
+            actorId: clientDeviceId,
+            actorName: 'Kiosk Face Sensor',
+            ipAddress: clientIp,
+            deviceId: clientDeviceId,
+            detail: `Unmatched face login (${computedReasonCode}, compat=${compatibleTemplatesCount}, mismatch=${diagVersionMismatchCount}, filtered=${filteredOutByStatusOrExclude})`,
+          });
+        }
         return jsonResponse(
           {
             ...result,
@@ -3668,6 +3946,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             topCandidate: null,
             runnerUp: null,
             confidencePercent: matchedConfidence,
+            reasonCode: computedReasonCode,
+            diagnostics,
             ...(verifyErrorCode ? { error: verifyErrorCode, failureReasons: [verifyErrorCode] } : {}),
           },
           401,
@@ -3687,6 +3967,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             topCandidate: null,
             runnerUp: null,
             reason: 'PATIENT_NOT_FOUND_OR_DELETED',
+            reasonCode: 'PATIENT_FILTERED_OUT' as BiometricVerifyReasonCode,
+            diagnostics: buildVerifyDiagnostics('PATIENT_FILTERED_OUT'),
           },
           401,
         );
@@ -3724,6 +4006,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         patientId: matchedPatientId,
         patientName: matchedPatientName ?? patient.fullName,
         confidencePercent: matchedConfidence,
+        reasonCode: 'MATCHED' as BiometricVerifyReasonCode,
+        diagnostics: buildVerifyDiagnostics('MATCHED'),
         patient: {
           id: patient.id,
           hn: patient.hn,

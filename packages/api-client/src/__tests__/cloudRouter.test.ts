@@ -18,6 +18,7 @@ import {
 } from '../index';
 import {
   HYDRATE_TTL_MS,
+  hydrateBiometricsLiveFromSupabase,
   hydrateStaffUsersOnly,
   hydrateStateFromSupabase,
   normalizeCompactExemplars,
@@ -3208,6 +3209,406 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     });
     expect(cleanRes.status).toBe(200);
     expect(((await cleanRes.json()) as { matched: boolean }).matched).toBe(true);
+  });
+
+  it('serves count-only /api/biometrics/stats (zero vectors/PII) and classifies all structured biometric reason codes accurately', async () => {
+    const makeRelu6 = (seed: number): number[] => {
+      const raw = new Array<number>(1024);
+      for (let i = 0; i < 1024; i += 1) {
+        const v = Math.sin((i + 1) * seed * 0.17) + 0.6 * Math.cos((i + 5) * seed * 0.31) + 0.3;
+        raw[i] = v > 0 ? v : 0;
+      }
+      return l2Normalize(raw);
+    };
+    const mixRelu6 = (a: number[], b: number[], alpha: number): number[] =>
+      l2Normalize(a.map((v, i) => v * (1 - alpha) + b[i] * alpha));
+
+    // 1. Empty library -> NO_TEMPLATES_IN_LIBRARY
+    const emptyRouter = createCloudDelegatedRouter({});
+    const emptyVerify = await callRouter(emptyRouter, '/api/biometric/verify', {
+      method: 'POST',
+      deviceId: 'KIOSK-DIAG-1',
+      body: {
+        probeVector: makeRelu6(1.1),
+        engine: 'human-faceres-1024d',
+        livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.05 },
+      },
+    });
+    expect(emptyVerify.status).toBe(401);
+    const emptyJson = (await emptyVerify.json()) as {
+      reasonCode: string;
+      diagnostics: { compatibleTemplatesCount: number; evaluatedCandidatesCount: number };
+    };
+    expect(emptyJson.reasonCode).toBe('NO_TEMPLATES_IN_LIBRARY');
+    expect(emptyJson.diagnostics.compatibleTemplatesCount).toBe(0);
+
+    // 2. Enroll 512-D legacy patient -> querying with 1024-D probe returns VERSION_MISMATCH (never cross-matched)
+    const legacyLogin = await callRouter(emptyRouter, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const { token: ptTokenEmpty } = (await legacyLogin.json()) as { token: string };
+    const legacy512 = makeHybridEmbedding(6.6);
+    await callRouter(emptyRouter, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptTokenEmpty,
+      body: {
+        hn: 'HN-OLD-512',
+        fullName: 'คุณรุ่นเก่า ห้าหนึ่งสอง',
+        age: 70,
+        diagnosis: 'Knee Rehab',
+        frontalCentroid: legacy512,
+        overallCentroid: legacy512,
+        rawFrames: Array.from({ length: 10 }, () => ({ pose: 'front', vector: legacy512, qualityScore: 0.95 })),
+      },
+    });
+    const mismatchVerify = await callRouter(emptyRouter, '/api/biometric/verify', {
+      method: 'POST',
+      deviceId: 'KIOSK-DIAG-2',
+      body: {
+        probeVector: makeRelu6(1.1),
+        engine: 'human-faceres-1024d',
+        livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.04 },
+      },
+    });
+    expect(mismatchVerify.status).toBe(401);
+    const mismatchJson = (await mismatchVerify.json()) as {
+      reasonCode: string;
+      diagnostics: { versionMismatchCount: number; compatibleTemplatesCount: number };
+    };
+    expect(mismatchJson.reasonCode).toBe('VERSION_MISMATCH');
+    expect(mismatchJson.diagnostics.versionMismatchCount).toBe(1);
+    expect(mismatchJson.diagnostics.compatibleTemplatesCount).toBe(0);
+
+    // 3. Realistic 1024-D ReLU6 patient with sharp-turn left/right/up/down centroids (~0.77 cos from center)
+    const diagRouter = createCloudDelegatedRouter({});
+    const ptAuth = await callRouter(diagRouter, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const { token: ptToken } = (await ptAuth.json()) as { token: string };
+
+    const p1Center = makeRelu6(2.3);
+    const p1Left = mixRelu6(p1Center, makeRelu6(10.1), 0.55);
+    const p1Right = mixRelu6(p1Center, makeRelu6(12.3), 0.55);
+    const p1Up = mixRelu6(p1Center, makeRelu6(14.7), 0.55);
+    const p1Down = mixRelu6(p1Center, makeRelu6(16.9), 0.55);
+    const p1Master = l2Normalize(
+      p1Center.map((_, i) => p1Center[i] * 0.4 + (p1Left[i] + p1Right[i] + p1Up[i] + p1Down[i]) * 0.15),
+    );
+    const enroll1 = await callRouter(diagRouter, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-LIVE-1024',
+        fullName: 'คุณสมหมาย สแกนผ่าน',
+        age: 64,
+        diagnosis: 'Stroke Shoulder',
+        masterEmbedding: p1Master,
+        frontalCentroid: p1Center,
+        overallCentroid: p1Master,
+        angleEmbeddings: {
+          center: p1Center,
+          left: p1Left,
+          right: p1Right,
+          up: p1Up,
+          down: p1Down,
+        },
+        exemplarEmbeddings: [p1Center, p1Left, p1Right, p1Up, p1Down],
+        biometricEngine: 'human-faceres-1024d',
+        framesCaptured: 120,
+      },
+    });
+    expect(enroll1.status).toBe(201);
+    const { patient: pat1 } = (await enroll1.json()) as { patient: { id: string } };
+
+    // Count-only /api/biometrics/stats returns counts with ZERO vectors and ZERO PII!
+    const statsRes = await callRouter(diagRouter, '/api/biometrics/stats');
+    expect(statsRes.status).toBe(200);
+    const statsRaw = await statsRes.text();
+    const statsJson = JSON.parse(statsRaw) as {
+      totalActivePatients: number;
+      compatibleTemplatesCount: number;
+      versionMismatchCount: number;
+      activeDimension: number;
+    };
+    expect(statsJson.totalActivePatients).toBe(1);
+    expect(statsJson.compatibleTemplatesCount).toBe(1);
+    expect(statsJson.versionMismatchCount).toBe(0);
+    expect(statsJson.activeDimension).toBe(1024);
+    expect(statsRaw).not.toContain('คุณสมหมาย');
+    expect(statsRaw).not.toContain('HN-LIVE-1024');
+    expect(statsRaw).not.toContain('masterEmbedding');
+
+    // Genuine frontal probe with slight live noise -> MATCHED immediately!
+    const genuineProbe = mixRelu6(p1Center, makeRelu6(5.5), 0.11);
+    const genuineRes = await callRouter(diagRouter, '/api/biometric/verify', {
+      method: 'POST',
+      deviceId: 'KIOSK-DIAG-3',
+      body: {
+        probeVector: genuineProbe,
+        engine: 'human-faceres-1024d',
+        livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.05 },
+      },
+    });
+    expect(genuineRes.status).toBe(200);
+    const genuineJson = (await genuineRes.json()) as {
+      matched: boolean;
+      reasonCode: string;
+      patient: { id: string };
+      diagnostics: { top1Code: string | null; top1ScorePercent: number };
+    };
+    expect(genuineJson.matched).toBe(true);
+    expect(genuineJson.reasonCode).toBe('MATCHED');
+    expect(genuineJson.patient.id).toBe(pat1.id);
+    expect(genuineJson.diagnostics.top1Code).toMatch(/^P#/);
+    expect(genuineJson.diagnostics.top1ScorePercent).toBeGreaterThanOrEqual(89);
+
+    // Liveness failure -> HTTP 403 LIVENESS_FAILED
+    const spoofRes = await callRouter(diagRouter, '/api/biometric/verify', {
+      method: 'POST',
+      deviceId: 'KIOSK-DIAG-3',
+      body: {
+        probeVector: genuineProbe,
+        engine: 'human-faceres-1024d',
+        livenessEvidence: { biologicalVerified: false, blinkCount: 0, spoofRisk: 0.9 },
+      },
+    });
+    expect(spoofRes.status).toBe(403);
+    expect(((await spoofRes.json()) as { reasonCode: string }).reasonCode).toBe('LIVENESS_FAILED');
+
+    // Unregistered stranger -> HTTP 401 BELOW_THRESHOLD with masked diagnostics (ZERO patient names/HNs!)
+    const strangerRes = await callRouter(diagRouter, '/api/biometric/verify', {
+      method: 'POST',
+      deviceId: 'KIOSK-DIAG-4',
+      body: {
+        probeVector: makeRelu6(99.1),
+        engine: 'human-faceres-1024d',
+        livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.05 },
+      },
+    });
+    expect(strangerRes.status).toBe(401);
+    const strangerRaw = await strangerRes.text();
+    const strangerJson = JSON.parse(strangerRaw) as {
+      matched: boolean;
+      reasonCode: string;
+      diagnostics: { top1Code: string | null; evaluatedCandidatesCount: number };
+    };
+    expect(strangerJson.matched).toBe(false);
+    expect(strangerJson.reasonCode).toBe('BELOW_THRESHOLD');
+    expect(strangerJson.diagnostics.evaluatedCandidatesCount).toBe(1);
+    expect(strangerJson.diagnostics.top1Code).toMatch(/^P#/);
+    expect(strangerRaw).not.toContain('คุณสมหมาย');
+    expect(strangerRaw).not.toContain('HN-LIVE-1024');
+
+    // Enroll a distinct-name twin candidate very close to p1Center -> AMBIGUOUS (within 0.08 margin)
+    const twinCenter = mixRelu6(p1Center, makeRelu6(7.9), 0.04);
+    await callRouter(diagRouter, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-TWIN-1024',
+        fullName: 'คุณฝาแฝด ใกล้เคียง',
+        age: 64,
+        diagnosis: 'Stroke Shoulder',
+        masterEmbedding: twinCenter,
+        frontalCentroid: twinCenter,
+        overallCentroid: twinCenter,
+        angleEmbeddings: {
+          center: twinCenter,
+          left: twinCenter,
+          right: twinCenter,
+          up: twinCenter,
+          down: twinCenter,
+        },
+        biometricEngine: 'human-faceres-1024d',
+        framesCaptured: 120,
+      },
+    });
+    const ambigRes = await callRouter(diagRouter, '/api/biometric/verify', {
+      method: 'POST',
+      deviceId: 'KIOSK-DIAG-5',
+      body: {
+        probeVector: p1Center,
+        engine: 'human-faceres-1024d',
+        livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.03 },
+      },
+    });
+    expect(ambigRes.status).toBe(401);
+    const ambigJson = (await ambigRes.json()) as { matched: boolean; reasonCode: string; error: string };
+    expect(ambigJson.matched).toBe(false);
+    expect(ambigJson.reasonCode).toBe('AMBIGUOUS');
+    expect(ambigJson.error).toBe('AMBIGUOUS_CLOSE_CANDIDATES');
+  });
+
+  it('derives biometric status strictly from real vectors, blocks archived ghosts, and separates RLS 42501 / timeout errors on live Supabase verify', async () => {
+    const makeRelu6 = (seed: number): number[] => {
+      const raw = new Array<number>(1024);
+      for (let i = 0; i < 1024; i += 1) {
+        const v = Math.sin((i + 1) * seed * 0.19) + 0.55 * Math.cos((i + 3) * seed * 0.27) + 0.35;
+        raw[i] = v > 0 ? v : 0;
+      }
+      return l2Normalize(raw);
+    };
+
+    const vec1024 = makeRelu6(8.4);
+    const vec512 = makeHybridEmbedding(4.2);
+
+    // 1. Live hydration derives VERIFIED / PENDING / REENROLL_REQUIRED from real vectors + excludes archived ghost
+    const makeMockSb = (
+      mode: 'normal' | 'rls_denied' | 'timeout',
+      extraRows?: { patients?: Record<string, unknown>[]; biometrics?: Record<string, unknown>[] },
+    ) => {
+      const makeQuery = (table: string) => {
+        const q: Record<string, unknown> = {};
+        q.select = () => q;
+        q.order = () => q;
+        q.limit = () => q;
+        q.eq = () => q;
+        q.then = (resolve: (val: unknown) => void) => {
+          if (mode === 'rls_denied') {
+            resolve({ data: null, error: { code: '42501', message: 'permission denied for table patients' } });
+            return;
+          }
+          if (mode === 'timeout') {
+            resolve({ data: null, error: { code: '57014', message: 'statement timeout' } });
+            return;
+          }
+          if (table === 'patients') {
+            resolve({
+              data: extraRows?.patients ?? [
+                {
+                  id: 'pat-real-pending-col',
+                  hn: 'HN-REAL-1',
+                  full_name: 'คุณจริง มีเวกเตอร์แต่คอลัมน์ค้าง',
+                  age: 60,
+                  registration_status: null,
+                  face_biometric_status: 'PENDING',
+                  history: {},
+                },
+                {
+                  id: 'pat-fake-verified-no-vec',
+                  hn: 'HN-NO-VEC',
+                  full_name: 'คุณไม่มีเวกเตอร์',
+                  age: 61,
+                  registration_status: 'active',
+                  face_biometric_status: 'VERIFIED',
+                  history: {},
+                },
+                {
+                  id: 'pat-legacy-512',
+                  hn: 'HN-OLD-512B',
+                  full_name: 'คุณเวกเตอร์เก่า',
+                  age: 62,
+                  registration_status: 'active',
+                  face_biometric_status: 'VERIFIED',
+                  history: {},
+                },
+                {
+                  id: 'pat-archived-ghost',
+                  hn: 'HN-GHOST',
+                  full_name: 'คุณถูกลบแล้ว',
+                  age: 63,
+                  registration_status: 'archived',
+                  face_biometric_status: 'VERIFIED',
+                  history: {},
+                },
+              ],
+              error: null,
+            });
+            return;
+          }
+          if (table === 'patient_biometrics') {
+            resolve({
+              data: extraRows?.biometrics ?? [
+                {
+                  patient_id: 'pat-real-pending-col',
+                  hn: 'HN-REAL-1',
+                  master_embedding: vec1024,
+                  angle_embeddings: { center: vec1024, left: vec1024, right: vec1024, up: vec1024, down: vec1024 },
+                  embedding_dim: 1024,
+                  frames_captured: 120,
+                },
+                {
+                  patient_id: 'pat-legacy-512',
+                  hn: 'HN-OLD-512B',
+                  master_embedding: vec512,
+                  embedding_dim: 512,
+                  frames_captured: 10,
+                },
+                {
+                  patient_id: 'pat-archived-ghost',
+                  hn: 'HN-GHOST',
+                  master_embedding: makeRelu6(19.2),
+                  embedding_dim: 1024,
+                  frames_captured: 120,
+                },
+              ],
+              error: null,
+            });
+            return;
+          }
+          resolve({ data: [], error: null });
+        };
+        return q;
+      };
+      return { from: (t: string) => makeQuery(t) } as unknown as SupabaseClient;
+    };
+
+    const state: CloudRouterState = {
+      users: [],
+      patients: [],
+      face_templates: [],
+      medical_notes: [],
+      patient_courses: [],
+      rehab_sessions: [],
+      treatment_reports: [],
+      exercises: [],
+      modpacks: [],
+      staff_calls: [],
+      audit_logs: [],
+      banned_targets: [],
+      active_sessions: [],
+      system_settings: {
+        aiFaceScanEnabled: true,
+        aiFaceThreshold: 0.84,
+        aiPoseDetectionEnabled: false,
+        kioskAutoResetSec: 6,
+      },
+      kiosks: [],
+    };
+
+    const normalSb = makeMockSb('normal');
+    const syncOk = await hydrateBiometricsLiveFromSupabase(normalSb, state, 1500);
+    expect(syncOk.ok).toBe(true);
+
+    // Null registration_status treated as active; archived ghost excluded and counted in filtered_out
+    expect(state.patients.some((p) => p.id === 'pat-archived-ghost')).toBe(false);
+    expect(state.filtered_out_template_patients_count).toBe(1);
+
+    const realPat = state.patients.find((p) => p.id === 'pat-real-pending-col');
+    expect(realPat?.faceBiometricStatus).toBe('VERIFIED');
+    expect(realPat?.biometricStatusDetail).toBe('VERIFIED');
+    expect(realPat?.biometricEmbeddingDim).toBe(1024);
+
+    const fakePat = state.patients.find((p) => p.id === 'pat-fake-verified-no-vec');
+    expect(fakePat?.faceBiometricStatus).toBe('PENDING');
+    expect(fakePat?.biometricStatusDetail).toBe('PENDING');
+
+    const legacyPat = state.patients.find((p) => p.id === 'pat-legacy-512');
+    expect(legacyPat?.faceBiometricStatus).toBe('PENDING');
+    expect(legacyPat?.biometricStatusDetail).toBe('REENROLL_REQUIRED');
+    expect(legacyPat?.biometricEmbeddingDim).toBe(512);
+
+    // 2. RLS permission denied -> classified strictly as PERMISSION_DENIED (never swallowed as "not found")
+    const rlsRes = await hydrateBiometricsLiveFromSupabase(makeMockSb('rls_denied'), state, 1500);
+    expect(rlsRes.ok).toBe(false);
+    expect(rlsRes.errorCode).toBe('PERMISSION_DENIED');
+
+    // 3. DB statement timeout -> classified strictly as TIMEOUT
+    const timeoutRes = await hydrateBiometricsLiveFromSupabase(makeMockSb('timeout'), state, 1500);
+    expect(timeoutRes.ok).toBe(false);
+    expect(timeoutRes.errorCode).toBe('TIMEOUT');
   });
 });
 

@@ -1,13 +1,17 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import {
+  ACTIVE_BIOMETRIC_DIM,
+  ACTIVE_BIOMETRIC_PIPELINE_VERSION,
   l2Normalize,
   purgeLegacyBiometricCache,
   verifyHybridBiometricIdentity,
   type BiometricPose,
   type BiometricVerificationResult,
+  type BiometricVerifyReasonCode,
   type EnrolledTemplateCandidate,
   type GeometricAnthropometricRatios,
 } from '@drtechcares/smart-biometric-core';
+export { ACTIVE_BIOMETRIC_DIM, ACTIVE_BIOMETRIC_PIPELINE_VERSION, type BiometricVerifyReasonCode };
 import {
   CLINICAL_EXERCISES,
   isDeprecatedExerciseRecord,
@@ -305,6 +309,9 @@ export interface PatientRecord {
   registrationStatus: 'active' | 'archived';
   enrolledAt: string;
   faceBiometricStatus?: 'PENDING' | 'VERIFIED';
+  biometricStatusDetail?: 'VERIFIED' | 'PENDING' | 'REENROLL_REQUIRED';
+  biometricEmbeddingDim?: number;
+  biometricPipelineVersion?: string;
   faceFramesCount?: number;
   faceImageUrl?: string;
   faceImageUrls?: string[];
@@ -468,9 +475,46 @@ export interface KioskStatusRecord {
   pairingToken?: string;
 }
 
+export interface BiometricVerifyDiagnostics {
+  reasonCode: BiometricVerifyReasonCode;
+  evaluatedCandidatesCount: number;
+  totalActivePatients: number;
+  compatibleTemplatesCount: number;
+  versionMismatchCount: number;
+  filteredOutCount: number;
+  thresholdPercent: number;
+  livenessPassed: boolean;
+  top1Code: string | null;
+  top1ScorePercent: number;
+  top1CenteredPercent: number;
+  top2Code: string | null;
+  top2ScorePercent: number;
+  marginPercent: number;
+  gateFailCodes: string[];
+  probeDim: number;
+  probeEngine: string;
+  dbFresh: boolean;
+}
+
+export interface BiometricLibraryStatsResponse {
+  totalActivePatients: number;
+  compatibleTemplatesCount: number;
+  versionMismatchCount: number;
+  missingTemplateCount: number;
+  filteredOutCount: number;
+  activeEngine: 'human-faceres-1024d';
+  activeDimension: number;
+  activePipelineVersion: string;
+  dbSynced: boolean;
+  updatedAt: string;
+}
+
 export interface KioskFaceVerifyResponse extends BiometricVerificationResult {
   error?: string;
   reason?: string;
+  reasonCode?: BiometricVerifyReasonCode;
+  diagnostics?: BiometricVerifyDiagnostics;
+  httpStatus?: number;
   message?: string;
   patient?: {
     id: string;
@@ -1257,13 +1301,17 @@ export class DrTechCaresApiClient {
         topCandidate: null,
         runnerUp: null,
         failureReasons: ['BIOLOGICAL_SPOOF_BLOCKED'],
+        reasonCode: 'LIVENESS_FAILED',
         patient: null,
       };
     }
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timeoutId = controller ? setTimeout(() => controller.abort(), 8000) : undefined;
     try {
       const res = await fetch(`${this.baseUrl}/api/biometric/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-device-id': this.deviceId },
+        ...(controller ? { signal: controller.signal } : {}),
         body: JSON.stringify(
           livenessEvidence
             ? {
@@ -1303,12 +1351,41 @@ export class DrTechCaresApiClient {
       try {
         body = (rawText ? JSON.parse(rawText) : {}) as KioskFaceVerifyResponse;
       } catch {
-        throw new ApiError(res.status, 'INVALID_JSON', `Non-JSON response (${res.status})`);
+        throw new ApiError(res.status, 'SERVER_ERROR', `Non-JSON response (${res.status})`);
+      }
+      body.httpStatus = res.status;
+      if (res.status >= 500) {
+        const code = String(body.reasonCode ?? body.error ?? 'SERVER_ERROR');
+        throw new ApiError(res.status, code, body.message ?? `Verification service error (${res.status})`);
+      }
+      if (res.status === 403 && body.error !== 'BIOMETRIC_SPOOF_DETECTED') {
+        throw new ApiError(
+          res.status,
+          String(body.reasonCode ?? body.error ?? 'PERMISSION_DENIED'),
+          body.message ?? 'Permission denied for biometric verification',
+        );
       }
       return body;
     } catch (err) {
-      throw err;
+      if (err instanceof ApiError) throw err;
+      const errName = (err as { name?: string } | null)?.name;
+      if (errName === 'AbortError') {
+        throw new ApiError(408, 'TIMEOUT', 'Biometric verification timed out');
+      }
+      throw new ApiError(0, 'SERVER_ERROR', err instanceof Error ? err.message : 'Network error');
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
+  }
+
+  /**
+   * Fetches live count-only biometric library statistics from the server (ZERO patient vectors, ZERO PII).
+   * Used by Kiosk login to display an accurate live "คลังใบหน้า: n บัญชี" count without downloading vectors.
+   */
+  async getBiometricLibraryStats(forceRefresh = false): Promise<BiometricLibraryStatsResponse> {
+    return this.request<BiometricLibraryStatsResponse>(
+      forceRefresh ? '/api/biometrics/stats?refresh=1' : '/api/biometrics/stats',
+    );
   }
 
   async verifyKioskPinLogin(pin: string): Promise<KioskFaceVerifyResponse> {
