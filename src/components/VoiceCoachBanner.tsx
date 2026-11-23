@@ -845,10 +845,12 @@ export function VoiceCoachBanner({
           isSpeakingRef.current = true;
           setIsSpeaking(true);
           clearSpeakingWatchdog();
+          const webWatchdogMs = Math.max(11000, clean.length * 180 + 3000);
           speakingWatchdogRef.current = window.setTimeout(() => {
             speakingWatchdogRef.current = null;
+            // Unlock cleanly without cancelling active slow TTS mid-sentence
             onSpeechEndedRef.current(seq);
-          }, 11000);
+          }, webWatchdogMs);
           synth.speak(utterance);
         };
 
@@ -946,25 +948,12 @@ export function VoiceCoachBanner({
           isSpeakingRef.current = true;
           setIsSpeaking(true);
           clearSpeakingWatchdog();
+          const audioWatchdogMs = Math.max(11000, clean.length * 180 + 3000);
           speakingWatchdogRef.current = window.setTimeout(() => {
             speakingWatchdogRef.current = null;
-            if (audioRef.current) {
-              try {
-                audioRef.current.pause();
-                audioRef.current.currentTime = 0;
-              } catch {
-                // ignore pause errors
-              }
-            }
-            if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-              try {
-                window.speechSynthesis.cancel();
-              } catch {
-                // ignore cancel errors
-              }
-            }
+            // Safe watchdog: unlock state without abruptly cutting off an active TTS voice
             onSpeechEndedRef.current(seq);
-          }, 11000);
+          }, audioWatchdogMs);
 
           if (playPromise && typeof playPromise.catch === 'function') {
             playPromise.catch((err: unknown) => {

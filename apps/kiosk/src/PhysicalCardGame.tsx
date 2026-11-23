@@ -272,7 +272,270 @@ type ActiveHandSide = 'LEFT' | 'RIGHT' | null;
 
 export const MINIGAME_HAND_RAISE_THRESHOLD_Y = 0.58;
 export const MINIGAME_THAI_SPEECH_RATE = 1.18;
+export const MINIGAME_SPEECH_KEEPALIVE_INTERVAL_MS = 3000;
+export const MINIGAME_QUESTION_LOCK_PILL_TEXT = 'กรุณาฟังคำถามให้จบก่อนยกมือตอบ...';
+export const MINIGAME_QUESTION_READY_PILL_TEXT = 'ฟังจบแล้ว! ยกมือค้าง 0.8 วินาทีเพื่อตอบ';
 export type QuestionAnswerPhase = 'READING_QUESTION' | 'READY_TO_ANSWER';
+
+/**
+ * Computes a generous safe watchdog duration (`>= 8000ms`, `text.length * 180 + 3000`)
+ * so long Thai/EN/CN card questions are NEVER cut off mid-sentence.
+ * When this fallback timer expires (e.g. muted/unavailable OS audio), it ONLY unlocks
+ * answering and NEVER calls `window.speechSynthesis.cancel()`.
+ */
+export function computeMinigameSafeSpeechWatchdogMs(text: string): number {
+  const cleanLen = (text ?? '').trim().length;
+  return Math.max(8000, cleanLen * 180 + 3000);
+}
+
+/**
+ * Builds a stable turn key (`cardIndex-cardId-lang`) so automatic card-question TTS
+ * only triggers when the active card, session, or language genuinely changes — NEVER on
+ * 60FPS hand-tracking updates (`leftHandRaised`, `rightHandRaised`, `holdProgress`).
+ */
+export function buildMinigameSpeechTurnKey(
+  sessionKey: number,
+  cardIndex: number,
+  cardId: string | undefined,
+  voiceLang: MinigameVoiceLang,
+): string {
+  return `${sessionKey}-${cardIndex}-${cardId ?? 'none'}-${voiceLang}`;
+}
+
+export function resolveMinigameAnswerStatusPill(params: {
+  bothHandsWarn: boolean;
+  isQuestionSpeaking: boolean;
+}): { text: string; variant: 'warn' | 'speaking' | 'ready' } {
+  if (params.isQuestionSpeaking) {
+    return {
+      text: MINIGAME_QUESTION_LOCK_PILL_TEXT,
+      variant: 'speaking',
+    };
+  }
+  if (params.bothHandsWarn) {
+    return {
+      text: 'ห้ามยก 2 มือพร้อมกัน! กรุณาลดมือลง 1 ข้างเพื่อตอบ',
+      variant: 'warn',
+    };
+  }
+  return {
+    text: MINIGAME_QUESTION_READY_PILL_TEXT,
+    variant: 'ready',
+  };
+}
+
+export interface MinigameSpeechEnginePort {
+  speak: (utterance: SpeechSynthesisUtterance) => void;
+  cancel: () => void;
+  resume: () => void;
+  getVoices: () => SpeechSynthesisVoice[];
+  readonly speaking: boolean;
+  readonly pending: boolean;
+  readonly paused: boolean;
+}
+
+export interface MinigameSpeechDriverOptions {
+  synth: MinigameSpeechEnginePort | null;
+  createUtterance: (text: string) => SpeechSynthesisUtterance;
+  setTimer: (fn: () => void, ms: number) => number;
+  clearTimer: (id: number) => void;
+  setIntervalFn: (fn: () => void, ms: number) => number;
+  clearIntervalFn: (id: number) => void;
+  onStateChange?: (state: {
+    isQuestionSpeaking: boolean;
+    phase: QuestionAnswerPhase;
+    statusText: string;
+    activeUtterance: SpeechSynthesisUtterance | null;
+  }) => void;
+}
+
+/**
+ * Self-contained, deterministic speech lifecycle driver used for unit testing and mirroring
+ * `PhysicalCardGame`'s exact non-cancelling watchdog, utterance GC retention, 3000ms Chromium
+ * keep-alive, turn-key deduplication, explicit replay (`พูดซ้ำ`), and mute unlock rules.
+ */
+export class MinigameSpeechTurnDriver {
+  public activeUtterance: SpeechSynthesisUtterance | null = null;
+  public spokenTurnKey = '';
+  public isQuestionSpeaking = false;
+  public isMuted = false;
+  private seq = 0;
+  private watchdogId: number | null = null;
+  private keepAliveId: number | null = null;
+  private readonly opts: MinigameSpeechDriverOptions;
+
+  constructor(opts: MinigameSpeechDriverOptions) {
+    this.opts = opts;
+  }
+
+  private clearTimers(): void {
+    if (this.watchdogId !== null) {
+      this.opts.clearTimer(this.watchdogId);
+      this.watchdogId = null;
+    }
+    if (this.keepAliveId !== null) {
+      this.opts.clearIntervalFn(this.keepAliveId);
+      this.keepAliveId = null;
+    }
+  }
+
+  private emitState(): void {
+    const phase: QuestionAnswerPhase = this.isQuestionSpeaking
+      ? 'READING_QUESTION'
+      : 'READY_TO_ANSWER';
+    this.opts.onStateChange?.({
+      isQuestionSpeaking: this.isQuestionSpeaking,
+      phase,
+      statusText: this.isQuestionSpeaking
+        ? MINIGAME_QUESTION_LOCK_PILL_TEXT
+        : MINIGAME_QUESTION_READY_PILL_TEXT,
+      activeUtterance: this.activeUtterance,
+    });
+  }
+
+  private startQuestionSpeech(text: string, voiceLang: MinigameVoiceLang, forceCancelPrev: boolean): boolean {
+    const clean = text.trim();
+    if (this.isMuted || !clean || !this.opts.synth) {
+      this.clearTimers();
+      this.activeUtterance = null;
+      this.isQuestionSpeaking = false;
+      this.emitState();
+      return false;
+    }
+
+    this.seq += 1;
+    const seq = this.seq;
+    this.clearTimers();
+
+    if (forceCancelPrev) {
+      try {
+        this.opts.synth.cancel();
+      } catch {
+        // Ignore cancel failure
+      }
+    }
+
+    const utterance = this.opts.createUtterance(clean);
+    const targetOpt =
+      MINIGAME_VOICE_LANG_OPTIONS.find((item) => item.code === voiceLang) ??
+      MINIGAME_VOICE_LANG_OPTIONS[0];
+    utterance.lang = targetOpt.speechLang;
+    utterance.rate = voiceLang === 'th' ? MINIGAME_THAI_SPEECH_RATE : voiceLang === 'zh' ? 0.98 : 1.0;
+
+    // Persist strong reference until onend/onerror so Chromium/Edge GC cannot drop speech mid-sentence
+    this.activeUtterance = utterance;
+    this.isQuestionSpeaking = true;
+    this.emitState();
+
+    utterance.onstart = () => {
+      if (this.seq !== seq) return;
+      this.isQuestionSpeaking = true;
+      this.emitState();
+    };
+
+    utterance.onend = () => {
+      if (this.activeUtterance === utterance) {
+        this.activeUtterance = null;
+      }
+      if (this.seq !== seq) return;
+      this.clearTimers();
+      this.isQuestionSpeaking = false;
+      this.emitState();
+    };
+
+    utterance.onerror = () => {
+      if (this.activeUtterance === utterance) {
+        this.activeUtterance = null;
+      }
+      if (this.seq !== seq) return;
+      this.clearTimers();
+      this.isQuestionSpeaking = false;
+      this.emitState();
+    };
+
+    // Chromium long-utterance keep-alive (3000ms): resume only if paused
+    this.keepAliveId = this.opts.setIntervalFn(() => {
+      if (this.seq !== seq || !this.isQuestionSpeaking || !this.opts.synth) return;
+      if (this.opts.synth.paused) {
+        try {
+          this.opts.synth.resume();
+        } catch {
+          // Ignore resume failure
+        }
+      }
+    }, MINIGAME_SPEECH_KEEPALIVE_INTERVAL_MS);
+
+    // Safe dynamic watchdog: unlocks answering WITHOUT calling speechSynthesis.cancel()
+    const safeDurationMs = computeMinigameSafeSpeechWatchdogMs(clean);
+    this.watchdogId = this.opts.setTimer(() => {
+      this.watchdogId = null;
+      if (this.seq !== seq) return;
+      if (this.keepAliveId !== null) {
+        this.opts.clearIntervalFn(this.keepAliveId);
+        this.keepAliveId = null;
+      }
+      this.isQuestionSpeaking = false;
+      this.emitState();
+    }, safeDurationMs);
+
+    this.opts.synth.speak(utterance);
+    return true;
+  }
+
+  /**
+   * Deduplicated automatic card-turn speech trigger: ignores repeated calls with identical
+   * `turnKey` (e.g. 60FPS hand-tracking updates) so active speech is never cancelled or restarted.
+   */
+  speakQuestionForTurn(params: {
+    sessionKey: number;
+    cardIndex: number;
+    cardId: string;
+    voiceLang: MinigameVoiceLang;
+    text: string;
+  }): boolean {
+    const turnKey = buildMinigameSpeechTurnKey(
+      params.sessionKey,
+      params.cardIndex,
+      params.cardId,
+      params.voiceLang,
+    );
+    if (this.spokenTurnKey === turnKey) {
+      return false;
+    }
+    this.spokenTurnKey = turnKey;
+    return this.startQuestionSpeech(params.text, params.voiceLang, false);
+  }
+
+  /** Explicit `"พูดซ้ำ"` replay: cancels prior utterance cleanly and replays full question. */
+  replayQuestion(text: string, voiceLang: MinigameVoiceLang): boolean {
+    return this.startQuestionSpeech(text, voiceLang, true);
+  }
+
+  /** Toggling mute ON cancels immediately and unlocks answering so muted mode never blocks gameplay. */
+  setMuted(muted: boolean, currentQuestionText?: string, voiceLang: MinigameVoiceLang = 'th'): void {
+    this.isMuted = muted;
+    if (muted) {
+      this.seq += 1;
+      this.clearTimers();
+      this.activeUtterance = null;
+      try {
+        this.opts.synth?.cancel();
+      } catch {
+        // Ignore cancel failure
+      }
+      this.isQuestionSpeaking = false;
+      this.emitState();
+    } else if (currentQuestionText?.trim()) {
+      this.startQuestionSpeech(currentQuestionText, voiceLang, true);
+    }
+  }
+
+  dispose(): void {
+    this.seq += 1;
+    this.clearTimers();
+    this.activeUtterance = null;
+  }
+}
 
 export interface DetectedCardHandSample {
   zone: 'LEFT' | 'RIGHT';
@@ -769,6 +1032,8 @@ export function PhysicalCardGame({
   const queuedSpeechRef = useRef<{ text: string; lang: MinigameVoiceLang } | null>(null);
   const pendingSpeakTimerRef = useRef<number | null>(null);
   const speakingWatchdogRef = useRef<number | null>(null);
+  const speechKeepAliveRef = useRef<number | null>(null);
+  const spokenTurnKeyRef = useRef<string>('');
   const onMinigameSpeechEndedRef = useRef<(seq: number) => void>(() => {});
   const webSpeechTimerRef = useRef<number | null>(null);
   const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
@@ -823,10 +1088,18 @@ export function PhysicalCardGame({
     }
   }, []);
 
+  const clearSpeechKeepAlive = useCallback(() => {
+    if (speechKeepAliveRef.current !== null && typeof window !== 'undefined') {
+      window.clearInterval(speechKeepAliveRef.current);
+      speechKeepAliveRef.current = null;
+    }
+  }, []);
+
   const stopMinigameSpeech = useCallback(
     (clearQueue = true) => {
       speakSeqRef.current += 1;
       clearSpeakingWatchdog();
+      clearSpeechKeepAlive();
       if (clearQueue) {
         queuedSpeechRef.current = null;
         clearPendingSpeakTimer();
@@ -858,7 +1131,7 @@ export function PhysicalCardGame({
       isSpeakingRef.current = false;
       setIsSpeaking(false);
     },
-    [clearPendingSpeakTimer, clearSpeakingWatchdog],
+    [clearPendingSpeakTimer, clearSpeechKeepAlive, clearSpeakingWatchdog],
   );
 
   const speakWithWebSpeechFallback = useCallback(
@@ -902,6 +1175,7 @@ export function PhysicalCardGame({
           utterance.rate = targetLang === 'th' ? MINIGAME_THAI_SPEECH_RATE : targetLang === 'zh' ? 0.98 : 1.0;
           utterance.pitch = 1.0;
           utterance.volume = 1.0;
+          // Persist strong reference in ref until onend/onerror so Chromium/Edge GC never drops mid-sentence
           activeUtteranceRef.current = utterance;
 
           utterance.onstart = () => {
@@ -909,17 +1183,23 @@ export function PhysicalCardGame({
             blockedByAutoplayRef.current = false;
             isSpeakingRef.current = true;
             setIsSpeaking(true);
+            if (!activeFeedbackMetaRef.current && !completedSummaryRef.current) {
+              questionPhaseRef.current = 'READING_QUESTION';
+              setQuestionPhase('READING_QUESTION');
+            }
           };
           utterance.onend = () => {
             if (activeUtteranceRef.current === utterance) {
               activeUtteranceRef.current = null;
             }
+            clearSpeechKeepAlive();
             onMinigameSpeechEndedRef.current(seq);
           };
           utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
             if (activeUtteranceRef.current === utterance) {
               activeUtteranceRef.current = null;
             }
+            clearSpeechKeepAlive();
             if (event?.error === 'not-allowed') {
               clearSpeakingWatchdog();
               if (speakSeqRef.current === seq) {
@@ -936,12 +1216,30 @@ export function PhysicalCardGame({
 
           isSpeakingRef.current = true;
           setIsSpeaking(true);
+          // Chromium long-utterance keep-alive: resume paused speechSynthesis every 3000ms
+          clearSpeechKeepAlive();
+          speechKeepAliveRef.current = window.setInterval(() => {
+            if (speakSeqRef.current !== seq || !isSpeakingRef.current) {
+              clearSpeechKeepAlive();
+              return;
+            }
+            if (synth.paused) {
+              try {
+                synth.resume();
+              } catch {
+                // Ignore resume failure
+              }
+            }
+          }, MINIGAME_SPEECH_KEEPALIVE_INTERVAL_MS);
+
+          // Safe dynamic watchdog: unlocks answering WITHOUT calling speechSynthesis.cancel()
           clearSpeakingWatchdog();
-          const watchdogMs = Math.min(7500, Math.max(2200, clean.length * 80));
+          const safeDurationMs = computeMinigameSafeSpeechWatchdogMs(clean);
           speakingWatchdogRef.current = window.setTimeout(() => {
             speakingWatchdogRef.current = null;
+            clearSpeechKeepAlive();
             onMinigameSpeechEndedRef.current(seq);
-          }, watchdogMs);
+          }, safeDurationMs);
           synth.speak(utterance);
         };
 
@@ -955,12 +1253,13 @@ export function PhysicalCardGame({
         }
       } catch {
         clearSpeakingWatchdog();
+        clearSpeechKeepAlive();
         isSpeakingRef.current = false;
         setIsSpeaking(false);
         onMinigameSpeechEndedRef.current(seq);
       }
     },
-    [clearSpeakingWatchdog],
+    [clearSpeechKeepAlive, clearSpeakingWatchdog],
   );
 
   const speakMinigameText = useCallback(
@@ -1007,6 +1306,10 @@ export function PhysicalCardGame({
             blockedByAutoplayRef.current = false;
             isSpeakingRef.current = true;
             setIsSpeaking(true);
+            if (!activeFeedbackMetaRef.current && !completedSummaryRef.current) {
+              questionPhaseRef.current = 'READING_QUESTION';
+              setQuestionPhase('READING_QUESTION');
+            }
           };
           audio.onended = () => {
             onMinigameSpeechEndedRef.current(seq);
@@ -1018,26 +1321,12 @@ export function PhysicalCardGame({
           isSpeakingRef.current = true;
           setIsSpeaking(true);
           clearSpeakingWatchdog();
-          const audioWatchdogMs = Math.min(7500, Math.max(2200, clean.length * 80));
+          // Safe dynamic watchdog (>= 8000ms, text.length * 180 + 3000): NEVER cancels active audio/TTS!
+          const safeAudioWatchdogMs = computeMinigameSafeSpeechWatchdogMs(clean);
           speakingWatchdogRef.current = window.setTimeout(() => {
             speakingWatchdogRef.current = null;
-            if (ttsAudioRef.current) {
-              try {
-                ttsAudioRef.current.pause();
-                ttsAudioRef.current.currentTime = 0;
-              } catch {
-                // ignore pause error
-              }
-            }
-            if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-              try {
-                window.speechSynthesis.cancel();
-              } catch {
-                // ignore cancel error
-              }
-            }
             onMinigameSpeechEndedRef.current(seq);
-          }, audioWatchdogMs);
+          }, safeAudioWatchdogMs);
 
           if (playPromise && typeof playPromise.catch === 'function') {
             playPromise.catch((err: unknown) => {
@@ -1075,6 +1364,7 @@ export function PhysicalCardGame({
   onMinigameSpeechEndedRef.current = (seq: number) => {
     if (speakSeqRef.current !== seq) return;
     clearSpeakingWatchdog();
+    clearSpeechKeepAlive();
     isSpeakingRef.current = false;
     setIsSpeaking(false);
 
@@ -1152,6 +1442,10 @@ export function PhysicalCardGame({
           blockedByAutoplayRef.current = false;
           const activeText = getActiveVoiceText(voiceLangRef.current);
           if (activeText) {
+            if (!activeFeedbackMetaRef.current && !completedSummaryRef.current) {
+              questionPhaseRef.current = 'READING_QUESTION';
+              setQuestionPhase('READING_QUESTION');
+            }
             speakMinigameText(activeText, voiceLangRef.current);
           }
         }
@@ -1199,6 +1493,17 @@ export function PhysicalCardGame({
   // Auto-speak active card question when card changes or game resets (Speech-First Relay Gate)
   useEffect(() => {
     if (completedSummary || !currentCard || feedbackRef.current) return;
+    const turnKey = buildMinigameSpeechTurnKey(
+      sessionKey,
+      index,
+      currentCard.id,
+      voiceLangRef.current,
+    );
+    // Deduplicate automatic card-turn speech so 60FPS hand updates / re-renders never cancel or restart active TTS
+    if (spokenTurnKeyRef.current === turnKey) {
+      return;
+    }
+    spokenTurnKeyRef.current = turnKey;
     resetTrackingRefs();
     setPendingChoice(null);
     setBothHandsWarn(false);
@@ -1216,7 +1521,7 @@ export function PhysicalCardGame({
       questionPhaseRef.current = 'READY_TO_ANSWER';
       setQuestionPhase('READY_TO_ANSWER');
     }
-  }, [completedSummary, currentCard?.id, sessionKey, resetTrackingRefs, speakMinigameText]);
+  }, [completedSummary, currentCard?.id, index, sessionKey, resetTrackingRefs, speakMinigameText]);
 
   // Auto-speak final summary when all 10 cards are finished
   useEffect(() => {
@@ -1262,10 +1567,22 @@ export function PhysicalCardGame({
 
       const nextText = getActiveVoiceText(nextLang);
       if (nextText) {
+        if (!completedSummaryRef.current) {
+          const activeCard = cardsRef.current[indexRef.current];
+          spokenTurnKeyRef.current = buildMinigameSpeechTurnKey(
+            sessionKey,
+            indexRef.current,
+            activeCard?.id,
+            nextLang,
+          );
+          questionPhaseRef.current = 'READING_QUESTION';
+          setQuestionPhase('READING_QUESTION');
+          resetTrackingRefs();
+        }
         speakMinigameText(nextText, nextLang, { forceInterrupt: true });
       }
     },
-    [getActiveVoiceText, setLang, speakMinigameText],
+    [getActiveVoiceText, resetTrackingRefs, sessionKey, setLang, speakMinigameText],
   );
 
   const handleReplayVoice = useCallback(() => {
@@ -1293,9 +1610,21 @@ export function PhysicalCardGame({
     }
     const text = getActiveVoiceText(voiceLangRef.current);
     if (text) {
+      if (!activeFeedbackMetaRef.current && !completedSummaryRef.current) {
+        const activeCard = cardsRef.current[indexRef.current];
+        spokenTurnKeyRef.current = buildMinigameSpeechTurnKey(
+          sessionKey,
+          indexRef.current,
+          activeCard?.id,
+          voiceLangRef.current,
+        );
+        questionPhaseRef.current = 'READING_QUESTION';
+        setQuestionPhase('READING_QUESTION');
+        resetTrackingRefs();
+      }
       speakMinigameText(text, voiceLangRef.current, { forceInterrupt: true });
     }
-  }, [getActiveVoiceText, speakMinigameText, stopMinigameSpeech]);
+  }, [getActiveVoiceText, resetTrackingRefs, sessionKey, speakMinigameText, stopMinigameSpeech]);
 
   useEffect(() => {
     return subscribeKioskVoiceMuted((muted) => {
@@ -1374,16 +1703,18 @@ export function PhysicalCardGame({
             }
           }
         } else {
+          spokenTurnKeyRef.current = '';
           setIndex((i) => i + 1);
         }
       };
 
+      const maxFeedbackWaitMs = computeMinigameSafeSpeechWatchdogMs(msg);
       const checkSpeechDoneThenAdvance = () => {
         if (
           (isSpeakingRef.current ||
             Boolean(queuedSpeechRef.current) ||
             Boolean(pendingSpeakTimerRef.current)) &&
-          Date.now() - answerStartedAt < 6500
+          Date.now() - answerStartedAt < maxFeedbackWaitMs
         ) {
           timerRef.current = window.setTimeout(checkSpeechDoneThenAdvance, 250);
           return;
@@ -1732,7 +2063,13 @@ export function PhysicalCardGame({
                     setBothHandsWarn(true);
                   }
                   const nowMs = Date.now();
-                  if (!voiceMutedRef.current && nowMs - bothHandsWarnSpeechTsRef.current >= 3600) {
+                  // Never interrupt active question or feedback speech when user accidentally moves both hands
+                  if (
+                    !isSpeechLocked &&
+                    !isSpeakingRef.current &&
+                    !voiceMutedRef.current &&
+                    nowMs - bothHandsWarnSpeechTsRef.current >= 3600
+                  ) {
                     bothHandsWarnSpeechTsRef.current = nowMs;
                     const warnText =
                       voiceLangRef.current === 'en'
@@ -1935,6 +2272,7 @@ export function PhysicalCardGame({
   useEffect(() => {
     return () => {
       if (timerRef.current) window.clearTimeout(timerRef.current);
+      spokenTurnKeyRef.current = '';
       stopCameraTracks();
       stopMinigameSpeech();
     };
@@ -1942,6 +2280,7 @@ export function PhysicalCardGame({
 
   const handleReplay = () => {
     if (timerRef.current) window.clearTimeout(timerRef.current);
+    spokenTurnKeyRef.current = '';
     stopMinigameSpeech();
     resetTrackingRefs();
     activeFeedbackMetaRef.current = null;
@@ -2153,21 +2492,26 @@ export function PhysicalCardGame({
 
           {!cameraError && (
             <div className="pointer-events-none absolute top-4 inset-x-4 z-10 flex flex-wrap items-center justify-between gap-2">
-              <span
-                className={`mg-cam-status inline-flex items-center gap-2 rounded-full px-5 py-2.5 font-black shadow-xl border-2 ${
-                  bothHandsWarn
-                    ? 'border-red-200 bg-red-600/95 text-white animate-pulse'
-                    : questionPhase === 'READING_QUESTION'
-                      ? 'border-indigo-300 bg-indigo-600/95 text-white'
-                      : 'border-emerald-300 bg-emerald-600/95 text-white'
-                }`}
-              >
-                {bothHandsWarn
-                  ? 'ห้ามยก 2 มือพร้อมกัน! กรุณาลดมือลง 1 ข้างเพื่อตอบ'
-                  : questionPhase === 'READING_QUESTION'
-                    ? 'กรุณาฟังคำถามให้จบก่อนยกมือตอบ...'
-                    : 'ยกมือข้างเดียวเพื่อตอบได้เลย!'}
-              </span>
+              {(() => {
+                const answerStatusPill = resolveMinigameAnswerStatusPill({
+                  bothHandsWarn,
+                  isQuestionSpeaking: questionPhase === 'READING_QUESTION',
+                });
+                return (
+                  <span
+                    data-testid="minigame-answer-status-pill"
+                    className={`mg-cam-status inline-flex items-center gap-2 rounded-full px-5 py-2.5 font-black shadow-xl border-2 transition-colors duration-300 ${
+                      answerStatusPill.variant === 'warn'
+                        ? 'border-red-200 bg-red-600/95 text-white animate-pulse'
+                        : answerStatusPill.variant === 'speaking'
+                          ? 'border-indigo-300 bg-indigo-600/95 text-white'
+                          : 'border-emerald-300 bg-emerald-600/95 text-white'
+                    }`}
+                  >
+                    {answerStatusPill.text}
+                  </span>
+                );
+              })()}
 
               {questionPhase === 'READY_TO_ANSWER' && pendingChoice === 'yes' && !bothHandsWarn ? (
                 <span className="mg-cam-status inline-flex items-center gap-2.5 rounded-full bg-emerald-600/95 px-6 py-3 font-black text-white shadow-xl">
@@ -2197,7 +2541,7 @@ export function PhysicalCardGame({
             </div>
           )}
 
-          {bothHandsWarn && (
+          {bothHandsWarn && questionPhase !== 'READING_QUESTION' && (
             <div className="pointer-events-none mg-cam-status absolute inset-x-6 top-1/2 -translate-y-1/2 z-20 flex items-center justify-center gap-3 rounded-3xl bg-red-600/95 border-2 border-white px-7 py-5 font-black text-white shadow-2xl text-center animate-toast-in animate-gentle-shake">
               <AlertTriangle className="h-10 w-10 shrink-0" />
               <span className="text-lg sm:text-xl">ห้ามยก 2 มือพร้อมกัน! กรุณาลดมือลง 1 ข้างเพื่อตอบ</span>
