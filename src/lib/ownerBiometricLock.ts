@@ -230,6 +230,62 @@ export function computeOwnerFaceBoxMetrics(
 }
 
 /**
+ * 60FPS exponential smoother for the live Owner Face bounding box inside the Success
+ * confirmation card: damps micro-jitter while snapping cleanly on fast head motion.
+ */
+export function smoothOwnerFaceBoxMetrics(
+  prev: OwnerFaceBoxMetrics | null,
+  target: OwnerFaceBoxMetrics | null,
+  dtMs: number,
+): OwnerFaceBoxMetrics | null {
+  if (!target) return null;
+  if (!prev) return target;
+
+  const dxPx = Math.abs(target.rawPx.centerX - prev.rawPx.centerX);
+  const dyPx = Math.abs(target.rawPx.centerY - prev.rawPx.centerY);
+  const dwPx = Math.abs(target.rawPx.width - prev.rawPx.width);
+  const dhPx = Math.abs(target.rawPx.height - prev.rawPx.height);
+  if (Math.hypot(dxPx, dyPx) >= 42 || dwPx >= 48 || dhPx >= 48) {
+    return target;
+  }
+
+  const safeDt = Number.isFinite(dtMs) ? Math.max(4, Math.min(200, dtMs)) : 16.67;
+  const alpha = 1 - Math.exp(-safeDt / 44);
+  const lerp = (a: number, b: number) => a + (b - a) * alpha;
+
+  const xMin = lerp(prev.xMin, target.xMin);
+  const xMax = lerp(prev.xMax, target.xMax);
+  const yMin = lerp(prev.yMin, target.yMin);
+  const yMax = lerp(prev.yMax, target.yMax);
+
+  const rawXMin = lerp(prev.rawPx.xMin, target.rawPx.xMin);
+  const rawXMax = lerp(prev.rawPx.xMax, target.rawPx.xMax);
+  const rawYMin = lerp(prev.rawPx.yMin, target.rawPx.yMin);
+  const rawYMax = lerp(prev.rawPx.yMax, target.rawPx.yMax);
+
+  return {
+    xMin,
+    xMax,
+    yMin,
+    yMax,
+    centerX: (xMin + xMax) * 0.5,
+    centerY: (yMin + yMax) * 0.5,
+    width: Math.max(0.03, xMax - xMin),
+    height: Math.max(0.04, yMax - yMin),
+    rawPx: {
+      xMin: rawXMin,
+      xMax: rawXMax,
+      yMin: rawYMin,
+      yMax: rawYMax,
+      centerX: (rawXMin + rawXMax) * 0.5,
+      centerY: (rawYMin + rawYMax) * 0.5,
+      width: Math.max(12, rawXMax - rawXMin),
+      height: Math.max(16, rawYMax - rawYMin),
+    },
+  };
+}
+
+/**
  * Continuous 1:1 Account Owner Face Lock verification:
  * compares live face probe strictly 1:1 against the currently logged-in account owner's
  * pose-synchronized angle template + master embedding + craniofacial ratios.
@@ -612,11 +668,12 @@ export function evaluateOwnerBoundKinematicHands(input: {
   }
 
   const leftMinX = box.centerX - 2.8 * box.width;
-  const leftMaxX = box.centerX - 0.15 * box.width;
-  const rightMinX = box.centerX + 0.15 * box.width;
+  const leftMaxX = box.centerX - 0.06 * box.width;
+  const rightMinX = box.centerX + 0.06 * box.width;
   const rightMaxX = box.centerX + 2.8 * box.width;
-  const minHandY = box.yMin - 0.8 * box.height;
-  const maxHandY = box.yMax + 1.2 * box.height;
+  // Allow elderly users to raise hands anywhere from chest/mid-frame (y <= 0.72+) up to top of frame
+  const minHandY = Math.min(-0.08, box.yMin - 1.5 * box.height);
+  const maxHandY = Math.min(0.92, Math.max(0.76, box.yMax + 1.2 * box.height));
 
   let boundLeftPalm: OwnerBoundPalmPoint | undefined;
   let boundRightPalm: OwnerBoundPalmPoint | undefined;
@@ -624,6 +681,7 @@ export function evaluateOwnerBoundKinematicHands(input: {
   let rightCountOnSide = 0;
   let intruderHandDetected = false;
   const intruderPalms: OwnerBoundPalmPoint[] = [];
+  const validInEnvelopePalms: OwnerBoundPalmPoint[] = [];
 
   for (const h of input.hands) {
     if (h.length < 21) continue;
@@ -641,7 +699,7 @@ export function evaluateOwnerBoundKinematicHands(input: {
     const horizontalInOwnerSpan =
       sv.x >= leftMinX && sv.x <= rightMaxX;
     const verticalInRaiseWindow =
-      sv.y >= minHandY && sv.y <= maxHandY;
+      sv.y >= minHandY && (sv.y <= maxHandY || anchor.y < 0.72);
 
     if (!horizontalInOwnerSpan) {
       // Hand pokes in horizontally outside owner's 2.8 * faceW wingspan
@@ -651,13 +709,10 @@ export function evaluateOwnerBoundKinematicHands(input: {
     }
 
     if (!verticalInRaiseWindow) {
-      // If raised way above head (>0.8 * faceH above brow), classify as external overhead hand
-      if (sv.y < minHandY) {
-        intruderHandDetected = true;
-        intruderPalms.push(pt);
-      }
       continue;
     }
+
+    validInEnvelopePalms.push(pt);
 
     const inLeftZone = sv.x >= leftMinX && sv.x <= leftMaxX;
     const inRightZone = sv.x >= rightMinX && sv.x <= rightMaxX;
@@ -678,13 +733,31 @@ export function evaluateOwnerBoundKinematicHands(input: {
       } else {
         boundRightPalm = pt;
       }
-    } else {
-      // Hand overlaps directly across face centerline [centerX - 0.15W .. centerX + 0.15W]
-      // Wait gently unless 2 hands exist on one side or >2 hands; skip ambiguous overlap
+    } else if (sv.x < box.centerX && !boundLeftPalm) {
+      boundLeftPalm = pt;
+    } else if (sv.x >= box.centerX && !boundRightPalm) {
+      boundRightPalm = pt;
     }
   }
 
-  // Fallback Condition 1: owner-linked pose skeleton wrist check when one hand blurs briefly
+  // If 2 clearly separated owner hands were detected inside the anatomical envelope
+  // while the user stood slightly off-center, bind leftmost -> Left and rightmost -> Right cleanly.
+  if (
+    !intruderHandDetected &&
+    validInEnvelopePalms.length === 2 &&
+    (!boundLeftPalm || !boundRightPalm)
+  ) {
+    const [first, second] = [...validInEnvelopePalms].sort(
+      (a, b) => a.screenNormX - b.screenNormX,
+    );
+    if (second.screenNormX - first.screenNormX >= 0.06) {
+      boundLeftPalm = first;
+      boundRightPalm = second;
+    }
+  }
+
+  // Dual-Detector Fallback: owner-linked upper-body Pose wrist keypoints (left_wrist / right_wrist)
+  // raised above chest/shoulder level (wrist.y < shoulder.y + 0.06 with confidence >= 0.35)
   if (
     !intruderHandDetected &&
     poseLinkedToOwner &&
@@ -696,26 +769,28 @@ export function evaluateOwnerBoundKinematicHands(input: {
     const rSh = input.pose[POSE_INDEX.RIGHT_SHOULDER];
     const lWr = input.pose[POSE_INDEX.LEFT_WRIST];
     const rWr = input.pose[POSE_INDEX.RIGHT_WRIST];
-    const lShY = lSh && (lSh.visibility ?? 1) >= 0.3 ? lSh.y : box.yMax;
-    const rShY = rSh && (rSh.visibility ?? 1) >= 0.3 ? rSh.y : box.yMax;
+    const fallbackShY = Math.max(0.66, box.yMax + 0.08);
+    const lShY = lSh && (lSh.visibility ?? 1) >= 0.3 ? lSh.y : fallbackShY;
+    const rShY = rSh && (rSh.visibility ?? 1) >= 0.3 ? rSh.y : fallbackShY;
 
     for (const [wr, shY] of [
       [lWr, lShY],
       [rWr, rShY],
     ] as const) {
-      if (!wr || (wr.visibility ?? 0) < 0.45 || wr.y > Math.min(0.84, shY + 0.08)) continue;
+      if (!wr || (wr.visibility ?? 0) < 0.35 || wr.y > Math.min(0.84, shY + 0.06)) continue;
       const sv = projectMirroredNormToCoverViewport(wr.x, wr.y, layout);
       const rp = projectRawNormToCoverCanvas(wr.x, wr.y, layout);
       if (sv.y < minHandY || sv.y > maxHandY) continue;
+      if (sv.x < leftMinX || sv.x > rightMaxX) continue;
       const pt: OwnerBoundPalmPoint = {
         rawX: rp.x,
         rawY: rp.y,
         screenNormX: sv.x,
         screenNormY: sv.y,
       };
-      if (sv.x >= leftMinX && sv.x <= leftMaxX && !boundLeftPalm) {
+      if (sv.x < box.centerX && !boundLeftPalm) {
         boundLeftPalm = pt;
-      } else if (sv.x >= rightMinX && sv.x <= rightMaxX && !boundRightPalm) {
+      } else if (sv.x >= box.centerX && !boundRightPalm) {
         boundRightPalm = pt;
       }
     }

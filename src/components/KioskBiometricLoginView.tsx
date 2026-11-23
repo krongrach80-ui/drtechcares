@@ -71,8 +71,10 @@ import {
   computeOwnerFaceBoxMetrics,
   drawOwnerBiometricOverlayOnCanvas,
   evaluateOwnerBoundKinematicHands,
+  smoothOwnerFaceBoxMetrics,
   verifyOwnerFace1to1,
   type OwnerBiometricTemplate,
+  type OwnerBoundHandEvaluation,
   type OwnerFaceBoxMetrics,
   type OwnerLockStatus,
 } from '../lib/ownerBiometricLock';
@@ -426,7 +428,7 @@ export interface KioskLoginSuccessPayload {
   biometricTemplate?: OwnerBiometricTemplate;
 }
 
-function buildKioskLoginSuccessPayload(params: {
+export function buildKioskLoginSuccessPayload(params: {
   patient: {
     id: string;
     hn: string;
@@ -548,8 +550,208 @@ export interface KioskVerifiedModalCopy {
 
 export const VERIFIED_HAND_HOLD_MS = 4000;
 export const HAND_SWITCH_GRACE_MS = 600;
-export const HAND_GLITCH_GRACE_MS = 220;
+export const HAND_GLITCH_GRACE_MS = 250;
 export const VERIFIED_MODAL_SPEECH_RATE = 1.12;
+export const VERIFIED_MODAL_TTS_STALL_TIMEOUT_MS = 2500;
+
+export interface ActiveVideoCandidateLike {
+  readyState: number;
+  videoWidth: number;
+  videoHeight?: number;
+  paused?: boolean;
+  ended?: boolean;
+  currentTime?: number;
+}
+
+/**
+ * Selects the actively playing camera `<video>` element during the post-match `Success`
+ * confirmation card so face tracking and dual-hand raise detection NEVER read from a
+ * paused or frozen video element.
+ */
+export function resolvePostMatchActiveVideoElement<T extends ActiveVideoCandidateLike>(
+  confirmVideo: T | null | undefined,
+  scanVideo: T | null | undefined,
+): T | null {
+  const isLivePlaying = (el: T | null | undefined): boolean =>
+    Boolean(el && el.readyState >= 2 && el.videoWidth > 0 && !el.paused && !el.ended);
+
+  if (confirmVideo && isLivePlaying(confirmVideo)) return confirmVideo;
+  if (scanVideo && isLivePlaying(scanVideo)) return scanVideo;
+  if (confirmVideo && confirmVideo.readyState >= 2 && confirmVideo.videoWidth > 0) {
+    return confirmVideo;
+  }
+  if (scanVideo && scanVideo.readyState >= 2 && scanVideo.videoWidth > 0) {
+    return scanVideo;
+  }
+  return confirmVideo ?? scanVideo ?? null;
+}
+
+export interface PostMatchGestureGateState {
+  targetFaceBox: OwnerFaceBoxMetrics | null;
+  smoothedFaceBox: OwnerFaceBoxMetrics | null;
+  holdMs: number;
+  lastRaisedAtMs: number;
+  leftHandRaised: boolean;
+  rightHandRaised: boolean;
+  bothHandsRaised: boolean;
+  confirmed: boolean;
+  handEval: OwnerBoundHandEvaluation | null;
+}
+
+export function createInitialPostMatchGestureGateState(): PostMatchGestureGateState {
+  return {
+    targetFaceBox: null,
+    smoothedFaceBox: null,
+    holdMs: 0,
+    lastRaisedAtMs: -Infinity,
+    leftHandRaised: false,
+    rightHandRaised: false,
+    bothHandsRaised: false,
+    confirmed: false,
+    handEval: null,
+  };
+}
+
+/**
+ * Pure 60FPS frame stepper for the `post_match_gesture_gate` mode inside the Kiosk `Success`
+ * confirmation card:
+ * 1. Smoothly tracks the live owner face bounding box on every frame (including during speech).
+ * 2. Evaluates dual-detector hand landmarks + pose wrists to update left/right hand badges.
+ * 3. Smoothly accumulates the 4.0-second dual-hand hold timer (`deltaMs / 1000`) with a
+ *    250ms brief-drop grace buffer and gentle decay, triggering confirmation at >= 4.0s.
+ */
+export function stepPostMatchGestureGateFrame(
+  prev: PostMatchGestureGateState,
+  input: {
+    nowMs: number;
+    dtMs: number;
+    speechBlocked: boolean;
+    ownerName: string;
+    ownerFaceVerified: boolean;
+    faceLandmarks?: ReadonlyArray<{ x: number; y: number }> | null;
+    faceCount: number;
+    hands: ReadonlyArray<ReadonlyArray<{ x: number; y: number }>>;
+    pose?: ReadonlyArray<{ x: number; y: number; visibility?: number }> | null;
+    poseCount?: number;
+    videoW: number;
+    videoH: number;
+    canvasW: number;
+    canvasH: number;
+    runInference?: boolean;
+  },
+): PostMatchGestureGateState & {
+  progress: number;
+  holdSeconds: number;
+  isGuardBlocked: boolean;
+  shouldProceedToExercise: boolean;
+} {
+  let targetFaceBox = prev.targetFaceBox;
+  let handEval = prev.handEval;
+  let leftHandRaised = prev.leftHandRaised;
+  let rightHandRaised = prev.rightHandRaised;
+  let bothHandsRaised = prev.bothHandsRaised;
+  let holdMs = prev.holdMs;
+  let lastRaisedAtMs = prev.lastRaisedAtMs;
+
+  if (input.runInference !== false) {
+    targetFaceBox =
+      input.faceLandmarks && input.faceLandmarks.length >= 10 && input.faceCount > 0
+        ? computeOwnerFaceBoxMetrics(
+            input.faceLandmarks,
+            input.videoW,
+            input.videoH,
+            input.canvasW,
+            input.canvasH,
+          )
+        : null;
+  }
+
+  const smoothedFaceBox = smoothOwnerFaceBoxMetrics(prev.smoothedFaceBox, targetFaceBox, input.dtMs);
+
+  if (input.speechBlocked) {
+    return {
+      targetFaceBox,
+      smoothedFaceBox,
+      holdMs: 0,
+      lastRaisedAtMs: -Infinity,
+      leftHandRaised: false,
+      rightHandRaised: false,
+      bothHandsRaised: false,
+      confirmed: false,
+      handEval: null,
+      progress: 0,
+      holdSeconds: 0,
+      isGuardBlocked: false,
+      shouldProceedToExercise: false,
+    };
+  }
+
+  let isGuardBlocked = false;
+  if (input.runInference !== false) {
+    handEval = evaluateOwnerBoundKinematicHands({
+      ownerFaceVerified: input.ownerFaceVerified,
+      ownerFaceBox: targetFaceBox,
+      faceCount: input.faceCount,
+      ownerName: input.ownerName,
+      hands: input.hands,
+      pose: input.pose,
+      poseCount: input.poseCount,
+      videoW: input.videoW,
+      videoH: input.videoH,
+      canvasW: input.canvasW,
+      canvasH: input.canvasH,
+    });
+    isGuardBlocked =
+      handEval.status === 'IMPOSTOR_FACE' ||
+      handEval.status === 'NO_OWNER_FACE' ||
+      handEval.status === 'MULTI_PERSON' ||
+      handEval.status === 'INTRUDER_HAND';
+
+    if (isGuardBlocked) {
+      leftHandRaised = false;
+      rightHandRaised = false;
+      bothHandsRaised = false;
+      holdMs = 0;
+      lastRaisedAtMs = -Infinity;
+    } else {
+      leftHandRaised = handEval.leftUp;
+      rightHandRaised = handEval.rightUp;
+      bothHandsRaised = handEval.bothUp;
+    }
+  } else if (handEval) {
+    isGuardBlocked =
+      handEval.status === 'IMPOSTOR_FACE' ||
+      handEval.status === 'NO_OWNER_FACE' ||
+      handEval.status === 'MULTI_PERSON' ||
+      handEval.status === 'INTRUDER_HAND';
+  }
+
+  const holdStep = stepVerifiedHandHold({
+    bothHandsNow: bothHandsRaised && !isGuardBlocked,
+    speechBlocked: isGuardBlocked,
+    nowMs: input.nowMs,
+    dtMs: input.dtMs,
+    lastRaisedAtMs: isGuardBlocked ? -Infinity : lastRaisedAtMs,
+    holdMs: isGuardBlocked ? 0 : holdMs,
+  });
+
+  const confirmed = prev.confirmed || holdStep.confirmed;
+  return {
+    targetFaceBox,
+    smoothedFaceBox,
+    holdMs: holdStep.holdMs,
+    lastRaisedAtMs: holdStep.lastRaisedAtMs,
+    leftHandRaised,
+    rightHandRaised,
+    bothHandsRaised: holdStep.detected,
+    confirmed,
+    handEval,
+    progress: holdStep.progress,
+    holdSeconds: holdStep.holdMs / 1000,
+    isGuardBlocked,
+    shouldProceedToExercise: !prev.confirmed && holdStep.confirmed,
+  };
+}
 
 export function computeWelcomeSpeechFallbackMs(greetingText: string): number {
   return Math.max(3500, greetingText.trim().length * 75);
@@ -718,11 +920,11 @@ export function evaluateStrictTwoHandsForStartModal(
     const rWr = pose[POSE_INDEX.RIGHT_WRIST];
     const lShY = lSh && (lSh.visibility ?? 1) >= 0.3 ? lSh.y : 0.72;
     const rShY = rSh && (rSh.visibility ?? 1) >= 0.3 ? rSh.y : 0.72;
-    if (lWr && (lWr.visibility ?? 0) >= 0.45 && lWr.y <= Math.min(0.82, lShY + 0.08)) {
+    if (lWr && (lWr.visibility ?? 0) >= 0.35 && lWr.y <= Math.min(0.82, lShY + 0.06)) {
       if (1 - lWr.x < 0.5) leftUp = true;
       else rightUp = true;
     }
-    if (rWr && (rWr.visibility ?? 0) >= 0.45 && rWr.y <= Math.min(0.82, rShY + 0.08)) {
+    if (rWr && (rWr.visibility ?? 0) >= 0.35 && rWr.y <= Math.min(0.82, rShY + 0.06)) {
       if (1 - rWr.x < 0.5) leftUp = true;
       else rightUp = true;
     }
@@ -1121,6 +1323,375 @@ const COPY: Record<
   },
 };
 
+export interface KioskVerifiedConfirmationCardProps {
+  lang: ClinicalLang;
+  verifiedModalPayload: KioskLoginSuccessPayload;
+  modalCopy: KioskVerifiedModalCopy;
+  scanGeneration: number;
+  verifiedAnimDone: boolean;
+  voiceMuted: boolean;
+  isWelcomeSpeechDone: boolean;
+  raisedDuringSpeech: boolean;
+  twoHandCameraReady: boolean;
+  twoHandDetectorReady: boolean;
+  twoHandDetected: boolean;
+  twoHandProgress: number;
+  leftHandUpState: boolean;
+  rightHandUpState: boolean;
+  ownerGuardBanner: { status: OwnerLockStatus; text: string } | null;
+  confirmVideoRef: React.RefObject<HTMLVideoElement | null>;
+  confirmCanvasRef: React.RefObject<HTMLCanvasElement | null>;
+  confirmProgressFillRef: React.RefObject<HTMLDivElement | null>;
+  confirmProgressTextRef: React.RefObject<HTMLSpanElement | null>;
+  confirmPillLabelRef: React.RefObject<HTMLSpanElement | null>;
+  confirmBtnFillRef: React.RefObject<HTMLSpanElement | null>;
+  confirmBtnLabelRef: React.RefObject<HTMLSpanElement | null>;
+  onSelectLang: (nextLang: ClinicalLang) => void;
+  onToggleVoiceMute: () => void;
+  onProceedToExercise: () => void;
+  onOpenTelemetrySimulator?: () => void;
+  onRejectWrongMatch: () => void;
+}
+
+export function KioskVerifiedConfirmationCard({
+  lang,
+  verifiedModalPayload,
+  modalCopy,
+  scanGeneration,
+  verifiedAnimDone,
+  voiceMuted,
+  isWelcomeSpeechDone,
+  raisedDuringSpeech,
+  twoHandCameraReady,
+  twoHandDetectorReady,
+  twoHandDetected,
+  twoHandProgress,
+  leftHandUpState,
+  rightHandUpState,
+  ownerGuardBanner,
+  confirmVideoRef,
+  confirmCanvasRef,
+  confirmProgressFillRef,
+  confirmProgressTextRef,
+  confirmPillLabelRef,
+  confirmBtnFillRef,
+  confirmBtnLabelRef,
+  onSelectLang,
+  onToggleVoiceMute,
+  onProceedToExercise,
+  onOpenTelemetrySimulator,
+  onRejectWrongMatch,
+}: KioskVerifiedConfirmationCardProps) {
+  const clampedProgress = Math.max(0, Math.min(1, twoHandProgress));
+  const totalSec = VERIFIED_HAND_HOLD_MS / 1000;
+  const heldSecStr = (clampedProgress * totalSec).toFixed(1);
+  const pctInt = Math.round(clampedProgress * 100);
+  const progressText = `${heldSecStr} / ${totalSec.toFixed(0)}.0 วิ (${pctInt}%)`;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-[#0F4C81]/40 backdrop-blur-md flex items-center justify-center p-4 animate-backdrop-fade">
+      <div className="w-full max-w-md rounded-3xl bg-white border-2 border-emerald-500/50 shadow-2xl p-6 text-center animate-popup-spring">
+        {/* 3-Language Selector Bar & Senior Voice Toggle inside Verified Patient Modal */}
+        <div className="mb-4 flex flex-col items-center gap-2.5">
+          <div
+            className="inline-flex items-center gap-1 rounded-2xl border border-sky-200 bg-sky-50/90 p-1"
+            data-testid="verified-modal-language-switcher"
+          >
+            {LANG_OPTIONS.map((opt) => {
+              const active = lang === opt.code;
+              return (
+                <button
+                  key={opt.code}
+                  type="button"
+                  onClick={() => onSelectLang(opt.code)}
+                  className={`rounded-xl px-2.5 py-1 text-[11px] sm:text-xs font-extrabold transition cursor-pointer ${
+                    active
+                      ? 'bg-[#0284C7] text-white shadow-sm'
+                      : 'text-[#0F4C81] hover:bg-white'
+                  }`}
+                >
+                  {opt.numberedLabel}
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            onClick={onToggleVoiceMute}
+            aria-pressed={voiceMuted}
+            data-testid="verified-modal-voice-mute-toggle"
+            className={`inline-flex items-center justify-center gap-2 rounded-2xl border-2 px-4 py-2 text-xs sm:text-sm font-extrabold shadow-xs transition-all cursor-pointer active:scale-95 ${
+              voiceMuted
+                ? 'border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200'
+                : 'border-emerald-400 bg-emerald-100 text-emerald-950 hover:bg-emerald-200'
+            }`}
+          >
+            {voiceMuted ? (
+              <VolumeX className="h-4 w-4 shrink-0 text-amber-700" />
+            ) : (
+              <Volume2 className="h-4 w-4 shrink-0 text-emerald-700" />
+            )}
+            <span>{getSeniorVoiceToggleLabel(lang, voiceMuted)}</span>
+          </button>
+        </div>
+
+        <div className="mb-3" data-anim-complete={verifiedAnimDone ? 'true' : 'false'}>
+          <KineticAuthStatusBadge
+            key={`kiosk-success-${verifiedModalPayload.patient.id}-${scanGeneration}`}
+            status="success"
+            compact
+            testId="kiosk-face-success-panel"
+            subtitle={`${verifiedModalPayload.patient.fullName} • ${modalCopy.confidenceBadge}`}
+          />
+        </div>
+        <h2 className="text-2xl font-extrabold text-slate-900">
+          {verifiedModalPayload.patient.fullName}
+        </h2>
+        <p className="text-xs text-slate-500 mt-1 font-mono">
+          {modalCopy.hnAndNextAppointment}
+        </p>
+
+        {/* Wide 16:9 Upper-Body Camera Preview at 1.0x Zoom for Live 60FPS Face Tracking & Dual-Hand Hold */}
+        <div
+          data-testid="kiosk-confirm-camera-stage"
+          className="mt-4 relative mx-auto aspect-video w-full overflow-hidden rounded-2xl bg-emerald-950 border-2 border-emerald-300 shadow-inner"
+        >
+          <video
+            ref={confirmVideoRef}
+            data-testid="kiosk-confirm-video"
+            autoPlay
+            playsInline
+            muted
+            className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
+          />
+          <canvas
+            ref={confirmCanvasRef}
+            data-testid="kiosk-confirm-canvas"
+            className="pointer-events-none absolute inset-0 w-full h-full object-cover scale-x-[-1]"
+          />
+          {!twoHandCameraReady && (
+            <div className="absolute inset-0 flex items-center justify-center bg-white/90 text-xs font-bold text-[#0F4C81]">
+              {modalCopy.openingCamera}
+            </div>
+          )}
+          <div className="absolute top-2 inset-x-2 flex items-center justify-between gap-2 pointer-events-none">
+            {!isWelcomeSpeechDone ? (
+              <>
+                <span className="px-2.5 py-1 rounded-full text-[11px] font-black shadow bg-sky-600/90 text-white border border-sky-200/70">
+                  {modalCopy.speechCornerBadge}
+                </span>
+                <span className="px-2.5 py-1 rounded-full text-[11px] font-black shadow bg-sky-600/90 text-white border border-sky-200/70">
+                  {modalCopy.speechCornerBadge}
+                </span>
+              </>
+            ) : (
+              <>
+                <span
+                  data-testid="kiosk-left-hand-badge"
+                  className={`px-2.5 py-1 rounded-full text-[11px] font-black shadow transition-colors duration-150 ${
+                    leftHandUpState
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-slate-800/80 text-white border border-white/25'
+                  }`}
+                >
+                  {leftHandUpState ? 'ยกมือซ้ายแล้ว' : 'รอมือซ้าย'}
+                </span>
+                <span
+                  data-testid="kiosk-right-hand-badge"
+                  className={`px-2.5 py-1 rounded-full text-[11px] font-black shadow transition-colors duration-150 ${
+                    rightHandUpState
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-slate-800/80 text-white border border-white/25'
+                  }`}
+                >
+                  {rightHandUpState ? 'ยกมือขวาแล้ว' : 'รอมือขวา'}
+                </span>
+              </>
+            )}
+          </div>
+          <div className="absolute inset-x-2 bottom-2 flex items-center justify-center pointer-events-none">
+            {ownerGuardBanner ? (
+              <span
+                key={`guard-${ownerGuardBanner.status}`}
+                className={`px-3 py-1 rounded-full text-[11px] font-extrabold border shadow-lg ${
+                  ownerGuardBanner.status === 'IMPOSTOR_FACE' ||
+                  ownerGuardBanner.status === 'INTRUDER_HAND'
+                    ? 'bg-rose-600/95 text-white border-rose-200'
+                    : 'bg-amber-500/95 text-white border-amber-200'
+                }`}
+              >
+                {ownerGuardBanner.text}
+              </span>
+            ) : !isWelcomeSpeechDone ? (
+              <span
+                key="pill-speech"
+                className={`px-3 py-1 rounded-full text-[11px] font-extrabold border shadow ${
+                  raisedDuringSpeech
+                    ? 'bg-amber-500/95 text-white border-amber-200'
+                    : 'bg-sky-600/95 text-white border-sky-200'
+                }`}
+              >
+                {raisedDuringSpeech ? modalCopy.speechEarlyRaiseBanner : modalCopy.speechListenBanner}
+              </span>
+            ) : twoHandDetected ? (
+              <span
+                key="pill-holding"
+                ref={confirmPillLabelRef}
+                className="px-3 py-1 rounded-full text-[11px] font-extrabold border shadow bg-emerald-600/95 text-white border-emerald-200"
+              >
+                {modalCopy.gestureDetectedPill}
+              </span>
+            ) : (
+              <span
+                key="pill-ready"
+                className={`px-3 py-1 rounded-full text-[11px] font-extrabold border shadow ${
+                  leftHandUpState !== rightHandUpState
+                    ? 'bg-amber-500/95 text-white border-amber-200'
+                    : !twoHandDetectorReady
+                      ? 'bg-white/95 text-[#0F4C81] border-emerald-300'
+                      : 'bg-emerald-600/95 text-white border-emerald-200'
+                }`}
+              >
+                {leftHandUpState !== rightHandUpState
+                  ? modalCopy.gestureSingleHandPill
+                  : !twoHandDetectorReady
+                    ? modalCopy.gestureLoadingPill
+                    : modalCopy.gestureReadyPill}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Dedicated 4-Second Loading Bar (locked at 0% until welcome voice completes + Owner 1:1 Lock passes) */}
+        <div
+          className={`mt-3 rounded-2xl border p-3 text-left ${
+            ownerGuardBanner
+              ? ownerGuardBanner.status === 'IMPOSTOR_FACE' ||
+                ownerGuardBanner.status === 'INTRUDER_HAND'
+                ? 'border-rose-300 bg-rose-50/90'
+                : 'border-amber-300 bg-amber-50/85'
+              : !isWelcomeSpeechDone
+                ? raisedDuringSpeech
+                  ? 'border-amber-200 bg-amber-50/75'
+                  : 'border-slate-200 bg-slate-50/90'
+                : 'border-emerald-200 bg-emerald-50/70'
+          }`}
+        >
+          <div
+            className={`flex items-center justify-between gap-2 text-[11px] font-extrabold mb-1.5 ${
+              ownerGuardBanner
+                ? ownerGuardBanner.status === 'IMPOSTOR_FACE' ||
+                  ownerGuardBanner.status === 'INTRUDER_HAND'
+                  ? 'text-rose-800'
+                  : 'text-amber-900'
+                : !isWelcomeSpeechDone
+                  ? raisedDuringSpeech
+                    ? 'text-amber-900'
+                    : 'text-slate-700'
+                  : 'text-emerald-950'
+            }`}
+          >
+            <span className="truncate">
+              {ownerGuardBanner
+                ? ownerGuardBanner.text
+                : !isWelcomeSpeechDone
+                  ? raisedDuringSpeech
+                    ? modalCopy.speechEarlyRaiseBanner
+                    : modalCopy.speechBarHeader
+                  : twoHandDetected
+                    ? 'กำลังโหลดยืนยัน 2 มือค้าง 4 วินาที...'
+                    : leftHandUpState !== rightHandUpState
+                      ? 'ยกมือเดียวไม่นับ กรุณายกขึ้นทั้ง 2 ข้าง'
+                      : 'หลอดโหลดเริ่มฝึก (ยก 2 ข้างค้าง 4 วิ)'}
+            </span>
+            <span
+              key={isWelcomeSpeechDone ? lang : 'locked'}
+              ref={confirmProgressTextRef}
+              data-testid="kiosk-hold-progress-text"
+              className={`font-mono shrink-0 ${
+                ownerGuardBanner
+                  ? ownerGuardBanner.status === 'IMPOSTOR_FACE' ||
+                    ownerGuardBanner.status === 'INTRUDER_HAND'
+                    ? 'text-rose-700'
+                    : 'text-amber-800'
+                  : !isWelcomeSpeechDone
+                    ? 'text-slate-500'
+                    : 'text-emerald-700'
+              }`}
+            >
+              {progressText}
+            </span>
+          </div>
+          <div className="h-4 w-full overflow-hidden rounded-full bg-slate-200 border border-slate-300 shadow-inner">
+            <div
+              ref={confirmProgressFillRef}
+              data-testid="kiosk-hold-progress-fill"
+              className={`h-full w-full origin-left rounded-full ${
+                ownerGuardBanner
+                  ? 'bg-rose-500'
+                  : !isWelcomeSpeechDone
+                    ? 'bg-slate-400'
+                    : twoHandDetected
+                      ? 'bg-gradient-to-r from-emerald-500 via-teal-400 to-sky-500'
+                      : leftHandUpState !== rightHandUpState
+                        ? 'bg-amber-400'
+                        : 'bg-emerald-500'
+              }`}
+              style={{ transform: `scaleX(${clampedProgress.toFixed(4)})`, willChange: 'transform' }}
+            />
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-col gap-2.5">
+          <button
+            type="button"
+            data-testid="kiosk-confirm-start-btn"
+            onClick={onProceedToExercise}
+            className="btn-tactile relative overflow-hidden w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg cursor-pointer"
+          >
+            <span
+              ref={confirmBtnFillRef}
+              className="pointer-events-none absolute inset-0 w-full origin-left bg-white/25"
+              style={{ transform: `scaleX(${clampedProgress.toFixed(4)})`, willChange: 'transform' }}
+            />
+            <span className="relative z-10 flex items-center justify-center gap-2">
+              {isWelcomeSpeechDone && clampedProgress > 0 ? (
+                <span key="btn-holding" ref={confirmBtnLabelRef}>
+                  {modalCopy.startBtnHolding}
+                </span>
+              ) : (
+                <span key="btn-idle">
+                  {modalCopy.startBtnIdle}
+                </span>
+              )}
+            </span>
+          </button>
+          {onOpenTelemetrySimulator && (
+            <button
+              type="button"
+              onClick={() => {
+                onProceedToExercise();
+                onOpenTelemetrySimulator();
+              }}
+              className="w-full py-2.5 px-4 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-800 text-xs font-bold cursor-pointer"
+            >
+              {modalCopy.telemetryBtn}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onRejectWrongMatch}
+            className="text-xs text-slate-500 hover:text-slate-700 underline py-1 cursor-pointer"
+          >
+            {modalCopy.notMeBtn}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function KioskBiometricLoginView({
   apiClient,
   kioskId = 'kiosk-01',
@@ -1361,6 +1932,7 @@ export function KioskBiometricLoginView({
     let webFallbackTimer: number | null = null;
     let safetyTimer: number | null = null;
     let speakingPollTimer: number | null = null;
+    let synthStallTimer: number | null = null;
     const fallbackMs = computeWelcomeSpeechFallbackMs(greeting);
     const hardDeadlineAt = Date.now() + fallbackMs + 5000;
 
@@ -1377,6 +1949,10 @@ export function KioskBiometricLoginView({
         window.clearInterval(speakingPollTimer);
         speakingPollTimer = null;
       }
+      if (synthStallTimer !== null) {
+        window.clearTimeout(synthStallTimer);
+        synthStallTimer = null;
+      }
     };
 
     const markSpeechDone = () => {
@@ -1384,6 +1960,16 @@ export function KioskBiometricLoginView({
       finished = true;
       clearTimers();
       activeUtteranceRef.current = null;
+      // Clear any stalled browser speechSynthesis utterance so `browserSpeaking` cannot stay true
+      if ('speechSynthesis' in window) {
+        try {
+          if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+            window.speechSynthesis.cancel();
+          }
+        } catch {
+          // Ignore synthesis cancel errors
+        }
+      }
       isSpeechDoneRef.current = true;
       setIsWelcomeSpeechDone(true);
       setRaisedDuringSpeech(false);
@@ -1456,7 +2042,7 @@ export function KioskBiometricLoginView({
       if (!finished && modalSpeakSeqRef.current === seq) {
         markSpeechDone();
       }
-    }, 2200);
+    }, VERIFIED_MODAL_TTS_STALL_TIMEOUT_MS);
     const clearStartWatchdog = () => {
       if (startWatchdog !== null) {
         window.clearTimeout(startWatchdog);
@@ -1469,6 +2055,7 @@ export function KioskBiometricLoginView({
       fallbackTriggered = true;
       clearStartWatchdog();
       if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance === 'undefined') {
+        markSpeechDone();
         return;
       }
       try {
@@ -1480,11 +2067,30 @@ export function KioskBiometricLoginView({
           const voices = synth.getVoices();
           const matchedVoice = pickSpeechVoice(voices, langOpt.bcp47);
           const cleanSpeechText = sanitizeSpeechText(greeting);
-          if (!cleanSpeechText) return;
+          if (!cleanSpeechText) {
+            markSpeechDone();
+            return;
+          }
           const utterance = new SpeechSynthesisUtterance(cleanSpeechText);
           utterance.lang = matchedVoice?.lang || langOpt.bcp47;
           if (matchedVoice) utterance.voice = matchedVoice;
           utterance.rate = VERIFIED_MODAL_SPEECH_RATE;
+          // 2500ms fallback guard so muted/stalled browser speechSynthesis never blocks the gesture gate
+          if (synthStallTimer !== null) {
+            window.clearTimeout(synthStallTimer);
+          }
+          synthStallTimer = window.setTimeout(() => {
+            synthStallTimer = null;
+            if (!finished && modalSpeakSeqRef.current === seq) {
+              markSpeechDone();
+            }
+          }, VERIFIED_MODAL_TTS_STALL_TIMEOUT_MS);
+          utterance.onstart = () => {
+            if (synthStallTimer !== null) {
+              window.clearTimeout(synthStallTimer);
+              synthStallTimer = null;
+            }
+          };
           utterance.onend = () => markSpeechDone();
           utterance.onerror = () => {
             activeUtteranceRef.current = null;
@@ -1502,7 +2108,7 @@ export function KioskBiometricLoginView({
           startUtterance();
         }
       } catch {
-        // Ignore browser TTS restriction; safety timer will unlock cleanly
+        markSpeechDone();
       }
     };
 
@@ -1611,6 +2217,7 @@ export function KioskBiometricLoginView({
   >([]);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const activeStreamRef = useRef<MediaStream | null>(null);
   const confirmVideoRef = useRef<HTMLVideoElement | null>(null);
   const confirmCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const confirmProgressFillRef = useRef<HTMLDivElement | null>(null);
@@ -1680,15 +2287,22 @@ export function KioskBiometricLoginView({
     setVerifiedModalPayload(payload);
   }, []);
   useEffect(() => {
-    const v = videoRef.current;
-    if (!v || !v.srcObject) return;
+    // Keep camera MediaStream live across the Success confirmation card:
+    // NEVER pause `videoRef.current` here (pausing froze post-match face & hand detection!).
+    // Immediately bind the live stream onto `confirmVideoRef.current` and start playback.
     if (verifiedModalPayload) {
-      try {
-        v.pause();
-      } catch {
-        // Ignore video pause error
+      const cv = confirmVideoRef.current;
+      const liveStream = activeStreamRef.current ?? (videoRef.current?.srcObject as MediaStream | null);
+      if (cv && liveStream) {
+        if (cv.srcObject !== liveStream) {
+          cv.srcObject = liveStream;
+        }
+        void cv.play().catch(() => {});
       }
-    } else if (!cameraPaused) {
+      return;
+    }
+    const v = videoRef.current;
+    if (v && v.srcObject && !cameraPaused && v.paused) {
       void v.play().catch(() => {});
     }
   }, [verifiedModalPayload, cameraPaused]);
@@ -1706,6 +2320,13 @@ export function KioskBiometricLoginView({
   }, [verifiedModalPayload]);
   const onPatientAuthenticatedRef = useRef(onPatientAuthenticated);
   onPatientAuthenticatedRef.current = onPatientAuthenticated;
+  const proceedToExerciseSession = useCallback((payload: KioskLoginSuccessPayload) => {
+    modalSpeakSeqRef.current += 1;
+    cancelAllKioskVoiceSpeech(modalAudioRef.current);
+    activeUtteranceRef.current = null;
+    excludedPatientIdsRef.current = [];
+    onPatientAuthenticatedRef.current(payload);
+  }, []);
   const presenceRef = useRef(new FacePresenceTracker());
   const verifyingLockRef = useRef(false);
   const edgeTelemetryRef = useRef<EdgeKioskTelemetryPayload | null>(null);
@@ -2225,10 +2846,14 @@ export function KioskBiometricLoginView({
     let gestureTriggered = false;
     let confirmFaceCycle = 0;
     let lastConfirmedPatientId: string | null = null;
-    let cachedConfirmOwnerVerified = false;
+    let cachedConfirmOwnerVerified = true;
     let cachedConfirmFaceCount = 0;
     let cachedConfirmFaceBox: OwnerFaceBoxMetrics | null = null;
+    let smoothedConfirmFaceBox: OwnerFaceBoxMetrics | null = null;
     let cachedConfirmExtraFaceBoxes: OwnerFaceBoxMetrics[] = [];
+    let cachedConfirmHandEval: OwnerBoundHandEvaluation | null = null;
+    let lastConfirmFaceDetectAt = 0;
+    let lastConfirmFaceVideoTime = -1;
     let confirmSnapCanvas: HTMLCanvasElement | null = null;
     let confirmEmbedInFlight = false;
     let lastOwnerGuardKey = '';
@@ -2269,6 +2894,7 @@ export function KioskBiometricLoginView({
       poseLandmarker = null;
       stream?.getTracks().forEach((track) => track.stop());
       stream = null;
+      activeStreamRef.current = null;
       if (videoEl) {
         videoEl.srcObject = null;
       }
@@ -2295,6 +2921,8 @@ export function KioskBiometricLoginView({
       }
       if (anyReady) {
         setTwoHandDetectorReady(true);
+      } else {
+        gestureWarmupStarted = false;
       }
     }
 
@@ -2356,6 +2984,7 @@ export function KioskBiometricLoginView({
           humanBackend: humanTel.backend,
         });
         stream = opened.stream;
+        activeStreamRef.current = stream;
         if (opened.devices.length > 0) {
           setAvailableCameras(opened.devices);
         }
@@ -3351,10 +3980,20 @@ export function KioskBiometricLoginView({
         };
 
         const loop = () => {
-          if (!active || !shouldContinueLoop || !videoRef.current || !landmarker) return;
+          if (
+            !active ||
+            !shouldContinueLoop ||
+            (!videoRef.current && !confirmVideoRef.current) ||
+            !landmarker
+          ) {
+            return;
+          }
           try {
-              const verifiedPayload = verifiedModalPayloadRef.current;
+            const verifiedPayload = verifiedModalPayloadRef.current;
             if (verifiedPayload) {
+              // Dedicated 'post_match_gesture_gate' 60FPS mode:
+              // Keeps MediaStream live on `confirmVideoRef`, tracks owner face smoothly on every
+              // frame (never freezing), and runs dual-detector (Hands + Pose Wrists) 4.0s hold gate.
               if (!gestureWarmupStarted && !handLandmarker && !poseLandmarker) {
                 gestureWarmupStarted = true;
                 if (gestureWarmupTimerId !== null) {
@@ -3362,23 +4001,36 @@ export function KioskBiometricLoginView({
                   gestureWarmupTimerId = null;
                 }
                 if (active) {
-                  void warmupGestureDetectors().catch(() => {});
+                  void warmupGestureDetectors().catch(() => {
+                    gestureWarmupStarted = false;
+                  });
                 }
               }
               if (lastConfirmedPatientId !== verifiedPayload.patient.id) {
                 lastConfirmedPatientId = verifiedPayload.patient.id;
                 confirmFaceCycle = 0;
-                cachedConfirmOwnerVerified = false;
+                // Patient just passed strict 3-frame server biometric verification; start locked green
+                // while continuous 1:1 owner verification monitors every few frames for impersonators.
+                cachedConfirmOwnerVerified = true;
                 cachedConfirmFaceCount = 0;
                 cachedConfirmFaceBox = null;
+                smoothedConfirmFaceBox = null;
                 cachedConfirmExtraFaceBoxes = [];
+                cachedConfirmHandEval = null;
+                lastConfirmFaceDetectAt = 0;
+                lastConfirmFaceVideoTime = -1;
+                lastGestureVideoTime = -1;
                 lastOwnerGuardKey = '';
                 gestureHoldMs = 0;
+                lastAnyHandRaisedAt = -Infinity;
+                latestAnyHandUp = false;
                 gestureTriggered = false;
               }
               if (confirmVideoRef.current && stream) {
                 if (confirmVideoRef.current.srcObject !== stream) {
                   confirmVideoRef.current.srcObject = stream;
+                  void confirmVideoRef.current.play().catch(() => {});
+                } else if (confirmVideoRef.current.paused) {
                   void confirmVideoRef.current.play().catch(() => {});
                 }
                 if (!twoHandCameraReadySent) {
@@ -3388,9 +4040,15 @@ export function KioskBiometricLoginView({
               }
 
               const now = performance.now();
-              const dt = lastGestureFrameAt > 0 ? Math.min(250, Math.max(1, now - lastGestureFrameAt)) : 16;
+              const dt = lastGestureFrameAt > 0 ? Math.min(250, Math.max(1, now - lastGestureFrameAt)) : 16.67;
               lastGestureFrameAt = now;
-              const v = videoRef.current;
+
+              // CRITICAL: Always read frames from the live playing `confirmVideoRef` (falling back
+              // to `videoRef` only during the initial mount frame) so detection NEVER sees a paused frame.
+              const activeVideo = resolvePostMatchActiveVideoElement(
+                confirmVideoRef.current,
+                videoRef.current,
+              );
 
               const browserSpeaking =
                 typeof window !== 'undefined' &&
@@ -3402,12 +4060,162 @@ export function KioskBiometricLoginView({
                 voiceMuted: voiceMutedRef.current,
               });
 
+              const cCanvas = confirmCanvasRef.current;
+              const cw = cCanvas?.clientWidth || 320;
+              const ch = cCanvas?.clientHeight || 180;
+
+              // 1. Live 60FPS Face Tracking (runs on EVERY fresh frame, even during welcome speech)
+              if (
+                activeVideo &&
+                activeVideo.readyState >= 2 &&
+                activeVideo.videoWidth > 0 &&
+                landmarker
+              ) {
+                if (
+                  now - lastConfirmFaceDetectAt >= 32 &&
+                  (activeVideo.currentTime !== lastConfirmFaceVideoTime ||
+                    now - lastConfirmFaceDetectAt >= 55)
+                ) {
+                  lastConfirmFaceVideoTime = activeVideo.currentTime;
+                  lastConfirmFaceDetectAt = now;
+                  confirmFaceCycle += 1;
+                  try {
+                    const faceTs = getNextMonotonicVideoDetectTs(now);
+                    const fRes = landmarker.detectForVideo(activeVideo, faceTs);
+                    const rawFaces = fRes.faceLandmarks ?? [];
+                    const faceSelection = selectPrimaryFace(rawFaces);
+                    const primaryLm = faceSelection.primaryFace ?? rawFaces[0] ?? null;
+                    const effCount =
+                      rawFaces.length > 1
+                        ? Math.max(1, faceSelection.effectiveFaceCount)
+                        : rawFaces.length;
+                    cachedConfirmFaceCount = effCount;
+
+                    if (!primaryLm || effCount === 0) {
+                      cachedConfirmFaceBox = null;
+                      cachedConfirmExtraFaceBoxes = [];
+                      cachedConfirmOwnerVerified = false;
+                    } else {
+                      cachedConfirmFaceBox = computeOwnerFaceBoxMetrics(
+                        primaryLm,
+                        activeVideo.videoWidth,
+                        activeVideo.videoHeight,
+                        cw,
+                        ch,
+                      );
+                      cachedConfirmExtraFaceBoxes = rawFaces
+                        .filter((lm) => lm !== primaryLm)
+                        .map((lm) =>
+                          computeOwnerFaceBoxMetrics(
+                            lm,
+                            activeVideo.videoWidth,
+                            activeVideo.videoHeight,
+                            cw,
+                            ch,
+                          ),
+                        )
+                        .filter((b): b is OwnerFaceBoxMetrics => b !== null);
+
+                      if (effCount > 1) {
+                        cachedConfirmOwnerVerified = false;
+                      } else if (
+                        !verifiedPayload.biometricTemplate ||
+                        verifiedPayload.biometricTemplate.masterEmbedding.length === 0
+                      ) {
+                        cachedConfirmOwnerVerified = true;
+                      } else if (
+                        !confirmEmbedInFlight &&
+                        (confirmFaceCycle === 1 ||
+                          confirmFaceCycle % 5 === 0 ||
+                          !cachedConfirmOwnerVerified)
+                      ) {
+                        if (!confirmSnapCanvas) {
+                          confirmSnapCanvas = document.createElement('canvas');
+                        }
+                        const confirmRawBox = computeBoundingBoxFromLandmarks(primaryLm);
+                        const snapCanvas = captureCanonicalFaceSnapshot(
+                          activeVideo,
+                          confirmRawBox,
+                          confirmSnapCanvas,
+                          primaryLm,
+                        );
+                        if (snapCanvas) {
+                          const snapLm = primaryLm.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+                          const snapEffCount = effCount;
+                          const snapW = activeVideo.videoWidth || 1280;
+                          const snapH = activeVideo.videoHeight || 720;
+                          const snapTemplate = verifiedPayload.biometricTemplate;
+                          confirmEmbedInFlight = true;
+                          void extractCanonicalFaceDescriptor(snapCanvas)
+                            .then((extracted) => {
+                              if (!active || !verifiedModalPayloadRef.current || !extracted.embedding) {
+                                return;
+                              }
+                              const livePose = evaluateLivenessAndPose(
+                                snapLm,
+                                null,
+                                snapEffCount,
+                              );
+                              const rollDeg = computeEyeRollAngleDeg(snapLm, snapW, snapH);
+                              const probeRatios = extractGeometricAnthropometricRatios(snapLm);
+                              const ownerCheck = verifyOwnerFace1to1({
+                                probeVector: extracted.embedding,
+                                probeEngine: BIOMETRIC_ENGINE_ID,
+                                yawDeg: -livePose.yawDeg,
+                                pitchDeg: livePose.pitchDeg,
+                                rollDeg,
+                                probeRatios,
+                                ownerTemplate: snapTemplate,
+                              });
+                              if (ownerCheck.hasTemplate) {
+                                cachedConfirmOwnerVerified = ownerCheck.matched;
+                              }
+                            })
+                            .catch(() => {})
+                            .finally(() => {
+                              confirmEmbedInFlight = false;
+                            });
+                        }
+                      }
+                    }
+                  } catch {
+                    // Keep loop resilient across transient MediaPipe frame errors
+                  }
+                }
+              }
+
+              smoothedConfirmFaceBox = smoothOwnerFaceBoxMetrics(
+                smoothedConfirmFaceBox,
+                cachedConfirmFaceBox,
+                dt,
+              );
+
+              const drawLiveConfirmOverlay = (activeHandEval: OwnerBoundHandEvaluation | null) => {
+                if (!cCanvas) return;
+                if (cCanvas.width !== cw || cCanvas.height !== ch) {
+                  cCanvas.width = cw;
+                  cCanvas.height = ch;
+                }
+                const cCtx = cCanvas.getContext('2d');
+                if (!cCtx) return;
+                cCtx.clearRect(0, 0, cw, ch);
+                drawOwnerBiometricOverlayOnCanvas(cCtx, cw, ch, {
+                  ownerName: verifiedPayload.patient.fullName,
+                  faceBox: smoothedConfirmFaceBox,
+                  extraFaceBoxes: cachedConfirmExtraFaceBoxes,
+                  ownerFaceVerified: cachedConfirmOwnerVerified,
+                  faceCount: cachedConfirmFaceCount,
+                  handEval: activeHandEval,
+                });
+              };
+
               if (speechBlocked) {
-                // Strict Speech-First Relay Lock: freeze 4.0s hold timer at 0%, reset all hand ready states,
-                // clear hand overlay dots, and NEVER advance until welcome voice completes 100%.
+                // Speech-First Relay Lock: hold 4.0s gesture timer at 0% until welcome voice
+                // completes (or 2500ms stall timeout fires), while STILL rendering the 60FPS live face box!
                 gestureHoldMs = 0;
                 lastAnyHandRaisedAt = -Infinity;
                 latestAnyHandUp = false;
+                cachedConfirmHandEval = null;
                 if (lastReportedHolding) {
                   lastReportedHolding = false;
                   setTwoHandProgress(0);
@@ -3432,32 +4240,29 @@ export function KioskBiometricLoginView({
                 ) {
                   confirmProgressTextRef.current.textContent = zeroSecStr;
                 }
-                if (confirmCanvasRef.current) {
-                  const cCtx = confirmCanvasRef.current.getContext('2d');
-                  if (cCtx) {
-                    cCtx.clearRect(0, 0, confirmCanvasRef.current.width, confirmCanvasRef.current.height);
-                  }
-                }
+                drawLiveConfirmOverlay(null);
 
-                // Lightly sense early hand raises (~8Hz) purely to warn user to wait for speech to finish
+                // Lightly sense early hand raises (~8Hz) purely to remind user to wait for speech
                 if (
-                  v.readyState >= 2 &&
-                  v.videoWidth > 0 &&
-                  (handLandmarker || Boolean(edgeTelemetryRef.current?.hand_status)) &&
+                  activeVideo &&
+                  activeVideo.readyState >= 2 &&
+                  activeVideo.videoWidth > 0 &&
+                  (handLandmarker || poseLandmarker || Boolean(edgeTelemetryRef.current?.hand_status)) &&
                   now - lastGestureInferenceAt >= 120
                 ) {
                   lastGestureInferenceAt = now;
                   const edgeHands = edgeTelemetryRef.current?.hand_status;
                   let detectedEarlyHands: NormalizedLandmark[][] = [];
-                  if (handLandmarker) {
+                  let detectedEarlyPose: NormalizedLandmark[] | null = null;
+                  if (handLandmarker || poseLandmarker) {
                     try {
                       if (!gestureOffscreenCanvas) {
                         gestureOffscreenCanvas = document.createElement('canvas');
                       }
-                      const offW = 320;
+                      const offW = 480;
                       const offH = Math.max(
-                        180,
-                        Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))),
+                        270,
+                        Math.round(offW * ((activeVideo.videoHeight || 720) / (activeVideo.videoWidth || 1280))),
                       );
                       if (
                         gestureOffscreenCanvas.width !== offW ||
@@ -3468,19 +4273,31 @@ export function KioskBiometricLoginView({
                       }
                       const offCtx = gestureOffscreenCanvas.getContext('2d', { alpha: false });
                       if (offCtx) {
-                        offCtx.drawImage(v, 0, 0, offW, offH);
+                        offCtx.drawImage(activeVideo, 0, 0, offW, offH);
                       }
-                      const handTs = getNextMonotonicHandDetectTs(now);
-                      const handRes = handLandmarker.detectForVideo(
-                        offCtx ? gestureOffscreenCanvas : v,
-                        handTs,
-                      );
-                      detectedEarlyHands = handRes.landmarks ?? [];
+                      const earlySource = offCtx ? gestureOffscreenCanvas : activeVideo;
+                      if (handLandmarker) {
+                        const handRes = handLandmarker.detectForVideo(
+                          earlySource,
+                          getNextMonotonicHandDetectTs(now),
+                        );
+                        detectedEarlyHands = handRes.landmarks ?? [];
+                      }
+                      if (poseLandmarker && detectedEarlyHands.length < 2) {
+                        const poseRes = poseLandmarker.detectForVideo(
+                          earlySource,
+                          getNextMonotonicPoseDetectTs(now),
+                        );
+                        detectedEarlyPose = poseRes.landmarks?.[0] ?? null;
+                      }
                     } catch {
                       // Ignore transient MediaPipe frame errors while locked for speech
                     }
                   }
-                  const earlyStrict = evaluateStrictTwoHandsForStartModal(detectedEarlyHands, null);
+                  const earlyStrict = evaluateStrictTwoHandsForStartModal(
+                    detectedEarlyHands,
+                    detectedEarlyPose,
+                  );
                   const earlyRaised = Boolean(
                     edgeHands?.left_raised ||
                       edgeHands?.right_raised ||
@@ -3493,134 +4310,30 @@ export function KioskBiometricLoginView({
               }
 
               if (
-                v.readyState >= 2 &&
-                v.videoWidth > 0 &&
+                activeVideo &&
+                activeVideo.readyState >= 2 &&
+                activeVideo.videoWidth > 0 &&
                 (landmarker || handLandmarker || poseLandmarker)
               ) {
                 let latestLeftUp = false;
                 let latestRightUp = false;
 
-                // Throttle inference smoothly (~22Hz max, >=45ms apart) so 60-120fps animations never stutter
+                // 2. Dual-Detector Hand + Pose Wrist inference (~25Hz max, >=40ms apart) on live activeVideo
                 if (
-                  now - lastGestureInferenceAt >= 45 &&
-                  (v.currentTime !== lastGestureVideoTime || now - lastGestureInferenceAt >= 80)
+                  now - lastGestureInferenceAt >= 40 &&
+                  (activeVideo.currentTime !== lastGestureVideoTime ||
+                    now - lastGestureInferenceAt >= 65)
                 ) {
-                  lastGestureVideoTime = v.currentTime;
+                  lastGestureVideoTime = activeVideo.currentTime;
                   lastGestureInferenceAt = now;
-                  confirmFaceCycle += 1;
-
-                  const cCanvas = confirmCanvasRef.current;
-                  const cw = cCanvas?.clientWidth || 320;
-                  const ch = cCanvas?.clientHeight || 200;
-
-                  // 1. Run FaceLandmarker + Continuous 1:1 Account Owner Verification every 4 frames (and immediately on cycle 1)
-                  if (landmarker) {
-                    try {
-                      const faceTs = getNextMonotonicVideoDetectTs(now);
-                      const fRes = landmarker.detectForVideo(v, faceTs);
-                      const rawFaces = fRes.faceLandmarks ?? [];
-                      const faceSelection = selectPrimaryFace(rawFaces);
-                      const primaryLm = faceSelection.primaryFace ?? rawFaces[0] ?? null;
-                      const effCount =
-                        rawFaces.length > 1
-                          ? Math.max(1, faceSelection.effectiveFaceCount)
-                          : rawFaces.length;
-                      cachedConfirmFaceCount = effCount;
-
-                      if (!primaryLm || effCount === 0) {
-                        cachedConfirmFaceBox = null;
-                        cachedConfirmExtraFaceBoxes = [];
-                        cachedConfirmOwnerVerified = false;
-                      } else {
-                        cachedConfirmFaceBox = computeOwnerFaceBoxMetrics(
-                          primaryLm,
-                          v.videoWidth,
-                          v.videoHeight,
-                          cw,
-                          ch,
-                        );
-                        cachedConfirmExtraFaceBoxes = rawFaces
-                          .filter((lm) => lm !== primaryLm)
-                          .map((lm) =>
-                            computeOwnerFaceBoxMetrics(lm, v.videoWidth, v.videoHeight, cw, ch),
-                          )
-                          .filter((b): b is OwnerFaceBoxMetrics => b !== null);
-
-                        if (effCount > 1) {
-                          cachedConfirmOwnerVerified = false;
-                        } else if (
-                          !verifiedPayload.biometricTemplate ||
-                          verifiedPayload.biometricTemplate.masterEmbedding.length === 0
-                        ) {
-                          // Fallback for PIN-only patient sessions with no stored vector: still require single face
-                          cachedConfirmOwnerVerified = true;
-                        } else if (
-                          !confirmEmbedInFlight &&
-                          (confirmFaceCycle === 1 ||
-                            confirmFaceCycle % 4 === 0 ||
-                            !cachedConfirmOwnerVerified)
-                        ) {
-                          if (!confirmSnapCanvas) {
-                            confirmSnapCanvas = document.createElement('canvas');
-                          }
-                          const confirmRawBox = computeBoundingBoxFromLandmarks(primaryLm);
-                          const snapCanvas = captureCanonicalFaceSnapshot(
-                            v,
-                            confirmRawBox,
-                            confirmSnapCanvas,
-                            primaryLm,
-                          );
-                          if (snapCanvas) {
-                            const snapLm = primaryLm.map((p) => ({ x: p.x, y: p.y, z: p.z }));
-                            const snapEffCount = effCount;
-                            const snapW = v.videoWidth || 1280;
-                            const snapH = v.videoHeight || 720;
-                            const snapTemplate = verifiedPayload.biometricTemplate;
-                            confirmEmbedInFlight = true;
-                            void extractCanonicalFaceDescriptor(snapCanvas)
-                              .then((extracted) => {
-                                if (!active || !verifiedModalPayloadRef.current || !extracted.embedding) {
-                                  return;
-                                }
-                                const livePose = evaluateLivenessAndPose(
-                                  snapLm,
-                                  null,
-                                  snapEffCount,
-                                );
-                                const rollDeg = computeEyeRollAngleDeg(snapLm, snapW, snapH);
-                                const probeRatios = extractGeometricAnthropometricRatios(snapLm);
-                                const ownerCheck = verifyOwnerFace1to1({
-                                  probeVector: extracted.embedding,
-                                  probeEngine: BIOMETRIC_ENGINE_ID,
-                                  yawDeg: -livePose.yawDeg,
-                                  pitchDeg: livePose.pitchDeg,
-                                  rollDeg,
-                                  probeRatios,
-                                  ownerTemplate: snapTemplate,
-                                });
-                                if (ownerCheck.hasTemplate) {
-                                  cachedConfirmOwnerVerified = ownerCheck.matched;
-                                }
-                              })
-                              .catch(() => {})
-                              .finally(() => {
-                                confirmEmbedInFlight = false;
-                              });
-                          }
-                        }
-                      }
-                    } catch {
-                      // Keep loop resilient across transient MediaPipe frame errors
-                    }
-                  }
 
                   if (!gestureOffscreenCanvas) {
                     gestureOffscreenCanvas = document.createElement('canvas');
                   }
-                  const offW = 320;
+                  const offW = 480;
                   const offH = Math.max(
-                    180,
-                    Math.round(offW * ((v.videoHeight || 480) / (v.videoWidth || 640))),
+                    270,
+                    Math.round(offW * ((activeVideo.videoHeight || 720) / (activeVideo.videoWidth || 1280))),
                   );
                   if (
                     gestureOffscreenCanvas.width !== offW ||
@@ -3631,9 +4344,9 @@ export function KioskBiometricLoginView({
                   }
                   const offCtx = gestureOffscreenCanvas.getContext('2d', { alpha: false });
                   if (offCtx) {
-                    offCtx.drawImage(v, 0, 0, offW, offH);
+                    offCtx.drawImage(activeVideo, 0, 0, offW, offH);
                   }
-                  const inferenceSource = offCtx ? gestureOffscreenCanvas : v;
+                  const inferenceSource = offCtx ? gestureOffscreenCanvas : activeVideo;
 
                   let detectedHands: NormalizedLandmark[][] = [];
                   let detectedPose: NormalizedLandmark[] | null = null;
@@ -3647,11 +4360,12 @@ export function KioskBiometricLoginView({
                       // Keep gesture loop running across transient MediaPipe frame errors
                     }
                   }
-                  // Run PoseLandmarker for skeleton-shoulder verification when HandLandmarker misses or single hand shows
+                  // Run PoseLandmarker whenever HandLandmarker is unavailable OR detects fewer than 2 hands
+                  // (0 or 1 hand) so raised upper-body wrists always provide reliable dual-detector coverage!
                   if (
                     poseLandmarker &&
                     (!handLandmarker ||
-                      (detectedHands.length >= 1 && now - lastPoseFallbackAt >= 140))
+                      (detectedHands.length < 2 && now - lastPoseFallbackAt >= 90))
                   ) {
                     lastPoseFallbackAt = now;
                     try {
@@ -3664,7 +4378,6 @@ export function KioskBiometricLoginView({
                     }
                   }
 
-                  // 2. Owner-Bound Kinematic Hand Filter + Face Lock gate
                   const handEval = evaluateOwnerBoundKinematicHands({
                     ownerFaceVerified: cachedConfirmOwnerVerified,
                     ownerFaceBox: cachedConfirmFaceBox,
@@ -3673,11 +4386,12 @@ export function KioskBiometricLoginView({
                     hands: detectedHands,
                     pose: detectedPose,
                     poseCount: detectedPoseCount,
-                    videoW: v.videoWidth,
-                    videoH: v.videoHeight,
+                    videoW: activeVideo.videoWidth,
+                    videoH: activeVideo.videoHeight,
                     canvasW: cw,
                     canvasH: ch,
                   });
+                  cachedConfirmHandEval = handEval;
 
                   const isGuardBlocked =
                     handEval.status === 'IMPOSTOR_FACE' ||
@@ -3689,7 +4403,6 @@ export function KioskBiometricLoginView({
                     latestLeftUp = false;
                     latestRightUp = false;
                     latestAnyHandUp = false;
-                    // Force hard lock reset to 0.0 / 4.0s (0%) whenever blocked by Face Lock or Intruder Hand!
                     gestureHoldMs = 0;
                     lastAnyHandRaisedAt = -Infinity;
                     const alertStr =
@@ -3717,27 +4430,10 @@ export function KioskBiometricLoginView({
 
                   setLeftHandUpState((prev) => (prev === latestLeftUp ? prev : latestLeftUp));
                   setRightHandUpState((prev) => (prev === latestRightUp ? prev : latestRightUp));
-
-                  // 3. Draw Full-Bleed Overlay: Owner Face Box (#10B981 / #EF4444) + Biometric Tether HUD + Intruder Markers
-                  if (cCanvas) {
-                    if (cCanvas.width !== cw || cCanvas.height !== ch) {
-                      cCanvas.width = cw;
-                      cCanvas.height = ch;
-                    }
-                    const cCtx = cCanvas.getContext('2d');
-                    if (cCtx) {
-                      cCtx.clearRect(0, 0, cw, ch);
-                      drawOwnerBiometricOverlayOnCanvas(cCtx, cw, ch, {
-                        ownerName: verifiedPayload.patient.fullName,
-                        faceBox: cachedConfirmFaceBox,
-                        extraFaceBoxes: cachedConfirmExtraFaceBoxes,
-                        ownerFaceVerified: cachedConfirmOwnerVerified,
-                        faceCount: cachedConfirmFaceCount,
-                        handEval,
-                      });
-                    }
-                  }
                 }
+
+                // 3. Draw 60FPS Live Face Box + Biometric Tether HUD on EVERY animation frame
+                drawLiveConfirmOverlay(cachedConfirmHandEval);
 
                 const isLockedByOwnerSecurity = lastOwnerGuardKey !== '';
                 const holdStep = stepVerifiedHandHold({
@@ -3752,7 +4448,7 @@ export function KioskBiometricLoginView({
                 gestureHoldMs = holdStep.holdMs;
                 const nextProgress = holdStep.progress;
 
-                // Zero-reflow 60-120Hz GPU compositor updates (scaleX + synchronized text labels, NO continuous React re-renders)
+                // Zero-reflow 60-120Hz GPU compositor updates (scaleX + synchronized text labels)
                 const scaleCss = `scaleX(${nextProgress.toFixed(4)})`;
                 const heldSecStr = (gestureHoldMs / 1000).toFixed(1);
                 const remainSecStr = Math.max(0, (VERIFIED_HAND_HOLD_MS - gestureHoldMs) / 1000).toFixed(1);
@@ -3798,15 +4494,17 @@ export function KioskBiometricLoginView({
                   gestureTriggered = true;
                   shouldContinueLoop = false;
                   active = false;
-                  excludedPatientIdsRef.current = [];
                   stopMediaAndDetectors();
-                  onPatientAuthenticatedRef.current(verifiedPayload);
+                  proceedToExerciseSession(verifiedPayload);
                   return;
                 }
+              } else {
+                drawLiveConfirmOverlay(cachedConfirmHandEval);
               }
               return;
             }
 
+            if (!videoRef.current) return;
             if (videoRef.current.readyState >= 2 && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
               const now = performance.now();
               profilerRef.current.recordFirstVideoFrame(now);
@@ -5767,299 +6465,35 @@ export function KioskBiometricLoginView({
 
       {/* Verified Patient Confirmation Modal */}
       {verifiedModalPayload && modalCopy && (
-        <div className="fixed inset-0 z-50 bg-[#0F4C81]/40 backdrop-blur-md flex items-center justify-center p-4 animate-backdrop-fade">
-          <div className="w-full max-w-md rounded-3xl bg-white border-2 border-emerald-500/50 shadow-2xl p-6 text-center animate-popup-spring">
-            {/* 3-Language Selector Bar & Senior Voice Toggle inside Verified Patient Modal */}
-            <div className="mb-4 flex flex-col items-center gap-2.5">
-              <div
-                className="inline-flex items-center gap-1 rounded-2xl border border-sky-200 bg-sky-50/90 p-1"
-                data-testid="verified-modal-language-switcher"
-              >
-                {LANG_OPTIONS.map((opt) => {
-                  const active = lang === opt.code;
-                  return (
-                    <button
-                      key={opt.code}
-                      type="button"
-                      onClick={() => handleSelectLang(opt.code)}
-                      className={`rounded-xl px-2.5 py-1 text-[11px] sm:text-xs font-extrabold transition cursor-pointer ${
-                        active
-                          ? 'bg-[#0284C7] text-white shadow-sm'
-                          : 'text-[#0F4C81] hover:bg-white'
-                      }`}
-                    >
-                      {opt.numberedLabel}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <button
-                type="button"
-                onClick={handleToggleVoiceMute}
-                aria-pressed={voiceMuted}
-                data-testid="verified-modal-voice-mute-toggle"
-                className={`inline-flex items-center justify-center gap-2 rounded-2xl border-2 px-4 py-2 text-xs sm:text-sm font-extrabold shadow-xs transition-all cursor-pointer active:scale-95 ${
-                  voiceMuted
-                    ? 'border-amber-400 bg-amber-100 text-amber-950 hover:bg-amber-200'
-                    : 'border-emerald-400 bg-emerald-100 text-emerald-950 hover:bg-emerald-200'
-                }`}
-              >
-                {voiceMuted ? (
-                  <VolumeX className="h-4 w-4 shrink-0 text-amber-700" />
-                ) : (
-                  <Volume2 className="h-4 w-4 shrink-0 text-emerald-700" />
-                )}
-                <span>{getSeniorVoiceToggleLabel(lang, voiceMuted)}</span>
-              </button>
-            </div>
-
-            <div className="mb-3" data-anim-complete={verifiedAnimDone ? 'true' : 'false'}>
-              <KineticAuthStatusBadge
-                key={`kiosk-success-${verifiedModalPayload.patient.id}-${scanGeneration}`}
-                status="success"
-                compact
-                testId="kiosk-face-success-panel"
-                subtitle={`${verifiedModalPayload.patient.fullName} • ${modalCopy.confidenceBadge}`}
-              />
-            </div>
-            <h2 className="text-2xl font-extrabold text-slate-900">
-              {verifiedModalPayload.patient.fullName}
-            </h2>
-            <p className="text-xs text-slate-500 mt-1 font-mono">
-              {modalCopy.hnAndNextAppointment}
-            </p>
-
-            {/* Zero-Black-Bar Full-Bleed Camera Preview for Continuous 1:1 Owner Lock & Owner-Bound Hand Raising */}
-            <div className="mt-4 relative mx-auto w-full aspect-[16/10] md:aspect-[16/9] overflow-hidden rounded-2xl bg-emerald-950 border-2 border-emerald-300 shadow-inner">
-              <video
-                ref={confirmVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
-              />
-              <canvas
-                ref={confirmCanvasRef}
-                className="pointer-events-none absolute inset-0 w-full h-full object-cover scale-x-[-1]"
-              />
-              {!twoHandCameraReady && (
-                <div className="absolute inset-0 flex items-center justify-center bg-white/90 text-xs font-bold text-[#0F4C81]">
-                  {modalCopy.openingCamera}
-                </div>
-              )}
-              <div className="absolute top-2 inset-x-2 flex items-center justify-between gap-2 pointer-events-none">
-                {!isWelcomeSpeechDone ? (
-                  <>
-                    <span className="px-2.5 py-1 rounded-full text-[11px] font-black shadow bg-sky-600/90 text-white border border-sky-200/70">
-                      {modalCopy.speechCornerBadge}
-                    </span>
-                    <span className="px-2.5 py-1 rounded-full text-[11px] font-black shadow bg-sky-600/90 text-white border border-sky-200/70">
-                      {modalCopy.speechCornerBadge}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span
-                      className={`px-2.5 py-1 rounded-full text-[11px] font-black shadow ${
-                        leftHandUpState
-                          ? 'bg-emerald-600 text-white'
-                          : 'bg-emerald-950/75 text-emerald-100 border border-white/25'
-                      }`}
-                    >
-                      {leftHandUpState ? 'มือซ้ายพร้อม' : 'รอมือซ้าย'}
-                    </span>
-                    <span
-                      className={`px-2.5 py-1 rounded-full text-[11px] font-black shadow ${
-                        rightHandUpState
-                          ? 'bg-emerald-600 text-white'
-                          : 'bg-emerald-950/75 text-emerald-100 border border-white/25'
-                      }`}
-                    >
-                      {rightHandUpState ? 'มือขวาพร้อม' : 'รอมือขวา'}
-                    </span>
-                  </>
-                )}
-              </div>
-              <div className="absolute inset-x-2 bottom-2 flex items-center justify-center pointer-events-none">
-                {ownerGuardBanner ? (
-                  <span
-                    key={`guard-${ownerGuardBanner.status}`}
-                    className={`px-3 py-1 rounded-full text-[11px] font-extrabold border shadow-lg ${
-                      ownerGuardBanner.status === 'IMPOSTOR_FACE' ||
-                      ownerGuardBanner.status === 'INTRUDER_HAND'
-                        ? 'bg-rose-600/95 text-white border-rose-200'
-                        : 'bg-amber-500/95 text-white border-amber-200'
-                    }`}
-                  >
-                    {ownerGuardBanner.text}
-                  </span>
-                ) : !isWelcomeSpeechDone ? (
-                  <span
-                    key="pill-speech"
-                    className={`px-3 py-1 rounded-full text-[11px] font-extrabold border shadow ${
-                      raisedDuringSpeech
-                        ? 'bg-amber-500/95 text-white border-amber-200'
-                        : 'bg-sky-600/95 text-white border-sky-200'
-                    }`}
-                  >
-                    {raisedDuringSpeech ? modalCopy.speechEarlyRaiseBanner : modalCopy.speechListenBanner}
-                  </span>
-                ) : twoHandDetected ? (
-                  <span
-                    key="pill-holding"
-                    ref={confirmPillLabelRef}
-                    className="px-3 py-1 rounded-full text-[11px] font-extrabold border shadow bg-emerald-600/95 text-white border-emerald-200"
-                  >
-                    {modalCopy.gestureDetectedPill}
-                  </span>
-                ) : (
-                  <span
-                    key="pill-ready"
-                    className={`px-3 py-1 rounded-full text-[11px] font-extrabold border shadow ${
-                      leftHandUpState !== rightHandUpState
-                        ? 'bg-amber-500/95 text-white border-amber-200'
-                        : !twoHandDetectorReady
-                          ? 'bg-white/95 text-[#0F4C81] border-emerald-300'
-                          : 'bg-emerald-600/95 text-white border-emerald-200'
-                    }`}
-                  >
-                    {leftHandUpState !== rightHandUpState
-                      ? modalCopy.gestureSingleHandPill
-                      : !twoHandDetectorReady
-                        ? modalCopy.gestureLoadingPill
-                        : modalCopy.gestureReadyPill}
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* Dedicated 4-Second Loading Bar (locked strictly at 0% until welcome voice completes + Owner 1:1 Lock passes) */}
-            <div
-              className={`mt-3 rounded-2xl border p-3 text-left ${
-                ownerGuardBanner
-                  ? ownerGuardBanner.status === 'IMPOSTOR_FACE' ||
-                    ownerGuardBanner.status === 'INTRUDER_HAND'
-                    ? 'border-rose-300 bg-rose-50/90'
-                    : 'border-amber-300 bg-amber-50/85'
-                  : !isWelcomeSpeechDone
-                    ? raisedDuringSpeech
-                      ? 'border-amber-200 bg-amber-50/75'
-                      : 'border-slate-200 bg-slate-50/90'
-                    : 'border-emerald-200 bg-emerald-50/70'
-              }`}
-            >
-              <div
-                className={`flex items-center justify-between gap-2 text-[11px] font-extrabold mb-1.5 ${
-                  ownerGuardBanner
-                    ? ownerGuardBanner.status === 'IMPOSTOR_FACE' ||
-                      ownerGuardBanner.status === 'INTRUDER_HAND'
-                      ? 'text-rose-800'
-                      : 'text-amber-900'
-                    : !isWelcomeSpeechDone
-                      ? raisedDuringSpeech
-                        ? 'text-amber-900'
-                        : 'text-slate-700'
-                      : 'text-emerald-950'
-                }`}
-              >
-                <span className="truncate">
-                  {ownerGuardBanner
-                    ? ownerGuardBanner.text
-                    : !isWelcomeSpeechDone
-                      ? raisedDuringSpeech
-                        ? modalCopy.speechEarlyRaiseBanner
-                        : modalCopy.speechBarHeader
-                      : twoHandDetected
-                        ? 'กำลังโหลดยืนยัน 2 มือค้าง 4 วินาที...'
-                        : leftHandUpState !== rightHandUpState
-                          ? 'ยกมือเดียวไม่นับ กรุณายกขึ้นทั้ง 2 ข้าง'
-                          : 'หลอดโหลดเริ่มฝึก (ยก 2 ข้างค้าง 4 วิ)'}
-                </span>
-                <span
-                  key={isWelcomeSpeechDone ? lang : 'locked'}
-                  ref={confirmProgressTextRef}
-                  className={`font-mono shrink-0 ${
-                    ownerGuardBanner
-                      ? ownerGuardBanner.status === 'IMPOSTOR_FACE' ||
-                        ownerGuardBanner.status === 'INTRUDER_HAND'
-                        ? 'text-rose-700'
-                        : 'text-amber-800'
-                      : !isWelcomeSpeechDone
-                        ? 'text-slate-500'
-                        : 'text-emerald-700'
-                  }`}
-                >
-                  0.0 / {(VERIFIED_HAND_HOLD_MS / 1000).toFixed(0)}.0 วิ (0%)
-                </span>
-              </div>
-              <div className="h-4 w-full overflow-hidden rounded-full bg-slate-200 border border-slate-300 shadow-inner">
-                <div
-                  ref={confirmProgressFillRef}
-                  className={`h-full w-full origin-left rounded-full ${
-                    ownerGuardBanner
-                      ? 'bg-rose-500'
-                      : !isWelcomeSpeechDone
-                        ? 'bg-slate-400'
-                        : twoHandDetected
-                          ? 'bg-gradient-to-r from-emerald-500 via-teal-400 to-sky-500'
-                          : leftHandUpState !== rightHandUpState
-                            ? 'bg-amber-400'
-                            : 'bg-emerald-500'
-                  }`}
-                  style={{ transform: 'scaleX(0)', willChange: 'transform' }}
-                />
-              </div>
-            </div>
-
-            <div className="mt-4 flex flex-col gap-2.5">
-              <button
-                type="button"
-                onClick={() => {
-                  excludedPatientIdsRef.current = [];
-                  onPatientAuthenticated(verifiedModalPayload);
-                }}
-                className="relative overflow-hidden w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg cursor-pointer"
-              >
-                <span
-                  ref={confirmBtnFillRef}
-                  className="pointer-events-none absolute inset-0 w-full origin-left bg-white/25"
-                  style={{ transform: 'scaleX(0)', willChange: 'transform' }}
-                />
-                <span className="relative z-10 flex items-center justify-center gap-2">
-                  {isWelcomeSpeechDone && twoHandProgress > 0 ? (
-                    <span key="btn-holding" ref={confirmBtnLabelRef}>
-                      {modalCopy.startBtnHolding}
-                    </span>
-                  ) : (
-                    <span key="btn-idle">
-                      {modalCopy.startBtnIdle}
-                    </span>
-                  )}
-                </span>
-              </button>
-              {onOpenTelemetrySimulator && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    onPatientAuthenticated(verifiedModalPayload);
-                    onOpenTelemetrySimulator();
-                  }}
-                  className="w-full py-2.5 px-4 rounded-xl bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-800 text-xs font-bold cursor-pointer"
-                >
-                  {modalCopy.telemetryBtn}
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={handleRejectWrongMatchAndRescan}
-                className="text-xs text-slate-500 hover:text-slate-700 underline py-1 cursor-pointer"
-              >
-                {modalCopy.notMeBtn}
-              </button>
-            </div>
-          </div>
-        </div>
+        <KioskVerifiedConfirmationCard
+          lang={lang}
+          verifiedModalPayload={verifiedModalPayload}
+          modalCopy={modalCopy}
+          scanGeneration={scanGeneration}
+          verifiedAnimDone={verifiedAnimDone}
+          voiceMuted={voiceMuted}
+          isWelcomeSpeechDone={isWelcomeSpeechDone}
+          raisedDuringSpeech={raisedDuringSpeech}
+          twoHandCameraReady={twoHandCameraReady}
+          twoHandDetectorReady={twoHandDetectorReady}
+          twoHandDetected={twoHandDetected}
+          twoHandProgress={twoHandProgress}
+          leftHandUpState={leftHandUpState}
+          rightHandUpState={rightHandUpState}
+          ownerGuardBanner={ownerGuardBanner}
+          confirmVideoRef={confirmVideoRef}
+          confirmCanvasRef={confirmCanvasRef}
+          confirmProgressFillRef={confirmProgressFillRef}
+          confirmProgressTextRef={confirmProgressTextRef}
+          confirmPillLabelRef={confirmPillLabelRef}
+          confirmBtnFillRef={confirmBtnFillRef}
+          confirmBtnLabelRef={confirmBtnLabelRef}
+          onSelectLang={handleSelectLang}
+          onToggleVoiceMute={handleToggleVoiceMute}
+          onProceedToExercise={() => proceedToExerciseSession(verifiedModalPayload)}
+          onOpenTelemetrySimulator={onOpenTelemetrySimulator}
+          onRejectWrongMatch={handleRejectWrongMatchAndRescan}
+        />
       )}
 
       {/* About System Modal */}

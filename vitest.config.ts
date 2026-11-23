@@ -11,6 +11,7 @@ export default defineConfig({
       'packages/*/src/**/*.test.ts',
       'apps/*/src/**/*.test.ts',
       'src/**/*.test.ts',
+      'src/**/*.test.tsx',
     ],
     globals: true,
   },
