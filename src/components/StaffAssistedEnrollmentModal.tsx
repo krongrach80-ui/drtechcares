@@ -633,9 +633,30 @@ export function StaffAssistedEnrollmentModal({
           qualityScore: bio.qualityScore,
           requireSupabase: false,
         }).catch(() => null);
-        const normalizedUpdated = normalizePatientRecord(updated, {
-          requireRealVectorsForVerified: false,
-        });
+        const normalizedUpdated = normalizePatientRecord(
+          {
+            ...updated,
+            faceBiometricStatus: 'VERIFIED',
+            faceFramesCount: updated.faceFramesCount || bio.framesCaptured || 120,
+            faceImageUrl: updated.faceImageUrl || finalSnapshot,
+            masterEmbedding: updated.masterEmbedding?.length ? updated.masterEmbedding : bio.masterEmbedding,
+            angleEmbeddings: updated.angleEmbeddings ?? bio.angleEmbeddings,
+            ...(updated.exemplarEmbeddings?.length
+              ? { exemplarEmbeddings: updated.exemplarEmbeddings }
+              : bio.exemplarEmbeddings?.length
+                ? { exemplarEmbeddings: bio.exemplarEmbeddings }
+                : {}),
+            ...(updated.biometricEngine || bio.biometricEngine
+              ? { biometricEngine: updated.biometricEngine ?? bio.biometricEngine }
+              : {}),
+            ...(updated.geometricRatios || bio.geometricRatios
+              ? { geometricRatios: updated.geometricRatios ?? bio.geometricRatios }
+              : {}),
+          },
+          {
+            requireRealVectorsForVerified: false,
+          },
+        );
         setErrorMsg(null);
         setToastMsg('บันทึกใบหน้าและข้อมูลคนไข้เรียบร้อยแล้ว!');
         setCreatedPatient(normalizedUpdated);
@@ -716,9 +737,29 @@ export function StaffAssistedEnrollmentModal({
           },
           { requireRealVectorsForVerified: false },
         );
-      } else {
-        enrolled = normalizePatientRecord(enrolled, { requireRealVectorsForVerified: false });
       }
+      enrolled = normalizePatientRecord(
+        {
+          ...enrolled,
+          faceBiometricStatus: 'VERIFIED',
+          faceFramesCount: enrolled.faceFramesCount || bio.framesCaptured || 120,
+          faceImageUrl: enrolled.faceImageUrl || finalSnapshot,
+          masterEmbedding: enrolled.masterEmbedding?.length ? enrolled.masterEmbedding : bio.masterEmbedding,
+          angleEmbeddings: enrolled.angleEmbeddings ?? bio.angleEmbeddings,
+          ...(enrolled.exemplarEmbeddings?.length
+            ? { exemplarEmbeddings: enrolled.exemplarEmbeddings }
+            : bio.exemplarEmbeddings?.length
+              ? { exemplarEmbeddings: bio.exemplarEmbeddings }
+              : {}),
+          ...(enrolled.biometricEngine || bio.biometricEngine
+            ? { biometricEngine: enrolled.biometricEngine ?? bio.biometricEngine }
+            : {}),
+          ...(enrolled.geometricRatios || bio.geometricRatios
+            ? { geometricRatios: enrolled.geometricRatios ?? bio.geometricRatios }
+            : {}),
+        },
+        { requireRealVectorsForVerified: false },
+      );
 
       const prescribedUniqueCount = new Set(
         (enrolled.rehabSchedules ?? customSchedules).map((s) => s.exerciseId).filter(Boolean),

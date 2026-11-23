@@ -417,6 +417,15 @@ export function stripOversizedBase64ForDb<T>(value: T, maxLen = MAX_DB_IMAGE_STR
   return value;
 }
 
+/** Safely apply `.order(col, { ascending: false })` on real PostgREST builders without breaking minimal unit mocks. */
+function withCreatedAtDescOrder(query: unknown): unknown {
+  const q = query as { order?: (col: string, opts?: { ascending?: boolean }) => unknown } | null;
+  if (q && typeof q.order === 'function') {
+    return q.order('created_at', { ascending: false });
+  }
+  return query;
+}
+
 /** Safely apply `.limit(maxRows)` on real PostgREST builders without breaking minimal unit mocks. */
 function withQueryLimit(query: unknown, maxRows: number): PromiseLike<unknown> {
   const q = query as { limit?: (n: number) => PromiseLike<unknown> } | null;
@@ -1129,7 +1138,7 @@ export async function hydrateBiometricsLiveFromSupabase(
     const fetchAll = Promise.allSettled([
       selectExplicitWithFallback(
         'patients',
-        (cols) => supabase.from('patients').select(cols),
+        (cols) => withCreatedAtDescOrder(supabase.from('patients').select(cols)) as PromiseLike<unknown>,
         PATIENTS_BIOMETRIC_LIVE_COLS,
         PATIENTS_MINIMAL_SAFE_COLS,
         250,

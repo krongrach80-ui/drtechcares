@@ -2976,10 +2976,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
     if (pathname === '/api/biometrics/stats' && method === 'GET') {
       const shouldWarmVerifyCache =
-        reqUrl.searchParams.get('warm') === '1' &&
+        (reqUrl.searchParams.get('warm') === '1' || forceSupabaseProbe) &&
         Boolean(supabase) &&
         !isSupabaseCircuitOpen(supabase!) &&
-        (lastLiveBioHydratedAt === 0 || Date.now() - lastLiveBioHydratedAt >= LIVE_BIO_REFRESH_MS);
+        (forceSupabaseProbe ||
+          lastLiveBioHydratedAt === 0 ||
+          Date.now() - lastLiveBioHydratedAt >= LIVE_BIO_REFRESH_MS);
       if (shouldWarmVerifyCache && supabase) {
         runWaitUntil(
           hydrateBiometricsLiveFromSupabase(supabase, state, 4500)
@@ -3521,7 +3523,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       let usedWarmRamCache = false;
       if (supabase) {
         const needsLiveRefresh =
-          lastLiveBioHydratedAt === 0 || Date.now() - lastLiveBioHydratedAt >= LIVE_BIO_REFRESH_MS;
+          forceSupabaseProbe ||
+          lastLiveBioHydratedAt === 0 ||
+          Date.now() - lastLiveBioHydratedAt >= LIVE_BIO_REFRESH_MS;
         if (needsLiveRefresh) {
           const liveSync = await hydrateBiometricsLiveFromSupabase(supabase, state, 4500);
           if (liveSync.ok) {

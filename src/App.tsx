@@ -12,6 +12,7 @@ import {
   resolveTodayPatientSchedule,
   type ManagedExerciseRecord,
   type ModpackRecord,
+  type PatientRecord,
   type UserAccount,
 } from '@drtechcares/api-client';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
@@ -668,6 +669,7 @@ export function App() {
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(() => apiClient.getStoredUser());
   const [authChecked, setAuthChecked] = useState(false);
   const [kioskEnrollModalOpen, setKioskEnrollModalOpen] = useState(false);
+  const [recentlyEnrolledPatient, setRecentlyEnrolledPatient] = useState<PatientRecord | null>(null);
   const [kioskPtList, setKioskPtList] = useState<UserAccount[]>([]);
   const [kioskExercises, setKioskExercises] = useState<ManagedExerciseRecord[]>([]);
   const [kioskModpacks, setKioskModpacks] = useState<ModpackRecord[]>([]);
@@ -1520,6 +1522,8 @@ export function App() {
           apiClient={apiClient}
           kioskId="kiosk-01"
           staffModalOpen={staffModalIntent !== null || kioskEnrollModalOpen}
+          recentlyEnrolledPatient={recentlyEnrolledPatient}
+          onRecentlyEnrolledConsumed={() => setRecentlyEnrolledPatient(null)}
           onPatientAuthenticated={(payload) => {
             setAuthenticatedPatient(payload);
             setKioskMode('training');
@@ -1562,7 +1566,9 @@ export function App() {
             exercises={kioskExercises}
             modpacks={kioskModpacks}
             onClose={() => setKioskEnrollModalOpen(false)}
-            onEnrolled={() => {}}
+            onEnrolled={(newPatient) => {
+              setRecentlyEnrolledPatient(newPatient);
+            }}
           />
         )}
       </>

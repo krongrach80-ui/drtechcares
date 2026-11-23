@@ -1333,6 +1333,7 @@ export class DrTechCaresApiClient {
       excludedPatientIds?: readonly string[];
       frameVectors?: readonly (readonly number[])[];
       frameTimestamps?: readonly number[];
+      forceRefresh?: boolean;
     },
   ): Promise<KioskFaceVerifyResponse> {
     if (
@@ -1356,7 +1357,8 @@ export class DrTechCaresApiClient {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timeoutId = controller ? setTimeout(() => controller.abort(), 8000) : undefined;
     try {
-      const res = await fetch(`${this.baseUrl}/api/biometric/verify`, {
+      const qs = livenessEvidence?.forceRefresh ? '?refresh=1' : '';
+      const res = await fetch(`${this.baseUrl}/api/biometric/verify${qs}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-device-id': this.deviceId },
         ...(controller ? { signal: controller.signal } : {}),

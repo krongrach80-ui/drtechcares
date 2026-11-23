@@ -15,18 +15,27 @@ import {
   KIOSK_INFERENCE_INTERVAL_MS,
   KIOSK_STREAK_GRACE_MS,
   KioskVerifiedConfirmationCard,
+  PASSIVE_LIVENESS_MIN_PIXEL_SHIFT,
   VERIFIED_HAND_HOLD_MS,
   VERIFIED_MODAL_TTS_STALL_TIMEOUT_MS,
   buildKioskLoginSuccessPayload,
   createInitialFastScanStreakState,
   createInitialPostMatchGestureGateState,
+  evaluatePassiveWebcamLiveness,
+  formatKioskSupabaseSyncBadgeLabel,
   getKioskVerifiedModalCopy,
   isClearFaceForFastScan,
+  matchLocalEnrolledPatientsStrict,
+  mergeEnrolledPatientIntoKioskList,
+  resolveKioskFaceBoundingBoxOverlay,
+  resolveKioskUnifiedScanProgress,
   resolvePostMatchActiveVideoElement,
+  shouldTriggerFastNotFoundVerdict,
   stepFastScanStreakWithGrace,
   stepPostMatchGestureGateFrame,
   type KioskLoginSuccessPayload,
 } from '../components/KioskBiometricLoginView';
+import type { PatientRecord } from '@drtechcares/api-client';
 
 const EMOJI_RE = /[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/u;
 
@@ -600,6 +609,9 @@ describe('Kiosk Fast 60FPS Biometric Login, Multi-Angle 2-Frame Lock & 2.0s Two-
 
     const auditedFiles = [
       'src/components/KioskBiometricLoginView.tsx',
+      'src/components/StaffAssistedEnrollmentModal.tsx',
+      'src/components/DrTechCareMascot.tsx',
+      'src/App.tsx',
       'src/lib/biometricEngine.ts',
       'src/lib/biometricVisionCache.ts',
       'packages/smart-biometric-core/src/vectorMath.ts',
@@ -612,5 +624,194 @@ describe('Kiosk Fast 60FPS Biometric Login, Multi-Angle 2-Frame Lock & 2.0s Two-
       const content = fs.readFileSync(path.join(root, rel), 'utf8');
       expect(EMOJI_RE.test(content), `Unexpected Unicode emoji in ${rel}`).toBe(false);
     }
+  });
+
+  it('immediately injects newly registered patients into Kiosk scan list, updates synced count, and allows instant face login without reload', () => {
+    const existingPatient: PatientRecord = {
+      id: 'pat-existing-1',
+      hn: 'HN-410382',
+      fullName: 'Poom',
+      age: 42,
+      phone: '0811111111',
+      diagnosis: 'Stroke Rehab',
+      assignedPtId: 'pt-1',
+      nextAppointmentDate: '2026-11-23',
+      registrationStatus: 'active',
+      enrolledAt: '2026-11-20T08:00:00.000Z',
+      faceBiometricStatus: 'VERIFIED',
+      faceFramesCount: 120,
+      masterEmbedding: makeUnitVec(11.1),
+      angleEmbeddings: {
+        center: makeUnitVec(11.1),
+        left: makeUnitVec(11.2),
+        right: makeUnitVec(11.3),
+        up: makeUnitVec(11.4),
+        down: makeUnitVec(11.5),
+      },
+    };
+    const newCenter = makeUnitVec(22.1);
+    const newLeft = makeUnitVec(22.2);
+    const newlyRegistered: PatientRecord = {
+      id: 'pat-new-2',
+      hn: 'HN-990123',
+      fullName: 'Somchai NewlyEnrolled',
+      age: 58,
+      phone: '0892223333',
+      diagnosis: 'Post-Stroke Upper Limb',
+      assignedPtId: 'pt-1',
+      nextAppointmentDate: '2026-11-23',
+      registrationStatus: 'active',
+      enrolledAt: '2026-11-23T07:00:00.000Z',
+      // Even if incoming status was stale PENDING while vectors exist, merge normalizes to VERIFIED
+      faceBiometricStatus: 'PENDING',
+      faceFramesCount: 0,
+      masterEmbedding: newCenter,
+      angleEmbeddings: {
+        center: newCenter,
+        left: newLeft,
+        right: makeUnitVec(22.3),
+        up: makeUnitVec(22.4),
+        down: makeUnitVec(22.5),
+      },
+      exemplarEmbeddings: [mixUnitVec(newCenter, newLeft, 0.25)],
+    };
+
+    const merged = mergeEnrolledPatientIntoKioskList([existingPatient], newlyRegistered);
+    expect(merged).toHaveLength(2);
+    expect(merged[0].id).toBe('pat-new-2');
+    expect(merged[0].faceBiometricStatus).toBe('VERIFIED');
+    expect(merged[0].faceFramesCount).toBe(120);
+    expect(formatKioskSupabaseSyncBadgeLabel(merged.length, merged.length)).toBe(
+      'ซิงก์ฐานข้อมูลใบหน้าจาก Supabase สำเร็จ: 2 บัญชี',
+    );
+
+    // Live tilted probe of newly registered user matches immediately without page reload
+    const liveProbe = mixUnitVec(newLeft, makeUnitVec(99.1), 0.1);
+    const matched = matchLocalEnrolledPatientsStrict(liveProbe, merged);
+    expect(matched).not.toBeNull();
+    expect(matched?.patient.id).toBe('pat-new-2');
+    expect(matched?.patient.fullName).toBe('Somchai NewlyEnrolled');
+    expect(matched?.confidencePercent).toBeGreaterThanOrEqual(90);
+
+    // Unregistered stranger is STILL strictly rejected
+    const strangerProbe = makeUnitVec(777.7);
+    expect(matchLocalEnrolledPatientsStrict(strangerProbe, merged)).toBeNull();
+  });
+
+  it('uses passive live-webcam liveness without blink trap, keeps top & bottom (X/2) counters synced, and transitions directly to Success with greeting mascot', () => {
+    // 1. Passive live-webcam liveness passes cleanly on >= 0.8px natural micro-movement with blinkCount=0
+    expect(PASSIVE_LIVENESS_MIN_PIXEL_SHIFT).toBe(0.8);
+    const livePass = evaluatePassiveWebcamLiveness({
+      prevAnchors: { boxCenterX: 320, boxCenterY: 240, noseX: 321, noseY: 245, yawDeg: 1.0, pitchDeg: 0.5 },
+      nextAnchors: { boxCenterX: 321.1, boxCenterY: 240.3, noseX: 322.2, noseY: 245.5, yawDeg: 1.1, pitchDeg: 0.5 },
+      bioBiologicalVerified: false,
+      blinkCount: 0,
+      isSpoof: false,
+    });
+    expect(livePass.liveVerified).toBe(true);
+    expect(livePass.signalReason).toBe('micro_motion');
+
+    // Spoofed static photo is STILL blocked
+    const spoofBlocked = evaluatePassiveWebcamLiveness({
+      prevAnchors: { boxCenterX: 320, boxCenterY: 240 },
+      nextAnchors: { boxCenterX: 322, boxCenterY: 240 },
+      bioBiologicalVerified: false,
+      blinkCount: 0,
+      isSpoof: true,
+    });
+    expect(spoofBlocked.liveVerified).toBe(false);
+    expect(spoofBlocked.signalReason).toBe('spoof');
+
+    // 2. Top status badge and bottom-right counter read from the exact same scanMatchCount (never 2/2 vs 0/2)
+    const step0 = resolveKioskUnifiedScanProgress({ scanMatchCount: 0, isMatched: false });
+    expect(step0.topLabel).toBe('กำลังตรวจสอบใบหน้า... (0/2)');
+    expect(step0.counterLabel).toBe('กำลังตรวจสอบใบหน้า... (0/2)');
+    expect(step0.isComplete).toBe(false);
+
+    const step1 = resolveKioskUnifiedScanProgress({ scanMatchCount: 1, isMatched: false });
+    expect(step1.topLabel).toBe('กำลังตรวจสอบใบหน้า... (1/2)');
+    expect(step1.counterLabel).toBe('กำลังตรวจสอบใบหน้า... (1/2)');
+    expect(step1.isComplete).toBe(false);
+
+    const step2 = resolveKioskUnifiedScanProgress({ scanMatchCount: 2, isMatched: true });
+    expect(step2.topLabel).toBe('ยืนยันสำเร็จ! (2/2)');
+    expect(step2.counterLabel).toBe('กำลังตรวจสอบใบหน้า... (2/2)');
+    expect(step2.isComplete).toBe(true);
+    expect(step2.progressPct).toBe(100);
+
+    // 3. Once matched or matching, NEVER fall back to "not_found" and NEVER show forced blink trap
+    expect(
+      shouldTriggerFastNotFoundVerdict({
+        candidatesLoaded: true,
+        humanWarmupReady: true,
+        documentHidden: false,
+        isAmbiguous: false,
+        isSpoof: false,
+        bioVerified: true,
+        matchStreak: 2,
+        hasMatchedPatient: true,
+        unmatchedClearFrames: 10,
+        unmatchedElapsedMs: 5000,
+        inRescanCooldown: false,
+        hasZeroCandidates: false,
+        totalEvaluatedFrames: 10,
+        totalDecisionElapsedMs: 5000,
+      }),
+    ).toBe(false);
+
+    const calmLivenessOverlay = resolveKioskFaceBoundingBoxOverlay({
+      isSpoof: false,
+      isBioVerified: false,
+      rawCosine: 0.92,
+      streak: 1,
+      requiredStreak: 2,
+      confirmedCandidateName: null,
+      distanceM: 1.3,
+    });
+    expect(calmLivenessOverlay.label).toBe('กำลังยืนยันใบหน้าจริง...');
+    expect(calmLivenessOverlay.label).not.toContain('กะพริบตา');
+
+    // 4. Success confirmation card renders DrTechCareMascot in 'greeting' pose with zero emojis
+    const payload = makeMatchedPayload();
+    const copy = getKioskVerifiedModalCopy('th', {
+      fullName: payload.patient.fullName,
+      hn: payload.patient.hn,
+      nextAppointmentDate: payload.patient.nextAppointmentDate,
+      confidencePercent: payload.confidencePercent,
+      twoHandProgressPct: 0,
+    });
+    const successHtml = renderToStaticMarkup(
+      <KioskVerifiedConfirmationCard
+        lang="th"
+        verifiedModalPayload={payload}
+        modalCopy={copy}
+        scanGeneration={2}
+        verifiedAnimDone={true}
+        voiceMuted={false}
+        isWelcomeSpeechDone={false}
+        raisedDuringSpeech={false}
+        twoHandCameraReady={true}
+        twoHandDetectorReady={true}
+        twoHandDetected={false}
+        twoHandProgress={0}
+        leftHandUpState={false}
+        rightHandUpState={false}
+        ownerGuardBanner={null}
+        confirmVideoRef={makeCardRef<HTMLVideoElement>()}
+        confirmCanvasRef={makeCardRef<HTMLCanvasElement>()}
+        confirmProgressFillRef={makeCardRef<HTMLDivElement>()}
+        confirmProgressTextRef={makeCardRef<HTMLSpanElement>()}
+        confirmPillLabelRef={makeCardRef<HTMLSpanElement>()}
+        confirmBtnFillRef={makeCardRef<HTMLSpanElement>()}
+        confirmBtnLabelRef={makeCardRef<HTMLSpanElement>()}
+        onSelectLang={() => {}}
+        onToggleVoiceMute={() => {}}
+        onProceedToExercise={() => {}}
+        onRejectWrongMatch={() => {}}
+      />,
+    );
+    expect(successHtml).toContain('data-testid="drtechcare-mascot"');
+    expect(successHtml).toContain('data-pose="greeting"');
+    expect(EMOJI_RE.test(successHtml)).toBe(false);
   });
 });
