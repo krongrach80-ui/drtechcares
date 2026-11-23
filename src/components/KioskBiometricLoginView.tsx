@@ -1756,8 +1756,9 @@ export function KioskBiometricLoginView({
   /**
    * Refreshes count-only biometric library telemetry from /api/biometrics/stats.
    * ZERO patient face vectors, names, or HNs are ever downloaded to the Kiosk browser.
+   * When `warmVerifyCache` is true, asks the edge Worker to warm its server-side template RAM cache.
    */
-  const refreshBiometricLibraryStats = useCallback(async (force = false) => {
+  const refreshBiometricLibraryStats = useCallback(async (force = false, warmVerifyCache = false) => {
     const now = Date.now();
     if (!force && lastCandidatesSyncAtRef.current > 0 && now - lastCandidatesSyncAtRef.current < 15_000) {
       return;
@@ -1768,7 +1769,10 @@ export function KioskBiometricLoginView({
       return;
     }
     try {
-      const stats: BiometricLibraryStatsResponse = await apiClient.getBiometricLibraryStats(force);
+      const stats: BiometricLibraryStatsResponse = await apiClient.getBiometricLibraryStats(
+        force,
+        warmVerifyCache,
+      );
       candidatesLoadedRef.current = true;
       accountCountsRef.current = {
         valid: stats.compatibleTemplatesCount,
@@ -1831,15 +1835,15 @@ export function KioskBiometricLoginView({
   }, [apiClient]);
 
   useEffect(() => {
-    void refreshBiometricLibraryStats(true);
+    void refreshBiometricLibraryStats(true, true);
     if (typeof window === 'undefined') return;
     const onFocus = () => {
-      void refreshBiometricLibraryStats(true);
+      void refreshBiometricLibraryStats(true, true);
     };
     window.addEventListener('focus', onFocus);
     const pollTimer = window.setInterval(() => {
       if (!document.hidden) {
-        void refreshBiometricLibraryStats(false);
+        void refreshBiometricLibraryStats(false, true);
       }
     }, 15_000);
     return () => {
@@ -2299,7 +2303,7 @@ export function KioskBiometricLoginView({
             humanBackend: hTel.backend,
           });
         });
-        void refreshBiometricLibraryStats();
+        void refreshBiometricLibraryStats(false, true);
         if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
           setCameraError('Browser does not support camera access');
           setCameraPaused(true);
@@ -2338,6 +2342,15 @@ export function KioskBiometricLoginView({
         }
         if (opened.activeDeviceId) {
           setActiveCameraId(opened.activeDeviceId);
+          if (!selectedCameraId && typeof window !== 'undefined') {
+            try {
+              if (!window.localStorage.getItem('drtech_preferred_camera_id')) {
+                window.localStorage.setItem('drtech_preferred_camera_id', opened.activeDeviceId);
+              }
+            } catch {
+              // Ignore storage quota/privacy errors
+            }
+          }
         }
         if (!active || !videoRef.current) {
           stream.getTracks().forEach((track) => track.stop());
@@ -2605,7 +2618,7 @@ export function KioskBiometricLoginView({
               const baseWindow = samePersonContinuity ? probeWindowRef.current : [];
               const validWindow = baseWindow.filter(
                 (item) =>
-                  params.snapNow - item.ts <= 1800 &&
+                  params.snapNow - item.ts <= 3500 &&
                   item.embedding.length === extracted.embedding!.length &&
                   Math.abs(item.yawDeg - effectiveYawDeg) <= 12 &&
                   Math.abs(item.pitchDeg - params.snapPitchDeg) <= 10,
@@ -2764,6 +2777,17 @@ export function KioskBiometricLoginView({
               return;
             }
 
+            const consensusWindow = probeWindowRef.current.slice(-KIOSK_FAST_MATCH_STREAK);
+            if (consensusWindow.length < KIOSK_FAST_MATCH_STREAK) {
+              // Fast local accumulation of 3 distinct sharp frames before single atomic 1-RTT server consensus
+              setBurstCount(consensusWindow.length);
+              setScanStage('burst');
+              return;
+            }
+
+            const frameVectors = consensusWindow.map((item) => item.embedding);
+            const frameTimestamps = consensusWindow.map((item) => Math.round(item.ts));
+
             const livenessEvidence = {
               biologicalVerified: params.snapBioVerified,
               blinkCount: params.snapBioBlinkCount,
@@ -2775,15 +2799,19 @@ export function KioskBiometricLoginView({
               pitchDeg: params.snapPitchDeg,
               rollDeg,
               engine: BIOMETRIC_ENGINE_ID,
+              frameVectors,
+              frameTimestamps,
               ...(activeGeometricRatios ? { geometricRatios: activeGeometricRatios } : {}),
               ...(excludedPatientIdsRef.current.length > 0
                 ? { excludedPatientIds: excludedPatientIdsRef.current }
                 : {}),
             };
 
-            // Live Server-Side Verification (ZERO other patients' vectors ever downloaded to the Kiosk browser!)
+            // Live Server-Side Verification (1 atomic RTT for 3 distinct frames; ZERO other patients' vectors downloaded!)
             if (!verifyingLockRef.current) {
               updateReadinessHint(null);
+              setBurstCount(KIOSK_FAST_MATCH_STREAK);
+              void preloadRehabPosePipeline();
               let verifyRes: KioskFaceVerifyResponse;
               let usedEmbedding = activeEmbedding;
               let usedGeometricRatios = activeGeometricRatios;
@@ -2836,8 +2864,9 @@ export function KioskBiometricLoginView({
                             }
                           : undefined;
                       const mirrorVerifyStart = performance.now();
+                      const { frameVectors: _fv, frameTimestamps: _ft, ...singleMirrorEvidence } = livenessEvidence;
                       const mirrorRes = await apiClient.verifyFaceLogin(mirroredExt.embedding, {
-                        ...livenessEvidence,
+                        ...singleMirrorEvidence,
                         yawDeg: -effectiveYawDeg,
                         ...(mirroredRatios ? { geometricRatios: mirroredRatios } : {}),
                         mirroredProbeVector: activeEmbedding,
@@ -3048,7 +3077,15 @@ export function KioskBiometricLoginView({
               ) {
                 preferredMirrorModeRef.current = useMirroredFirst ? 'mirrored' : 'normal';
                 const scoreNorm = Math.max(0, Math.min(1, verifyRes.confidencePercent / 100));
-                if (serverStreakRef.current.patientId === matchedPat.id) {
+                const atomicConsensusVerified =
+                  typeof verifyRes.consensusFramesVerified === 'number' &&
+                  verifyRes.consensusFramesVerified >= KIOSK_FAST_MATCH_STREAK;
+                if (atomicConsensusVerified) {
+                  serverStreakRef.current = {
+                    patientId: matchedPat.id,
+                    scores: Array.from({ length: KIOSK_FAST_MATCH_STREAK }, () => scoreNorm),
+                  };
+                } else if (serverStreakRef.current.patientId === matchedPat.id) {
                   const candidateScores = [...serverStreakRef.current.scores, scoreNorm];
                   const minScore = Math.min(...candidateScores);
                   const maxScore = Math.max(...candidateScores);
@@ -3076,10 +3113,6 @@ export function KioskBiometricLoginView({
                 unmatchedClearFramesRef.current = 0;
                 setBurstCount(nextStreak);
                 setTurningHintPct(null);
-
-                if (nextStreak === KIOSK_FAST_MATCH_STREAK - 1) {
-                  void preloadRehabPosePipeline();
-                }
 
                 const matchOverlay = resolveKioskFaceBoundingBoxOverlay({
                   isSpoof: false,
@@ -3246,8 +3279,9 @@ export function KioskBiometricLoginView({
                 if (scanDecisionStartAtRef.current === 0) {
                   scanDecisionStartAtRef.current = params.snapNow;
                 }
-                totalEvaluatedFramesRef.current += 1;
-                unmatchedClearFramesRef.current += 1;
+                const evaluatedBatchFrames = Math.max(1, consensusWindow.length);
+                totalEvaluatedFramesRef.current += evaluatedBatchFrames;
+                unmatchedClearFramesRef.current += evaluatedBatchFrames;
                 const unmatchedElapsed = params.snapNow - bioVerifiedUnmatchedStartAt;
                 const totalDecisionElapsed = params.snapNow - scanDecisionStartAtRef.current;
 
@@ -4300,6 +4334,9 @@ export function KioskBiometricLoginView({
                 profilerRef.current.markFaceSeen(now);
                 noFaceSinceRef.current = null;
                 setShowNoFaceGuidance(false);
+                if (Date.now() - lastCandidatesSyncAtRef.current >= 10_000) {
+                  void refreshBiometricLibraryStats(false, true);
+                }
               }
 
               if (!alignCanvasRef.current) {
@@ -4316,12 +4353,13 @@ export function KioskBiometricLoginView({
                 lastKnownRoiBox = rawBoxForBio;
               }
 
-              // Throttle synchronous GPU->CPU getImageData readbacks to ~12.5 Hz (every 80ms)
-              // while keeping landmark blinks, iris gaze micro-saccades & smooth mesh tracking full speed
+              // Throttle synchronous GPU->CPU getImageData readbacks (80ms during liveness/exposure settle,
+              // 220ms once exposure is settled & biological liveness locked to cut readback stalls by ~65%)
               const livenessStartMs = performance.now();
+              const alignSampleIntervalMs = exposureSettled && lastBioVerifiedUi ? 220 : 80;
               const shouldSamplePixelCrops =
                 landmarks.length >= 300 &&
-                (!cachedAlignCrop || now - lastAlignSampleAt >= 80);
+                (!cachedAlignCrop || now - lastAlignSampleAt >= alignSampleIntervalMs);
               if (shouldSamplePixelCrops) {
                 lastAlignSampleAt = now;
                 cachedAlignCrop = alignFaceTo112(
@@ -4560,14 +4598,19 @@ export function KioskBiometricLoginView({
                   if (blurryFrameStreak < 2) {
                     updateReadinessHint(null);
                   }
-                  // Dispatch single-pass backlit-normalized 1024-D + 256-D Dual-Iris matching asynchronously
-                  // so GPU landmark tracking NEVER stalls
+                  // Dispatch single-pass backlit-normalized 1024-D + 256-D Dual-Iris matching asynchronously.
+                  // Before biological liveness locks, capture at most 2 sharp pre-warm frames spaced >= 140ms apart
+                  // so MediaPipe FaceLandmarker gets 100% GPU priority for fastest blink/iris liveness lock!
+                  const prewarmCount = probeWindowRef.current.length;
+                  const allowEmbedDispatch = bio?.biologicalVerified
+                    ? now - lastEmbedCheckAt >= 25
+                    : prewarmCount < 2 && now - lastEmbedCheckAt >= 140;
                   if (
                     !asyncMatchInFlight &&
                     !verifyingLockRef.current &&
                     bio &&
                     meanEar >= 0.16 &&
-                    now - lastEmbedCheckAt >= 20
+                    allowEmbedDispatch
                   ) {
                     if (!matchSnapCanvasRef.current) {
                       matchSnapCanvasRef.current = document.createElement('canvas');

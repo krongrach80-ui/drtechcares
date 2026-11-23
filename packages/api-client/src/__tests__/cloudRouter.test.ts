@@ -1240,7 +1240,8 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     });
     expect(oldEnroll.status).toBe(201);
 
-    const newEnroll = await callRouter(router, '/api/biometric/enroll', {
+    // Attempting to enroll the exact same face a second time via /api/biometric/enroll is now blocked with 409!
+    const dupBlockEnroll = await callRouter(router, '/api/biometric/enroll', {
       method: 'POST',
       token: ptToken,
       body: {
@@ -1253,7 +1254,41 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         rawFrames: buildFrames(newerVec),
       },
     });
+    expect(dupBlockEnroll.status).toBe(409);
+
+    // Simulate legacy pre-existing same-person duplicate DB rows via skipFaceScan + /api/biometrics
+    const newEnroll = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-54720',
+        fullName: 'พัทธดนย์ ผ่องอารมย์',
+        age: 28,
+        diagnosis: 'ฟื้นฟูข้อไหล่',
+        skipFaceScan: true,
+      },
+    });
     expect(newEnroll.status).toBe(201);
+    const { patient: newerPat } = (await newEnroll.json()) as { patient: { id: string; hn: string } };
+    const attachNewerRes = await callRouter(router, '/api/biometrics', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        patientId: newerPat.id,
+        hn: newerPat.hn,
+        fullName: 'พัทธดนย์ ผ่องอารมย์',
+        masterEmbedding: newerVec,
+        angleEmbeddings: {
+          center: newerVec,
+          left: newerVec,
+          right: newerVec,
+          up: newerVec,
+          down: newerVec,
+        },
+        framesCaptured: 120,
+      },
+    });
+    expect(attachNewerRes.status).toBe(201);
 
     // Probe near both duplicate enrollments (~0.83-0.96 similarity) must match the newer HN rather than colliding on margin
     const liveProbe = l2Normalize(olderVec.map((v, i) => v * 0.45 + newerVec[i] * 0.55));
@@ -1474,11 +1509,11 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(lrJson.matched).toBe(true);
     expect(lrJson.patient?.hn).toBe('HN-BIOSPOOF-01');
 
-    // Enroll a close-looking second person (similarity within < 0.08 margin of owner) -> must return 401 AMBIGUOUS_CLOSE_CANDIDATES
+    // Attempting direct /api/biometric/enroll with near-identical face is blocked at 409; seed pre-existing twin row via skipFaceScan + /api/biometrics
     const closeLookAlikeVec = l2Normalize(
       ownerVec.map((v, i) => v * 0.96 + makeHybridEmbedding(44.2)[i] * 0.04),
     );
-    const twinEnrollRes = await callRouter(router, '/api/biometric/enroll', {
+    const blockedTwinRes = await callRouter(router, '/api/biometric/enroll', {
       method: 'POST',
       token: ptToken,
       body: {
@@ -1497,8 +1532,41 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         ],
       },
     });
+    expect(blockedTwinRes.status).toBe(409);
+
+    const twinEnrollRes = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-BIOSPOOF-02',
+        fullName: 'คุณแฝด คนละบัญชี',
+        age: 62,
+        phone: '0890000002',
+        diagnosis: 'Knee Rehab',
+        skipFaceScan: true,
+      },
+    });
     expect(twinEnrollRes.status).toBe(201);
-    const twinPatient = (await twinEnrollRes.json()) as { patient: { id: string } };
+    const twinPatient = (await twinEnrollRes.json()) as { patient: { id: string; hn: string } };
+    const attachTwinRes = await callRouter(router, '/api/biometrics', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        patientId: twinPatient.patient.id,
+        hn: twinPatient.patient.hn,
+        fullName: 'คุณแฝด คนละบัญชี',
+        masterEmbedding: closeLookAlikeVec,
+        angleEmbeddings: {
+          center: closeLookAlikeVec,
+          left: closeLookAlikeVec,
+          right: closeLookAlikeVec,
+          up: closeLookAlikeVec,
+          down: closeLookAlikeVec,
+        },
+        framesCaptured: 120,
+      },
+    });
+    expect(attachTwinRes.status).toBe(201);
 
     // Ambiguous close candidates must reject instead of guessing between patient 1 & patient 2
     const ambiguousProbe = l2Normalize(
@@ -3402,9 +3470,9 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(strangerRaw).not.toContain('คุณสมหมาย');
     expect(strangerRaw).not.toContain('HN-LIVE-1024');
 
-    // Enroll a distinct-name twin candidate very close to p1Center -> AMBIGUOUS (within 0.08 margin)
+    // Attempt to enroll a distinct-name near-identical face -> blocked with HTTP 409 DUPLICATE_FACE_ENROLLMENT!
     const twinCenter = mixRelu6(p1Center, makeRelu6(7.9), 0.04);
-    await callRouter(diagRouter, '/api/biometric/enroll', {
+    const dupBlockRes = await callRouter(diagRouter, '/api/biometric/enroll', {
       method: 'POST',
       token: ptToken,
       body: {
@@ -3415,6 +3483,41 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         masterEmbedding: twinCenter,
         frontalCentroid: twinCenter,
         overallCentroid: twinCenter,
+        angleEmbeddings: {
+          center: twinCenter,
+          left: twinCenter,
+          right: twinCenter,
+          up: twinCenter,
+          down: twinCenter,
+        },
+        biometricEngine: 'human-faceres-1024d',
+        framesCaptured: 120,
+      },
+    });
+    expect(dupBlockRes.status).toBe(409);
+
+    // Simulate legacy pre-existing duplicate DB accounts via skipFaceScan + /api/biometrics -> AMBIGUOUS (within 0.08 margin)
+    const legacyTwinCreate = await callRouter(diagRouter, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-TWIN-1024',
+        fullName: 'คุณฝาแฝด ใกล้เคียง',
+        age: 64,
+        diagnosis: 'Stroke Shoulder',
+        skipFaceScan: true,
+      },
+    });
+    expect(legacyTwinCreate.status).toBe(201);
+    const { patient: twinPat } = (await legacyTwinCreate.json()) as { patient: { id: string; hn: string } };
+    await callRouter(diagRouter, '/api/biometrics', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        patientId: twinPat.id,
+        hn: twinPat.hn,
+        fullName: 'คุณฝาแฝด ใกล้เคียง',
+        masterEmbedding: twinCenter,
         angleEmbeddings: {
           center: twinCenter,
           left: twinCenter,
@@ -3654,6 +3757,413 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(statsMeta.filteredOutCount).toBe(1);
     expect((seenStatsCols.patients ?? []).join(',')).not.toContain('history');
     expect((seenStatsCols.patient_biometrics ?? []).join(',')).not.toContain('master_embedding');
+  });
+
+  it('preserves face_biometric_status=VERIFIED and face_frames_count=120 when unmigrated optional patient columns fail PGRST204', async () => {
+    resetUnsupportedColumnsForTests();
+    const makeRelu6 = (seed: number): number[] => {
+      const raw = new Array<number>(1024);
+      for (let i = 0; i < 1024; i += 1) {
+        const v = Math.sin((i + 1) * seed * 0.21) + 0.5 * Math.cos((i + 2) * seed * 0.33) + 0.35;
+        raw[i] = v > 0 ? v : 0;
+      }
+      return l2Normalize(raw);
+    };
+    const vec = makeRelu6(12.3);
+    const missingDbCols = new Set([
+      'max_safe_rom_deg',
+      'universal_health_link_code',
+      'biometric_data',
+      'face_embedding',
+      'biometric_updated_at',
+    ]);
+    const acceptedPayloads: Record<string, unknown>[] = [];
+    const origFetch = globalThis.fetch;
+
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
+        if (url.includes('/rest/v1/patients') && method === 'POST') {
+          const parsed = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+          const row = Array.isArray(parsed) ? (parsed[0] as Record<string, unknown>) : parsed;
+          for (const col of missingDbCols) {
+            if (col in row) {
+              return new Response(
+                JSON.stringify({
+                  code: 'PGRST204',
+                  message: `Could not find the '${col}' column of 'patients' in the schema cache`,
+                }),
+                { status: 400, headers: { 'Content-Type': 'application/json' } },
+              );
+            }
+          }
+          acceptedPayloads.push(row);
+          return new Response(JSON.stringify([row]), {
+            status: 201,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as typeof fetch;
+
+      const fakeJwt =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.signaturevaltestsafe1234567890';
+      const router = createCloudDelegatedRouter({
+        supabaseUrl: 'https://unit-test.supabase.co',
+        supabaseServiceKey: fakeJwt,
+      });
+      const loginRes = await callRouter(router, '/api/auth/login', {
+        method: 'POST',
+        body: { username: 'admin', password: 'Admin@2026' },
+      });
+      expect(loginRes.status).toBe(200);
+      const { token } = (await loginRes.json()) as { token: string };
+
+      const enrollRes = await callRouter(router, '/api/biometric/enroll', {
+        method: 'POST',
+        token,
+        body: {
+          hn: 'HN-COL-PRESERVE',
+          fullName: 'คุณทดสอบ คงคอลัมน์ชีวมาตร',
+          age: 55,
+          diagnosis: 'Stroke Shoulder',
+          masterEmbedding: vec,
+          frontalCentroid: vec,
+          overallCentroid: vec,
+          angleEmbeddings: { center: vec, left: vec, right: vec, up: vec, down: vec },
+          biometricEngine: 'human-faceres-1024d',
+          framesCaptured: 120,
+          qualityScore: 0.97,
+        },
+      });
+      expect(enrollRes.status).toBe(201);
+      const acceptedPatientInsertPayload = acceptedPayloads[0];
+      expect(acceptedPatientInsertPayload).toBeDefined();
+      expect(acceptedPatientInsertPayload?.face_biometric_status).toBe('VERIFIED');
+      expect(acceptedPatientInsertPayload?.face_frames_count).toBe(120);
+      expect(acceptedPatientInsertPayload?.max_safe_rom_deg).toBeUndefined();
+      expect(acceptedPatientInsertPayload?.biometric_data).toBeUndefined();
+    } finally {
+      globalThis.fetch = origFetch;
+      resetUnsupportedColumnsForTests();
+    }
+  });
+
+  it('enforces duplicate-face guard (409 on enroll, privacy-safe check-duplicate, self re-enroll allowed) and atomic 3-frame verify consensus + JSONB projection', async () => {
+    const makeRelu6 = (seed: number): number[] => {
+      const raw = new Array<number>(1024);
+      for (let i = 0; i < 1024; i += 1) {
+        const v = Math.sin((i + 1) * seed * 0.17) + 0.55 * Math.cos((i + 5) * seed * 0.29) + 0.35;
+        raw[i] = v > 0 ? v : 0;
+      }
+      return l2Normalize(raw);
+    };
+    const mixRelu6 = (a: number[], b: number[], alpha: number): number[] =>
+      l2Normalize(a.map((v, i) => v * (1 - alpha) + b[i] * alpha));
+
+    const router = createCloudDelegatedRouter({});
+    const loginRes = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'pt_somchai', password: 'Pt@2026' },
+    });
+    const { token: ptToken } = (await loginRes.json()) as { token: string };
+
+    const personA = makeRelu6(3.7);
+    const personACenter = mixRelu6(personA, makeRelu6(4.1), 0.05);
+    const personB = makeRelu6(27.9);
+
+    // 1. Enroll Patient A (English name)
+    const enrollA = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-DUP-EN',
+        fullName: 'Phatdanai Phongarom',
+        age: 30,
+        diagnosis: 'Stroke Shoulder',
+        masterEmbedding: personA,
+        frontalCentroid: personACenter,
+        overallCentroid: personA,
+        angleEmbeddings: {
+          center: personACenter,
+          left: mixRelu6(personA, makeRelu6(5.1), 0.08),
+          right: mixRelu6(personA, makeRelu6(6.1), 0.08),
+          up: mixRelu6(personA, makeRelu6(7.1), 0.08),
+          down: mixRelu6(personA, makeRelu6(8.1), 0.08),
+        },
+        biometricEngine: 'human-faceres-1024d',
+        framesCaptured: 120,
+      },
+    });
+    expect(enrollA.status).toBe(201);
+    const { patient: patA } = (await enrollA.json()) as { patient: { id: string; hn: string } };
+
+    // 2. Unauthenticated check-duplicate returns duplicate:true with ZERO PII leaked!
+    const dupProbe = mixRelu6(personA, makeRelu6(9.2), 0.06);
+    const pubDupRes = await callRouter(router, '/api/biometric/check-duplicate', {
+      method: 'POST',
+      body: { masterEmbedding: dupProbe, centerEmbedding: dupProbe },
+    });
+    expect(pubDupRes.status).toBe(200);
+    const pubDupRaw = await pubDupRes.text();
+    const pubDupJson = JSON.parse(pubDupRaw) as {
+      duplicate: boolean;
+      existingPatient?: unknown;
+      message?: string;
+    };
+    expect(pubDupJson.duplicate).toBe(true);
+    expect(pubDupJson.existingPatient).toBeUndefined();
+    expect(pubDupRaw).not.toContain('Phatdanai');
+    expect(pubDupRaw).not.toContain('HN-DUP-EN');
+
+    // 3. Authenticated Staff check-duplicate returns existingPatient metadata
+    const staffDupRes = await callRouter(router, '/api/biometric/check-duplicate', {
+      method: 'POST',
+      token: ptToken,
+      body: { masterEmbedding: dupProbe, centerEmbedding: dupProbe },
+    });
+    expect(staffDupRes.status).toBe(200);
+    const staffDupJson = (await staffDupRes.json()) as {
+      duplicate: boolean;
+      existingPatient?: { id: string; hn: string; fullName: string };
+    };
+    expect(staffDupJson.duplicate).toBe(true);
+    expect(staffDupJson.existingPatient?.hn).toBe('HN-DUP-EN');
+    expect(staffDupJson.existingPatient?.fullName).toBe('Phatdanai Phongarom');
+
+    // 4. Self re-enrollment check with excludePatientId returns duplicate:false
+    const selfDupRes = await callRouter(router, '/api/biometric/check-duplicate', {
+      method: 'POST',
+      token: ptToken,
+      body: { masterEmbedding: dupProbe, centerEmbedding: dupProbe, excludePatientId: patA.id },
+    });
+    expect(selfDupRes.status).toBe(200);
+    expect(((await selfDupRes.json()) as { duplicate: boolean }).duplicate).toBe(false);
+
+    // 5. Enrolling same face under Thai name -> HTTP 409 DUPLICATE_FACE_ENROLLMENT
+    const enrollDupThai = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-DUP-TH',
+        fullName: 'ภัทรดนย์ ผ่องอารมย์',
+        age: 30,
+        diagnosis: 'Stroke Shoulder',
+        masterEmbedding: dupProbe,
+        frontalCentroid: dupProbe,
+        overallCentroid: dupProbe,
+        angleEmbeddings: { center: dupProbe, left: dupProbe, right: dupProbe, up: dupProbe, down: dupProbe },
+        biometricEngine: 'human-faceres-1024d',
+        framesCaptured: 120,
+      },
+    });
+    expect(enrollDupThai.status).toBe(409);
+    const enrollDupJson = (await enrollDupThai.json()) as {
+      error: string;
+      existingPatient?: { hn: string };
+    };
+    expect(enrollDupJson.error).toBe('DUPLICATE_FACE_ENROLLMENT');
+    expect(enrollDupJson.existingPatient?.hn).toBe('HN-DUP-EN');
+
+    // 6. Enrolling genuinely different Person B succeeds (201), and trying to overwrite Person B with Person A's face returns 409
+    const enrollB = await callRouter(router, '/api/biometric/enroll', {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        hn: 'HN-PERSON-B',
+        fullName: 'คุณสมศรี คนละคน',
+        age: 58,
+        diagnosis: 'Stroke Shoulder',
+        masterEmbedding: personB,
+        frontalCentroid: personB,
+        overallCentroid: personB,
+        angleEmbeddings: { center: personB, left: personB, right: personB, up: personB, down: personB },
+        biometricEngine: 'human-faceres-1024d',
+        framesCaptured: 120,
+      },
+    });
+    expect(enrollB.status).toBe(201);
+    const { patient: patB } = (await enrollB.json()) as { patient: { id: string } };
+
+    const crossOverwrite = await callRouter(router, `/api/patients/${patB.id}/enroll-face`, {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        masterEmbedding: dupProbe,
+        angleEmbeddings: { center: dupProbe, left: dupProbe, right: dupProbe, up: dupProbe, down: dupProbe },
+        biometricEngine: 'human-faceres-1024d',
+        framesCaptured: 120,
+      },
+    });
+    expect(crossOverwrite.status).toBe(409);
+
+    // Self re-enroll on Patient A succeeds (200)
+    const selfReenroll = await callRouter(router, `/api/patients/${patA.id}/enroll-face`, {
+      method: 'POST',
+      token: ptToken,
+      body: {
+        masterEmbedding: dupProbe,
+        angleEmbeddings: { center: dupProbe, left: dupProbe, right: dupProbe, up: dupProbe, down: dupProbe },
+        biometricEngine: 'human-faceres-1024d',
+        framesCaptured: 120,
+      },
+    });
+    expect(selfReenroll.status).toBe(200);
+
+    // 7. Atomic 3-frame verify consensus (1 RTT -> consensusFramesVerified: 3)
+    const f1 = mixRelu6(personA, makeRelu6(11.1), 0.04);
+    const f2 = mixRelu6(personA, makeRelu6(12.2), 0.05);
+    const f3 = mixRelu6(personA, makeRelu6(13.3), 0.045);
+    const centroid = l2Normalize(f1.map((v, i) => v + f2[i] + f3[i]));
+    const atomicOk = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      deviceId: 'KIOSK-ATOMIC-1',
+      body: {
+        probeVector: centroid,
+        frameVectors: [f1, f2, f3],
+        frameTimestamps: [1000, 1180, 1340],
+        engine: 'human-faceres-1024d',
+        livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.02 },
+      },
+    });
+    expect(atomicOk.status).toBe(200);
+    const atomicOkJson = (await atomicOk.json()) as {
+      matched: boolean;
+      consensusFramesVerified?: number;
+      patient?: { hn: string };
+    };
+    expect(atomicOkJson.matched).toBe(true);
+    expect(atomicOkJson.consensusFramesVerified).toBe(3);
+    expect(atomicOkJson.patient?.hn).toBe('HN-DUP-EN');
+
+    // 8. Bit-identical replay frames [f1, f1, f1] MUST be rejected (401 FRAME_CONSENSUS_FAILED)
+    const replayRes = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      deviceId: 'KIOSK-ATOMIC-2',
+      body: {
+        probeVector: f1,
+        frameVectors: [f1, f1, f1],
+        frameTimestamps: [1000, 1180, 1340],
+        engine: 'human-faceres-1024d',
+        livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.02 },
+      },
+    });
+    expect(replayRes.status).toBe(401);
+    const replayJson = (await replayRes.json()) as { matched: boolean; failureReasons?: string[] };
+    expect(replayJson.matched).toBe(false);
+    expect(replayJson.failureReasons).toContain('FRAME_CONSENSUS_FAILED');
+
+    // 9. Mixed stranger frame in [f1, f2, personB] MUST be rejected (401 FRAME_CONSENSUS_FAILED)
+    const mixedRes = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      deviceId: 'KIOSK-ATOMIC-3',
+      body: {
+        probeVector: centroid,
+        frameVectors: [f1, f2, personB],
+        frameTimestamps: [1000, 1180, 1340],
+        engine: 'human-faceres-1024d',
+        livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.02 },
+      },
+    });
+    expect(mixedRes.status).toBe(401);
+    const mixedJson = (await mixedRes.json()) as { matched: boolean; failureReasons?: string[] };
+    expect(mixedJson.matched).toBe(false);
+    expect(mixedJson.failureReasons).toContain('FRAME_CONSENSUS_FAILED');
+
+    // 10. GET /api/biometrics/stats?warm=1 returns count-only JSON with ZERO vectors / ZERO PII
+    const warmStatsRes = await callRouter(router, '/api/biometrics/stats?warm=1');
+    expect(warmStatsRes.status).toBe(200);
+    const warmStatsRaw = await warmStatsRes.text();
+    const warmStatsJson = JSON.parse(warmStatsRaw) as { compatibleTemplatesCount: number };
+    expect(warmStatsJson.compatibleTemplatesCount).toBe(2);
+    expect(warmStatsRaw).not.toContain('Phatdanai');
+    expect(warmStatsRaw).not.toContain('masterEmbedding');
+
+    // 11. hydrateBiometricsLiveFromSupabase uses PostgREST JSONB projection (never downloads raw history embeddings)
+    const seenLiveCols: Record<string, string[]> = {};
+    const projSb = {
+      from: (table: string) => {
+        const q: Record<string, unknown> = {};
+        q.select = (cols: string) => {
+          seenLiveCols[table] = [...(seenLiveCols[table] ?? []), cols];
+          return q;
+        };
+        q.limit = () => q;
+        q.then = (resolve: (val: unknown) => void) => {
+          if (table === 'patients') {
+            resolve({
+              data: [
+                {
+                  id: 'pat-proj-1',
+                  hn: 'HN-PROJ-1',
+                  full_name: 'คุณทดสอบ โปรเจคชัน',
+                  age: 60,
+                  registration_status: 'active',
+                  geometricRatios: { eyeToNoseRatio: 1.2, faceWidthToUpperHeight: 1.1, mouthToEyeRatio: 0.8, noseToChinRatio: 0.9 },
+                  rehabSchedules: [{ id: 's1', patientId: 'pat-proj-1', ptId: 'pt-1', exerciseId: 'STROKE_SH_FLEX', scheduledDate: '2026-11-23', sets: 3, reps: 10, status: 'ACTIVE' }],
+                  strokeType: 'ISCHEMIC',
+                  affectedSide: 'RIGHT',
+                  motorAssessmentScore: 4,
+                  maxSafeRomDeg: 135,
+                  universalHealthLinkCode: 'DTC-EHR-PROJ01',
+                },
+              ],
+              error: null,
+            });
+            return;
+          }
+          if (table === 'patient_biometrics') {
+            resolve({
+              data: [
+                {
+                  patient_id: 'pat-proj-1',
+                  hn: 'HN-PROJ-1',
+                  master_embedding: personA,
+                  angle_embeddings: { center: personA, left: personA, right: personA, up: personA, down: personA },
+                  embedding_dim: 1024,
+                  frames_captured: 120,
+                },
+              ],
+              error: null,
+            });
+            return;
+          }
+          resolve({ data: [], error: null });
+        };
+        return q;
+      },
+    } as unknown as SupabaseClient;
+    const projState = {
+      users: [],
+      patients: [],
+      face_templates: [],
+      medical_notes: [],
+      patient_courses: [],
+      rehab_sessions: [],
+      treatment_reports: [],
+      exercises: [],
+      modpacks: [],
+      staff_calls: [],
+      audit_logs: [],
+      banned_targets: [],
+      active_sessions: [],
+      system_settings: { aiFaceScanEnabled: true, aiFaceThreshold: 0.84, aiPoseDetectionEnabled: false, kioskAutoResetSec: 6 },
+      kiosks: [],
+    } as unknown as CloudRouterState;
+    const projRes = await hydrateBiometricsLiveFromSupabase(projSb, projState, 2000);
+    expect(projRes.ok).toBe(true);
+    const patientSelectCsv = (seenLiveCols.patients ?? []).join(',');
+    expect(patientSelectCsv).toContain('geometricRatios:history->geometricRatios');
+    expect(patientSelectCsv).toContain('rehabSchedules:history->rehabSchedules');
+    expect(patientSelectCsv.split(',').includes('history')).toBe(false);
+    expect(projState.patients[0]?.geometricRatios?.eyeToNoseRatio).toBe(1.2);
+    expect(projState.patients[0]?.rehabSchedules).toHaveLength(1);
+    expect(projState.patients[0]?.strokeType).toBe('ISCHEMIC');
+    expect(projState.patients[0]?.universalHealthLinkCode).toBe('DTC-EHR-PROJ01');
   });
 });
 

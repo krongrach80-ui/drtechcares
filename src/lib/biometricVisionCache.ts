@@ -377,7 +377,7 @@ export async function preloadKioskBiometricPipeline(
         : Promise.resolve();
     const statsPing =
       typeof apiClient.getBiometricLibraryStats === 'function'
-        ? apiClient.getBiometricLibraryStats().catch(() => undefined)
+        ? apiClient.getBiometricLibraryStats(false, true).catch(() => undefined)
         : Promise.resolve();
     await Promise.allSettled([
       warmupBiometricEngine(),

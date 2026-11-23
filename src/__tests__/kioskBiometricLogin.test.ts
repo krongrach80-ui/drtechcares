@@ -763,6 +763,7 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
     expect(EMOJI_RE.test(rateHtml)).toBe(false);
 
     // 3. KioskBiometricLoginView never downloads other patients' face vectors to the browser
+    //    and uses atomic 3-frame server consensus + background ?warm=1 + camera persistence
     const root = process.cwd();
     const kioskSrc = fs.readFileSync(path.join(root, 'src/components/KioskBiometricLoginView.tsx'), 'utf8');
     expect(kioskSrc).toContain('getBiometricLibraryStats');
@@ -771,6 +772,16 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
     expect(kioskSrc).not.toContain('evaluateLiveMatch1toN');
     expect(kioskSrc).toContain('data-testid="staff-biometric-diagnostics"');
     expect(kioskSrc).toContain('data-testid="kiosk-system-error-modal"');
+    expect(kioskSrc).toContain('frameVectors');
+    expect(kioskSrc).toContain('frameTimestamps');
+    expect(kioskSrc).toContain('consensusFramesVerified');
+    expect(kioskSrc).toContain("window.localStorage.setItem('drtech_preferred_camera_id', opened.activeDeviceId)");
+
+    // 4. StaffAssistedEnrollmentModal enforces duplicate-face check and warning UI
+    const enrollSrc = fs.readFileSync(path.join(root, 'src/components/StaffAssistedEnrollmentModal.tsx'), 'utf8');
+    expect(enrollSrc).toContain('checkDuplicateFace');
+    expect(enrollSrc).toContain('DUPLICATE_FACE_ENROLLMENT');
+    expect(enrollSrc).toContain('data-testid="duplicate-face-warning-banner"');
   });
 
   it('audits all mascot, kiosk login, and biometric matcher files for zero Unicode emojis', () => {
@@ -779,6 +790,7 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
       'src/components/DrTechCareMascot.tsx',
       'src/components/KioskBiometricLoginView.tsx',
       'src/components/ClinicalStaffPortalShell.tsx',
+      'src/components/StaffAssistedEnrollmentModal.tsx',
       'src/lib/biometricEngine.ts',
       'src/lib/biometricScanProfiler.ts',
       'src/lib/biometricTrackerSmoothing.ts',

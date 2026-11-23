@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ApiError,
   formatLocalIsoDate,
   MAHIDOL_MOTOR_SCALE,
   resolveNextAppointmentDate,
   type AffectedSide,
   type DrTechCaresApiClient,
+  type DuplicateFaceCheckResponse,
   type ManagedExerciseRecord,
   type ModpackRecord,
   type PatientRecord,
@@ -33,6 +35,7 @@ import {
 } from './ExerciseSideSelector';
 import {
   Activity,
+  AlertTriangle,
   CalendarDays,
   Camera,
   Check,
@@ -235,6 +238,8 @@ export function StaffAssistedEnrollmentModal({
   const [customDateInput, setCustomDateInput] = useState(todayIso);
 
   const [saving, setSaving] = useState(false);
+  const [duplicateCheckPending, setDuplicateCheckPending] = useState(false);
+  const [duplicateFaceWarning, setDuplicateFaceWarning] = useState<DuplicateFaceCheckResponse | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [createdPatient, setCreatedPatient] = useState<PatientRecord | null>(null);
@@ -250,6 +255,8 @@ export function StaffAssistedEnrollmentModal({
     triggerFinalizeRef.current = null;
     setCreatedPatient(null);
     setCapturedSnapshotUrl(undefined);
+    setDuplicateCheckPending(false);
+    setDuplicateFaceWarning(null);
     setErrorMsg(null);
     setToastMsg(null);
     setExerciseCategoryFilter('all');
@@ -368,6 +375,8 @@ export function StaffAssistedEnrollmentModal({
     setScheduledDates([todayIso]);
     setCustomDateInput(todayIso);
     setCreatedPatient(null);
+    setDuplicateCheckPending(false);
+    setDuplicateFaceWarning(null);
     setErrorMsg(null);
     setToastMsg(null);
   };
@@ -396,6 +405,34 @@ export function StaffAssistedEnrollmentModal({
     setCapturing(true);
   };
 
+  const verifyNoDuplicateFace = async (
+    bio: FaceID120Result,
+  ): Promise<DuplicateFaceCheckResponse> => {
+    if (typeof apiClient.checkDuplicateFace !== 'function') {
+      return { duplicate: false };
+    }
+    setDuplicateCheckPending(true);
+    try {
+      const checkRes = await apiClient.checkDuplicateFace({
+        masterEmbedding: bio.masterEmbedding,
+        centerEmbedding: bio.angleEmbeddings.center,
+        ...(bio.geometricRatios ? { geometricRatios: bio.geometricRatios } : {}),
+        ...(targetPatient ? { excludePatientId: targetPatient.id } : {}),
+      });
+      if (checkRes.duplicate) {
+        setDuplicateFaceWarning(checkRes);
+        setErrorMsg(null);
+      } else {
+        setDuplicateFaceWarning(null);
+      }
+      return checkRes;
+    } catch {
+      return { duplicate: false };
+    } finally {
+      setDuplicateCheckPending(false);
+    }
+  };
+
   const handleProceedFromStep2ToStep3 = async () => {
     setErrorMsg(null);
     let bio = biometric120Result;
@@ -421,6 +458,15 @@ export function StaffAssistedEnrollmentModal({
     }
     if (!bio) {
       setErrorMsg('กรุณาสแกนใบหน้าให้ครบ 5 มุมหรือครบ 120 เฟรมก่อนดำเนินการต่อ');
+      return;
+    }
+    if (duplicateFaceWarning?.duplicate) {
+      setCapturing(false);
+      return;
+    }
+    const dupCheck = await verifyNoDuplicateFace(bio);
+    if (dupCheck.duplicate) {
+      setCapturing(false);
       return;
     }
     setCapturing(false);
@@ -534,6 +580,21 @@ export function StaffAssistedEnrollmentModal({
         setErrorMsg('กรุณาสแกนใบหน้าให้ครบ 5 มุมหรือครบ 120 เฟรมก่อนบันทึกข้อมูล');
         setStep(2);
         setCapturing(true);
+        setSaving(false);
+        return;
+      }
+
+      if (duplicateFaceWarning?.duplicate) {
+        setStep(2);
+        setCapturing(false);
+        setSaving(false);
+        return;
+      }
+
+      const dupCheck = await verifyNoDuplicateFace(bio);
+      if (dupCheck.duplicate) {
+        setStep(2);
+        setCapturing(false);
         setSaving(false);
         return;
       }
@@ -688,7 +749,37 @@ export function StaffAssistedEnrollmentModal({
       setStep(4);
       onEnrolled(enrolled);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'ไม่สามารถบันทึกข้อมูลผู้ป่วยได้');
+      if (
+        err instanceof ApiError &&
+        (err.code === 'DUPLICATE_FACE_ENROLLMENT' || err.status === 409)
+      ) {
+        const rawExisting = err.details?.existingPatient as
+          | { id?: string; hn?: string; fullName?: string }
+          | undefined;
+        const simVal =
+          typeof err.details?.similarityPercent === 'number'
+            ? err.details.similarityPercent
+            : undefined;
+        setDuplicateFaceWarning({
+          duplicate: true,
+          similarityPercent: simVal,
+          ...(rawExisting?.id && rawExisting?.hn && rawExisting?.fullName
+            ? {
+                existingPatient: {
+                  id: rawExisting.id,
+                  hn: rawExisting.hn,
+                  fullName: rawExisting.fullName,
+                },
+              }
+            : {}),
+          message: err.message,
+        });
+        setErrorMsg(null);
+        setCapturing(false);
+        setStep(2);
+      } else {
+        setErrorMsg(err instanceof Error ? err.message : 'ไม่สามารถบันทึกข้อมูลผู้ป่วยได้');
+      }
     } finally {
       setSaving(false);
     }
@@ -827,6 +918,64 @@ export function StaffAssistedEnrollmentModal({
           {errorMsg && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-700 animate-toast-in animate-gentle-shake">
               {errorMsg}
+            </div>
+          )}
+          {duplicateFaceWarning?.duplicate && (
+            <div
+              data-testid="duplicate-face-warning-banner"
+              role="alert"
+              className="rounded-2xl border-2 border-rose-300 bg-rose-50 px-4 py-3.5 text-xs text-rose-950 shadow-sm space-y-2.5 animate-toast-in"
+            >
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <div className="font-extrabold text-sm text-rose-800">
+                    {duplicateFaceWarning.existingPatient
+                      ? 'ตรวจพบใบหน้าซ้ำกับบัญชีที่มีอยู่แล้วในระบบ'
+                      : 'ตรวจพบใบหน้านี้ลงทะเบียนไว้ในระบบแล้ว'}
+                  </div>
+                  <p className="leading-relaxed text-rose-900">
+                    {duplicateFaceWarning.existingPatient
+                      ? `ใบหน้านี้ตรงกับบัญชี ${duplicateFaceWarning.existingPatient.fullName} (${duplicateFaceWarning.existingPatient.hn})${
+                          typeof duplicateFaceWarning.similarityPercent === 'number'
+                            ? ` ความคล้าย ${duplicateFaceWarning.similarityPercent.toFixed(1)}%`
+                            : ''
+                        } — ห้ามสร้างบัญชีซ้ำเพราะจะทำให้การสแกนหน้าเข้าสู่ระบบที่ตู้ Kiosk สับสน กรุณากลับไปอัปเดตใบหน้าในบัญชีเดิมแทน หรือสแกนใบหน้าผู้ป่วยคนใหม่`
+                      : duplicateFaceWarning.message ??
+                        'ใบหน้านี้มีบัญชีอยู่ในระบบแล้ว กรุณากลับไปสแกนหน้าเข้าสู่ระบบ หรือติดต่อเจ้าหน้าที่'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 pl-7">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDuplicateFaceWarning(null);
+                    setErrorMsg(null);
+                    setBiometric120Result(null);
+                    setCapturedSnapshotUrl(undefined);
+                    setAllFiveAnglesReady(false);
+                    triggerFinalizeRef.current = null;
+                    setStep(2);
+                    setCapturing(true);
+                  }}
+                  className="rounded-xl bg-rose-600 px-3.5 py-2 text-xs font-extrabold text-white shadow-xs hover:bg-rose-700 cursor-pointer"
+                >
+                  สแกนใบหน้าใหม่
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCapturing(false);
+                    onClose();
+                  }}
+                  className="rounded-xl border border-rose-300 bg-white px-3.5 py-2 text-xs font-bold text-rose-800 hover:bg-rose-100 cursor-pointer"
+                >
+                  {duplicateFaceWarning.existingPatient
+                    ? 'ปิดหน้าต่างเพื่อกลับไปอัปเดตบัญชีเดิม'
+                    : 'ปิดหน้าต่าง'}
+                </button>
+              </div>
             </div>
           )}
           {toastMsg && (
@@ -1271,6 +1420,7 @@ export function StaffAssistedEnrollmentModal({
                     setBiometric120Result(result);
                     setCapturedSnapshotUrl(result.avatarDataUrl);
                     setAllFiveAnglesReady(true);
+                    void verifyNoDuplicateFace(result);
                   }}
                   onReadyStateChange={(ready, triggerFinalize) => {
                     setAllFiveAnglesReady(ready);
@@ -1278,6 +1428,7 @@ export function StaffAssistedEnrollmentModal({
                     if (!ready) {
                       setBiometric120Result(null);
                       setCapturedSnapshotUrl(undefined);
+                      setDuplicateFaceWarning(null);
                     }
                   }}
                   onCancel={() => setCapturing(false)}
@@ -1297,6 +1448,7 @@ export function StaffAssistedEnrollmentModal({
                     type="button"
                     onClick={() => {
                       setErrorMsg(null);
+                      setDuplicateFaceWarning(null);
                       setBiometric120Result(null);
                       setCapturedSnapshotUrl(undefined);
                       setAllFiveAnglesReady(false);
@@ -1872,28 +2024,46 @@ export function StaffAssistedEnrollmentModal({
               {isExistingPatientMode ? (
                 <button
                   type="button"
-                  disabled={saving || (!biometric120Result && !allFiveAnglesReady)}
+                  disabled={
+                    saving ||
+                    duplicateCheckPending ||
+                    Boolean(duplicateFaceWarning?.duplicate) ||
+                    (!biometric120Result && !allFiveAnglesReady)
+                  }
                   onClick={() => void handleFinalizeEnrollment('verified')}
                   className={`rounded-xl px-5 py-2.5 text-xs font-extrabold transition ${
-                    biometric120Result || allFiveAnglesReady
+                    (biometric120Result || allFiveAnglesReady) && !duplicateFaceWarning?.duplicate
                       ? 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/30 cursor-pointer'
                       : 'bg-slate-200 text-slate-400 cursor-not-allowed'
                   } disabled:opacity-60`}
                 >
-                  {saving ? 'กำลังบันทึกเวชระเบียน...' : 'บันทึกและเปิดใช้งานตู้ Kiosk →'}
+                  {saving
+                    ? 'กำลังบันทึกเวชระเบียน...'
+                    : duplicateCheckPending
+                      ? 'กำลังตรวจสอบใบหน้าซ้ำ...'
+                      : 'บันทึกและเปิดใช้งานตู้ Kiosk →'}
                 </button>
               ) : (
                 <button
                   type="button"
-                  disabled={saving || (!biometric120Result && !allFiveAnglesReady)}
+                  disabled={
+                    saving ||
+                    duplicateCheckPending ||
+                    Boolean(duplicateFaceWarning?.duplicate) ||
+                    (!biometric120Result && !allFiveAnglesReady)
+                  }
                   onClick={() => void handleProceedFromStep2ToStep3()}
                   className={`rounded-xl px-5 py-2.5 text-xs font-extrabold transition ${
-                    biometric120Result || allFiveAnglesReady
+                    (biometric120Result || allFiveAnglesReady) && !duplicateFaceWarning?.duplicate
                       ? 'bg-gradient-to-r from-emerald-600 to-blue-600 hover:opacity-95 text-white shadow-lg shadow-emerald-500/25 cursor-pointer'
                       : 'bg-slate-200 text-slate-400 cursor-not-allowed'
                   } disabled:opacity-60`}
                 >
-                  {saving ? 'กำลังเตรียมข้อมูลใบหน้า...' : '→ ขั้นตอนต่อไป: กำหนดท่ากายภาพบำบัด →'}
+                  {saving
+                    ? 'กำลังเตรียมข้อมูลใบหน้า...'
+                    : duplicateCheckPending
+                      ? 'กำลังตรวจสอบใบหน้าซ้ำ...'
+                      : '→ ขั้นตอนต่อไป: กำหนดท่ากายภาพบำบัด →'}
                 </button>
               )}
             </>
@@ -1917,7 +2087,7 @@ export function StaffAssistedEnrollmentModal({
               </button>
               <button
                 type="button"
-                disabled={saving}
+                disabled={saving || duplicateCheckPending || Boolean(duplicateFaceWarning?.duplicate)}
                 onClick={() =>
                   void handleFinalizeEnrollment('verified', undefined, undefined, [])
                 }
@@ -1927,7 +2097,13 @@ export function StaffAssistedEnrollmentModal({
               </button>
               <button
                 type="button"
-                disabled={saving || selectedEntries.length === 0 || scheduledDates.length === 0}
+                disabled={
+                  saving ||
+                  duplicateCheckPending ||
+                  Boolean(duplicateFaceWarning?.duplicate) ||
+                  selectedEntries.length === 0 ||
+                  scheduledDates.length === 0
+                }
                 onClick={() => {
                   const built = buildPrescriptionSchedules();
                   void handleFinalizeEnrollment('verified', undefined, undefined, built);

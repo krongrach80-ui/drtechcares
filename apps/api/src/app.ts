@@ -8,6 +8,13 @@ import {
   ACTIVE_BIOMETRIC_DIM,
   ACTIVE_BIOMETRIC_PIPELINE_VERSION,
   FACE_EMBEDDING_DIM,
+  STRICT_RAW_COSINE_THRESHOLD,
+  STRICT_RELU6_CENTERED_COSINE_THRESHOLD,
+  STRICT_RELU6_RAW_COSINE_THRESHOLD,
+  computeZeroMeanCenteredVectorStrict,
+  cosineSimilarity,
+  isNonNegativeRelu6Vector,
+  l2Normalize,
   verifyHybridBiometricIdentity,
   type BiometricVerifyReasonCode,
 } from '@drtechcares/smart-biometric-core';
@@ -29,6 +36,7 @@ import {
   resolveTodayPatientSchedule,
   type BiometricLibraryStatsResponse,
   type BiometricVerifyDiagnostics,
+  type DuplicateFaceCheckResponse,
 } from '../../../packages/api-client/src/index';
 import {
   ClinicalDatabase,
@@ -88,6 +96,14 @@ const enrollSchema = z.object({
 
 const verifySchema = z.object({
   probeVector: vectorSchema,
+  frameVectors: z.array(vectorSchema).max(6).optional(),
+  frameTimestamps: z.array(z.number().finite()).max(6).optional(),
+});
+
+const checkDuplicateFaceSchema = z.object({
+  masterEmbedding: vectorSchema.optional(),
+  centerEmbedding: vectorSchema.optional(),
+  excludePatientId: z.string().optional(),
 });
 
 const inspectFrameSchema = z.object({
@@ -711,6 +727,104 @@ export function createDrTechCaresApiApp(
   // ========================
   // 3. BIOMETRICS & KIOSK FACE AUTH
   // ========================
+  const findLocalDuplicateFace = (
+    masterVec: readonly number[],
+    centerVec?: readonly number[],
+    excludePatientId?: string,
+  ): { id: string; hn: string; fullName: string; similarityPercent: number } | null => {
+    const probeMaster = l2Normalize(masterVec);
+    const probeCenter =
+      centerVec && centerVec.length === probeMaster.length ? l2Normalize(centerVec) : probeMaster;
+    const expectedDim = probeMaster.length;
+    const isRelu6 = isNonNegativeRelu6Vector(probeMaster) || expectedDim >= ACTIVE_BIOMETRIC_DIM;
+    const probeMasterC = computeZeroMeanCenteredVectorStrict(probeMaster);
+    const probeCenterC = computeZeroMeanCenteredVectorStrict(probeCenter);
+    const excludeLo = (excludePatientId ?? '').trim().toLowerCase();
+    let best: { id: string; hn: string; fullName: string; raw: number } | null = null;
+
+    for (const p of db.state.patients) {
+      const regLo = String(p.registrationStatus ?? '').trim().toLowerCase();
+      if (regLo !== '' && regLo !== 'active') continue;
+      if (
+        excludeLo &&
+        (p.id.trim().toLowerCase() === excludeLo || p.hn.trim().toLowerCase() === excludeLo)
+      ) {
+        continue;
+      }
+      const existingRaw =
+        p.biometricHistory?.overall_centroid ??
+        p.biometricHistory?.frontal_centroid ??
+        db.state.face_templates.find((t) => t.patientId === p.id)?.vector;
+      if (!Array.isArray(existingRaw) || existingRaw.length !== expectedDim) continue;
+      const existingMaster = l2Normalize(existingRaw);
+      const existingCenterRaw = p.biometricHistory?.frontal_centroid ?? existingRaw;
+      const existingCenter =
+        existingCenterRaw.length === expectedDim ? l2Normalize(existingCenterRaw) : existingMaster;
+      const bestRaw = Math.max(
+        cosineSimilarity(probeMaster, existingMaster),
+        cosineSimilarity(probeCenter, existingCenter),
+        cosineSimilarity(probeCenter, existingMaster),
+      );
+      const exMasterC = computeZeroMeanCenteredVectorStrict(existingMaster);
+      const exCenterC = computeZeroMeanCenteredVectorStrict(existingCenter);
+      const bestCentered = Math.max(
+        probeMasterC && exMasterC ? cosineSimilarity(probeMasterC, exMasterC) : 0,
+        probeCenterC && exCenterC ? cosineSimilarity(probeCenterC, exCenterC) : 0,
+      );
+      const dup = isRelu6
+        ? bestRaw >= STRICT_RELU6_RAW_COSINE_THRESHOLD &&
+          bestCentered >= STRICT_RELU6_CENTERED_COSINE_THRESHOLD
+        : bestRaw >= 0.88 && bestCentered >= 0.82;
+      if (dup && (!best || bestRaw > best.raw)) {
+        best = { id: p.id, hn: p.hn, fullName: p.fullName, raw: bestRaw };
+      }
+    }
+    return best
+      ? {
+          id: best.id,
+          hn: best.hn,
+          fullName: best.fullName,
+          similarityPercent: Number((Math.max(0, Math.min(1, best.raw)) * 100).toFixed(1)),
+        }
+      : null;
+  };
+
+  app.post('/api/biometric/check-duplicate', (req: AuthenticatedRequest, res: Response) => {
+    const parsed = checkDuplicateFaceSchema.safeParse(req.body);
+    const primary = parsed.success ? (parsed.data.masterEmbedding ?? parsed.data.centerEmbedding) : null;
+    if (!parsed.success || !primary) {
+      res.status(400).json({ error: 'VALIDATION_ERROR' });
+      return;
+    }
+    const dup = findLocalDuplicateFace(
+      primary,
+      parsed.data.centerEmbedding,
+      parsed.data.excludePatientId,
+    );
+    if (!dup) {
+      const okPayload: DuplicateFaceCheckResponse = { duplicate: false };
+      res.json(okPayload);
+      return;
+    }
+    const isStaff = req.authUser?.role === 'super_admin' || req.authUser?.role === 'pt';
+    if (isStaff) {
+      const staffPayload: DuplicateFaceCheckResponse = {
+        duplicate: true,
+        similarityPercent: dup.similarityPercent,
+        existingPatient: { id: dup.id, hn: dup.hn, fullName: dup.fullName },
+        message: `ตรวจพบใบหน้าซ้ำกับบัญชีที่มีอยู่แล้วในระบบ: ${dup.fullName} (${dup.hn}) (ความคล้าย ${dup.similarityPercent.toFixed(1)}%) กรุณาอัปเดตใบหน้าในบัญชีเดิมแทนการสร้างบัญชีใหม่`,
+      };
+      res.json(staffPayload);
+      return;
+    }
+    const publicPayload: DuplicateFaceCheckResponse = {
+      duplicate: true,
+      similarityPercent: dup.similarityPercent,
+      message: 'ใบหน้านี้มีบัญชีอยู่ในระบบแล้ว กรุณากลับไปสแกนหน้าเข้าสู่ระบบ หรือติดต่อเจ้าหน้าที่',
+    };
+    res.json(publicPayload);
+  });
+
   app.post('/api/biometric/enroll', requireAuth(['super_admin', 'pt']), (req: AuthenticatedRequest, res: Response) => {
     const parsed = enrollSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -719,6 +833,16 @@ export function createDrTechCaresApiApp(
     }
 
     const d = parsed.data;
+    const duplicate = findLocalDuplicateFace(d.overallCentroid, d.frontalCentroid);
+    if (duplicate) {
+      res.status(409).json({
+        error: 'DUPLICATE_FACE_ENROLLMENT',
+        similarityPercent: duplicate.similarityPercent,
+        existingPatient: { id: duplicate.id, hn: duplicate.hn, fullName: duplicate.fullName },
+        message: `ตรวจพบใบหน้าซ้ำกับบัญชีที่มีอยู่แล้วในระบบ: ${duplicate.fullName} (${duplicate.hn}) (ความคล้าย ${duplicate.similarityPercent.toFixed(1)}%) ห้ามสร้างบัญชีซ้ำ กรุณาอัปเดตใบหน้าในบัญชีเดิมแทน`,
+      });
+      return;
+    }
     const patientId = `pat-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
     const assignedPtId =
       req.authUser!.role === 'pt'
@@ -1027,6 +1151,44 @@ export function createDrTechCaresApiApp(
       });
       return;
     }
+    let consensusFramesVerified = 1;
+    if (Array.isArray(parsed.data.frameVectors) && parsed.data.frameVectors.length >= 3) {
+      const slice = parsed.data.frameVectors.slice(-3).map((v) => l2Normalize(v));
+      const ts = parsed.data.frameTimestamps?.slice(-3);
+      const tsOk = !ts || ts.length < 3 || (ts[1] > ts[0] && ts[2] > ts[1] && ts[2] - ts[0] <= 10_000);
+      const replay =
+        cosineSimilarity(slice[0], slice[1]) >= 0.9999995 ||
+        cosineSimilarity(slice[1], slice[2]) >= 0.9999995 ||
+        cosineSimilarity(slice[0], slice[2]) >= 0.9999995;
+      const patientTemplates = activeTemplates
+        .filter((t) => t.patientId === patient.id && t.vector.length === probeDim)
+        .map((t) => l2Normalize(t.vector));
+      const rawScores = slice.map((f) =>
+        patientTemplates.reduce((best, t) => Math.max(best, cosineSimilarity(f, t)), -1),
+      );
+      const minFloor = isNonNegativeRelu6Vector(l2Normalize(parsed.data.probeVector))
+        ? 0.88
+        : STRICT_RAW_COSINE_THRESHOLD;
+      const varianceOk = Math.max(...rawScores) - Math.min(...rawScores) <= 0.08;
+      if (tsOk && !replay && varianceOk && rawScores.every((s) => s >= minFloor)) {
+        consensusFramesVerified = 3;
+      } else {
+        res.status(401).json({
+          ...result,
+          matched: false,
+          patientId: null,
+          patientName: null,
+          topCandidate: null,
+          runnerUp: null,
+          consensusFramesVerified: 0,
+          reasonCode: 'BELOW_THRESHOLD' as BiometricVerifyReasonCode,
+          diagnostics: buildDiag('BELOW_THRESHOLD'),
+          failureReasons: ['FRAME_CONSENSUS_FAILED'],
+        });
+        return;
+      }
+    }
+
     const course = db.state.patient_courses.find((c) => c.patientId === result.patientId) ?? null;
     const todayIdx = new Date().getDay();
     const todayRoutine = course?.weeklySchedule.find((d) => d.dayIndex === todayIdx) ?? null;
@@ -1044,6 +1206,7 @@ export function createDrTechCaresApiApp(
 
     res.json({
       ...result,
+      consensusFramesVerified,
       reasonCode: 'MATCHED' as BiometricVerifyReasonCode,
       diagnostics: buildDiag('MATCHED'),
       patient: {

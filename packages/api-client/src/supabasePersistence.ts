@@ -572,6 +572,8 @@ const STAFF_USERS_BASE_COLS =
 
 const PATIENTS_BASE_COLS =
   'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,history,created_at,updated_at';
+const PATIENTS_BIOMETRIC_LIVE_COLS =
+  'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,created_at,updated_at,geometricRatios:history->geometricRatios,rehabSchedules:history->rehabSchedules,biometricEngine:history->>biometricEngine,strokeType:history->>strokeType,affectedSide:history->>affectedSide,motorAssessmentScore:history->motorAssessmentScore,adlDressingScore:history->adlDressingScore,maxSafeRomDeg:history->maxSafeRomDeg,universalHealthLinkCode:history->>universalHealthLinkCode';
 const PATIENTS_MINIMAL_SAFE_COLS =
   'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,history,created_at';
 
@@ -913,7 +915,7 @@ export async function hydrateBiometricsLiveFromSupabase(
       selectExplicitWithFallback(
         'patients',
         (cols) => supabase.from('patients').select(cols),
-        PATIENTS_BASE_COLS,
+        PATIENTS_BIOMETRIC_LIVE_COLS,
         PATIENTS_MINIMAL_SAFE_COLS,
         250,
       ),
@@ -1203,13 +1205,16 @@ export async function hydrateBiometricsLiveFromSupabase(
         })();
         const mergedExemplars = fallbackExemplars ?? prevPatient?.exemplarEmbeddings;
         const resolvedGeom =
-          history.geometricRatios && typeof history.geometricRatios === 'object'
-            ? (history.geometricRatios as GeometricAnthropometricRatios)
-            : prevPatient?.geometricRatios;
+          r.geometricRatios && typeof r.geometricRatios === 'object'
+            ? (r.geometricRatios as GeometricAnthropometricRatios)
+            : history.geometricRatios && typeof history.geometricRatios === 'object'
+              ? (history.geometricRatios as GeometricAnthropometricRatios)
+              : prevPatient?.geometricRatios;
         const hasRealVector = Boolean(mergedMaster && mergedMaster.length >= 128);
         const embeddingDim = mergedMaster?.length ?? 0;
         const resolvedEngine =
           normalizeEngineTag(b120?.biometricEngine, mergedMaster) ??
+          normalizeEngineTag(r.biometricEngine, mergedMaster) ??
           normalizeEngineTag(history.biometricEngine, mergedMaster) ??
           normalizeEngineTag(prevPatient?.biometricEngine, mergedMaster);
         const isCompatibleCurrent =
@@ -1228,6 +1233,47 @@ export async function hydrateBiometricsLiveFromSupabase(
               ? ACTIVE_BIOMETRIC_PIPELINE_VERSION
               : 'v2-pre-iris-1024d'
             : 'legacy-512d';
+        const projectedSchedules = Array.isArray(r.rehabSchedules)
+          ? (r.rehabSchedules as RehabScheduleItem[])
+          : Array.isArray(history.rehabSchedules)
+            ? (history.rehabSchedules as RehabScheduleItem[])
+            : null;
+        const projectedStrokeType =
+          (typeof r.strokeType === 'string' && r.strokeType
+            ? (r.strokeType as StrokeType)
+            : typeof history.strokeType === 'string' && history.strokeType
+              ? (history.strokeType as StrokeType)
+              : prevPatient?.strokeType) ?? undefined;
+        const projectedAffectedSide =
+          (typeof r.affectedSide === 'string' && r.affectedSide
+            ? (r.affectedSide as AffectedSide)
+            : typeof history.affectedSide === 'string' && history.affectedSide
+              ? (history.affectedSide as AffectedSide)
+              : prevPatient?.affectedSide) ?? undefined;
+        const projectedMotorScore =
+          typeof r.motorAssessmentScore === 'number'
+            ? r.motorAssessmentScore
+            : typeof history.motorAssessmentScore === 'number'
+              ? history.motorAssessmentScore
+              : prevPatient?.motorAssessmentScore;
+        const projectedAdlScore =
+          typeof r.adlDressingScore === 'number'
+            ? r.adlDressingScore
+            : typeof history.adlDressingScore === 'number'
+              ? history.adlDressingScore
+              : prevPatient?.adlDressingScore;
+        const projectedMaxRom =
+          typeof r.maxSafeRomDeg === 'number'
+            ? r.maxSafeRomDeg
+            : typeof history.maxSafeRomDeg === 'number'
+              ? history.maxSafeRomDeg
+              : prevPatient?.maxSafeRomDeg;
+        const projectedLinkCode =
+          typeof r.universalHealthLinkCode === 'string' && r.universalHealthLinkCode
+            ? r.universalHealthLinkCode
+            : typeof history.universalHealthLinkCode === 'string' && history.universalHealthLinkCode
+              ? history.universalHealthLinkCode
+              : prevPatient?.universalHealthLinkCode;
 
         return {
           ...(prevPatient ?? {
@@ -1247,7 +1293,14 @@ export async function hydrateBiometricsLiveFromSupabase(
           id: pid,
           hn: String(r.hn),
           fullName: String(r.full_name),
+          nextAppointmentDate: String(r.next_appointment_date ?? prevPatient?.nextAppointmentDate ?? ''),
           registrationStatus: 'active' as const,
+          ...(projectedStrokeType ? { strokeType: projectedStrokeType } : {}),
+          ...(projectedAffectedSide ? { affectedSide: projectedAffectedSide } : {}),
+          ...(projectedMotorScore !== undefined ? { motorAssessmentScore: projectedMotorScore } : {}),
+          ...(projectedAdlScore !== undefined ? { adlDressingScore: projectedAdlScore } : {}),
+          ...(projectedMaxRom !== undefined ? { maxSafeRomDeg: projectedMaxRom } : {}),
+          ...(projectedLinkCode ? { universalHealthLinkCode: projectedLinkCode } : {}),
           faceBiometricStatus: isCompatibleCurrent ? ('VERIFIED' as const) : ('PENDING' as const),
           biometricStatusDetail,
           biometricEmbeddingDim: embeddingDim,
@@ -1260,8 +1313,8 @@ export async function hydrateBiometricsLiveFromSupabase(
           ...(mergedExemplars ? { exemplarEmbeddings: mergedExemplars } : {}),
           biometricEngine: resolvedEngine,
           geometricRatios: resolvedGeom,
-          rehabSchedules: Array.isArray(history.rehabSchedules)
-            ? sanitizeAccidentalDefaultKneePrefix(history.rehabSchedules as RehabScheduleItem[])
+          rehabSchedules: projectedSchedules
+            ? sanitizeAccidentalDefaultKneePrefix(projectedSchedules)
             : prevPatient?.rehabSchedules ?? [],
           biometricHistory:
             tpl && tpl.frontal && tpl.overall

@@ -18,12 +18,15 @@ import {
   STRICT_DISTINCTIVENESS_MARGIN,
   STRICT_MAX_EUCLIDEAN_DISTANCE,
   STRICT_RAW_COSINE_THRESHOLD,
+  STRICT_RELU6_CENTERED_COSINE_THRESHOLD,
+  STRICT_RELU6_MAX_EUCLIDEAN_DISTANCE,
   STRICT_RELU6_RAW_COSINE_THRESHOLD,
   classifyLivePoseZone,
   computeArcFaceBiometricScore,
   computeDualFactorBiometricScore,
   computeFaceCoreMetrics,
   computeMaxImposterCohortScore,
+  computeZeroMeanCenteredVectorStrict,
   cosineSimilarity,
   detectBiometricVectorEngine,
   euclideanDistance,
@@ -72,6 +75,7 @@ import {
   type CloudClientConfig,
   type CreateClinicalAssessmentPayload,
   type DailyScheduleDay,
+  type DuplicateFaceCheckResponse,
   type ManagedExerciseRecord,
   type MedicalNoteRecord,
   type ModpackRecord,
@@ -99,6 +103,7 @@ import {
   isSupabaseCircuitOpen,
   isUuidString,
   markSupabaseDown,
+  markUnsupportedColumnForTable,
   newRecordId,
   normalizeCompactExemplars,
   normalizeStaffRole,
@@ -638,13 +643,10 @@ async function writePatientRowWithFramesFallback(
       | { error?: { code?: string; message?: string } | null }
       | undefined;
 
-  const optionalCols = new Set([
+  const legacyOptionalCols = new Set([
     'biometric_updated_at',
     'face_embedding',
     'biometric_data',
-    'face_frames_count',
-    'face_image_url',
-    'face_biometric_status',
     'gender',
     'stroke_type',
     'affected_side',
@@ -656,7 +658,7 @@ async function writePatientRowWithFramesFallback(
     'delegated_to_pt_id',
     'delegation_note',
   ]);
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  for (let attempt = 0; attempt < 16; attempt += 1) {
     try {
       const res = await exec(working);
       if (!res?.error) return;
@@ -675,14 +677,12 @@ async function writePatientRowWithFramesFallback(
       const missingCol =
         recordUnsupportedColumn('patients', res.error) ?? parsePostgrestMissingCol(res.error);
       if (missingCol && missingCol !== 'history' && missingCol !== 'hn') {
-        delete working[missingCol];
-        // Jump straight to safe optional-stripped payload so unmigrated columns never retry 12 times
-        for (const optCol of optionalCols) {
-          if (optCol !== 'assigned_pt_id' && optCol !== 'delegated_to_pt_id' && optCol !== 'delegation_note') {
-            delete working[optCol];
-          }
+        if (missingCol in working) {
+          delete working[missingCol];
+          // Strip ONLY the exact unsupported column reported by Postgres/PostgREST so existing
+          // columns like `face_biometric_status`, `face_frames_count`, and `face_image_url` are preserved.
+          continue;
         }
-        continue;
       }
       if (isPgVectorDimensionOrTypeMismatch(res.error)) {
         let fixed = false;
@@ -691,6 +691,7 @@ async function writePatientRowWithFramesFallback(
             if (col === 'assigned_pt_id' || col === 'delegated_to_pt_id') {
               working[col] = null;
             } else {
+              markUnsupportedColumnForTable('patients', col);
               delete working[col];
             }
             fixed = true;
@@ -699,7 +700,7 @@ async function writePatientRowWithFramesFallback(
         if (fixed) continue;
       }
       let strippedAny = false;
-      for (const optCol of optionalCols) {
+      for (const optCol of legacyOptionalCols) {
         if (optCol in working) {
           delete working[optCol];
           strippedAny = true;
@@ -1162,7 +1163,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     url && key
       ? createClient(url, key, {
           auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-          global: { fetch: createBoundedSupabaseFetch(1500, key, anonFallbackKey, undefined, circuitHook) },
+          global: { fetch: createBoundedSupabaseFetch(3500, key, anonFallbackKey, undefined, circuitHook) },
         })
       : null;
   if (supabase) {
@@ -1174,7 +1175,159 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
   let hydrated = false;
   let lastHydratedAt = 0;
   let lastLiveBioHydratedAt = 0;
-  const LIVE_BIO_REFRESH_MS = 2000;
+  const LIVE_BIO_REFRESH_MS = 15_000;
+  const DUPLICATE_CHECK_REFRESH_MS = 2000;
+
+  const findDuplicateEnrolledFace = async (params: {
+    masterEmbedding: readonly number[];
+    centerEmbedding?: readonly number[];
+    geometricRatios?: GeometricAnthropometricRatios | null;
+    excludePatientId?: string;
+  }): Promise<{ id: string; hn: string; fullName: string; similarityPercent: number } | null> => {
+    if (
+      supabase &&
+      !isSupabaseCircuitOpen(supabase) &&
+      (lastLiveBioHydratedAt === 0 || Date.now() - lastLiveBioHydratedAt >= DUPLICATE_CHECK_REFRESH_MS)
+    ) {
+      const syncRes = await hydrateBiometricsLiveFromSupabase(supabase, state, 4500);
+      if (syncRes.ok) {
+        lastLiveBioHydratedAt = Date.now();
+      }
+    }
+
+    const probeMaster = l2Normalize(params.masterEmbedding);
+    const probeCenter =
+      params.centerEmbedding && params.centerEmbedding.length === probeMaster.length
+        ? l2Normalize(params.centerEmbedding)
+        : probeMaster;
+    const expectedDim = probeMaster.length;
+    const isRelu6 = isNonNegativeRelu6Vector(probeMaster) || expectedDim >= ACTIVE_BIOMETRIC_DIM;
+    const probeMasterCentered = computeZeroMeanCenteredVectorStrict(probeMaster);
+    const probeCenterCentered = computeZeroMeanCenteredVectorStrict(probeCenter);
+
+    const deletedLower = new Set(
+      (state.deleted_patient_ids ?? []).map((x) => x.trim().toLowerCase()).filter(Boolean),
+    );
+    const inactiveUserPatientIds = new Set(
+      state.users.filter((u) => !u.active && u.patientId).map((u) => u.patientId as string),
+    );
+    const excludeLower = (params.excludePatientId ?? '').trim().toLowerCase();
+
+    let bestMatch: { id: string; hn: string; fullName: string; rawScore: number } | null = null;
+
+    for (const p of state.patients) {
+      const pidLo = p.id.trim().toLowerCase();
+      const hnLo = (p.hn ?? '').trim().toLowerCase();
+      if (excludeLower && (pidLo === excludeLower || (hnLo && hnLo === excludeLower))) {
+        continue;
+      }
+      const regLo = String(p.registrationStatus ?? '').trim().toLowerCase();
+      if (
+        (regLo !== '' && regLo !== 'active') ||
+        deletedLower.has(pidLo) ||
+        (hnLo && deletedLower.has(hnLo)) ||
+        inactiveUserPatientIds.has(p.id)
+      ) {
+        continue;
+      }
+
+      const tplFront = parseEmbeddingVector(
+        state.face_templates.find((t) => t.patientId === p.id && t.pose === 'frontal_centroid')?.vector,
+      );
+      const tplOverall = parseEmbeddingVector(
+        state.face_templates.find((t) => t.patientId === p.id && t.pose === 'overall_centroid')?.vector,
+      );
+      const existingMasterRaw = [
+        parseEmbeddingVector(p.masterEmbedding),
+        tplOverall,
+        tplFront,
+        parseEmbeddingVector(p.biometricHistory?.overall_centroid),
+        parseEmbeddingVector(p.biometricHistory?.frontal_centroid),
+      ].find((v): v is number[] => Boolean(v && v.length === expectedDim));
+      if (!existingMasterRaw) continue;
+
+      const existingMaster = l2Normalize(existingMasterRaw);
+      const existingCenterRaw =
+        parseEmbeddingVector(p.angleEmbeddings?.center) ?? tplFront ?? existingMaster;
+      const existingCenter =
+        existingCenterRaw.length === expectedDim ? l2Normalize(existingCenterRaw) : existingMaster;
+
+      const rawCosMaster = cosineSimilarity(probeMaster, existingMaster);
+      const rawCosCenter = cosineSimilarity(probeCenter, existingCenter);
+      const rawCosCross = Math.max(
+        cosineSimilarity(probeCenter, existingMaster),
+        cosineSimilarity(probeMaster, existingCenter),
+      );
+      const bestRaw = Math.max(rawCosMaster, rawCosCenter, rawCosCross);
+
+      const existingMasterCentered = computeZeroMeanCenteredVectorStrict(existingMaster);
+      const existingCenterCentered = computeZeroMeanCenteredVectorStrict(existingCenter);
+      const bestCentered = Math.max(
+        probeMasterCentered && existingMasterCentered
+          ? cosineSimilarity(probeMasterCentered, existingMasterCentered)
+          : 0,
+        probeCenterCentered && existingCenterCentered
+          ? cosineSimilarity(probeCenterCentered, existingCenterCentered)
+          : 0,
+        probeCenterCentered && existingMasterCentered
+          ? cosineSimilarity(probeCenterCentered, existingMasterCentered)
+          : 0,
+      );
+
+      let isDuplicate = false;
+      if (isRelu6) {
+        const candidateInput = {
+          masterEmbedding: existingMaster,
+          angleEmbeddings: {
+            center: existingCenter,
+            left: parseEmbeddingVector(p.angleEmbeddings?.left),
+            right: parseEmbeddingVector(p.angleEmbeddings?.right),
+            up: parseEmbeddingVector(p.angleEmbeddings?.up),
+            down: parseEmbeddingVector(p.angleEmbeddings?.down),
+          },
+          exemplarEmbeddings: (p.exemplarEmbeddings ?? []).filter(
+            (ex) => Array.isArray(ex) && ex.length === expectedDim,
+          ),
+          geometricRatios: p.geometricRatios ?? null,
+        };
+        const gateCenter = evaluateTripleGateNeuralCandidate(
+          probeCenter,
+          candidateInput,
+          params.geometricRatios ?? null,
+          'center',
+        );
+        const gateMaster = evaluateTripleGateNeuralCandidate(
+          probeMaster,
+          candidateInput,
+          params.geometricRatios ?? null,
+          'center',
+        );
+        const strictRelu6Match =
+          bestRaw >= STRICT_RELU6_RAW_COSINE_THRESHOLD &&
+          bestCentered >= STRICT_RELU6_CENTERED_COSINE_THRESHOLD;
+        isDuplicate = gateCenter.passed || gateMaster.passed || strictRelu6Match;
+      } else {
+        isDuplicate = bestRaw >= 0.88 && bestCentered >= 0.82;
+      }
+
+      if (isDuplicate && (!bestMatch || bestRaw > bestMatch.rawScore)) {
+        bestMatch = {
+          id: p.id,
+          hn: p.hn,
+          fullName: p.fullName,
+          rawScore: bestRaw,
+        };
+      }
+    }
+
+    if (!bestMatch) return null;
+    return {
+      id: bestMatch.id,
+      hn: bestMatch.hn,
+      fullName: bestMatch.fullName,
+      similarityPercent: Number((Math.max(0, Math.min(1, bestMatch.rawScore)) * 100).toFixed(1)),
+    };
+  };
   // Sliding-window failed biometric verify rate limiter per (clientIp, deviceId)
   const BIOMETRIC_VERIFY_RATE_WINDOW_MS = 60_000;
   const BIOMETRIC_VERIFY_MAX_FAILED_PER_WINDOW = 15;
@@ -1662,7 +1815,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     }
 
     const isLightweightBiometricEndpoint =
-      pathname === '/api/biometrics/stats' || pathname === '/api/biometric/verify';
+      pathname === '/api/biometrics/stats' ||
+      pathname === '/api/biometric/verify' ||
+      pathname === '/api/biometric/check-duplicate';
 
     const shouldHydrateRequest =
       !isLightweightBiometricEndpoint &&
@@ -2160,6 +2315,60 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     // ========================
     // 3. BIOMETRICS & KIOSK FACE AUTH
     // ========================
+    if (pathname === '/api/biometric/check-duplicate' && method === 'POST') {
+      const body = await readJsonBody<{
+        masterEmbedding?: unknown;
+        centerEmbedding?: unknown;
+        geometricRatios?: GeometricAnthropometricRatios;
+        excludePatientId?: string;
+      }>(request);
+      const validMaster = isValidBiometricVector(body?.masterEmbedding)
+        ? (body!.masterEmbedding as number[])
+        : null;
+      const validCenter = isValidBiometricVector(body?.centerEmbedding)
+        ? (body!.centerEmbedding as number[])
+        : null;
+      const primaryVec = validMaster ?? validCenter;
+      if (!primaryVec) {
+        return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
+      }
+
+      const duplicate = await findDuplicateEnrolledFace({
+        masterEmbedding: primaryVec,
+        centerEmbedding: validCenter ?? undefined,
+        geometricRatios: body?.geometricRatios ?? null,
+        excludePatientId: typeof body?.excludePatientId === 'string' ? body.excludePatientId : undefined,
+      });
+
+      if (!duplicate) {
+        const resPayload: DuplicateFaceCheckResponse = { duplicate: false };
+        return jsonResponse(resPayload);
+      }
+
+      const isAuthorizedStaff = authUser?.role === 'super_admin' || authUser?.role === 'pt';
+      if (isAuthorizedStaff) {
+        const staffPayload: DuplicateFaceCheckResponse = {
+          duplicate: true,
+          similarityPercent: duplicate.similarityPercent,
+          existingPatient: {
+            id: duplicate.id,
+            hn: duplicate.hn,
+            fullName: duplicate.fullName,
+          },
+          message: `ตรวจพบใบหน้าซ้ำกับบัญชีที่มีอยู่แล้วในระบบ: ${duplicate.fullName} (${duplicate.hn}) (ความคล้าย ${duplicate.similarityPercent.toFixed(1)}%) กรุณาอัปเดตใบหน้าในบัญชีเดิมแทนการสร้างบัญชีใหม่`,
+        };
+        return jsonResponse(staffPayload);
+      }
+
+      // Privacy-safe response for unauthenticated callers (ZERO other patient PII leaked)
+      const publicPayload: DuplicateFaceCheckResponse = {
+        duplicate: true,
+        similarityPercent: duplicate.similarityPercent,
+        message: 'ใบหน้านี้มีบัญชีอยู่ในระบบแล้ว กรุณากลับไปสแกนหน้าเข้าสู่ระบบ หรือติดต่อเจ้าหน้าที่',
+      };
+      return jsonResponse(publicPayload);
+    }
+
     if (pathname === '/api/biometric/enroll' && method === 'POST') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
@@ -2287,6 +2496,39 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           ? body.framesCaptured
           : Math.max(rawFrames.length, 120);
       const qualityScore = typeof body.qualityScore === 'number' ? body.qualityScore : 0.96;
+
+      if (!isPendingSkip && masterVec) {
+        const duplicate = await findDuplicateEnrolledFace({
+          masterEmbedding: masterVec,
+          centerEmbedding: resolvedAngles?.center ?? frontalVec,
+          geometricRatios: body.geometricRatios ?? null,
+        });
+        if (duplicate) {
+          recordAudit({
+            eventType: 'DUPLICATE_FACE_ENROLLMENT_BLOCKED',
+            actorRole: authUser!.role,
+            actorId: authUser!.id,
+            actorName: authUser!.fullName,
+            ipAddress: clientIp,
+            deviceId: clientDeviceId,
+            targetId: duplicate.id,
+            detail: `Blocked duplicate face enrollment for ${body.fullName} (${body.hn}); matches existing ${duplicate.fullName} (${duplicate.hn}) at ${duplicate.similarityPercent}%`,
+          });
+          return jsonResponse(
+            {
+              error: 'DUPLICATE_FACE_ENROLLMENT',
+              similarityPercent: duplicate.similarityPercent,
+              existingPatient: {
+                id: duplicate.id,
+                hn: duplicate.hn,
+                fullName: duplicate.fullName,
+              },
+              message: `ตรวจพบใบหน้าซ้ำกับบัญชีที่มีอยู่แล้วในระบบ: ${duplicate.fullName} (${duplicate.hn}) (ความคล้าย ${duplicate.similarityPercent.toFixed(1)}%) ห้ามสร้างบัญชีซ้ำเพราะจะทำให้การสแกนหน้า Kiosk สับสน กรุณาอัปเดตใบหน้าในบัญชีเดิมแทน`,
+            },
+            409,
+          );
+        }
+      }
 
       const faceStatus: 'PENDING' | 'VERIFIED' = isPendingSkip
         ? 'PENDING'
@@ -2579,6 +2821,22 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     }
 
     if (pathname === '/api/biometrics/stats' && method === 'GET') {
+      const shouldWarmVerifyCache =
+        reqUrl.searchParams.get('warm') === '1' &&
+        Boolean(supabase) &&
+        !isSupabaseCircuitOpen(supabase!) &&
+        (lastLiveBioHydratedAt === 0 || Date.now() - lastLiveBioHydratedAt >= LIVE_BIO_REFRESH_MS);
+      if (shouldWarmVerifyCache && supabase) {
+        runWaitUntil(
+          hydrateBiometricsLiveFromSupabase(supabase, state, 4500)
+            .then((syncRes) => {
+              if (syncRes.ok) {
+                lastLiveBioHydratedAt = Date.now();
+              }
+            })
+            .catch(() => {}),
+        );
+      }
       if (supabase && !isSupabaseCircuitOpen(supabase)) {
         const meta = await fetchBiometricLibraryStatsFromSupabase(supabase, state, 3500);
         if (meta.ok) {
@@ -3020,6 +3278,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
       const body = await readJsonBody<{
         probeVector?: unknown;
+        frameVectors?: unknown;
+        frameTimestamps?: unknown;
         mirroredProbeVector?: unknown;
         hybridV2ProbeVector?: unknown;
         mirroredHybridV2ProbeVector?: unknown;
@@ -3993,6 +4253,178 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         );
       }
 
+      // Atomic Multi-Frame Consensus Check (when client sends 3 distinct raw frames in 1 RTT):
+      // Preserves full 3/3 frame voting, low variance (<= 0.08), monotonic timestamps, anti-replay,
+      // and per-frame biometric strictness without requiring 3 serial network round trips!
+      let consensusFramesVerified = 1;
+      const rawFrameVectorsInput = Array.isArray(body.frameVectors)
+        ? body.frameVectors
+        : Array.isArray((body.livenessEvidence as { frameVectors?: unknown } | undefined)?.frameVectors)
+          ? ((body.livenessEvidence as { frameVectors?: unknown }).frameVectors as unknown[])
+          : null;
+      const rawFrameTimestampsInput = Array.isArray(body.frameTimestamps)
+        ? body.frameTimestamps
+        : Array.isArray((body.livenessEvidence as { frameTimestamps?: unknown } | undefined)?.frameTimestamps)
+          ? ((body.livenessEvidence as { frameTimestamps?: unknown }).frameTimestamps as unknown[])
+          : null;
+
+      if (rawFrameVectorsInput && rawFrameVectorsInput.length >= 3) {
+        const expectedDim = probeNorm.length;
+        const consensusSlice = rawFrameVectorsInput.slice(-3);
+        const validFrames = consensusSlice.every((v) => isValidBiometricVector(v, expectedDim))
+          ? (consensusSlice as number[][]).map((v) => l2Normalize(v))
+          : null;
+
+        let timestampsValid = true;
+        if (rawFrameTimestampsInput && rawFrameTimestampsInput.length >= 3) {
+          const tsSlice = rawFrameTimestampsInput.slice(-3).map((n) => Number(n));
+          timestampsValid =
+            tsSlice.every((t) => Number.isFinite(t)) &&
+            tsSlice[1] > tsSlice[0] &&
+            tsSlice[2] > tsSlice[1] &&
+            tsSlice[2] - tsSlice[0] <= 10_000;
+        }
+
+        let isReplayDuplicate = false;
+        if (validFrames) {
+          for (let i = 0; i < validFrames.length; i += 1) {
+            for (let j = i + 1; j < validFrames.length; j += 1) {
+              if (cosineSimilarity(validFrames[i], validFrames[j]) >= 0.9999995) {
+                isReplayDuplicate = true;
+                break;
+              }
+            }
+          }
+        }
+
+        const matchedTemplates: number[][] = [];
+        const addTemplateIfValid = (raw: unknown) => {
+          const parsed = parseEmbeddingVector(raw);
+          if (parsed && parsed.length === expectedDim) {
+            matchedTemplates.push(l2Normalize(parsed));
+          }
+        };
+        addTemplateIfValid(patient.masterEmbedding);
+        addTemplateIfValid(patient.angleEmbeddings?.center);
+        addTemplateIfValid(patient.angleEmbeddings?.left);
+        addTemplateIfValid(patient.angleEmbeddings?.right);
+        addTemplateIfValid(patient.angleEmbeddings?.up);
+        addTemplateIfValid(patient.angleEmbeddings?.down);
+        for (const ex of patient.exemplarEmbeddings ?? []) {
+          addTemplateIfValid(ex);
+        }
+        for (const tpl of state.face_templates) {
+          if (tpl.patientId === patient.id) {
+            addTemplateIfValid(tpl.vector);
+          }
+        }
+
+        const matchedCenteredTemplates = matchedTemplates
+          .map((t) => computeZeroMeanCenteredVectorStrict(t))
+          .filter((v): v is number[] => Boolean(v));
+        const isRelu6Probe = isNonNegativeRelu6Vector(probeNorm);
+        const perFrameMinRaw = isRelu6Probe ? 0.88 : STRICT_RAW_COSINE_THRESHOLD;
+        const perFrameMinCentered = isRelu6Probe ? 0.84 : STRICT_CENTERED_COSINE_THRESHOLD;
+        const perFrameMaxL2 = isRelu6Probe
+          ? STRICT_RELU6_MAX_EUCLIDEAN_DISTANCE + 0.02
+          : STRICT_MAX_EUCLIDEAN_DISTANCE;
+
+        const normalizeName = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
+        const matchedNormName = normalizeName(patient.fullName);
+        const otherActiveMasters: number[][] = [];
+        for (const other of state.patients) {
+          if (!activePatientIds.has(other.id) || other.id === patient.id) continue;
+          if (matchedNormName && normalizeName(other.fullName) === matchedNormName) continue;
+          const om = parseEmbeddingVector(other.masterEmbedding);
+          if (om && om.length === expectedDim) {
+            otherActiveMasters.push(l2Normalize(om));
+          }
+        }
+
+        let allFramesValid = Boolean(validFrames && timestampsValid && !isReplayDuplicate && matchedTemplates.length > 0);
+        const frameRawScores: number[] = [];
+        const frameCenteredScores: number[] = [];
+
+        if (allFramesValid && validFrames) {
+          for (const fNorm of validFrames) {
+            let bestRaw = -1;
+            let bestL2 = Number.POSITIVE_INFINITY;
+            for (const tpl of matchedTemplates) {
+              const rCos = cosineSimilarity(fNorm, tpl);
+              if (rCos > bestRaw) bestRaw = rCos;
+              const dist = euclideanDistance(fNorm, tpl);
+              if (dist < bestL2) bestL2 = dist;
+            }
+            const fCentered = computeZeroMeanCenteredVectorStrict(fNorm);
+            let bestCentered = -1;
+            if (fCentered) {
+              for (const tplC of matchedCenteredTemplates) {
+                const cCos = cosineSimilarity(fCentered, tplC);
+                if (cCos > bestCentered) bestCentered = cCos;
+              }
+            }
+            const beatsAllOthers = otherActiveMasters.every(
+              (om) => bestRaw > cosineSimilarity(fNorm, om),
+            );
+            frameRawScores.push(bestRaw);
+            frameCenteredScores.push(bestCentered);
+            if (
+              bestRaw < perFrameMinRaw ||
+              bestCentered < perFrameMinCentered ||
+              bestL2 > perFrameMaxL2 ||
+              !beatsAllOthers
+            ) {
+              allFramesValid = false;
+              break;
+            }
+          }
+        }
+
+        if (allFramesValid && frameRawScores.length === 3) {
+          const minRaw = Math.min(...frameRawScores);
+          const maxRaw = Math.max(...frameRawScores);
+          const meanRaw = (frameRawScores[0] + frameRawScores[1] + frameRawScores[2]) / 3;
+          const meanCentered =
+            (frameCenteredScores[0] + frameCenteredScores[1] + frameCenteredScores[2]) / 3;
+          const meanRawFloor = isRelu6Probe
+            ? STRICT_RELU6_RAW_COSINE_THRESHOLD
+            : STRICT_RAW_COSINE_THRESHOLD;
+          const meanCenteredFloor = isRelu6Probe
+            ? STRICT_RELU6_CENTERED_COSINE_THRESHOLD
+            : STRICT_CENTERED_COSINE_THRESHOLD;
+          if (
+            maxRaw - minRaw <= 0.08 &&
+            meanRaw >= meanRawFloor &&
+            meanCentered >= meanCenteredFloor
+          ) {
+            consensusFramesVerified = 3;
+          } else {
+            allFramesValid = false;
+          }
+        }
+
+        if (!allFramesValid) {
+          diagGateFailCodes = [...diagGateFailCodes, 'FRAME_CONSENSUS_FAILED'];
+          recordFailedBiometricVerify(verifyRateKey, verifyNowMs);
+          return jsonResponse(
+            {
+              ...result,
+              matched: false,
+              patientId: null,
+              patientName: null,
+              topCandidate: null,
+              runnerUp: null,
+              confidencePercent: matchedConfidence,
+              consensusFramesVerified: 0,
+              reasonCode: 'BELOW_THRESHOLD' as BiometricVerifyReasonCode,
+              diagnostics: buildVerifyDiagnostics('BELOW_THRESHOLD'),
+              failureReasons: ['FRAME_CONSENSUS_FAILED'],
+            },
+            401,
+          );
+        }
+      }
+
       failedBiometricVerifyLog.delete(verifyRateKey);
 
       let course = state.patient_courses.find((c) => c.patientId === matchedPatientId) ?? null;
@@ -4016,7 +4448,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           const resTuple = await Promise.race([
             singleFetch,
             new Promise<null>((resolve) => {
-              schedTimer = setTimeout(() => resolve(null), 1000);
+              schedTimer = setTimeout(() => resolve(null), 450);
             }),
           ]);
           if (Array.isArray(resTuple)) {
@@ -4094,6 +4526,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         patientId: matchedPatientId,
         patientName: matchedPatientName ?? patient.fullName,
         confidencePercent: matchedConfidence,
+        consensusFramesVerified,
         reasonCode: 'MATCHED' as BiometricVerifyReasonCode,
         diagnostics: buildVerifyDiagnostics('MATCHED'),
         patient: {
@@ -4957,6 +5390,38 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           : Math.max(rawFrames.length, 120);
       const qualityScore = typeof body.qualityScore === 'number' ? body.qualityScore : 0.96;
 
+      const duplicateOther = await findDuplicateEnrolledFace({
+        masterEmbedding: masterVec,
+        centerEmbedding: resolvedAngles.center,
+        geometricRatios: body.geometricRatios ?? null,
+        excludePatientId: patient.id,
+      });
+      if (duplicateOther) {
+        recordAudit({
+          eventType: 'DUPLICATE_FACE_ENROLLMENT_BLOCKED',
+          actorRole: authUser!.role,
+          actorId: authUser!.id,
+          actorName: authUser!.fullName,
+          ipAddress: clientIp,
+          deviceId: clientDeviceId,
+          targetId: duplicateOther.id,
+          detail: `Blocked cross-patient face overwrite on ${patient.fullName} (${patient.hn}); matches ${duplicateOther.fullName} (${duplicateOther.hn}) at ${duplicateOther.similarityPercent}%`,
+        });
+        return jsonResponse(
+          {
+            error: 'DUPLICATE_FACE_ENROLLMENT',
+            similarityPercent: duplicateOther.similarityPercent,
+            existingPatient: {
+              id: duplicateOther.id,
+              hn: duplicateOther.hn,
+              fullName: duplicateOther.fullName,
+            },
+            message: `ตรวจพบใบหน้าซ้ำกับบัญชีอื่นที่มีอยู่แล้วในระบบ: ${duplicateOther.fullName} (${duplicateOther.hn}) (ความคล้าย ${duplicateOther.similarityPercent.toFixed(1)}%) กรุณาตรวจสอบว่าสแกนใบหน้าผู้ป่วยตรงกับบัญชีที่เลือก`,
+          },
+          409,
+        );
+      }
+
       patient.faceBiometricStatus = 'VERIFIED';
       patient.faceFramesCount = framesCaptured;
       patient.masterEmbedding = masterVec;
@@ -5115,6 +5580,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         targetId: patient.id,
         detail: `Captured ${framesCaptured}-frame 3D Face ID for ${patient.fullName} (${patient.hn})`,
       });
+      lastLiveBioHydratedAt = 0;
       return jsonResponse({ ok: true, patient, persisted: persistRes.persisted });
     }
 
@@ -5331,6 +5797,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         targetId: patient.id,
         detail: `Updated patient ${patient.fullName}`,
       });
+      lastLiveBioHydratedAt = 0;
       return jsonResponse({ ok: true, patient, persisted: persistRes.persisted });
     }
 
@@ -5381,6 +5848,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           if (bioDelTimer !== undefined) clearTimeout(bioDelTimer);
         }
       }
+      lastLiveBioHydratedAt = 0;
       return jsonResponse({ ok: true, deleted: true, id: targetId });
     }
 
@@ -5436,6 +5904,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           ? `Cascading purge for patient ${purged.patient.fullName} (${purged.patient.hn})`
           : `Cascading purge for patient ${purged.pid || rawPid}`,
       });
+      lastLiveBioHydratedAt = 0;
       return jsonResponse({
         ok: true,
         deleted: true,
@@ -5494,6 +5963,39 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         ? body.biometricEngine ?? (masterVec.length >= 768 ? 'human-faceres-1024d' : 'hybrid-512d')
         : body.biometricEngine;
       const hasBio = Boolean(masterVec && resolvedAngles);
+
+      if (hasBio && masterVec) {
+        const duplicate = await findDuplicateEnrolledFace({
+          masterEmbedding: masterVec,
+          centerEmbedding: resolvedAngles?.center,
+          geometricRatios: body.geometricRatios ?? null,
+        });
+        if (duplicate) {
+          recordAudit({
+            eventType: 'DUPLICATE_FACE_ENROLLMENT_BLOCKED',
+            actorRole: authUser!.role,
+            actorId: authUser!.id,
+            actorName: authUser!.fullName,
+            ipAddress: clientIp,
+            deviceId: clientDeviceId,
+            targetId: duplicate.id,
+            detail: `Blocked duplicate face patient creation for ${fullName} (${hn}); matches existing ${duplicate.fullName} (${duplicate.hn}) at ${duplicate.similarityPercent}%`,
+          });
+          return jsonResponse(
+            {
+              error: 'DUPLICATE_FACE_ENROLLMENT',
+              similarityPercent: duplicate.similarityPercent,
+              existingPatient: {
+                id: duplicate.id,
+                hn: duplicate.hn,
+                fullName: duplicate.fullName,
+              },
+              message: `ตรวจพบใบหน้าซ้ำกับบัญชีที่มีอยู่แล้วในระบบ: ${duplicate.fullName} (${duplicate.hn}) (ความคล้าย ${duplicate.similarityPercent.toFixed(1)}%) ห้ามสร้างบัญชีซ้ำ กรุณาอัปเดตใบหน้าในบัญชีเดิมแทน`,
+            },
+            409,
+          );
+        }
+      }
 
       const created: PatientRecord = {
         id: patientId,
@@ -5598,6 +6100,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         1500,
         'create_patient',
       );
+      lastLiveBioHydratedAt = 0;
       return jsonResponse({ ok: true, patient: created, persisted: persistRes.persisted }, 201);
     }
 

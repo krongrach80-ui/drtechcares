@@ -509,11 +509,25 @@ export interface BiometricLibraryStatsResponse {
   updatedAt: string;
 }
 
+export interface DuplicateFaceMatchSummary {
+  id: string;
+  hn: string;
+  fullName: string;
+}
+
+export interface DuplicateFaceCheckResponse {
+  duplicate: boolean;
+  similarityPercent?: number;
+  existingPatient?: DuplicateFaceMatchSummary;
+  message?: string;
+}
+
 export interface KioskFaceVerifyResponse extends BiometricVerificationResult {
   error?: string;
   reason?: string;
   reasonCode?: BiometricVerifyReasonCode;
   diagnostics?: BiometricVerifyDiagnostics;
+  consensusFramesVerified?: number;
   httpStatus?: number;
   message?: string;
   patient?: {
@@ -548,6 +562,7 @@ export class ApiError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
   }
@@ -833,6 +848,7 @@ export class DrTechCaresApiClient {
         res.status,
         String(data.error ?? 'API_ERROR'),
         String(data.message ?? `Request failed (${res.status})`),
+        data,
       );
     }
     return data as T;
@@ -1285,6 +1301,8 @@ export class DrTechCaresApiClient {
       mirroredLegacyV1ProbeVector?: readonly number[];
       geometricRatios?: GeometricAnthropometricRatios;
       excludedPatientIds?: readonly string[];
+      frameVectors?: readonly (readonly number[])[];
+      frameTimestamps?: readonly number[];
     },
   ): Promise<KioskFaceVerifyResponse> {
     if (
@@ -1316,6 +1334,12 @@ export class DrTechCaresApiClient {
           livenessEvidence
             ? {
                 probeVector,
+                ...(livenessEvidence.frameVectors && livenessEvidence.frameVectors.length > 0
+                  ? { frameVectors: livenessEvidence.frameVectors }
+                  : {}),
+                ...(livenessEvidence.frameTimestamps && livenessEvidence.frameTimestamps.length > 0
+                  ? { frameTimestamps: livenessEvidence.frameTimestamps }
+                  : {}),
                 ...(livenessEvidence.mirroredProbeVector
                   ? { mirroredProbeVector: livenessEvidence.mirroredProbeVector }
                   : {}),
@@ -1380,12 +1404,41 @@ export class DrTechCaresApiClient {
 
   /**
    * Fetches live count-only biometric library statistics from the server (ZERO patient vectors, ZERO PII).
-   * Used by Kiosk login to display an accurate live "คลังใบหน้า: n บัญชี" count without downloading vectors.
+   * When `warmVerifyCache` is true, asks the edge Worker to pre-warm its in-RAM template cache in the background
+   * without returning any patient vectors to the browser.
    */
-  async getBiometricLibraryStats(forceRefresh = false): Promise<BiometricLibraryStatsResponse> {
-    return this.request<BiometricLibraryStatsResponse>(
-      forceRefresh ? '/api/biometrics/stats?refresh=1' : '/api/biometrics/stats',
-    );
+  async getBiometricLibraryStats(
+    forceRefresh = false,
+    warmVerifyCache = false,
+  ): Promise<BiometricLibraryStatsResponse> {
+    const params: string[] = [];
+    if (forceRefresh) params.push('refresh=1');
+    if (warmVerifyCache) params.push('warm=1');
+    const query = params.length > 0 ? `?${params.join('&')}` : '';
+    return this.request<BiometricLibraryStatsResponse>(`/api/biometrics/stats${query}`);
+  }
+
+  /**
+   * Server-side duplicate-face check during patient registration (never downloads other patients' vectors).
+   * Returns `existingPatient` metadata ONLY when called by an authenticated staff member.
+   */
+  async checkDuplicateFace(input: {
+    masterEmbedding: readonly number[];
+    centerEmbedding?: readonly number[];
+    geometricRatios?: GeometricAnthropometricRatios;
+    excludePatientId?: string;
+  }): Promise<DuplicateFaceCheckResponse> {
+    try {
+      return await this.request<DuplicateFaceCheckResponse>('/api/biometric/check-duplicate', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+    } catch (err) {
+      if (!this.isTransientOrServerFailure(err)) {
+        throw err;
+      }
+      return { duplicate: false };
+    }
   }
 
   async verifyKioskPinLogin(pin: string): Promise<KioskFaceVerifyResponse> {
