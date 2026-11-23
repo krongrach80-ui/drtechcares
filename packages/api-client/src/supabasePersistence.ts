@@ -512,10 +512,192 @@ async function settleStageInBatches(
   return results;
 }
 
-/** Merge authoritative staff_users DB rows into state without resurrecting deleted seeded PT accounts. */
+export const STAFF_PROFILE_STORAGE_BUCKET = 'patient-faces';
+export const STAFF_PROFILE_MANIFEST_PATH = 'staff-profiles/manifest.json';
+
+export interface StaffProfileCloudRecord {
+  id: string;
+  username: string;
+  avatarUrl?: string;
+  bio?: string;
+  updatedAt: string;
+}
+
+function normalizeStaffProfileManifest(raw: unknown): Record<string, StaffProfileCloudRecord> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, StaffProfileCloudRecord> = {};
+  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (!val || typeof val !== 'object' || Array.isArray(val)) continue;
+    const rec = val as Record<string, unknown>;
+    const id = typeof rec.id === 'string' ? rec.id.trim() : '';
+    const username = typeof rec.username === 'string' ? rec.username.trim() : '';
+    const avatarUrl = typeof rec.avatarUrl === 'string' && rec.avatarUrl.trim() ? rec.avatarUrl.trim() : undefined;
+    const bio = typeof rec.bio === 'string' ? rec.bio : undefined;
+    const updatedAt = typeof rec.updatedAt === 'string' && rec.updatedAt.trim() ? rec.updatedAt.trim() : '';
+    if (!id && !username) continue;
+    const normalized: StaffProfileCloudRecord = {
+      id: id || key,
+      username,
+      avatarUrl,
+      bio,
+      updatedAt,
+    };
+    out[key] = normalized;
+    if (id) out[id] = normalized;
+    if (username) out[`usr:${username.toLowerCase()}`] = normalized;
+  }
+  return out;
+}
+
+async function decodeStorageBlobText(data: unknown): Promise<string | null> {
+  if (typeof data === 'string') return data;
+  if (!data || typeof data !== 'object') return null;
+  if ('text' in data && typeof (data as { text?: unknown }).text === 'function') {
+    return await (data as { text: () => Promise<string> }).text();
+  }
+  if ('arrayBuffer' in data && typeof (data as { arrayBuffer?: unknown }).arrayBuffer === 'function') {
+    const buf = await (data as { arrayBuffer: () => Promise<ArrayBuffer> }).arrayBuffer();
+    return new TextDecoder().decode(new Uint8Array(buf));
+  }
+  if (data instanceof Uint8Array) {
+    return new TextDecoder().decode(data);
+  }
+  return null;
+}
+
+/**
+ * Fetches cross-device staff profile metadata (avatarUrl + bio) stored in Supabase Storage.
+ * Guarantees instant cross-device profile photo sync even if Postgres `staff_users` has not
+ * yet run migration 011 (`avatar_url`, `bio` columns). Never throws or trips circuit breaker.
+ */
+export async function fetchStaffProfileManifestFromStorage(
+  supabase: SupabaseClient | null,
+  timeoutMs = 900,
+): Promise<Record<string, StaffProfileCloudRecord>> {
+  if (
+    !supabase ||
+    !supabase.storage ||
+    typeof supabase.storage.from !== 'function' ||
+    isSupabaseCircuitOpen(supabase)
+  ) {
+    return {};
+  }
+  const bucket = supabase.storage.from(STAFF_PROFILE_STORAGE_BUCKET) as {
+    download?: (path: string) => Promise<{ data: unknown; error: unknown }>;
+  };
+  if (typeof bucket?.download !== 'function') {
+    return {};
+  }
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const outcome = await Promise.race([
+      Promise.resolve(bucket.download(STAFF_PROFILE_MANIFEST_PATH)).then(
+        (res) => ({ timedOut: false as const, res }),
+        () => ({ timedOut: false as const, res: null }),
+      ),
+      new Promise<{ timedOut: true }>((resolve) => {
+        timerId = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+      }),
+    ]);
+    if (outcome.timedOut || !outcome.res || outcome.res.error || !outcome.res.data) {
+      return {};
+    }
+    const text = await decodeStorageBlobText(outcome.res.data);
+    if (!text) return {};
+    const parsed = JSON.parse(text) as unknown;
+    return normalizeStaffProfileManifest(parsed);
+  } catch {
+    return {};
+  } finally {
+    if (timerId !== undefined) clearTimeout(timerId);
+  }
+}
+
+/**
+ * Read-merge-writes a staff member's latest avatarUrl and bio into the shared Supabase Storage
+ * manifest (`staff-profiles/manifest.json`) so all devices and Worker isolates see updates immediately.
+ */
+export async function persistStaffProfileToStorageManifest(
+  supabase: SupabaseClient | null,
+  record: StaffProfileCloudRecord,
+  timeoutMs = 2000,
+): Promise<boolean> {
+  if (
+    !supabase ||
+    !supabase.storage ||
+    typeof supabase.storage.from !== 'function' ||
+    isSupabaseCircuitOpen(supabase)
+  ) {
+    return false;
+  }
+  const bucket = supabase.storage.from(STAFF_PROFILE_STORAGE_BUCKET) as {
+    upload?: (
+      path: string,
+      fileBody: Uint8Array,
+      opts?: { contentType?: string; upsert?: boolean; cacheControl?: string },
+    ) => Promise<{ data?: unknown; error?: { message?: string } | null }>;
+  };
+  if (typeof bucket?.upload !== 'function') {
+    return false;
+  }
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const run = async (): Promise<boolean> => {
+      const existing = await fetchStaffProfileManifestFromStorage(supabase, Math.min(800, timeoutMs));
+      const cleanRecord: StaffProfileCloudRecord = {
+        id: record.id,
+        username: record.username,
+        ...(record.avatarUrl ? { avatarUrl: record.avatarUrl } : {}),
+        ...(record.bio !== undefined ? { bio: record.bio } : {}),
+        updatedAt: record.updatedAt || new Date().toISOString(),
+      };
+      const merged: Record<string, StaffProfileCloudRecord> = {
+        ...existing,
+        [cleanRecord.id]: cleanRecord,
+        ...(cleanRecord.username
+          ? { [`usr:${cleanRecord.username.toLowerCase()}`]: cleanRecord }
+          : {}),
+      };
+      const bytes = new TextEncoder().encode(JSON.stringify(merged));
+      let uploadRes = await bucket.upload!(STAFF_PROFILE_MANIFEST_PATH, bytes, {
+        contentType: 'application/json',
+        upsert: true,
+        cacheControl: '0',
+      });
+      if (uploadRes?.error) {
+        const msgLower = String(uploadRes.error.message ?? '').toLowerCase();
+        if (
+          (msgLower.includes('not found') || msgLower.includes('bucket')) &&
+          typeof supabase.storage.createBucket === 'function'
+        ) {
+          await supabase.storage.createBucket(STAFF_PROFILE_STORAGE_BUCKET, { public: true }).catch(() => {});
+          uploadRes = await bucket.upload!(STAFF_PROFILE_MANIFEST_PATH, bytes, {
+            contentType: 'application/json',
+            upsert: true,
+            cacheControl: '0',
+          });
+        }
+      }
+      return !uploadRes?.error;
+    };
+    return await Promise.race([
+      run(),
+      new Promise<boolean>((resolve) => {
+        timerId = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } catch {
+    return false;
+  } finally {
+    if (timerId !== undefined) clearTimeout(timerId);
+  }
+}
+
+/** Merge authoritative staff_users DB rows + cloud profile manifest into state without resurrecting deleted seeded PT accounts. */
 export function mergeStaffUsersFromDbRows(
   rows: Record<string, unknown>[],
   state: CloudRouterState,
+  profileManifest?: Record<string, StaffProfileCloudRecord>,
 ): void {
   const deletedLower = new Set((state.deleted_user_ids ?? []).map((x) => x.toLowerCase()));
   const prevById = new Map(state.users.map((u) => [u.id, u]));
@@ -525,6 +707,30 @@ export function mergeStaffUsersFromDbRows(
       const id = String(r.id);
       const username = String(r.username);
       const prev = prevById.get(id) ?? prevByUsername.get(username.toLowerCase());
+      const manifestRec =
+        profileManifest?.[id] ?? profileManifest?.[`usr:${username.toLowerCase()}`];
+      const dbAvatar =
+        typeof r.avatar_url === 'string' && r.avatar_url.trim() ? r.avatar_url.trim() : '';
+      const cloudAvatar =
+        typeof manifestRec?.avatarUrl === 'string' && manifestRec.avatarUrl.trim()
+          ? manifestRec.avatarUrl.trim()
+          : '';
+      const dbBio = typeof r.bio === 'string' && r.bio.trim() ? r.bio.trim() : '';
+      const cloudBio =
+        typeof manifestRec?.bio === 'string' && manifestRec.bio.trim()
+          ? manifestRec.bio.trim()
+          : '';
+      const dbUpdatedMs = typeof r.updated_at === 'string' ? Date.parse(r.updated_at) || 0 : 0;
+      const cloudUpdatedMs =
+        typeof manifestRec?.updatedAt === 'string' ? Date.parse(manifestRec.updatedAt) || 0 : 0;
+      const resolvedAvatar =
+        cloudAvatar && (!dbAvatar || cloudUpdatedMs >= dbUpdatedMs)
+          ? cloudAvatar
+          : dbAvatar || cloudAvatar || prev?.avatarUrl;
+      const resolvedBio =
+        cloudBio && (!dbBio || cloudUpdatedMs >= dbUpdatedMs)
+          ? cloudBio
+          : dbBio || cloudBio || prev?.bio;
       return {
         id,
         username,
@@ -538,8 +744,8 @@ export function mergeStaffUsersFromDbRows(
           : r.license_number
             ? String(r.license_number)
             : undefined,
-        avatarUrl: typeof r.avatar_url === 'string' && r.avatar_url ? r.avatar_url : prev?.avatarUrl,
-        bio: typeof r.bio === 'string' && r.bio ? r.bio : prev?.bio,
+        avatarUrl: resolvedAvatar,
+        bio: resolvedBio,
         patientId: r.patient_id ? String(r.patient_id) : undefined,
         active:
           r.active !== undefined && r.active !== null
@@ -570,9 +776,10 @@ export function mergeStaffUsersFromDbRows(
 }
 
 // Exact base schema columns matching supabase/migrations/20261113000001_drtechcares_schema_and_rpc.sql
-// Extended fields live in patients.history JSONB, exercises.*_i18n, kiosks.current_state, and audit_logs.detail.
+// Extended staff columns (avatar_url, bio) are selected opportunistically with automatic fallback to base cols.
 const STAFF_USERS_BASE_COLS =
   'id,username,password_hash,role,full_name,phone,specialty,license_no,patient_id,active,force_logged_out_at,created_at';
+const STAFF_USERS_EXTENDED_COLS = `${STAFF_USERS_BASE_COLS},avatar_url,bio`;
 
 const PATIENTS_BASE_COLS =
   'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,face_biometric_status,face_frames_count,face_image_url,biometric_updated_at,history,created_at,updated_at';
@@ -598,7 +805,7 @@ const KIOSKS_BASE_COLS =
 const AUDIT_LOGS_BASE_COLS =
   'id,event_type,actor_role,actor_id,actor_name,ip_address,device_id,target_id,detail,created_at';
 
-/** Fast single-table lookup of staff_users for POST /api/auth/login (never blocks on 17-table hydration). */
+/** Fast single-table lookup of staff_users + cloud profile manifest for login & cross-device profile sync. */
 export async function hydrateStaffUsersOnly(
   supabase: SupabaseClient,
   state: CloudRouterState,
@@ -610,15 +817,19 @@ export async function hydrateStaffUsersOnly(
   let timerId: ReturnType<typeof setTimeout> | undefined;
   try {
     const outcome = await Promise.race([
-      selectExplicitWithFallback(
-        'staff_users',
-        (cols) => supabase.from('staff_users').select(cols),
-        STAFF_USERS_BASE_COLS,
-        STAFF_USERS_BASE_COLS,
-        50,
-      ).then((res) => ({
+      Promise.all([
+        selectExplicitWithFallback(
+          'staff_users',
+          (cols) => supabase.from('staff_users').select(cols),
+          STAFF_USERS_EXTENDED_COLS,
+          STAFF_USERS_BASE_COLS,
+          250,
+        ),
+        fetchStaffProfileManifestFromStorage(supabase, Math.min(900, timeoutMs)),
+      ]).then(([res, manifest]) => ({
         timedOut: false as const,
         res: res as { data: Record<string, unknown>[] | null; error: unknown },
+        manifest,
       })),
       new Promise<{ timedOut: true }>((resolve) => {
         timerId = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
@@ -634,7 +845,7 @@ export async function hydrateStaffUsersOnly(
       }
       return false;
     }
-    mergeStaffUsersFromDbRows(outcome.res.data, state);
+    mergeStaffUsersFromDbRows(outcome.res.data, state, outcome.manifest);
     return true;
   } catch (err) {
     if (isSupabaseTransientFailure(err)) {
@@ -1462,16 +1673,17 @@ async function runHydrateStateFromSupabaseInternal(
   }
   const totalDeadlineMs = Date.now() + 1500;
 
-  // Stage 1 (Priority Clinical Directory): fetch patients & staff_users FIRST with explicit base-schema columns
+  // Stage 1 (Priority Clinical Directory): fetch patients, staff_users & cloud profile manifest FIRST
   const stage1Tasks: ReadonlyArray<() => PromiseLike<unknown>> = [
     () =>
       selectExplicitWithFallback(
         'staff_users',
         (cols) => supabase.from('staff_users').select(cols),
-        STAFF_USERS_BASE_COLS,
+        STAFF_USERS_EXTENDED_COLS,
         STAFF_USERS_BASE_COLS,
         250,
       ),
+    () => fetchStaffProfileManifestFromStorage(supabase, 850),
     () =>
       selectExplicitWithFallback(
         'patients',
@@ -1625,9 +1837,10 @@ async function runHydrateStateFromSupabaseInternal(
       ),
   ];
 
-  const [usersRes, patientsRes, settingsRes, bansRes, activeSessionsRes] =
-    (await settleStageInBatches(stage1Tasks, 5, Math.min(totalDeadlineMs, Date.now() + 1200))) as [
+  const [usersRes, staffManifestRes, patientsRes, settingsRes, bansRes, activeSessionsRes] =
+    (await settleStageInBatches(stage1Tasks, 6, Math.min(totalDeadlineMs, Date.now() + 1200))) as [
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      PromiseSettledResult<Record<string, StaffProfileCloudRecord>>,
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
       PromiseSettledResult<{ data: Record<string, unknown> | null; error: unknown }>,
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
@@ -1689,7 +1902,11 @@ async function runHydrateStateFromSupabaseInternal(
   }
 
   if (usersRes.status === 'fulfilled' && !usersRes.value.error && Array.isArray(usersRes.value.data)) {
-    mergeStaffUsersFromDbRows(usersRes.value.data as Record<string, unknown>[], state);
+    const manifest =
+      staffManifestRes.status === 'fulfilled' && staffManifestRes.value
+        ? staffManifestRes.value
+        : undefined;
+    mergeStaffUsersFromDbRows(usersRes.value.data as Record<string, unknown>[], state, manifest);
   }
 
   const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);

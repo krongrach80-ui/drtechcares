@@ -1241,7 +1241,7 @@ function getDefaultAvatarForUser(u: UserAccount): string {
   return PT_PRESET_AVATARS[0].uri;
 }
 
-function resolveUserProfile(
+export function resolveUserProfile(
   u: UserAccount,
   overrides: Record<string, StoredStaffProfileOverride>,
 ): {
@@ -1253,14 +1253,63 @@ function resolveUserProfile(
   bio: string;
 } {
   const local = overrides[u.id] ?? overrides[`usr:${u.username.toLowerCase()}`];
+  const serverAvatar =
+    typeof u.avatarUrl === 'string' && u.avatarUrl.trim() ? u.avatarUrl.trim() : '';
+  const localAvatar =
+    typeof local?.avatarUrl === 'string' && local.avatarUrl.trim() ? local.avatarUrl.trim() : '';
+  const serverBio = typeof u.bio === 'string' && u.bio.trim() ? u.bio.trim() : '';
+  const localBio = typeof local?.bio === 'string' && local.bio.trim() ? local.bio.trim() : '';
   return {
-    fullName: local?.fullName?.trim() || u.fullName,
-    phone: local?.phone !== undefined ? local.phone : u.phone || '',
-    specialty: local?.specialty !== undefined ? local.specialty : u.specialty || 'เวชศาสตร์ฟื้นฟูกายภาพบำบัด',
+    fullName: u.fullName?.trim() || local?.fullName?.trim() || u.username,
+    phone: u.phone !== undefined && u.phone !== '' ? u.phone : local?.phone ?? '',
+    specialty: u.specialty?.trim() || local?.specialty?.trim() || 'เวชศาสตร์ฟื้นฟูกายภาพบำบัด',
     licenseNo: u.licenseNo || local?.licenseNo || 'PT-44012',
-    avatarUrl: local?.avatarUrl || u.avatarUrl || getDefaultAvatarForUser(u),
-    bio: local?.bio !== undefined && local.bio.trim() ? local.bio : u.bio?.trim() || getDefaultBioForUser(u),
+    // Authoritative cloud avatarUrl always takes precedence over stale per-device localStorage overrides
+    avatarUrl: serverAvatar || localAvatar || getDefaultAvatarForUser(u),
+    bio: serverBio || localBio || getDefaultBioForUser(u),
   };
+}
+
+export function reconcileStaffProfileOverridesFromServer(
+  prevOverrides: Record<string, StoredStaffProfileOverride>,
+  serverUsers: readonly UserAccount[],
+): Record<string, StoredStaffProfileOverride> {
+  if (!serverUsers || serverUsers.length === 0) return prevOverrides;
+  let changed = false;
+  const next: Record<string, StoredStaffProfileOverride> = { ...prevOverrides };
+  for (const u of serverUsers) {
+    const idKey = u.id;
+    const usrKey = `usr:${u.username.toLowerCase()}`;
+    const existing = next[idKey] ?? next[usrKey];
+    const serverAvatar =
+      typeof u.avatarUrl === 'string' && u.avatarUrl.trim() ? u.avatarUrl.trim() : undefined;
+    const serverBio = typeof u.bio === 'string' && u.bio.trim() ? u.bio.trim() : undefined;
+    if (!existing && !serverAvatar && !serverBio) continue;
+    const merged: StoredStaffProfileOverride = {
+      ...(existing ?? {}),
+      fullName: u.fullName || existing?.fullName,
+      phone: u.phone !== undefined ? u.phone : existing?.phone,
+      specialty: u.specialty || existing?.specialty,
+      licenseNo: u.licenseNo || existing?.licenseNo,
+      ...(serverAvatar ? { avatarUrl: serverAvatar } : existing?.avatarUrl ? { avatarUrl: existing.avatarUrl } : {}),
+      ...(serverBio ? { bio: serverBio } : existing?.bio ? { bio: existing.bio } : {}),
+    };
+    const prevIdEntry = next[idKey];
+    if (
+      !prevIdEntry ||
+      prevIdEntry.avatarUrl !== merged.avatarUrl ||
+      prevIdEntry.bio !== merged.bio ||
+      prevIdEntry.fullName !== merged.fullName ||
+      prevIdEntry.phone !== merged.phone ||
+      prevIdEntry.specialty !== merged.specialty ||
+      prevIdEntry.licenseNo !== merged.licenseNo
+    ) {
+      next[idKey] = merged;
+      next[usrKey] = merged;
+      changed = true;
+    }
+  }
+  return changed ? next : prevOverrides;
 }
 
 async function resizeImageFileToDataUri(file: File, maxDim = 320): Promise<string> {
@@ -1666,7 +1715,7 @@ export function ClinicalStaffPortalShell({
     try {
       let listUsersError: unknown = null;
       const [uRes, patientSyncRes, exRes, mpRes, sessRes, callsRes, settingsRes, secRes, healthRes] = await Promise.all([
-        apiClient.listUsers().catch((err) => {
+        apiClient.listUsers({ forceRefresh: true }).catch((err) => {
           listUsersError = err;
           return null;
         }),
@@ -1698,6 +1747,13 @@ export function ClinicalStaffPortalShell({
       const nextUsers = uRes && uRes.length > 0 ? uRes : uRes ? [currentUser] : null;
       if (nextUsers) {
         setUsers(nextUsers);
+        setProfileOverrides((prev) => {
+          const reconciled = reconcileStaffProfileOverridesFromServer(prev, nextUsers);
+          if (reconciled !== prev) {
+            saveStaffProfileOverrides(reconciled);
+          }
+          return reconciled;
+        });
       } else {
         setUsers((prev) => (prev.length > 0 ? prev : [currentUser]));
       }
@@ -1772,26 +1828,64 @@ export function ClinicalStaffPortalShell({
     flashBanner,
   ]);
 
+  const lastUsersCloudSyncAtRef = useRef(0);
+  const syncStaffUsersFromCloud = useCallback(
+    async (force = false) => {
+      const now = Date.now();
+      if (!force && now - lastUsersCloudSyncAtRef.current < 4000) return;
+      lastUsersCloudSyncAtRef.current = now;
+      try {
+        const freshUsers = await apiClient.listUsers({ forceRefresh: true });
+        if (freshUsers && freshUsers.length > 0) {
+          setUsers(freshUsers);
+          setProfileOverrides((prev) => {
+            const reconciled = reconcileStaffProfileOverridesFromServer(prev, freshUsers);
+            if (reconciled !== prev) {
+              saveStaffProfileOverrides(reconciled);
+            }
+            return reconciled;
+          });
+        }
+      } catch {
+        // Silent background profile sync — keep existing state on transient errors
+      }
+    },
+    [apiClient],
+  );
+
   useEffect(() => {
     if (activeTab === 'patients' || activeTab === 'assessments' || activeTab === 'schedules') {
       void syncPatientsFromSupabase({ silent: true });
     }
-  }, [activeTab, syncPatientsFromSupabase]);
+    if (activeTab === 'profile' || activeTab === 'staff' || activeTab === 'pts') {
+      void syncStaffUsersFromCloud(true);
+    }
+  }, [activeTab, syncPatientsFromSupabase, syncStaffUsersFromCloud]);
 
   useEffect(() => {
     refreshAll();
     const handleOnline = () => {
       void pingCloudHealth(true);
+      void syncStaffUsersFromCloud(true);
     };
     const handleOffline = () => {
       setCloudHealth((prev) => ({ ...prev, online: false, dbConnected: false }));
     };
+    const handleWindowFocusOrVisible = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      void syncStaffUsersFromCloud(false);
+    };
     if (typeof window !== 'undefined') {
       window.addEventListener('online', handleOnline);
       window.addEventListener('offline', handleOffline);
+      window.addEventListener('focus', handleWindowFocusOrVisible);
+    }
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleWindowFocusOrVisible);
     }
     const pollTimer = window.setInterval(() => {
       void pingCloudHealth();
+      void syncStaffUsersFromCloud(false);
       apiClient
         .listStaffCalls()
         .then((calls) => {
@@ -1808,9 +1902,13 @@ export function ClinicalStaffPortalShell({
       if (typeof window !== 'undefined') {
         window.removeEventListener('online', handleOnline);
         window.removeEventListener('offline', handleOffline);
+        window.removeEventListener('focus', handleWindowFocusOrVisible);
+      }
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleWindowFocusOrVisible);
       }
     };
-  }, [refreshAll, pingCloudHealth, apiClient]);
+  }, [refreshAll, pingCloudHealth, syncStaffUsersFromCloud, apiClient]);
 
   const exerciseLibrarySyncAttemptedRef = useRef(false);
   useEffect(() => {
@@ -2086,15 +2184,35 @@ export function ClinicalStaffPortalShell({
         avatarUrl: patch.avatarUrl,
         bio: patch.bio,
       });
+      const syncedAvatarUrl = updated.avatarUrl || patch.avatarUrl;
+      const syncedPatch: StoredStaffProfileOverride = {
+        ...patch,
+        fullName: updated.fullName || patch.fullName,
+        phone: updated.phone !== undefined ? updated.phone : patch.phone,
+        specialty: updated.specialty || patch.specialty,
+        licenseNo: updated.licenseNo ?? safeLicenseNumber,
+        avatarUrl: syncedAvatarUrl,
+        bio: updated.bio ?? patch.bio,
+      };
+      const syncedOverrides: Record<string, StoredStaffProfileOverride> = {
+        ...nextOverrides,
+        [updated.id]: syncedPatch,
+        [`usr:${updated.username.toLowerCase()}`]: syncedPatch,
+      };
+      setProfileOverrides(syncedOverrides);
+      saveStaffProfileOverrides(syncedOverrides);
+      if (syncedAvatarUrl) {
+        setProfileAvatarUrl(syncedAvatarUrl);
+      }
       setUsers((prev) =>
-        prev.map((u) => (u.id === updated.id ? { ...u, ...updated, ...patch, licenseNo: updated.licenseNo ?? safeLicenseNumber } : u)),
+        prev.map((u) => (u.id === updated.id ? { ...u, ...updated, ...syncedPatch, licenseNo: updated.licenseNo ?? safeLicenseNumber } : u)),
       );
       flashBanner('success', locale.profile.savedSuccess);
       await refreshAll();
     } catch (err) {
       if (await handleAuthFailureIfExpired(err)) return;
-      // Preserve local profile override cleanly while letting the user know
-      flashBanner('success', `${locale.profile.savedSuccess} (Local Sync)`);
+      // Preserve local profile override cleanly while letting the user know cloud sync failed
+      flashBanner('error', 'บันทึกเฉพาะเครื่องนี้ชั่วคราว แต่ยังไม่สามารถซิงก์รูปโปรไฟล์ขึ้นคลาวด์ได้ กรุณาลองกดบันทึกอีกครั้ง');
     } finally {
       setSubmitting(false);
     }

@@ -95,6 +95,7 @@ import {
 } from './index';
 import {
   HYDRATE_TTL_MS,
+  STAFF_PROFILE_STORAGE_BUCKET,
   fetchBiometricLibraryStatsFromSupabase,
   getSupabaseCircuitState,
   hydrateBiometricsLiveFromSupabase,
@@ -107,6 +108,7 @@ import {
   newRecordId,
   normalizeCompactExemplars,
   normalizeStaffRole,
+  persistStaffProfileToStorageManifest,
   persistToSupabase,
   persistWithTimeoutBestEffort,
   probeSupabaseHealth,
@@ -799,6 +801,72 @@ async function uploadFaceImageIfNeeded(
     return data?.publicUrl || rawUrl;
   } catch {
     return rawUrl;
+  }
+}
+
+/**
+ * Uploads a staff member's uploaded base64 profile photo (`data:image/jpeg;base64,...`, PNG, WebP)
+ * into Supabase Storage (`patient-faces/staff-avatars/...`) and returns a permanent public HTTPS URL
+ * so all devices render the updated profile photo without hitting the DB base64 size cap.
+ * Compact SVG presets (`data:image/svg+xml;utf8,...`) and existing HTTPS URLs are preserved cleanly.
+ */
+async function uploadStaffAvatarIfNeeded(
+  supabase: SupabaseClient | null,
+  userId: string,
+  rawUrl: string | undefined,
+): Promise<string | undefined> {
+  if (!supabase || !rawUrl) return rawUrl;
+  const trimmed = rawUrl.trim();
+  if (!trimmed.startsWith('data:image/')) return trimmed;
+  const match = trimmed.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!match) return trimmed;
+  if (!supabase.storage || typeof supabase.storage.from !== 'function' || isSupabaseCircuitOpen(supabase)) {
+    return trimmed;
+  }
+  const rawSubtype = match[1].toLowerCase();
+  const ext = rawSubtype === 'jpeg' ? 'jpg' : rawSubtype.replace(/[^a-z0-9]/g, '') || 'jpg';
+  const contentType = `image/${rawSubtype}`;
+  const safeUserId = userId.replace(/[^a-zA-Z0-9_-]/g, '') || 'staff';
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const runUpload = async (): Promise<string> => {
+      const binary = globalThis.atob(match[2]);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const objectPath = `staff-avatars/${safeUserId}-${Date.now()}.${ext}`;
+      let uploadRes = await supabase.storage
+        .from(STAFF_PROFILE_STORAGE_BUCKET)
+        .upload(objectPath, bytes, { contentType, upsert: true, cacheControl: '31536000' });
+      if (uploadRes.error && !patientFacesBucketReady) {
+        const msgLower = String(uploadRes.error.message ?? '').toLowerCase();
+        if (
+          (msgLower.includes('not found') || msgLower.includes('bucket')) &&
+          typeof supabase.storage.createBucket === 'function'
+        ) {
+          await supabase.storage.createBucket(STAFF_PROFILE_STORAGE_BUCKET, { public: true }).catch(() => {});
+          patientFacesBucketReady = true;
+          uploadRes = await supabase.storage
+            .from(STAFF_PROFILE_STORAGE_BUCKET)
+            .upload(objectPath, bytes, { contentType, upsert: true, cacheControl: '31536000' });
+        }
+      }
+      if (uploadRes.error) return trimmed;
+      patientFacesBucketReady = true;
+      const { data } = supabase.storage.from(STAFF_PROFILE_STORAGE_BUCKET).getPublicUrl(objectPath);
+      return data?.publicUrl || trimmed;
+    };
+    return await Promise.race([
+      runUpload(),
+      new Promise<string>((resolve) => {
+        timerId = setTimeout(() => resolve(trimmed), 4000);
+      }),
+    ]);
+  } catch {
+    return trimmed;
+  } finally {
+    if (timerId !== undefined) clearTimeout(timerId);
   }
 }
 
@@ -2026,7 +2094,14 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (pathname === '/api/auth/me' && method === 'GET') {
       const err = requireAuth(authUser);
       if (err) return err;
-      return jsonResponse({ user: publicUser(authUser!) });
+      if (supabase && forceSupabaseProbe) {
+        await hydrateStaffUsersOnly(supabase, state, 2500);
+      }
+      const freshUser =
+        state.users.find(
+          (u) => u.id === authUser!.id || u.username.toLowerCase() === authUser!.username.toLowerCase(),
+        ) ?? authUser!;
+      return jsonResponse({ user: publicUser(freshUser) });
     }
 
     if (pathname === '/api/auth/change-password' && method === 'POST') {
@@ -2067,6 +2142,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if ((pathname === '/api/users' || pathname === '/api/staff') && method === 'GET') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
+      if (supabase && forceSupabaseProbe) {
+        await hydrateStaffUsersOnly(supabase, state, 2500);
+      }
       const users =
         authUser!.role === 'super_admin'
           ? state.users
@@ -2219,7 +2297,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       if (requestedLicense !== undefined && actorIsAdmin) {
         target.licenseNo = String(requestedLicense).trim() || undefined;
       }
-      if (body.avatarUrl !== undefined) target.avatarUrl = body.avatarUrl;
+      if (body.avatarUrl !== undefined) {
+        target.avatarUrl = await uploadStaffAvatarIfNeeded(supabase, target.id, body.avatarUrl);
+      }
       if (body.bio !== undefined) target.bio = body.bio;
       if (body.role !== undefined && actorIsAdmin) target.role = normalizeStaffRole(body.role);
       if (body.active !== undefined && actorIsAdmin) target.active = body.active;
@@ -2237,17 +2317,34 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           })
           .eq('id', target!.id),
       );
-      await persistToSupabase(supabase, (db) =>
-        db
-          .from('staff_users')
-          .update(
-            stripOversizedBase64ForDb({
-              avatar_url: target!.avatarUrl ?? null,
-              bio: target!.bio ?? null,
-            }),
-          )
-          .eq('id', target!.id),
+      const extendedProfilePatch = stripUnsupportedColumnsForWrite(
+        'staff_users',
+        stripOversizedBase64ForDb({
+          avatar_url: target!.avatarUrl ?? null,
+          bio: target!.bio ?? null,
+        }),
       );
+      if (Object.keys(extendedProfilePatch).length > 0) {
+        await persistToSupabase(supabase, async (db) => {
+          const res = (await db
+            .from('staff_users')
+            .update(extendedProfilePatch)
+            .eq('id', target!.id)) as { error?: unknown } | undefined;
+          if (res?.error) {
+            recordUnsupportedColumn('staff_users', res.error);
+          }
+          return res;
+        });
+      }
+      if (body.avatarUrl !== undefined || body.bio !== undefined) {
+        await persistStaffProfileToStorageManifest(supabase, {
+          id: target.id,
+          username: target.username,
+          avatarUrl: target.avatarUrl,
+          bio: target.bio,
+          updatedAt: new Date().toISOString(),
+        });
+      }
 
       recordAudit({
         eventType: 'USER_UPDATED',

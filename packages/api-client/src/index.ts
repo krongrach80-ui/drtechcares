@@ -1071,11 +1071,12 @@ export class DrTechCaresApiClient {
     }
   }
 
-  async getMe(): Promise<UserAccount | null> {
+  async getMe(options?: { forceRefresh?: boolean }): Promise<UserAccount | null> {
     const activeToken = this.getAuthToken();
     if (!activeToken) return null;
     try {
-      const res = await this.request<{ user: UserAccount }>('/api/auth/me');
+      const qs = options?.forceRefresh ? '?refresh=1' : '';
+      const res = await this.request<{ user: UserAccount }>(`/api/auth/me${qs}`);
       this.setSession(activeToken, res.user);
       return res.user;
     } catch (err) {
@@ -1095,13 +1096,27 @@ export class DrTechCaresApiClient {
   }
 
   // Users & Staff RBAC
-  async listUsers(): Promise<UserAccount[]> {
-    const res = await this.request<{ users: UserAccount[] }>('/api/users');
+  async listUsers(options?: { forceRefresh?: boolean }): Promise<UserAccount[]> {
+    const qs = options?.forceRefresh ? '?refresh=1' : '';
+    const res = await this.request<{ users: UserAccount[] }>(`/api/users${qs}`);
     const deleted = this.readLocallyDeletedIdSet();
-    if (deleted.size === 0) return res.users;
-    return res.users.filter(
-      (u) => !deleted.has(u.id.toLowerCase()) && !deleted.has(u.username.toLowerCase()),
-    );
+    const visibleUsers =
+      deleted.size === 0
+        ? res.users
+        : res.users.filter(
+            (u) => !deleted.has(u.id.toLowerCase()) && !deleted.has(u.username.toLowerCase()),
+          );
+    const activeToken = this.getAuthToken();
+    const storedUser = this.getStoredUser();
+    if (activeToken && storedUser) {
+      const freshSelf = visibleUsers.find(
+        (u) => u.id === storedUser.id || u.username.toLowerCase() === storedUser.username.toLowerCase(),
+      );
+      if (freshSelf) {
+        this.setSession(activeToken, freshSelf);
+      }
+    }
+    return visibleUsers;
   }
 
   async createUser(input: {
@@ -1126,6 +1141,16 @@ export class DrTechCaresApiClient {
       method: 'PUT',
       body: JSON.stringify(patch),
     });
+    const activeToken = this.getAuthToken();
+    const storedUser = this.getStoredUser();
+    if (
+      activeToken &&
+      storedUser &&
+      (storedUser.id === res.user.id ||
+        storedUser.username.toLowerCase() === res.user.username.toLowerCase())
+    ) {
+      this.setSession(activeToken, res.user);
+    }
     return res.user;
   }
 

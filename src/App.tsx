@@ -753,7 +753,7 @@ export function App() {
       };
     }
     let cancelled = false;
-    apiClient.getMe().then((u) => {
+    apiClient.getMe({ forceRefresh: true }).then((u) => {
       if (!cancelled) {
         setCurrentUser(u);
         setAuthChecked(true);
