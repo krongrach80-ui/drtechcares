@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   CANONICAL_HUMAN_FACE_BASELINE_512,
   FACE_EMBEDDING_DIM,
+  cosineSimilarity,
   l2Normalize,
 } from '@drtechcares/smart-biometric-core';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -4074,6 +4075,66 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(mixedJson.matched).toBe(false);
     expect(mixedJson.failureReasons).toContain('FRAME_CONSENSUS_FAILED');
 
+    // 9b. Mild 1-frame dip (genuine >= 0.84 and < 0.88 raw, variance <= 0.08, centroid passes full Triple-Gate)
+    //     falls back safely to consensusFramesVerified: 1 (requiring full 3-call streak) instead of false 401
+    const fDip = mixRelu6(personA, makeRelu6(17.7), 0.49);
+    const fStrong2 = mixRelu6(personA, makeRelu6(18.8), 0.39);
+    const fStrong3 = mixRelu6(personA, makeRelu6(19.9), 0.37);
+    const dipRawCos = cosineSimilarity(fDip, personA);
+    expect(dipRawCos).toBeGreaterThanOrEqual(0.84);
+    expect(dipRawCos).toBeLessThan(0.88);
+    const dipCentroid = l2Normalize(fDip.map((v, i) => v + fStrong2[i] + fStrong3[i]));
+    const dipRes = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      deviceId: 'KIOSK-ATOMIC-DIP',
+      body: {
+        probeVector: dipCentroid,
+        frameVectors: [fDip, fStrong2, fStrong3],
+        frameTimestamps: [2000, 2180, 2360],
+        engine: 'human-faceres-1024d',
+        livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.02 },
+      },
+    });
+    expect(dipRes.status).toBe(200);
+    const dipJson = (await dipRes.json()) as {
+      matched: boolean;
+      consensusFramesVerified?: number;
+      patient?: { hn: string };
+    };
+    expect(dipJson.matched).toBe(true);
+    expect(dipJson.consensusFramesVerified).toBe(1);
+    expect(dipJson.patient?.hn).toBe('HN-DUP-EN');
+
+    // 9c. BELOW_THRESHOLD writes a throttled ZERO-PII masked diagnostic entry to audit_logs
+    const strangerVec = makeRelu6(88.8);
+    const belowRes = await callRouter(router, '/api/biometric/verify', {
+      method: 'POST',
+      deviceId: 'KIOSK-DIAG-AUDIT',
+      body: {
+        probeVector: strangerVec,
+        engine: 'human-faceres-1024d',
+        livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.02 },
+      },
+    });
+    expect(belowRes.status).toBe(401);
+    const adminLoginRes = await callRouter(router, '/api/auth/login', {
+      method: 'POST',
+      body: { username: 'admin', password: 'Admin@2026' },
+    });
+    const { token: adminToken } = (await adminLoginRes.json()) as { token: string };
+    const auditLogsRes = await callRouter(router, '/api/audit-logs', { token: adminToken });
+    expect(auditLogsRes.status).toBe(200);
+    const auditLogsJson = (await auditLogsRes.json()) as {
+      logs: Array<{ eventType: string; deviceId?: string; detail?: string }>;
+    };
+    const belowAudit = auditLogsJson.logs.find(
+      (log) => log.eventType === 'BIOMETRIC_VERIFY_BELOW_THRESHOLD' && log.deviceId === 'KIOSK-DIAG-AUDIT',
+    );
+    expect(belowAudit).toBeDefined();
+    expect(belowAudit?.detail).toContain('top1=P#');
+    expect(belowAudit?.detail).not.toContain('Phatdanai');
+    expect(belowAudit?.detail).not.toContain('HN-DUP-EN');
+
     // 10. GET /api/biometrics/stats?warm=1 returns count-only JSON with ZERO vectors / ZERO PII
     const warmStatsRes = await callRouter(router, '/api/biometrics/stats?warm=1');
     expect(warmStatsRes.status).toBe(200);
@@ -4164,6 +4225,126 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(projState.patients[0]?.rehabSchedules).toHaveLength(1);
     expect(projState.patients[0]?.strokeType).toBe('ISCHEMIC');
     expect(projState.patients[0]?.universalHealthLinkCode).toBe('DTC-EHR-PROJ01');
+
+    // 12. Multi-isolate stale RAM cache recovery: if a patient was just enrolled on another Worker isolate,
+    //     POST /api/biometric/verify misses on warm RAM cache (evalPass=0), triggers a live Supabase re-sync
+    //     (evalPass=1), and matches the newly enrolled patient on the VERY SAME request!
+    resetHydrationCacheForTests();
+    resetSupabaseCircuitForTests();
+    const personC = makeRelu6(77.7);
+    let includePersonCInDb = false;
+    let dbBioReads = 0;
+    const origFetchIso = globalThis.fetch;
+    const realDateNow = Date.now;
+    let fakeNow = realDateNow();
+    vi.spyOn(Date, 'now').mockImplementation(() => fakeNow);
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
+        if (method === 'GET' && url.includes('/rest/v1/patients')) {
+          return new Response(
+            JSON.stringify([
+              {
+                id: 'pat-iso-a',
+                hn: 'HN-ISO-A',
+                full_name: 'คนไข้เก่า ไอโซเลตเอ',
+                age: 62,
+                registration_status: 'active',
+              },
+              ...(includePersonCInDb
+                ? [
+                    {
+                      id: 'pat-iso-c',
+                      hn: 'HN-ISO-C',
+                      full_name: 'คนไข้ใหม่ สมัครสด',
+                      age: 45,
+                      registration_status: 'active',
+                    },
+                  ]
+                : []),
+            ]),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (method === 'GET' && url.includes('/rest/v1/patient_biometrics')) {
+          dbBioReads += 1;
+          return new Response(
+            JSON.stringify([
+              {
+                patient_id: 'pat-iso-a',
+                hn: 'HN-ISO-A',
+                master_embedding: personA,
+                angle_embeddings: { center: personA, left: personA, right: personA, up: personA, down: personA },
+                embedding_dim: 1024,
+                frames_captured: 120,
+                biometric_engine: 'human-faceres-1024d',
+              },
+              ...(includePersonCInDb
+                ? [
+                    {
+                      patient_id: 'pat-iso-c',
+                      hn: 'HN-ISO-C',
+                      master_embedding: personC,
+                      angle_embeddings: { center: personC, left: personC, right: personC, up: personC, down: personC },
+                      embedding_dim: 1024,
+                      frames_captured: 120,
+                      biometric_engine: 'human-faceres-1024d',
+                    },
+                  ]
+                : []),
+            ]),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as typeof fetch;
+
+      const fakeJwtIso =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.signaturevaltestsafe9876543210';
+      const staleRouter = createCloudDelegatedRouter({
+        supabaseUrl: 'https://unit-test-iso.supabase.co',
+        supabaseServiceKey: fakeJwtIso,
+      });
+      // Step A: Warm this isolate when only Patient A exists in Supabase
+      const warm1 = await callRouter(staleRouter, '/api/biometrics/stats?warm=1');
+      expect(warm1.status).toBe(200);
+      expect(dbBioReads).toBeGreaterThanOrEqual(1);
+      const readsAfterWarm = dbBioReads;
+
+      // Step B: 3 seconds later, Patient C finishes 120-frame enrollment on a DIFFERENT Worker isolate
+      includePersonCInDb = true;
+      fakeNow += 3000;
+
+      // Step C: Patient C scans at Kiosk hitting THIS isolate (within 15s RAM cache TTL, >= 1.5s since warm)
+      const cProbe = mixRelu6(personC, makeRelu6(55.5), 0.04);
+      const verifyFreshRes = await callRouter(staleRouter, '/api/biometric/verify', {
+        method: 'POST',
+        deviceId: 'KIOSK-ISOLATE-RECOVERY',
+        body: {
+          probeVector: cProbe,
+          engine: 'human-faceres-1024d',
+          livenessEvidence: { biologicalVerified: true, blinkCount: 1, spoofRisk: 0.01 },
+        },
+      });
+      expect(verifyFreshRes.status).toBe(200);
+      const verifyFreshJson = (await verifyFreshRes.json()) as {
+        matched: boolean;
+        patient?: { id: string; hn: string };
+      };
+      expect(verifyFreshJson.matched).toBe(true);
+      expect(verifyFreshJson.patient?.id).toBe('pat-iso-c');
+      expect(verifyFreshJson.patient?.hn).toBe('HN-ISO-C');
+      expect(dbBioReads).toBeGreaterThan(readsAfterWarm);
+    } finally {
+      globalThis.fetch = origFetchIso;
+      vi.restoreAllMocks();
+      resetHydrationCacheForTests();
+      resetSupabaseCircuitForTests();
+    }
   });
 });
 

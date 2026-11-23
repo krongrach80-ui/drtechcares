@@ -1532,16 +1532,45 @@ export default function FaceID120Scanner({
         // Warm up the Shared Biometric Engine (@vladmandic/human faceres 1024-D) in parallel with camera access
         const humanWarmupPromise = warmupBiometricEngine();
 
-        const preferredDeviceId = await selectClinicalCameraDeviceId();
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            deviceId: preferredDeviceId ? { ideal: preferredDeviceId } : undefined,
-            facingMode: 'user',
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
-          audio: false,
-        });
+        let storedPreferredCameraId: string | null = null;
+        try {
+          if (typeof window !== 'undefined') {
+            storedPreferredCameraId = window.localStorage.getItem('drtech_preferred_camera_id');
+          }
+        } catch {
+          storedPreferredCameraId = null;
+        }
+        const preferredDeviceId = await selectClinicalCameraDeviceId(storedPreferredCameraId);
+        let stream: MediaStream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              deviceId: preferredDeviceId ? { exact: preferredDeviceId } : undefined,
+              facingMode: preferredDeviceId ? undefined : 'user',
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            },
+            audio: false,
+          });
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              deviceId: preferredDeviceId ? { ideal: preferredDeviceId } : undefined,
+              facingMode: 'user',
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+            },
+            audio: false,
+          });
+        }
+        try {
+          const openedDevId = stream.getVideoTracks()[0]?.getSettings?.()?.deviceId;
+          if (openedDevId && !storedPreferredCameraId && typeof window !== 'undefined') {
+            window.localStorage.setItem('drtech_preferred_camera_id', openedDevId);
+          }
+        } catch {
+          // Ignore storage errors
+        }
         if (cancelled) {
           stream.getTracks().forEach((t) => t.stop());
           return;

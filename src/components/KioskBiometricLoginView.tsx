@@ -160,7 +160,7 @@ export const KIOSK_MAX_DECISION_EVAL_FRAMES = 6;
 export const KIOSK_NO_FACE_GUIDANCE_DELAY_MS = 1500;
 export const KIOSK_RESCAN_COOLDOWN_MS = 1500;
 export const KIOSK_MAX_EXPOSURE_SETTLE_MS = 800;
-export const KIOSK_DETECT_MAX_LONG_SIDE_PX = 480;
+export const KIOSK_DETECT_MAX_LONG_SIDE_PX = 1280;
 export const KIOSK_OVERLAY_MIN_INTERVAL_MS = 32;
 export const KIOSK_IDLE_STANDBY_TIMEOUT_MS = 45000;
 export const KIOSK_NOT_FOUND_IDLE_STANDBY_MS = 60000;
@@ -1873,7 +1873,7 @@ export function KioskBiometricLoginView({
 
   useEffect(() => {
     return subscribeBiometricIndex(apiClient, () => {
-      void refreshBiometricLibraryStats(true);
+      void refreshBiometricLibraryStats(true, true);
     });
   }, [apiClient, refreshBiometricLibraryStats]);
 
@@ -1945,7 +1945,7 @@ export function KioskBiometricLoginView({
     setScanStage('scanning');
     setScanGeneration((g) => g + 1);
     edgeMatchStreakRef.current = { patientId: null, count: 0 };
-    void refreshBiometricLibraryStats(true);
+    void refreshBiometricLibraryStats(true, true);
   }, [refreshBiometricLibraryStats]);
 
   const handleRejectWrongMatchAndRescan = useCallback(() => {
@@ -2135,6 +2135,7 @@ export function KioskBiometricLoginView({
       setTurningHintPct(null);
       setBurstCount(0);
     } else if (!staffModalOpen && wasOpen) {
+      excludedPatientIdsRef.current = [];
       handleRestartScan();
     }
   }, [staffModalOpen, handleRestartScan]);
@@ -2405,6 +2406,7 @@ export function KioskBiometricLoginView({
         });
 
         let lastEmbedCheckAt = 0;
+        let lastEmbeddedVideoTime = -1;
         const KEY_MESH_LANDMARK_INDICES = [
           // Left & right eyes + iris
           33, 133, 159, 145, 362, 263, 386, 374,
@@ -2877,6 +2879,7 @@ export function KioskBiometricLoginView({
                       }
                       if (mirrorRes.matched) {
                         preferredMirrorModeRef.current = useMirroredFirst ? 'normal' : 'mirrored';
+                        probeWindowRef.current = [];
                         verifyRes = mirrorRes;
                         usedEmbedding = mirroredExt.embedding;
                         usedGeometricRatios = mirroredRatios;
@@ -3279,9 +3282,14 @@ export function KioskBiometricLoginView({
                 if (scanDecisionStartAtRef.current === 0) {
                   scanDecisionStartAtRef.current = params.snapNow;
                 }
-                const evaluatedBatchFrames = Math.max(1, consensusWindow.length);
-                totalEvaluatedFramesRef.current += evaluatedBatchFrames;
-                unmatchedClearFramesRef.current += evaluatedBatchFrames;
+                // Slide the rolling window by dropping the oldest frame so any stale pre-exposure or
+                // post-blink frame is immediately replaced on the next capture instead of causing an
+                // instant single-call false "not_found" verdict for a newly registered patient!
+                if (probeWindowRef.current.length > 0) {
+                  probeWindowRef.current = probeWindowRef.current.slice(1);
+                }
+                totalEvaluatedFramesRef.current += 1;
+                unmatchedClearFramesRef.current += 1;
                 const unmatchedElapsed = params.snapNow - bioVerifiedUnmatchedStartAt;
                 const totalDecisionElapsed = params.snapNow - scanDecisionStartAtRef.current;
 
@@ -4599,19 +4607,25 @@ export function KioskBiometricLoginView({
                     updateReadinessHint(null);
                   }
                   // Dispatch single-pass backlit-normalized 1024-D + 256-D Dual-Iris matching asynchronously.
-                  // Before biological liveness locks, capture at most 2 sharp pre-warm frames spaced >= 140ms apart
-                  // so MediaPipe FaceLandmarker gets 100% GPU priority for fastest blink/iris liveness lock!
+                  // Wait for camera auto-exposure settle + fully open eyes (avoiding post-blink half-closed
+                  // eyelids that distort ocularIrisPatch256) and ensure distinct decoded video frames.
                   const prewarmCount = probeWindowRef.current.length;
+                  const minOpenEyeEar = bio && bio.faceScale < 0.2 ? 0.17 : 0.21;
+                  const isDistinctDecodedFrame =
+                    currentVideoTime !== lastEmbeddedVideoTime || now - lastEmbedCheckAt >= 260;
                   const allowEmbedDispatch = bio?.biologicalVerified
-                    ? now - lastEmbedCheckAt >= 25
-                    : prewarmCount < 2 && now - lastEmbedCheckAt >= 140;
+                    ? now - lastEmbedCheckAt >= 35
+                    : prewarmCount < 2 && now - lastEmbedCheckAt >= 150;
                   if (
                     !asyncMatchInFlight &&
                     !verifyingLockRef.current &&
                     bio &&
-                    meanEar >= 0.16 &&
+                    exposureSettled &&
+                    meanEar >= minOpenEyeEar &&
+                    isDistinctDecodedFrame &&
                     allowEmbedDispatch
                   ) {
+                    lastEmbeddedVideoTime = currentVideoTime;
                     if (!matchSnapCanvasRef.current) {
                       matchSnapCanvasRef.current = document.createElement('canvas');
                     }

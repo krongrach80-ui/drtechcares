@@ -522,7 +522,7 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
 
   it('records 20-round Step 0 telemetry percentiles (avg/p50/p95) cleanly without storing PII or face vectors', () => {
     expect(KIOSK_MAX_EXPOSURE_SETTLE_MS).toBeLessThanOrEqual(800);
-    expect(KIOSK_DETECT_MAX_LONG_SIDE_PX).toBe(480);
+    expect(KIOSK_DETECT_MAX_LONG_SIDE_PX).toBe(1280);
     expect(KIOSK_OVERLAY_MIN_INTERVAL_MS).toBeGreaterThanOrEqual(30);
 
     const summary = computeTimingPercentiles(Array.from({ length: 20 }, (_, i) => (i + 1) * 10));
@@ -776,12 +776,23 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
     expect(kioskSrc).toContain('frameTimestamps');
     expect(kioskSrc).toContain('consensusFramesVerified');
     expect(kioskSrc).toContain("window.localStorage.setItem('drtech_preferred_camera_id', opened.activeDeviceId)");
+    // Regression guards for enroll-to-login parity (no single-call false not_found, exposure + open-eye + distinct-frame gating)
+    expect(kioskSrc).toContain('unmatchedClearFramesRef.current += 1;');
+    expect(kioskSrc).not.toContain('unmatchedClearFramesRef.current += evaluatedBatchFrames');
+    expect(kioskSrc).toContain('exposureSettled &&');
+    expect(kioskSrc).toContain('lastEmbeddedVideoTime');
+    expect(kioskSrc).toContain('excludedPatientIdsRef.current = [];');
 
     // 4. StaffAssistedEnrollmentModal enforces duplicate-face check and warning UI
     const enrollSrc = fs.readFileSync(path.join(root, 'src/components/StaffAssistedEnrollmentModal.tsx'), 'utf8');
     expect(enrollSrc).toContain('checkDuplicateFace');
     expect(enrollSrc).toContain('DUPLICATE_FACE_ENROLLMENT');
     expect(enrollSrc).toContain('data-testid="duplicate-face-warning-banner"');
+
+    // 5. FaceID120Scanner uses the same remembered camera ID as Kiosk login on multi-camera PCs
+    const scannerSrc = fs.readFileSync(path.join(root, 'src/components/FaceID120Scanner.tsx'), 'utf8');
+    expect(scannerSrc).toContain("window.localStorage.getItem('drtech_preferred_camera_id')");
+    expect(scannerSrc).toContain('selectClinicalCameraDeviceId(storedPreferredCameraId)');
   });
 
   it('audits all mascot, kiosk login, and biometric matcher files for zero Unicode emojis', () => {
@@ -789,6 +800,7 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
     const files = [
       'src/components/DrTechCareMascot.tsx',
       'src/components/KioskBiometricLoginView.tsx',
+      'src/components/FaceID120Scanner.tsx',
       'src/components/ClinicalStaffPortalShell.tsx',
       'src/components/StaffAssistedEnrollmentModal.tsx',
       'src/lib/biometricEngine.ts',

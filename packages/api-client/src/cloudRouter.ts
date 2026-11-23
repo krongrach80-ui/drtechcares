@@ -1332,6 +1332,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
   const BIOMETRIC_VERIFY_RATE_WINDOW_MS = 60_000;
   const BIOMETRIC_VERIFY_MAX_FAILED_PER_WINDOW = 15;
   const failedBiometricVerifyLog = new Map<string, number[]>();
+  const lastBelowThresholdAuditByDevice = new Map<string, number>();
   const recordFailedBiometricVerify = (rateKey: string, nowMs: number): number => {
     const list = (failedBiometricVerifyLog.get(rateKey) ?? []).filter(
       (ts) => nowMs - ts < BIOMETRIC_VERIFY_RATE_WINDOW_MS,
@@ -3346,6 +3347,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       // and newly deleted patients are excluded immediately without waiting for the 60s full hydration TTL.
       // Generous 4500ms budget avoids false timeouts when transferring 1024-D multi-angle rows on cold Worker isolates.
       let dbFresh = !supabase;
+      let usedWarmRamCache = false;
       if (supabase) {
         const needsLiveRefresh =
           lastLiveBioHydratedAt === 0 || Date.now() - lastLiveBioHydratedAt >= LIVE_BIO_REFRESH_MS;
@@ -3404,148 +3406,38 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           }
         } else {
           dbFresh = true;
+          usedWarmRamCache = true;
         }
       }
 
-      const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
-      const deletedPatientLower = new Set(
-        (state.deleted_patient_ids ?? []).map((x) => x.trim().toLowerCase()).filter(Boolean),
+      const probeNorm = l2Normalize(body.probeVector);
+      const probeEngine = detectBiometricVectorEngine(
+        probeNorm,
+        body.engine ?? body.livenessEvidence?.engine,
       );
+      const probeRatios = body.geometricRatios ?? body.livenessEvidence?.geometricRatios ?? null;
       const excludedPatientList =
         body.excludedPatientIds ?? body.livenessEvidence?.excludedPatientIds ?? [];
       const excludedPatientSet = new Set(
         Array.isArray(excludedPatientList) ? excludedPatientList.map(String) : [],
       );
-      const inactiveUserPatientIds = new Set(
-        state.users.filter((u) => !u.active && u.patientId).map((u) => u.patientId as string),
-      );
-      let filteredOutByStatusOrExclude = state.filtered_out_template_patients_count ?? 0;
-      const activePatientIds = new Set<string>();
-      for (const p of state.patients) {
-        const regLo = String(p.registrationStatus ?? '').trim().toLowerCase();
-        const isActiveStatus = regLo === '' || regLo === 'active';
-        const isExcludedOrDeleted =
-          deletedPatientSet.has(p.id) ||
-          deletedPatientLower.has(p.id.toLowerCase()) ||
-          (Boolean(p.hn) && deletedPatientLower.has(p.hn.toLowerCase())) ||
-          excludedPatientSet.has(p.id) ||
-          excludedPatientSet.has(p.hn) ||
-          inactiveUserPatientIds.has(p.id);
-        if (isActiveStatus && !isExcludedOrDeleted) {
-          activePatientIds.add(p.id);
-        } else if (
-          parseEmbeddingVector(p.masterEmbedding) ||
-          state.face_templates.some((t) => t.patientId === p.id)
-        ) {
-          filteredOutByStatusOrExclude += 1;
-        }
-      }
 
-      const probeNorm = l2Normalize(body.probeVector);
-
-      let candidates: EnrolledTemplateCandidate[] = state.face_templates
-        .filter((t) => activePatientIds.has(t.patientId))
-        .map((t) => ({ ...t, vector: l2Normalize(t.vector) }));
-
-      // Ensure active patients with master/angle embeddings but no face_templates row are still in candidates
-      const candidatePatientIds = new Set(candidates.map((c) => c.patientId));
-      for (const p of state.patients) {
-        if (!activePatientIds.has(p.id) || candidatePatientIds.has(p.id)) continue;
-        if (p.angleEmbeddings?.center) {
-          candidates.push({
-            patientId: p.id,
-            patientName: p.fullName,
-            pose: 'frontal_centroid',
-            vector: l2Normalize(p.angleEmbeddings.center),
-          });
-        }
-        if (p.masterEmbedding) {
-          candidates.push({
-            patientId: p.id,
-            patientName: p.fullName,
-            pose: 'overall_centroid',
-            vector: l2Normalize(p.masterEmbedding),
-          });
-        }
-      }
-      let totalPatients = activePatientIds.size;
-
-      if (
-        supabase &&
-        candidates.length === 0 &&
-        activePatientIds.size > 0 &&
-        probeNorm.length === FACE_EMBEDDING_DIM
-      ) {
-        const { data, error } = await supabase.rpc('match_patient_face', {
-          query_embedding: probeNorm,
-          match_count: 5,
-        });
-        if (!error && Array.isArray(data) && data.length > 0) {
-          candidates = data
-            .filter(
-              (row: Record<string, unknown>) =>
-                Array.isArray(row.embedding) && activePatientIds.has(String(row.patient_id)),
-            )
-            .map((row: Record<string, unknown>) => ({
-              patientId: String(row.patient_id),
-              patientName: typeof row.full_name === 'string' ? row.full_name : undefined,
-              pose: (row.pose as BiometricPose) || 'frontal_centroid',
-              vector: l2Normalize(row.embedding as number[]),
-            }));
-          totalPatients = Math.max(1, new Set(candidates.map((c) => c.patientId)).size);
-        }
-      }
-
-      const probeEngine = detectBiometricVectorEngine(
-        probeNorm,
-        body.engine ?? body.livenessEvidence?.engine,
-      );
-      const nonArcFacePatientIds = new Set(
-        state.patients
-          .filter(
-            (p) =>
-              activePatientIds.has(p.id) &&
-              p.biometricEngine !== 'arcface-onnx' &&
-              p.biometricEngine !== 'human-faceres-1024d',
-          )
-          .map((p) => p.id),
-      );
-      const hybridCandidates = candidates.filter((c) => nonArcFacePatientIds.has(c.patientId));
-      const probeRatios = body.geometricRatios ?? body.livenessEvidence?.geometricRatios ?? null;
-      const result =
-        probeEngine === 'arcface-onnx' || probeEngine === 'human-faceres-1024d'
-          ? {
-              matched: false,
-              patientId: null,
-              patientName: null,
-              confidencePercent: 0,
-              rawMargin: 0,
-              whitenedMargin: 0,
-              topCandidate: null,
-              runnerUp: null,
-              failureReasons: ['NEURAL_PRIMARY_MATCHER'],
-            }
-          : verifyHybridBiometricIdentity(probeNorm, hybridCandidates, {
-              totalEnrolledPatients: totalPatients,
-              excludedPatientIds: Array.from(excludedPatientSet),
-              thresholds: {
-                minRawCosSingle: Math.max(
-                  STRICT_RAW_COSINE_THRESHOLD,
-                  state.system_settings.aiFaceThreshold ?? STRICT_RAW_COSINE_THRESHOLD,
-                ),
-                minRawCosMulti: Math.max(
-                  STRICT_RAW_COSINE_THRESHOLD,
-                  state.system_settings.aiFaceThreshold ?? STRICT_RAW_COSINE_THRESHOLD,
-                ),
-              },
-            });
-
-      let matchedPatientId =
-        result.matched && result.patientId && activePatientIds.has(result.patientId)
-          ? result.patientId
-          : null;
-      let matchedPatientName = matchedPatientId ? result.patientName : null;
-      let matchedConfidence = result.confidencePercent;
+      let activePatientIds = new Set<string>();
+      let filteredOutByStatusOrExclude = 0;
+      let result: ReturnType<typeof verifyHybridBiometricIdentity> = {
+        matched: false,
+        patientId: null,
+        patientName: null,
+        confidencePercent: 0,
+        rawMargin: 0,
+        whitenedMargin: 0,
+        topCandidate: null,
+        runnerUp: null,
+        failureReasons: [],
+      };
+      let matchedPatientId: string | null = null;
+      let matchedPatientName: string | null = null;
+      let matchedConfidence = 0;
       let verifyErrorCode: string | undefined;
       let diagEvaluatedCount = 0;
       let diagVersionMismatchCount = 0;
@@ -3556,30 +3448,191 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       let diagTop2RawPct = 0;
       let diagMarginPct = 0;
       let diagGateFailCodes: string[] = [];
-
-      // Count active patients with compatible vs mismatched vector dimensions/versions
       let compatibleTemplatesCount = 0;
-      for (const p of state.patients) {
-        if (!activePatientIds.has(p.id)) continue;
-        const tplFront = parseEmbeddingVector(
-          state.face_templates.find((t) => t.patientId === p.id && t.pose === 'frontal_centroid')?.vector,
-        );
-        const tplOverall = parseEmbeddingVector(
-          state.face_templates.find((t) => t.patientId === p.id && t.pose === 'overall_centroid')?.vector,
-        );
-        const anyMaster =
-          parseEmbeddingVector(p.masterEmbedding) ??
-          tplOverall ??
-          tplFront ??
-          parseEmbeddingVector(p.biometricHistory?.overall_centroid) ??
-          parseEmbeddingVector(p.biometricHistory?.frontal_centroid);
-        if (!anyMaster || anyMaster.length < 128) continue;
-        if (anyMaster.length === probeNorm.length) {
-          compatibleTemplatesCount += 1;
-        } else {
-          diagVersionMismatchCount += 1;
+
+      // Pass 0 evaluates immediately on warm RAM cache (0ms DB wait); if unmatched on a multi-isolate
+      // warm cache (>1.5s old), Pass 1 performs one live Supabase sync so newly enrolled patients on
+      // another Worker isolate match immediately on the very first verify request!
+      for (let evalPass = 0; evalPass < 2; evalPass += 1) {
+        if (evalPass === 1) {
+          if (
+            !supabase ||
+            isSupabaseCircuitOpen(supabase) ||
+            !usedWarmRamCache ||
+            Date.now() - lastLiveBioHydratedAt < 1500
+          ) {
+            break;
+          }
+          const retrySync = await hydrateBiometricsLiveFromSupabase(supabase, state, 4500);
+          if (!retrySync.ok) {
+            break;
+          }
+          lastLiveBioHydratedAt = Date.now();
+          dbFresh = true;
+          usedWarmRamCache = false;
         }
-      }
+
+        const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
+        const deletedPatientLower = new Set(
+          (state.deleted_patient_ids ?? []).map((x) => x.trim().toLowerCase()).filter(Boolean),
+        );
+        const inactiveUserPatientIds = new Set(
+          state.users.filter((u) => !u.active && u.patientId).map((u) => u.patientId as string),
+        );
+        filteredOutByStatusOrExclude = state.filtered_out_template_patients_count ?? 0;
+        activePatientIds = new Set<string>();
+        for (const p of state.patients) {
+          const regLo = String(p.registrationStatus ?? '').trim().toLowerCase();
+          const isActiveStatus = regLo === '' || regLo === 'active';
+          const isExcludedOrDeleted =
+            deletedPatientSet.has(p.id) ||
+            deletedPatientLower.has(p.id.toLowerCase()) ||
+            (Boolean(p.hn) && deletedPatientLower.has(p.hn.toLowerCase())) ||
+            excludedPatientSet.has(p.id) ||
+            excludedPatientSet.has(p.hn) ||
+            inactiveUserPatientIds.has(p.id);
+          if (isActiveStatus && !isExcludedOrDeleted) {
+            activePatientIds.add(p.id);
+          } else if (
+            parseEmbeddingVector(p.masterEmbedding) ||
+            state.face_templates.some((t) => t.patientId === p.id)
+          ) {
+            filteredOutByStatusOrExclude += 1;
+          }
+        }
+
+        let candidates: EnrolledTemplateCandidate[] = state.face_templates
+          .filter((t) => activePatientIds.has(t.patientId))
+          .map((t) => ({ ...t, vector: l2Normalize(t.vector) }));
+
+        // Ensure active patients with master/angle embeddings but no face_templates row are still in candidates
+        const candidatePatientIds = new Set(candidates.map((c) => c.patientId));
+        for (const p of state.patients) {
+          if (!activePatientIds.has(p.id) || candidatePatientIds.has(p.id)) continue;
+          if (p.angleEmbeddings?.center) {
+            candidates.push({
+              patientId: p.id,
+              patientName: p.fullName,
+              pose: 'frontal_centroid',
+              vector: l2Normalize(p.angleEmbeddings.center),
+            });
+          }
+          if (p.masterEmbedding) {
+            candidates.push({
+              patientId: p.id,
+              patientName: p.fullName,
+              pose: 'overall_centroid',
+              vector: l2Normalize(p.masterEmbedding),
+            });
+          }
+        }
+        let totalPatients = activePatientIds.size;
+
+        if (
+          supabase &&
+          candidates.length === 0 &&
+          activePatientIds.size > 0 &&
+          probeNorm.length === FACE_EMBEDDING_DIM
+        ) {
+          const { data, error } = await supabase.rpc('match_patient_face', {
+            query_embedding: probeNorm,
+            match_count: 5,
+          });
+          if (!error && Array.isArray(data) && data.length > 0) {
+            candidates = data
+              .filter(
+                (row: Record<string, unknown>) =>
+                  Array.isArray(row.embedding) && activePatientIds.has(String(row.patient_id)),
+              )
+              .map((row: Record<string, unknown>) => ({
+                patientId: String(row.patient_id),
+                patientName: typeof row.full_name === 'string' ? row.full_name : undefined,
+                pose: (row.pose as BiometricPose) || 'frontal_centroid',
+                vector: l2Normalize(row.embedding as number[]),
+              }));
+            totalPatients = Math.max(1, new Set(candidates.map((c) => c.patientId)).size);
+          }
+        }
+
+        const nonArcFacePatientIds = new Set(
+          state.patients
+            .filter(
+              (p) =>
+                activePatientIds.has(p.id) &&
+                p.biometricEngine !== 'arcface-onnx' &&
+                p.biometricEngine !== 'human-faceres-1024d',
+            )
+            .map((p) => p.id),
+        );
+        const hybridCandidates = candidates.filter((c) => nonArcFacePatientIds.has(c.patientId));
+        result =
+          probeEngine === 'arcface-onnx' || probeEngine === 'human-faceres-1024d'
+            ? {
+                matched: false,
+                patientId: null,
+                patientName: null,
+                confidencePercent: 0,
+                rawMargin: 0,
+                whitenedMargin: 0,
+                topCandidate: null,
+                runnerUp: null,
+                failureReasons: ['NEURAL_PRIMARY_MATCHER'],
+              }
+            : verifyHybridBiometricIdentity(probeNorm, hybridCandidates, {
+                totalEnrolledPatients: totalPatients,
+                excludedPatientIds: Array.from(excludedPatientSet),
+                thresholds: {
+                  minRawCosSingle: Math.max(
+                    STRICT_RAW_COSINE_THRESHOLD,
+                    state.system_settings.aiFaceThreshold ?? STRICT_RAW_COSINE_THRESHOLD,
+                  ),
+                  minRawCosMulti: Math.max(
+                    STRICT_RAW_COSINE_THRESHOLD,
+                    state.system_settings.aiFaceThreshold ?? STRICT_RAW_COSINE_THRESHOLD,
+                  ),
+                },
+              });
+
+        matchedPatientId =
+          result.matched && result.patientId && activePatientIds.has(result.patientId)
+            ? result.patientId
+            : null;
+        matchedPatientName = matchedPatientId ? result.patientName : null;
+        matchedConfidence = result.confidencePercent;
+        verifyErrorCode = undefined;
+        diagEvaluatedCount = 0;
+        diagVersionMismatchCount = 0;
+        diagTop1Code = null;
+        diagTop1RawPct = 0;
+        diagTop1CenteredPct = 0;
+        diagTop2Code = null;
+        diagTop2RawPct = 0;
+        diagMarginPct = 0;
+        diagGateFailCodes = [];
+
+        // Count active patients with compatible vs mismatched vector dimensions/versions
+        compatibleTemplatesCount = 0;
+        for (const p of state.patients) {
+          if (!activePatientIds.has(p.id)) continue;
+          const tplFront = parseEmbeddingVector(
+            state.face_templates.find((t) => t.patientId === p.id && t.pose === 'frontal_centroid')?.vector,
+          );
+          const tplOverall = parseEmbeddingVector(
+            state.face_templates.find((t) => t.patientId === p.id && t.pose === 'overall_centroid')?.vector,
+          );
+          const anyMaster =
+            parseEmbeddingVector(p.masterEmbedding) ??
+            tplOverall ??
+            tplFront ??
+            parseEmbeddingVector(p.biometricHistory?.overall_centroid) ??
+            parseEmbeddingVector(p.biometricHistory?.frontal_centroid);
+          if (!anyMaster || anyMaster.length < 128) continue;
+          if (anyMaster.length === probeNorm.length) {
+            compatibleTemplatesCount += 1;
+          } else {
+            diagVersionMismatchCount += 1;
+          }
+        }
 
       if (matchedPatientId) {
         const matchedPat = state.patients.find((p) => p.id === matchedPatientId);
@@ -4164,6 +4217,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         }
       }
 
+        if (matchedPatientId) {
+          break;
+        }
+      }
+
       const minConfidenceFloor = STRICT_RAW_COSINE_THRESHOLD * 100;
       const effectiveThresholdPct = isNonNegativeRelu6Vector(probeNorm)
         ? Number((STRICT_RELU6_RAW_COSINE_THRESHOLD * 100).toFixed(1))
@@ -4215,6 +4273,24 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             deviceId: clientDeviceId,
             detail: `Unmatched face login (${computedReasonCode}, compat=${compatibleTemplatesCount}, mismatch=${diagVersionMismatchCount}, filtered=${filteredOutByStatusOrExclude})`,
           });
+        } else {
+          const lastLogAt = lastBelowThresholdAuditByDevice.get(clientDeviceId) ?? 0;
+          if (verifyNowMs - lastLogAt >= 4000) {
+            lastBelowThresholdAuditByDevice.set(clientDeviceId, verifyNowMs);
+            if (lastBelowThresholdAuditByDevice.size > 300) {
+              const oldest = lastBelowThresholdAuditByDevice.keys().next().value;
+              if (oldest) lastBelowThresholdAuditByDevice.delete(oldest);
+            }
+            recordAudit({
+              eventType: 'BIOMETRIC_VERIFY_BELOW_THRESHOLD',
+              actorRole: 'patient_kiosk',
+              actorId: clientDeviceId,
+              actorName: 'Kiosk Face Sensor',
+              ipAddress: clientIp,
+              deviceId: clientDeviceId,
+              detail: `Unmatched face login (BELOW_THRESHOLD, top1=${diagTop1Code ?? 'none'}@${diagTop1RawPct || matchedConfidence}%/c=${diagTop1CenteredPct}%, thr=${effectiveThresholdPct}%, compat=${compatibleTemplatesCount}, fails=${diagGateFailCodes.slice(0, 3).join('|') || 'none'})`,
+            });
+          }
         }
         return jsonResponse(
           {
@@ -4341,11 +4417,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           }
         }
 
-        let allFramesValid = Boolean(validFrames && timestampsValid && !isReplayDuplicate && matchedTemplates.length > 0);
+        let hardConsensusReject = Boolean(!validFrames || !timestampsValid || isReplayDuplicate || matchedTemplates.length === 0);
+        let allFramesStrict = !hardConsensusReject;
         const frameRawScores: number[] = [];
         const frameCenteredScores: number[] = [];
 
-        if (allFramesValid && validFrames) {
+        if (!hardConsensusReject && validFrames) {
           for (const fNorm of validFrames) {
             let bestRaw = -1;
             let bestL2 = Number.POSITIVE_INFINITY;
@@ -4368,19 +4445,23 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             );
             frameRawScores.push(bestRaw);
             frameCenteredScores.push(bestCentered);
+            // Hard-reject mixed stranger frames (< 0.84 raw or beaten by another patient)
+            if (bestRaw < STRICT_RAW_COSINE_THRESHOLD || !beatsAllOthers) {
+              hardConsensusReject = true;
+              allFramesStrict = false;
+              break;
+            }
             if (
               bestRaw < perFrameMinRaw ||
               bestCentered < perFrameMinCentered ||
-              bestL2 > perFrameMaxL2 ||
-              !beatsAllOthers
+              bestL2 > perFrameMaxL2
             ) {
-              allFramesValid = false;
-              break;
+              allFramesStrict = false;
             }
           }
         }
 
-        if (allFramesValid && frameRawScores.length === 3) {
+        if (!hardConsensusReject && frameRawScores.length === 3) {
           const minRaw = Math.min(...frameRawScores);
           const maxRaw = Math.max(...frameRawScores);
           const meanRaw = (frameRawScores[0] + frameRawScores[1] + frameRawScores[2]) / 3;
@@ -4392,18 +4473,23 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           const meanCenteredFloor = isRelu6Probe
             ? STRICT_RELU6_CENTERED_COSINE_THRESHOLD
             : STRICT_CENTERED_COSINE_THRESHOLD;
-          if (
-            maxRaw - minRaw <= 0.08 &&
+          if (maxRaw - minRaw > 0.08) {
+            hardConsensusReject = true;
+          } else if (
+            allFramesStrict &&
             meanRaw >= meanRawFloor &&
             meanCentered >= meanCenteredFloor
           ) {
             consensusFramesVerified = 3;
           } else {
-            allFramesValid = false;
+            // Probe centroid already passed full Triple-Gate + Cohort + Margin and all 3 raw frames
+            // are genuine (>= 0.84, distinct, low-variance); require standard 3-call streak instead of
+            // discarding a valid patient match because 1 pre-warm frame dipped slightly below 0.88.
+            consensusFramesVerified = 1;
           }
         }
 
-        if (!allFramesValid) {
+        if (hardConsensusReject) {
           diagGateFailCodes = [...diagGateFailCodes, 'FRAME_CONSENSUS_FAILED'];
           recordFailedBiometricVerify(verifyRateKey, verifyNowMs);
           return jsonResponse(
