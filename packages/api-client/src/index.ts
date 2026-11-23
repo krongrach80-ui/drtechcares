@@ -226,12 +226,14 @@ export type ClinicalAssessmentTargetSide = 'LEFT' | 'RIGHT' | 'BOTH';
 
 export type ClinicalAssessmentSourceChannel =
   | 'STAFF_MANUAL_ASSESSMENT'
-  | 'KIOSK_SESSION_AUTO_SYNC';
+  | 'KIOSK_SESSION_AUTO_SYNC'
+  | 'COURSE_AUTO_CALCULATED';
 
 export type ClinicalAssessmentMeasurementMethod =
   | 'MANUAL_INPUT'
   | 'CAMERA_AI_LIVE'
-  | 'KIOSK_SESSION_AUTO_SYNC';
+  | 'KIOSK_SESSION_AUTO_SYNC'
+  | 'COURSE_AUTO_CALCULATED';
 
 export interface ClinicalAssessmentRecord {
   id: string;
@@ -258,6 +260,7 @@ export interface ClinicalAssessmentRecord {
   completed_reps?: number | null;
   accuracy_percent?: number | null;
   session_id?: string | null;
+  source_session_id?: string | null;
   created_at?: string;
 }
 
@@ -283,6 +286,7 @@ export interface CreateClinicalAssessmentPayload {
   completed_reps?: number | null;
   accuracy_percent?: number | null;
   session_id?: string | null;
+  source_session_id?: string | null;
 }
 
 export interface PatientRecord {
@@ -2086,6 +2090,10 @@ export class DrTechCaresApiClient {
       scheduledDate?: string;
       markDailyCompleted?: boolean;
       clinicalNotes?: string;
+      targetReps?: number;
+      targetRomDeg?: number;
+      sourceSessionId?: string;
+      courseTitle?: string;
     },
   ): Promise<RehabSessionRecord> {
     const res = await this.request<{ session: RehabSessionRecord }>('/api/sessions', {

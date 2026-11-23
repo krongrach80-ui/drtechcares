@@ -5404,7 +5404,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       ): boolean => {
         const targetTs = new Date(assessedIso).getTime();
         for (const existing of byId.values()) {
-          if (sessionId && (existing.session_id === sessionId || existing.id === sessionId)) {
+          if (
+            sessionId &&
+            (existing.source_session_id === sessionId ||
+              existing.session_id === sessionId ||
+              existing.id === sessionId)
+          ) {
             return true;
           }
           if (existing.exercise_code.toUpperCase() !== exCode.toUpperCase()) continue;
@@ -5613,19 +5618,36 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         ...(state.clinical_assessments ?? []).filter((a) => a.patient_id === patient.id),
         ...(patient.clinicalAssessments ?? []),
       ];
+      const cleanSourceSessionId =
+        String(body.source_session_id ?? body.session_id ?? '').trim() || null;
+      if (cleanSourceSessionId) {
+        const duplicateExisting = existingPersisted.find(
+          (a) =>
+            !a.id.startsWith('kiosk-sess-') &&
+            !a.id.startsWith('hist-sess-') &&
+            (a.source_session_id === cleanSourceSessionId || a.session_id === cleanSourceSessionId),
+        );
+        if (duplicateExisting) {
+          return jsonResponse({ assessment: duplicateExisting, deduplicated: true }, 200);
+        }
+      }
       const nextVisitNumber =
         existingPersisted.reduce((maxV, rec) => Math.max(maxV, rec.visit_number || 0), 0) + 1;
 
       const sourceChannel: ClinicalAssessmentSourceChannel =
-        body.source_channel === 'KIOSK_SESSION_AUTO_SYNC'
-          ? 'KIOSK_SESSION_AUTO_SYNC'
-          : 'STAFF_MANUAL_ASSESSMENT';
-      const measurementMethod: ClinicalAssessmentMeasurementMethod =
-        body.measurement_method === 'CAMERA_AI_LIVE'
-          ? 'CAMERA_AI_LIVE'
-          : body.measurement_method === 'KIOSK_SESSION_AUTO_SYNC' || sourceChannel === 'KIOSK_SESSION_AUTO_SYNC'
+        body.source_channel === 'COURSE_AUTO_CALCULATED'
+          ? 'COURSE_AUTO_CALCULATED'
+          : body.source_channel === 'KIOSK_SESSION_AUTO_SYNC'
             ? 'KIOSK_SESSION_AUTO_SYNC'
-            : 'MANUAL_INPUT';
+            : 'STAFF_MANUAL_ASSESSMENT';
+      const measurementMethod: ClinicalAssessmentMeasurementMethod =
+        body.measurement_method === 'COURSE_AUTO_CALCULATED' || sourceChannel === 'COURSE_AUTO_CALCULATED'
+          ? 'COURSE_AUTO_CALCULATED'
+          : body.measurement_method === 'CAMERA_AI_LIVE'
+            ? 'CAMERA_AI_LIVE'
+            : body.measurement_method === 'KIOSK_SESSION_AUTO_SYNC' || sourceChannel === 'KIOSK_SESSION_AUTO_SYNC'
+              ? 'KIOSK_SESSION_AUTO_SYNC'
+              : 'MANUAL_INPUT';
 
       const linkCode =
         (body.universal_link_code ?? '').trim().toUpperCase() ||
@@ -5665,7 +5687,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           typeof body.accuracy_percent === 'number' && Number.isFinite(body.accuracy_percent)
             ? Math.max(0, Math.min(100, Math.round(body.accuracy_percent)))
             : null,
-        session_id: body.session_id ? String(body.session_id) : null,
+        session_id: cleanSourceSessionId,
+        source_session_id: cleanSourceSessionId,
         created_at: new Date().toISOString(),
       };
 
@@ -5687,7 +5710,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       await persistWithTimeoutBestEffort(
         supabase,
         async (db) => {
-          const tablePayload = {
+          const tablePayload: Record<string, unknown> = {
             id: assessment.id,
             patient_id: assessment.patient_id,
             patient_hn: assessment.patient_hn,
@@ -5710,8 +5733,20 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             source_channel: assessment.source_channel,
             created_at: assessment.created_at,
           };
-          // Best-effort dedicated table insert (safe if migration 008 not yet applied on DB)
-          await db.from('patient_clinical_assessments').insert(tablePayload);
+          if (assessment.source_session_id) {
+            tablePayload.source_session_id = assessment.source_session_id;
+          }
+          // Best-effort dedicated table insert with graceful fallback if migration 012 is not yet applied
+          const insRes = await db.from('patient_clinical_assessments').insert(tablePayload);
+          if (insRes.error && (assessment.source_channel === 'COURSE_AUTO_CALCULATED' || tablePayload.source_session_id)) {
+            const legacyPayload = { ...tablePayload };
+            delete legacyPayload.source_session_id;
+            legacyPayload.source_channel =
+              assessment.source_channel === 'COURSE_AUTO_CALCULATED'
+                ? 'KIOSK_SESSION_AUTO_SYNC'
+                : assessment.source_channel;
+            await db.from('patient_clinical_assessments').insert(legacyPayload);
+          }
           // Guaranteed persistence inside patients.history JSONB + motor_assessment_score
           await writePatientRowWithFramesFallback(
             db,
@@ -6700,7 +6735,14 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (pathname === '/api/sessions' && method === 'POST') {
       await ensureHydrated();
       const body = await readJsonBody<
-        Partial<RehabSessionRecord> & { scheduledDate?: string; markDailyCompleted?: boolean }
+        Partial<RehabSessionRecord> & {
+          scheduledDate?: string;
+          markDailyCompleted?: boolean;
+          targetReps?: number;
+          targetRomDeg?: number;
+          sourceSessionId?: string;
+          courseTitle?: string;
+        }
       >(request);
       if (!body?.patientId || !body?.exerciseId || !body?.exerciseName) {
         return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
@@ -6801,6 +6843,168 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         }
       }
 
+      // Auto-record COURSE_AUTO_CALCULATED 0-6 Mahidol assessment on completed Kiosk course session
+      let autoCourseAssessment: ClinicalAssessmentRecord | null = null;
+      if (
+        matchedPatient &&
+        session.activityType === 'physio_exercise' &&
+        session.exerciseId !== 'CLINIC_CHECKIN'
+      ) {
+        const parsedAuto = parseExerciseCodeAndSide(session.exerciseId, session.bodySide);
+        const catalogAuto =
+          state.exercises.find((e) => e.code === parsedAuto.baseCode || e.id === session.exerciseId) ??
+          CLINICAL_EXERCISES.find((e) => e.code === parsedAuto.baseCode || e.id === session.exerciseId);
+        const autoExCode = (catalogAuto?.code || parsedAuto.baseCode || session.exerciseId).toUpperCase();
+        const autoSide: ClinicalAssessmentTargetSide =
+          parsedAuto.side === 'LEFT' ? 'LEFT' : parsedAuto.side === 'BOTH' ? 'BOTH' : 'RIGHT';
+
+        // Match PT-assigned course target ROM & reps from patient_courses / rehabSchedules
+        const patientCourse = state.patient_courses.find((c) => c.patientId === matchedPatient.id);
+        let matchedAssignedCourse = false;
+        let prescribedTargetRom: number | null =
+          typeof body.targetRomDeg === 'number' && Number.isFinite(body.targetRomDeg) && body.targetRomDeg >= 10
+            ? body.targetRomDeg
+            : null;
+        let prescribedTargetReps: number | null =
+          typeof body.targetReps === 'number' && Number.isFinite(body.targetReps) && body.targetReps > 0
+            ? Math.round(body.targetReps)
+            : null;
+        if (patientCourse) {
+          for (const day of patientCourse.weeklySchedule ?? []) {
+            for (const exItem of day.exercises ?? []) {
+              const exParsed = parseExerciseCodeAndSide(exItem.exerciseId, exItem.side);
+              if (exParsed.baseCode.toUpperCase() === autoExCode) {
+                matchedAssignedCourse = true;
+                if (prescribedTargetRom === null && exItem.targetMinDeg > 0) {
+                  prescribedTargetRom = exItem.targetMinDeg;
+                }
+                if (prescribedTargetReps === null && exItem.reps > 0) {
+                  prescribedTargetReps = exItem.reps;
+                }
+              }
+            }
+          }
+        }
+        const matchedSched = (matchedPatient.rehabSchedules ?? []).find((sc) => {
+          const code = sc.effectiveCode || sc.exerciseCode || sc.exerciseId || '';
+          return Boolean(code) && parseExerciseCodeAndSide(code, sc.side).baseCode.toUpperCase() === autoExCode;
+        });
+        if (matchedSched) {
+          matchedAssignedCourse = true;
+          if (prescribedTargetReps === null && matchedSched.reps > 0) {
+            prescribedTargetReps = matchedSched.reps;
+          }
+        }
+
+        const isCourseAutoEligible =
+          matchedAssignedCourse ||
+          Boolean((body.sourceSessionId ?? '').trim()) ||
+          Boolean((body.courseTitle ?? '').trim());
+
+        const safeTargetRom = Number(
+          Math.max(10, Math.min(220, prescribedTargetRom ?? catalogAuto?.detection.targetMinDeg ?? 90)).toFixed(1),
+        );
+        const safeTargetReps = Math.max(1, prescribedTargetReps ?? Math.max(1, session.completedReps || 10));
+        const safeCompletedReps = Math.max(0, Math.round(session.completedReps ?? 0));
+        const hasRawRom = achievedMaxRom > 0;
+        const completionRatio = Math.max(0, Math.min(1, safeCompletedReps / Math.max(1, safeTargetReps)));
+        const effectiveRom = hasRawRom
+          ? Number(Math.max(0, Math.min(220, achievedMaxRom)).toFixed(1))
+          : safeCompletedReps > 0
+            ? Math.round(safeTargetRom * completionRatio * 10) / 10
+            : 0;
+        const safeAccuracy = Math.max(
+          0,
+          Math.min(100, Number.isFinite(session.accuracyPercent) ? session.accuracyPercent : 85),
+        );
+        let compositePct = 0;
+        let autoScore: 0 | 1 | 2 | 3 | 4 | 5 | 6 = 0;
+        if (safeCompletedReps > 0 || effectiveRom > 0) {
+          const romRatio = Math.max(0, Math.min(1.15, effectiveRom / Math.max(1, safeTargetRom)));
+          const repRatio = Math.max(0, Math.min(1.0, safeCompletedReps / Math.max(1, safeTargetReps)));
+          const accRatio = Math.max(0, Math.min(1.0, safeAccuracy / 100));
+          compositePct = Math.max(
+            0,
+            Math.min(100, Math.round((romRatio * 0.5 + repRatio * 0.3 + accRatio * 0.2) * 100)),
+          );
+          if (compositePct === 0) autoScore = 0;
+          else if (compositePct <= 19) autoScore = 1;
+          else if (compositePct <= 39) autoScore = 2;
+          else if (compositePct <= 59) autoScore = 3;
+          else if (compositePct <= 79) autoScore = 4;
+          else if (compositePct <= 94) autoScore = 5;
+          else autoScore = 6;
+        }
+
+        const sourceSessionId = (body.sourceSessionId ?? '').trim() || session.id;
+        const existingAssessmentsForPat = [
+          ...(state.clinical_assessments ?? []).filter((a) => a.patient_id === matchedPatient.id),
+          ...(matchedPatient.clinicalAssessments ?? []),
+        ];
+        const alreadyRecorded = existingAssessmentsForPat.some(
+          (a) =>
+            !a.id.startsWith('kiosk-sess-') &&
+            !a.id.startsWith('hist-sess-') &&
+            (a.source_session_id === sourceSessionId || a.session_id === sourceSessionId),
+        );
+
+        if (isCourseAutoEligible && !alreadyRecorded) {
+          const nextVisitNum =
+            existingAssessmentsForPat.reduce((maxV, rec) => Math.max(maxV, rec.visit_number || 0), 0) + 1;
+          const romPct = Math.round((effectiveRom / Math.max(1, safeTargetRom)) * 100);
+          const courseLabel =
+            (body.courseTitle ?? '').trim() || patientCourse?.title || 'คอร์สฟื้นฟูที่นักกายภาพจัดให้';
+          const exNameTh = catalogAuto?.name.th || session.exerciseName || autoExCode;
+          const breakdownTh = `คำนวณอัตโนมัติจากคอร์ส: องศาเฉลี่ย/สูงสุด ${effectiveRom.toFixed(1)}° จากเป้า ${Math.round(safeTargetRom)}° (${romPct}%) • ทำครบ ${safeCompletedReps}/${safeTargetReps} ครั้ง • ความแม่นยำ ${Math.round(safeAccuracy)}% -> ประเมินได้ระดับ ${autoScore}/6${!hasRawRom && safeCompletedReps > 0 ? ' (คำนวณองศาตามสัดส่วนความสำเร็จของคอร์ส)' : ''}`;
+          const nextTargetDeg =
+            effectiveRom >= safeTargetRom
+              ? Math.round(safeTargetRom)
+              : Math.min(Math.round(safeTargetRom), Math.round(effectiveRom + 10));
+
+          autoCourseAssessment = {
+            id: newRecordId(Boolean(supabase), 'assess'),
+            patient_id: matchedPatient.id,
+            patient_hn: matchedPatient.hn,
+            universal_link_code:
+              matchedPatient.universalHealthLinkCode || generateUniversalLinkCode(matchedPatient.id),
+            visit_number: nextVisitNum,
+            assessed_at: session.createdAt,
+            facility_name: facilityName || 'ตู้ Kiosk กายภาพอัจฉริยะ Dr.Tech.Care',
+            assessor_staff_id: 'SYSTEM_COURSE_AUTO_CALC',
+            assessor_staff_name: 'ระบบคำนวณอัตโนมัติจากคอร์สกายภาพ',
+            exercise_code: autoExCode,
+            exercise_name_th: exNameTh,
+            target_side: autoSide,
+            initial_score_0_to_6: autoScore,
+            measured_rom_deg: effectiveRom,
+            target_rom_deg: safeTargetRom,
+            pain_vas_0_to_10: null,
+            chief_complaint: `ประเมินอัตโนมัติจาก${courseLabel} ท่า ${exNameTh} (${safeCompletedReps}/${safeTargetReps} ครั้ง)`,
+            clinical_handover_note: breakdownTh,
+            next_session_goal:
+              autoScore >= 6
+                ? `คงความสมบูรณ์การเคลื่อนไหวท่า ${exNameTh} และฝึกตามคอร์สต่อเนื่อง`
+                : `เพิ่มมุมการเคลื่อนไหวท่า ${exNameTh} สู่ ${nextTargetDeg}° และยกระดับคะแนนมหิดลเป็น ${Math.min(6, autoScore + 1)}/6`,
+            source_channel: 'COURSE_AUTO_CALCULATED',
+            measurement_method: 'COURSE_AUTO_CALCULATED',
+            completed_reps: safeCompletedReps,
+            accuracy_percent: Math.round(safeAccuracy),
+            session_id: sourceSessionId,
+            source_session_id: sourceSessionId,
+            created_at: session.createdAt,
+          };
+
+          state.clinical_assessments = [...(state.clinical_assessments ?? []), autoCourseAssessment];
+          matchedPatient.clinicalAssessments = [
+            ...(matchedPatient.clinicalAssessments ?? []).filter(
+              (a) => a.id !== autoCourseAssessment!.id,
+            ),
+            autoCourseAssessment,
+          ].slice(-120);
+          matchedPatient.motorAssessmentScore = autoScore;
+        }
+      }
+
       if (matchedPatient && session.exerciseId !== 'CLINIC_CHECKIN') {
         const utcIso = new Date().toISOString().slice(0, 10);
         const localIso = formatLocalIsoDate(new Date());
@@ -6896,12 +7100,50 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             // Best-effort if table 004 is not yet migrated; patient.history JSONB already preserves it.
           }
         }
+        if (autoCourseAssessment) {
+          try {
+            const autoPayload: Record<string, unknown> = {
+              id: autoCourseAssessment.id,
+              patient_id: autoCourseAssessment.patient_id,
+              patient_hn: autoCourseAssessment.patient_hn,
+              universal_link_code: autoCourseAssessment.universal_link_code,
+              visit_number: autoCourseAssessment.visit_number,
+              assessed_at: autoCourseAssessment.assessed_at,
+              facility_name: autoCourseAssessment.facility_name,
+              assessor_staff_id: autoCourseAssessment.assessor_staff_id,
+              assessor_staff_name: autoCourseAssessment.assessor_staff_name,
+              exercise_code: autoCourseAssessment.exercise_code,
+              exercise_name_th: autoCourseAssessment.exercise_name_th,
+              target_side: autoCourseAssessment.target_side,
+              initial_score_0_to_6: autoCourseAssessment.initial_score_0_to_6,
+              measured_rom_deg: autoCourseAssessment.measured_rom_deg,
+              target_rom_deg: autoCourseAssessment.target_rom_deg,
+              pain_vas_0_to_10: autoCourseAssessment.pain_vas_0_to_10,
+              chief_complaint: autoCourseAssessment.chief_complaint,
+              clinical_handover_note: autoCourseAssessment.clinical_handover_note,
+              next_session_goal: autoCourseAssessment.next_session_goal,
+              source_channel: autoCourseAssessment.source_channel,
+              source_session_id: autoCourseAssessment.source_session_id,
+              created_at: autoCourseAssessment.created_at,
+            };
+            const insAuto = await db.from('patient_clinical_assessments').insert(autoPayload);
+            if (insAuto.error) {
+              const legacyAuto = { ...autoPayload };
+              delete legacyAuto.source_session_id;
+              legacyAuto.source_channel = 'KIOSK_SESSION_AUTO_SYNC';
+              await db.from('patient_clinical_assessments').insert(legacyAuto);
+            }
+          } catch {
+            // Guaranteed fallback inside patients.history.clinicalAssessments below
+          }
+        }
         if (matchedPatient && session.exerciseId !== 'CLINIC_CHECKIN') {
           await writePatientRowWithFramesFallback(
             db,
             'update',
             {
               next_appointment_date: matchedPatient.nextAppointmentDate || null,
+              motor_assessment_score: matchedPatient.motorAssessmentScore,
               face_biometric_status: resolveProtectedBiometricStatus(matchedPatient),
               face_frames_count: matchedPatient.faceFramesCount ?? 0,
               history: buildPatientHistoryPayload(matchedPatient),

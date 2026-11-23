@@ -133,7 +133,11 @@ import {
   type PatientSummary,
 } from '../hooks/useKioskSocket';
 import { isUpperBodyVisibleInFrame } from '../hooks/useEdgeVisionSocket';
-import { syncKioskSessionToAssessment } from '../lib/clinicalAssessmentStore';
+import { upsertCourseAutoAssessment } from '../lib/clinicalAssessmentStore';
+import {
+  buildAssessmentInputFromCourseResult,
+  calculateMahidolScoreFromCourse,
+} from '../utils/courseClinicalScoring';
 
 export {
   isUpperBodyVisibleInFrame,
@@ -155,7 +159,11 @@ interface SmartRehabKioskUIProps {
   onBackToAdminPortal?: () => void;
   onExerciseCompleted?: (
     exercise: ExercisePrescriptionOption,
-    metrics?: { peakRomDeg?: number },
+    metrics?: {
+      peakRomDeg?: number;
+      completedReps?: number;
+      sourceSessionId?: string;
+    },
   ) => void;
   onAllExercisesCompleted?: () => void;
   onEmergencyStop?: (info: { reason: string; patientId?: string; exerciseNameTh?: string }) => void;
@@ -2666,7 +2674,11 @@ export function SmartRehabKioskUI({
     sessionPeakRomRef.current = telemetry_analysis.current_rom_deg;
   }
 
-  const syncCompletedExerciseHistory = (completedRepsCount: number, peakRomDeg: number) => {
+  const syncCompletedExerciseHistory = (
+    completedRepsCount: number,
+    peakRomDeg: number,
+    sourceSessionId: string,
+  ) => {
     const pid = patient?.id ?? patientProp?.id;
     if (isPoseTestMode || !pid || !canExerciseByOwnerGuard) return;
     const parsed = parseExerciseCodeAndSide(
@@ -2674,18 +2686,43 @@ export function SmartRehabKioskUI({
       selectedExercise.prescribed_side,
     );
     const targetSide = parsed.side === 'LEFT' ? 'LEFT' : parsed.side === 'BOTH' ? 'BOTH' : 'RIGHT';
-    void syncKioskSessionToAssessment({
-      patientId: pid,
-      patientHn: patient?.hn ?? patientProp?.hn ?? '',
-      universalHealthLinkCode:
-        patient?.universalHealthLinkCode ?? patientProp?.universalHealthLinkCode,
+    const patientHn = patient?.hn ?? patientProp?.hn ?? '';
+    const autoResult = calculateMahidolScoreFromCourse({
+      achievedRomDeg: peakRomDeg,
+      targetRomDeg: selectedExercise.target_rom_deg,
+      completedReps: completedRepsCount,
+      targetReps: selectedExercise.target_reps,
+      accuracyScore: 100,
+      sourceSessionId,
       exerciseCode: parsed.baseCode,
       exerciseNameTh: selectedExercise.name_th,
       targetSide,
-      measuredRomDeg: peakRomDeg,
-      targetRomDeg: selectedExercise.target_rom_deg,
-      completedReps: completedRepsCount,
+      assessedAt: new Date().toISOString(),
+      facilityName: 'ตู้ Kiosk กายภาพอัจฉริยะ Dr.Tech.Care',
+      patientId: pid,
+      patientHn,
     });
+    const payload = buildAssessmentInputFromCourseResult({
+      result: autoResult,
+      patient: {
+        id: pid,
+        hn: patientHn,
+        universalHealthLinkCode:
+          patient?.universalHealthLinkCode ?? patientProp?.universalHealthLinkCode ?? undefined,
+      },
+      facilityName: 'ตู้ Kiosk กายภาพอัจฉริยะ Dr.Tech.Care',
+    });
+    void upsertCourseAutoAssessment(payload);
+  };
+
+  const buildCompletedCourseSessionId = (completedRepsCount: number): string => {
+    const pid = patient?.id ?? patientProp?.id ?? 'kiosk';
+    const parsed = parseExerciseCodeAndSide(
+      selectedExercise.effective_code || selectedExercise.base_code || selectedExercise.exercise_id,
+      selectedExercise.prescribed_side,
+    );
+    const todayIso = new Date().toISOString().slice(0, 10);
+    return `kiosk-course-${pid}-${parsed.baseCode}-${todayIso}-${completedRepsCount}`;
   };
 
   const markCurrentExerciseCompleted = () => {
@@ -2695,13 +2732,18 @@ export function SmartRehabKioskUI({
       const peakRomDeg = Number(
         Math.max(sessionPeakRomRef.current, telemetry_analysis.current_rom_deg || 0).toFixed(1),
       );
+      const sourceSessionId = buildCompletedCourseSessionId(selectedExercise.target_reps);
       setCompletedIds((prev) =>
         prev.includes(selectedExercise.exercise_id)
           ? prev
           : [...prev, selectedExercise.exercise_id],
       );
-      onExerciseCompletedRef.current?.(selectedExercise, { peakRomDeg });
-      syncCompletedExerciseHistory(selectedExercise.target_reps, peakRomDeg);
+      onExerciseCompletedRef.current?.(selectedExercise, {
+        peakRomDeg,
+        completedReps: selectedExercise.target_reps,
+        sourceSessionId,
+      });
+      syncCompletedExerciseHistory(selectedExercise.target_reps, peakRomDeg, sourceSessionId);
     }
   };
 
@@ -2737,11 +2779,16 @@ export function SmartRehabKioskUI({
     const peakRomDeg = Number(
       Math.max(sessionPeakRomRef.current, telemetry_analysis.current_rom_deg || 0).toFixed(1),
     );
+    const sourceSessionId = buildCompletedCourseSessionId(rep_counter.valid_reps);
     setCompletedIds((prev) =>
       prev.includes(selectedExercise.exercise_id) ? prev : [...prev, selectedExercise.exercise_id],
     );
-    onExerciseCompletedRef.current?.(selectedExercise, { peakRomDeg });
-    syncCompletedExerciseHistory(rep_counter.valid_reps, peakRomDeg);
+    onExerciseCompletedRef.current?.(selectedExercise, {
+      peakRomDeg,
+      completedReps: rep_counter.valid_reps,
+      sourceSessionId,
+    });
+    syncCompletedExerciseHistory(rep_counter.valid_reps, peakRomDeg, sourceSessionId);
   }, [canExerciseByOwnerGuard, rep_counter.valid_reps, selectedExercise, completedIds]);
 
   // Auto-advance to the next uncompleted exercise after completing one set (disabled in staff Pose Test sandbox)

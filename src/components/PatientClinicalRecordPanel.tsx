@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   DrTechCaresApiClient,
+  PatientCourseRecord,
   PatientRecord,
+  RehabScheduleItem,
+  RehabSessionHistoryEntry,
   RehabSessionRecord,
   UserAccount,
 } from '@drtechcares/api-client';
@@ -33,6 +36,7 @@ import {
   deletePatientAssessment,
   deriveScore0To6FromRomRatio,
   listPatientAssessments,
+  upsertCourseAutoAssessment,
 } from '../lib/clinicalAssessmentStore';
 import {
   MAHIDOL_ASSESSMENT_SCALE_0_TO_6,
@@ -47,6 +51,11 @@ import {
   type MahidolScore0To6,
   type PatientClinicalAssessmentRecord,
 } from '../types/clinicalAssessment';
+import {
+  buildAssessmentInputFromCourseResult,
+  buildPatientCourseAutoAssessments,
+  type CourseAutoAssessmentResult,
+} from '../utils/courseClinicalScoring';
 import { ClinicalRomLiveMeasureModal } from './ClinicalRomLiveMeasureModal';
 
 export interface PatientClinicalRecordPanelProps {
@@ -58,11 +67,35 @@ export interface PatientClinicalRecordPanelProps {
   onSelectPatientId: (patientId: string) => void;
   onOpenUniversalEhrModal?: (patient: PatientRecord) => void;
   onAssessmentSaved?: () => Promise<void> | void;
+  patientCourseOverride?: PatientCourseRecord | null;
+  patientRehabSchedulesOverride?: RehabScheduleItem[];
+  patientSessionHistoryOverride?: RehabSessionHistoryEntry[];
 }
 
 type DateRangeFilter = 'ALL' | '7D' | '30D' | '90D';
-type SourceFilter = 'ALL' | 'STAFF_MANUAL_ASSESSMENT' | 'KIOSK_SESSION_AUTO_SYNC';
+type SourceFilter =
+  | 'ALL'
+  | 'STAFF_MANUAL_ASSESSMENT'
+  | 'KIOSK_SESSION_AUTO_SYNC'
+  | 'COURSE_AUTO_CALCULATED';
 type ChartMetricMode = 'ROM_DEG' | 'TARGET_PCT';
+
+function getDirectSupabaseRestConfig(): { url: string; key: string } | null {
+  try {
+    const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
+    const isTestRuntime =
+      env?.MODE === 'test' ||
+      (typeof process !== 'undefined' &&
+        Boolean(process.env?.VITEST || process.env?.NODE_ENV === 'test'));
+    if (isTestRuntime) return null;
+    const url = (env?.VITE_SUPABASE_URL ?? '').trim().replace(/\/+$/, '');
+    const key = (env?.VITE_SUPABASE_ANON_KEY ?? '').trim();
+    if (!url || !key) return null;
+    return { url, key };
+  } catch {
+    return null;
+  }
+}
 
 const SIDE_OPTIONS: { value: AssessmentTargetSide; labelTh: string }[] = [
   { value: 'LEFT', labelTh: 'ซ้าย' },
@@ -119,12 +152,25 @@ export function PatientClinicalRecordPanel({
   onSelectPatientId,
   onOpenUniversalEhrModal,
   onAssessmentSaved,
+  patientCourseOverride,
+  patientRehabSchedulesOverride,
+  patientSessionHistoryOverride,
 }: PatientClinicalRecordPanelProps) {
   const [patientQuery, setPatientQuery] = useState('');
   const [records, setRecords] = useState<PatientClinicalAssessmentRecord[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [syncingCrossFacility, setSyncingCrossFacility] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
+
+  // Assigned course & automatic 0-6 calculation state
+  const [assignedCourse, setAssignedCourse] = useState<PatientCourseRecord | null>(null);
+  const [fetchedSchedules, setFetchedSchedules] = useState<RehabScheduleItem[]>([]);
+  const [fetchedSessions, setFetchedSessions] = useState<RehabSessionRecord[]>([]);
+  const [fetchedSessionHistory, setFetchedSessionHistory] = useState<RehabSessionHistoryEntry[]>([]);
+  const [loadingCourseContext, setLoadingCourseContext] = useState(false);
+  const [batchSyncingCourse, setBatchSyncingCourse] = useState(false);
+  const [activeAutoCalcResult, setActiveAutoCalcResult] =
+    useState<CourseAutoAssessmentResult | null>(null);
 
   // Retrospective tracking & comparison filters
   const [exerciseFilter, setExerciseFilter] = useState<string>('ALL');
@@ -169,6 +215,9 @@ export function PatientClinicalRecordPanel({
   const toastTimerRef = useRef<number | null>(null);
   const copyTimerRef = useRef<number | null>(null);
   const latestLoadReqIdRef = useRef(0);
+  const latestCourseReqIdRef = useRef(0);
+  const formManuallyEditedRef = useRef(false);
+  const lastAutoPrefilledKeyRef = useRef<string>('');
   const selectedPatientIdRef = useRef<string | null>(selectedPatientId ?? null);
 
   useEffect(() => {
@@ -279,11 +328,157 @@ export function PatientClinicalRecordPanel({
     [apiClient, sessions, showToast],
   );
 
-  useEffect(() => {
-    void loadPatientHistory(selectedPatient, false);
-  }, [selectedPatient?.id, sessions.length, loadPatientHistory]);
+  const loadPatientCourseContext = useCallback(
+    async (patient: PatientRecord | null) => {
+      const reqId = ++latestCourseReqIdRef.current;
+      if (!patient) {
+        setAssignedCourse(null);
+        setFetchedSchedules([]);
+        setFetchedSessions([]);
+        setFetchedSessionHistory([]);
+        setLoadingCourseContext(false);
+        return;
+      }
+      const targetPatientId = patient.id;
+      setLoadingCourseContext(true);
+      try {
+        let nextCourse: PatientCourseRecord | null = patientCourseOverride ?? null;
+        let nextSchedules: RehabScheduleItem[] = patientRehabSchedulesOverride
+          ? [...patientRehabSchedulesOverride]
+          : [];
+        let nextSessions: RehabSessionRecord[] = [];
+        let nextHistory: RehabSessionHistoryEntry[] = patientSessionHistoryOverride
+          ? [...patientSessionHistoryOverride]
+          : [];
+
+        if (apiClient) {
+          const [courseRes, sessRes, histRes] = await Promise.allSettled([
+            patientCourseOverride !== undefined
+              ? Promise.resolve(patientCourseOverride)
+              : apiClient.getPatientCourse(targetPatientId),
+            apiClient.listRehabSessions(targetPatientId),
+            patientSessionHistoryOverride !== undefined
+              ? Promise.resolve(patientSessionHistoryOverride)
+              : apiClient.listRehabSessionHistory(targetPatientId),
+          ]);
+          if (courseRes.status === 'fulfilled' && courseRes.value) {
+            nextCourse = courseRes.value;
+          }
+          if (sessRes.status === 'fulfilled' && Array.isArray(sessRes.value)) {
+            nextSessions = sessRes.value.filter((s) => s.patientId === targetPatientId);
+          }
+          if (histRes.status === 'fulfilled' && Array.isArray(histRes.value)) {
+            nextHistory = histRes.value.filter((h) => h.patientId === targetPatientId);
+          }
+        } else {
+          const supa = getDirectSupabaseRestConfig();
+          if (supa && typeof fetch === 'function') {
+            const pidEnc = encodeURIComponent(targetPatientId);
+            const headers = {
+              apikey: supa.key,
+              Authorization: `Bearer ${supa.key}`,
+              'Content-Type': 'application/json',
+            };
+            const [cRes, scRes, seRes] = await Promise.allSettled([
+              fetch(`${supa.url}/rest/v1/patient_courses?patient_id=eq.${pidEnc}&limit=1`, { headers }),
+              fetch(`${supa.url}/rest/v1/rehab_schedules?patient_id=eq.${pidEnc}`, { headers }),
+              fetch(`${supa.url}/rest/v1/rehab_sessions?patient_id=eq.${pidEnc}&order=created_at.desc`, { headers }),
+            ]);
+            if (cRes.status === 'fulfilled' && cRes.value.ok) {
+              const rows = (await cRes.value.json()) as Record<string, unknown>[];
+              const row = Array.isArray(rows) ? rows[0] : null;
+              if (row && !nextCourse) {
+                nextCourse = {
+                  id: String(row.id ?? ''),
+                  patientId: String(row.patient_id ?? targetPatientId),
+                  title: String(row.title ?? 'คอร์สฟื้นฟูที่นักกายภาพจัดให้'),
+                  weeklySchedule: Array.isArray(row.weekly_schedule)
+                    ? (row.weekly_schedule as PatientCourseRecord['weeklySchedule'])
+                    : [],
+                  cognitiveModpackId: String(row.cognitive_modpack_id ?? ''),
+                  updatedAt: String(row.updated_at ?? new Date().toISOString()),
+                };
+              }
+            }
+            if (scRes.status === 'fulfilled' && scRes.value.ok) {
+              const rows = (await scRes.value.json()) as Record<string, unknown>[];
+              if (Array.isArray(rows) && nextSchedules.length === 0) {
+                nextSchedules = rows.map((r) => ({
+                  id: String(r.id ?? ''),
+                  patientId: String(r.patient_id ?? targetPatientId),
+                  ptId: r.pt_id ? String(r.pt_id) : undefined,
+                  exerciseId: r.exercise_id ? String(r.exercise_id) : undefined,
+                  modpackId: r.modpack_id ? String(r.modpack_id) : undefined,
+                  scheduledDate: String(r.scheduled_date ?? ''),
+                  sets: Number(r.sets ?? 2),
+                  reps: Number(r.reps ?? 8),
+                  status: String(r.status ?? 'ACTIVE').toUpperCase() as RehabScheduleItem['status'],
+                  notes: String(r.notes ?? ''),
+                }));
+              }
+            }
+            if (seRes.status === 'fulfilled' && seRes.value.ok) {
+              const rows = (await seRes.value.json()) as Record<string, unknown>[];
+              if (Array.isArray(rows)) {
+                nextSessions = rows.map((r) => ({
+                  id: String(r.id ?? ''),
+                  patientId: String(r.patient_id ?? targetPatientId),
+                  activityType: 'physio_exercise',
+                  exerciseId: String(r.exercise_id ?? ''),
+                  exerciseName: String(r.exercise_id ?? ''),
+                  completedSets: Number(r.completed_sets ?? 0),
+                  completedReps: Number(r.completed_reps ?? 0),
+                  accuracyPercent: Number(r.accuracy_percent ?? 85),
+                  maxRomDeg: Number(r.max_rom_deg ?? 0),
+                  painStopTriggered: Boolean(r.pain_stop_triggered),
+                  aiFeedback: '',
+                  kinematicsReplay: [],
+                  createdAt: String(r.created_at ?? new Date().toISOString()),
+                }));
+              }
+            }
+          }
+        }
+
+        if (
+          reqId !== latestCourseReqIdRef.current ||
+          selectedPatientIdRef.current !== targetPatientId
+        ) {
+          return;
+        }
+        setAssignedCourse(nextCourse);
+        setFetchedSchedules(nextSchedules);
+        setFetchedSessions(nextSessions);
+        setFetchedSessionHistory(nextHistory);
+      } catch {
+        // Gracefully fall back to embedded patient schedules & prop sessions
+      } finally {
+        if (reqId === latestCourseReqIdRef.current) {
+          setLoadingCourseContext(false);
+        }
+      }
+    },
+    [
+      apiClient,
+      patientCourseOverride,
+      patientRehabSchedulesOverride,
+      patientSessionHistoryOverride,
+    ],
+  );
 
   useEffect(() => {
+    void loadPatientHistory(selectedPatient, false);
+    void loadPatientCourseContext(selectedPatient);
+  }, [selectedPatient?.id, sessions.length, loadPatientHistory, loadPatientCourseContext]);
+
+  useEffect(() => {
+    formManuallyEditedRef.current = false;
+    lastAutoPrefilledKeyRef.current = '';
+    setActiveAutoCalcResult(null);
+    setAssignedCourse(patientCourseOverride ?? null);
+    setFetchedSchedules(patientRehabSchedulesOverride ?? []);
+    setFetchedSessions([]);
+    setFetchedSessionHistory(patientSessionHistoryOverride ?? []);
     setRecords([]);
     setExerciseFilter('ALL');
     setSideFilter('ALL');
@@ -308,6 +503,162 @@ export function PatientClinicalRecordPanel({
     }
   }, [selectedPatient?.id]);
 
+  const mergedPatientSessions = useMemo(() => {
+    if (!selectedPatient) return [];
+    const byId = new Map<string, RehabSessionRecord>();
+    for (const s of sessions) {
+      if (s.patientId === selectedPatient.id) {
+        byId.set(s.id, s);
+      }
+    }
+    for (const s of fetchedSessions) {
+      if (s.patientId === selectedPatient.id && !byId.has(s.id)) {
+        byId.set(s.id, s);
+      }
+    }
+    return Array.from(byId.values());
+  }, [selectedPatient, sessions, fetchedSessions]);
+
+  const courseAutoBundle = useMemo(() => {
+    if (!selectedPatient) return null;
+    return buildPatientCourseAutoAssessments({
+      patient: selectedPatient,
+      course: patientCourseOverride ?? assignedCourse,
+      rehabSchedules:
+        patientRehabSchedulesOverride ?? (fetchedSchedules.length > 0 ? fetchedSchedules : null),
+      sessions: mergedPatientSessions,
+      sessionHistory:
+        patientSessionHistoryOverride ??
+        (fetchedSessionHistory.length > 0 ? fetchedSessionHistory : null),
+      existingAssessments: records,
+    });
+  }, [
+    selectedPatient,
+    patientCourseOverride,
+    assignedCourse,
+    patientRehabSchedulesOverride,
+    fetchedSchedules,
+    mergedPatientSessions,
+    patientSessionHistoryOverride,
+    fetchedSessionHistory,
+    records,
+  ]);
+
+  const applyCourseResultToForm = useCallback(
+    (result: CourseAutoAssessmentResult, showFeedback = false) => {
+      const matchedCatalog = CLINICAL_EXERCISES.find(
+        (e) => e.code.toUpperCase() === result.exerciseCode.toUpperCase(),
+      );
+      if (matchedCatalog) {
+        setExerciseCode(matchedCatalog.code);
+      } else {
+        setExerciseCode(result.exerciseCode);
+      }
+      setTargetSide(result.targetSide);
+      setSelectedScore(result.calculatedScore0To6);
+      setMeasuredRomInput(result.effectiveRomDeg.toFixed(1));
+      setTargetRomInput(String(Math.round(result.targetRomDeg)));
+      setMeasurementMethod('COURSE_AUTO_CALCULATED');
+      setChiefComplaint(
+        `ประเมินอัตโนมัติจาก${result.courseTitle} ท่า ${result.exerciseNameTh} (${result.completedReps}/${result.targetReps} ครั้ง)`,
+      );
+      setHandoverNote(result.breakdownSummaryTh);
+      const nextTargetRom =
+        result.effectiveRomDeg >= result.targetRomDeg
+          ? Math.round(result.targetRomDeg)
+          : Math.min(Math.round(result.targetRomDeg), Math.round(result.effectiveRomDeg + 10));
+      setNextGoal(
+        result.calculatedScore0To6 >= 6
+          ? `คงความสมบูรณ์การเคลื่อนไหวท่า ${result.exerciseNameTh} และฝึกตามคอร์สต่อเนื่อง`
+          : `เพิ่มมุมการเคลื่อนไหวท่า ${result.exerciseNameTh} สู่ ${nextTargetRom}° และยกระดับคะแนนมหิดลเป็น ${Math.min(6, result.calculatedScore0To6 + 1)}/6`,
+      );
+      setActiveAutoCalcResult(result);
+      if (showFeedback) {
+        showToast(
+          'info',
+          `นำผลคำนวณอัตโนมัติจากคอร์ส (${result.exerciseNameTh}: ระดับ ${result.calculatedScore0To6}/6, ROM ${result.effectiveRomDeg.toFixed(1)}°) กรอกลงแบบฟอร์มแล้ว`,
+        );
+      }
+    },
+    [showToast],
+  );
+
+  // Automatically pre-fill assessment form when the selected patient has completed assigned course sessions
+  useEffect(() => {
+    if (!selectedPatient || !courseAutoBundle?.latestResult) return;
+    if (formManuallyEditedRef.current) return;
+    const prefillKey = `${selectedPatient.id}::${courseAutoBundle.latestResult.sourceSessionId}`;
+    if (lastAutoPrefilledKeyRef.current === prefillKey) return;
+    lastAutoPrefilledKeyRef.current = prefillKey;
+    applyCourseResultToForm(courseAutoBundle.latestResult, false);
+  }, [selectedPatient, courseAutoBundle?.latestResult, applyCourseResultToForm]);
+
+  const handleBatchSyncCourseSessions = async () => {
+    if (!selectedPatient || batchSyncingCourse) return;
+    if (!courseAutoBundle || courseAutoBundle.autoResults.length === 0) {
+      showToast('info', 'ยังไม่พบประวัติการเล่นคอร์สกายภาพที่เสร็จสมบูรณ์สำหรับผู้ป่วยรายนี้');
+      return;
+    }
+    const pending = courseAutoBundle.unrecordedResults;
+    if (pending.length === 0) {
+      if (courseAutoBundle.latestResult) {
+        applyCourseResultToForm(courseAutoBundle.latestResult, false);
+      }
+      showToast(
+        'info',
+        `ผลเล่นคอร์สทั้งหมด (${courseAutoBundle.autoResults.length} รอบ) ของ ${selectedPatient.fullName} ถูกบันทึกเข้าแฟ้มประเมินครบถ้วนแล้ว`,
+      );
+      return;
+    }
+
+    const submitPatientId = selectedPatient.id;
+    setBatchSyncingCourse(true);
+    try {
+      let createdCount = 0;
+      for (const result of pending) {
+        const input = buildAssessmentInputFromCourseResult({
+          result,
+          patient: selectedPatient,
+          assessorStaffId: currentUser.id,
+          assessorStaffName: `${currentUser.fullName} (คำนวณอัตโนมัติจากคอร์ส)`,
+          facilityName: result.facilityName || facilityName,
+        });
+        const { created } = await upsertCourseAutoAssessment(input, apiClient);
+        if (created) createdCount += 1;
+      }
+
+      if (selectedPatientIdRef.current === submitPatientId) {
+        const refreshed = await listPatientAssessments(selectedPatient, {
+          includeCrossFacility: true,
+          seedDemoIfEmpty: false,
+          excludeDemoRows: true,
+          apiClient,
+          sessions: mergedPatientSessions,
+        });
+        if (selectedPatientIdRef.current === submitPatientId) {
+          setRecords(refreshed);
+        }
+      }
+
+      showToast(
+        'success',
+        createdCount > 0
+          ? `ดึงผลเล่นคอร์สและบันทึกอัตโนมัติสำเร็จ ${createdCount} รอบ (คำนวณคะแนนมหิดล 0-6 และ ROM อัตโนมัติแล้ว)`
+          : 'ผลเล่นคอร์สทั้งหมดถูกบันทึกเข้าแฟ้มประเมินไว้เรียบร้อยแล้ว',
+      );
+      if (onAssessmentSaved) {
+        void onAssessmentSaved();
+      }
+    } catch (err) {
+      showToast(
+        'error',
+        err instanceof Error ? err.message : 'ไม่สามารถดึงผลเล่นคอร์สและบันทึกอัตโนมัติได้',
+      );
+    } finally {
+      setBatchSyncingCourse(false);
+    }
+  };
+
   const handleExerciseChange = (nextCode: string) => {
     setExerciseCode(nextCode);
     const matched = CLINICAL_EXERCISES.find((e) => e.code === nextCode || e.id === nextCode);
@@ -327,7 +678,7 @@ export function PatientClinicalRecordPanel({
   const latestKioskRomInfo = useMemo(() => {
     if (!selectedPatient) return null;
     const normalizedSelectedBase = parseExerciseCodeAndSide(exerciseCode).baseCode;
-    const patientKioskSessions = sessions
+    const patientKioskSessions = mergedPatientSessions
       .filter((s) => s.patientId === selectedPatient.id && s.maxRomDeg > 0)
       .slice()
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -365,7 +716,7 @@ export function PatientClinicalRecordPanel({
       };
     }
     return null;
-  }, [selectedPatient, sessions, records, exerciseCode]);
+  }, [selectedPatient, mergedPatientSessions, records, exerciseCode]);
 
   const handlePullLatestKioskRom = () => {
     if (!latestKioskRomInfo) {
@@ -404,18 +755,39 @@ export function PatientClinicalRecordPanel({
   const handleSubmitAssessment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedPatient) return;
+    const matchedEx = selectedExerciseMeta;
+    const parsedTargetRom = Number(targetRomInput);
+    const safeTargetRom = Number(
+      (Number.isFinite(parsedTargetRom) && parsedTargetRom > 0
+        ? parsedTargetRom
+        : matchedEx.detection.targetMinDeg
+      ).toFixed(1),
+    );
+
+    // Allow zero-manual-measurement submission by auto-resolving effective ROM from assigned course or 0-6 level
+    let measuredRom: number;
+    let resolvedMethod: AssessmentMeasurementMethod = measurementMethod;
     if (measuredRomInput.trim() === '') {
-      showToast('error', 'กรุณาวัดองศาด้วยกล้อง AI หรือระบุองศาข้อต่อ (ROM) ที่วัดได้จริง');
-      return;
+      const matchingCourseSummary = courseAutoBundle?.exerciseSummaries.find(
+        (item) =>
+          item.definition.exerciseCode === matchedEx.code.toUpperCase() && item.latestResult,
+      );
+      const fallbackCourseResult =
+        matchingCourseSummary?.latestResult ?? courseAutoBundle?.latestResult ?? null;
+      if (fallbackCourseResult) {
+        measuredRom = fallbackCourseResult.effectiveRomDeg;
+        resolvedMethod = 'COURSE_AUTO_CALCULATED';
+      } else {
+        measuredRom = Number(Math.max(0, Math.min(220, (safeTargetRom * selectedScore) / 6)).toFixed(1));
+      }
+    } else {
+      measuredRom = Number(measuredRomInput);
     }
-    const measuredRom = Number(measuredRomInput);
-    const targetRom = Number(targetRomInput);
     if (!Number.isFinite(measuredRom) || measuredRom < 0 || measuredRom > 220) {
       showToast('error', 'กรุณาระบุองศาข้อต่อ (ROM) ระหว่าง 0 ถึง 220 องศา');
       return;
     }
 
-    const matchedEx = selectedExerciseMeta;
     const painParsed = painVasInput.trim() === '' ? null : Number(painVasInput);
     const safePain =
       painParsed !== null && Number.isFinite(painParsed)
@@ -430,6 +802,7 @@ export function PatientClinicalRecordPanel({
       }
     }
 
+    const isCourseAutoSubmission = resolvedMethod === 'COURSE_AUTO_CALCULATED';
     const submitPatientId = selectedPatient.id;
     setSaving(true);
     try {
@@ -447,21 +820,26 @@ export function PatientClinicalRecordPanel({
           target_side: targetSide,
           initial_score_0_to_6: selectedScore,
           measured_rom_deg: Number(measuredRom.toFixed(1)),
-          target_rom_deg: Number(
-            (Number.isFinite(targetRom) && targetRom > 0
-              ? targetRom
-              : matchedEx.detection.targetMinDeg
-            ).toFixed(1),
-          ),
+          target_rom_deg: safeTargetRom,
           pain_vas_0_to_10: safePain,
           chief_complaint: chiefComplaint || `ตรวจประเมินต่อเนื่องท่า ${matchedEx.name.th}`,
           clinical_handover_note:
             handoverNote ||
-            `วัดมุม ROM ได้จริง ${measuredRom.toFixed(1)}° (คะแนนมหิดลระดับ ${selectedScore}/6) ติดตามความสม่ำเสมอการฝึกและระวังอาการชดเชย`,
+            (isCourseAutoSubmission && activeAutoCalcResult
+              ? activeAutoCalcResult.breakdownSummaryTh
+              : `ประเมินการเคลื่อนไหว ROM ${measuredRom.toFixed(1)}° (คะแนนมหิดลระดับ ${selectedScore}/6) ติดตามความสม่ำเสมอการฝึกและระวังอาการชดเชย`),
           next_session_goal:
             nextGoal || `เพิ่มมุมข้อต่อสู่ ${Math.min(180, measuredRom + 12).toFixed(0)}° ในครั้งถัดไป`,
-          source_channel: 'STAFF_MANUAL_ASSESSMENT',
-          measurement_method: measurementMethod,
+          source_channel: isCourseAutoSubmission
+            ? 'COURSE_AUTO_CALCULATED'
+            : 'STAFF_MANUAL_ASSESSMENT',
+          measurement_method: resolvedMethod,
+          completed_reps: isCourseAutoSubmission ? (activeAutoCalcResult?.completedReps ?? null) : null,
+          accuracy_percent: isCourseAutoSubmission ? (activeAutoCalcResult?.accuracyScore ?? null) : null,
+          session_id: isCourseAutoSubmission ? (activeAutoCalcResult?.sourceSessionId ?? null) : null,
+          source_session_id: isCourseAutoSubmission
+            ? (activeAutoCalcResult?.sourceSessionId ?? null)
+            : null,
         },
         apiClient,
       );
@@ -472,10 +850,12 @@ export function PatientClinicalRecordPanel({
           seedDemoIfEmpty: false,
           excludeDemoRows: true,
           apiClient,
-          sessions,
+          sessions: mergedPatientSessions,
         });
         if (selectedPatientIdRef.current === submitPatientId) {
           setRecords(refreshed);
+          formManuallyEditedRef.current = false;
+          setActiveAutoCalcResult(null);
           setMeasuredRomInput('');
           setChiefComplaint('');
           setHandoverNote('');
@@ -792,7 +1172,10 @@ export function PatientClinicalRecordPanel({
             <button
               type="button"
               disabled={!selectedPatient || syncingCrossFacility}
-              onClick={() => void loadPatientHistory(selectedPatient, true)}
+              onClick={() => {
+                void loadPatientHistory(selectedPatient, true);
+                void loadPatientCourseContext(selectedPatient);
+              }}
               className="btn-tactile inline-flex items-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2 text-xs font-bold text-[#0F4C81] hover:bg-sky-100 disabled:opacity-50 cursor-pointer"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${syncingCrossFacility ? 'animate-spin' : ''}`} />
@@ -907,282 +1290,521 @@ export function PatientClinicalRecordPanel({
 
       {/* Main Two-Column Clinical Workspace */}
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
-        {/* SECTION B: Initial Symptom, Live AI Measurement & 0-6 Mahidol-Adapted Assessment Form */}
-        <form
-          onSubmit={(e) => void handleSubmitAssessment(e)}
-          className="xl:col-span-5 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-4 self-start"
-        >
-          <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
-            <div className="flex items-center gap-2">
-              <FileText className="h-4 w-4 text-[#0F4C81]" />
-              <h3 className="text-sm font-black text-slate-900">
-                บันทึกการประเมินจริง 0-6 คะแนน
-              </h3>
-            </div>
-            <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[10px] font-bold text-emerald-700">
-              Mahidol-Adapted Scale
-            </span>
-          </div>
-
-          {/* Interactive 0-6 Score Picker */}
-          <div className="space-y-2">
-            <label className="block text-xs font-bold text-slate-700">
-              คะแนนประเมินการเคลื่อนไหว (0 ถึง 6 คะแนน)
-            </label>
-            <div className="grid grid-cols-7 gap-2">
-              {MAHIDOL_ASSESSMENT_SCALE_0_TO_6.map((item) => {
-                const active = selectedScore === item.score;
-                return (
-                  <button
-                    key={item.score}
-                    type="button"
-                    onClick={() => setSelectedScore(item.score)}
-                    className={`btn-tactile h-11 rounded-xl border text-sm font-black transition-all cursor-pointer ${
-                      active
-                        ? 'bg-emerald-600 text-white border-emerald-700 shadow-md scale-[1.03]'
-                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:border-sky-300 hover:bg-sky-50'
-                    }`}
+        {/* SECTION B: Assigned Rehab Courses Auto-Score Card + 0-6 Mahidol-Adapted Assessment Form */}
+        <div className="xl:col-span-5 space-y-4 self-start">
+          {/* Assigned Course & Automatic 0-6 Mahidol Scoring Card */}
+          <div
+            data-testid="assigned-course-auto-score-card"
+            className="rounded-3xl border border-emerald-200/90 bg-gradient-to-br from-white via-[#F0FDF9] to-[#EFF6FF] p-4 shadow-sm space-y-3 animate-view-enter"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-2 border-b border-emerald-100 pb-2.5">
+              <div className="flex items-start gap-2.5 min-w-0">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#0F4C81] to-emerald-600 text-white shadow-xs">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-4 w-4"
+                    aria-hidden="true"
                   >
-                    {item.score}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-xs font-semibold text-emerald-900">
-              {selectedRubric.descriptionTh}
-            </div>
-          </div>
-
-          {/* Exercise + Target Side */}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
-            <div className="sm:col-span-7 space-y-1">
-              <label className="block text-[11px] font-bold text-slate-600">
-                ท่ากายภาพบำบัด / ข้อต่อที่ประเมิน
-              </label>
-              <select
-                value={exerciseCode}
-                onChange={(e) => handleExerciseChange(e.target.value)}
-                className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800 focus:border-sky-500 focus:outline-none"
-              >
-                {CLINICAL_EXERCISES.map((ex) => (
-                  <option key={ex.code} value={ex.code}>
-                    {ex.name.th} (เป้า {ex.detection.targetMinDeg}°)
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="sm:col-span-5 space-y-1">
-              <label className="block text-[11px] font-bold text-slate-600">ข้างที่ประเมิน</label>
-              <div className="grid grid-cols-3 gap-1 h-10">
-                {SIDE_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => setTargetSide(opt.value)}
-                    className={`rounded-xl border text-[11px] font-bold cursor-pointer transition-colors ${
-                      targetSide === opt.value
-                        ? 'border-[#0F4C81] bg-[#0F4C81] text-white'
-                        : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
-                    }`}
-                  >
-                    {opt.labelTh}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Measured ROM + Live AI Camera Goniometer + Pull Kiosk ROM */}
-          <div className="rounded-2xl border border-sky-200 bg-sky-50/50 p-3.5 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <label className="text-xs font-bold text-[#0F4C81]">
-                องศาข้อต่อที่วัดได้จริง (ROM °)
-              </label>
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setLiveMeasureModalOpen(true)}
-                  className="btn-tactile inline-flex items-center gap-1 rounded-lg bg-gradient-to-r from-[#0F4C81] to-[#059669] px-2.5 py-1.5 text-[11px] font-extrabold text-white shadow-xs hover:brightness-105 cursor-pointer"
-                >
-                  <Camera className="h-3.5 w-3.5" />
-                  <span>วัดองศาจริงด้วยกล้อง AI</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handlePullLatestKioskRom}
-                  className="btn-tactile inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-white px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50 cursor-pointer"
-                >
-                  <Sparkles className="h-3 w-3" />
-                  <span>ดึงค่าจากตู้ Kiosk</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-3 gap-2">
-              <div>
-                <span className="block text-[10px] font-semibold text-slate-500 mb-1">
-                  วัดได้จริง (องศา)
-                </span>
-                <input
-                  type="number"
-                  step="0.5"
-                  min={0}
-                  max={220}
-                  required
-                  placeholder="เช่น 65.0"
-                  value={measuredRomInput}
-                  onChange={(e) => {
-                    setMeasuredRomInput(e.target.value);
-                    setMeasurementMethod('MANUAL_INPUT');
-                  }}
-                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm font-black text-slate-900 focus:border-sky-500 focus:outline-none"
-                />
-              </div>
-              <div>
-                <span className="block text-[10px] font-semibold text-slate-500 mb-1">
-                  เป้าหมายคลินิก (°)
-                </span>
-                <input
-                  type="number"
-                  step="1"
-                  min={10}
-                  max={220}
-                  value={targetRomInput}
-                  onChange={(e) => setTargetRomInput(e.target.value)}
-                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm font-bold text-slate-700 focus:border-sky-500 focus:outline-none"
-                />
-              </div>
-              <div>
-                <span className="block text-[10px] font-semibold text-slate-500 mb-1">
-                  ระดับปวด VAS (0-10)
-                </span>
-                <input
-                  type="number"
-                  min={0}
-                  max={10}
-                  placeholder="ไม่ระบุ"
-                  value={painVasInput}
-                  onChange={(e) => setPainVasInput(e.target.value)}
-                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm font-bold text-slate-700 focus:border-sky-500 focus:outline-none"
-                />
-              </div>
-            </div>
-
-            {liveFormPreviewPct !== null && liveFormSuggestedScore !== null && (
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-[11px]">
-                <div className="font-bold text-slate-700">
-                  เทียบเป้าหมายคลินิก:{' '}
-                  <span className="text-emerald-700 font-black">{liveFormPreviewPct.toFixed(1)}%</span>
-                  {measurementMethod === 'CAMERA_AI_LIVE' && (
-                    <span className="ml-2 rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-extrabold text-indigo-700">
-                      วัดจากกล้อง AI
-                    </span>
-                  )}
+                    <path d="M9 11l3 3L22 4" />
+                    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                  </svg>
                 </div>
-                {liveFormSuggestedScore !== selectedScore && (
+                <div className="min-w-0">
+                  <h3 className="text-xs font-black text-slate-900 leading-snug">
+                    คอร์สกายภาพที่นักกายภาพจัดให้ &amp; คำนวณคะแนนอัตโนมัติ
+                  </h3>
+                  <p className="text-[11px] text-slate-600 truncate">
+                    {courseAutoBundle?.courseTitle
+                      ? `${courseAutoBundle.courseTitle} • ${courseAutoBundle.exerciseSummaries.length} ท่าที่จัดให้`
+                      : `ดึงผลฝึกจากคอร์สของ ${selectedPatient?.fullName ?? '-'} เพื่อคำนวณคะแนน 0-6 และ ROM โดยไม่ต้องวัดมุมเอง`}
+                  </p>
+                </div>
+              </div>
+              {courseAutoBundle && courseAutoBundle.unrecordedResults.length > 0 ? (
+                <span className="shrink-0 rounded-full bg-emerald-600 px-2.5 py-0.5 text-[10px] font-black text-white shadow-xs">
+                  รอบันทึก {courseAutoBundle.unrecordedResults.length} รอบ
+                </span>
+              ) : courseAutoBundle && courseAutoBundle.autoResults.length > 0 ? (
+                <span className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[10px] font-extrabold text-emerald-700">
+                  ซิงก์ครบ {courseAutoBundle.autoResults.length} รอบแล้ว
+                </span>
+              ) : null}
+            </div>
+
+            {loadingCourseContext && (!courseAutoBundle || courseAutoBundle.exerciseSummaries.length === 0) ? (
+              <div className="rounded-xl border border-slate-200/80 bg-white/80 px-3 py-3 text-[11px] font-semibold text-slate-500">
+                กำลังดึงข้อมูลคอร์สที่นักกายภาพจัดให้และประวัติการฝึก...
+              </div>
+            ) : courseAutoBundle && courseAutoBundle.exerciseSummaries.length > 0 ? (
+              <div className="space-y-2">
+                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-0.5">
+                  {courseAutoBundle.exerciseSummaries.map((item) => {
+                    const latest = item.latestResult;
+                    const isSelectedInForm =
+                      activeAutoCalcResult &&
+                      latest &&
+                      activeAutoCalcResult.sourceSessionId === latest.sourceSessionId;
+                    return (
+                      <div
+                        key={item.definition.key}
+                        className={`rounded-2xl border p-2.5 transition-colors ${
+                          isSelectedInForm
+                            ? 'border-emerald-400 bg-white shadow-xs'
+                            : 'border-slate-200/80 bg-white/90 hover:border-sky-300'
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-[11px] font-black text-slate-900">
+                                {item.definition.exerciseNameTh}
+                              </span>
+                              <span className="rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold text-[#0F4C81]">
+                                ข้าง{formatSideTh(item.definition.targetSide)}
+                              </span>
+                            </div>
+                            <div className="mt-0.5 text-[10px] font-semibold text-slate-500">
+                              เป้า {Math.round(item.definition.targetRomDeg)}° •{' '}
+                              {item.definition.targetReps} ครั้ง/เซต • เล่นสำเร็จ{' '}
+                              <span className="font-bold text-slate-700">
+                                {item.completedSessionsCount} รอบ
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {latest ? (
+                              <>
+                                <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-black text-white">
+                                  ระดับ {latest.calculatedScore0To6}/6
+                                </span>
+                                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-extrabold text-emerald-800">
+                                  ROM {latest.effectiveRomDeg.toFixed(1)}°
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    formManuallyEditedRef.current = false;
+                                    applyCourseResultToForm(latest, true);
+                                  }}
+                                  className="btn-tactile rounded-lg border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-extrabold text-[#0F4C81] hover:bg-sky-100 cursor-pointer"
+                                >
+                                  ใช้ผลนี้
+                                </button>
+                              </>
+                            ) : (
+                              <span className="rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
+                                รอผู้ป่วยเล่นคอร์ส
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {courseAutoBundle.latestResult && (
+                  <div
+                    data-testid="course-auto-score-breakdown"
+                    className="rounded-2xl border border-sky-200 bg-white/95 px-3 py-2.5 text-[11px] space-y-1 animate-toast-in"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-1.5">
+                      <span className="font-black text-[#0F4C81]">
+                        สรุปสูตรคำนวณคะแนนมหิดล 0-6 อัตโนมัติ (เติมเข้าแบบฟอร์มแล้ว)
+                      </span>
+                      <span className="rounded-md bg-sky-50 border border-sky-200 px-1.5 py-0.5 text-[10px] font-extrabold text-[#0F4C81]">
+                        คะแนนรวม {courseAutoBundle.latestResult.compositePct}%
+                      </span>
+                    </div>
+                    <p className="text-[11px] font-semibold text-slate-700 leading-relaxed">
+                      {courseAutoBundle.latestResult.breakdownSummaryTh}
+                    </p>
+                    <div className="text-[10px] text-slate-500 font-medium">
+                      เกณฑ์ถ่วงน้ำหนัก: ช่วงองศา ROM 50% • จำนวนครั้งครบตามคอร์ส 30% • ความแม่นยำท่า 20%
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                  <span className="text-[10px] font-semibold text-slate-500">
+                    {courseAutoBundle.unrecordedResults.length > 0
+                      ? `พบผลเล่นคอร์สใหม่ ${courseAutoBundle.unrecordedResults.length} รอบที่ยังไม่บันทึกลงแฟ้มประเมิน`
+                      : courseAutoBundle.autoResults.length > 0
+                        ? 'บันทึกผลเล่นคอร์สครบทุกรอบแล้ว (ป้องกันข้อมูลซ้ำอัตโนมัติ)'
+                        : 'เมื่อผู้ป่วยเล่นคอร์สที่จัดไว้ครบ ระบบจะคำนวณ 0-6 และ ROM ให้อัตโนมัติ'}
+                  </span>
                   <button
                     type="button"
-                    onClick={() => setSelectedScore(liveFormSuggestedScore)}
-                    className="rounded-lg border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-extrabold text-[#0F4C81] hover:bg-sky-100 cursor-pointer"
+                    data-testid="batch-sync-course-card-btn"
+                    disabled={
+                      batchSyncingCourse ||
+                      !selectedPatient ||
+                      courseAutoBundle.autoResults.length === 0
+                    }
+                    onClick={() => void handleBatchSyncCourseSessions()}
+                    className="btn-tactile inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-[11px] font-extrabold text-white shadow-xs disabled:opacity-45 cursor-pointer"
                   >
-                    ใช้คะแนนแนะนำ ({liveFormSuggestedScore}/6)
+                    <RefreshCw
+                      className={`h-3.5 w-3.5 ${batchSyncingCourse ? 'animate-spin' : ''}`}
+                    />
+                    <span>
+                      {batchSyncingCourse
+                        ? 'กำลังบันทึกผลคอร์ส...'
+                        : 'ดึงผลเล่นคอร์สและบันทึกอัตโนมัติ'}
+                    </span>
                   </button>
-                )}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-emerald-200 bg-white/80 px-3 py-3 text-[11px] text-slate-600">
+                ยังไม่มีคอร์สกายภาพหรือรอบฝึกที่เสร็จสมบูรณ์สำหรับผู้ป่วยรายนี้ เมื่อนักกายภาพจัดคอร์สและผู้ป่วยเล่นผ่านตู้ Kiosk ระบบจะดึงผลมาคำนวณคะแนน 0-6 และ ROM ให้อัตโนมัติ
               </div>
             )}
           </div>
 
-          {/* Visit Date/Time & Facility */}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="space-y-1">
-              <label className="flex items-center gap-1 text-[11px] font-bold text-slate-600">
-                <Calendar className="h-3.5 w-3.5 text-[#0F4C81]" />
-                <span>วันที่และเวลาที่ประเมิน</span>
-              </label>
-              <input
-                type="datetime-local"
-                value={assessedAtInput}
-                onChange={(e) => setAssessedAtInput(e.target.value)}
-                className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-800 focus:border-sky-500 focus:outline-none"
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="block text-[11px] font-bold text-slate-600">
-                สถานที่ / สาขาที่ตรวจ
-              </label>
-              <input
-                type="text"
-                value={facilityName}
-                onChange={(e) => setFacilityName(e.target.value)}
-                className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800 focus:border-sky-500 focus:outline-none"
-              />
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {CLINICAL_FACILITY_PRESETS.map((preset) => (
-              <button
-                key={preset}
-                type="button"
-                onClick={() => setFacilityName(preset)}
-                className={`rounded-lg border px-2 py-0.5 text-[10px] font-bold cursor-pointer ${
-                  facilityName === preset
-                    ? 'border-sky-400 bg-sky-50 text-[#0F4C81]'
-                    : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                {preset}
-              </button>
-            ))}
-          </div>
-
-          {/* Clinical Handover Notes */}
-          <div className="space-y-2.5">
-            <div className="space-y-1">
-              <label className="block text-[11px] font-bold text-slate-600">
-                อาการแรกรับ / อาการรอบนี้ (Chief Complaint)
-              </label>
-              <input
-                type="text"
-                value={chiefComplaint}
-                onChange={(e) => setChiefComplaint(e.target.value)}
-                placeholder="เช่น ยังตึงช่วงยกไหล่เกิน 60 องศา แต่ออกแรงได้มั่นคงขึ้น..."
-                className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs text-slate-800 focus:border-sky-500 focus:outline-none"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="block text-[11px] font-bold text-slate-600">
-                บันทึกส่งต่อการรักษาสำหรับบุคลากรท่านถัดไป (Handover Note)
-              </label>
-              <textarea
-                rows={3}
-                value={handoverNote}
-                onChange={(e) => setHandoverNote(e.target.value)}
-                placeholder="ระบุท่าที่ฝึก ระยะค้างท่า การช่วยเหลือ ข้อควรระวังสำหรับนักกายภาพรอบถัดไปหรือสาขาเครือข่าย..."
-                className="w-full rounded-xl border border-slate-200 bg-white p-2.5 text-xs text-slate-800 focus:border-sky-500 focus:outline-none"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="block text-[11px] font-bold text-slate-600">เป้าหมายครั้งถัดไป</label>
-              <input
-                type="text"
-                value={nextGoal}
-                onChange={(e) => setNextGoal(e.target.value)}
-                placeholder="เช่น เพิ่มมุมยกแขนเป็น 85 องศา และลดแรงช่วยประคอง"
-                className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs text-slate-800 focus:border-sky-500 focus:outline-none"
-              />
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            disabled={saving || !selectedPatient}
-            className="btn-tactile w-full h-11 rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] text-xs font-black text-white shadow-md hover:brightness-105 disabled:opacity-50 cursor-pointer"
+          <form
+            onSubmit={(e) => void handleSubmitAssessment(e)}
+            className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-4"
           >
-            {saving ? 'กำลังบันทึกผลประเมินลงฐานข้อมูล...' : 'บันทึกผลประเมินจริงเข้าแฟ้มผู้ป่วย'}
-          </button>
-        </form>
+            <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <FileText className="h-4 w-4 text-[#0F4C81]" />
+                <h3 className="text-sm font-black text-slate-900">
+                  บันทึกการประเมินจริง 0-6 คะแนน
+                </h3>
+              </div>
+              <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[10px] font-bold text-emerald-700">
+                {activeAutoCalcResult ? 'คำนวณอัตโนมัติจากคอร์ส' : 'Mahidol-Adapted Scale'}
+              </span>
+            </div>
+
+            {activeAutoCalcResult && (
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/75 px-3 py-2 text-[11px] font-semibold text-emerald-900 animate-toast-in">
+                <div className="font-black text-emerald-800">
+                  เติมค่าอัตโนมัติจากคอร์สกายภาพ (ไม่ต้องวัดองศาด้วยตนเอง)
+                </div>
+                <div className="mt-0.5 leading-relaxed">
+                  {activeAutoCalcResult.breakdownSummaryTh}
+                </div>
+              </div>
+            )}
+
+            {/* Interactive 0-6 Score Picker */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-700">
+                คะแนนประเมินการเคลื่อนไหว (0 ถึง 6 คะแนน)
+              </label>
+              <div className="grid grid-cols-7 gap-2">
+                {MAHIDOL_ASSESSMENT_SCALE_0_TO_6.map((item) => {
+                  const active = selectedScore === item.score;
+                  return (
+                    <button
+                      key={item.score}
+                      type="button"
+                      onClick={() => {
+                        formManuallyEditedRef.current = true;
+                        setSelectedScore(item.score);
+                      }}
+                      className={`btn-tactile h-11 rounded-xl border text-sm font-black transition-all cursor-pointer ${
+                        active
+                          ? 'bg-emerald-600 text-white border-emerald-700 shadow-md scale-[1.03]'
+                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:border-sky-300 hover:bg-sky-50'
+                      }`}
+                    >
+                      {item.score}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-xs font-semibold text-emerald-900">
+                {selectedRubric.descriptionTh}
+              </div>
+            </div>
+
+            {/* Exercise + Target Side */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
+              <div className="sm:col-span-7 space-y-1">
+                <label className="block text-[11px] font-bold text-slate-600">
+                  ท่ากายภาพบำบัด / ข้อต่อที่ประเมิน
+                </label>
+                <select
+                  value={exerciseCode}
+                  onChange={(e) => {
+                    formManuallyEditedRef.current = true;
+                    handleExerciseChange(e.target.value);
+                  }}
+                  className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800 focus:border-sky-500 focus:outline-none"
+                >
+                  {CLINICAL_EXERCISES.map((ex) => (
+                    <option key={ex.code} value={ex.code}>
+                      {ex.name.th} (เป้า {ex.detection.targetMinDeg}°)
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="sm:col-span-5 space-y-1">
+                <label className="block text-[11px] font-bold text-slate-600">ข้างที่ประเมิน</label>
+                <div className="grid grid-cols-3 gap-1 h-10">
+                  {SIDE_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => {
+                        formManuallyEditedRef.current = true;
+                        setTargetSide(opt.value);
+                      }}
+                      className={`rounded-xl border text-[11px] font-bold cursor-pointer transition-colors ${
+                        targetSide === opt.value
+                          ? 'border-[#0F4C81] bg-[#0F4C81] text-white'
+                          : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      {opt.labelTh}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Measured ROM (Optional / Auto-Filled From Course) + One-Click Course Sync + Live Camera AI */}
+            <div className="rounded-2xl border border-sky-200 bg-sky-50/50 p-3.5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <label className="text-xs font-bold text-[#0F4C81]">
+                    องศาข้อต่อ (ROM °)
+                  </label>
+                  <span className="ml-1.5 text-[10px] font-semibold text-emerald-700">
+                    (เติมอัตโนมัติจากคอร์สได้ / ไม่บังคับวัดเอง)
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    data-testid="batch-sync-course-inline-btn"
+                    disabled={batchSyncingCourse || !selectedPatient}
+                    onClick={() => void handleBatchSyncCourseSessions()}
+                    className="btn-tactile inline-flex items-center gap-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1.5 text-[11px] font-extrabold text-white shadow-xs disabled:opacity-50 cursor-pointer"
+                  >
+                    <RefreshCw
+                      className={`h-3 w-3 ${batchSyncingCourse ? 'animate-spin' : ''}`}
+                    />
+                    <span>ดึงผลเล่นคอร์สและบันทึกอัตโนมัติ</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handlePullLatestKioskRom}
+                    className="btn-tactile inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-white px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50 cursor-pointer"
+                  >
+                    <Sparkles className="h-3 w-3" />
+                    <span>ดึงจากตู้ Kiosk</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLiveMeasureModalOpen(true)}
+                    className="btn-tactile inline-flex items-center gap-1 rounded-lg border border-sky-300 bg-white px-2.5 py-1.5 text-[11px] font-bold text-[#0F4C81] hover:bg-sky-50 cursor-pointer"
+                  >
+                    <Camera className="h-3.5 w-3.5" />
+                    <span>วัดองศาจริงด้วยกล้อง AI</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <span className="block text-[10px] font-semibold text-slate-500 mb-1">
+                    ROM (องศา / เว้นว่างได้)
+                  </span>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min={0}
+                    max={220}
+                    placeholder="คำนวณจากคอร์สอัตโนมัติ"
+                    value={measuredRomInput}
+                    onChange={(e) => {
+                      formManuallyEditedRef.current = true;
+                      setMeasuredRomInput(e.target.value);
+                      setMeasurementMethod('MANUAL_INPUT');
+                      setActiveAutoCalcResult(null);
+                    }}
+                    className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm font-black text-slate-900 focus:border-sky-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <span className="block text-[10px] font-semibold text-slate-500 mb-1">
+                    เป้าหมายคลินิก (°)
+                  </span>
+                  <input
+                    type="number"
+                    step="1"
+                    min={10}
+                    max={220}
+                    value={targetRomInput}
+                    onChange={(e) => {
+                      formManuallyEditedRef.current = true;
+                      setTargetRomInput(e.target.value);
+                    }}
+                    className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm font-bold text-slate-700 focus:border-sky-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <span className="block text-[10px] font-semibold text-slate-500 mb-1">
+                    ระดับปวด VAS (0-10)
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={10}
+                    placeholder="ไม่ระบุ"
+                    value={painVasInput}
+                    onChange={(e) => {
+                      formManuallyEditedRef.current = true;
+                      setPainVasInput(e.target.value);
+                    }}
+                    className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm font-bold text-slate-700 focus:border-sky-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {liveFormPreviewPct !== null && liveFormSuggestedScore !== null && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-[11px]">
+                  <div className="font-bold text-slate-700">
+                    เทียบเป้าหมายคลินิก:{' '}
+                    <span className="text-emerald-700 font-black">{liveFormPreviewPct.toFixed(1)}%</span>
+                    {measurementMethod === 'COURSE_AUTO_CALCULATED' && (
+                      <span className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-800">
+                        คำนวณอัตโนมัติจากคอร์ส
+                      </span>
+                    )}
+                    {measurementMethod === 'CAMERA_AI_LIVE' && (
+                      <span className="ml-2 rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-extrabold text-indigo-700">
+                        วัดจากกล้อง AI
+                      </span>
+                    )}
+                  </div>
+                  {liveFormSuggestedScore !== selectedScore && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        formManuallyEditedRef.current = true;
+                        setSelectedScore(liveFormSuggestedScore);
+                      }}
+                      className="rounded-lg border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-extrabold text-[#0F4C81] hover:bg-sky-100 cursor-pointer"
+                    >
+                      ใช้คะแนนแนะนำ ({liveFormSuggestedScore}/6)
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Visit Date/Time & Facility */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="space-y-1">
+                <label className="flex items-center gap-1 text-[11px] font-bold text-slate-600">
+                  <Calendar className="h-3.5 w-3.5 text-[#0F4C81]" />
+                  <span>วันที่และเวลาที่ประเมิน</span>
+                </label>
+                <input
+                  type="datetime-local"
+                  value={assessedAtInput}
+                  onChange={(e) => setAssessedAtInput(e.target.value)}
+                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-800 focus:border-sky-500 focus:outline-none"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-slate-600">
+                  สถานที่ / สาขาที่ตรวจ
+                </label>
+                <input
+                  type="text"
+                  value={facilityName}
+                  onChange={(e) => setFacilityName(e.target.value)}
+                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800 focus:border-sky-500 focus:outline-none"
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {CLINICAL_FACILITY_PRESETS.map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => setFacilityName(preset)}
+                  className={`rounded-lg border px-2 py-0.5 text-[10px] font-bold cursor-pointer ${
+                    facilityName === preset
+                      ? 'border-sky-400 bg-sky-50 text-[#0F4C81]'
+                      : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  {preset}
+                </button>
+              ))}
+            </div>
+
+            {/* Clinical Handover Notes */}
+            <div className="space-y-2.5">
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-slate-600">
+                  อาการแรกรับ / อาการรอบนี้ (Chief Complaint)
+                </label>
+                <input
+                  type="text"
+                  value={chiefComplaint}
+                  onChange={(e) => {
+                    formManuallyEditedRef.current = true;
+                    setChiefComplaint(e.target.value);
+                  }}
+                  placeholder="เช่น ยังตึงช่วงยกไหล่เกิน 60 องศา แต่ออกแรงได้มั่นคงขึ้น..."
+                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs text-slate-800 focus:border-sky-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-slate-600">
+                  บันทึกส่งต่อการรักษาสำหรับบุคลากรท่านถัดไป (Handover Note)
+                </label>
+                <textarea
+                  rows={3}
+                  value={handoverNote}
+                  onChange={(e) => {
+                    formManuallyEditedRef.current = true;
+                    setHandoverNote(e.target.value);
+                  }}
+                  placeholder="ระบุท่าที่ฝึก ระยะค้างท่า การช่วยเหลือ ข้อควรระวังสำหรับนักกายภาพรอบถัดไปหรือสาขาเครือข่าย..."
+                  className="w-full rounded-xl border border-slate-200 bg-white p-2.5 text-xs text-slate-800 focus:border-sky-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-slate-600">เป้าหมายครั้งถัดไป</label>
+                <input
+                  type="text"
+                  value={nextGoal}
+                  onChange={(e) => {
+                    formManuallyEditedRef.current = true;
+                    setNextGoal(e.target.value);
+                  }}
+                  placeholder="เช่น เพิ่มมุมยกแขนเป็น 85 องศา และลดแรงช่วยประคอง"
+                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs text-slate-800 focus:border-sky-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={saving || !selectedPatient}
+              className="btn-tactile w-full h-11 rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] text-xs font-black text-white shadow-md hover:brightness-105 disabled:opacity-50 cursor-pointer"
+            >
+              {saving ? 'กำลังบันทึกผลประเมินลงฐานข้อมูล...' : 'บันทึกผลประเมินจริงเข้าแฟ้มผู้ป่วย'}
+            </button>
+          </form>
+        </div>
 
         {/* SECTION C: Genuine Retrospective Tracking & Longitudinal Progress Comparison */}
         <div className="xl:col-span-7 space-y-5">
@@ -1234,6 +1856,7 @@ export function PatientClinicalRecordPanel({
                 className="h-9 rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-bold text-slate-700"
               >
                 <option value="ALL">ทุกแหล่งข้อมูล</option>
+                <option value="COURSE_AUTO_CALCULATED">คำนวณอัตโนมัติจากคอร์ส</option>
                 <option value="STAFF_MANUAL_ASSESSMENT">ประเมินโดยบุคลากร</option>
                 <option value="KIOSK_SESSION_AUTO_SYNC">ซิงก์จากตู้ Kiosk</option>
               </select>
@@ -1428,6 +2051,8 @@ export function PatientClinicalRecordPanel({
                 </span>
               </div>
               <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold">
+                <span className="text-emerald-700">คอร์สอัตโนมัติ {summary.courseAutoVisitCount}</span>
+                <span className="text-slate-300">|</span>
                 <span className="text-[#0F4C81]">บุคลากร {summary.staffVisitCount}</span>
                 <span className="text-slate-300">|</span>
                 <span className="text-teal-700">ตู้ Kiosk {summary.kioskVisitCount}</span>
@@ -1527,7 +2152,7 @@ export function PatientClinicalRecordPanel({
                 </div>
                 {!loadingRecords && (
                   <p className="text-[11px] text-slate-500 max-w-md mx-auto">
-                    เริ่มต้นติดตามผลได้จริงทันทีโดยกดปุ่ม &quot;วัดองศาจริงด้วยกล้อง AI&quot; ด้านซ้าย หรือกรอกค่าที่วัดด้วย Goniometer แล้วบันทึกเป็นรอบแรกรับ (Baseline)
+                    เริ่มต้นติดตามผลได้ทันทีโดยกดปุ่ม &quot;ดึงผลเล่นคอร์สและบันทึกอัตโนมัติ&quot; ด้านซ้าย หรือกดบันทึกผลประเมิน 0-6 เข้าแฟ้มผู้ป่วย
                   </p>
                 )}
               </div>
@@ -2082,6 +2707,7 @@ export function PatientClinicalRecordPanel({
                   .slice()
                   .reverse()
                   .map(({ record, deltaFromPrevRom, targetAchievementPct }) => {
+                    const isCourseAuto = record.source_channel === 'COURSE_AUTO_CALCULATED';
                     const isKiosk = record.source_channel === 'KIOSK_SESSION_AUTO_SYNC';
                     const isCameraAi = record.measurement_method === 'CAMERA_AI_LIVE';
                     const canDelete =
@@ -2101,18 +2727,22 @@ export function PatientClinicalRecordPanel({
                             </span>
                             <span
                               className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${
-                                isCameraAi
-                                  ? 'border-indigo-200 bg-indigo-50 text-indigo-800'
-                                  : isKiosk
-                                    ? 'border-teal-200 bg-teal-50 text-teal-800'
-                                    : 'border-sky-200 bg-sky-50 text-[#0F4C81]'
+                                isCourseAuto
+                                  ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                                  : isCameraAi
+                                    ? 'border-indigo-200 bg-indigo-50 text-indigo-800'
+                                    : isKiosk
+                                      ? 'border-teal-200 bg-teal-50 text-teal-800'
+                                      : 'border-sky-200 bg-sky-50 text-[#0F4C81]'
                               }`}
                             >
-                              {isCameraAi
-                                ? 'วัดด้วยกล้อง AI'
-                                : isKiosk
-                                  ? 'ซิงก์จากตู้ Kiosk'
-                                  : 'ประเมินโดยบุคลากร'}
+                              {isCourseAuto
+                                ? 'คำนวณอัตโนมัติจากคอร์ส'
+                                : isCameraAi
+                                  ? 'วัดด้วยกล้อง AI'
+                                  : isKiosk
+                                    ? 'ซิงก์จากตู้ Kiosk'
+                                    : 'ประเมินโดยบุคลากร'}
                             </span>
                           </div>
 

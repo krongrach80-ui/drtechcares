@@ -221,16 +221,26 @@ function normalizeSupabaseRow(row: Record<string, unknown>): PatientClinicalAsse
     sideRaw === 'LEFT' ? 'LEFT' : sideRaw === 'BOTH' ? 'BOTH' : 'RIGHT';
   const channelRaw = String(row.source_channel ?? 'STAFF_MANUAL_ASSESSMENT');
   const sourceChannel =
-    channelRaw === 'KIOSK_SESSION_AUTO_SYNC'
-      ? 'KIOSK_SESSION_AUTO_SYNC'
-      : 'STAFF_MANUAL_ASSESSMENT';
+    channelRaw === 'COURSE_AUTO_CALCULATED'
+      ? 'COURSE_AUTO_CALCULATED'
+      : channelRaw === 'KIOSK_SESSION_AUTO_SYNC'
+        ? 'KIOSK_SESSION_AUTO_SYNC'
+        : 'STAFF_MANUAL_ASSESSMENT';
   const methodRaw = String(row.measurement_method ?? '');
   const measurementMethod: AssessmentMeasurementMethod =
-    methodRaw === 'CAMERA_AI_LIVE'
-      ? 'CAMERA_AI_LIVE'
-      : methodRaw === 'KIOSK_SESSION_AUTO_SYNC' || sourceChannel === 'KIOSK_SESSION_AUTO_SYNC'
-        ? 'KIOSK_SESSION_AUTO_SYNC'
-        : 'MANUAL_INPUT';
+    methodRaw === 'COURSE_AUTO_CALCULATED' || sourceChannel === 'COURSE_AUTO_CALCULATED'
+      ? 'COURSE_AUTO_CALCULATED'
+      : methodRaw === 'CAMERA_AI_LIVE'
+        ? 'CAMERA_AI_LIVE'
+        : methodRaw === 'KIOSK_SESSION_AUTO_SYNC' || sourceChannel === 'KIOSK_SESSION_AUTO_SYNC'
+          ? 'KIOSK_SESSION_AUTO_SYNC'
+          : 'MANUAL_INPUT';
+  const resolvedSourceSessionId =
+    typeof row.source_session_id === 'string' && row.source_session_id.trim()
+      ? row.source_session_id.trim()
+      : typeof row.session_id === 'string' && row.session_id.trim()
+        ? row.session_id.trim()
+        : null;
 
   return {
     id: String(row.id ?? `assess-${Date.now()}`),
@@ -265,7 +275,8 @@ function normalizeSupabaseRow(row: Record<string, unknown>): PatientClinicalAsse
       typeof row.accuracy_percent === 'number' && Number.isFinite(row.accuracy_percent)
         ? Math.round(row.accuracy_percent)
         : null,
-    session_id: typeof row.session_id === 'string' ? row.session_id : null,
+    session_id: typeof row.session_id === 'string' ? row.session_id : resolvedSourceSessionId,
+    source_session_id: resolvedSourceSessionId,
     created_at: row.created_at ? String(row.created_at) : undefined,
   };
 }
@@ -347,11 +358,14 @@ function hasEquivalentAssessment(
   candidate: PatientClinicalAssessmentRecord,
 ): boolean {
   const candTs = new Date(candidate.assessed_at).getTime();
+  const candSourceSessionId = candidate.source_session_id || candidate.session_id || null;
   for (const existing of map.values()) {
     if (existing.id === candidate.id) return true;
     if (
-      candidate.session_id &&
-      (existing.session_id === candidate.session_id || existing.id === candidate.session_id)
+      candSourceSessionId &&
+      (existing.source_session_id === candSourceSessionId ||
+        existing.session_id === candSourceSessionId ||
+        existing.id === candSourceSessionId)
     ) {
       return true;
     }
@@ -550,6 +564,18 @@ export async function createPatientAssessment(
     hn: input.patient_hn,
     universalHealthLinkCode: input.universal_link_code,
   });
+  const cleanSourceSessionId = (input.source_session_id || input.session_id || '').trim() || null;
+  if (cleanSourceSessionId) {
+    const duplicateLocal = patientExisting.find(
+      (rec) =>
+        !rec.id.startsWith('kiosk-sess-') &&
+        !rec.id.startsWith('hist-sess-') &&
+        (rec.source_session_id === cleanSourceSessionId || rec.session_id === cleanSourceSessionId),
+    );
+    if (duplicateLocal) {
+      return duplicateLocal;
+    }
+  }
   const nextVisitNumber =
     patientExisting.reduce((maxV, rec) => Math.max(maxV, rec.visit_number), 0) + 1;
 
@@ -560,7 +586,11 @@ export async function createPatientAssessment(
   const sourceChannel = input.source_channel ?? 'STAFF_MANUAL_ASSESSMENT';
   const measurementMethod: AssessmentMeasurementMethod =
     input.measurement_method ??
-    (sourceChannel === 'KIOSK_SESSION_AUTO_SYNC' ? 'KIOSK_SESSION_AUTO_SYNC' : 'MANUAL_INPUT');
+    (sourceChannel === 'COURSE_AUTO_CALCULATED'
+      ? 'COURSE_AUTO_CALCULATED'
+      : sourceChannel === 'KIOSK_SESSION_AUTO_SYNC'
+        ? 'KIOSK_SESSION_AUTO_SYNC'
+        : 'MANUAL_INPUT');
 
   // Prefer server API persistence (Cloudflare Worker + Supabase service role) when available
   if (apiClient) {
@@ -589,7 +619,8 @@ export async function createPatientAssessment(
         measurement_method: measurementMethod,
         completed_reps: input.completed_reps ?? null,
         accuracy_percent: input.accuracy_percent ?? null,
-        session_id: input.session_id ?? null,
+        session_id: cleanSourceSessionId,
+        source_session_id: cleanSourceSessionId,
       });
       const normalized = normalizeSupabaseRow(savedRemote as unknown as Record<string, unknown>);
       writeStorageRecords([...existing.filter((r) => r.id !== normalized.id), normalized]);
@@ -600,8 +631,9 @@ export async function createPatientAssessment(
   }
 
   const newRecord: PatientClinicalAssessmentRecord = {
-    id:
-      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    id: cleanSourceSessionId
+      ? buildStableUuid(`course-auto-${input.patient_id.trim()}-${cleanSourceSessionId}`)
+      : typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
         : buildStableUuid(`${input.patient_id}-${nowIso}-${nextVisitNumber}-${Math.random()}`),
     patient_id: input.patient_id.trim(),
@@ -629,15 +661,42 @@ export async function createPatientAssessment(
     measurement_method: measurementMethod,
     completed_reps: input.completed_reps ?? null,
     accuracy_percent: input.accuracy_percent ?? null,
-    session_id: input.session_id ?? null,
+    session_id: cleanSourceSessionId,
+    source_session_id: cleanSourceSessionId,
     created_at: nowIso,
   };
 
-  writeStorageRecords([...existing, newRecord]);
+  writeStorageRecords([...existing.filter((r) => r.id !== newRecord.id), newRecord]);
 
   const supa = getSupabaseRestConfig();
   if (supa && typeof fetch === 'function') {
     try {
+      const restRow: Record<string, unknown> = {
+        id: newRecord.id,
+        patient_id: newRecord.patient_id,
+        patient_hn: newRecord.patient_hn,
+        universal_link_code: newRecord.universal_link_code,
+        visit_number: newRecord.visit_number,
+        assessed_at: newRecord.assessed_at,
+        facility_name: newRecord.facility_name,
+        assessor_staff_id: newRecord.assessor_staff_id,
+        assessor_staff_name: newRecord.assessor_staff_name,
+        exercise_code: newRecord.exercise_code,
+        exercise_name_th: newRecord.exercise_name_th,
+        target_side: newRecord.target_side,
+        initial_score_0_to_6: newRecord.initial_score_0_to_6,
+        measured_rom_deg: newRecord.measured_rom_deg,
+        target_rom_deg: newRecord.target_rom_deg,
+        pain_vas_0_to_10: newRecord.pain_vas_0_to_10 ?? null,
+        chief_complaint: newRecord.chief_complaint,
+        clinical_handover_note: newRecord.clinical_handover_note,
+        next_session_goal: newRecord.next_session_goal,
+        source_channel: newRecord.source_channel,
+        created_at: newRecord.created_at,
+      };
+      if (newRecord.source_session_id) {
+        restRow.source_session_id = newRecord.source_session_id;
+      }
       const res = await fetchWithTimeout(
         `${supa.url}/rest/v1/patient_clinical_assessments`,
         {
@@ -646,14 +705,30 @@ export async function createPatientAssessment(
             apikey: supa.key,
             Authorization: `Bearer ${supa.key}`,
             'Content-Type': 'application/json',
-            Prefer: 'return=minimal',
+            Prefer: 'return=minimal,resolution=merge-duplicates',
           },
-          body: JSON.stringify(newRecord),
+          body: JSON.stringify(restRow),
         },
         5000,
       );
-      if (!res.ok) {
-        // Local persistence already committed; remote sync rejection does not crash UI flow
+      if (!res.ok && (newRecord.source_channel === 'COURSE_AUTO_CALCULATED' || restRow.source_session_id)) {
+        const legacyRow = { ...restRow };
+        delete legacyRow.source_session_id;
+        legacyRow.source_channel = 'KIOSK_SESSION_AUTO_SYNC';
+        await fetchWithTimeout(
+          `${supa.url}/rest/v1/patient_clinical_assessments`,
+          {
+            method: 'POST',
+            headers: {
+              apikey: supa.key,
+              Authorization: `Bearer ${supa.key}`,
+              'Content-Type': 'application/json',
+              Prefer: 'return=minimal,resolution=merge-duplicates',
+            },
+            body: JSON.stringify(legacyRow),
+          },
+          5000,
+        );
       }
     } catch {
       // Local persistence already committed; remote sync failure does not break UI flow
@@ -730,4 +805,38 @@ export async function syncKioskSessionToAssessment(params: {
     measurement_method: 'KIOSK_SESSION_AUTO_SYNC',
     completed_reps: params.completedReps ?? null,
   });
+}
+
+export async function upsertCourseAutoAssessment(
+  input: CreatePatientClinicalAssessmentInput,
+  apiClient?: DrTechCaresApiClient,
+): Promise<{ record: PatientClinicalAssessmentRecord; created: boolean }> {
+  const cleanSourceSessionId = (input.source_session_id || input.session_id || '').trim();
+  if (cleanSourceSessionId) {
+    const localExisting = filterAssessmentsForPatient(readStorageRecords(), {
+      id: input.patient_id,
+      hn: input.patient_hn,
+      universalHealthLinkCode: input.universal_link_code,
+    }).find(
+      (rec) =>
+        !rec.id.startsWith('kiosk-sess-') &&
+        !rec.id.startsWith('hist-sess-') &&
+        (rec.source_session_id === cleanSourceSessionId || rec.session_id === cleanSourceSessionId),
+    );
+    if (localExisting) {
+      return { record: localExisting, created: false };
+    }
+  }
+
+  const saved = await createPatientAssessment(
+    {
+      ...input,
+      source_channel: 'COURSE_AUTO_CALCULATED',
+      measurement_method: 'COURSE_AUTO_CALCULATED',
+      source_session_id: cleanSourceSessionId || null,
+      session_id: cleanSourceSessionId || null,
+    },
+    apiClient,
+  );
+  return { record: saved, created: true };
 }

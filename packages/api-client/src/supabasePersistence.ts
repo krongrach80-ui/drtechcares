@@ -2660,9 +2660,14 @@ async function runHydrateStateFromSupabaseInternal(
       const sideRaw = String(r.target_side ?? 'RIGHT').toUpperCase();
       const targetSide: ClinicalAssessmentRecord['target_side'] =
         sideRaw === 'LEFT' ? 'LEFT' : sideRaw === 'BOTH' ? 'BOTH' : 'RIGHT';
-      const channelRaw = String(r.source_channel ?? 'STAFF_MANUAL_ASSESSMENT');
+      const existingRec = mergedAssessmentsMap.get(id);
+      const channelRaw = String(r.source_channel ?? existingRec?.source_channel ?? 'STAFF_MANUAL_ASSESSMENT');
       const sourceChannel: ClinicalAssessmentRecord['source_channel'] =
-        channelRaw === 'KIOSK_SESSION_AUTO_SYNC' ? 'KIOSK_SESSION_AUTO_SYNC' : 'STAFF_MANUAL_ASSESSMENT';
+        existingRec?.source_channel === 'COURSE_AUTO_CALCULATED' || channelRaw === 'COURSE_AUTO_CALCULATED'
+          ? 'COURSE_AUTO_CALCULATED'
+          : channelRaw === 'KIOSK_SESSION_AUTO_SYNC'
+            ? 'KIOSK_SESSION_AUTO_SYNC'
+            : 'STAFF_MANUAL_ASSESSMENT';
       const rawScore = Number(r.initial_score_0_to_6 ?? 0);
       const clampedScore = Math.max(0, Math.min(6, Math.round(Number.isFinite(rawScore) ? rawScore : 0))) as
         | 0
@@ -2672,7 +2677,10 @@ async function runHydrateStateFromSupabaseInternal(
         | 4
         | 5
         | 6;
-      const existingRec = mergedAssessmentsMap.get(id);
+      const resolvedSourceSessionId =
+        typeof r.source_session_id === 'string' && r.source_session_id.trim()
+          ? r.source_session_id.trim()
+          : existingRec?.source_session_id ?? existingRec?.session_id ?? null;
       mergedAssessmentsMap.set(id, {
         id,
         patient_id: pid,
@@ -2701,10 +2709,15 @@ async function runHydrateStateFromSupabaseInternal(
         source_channel: sourceChannel,
         measurement_method:
           existingRec?.measurement_method ??
-          (sourceChannel === 'KIOSK_SESSION_AUTO_SYNC' ? 'KIOSK_SESSION_AUTO_SYNC' : 'MANUAL_INPUT'),
+          (sourceChannel === 'COURSE_AUTO_CALCULATED'
+            ? 'COURSE_AUTO_CALCULATED'
+            : sourceChannel === 'KIOSK_SESSION_AUTO_SYNC'
+              ? 'KIOSK_SESSION_AUTO_SYNC'
+              : 'MANUAL_INPUT'),
         completed_reps: existingRec?.completed_reps ?? null,
         accuracy_percent: existingRec?.accuracy_percent ?? null,
-        session_id: existingRec?.session_id ?? null,
+        session_id: existingRec?.session_id ?? resolvedSourceSessionId,
+        source_session_id: resolvedSourceSessionId,
         created_at: r.created_at ? String(r.created_at) : existingRec?.created_at,
       });
     }

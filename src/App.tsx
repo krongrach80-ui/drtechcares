@@ -863,7 +863,11 @@ export function App() {
 
     const handleExerciseCompleted = async (
       ex: ExercisePrescriptionOption,
-      metrics?: { peakRomDeg?: number },
+      metrics?: {
+        peakRomDeg?: number;
+        completedReps?: number;
+        sourceSessionId?: string;
+      },
     ) => {
       if (!authenticatedPatient || !overviewScheduleState) return;
       const nextIds = completedTodayExerciseIds.includes(ex.exercise_id)
@@ -879,18 +883,31 @@ export function App() {
         metrics?.peakRomDeg && metrics.peakRomDeg > 0
           ? Number(metrics.peakRomDeg.toFixed(1))
           : ex.target_rom_deg;
+      const completedReps =
+        typeof metrics?.completedReps === 'number' && metrics.completedReps > 0
+          ? metrics.completedReps
+          : ex.target_reps;
       try {
         await apiClient.recordRehabSession({
           patientId: authenticatedPatient.patient.id,
           activityType: 'physio_exercise',
           exerciseId: ex.catalog_exercise_id ?? ex.exercise_id,
           exerciseName: ex.name_th,
+          bodySide:
+            ex.prescribed_side === 'LEFT'
+              ? 'LEFT'
+              : ex.prescribed_side === 'RIGHT'
+                ? 'RIGHT'
+                : 'BOTH',
           completedSets: ex.target_sets ?? 1,
-          completedReps: ex.target_reps,
+          completedReps,
           accuracyPercent: 100,
           maxRomDeg: peakRom,
+          targetReps: ex.target_reps,
+          targetRomDeg: ex.target_rom_deg,
+          sourceSessionId: metrics?.sourceSessionId,
           painStopTriggered: false,
-          aiFeedback: `Completed prescribed ${ex.name_th} (${ex.target_reps} reps)`,
+          aiFeedback: `Completed prescribed ${ex.name_th} (${completedReps} reps)`,
           kinematicsReplay: [],
           scheduledDate: overviewScheduleState.todaySchedule.todayIso,
           markDailyCompleted: allDoneNow,

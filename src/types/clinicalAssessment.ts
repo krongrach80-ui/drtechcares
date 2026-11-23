@@ -2,12 +2,16 @@ export type MahidolScore0To6 = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
 export type AssessmentTargetSide = 'LEFT' | 'RIGHT' | 'BOTH';
 
-export type AssessmentSourceChannel = 'STAFF_MANUAL_ASSESSMENT' | 'KIOSK_SESSION_AUTO_SYNC';
+export type AssessmentSourceChannel =
+  | 'STAFF_MANUAL_ASSESSMENT'
+  | 'KIOSK_SESSION_AUTO_SYNC'
+  | 'COURSE_AUTO_CALCULATED';
 
 export type AssessmentMeasurementMethod =
   | 'MANUAL_INPUT'
   | 'CAMERA_AI_LIVE'
-  | 'KIOSK_SESSION_AUTO_SYNC';
+  | 'KIOSK_SESSION_AUTO_SYNC'
+  | 'COURSE_AUTO_CALCULATED';
 
 export interface MahidolScaleRubricItem {
   score: MahidolScore0To6;
@@ -78,6 +82,7 @@ export interface PatientClinicalAssessmentRecord {
   completed_reps?: number | null;
   accuracy_percent?: number | null;
   session_id?: string | null;
+  source_session_id?: string | null;
   created_at?: string;
 }
 
@@ -104,6 +109,7 @@ export interface CreatePatientClinicalAssessmentInput {
   completed_reps?: number | null;
   accuracy_percent?: number | null;
   session_id?: string | null;
+  source_session_id?: string | null;
 }
 
 export interface LongitudinalVisitDelta {
@@ -184,6 +190,7 @@ export interface LongitudinalProgressSummary {
   hasMixedExercises: boolean;
   staffVisitCount: number;
   kioskVisitCount: number;
+  courseAutoVisitCount: number;
   exerciseBreakdown: ExerciseComparisonBreakdownItem[];
 }
 
@@ -485,6 +492,7 @@ export function computeLongitudinalProgressSummary(
       hasMixedExercises: false,
       staffVisitCount: 0,
       kioskVisitCount: 0,
+      courseAutoVisitCount: 0,
       exerciseBreakdown: [],
     };
   }
@@ -542,11 +550,14 @@ export function computeLongitudinalProgressSummary(
   const facilitiesSet = new Set<string>();
   let staffVisitCount = 0;
   let kioskVisitCount = 0;
+  let courseAutoVisitCount = 0;
   const visitsWithDelta: LongitudinalVisitDelta[] = sorted.map((rec, idx) => {
     if (rec.facility_name?.trim()) {
       facilitiesSet.add(rec.facility_name.trim());
     }
-    if (rec.source_channel === 'KIOSK_SESSION_AUTO_SYNC') {
+    if (rec.source_channel === 'COURSE_AUTO_CALCULATED') {
+      courseAutoVisitCount += 1;
+    } else if (rec.source_channel === 'KIOSK_SESSION_AUTO_SYNC') {
       kioskVisitCount += 1;
     } else {
       staffVisitCount += 1;
@@ -594,6 +605,7 @@ export function computeLongitudinalProgressSummary(
     hasMixedExercises,
     staffVisitCount,
     kioskVisitCount,
+    courseAutoVisitCount,
     exerciseBreakdown,
   };
 }
@@ -637,14 +649,21 @@ export function buildLongitudinalCsvReport(
 
   const rows = summary.visitsWithDelta.map(({ record, deltaFromPrevRom, targetAchievementPct }) => {
     const sourceLabel =
-      record.source_channel === 'KIOSK_SESSION_AUTO_SYNC' ? 'ซิงก์จากตู้ Kiosk' : 'ประเมินโดยบุคลากร';
+      record.source_channel === 'COURSE_AUTO_CALCULATED'
+        ? 'คำนวณอัตโนมัติจากคอร์ส'
+        : record.source_channel === 'KIOSK_SESSION_AUTO_SYNC'
+          ? 'ซิงก์จากตู้ Kiosk'
+          : 'ประเมินโดยบุคลากร';
     const methodLabel =
-      record.measurement_method === 'CAMERA_AI_LIVE'
-        ? 'วัดด้วยกล้อง AI'
-        : record.measurement_method === 'KIOSK_SESSION_AUTO_SYNC' ||
-            record.source_channel === 'KIOSK_SESSION_AUTO_SYNC'
-          ? 'ตู้ Kiosk AI'
-          : 'บันทึกโดยบุคลากร';
+      record.measurement_method === 'COURSE_AUTO_CALCULATED' ||
+      record.source_channel === 'COURSE_AUTO_CALCULATED'
+        ? 'คำนวณอัตโนมัติจากคอร์ส'
+        : record.measurement_method === 'CAMERA_AI_LIVE'
+          ? 'วัดด้วยกล้อง AI'
+          : record.measurement_method === 'KIOSK_SESSION_AUTO_SYNC' ||
+              record.source_channel === 'KIOSK_SESSION_AUTO_SYNC'
+            ? 'ตู้ Kiosk AI'
+            : 'บันทึกโดยบุคลากร';
     const sideLabel =
       record.target_side === 'LEFT' ? 'ซ้าย' : record.target_side === 'RIGHT' ? 'ขวา' : 'ทั้งสองข้าง';
     return [
