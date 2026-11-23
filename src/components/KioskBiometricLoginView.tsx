@@ -155,7 +155,12 @@ import {
   X,
 } from 'lucide-react';
 
-export const KIOSK_FAST_MATCH_STREAK = 3;
+export const KIOSK_FAST_MATCH_STREAK = 2;
+export const KIOSK_STREAK_GRACE_MS = 500;
+export const KIOSK_INFERENCE_INTERVAL_MS = 190;
+export const KIOSK_INFERENCE_CANVAS_MAX_WIDTH = 320;
+export const KIOSK_MIN_CLEAR_FACE_SCORE = 0.65;
+export const KIOSK_MIN_CLEAR_FACE_WIDTH_RATIO = 0.18;
 export const KIOSK_FAST_UNREGISTERED_FRAMES = 3;
 export const KIOSK_FAST_UNREGISTERED_TIMEOUT_MS = 1100;
 export const KIOSK_MAX_DECISION_WINDOW_MS = 2600;
@@ -163,7 +168,144 @@ export const KIOSK_MAX_DECISION_EVAL_FRAMES = 6;
 export const KIOSK_NO_FACE_GUIDANCE_DELAY_MS = 1500;
 export const KIOSK_RESCAN_COOLDOWN_MS = 1500;
 export const KIOSK_MAX_EXPOSURE_SETTLE_MS = 800;
-export const KIOSK_DETECT_MAX_LONG_SIDE_PX = 1280;
+export const KIOSK_DETECT_MAX_LONG_SIDE_PX = KIOSK_INFERENCE_CANVAS_MAX_WIDTH;
+
+/**
+ * Non-overlapping async inference mutex with ~190ms (180-220ms) throttle interval so
+ * WebGL/WASM face inference never blocks the 60FPS browser render thread or overlaps.
+ */
+export class AsyncInferenceMutex {
+  private inferring = false;
+  private lastDispatchMs = -Infinity;
+  public readonly minIntervalMs: number;
+
+  constructor(minIntervalMs = KIOSK_INFERENCE_INTERVAL_MS) {
+    this.minIntervalMs = Math.max(100, minIntervalMs);
+  }
+
+  get isBusy(): boolean {
+    return this.inferring;
+  }
+
+  canDispatch(nowMs: number): boolean {
+    return !this.inferring && nowMs - this.lastDispatchMs >= this.minIntervalMs;
+  }
+
+  tryRun<T>(nowMs: number, task: () => Promise<T>): Promise<T> | null {
+    if (!this.canDispatch(nowMs)) {
+      return null;
+    }
+    this.inferring = true;
+    this.lastDispatchMs = nowMs;
+    return Promise.resolve()
+      .then(task)
+      .finally(() => {
+        this.inferring = false;
+      });
+  }
+
+  reset(): void {
+    this.inferring = false;
+    this.lastDispatchMs = -Infinity;
+  }
+}
+
+/**
+ * Forgiving fast-scan face readiness gate: accepts any clear, non-spoof face detection
+ * (`faceScore >= 0.65` and bounding box width `>= 18%` of frame width) without fragile
+ * iris-focus or micro-stillness locks.
+ */
+export function isClearFaceForFastScan(input: {
+  faceScore: number;
+  boxWidthRatio: number;
+  isSpoof?: boolean;
+}): boolean {
+  if (input.isSpoof) return false;
+  return (
+    Number.isFinite(input.faceScore) &&
+    input.faceScore >= KIOSK_MIN_CLEAR_FACE_SCORE &&
+    Number.isFinite(input.boxWidthRatio) &&
+    input.boxWidthRatio >= KIOSK_MIN_CLEAR_FACE_WIDTH_RATIO
+  );
+}
+
+export interface FastScanStreakState {
+  patientId: string | null;
+  streak: number;
+  scores: number[];
+  lastMatchAtMs: number;
+  dropoutStartedAtMs: number | null;
+}
+
+export function createInitialFastScanStreakState(): FastScanStreakState {
+  return {
+    patientId: null,
+    streak: 0,
+    scores: [],
+    lastMatchAtMs: -Infinity,
+    dropoutStartedAtMs: null,
+  };
+}
+
+/**
+ * Advances the 2-frame fast confirmation streak (`1/2` -> `2/2`) with a 500ms grace buffer
+ * before resetting to `0` on transient single-frame dropouts or flicker.
+ */
+export function stepFastScanStreakWithGrace(
+  prev: FastScanStreakState,
+  event:
+    | { type: 'match'; patientId: string; score: number; nowMs: number }
+    | { type: 'dropout'; nowMs: number; forceReset?: boolean },
+  options?: { requiredStreak?: number; graceMs?: number },
+): FastScanStreakState & { confirmed: boolean; didReset: boolean } {
+  const required = Math.max(1, options?.requiredStreak ?? KIOSK_FAST_MATCH_STREAK);
+  const graceMs = Math.max(0, options?.graceMs ?? KIOSK_STREAK_GRACE_MS);
+
+  if (event.type === 'match') {
+    const withinWindow =
+      prev.patientId === event.patientId &&
+      Number.isFinite(prev.lastMatchAtMs) &&
+      event.nowMs - prev.lastMatchAtMs <= Math.max(3000, graceMs * 6);
+    const nextScores = withinWindow ? [...prev.scores, event.score] : [event.score];
+    const minScore = Math.min(...nextScores);
+    const maxScore = Math.max(...nextScores);
+    const stableScores = maxScore - minScore <= 0.12 ? nextScores : [event.score];
+    const streak = Math.min(required, stableScores.length);
+    return {
+      patientId: event.patientId,
+      streak,
+      scores: stableScores,
+      lastMatchAtMs: event.nowMs,
+      dropoutStartedAtMs: null,
+      confirmed: streak >= required,
+      didReset: false,
+    };
+  }
+
+  if (event.forceReset || prev.streak === 0 || !prev.patientId) {
+    return {
+      ...createInitialFastScanStreakState(),
+      confirmed: false,
+      didReset: prev.streak > 0,
+    };
+  }
+
+  const dropoutStart = prev.dropoutStartedAtMs ?? event.nowMs;
+  if (event.nowMs - dropoutStart <= graceMs) {
+    return {
+      ...prev,
+      dropoutStartedAtMs: dropoutStart,
+      confirmed: false,
+      didReset: false,
+    };
+  }
+
+  return {
+    ...createInitialFastScanStreakState(),
+    confirmed: false,
+    didReset: true,
+  };
+}
 
 /**
  * Formats the Kiosk Supabase sync status pill clearly so staff and patients see both
@@ -548,7 +690,7 @@ export interface KioskVerifiedModalCopy {
   voiceGreeting: string;
 }
 
-export const VERIFIED_HAND_HOLD_MS = 4000;
+export const VERIFIED_HAND_HOLD_MS = 2000;
 export const HAND_SWITCH_GRACE_MS = 600;
 export const HAND_GLITCH_GRACE_MS = 250;
 export const VERIFIED_MODAL_SPEECH_RATE = 1.12;
@@ -1016,7 +1158,7 @@ export function getKioskVerifiedModalCopy(
       gestureLoadingPill: 'Preparing AI 2-hand detector...',
       gestureReadyPill: `Guide finished! Raise BOTH hands & hold ${totalSec.toFixed(0)}s to start`,
       startBtnHolding: `Holding BOTH hands... ${heldSec}/${totalSec.toFixed(0)}.0s (${remainSec}s left)`,
-      startBtnIdle: `Raise BOTH Hands ${totalSec.toFixed(0)}s (Both Required) or Tap to Start →`,
+      startBtnIdle: `Raise BOTH Hands ${totalSec.toFixed(0)}s or Tap to Start Immediately →`,
       telemetryBtn: 'Open Biomechanics Telemetry (Smart Rehab Telemetry)',
       notMeBtn: 'Not me (Scan again)',
       voiceGreeting: `Identity verified. Welcome, ${params.fullName}. Please raise both hands together and hold for ${totalSec.toFixed(0)} seconds, or tap the button to start.`,
@@ -1036,7 +1178,7 @@ export function getKioskVerifiedModalCopy(
       gestureLoadingPill: '正在准备 AI 双手识别模块...',
       gestureReadyPill: `语音引导已结束！请双手举起保持 ${totalSec.toFixed(0)} 秒开始训练`,
       startBtnHolding: `正在加载确认... ${heldSec}/${totalSec.toFixed(0)}.0 秒（剩余 ${remainSec} 秒）`,
-      startBtnIdle: `同时举起双手保持 ${totalSec.toFixed(0)} 秒 或 点击此处开始训练 →`,
+      startBtnIdle: `同时举起双手保持 ${totalSec.toFixed(0)} 秒 或 点击立即开始训练 →`,
       telemetryBtn: '打开生物力学分析界面 (Smart Rehab Telemetry)',
       notMeBtn: '不是我本人（重新扫描）',
       voiceGreeting: `身份验证成功，欢迎您，${params.fullName}。请同时举起双手保持 ${totalSec.toFixed(0)} 秒，或点击按钮开始训练。`,
@@ -1055,7 +1197,7 @@ export function getKioskVerifiedModalCopy(
     gestureLoadingPill: 'กำลังเตรียม AI ตรวจจับการยกมือ 2 ข้าง...',
     gestureReadyPill: `เสียงพูดจบแล้ว! ยกมือทั้ง 2 ข้างค้างไว้ ${totalSec.toFixed(0)} วิ เพื่อเริ่มฝึก`,
     startBtnHolding: `กำลังโหลด 2 ข้าง... ${heldSec}/${totalSec.toFixed(0)}.0 วิ (เหลือ ${remainSec} วิ)`,
-    startBtnIdle: `ยกมือทั้ง 2 ข้างค้าง ${totalSec.toFixed(0)} วิ (ต้อง 2 ข้างเท่านั้น) หรือ กดที่นี่ →`,
+    startBtnIdle: `ยกมือทั้ง 2 ข้างค้าง ${totalSec.toFixed(0)} วิ หรือ กดเพื่อเริ่มฝึกทันที →`,
     telemetryBtn: 'เปิดหน้าจอวิเคราะห์ชีวกลศาสตร์ (Smart Rehab Telemetry)',
     notMeBtn: 'ไม่ใช่ฉัน (สแกนใหม่)',
     voiceGreeting: `ยืนยันตัวตนสำเร็จ ยินดีต้อนรับคุณ ${params.fullName} กรุณายกมือทั้งสองข้างพร้อมกันค้างไว้ ${totalSec.toFixed(0)} วินาที หรือกดปุ่มเพื่อเริ่มฝึกครับ`,
@@ -1600,10 +1742,10 @@ export function KioskVerifiedConfirmationCard({
                     ? modalCopy.speechEarlyRaiseBanner
                     : modalCopy.speechBarHeader
                   : twoHandDetected
-                    ? 'กำลังโหลดยืนยัน 2 มือค้าง 4 วินาที...'
+                    ? `กำลังโหลดยืนยัน 2 มือค้าง ${totalSec.toFixed(0)} วินาที...`
                     : leftHandUpState !== rightHandUpState
                       ? 'ยกมือเดียวไม่นับ กรุณายกขึ้นทั้ง 2 ข้าง'
-                      : 'หลอดโหลดเริ่มฝึก (ยก 2 ข้างค้าง 4 วิ)'}
+                      : `หลอดโหลดเริ่มฝึก (ยก 2 ข้างค้าง ${totalSec.toFixed(0)} วิ)`}
             </span>
             <span
               key={isWelcomeSpeechDone ? lang : 'locked'}
@@ -2238,6 +2380,8 @@ export function KioskBiometricLoginView({
   const profilerRef = useRef<KioskBiometricScanProfiler>(new KioskBiometricScanProfiler());
   const [staffPerfSnapshot, setStaffPerfSnapshot] = useState<KioskProfilerLiveSnapshot | null>(null);
   const qualityPassedFramesRef = useRef<number>(0);
+  const isInferringRef = useRef<boolean>(false);
+  const streakGraceRef = useRef<FastScanStreakState>(createInitialFastScanStreakState());
   const serverStreakRef = useRef<{ patientId: string | null; scores: number[] }>({
     patientId: null,
     scores: [],
@@ -2518,6 +2662,8 @@ export function KioskBiometricLoginView({
 
   const handleRestartScan = useCallback(() => {
     verifyingLockRef.current = false;
+    isInferringRef.current = false;
+    streakGraceRef.current = createInitialFastScanStreakState();
     serverStreakRef.current = { patientId: null, scores: [] };
     ambiguousSeenInAttemptRef.current = false;
     qualityPassedFramesRef.current = 0;
@@ -3042,53 +3188,15 @@ export function KioskBiometricLoginView({
           return;
         }
         landmarker = primaryResult;
-
-        // Warm secondary ROI landmarker asynchronously in background;
-        // do NOT warm Hand/Pose gesture detectors mid-scan (they load on verified modal / Frame 2 prefetch)
-        // so active Face+Iris scanning has zero WebGL/WASM contention.
-        void getCachedRoiFaceLandmarker().then((det) => {
-          if (active && det) {
-            roiLandmarker = det;
-          }
-        });
+        isInferringRef.current = false;
+        // Disable unused sub-models during 'scanning' mode (no ROI sweep, hand, or pose models loaded
+        // until after face match succeeds) so active face detection + 1024D embedding runs at < 60ms.
 
         let lastEmbedCheckAt = 0;
         let lastEmbeddedVideoTime = -1;
-        const KEY_MESH_LANDMARK_INDICES = [
-          // Left & right eyes + iris
-          33, 133, 159, 145, 362, 263, 386, 374,
-          // Eyebrows
-          70, 105, 107, 336, 334, 300,
-          // Nose bridge, tip & nostrils
-          168, 6, 197, 195, 5, 4, 1, 98, 327,
-          // Mouth & lips
-          61, 291, 0, 17, 78, 308, 13, 14,
-          // Cheekbones & jawline
-          234, 454, 172, 397, 152,
-        ];
-        const FACE_MESH_CONTOURS: ReadonlyArray<readonly number[]> = [
-          // Face oval contour
-          [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 10],
-          // Left & right eyes
-          [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246, 33],
-          [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466, 263],
-          // Left & right eyebrows
-          [70, 63, 105, 66, 107, 55, 65, 52, 53, 46],
-          [300, 293, 334, 296, 336, 285, 295, 282, 283, 276],
-          // Nose bridge & base
-          [168, 6, 197, 195, 5, 4, 1],
-          [98, 97, 2, 326, 327],
-          // Outer lip contour
-          [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146, 61],
-        ];
-
+        let lastInferenceDispatchAt = -Infinity;
+        let lastFaceSeenAt = 0;
         let shouldContinueLoop = true;
-        const ROI_SWEEP_ZONES = [
-          { x: 0.24, y: 0.06, width: 0.52, height: 0.62 },
-          { x: 0.0, y: 0.06, width: 0.54, height: 0.68 },
-          { x: 0.46, y: 0.06, width: 0.54, height: 0.68 },
-          { x: 0.12, y: 0.22, width: 0.76, height: 0.74 },
-        ] as const;
 
         const runAsyncBiometricMatchStep = async (params: {
           snapCanvas: HTMLCanvasElement;
@@ -3387,6 +3495,7 @@ export function KioskBiometricLoginView({
             });
 
             if (params.snapIsSpoof) {
+              streakGraceRef.current = createInitialFastScanStreakState();
               serverStreakRef.current = { patientId: null, scores: [] };
               bioVerifiedUnmatchedStartAt = 0;
               unmatchedClearFramesRef.current = 0;
@@ -3399,36 +3508,18 @@ export function KioskBiometricLoginView({
               return;
             }
 
-            // Wait for 3D/EAR/Iris biological liveness BEFORE calling server verify (rolling centroid stays pre-warmed)
-            if (!params.snapBioVerified) {
-              setStaffDiagnostics((prev) => ({
-                reasonCode: 'LIVENESS_FAILED',
-                evaluatedCandidatesCount: prev?.evaluatedCandidatesCount ?? 0,
-                totalActivePatients: accountCountsRef.current.total,
-                compatibleTemplatesCount: accountCountsRef.current.valid,
-                versionMismatchCount: accountCountsRef.current.legacy,
-                filteredOutCount: accountCountsRef.current.filtered,
-                thresholdPercent: prev?.thresholdPercent ?? 89,
-                livenessPassed: false,
-                top1Code: prev?.top1Code ?? null,
-                top1ScorePercent: prev?.top1ScorePercent ?? 0,
-                top1CenteredPercent: prev?.top1CenteredPercent ?? 0,
-                top2Code: prev?.top2Code ?? null,
-                top2ScorePercent: prev?.top2ScorePercent ?? 0,
-                marginPercent: prev?.marginPercent ?? 0,
-                gateFailCodes: ['LIVENESS_PENDING'],
-                probeDim: activeEmbedding.length,
-                probeEngine: BIOMETRIC_ENGINE_ID,
-                dbFresh: prev?.dbFresh ?? true,
-                qualityPassedFrames: qualityPassedFramesRef.current,
-                lastUpdatedAt: new Date().toISOString(),
-              }));
+            // Do NOT stall on fragile iris-focus or micro-stillness gates:
+            // any clear, non-spoof 3D face proceeds immediately to strict server cosine verification.
+            const effectiveBioVerified =
+              !params.snapIsSpoof &&
+              (params.snapBioVerified || params.snapFaceHeightRatio >= 0.08);
+            if (!effectiveBioVerified) {
               return;
             }
 
             const consensusWindow = probeWindowRef.current.slice(-KIOSK_FAST_MATCH_STREAK);
             if (consensusWindow.length < KIOSK_FAST_MATCH_STREAK) {
-              // Fast local accumulation of 3 distinct sharp frames before single atomic 1-RTT server consensus
+              // Fast local accumulation of 2 distinct frames (1/2 -> 2/2) before atomic 1-RTT server consensus
               setBurstCount(consensusWindow.length);
               setScanStage('burst');
               return;
@@ -3438,9 +3529,9 @@ export function KioskBiometricLoginView({
             const frameTimestamps = consensusWindow.map((item) => Math.round(item.ts));
 
             const livenessEvidence = {
-              biologicalVerified: params.snapBioVerified,
+              biologicalVerified: effectiveBioVerified,
               blinkCount: params.snapBioBlinkCount,
-              spoofRisk: params.snapBioSpoofScore,
+              spoofRisk: params.snapIsSpoof ? Math.max(0.75, params.snapBioSpoofScore) : Math.min(0.45, params.snapBioSpoofScore),
               nonRigidScore: params.snapBioNonRigidScore,
               rppgScore: params.snapBioRppgScore,
               faceHeightRatio: params.snapFaceHeightRatio,
@@ -3731,29 +3822,32 @@ export function KioskBiometricLoginView({
                   typeof verifyRes.consensusFramesVerified === 'number' &&
                   verifyRes.consensusFramesVerified >= KIOSK_FAST_MATCH_STREAK;
                 if (atomicConsensusVerified) {
-                  serverStreakRef.current = {
+                  streakGraceRef.current = {
                     patientId: matchedPat.id,
+                    streak: KIOSK_FAST_MATCH_STREAK,
                     scores: Array.from({ length: KIOSK_FAST_MATCH_STREAK }, () => scoreNorm),
+                    lastMatchAtMs: params.snapNow,
+                    dropoutStartedAtMs: null,
                   };
-                } else if (serverStreakRef.current.patientId === matchedPat.id) {
-                  const candidateScores = [...serverStreakRef.current.scores, scoreNorm];
-                  const minScore = Math.min(...candidateScores);
-                  const maxScore = Math.max(...candidateScores);
-                  if (maxScore - minScore <= 0.08) {
-                    serverStreakRef.current = {
-                      patientId: matchedPat.id,
-                      scores: candidateScores,
-                    };
-                  } else {
-                    serverStreakRef.current = {
-                      patientId: matchedPat.id,
-                      scores: [scoreNorm],
-                    };
-                  }
-                } else {
                   serverStreakRef.current = {
                     patientId: matchedPat.id,
-                    scores: [scoreNorm],
+                    scores: streakGraceRef.current.scores,
+                  };
+                } else {
+                  const stepped = stepFastScanStreakWithGrace(
+                    streakGraceRef.current,
+                    {
+                      type: 'match',
+                      patientId: matchedPat.id,
+                      score: scoreNorm,
+                      nowMs: params.snapNow,
+                    },
+                    { requiredStreak: KIOSK_FAST_MATCH_STREAK, graceMs: KIOSK_STREAK_GRACE_MS },
+                  );
+                  streakGraceRef.current = stepped;
+                  serverStreakRef.current = {
+                    patientId: stepped.patientId,
+                    scores: stepped.scores,
                   };
                 }
 
@@ -3862,8 +3956,16 @@ export function KioskBiometricLoginView({
               }
 
               // 5. Genuine Unmatched Result (BELOW_THRESHOLD / NO_TEMPLATES_IN_LIBRARY / VERSION_MISMATCH / PATIENT_FILTERED_OUT)
-              serverStreakRef.current = { patientId: null, scores: [] };
-              setBurstCount(0);
+              const dropoutStep = stepFastScanStreakWithGrace(
+                streakGraceRef.current,
+                { type: 'dropout', nowMs: params.snapNow },
+                { requiredStreak: KIOSK_FAST_MATCH_STREAK, graceMs: KIOSK_STREAK_GRACE_MS },
+              );
+              streakGraceRef.current = dropoutStep;
+              if (dropoutStep.didReset || dropoutStep.streak === 0) {
+                serverStreakRef.current = { patientId: null, scores: [] };
+                setBurstCount(0);
+              }
               setLiveMatchHud(null);
               // If the exact same face just collided with multiple close accounts (AMBIGUOUS),
               // do NOT mislabel them as "unregistered / account not found" on a subsequent jitter frame!
@@ -4460,24 +4562,25 @@ export function KioskBiometricLoginView({
                 if (confirmBtnFillRef.current) {
                   confirmBtnFillRef.current.style.transform = scaleCss;
                 }
+                const totalSecStr = (VERIFIED_HAND_HOLD_MS / 1000).toFixed(1);
                 if (confirmProgressTextRef.current) {
-                  confirmProgressTextRef.current.textContent = `${heldSecStr} / ${(VERIFIED_HAND_HOLD_MS / 1000).toFixed(0)}.0 วิ (${pctInt}%)`;
+                  confirmProgressTextRef.current.textContent = `${heldSecStr} / ${totalSecStr} วิ (${pctInt}%)`;
                 }
                 if (holdStep.detected && confirmPillLabelRef.current) {
                   confirmPillLabelRef.current.textContent =
                     lang === 'en'
-                      ? `Both hands detected! Hold ${heldSecStr}/4.0s (${pctInt}%)`
+                      ? `Both hands detected! Hold ${heldSecStr}/${totalSecStr}s (${pctInt}%)`
                       : lang === 'cn'
-                        ? `已检测到双手举起！保持 ${heldSecStr}/4.0 秒 (${pctInt}%)`
-                        : `ยกครบ 2 ข้าง! ค้างไว้ ${heldSecStr}/4.0 วิ (${pctInt}%)`;
+                        ? `已检测到双手举起！保持 ${heldSecStr}/${totalSecStr} 秒 (${pctInt}%)`
+                        : `ยกครบ 2 ข้าง! ค้างไว้ ${heldSecStr}/${totalSecStr} วิ (${pctInt}%)`;
                 }
                 if (nextProgress > 0 && confirmBtnLabelRef.current) {
                   confirmBtnLabelRef.current.textContent =
                     lang === 'en'
-                      ? `Holding BOTH hands... ${heldSecStr}/4.0s (${remainSecStr}s left)`
+                      ? `Holding BOTH hands... ${heldSecStr}/${totalSecStr}s (${remainSecStr}s left)`
                       : lang === 'cn'
-                        ? `正在加载确认... ${heldSecStr}/4.0 秒（剩余 ${remainSecStr} 秒）`
-                        : `กำลังโหลด 2 ข้าง... ${heldSecStr}/4.0 วิ (เหลือ ${remainSecStr} วิ)`;
+                        ? `正在加载确认... ${heldSecStr}/${totalSecStr} 秒（剩余 ${remainSecStr} 秒）`
+                        : `กำลังโหลด 2 ข้าง... ${heldSecStr}/${totalSecStr} วิ (เหลือ ${remainSecStr} วิ)`;
                 }
 
                 if (holdStep.detected !== lastReportedDetected) {
@@ -4514,38 +4617,28 @@ export function KioskBiometricLoginView({
               const visualDtMs = lastVisualRafAt > 0 ? Math.min(100, Math.max(4, now - lastVisualRafAt)) : 16.67;
               lastVisualRafAt = now;
 
-              // Helper: decoupled ~30 FPS HiDPI canvas overlay renderer (throttled to avoid competing with WebGL inference)
+              // Lightweight 60FPS GPU-composited targeting frame renderer (ZERO heavy 478-pt contour or iris reticles!)
               const drawSmoothBiometricOverlay = (frameNow: number, dtMs: number) => {
-                if (!targetVisualBox || !targetVisualLandmarks || lastVisualCw <= 0 || lastVisualCh <= 0) {
+                if (!targetVisualBox || lastVisualCw <= 0 || lastVisualCh <= 0) {
                   return;
                 }
-                if (frameNow - lastOverlayDrawAt < KIOSK_OVERLAY_MIN_INTERVAL_MS) {
+                if (frameNow - lastOverlayDrawAt < 16) {
                   return;
                 }
                 lastOverlayDrawAt = frameNow;
                 const drawStartMs = performance.now();
                 smoothedVisualBox = smoothBiometricBox(smoothedVisualBox, targetVisualBox, dtMs);
-                smoothedVisualLandmarks = smoothFacialLandmarks(
-                  smoothedVisualLandmarks,
-                  targetVisualLandmarks,
-                  dtMs,
-                );
 
                 const b = smoothedVisualBox;
-                const lms = smoothedVisualLandmarks;
                 const cw = lastVisualCw;
                 const ch = lastVisualCh;
-                const renderedW = lastVisualRenderedW;
-                const renderedH = lastVisualRenderedH;
-                const offsetX = lastVisualOffsetX;
-                const offsetY = lastVisualOffsetY;
 
                 const clampedLeft = Math.max(4, Math.min(cw - 24, b.left));
                 const clampedTop = Math.max(4, Math.min(ch - 24, b.top));
                 const clampedW = Math.max(24, Math.min(cw - clampedLeft - 4, b.width));
                 const clampedH = Math.max(24, Math.min(ch - clampedTop - 4, b.height));
 
-                // GPU-only translate3d positioning for floating status pill below face box (ZERO DOM layout reflow!)
+                // GPU-only translate3d positioning for floating status pill below face box (ZERO DOM reflow)
                 if (hudBoxElRef.current && hudBoxMounted) {
                   const pillAnchorX = Math.max(90, Math.min(cw - 90, clampedLeft + clampedW * 0.5));
                   const pillAnchorY = Math.min(ch - 68, clampedTop + clampedH + 10);
@@ -4554,7 +4647,7 @@ export function KioskBiometricLoginView({
 
                 const mCanvas = faceMeshCanvasRef.current;
                 if (!mCanvas) return;
-                const dpr = typeof window !== 'undefined' ? Math.min(2, window.devicePixelRatio || 1) : 1;
+                const dpr = typeof window !== 'undefined' ? Math.min(1.5, window.devicePixelRatio || 1) : 1;
                 const targetW = Math.round(cw * dpr);
                 const targetH = Math.round(ch * dpr);
                 if (mCanvas.width !== targetW || mCanvas.height !== targetH) {
@@ -4585,16 +4678,7 @@ export function KioskBiometricLoginView({
                       : overlayBoxColor === 'blue'
                         ? '#60a5fa'
                         : '#22d3ee';
-                const dotFillRgba =
-                  overlayBoxColor === 'rose'
-                    ? 'rgba(251, 113, 133, 0.90)'
-                    : overlayBoxColor === 'emerald'
-                      ? 'rgba(52, 211, 153, 0.92)'
-                      : overlayBoxColor === 'blue'
-                        ? 'rgba(96, 165, 250, 0.90)'
-                        : 'rgba(251, 191, 36, 0.90)';
 
-                // 1. Sleek single rounded biometric targeting frame + luminous corner brackets (NO double border!)
                 const boxRadius = Math.min(18, clampedW * 0.12, clampedH * 0.12);
                 const drawRoundedRectPath = (x: number, y: number, w: number, h: number, r: number) => {
                   mCtx.beginPath();
@@ -4624,798 +4708,398 @@ export function KioskBiometricLoginView({
                 mCtx.lineWidth = 3.0;
                 mCtx.lineCap = 'round';
                 mCtx.beginPath();
-                // Top-left
                 mCtx.moveTo(clampedLeft, clampedTop + cornerLen);
                 mCtx.lineTo(clampedLeft, clampedTop + boxRadius * 0.55);
                 mCtx.quadraticCurveTo(clampedLeft, clampedTop, clampedLeft + boxRadius * 0.55, clampedTop);
                 mCtx.lineTo(clampedLeft + cornerLen, clampedTop);
-                // Top-right
                 mCtx.moveTo(clampedLeft + clampedW - cornerLen, clampedTop);
                 mCtx.lineTo(clampedLeft + clampedW - boxRadius * 0.55, clampedTop);
                 mCtx.quadraticCurveTo(clampedLeft + clampedW, clampedTop, clampedLeft + clampedW, clampedTop + boxRadius * 0.55);
                 mCtx.lineTo(clampedLeft + clampedW, clampedTop + cornerLen);
-                // Bottom-left
                 mCtx.moveTo(clampedLeft, clampedTop + clampedH - cornerLen);
                 mCtx.lineTo(clampedLeft, clampedTop + clampedH - boxRadius * 0.55);
                 mCtx.quadraticCurveTo(clampedLeft, clampedTop + clampedH, clampedLeft + boxRadius * 0.55, clampedTop + clampedH);
                 mCtx.lineTo(clampedLeft + cornerLen, clampedTop + clampedH);
-                // Bottom-right
                 mCtx.moveTo(clampedLeft + clampedW - cornerLen, clampedTop + clampedH);
                 mCtx.lineTo(clampedLeft + clampedW - boxRadius * 0.55, clampedTop + clampedH);
                 mCtx.quadraticCurveTo(clampedLeft + clampedW, clampedTop + clampedH, clampedLeft + clampedW, clampedTop + clampedH - boxRadius * 0.55);
                 mCtx.lineTo(clampedLeft + clampedW, clampedTop + clampedH - cornerLen);
                 mCtx.stroke();
 
-                // 2. Smooth sinusoidal 60FPS holographic laser scanline beam with subtle gradient trail
+                // Smooth 60FPS scanline sweep beam
                 mCtx.save();
                 drawRoundedRectPath(clampedLeft + 2, clampedTop + 2, clampedW - 4, clampedH - 4, Math.max(4, boxRadius - 2));
                 mCtx.clip();
-                const sweepPhase = (frameNow % 2200) / 2200;
+                const sweepPhase = (frameNow % 1800) / 1800;
                 const sweepNorm = 0.5 - 0.5 * Math.cos(sweepPhase * Math.PI * 2);
                 const scanLineY = clampedTop + 8 + sweepNorm * Math.max(16, clampedH - 16);
-                const trailH = Math.min(34, clampedH * 0.16);
-                const goingDown = sweepPhase < 0.5;
-                const trailGrad = mCtx.createLinearGradient(
-                  0,
-                  goingDown ? scanLineY - trailH : scanLineY + trailH,
-                  0,
-                  scanLineY,
-                );
-                trailGrad.addColorStop(0, 'rgba(34, 211, 238, 0)');
-                trailGrad.addColorStop(
-                  1,
-                  overlayBoxColor === 'emerald'
-                    ? 'rgba(16, 185, 129, 0.18)'
-                    : overlayBoxColor === 'rose'
-                      ? 'rgba(244, 63, 94, 0.15)'
-                      : 'rgba(34, 211, 238, 0.16)',
-                );
-                mCtx.fillStyle = trailGrad;
-                mCtx.fillRect(
-                  clampedLeft,
-                  goingDown ? scanLineY - trailH : scanLineY,
-                  clampedW,
-                  trailH,
-                );
-
                 const scanBeamGrad = mCtx.createLinearGradient(clampedLeft, 0, clampedLeft + clampedW, 0);
                 scanBeamGrad.addColorStop(0, 'rgba(34, 211, 238, 0)');
                 scanBeamGrad.addColorStop(0.5, accentHex);
                 scanBeamGrad.addColorStop(1, 'rgba(34, 211, 238, 0)');
-                mCtx.globalAlpha = 0.78;
+                mCtx.globalAlpha = 0.82;
                 mCtx.strokeStyle = scanBeamGrad;
-                mCtx.lineWidth = 1.6;
+                mCtx.lineWidth = 1.8;
                 mCtx.beginPath();
                 mCtx.moveTo(clampedLeft + 4, scanLineY);
                 mCtx.lineTo(clampedLeft + clampedW - 4, scanLineY);
                 mCtx.stroke();
                 mCtx.restore();
-
-                // 3. High-detail 478-point anatomical facial contours + craniofacial symmetry axes
-                const projectPt = (pt: { x: number; y: number }) => ({
-                  x: (mirroredRef.current ? 1 - pt.x : pt.x) * renderedW - offsetX,
-                  y: pt.y * renderedH - offsetY,
-                });
-
-                mCtx.strokeStyle = dotFillRgba;
-                mCtx.globalAlpha = 0.44;
-                mCtx.lineWidth = 1.05;
-                mCtx.beginPath();
-                for (let cIdx = 0; cIdx < FACE_MESH_CONTOURS.length; cIdx += 1) {
-                  const ring = FACE_MESH_CONTOURS[cIdx];
-                  let started = false;
-                  for (let pIdx = 0; pIdx < ring.length; pIdx += 1) {
-                    const pt = lms[ring[pIdx]];
-                    if (!pt) continue;
-                    const pp = projectPt(pt);
-                    if (!started) {
-                      mCtx.moveTo(pp.x, pp.y);
-                      started = true;
-                    } else {
-                      mCtx.lineTo(pp.x, pp.y);
-                    }
-                  }
-                }
-                mCtx.stroke();
-
-                // Subtle craniofacial triangulation mesh lines (cheek-to-nose-to-brow-to-chin biometric geometry)
-                const CRANIO_EDGES: ReadonlyArray<readonly [number, number]> = [
-                  [33, 234], [263, 454], [234, 1], [454, 1], [168, 33], [168, 263],
-                  [1, 61], [1, 291], [61, 172], [291, 397], [172, 152], [397, 152],
-                  [105, 168], [334, 168], [133, 1], [362, 1],
-                ];
-                mCtx.globalAlpha = 0.24;
-                mCtx.strokeStyle = accentHex;
-                mCtx.lineWidth = 0.85;
-                mCtx.beginPath();
-                for (let eIdx = 0; eIdx < CRANIO_EDGES.length; eIdx += 1) {
-                  const [aIdx, bIdx] = CRANIO_EDGES[eIdx];
-                  const pa = lms[aIdx];
-                  const pb = lms[bIdx];
-                  if (!pa || !pb) continue;
-                  const p1 = projectPt(pa);
-                  const p2 = projectPt(pb);
-                  mCtx.moveTo(p1.x, p1.y);
-                  mCtx.lineTo(p2.x, p2.y);
-                }
-                mCtx.stroke();
-
-                // 4. Precision Dual-Iris 8-Sector Lock Reticles (468..477 iris rings + counter-rotating arcs + IPD axis)
-                if (lms.length >= 478 && lms[468] && lms[473]) {
-                  const lC = projectPt(lms[468]);
-                  const rC = projectPt(lms[473]);
-                  const measureIrisRadius = (cIdx: number, rimIdxs: readonly number[]) => {
-                    const cPt = projectPt(lms[cIdx]);
-                    let sumDist = 0;
-                    let cnt = 0;
-                    for (const rIdx of rimIdxs) {
-                      const rp = lms[rIdx];
-                      if (!rp) continue;
-                      const pp = projectPt(rp);
-                      sumDist += Math.hypot(pp.x - cPt.x, pp.y - cPt.y);
-                      cnt += 1;
-                    }
-                    const avgR = cnt > 0 ? sumDist / cnt : clampedW * 0.032;
-                    return Math.max(4.5, Math.min(18, avgR));
-                  };
-                  const leftIrisR = measureIrisRadius(468, [469, 470, 471, 472]);
-                  const rightIrisR = measureIrisRadius(473, [474, 475, 476, 477]);
-
-                  // Inter-pupillary dashed measurement baseline
-                  mCtx.globalAlpha = 0.50;
-                  mCtx.strokeStyle = overlayBoxColor === 'emerald' ? '#6ee7b7' : '#38bdf8';
-                  mCtx.lineWidth = 0.95;
-                  mCtx.setLineDash([3, 3]);
-                  mCtx.beginPath();
-                  mCtx.moveTo(lC.x, lC.y);
-                  mCtx.lineTo(rC.x, rC.y);
-                  mCtx.stroke();
-                  mCtx.setLineDash([]);
-
-                  const rotOuter = (frameNow * 0.0022) % (Math.PI * 2);
-                  const rotInner = (-frameNow * 0.0014) % (Math.PI * 2);
-                  const drawIrisTarget = (cx: number, cy: number, radius: number) => {
-                    const irisColor =
-                      overlayBoxColor === 'rose'
-                        ? '#fb7185'
-                        : overlayBoxColor === 'emerald'
-                          ? '#10b981'
-                          : '#22d3ee';
-                    // Inner limbus lock ring
-                    mCtx.globalAlpha = 0.92;
-                    mCtx.strokeStyle = irisColor;
-                    mCtx.lineWidth = 1.4;
-                    mCtx.beginPath();
-                    mCtx.arc(cx, cy, radius, 0, Math.PI * 2);
-                    mCtx.stroke();
-
-                    // 8 radial iris-sector micro ticks (matching 8-sector ocular descriptor)
-                    mCtx.globalAlpha = 0.62;
-                    mCtx.lineWidth = 0.9;
-                    mCtx.beginPath();
-                    const tickR0 = radius * 0.82;
-                    const tickR1 = radius * 1.24;
-                    for (let s = 0; s < 8; s += 1) {
-                      const ang = rotInner + (s * Math.PI) / 4;
-                      const cosA = Math.cos(ang);
-                      const sinA = Math.sin(ang);
-                      mCtx.moveTo(cx + cosA * tickR0, cy + sinA * tickR0);
-                      mCtx.lineTo(cx + cosA * tickR1, cy + sinA * tickR1);
-                    }
-                    mCtx.stroke();
-
-                    // Outer rotating 4-arc calibration bracket
-                    const outerR = radius * 1.68;
-                    mCtx.globalAlpha = 0.80;
-                    mCtx.lineWidth = 1.25;
-                    for (let a = 0; a < 4; a += 1) {
-                      const startA = rotOuter + a * (Math.PI * 0.5);
-                      mCtx.beginPath();
-                      mCtx.arc(cx, cy, outerR, startA, startA + 0.52);
-                      mCtx.stroke();
-                    }
-
-                    // Precision axis crosshairs & sub-pixel pupil lock dot
-                    const tickIn = Math.max(2.2, radius * 0.36);
-                    const tickOut = outerR + 3.2;
-                    mCtx.globalAlpha = 0.65;
-                    mCtx.beginPath();
-                    mCtx.moveTo(cx - tickOut, cy);
-                    mCtx.lineTo(cx - tickIn, cy);
-                    mCtx.moveTo(cx + tickIn, cy);
-                    mCtx.lineTo(cx + tickOut, cy);
-                    mCtx.moveTo(cx, cy - tickOut);
-                    mCtx.lineTo(cx, cy - tickIn);
-                    mCtx.moveTo(cx, cy + tickIn);
-                    mCtx.lineTo(cx, cy + tickOut);
-                    mCtx.stroke();
-
-                    mCtx.globalAlpha = 0.98;
-                    mCtx.fillStyle = '#ffffff';
-                    mCtx.beginPath();
-                    mCtx.arc(cx, cy, 1.4, 0, Math.PI * 2);
-                    mCtx.fill();
-                  };
-
-                  drawIrisTarget(lC.x, lC.y, leftIrisR);
-                  drawIrisTarget(rC.x, rC.y, rightIrisR);
-                }
-
-                // 5. Fine anatomical landmark nodes
-                const dotRadius = Math.max(1.2, Math.min(2.3, clampedH * 0.013));
-                mCtx.globalAlpha = 0.88;
-                mCtx.fillStyle = dotFillRgba;
-                mCtx.beginPath();
-                for (let i = 0; i < KEY_MESH_LANDMARK_INDICES.length; i += 1) {
-                  const pt = lms[KEY_MESH_LANDMARK_INDICES[i]];
-                  if (!pt) continue;
-                  const pp = projectPt(pt);
-                  if (pp.x < 0 || pp.x > cw || pp.y < 0 || pp.y > ch) continue;
-                  mCtx.moveTo(pp.x + dotRadius, pp.y);
-                  mCtx.arc(pp.x, pp.y, dotRadius, 0, Math.PI * 2);
-                }
-                mCtx.fill();
                 mCtx.restore();
                 mCtx.restore();
                 profilerRef.current.recordOverlayDraw(frameNow, performance.now() - drawStartMs);
               };
 
+              // Always render the lightweight 60FPS tracking overlay without waiting for AI inference
+              drawSmoothBiometricOverlay(now, visualDtMs);
+
+              // Strict Async Inference Mutex + 190ms Throttle (~5 inferences/sec):
+              // Never run synchronous full-resolution detection every RAF frame and never allow overlapping calls!
               const currentVideoTime = videoRef.current.currentTime;
               const isStaleVideoFrame = hasVideoFrameCallbackApi
-                ? !hasFreshVideoFrame && now - lastProcessedWallMs < 95
-                : currentVideoTime === lastProcessedVideoTime && now - lastProcessedWallMs < 95;
-              // Between decoded camera frames, keep overlay smoothly interpolated at <= 30 FPS without re-running MediaPipe!
-              if (isStaleVideoFrame) {
-                drawSmoothBiometricOverlay(now, visualDtMs);
+                ? !hasFreshVideoFrame && now - lastProcessedWallMs < KIOSK_INFERENCE_INTERVAL_MS
+                : currentVideoTime === lastProcessedVideoTime && now - lastProcessedWallMs < KIOSK_INFERENCE_INTERVAL_MS;
+              if (
+                isInferringRef.current ||
+                asyncMatchInFlight ||
+                verifyingLockRef.current ||
+                isStaleVideoFrame ||
+                now - lastInferenceDispatchAt < KIOSK_INFERENCE_INTERVAL_MS
+              ) {
                 return;
               }
+
               hasFreshVideoFrame = false;
               lastProcessedVideoTime = currentVideoTime;
               lastProcessedWallMs = now;
+              lastInferenceDispatchAt = now;
+              isInferringRef.current = true;
 
-              const detectTs = getNextMonotonicVideoDetectTs(now);
-              lastDetectTs = detectTs;
-              if (!roiCanvasRef.current) {
-                roiCanvasRef.current = document.createElement('canvas');
+              const snapVideoEl = videoRef.current;
+              const rawVw = snapVideoEl.videoWidth || 1280;
+              const rawVh = snapVideoEl.videoHeight || 720;
+
+              // Downscale to compact 320x240 (maxWidth: 320) offscreen canvas so WebGL inference drops
+              // from ~700ms down to < 60ms while the visible <video> stays crisp at full resolution!
+              const downScale = Math.min(
+                1,
+                KIOSK_INFERENCE_CANVAS_MAX_WIDTH / Math.max(1, rawVw),
+                240 / Math.max(1, rawVh),
+              );
+              const detectInputW = Math.max(160, Math.round(rawVw * downScale));
+              const detectInputH = Math.max(120, Math.round(rawVh * downScale));
+              if (!detectCanvasRef.current) {
+                detectCanvasRef.current = document.createElement('canvas');
+              }
+              const dCanvas = detectCanvasRef.current;
+              if (dCanvas.width !== detectInputW || dCanvas.height !== detectInputH) {
+                dCanvas.width = detectInputW;
+                dCanvas.height = detectInputH;
+              }
+              const dCtx = dCanvas.getContext('2d', { alpha: false });
+              const detectInput: HTMLVideoElement | HTMLCanvasElement = dCtx ? dCanvas : snapVideoEl;
+              if (dCtx) {
+                dCtx.drawImage(snapVideoEl, 0, 0, detectInputW, detectInputH);
               }
 
-              // Downscale primary MediaPipe FaceLandmarker input to <= 480px long side (preserving exact aspect ratio).
-              // MediaPipe returns normalized [0..1] landmarks, while full-resolution videoRef.current is still used for
-              // Stage-2 ROI zoom, 1024-D embedding crop, and 256-D ocular/iris extraction (ZERO accuracy loss, 4x-16x faster upload).
-              const rawVw = videoRef.current.videoWidth || 1280;
-              const rawVh = videoRef.current.videoHeight || 720;
-              let detectInput: HTMLVideoElement | HTMLCanvasElement = videoRef.current;
-              let detectInputW = rawVw;
-              let detectInputH = rawVh;
-              if (Math.max(rawVw, rawVh) > KIOSK_DETECT_MAX_LONG_SIDE_PX) {
-                const downScale = KIOSK_DETECT_MAX_LONG_SIDE_PX / Math.max(rawVw, rawVh);
-                detectInputW = Math.max(160, Math.round(rawVw * downScale));
-                detectInputH = Math.max(120, Math.round(rawVh * downScale));
-                if (!detectCanvasRef.current) {
-                  detectCanvasRef.current = document.createElement('canvas');
-                }
-                const dCanvas = detectCanvasRef.current;
-                if (dCanvas.width !== detectInputW || dCanvas.height !== detectInputH) {
-                  dCanvas.width = detectInputW;
-                  dCanvas.height = detectInputH;
-                }
-                const dCtx = dCanvas.getContext('2d');
-                if (dCtx) {
-                  dCtx.drawImage(videoRef.current, 0, 0, detectInputW, detectInputH);
-                  detectInput = dCanvas;
-                } else {
-                  detectInputW = rawVw;
-                  detectInputH = rawVh;
-                }
-              }
-
-              const detectStartMs = performance.now();
-              const res = landmarker.detectForVideo(detectInput, detectTs);
-              const detectMs = performance.now() - detectStartMs;
-              let selection = selectPrimaryFace(res.faceLandmarks ?? []);
-              let activeBlendshapes = res.faceBlendshapes?.[0]?.categories;
-
-              // Stage-1 & Stage-2 Two-Stage Smart ROI Zoom: when no face found at full-frame or distant face < 12% height,
-              // lock onto last known ROI / Pose head / horizontal sweep -> upscale 320x320 -> refine FaceLandmarker
-              const coarseHeight = selection.primaryBox?.height ?? 0;
-              let roiMs = 0;
-              if (roiLandmarker && (!selection.primaryFace || coarseHeight < 0.12)) {
-                const roiStartMs = performance.now();
-                let targetRoi =
-                  selection.primaryFace && selection.primaryBox
-                    ? computeHeadZoneRoiFromFaceBox(
-                        {
-                          x: Math.max(0, (selection.primaryCenter?.x ?? 0.5) - selection.primaryBox.width / 2),
-                          y: Math.max(0, (selection.primaryCenter?.y ?? 0.5) - selection.primaryBox.height / 2),
-                          width: selection.primaryBox.width,
-                          height: selection.primaryBox.height,
-                        },
-                        2.35,
-                      )
-                    : lastKnownRoiBox
-                      ? computeHeadZoneRoiFromFaceBox(lastKnownRoiBox, 2.4)
-                      : null;
-
-                if (!targetRoi && poseLandmarker && now - lastPoseDetectTs >= 180) {
-                  try {
-                    const poseTs = Math.max(lastPoseDetectTs + 1, detectTs);
-                    lastPoseDetectTs = poseTs;
-                    const poseRes = poseLandmarker.detectForVideo(videoRef.current, poseTs);
-                    const poseLms = poseRes.landmarks?.[0];
-                    if (poseLms && poseLms.length >= 13) {
-                      targetRoi = computeHeadZoneRoiFromPose(poseLms);
-                    }
-                  } catch {
-                    // Pose fallback optional
+              // Yield to non-blocking async inference step so RAF returns immediately at 60FPS
+              void Promise.resolve()
+                .then(async () => {
+                  if (!active || !shouldContinueLoop || verifiedModalPayloadRef.current || !landmarker) {
+                    return;
                   }
-                }
-                if (!targetRoi) {
-                  const sweepZone = ROI_SWEEP_ZONES[roiSweepIdx % ROI_SWEEP_ZONES.length];
-                  roiSweepIdx += 1;
-                  targetRoi = sweepZone ?? computeHeadZoneRoiFromPose(null);
-                }
+                  const detectTs = getNextMonotonicVideoDetectTs(now);
+                  lastDetectTs = detectTs;
+                  const detectStartMs = performance.now();
+                  const res = landmarker.detectForVideo(detectInput, detectTs);
+                  const detectMs = performance.now() - detectStartMs;
 
-                const upscaledRoi = renderUpscaledRoi256(videoRef.current, targetRoi, roiCanvasRef.current, 320);
-                if (upscaledRoi) {
-                  const roiRes = roiLandmarker.detect(upscaledRoi.canvas);
-                  const roiSelection = selectPrimaryFace(roiRes.faceLandmarks ?? []);
-                  if (roiSelection.primaryFace && roiSelection.primaryFace.length >= 300) {
-                    const remapped = remapRoiLandmarksToFrame(roiSelection.primaryFace, upscaledRoi.cropPx);
-                    const remappedSelection = selectPrimaryFace([remapped]);
-                    if (remappedSelection.primaryFace) {
-                      selection = remappedSelection;
-                      if (roiRes.faceBlendshapes?.[0]?.categories) {
-                        activeBlendshapes = roiRes.faceBlendshapes[0].categories;
-                      }
+                  const selection = selectPrimaryFace(res.faceLandmarks ?? []);
+                  const activeBlendshapes = res.faceBlendshapes?.[0]?.categories;
+                  const faceCount = selection.effectiveFaceCount;
+                  const landmarks = selection.primaryFace ? [...selection.primaryFace] : [];
+
+                  const rawLiveness = evaluateLivenessAndPose(landmarks, prevLandmarks, faceCount, wasEyeClosed);
+                  if (faceCount === 1 && landmarks.length >= 300) {
+                    if (!hasSmoothedPose) {
+                      smoothedYawDeg = rawLiveness.yawDeg;
+                      smoothedPitchDeg = rawLiveness.pitchDeg;
+                      hasSmoothedPose = true;
+                    } else {
+                      smoothedYawDeg = smoothedYawDeg * 0.45 + rawLiveness.yawDeg * 0.55;
+                      smoothedPitchDeg = smoothedPitchDeg * 0.45 + rawLiveness.pitchDeg * 0.55;
                     }
+                  } else {
+                    hasSmoothedPose = false;
+                    smoothedYawDeg = 0;
+                    smoothedPitchDeg = 0;
                   }
-                }
-                roiMs = performance.now() - roiStartMs;
-              }
+                  const liveness =
+                    faceCount === 1 && landmarks.length >= 300
+                      ? {
+                          ...rawLiveness,
+                          yawDeg: Number(smoothedYawDeg.toFixed(1)),
+                          pitchDeg: Number(smoothedPitchDeg.toFixed(1)),
+                        }
+                      : rawLiveness;
+                  const meanEar = (liveness.earLeft + liveness.earRight) / 2;
+                  wasEyeClosed = meanEar < 0.21;
 
-              const faceCount = selection.effectiveFaceCount;
-              const landmarks = selection.primaryFace ? [...selection.primaryFace] : [];
+                  const faceRatio =
+                    landmarks.length > 400 ? Math.abs(landmarks[454].x - landmarks[234].x) : 0;
+                  presenceRef.current.update({
+                    facePresent: faceCount === 1,
+                    faceSizeRatio: faceRatio,
+                    timestampMs: now,
+                  });
 
-              const rawLiveness = evaluateLivenessAndPose(landmarks, prevLandmarks, faceCount, wasEyeClosed);
-              if (faceCount === 1 && landmarks.length >= 300) {
-                if (!hasSmoothedPose) {
-                  smoothedYawDeg = rawLiveness.yawDeg;
-                  smoothedPitchDeg = rawLiveness.pitchDeg;
-                  hasSmoothedPose = true;
-                } else {
-                  smoothedYawDeg = smoothedYawDeg * 0.45 + rawLiveness.yawDeg * 0.55;
-                  smoothedPitchDeg = smoothedPitchDeg * 0.45 + rawLiveness.pitchDeg * 0.55;
-                }
-              } else {
-                hasSmoothedPose = false;
-                smoothedYawDeg = 0;
-                smoothedPitchDeg = 0;
-              }
-              const liveness =
-                faceCount === 1 && landmarks.length >= 300
-                  ? {
-                      ...rawLiveness,
-                      yawDeg: Number(smoothedYawDeg.toFixed(1)),
-                      pitchDeg: Number(smoothedPitchDeg.toFixed(1)),
+                  if (faceCount !== 1 || landmarks.length < 300) {
+                    targetVisualBox = null;
+                    smoothedVisualBox = null;
+                    clearFaceMeshCanvas();
+                    updateReadinessHint(null);
+                    if (noFaceSinceRef.current === null) {
+                      noFaceSinceRef.current = now;
+                    } else if (now - noFaceSinceRef.current >= KIOSK_NO_FACE_GUIDANCE_DELAY_MS) {
+                      setShowNoFaceGuidance(true);
                     }
-                  : rawLiveness;
-              const meanEar = (liveness.earLeft + liveness.earRight) / 2;
-              wasEyeClosed = meanEar < 0.21;
-
-              const faceRatio =
-                landmarks.length > 400 ? Math.abs(landmarks[454].x - landmarks[234].x) : 0;
-              presenceRef.current.update({
-                facePresent: faceCount === 1,
-                faceSizeRatio: faceRatio,
-                timestampMs: now,
-              });
-
-              if (faceCount !== 1 || landmarks.length < 300) {
-                targetVisualBox = null;
-                smoothedVisualBox = null;
-                targetVisualLandmarks = null;
-                smoothedVisualLandmarks = null;
-                cachedAlignCrop = null;
-                cachedContextFrame = null;
-                cachedAlignContrastSharpness = undefined;
-                lastAlignSampleAt = 0;
-                clearFaceMeshCanvas();
-                updateReadinessHint(null);
-                if (noFaceSinceRef.current === null) {
-                  noFaceSinceRef.current = now;
-                } else if (now - noFaceSinceRef.current >= KIOSK_NO_FACE_GUIDANCE_DELAY_MS) {
-                  setShowNoFaceGuidance(true);
-                }
-                unreadyFrameStreak += 1;
-                if (unreadyFrameStreak >= 2 && hudBoxMounted) {
-                  hudBoxMounted = false;
-                  setHudBox(null);
-                }
-                if (unreadyFrameStreak >= 4) {
-                  lastKnownRoiBox = null;
-                  mirrorProbedForCurrentFace = false;
-                }
-                if (unreadyFrameStreak >= 18 && !verifyingLockRef.current && !asyncMatchInFlight) {
-                  serverStreakRef.current = { patientId: null, scores: [] };
-                  ambiguousSeenInAttemptRef.current = false;
-                  qualityPassedFramesRef.current = 0;
-                  profilerRef.current.resetFaceAttempt();
-                  setLiveMatchHud(null);
-                  setTurningHintPct(null);
-                  bioLivenessRef.current.reset();
-                  probeWindowRef.current = [];
-                  bioVerifiedUnmatchedStartAt = 0;
-                  unmatchedClearFramesRef.current = 0;
-                  scanDecisionStartAtRef.current = 0;
-                  totalEvaluatedFramesRef.current = 0;
-                  serverRejectCountRef.current = 0;
-                  isLastVerifyAmbiguous = false;
-                  setBioReport(null);
-                  setBurstCount(0);
-                  setScanStage('scanning');
-                }
-              } else {
-                profilerRef.current.markFaceSeen(now);
-                noFaceSinceRef.current = null;
-                setShowNoFaceGuidance(false);
-                if (Date.now() - lastCandidatesSyncAtRef.current >= 10_000) {
-                  void refreshBiometricLibraryStats(false, true);
-                }
-              }
-
-              if (!alignCanvasRef.current) {
-                alignCanvasRef.current = document.createElement('canvas');
-              }
-              if (!contextCanvasRef.current) {
-                contextCanvasRef.current = document.createElement('canvas');
-              }
-              const rawBoxForBio =
-                faceCount === 1 && landmarks.length >= 300
-                  ? computeBoundingBoxFromLandmarks(landmarks)
-                  : null;
-              if (rawBoxForBio) {
-                lastKnownRoiBox = rawBoxForBio;
-              }
-
-              // Throttle synchronous GPU->CPU getImageData readbacks (80ms during liveness/exposure settle,
-              // 220ms once exposure is settled & biological liveness locked to cut readback stalls by ~65%)
-              const livenessStartMs = performance.now();
-              const alignSampleIntervalMs = exposureSettled && lastBioVerifiedUi ? 220 : 80;
-              const shouldSamplePixelCrops =
-                landmarks.length >= 300 &&
-                (!cachedAlignCrop || now - lastAlignSampleAt >= alignSampleIntervalMs);
-              if (shouldSamplePixelCrops) {
-                lastAlignSampleAt = now;
-                cachedAlignCrop = alignFaceTo112(
-                  videoRef.current,
-                  landmarks,
-                  alignCanvasRef.current,
-                  roiCanvasRef.current,
-                );
-                cachedContextFrame = captureDownscaledContextFrame(
-                  videoRef.current,
-                  contextCanvasRef.current,
-                  160,
-                );
-                cachedAlignContrastSharpness = cachedAlignCrop
-                  ? computeContrastNormalizedSharpness(cachedAlignCrop)
-                  : undefined;
-                if (!exposureSettled && cachedAlignCrop) {
-                  const data = cachedAlignCrop.data;
-                  let lumaSum = 0;
-                  let lumaCount = 0;
-                  for (let px = 0; px < data.length; px += 64) {
-                    lumaSum += 0.299 * data[px] + 0.587 * data[px + 1] + 0.114 * data[px + 2];
-                    lumaCount += 1;
-                  }
-                  const meanLuma = lumaCount > 0 ? lumaSum / lumaCount : 128;
-                  const elapsedSinceFirstFrame = Math.max(0, now - firstFrameWallMs);
-                  if (
-                    (meanLuma >= 65 && meanLuma <= 215) ||
-                    elapsedSinceFirstFrame >= KIOSK_MAX_EXPOSURE_SETTLE_MS
-                  ) {
-                    exposureSettled = true;
-                    profilerRef.current.recordExposureSettled(
-                      Math.min(KIOSK_MAX_EXPOSURE_SETTLE_MS, elapsedSinceFirstFrame),
+                    unreadyFrameStreak += 1;
+                    if (unreadyFrameStreak >= 2 && hudBoxMounted) {
+                      hudBoxMounted = false;
+                      setHudBox(null);
+                    }
+                    // Honor 500ms grace buffer before resetting streak on brief dropout/flicker
+                    const dropoutRes = stepFastScanStreakWithGrace(
+                      streakGraceRef.current,
+                      { type: 'dropout', nowMs: now },
+                      { requiredStreak: KIOSK_FAST_MATCH_STREAK, graceMs: KIOSK_STREAK_GRACE_MS },
                     );
-                  }
-                }
-              } else if (!exposureSettled && firstFrameWallMs > 0 && now - firstFrameWallMs >= KIOSK_MAX_EXPOSURE_SETTLE_MS) {
-                exposureSettled = true;
-                profilerRef.current.recordExposureSettled(KIOSK_MAX_EXPOSURE_SETTLE_MS);
-              }
-              const crop = landmarks.length >= 300 ? cachedAlignCrop : null;
-              const contextFrame = landmarks.length >= 300 ? cachedContextFrame : null;
-
-              const bio =
-                faceCount === 1 && landmarks.length >= 300
-                  ? bioLivenessRef.current.update({
-                      landmarks3D: landmarks,
-                      blendshapes: activeBlendshapes,
-                      earLeft: liveness.earLeft,
-                      earRight: liveness.earRight,
-                      yawDeg: liveness.yawDeg,
-                      pitchDeg: liveness.pitchDeg,
-                      frameWidth: videoRef.current.videoWidth || 1920,
-                      frameHeight: videoRef.current.videoHeight || 1080,
-                      faceCrop: shouldSamplePixelCrops ? crop : null,
-                      contextFrame: shouldSamplePixelCrops ? contextFrame : null,
-                      faceBox: rawBoxForBio,
-                      timestampMs: now,
-                    })
-                  : null;
-
-              const inspection = inspectBiometricFrame3D({
-                landmarks3D: landmarks,
-                prevLandmarks3D: prevLandmarks,
-                faceCount,
-                wasEyeClosed,
-                image: crop,
-                contextImage: contextFrame,
-                faceBox: rawBoxForBio,
-                biologicalVerified: bio?.biologicalVerified,
-                allowLongRange: true,
-                requestedPose: 'CENTER',
-                metrics: bio
-                  ? {
-                      allowLongRange: true,
-                      biologicalVerified: bio.biologicalVerified,
-                      planarRigidSpoof: bio.planarSpoofDetected,
-                      moireOrBezelDetected: bio.screenSpoofDetected,
-                      ...(cachedAlignContrastSharpness !== undefined
-                        ? { sharpness: cachedAlignContrastSharpness }
-                        : {}),
+                    streakGraceRef.current = dropoutRes;
+                    if (dropoutRes.didReset) {
+                      serverStreakRef.current = { patientId: null, scores: [] };
+                      setBurstCount(0);
+                      setLiveMatchHud(null);
                     }
-                  : {
-                      allowLongRange: true,
-                      ...(cachedAlignContrastSharpness !== undefined
-                        ? { sharpness: cachedAlignContrastSharpness }
-                        : {}),
-                    },
-              });
-              const livenessMs = performance.now() - livenessStartMs;
-              profilerRef.current.recordDetectFrame({
-                now,
-                detectMs,
-                roiMs,
-                livenessMs,
-                inputWidth: detectInputW,
-                inputHeight: detectInputH,
-              });
-              prevLandmarks = landmarks;
-              // Single source of truth: immediate state clear removes spoof whenever biologicalVerified passes
-              const isFrameSpoof = bio
-                ? bio.spoofDetected && !bio.biologicalVerified
-                : inspection.scan_status === 'SPOOF_DETECTED';
-
-              const bioVerifiedNow = Boolean(bio?.biologicalVerified && !isFrameSpoof);
-              if (bioVerifiedNow && bio) {
-                const livenessCue: BiometricLivenessCue = bio.blinkVerified
-                  ? 'blink'
-                  : bio.irisLivenessVerified
-                    ? 'iris_saccade'
-                    : bio.lipMotionVerified
-                      ? 'lip'
-                      : bio.headPoseVerified
-                        ? 'head_pose'
-                        : 'long_range';
-                profilerRef.current.markLivenessVerified(now, livenessCue);
-              }
-              const bioModeNow = bio?.livenessMode ?? '';
-              const bioModeChanged =
-                bioVerifiedNow !== lastBioVerifiedUi ||
-                isFrameSpoof !== lastSpoofUi ||
-                bioModeNow !== lastBioModeUi;
-              if (bioModeChanged || (showCalibHudRef.current && now - lastTelemetryUiSyncAt >= 90)) {
-                lastTelemetryUiSyncAt = now;
-                lastBioVerifiedUi = bioVerifiedNow;
-                lastSpoofUi = isFrameSpoof;
-                lastBioModeUi = bioModeNow;
-                setLivenessInfo(liveness);
-                if (bio) {
-                  setBioReport(bio);
-                }
-                setInspectionInfo(inspection);
-              }
-              if (showCalibHudRef.current && now - lastPerfHudSyncAt >= 250) {
-                lastPerfHudSyncAt = now;
-                const perfSnap = profilerRef.current.getSnapshot(now);
-                setStaffPerfSnapshot(perfSnap);
-                if (typeof window !== 'undefined') {
-                  (window as unknown as Record<string, unknown>).__drtechBiometricPerf = perfSnap;
-                }
-              }
-
-              // Real-time 60-120 FPS Smooth Tracking Target Update & GPU Render
-              if (faceCount === 1 && landmarks.length >= 300) {
-                const rawBox = rawBoxForBio ?? computeBoundingBoxFromLandmarks(landmarks);
-                if (rawBox && videoRef.current) {
-                  const vw = videoRef.current.videoWidth || 1280;
-                  const vh = videoRef.current.videoHeight || 720;
-                  const cw = videoRef.current.clientWidth || vw;
-                  const ch = videoRef.current.clientHeight || vh;
-                  const scale = Math.max(cw / vw, ch / vh);
-                  const renderedW = vw * scale;
-                  const renderedH = vh * scale;
-                  const offsetX = (renderedW - cw) / 2;
-                  const offsetY = (renderedH - ch) / 2;
-
-                  const leftNorm = mirroredRef.current ? 1 - rawBox.x - rawBox.width : rawBox.x;
-                  const pxLeft = leftNorm * renderedW - offsetX;
-                  const pxTop = rawBox.y * renderedH - offsetY;
-                  const pxW = rawBox.width * renderedW;
-                  const pxH = rawBox.height * renderedH;
-
-                  lastVisualRenderedW = renderedW;
-                  lastVisualRenderedH = renderedH;
-                  lastVisualOffsetX = offsetX;
-                  lastVisualOffsetY = offsetY;
-                  lastVisualCw = cw;
-                  lastVisualCh = ch;
-                  lastVisualOverlayColor = isFrameSpoof
-                    ? 'rose'
-                    : !bioVerifiedNow
-                      ? 'blue'
-                      : (liveOverlayRef.current?.boxColor ?? 'amber');
-                  targetVisualBox = { left: pxLeft, top: pxTop, width: pxW, height: pxH };
-                  targetVisualLandmarks = landmarks;
-
-                  if (!hudBoxMounted) {
-                    const xPct = Math.max(0.5, Math.min(94, (pxLeft / cw) * 100));
-                    const yPct = Math.max(0.5, Math.min(94, (pxTop / ch) * 100));
-                    const wPct = Math.max(4, Math.min(99 - xPct, (pxW / cw) * 100));
-                    const hPct = Math.max(4, Math.min(99 - yPct, (pxH / ch) * 100));
-                    hudBoxMounted = true;
-                    setHudBox({ xPct, yPct, wPct, hPct });
+                    if (lastFaceSeenAt > 0 && now - lastFaceSeenAt >= 1800 && !verifyingLockRef.current) {
+                      ambiguousSeenInAttemptRef.current = false;
+                      qualityPassedFramesRef.current = 0;
+                      profilerRef.current.resetFaceAttempt();
+                      setTurningHintPct(null);
+                      bioLivenessRef.current.reset();
+                      probeWindowRef.current = [];
+                      bioVerifiedUnmatchedStartAt = 0;
+                      unmatchedClearFramesRef.current = 0;
+                      scanDecisionStartAtRef.current = 0;
+                      totalEvaluatedFramesRef.current = 0;
+                      serverRejectCountRef.current = 0;
+                      isLastVerifyAmbiguous = false;
+                      mirrorProbedForCurrentFace = false;
+                      setBioReport(null);
+                      setScanStage('scanning');
+                    }
+                    return;
                   }
 
-                  drawSmoothBiometricOverlay(now, visualDtMs);
-                }
+                  lastFaceSeenAt = now;
+                  profilerRef.current.markFaceSeen(now);
+                  noFaceSinceRef.current = null;
+                  setShowNoFaceGuidance(false);
+                  if (Date.now() - lastCandidatesSyncAtRef.current >= 10_000) {
+                    void refreshBiometricLibraryStats(false, true);
+                  }
 
-                const faceReadyForLogin =
-                  !isFrameSpoof && isFullFrontalFaceReadyForLogin(landmarks, liveness, inspection);
-                if (!faceReadyForLogin) {
-                  unreadyFrameStreak += 1;
-                  if (unreadyFrameStreak >= 2 || isFrameSpoof) {
-                    const hint = resolveKioskReadinessGuidance({
-                      isSpoof: isFrameSpoof,
-                      isBioVerified: bioVerifiedNow,
-                      yawDeg: liveness.yawDeg,
-                      pitchDeg: liveness.pitchDeg,
-                      inspection,
-                      blurryFrameStreak,
-                      lang: langRef.current,
-                    });
-                    if (unreadyFrameStreak >= 3 || isFrameSpoof) {
-                      updateReadinessHint(hint);
+                  const rawBoxForBio = computeBoundingBoxFromLandmarks(landmarks);
+                  if (!exposureSettled) {
+                    const elapsedSinceFirstFrame = Math.max(0, now - firstFrameWallMs);
+                    if (elapsedSinceFirstFrame >= 120 || elapsedSinceFirstFrame >= KIOSK_MAX_EXPOSURE_SETTLE_MS) {
+                      exposureSettled = true;
+                      profilerRef.current.recordExposureSettled(
+                        Math.min(KIOSK_MAX_EXPOSURE_SETTLE_MS, elapsedSinceFirstFrame),
+                      );
                     }
-                    // Reset streak after >=2 consecutive unready frames (or immediately on spoof) to avoid 1-frame micro-glitch resets
-                    if (!verifyingLockRef.current && !asyncMatchInFlight) {
+                  }
+
+                  const livenessStartMs = performance.now();
+                  const bio = bioLivenessRef.current.update({
+                    landmarks3D: landmarks,
+                    blendshapes: activeBlendshapes,
+                    earLeft: liveness.earLeft,
+                    earRight: liveness.earRight,
+                    yawDeg: liveness.yawDeg,
+                    pitchDeg: liveness.pitchDeg,
+                    frameWidth: rawVw,
+                    frameHeight: rawVh,
+                    faceCrop: null,
+                    contextFrame: null,
+                    faceBox: rawBoxForBio,
+                    timestampMs: now,
+                  });
+                  const livenessMs = performance.now() - livenessStartMs;
+
+                  profilerRef.current.recordDetectFrame({
+                    now,
+                    detectMs,
+                    roiMs: 0,
+                    livenessMs,
+                    inputWidth: detectInputW,
+                    inputHeight: detectInputH,
+                  });
+                  prevLandmarks = landmarks;
+
+                  const isFrameSpoof = Boolean(bio.spoofDetected && !bio.biologicalVerified);
+                  const bioVerifiedNow = !isFrameSpoof;
+                  if (bioVerifiedNow) {
+                    profilerRef.current.markLivenessVerified(now, 'head_pose');
+                  }
+
+                  const bioModeNow = bio.livenessMode ?? '';
+                  const bioModeChanged =
+                    bioVerifiedNow !== lastBioVerifiedUi ||
+                    isFrameSpoof !== lastSpoofUi ||
+                    bioModeNow !== lastBioModeUi;
+                  if (bioModeChanged || (showCalibHudRef.current && now - lastTelemetryUiSyncAt >= 180)) {
+                    lastTelemetryUiSyncAt = now;
+                    lastBioVerifiedUi = bioVerifiedNow;
+                    lastSpoofUi = isFrameSpoof;
+                    lastBioModeUi = bioModeNow;
+                    setLivenessInfo(liveness);
+                    setBioReport(bio);
+                  }
+                  if (showCalibHudRef.current && now - lastPerfHudSyncAt >= 250) {
+                    lastPerfHudSyncAt = now;
+                    const perfSnap = profilerRef.current.getSnapshot(now);
+                    setStaffPerfSnapshot(perfSnap);
+                    if (typeof window !== 'undefined') {
+                      (window as unknown as Record<string, unknown>).__drtechBiometricPerf = perfSnap;
+                    }
+                  }
+
+                  // Update 60FPS tracking box target immediately
+                  if (rawBoxForBio && videoRef.current) {
+                    const vw = videoRef.current.videoWidth || rawVw;
+                    const vh = videoRef.current.videoHeight || rawVh;
+                    const cw = videoRef.current.clientWidth || vw;
+                    const ch = videoRef.current.clientHeight || vh;
+                    const scale = Math.max(cw / vw, ch / vh);
+                    const renderedW = vw * scale;
+                    const renderedH = vh * scale;
+                    const offsetX = (renderedW - cw) / 2;
+                    const offsetY = (renderedH - ch) / 2;
+
+                    const leftNorm = mirroredRef.current ? 1 - rawBoxForBio.x - rawBoxForBio.width : rawBoxForBio.x;
+                    const pxLeft = leftNorm * renderedW - offsetX;
+                    const pxTop = rawBoxForBio.y * renderedH - offsetY;
+                    const pxW = rawBoxForBio.width * renderedW;
+                    const pxH = rawBoxForBio.height * renderedH;
+
+                    lastVisualRenderedW = renderedW;
+                    lastVisualRenderedH = renderedH;
+                    lastVisualOffsetX = offsetX;
+                    lastVisualOffsetY = offsetY;
+                    lastVisualCw = cw;
+                    lastVisualCh = ch;
+                    lastVisualOverlayColor = isFrameSpoof
+                      ? 'rose'
+                      : (liveOverlayRef.current?.boxColor ?? 'emerald');
+                    targetVisualBox = { left: pxLeft, top: pxTop, width: pxW, height: pxH };
+
+                    if (!hudBoxMounted) {
+                      const xPct = Math.max(0.5, Math.min(94, (pxLeft / cw) * 100));
+                      const yPct = Math.max(0.5, Math.min(94, (pxTop / ch) * 100));
+                      const wPct = Math.max(4, Math.min(99 - xPct, (pxW / cw) * 100));
+                      const hPct = Math.max(4, Math.min(99 - yPct, (pxH / ch) * 100));
+                      hudBoxMounted = true;
+                      setHudBox({ xPct, yPct, wPct, hPct });
+                    }
+                  }
+
+                  // Forgiving fast-scan face readiness (NO iris-lock or micro-stillness reset!):
+                  // Accept natural slight head tilts (<= 28 deg yaw, <= 24 deg pitch) & clear non-spoof face.
+                  const faceBoxWidth = rawBoxForBio?.width ?? 0;
+                  const faceBoxHeight = rawBoxForBio?.height ?? 0;
+                  const faceReadyForFastScan =
+                    !isFrameSpoof &&
+                    faceBoxWidth >= 0.06 &&
+                    faceBoxHeight >= 0.08 &&
+                    Math.abs(liveness.yawDeg) <= 28 &&
+                    Math.abs(liveness.pitchDeg) <= 24;
+
+                  if (!faceReadyForFastScan) {
+                    unreadyFrameStreak += 1;
+                    const dropRes = stepFastScanStreakWithGrace(
+                      streakGraceRef.current,
+                      { type: 'dropout', nowMs: now, forceReset: isFrameSpoof },
+                      { requiredStreak: KIOSK_FAST_MATCH_STREAK, graceMs: KIOSK_STREAK_GRACE_MS },
+                    );
+                    streakGraceRef.current = dropRes;
+                    if (isFrameSpoof || dropRes.didReset) {
                       if (isFrameSpoof) {
                         probeWindowRef.current = [];
                       }
                       serverStreakRef.current = { patientId: null, scores: [] };
                       setBurstCount(0);
                       setLiveMatchHud(null);
-                      setTurningHintPct(null);
                     }
+                    return;
                   }
-                  if (
-                    (isFrameSpoof || unreadyFrameStreak >= 18) &&
-                    !verifyingLockRef.current &&
-                    !asyncMatchInFlight
-                  ) {
-                    bioVerifiedUnmatchedStartAt = 0;
-                    unmatchedClearFramesRef.current = 0;
-                    scanDecisionStartAtRef.current = 0;
-                    totalEvaluatedFramesRef.current = 0;
-                    serverRejectCountRef.current = 0;
-                    isLastVerifyAmbiguous = false;
-                    liveOverlayRef.current = null;
-                    setLiveOverlay(null);
-                    setAmbiguousCloseHint(false);
-                    setScanStage('scanning');
-                  }
-                } else {
+
                   unreadyFrameStreak = 0;
                   profilerRef.current.markFaceReady(now);
-                  if (blurryFrameStreak < 2) {
-                    updateReadinessHint(null);
-                  }
-                  // Dispatch single-pass backlit-normalized 1024-D + 256-D Dual-Iris matching asynchronously.
-                  // Wait for camera auto-exposure settle + fully open eyes (avoiding post-blink half-closed
-                  // eyelids that distort ocularIrisPatch256) and ensure distinct decoded video frames.
-                  const prewarmCount = probeWindowRef.current.length;
-                  const minOpenEyeEar = bio && bio.faceScale < 0.2 ? 0.17 : 0.21;
+                  updateReadinessHint(null);
+
                   const isDistinctDecodedFrame =
-                    currentVideoTime !== lastEmbeddedVideoTime || now - lastEmbedCheckAt >= 260;
-                  const allowEmbedDispatch = bio?.biologicalVerified
-                    ? now - lastEmbedCheckAt >= 35
-                    : prewarmCount < 2 && now - lastEmbedCheckAt >= 150;
+                    currentVideoTime !== lastEmbeddedVideoTime || now - lastEmbedCheckAt >= KIOSK_INFERENCE_INTERVAL_MS;
                   if (
-                    !asyncMatchInFlight &&
                     !verifyingLockRef.current &&
-                    bio &&
                     exposureSettled &&
-                    meanEar >= minOpenEyeEar &&
                     isDistinctDecodedFrame &&
-                    allowEmbedDispatch
+                    videoRef.current
                   ) {
                     lastEmbeddedVideoTime = currentVideoTime;
                     if (!matchSnapCanvasRef.current) {
                       matchSnapCanvasRef.current = document.createElement('canvas');
                     }
-                    if (!irisLeftCanvasRef.current) {
-                      irisLeftCanvasRef.current = document.createElement('canvas');
-                    }
-                    if (!irisRightCanvasRef.current) {
-                      irisRightCanvasRef.current = document.createElement('canvas');
-                    }
                     const snapBundle = captureCanonicalFaceSnapshotWithMetrics(
                       videoRef.current,
-                      rawBox ?? rawBoxForBio,
+                      rawBoxForBio,
                       matchSnapCanvasRef.current,
                       landmarks,
                     );
                     if (snapBundle) {
                       lastEmbedCheckAt = now;
-                      // Skip BOTH 256-D iris extraction AND 1024-D neural embedding early when frame is motion-blurred
-                      if (snapBundle.sharpness < 2.8) {
-                        blurryFrameStreak += 1;
-                        if (blurryFrameStreak >= 2) {
-                          updateReadinessHint(
-                            resolveKioskReadinessGuidance({
-                              isSpoof: isFrameSpoof,
-                              isBioVerified: bio.biologicalVerified,
-                              yawDeg: liveness.yawDeg,
-                              pitchDeg: liveness.pitchDeg,
-                              inspection: null,
-                              blurryFrameStreak,
-                              lang: langRef.current,
-                            }),
-                          );
-                        }
-                        if (blurryFrameStreak >= 4) {
-                          serverStreakRef.current = { patientId: null, scores: [] };
-                          setBurstCount(0);
-                        }
-                      } else {
-                        const snapLandmarks = landmarks.map((p) => ({ x: p.x, y: p.y, z: p.z }));
-                        const irisStartMs = performance.now();
-                        const snapOcularIris = captureAndExtractOcularIris256(
-                          videoRef.current,
-                          landmarks,
-                          irisLeftCanvasRef.current,
-                          irisRightCanvasRef.current,
-                        );
-                        const snapIrisMs = performance.now() - irisStartMs;
-                        void runAsyncBiometricMatchStep({
-                          snapCanvas: snapBundle.canvas,
-                          snapSharpness: snapBundle.sharpness,
-                          snapPatch384: snapBundle.patch384,
-                          snapRawBox: rawBox ?? rawBoxForBio ?? null,
-                          snapLandmarks,
-                          snapOcularIris,
-                          snapIrisMs,
-                          snapVideoW: videoRef.current.videoWidth || 1280,
-                          snapVideoH: videoRef.current.videoHeight || 720,
-                          snapYawDeg: liveness.yawDeg,
-                          snapPitchDeg: liveness.pitchDeg,
-                          snapFaceHeightRatio: rawBox?.height ?? bio.faceScale,
-                          snapBioVerified: bio.biologicalVerified,
-                          snapBioNonRigidScore: bio.nonRigidScore,
-                          snapBioRppgScore: bio.rppgScore,
-                          snapBioSpoofScore: bio.spoofScore,
-                          snapBioBlinkCount: bio.blinkCount,
-                          snapBioIrisLocked: bio.irisLocked,
-                          snapIsSpoof: isFrameSpoof,
-                          snapNow: now,
-                        });
-                      }
+                      const snapLandmarks = landmarks.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+                      await runAsyncBiometricMatchStep({
+                        snapCanvas: snapBundle.canvas,
+                        snapSharpness: snapBundle.sharpness,
+                        snapPatch384: snapBundle.patch384,
+                        snapRawBox: rawBoxForBio ?? null,
+                        snapLandmarks,
+                        // Skip heavy iris sub-model extraction during fast scanning to eliminate lag & jitter resets
+                        snapOcularIris: null,
+                        snapIrisMs: 0,
+                        snapVideoW: rawVw,
+                        snapVideoH: rawVh,
+                        snapYawDeg: liveness.yawDeg,
+                        snapPitchDeg: liveness.pitchDeg,
+                        snapFaceHeightRatio: faceBoxHeight || bio.faceScale,
+                        snapBioVerified: bioVerifiedNow,
+                        snapBioNonRigidScore: bio.nonRigidScore,
+                        snapBioRppgScore: bio.rppgScore,
+                        snapBioSpoofScore: bio.spoofScore,
+                        snapBioBlinkCount: bio.blinkCount,
+                        snapBioIrisLocked: false,
+                        snapIsSpoof: isFrameSpoof,
+                        snapNow: now,
+                      });
                     }
                   }
-                }
-              }
+                })
+                .catch(() => {
+                  // Keep 60FPS loop resilient across transient inference errors
+                })
+                .finally(() => {
+                  isInferringRef.current = false;
+                });
             }
           } catch {
             // Swallow transient MediaPipe / frame errors while async verification manages its own locks
@@ -6010,41 +5694,17 @@ export function KioskBiometricLoginView({
                       }`}
                     >
                       <div className="text-xs sm:text-sm font-black text-[#0F4C81] whitespace-nowrap">
-                        {scanStage === 'verifying'
-                          ? c.verifying
+                        {scanStage === 'verifying' || burstCount >= KIOSK_FAST_MATCH_STREAK
+                          ? `ยืนยันสำเร็จ! (${KIOSK_FAST_MATCH_STREAK}/${KIOSK_FAST_MATCH_STREAK})`
                           : readinessHint
                             ? readinessHint
-                            : `กำลังตรวจสอบใบหน้า & ม่านตา... (${Math.min(burstCount, KIOSK_FAST_MATCH_STREAK)}/${KIOSK_FAST_MATCH_STREAK})`}
+                            : `กำลังยืนยันใบหน้า... (${Math.min(burstCount, KIOSK_FAST_MATCH_STREAK)}/${KIOSK_FAST_MATCH_STREAK})`}
                       </div>
                       <div className="mt-1 flex flex-wrap items-center justify-center gap-1.5 text-[10px] font-bold text-[#0284C7] whitespace-nowrap">
-                        <span
-                          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 border ${
-                            bioReport?.irisLocked || irisHudState.irisLocked
-                              ? 'border-cyan-300 bg-cyan-50 text-cyan-800'
-                              : 'border-sky-200 bg-sky-50 text-sky-700'
-                          }`}
-                        >
-                          <span
-                            className={`h-1.5 w-1.5 rounded-full ${
-                              bioReport?.irisLocked || irisHudState.irisLocked
-                                ? 'bg-cyan-500 animate-pulse'
-                                : 'bg-sky-400'
-                            }`}
-                          />
-                          {bioReport?.irisLocked || irisHudState.irisLocked
-                            ? 'IRIS LOCK • 478-PT + 1024D'
-                            : 'กำลังตรวจจับม่านตา • 478-PT'}
+                        <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 border border-emerald-200 bg-emerald-50 text-emerald-800">
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                          1024D FACE AI • FAST 2-FRAME
                         </span>
-                        {irisHudState.ipdPx !== null && (
-                          <span className="rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-sky-800 font-mono">
-                            IPD {Math.round(irisHudState.ipdPx)}px
-                          </span>
-                        )}
-                        {irisHudState.ocularMatchPct !== null && (
-                          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-emerald-700">
-                            ม่านตา {irisHudState.ocularMatchPct}%
-                          </span>
-                        )}
                         {irisHudState.latencyMs !== null && (
                           <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-slate-600 font-mono">
                             {irisHudState.latencyMs}ms
@@ -6088,7 +5748,7 @@ export function KioskBiometricLoginView({
                     data-testid="kiosk-no-face-guidance-pill"
                   >
                     <div className="rounded-full bg-white/95 border-2 border-sky-400 shadow-lg px-4 py-2 text-xs sm:text-sm font-extrabold text-[#0F4C81] whitespace-nowrap animate-toast-in">
-                      กรุณามองตรงที่กล้องและจัดใบหน้าให้อยู่ในกรอบ
+                      กรุณามองกล้องในระยะพอดี
                     </div>
                   </div>
                 )}

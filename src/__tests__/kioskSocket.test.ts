@@ -532,18 +532,18 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     const th = getKioskVerifiedModalCopy('th', sampleParams);
     expect(th.confidenceBadge).toContain('ความแม่นยำชีวมาตร 77%');
     expect(th.hnAndNextAppointment).toContain('นัดถัดไป: 2026-11-20');
-    expect(th.startBtnIdle).toContain('4 วิ');
-    expect(th.startBtnIdle).toContain('ต้อง 2 ข้างเท่านั้น');
+    expect(th.startBtnIdle).toContain('2 วิ');
+    expect(th.startBtnIdle).toContain('เริ่มฝึกทันที');
     expect(th.gestureSingleHandPill).toContain('ยกมือเดียวไม่นับ');
     expect(th.gestureDetectedPill).toContain('50%');
-    expect(th.gestureDetectedPill).toContain('2.0/4.0');
+    expect(th.gestureDetectedPill).toContain('1.0/2.0');
     expect(th.notMeBtn).toContain('ไม่ใช่ฉัน');
     expect(th.voiceGreeting).toContain('Pdasdwa');
 
     const en = getKioskVerifiedModalCopy('en', sampleParams);
     expect(en.confidenceBadge).toContain('Biometric Confidence 77%');
     expect(en.hnAndNextAppointment).toContain('Next Appointment: 2026-11-20');
-    expect(en.startBtnIdle).toContain('Raise BOTH Hands 4s');
+    expect(en.startBtnIdle).toContain('Raise BOTH Hands 2s');
     expect(en.gestureDetectedPill).toContain('50%');
     expect(en.notMeBtn).toContain('Not me');
     expect(en.voiceGreeting).toContain('Welcome, Pdasdwa');
@@ -551,14 +551,14 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     const cn = getKioskVerifiedModalCopy('cn', sampleParams);
     expect(cn.confidenceBadge).toContain('生物识别准确度 77%');
     expect(cn.hnAndNextAppointment).toContain('下次预约: 2026-11-20');
-    expect(cn.startBtnIdle).toContain('4 秒');
+    expect(cn.startBtnIdle).toContain('2 秒');
     expect(cn.gestureDetectedPill).toContain('50%');
     expect(cn.notMeBtn).toContain('不是我本人');
     expect(cn.voiceGreeting).toContain('Pdasdwa');
   });
 
-  it('rejects single-hand raises and requires BOTH hands held for exact 4.0s to confirm', () => {
-    expect(VERIFIED_HAND_HOLD_MS).toBe(4000);
+  it('rejects single-hand raises and requires BOTH hands held for exact 2.0s to confirm', () => {
+    expect(VERIFIED_HAND_HOLD_MS).toBe(2000);
     expect(HAND_SWITCH_GRACE_MS).toBeGreaterThanOrEqual(500);
     expect(HAND_GLITCH_GRACE_MS).toBeGreaterThanOrEqual(150);
 
@@ -582,13 +582,13 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(bothHandsRes.bothUp).toBe(true);
     expect(bothHandsRes.singleOnly).toBe(false);
 
-    // 3. Loading bar advances strictly when bothHandsNow=true over 4000ms (and never advances while dropped)
+    // 3. Loading bar advances strictly when bothHandsNow=true over 2000ms (and never advances while dropped)
     let holdMs = 0;
     let lastRaisedAtMs = -Infinity;
     let nowMs = 1000;
 
-    // Hold BOTH hands for 2.0s (40 ticks * 50ms) -> exact 50% (2000ms), not confirmed
-    for (let i = 0; i < 40; i += 1) {
+    // Hold BOTH hands for 1.0s (20 ticks * 50ms) -> exact 50% (1000ms), not confirmed
+    for (let i = 0; i < 20; i += 1) {
       nowMs += 50;
       const step = stepVerifiedHandHold({
         bothHandsNow: true,
@@ -602,10 +602,10 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
       expect(step.detected).toBe(true);
       expect(step.confirmed).toBe(false);
     }
-    expect(holdMs).toBe(2000);
+    expect(holdMs).toBe(1000);
     expect(holdMs / VERIFIED_HAND_HOLD_MS).toBe(0.5);
 
-    // Drop one hand for 100ms (micro-glitch freeze: holds steady at 2000ms without adding fake time)
+    // Drop one hand for 100ms (micro-glitch freeze: holds steady at 1000ms without adding fake time)
     for (let i = 0; i < 2; i += 1) {
       nowMs += 50;
       const step = stepVerifiedHandHold({
@@ -619,11 +619,11 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
       lastRaisedAtMs = step.lastRaisedAtMs;
       expect(step.detected).toBe(false);
     }
-    expect(holdMs).toBe(2000);
+    expect(holdMs).toBe(1000);
 
-    // Hold BOTH hands for remaining 2.0s (40 * 50ms) -> completes exact 4.0s and confirms
+    // Hold BOTH hands for remaining 1.0s (20 * 50ms) -> completes exact 2.0s and confirms
     let finalConfirmed = false;
-    for (let i = 0; i < 40; i += 1) {
+    for (let i = 0; i < 20; i += 1) {
       nowMs += 50;
       const step = stepVerifiedHandHold({
         bothHandsNow: true,
@@ -636,7 +636,7 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
       lastRaisedAtMs = step.lastRaisedAtMs;
       finalConfirmed = step.confirmed;
     }
-    expect(holdMs).toBe(4000);
+    expect(holdMs).toBe(2000);
     expect(finalConfirmed).toBe(true);
   });
 
@@ -698,8 +698,8 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     }
     expect(holdMs).toBe(0);
 
-    // Once speech finishes, hold accumulates 0 -> 2.0s over 2000ms
-    for (let i = 0; i < 40; i += 1) {
+    // Once speech finishes, hold accumulates 0 -> 1.0s over 1000ms
+    for (let i = 0; i < 20; i += 1) {
       nowMs += 50;
       const step = stepVerifiedHandHold({
         bothHandsNow: true,
@@ -713,7 +713,7 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
       lastRaisedAtMs = step.lastRaisedAtMs;
       expect(step.confirmed).toBe(false);
     }
-    expect(holdMs).toBe(2000);
+    expect(holdMs).toBe(1000);
 
     // Switching language mid-hold re-locks speechBlocked=true -> resets progress immediately to 0%
     nowMs += 50;
@@ -729,11 +729,11 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(relockStep.progress).toBe(0);
     expect(relockStep.confirmed).toBe(false);
 
-    // Re-holding full 4.0s after second speech finishes confirms cleanly
+    // Re-holding full 2.0s after second speech finishes confirms cleanly
     holdMs = relockStep.holdMs;
     lastRaisedAtMs = relockStep.lastRaisedAtMs;
     let confirmedAfterRelock = false;
-    for (let i = 0; i < 80; i += 1) {
+    for (let i = 0; i < 40; i += 1) {
       nowMs += 50;
       const step = stepVerifiedHandHold({
         bothHandsNow: true,
@@ -747,7 +747,7 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
       lastRaisedAtMs = step.lastRaisedAtMs;
       confirmedAfterRelock = step.confirmed;
     }
-    expect(holdMs).toBe(4000);
+    expect(holdMs).toBe(2000);
     expect(confirmedAfterRelock).toBe(true);
   });
 

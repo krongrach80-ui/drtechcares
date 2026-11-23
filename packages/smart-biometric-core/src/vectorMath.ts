@@ -2266,13 +2266,36 @@ export function evaluateTripleGateNeuralCandidate(
   const poseMetrics = hasPoseZoneVec
     ? computeVectorPairMetrics(probeNorm, l2Normalize(candidate.angleEmbeddings![liveBucket!]!))
     : null;
-  const zoneMetrics = poseMetrics
+
+  // Best-of-All-Angles evaluation when a live pose bucket is provided (all live Kiosk verify calls):
+  // checks center, all stored pose angles (left/right/up/down), and exemplar embeddings so slight
+  // natural head tilts or lighting shifts match effortlessly without lowering strict thresholds.
+  let bestAngleMetrics = poseMetrics
     ? {
         rawCosine: Math.max(centerMetrics.rawCosine, poseMetrics.rawCosine),
         centeredCosine: Math.max(centerMetrics.centeredCosine, poseMetrics.centeredCosine),
         l2Dist: Math.min(centerMetrics.l2Dist, poseMetrics.l2Dist),
       }
-    : centerMetrics;
+    : { ...centerMetrics };
+  if (liveBucket) {
+    const allAngleZones: FacePoseZone5[] = ['center', 'left', 'right', 'up', 'down'];
+    for (const z of allAngleZones) {
+      const rawZ = candidate.angleEmbeddings?.[z];
+      if (!Array.isArray(rawZ) || rawZ.length !== probeNorm.length) continue;
+      const mZ = computeVectorPairMetrics(probeNorm, l2Normalize(rawZ));
+      if (mZ.rawCosine > bestAngleMetrics.rawCosine) {
+        bestAngleMetrics = mZ;
+      }
+    }
+    for (const ex of candidate.exemplarEmbeddings ?? []) {
+      if (!Array.isArray(ex) || ex.length !== probeNorm.length) continue;
+      const mEx = computeVectorPairMetrics(probeNorm, l2Normalize(ex));
+      if (mEx.rawCosine > bestAngleMetrics.rawCosine) {
+        bestAngleMetrics = mEx;
+      }
+    }
+  }
+  const zoneMetrics = bestAngleMetrics;
 
   const isRelu6Pair =
     isNonNegativeRelu6Vector(probeNorm) && isNonNegativeRelu6Vector(masterNorm);
@@ -2291,16 +2314,27 @@ export function evaluateTripleGateNeuralCandidate(
 
   const failureReasons: string[] = [];
 
-  if (masterMetrics.rawCosine < rawFloor) {
-    failureReasons.push(`masterRawCos ${masterMetrics.rawCosine.toFixed(4)} < ${rawFloor}`);
+  // Best-of-All-Angles + Master check: when a strong multi-angle/exemplar match passes all
+  // strict thresholds, allow a small angled-pose delta (0.04) on the averaged master centroid
+  // while still strictly rejecting strangers and near-misses across every stored angle.
+  const hasStrongAngleMatch =
+    zoneMetrics.rawCosine >= rawFloor &&
+    zoneMetrics.centeredCosine >= centeredFloor &&
+    zoneMetrics.l2Dist <= maxL2;
+  const effectiveMasterRawFloor = hasStrongAngleMatch ? rawFloor - 0.04 : rawFloor;
+  const effectiveMasterCenteredFloor = hasStrongAngleMatch ? centeredFloor - 0.04 : centeredFloor;
+  const effectiveMasterMaxL2 = hasStrongAngleMatch ? maxL2 + 0.06 : maxL2;
+
+  if (masterMetrics.rawCosine < effectiveMasterRawFloor) {
+    failureReasons.push(`masterRawCos ${masterMetrics.rawCosine.toFixed(4)} < ${effectiveMasterRawFloor}`);
   }
-  if (masterMetrics.centeredCosine < centeredFloor) {
+  if (masterMetrics.centeredCosine < effectiveMasterCenteredFloor) {
     failureReasons.push(
-      `masterCenteredCos ${masterMetrics.centeredCosine.toFixed(4)} < ${centeredFloor}`,
+      `masterCenteredCos ${masterMetrics.centeredCosine.toFixed(4)} < ${effectiveMasterCenteredFloor}`,
     );
   }
-  if (masterMetrics.l2Dist > maxL2) {
-    failureReasons.push(`masterL2 ${masterMetrics.l2Dist.toFixed(4)} > ${maxL2}`);
+  if (masterMetrics.l2Dist > effectiveMasterMaxL2) {
+    failureReasons.push(`masterL2 ${masterMetrics.l2Dist.toFixed(4)} > ${effectiveMasterMaxL2}`);
   }
 
   const zoneLabel = poseMetrics && liveBucket ? `pose(${liveBucket})` : 'center';

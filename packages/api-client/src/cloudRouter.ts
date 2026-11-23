@@ -4403,9 +4403,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         );
       }
 
-      // Atomic Multi-Frame Consensus Check (when client sends 3 distinct raw frames in 1 RTT):
-      // Preserves full 3/3 frame voting, low variance (<= 0.08), monotonic timestamps, anti-replay,
-      // and per-frame biometric strictness without requiring 3 serial network round trips!
+      // Atomic Multi-Frame Consensus Check (supports fast 2-frame Kiosk lock AND 3-frame callers in 1 RTT):
+      // Preserves multi-frame voting, low variance (<= 0.08), monotonic timestamps, anti-replay,
+      // and per-frame biometric strictness across ALL stored angles without serial network round trips.
       let consensusFramesVerified = 1;
       const rawFrameVectorsInput = Array.isArray(body.frameVectors)
         ? body.frameVectors
@@ -4418,21 +4418,25 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           ? ((body.livenessEvidence as { frameTimestamps?: unknown }).frameTimestamps as unknown[])
           : null;
 
-      if (rawFrameVectorsInput && rawFrameVectorsInput.length >= 3) {
+      if (rawFrameVectorsInput && rawFrameVectorsInput.length >= 2) {
         const expectedDim = probeNorm.length;
-        const consensusSlice = rawFrameVectorsInput.slice(-3);
+        const targetConsensusCount = Math.min(3, rawFrameVectorsInput.length);
+        const consensusSlice = rawFrameVectorsInput.slice(-targetConsensusCount);
         const validFrames = consensusSlice.every((v) => isValidBiometricVector(v, expectedDim))
           ? (consensusSlice as number[][]).map((v) => l2Normalize(v))
           : null;
 
         let timestampsValid = true;
-        if (rawFrameTimestampsInput && rawFrameTimestampsInput.length >= 3) {
-          const tsSlice = rawFrameTimestampsInput.slice(-3).map((n) => Number(n));
+        if (rawFrameTimestampsInput && rawFrameTimestampsInput.length >= targetConsensusCount) {
+          const tsSlice = rawFrameTimestampsInput.slice(-targetConsensusCount).map((n) => Number(n));
+          let strictlyIncreasing = tsSlice.every((t) => Number.isFinite(t));
+          for (let tIdx = 1; strictlyIncreasing && tIdx < tsSlice.length; tIdx += 1) {
+            if (tsSlice[tIdx] <= tsSlice[tIdx - 1]) {
+              strictlyIncreasing = false;
+            }
+          }
           timestampsValid =
-            tsSlice.every((t) => Number.isFinite(t)) &&
-            tsSlice[1] > tsSlice[0] &&
-            tsSlice[2] > tsSlice[1] &&
-            tsSlice[2] - tsSlice[0] <= 10_000;
+            strictlyIncreasing && tsSlice[tsSlice.length - 1] - tsSlice[0] <= 10_000;
         }
 
         let isReplayDuplicate = false;
@@ -4535,12 +4539,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           }
         }
 
-        if (!hardConsensusReject && frameRawScores.length === 3) {
+        if (!hardConsensusReject && frameRawScores.length === targetConsensusCount) {
           const minRaw = Math.min(...frameRawScores);
           const maxRaw = Math.max(...frameRawScores);
-          const meanRaw = (frameRawScores[0] + frameRawScores[1] + frameRawScores[2]) / 3;
+          const meanRaw =
+            frameRawScores.reduce((acc, s) => acc + s, 0) / frameRawScores.length;
           const meanCentered =
-            (frameCenteredScores[0] + frameCenteredScores[1] + frameCenteredScores[2]) / 3;
+            frameCenteredScores.reduce((acc, s) => acc + s, 0) / frameCenteredScores.length;
           const meanRawFloor = isRelu6Probe
             ? STRICT_RELU6_RAW_COSINE_THRESHOLD
             : STRICT_RAW_COSINE_THRESHOLD;
@@ -4554,10 +4559,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             meanRaw >= meanRawFloor &&
             meanCentered >= meanCenteredFloor
           ) {
-            consensusFramesVerified = 3;
+            consensusFramesVerified = targetConsensusCount;
           } else {
-            // Probe centroid already passed full Triple-Gate + Cohort + Margin and all 3 raw frames
-            // are genuine (>= 0.84, distinct, low-variance); require standard 3-call streak instead of
+            // Probe centroid already passed full Triple-Gate + Cohort + Margin and raw frames
+            // are genuine (>= 0.84, distinct, low-variance); require standard multi-call streak instead of
             // discarding a valid patient match because 1 pre-warm frame dipped slightly below 0.88.
             consensusFramesVerified = 1;
           }

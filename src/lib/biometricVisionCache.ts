@@ -150,9 +150,9 @@ export async function getCachedPrimaryFaceLandmarker(): Promise<FaceLandmarker> 
             minTrackingConfidence: 0.32,
           });
           primaryFaceDelegate = delegate;
-          // Pre-compile WebGL/WASM shaders on a tiny blank canvas during Standby idle
-          // so Frame 1 of real patient scanning has 0ms shader-compile stall!
-          const blank = createBlankWarmupCanvas(160, 120);
+          // Pre-compile WebGL/WASM shaders once on mount using a lightweight 64x64 dummy canvas
+          // so the first real camera frame does not stall or freeze the screen.
+          const blank = createBlankWarmupCanvas(64, 64);
           if (blank) {
             try {
               const warmTs = getNextMonotonicVideoDetectTs(

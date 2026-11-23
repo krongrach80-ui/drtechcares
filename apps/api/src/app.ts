@@ -1152,14 +1152,31 @@ export function createDrTechCaresApiApp(
       return;
     }
     let consensusFramesVerified = 1;
-    if (Array.isArray(parsed.data.frameVectors) && parsed.data.frameVectors.length >= 3) {
-      const slice = parsed.data.frameVectors.slice(-3).map((v) => l2Normalize(v));
-      const ts = parsed.data.frameTimestamps?.slice(-3);
-      const tsOk = !ts || ts.length < 3 || (ts[1] > ts[0] && ts[2] > ts[1] && ts[2] - ts[0] <= 10_000);
-      const replay =
-        cosineSimilarity(slice[0], slice[1]) >= 0.9999995 ||
-        cosineSimilarity(slice[1], slice[2]) >= 0.9999995 ||
-        cosineSimilarity(slice[0], slice[2]) >= 0.9999995;
+    if (Array.isArray(parsed.data.frameVectors) && parsed.data.frameVectors.length >= 2) {
+      const targetCount = Math.min(3, parsed.data.frameVectors.length);
+      const slice = parsed.data.frameVectors.slice(-targetCount).map((v) => l2Normalize(v));
+      const ts = parsed.data.frameTimestamps?.slice(-targetCount);
+      let tsOk = true;
+      if (ts && ts.length === targetCount) {
+        for (let i = 1; i < ts.length; i += 1) {
+          if (ts[i] <= ts[i - 1]) {
+            tsOk = false;
+            break;
+          }
+        }
+        if (tsOk && ts[ts.length - 1] - ts[0] > 10_000) {
+          tsOk = false;
+        }
+      }
+      let replay = false;
+      for (let i = 0; !replay && i < slice.length; i += 1) {
+        for (let j = i + 1; j < slice.length; j += 1) {
+          if (cosineSimilarity(slice[i], slice[j]) >= 0.9999995) {
+            replay = true;
+            break;
+          }
+        }
+      }
       const patientTemplates = activeTemplates
         .filter((t) => t.patientId === patient.id && t.vector.length === probeDim)
         .map((t) => l2Normalize(t.vector));
@@ -1171,7 +1188,7 @@ export function createDrTechCaresApiApp(
         : STRICT_RAW_COSINE_THRESHOLD;
       const varianceOk = Math.max(...rawScores) - Math.min(...rawScores) <= 0.08;
       if (tsOk && !replay && varianceOk && rawScores.every((s) => s >= minFloor)) {
-        consensusFramesVerified = 3;
+        consensusFramesVerified = targetCount;
       } else {
         res.status(401).json({
           ...result,

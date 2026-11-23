@@ -150,12 +150,8 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
 
     const f2 = tracker.step(strictPassEval, { biologicalVerified: true, spoofDetected: false });
     expect(f2.streak).toBe(2);
-    expect(f2.confirmed).toBe(false);
-
-    const f3 = tracker.step(strictPassEval, { biologicalVerified: true, spoofDetected: false });
-    expect(f3.streak).toBe(3);
-    expect(f3.confirmed).toBe(true);
-    expect(f3.candidate?.patientId).toBe('pat-fast-1');
+    expect(f2.confirmed).toBe(true);
+    expect(f2.candidate?.patientId).toBe('pat-fast-1');
   });
 
   it('triggers fast not_found verdict within <= 3 clear frames / ~1.1s while respecting rescan cooldown and guards', () => {
@@ -522,7 +518,7 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
 
   it('records 20-round Step 0 telemetry percentiles (avg/p50/p95) cleanly without storing PII or face vectors', () => {
     expect(KIOSK_MAX_EXPOSURE_SETTLE_MS).toBeLessThanOrEqual(800);
-    expect(KIOSK_DETECT_MAX_LONG_SIDE_PX).toBe(1280);
+    expect(KIOSK_DETECT_MAX_LONG_SIDE_PX).toBe(320);
     expect(KIOSK_OVERLAY_MIN_INTERVAL_MS).toBeGreaterThanOrEqual(30);
 
     const summary = computeTimingPercentiles(Array.from({ length: 20 }, (_, i) => (i + 1) * 10));

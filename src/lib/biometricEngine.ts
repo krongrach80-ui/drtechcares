@@ -298,6 +298,68 @@ export function computeHumanDescriptorSimilarity(
   return Math.max(0, cosineSimilarityNormalized(normA, normB));
 }
 
+export interface MultiAngleSimilarityCandidate {
+  masterEmbedding?: readonly number[] | null;
+  master_embedding?: readonly number[] | null;
+  angleEmbeddings?: Partial<Record<keyof AngleEmbeddings5D, readonly number[] | null | undefined>> | null;
+  angle_embeddings?: Partial<Record<keyof AngleEmbeddings5D, readonly number[] | null | undefined>> | null;
+  exemplarEmbeddings?: readonly (readonly number[])[] | null;
+  exemplar_embeddings?: readonly (readonly number[])[] | null;
+}
+
+/**
+ * Best-of-All-Angles embedding matcher: computes L2-normalized cosine similarity against
+ * `masterEmbedding`, all 5 `angleEmbeddings` (`center`, `left`, `right`, `up`, `down`),
+ * and all `exemplarEmbeddings`, returning the highest similarity (`maxSimilarity`) so slight
+ * head tilts or lighting shifts match effortlessly without lowering biometric thresholds.
+ */
+export function computeBestMultiAngleSimilarity(
+  probeEmbedding: readonly number[],
+  candidate: MultiAngleSimilarityCandidate,
+): {
+  maxSimilarity: number;
+  bestSource: 'master' | keyof AngleEmbeddings5D | 'exemplar' | 'none';
+  evaluatedCount: number;
+} {
+  if (!Array.isArray(probeEmbedding) || probeEmbedding.length === 0) {
+    return { maxSimilarity: 0, bestSource: 'none', evaluatedCount: 0 };
+  }
+  const probeNorm = normalizeVector(probeEmbedding);
+  let maxSimilarity = 0;
+  let bestSource: 'master' | keyof AngleEmbeddings5D | 'exemplar' | 'none' = 'none';
+  let evaluatedCount = 0;
+
+  const evaluate = (
+    vec: readonly number[] | null | undefined,
+    source: 'master' | keyof AngleEmbeddings5D | 'exemplar',
+  ) => {
+    if (!Array.isArray(vec) || vec.length !== probeNorm.length) return;
+    const sim = Math.max(0, cosineSimilarityNormalized(probeNorm, normalizeVector(vec)));
+    evaluatedCount += 1;
+    if (sim > maxSimilarity) {
+      maxSimilarity = sim;
+      bestSource = source;
+    }
+  };
+
+  evaluate(candidate.masterEmbedding ?? candidate.master_embedding, 'master');
+  const angles = candidate.angleEmbeddings ?? candidate.angle_embeddings;
+  if (angles) {
+    const angleKeys: ReadonlyArray<keyof AngleEmbeddings5D> = ['center', 'left', 'right', 'up', 'down'];
+    for (const key of angleKeys) {
+      evaluate(angles[key], key);
+    }
+  }
+  const exemplars = candidate.exemplarEmbeddings ?? candidate.exemplar_embeddings;
+  if (Array.isArray(exemplars)) {
+    for (const ex of exemplars) {
+      evaluate(ex, 'exemplar');
+    }
+  }
+
+  return { maxSimilarity, bestSource, evaluatedCount };
+}
+
 let sharedHumanInstance: Human | null = null;
 let sharedHumanPromise: Promise<Human> | null = null;
 let engineStatus: BiometricEngineLifecycleStatus = 'idle';
@@ -348,7 +410,28 @@ export async function getSharedHuman(): Promise<Human> {
             backend,
           });
           await candidate.load();
-          await candidate.warmup();
+          // Pre-warm WebGL/CPU face detector + 1024D descriptor once on mount with a dummy 64x64 canvas
+          // so the first live camera frame never freezes the UI.
+          let dummyWarmed = false;
+          if (typeof document !== 'undefined') {
+            try {
+              const dummyCanvas = document.createElement('canvas');
+              dummyCanvas.width = 64;
+              dummyCanvas.height = 64;
+              const dCtx = dummyCanvas.getContext('2d');
+              if (dCtx) {
+                dCtx.fillStyle = '#808080';
+                dCtx.fillRect(0, 0, 64, 64);
+              }
+              await candidate.detect(dummyCanvas);
+              dummyWarmed = true;
+            } catch {
+              dummyWarmed = false;
+            }
+          }
+          if (!dummyWarmed) {
+            await candidate.warmup();
+          }
           instance = candidate;
           chosenBackend = backend;
           break;
