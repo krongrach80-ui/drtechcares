@@ -56,6 +56,15 @@ import {
   buildPatientCourseAutoAssessments,
   type CourseAutoAssessmentResult,
 } from '../utils/courseClinicalScoring';
+import {
+  buildMultiExerciseChartSeries,
+  computeClinicalMilestones,
+  computeMonthlyScoreSummary,
+  formatThaiClinicalDate,
+  formatThaiMonthYear,
+  formatThaiShortDate,
+  getCalendarMonthKey,
+} from '../utils/clinicalChartAnalytics';
 import { ClinicalRomLiveMeasureModal } from './ClinicalRomLiveMeasureModal';
 
 export interface PatientClinicalRecordPanelProps {
@@ -70,6 +79,7 @@ export interface PatientClinicalRecordPanelProps {
   patientCourseOverride?: PatientCourseRecord | null;
   patientRehabSchedulesOverride?: RehabScheduleItem[];
   patientSessionHistoryOverride?: RehabSessionHistoryEntry[];
+  initialRecordsOverride?: PatientClinicalAssessmentRecord[];
 }
 
 type DateRangeFilter = 'ALL' | '7D' | '30D' | '90D';
@@ -79,6 +89,7 @@ type SourceFilter =
   | 'KIOSK_SESSION_AUTO_SYNC'
   | 'COURSE_AUTO_CALCULATED';
 type ChartMetricMode = 'ROM_DEG' | 'TARGET_PCT';
+type ChartViewMode = 'SESSIONS' | 'MONTHLY';
 
 function getDirectSupabaseRestConfig(): { url: string; key: string } | null {
   try {
@@ -110,24 +121,11 @@ function formatSideTh(side: AssessmentTargetSide): string {
 }
 
 function formatThaiDateTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString('th-TH', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return formatThaiClinicalDate(iso);
 }
 
 function formatShortThaiDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleDateString('th-TH', {
-    day: 'numeric',
-    month: 'short',
-  });
+  return formatThaiShortDate(iso);
 }
 
 function toLocalDateTimeInputValue(d: Date = new Date()): string {
@@ -155,9 +153,12 @@ export function PatientClinicalRecordPanel({
   patientCourseOverride,
   patientRehabSchedulesOverride,
   patientSessionHistoryOverride,
+  initialRecordsOverride,
 }: PatientClinicalRecordPanelProps) {
   const [patientQuery, setPatientQuery] = useState('');
-  const [records, setRecords] = useState<PatientClinicalAssessmentRecord[]>([]);
+  const [records, setRecords] = useState<PatientClinicalAssessmentRecord[]>(
+    () => initialRecordsOverride ?? [],
+  );
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [syncingCrossFacility, setSyncingCrossFacility] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
@@ -178,6 +179,9 @@ export function PatientClinicalRecordPanel({
   const [dateRangeFilter, setDateRangeFilter] = useState<DateRangeFilter>('ALL');
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('ALL');
   const [chartMetricMode, setChartMetricMode] = useState<ChartMetricMode>('ROM_DEG');
+  const [chartViewMode, setChartViewMode] = useState<ChartViewMode>('SESSIONS');
+  const [legendFocusExerciseCode, setLegendFocusExerciseCode] = useState<string | null>(null);
+  const [selectedMonthKey, setSelectedMonthKey] = useState<string | null>(null);
   const [showMahidolLine, setShowMahidolLine] = useState<boolean>(true);
   const [showPainLine, setShowPainLine] = useState<boolean>(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -479,11 +483,14 @@ export function PatientClinicalRecordPanel({
     setFetchedSchedules(patientRehabSchedulesOverride ?? []);
     setFetchedSessions([]);
     setFetchedSessionHistory(patientSessionHistoryOverride ?? []);
-    setRecords([]);
+    setRecords(initialRecordsOverride ?? []);
     setExerciseFilter('ALL');
     setSideFilter('ALL');
     setDateRangeFilter('ALL');
     setSourceFilter('ALL');
+    setLegendFocusExerciseCode(null);
+    setSelectedMonthKey(null);
+    setChartViewMode('SESSIONS');
     setSelectedNodeId(null);
     setCompareBaselineId('');
     setCompareFollowUpId('');
@@ -1004,16 +1011,66 @@ export function PatientClinicalRecordPanel({
       ? deriveScore0To6FromRomRatio(liveFormMeasuredNum, liveFormTargetNum)
       : null;
 
-  // Collision-free Pure SVG Dual-Metric Progress Chart geometry
+  // 3-Milestone Navigator (Previous, Latest, Personal Best)
+  const milestones = useMemo(
+    () => computeClinicalMilestones(summary.visitsWithDelta),
+    [summary.visitsWithDelta],
+  );
+
+  // Multi-Exercise Color-Coded Grouping across the active visits
+  const multiExerciseGrouping = useMemo(
+    () => buildMultiExerciseChartSeries(summary.visitsWithDelta),
+    [summary.visitsWithDelta],
+  );
+
+  // Monthly Score Summary (grouped by YYYY-MM in Buddhist Era Thai labels)
+  const monthlySummary = useMemo(
+    () => computeMonthlyScoreSummary(filteredRecords),
+    [filteredRecords],
+  );
+
+  // Reset legend isolation if the focused exercise is no longer present in the filtered set
+  useEffect(() => {
+    if (
+      legendFocusExerciseCode &&
+      !multiExerciseGrouping.series.some((s) => s.exerciseCode === legendFocusExerciseCode)
+    ) {
+      setLegendFocusExerciseCode(null);
+    }
+  }, [legendFocusExerciseCode, multiExerciseGrouping.series]);
+
+  // Reset month filter if no longer present in monthlySummary
+  useEffect(() => {
+    if (selectedMonthKey && !monthlySummary.some((m) => m.monthKey === selectedMonthKey)) {
+      setSelectedMonthKey(null);
+    }
+  }, [selectedMonthKey, monthlySummary]);
+
+  const handleJumpToMilestone = useCallback((recordId: string) => {
+    setChartViewMode('SESSIONS');
+    setLegendFocusExerciseCode(null);
+    setSelectedNodeId(recordId);
+  }, []);
+
+  // Collision-free Pure SVG Multi-Exercise Progress Chart geometry
   const chartData = useMemo(() => {
-    const pts = summary.visitsWithDelta.slice(-12);
-    const width = 700;
-    const height = 268;
+    const allVisits = summary.visitsWithDelta;
+    let pts = allVisits.slice(-16);
+    if (selectedNodeId && !pts.some((v) => v.record.id === selectedNodeId)) {
+      const targetIdx = allVisits.findIndex((v) => v.record.id === selectedNodeId);
+      if (targetIdx >= 0) {
+        const start = Math.max(0, targetIdx - 4);
+        pts = allVisits.slice(start, start + 16);
+      }
+    }
+
+    const width = Math.max(700, pts.length > 10 ? pts.length * 64 + 100 : 700);
+    const height = 280;
     const padL = 56;
-    const padR = 44;
-    const padT = 34;
-    const padB = 54;
-    const innerPadX = 34;
+    const padR = 46;
+    const padT = 36;
+    const padB = 62;
+    const innerPadX = 36;
     const plotW = width - padL - padR;
     const plotH = height - padT - padB;
     const usableW = Math.max(40, plotW - innerPadX * 2);
@@ -1031,6 +1088,9 @@ export function PatientClinicalRecordPanel({
           ) * 30,
         );
 
+    const isMultiExerciseView =
+      exerciseFilter === 'ALL' && multiExerciseGrouping.series.length > 1;
+
     const nodes = pts.map((item, idx) => {
       const x =
         pts.length === 1
@@ -1045,10 +1105,15 @@ export function PatientClinicalRecordPanel({
           ? item.record.pain_vas_0_to_10
           : null;
       const painY = painVal !== null ? padT + plotH - (painVal / 10) * plotH : null;
+      const exCode = (item.record.exercise_code || 'UNKNOWN').trim().toUpperCase();
+      const exerciseColor = multiExerciseGrouping.colorByExerciseCode[exCode] ?? '#059669';
 
       return {
         id: item.record.id,
         record: item.record,
+        exerciseCode: exCode,
+        exerciseNameTh: item.record.exercise_name_th || exCode,
+        exerciseColor,
         deltaFromPrevRom: item.deltaFromPrevRom,
         deltaFromFirstRom: item.deltaFromFirstRom,
         targetAchievementPct: item.targetAchievementPct,
@@ -1059,22 +1124,47 @@ export function PatientClinicalRecordPanel({
         painY,
         primaryVal,
         visitNumber: item.record.visit_number,
-        shortDate: formatShortThaiDate(item.record.assessed_at),
+        shortDate: formatThaiShortDate(item.record.assessed_at),
+        fullThaiDate: formatThaiClinicalDate(item.record.assessed_at),
+        isMilestonePrevious: milestones.previous?.record.id === item.record.id,
+        isMilestoneLatest: milestones.latest?.record.id === item.record.id,
+        isMilestoneBest: milestones.best?.record.id === item.record.id,
       };
     });
 
-    const polylinePoints = nodes.map((n) => `${n.x.toFixed(1)},${n.y.toFixed(1)}`).join(' ');
-    const scorePolylinePoints = nodes.map((n) => `${n.x.toFixed(1)},${n.scoreY.toFixed(1)}`).join(' ');
-    const painNodes = nodes.filter((n) => n.painY !== null);
+    // Separate color-coded polylines per exercise (never connecting unrelated exercises into 1 line)
+    const exerciseSeriesPaths = multiExerciseGrouping.series.map((seriesItem) => {
+      const seriesNodes = nodes.filter((n) => n.exerciseCode === seriesItem.exerciseCode);
+      const ptsStr = seriesNodes.map((n) => `${n.x.toFixed(1)},${n.y.toFixed(1)}`).join(' ');
+      const areaStr =
+        seriesNodes.length >= 2
+          ? `${seriesNodes[0].x.toFixed(1)},${(padT + plotH).toFixed(1)} ${ptsStr} ${seriesNodes[seriesNodes.length - 1].x.toFixed(1)},${(padT + plotH).toFixed(1)}`
+          : '';
+      return {
+        exerciseCode: seriesItem.exerciseCode,
+        exerciseNameTh: seriesItem.exerciseNameTh,
+        color: seriesItem.color,
+        nodes: seriesNodes,
+        polylinePoints: ptsStr,
+        areaPoints: areaStr,
+      };
+    });
+
+    const visibleScoreNodes = legendFocusExerciseCode
+      ? nodes.filter((n) => n.exerciseCode === legendFocusExerciseCode)
+      : nodes;
+    const scorePolylinePoints = visibleScoreNodes
+      .map((n) => `${n.x.toFixed(1)},${n.scoreY.toFixed(1)}`)
+      .join(' ');
+    const painNodes = visibleScoreNodes.filter((n) => n.painY !== null);
     const painPolylinePoints = painNodes
       .map((n) => `${n.x.toFixed(1)},${(n.painY as number).toFixed(1)}`)
       .join(' ');
-    const areaPoints =
-      nodes.length > 0
-        ? `${nodes[0].x.toFixed(1)},${(padT + plotH).toFixed(1)} ${polylinePoints} ${nodes[nodes.length - 1].x.toFixed(1)},${(padT + plotH).toFixed(1)}`
-        : '';
 
-    const targetRefValue = isPctMode ? 100 : summary.targetRomDeg;
+    const focusedSeriesTargetRom = legendFocusExerciseCode
+      ? nodes.find((n) => n.exerciseCode === legendFocusExerciseCode)?.record.target_rom_deg ?? null
+      : null;
+    const targetRefValue = isPctMode ? 100 : focusedSeriesTargetRom ?? summary.targetRomDeg;
     const targetRefY =
       targetRefValue !== null && targetRefValue > 0 && targetRefValue <= maxY
         ? padT + plotH - (targetRefValue / maxY) * plotH
@@ -1091,16 +1181,70 @@ export function PatientClinicalRecordPanel({
       plotH,
       maxY,
       isPctMode,
+      isMultiExerciseView,
       nodes,
-      polylinePoints,
+      exerciseSeriesPaths,
       scorePolylinePoints,
       painNodes,
       painPolylinePoints,
-      areaPoints,
       targetRefValue,
       targetRefY,
     };
-  }, [summary.visitsWithDelta, summary.targetRomDeg, effectiveChartMode]);
+  }, [
+    summary.visitsWithDelta,
+    summary.targetRomDeg,
+    effectiveChartMode,
+    exerciseFilter,
+    multiExerciseGrouping,
+    legendFocusExerciseCode,
+    milestones,
+    selectedNodeId,
+  ]);
+
+  // 60FPS Pure SVG Monthly Score Summary Chart geometry (0-6 Y-axis scale)
+  const monthlyChartData = useMemo(() => {
+    const items = monthlySummary.slice(-12);
+    const width = Math.max(660, items.length > 7 ? items.length * 92 + 96 : 660);
+    const height = 256;
+    const padL = 52;
+    const padR = 32;
+    const padT = 36;
+    const padB = 64;
+    const plotW = width - padL - padR;
+    const plotH = height - padT - padB;
+    const slotW = items.length > 0 ? plotW / items.length : plotW;
+    const barW = Math.min(46, Math.max(22, slotW * 0.44));
+
+    const bars = items.map((m, idx) => {
+      const cx = padL + slotW * idx + slotW / 2;
+      const barH = Math.max(4, (Math.max(0, Math.min(6, m.avgScore0To6)) / 6) * plotH);
+      const y = padT + plotH - barH;
+      const maxY = padT + plotH - (Math.max(0, Math.min(6, m.maxScore0To6)) / 6) * plotH;
+      return {
+        ...m,
+        cx,
+        x: cx - barW / 2,
+        y,
+        barW,
+        barH,
+        maxY,
+      };
+    });
+
+    const trendPoints = bars.map((b) => `${b.cx.toFixed(1)},${b.y.toFixed(1)}`).join(' ');
+    return {
+      width,
+      height,
+      padL,
+      padR,
+      padT,
+      padB,
+      plotW,
+      plotH,
+      bars,
+      trendPoints,
+    };
+  }, [monthlySummary]);
 
   const activeSelectedNode = useMemo(() => {
     if (chartData.nodes.length === 0) return null;
@@ -1110,6 +1254,12 @@ export function PatientClinicalRecordPanel({
     }
     return chartData.nodes[chartData.nodes.length - 1];
   }, [chartData.nodes, selectedNodeId]);
+
+  const timelineVisits = useMemo(() => {
+    const base = summary.visitsWithDelta;
+    if (!selectedMonthKey) return base;
+    return base.filter((v) => getCalendarMonthKey(v.record.assessed_at) === selectedMonthKey);
+  }, [summary.visitsWithDelta, selectedMonthKey]);
 
   const handleExportCsv = () => {
     if (!selectedPatient || summary.totalVisits === 0) {
@@ -2062,380 +2212,1016 @@ export function PatientClinicalRecordPanel({
             </div>
           </div>
 
-          {/* 60FPS Collision-Free Interactive Dual-Metric Progress Chart */}
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-3">
-            <div className="flex flex-wrap items-start justify-between gap-2">
+          {/* Interactive 3-Milestone Navigator (Previous • Latest • Personal Best) with Thai Dates */}
+          <div
+            data-testid="clinical-milestone-navigator"
+            className="grid grid-cols-1 gap-3 md:grid-cols-3"
+          >
+            {/* 1. Previous Session */}
+            <button
+              type="button"
+              data-testid="milestone-card-previous"
+              disabled={!milestones.previous}
+              onClick={() => {
+                if (milestones.previous) handleJumpToMilestone(milestones.previous.record.id);
+              }}
+              className={`btn-tactile text-left rounded-2xl border p-3.5 shadow-sm transition-all space-y-1.5 ${
+                milestones.previous
+                  ? activeSelectedNode?.id === milestones.previous.record.id
+                    ? 'border-[#0F4C81] bg-sky-50/70 ring-2 ring-sky-200 cursor-pointer'
+                    : 'border-slate-200 bg-white hover:border-sky-300 cursor-pointer'
+                  : 'border-slate-200/70 bg-slate-50/70 opacity-75 cursor-default'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-1.5">
+                <span className="inline-flex items-center gap-1 text-[11px] font-black text-slate-700">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-3.5 w-3.5 text-slate-500"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                    <path d="M3 3v5h5" />
+                  </svg>
+                  <span>ครั้งก่อนหน้า</span>
+                </span>
+                {milestones.previous && (
+                  <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] font-extrabold text-white">
+                    ระดับ {milestones.previous.record.initial_score_0_to_6}/6
+                  </span>
+                )}
+              </div>
+              {milestones.previous ? (
+                <>
+                  <div className="text-[11px] font-bold text-[#0F4C81]">
+                    {formatThaiClinicalDate(milestones.previous.record.assessed_at)}
+                  </div>
+                  <div className="text-[11px] font-semibold text-slate-700 truncate">
+                    {milestones.previous.record.exercise_name_th}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <span className="font-black text-slate-900">
+                      {milestones.previous.record.measured_rom_deg.toFixed(1)}°
+                    </span>
+                    <span className="text-slate-400">•</span>
+                    <span className="font-bold text-emerald-700">
+                      {milestones.previous.targetAchievementPct.toFixed(0)}% เป้าหมาย
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <div className="text-[11px] text-slate-400 py-1">ยังไม่มีข้อมูลครั้งก่อนหน้า</div>
+              )}
+            </button>
+
+            {/* 2. Latest Session */}
+            <button
+              type="button"
+              data-testid="milestone-card-latest"
+              disabled={!milestones.latest}
+              onClick={() => {
+                if (milestones.latest) handleJumpToMilestone(milestones.latest.record.id);
+              }}
+              className={`btn-tactile text-left rounded-2xl border p-3.5 shadow-sm transition-all space-y-1.5 ${
+                milestones.latest
+                  ? activeSelectedNode?.id === milestones.latest.record.id
+                    ? 'border-[#0284C7] bg-sky-50/80 ring-2 ring-sky-200 cursor-pointer'
+                    : 'border-sky-200 bg-white hover:border-[#0284C7] cursor-pointer'
+                  : 'border-slate-200/70 bg-slate-50/70 opacity-75 cursor-default'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-1.5">
+                <span className="inline-flex items-center gap-1 text-[11px] font-black text-[#0F4C81]">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-3.5 w-3.5 text-[#0284C7]"
+                    aria-hidden="true"
+                  >
+                    <circle cx="12" cy="12" r="10" />
+                    <polyline points="12 6 12 12 16 14" />
+                  </svg>
+                  <span>ครั้งล่าสุด</span>
+                </span>
+                {milestones.latest && (
+                  <span className="rounded-full bg-[#0F4C81] px-2 py-0.5 text-[10px] font-extrabold text-white">
+                    ระดับ {milestones.latest.record.initial_score_0_to_6}/6
+                  </span>
+                )}
+              </div>
+              {milestones.latest ? (
+                <>
+                  <div className="text-[11px] font-bold text-[#0F4C81]">
+                    {formatThaiClinicalDate(milestones.latest.record.assessed_at)}
+                  </div>
+                  <div className="text-[11px] font-semibold text-slate-700 truncate">
+                    {milestones.latest.record.exercise_name_th}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <span className="font-black text-slate-900">
+                      {milestones.latest.record.measured_rom_deg.toFixed(1)}°
+                    </span>
+                    {milestones.latestDeltaRomFromPrevious !== null && (
+                      <span
+                        className={`rounded-full px-1.5 py-0.5 text-[10px] font-extrabold ${
+                          milestones.latestDeltaRomFromPrevious >= 0
+                            ? 'bg-emerald-50 text-emerald-700'
+                            : 'bg-rose-50 text-rose-700'
+                        }`}
+                      >
+                        {milestones.latestDeltaRomFromPrevious >= 0 ? '+' : ''}
+                        {milestones.latestDeltaRomFromPrevious.toFixed(1)}°
+                      </span>
+                    )}
+                    {milestones.latestDeltaScoreFromPrevious !== null && (
+                      <span
+                        className={`rounded-full px-1.5 py-0.5 text-[10px] font-extrabold ${
+                          milestones.latestDeltaScoreFromPrevious >= 0
+                            ? 'bg-sky-50 text-[#0F4C81]'
+                            : 'bg-rose-50 text-rose-700'
+                        }`}
+                      >
+                        {milestones.latestDeltaScoreFromPrevious >= 0 ? '+' : ''}
+                        {milestones.latestDeltaScoreFromPrevious} ระดับ
+                      </span>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="text-[11px] text-slate-400 py-1">ยังไม่มีข้อมูลครั้งล่าสุด</div>
+              )}
+            </button>
+
+            {/* 3. Personal Best Session */}
+            <button
+              type="button"
+              data-testid="milestone-card-best"
+              disabled={!milestones.best}
+              onClick={() => {
+                if (milestones.best) handleJumpToMilestone(milestones.best.record.id);
+              }}
+              className={`btn-tactile text-left rounded-2xl border p-3.5 shadow-sm transition-all space-y-1.5 ${
+                milestones.best
+                  ? activeSelectedNode?.id === milestones.best.record.id
+                    ? 'border-emerald-500 bg-gradient-to-br from-emerald-50 via-white to-sky-50 ring-2 ring-emerald-200 cursor-pointer'
+                    : 'border-emerald-300 bg-gradient-to-br from-emerald-50/70 via-white to-sky-50/60 hover:border-emerald-500 cursor-pointer'
+                  : 'border-slate-200/70 bg-slate-50/70 opacity-75 cursor-default'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-1.5">
+                <span className="inline-flex items-center gap-1 text-[11px] font-black text-emerald-800">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-3.5 w-3.5 text-emerald-600"
+                    aria-hidden="true"
+                  >
+                    <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" />
+                    <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18" />
+                    <path d="M4 22h16" />
+                    <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" />
+                    <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
+                    <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" />
+                  </svg>
+                  <span>ครั้งที่ดีที่สุด</span>
+                </span>
+                {milestones.best && (
+                  <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-black text-white">
+                    ระดับ {milestones.best.record.initial_score_0_to_6}/6
+                  </span>
+                )}
+              </div>
+              {milestones.best ? (
+                <>
+                  <div className="text-[11px] font-bold text-emerald-800">
+                    {formatThaiClinicalDate(milestones.best.record.assessed_at)}
+                  </div>
+                  <div className="text-[11px] font-semibold text-slate-700 truncate">
+                    {milestones.best.record.exercise_name_th}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <span className="font-black text-emerald-700">
+                      {milestones.best.record.measured_rom_deg.toFixed(1)}°
+                    </span>
+                    <span className="text-slate-400">•</span>
+                    <span className="font-bold text-[#0F4C81]">
+                      {milestones.best.targetAchievementPct.toFixed(0)}% เป้าหมาย
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <div className="text-[11px] text-slate-400 py-1">ยังไม่มีข้อมูลสถิติสูงสุด</div>
+              )}
+            </button>
+          </div>
+
+          {/* 60FPS Collision-Free Multi-Exercise & Monthly Score Summary Chart Card */}
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-3.5">
+            <div className="flex flex-wrap items-start justify-between gap-2.5">
               <div>
                 <h3 className="text-sm font-black text-slate-900">
-                  กราฟติดตามผลย้อนหลังและเปรียบเทียบพัฒนาการ (ข้อมูลจริง)
+                  {chartViewMode === 'MONTHLY'
+                    ? 'กราฟสรุปรายเดือน (ผลคะแนนมหิดล 0-6 เฉลี่ยต่อเดือน)'
+                    : 'กราฟติดตามผลย้อนหลังแยกตามท่ากายภาพและเปรียบเทียบพัฒนาการ'}
                 </h3>
                 <p className="text-[11px] text-slate-500">
-                  คลิกที่จุดข้อมูลบนกราฟเพื่อตรวจสอบรายละเอียดแต่ละรอบ •{' '}
-                  {chartData.isPctMode
-                    ? 'แสดงสัดส่วนเทียบเป้าหมายคลินิก (% Target ROM) เพื่อเทียบข้ามท่าอย่างยุติธรรม'
-                    : 'แสดงองศาข้อต่อจริง (ROM °) พร้อมเส้นเป้าหมายคลินิก'}
+                  {chartViewMode === 'MONTHLY'
+                    ? 'คลิกที่แท่งเดือนเพื่อกรองประวัติการรักษารายเดือนด้านล่าง • แสดงคะแนนเฉลี่ย 0-6 และความคืบหน้าเทียบเดือนก่อน'
+                    : chartData.isMultiExerciseView
+                      ? 'แยกเส้นสีตามแต่ละท่ากายภาพบำบัดอย่างชัดเจน พร้อมวัน/เดือน/ปี พ.ศ. • คลิกชื่อท่าด้านล่างเพื่อโฟกัสทีละท่า'
+                      : chartData.isPctMode
+                        ? 'แสดงสัดส่วนเทียบเป้าหมายคลินิก (% Target ROM) พร้อมวัน/เดือน/ปี พ.ศ.'
+                        : 'แสดงองศาข้อต่อจริง (ROM °) พร้อมเส้นเป้าหมายคลินิกและวัน/เดือน/ปี พ.ศ.'}
                 </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-1.5">
-                <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-0.5 text-[11px] font-bold">
+                {/* Primary View Switcher: Sessions vs Monthly Score Summary */}
+                <div className="inline-flex rounded-xl border border-sky-200 bg-sky-50/70 p-0.5 text-[11px] font-bold">
                   <button
                     type="button"
-                    onClick={() => setChartMetricMode('ROM_DEG')}
+                    data-testid="chart-tab-sessions"
+                    onClick={() => setChartViewMode('SESSIONS')}
                     className={`rounded-lg px-2.5 py-1 cursor-pointer transition-colors ${
-                      chartMetricMode === 'ROM_DEG'
+                      chartViewMode === 'SESSIONS'
                         ? 'bg-[#0F4C81] text-white shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
+                        : 'text-[#0F4C81] hover:bg-white/80'
                     }`}
                   >
-                    องศาจริง (°)
+                    กราฟรายครั้ง (Sessions)
                   </button>
                   <button
                     type="button"
-                    onClick={() => setChartMetricMode('TARGET_PCT')}
+                    data-testid="chart-tab-monthly"
+                    onClick={() => setChartViewMode('MONTHLY')}
                     className={`rounded-lg px-2.5 py-1 cursor-pointer transition-colors ${
-                      chartMetricMode === 'TARGET_PCT'
+                      chartViewMode === 'MONTHLY'
                         ? 'bg-emerald-600 text-white shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
+                        : 'text-emerald-800 hover:bg-white/80'
                     }`}
                   >
-                    % เป้าหมาย
+                    กราฟสรุปรายเดือน (ผลคะแนน)
                   </button>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setShowMahidolLine((v) => !v)}
-                  className={`rounded-lg border px-2.5 py-1 text-[10px] font-extrabold cursor-pointer ${
-                    showMahidolLine
-                      ? 'border-sky-300 bg-sky-50 text-[#0F4C81]'
-                      : 'border-slate-200 bg-white text-slate-500'
-                  }`}
-                >
-                  เส้นมหิดล 0-6
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowPainLine((v) => !v)}
-                  className={`rounded-lg border px-2.5 py-1 text-[10px] font-extrabold cursor-pointer ${
-                    showPainLine
-                      ? 'border-amber-300 bg-amber-50 text-amber-800'
-                      : 'border-slate-200 bg-white text-slate-500'
-                  }`}
-                >
-                  เส้นปวด VAS
-                </button>
+                {chartViewMode === 'SESSIONS' && (
+                  <>
+                    <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-0.5 text-[11px] font-bold">
+                      <button
+                        type="button"
+                        onClick={() => setChartMetricMode('ROM_DEG')}
+                        className={`rounded-lg px-2.5 py-1 cursor-pointer transition-colors ${
+                          chartMetricMode === 'ROM_DEG'
+                            ? 'bg-[#0F4C81] text-white shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        องศาจริง (°)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setChartMetricMode('TARGET_PCT')}
+                        className={`rounded-lg px-2.5 py-1 cursor-pointer transition-colors ${
+                          chartMetricMode === 'TARGET_PCT'
+                            ? 'bg-emerald-600 text-white shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        % เป้าหมาย
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowMahidolLine((v) => !v)}
+                      className={`rounded-lg border px-2.5 py-1 text-[10px] font-extrabold cursor-pointer ${
+                        showMahidolLine
+                          ? 'border-sky-300 bg-sky-50 text-[#0F4C81]'
+                          : 'border-slate-200 bg-white text-slate-500'
+                      }`}
+                    >
+                      เส้นมหิดล 0-6
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowPainLine((v) => !v)}
+                      className={`rounded-lg border px-2.5 py-1 text-[10px] font-extrabold cursor-pointer ${
+                        showPainLine
+                          ? 'border-amber-300 bg-amber-50 text-amber-800'
+                          : 'border-slate-200 bg-white text-slate-500'
+                      }`}
+                    >
+                      เส้นปวด VAS
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 
-            {summary.hasMixedExercises && chartMetricMode === 'ROM_DEG' && (
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-900">
-                <span>
-                  กราฟนี้รวมหลายท่ากายภาพที่มีองศาเป้าหมายต่างกัน แนะนำสลับเป็นโหมด &quot;% เป้าหมาย&quot; หรือเลือกดูทีละท่า
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setChartMetricMode('TARGET_PCT')}
-                  className="rounded-lg bg-amber-600 px-2.5 py-1 text-[10px] font-extrabold text-white cursor-pointer"
-                >
-                  สลับเป็น % เป้าหมาย
-                </button>
-              </div>
-            )}
-
-            {chartData.nodes.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 py-10 px-4 text-center space-y-2">
-                <div className="text-xs font-extrabold text-slate-700">
-                  {loadingRecords
-                    ? 'กำลังโหลดประวัติจริงจากฐานข้อมูล...'
-                    : 'ยังไม่มีข้อมูลการประเมินหรือประวัติฝึก ROM จริงสำหรับผู้ป่วยรายนี้'}
-                </div>
-                {!loadingRecords && (
-                  <p className="text-[11px] text-slate-500 max-w-md mx-auto">
-                    เริ่มต้นติดตามผลได้ทันทีโดยกดปุ่ม &quot;ดึงผลเล่นคอร์สและบันทึกอัตโนมัติ&quot; ด้านซ้าย หรือกดบันทึกผลประเมิน 0-6 เข้าแฟ้มผู้ป่วย
-                  </p>
-                )}
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="w-full overflow-x-auto">
-                  <svg
-                    viewBox={`0 0 ${chartData.width} ${chartData.height}`}
-                    className="w-full min-w-[540px] h-auto"
-                    role="img"
-                    aria-label="กราฟเปรียบเทียบพัฒนาการมุมองศาข้อต่อและคะแนน 0-6 จากข้อมูลจริง"
+            {chartViewMode === 'SESSIONS' && (
+              <>
+                {/* Interactive Multi-Exercise Color Legend */}
+                {multiExerciseGrouping.series.length > 0 && (
+                  <div
+                    data-testid="multi-exercise-chart-legend"
+                    className="flex flex-wrap items-center gap-1.5 rounded-2xl border border-slate-200/80 bg-slate-50/70 p-2.5"
                   >
-                    <defs>
-                      <linearGradient id="romAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#10b981" stopOpacity="0.26" />
-                        <stop offset="100%" stopColor="#10b981" stopOpacity="0.02" />
-                      </linearGradient>
-                    </defs>
-
-                    {/* Horizontal Grid + Left Axis (ROM or % Target) + Right Axis (Mahidol 0-6) */}
-                    {[0, 0.25, 0.5, 0.75, 1].map((frac) => {
-                      const yVal = chartData.padT + chartData.plotH * (1 - frac);
-                      const leftLabel = Math.round(chartData.maxY * frac);
-                      const rightScoreLabel = Math.round(6 * frac);
+                    {multiExerciseGrouping.series.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => setLegendFocusExerciseCode(null)}
+                        className={`btn-tactile inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-extrabold cursor-pointer transition-colors ${
+                          legendFocusExerciseCode === null
+                            ? 'border-[#0F4C81] bg-[#0F4C81] text-white shadow-xs'
+                            : 'border-slate-200 bg-white text-slate-700 hover:border-sky-300'
+                        }`}
+                      >
+                        <span>แสดงทุกท่าพร้อมกัน ({multiExerciseGrouping.series.length} ท่า)</span>
+                      </button>
+                    )}
+                    {multiExerciseGrouping.series.map((seriesItem) => {
+                      const isFocused = legendFocusExerciseCode === seriesItem.exerciseCode;
+                      const isDimmed =
+                        legendFocusExerciseCode !== null && !isFocused;
                       return (
-                        <g key={frac}>
-                          <line
-                            x1={chartData.padL}
-                            y1={yVal}
-                            x2={chartData.width - chartData.padR}
-                            y2={yVal}
-                            stroke="#e2e8f0"
-                            strokeDasharray="3 3"
-                            strokeWidth="1"
-                          />
-                          <text
-                            x={chartData.padL - 10}
-                            y={yVal + 3.5}
-                            textAnchor="end"
-                            fill="#64748b"
-                            fontSize="10"
-                            fontWeight="700"
-                          >
-                            {chartData.isPctMode ? `${leftLabel}%` : `${leftLabel}°`}
-                          </text>
-                          {showMahidolLine && (
-                            <text
-                              x={chartData.width - chartData.padR + 8}
-                              y={yVal + 3.5}
-                              textAnchor="start"
-                              fill="#0284c7"
-                              fontSize="9.5"
-                              fontWeight="700"
-                            >
-                              {rightScoreLabel}/6
-                            </text>
-                          )}
-                        </g>
-                      );
-                    })}
-
-                    {/* Target ROM / 100% Clinical Reference Line */}
-                    {chartData.targetRefY !== null && chartData.targetRefValue !== null && (
-                      <g>
-                        <line
-                          x1={chartData.padL}
-                          y1={chartData.targetRefY}
-                          x2={chartData.width - chartData.padR}
-                          y2={chartData.targetRefY}
-                          stroke="#0284c7"
-                          strokeDasharray="6 4"
-                          strokeWidth="1.6"
-                        />
-                        <text
-                          x={chartData.width - chartData.padR - 4}
-                          y={Math.max(14, chartData.targetRefY - 6)}
-                          textAnchor="end"
-                          fill="#0369a1"
-                          fontSize="9.5"
-                          fontWeight="800"
-                        >
-                          {chartData.isPctMode
-                            ? 'เป้าหมายคลินิก 100%'
-                            : `เป้าหมายคลินิก ${chartData.targetRefValue.toFixed(0)}°`}
-                        </text>
-                      </g>
-                    )}
-
-                    {/* Primary ROM / % Target Area & Line */}
-                    {chartData.areaPoints && (
-                      <polygon points={chartData.areaPoints} fill="url(#romAreaGrad)" />
-                    )}
-
-                    {chartData.nodes.length >= 2 && (
-                      <polyline
-                        fill="none"
-                        stroke="#059669"
-                        strokeWidth="3"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        points={chartData.polylinePoints}
-                      />
-                    )}
-
-                    {/* Secondary Mahidol 0-6 Trend Line */}
-                    {showMahidolLine && chartData.nodes.length >= 2 && (
-                      <polyline
-                        fill="none"
-                        stroke="#0284c7"
-                        strokeWidth="2"
-                        strokeDasharray="5 4"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        points={chartData.scorePolylinePoints}
-                      />
-                    )}
-
-                    {/* Optional Pain VAS Trend Line */}
-                    {showPainLine && chartData.painNodes.length >= 2 && (
-                      <polyline
-                        fill="none"
-                        stroke="#d97706"
-                        strokeWidth="2"
-                        strokeDasharray="3 3"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        points={chartData.painPolylinePoints}
-                      />
-                    )}
-
-                    {/* Interactive Nodes */}
-                    {chartData.nodes.map((node) => {
-                      const isSelected = activeSelectedNode?.id === node.id;
-                      const labelAboveY = node.y < chartData.padT + 20 ? node.y + 20 : node.y - 12;
-                      return (
-                        <g
-                          key={node.id}
-                          onClick={() => setSelectedNodeId(node.id)}
-                          className="cursor-pointer"
-                        >
-                          {isSelected && (
-                            <line
-                              x1={node.x}
-                              y1={chartData.padT}
-                              x2={node.x}
-                              y2={chartData.padT + chartData.plotH}
-                              stroke="#10b981"
-                              strokeDasharray="2 3"
-                              strokeWidth="1.2"
-                              opacity="0.6"
-                            />
-                          )}
-                          {showMahidolLine && (
-                            <circle
-                              cx={node.x}
-                              cy={node.scoreY}
-                              r="3.8"
-                              fill="#0284c7"
-                              stroke="#ffffff"
-                              strokeWidth="1.5"
-                            />
-                          )}
-                          {showPainLine && node.painY !== null && (
-                            <circle
-                              cx={node.x}
-                              cy={node.painY}
-                              r="3.5"
-                              fill="#d97706"
-                              stroke="#ffffff"
-                              strokeWidth="1.5"
-                            />
-                          )}
-                          <circle cx={node.x} cy={node.y} r="15" fill="transparent" />
-                          <circle
-                            cx={node.x}
-                            cy={node.y}
-                            r={isSelected ? '7.5' : '5.8'}
-                            fill={isSelected ? '#059669' : '#ffffff'}
-                            stroke="#059669"
-                            strokeWidth="3"
-                          />
-                          <text
-                            x={node.x}
-                            y={labelAboveY}
-                            textAnchor="middle"
-                            fill="#065f46"
-                            fontSize="10.5"
-                            fontWeight="800"
-                          >
-                            {chartData.isPctMode
-                              ? `${node.targetAchievementPct.toFixed(0)}%`
-                              : `${node.record.measured_rom_deg.toFixed(1)}°`}
-                          </text>
-                          <rect
-                            x={node.x - 16}
-                            y={chartData.padT + chartData.plotH + 6}
-                            width="32"
-                            height="16"
-                            rx="8"
-                            fill={isSelected ? '#0F4C81' : '#e0f2fe'}
-                            stroke={isSelected ? '#0F4C81' : '#bae6fd'}
-                            strokeWidth="1"
-                          />
-                          <text
-                            x={node.x}
-                            y={chartData.padT + chartData.plotH + 17}
-                            textAnchor="middle"
-                            fill={isSelected ? '#ffffff' : '#0f4c81'}
-                            fontSize="9.5"
-                            fontWeight="800"
-                          >
-                            {node.record.initial_score_0_to_6}/6
-                          </text>
-                          <text
-                            x={node.x}
-                            y={chartData.padT + chartData.plotH + 34}
-                            textAnchor="middle"
-                            fill="#334155"
-                            fontSize="9.5"
-                            fontWeight="700"
-                          >
-                            ครั้งที่ {node.visitNumber}
-                          </text>
-                          <text
-                            x={node.x}
-                            y={chartData.padT + chartData.plotH + 46}
-                            textAnchor="middle"
-                            fill="#64748b"
-                            fontSize="8.5"
-                            fontWeight="600"
-                          >
-                            {node.shortDate}
-                          </text>
-                        </g>
-                      );
-                    })}
-                  </svg>
-                </div>
-
-                {/* Selected Chart Visit Inspector */}
-                {activeSelectedNode && (
-                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50/45 px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-2">
-                    <div className="space-y-0.5 min-w-0">
-                      <div className="font-black text-slate-900">
-                        รายละเอียดครั้งที่ {activeSelectedNode.visitNumber} •{' '}
-                        {formatThaiDateTime(activeSelectedNode.record.assessed_at)}
-                      </div>
-                      <div className="text-[11px] text-slate-600">
-                        {activeSelectedNode.record.exercise_name_th} (ข้าง
-                        {formatSideTh(activeSelectedNode.record.target_side)}) •{' '}
-                        {activeSelectedNode.record.facility_name}
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="rounded-full bg-emerald-600 px-2.5 py-0.5 text-[11px] font-black text-white">
-                        ROM {activeSelectedNode.record.measured_rom_deg.toFixed(1)}° ({activeSelectedNode.targetAchievementPct.toFixed(1)}%)
-                      </span>
-                      <span className="rounded-full bg-[#0F4C81] px-2.5 py-0.5 text-[11px] font-extrabold text-white">
-                        มหิดล {activeSelectedNode.record.initial_score_0_to_6}/6
-                      </span>
-                      {activeSelectedNode.deltaFromPrevRom !== null && (
-                        <span
-                          className={`rounded-full border px-2 py-0.5 text-[11px] font-extrabold ${
-                            activeSelectedNode.deltaFromPrevRom >= 0
-                              ? 'border-emerald-300 bg-white text-emerald-700'
-                              : 'border-rose-300 bg-white text-rose-700'
+                        <button
+                          key={seriesItem.exerciseCode}
+                          type="button"
+                          data-testid={`legend-exercise-${seriesItem.exerciseCode}`}
+                          onClick={() =>
+                            setLegendFocusExerciseCode((prev) =>
+                              prev === seriesItem.exerciseCode ? null : seriesItem.exerciseCode,
+                            )
+                          }
+                          className={`btn-tactile inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-bold cursor-pointer transition-all ${
+                            isFocused
+                              ? 'border-slate-900 bg-white text-slate-900 shadow-xs ring-2 ring-sky-200'
+                              : isDimmed
+                                ? 'border-slate-200 bg-white/60 text-slate-400 opacity-60 hover:opacity-100'
+                                : 'border-slate-200 bg-white text-slate-700 hover:border-sky-300'
                           }`}
                         >
-                          เทียบครั้งก่อน {activeSelectedNode.deltaFromPrevRom >= 0 ? '+' : ''}
-                          {activeSelectedNode.deltaFromPrevRom.toFixed(1)}°
-                        </span>
-                      )}
-                      {activeSelectedNode.painVal !== null && (
-                        <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-800">
-                          ปวด VAS {activeSelectedNode.painVal}/10
-                        </span>
-                      )}
+                          <span
+                            className="h-2.5 w-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: seriesItem.color }}
+                          />
+                          <span className="max-w-[190px] truncate">{seriesItem.exerciseNameTh}</span>
+                          <span className="text-[9.5px] font-extrabold text-slate-500">
+                            ({seriesItem.latestRomDeg.toFixed(1)}° • {seriesItem.latestScore0To6}/6 • {seriesItem.sessionCount} ครั้ง)
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {summary.hasMixedExercises &&
+                  chartMetricMode === 'ROM_DEG' &&
+                  legendFocusExerciseCode === null && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-200 bg-sky-50/70 px-3 py-2 text-[11px] font-semibold text-[#0F4C81]">
+                      <span>
+                        กำลังแสดงเส้นพัฒนาการแยกสีครบทั้ง {multiExerciseGrouping.series.length} ท่ากายภาพ สามารถสลับเป็น &quot;% เป้าหมาย&quot; เพื่อเทียบสัดส่วนความสำเร็จระหว่างท่าได้
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setChartMetricMode('TARGET_PCT')}
+                        className="rounded-lg bg-[#0F4C81] px-2.5 py-1 text-[10px] font-extrabold text-white cursor-pointer"
+                      >
+                        สลับเป็น % เป้าหมาย
+                      </button>
                     </div>
+                  )}
+
+                {chartData.nodes.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 py-10 px-4 text-center space-y-2">
+                    <div className="text-xs font-extrabold text-slate-700">
+                      {loadingRecords
+                        ? 'กำลังโหลดประวัติจริงจากฐานข้อมูล...'
+                        : 'ยังไม่มีข้อมูลการประเมินหรือประวัติฝึก ROM จริงสำหรับผู้ป่วยรายนี้'}
+                    </div>
+                    {!loadingRecords && (
+                      <p className="text-[11px] text-slate-500 max-w-md mx-auto">
+                        เริ่มต้นติดตามผลได้ทันทีโดยกดปุ่ม &quot;ดึงผลเล่นคอร์สและบันทึกอัตโนมัติ&quot; ด้านซ้าย หรือกดบันทึกผลประเมิน 0-6 เข้าแฟ้มผู้ป่วย
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="w-full overflow-x-auto">
+                      <svg
+                        viewBox={`0 0 ${chartData.width} ${chartData.height}`}
+                        className="w-full min-w-[560px] h-auto"
+                        role="img"
+                        aria-label="กราฟเปรียบเทียบพัฒนาการมุมองศาข้อต่อแยกตามท่ากายภาพและคะแนน 0-6 พร้อมวันเดือนปี"
+                      >
+                        <defs>
+                          <linearGradient id="romAreaGrad" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#10b981" stopOpacity="0.22" />
+                            <stop offset="100%" stopColor="#10b981" stopOpacity="0.02" />
+                          </linearGradient>
+                        </defs>
+
+                        {/* Horizontal Grid + Left Axis (ROM or % Target) + Right Axis (Mahidol 0-6) */}
+                        {[0, 0.25, 0.5, 0.75, 1].map((frac) => {
+                          const yVal = chartData.padT + chartData.plotH * (1 - frac);
+                          const leftLabel = Math.round(chartData.maxY * frac);
+                          const rightScoreLabel = Math.round(6 * frac);
+                          return (
+                            <g key={frac}>
+                              <line
+                                x1={chartData.padL}
+                                y1={yVal}
+                                x2={chartData.width - chartData.padR}
+                                y2={yVal}
+                                stroke="#e2e8f0"
+                                strokeDasharray="3 3"
+                                strokeWidth="1"
+                              />
+                              <text
+                                x={chartData.padL - 10}
+                                y={yVal + 3.5}
+                                textAnchor="end"
+                                fill="#64748b"
+                                fontSize="10"
+                                fontWeight="700"
+                              >
+                                {chartData.isPctMode ? `${leftLabel}%` : `${leftLabel}°`}
+                              </text>
+                              {showMahidolLine && (
+                                <text
+                                  x={chartData.width - chartData.padR + 8}
+                                  y={yVal + 3.5}
+                                  textAnchor="start"
+                                  fill="#0284c7"
+                                  fontSize="9.5"
+                                  fontWeight="700"
+                                >
+                                  {rightScoreLabel}/6
+                                </text>
+                              )}
+                            </g>
+                          );
+                        })}
+
+                        {/* Target ROM / 100% Clinical Reference Line */}
+                        {chartData.targetRefY !== null && chartData.targetRefValue !== null && (
+                          <g>
+                            <line
+                              x1={chartData.padL}
+                              y1={chartData.targetRefY}
+                              x2={chartData.width - chartData.padR}
+                              y2={chartData.targetRefY}
+                              stroke="#0284c7"
+                              strokeDasharray="6 4"
+                              strokeWidth="1.6"
+                            />
+                            <text
+                              x={chartData.width - chartData.padR - 4}
+                              y={Math.max(14, chartData.targetRefY - 6)}
+                              textAnchor="end"
+                              fill="#0369a1"
+                              fontSize="9.5"
+                              fontWeight="800"
+                            >
+                              {chartData.isPctMode
+                                ? 'เป้าหมายคลินิก 100%'
+                                : `เป้าหมายคลินิก ${chartData.targetRefValue.toFixed(0)}°`}
+                            </text>
+                          </g>
+                        )}
+
+                        {/* Separate Color-Coded Area & Polyline Per Physical Therapy Exercise */}
+                        {chartData.exerciseSeriesPaths.map((seriesPath) => {
+                          const isFocusedSeries =
+                            legendFocusExerciseCode === null ||
+                            legendFocusExerciseCode === seriesPath.exerciseCode;
+                          const showSoftArea =
+                            seriesPath.areaPoints &&
+                            (!chartData.isMultiExerciseView ||
+                              legendFocusExerciseCode === seriesPath.exerciseCode);
+                          return (
+                            <g
+                              key={seriesPath.exerciseCode}
+                              data-testid={`exercise-series-${seriesPath.exerciseCode}`}
+                              opacity={isFocusedSeries ? 1 : 0.16}
+                            >
+                              {showSoftArea && (
+                                <polygon
+                                  points={seriesPath.areaPoints}
+                                  fill={seriesPath.color}
+                                  fillOpacity="0.12"
+                                />
+                              )}
+                              {seriesPath.nodes.length >= 2 && (
+                                <polyline
+                                  data-testid={`exercise-polyline-${seriesPath.exerciseCode}`}
+                                  fill="none"
+                                  stroke={seriesPath.color}
+                                  strokeWidth={isFocusedSeries ? '3' : '2'}
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  points={seriesPath.polylinePoints}
+                                />
+                              )}
+                            </g>
+                          );
+                        })}
+
+                        {/* Secondary Mahidol 0-6 Trend Line */}
+                        {showMahidolLine && chartData.scorePolylinePoints && (
+                          <polyline
+                            fill="none"
+                            stroke="#0284c7"
+                            strokeWidth="1.8"
+                            strokeDasharray="5 4"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            opacity="0.72"
+                            points={chartData.scorePolylinePoints}
+                          />
+                        )}
+
+                        {/* Optional Pain VAS Trend Line */}
+                        {showPainLine && chartData.painNodes.length >= 2 && (
+                          <polyline
+                            fill="none"
+                            stroke="#d97706"
+                            strokeWidth="2"
+                            strokeDasharray="3 3"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            points={chartData.painPolylinePoints}
+                          />
+                        )}
+
+                        {/* Interactive Nodes with Color-Coding, Milestone Pulse Ring & Full Thai Short Date */}
+                        {chartData.nodes.map((node) => {
+                          const isSelected = activeSelectedNode?.id === node.id;
+                          const isDimmed =
+                            legendFocusExerciseCode !== null &&
+                            node.exerciseCode !== legendFocusExerciseCode;
+                          const labelAboveY = node.y < chartData.padT + 20 ? node.y + 20 : node.y - 12;
+                          return (
+                            <g
+                              key={node.id}
+                              onClick={() => setSelectedNodeId(node.id)}
+                              className="cursor-pointer"
+                              opacity={isDimmed ? 0.2 : 1}
+                            >
+                              {isSelected && (
+                                <>
+                                  <line
+                                    x1={node.x}
+                                    y1={chartData.padT}
+                                    x2={node.x}
+                                    y2={chartData.padT + chartData.plotH}
+                                    stroke={node.exerciseColor}
+                                    strokeDasharray="2 3"
+                                    strokeWidth="1.3"
+                                    opacity="0.65"
+                                  />
+                                  <circle
+                                    cx={node.x}
+                                    cy={node.y}
+                                    r="13"
+                                    fill={node.exerciseColor}
+                                    fillOpacity="0.18"
+                                    stroke={node.exerciseColor}
+                                    strokeWidth="1.4"
+                                  />
+                                </>
+                              )}
+                              {showMahidolLine && (
+                                <circle
+                                  cx={node.x}
+                                  cy={node.scoreY}
+                                  r="3.5"
+                                  fill="#0284c7"
+                                  stroke="#ffffff"
+                                  strokeWidth="1.4"
+                                />
+                              )}
+                              {showPainLine && node.painY !== null && (
+                                <circle
+                                  cx={node.x}
+                                  cy={node.painY}
+                                  r="3.5"
+                                  fill="#d97706"
+                                  stroke="#ffffff"
+                                  strokeWidth="1.5"
+                                />
+                              )}
+                              <circle cx={node.x} cy={node.y} r="15" fill="transparent" />
+                              <circle
+                                cx={node.x}
+                                cy={node.y}
+                                r={isSelected ? '7.5' : '5.6'}
+                                fill={isSelected ? node.exerciseColor : '#ffffff'}
+                                stroke={node.exerciseColor}
+                                strokeWidth="3"
+                              />
+                              <text
+                                x={node.x}
+                                y={labelAboveY}
+                                textAnchor="middle"
+                                fill={node.exerciseColor}
+                                fontSize="10"
+                                fontWeight="800"
+                              >
+                                {chartData.isPctMode
+                                  ? `${node.targetAchievementPct.toFixed(0)}%`
+                                  : `${node.record.measured_rom_deg.toFixed(1)}°`}
+                              </text>
+                              <rect
+                                x={node.x - 16}
+                                y={chartData.padT + chartData.plotH + 6}
+                                width="32"
+                                height="16"
+                                rx="8"
+                                fill={isSelected ? '#0F4C81' : '#e0f2fe'}
+                                stroke={isSelected ? '#0F4C81' : '#bae6fd'}
+                                strokeWidth="1"
+                              />
+                              <text
+                                x={node.x}
+                                y={chartData.padT + chartData.plotH + 17}
+                                textAnchor="middle"
+                                fill={isSelected ? '#ffffff' : '#0f4c81'}
+                                fontSize="9.5"
+                                fontWeight="800"
+                              >
+                                {node.record.initial_score_0_to_6}/6
+                              </text>
+                              <text
+                                x={node.x}
+                                y={chartData.padT + chartData.plotH + 35}
+                                textAnchor="middle"
+                                fill="#334155"
+                                fontSize="9.5"
+                                fontWeight="700"
+                              >
+                                ครั้งที่ {node.visitNumber}
+                              </text>
+                              <text
+                                x={node.x}
+                                y={chartData.padT + chartData.plotH + 49}
+                                textAnchor="middle"
+                                fill="#475569"
+                                fontSize="8.5"
+                                fontWeight="700"
+                              >
+                                {node.shortDate}
+                              </text>
+                            </g>
+                          );
+                        })}
+                      </svg>
+                    </div>
+
+                    {/* Selected Chart Visit Inspector with Full Thai Date & Milestone Badges */}
+                    {activeSelectedNode && (
+                      <div
+                        data-testid="selected-chart-visit-inspector"
+                        className="rounded-2xl border border-emerald-200 bg-emerald-50/45 px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-2 animate-toast-in"
+                      >
+                        <div className="space-y-0.5 min-w-0">
+                          <div className="flex flex-wrap items-center gap-1.5 font-black text-slate-900">
+                            <span
+                              className="h-2.5 w-2.5 rounded-full shrink-0"
+                              style={{ backgroundColor: activeSelectedNode.exerciseColor }}
+                            />
+                            <span>
+                              รายละเอียดครั้งที่ {activeSelectedNode.visitNumber} •{' '}
+                              {activeSelectedNode.fullThaiDate}
+                            </span>
+                            {activeSelectedNode.isMilestoneBest && (
+                              <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-extrabold text-white">
+                                ครั้งที่ดีที่สุด
+                              </span>
+                            )}
+                            {activeSelectedNode.isMilestoneLatest && (
+                              <span className="rounded-full bg-[#0F4C81] px-2 py-0.5 text-[10px] font-extrabold text-white">
+                                ครั้งล่าสุด
+                              </span>
+                            )}
+                            {activeSelectedNode.isMilestonePrevious && (
+                              <span className="rounded-full bg-slate-700 px-2 py-0.5 text-[10px] font-extrabold text-white">
+                                ครั้งก่อนหน้า
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-600">
+                            {activeSelectedNode.exerciseNameTh} (ข้าง
+                            {formatSideTh(activeSelectedNode.record.target_side)}) •{' '}
+                            {activeSelectedNode.record.facility_name}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="rounded-full bg-emerald-600 px-2.5 py-0.5 text-[11px] font-black text-white">
+                            ROM {activeSelectedNode.record.measured_rom_deg.toFixed(1)}° ({activeSelectedNode.targetAchievementPct.toFixed(1)}%)
+                          </span>
+                          <span className="rounded-full bg-[#0F4C81] px-2.5 py-0.5 text-[11px] font-extrabold text-white">
+                            มหิดล {activeSelectedNode.record.initial_score_0_to_6}/6
+                          </span>
+                          {activeSelectedNode.deltaFromPrevRom !== null && (
+                            <span
+                              className={`rounded-full border px-2 py-0.5 text-[11px] font-extrabold ${
+                                activeSelectedNode.deltaFromPrevRom >= 0
+                                  ? 'border-emerald-300 bg-white text-emerald-700'
+                                  : 'border-rose-300 bg-white text-rose-700'
+                              }`}
+                            >
+                              เทียบครั้งก่อน {activeSelectedNode.deltaFromPrevRom >= 0 ? '+' : ''}
+                              {activeSelectedNode.deltaFromPrevRom.toFixed(1)}°
+                            </span>
+                          )}
+                          {activeSelectedNode.painVal !== null && (
+                            <span className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-800">
+                              ปวด VAS {activeSelectedNode.painVal}/10
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Dedicated Monthly Score Summary Chart (Tab View OR Always-Accessible Card Below) */}
+            {chartViewMode === 'MONTHLY' && (
+              <div data-testid="monthly-score-summary-chart" className="space-y-3">
+                {monthlyChartData.bars.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 py-10 px-4 text-center text-xs text-slate-500">
+                    ยังไม่มีข้อมูลคะแนนประเมินรายเดือนสำหรับผู้ป่วยรายนี้
+                  </div>
+                ) : (
+                  <div className="w-full overflow-x-auto">
+                    <svg
+                      viewBox={`0 0 ${monthlyChartData.width} ${monthlyChartData.height}`}
+                      className="w-full min-w-[540px] h-auto"
+                      role="img"
+                      aria-label="กราฟสรุปรายเดือนแสดงคะแนนมหิดลเฉลี่ย 0-6 ต่อเดือน"
+                    >
+                      <defs>
+                        <linearGradient id="monthlyScoreBarGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#059669" stopOpacity="0.92" />
+                          <stop offset="100%" stopColor="#0F4C81" stopOpacity="0.88" />
+                        </linearGradient>
+                        <linearGradient id="monthlyScoreBarSelected" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#10b981" stopOpacity="1" />
+                          <stop offset="100%" stopColor="#0284c7" stopOpacity="1" />
+                        </linearGradient>
+                      </defs>
+
+                      {/* 0 to 6 Mahidol Y-Axis Gridlines */}
+                      {[0, 1, 2, 3, 4, 5, 6].map((scoreTick) => {
+                        const yVal =
+                          monthlyChartData.padT +
+                          monthlyChartData.plotH * (1 - scoreTick / 6);
+                        return (
+                          <g key={scoreTick}>
+                            <line
+                              x1={monthlyChartData.padL}
+                              y1={yVal}
+                              x2={monthlyChartData.width - monthlyChartData.padR}
+                              y2={yVal}
+                              stroke={scoreTick === 0 ? '#94a3b8' : '#e2e8f0'}
+                              strokeDasharray={scoreTick === 0 ? undefined : '3 3'}
+                              strokeWidth="1"
+                            />
+                            <text
+                              x={monthlyChartData.padL - 10}
+                              y={yVal + 3.5}
+                              textAnchor="end"
+                              fill="#475569"
+                              fontSize="10"
+                              fontWeight="700"
+                            >
+                              {scoreTick}/6
+                            </text>
+                          </g>
+                        );
+                      })}
+
+                      {/* Monthly 0-6 Score Bars */}
+                      {monthlyChartData.bars.map((bar) => {
+                        const isSelectedMonth = selectedMonthKey === bar.monthKey;
+                        return (
+                          <g
+                            key={bar.monthKey}
+                            data-testid={`monthly-bar-${bar.monthKey}`}
+                            onClick={() =>
+                              setSelectedMonthKey((prev) =>
+                                prev === bar.monthKey ? null : bar.monthKey,
+                              )
+                            }
+                            className="cursor-pointer"
+                          >
+                            <rect
+                              x={bar.x}
+                              y={bar.y}
+                              width={bar.barW}
+                              height={bar.barH}
+                              rx="8"
+                              fill={
+                                isSelectedMonth
+                                  ? 'url(#monthlyScoreBarSelected)'
+                                  : 'url(#monthlyScoreBarGrad)'
+                              }
+                              stroke={isSelectedMonth ? '#0F4C81' : 'transparent'}
+                              strokeWidth={isSelectedMonth ? '2.5' : '0'}
+                            />
+                            <text
+                              x={bar.cx}
+                              y={Math.max(14, bar.y - 8)}
+                              textAnchor="middle"
+                              fill="#065f46"
+                              fontSize="10.5"
+                              fontWeight="900"
+                            >
+                              {bar.avgScore0To6.toFixed(1)} / 6 คะแนน
+                            </text>
+                            <text
+                              x={bar.cx}
+                              y={monthlyChartData.padT + monthlyChartData.plotH + 17}
+                              textAnchor="middle"
+                              fill={isSelectedMonth ? '#0F4C81' : '#1e293b'}
+                              fontSize="10"
+                              fontWeight="800"
+                            >
+                              {bar.monthLabelShortTh}
+                            </text>
+                            <text
+                              x={bar.cx}
+                              y={monthlyChartData.padT + monthlyChartData.plotH + 31}
+                              textAnchor="middle"
+                              fill="#64748b"
+                              fontSize="9"
+                              fontWeight="700"
+                            >
+                              {bar.sessionCount} ครั้ง • สูงสุด {bar.maxScore0To6}/6
+                            </text>
+                            {bar.monthDeltaScore !== null && (
+                              <text
+                                x={bar.cx}
+                                y={monthlyChartData.padT + monthlyChartData.plotH + 45}
+                                textAnchor="middle"
+                                fill={bar.monthDeltaScore >= 0 ? '#059669' : '#e11d48'}
+                                fontSize="9"
+                                fontWeight="800"
+                              >
+                                {bar.monthDeltaScore >= 0 ? '+' : ''}
+                                {bar.monthDeltaScore.toFixed(1)} คะแนน
+                              </text>
+                            )}
+                          </g>
+                        );
+                      })}
+
+                      {/* Smooth Emerald Trend Line Connecting Monthly Averages */}
+                      {monthlyChartData.bars.length >= 2 && (
+                        <polyline
+                          fill="none"
+                          stroke="#059669"
+                          strokeWidth="2.6"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          points={monthlyChartData.trendPoints}
+                        />
+                      )}
+                      {monthlyChartData.bars.map((bar) => (
+                        <circle
+                          key={`dot-${bar.monthKey}`}
+                          cx={bar.cx}
+                          cy={bar.y}
+                          r="4.5"
+                          fill="#ffffff"
+                          stroke="#059669"
+                          strokeWidth="2.5"
+                          pointerEvents="none"
+                        />
+                      ))}
+                    </svg>
                   </div>
                 )}
               </div>
             )}
           </div>
+
+          {/* Always-Accessible Monthly Score Summary Breakdown Card */}
+          {monthlySummary.length > 0 && (
+            <div
+              data-testid="monthly-score-summary-card"
+              className="rounded-3xl border border-emerald-200/80 bg-white p-5 shadow-sm space-y-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-black text-slate-900">
+                    สรุปผลคะแนนรายเดือน (Monthly Score Summary — {monthlySummary.length} เดือน)
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    คลิกเลือกเดือนเพื่อกรองประวัติการรักษารายบุคคลด้านล่าง หรือเปิดดูกราฟแท่งรายเดือนเต็มรูปแบบ
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {selectedMonthKey && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedMonthKey(null)}
+                      className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                    >
+                      แสดงทุกเดือน
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setChartViewMode((prev) => (prev === 'MONTHLY' ? 'SESSIONS' : 'MONTHLY'))
+                    }
+                    className="btn-tactile rounded-lg border border-emerald-300 bg-emerald-50 px-2.5 py-1 text-[10px] font-extrabold text-emerald-800 hover:bg-emerald-100 cursor-pointer"
+                  >
+                    {chartViewMode === 'MONTHLY'
+                      ? 'กลับสู่กราฟรายครั้ง'
+                      : 'เปิดกราฟแท่งรายเดือน'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+                {monthlySummary.map((m) => {
+                  const isSelectedMonth = selectedMonthKey === m.monthKey;
+                  return (
+                    <button
+                      key={m.monthKey}
+                      type="button"
+                      onClick={() =>
+                        setSelectedMonthKey((prev) => (prev === m.monthKey ? null : m.monthKey))
+                      }
+                      className={`btn-tactile text-left rounded-2xl border p-3 transition-all space-y-1.5 cursor-pointer ${
+                        isSelectedMonth
+                          ? 'border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-200'
+                          : 'border-slate-200 bg-slate-50/60 hover:border-sky-300 hover:bg-white'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="text-xs font-black text-slate-900">
+                          {m.monthLabelFullTh}
+                        </span>
+                        <span className="rounded-full bg-[#0F4C81] px-2 py-0.5 text-[10px] font-extrabold text-white">
+                          {m.avgScore0To6.toFixed(1)}/6
+                        </span>
+                      </div>
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-[#0F4C81] to-[#10B981]"
+                          style={{ width: `${Math.min(100, (m.avgScore0To6 / 6) * 100)}%` }}
+                        />
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] font-semibold text-slate-600">
+                        <span>
+                          {m.sessionCount} ครั้ง • เป้าหมาย {m.avgTargetPct.toFixed(0)}%
+                        </span>
+                        <span>ROM เฉลี่ย {m.avgRomDeg.toFixed(1)}°</span>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-1 text-[10px]">
+                        <span className="font-bold text-emerald-700">
+                          สูงสุด {m.maxScore0To6}/6
+                        </span>
+                        {m.monthDeltaScore !== null ? (
+                          <span
+                            className={`rounded-full px-1.5 py-0.5 font-extrabold ${
+                              m.monthDeltaScore >= 0
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-rose-100 text-rose-700'
+                            }`}
+                          >
+                            {m.monthDeltaScore >= 0 ? '+' : ''}
+                            {m.monthDeltaScore.toFixed(1)} คะแนน
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 font-semibold">เดือนตั้งต้น</span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Interactive 2-Visit Side-by-Side Deep Comparator */}
           {pairComparison && (
@@ -2686,39 +3472,62 @@ export function PatientClinicalRecordPanel({
           {/* Chronological Individual History Timeline */}
           <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <History className="h-4 w-4 text-[#0F4C81]" />
                 <h3 className="text-sm font-black text-slate-900">
-                  ประวัติการรักษารายบุคคลเรียงตามลำดับเวลา ({summary.visitsWithDelta.length} ครั้ง)
+                  ประวัติการรักษารายบุคคลเรียงตามลำดับเวลา ({timelineVisits.length} ครั้ง)
                 </h3>
+                {selectedMonthKey && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedMonthKey(null)}
+                    className="inline-flex items-center gap-1 rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-[10px] font-extrabold text-emerald-800 hover:bg-emerald-100 cursor-pointer"
+                  >
+                    <span>เดือน {formatThaiMonthYear(selectedMonthKey, 'full')}</span>
+                    <span className="text-emerald-600">• แสดงทุกเดือน</span>
+                  </button>
+                )}
               </div>
               <span className="text-[11px] font-semibold text-slate-500">
                 แสดงเฉพาะแฟ้มของ {selectedPatient?.fullName ?? '-'}
               </span>
             </div>
 
-            {summary.visitsWithDelta.length === 0 ? (
+            {timelineVisits.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 py-8 px-4 text-center text-xs text-slate-500">
                 ยังไม่มีประวัติการประเมินในเงื่อนไขที่เลือก
               </div>
             ) : (
               <div className="space-y-3 max-h-[540px] overflow-y-auto pr-1">
-                {summary.visitsWithDelta
+                {timelineVisits
                   .slice()
                   .reverse()
                   .map(({ record, deltaFromPrevRom, targetAchievementPct }) => {
                     const isCourseAuto = record.source_channel === 'COURSE_AUTO_CALCULATED';
                     const isKiosk = record.source_channel === 'KIOSK_SESSION_AUTO_SYNC';
                     const isCameraAi = record.measurement_method === 'CAMERA_AI_LIVE';
+                    const isSelectedCard = activeSelectedNode?.id === record.id;
+                    const exerciseDotColor =
+                      multiExerciseGrouping.colorByExerciseCode[
+                        (record.exercise_code || '').toUpperCase()
+                      ] ?? '#059669';
                     const canDelete =
                       !record.id.startsWith('kiosk-sess-') && !record.id.startsWith('hist-sess-');
                     return (
                       <div
                         key={record.id}
-                        className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 space-y-2 hover:border-sky-300 transition-colors card-hover-lift animate-card-enter"
+                        className={`rounded-2xl border p-4 space-y-2 transition-colors card-hover-lift animate-card-enter ${
+                          isSelectedCard
+                            ? 'border-emerald-400 bg-emerald-50/35 ring-1 ring-emerald-200'
+                            : 'border-slate-200 bg-slate-50/60 hover:border-sky-300'
+                        }`}
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="flex flex-wrap items-center gap-1.5">
+                            <span
+                              className="h-2.5 w-2.5 rounded-full shrink-0"
+                              style={{ backgroundColor: exerciseDotColor }}
+                            />
                             <span className="rounded-full bg-[#0F4C81] px-2.5 py-0.5 text-[11px] font-extrabold text-white">
                               ครั้งที่ {record.visit_number}
                             </span>
