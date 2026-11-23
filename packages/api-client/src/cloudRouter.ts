@@ -124,7 +124,9 @@ import {
 import { clampTtsText, synthesizeTtsAudio } from './ttsProxy';
 import {
   buildPatientDualWriteColumns,
+  inspectPatientRecordHydration,
   resolveProtectedBiometricStatus,
+  schedulePatientTopLevelRepairInBackground,
 } from './patientNormalization';
 
 function randomHex(byteLength: number): string {
@@ -4764,8 +4766,94 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const err = requireAuth(authUser);
       if (err) return err;
       const actor = authUser!;
+      const scopeParam = (reqUrl.searchParams.get('scope') ?? '').trim().toLowerCase();
+      const wantRefresh =
+        reqUrl.searchParams.get('refresh') === '1' || reqUrl.searchParams.get('refresh') === 'true';
+
+      // Guarantee live Supabase patients are hydrated even if full 17-table ensureHydrated timed out on cold start
+      if (supabase && !isSupabaseCircuitOpen(supabase) && (wantRefresh || state.patients.length === 0)) {
+        try {
+          let directTimer: ReturnType<typeof setTimeout> | undefined;
+          const runDirectPatientsSelect = () => {
+            let q = supabase.from('patients').select('*') as unknown as {
+              order?: (col: string, opts?: { ascending?: boolean }) => typeof q;
+              limit?: (n: number) => PromiseLike<unknown>;
+            } & PromiseLike<unknown>;
+            if (typeof q.order === 'function') {
+              q = q.order('created_at', { ascending: false });
+            }
+            if (typeof q.limit === 'function') {
+              return Promise.resolve(q.limit(250));
+            }
+            return Promise.resolve(q);
+          };
+          const directOutcome = await Promise.race([
+            runDirectPatientsSelect().then(
+              (res) => ({ timedOut: false as const, res }),
+              (queryErr) => ({ timedOut: false as const, queryErr }),
+            ),
+            new Promise<{ timedOut: true }>((resolve) => {
+              directTimer = setTimeout(() => resolve({ timedOut: true }), 3500);
+            }),
+          ]).finally(() => {
+            if (directTimer !== undefined) clearTimeout(directTimer);
+          });
+
+          if (!directOutcome.timedOut && 'res' in directOutcome) {
+            const rawRes = directOutcome.res as {
+              data?: Record<string, unknown>[] | null;
+              error?: { code?: string; message?: string } | null;
+            };
+            if (!rawRes?.error && Array.isArray(rawRes?.data) && rawRes.data.length > 0) {
+              const deletedLower = new Set(
+                (state.deleted_patient_ids ?? []).map((x) => x.trim().toLowerCase()).filter(Boolean),
+              );
+              const prevById = new Map(state.patients.map((p) => [p.id, p]));
+              const hydratedRows: PatientRecord[] = [];
+              for (const row of rawRes.data) {
+                const pid = String(row.id ?? '').trim();
+                const hn = String(row.hn ?? '').trim();
+                const regLo = String(row.registration_status ?? '').trim().toLowerCase();
+                if (
+                  !pid ||
+                  Boolean(row.deleted_at) ||
+                  regLo === 'deleted' ||
+                  regLo === 'archived' ||
+                  regLo === 'rejected' ||
+                  regLo === 'inactive' ||
+                  deletedLower.has(pid.toLowerCase()) ||
+                  (hn && deletedLower.has(hn.toLowerCase()))
+                ) {
+                  continue;
+                }
+                const inspected = inspectPatientRecordHydration(row, {
+                  prevPatient: prevById.get(pid) ?? null,
+                  requireRealVectorsForVerified: false,
+                  applyClinicalDefaults: true,
+                });
+                if (inspected.needsTopLevelRepair && inspected.topLevelRepairPatch) {
+                  runWaitUntil(
+                    schedulePatientTopLevelRepairInBackground(
+                      supabase,
+                      pid,
+                      inspected.topLevelRepairPatch,
+                    ),
+                  );
+                }
+                hydratedRows.push(inspected.patient);
+              }
+              if (hydratedRows.length > 0) {
+                state.patients = hydratedRows;
+              }
+            }
+          }
+        } catch {
+          // Keep existing in-memory patients on transient fallback error
+        }
+      }
+
       let list = state.patients;
-      if (actor.role === 'pt') {
+      if (actor.role === 'pt' && scopeParam !== 'all') {
         list = list.filter((p) => p.assignedPtId === actor.id || p.delegatedToPtId === actor.id);
       } else if (actor.role === 'patient') {
         list = list.filter((p) => p.id === actor.patientId);

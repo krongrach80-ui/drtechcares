@@ -78,6 +78,12 @@ import { PatientClinicalRecordPanel } from './PatientClinicalRecordPanel';
 import { SmartRehabKioskUI } from './SmartRehabKioskUI';
 import { notifyBiometricIndexChanged } from '../lib/faceMatcher';
 import { removeProfileFromLocalBiometricVault } from '../lib/biometricEngine';
+import {
+  fetchAllPatientsUnified,
+  filterAdminPortalPatients,
+  normalizePatientRecord,
+  type PatientScopeFilter,
+} from '../lib/patientHydration';
 import { StaffAssistedEnrollmentModal } from './StaffAssistedEnrollmentModal';
 import {
   PatientProfileAndHistoryModal,
@@ -96,6 +102,9 @@ export interface ClinicalStaffPortalShellProps {
   initialTab?: PortalTab;
   autoOpenEnroll?: boolean;
   onAutoOpenEnrollConsumed?: () => void;
+  initialPatients?: PatientRecord[];
+  initialPatientScope?: PatientScopeFilter;
+  initialPatientSyncError?: string | null;
 }
 
 type PortalTab = 'staff' | 'patients' | 'assessments' | 'pts' | 'exercises' | 'schedules' | 'security' | 'profile';
@@ -1337,6 +1346,9 @@ export function ClinicalStaffPortalShell({
   initialTab,
   autoOpenEnroll,
   onAutoOpenEnrollConsumed,
+  initialPatients,
+  initialPatientScope,
+  initialPatientSyncError,
 }: ClinicalStaffPortalShellProps) {
   const { lang, setLang } = useClinicalI18n();
   const locale = PORTAL_TEXT[lang];
@@ -1368,7 +1380,13 @@ export function ClinicalStaffPortalShell({
 
   // Core data state
   const [users, setUsers] = useState<UserAccount[]>([]);
-  const [patients, setPatients] = useState<PatientRecord[]>([]);
+  const [patients, setPatients] = useState<PatientRecord[]>(() =>
+    initialPatients
+      ? initialPatients.map((p) => normalizePatientRecord(p, { requireRealVectorsForVerified: false }))
+      : [],
+  );
+  const [patientsSyncing, setPatientsSyncing] = useState(false);
+  const [patientSyncError, setPatientSyncError] = useState<string | null>(initialPatientSyncError ?? null);
   const [exercises, setExercises] = useState<ManagedExerciseRecord[]>(() =>
     CLINICAL_EXERCISES.map((ex) => ({ ...ex, createdBy: 'system' })),
   );
@@ -1439,6 +1457,9 @@ export function ClinicalStaffPortalShell({
 
   const [patientSearch, setPatientSearch] = useState('');
   const [patientFaceFilter, setPatientFaceFilter] = useState<'all' | 'enrolled' | 'pending'>('all');
+  const [patientScopeFilter, setPatientScopeFilter] = useState<PatientScopeFilter>(
+    initialPatientScope ?? 'all',
+  );
 
   const [ptSearch, setPtSearch] = useState('');
   const [quickCheckinSearch, setQuickCheckinSearch] = useState('');
@@ -1572,23 +1593,66 @@ export function ClinicalStaffPortalShell({
     [apiClient],
   );
 
+  const applyPatientDelegationOverrides = useCallback((rows: PatientRecord[]): PatientRecord[] => {
+    const localDelegations = loadCaseDelegationOverrides();
+    return rows.map((p) => {
+      const ov = localDelegations[p.id];
+      if (ov && ov.delegatedToPtId) {
+        return {
+          ...p,
+          delegatedToPtId: p.delegatedToPtId || ov.delegatedToPtId,
+          delegationDate: p.delegationDate || ov.delegationDate,
+          delegationNote: p.delegationNote ?? ov.delegationNote,
+        };
+      }
+      return p;
+    });
+  }, []);
+
+  const syncPatientsFromSupabase = useCallback(
+    async (options?: { showSuccessToast?: boolean; silent?: boolean }) => {
+      setPatientsSyncing(true);
+      try {
+        const res = await fetchAllPatientsUnified(apiClient, { forceRefresh: true });
+        if (res.authError) {
+          if (await handleAuthFailureIfExpired(res.authError)) return res;
+        }
+        if (res.patients.length > 0) {
+          const merged = applyPatientDelegationOverrides(res.patients);
+          setPatients(merged);
+          setSelectedSchedulePatientId((prev) => prev || merged[0].id);
+          setPatientSyncError(res.errorMessage);
+        } else if (res.errorMessage) {
+          setPatientSyncError(res.errorMessage);
+        } else if (res.syncedFromSupabase) {
+          setPatients([]);
+          setPatientSyncError(null);
+        }
+        if (options?.showSuccessToast) {
+          if (res.errorMessage && res.patients.length === 0) {
+            flashBanner('error', `ไม่สามารถซิงก์ข้อมูลจาก Supabase ได้: ${res.errorMessage}`);
+          } else {
+            flashBanner('success', `ซิงก์ข้อมูลจาก Supabase สำเร็จ: ${res.patients.length} บัญชี`);
+          }
+        }
+        return res;
+      } finally {
+        setPatientsSyncing(false);
+      }
+    },
+    [apiClient, applyPatientDelegationOverrides, flashBanner, handleAuthFailureIfExpired],
+  );
+
   const refreshAll = useCallback(async () => {
     setLoading(true);
     try {
       let listUsersError: unknown = null;
-      let patientsHttpOk = false;
-      const [uRes, pRes, exRes, mpRes, sessRes, callsRes, settingsRes, secRes, healthRes] = await Promise.all([
+      const [uRes, patientSyncRes, exRes, mpRes, sessRes, callsRes, settingsRes, secRes, healthRes] = await Promise.all([
         apiClient.listUsers().catch((err) => {
           listUsersError = err;
           return null;
         }),
-        apiClient
-          .listPatients()
-          .then((rows) => {
-            patientsHttpOk = true;
-            return rows;
-          })
-          .catch(() => []),
+        fetchAllPatientsUnified(apiClient, { forceRefresh: true }),
         apiClient.listExercises().catch(() => []),
         apiClient.listModpacks().catch(() => []),
         apiClient.listRehabSessions().catch(() => []),
@@ -1600,12 +1664,17 @@ export function ClinicalStaffPortalShell({
           .catch(() => ({ ok: false, persistentDb: false, supabaseConnected: false, latencyMs: 0 })),
       ]);
 
+      const patientsHttpOk = patientSyncRes.syncedFromSupabase;
+
       if (listUsersError) {
         if (await handleAuthFailureIfExpired(listUsersError)) return;
         flashBanner(
           'error',
           listUsersError instanceof Error ? listUsersError.message : 'ไม่สามารถโหลดข้อมูลบุคลากรได้',
         );
+      }
+      if (patientSyncRes.authError) {
+        if (await handleAuthFailureIfExpired(patientSyncRes.authError)) return;
       }
 
       if (uRes && uRes.length > 0) {
@@ -1615,21 +1684,19 @@ export function ClinicalStaffPortalShell({
       } else {
         setUsers((prev) => (prev.length > 0 ? prev : [currentUser]));
       }
-      const localDelegations = loadCaseDelegationOverrides();
-      setPatients(
-        pRes.map((p) => {
-          const ov = localDelegations[p.id];
-          if (ov && ov.delegatedToPtId) {
-            return {
-              ...p,
-              delegatedToPtId: p.delegatedToPtId || ov.delegatedToPtId,
-              delegationDate: p.delegationDate || ov.delegationDate,
-              delegationNote: p.delegationNote ?? ov.delegationNote,
-            };
-          }
-          return p;
-        }),
-      );
+
+      if (patientSyncRes.patients.length > 0) {
+        const mergedPatients = applyPatientDelegationOverrides(patientSyncRes.patients);
+        setPatients(mergedPatients);
+        setPatientSyncError(patientSyncRes.errorMessage);
+        setSelectedSchedulePatientId((prev) => prev || mergedPatients[0].id);
+      } else if (patientSyncRes.errorMessage) {
+        setPatientSyncError(patientSyncRes.errorMessage);
+      } else if (patientSyncRes.syncedFromSupabase) {
+        setPatients([]);
+        setPatientSyncError(null);
+      }
+
       const unifiedEx = mergeDuplicateSideExercises(
         sortExercisesStrokeUpperFirst(exRes.filter((ex) => !isDeprecatedExerciseRecord(ex))),
       );
@@ -1667,9 +1734,6 @@ export function ClinicalStaffPortalShell({
         setActiveSessions(sortNewestFirst(secRes.activeSessions));
       }
 
-      if (pRes.length > 0) {
-        setSelectedSchedulePatientId((prev) => prev || pRes[0].id);
-      }
       if (mpRes.length > 0) {
         setCourseModpackId((prev) => prev || mpRes[0].id);
       }
@@ -1680,9 +1744,16 @@ export function ClinicalStaffPortalShell({
     apiClient,
     isAdmin,
     currentUser,
+    applyPatientDelegationOverrides,
     handleAuthFailureIfExpired,
     flashBanner,
   ]);
+
+  useEffect(() => {
+    if (activeTab === 'patients' || activeTab === 'assessments') {
+      void syncPatientsFromSupabase({ silent: true });
+    }
+  }, [activeTab, syncPatientsFromSupabase]);
 
   useEffect(() => {
     refreshAll();
@@ -1890,21 +1961,24 @@ export function ClinicalStaffPortalShell({
     });
   }, [users, staffSearch, staffRoleFilter, staffStatusFilter]);
 
-  const filteredPatients = useMemo(() => {
-    const q = patientSearch.trim().toLowerCase();
-    return patients.filter((p) => {
-      const verified = isPatientFaceVerified(p);
-      if (patientFaceFilter === 'enrolled' && !verified) return false;
-      if (patientFaceFilter === 'pending' && verified) return false;
-      if (!q) return true;
-      return (
-        p.fullName.toLowerCase().includes(q) ||
-        p.hn.toLowerCase().includes(q) ||
-        (p.phone || '').toLowerCase().includes(q) ||
-        (p.diagnosis || '').toLowerCase().includes(q)
-      );
-    });
-  }, [patients, patientSearch, patientFaceFilter]);
+  const assignedPatientsCount = useMemo(
+    () =>
+      patients.filter(
+        (p) => p.assignedPtId === currentUser.id || p.delegatedToPtId === currentUser.id,
+      ).length,
+    [patients, currentUser.id],
+  );
+
+  const filteredPatients = useMemo(
+    () =>
+      filterAdminPortalPatients(patients, {
+        scopeFilter: patientScopeFilter,
+        faceFilter: patientFaceFilter,
+        searchQuery: patientSearch,
+        currentUserId: currentUser.id,
+      }),
+    [patients, patientScopeFilter, patientFaceFilter, patientSearch, currentUser.id],
+  );
 
   const filteredPts = useMemo(() => {
     const q = ptSearch.trim().toLowerCase();
@@ -3016,20 +3090,73 @@ export function ClinicalStaffPortalShell({
                   <div className="flex items-start gap-2.5 min-w-0">
                     <Activity className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
                     <div className="min-w-0">
-                      <h2 className="text-lg font-extrabold text-slate-900">{locale.patients.title}</h2>
-                      <p className="text-xs text-slate-500">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-lg font-extrabold text-slate-900">{locale.patients.title}</h2>
+                        <span
+                          data-testid="admin-supabase-sync-pill"
+                          className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-bold transition-colors ${patientSyncError
+                              ? 'border-rose-200 bg-rose-50 text-rose-700'
+                              : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                            }`}
+                        >
+                          <span
+                            className={`h-2 w-2 rounded-full shrink-0 ${patientSyncError
+                                ? 'bg-rose-500'
+                                : patientsSyncing
+                                  ? 'bg-sky-500 animate-pulse'
+                                  : 'bg-emerald-500'
+                              }`}
+                          />
+                          <svg
+                            viewBox="0 0 20 20"
+                            fill="none"
+                            aria-hidden="true"
+                            className="h-3.5 w-3.5 shrink-0"
+                          >
+                            <ellipse cx="10" cy="4.5" rx="6.5" ry="2.5" stroke="currentColor" strokeWidth="1.6" />
+                            <path
+                              d="M3.5 4.5V10C3.5 11.38 6.41 12.5 10 12.5C13.59 12.5 16.5 11.38 16.5 10V4.5"
+                              stroke="currentColor"
+                              strokeWidth="1.6"
+                            />
+                            <path
+                              d="M3.5 10V15.5C3.5 16.88 6.41 18 10 18C13.59 18 16.5 16.88 16.5 15.5V10"
+                              stroke="currentColor"
+                              strokeWidth="1.6"
+                            />
+                          </svg>
+                          <span>ซิงก์ข้อมูลจาก Supabase: {patients.length} บัญชี</span>
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5">
                         {locale.patients.subtitle}
                       </p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
                     <button
                       type="button"
-                      onClick={() => void refreshAll()}
-                      className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer shrink-0"
+                      data-testid="admin-refresh-patients-btn"
+                      disabled={patientsSyncing || loading}
+                      onClick={() => void syncPatientsFromSupabase({ showSuccessToast: true })}
+                      className="btn-tactile whitespace-nowrap h-10 px-3.5 inline-flex items-center justify-center gap-1.5 rounded-xl border border-sky-200 bg-white text-xs font-bold text-sky-700 hover:bg-sky-50 disabled:opacity-60 cursor-pointer shrink-0 shadow-xs"
                       title={locale.staff.refreshTitle}
                     >
-                      <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                      <svg
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        aria-hidden="true"
+                        className={`h-4 w-4 shrink-0 ${patientsSyncing || loading ? 'animate-spin' : ''}`}
+                      >
+                        <path
+                          d="M16.25 10A6.25 6.25 0 1 1 14.42 5.58L16.25 7.25M16.25 7.25V3.75M16.25 7.25H12.75"
+                          stroke="currentColor"
+                          strokeWidth="1.75"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                      <span>รีเฟรชข้อมูล</span>
                     </button>
                     <button
                       type="button"
@@ -3037,13 +3164,107 @@ export function ClinicalStaffPortalShell({
                         setEnrollTargetPatient(null);
                         setEnrollModalOpen(true);
                       }}
-                      className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1.5 shrink-0 rounded-xl bg-emerald-600 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500 cursor-pointer"
+                      className="btn-tactile whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-1.5 shrink-0 rounded-xl bg-emerald-600 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-500 cursor-pointer"
                     >
                       <UserPlus className="h-4 w-4 shrink-0" />
                       {locale.patients.addBtn}
                     </button>
                   </div>
                 </div>
+
+                {/* Segmented Clinic Scope Toggle (All Clinic Patients vs Assigned To Me) */}
+                <div className="flex flex-wrap items-center justify-between gap-2.5">
+                  <div
+                    role="tablist"
+                    aria-label="ขอบเขตการแสดงรายชื่อผู้ป่วย"
+                    data-testid="patient-scope-toggle"
+                    className="inline-flex items-center rounded-xl border border-slate-200 bg-slate-100/80 p-1 gap-1"
+                  >
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={patientScopeFilter === 'all'}
+                      data-testid="patient-scope-all"
+                      onClick={() => setPatientScopeFilter('all')}
+                      className={`btn-tactile whitespace-nowrap inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-bold transition-all cursor-pointer ${patientScopeFilter === 'all'
+                          ? 'bg-white text-sky-800 shadow-xs ring-1 ring-sky-200'
+                          : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                    >
+                      <span>คนไข้ทั้งหมดในคลินิก (All)</span>
+                      <span
+                        className={`rounded-full px-1.5 py-0.5 text-[10px] font-extrabold ${patientScopeFilter === 'all'
+                            ? 'bg-emerald-100 text-emerald-700'
+                            : 'bg-slate-200 text-slate-600'
+                          }`}
+                      >
+                        {patients.length}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={patientScopeFilter === 'assigned'}
+                      data-testid="patient-scope-assigned"
+                      onClick={() => setPatientScopeFilter('assigned')}
+                      className={`btn-tactile whitespace-nowrap inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-bold transition-all cursor-pointer ${patientScopeFilter === 'assigned'
+                          ? 'bg-white text-sky-800 shadow-xs ring-1 ring-sky-200'
+                          : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                    >
+                      <span>คนไข้ในความดูแลของฉัน (Assigned)</span>
+                      <span
+                        className={`rounded-full px-1.5 py-0.5 text-[10px] font-extrabold ${patientScopeFilter === 'assigned'
+                            ? 'bg-sky-100 text-sky-700'
+                            : 'bg-slate-200 text-slate-600'
+                          }`}
+                      >
+                        {assignedPatientsCount}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                {patientSyncError && (
+                  <div
+                    role="alert"
+                    data-testid="patient-sync-error-banner"
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-800 shadow-xs animate-toast-in"
+                  >
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <svg
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        aria-hidden="true"
+                        className="h-4 w-4 text-rose-600 mt-0.5 shrink-0"
+                      >
+                        <path
+                          d="M10 3.2L17.2 16H2.8L10 3.2Z"
+                          stroke="currentColor"
+                          strokeWidth="1.6"
+                          strokeLinejoin="round"
+                        />
+                        <path d="M10 8V11.4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                        <circle cx="10" cy="13.8" r="0.9" fill="currentColor" />
+                      </svg>
+                      <div className="min-w-0">
+                        <div className="font-extrabold text-rose-900">
+                          ไม่สามารถซิงก์รายชื่อผู้ป่วยจาก Supabase ได้
+                        </div>
+                        <div className="mt-0.5 font-mono text-[11px] text-rose-700 break-words">
+                          {patientSyncError}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void syncPatientsFromSupabase({ showSuccessToast: true })}
+                      className="btn-tactile whitespace-nowrap rounded-lg border border-rose-300 bg-white px-3 py-1.5 text-[11px] font-bold text-rose-700 hover:bg-rose-100 cursor-pointer shrink-0"
+                    >
+                      ลองซิงก์ใหม่
+                    </button>
+                  </div>
+                )}
 
                 <div className="flex flex-wrap items-center gap-2.5">
                   <div className="flex flex-1 min-w-[260px] h-10 items-center rounded-xl border border-slate-200 bg-white p-1">
@@ -3056,13 +3277,14 @@ export function ClinicalStaffPortalShell({
                     />
                     <button
                       type="button"
-                      onClick={() => void refreshAll()}
-                      className="whitespace-nowrap h-8 px-3.5 inline-flex items-center justify-center shrink-0 rounded-lg bg-emerald-600 text-xs font-bold text-white hover:bg-emerald-500 cursor-pointer"
+                      onClick={() => void syncPatientsFromSupabase({ showSuccessToast: true })}
+                      className="btn-tactile whitespace-nowrap h-8 px-3.5 inline-flex items-center justify-center shrink-0 rounded-lg bg-emerald-600 text-xs font-bold text-white hover:bg-emerald-500 cursor-pointer"
                     >
                       {locale.patients.searchBtn}
                     </button>
                   </div>
                   <select
+                    aria-label="กรองสถานะใบหน้าผู้ป่วย"
                     value={patientFaceFilter}
                     onChange={(e) => setPatientFaceFilter(e.target.value as 'all' | 'enrolled' | 'pending')}
                     className="h-10 rounded-xl border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-700"
@@ -5672,13 +5894,26 @@ export function ClinicalStaffPortalShell({
           setEnrollTargetPatient(null);
         }}
         onEnrolled={(p) => {
-          const rxCount = p.rehabSchedules?.length ?? 0;
+          const hydratedEnrolled = normalizePatientRecord(p, {
+            requireRealVectorsForVerified: false,
+          });
+          setPatients((prev) => [
+            hydratedEnrolled,
+            ...prev.filter(
+              (item) =>
+                item.id !== hydratedEnrolled.id &&
+                item.hn.toLowerCase() !== hydratedEnrolled.hn.toLowerCase(),
+            ),
+          ]);
+          setPatientSyncError(null);
+          const rxCount = hydratedEnrolled.rehabSchedules?.length ?? 0;
           flashBanner(
             'success',
             rxCount > 0
-              ? `ลงทะเบียนคนไข้ ${p.fullName} (${p.hn}) พร้อมกำหนดท่ากายภาพ ${rxCount} รายการสำเร็จ!`
-              : `ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ! (${p.fullName} • ${p.hn})`,
+              ? `ลงทะเบียนคนไข้ ${hydratedEnrolled.fullName} (${hydratedEnrolled.hn}) พร้อมกำหนดท่ากายภาพ ${rxCount} รายการสำเร็จ!`
+              : `ลงทะเบียนคนไข้และบันทึก Face ID 120 เฟรมสำเร็จ! (${hydratedEnrolled.fullName} - ${hydratedEnrolled.hn})`,
           );
+          void syncPatientsFromSupabase({ silent: true });
           void refreshAll();
         }}
       />

@@ -1854,8 +1854,12 @@ export class DrTechCaresApiClient {
   }
 
   // Patients, Delegation, Notes
-  async listPatients(): Promise<PatientRecord[]> {
-    const res = await this.request<{ patients: PatientRecord[] }>('/api/patients');
+  async listPatients(options?: { scope?: 'all' | 'assigned'; refresh?: boolean }): Promise<PatientRecord[]> {
+    const params: string[] = [];
+    if (options?.scope === 'all') params.push('scope=all');
+    if (options?.refresh) params.push('refresh=1');
+    const query = params.length > 0 ? `?${params.join('&')}` : '';
+    const res = await this.request<{ patients: PatientRecord[] }>(`/api/patients${query}`);
     const deleted = this.readLocallyDeletedIdSet();
     const overrides = this.readCaseDelegationOverrides();
     return res.patients
