@@ -2,16 +2,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { l2Normalize } from '@drtechcares/smart-biometric-core';
 import {
   DrTechCaresApiClient,
+  createCloudDelegatedRouter,
+  type PatientRecord,
   type UserAccount,
 } from '@drtechcares/api-client';
 import { ClinicalI18nProvider } from '@drtechcares/clinical-i18n';
 import { ClinicalStaffPortalShell } from '../components/ClinicalStaffPortalShell';
+import { formatKioskSupabaseSyncBadgeLabel } from '../components/KioskBiometricLoginView';
 import {
+  applyCascadingPatientDeletionToState,
+  cascadeDeletePatientInSupabase,
   formatCanonicalHn,
   mirrorSynthesizedPatientsToSupabase,
   normalizeHnKey,
@@ -44,7 +49,7 @@ const ADMIN_USER: UserAccount = {
 
 const STAFF_USER_MANOT: UserAccount = {
   id: '4a4f1af2-9b46-43d5-8951-7105f82e5cf9',
-  username: '@hn53309',
+  username: 'hn53309',
   role: 'patient',
   fullName: 'มาโนชญ์ อ่อนสิงห์',
   phone: '0821699168',
@@ -55,7 +60,7 @@ const STAFF_USER_MANOT: UserAccount = {
 
 const STAFF_USER_POOM: UserAccount = {
   id: '49bf2cc5-6c9f-4668-b99d-b6724867141d',
-  username: '@hn410382',
+  username: 'hn410382',
   role: 'patient',
   fullName: 'Poom',
   phone: '0914448744',
@@ -78,9 +83,10 @@ function makePoomSupabaseRow() {
     next_appointment_date: '2026-11-25',
     created_at: '2026-11-23T02:04:11.925523+00:00',
     updated_at: '2026-11-23T02:04:11.925523+00:00',
-    face_biometric_status: 'PENDING',
-    face_frames_count: 0,
-    face_image_url: null,
+    face_biometric_status: 'VERIFIED',
+    face_frames_count: 120,
+    face_image_url:
+      'https://vyjuwjhbdhknjdzyqctz.supabase.co/storage/v1/object/public/patient-faces/5104db15-5634-45e5-ab65-f2f008a15e54/center.jpg',
     history: {
       faceBiometricStatus: 'VERIFIED',
       faceFramesCount: 120,
@@ -98,81 +104,289 @@ function makePoomSupabaseRow() {
   };
 }
 
-describe('Unified Clinic Patient Directory (Staff Management + Patients + EHR + Appointments)', () => {
-  it('normalizes @hn usernames and merges staff_users PATIENT accounts with 0 or 1 Supabase patient rows without duplicates', () => {
+function makeManotSupabaseRow() {
+  return {
+    id: 'bf47d4a3-97ab-40fb-8561-05550da1c040',
+    hn: 'HN-53309',
+    full_name: 'มาโนชญ์ อ่อนสิงห์',
+    age: 62,
+    phone: '0821699168',
+    diagnosis: 'รอประเมินอาการทางกายภาพบำบัด',
+    registration_status: 'active',
+    assigned_pt_id: '',
+    next_appointment_date: '',
+    created_at: '2026-11-20T08:00:00.000Z',
+    updated_at: '2026-11-20T08:00:00.000Z',
+    face_biometric_status: 'PENDING',
+    face_frames_count: 0,
+    face_image_url: null,
+    history: {
+      faceBiometricStatus: 'PENDING',
+      faceFramesCount: 0,
+      gender: 'ชาย',
+      strokeType: 'ELDERLY_GENERAL',
+      affectedSide: 'NONE',
+      motorAssessmentScore: 3,
+      adlDressingScore: 3,
+    },
+  };
+}
+
+describe('Cascading Patient Delete (Zero Resurrection) & Unified Kiosk Sync Count', () => {
+  it('treats public.patients as single source of truth and NEVER resurrects deleted patients from staff_users on read/render', async () => {
     expect(normalizeHnKey('@hn410382')).toBe('hn410382');
     expect(normalizeHnKey('HN-410382')).toBe('hn410382');
     expect(formatCanonicalHn('@hn53309')).toBe('HN-53309');
-    expect(formatCanonicalHn('@hn410382')).toBe('HN-410382');
 
     const staffList: UserAccount[] = [ADMIN_USER, STAFF_USER_MANOT, STAFF_USER_POOM];
 
-    // Case 1: Supabase patients table returns 0 rows -> both PATIENT accounts synthesized cleanly
-    const fromZero = unifyClinicPatientsDetailed([], staffList);
-    expect(fromZero.patients).toHaveLength(2);
-    expect(fromZero.synthesizedPatients).toHaveLength(2);
-    expect(fromZero.patients.map((p) => p.hn)).toEqual(['HN-53309', 'HN-410382']);
-    expect(fromZero.patients.map((p) => p.fullName)).toEqual(['มาโนชญ์ อ่อนสิงห์', 'Poom']);
+    // Even if staff_users still had an orphan row for Manot, unifyClinicPatients strictly uses public.patients
+    const result = unifyClinicPatientsDetailed([makePoomSupabaseRow()], staffList);
+    expect(result.patients).toHaveLength(1);
+    expect(result.patients[0]?.hn).toBe('HN-410382');
+    expect(result.patients[0]?.fullName).toBe('Poom');
+    expect(result.patients.some((p) => p.hn === 'HN-53309')).toBe(false);
+    expect(result.synthesizedPatients).toHaveLength(0);
 
-    // Case 2: Supabase patients table returns 1 row (Poom HN-410382) -> deduplicates Poom and synthesizes Manot
-    const fromOne = unifyClinicPatientsDetailed([makePoomSupabaseRow()], staffList);
-    expect(fromOne.patients).toHaveLength(2);
-    expect(fromOne.synthesizedPatients).toHaveLength(1);
-    expect(fromOne.synthesizedPatients[0]?.hn).toBe('HN-53309');
-    expect(fromOne.synthesizedPatients[0]?.fullName).toBe('มาโนชญ์ อ่อนสิงห์');
-
-    const poom = fromOne.patients.find((p) => p.hn === 'HN-410382');
-    const manot = fromOne.patients.find((p) => p.hn === 'HN-53309');
-    expect(poom?.fullName).toBe('Poom');
-    expect(poom?.faceBiometricStatus).toBe('VERIFIED');
-    expect(poom?.faceFramesCount).toBe(120);
-    expect(manot?.fullName).toBe('มาโนชญ์ อ่อนสิงห์');
-    expect(manot?.phone).toBe('0821699168');
-
-    // Convenience helper returns identical 2-account unified array
-    const simpleList = unifyClinicPatients([makePoomSupabaseRow()], staffList);
-    expect(simpleList).toHaveLength(2);
-    expect(simpleList.map((p) => p.hn).sort()).toEqual(['HN-410382', 'HN-53309']);
+    // And mirrorSynthesizedPatientsToSupabase must never INSERT/UPSERT during read/render cycles
+    const upsertSpy = vi.fn();
+    const mockSb = {
+      from: () => ({ upsert: upsertSpy }),
+    } as unknown as SupabaseClient;
+    const mirrored = await mirrorSynthesizedPatientsToSupabase(mockSb, result.patients);
+    expect(mirrored).toBe(0);
+    expect(upsertSpy).not.toHaveBeenCalled();
   });
 
-  it('triggers background upsert into Supabase public.patients for synthesized PATIENT user accounts', async () => {
-    const upsertedRows: Record<string, unknown>[] = [];
+  it('cascade-deletes a patient from BOTH patients and staff_users (by id, normalized HN/username, and full_name) plus assessments and schedules without resurrection', async () => {
+    const initialPatients = unifyClinicPatients([makeManotSupabaseRow(), makePoomSupabaseRow()], []);
+    const initialUsers: UserAccount[] = [ADMIN_USER, STAFF_USER_MANOT, STAFF_USER_POOM];
+    expect(initialPatients).toHaveLength(2);
+    expect(initialUsers).toHaveLength(3);
+
+    // 1. Delete Manot (HN-53309, different UUID from staff_users.patient_id!) from Tab 2 Patients Directory
+    const manot = initialPatients.find((p) => p.hn === 'HN-53309')!;
+    const afterDelete = applyCascadingPatientDeletionToState(initialPatients, initialUsers, {
+      id: manot.id,
+      patientId: manot.id,
+      hn: manot.hn,
+      fullName: manot.fullName,
+      role: 'patient',
+    });
+
+    expect(afterDelete.patients.map((p) => p.hn)).toEqual(['HN-410382']);
+    expect(afterDelete.users.map((u) => u.username)).toEqual(['admin', 'hn410382']);
+    expect(afterDelete.users.some((u) => u.username === 'hn53309')).toBe(false);
+
+    // Subsequent directory unification/reload NEVER resurrects Manot
+    const afterReload = unifyClinicPatients(afterDelete.patients, afterDelete.users);
+    expect(afterReload.map((p) => p.hn)).toEqual(['HN-410382']);
+    expect(afterReload.some((p) => p.hn === 'HN-53309')).toBe(false);
+
+    // 2. Delete Poom from Tab 1 Staff Management (role === 'patient') -> also removes Poom from patients!
+    const afterDeleteStaffPatient = applyCascadingPatientDeletionToState(
+      afterDelete.patients,
+      afterDelete.users,
+      {
+        id: STAFF_USER_POOM.id,
+        patientId: STAFF_USER_POOM.patientId,
+        username: STAFF_USER_POOM.username,
+        fullName: STAFF_USER_POOM.fullName,
+        role: STAFF_USER_POOM.role,
+      },
+    );
+    expect(afterDeleteStaffPatient.patients).toHaveLength(0);
+    expect(afterDeleteStaffPatient.users.map((u) => u.username)).toEqual(['admin']);
+
+    // 3. Direct Supabase cascading delete cleans patients, staff_users (username hn53309 + full_name), assessments & schedules
+    const deletedOps: Array<{ table: string; col: string; val: string }> = [];
     const mockSb = {
       from: (table: string) => ({
-        upsert: async (payload: Record<string, unknown>) => {
-          if (table === 'patients') {
-            upsertedRows.push(payload);
-          }
-          return { error: null };
-        },
+        delete: () => ({
+          eq: (col: string, val: string) => {
+            deletedOps.push({ table, col, val });
+            return {
+              eq: async (col2: string, val2: string) => {
+                deletedOps.push({ table, col: `${col}+${col2}`, val: `${val}+${val2}` });
+                return { error: null };
+              },
+              then: (resolve: (v: unknown) => void) => resolve({ error: null }),
+            };
+          },
+        }),
       }),
     } as unknown as SupabaseClient;
 
-    const { synthesizedPatients } = unifyClinicPatientsDetailed(
-      [makePoomSupabaseRow()],
-      [ADMIN_USER, STAFF_USER_MANOT, STAFF_USER_POOM],
-    );
-    expect(synthesizedPatients).toHaveLength(1);
+    await cascadeDeletePatientInSupabase(mockSb, {
+      id: manot.id,
+      patientId: manot.id,
+      hn: 'HN-53309',
+      username: 'hn53309',
+      fullName: 'มาโนชญ์ อ่อนสิงห์',
+      role: 'patient',
+    });
 
-    const count1 = await mirrorSynthesizedPatientsToSupabase(mockSb, synthesizedPatients);
-    expect(count1).toBe(1);
-    expect(upsertedRows).toHaveLength(1);
-    expect(upsertedRows[0]?.hn).toBe('HN-53309');
-    expect(upsertedRows[0]?.full_name).toBe('มาโนชญ์ อ่อนสิงห์');
-
-    // Deduplicated per client: calling again does not spam duplicate upserts
-    const count2 = await mirrorSynthesizedPatientsToSupabase(mockSb, synthesizedPatients);
-    expect(count2).toBe(0);
-    expect(upsertedRows).toHaveLength(1);
+    expect(deletedOps.some((op) => op.table === 'patients' && op.col === 'id' && op.val === manot.id)).toBe(true);
+    expect(deletedOps.some((op) => op.table === 'patients' && op.col === 'hn' && op.val === 'HN-53309')).toBe(true);
+    expect(deletedOps.some((op) => op.table === 'staff_users' && op.col === 'username' && op.val === 'hn53309')).toBe(true);
+    expect(deletedOps.some((op) => op.table === 'staff_users' && op.col === 'role+full_name' && op.val === 'patient+มาโนชญ์ อ่อนสิงห์')).toBe(true);
+    expect(deletedOps.some((op) => op.table === 'patient_clinical_assessments' && op.col === 'patient_id' && op.val === manot.id)).toBe(true);
+    expect(deletedOps.some((op) => op.table === 'rehab_schedules' && op.col === 'patient_id' && op.val === manot.id)).toBe(true);
   });
 
-  it('renders both Poom (HN-410382) and มาโนชญ์ อ่อนสิงห์ (HN-53309) across Tab 2 Patients Directory, Tab 5 Schedules, and Individual 0-6 Clinical Assessments', () => {
-    const apiClient = new DrTechCaresApiClient();
-    const staffUsers = [ADMIN_USER, STAFF_USER_MANOT, STAFF_USER_POOM];
-    const poomOnlyFromPatients = unifyClinicPatients([makePoomSupabaseRow()], []);
+  it('cascade-deletes HN-53309 on Cloud Worker router without resurrection on subsequent GET /api/patients', async () => {
+    const dbPatients = [makeManotSupabaseRow(), makePoomSupabaseRow()];
+    const dbStaffUsers = [
+      {
+        id: '00000000-0000-4000-8000-000000000001',
+        username: 'admin',
+        password_hash:
+          'pbkdf2:dceb3f63b5ff16065454e730ac190076:405a025959bb0a88efc4ee2b0d7f1cc91f8c274e286980cb053b1409d17626aa',
+        full_name: 'นพ.สมชาย ผู้อำนวยการโรงพยาบาล',
+        phone: '02-000-0001',
+        role: 'super_admin',
+        active: true,
+      },
+      {
+        id: STAFF_USER_MANOT.id,
+        username: 'hn53309',
+        password_hash: 'pbkdf2:00:00',
+        full_name: 'มาโนชญ์ อ่อนสิงห์',
+        phone: '0821699168',
+        patient_id: '7c864f61-4cb0-40f8-9336-dc5654ab9e56',
+        role: 'patient',
+        active: true,
+      },
+      {
+        id: STAFF_USER_POOM.id,
+        username: 'hn410382',
+        password_hash: 'pbkdf2:00:00',
+        full_name: 'Poom',
+        phone: '0914448744',
+        patient_id: '5104db15-5634-45e5-ab65-f2f008a15e54',
+        role: 'patient',
+        active: true,
+      },
+    ];
 
-    // Tab 2: ข้อมูลคนไข้ — starts with 1 row in patients + 2 PATIENT users in staff_users -> displays 2 บัญชี!
-    const patientsTabHtml = renderToStaticMarkup(
+    const deletedStaffUserQueries: string[] = [];
+    const origFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
+        if (method === 'DELETE' && url.includes('/rest/v1/patients')) {
+          const parsedUrl = new URL(url);
+          const idFilter = parsedUrl.searchParams.get('id')?.replace(/^eq\./, '');
+          const hnFilter = parsedUrl.searchParams.get('hn')?.replace(/^eq\./, '');
+          for (let i = dbPatients.length - 1; i >= 0; i -= 1) {
+            if ((idFilter && dbPatients[i].id === idFilter) || (hnFilter && dbPatients[i].hn === hnFilter)) {
+              dbPatients.splice(i, 1);
+            }
+          }
+          return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        if (method === 'DELETE' && url.includes('/rest/v1/staff_users')) {
+          deletedStaffUserQueries.push(url);
+          const parsedUrl = new URL(url);
+          const idFilter = parsedUrl.searchParams.get('id')?.replace(/^eq\./, '');
+          const userFilter = parsedUrl.searchParams.get('username')?.replace(/^eq\./, '');
+          const nameFilter = parsedUrl.searchParams.get('full_name')?.replace(/^eq\./, '');
+          for (let i = dbStaffUsers.length - 1; i >= 0; i -= 1) {
+            if (
+              (idFilter && dbStaffUsers[i].id === idFilter) ||
+              (userFilter && dbStaffUsers[i].username === userFilter) ||
+              (nameFilter && dbStaffUsers[i].full_name === nameFilter && dbStaffUsers[i].role === 'patient')
+            ) {
+              dbStaffUsers.splice(i, 1);
+            }
+          }
+          return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        if (method === 'GET' && url.includes('/rest/v1/patients')) {
+          return new Response(JSON.stringify(dbPatients), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        if (method === 'GET' && url.includes('/rest/v1/staff_users')) {
+          return new Response(JSON.stringify(dbStaffUsers), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }) as typeof fetch;
+
+      const fakeJwt =
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.signaturevaltestsafe5544332211';
+      const router = createCloudDelegatedRouter({
+        supabaseUrl: 'https://cascade-delete-test.supabase.co',
+        supabaseServiceKey: fakeJwt,
+      });
+
+      const loginRes = await router(
+        new Request('https://drtechcares.workers.dev/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: 'admin', password: 'Admin@2026' }),
+        }),
+      );
+      const { token } = (await loginRes.json()) as { token: string };
+
+      // Load both patients first
+      const beforeRes = await router(
+        new Request('https://drtechcares.workers.dev/api/patients?scope=all&refresh=1', {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      );
+      const beforeJson = (await beforeRes.json()) as { patients: PatientRecord[] };
+      expect(beforeJson.patients).toHaveLength(2);
+
+      // Delete Manot (HN-53309)
+      const delRes = await router(
+        new Request('https://drtechcares.workers.dev/api/patients/bf47d4a3-97ab-40fb-8561-05550da1c040', {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      );
+      expect(delRes.status).toBe(200);
+
+      // Verify staff_users row hn53309 was cascade-deleted in DB too!
+      expect(deletedStaffUserQueries.some((u) => u.includes('username=eq.hn53309'))).toBe(true);
+      expect(dbStaffUsers.some((u) => u.username === 'hn53309')).toBe(false);
+      expect(dbPatients.some((p) => p.hn === 'HN-53309')).toBe(false);
+
+      // Refresh GET /api/patients -> ONLY Poom remains (Manot does NOT resurrect!)
+      const afterRes = await router(
+        new Request('https://drtechcares.workers.dev/api/patients?scope=all&refresh=1', {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      );
+      const afterJson = (await afterRes.json()) as { patients: PatientRecord[] };
+      expect(afterJson.patients.map((p) => p.hn)).toEqual(['HN-410382']);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('formats Kiosk Supabase sync status pill accurately when all patients are VERIFIED vs when PENDING patients exist', () => {
+    // All clinic patients have verified face profiles
+    const allVerifiedLabel = formatKioskSupabaseSyncBadgeLabel(2, 2);
+    expect(allVerifiedLabel).toBe('ซิงก์ฐานข้อมูลใบหน้าจาก Supabase สำเร็จ: 2 บัญชี');
+    expect(EMOJI_RE.test(allVerifiedLabel)).toBe(false);
+
+    const singleVerifiedLabel = formatKioskSupabaseSyncBadgeLabel(1, 1);
+    expect(singleVerifiedLabel).toBe('ซิงก์ฐานข้อมูลใบหน้าจาก Supabase สำเร็จ: 1 บัญชี');
+
+    // Mixed state: 1 VERIFIED + 1 PENDING (2 total in public.patients)
+    const mixedLabel = formatKioskSupabaseSyncBadgeLabel(1, 2);
+    expect(mixedLabel).toBe('ซิงก์ใบหน้าพร้อมสแกนจาก Supabase: 1 บัญชี (คนไข้ในระบบทั้งหมด 2 บัญชี)');
+    expect(EMOJI_RE.test(mixedLabel)).toBe(false);
+
+    // 0 VERIFIED + 2 PENDING
+    const zeroVerifiedLabel = formatKioskSupabaseSyncBadgeLabel(0, 2);
+    expect(zeroVerifiedLabel).toBe('ซิงก์ใบหน้าพร้อมสแกนจาก Supabase: 0 บัญชี (คนไข้ในระบบทั้งหมด 2 บัญชี)');
+    expect(EMOJI_RE.test(zeroVerifiedLabel)).toBe(false);
+
+    // Also confirm ClinicalStaffPortalShell displays only authoritative public.patients across Tab 2 & Tab 5
+    const apiClient = new DrTechCaresApiClient();
+    const poomOnly = unifyClinicPatients([makePoomSupabaseRow()], []);
+    const portalHtml = renderToStaticMarkup(
       React.createElement(
         ClinicalI18nProvider,
         null,
@@ -181,80 +395,25 @@ describe('Unified Clinic Patient Directory (Staff Management + Patients + EHR + 
           currentUser: ADMIN_USER,
           onLogout: () => {},
           initialTab: 'patients',
-          initialPatients: poomOnlyFromPatients,
-          initialUsers: staffUsers,
+          initialPatients: poomOnly,
+          initialUsers: [ADMIN_USER, STAFF_USER_MANOT, STAFF_USER_POOM],
         }),
       ),
     );
-    expect(patientsTabHtml).toContain('ซิงก์ข้อมูลจาก Supabase: 2 บัญชี');
-    expect(patientsTabHtml).toContain('Poom');
-    expect(patientsTabHtml).toContain('HN-410382');
-    expect(patientsTabHtml).toContain('มาโนชญ์ อ่อนสิงห์');
-    expect(patientsTabHtml).toContain('HN-53309');
-    expect(EMOJI_RE.test(patientsTabHtml)).toBe(false);
-
-    // Tab 5: ตารางนัด — renders selectable patient options instead of "ยังไม่มีคนไข้ในระบบ"
-    const schedulesTabHtml = renderToStaticMarkup(
-      React.createElement(
-        ClinicalI18nProvider,
-        null,
-        React.createElement(ClinicalStaffPortalShell, {
-          apiClient,
-          currentUser: ADMIN_USER,
-          onLogout: () => {},
-          initialTab: 'schedules',
-          initialPatients: [],
-          initialUsers: staffUsers,
-        }),
-      ),
-    );
-    expect(schedulesTabHtml).not.toContain('ยังไม่มีคนไข้ในระบบ');
-    expect(schedulesTabHtml).toContain('มาโนชญ์ อ่อนสิงห์ (HN-53309)');
-    expect(schedulesTabHtml).toContain('Poom (HN-410382)');
-    expect(EMOJI_RE.test(schedulesTabHtml)).toBe(false);
-
-    // Tab 2B: เวชระเบียนรายบุคคล (ประเมิน 0-6) — renders both patients selectable for 0-6 assessment
-    const assessmentsTabHtml = renderToStaticMarkup(
-      React.createElement(
-        ClinicalI18nProvider,
-        null,
-        React.createElement(ClinicalStaffPortalShell, {
-          apiClient,
-          currentUser: ADMIN_USER,
-          onLogout: () => {},
-          initialTab: 'assessments',
-          initialPatients: poomOnlyFromPatients,
-          initialUsers: staffUsers,
-        }),
-      ),
-    );
-    expect(assessmentsTabHtml).toContain('HN-410382');
-    expect(assessmentsTabHtml).toContain('HN-53309');
-    expect(assessmentsTabHtml).toContain('มาโนชญ์ อ่อนสิงห์');
-    expect(assessmentsTabHtml).toContain('Poom');
-    expect(EMOJI_RE.test(assessmentsTabHtml)).toBe(false);
+    expect(portalHtml).toContain('ซิงก์ข้อมูลจาก Supabase: 1 บัญชี');
+    expect(portalHtml).toContain('HN-410382');
+    expect(portalHtml).not.toContain('HN-53309');
+    expect(EMOJI_RE.test(portalHtml)).toBe(false);
   });
 
-  it('validates SQL RLS migration 010 and guarantees zero Unicode emojis in all modified files', () => {
+  it('audits all modified cascading-delete and Kiosk sync files for zero Unicode emojis', () => {
     const root = process.cwd();
-    const sqlPath = path.join(
-      root,
-      'supabase/migrations/010_patients_rls_policies_and_staff_user_backfill.sql',
-    );
-    const sql = fs.readFileSync(sqlPath, 'utf8');
-    expect(sql).toContain('FOR SELECT');
-    expect(sql).toContain('FOR INSERT');
-    expect(sql).toContain('FOR UPDATE');
-    expect(sql).toContain('public.patients');
-    expect(sql).toContain('public.staff_users');
-    expect(sql).toContain("NOTIFY pgrst, 'reload schema'");
-
     const files = [
-      'supabase/migrations/010_patients_rls_policies_and_staff_user_backfill.sql',
       'src/utils/unifyPatientDirectory.ts',
       'src/components/ClinicalStaffPortalShell.tsx',
+      'src/components/KioskBiometricLoginView.tsx',
       'packages/api-client/src/cloudRouter.ts',
-      'packages/api-client/src/index.ts',
+      'packages/api-client/src/supabasePersistence.ts',
       'src/__tests__/unifyPatientDirectory.test.ts',
     ];
     for (const rel of files) {
@@ -263,4 +422,3 @@ describe('Unified Clinic Patient Directory (Staff Management + Patients + EHR + 
     }
   });
 });
-

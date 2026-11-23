@@ -162,6 +162,23 @@ export const KIOSK_NO_FACE_GUIDANCE_DELAY_MS = 1500;
 export const KIOSK_RESCAN_COOLDOWN_MS = 1500;
 export const KIOSK_MAX_EXPOSURE_SETTLE_MS = 800;
 export const KIOSK_DETECT_MAX_LONG_SIDE_PX = 1280;
+
+/**
+ * Formats the Kiosk Supabase sync status pill clearly so staff and patients see both
+ * face-verified accounts ready for scanning and total registered patients when PENDING
+ * accounts exist in `public.patients`.
+ */
+export function formatKioskSupabaseSyncBadgeLabel(
+  verifiedCount: number,
+  totalPatients: number,
+): string {
+  const safeVerified = Math.max(0, Math.round(Number.isFinite(verifiedCount) ? verifiedCount : 0));
+  const safeTotal = Math.max(0, Math.round(Number.isFinite(totalPatients) ? totalPatients : 0));
+  if (safeTotal > safeVerified) {
+    return `ซิงก์ใบหน้าพร้อมสแกนจาก Supabase: ${safeVerified} บัญชี (คนไข้ในระบบทั้งหมด ${safeTotal} บัญชี)`;
+  }
+  return `ซิงก์ฐานข้อมูลใบหน้าจาก Supabase สำเร็จ: ${safeVerified} บัญชี`;
+}
 export const KIOSK_OVERLAY_MIN_INTERVAL_MS = 32;
 export const KIOSK_IDLE_STANDBY_TIMEOUT_MS = 45000;
 export const KIOSK_NOT_FOUND_IDLE_STANDBY_MS = 60000;
@@ -5507,18 +5524,21 @@ export function KioskBiometricLoginView({
                 }`}
               />
               <span
+                data-testid="kiosk-supabase-sync-label"
                 className={`font-bold ${
                   supabaseSyncError && !supabaseSyncedFromCloud ? 'text-amber-300' : 'text-emerald-300'
                 }`}
               >
                 {liveDebugHud?.syncedFromSupabase || supabaseSyncedFromCloud
-                  ? `ซิงก์ฐานข้อมูลใบหน้าจาก Supabase สำเร็จ: ${liveDebugHud?.validAccounts ?? dbAccountCount} บัญชี`
+                  ? formatKioskSupabaseSyncBadgeLabel(
+                      liveDebugHud?.validAccounts ?? dbAccountCount,
+                      liveDebugHud?.totalAccounts ?? totalAccountCount,
+                    )
                   : `คลังใบหน้า: ${liveDebugHud?.validAccounts ?? dbAccountCount} บัญชี`}
               </span>
               {(liveDebugHud?.legacyAccounts ?? legacyAccountCount) > 0 && (
                 <span className="text-amber-300">
-                  (ทั้งหมด {liveDebugHud?.totalAccounts ?? totalAccountCount} • บัญชีเก่ารออัปเดต{' '}
-                  {liveDebugHud?.legacyAccounts ?? legacyAccountCount})
+                  (บัญชีเก่ารออัปเดต {liveDebugHud?.legacyAccounts ?? legacyAccountCount})
                 </span>
               )}
             </div>

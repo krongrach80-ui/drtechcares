@@ -1564,19 +1564,31 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     return null;
   };
 
+  const normalizeHnLookupKey = (raw: unknown): string =>
+    String(raw ?? '').trim().replace(/^@+/, '').replace(/[\s_-]+/g, '').toLowerCase();
+
+  const normalizeNameLookupKey = (raw: unknown): string =>
+    String(raw ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+
   const purgePatientInMemory = (rawKey: string, explicitPatient?: PatientRecord | null) => {
     const cleanKey = decodePathSegment(rawKey);
     const keyLower = cleanKey.toLowerCase();
+    const keyHnNorm = normalizeHnLookupKey(cleanKey);
     const patient =
       explicitPatient ??
       state.patients.find(
-        (p) => p.id === cleanKey || (keyLower.length > 0 && p.hn.toLowerCase() === keyLower),
+        (p) =>
+          p.id === cleanKey ||
+          (keyLower.length > 0 && p.hn.toLowerCase() === keyLower) ||
+          (keyHnNorm.length > 0 && normalizeHnLookupKey(p.hn) === keyHnNorm),
       ) ??
       null;
     const pid = patient?.id ?? cleanKey;
     const hnLower = patient?.hn?.toLowerCase();
+    const hnNorm = normalizeHnLookupKey(patient?.hn || cleanKey);
+    const fullNameNorm = normalizeNameLookupKey(patient?.fullName);
 
-    const deletedIds = [pid, patient?.hn, cleanKey].filter(
+    const deletedIds = [pid, patient?.hn, hnNorm, cleanKey].filter(
       (v): v is string => typeof v === 'string' && v.trim().length > 0,
     );
     if (deletedIds.length > 0) {
@@ -1588,11 +1600,20 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     const linkedUsers = state.users.filter(
       (u) =>
         (pid && u.patientId === pid) ||
+        (pid && u.id === pid) ||
         (hnLower && u.username.toLowerCase() === hnLower) ||
-        (keyLower && (u.patientId === cleanKey || u.username.toLowerCase() === keyLower)),
+        (hnNorm && normalizeHnLookupKey(u.username) === hnNorm) ||
+        (keyLower && (u.patientId === cleanKey || u.username.toLowerCase() === keyLower)) ||
+        (u.role === 'patient' && fullNameNorm && normalizeNameLookupKey(u.fullName) === fullNameNorm),
     );
     const linkedUserIds = linkedUsers.map((u) => u.id);
-    const linkedUsernames = linkedUsers.map((u) => u.username);
+    const linkedUsernames = Array.from(
+      new Set(
+        [...linkedUsers.map((u) => u.username), hnNorm, patient?.hn].filter(
+          (v): v is string => typeof v === 'string' && v.trim().length > 0,
+        ),
+      ),
+    );
     if (linkedUserIds.length > 0 || linkedUsernames.length > 0) {
       state.deleted_user_ids = Array.from(
         new Set([
@@ -1606,11 +1627,21 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     const matchesTargetPid = (candidatePid?: string | null) =>
       Boolean(candidatePid && (candidatePid === pid || candidatePid === cleanKey));
     state.patients = state.patients.filter(
-      (p) => p.id !== pid && p.id !== cleanKey && (!keyLower || p.hn.toLowerCase() !== keyLower),
+      (p) =>
+        p.id !== pid &&
+        p.id !== cleanKey &&
+        (!keyLower || p.hn.toLowerCase() !== keyLower) &&
+        (!hnNorm || normalizeHnLookupKey(p.hn) !== hnNorm),
     );
     state.face_templates = state.face_templates.filter((t) => !matchesTargetPid(t.patientId));
     state.patient_courses = state.patient_courses.filter((c) => !matchesTargetPid(c.patientId));
     state.rehab_sessions = state.rehab_sessions.filter((s) => !matchesTargetPid(s.patientId));
+    state.rehab_session_history = (state.rehab_session_history ?? []).filter(
+      (h) => !matchesTargetPid(h.patientId) && (!hnNorm || normalizeHnLookupKey(h.hn) !== hnNorm),
+    );
+    state.clinical_assessments = (state.clinical_assessments ?? []).filter(
+      (a) => !matchesTargetPid(a.patient_id) && (!hnNorm || normalizeHnLookupKey(a.patient_hn) !== hnNorm),
+    );
     state.medical_notes = state.medical_notes.filter((n) => !matchesTargetPid(n.patientId));
     state.treatment_reports = state.treatment_reports.filter((r) => !matchesTargetPid(r.patientId));
     state.staff_calls = state.staff_calls.filter((c) => !matchesTargetPid(c.patientId));
@@ -1620,7 +1651,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       (u) =>
         !linkedUserIdSet.has(u.id) &&
         (!pid || u.patientId !== pid) &&
-        (!hnLower || u.username.toLowerCase() !== hnLower),
+        (!hnLower || u.username.toLowerCase() !== hnLower) &&
+        (!hnNorm || normalizeHnLookupKey(u.username) !== hnNorm),
     );
     if (linkedUserIdSet.size > 0) {
       state.active_sessions = state.active_sessions.filter((s) => !linkedUserIdSet.has(s.userId));
@@ -2285,17 +2317,29 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         (s) => s.userId !== effectiveId && s.userId !== rawTargetKey,
       );
 
+      const removedHnNorm = removed ? normalizeHnLookupKey(removed.username) : normalizeHnLookupKey(rawTargetKey);
+      const removedNameNorm = removed ? normalizeNameLookupKey(removed.fullName) : '';
       const linkedPatient = removed
         ? state.patients.find(
             (p) =>
               (removed.patientId && p.id === removed.patientId) ||
               p.hn.toLowerCase() === removed.username.toLowerCase() ||
-              (removed.role === 'patient' && p.fullName.toLowerCase() === removed.fullName.toLowerCase()),
+              (removedHnNorm && normalizeHnLookupKey(p.hn) === removedHnNorm) ||
+              (removed.role === 'patient' &&
+                removedNameNorm &&
+                normalizeNameLookupKey(p.fullName) === removedNameNorm),
           )
         : undefined;
       const linkedPatientId = linkedPatient?.id ?? removed?.patientId ?? null;
-      if (linkedPatientId) {
-        purgePatientInMemory(linkedPatientId, linkedPatient ?? null);
+      const derivedHn = (() => {
+        if (linkedPatient?.hn) return linkedPatient.hn;
+        if (removed?.role !== 'patient') return null;
+        const cleanUsr = removed.username.replace(/^@+/, '');
+        const m = cleanUsr.match(/^hn[-_\s]*([a-zA-Z0-9]+)$/i);
+        return m?.[1] ? `HN-${m[1].toUpperCase()}` : cleanUsr || null;
+      })();
+      if (linkedPatientId || derivedHn) {
+        purgePatientInMemory(linkedPatientId ?? derivedHn ?? rawTargetKey, linkedPatient ?? null);
       }
 
       try {
@@ -2303,8 +2347,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           rawId: rawTargetKey,
           matchedUserId: removed?.id,
           username: removed?.username,
+          role: removed?.role,
+          fullName: removed?.fullName,
           linkedPatientId,
-          linkedHn: linkedPatient?.hn ?? null,
+          linkedHn: derivedHn,
         });
       } catch {
         // Best-effort purge never fails delete
@@ -4803,23 +4849,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             }
             return Promise.resolve(q);
           };
-          const runDirectPatientUsersSelect = () => {
-            let q = supabase
-              .from('staff_users')
-              .select('id,username,full_name,phone,role,patient_id,active,created_at') as unknown as {
-              limit?: (n: number) => PromiseLike<unknown>;
-            } & PromiseLike<unknown>;
-            if (typeof q.limit === 'function') {
-              return Promise.resolve(q.limit(250));
-            }
-            return Promise.resolve(q);
-          };
-
           const directOutcome = await Promise.race([
             Promise.allSettled([
               runDirectPatientsSelect(),
               runDirectBiometricsSelect(),
-              runDirectPatientUsersSelect(),
             ]).then((results) => ({ timedOut: false as const, results })),
             new Promise<{ timedOut: true }>((resolve) => {
               directTimer = setTimeout(() => resolve({ timedOut: true }), 4000);
@@ -4831,7 +4864,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           if (directOutcome.timedOut) {
             syncErrorMessage = 'หมดเวลาการเชื่อมต่อ Supabase ระหว่างดึงรายชื่อผู้ป่วย';
           } else {
-            const [patSettled, bioSettled, staffSettled] = directOutcome.results;
+            const [patSettled, bioSettled] = directOutcome.results;
             const rawRes =
               patSettled.status === 'fulfilled'
                 ? (patSettled.value as {
@@ -4883,22 +4916,20 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             }
 
             if (rawRes && !rawRes.error && Array.isArray(rawRes.data)) {
+              // Single source of truth: public.patients ONLY (never resurrect deleted patients from staff_users on read)
               const deletedLower = new Set(
                 (state.deleted_patient_ids ?? []).map((x) => x.trim().toLowerCase()).filter(Boolean),
               );
+              const deletedHnNorm = new Set(
+                (state.deleted_patient_ids ?? []).map((x) => normalizeHnLookupKey(x)).filter(Boolean),
+              );
               const prevById = new Map(state.patients.map((p) => [p.id, p]));
               const hydratedRows: PatientRecord[] = [];
-              const seenIds = new Set<string>();
-              const seenHnKeys = new Set<string>();
-              const seenNameKeys = new Set<string>();
-              const normHn = (v: unknown) =>
-                String(v ?? '').trim().replace(/^@+/, '').replace(/[\s_-]+/g, '').toLowerCase();
-              const normName = (v: unknown) =>
-                String(v ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
 
               for (const row of rawRes.data) {
                 const pid = String(row.id ?? '').trim();
                 const hn = String(row.hn ?? '').trim();
+                const hnKey = normalizeHnLookupKey(hn);
                 const regLo = String(row.registration_status ?? '').trim().toLowerCase();
                 if (
                   !pid ||
@@ -4908,7 +4939,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
                   regLo === 'rejected' ||
                   regLo === 'inactive' ||
                   deletedLower.has(pid.toLowerCase()) ||
-                  (hn && deletedLower.has(hn.toLowerCase()))
+                  (hn && deletedLower.has(hn.toLowerCase())) ||
+                  (hnKey && deletedHnNorm.has(hnKey))
                 ) {
                   continue;
                 }
@@ -4928,118 +4960,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
                   );
                 }
                 hydratedRows.push(inspected.patient);
-                seenIds.add(inspected.patient.id.toLowerCase());
-                const hk = normHn(inspected.patient.hn);
-                if (hk) seenHnKeys.add(hk);
-                const nk = normName(inspected.patient.fullName);
-                if (nk) seenNameKeys.add(nk);
               }
 
-              // Mirror any active role='patient' accounts from staff_users missing in public.patients
-              const staffPatientRows: Record<string, unknown>[] = [];
-              if (staffSettled.status === 'fulfilled') {
-                const staffRes = staffSettled.value as {
-                  data?: Record<string, unknown>[] | null;
-                  error?: unknown;
-                };
-                if (!staffRes?.error && Array.isArray(staffRes?.data)) {
-                  staffPatientRows.push(...staffRes.data);
-                }
-              }
-              for (const u of state.users) {
-                if (u.role === 'patient' && u.active) {
-                  staffPatientRows.push({
-                    id: u.id,
-                    username: u.username,
-                    full_name: u.fullName,
-                    phone: u.phone,
-                    role: u.role,
-                    patient_id: u.patientId ?? null,
-                    active: u.active,
-                    created_at: u.createdAt,
-                  });
-                }
-              }
-
-              for (const su of staffPatientRows) {
-                if (String(su.role ?? '').trim().toLowerCase() !== 'patient' || su.active === false) {
-                  continue;
-                }
-                const linkedPid = String(su.patient_id ?? su.id ?? '').trim();
-                const username = String(su.username ?? '').trim();
-                const fullName = String(su.full_name ?? '').trim();
-                const hk = normHn(username);
-                const nk = normName(fullName);
-                if (
-                  !linkedPid ||
-                  deletedLower.has(linkedPid.toLowerCase()) ||
-                  (hk && deletedLower.has(hk)) ||
-                  seenIds.has(linkedPid.toLowerCase()) ||
-                  (hk && seenHnKeys.has(hk)) ||
-                  (nk && seenNameKeys.has(nk))
-                ) {
-                  continue;
-                }
-                const cleanUsr = username.replace(/^@+/, '');
-                const hnDigits = cleanUsr.match(/^hn[-_\s]*([a-zA-Z0-9]+)$/i);
-                const canonicalHn = hnDigits?.[1]
-                  ? `HN-${hnDigits[1].toUpperCase()}`
-                  : cleanUsr
-                    ? cleanUsr.toUpperCase()
-                    : `HN-${linkedPid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase()}`;
-                const mirroredPatient: PatientRecord = {
-                  id: linkedPid,
-                  hn: canonicalHn,
-                  fullName: fullName || canonicalHn,
-                  age: 0,
-                  gender: 'ชาย',
-                  phone: String(su.phone ?? ''),
-                  diagnosis: 'รอประเมินอาการทางกายภาพบำบัด',
-                  strokeType: 'ELDERLY_GENERAL',
-                  affectedSide: 'NONE',
-                  motorAssessmentScore: 3,
-                  adlDressingScore: 3,
-                  maxSafeRomDeg: 150,
-                  universalHealthLinkCode: generateUniversalLinkCode(linkedPid),
-                  assignedPtId: '',
-                  delegatedToPtId: null,
-                  delegationNote: null,
-                  nextAppointmentDate: '',
-                  registrationStatus: 'active',
-                  enrolledAt: String(su.created_at ?? new Date().toISOString()),
-                  faceBiometricStatus: 'PENDING',
-                  faceFramesCount: 0,
-                  rehabSchedules: [],
-                };
-                hydratedRows.push(mirroredPatient);
-                seenIds.add(mirroredPatient.id.toLowerCase());
-                if (hk) seenHnKeys.add(hk);
-                if (nk) seenNameKeys.add(nk);
-
-                // Background mirror upsert so staff_users and public.patients stay permanently synchronized
-                const dualCols = buildPatientDualWriteColumns(mirroredPatient, {
-                  updatedAtIso: new Date().toISOString(),
-                  includeProfileFields: true,
-                });
-                runWaitUntil(
-                  writePatientRowWithFramesFallback(supabase, 'insert', {
-                    id: mirroredPatient.id,
-                    hn: mirroredPatient.hn,
-                    full_name: mirroredPatient.fullName,
-                    age: 0,
-                    phone: mirroredPatient.phone,
-                    diagnosis: mirroredPatient.diagnosis,
-                    registration_status: 'active',
-                    ...dualCols,
-                    history: buildPatientHistoryPayload(mirroredPatient),
-                    updated_at: new Date().toISOString(),
-                  }),
-                );
-              }
-
-              if (hydratedRows.length > 0 || state.patients.length === 0) {
-                state.patients = hydratedRows;
-              }
+              state.patients = hydratedRows;
             }
           }
         } catch (err) {
@@ -6279,6 +6202,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           rawId: rawPid,
           patientId: purged.patient?.id ?? rawPid,
           hn: purged.patient?.hn ?? null,
+          fullName: purged.patient?.fullName ?? null,
           linkedUserIds: purged.linkedUserIds,
           linkedUsernames: purged.linkedUsernames,
         });

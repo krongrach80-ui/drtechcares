@@ -1,15 +1,13 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
-  buildPatientDualWriteColumns,
+  DrTechCaresApiClient,
   normalizePatientRecord,
   type PatientRecord,
   type UserAccount,
 } from '@drtechcares/api-client';
 import {
   isSupabaseCircuitOpen,
-  recordUnsupportedColumn,
-  stripOversizedBase64ForDb,
-  stripUnsupportedColumnsForWrite,
+  isUuidString,
 } from '../../packages/api-client/src/supabasePersistence';
 
 export interface StaffPatientMirrorCandidate {
@@ -28,7 +26,17 @@ export interface StaffPatientMirrorCandidate {
 
 export interface UnifyClinicPatientsResult {
   patients: PatientRecord[];
+  /** Always empty on read/render cycles so deleted patients are never resurrected from staff_users. */
   synthesizedPatients: PatientRecord[];
+}
+
+export interface CascadeDeletePatientTarget {
+  id?: string | null;
+  patientId?: string | null;
+  hn?: string | null;
+  username?: string | null;
+  fullName?: string | null;
+  role?: string | null;
 }
 
 /**
@@ -56,6 +64,45 @@ export function formatCanonicalHn(raw: unknown, fallbackId?: string): string {
   return cleaned.toUpperCase();
 }
 
+export function buildNormalizedHnVariants(rawValues: ReadonlyArray<string | null | undefined>): {
+  hnVariants: string[];
+  usernameVariants: string[];
+} {
+  const hnSet = new Set<string>();
+  const userSet = new Set<string>();
+  for (const raw of rawValues) {
+    const clean = (raw ?? '').trim();
+    if (!clean) continue;
+    const withoutAt = clean.replace(/^@+/, '').trim();
+    if (!withoutAt) continue;
+    hnSet.add(withoutAt);
+    userSet.add(clean);
+    userSet.add(withoutAt);
+    userSet.add(withoutAt.toLowerCase());
+    userSet.add(`@${withoutAt.toLowerCase()}`);
+
+    const hnMatch = withoutAt.match(/^hn[-_\s]*([a-zA-Z0-9]+)$/i);
+    if (hnMatch?.[1]) {
+      const digits = hnMatch[1];
+      const upper = digits.toUpperCase();
+      const lower = digits.toLowerCase();
+      hnSet.add(`HN-${upper}`);
+      hnSet.add(`hn-${lower}`);
+      hnSet.add(`HN${upper}`);
+      hnSet.add(`hn${lower}`);
+      userSet.add(`hn${lower}`);
+      userSet.add(`@hn${lower}`);
+      userSet.add(`HN-${upper}`);
+      userSet.add(`hn-${lower}`);
+      userSet.add(`HN${upper}`);
+    }
+  }
+  return {
+    hnVariants: Array.from(hnSet),
+    usernameVariants: Array.from(userSet),
+  };
+}
+
 function normalizeFullNameKey(raw: unknown): string {
   if (typeof raw !== 'string') return '';
   return raw.trim().toLowerCase().replace(/\s+/g, ' ');
@@ -67,10 +114,10 @@ function isPatientRoleAccount(user: StaffPatientMirrorCandidate): boolean {
 }
 
 /**
- * Deterministically unifies Supabase `patients` rows with any `role === 'PATIENT'` accounts
- * loaded from `staff_users` (Staff Management tab) so all Admin/Staff tabs (`2. ข้อมูลคนไข้`,
- * `เวชระเบียนรายบุคคล (ประเมิน 0-6)`, and `5. ตารางนัด`) always display the complete,
- * deduplicated clinic roster.
+ * Single-source-of-truth Patient Directory hydrator (`public.patients` ONLY).
+ * - Hydrates top-level columns and `history` JSON fields cleanly and deduplicates by `id` / normalized `hn`.
+ * - May enrich missing `phone` on an already-existing patient row from a matching `staff_users` entry.
+ * - NEVER synthesizes, inserts, or resurrects deleted patients from `staff_users` during read/render cycles.
  */
 export function unifyClinicPatientsDetailed(
   supabasePatients: ReadonlyArray<Record<string, unknown> | PatientRecord>,
@@ -81,19 +128,6 @@ export function unifyClinicPatientsDetailed(
   const byHnKey = new Map<string, number>();
   const byNameKey = new Map<string, number>();
 
-  const registerPatient = (patient: PatientRecord): number => {
-    const idx = unified.length;
-    unified.push(patient);
-    const idLo = patient.id.trim().toLowerCase();
-    const hnKey = normalizeHnKey(patient.hn);
-    const nameKey = normalizeFullNameKey(patient.fullName);
-    if (idLo) byId.set(idLo, idx);
-    if (hnKey) byHnKey.set(hnKey, idx);
-    if (nameKey) byNameKey.set(nameKey, idx);
-    return idx;
-  };
-
-  // 1. Hydrate all Supabase patients (top-level columns + history JSON) with deterministic deduplication
   for (const raw of supabasePatients) {
     if (!raw || typeof raw !== 'object') continue;
     const normalized = normalizePatientRecord(raw, {
@@ -132,80 +166,43 @@ export function unifyClinicPatientsDetailed(
       continue;
     }
 
-    registerPatient(canonicalPatient);
+    const idx = unified.length;
+    unified.push(canonicalPatient);
+    if (idLo) byId.set(idLo, idx);
+    if (hnKey) byHnKey.set(hnKey, idx);
+    const nameKey = normalizeFullNameKey(canonicalPatient.fullName);
+    if (nameKey) byNameKey.set(nameKey, idx);
   }
 
-  // 2. Merge any active role === 'PATIENT' accounts from staff_users
-  const synthesizedPatients: PatientRecord[] = [];
+  // Enrich phone ONLY for patients already present in public.patients (never resurrect missing rows)
   for (const rawUser of staffUserAccounts) {
     const user = rawUser as StaffPatientMirrorCandidate;
     if (!user || !isPatientRoleAccount(user)) continue;
-
-    const linkedPatientId = String(user.patientId ?? user.patient_id ?? '').trim();
-    const userId = String(user.id ?? '').trim();
-    const fullName = String(user.fullName ?? user.full_name ?? '').trim();
-    const username = String(user.username ?? '').trim();
     const phone = String(user.phone ?? '').trim();
-    const createdAt = String(user.createdAt ?? user.created_at ?? new Date().toISOString());
+    if (!phone) continue;
 
-    const hnKey = normalizeHnKey(username);
-    const nameKey = normalizeFullNameKey(fullName);
+    const linkedPatientId = String(user.patientId ?? user.patient_id ?? '').trim().toLowerCase();
+    const userId = String(user.id ?? '').trim().toLowerCase();
+    const hnKey = normalizeHnKey(user.username);
+    const nameKey = normalizeFullNameKey(user.fullName ?? user.full_name);
+
     const existingIdx =
-      (linkedPatientId && byId.has(linkedPatientId.toLowerCase())
-        ? byId.get(linkedPatientId.toLowerCase())
-        : undefined) ??
-      (userId && byId.has(userId.toLowerCase()) ? byId.get(userId.toLowerCase()) : undefined) ??
+      (linkedPatientId && byId.has(linkedPatientId) ? byId.get(linkedPatientId) : undefined) ??
+      (userId && byId.has(userId) ? byId.get(userId) : undefined) ??
       (hnKey && byHnKey.has(hnKey) ? byHnKey.get(hnKey) : undefined) ??
       (nameKey && byNameKey.has(nameKey) ? byNameKey.get(nameKey) : undefined);
 
-    if (existingIdx !== undefined) {
-      const existing = unified[existingIdx];
-      if (!existing.phone && phone) {
-        unified[existingIdx] = { ...existing, phone };
-      }
-      continue;
+    if (existingIdx !== undefined && !unified[existingIdx].phone) {
+      unified[existingIdx] = { ...unified[existingIdx], phone };
     }
-
-    const effectiveId = linkedPatientId || userId;
-    if (!effectiveId) continue;
-    const canonicalHn = formatCanonicalHn(username, effectiveId);
-    const linkSuffix = effectiveId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase().padStart(8, '0');
-
-    const synthesized: PatientRecord = {
-      id: effectiveId,
-      hn: canonicalHn,
-      fullName: fullName || canonicalHn,
-      age: 0,
-      gender: 'ชาย',
-      phone,
-      diagnosis: 'รอประเมินอาการทางกายภาพบำบัด',
-      strokeType: 'ELDERLY_GENERAL',
-      affectedSide: 'NONE',
-      motorAssessmentScore: 3,
-      adlDressingScore: 3,
-      maxSafeRomDeg: 150,
-      universalHealthLinkCode: `DTC-EHR-${linkSuffix}`,
-      assignedPtId: '',
-      delegatedToPtId: null,
-      delegationNote: null,
-      nextAppointmentDate: '',
-      registrationStatus: 'active',
-      enrolledAt: createdAt,
-      faceBiometricStatus: 'PENDING',
-      faceFramesCount: 0,
-      rehabSchedules: [],
-    };
-
-    registerPatient(synthesized);
-    synthesizedPatients.push(synthesized);
   }
 
-  return { patients: unified, synthesizedPatients };
+  return { patients: unified, synthesizedPatients: [] };
 }
 
 /**
- * Deterministic helper returning the unified deduplicated `PatientRecord[]` directory
- * combining Supabase `patients` and `role === 'PATIENT'` accounts from `staff_users`.
+ * Deterministic helper returning the hydrated, deduplicated `PatientRecord[]` directory
+ * backed strictly by `public.patients` (never resurrecting deleted accounts from `staff_users`).
  */
 export function unifyClinicPatients(
   supabasePatients: ReadonlyArray<Record<string, unknown> | PatientRecord>,
@@ -214,102 +211,296 @@ export function unifyClinicPatients(
   return unifyClinicPatientsDetailed(supabasePatients, staffUserAccounts).patients;
 }
 
-const mirroredPatientIdsByClient = new WeakMap<object, Set<string>>();
-
 /**
- * Triggers a deduplicated, non-blocking background upsert into Supabase `public.patients`
- * for any `PATIENT` user accounts synthesized from `staff_users` so both tables stay permanently synced.
+ * Intentionally a no-op during read/render cycles: new patient rows in `public.patients` and
+ * `staff_users` must be created exclusively through explicit patient registration flows.
  */
 export function mirrorSynthesizedPatientsToSupabase(
-  supabase: SupabaseClient | null | undefined,
-  synthesizedPatients: ReadonlyArray<PatientRecord>,
+  _supabase: SupabaseClient | null | undefined,
+  _synthesizedPatients: ReadonlyArray<PatientRecord>,
 ): Promise<number> {
-  if (!supabase || synthesizedPatients.length === 0 || isSupabaseCircuitOpen(supabase)) {
-    return Promise.resolve(0);
-  }
-  let seen = mirroredPatientIdsByClient.get(supabase);
-  if (!seen) {
-    seen = new Set<string>();
-    mirroredPatientIdsByClient.set(supabase, seen);
-  }
-
-  const pending = synthesizedPatients.filter((p) => p.id && !seen!.has(p.id));
-  if (pending.length === 0) return Promise.resolve(0);
-  for (const p of pending) seen.add(p.id);
-
-  const runMirror = async (): Promise<number> => {
-    let mirroredCount = 0;
-    for (const p of pending) {
-      try {
-        const tableBuilder = supabase.from('patients') as unknown as {
-          upsert?: (
-            payload: Record<string, unknown>,
-            opts?: { onConflict?: string },
-          ) => PromiseLike<{ error?: { code?: string; message?: string } | null }>;
-        };
-        if (!tableBuilder || typeof tableBuilder.upsert !== 'function') break;
-
-        const nowIso = new Date().toISOString();
-        const dualCols = buildPatientDualWriteColumns(p, {
-          updatedAtIso: nowIso,
-          includeProfileFields: true,
-        });
-        const working = stripUnsupportedColumnsForWrite(
-          'patients',
-          stripOversizedBase64ForDb({
-            id: p.id,
-            hn: p.hn,
-            full_name: p.fullName,
-            age: Number.isFinite(p.age) ? p.age : 0,
-            phone: p.phone ?? '',
-            diagnosis: p.diagnosis ?? '',
-            registration_status: 'active',
-            ...dualCols,
-            history: {
-              gender: p.gender ?? 'ชาย',
-              strokeType: p.strokeType ?? 'ELDERLY_GENERAL',
-              affectedSide: p.affectedSide ?? 'NONE',
-              motorAssessmentScore: p.motorAssessmentScore ?? 3,
-              adlDressingScore: p.adlDressingScore ?? 3,
-              maxSafeRomDeg: p.maxSafeRomDeg ?? 150,
-              universalHealthLinkCode: p.universalHealthLinkCode,
-              faceBiometricStatus: p.faceBiometricStatus ?? 'PENDING',
-              faceFramesCount: p.faceFramesCount ?? 0,
-              rehabSchedules: p.rehabSchedules ?? [],
-              mirroredFromStaffUsers: true,
-            },
-            created_at: p.enrolledAt || nowIso,
-            updated_at: nowIso,
-          }),
-        );
-
-        let conflictCol: 'id' | 'hn' = 'id';
-        for (let attempt = 0; attempt < 10; attempt += 1) {
-          const res = await tableBuilder.upsert(working, { onConflict: conflictCol });
-          if (!res?.error) {
-            mirroredCount += 1;
-            break;
-          }
-          const code = String(res.error.code ?? '');
-          if (code === '23505' && conflictCol === 'id') {
-            conflictCol = 'hn';
-            delete working.id;
-            continue;
-          }
-          const missingCol = recordUnsupportedColumn('patients', res.error);
-          if (missingCol && missingCol in working && missingCol !== 'id' && missingCol !== 'hn') {
-            delete working[missingCol];
-            continue;
-          }
-          break;
-        }
-      } catch {
-        // Non-fatal best-effort mirror
-      }
-    }
-    return mirroredCount;
-  };
-
-  return runMirror();
+  return Promise.resolve(0);
 }
 
+/**
+ * Removes a deleted patient (or PATIENT staff_user) consistently from both React `patients`
+ * and `users` lists using `id`, `patientId`, normalized `hn`/`username`, and `fullName`.
+ */
+export function applyCascadingPatientDeletionToState(
+  patients: ReadonlyArray<PatientRecord>,
+  users: ReadonlyArray<UserAccount>,
+  target: CascadeDeletePatientTarget,
+): { patients: PatientRecord[]; users: UserAccount[]; matchedUserIds: string[]; matchedPatientIds: string[] } {
+  const idKeys = new Set(
+    [target.id, target.patientId]
+      .map((v) => (v ?? '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const hnKeys = new Set(
+    [target.hn, target.username]
+      .map((v) => normalizeHnKey(v))
+      .filter(Boolean),
+  );
+  const nameKey = normalizeFullNameKey(target.fullName);
+  const targetIsStaffNonPatient =
+    Boolean(target.role) && String(target.role).trim().toLowerCase() !== 'patient';
+
+  const matchedPatientIds: string[] = [];
+  const nextPatients: PatientRecord[] = [];
+  for (const p of patients) {
+    const pidLo = p.id.trim().toLowerCase();
+    const pHnKey = normalizeHnKey(p.hn);
+    const pNameKey = normalizeFullNameKey(p.fullName);
+    const isTargetPatient =
+      !targetIsStaffNonPatient &&
+      (idKeys.has(pidLo) ||
+        (Boolean(pHnKey) && hnKeys.has(pHnKey)) ||
+        (Boolean(nameKey) && pNameKey === nameKey));
+
+    if (isTargetPatient) {
+      matchedPatientIds.push(p.id);
+      idKeys.add(pidLo);
+      if (pHnKey) hnKeys.add(pHnKey);
+      continue;
+    }
+
+    // If deleting a PT/staff member, keep the patient and unassign PT references
+    if (
+      (p.assignedPtId && idKeys.has(p.assignedPtId.trim().toLowerCase())) ||
+      (p.delegatedToPtId && idKeys.has(p.delegatedToPtId.trim().toLowerCase()))
+    ) {
+      nextPatients.push({
+        ...p,
+        assignedPtId: p.assignedPtId && idKeys.has(p.assignedPtId.trim().toLowerCase()) ? '' : p.assignedPtId,
+        delegatedToPtId:
+          p.delegatedToPtId && idKeys.has(p.delegatedToPtId.trim().toLowerCase()) ? null : p.delegatedToPtId,
+      });
+    } else {
+      nextPatients.push(p);
+    }
+  }
+
+  const matchedUserIds: string[] = [];
+  const nextUsers: UserAccount[] = [];
+  for (const u of users) {
+    const uidLo = u.id.trim().toLowerCase();
+    const uPidLo = (u.patientId ?? '').trim().toLowerCase();
+    const uHnKey = normalizeHnKey(u.username);
+    const uNameKey = normalizeFullNameKey(u.fullName);
+    const isPatientRole = String(u.role ?? '').trim().toLowerCase() === 'patient';
+
+    const matchesUser =
+      idKeys.has(uidLo) ||
+      (Boolean(uPidLo) && idKeys.has(uPidLo)) ||
+      (Boolean(uHnKey) && hnKeys.has(uHnKey)) ||
+      (isPatientRole && Boolean(nameKey) && uNameKey === nameKey);
+
+    if (matchesUser) {
+      matchedUserIds.push(u.id);
+      continue;
+    }
+    nextUsers.push(u);
+  }
+
+  return { patients: nextPatients, users: nextUsers, matchedUserIds, matchedPatientIds };
+}
+
+/**
+ * Purges deleted patient & linked PATIENT account records from all browser `localStorage` keys
+ * (`drtech_patients`, `drtech_users`, `drtech_biometric_vault_v3`, `drtech_face_templates`,
+ * `drtech_courses`, `drtech_case_delegations`, `drtech_clinical_assessments_v1`,
+ * `drtechcares_recent_enroll_sync_v1`) and records tombstones in `drtech_deleted_ids`.
+ */
+export function cleanupDeletedPatientLocalStorage(target: CascadeDeletePatientTarget): void {
+  if (typeof globalThis.localStorage === 'undefined') return;
+  try {
+    const idKeys = new Set(
+      [target.id, target.patientId]
+        .map((v) => (v ?? '').trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const { hnVariants, usernameVariants } = buildNormalizedHnVariants([target.hn, target.username]);
+    const hnKeySet = new Set(
+      [target.hn, target.username, ...hnVariants, ...usernameVariants]
+        .map((v) => normalizeHnKey(v))
+        .filter(Boolean),
+    );
+    const exactKeySet = new Set(
+      [...idKeys, ...hnVariants.map((v) => v.toLowerCase()), ...usernameVariants.map((v) => v.toLowerCase())],
+    );
+    const nameKey = normalizeFullNameKey(target.fullName);
+
+    // Record tombstones in drtech_deleted_ids
+    const existingTombstones = DrTechCaresApiClient.readDeletedTombstones();
+    for (const k of [...exactKeySet, ...hnKeySet]) {
+      if (k) existingTombstones.add(k);
+    }
+    globalThis.localStorage.setItem(
+      'drtech_deleted_ids',
+      JSON.stringify(Array.from(existingTombstones).slice(-500)),
+    );
+
+    const isMatchingEntry = (entry: unknown): boolean => {
+      if (!entry || typeof entry !== 'object') return false;
+      const rec = entry as Record<string, unknown>;
+      const rawIds = [rec.id, rec.patientId, rec.patient_id, rec.userId, rec.user_id]
+        .map((v) => (typeof v === 'string' ? v.trim().toLowerCase() : ''))
+        .filter(Boolean);
+      if (rawIds.some((id) => exactKeySet.has(id))) return true;
+
+      const rawHns = [rec.hn, rec.patient_hn, rec.username]
+        .map((v) => normalizeHnKey(v))
+        .filter(Boolean);
+      if (rawHns.some((hk) => hnKeySet.has(hk))) return true;
+
+      const entryRole = typeof rec.role === 'string' ? rec.role.trim().toLowerCase() : '';
+      const entryName = normalizeFullNameKey(rec.fullName ?? rec.full_name);
+      if (nameKey && entryName === nameKey && (!entryRole || entryRole === 'patient')) {
+        return true;
+      }
+      return false;
+    };
+
+    const arrayStorageKeys = [
+      'drtech_patients',
+      'drtech_users',
+      'drtech_biometric_vault_v3',
+      'drtech_face_templates',
+      'drtech_courses',
+      'drtech_clinical_assessments_v1',
+      'drtechcares_recent_enroll_sync_v1',
+    ];
+    for (const key of arrayStorageKeys) {
+      const raw = globalThis.localStorage.getItem(key);
+      if (!raw) continue;
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed)) {
+          const filtered = parsed.filter((item) => !isMatchingEntry(item));
+          globalThis.localStorage.setItem(key, JSON.stringify(filtered));
+        }
+      } catch {
+        // Ignore malformed localStorage cache entry
+      }
+    }
+
+    // Clean map-keyed delegation overrides (`drtech_case_delegations`)
+    const delRaw = globalThis.localStorage.getItem('drtech_case_delegations');
+    if (delRaw) {
+      try {
+        const parsed = JSON.parse(delRaw) as Record<string, unknown>;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          let changed = false;
+          for (const k of Object.keys(parsed)) {
+            if (exactKeySet.has(k.toLowerCase()) || hnKeySet.has(normalizeHnKey(k))) {
+              delete parsed[k];
+              changed = true;
+            }
+          }
+          if (changed) {
+            globalThis.localStorage.setItem('drtech_case_delegations', JSON.stringify(parsed));
+          }
+        }
+      } catch {
+        // Ignore malformed map
+      }
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+}
+
+/**
+ * Executes a direct best-effort cascading delete in Supabase across `public.patients`,
+ * `public.staff_users`, `patient_clinical_assessments`, `rehab_schedules`, and child tables
+ * matching by `id`, `patient_id`, normalized `hn` / `username` (`HN-XXXXX` / `hnXXXXX` / `@hnXXXXX`),
+ * and `full_name` (restricted to `role = 'patient'`).
+ */
+export async function cascadeDeletePatientInSupabase(
+  supabase: SupabaseClient | null | undefined,
+  target: CascadeDeletePatientTarget,
+): Promise<void> {
+  if (!supabase || isSupabaseCircuitOpen(supabase)) return;
+  try {
+    const candidateUuids = Array.from(
+      new Set([target.id, target.patientId].filter((v): v is string => isUuidString(v))),
+    );
+    const { hnVariants, usernameVariants } = buildNormalizedHnVariants([target.hn, target.username]);
+    const cleanFullName = (target.fullName ?? '').trim();
+
+    const safeDeleteEq = async (table: string, col: string, val: string): Promise<void> => {
+      try {
+        const builder = supabase.from(table) as unknown as {
+          delete?: () => { eq?: (c: string, v: string) => PromiseLike<unknown> };
+        };
+        const del = builder?.delete?.();
+        if (del && typeof del.eq === 'function') {
+          await del.eq(col, val);
+        }
+      } catch {
+        // Non-fatal best-effort delete
+      }
+    };
+
+    const childOps: Promise<void>[] = [];
+    for (const pid of candidateUuids) {
+      childOps.push(
+        safeDeleteEq('patient_clinical_assessments', 'patient_id', pid),
+        safeDeleteEq('rehab_schedules', 'patient_id', pid),
+        safeDeleteEq('patient_biometrics', 'patient_id', pid),
+        safeDeleteEq('face_templates', 'patient_id', pid),
+        safeDeleteEq('face_enrollments', 'patient_id', pid),
+        safeDeleteEq('patient_courses', 'patient_id', pid),
+        safeDeleteEq('rehab_sessions', 'patient_id', pid),
+        safeDeleteEq('rehab_session_history', 'patient_id', pid),
+        safeDeleteEq('medical_notes', 'patient_id', pid),
+        safeDeleteEq('treatment_reports', 'patient_id', pid),
+        safeDeleteEq('staff_calls', 'patient_id', pid),
+        safeDeleteEq('active_sessions', 'user_id', pid),
+        safeDeleteEq('staff_users', 'patient_id', pid),
+        safeDeleteEq('staff_users', 'id', pid),
+      );
+    }
+    for (const h of hnVariants) {
+      childOps.push(
+        safeDeleteEq('patient_clinical_assessments', 'patient_hn', h),
+        safeDeleteEq('patient_biometrics', 'hn', h),
+      );
+    }
+    for (const uname of usernameVariants) {
+      childOps.push(safeDeleteEq('staff_users', 'username', uname));
+    }
+    if (cleanFullName) {
+      childOps.push(
+        (async () => {
+          try {
+            const builder = supabase.from('staff_users') as unknown as {
+              delete?: () => {
+                eq?: (
+                  c: string,
+                  v: string,
+                ) => { eq?: (c2: string, v2: string) => PromiseLike<unknown> } & PromiseLike<unknown>;
+              };
+            };
+            const q1 = builder?.delete?.()?.eq?.('role', 'patient');
+            if (q1 && typeof q1.eq === 'function') {
+              await q1.eq('full_name', cleanFullName);
+            }
+          } catch {
+            // Non-fatal
+          }
+        })(),
+      );
+    }
+
+    await Promise.allSettled(childOps);
+
+    const parentOps: Promise<void>[] = [
+      ...candidateUuids.map((pid) => safeDeleteEq('patients', 'id', pid)),
+      ...hnVariants.map((h) => safeDeleteEq('patients', 'hn', h)),
+    ];
+    await Promise.allSettled(parentOps);
+  } catch {
+    // Best-effort cascading delete never crashes UI
+  }
+}

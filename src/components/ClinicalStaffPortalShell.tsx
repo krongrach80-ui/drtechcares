@@ -85,7 +85,10 @@ import {
   type PatientScopeFilter,
 } from '../lib/patientHydration';
 import {
-  mirrorSynthesizedPatientsToSupabase,
+  applyCascadingPatientDeletionToState,
+  cascadeDeletePatientInSupabase,
+  cleanupDeletedPatientLocalStorage,
+  formatCanonicalHn,
   normalizeHnKey,
   unifyClinicPatientsDetailed,
 } from '../utils/unifyPatientDirectory';
@@ -1392,17 +1395,12 @@ export function ClinicalStaffPortalShell({
       ? initialPatients.map((p) => normalizePatientRecord(p, { requireRealVectorsForVerified: false }))
       : [],
   );
-  const { patients, synthesizedPatients } = useMemo(
+  const { patients } = useMemo(
     () => unifyClinicPatientsDetailed(rawPatients, users),
     [rawPatients, users],
   );
   const [patientsSyncing, setPatientsSyncing] = useState(false);
   const [patientSyncError, setPatientSyncError] = useState<string | null>(initialPatientSyncError ?? null);
-
-  useEffect(() => {
-    if (synthesizedPatients.length === 0) return;
-    void mirrorSynthesizedPatientsToSupabase(apiClient.getSupabaseClient(), synthesizedPatients);
-  }, [apiClient, synthesizedPatients]);
   const [exercises, setExercises] = useState<ManagedExerciseRecord[]>(() =>
     CLINICAL_EXERCISES.map((ex) => ({ ...ex, createdBy: 'system' })),
   );
@@ -2175,33 +2173,57 @@ export function ClinicalStaffPortalShell({
 
     setSubmitting(true);
     try {
+      const isPatientRole = String(target.role ?? '').trim().toLowerCase() === 'patient';
+      const derivedHn = isPatientRole ? formatCanonicalHn(target.username, target.patientId ?? target.id) : null;
+      const linkedPatient = isPatientRole
+        ? patients.find(
+            (p) =>
+              (target.patientId && p.id === target.patientId) ||
+              normalizeHnKey(p.hn) === normalizeHnKey(target.username) ||
+              p.fullName.trim().toLowerCase() === target.fullName.trim().toLowerCase(),
+          )
+        : undefined;
+
       await apiClient.deleteUser(target.id, target.username);
-      setUsers((prev) =>
-        prev.filter(
-          (acc) =>
-            acc.id !== target.id &&
-            acc.username.toLowerCase() !== target.username.toLowerCase(),
-        ),
-      );
-      setRawPatients((prev) =>
-        prev.map((p) =>
-          p.assignedPtId === target.id || p.delegatedToPtId === target.id
-            ? {
-              ...p,
-              assignedPtId: p.assignedPtId === target.id ? '' : p.assignedPtId,
-              delegatedToPtId: p.delegatedToPtId === target.id ? null : p.delegatedToPtId,
-            }
-            : p,
-        ),
-      );
+      if (isPatientRole) {
+        const cascadeTarget = {
+          id: linkedPatient?.id ?? target.patientId ?? target.id,
+          patientId: linkedPatient?.id ?? target.patientId ?? target.id,
+          hn: linkedPatient?.hn ?? derivedHn,
+          username: target.username,
+          fullName: target.fullName,
+          role: 'patient',
+        };
+        await apiClient
+          .deletePatientCascading(
+            linkedPatient?.id ?? target.patientId ?? derivedHn ?? target.id,
+            linkedPatient?.hn ?? derivedHn ?? undefined,
+          )
+          .catch(() => {});
+        await cascadeDeletePatientInSupabase(apiClient.getSupabaseClient(), cascadeTarget);
+        cleanupDeletedPatientLocalStorage(cascadeTarget);
+      }
+
+      const nextState = applyCascadingPatientDeletionToState(rawPatients, users, {
+        id: target.id,
+        patientId: linkedPatient?.id ?? target.patientId ?? null,
+        hn: linkedPatient?.hn ?? derivedHn,
+        username: target.username,
+        fullName: target.fullName,
+        role: target.role,
+      });
+      setUsers(nextState.users);
+      setRawPatients(nextState.patients);
+
       const nextOverrides = { ...profileOverrides };
       delete nextOverrides[target.id];
       delete nextOverrides[`usr:${target.username.toLowerCase()}`];
       setProfileOverrides(nextOverrides);
       saveStaffProfileOverrides(nextOverrides);
-      if (target.patientId) {
-        removeProfileFromLocalBiometricVault(target.patientId);
-      }
+      if (linkedPatient?.id) removeProfileFromLocalBiometricVault(linkedPatient.id);
+      if (target.patientId) removeProfileFromLocalBiometricVault(target.patientId);
+      if (linkedPatient?.hn) removeProfileFromLocalBiometricVault(linkedPatient.hn);
+      if (derivedHn) removeProfileFromLocalBiometricVault(derivedHn);
       removeProfileFromLocalBiometricVault(target.username);
       notifyBiometricIndexChanged();
       if (deletingSelf) {
@@ -2222,25 +2244,42 @@ export function ClinicalStaffPortalShell({
     if (!window.confirm(`ยืนยันลบข้อมูลคนไข้ ${target.fullName} (รวม Face ID)?`)) return;
     setSubmitting(true);
     try {
+      const targetHnKey = normalizeHnKey(target.hn);
+      const targetNameKey = target.fullName.trim().toLowerCase();
+      const linkedUsers = users.filter(
+        (u) =>
+          u.patientId === target.id ||
+          u.id === target.id ||
+          (targetHnKey && normalizeHnKey(u.username) === targetHnKey) ||
+          (u.role === 'patient' && u.fullName.trim().toLowerCase() === targetNameKey),
+      );
+
       await apiClient.deletePatientCascading(target.id, target.hn);
-      setRawPatients((prev) =>
-        prev.filter(
-          (p) =>
-            p.id !== target.id &&
-            p.hn.toLowerCase() !== target.hn.toLowerCase(),
-        ),
-      );
-      setUsers((prev) =>
-        prev.filter(
-          (u) =>
-            u.patientId !== target.id &&
-            normalizeHnKey(u.username) !== normalizeHnKey(target.hn),
-        ),
-      );
+      for (const lu of linkedUsers) {
+        await apiClient.deleteUser(lu.id, lu.username).catch(() => {});
+      }
+      const cascadeTarget = {
+        id: target.id,
+        patientId: target.id,
+        hn: target.hn,
+        username: linkedUsers[0]?.username ?? targetHnKey,
+        fullName: target.fullName,
+        role: 'patient',
+      };
+      await cascadeDeletePatientInSupabase(apiClient.getSupabaseClient(), cascadeTarget);
+      cleanupDeletedPatientLocalStorage(cascadeTarget);
+
+      const nextState = applyCascadingPatientDeletionToState(rawPatients, users, cascadeTarget);
+      setRawPatients(nextState.patients);
+      setUsers(nextState.users);
+
       removeProfileFromLocalBiometricVault(target.id);
       removeProfileFromLocalBiometricVault(target.hn);
+      for (const lu of linkedUsers) {
+        removeProfileFromLocalBiometricVault(lu.username);
+      }
       notifyBiometricIndexChanged();
-      flashBanner('success', `ลบข้อมูลคนไข้ ${target.fullName} แล้ว`);
+      flashBanner('success', `ลบข้อมูลคนไข้ ${target.fullName} และบัญชีผู้ใช้ที่เชื่อมโยงเรียบร้อยแล้ว`);
       await refreshAll();
     } catch (err) {
       if (await handleAuthFailureIfExpired(err)) return;
