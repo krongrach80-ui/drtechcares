@@ -9,6 +9,12 @@ import {
 } from '@drtechcares/api-client';
 import { notifyBiometricIndexChanged } from './faceMatcher';
 import {
+  buildPatientDualWriteColumns,
+  inspectPatientRecordHydration,
+  normalizePatientRecord,
+  schedulePatientTopLevelRepairInBackground,
+} from './patientHydration';
+import {
   REQUIRED_MATCH_STREAK,
   STRICT_CENTERED_COSINE_THRESHOLD,
   STRICT_COHORT_MARGIN,
@@ -1711,8 +1717,32 @@ export async function syncPatientBiometricEverywhere(input: {
         existingPat.data && existingPat.data.history && typeof existingPat.data.history === 'object'
           ? (existingPat.data.history as Record<string, unknown>)
           : {};
+      const syncedPatientForDualWrite: PatientRecord = {
+        ...input.patient,
+        faceBiometricStatus: 'VERIFIED',
+        faceFramesCount: profile.framesCaptured,
+        masterEmbedding: masterNorm,
+        angleEmbeddings: angleNorm,
+        exemplarEmbeddings: dbExemplars,
+        biometricEngine: BIOMETRIC_ENGINE_ID,
+        biometricUpdatedAt: profile.updatedAt,
+        ...(profile.geometricRatios ? { geometricRatios: profile.geometricRatios } : {}),
+      };
       const enrichedHistory = {
         ...baseHistory,
+        ...(syncedPatientForDualWrite.gender ? { gender: syncedPatientForDualWrite.gender } : {}),
+        ...(syncedPatientForDualWrite.strokeType ? { strokeType: syncedPatientForDualWrite.strokeType } : {}),
+        ...(syncedPatientForDualWrite.affectedSide ? { affectedSide: syncedPatientForDualWrite.affectedSide } : {}),
+        ...(syncedPatientForDualWrite.motorAssessmentScore !== undefined
+          ? { motorAssessmentScore: syncedPatientForDualWrite.motorAssessmentScore }
+          : {}),
+        ...(syncedPatientForDualWrite.adlDressingScore !== undefined
+          ? { adlDressingScore: syncedPatientForDualWrite.adlDressingScore }
+          : {}),
+        faceBiometricStatus: 'VERIFIED',
+        faceFramesCount: profile.framesCaptured,
+        ...(syncedPatientForDualWrite.faceImageUrl ? { faceImageUrl: syncedPatientForDualWrite.faceImageUrl } : {}),
+        ...(syncedPatientForDualWrite.angleImageUrls ? { angleImageUrls: syncedPatientForDualWrite.angleImageUrls } : {}),
         biometricEngine: BIOMETRIC_ENGINE_ID,
         masterEmbedding: masterNorm,
         angleEmbeddings: angleNorm,
@@ -1721,9 +1751,16 @@ export async function syncPatientBiometricEverywhere(input: {
         biometricUpdatedAt: profile.updatedAt,
       };
 
+      const dualTopCols = buildPatientDualWriteColumns(syncedPatientForDualWrite, {
+        updatedAtIso: profile.updatedAt,
+        includeProfileFields: true,
+      });
       const patientBioPatch: Record<string, unknown> = {
+        ...dualTopCols,
         face_biometric_status: 'VERIFIED',
         face_frames_count: profile.framesCaptured,
+        master_embedding: masterNorm,
+        angle_embeddings: angleNorm,
         face_embedding: blob,
         biometric_data: blob,
         biometric_updated_at: profile.updatedAt,
@@ -2076,16 +2113,19 @@ export async function loadEnrolledPatientsWithBiometrics(
             fullName: p.fullName,
             registrationStatus: p.registrationStatus ?? 'active',
           }));
-          // Also merge any biometric embeddings attached directly on /api/patients records
-          for (const p of liveList as unknown as Record<string, unknown>[]) {
-            const pid = String(p.id ?? '');
-            const hn = String(p.hn ?? '');
+          // Also merge any biometric embeddings attached directly on /api/patients records (or inside history JSON)
+          for (const rawP of liveList as unknown as Record<string, unknown>[]) {
+            const hydratedP = normalizePatientRecord(rawP, { requireRealVectorsForVerified: false });
+            const p = rawP;
+            const pid = hydratedP.id || String(p.id ?? '');
+            const hn = hydratedP.hn || String(p.hn ?? '');
             const pidLo = pid.trim().toLowerCase();
             const hnLo = hn.trim().toLowerCase();
             if (!pid || deletedLowerSet.has(pidLo) || (hnLo && deletedLowerSet.has(hnLo))) continue;
             const bioObj = (p.biometric && typeof p.biometric === 'object' ? p.biometric : null) as Record<string, unknown> | null;
             const templatesArr = Array.isArray(p.face_templates) ? (p.face_templates as unknown[]) : null;
             const masterVec =
+              hydratedP.masterEmbedding ??
               parseVectorLoose(p.masterEmbedding) ??
               parseVectorLoose(p.master_embedding) ??
               parseVectorLoose(p.faceEmbedding) ??
@@ -2096,6 +2136,7 @@ export async function loadEnrolledPatientsWithBiometrics(
               parseVectorLoose(templatesArr?.[0]);
             if (!masterVec) continue;
             const angles =
+              hydratedP.angleEmbeddings ??
               (p.angleEmbeddings as Partial<AngleEmbeddings5D> | undefined) ??
               (p.angle_embeddings as Partial<AngleEmbeddings5D> | undefined) ??
               (bioObj?.angle_embeddings as Partial<AngleEmbeddings5D> | undefined);
@@ -2103,20 +2144,21 @@ export async function loadEnrolledPatientsWithBiometrics(
               buildCandidateFromSource(
                 pid,
                 hn,
-                String(p.fullName ?? p.full_name ?? ''),
+                hydratedP.fullName || String(p.fullName ?? p.full_name ?? ''),
                 masterVec,
                 angles,
-                Array.isArray(p.exemplarEmbeddings) ? (p.exemplarEmbeddings as unknown[]) : undefined,
+                hydratedP.exemplarEmbeddings ??
+                  (Array.isArray(p.exemplarEmbeddings) ? (p.exemplarEmbeddings as unknown[]) : undefined),
                 {
-                  diagnosis: String(p.diagnosis ?? ''),
-                  assignedPtId: String(p.assignedPtId ?? p.assigned_pt_id ?? ''),
-                  nextAppointmentDate: String(p.nextAppointmentDate ?? p.next_appointment_date ?? ''),
-                  avatarUrl: typeof p.faceImageUrl === 'string' ? p.faceImageUrl : undefined,
-                  framesCaptured: typeof p.faceFramesCount === 'number' ? p.faceFramesCount : 120,
-                  biometricEngine: p.biometricEngine as PatientRecord['biometricEngine'],
-                  geometricRatios: (p.geometricRatios ?? p.geometric_ratios) as
+                  diagnosis: hydratedP.diagnosis || String(p.diagnosis ?? ''),
+                  assignedPtId: hydratedP.assignedPtId || String(p.assignedPtId ?? p.assigned_pt_id ?? ''),
+                  nextAppointmentDate: hydratedP.nextAppointmentDate || String(p.nextAppointmentDate ?? p.next_appointment_date ?? ''),
+                  avatarUrl: hydratedP.faceImageUrl ?? (typeof p.faceImageUrl === 'string' ? p.faceImageUrl : undefined),
+                  framesCaptured: hydratedP.faceFramesCount ?? (typeof p.faceFramesCount === 'number' ? p.faceFramesCount : 120),
+                  biometricEngine: hydratedP.biometricEngine ?? (p.biometricEngine as PatientRecord['biometricEngine']),
+                  geometricRatios: hydratedP.geometricRatios ?? ((p.geometricRatios ?? p.geometric_ratios) as
                     | GeometricAnthropometricRatios
-                    | undefined,
+                    | undefined),
                 },
               ),
             );
@@ -2240,27 +2282,61 @@ export async function loadEnrolledPatientsWithBiometrics(
             ? r.face_embedding
             : {}) as Record<string, unknown>;
 
+          const inspectedRow = inspectPatientRecordHydration(r, {
+            biometricsRow: bio
+              ? {
+                  masterEmbedding: parseVectorLoose(bio.master_embedding),
+                  angleEmbeddings: bio.angle_embeddings as AngleEmbeddings5D | undefined,
+                  exemplarEmbeddings: Array.isArray(bio.exemplar_embeddings)
+                    ? (bio.exemplar_embeddings as number[][])
+                    : undefined,
+                  framesCaptured:
+                    typeof bio.frame_count === 'number'
+                      ? bio.frame_count
+                      : typeof bio.frames_captured === 'number'
+                        ? bio.frames_captured
+                        : undefined,
+                  avatarUrl: typeof bio.avatar_url === 'string' && bio.avatar_url ? bio.avatar_url : undefined,
+                  geometricRatios:
+                    bio.geometric_ratios && typeof bio.geometric_ratios === 'object'
+                      ? (bio.geometric_ratios as GeometricAnthropometricRatios)
+                      : undefined,
+                  updatedAt: typeof bio.updated_at === 'string' ? bio.updated_at : undefined,
+                }
+              : undefined,
+            requireRealVectorsForVerified: true,
+          });
+          if (inspectedRow.needsTopLevelRepair && inspectedRow.topLevelRepairPatch) {
+            void schedulePatientTopLevelRepairInBackground(supabase, pid, inspectedRow.topLevelRepairPatch);
+          }
+
           const master =
+            inspectedRow.patient.masterEmbedding ??
             parseVectorLoose(bio?.master_embedding) ??
+            parseVectorLoose(r.master_embedding) ??
             parseVectorLoose(r.biometric_data) ??
             parseVectorLoose(r.face_embedding) ??
             parseVectorLoose(history.masterEmbedding);
           if (!master) continue;
 
           const rawAngles =
+            inspectedRow.patient.angleEmbeddings ??
             (bio?.angle_embeddings as Partial<AngleEmbeddings5D> | undefined) ??
+            (r.angle_embeddings as Partial<AngleEmbeddings5D> | undefined) ??
             (bioDataObj.angle_embeddings as Partial<AngleEmbeddings5D> | undefined) ??
             (faceBlob.angle_embeddings as Partial<AngleEmbeddings5D> | undefined) ??
             (history.angleEmbeddings as Partial<AngleEmbeddings5D> | undefined);
-          const rawExemplars = Array.isArray(bio?.exemplar_embeddings)
-            ? (bio.exemplar_embeddings as unknown[])
-            : Array.isArray(bioDataObj.exemplar_embeddings)
-              ? (bioDataObj.exemplar_embeddings as unknown[])
-              : Array.isArray(faceBlob.exemplar_embeddings)
-                ? (faceBlob.exemplar_embeddings as unknown[])
-                : Array.isArray(history.exemplarEmbeddings)
-                  ? (history.exemplarEmbeddings as unknown[])
-                  : undefined;
+          const rawExemplars =
+            inspectedRow.patient.exemplarEmbeddings ??
+            (Array.isArray(bio?.exemplar_embeddings)
+              ? (bio.exemplar_embeddings as unknown[])
+              : Array.isArray(bioDataObj.exemplar_embeddings)
+                ? (bioDataObj.exemplar_embeddings as unknown[])
+                : Array.isArray(faceBlob.exemplar_embeddings)
+                  ? (faceBlob.exemplar_embeddings as unknown[])
+                  : Array.isArray(history.exemplarEmbeddings)
+                    ? (history.exemplarEmbeddings as unknown[])
+                    : undefined);
 
           const prevCloud = prevCloudByPid.get(pid);
           const cand = buildCandidateFromSource(
@@ -2275,25 +2351,29 @@ export async function loadEnrolledPatientsWithBiometrics(
               assignedPtId: String(r.assigned_pt_id ?? ''),
               nextAppointmentDate: String(r.next_appointment_date ?? ''),
               avatarUrl:
-                typeof bio?.avatar_url === 'string' && bio.avatar_url
+                inspectedRow.patient.faceImageUrl ??
+                (typeof bio?.avatar_url === 'string' && bio.avatar_url
                   ? bio.avatar_url
                   : typeof r.face_image_url === 'string'
                     ? r.face_image_url
-                    : undefined,
+                    : undefined),
               framesCaptured:
-                typeof bio?.frame_count === 'number'
-                  ? bio.frame_count
-                  : typeof bio?.frames_captured === 'number'
-                    ? bio.frames_captured
-                    : typeof r.face_frames_count === 'number'
-                      ? r.face_frames_count
-                      : 120,
+                inspectedRow.patient.faceFramesCount && inspectedRow.patient.faceFramesCount > 0
+                  ? inspectedRow.patient.faceFramesCount
+                  : typeof bio?.frame_count === 'number'
+                    ? bio.frame_count
+                    : typeof bio?.frames_captured === 'number'
+                      ? bio.frames_captured
+                      : typeof r.face_frames_count === 'number' && r.face_frames_count > 0
+                        ? r.face_frames_count
+                        : 120,
               qualityScore: typeof bio?.quality_score === 'number' ? bio.quality_score : 0.96,
               biometricEngine:
                 master.length >= 768
                   ? BIOMETRIC_ENGINE_ID
-                  : (history.biometricEngine as PatientRecord['biometricEngine']),
+                  : (inspectedRow.patient.biometricEngine ?? (history.biometricEngine as PatientRecord['biometricEngine'])),
               geometricRatios:
+                inspectedRow.patient.geometricRatios ??
                 (bio?.geometric_ratios && typeof bio.geometric_ratios === 'object'
                   ? (bio.geometric_ratios as GeometricAnthropometricRatios)
                   : undefined) ??

@@ -51,6 +51,7 @@ import {
 } from 'lucide-react';
 import FaceID120Scanner, { type FaceID120Result } from './FaceID120Scanner';
 import { syncPatientBiometricEverywhere } from '../lib/biometricEngine';
+import { normalizePatientRecord } from '../lib/patientHydration';
 
 interface StaffAssistedEnrollmentModalProps {
   open: boolean;
@@ -632,12 +633,15 @@ export function StaffAssistedEnrollmentModal({
           qualityScore: bio.qualityScore,
           requireSupabase: false,
         }).catch(() => null);
+        const normalizedUpdated = normalizePatientRecord(updated, {
+          requireRealVectorsForVerified: false,
+        });
         setErrorMsg(null);
         setToastMsg('บันทึกใบหน้าและข้อมูลคนไข้เรียบร้อยแล้ว!');
-        setCreatedPatient(updated);
+        setCreatedPatient(normalizedUpdated);
         setCapturing(false);
         setStep(4);
-        onEnrolled(updated);
+        onEnrolled(normalizedUpdated);
         return;
       }
 
@@ -700,13 +704,20 @@ export function StaffAssistedEnrollmentModal({
           .updatePatient(enrolled.id, {
             nextAppointmentDate: effectiveNextAppointmentDate,
             rehabSchedules: finalizedSchedules,
+            faceBiometricStatus: 'VERIFIED',
           })
           .catch(() => null);
-        enrolled = patched ?? {
-          ...enrolled,
-          nextAppointmentDate: effectiveNextAppointmentDate,
-          rehabSchedules: finalizedSchedules,
-        };
+        enrolled = normalizePatientRecord(
+          patched ?? {
+            ...enrolled,
+            nextAppointmentDate: effectiveNextAppointmentDate,
+            rehabSchedules: finalizedSchedules,
+            faceBiometricStatus: 'VERIFIED',
+          },
+          { requireRealVectorsForVerified: false },
+        );
+      } else {
+        enrolled = normalizePatientRecord(enrolled, { requireRealVectorsForVerified: false });
       }
 
       const prescribedUniqueCount = new Set(

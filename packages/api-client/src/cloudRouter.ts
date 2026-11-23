@@ -122,6 +122,10 @@ import {
   type StoredUserAccount,
 } from './supabasePersistence';
 import { clampTtsText, synthesizeTtsAudio } from './ttsProxy';
+import {
+  buildPatientDualWriteColumns,
+  resolveProtectedBiometricStatus,
+} from './patientNormalization';
 
 function randomHex(byteLength: number): string {
   const bytes = new Uint8Array(byteLength);
@@ -459,20 +463,6 @@ function normalizeAngleEmbeddingsInput(rawAngles: unknown): AngleEmbeddings5D | 
   return null;
 }
 
-function buildPatientBiometricBlob(patient: PatientRecord): Record<string, unknown> | null {
-  if (!patient.masterEmbedding || patient.masterEmbedding.length === 0) return null;
-  return {
-    engine:
-      patient.biometricEngine ??
-      (patient.masterEmbedding.length >= 768 ? 'human-faceres-1024d' : 'hybrid-512d'),
-    dimension: patient.masterEmbedding.length,
-    master_embedding: patient.masterEmbedding,
-    angle_embeddings: patient.angleEmbeddings ?? null,
-    exemplar_embeddings: patient.exemplarEmbeddings ?? [],
-    ...(patient.geometricRatios ? { geometric_ratios: patient.geometricRatios } : {}),
-  };
-}
-
 function parsePostgrestMissingCol(err: unknown): string | null {
   if (!err || typeof err !== 'object') return null;
   const msg = String((err as { message?: unknown }).message ?? '');
@@ -591,6 +581,17 @@ function clampScore(val: unknown, min: number, max: number, fallback: number): n
 }
 
 function buildPatientHistoryPayload(patient: PatientRecord): Record<string, unknown> {
+  const effectiveStatus = resolveProtectedBiometricStatus(patient);
+  const hasValidEmbeddings = Boolean(
+    (patient.masterEmbedding && patient.masterEmbedding.length >= 128) ||
+      (patient.angleEmbeddings?.center && patient.angleEmbeddings.center.length >= 128),
+  );
+  const effectiveFrames =
+    typeof patient.faceFramesCount === 'number' && patient.faceFramesCount > 0
+      ? Math.round(patient.faceFramesCount)
+      : hasValidEmbeddings || effectiveStatus === 'VERIFIED'
+        ? 120
+        : 0;
   return {
     gender: patient.gender ?? 'ชาย',
     assignedPtId: patient.assignedPtId ?? null,
@@ -602,8 +603,8 @@ function buildPatientHistoryPayload(patient: PatientRecord): Record<string, unkn
     universalHealthLinkCode: patient.universalHealthLinkCode ?? generateUniversalLinkCode(patient.id),
     rehabSessionHistory: patient.rehabSessionHistory ?? [],
     clinicalAssessments: patient.clinicalAssessments ?? [],
-    faceBiometricStatus: patient.faceBiometricStatus ?? 'PENDING',
-    faceFramesCount: patient.faceFramesCount ?? 0,
+    faceBiometricStatus: effectiveStatus,
+    faceFramesCount: effectiveFrames,
     faceImageUrl: patient.faceImageUrl ?? null,
     faceImageUrls: patient.faceImageUrls ?? [],
     angleImageUrls: patient.angleImageUrls ?? null,
@@ -616,6 +617,7 @@ function buildPatientHistoryPayload(patient: PatientRecord): Record<string, unkn
     exemplarEmbeddings: patient.exemplarEmbeddings ?? null,
     biometricEngine: patient.biometricEngine ?? null,
     geometricRatios: patient.geometricRatios ?? null,
+    ...(patient.biometricUpdatedAt ? { biometricUpdatedAt: patient.biometricUpdatedAt } : {}),
   };
 }
 
@@ -645,6 +647,8 @@ async function writePatientRowWithFramesFallback(
 
   const legacyOptionalCols = new Set([
     'biometric_updated_at',
+    'master_embedding',
+    'angle_embeddings',
     'face_embedding',
     'biometric_data',
     'gender',
@@ -658,7 +662,7 @@ async function writePatientRowWithFramesFallback(
     'delegated_to_pt_id',
     'delegation_note',
   ]);
-  for (let attempt = 0; attempt < 16; attempt += 1) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
       const res = await exec(working);
       if (!res?.error) return;
@@ -686,7 +690,14 @@ async function writePatientRowWithFramesFallback(
       }
       if (isPgVectorDimensionOrTypeMismatch(res.error)) {
         let fixed = false;
-        for (const col of ['face_embedding', 'biometric_data', 'assigned_pt_id', 'delegated_to_pt_id'] as const) {
+        for (const col of [
+          'master_embedding',
+          'angle_embeddings',
+          'face_embedding',
+          'biometric_data',
+          'assigned_pt_id',
+          'delegated_to_pt_id',
+        ] as const) {
           if (col in working && working[col] !== null) {
             if (col === 'assigned_pt_id' || col === 'delegated_to_pt_id') {
               working[col] = null;
@@ -2590,8 +2601,14 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             : undefined,
       };
 
-      const patientBiometricBlob = buildPatientBiometricBlob(patient);
       const enrolledAtIso = new Date().toISOString();
+      if (!isPendingSkip && masterVec) {
+        patient.biometricUpdatedAt = enrolledAtIso;
+      }
+      const patientDualWriteCols = buildPatientDualWriteColumns(patient, {
+        updatedAtIso: enrolledAtIso,
+        includeProfileFields: true,
+      });
       const safeAssignedPtUuid = toSafeUuidOrNull(patient.assignedPtId, state.users);
       const safeActorUuid = toSafeUuidOrNull(authUser!.id, state.users);
       const compactExemplars =
@@ -2700,26 +2717,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               age: patient.age,
               phone: patient.phone,
               diagnosis: patient.diagnosis,
-              stroke_type: patient.strokeType,
-              affected_side: patient.affectedSide,
-              motor_assessment_score: patient.motorAssessmentScore,
-              adl_dressing_score: patient.adlDressingScore,
-              max_safe_rom_deg: patient.maxSafeRomDeg,
-              universal_health_link_code: patient.universalHealthLinkCode,
               assigned_pt_id: safeAssignedPtUuid,
               next_appointment_date: patient.nextAppointmentDate || null,
               registration_status: 'active',
-              face_biometric_status: faceStatus,
-              face_frames_count: framesCaptured,
               face_image_url: storedFaceImageUrl ?? null,
-              ...(patientBiometricBlob
-                ? {
-                    face_embedding: patientBiometricBlob,
-                    biometric_data: patientBiometricBlob,
-                    biometric_updated_at: enrolledAtIso,
-                  }
-                : {}),
+              ...patientDualWriteCols,
               history: buildPatientHistoryPayload(patient),
+              updated_at: enrolledAtIso,
             },
             undefined,
             false,
@@ -3176,6 +3180,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         );
       }
 
+      const bioUpdatedAtIso = new Date().toISOString();
+      patient.biometricUpdatedAt = bioUpdatedAtIso;
+      const dualColsForUpsert = buildPatientDualWriteColumns(patient, {
+        updatedAtIso: bioUpdatedAtIso,
+        includeProfileFields: true,
+      });
+
       const persistRes = await persistWithTimeoutBestEffort(
         supabase,
         async (db) => {
@@ -3193,8 +3204,19 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             frames_captured: framesCaptured,
             quality_score: qualityScore,
             avatar_url: patient!.faceImageUrl ?? null,
-            updated_at: new Date().toISOString(),
+            updated_at: bioUpdatedAtIso,
           });
+          await writePatientRowWithFramesFallback(
+            db,
+            'update',
+            {
+              ...dualColsForUpsert,
+              history: buildPatientHistoryPayload(patient!),
+              updated_at: bioUpdatedAtIso,
+            },
+            patient!.id,
+            false,
+          );
           return { error: null };
         },
         1500,
@@ -5573,7 +5595,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         );
       }
 
-      const patientBiometricBlob = buildPatientBiometricBlob(patient);
+      const enrollUpdatedAtIso = new Date().toISOString();
+      patient.biometricUpdatedAt = enrollUpdatedAtIso;
+      const enrollDualCols = buildPatientDualWriteColumns(patient, {
+        updatedAtIso: enrollUpdatedAtIso,
+        includeProfileFields: true,
+      });
       const compactExemplars = normalizeCompactExemplars(exemplarList, masterVec.length, 9);
       const safeActorUuid = toSafeUuidOrNull(authUser!.id, state.users);
       const compactAngleRows: {
@@ -5598,6 +5625,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             master_embedding: masterVec,
             angle_embeddings: resolvedAngles,
             exemplar_embeddings: compactExemplars,
+            ...(patient.geometricRatios ? { geometric_ratios: patient.geometricRatios } : {}),
             biometric_engine: resolvedBiometricEngine ?? null,
             model_version: resolvedBiometricEngine ?? null,
             embedding_dim: masterVec.length,
@@ -5605,24 +5633,16 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             frames_captured: framesCaptured,
             quality_score: qualityScore,
             avatar_url: patient.faceImageUrl ?? null,
-            updated_at: new Date().toISOString(),
+            updated_at: enrollUpdatedAtIso,
           });
           await writePatientRowWithFramesFallback(
             db,
             'update',
             {
-              face_biometric_status: 'VERIFIED',
-              face_frames_count: framesCaptured,
               face_image_url: patient.faceImageUrl ?? null,
-              ...(patientBiometricBlob
-                ? {
-                    face_embedding: patientBiometricBlob,
-                    biometric_data: patientBiometricBlob,
-                    biometric_updated_at: new Date().toISOString(),
-                  }
-                : {}),
+              ...enrollDualCols,
               history: buildPatientHistoryPayload(patient),
-              updated_at: new Date().toISOString(),
+              updated_at: enrollUpdatedAtIso,
             },
             patient.id,
             false,
@@ -5725,6 +5745,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           'update',
           {
             next_appointment_date: todayIso,
+            face_biometric_status: resolveProtectedBiometricStatus(patient),
             face_frames_count: patient.faceFramesCount ?? 0,
             history: buildPatientHistoryPayload(patient),
             updated_at: new Date().toISOString(),
@@ -5802,7 +5823,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           patient.assignedPtId = body.assignedPtId;
         }
         if (body.faceBiometricStatus !== undefined) {
-          patient.faceBiometricStatus = body.faceBiometricStatus;
+          patient.faceBiometricStatus = resolveProtectedBiometricStatus(
+            patient,
+            body.faceBiometricStatus,
+          );
         }
         if (
           body.faceImageUrl !== undefined ||
@@ -5837,8 +5861,14 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           });
         }
       }
+      patient.faceBiometricStatus = resolveProtectedBiometricStatus(patient);
       const safeAssignedPtUuid = toSafeUuidOrNull(patient.assignedPtId, state.users);
       const safeDelegatedPtUuid = toSafeUuidOrNull(patient.delegatedToPtId, state.users);
+      const updateNowIso = new Date().toISOString();
+      const updateDualCols = buildPatientDualWriteColumns(patient, {
+        updatedAtIso: patient.biometricUpdatedAt ?? updateNowIso,
+        includeProfileFields: true,
+      });
       const persistRes = await persistWithTimeoutBestEffort(
         supabase,
         async (db) => {
@@ -5850,21 +5880,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               age: patient.age,
               phone: patient.phone,
               diagnosis: patient.diagnosis,
-              stroke_type: patient.strokeType ?? 'ELDERLY_GENERAL',
-              affected_side: patient.affectedSide ?? 'NONE',
-              motor_assessment_score: patient.motorAssessmentScore ?? 3,
-              adl_dressing_score: patient.adlDressingScore ?? 3,
-              max_safe_rom_deg: patient.maxSafeRomDeg ?? 150,
-              universal_health_link_code:
-                patient.universalHealthLinkCode ?? generateUniversalLinkCode(patient.id),
               assigned_pt_id: safeAssignedPtUuid,
               delegated_to_pt_id: safeDelegatedPtUuid,
               next_appointment_date: patient.nextAppointmentDate || null,
-              face_biometric_status: patient.faceBiometricStatus ?? 'PENDING',
-              face_frames_count: patient.faceFramesCount ?? 0,
               face_image_url: patient.faceImageUrl ?? null,
+              ...updateDualCols,
               history: buildPatientHistoryPayload(patient),
-              updated_at: new Date().toISOString(),
+              updated_at: updateNowIso,
             },
             patient.id,
           );
@@ -6133,7 +6155,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         );
       }
 
-      const patientBiometricBlob = buildPatientBiometricBlob(created);
+      if (hasBio) {
+        created.biometricUpdatedAt = created.enrolledAt;
+      }
+      const createdDualCols = buildPatientDualWriteColumns(created, {
+        updatedAtIso: created.enrolledAt,
+        includeProfileFields: true,
+      });
       const persistRes = await persistWithTimeoutBestEffort(
         supabase,
         async (db) => {
@@ -6144,25 +6172,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             age: created.age,
             phone: created.phone,
             diagnosis: created.diagnosis,
-            stroke_type: created.strokeType,
-            affected_side: created.affectedSide,
-            motor_assessment_score: created.motorAssessmentScore,
-            adl_dressing_score: created.adlDressingScore,
-            max_safe_rom_deg: created.maxSafeRomDeg,
-            universal_health_link_code: created.universalHealthLinkCode,
             assigned_pt_id: toSafeUuidOrNull(created.assignedPtId, state.users),
             next_appointment_date: created.nextAppointmentDate || null,
             registration_status: 'active',
-            face_biometric_status: created.faceBiometricStatus,
-            face_frames_count: created.faceFramesCount,
-            ...(patientBiometricBlob
-              ? {
-                  face_embedding: patientBiometricBlob,
-                  biometric_data: patientBiometricBlob,
-                  biometric_updated_at: created.enrolledAt,
-                }
-              : {}),
+            face_image_url: created.faceImageUrl ?? null,
+            ...createdDualCols,
             history: buildPatientHistoryPayload(created),
+            updated_at: created.enrolledAt,
           });
           if (hasBio && masterVec && resolvedAngles) {
             await upsertPatientBiometricsCompat(db, {
@@ -6570,6 +6586,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             'update',
             {
               next_appointment_date: matchedPatient.nextAppointmentDate || null,
+              face_biometric_status: resolveProtectedBiometricStatus(matchedPatient),
               face_frames_count: matchedPatient.faceFramesCount ?? 0,
               history: buildPatientHistoryPayload(matchedPatient),
               updated_at: new Date().toISOString(),
@@ -6816,6 +6833,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             motor_assessment_score: patient.motorAssessmentScore ?? 3,
             max_safe_rom_deg: patient.maxSafeRomDeg ?? 150,
             universal_health_link_code: patient.universalHealthLinkCode,
+            face_biometric_status: resolveProtectedBiometricStatus(patient),
             face_frames_count: patient.faceFramesCount ?? 0,
             history: buildPatientHistoryPayload(patient),
             updated_at: new Date().toISOString(),

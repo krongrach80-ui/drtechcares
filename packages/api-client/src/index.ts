@@ -312,6 +312,7 @@ export interface PatientRecord {
   biometricStatusDetail?: 'VERIFIED' | 'PENDING' | 'REENROLL_REQUIRED';
   biometricEmbeddingDim?: number;
   biometricPipelineVersion?: string;
+  biometricUpdatedAt?: string;
   faceFramesCount?: number;
   faceImageUrl?: string;
   faceImageUrls?: string[];
@@ -934,7 +935,11 @@ export class DrTechCaresApiClient {
       const raw = globalThis.localStorage.getItem(DRTECH_LOCAL_PATIENTS_KEY);
       if (!raw) return [];
       const parsed = JSON.parse(raw) as unknown;
-      return Array.isArray(parsed) ? (parsed as PatientRecord[]) : [];
+      return Array.isArray(parsed)
+        ? parsed
+            .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+            .map((item) => normalizePatientRecord(item, { requireRealVectorsForVerified: false }))
+        : [];
     } catch {
       return [];
     }
@@ -1682,10 +1687,13 @@ export class DrTechCaresApiClient {
         method: 'POST',
         body: JSON.stringify(input),
       });
-      this.clearLocallyDeletedKeys([res.patient.id, res.patient.hn]);
-      this.saveRecentEnrolledEntry(res.patient, input);
-      this.saveLocalPatientRecord(res.patient);
-      return res.patient;
+      const normalizedPatient = normalizePatientRecord(res.patient, {
+        requireRealVectorsForVerified: false,
+      });
+      this.clearLocallyDeletedKeys([normalizedPatient.id, normalizedPatient.hn]);
+      this.saveRecentEnrolledEntry(normalizedPatient, input);
+      this.saveLocalPatientRecord(normalizedPatient);
+      return normalizedPatient;
     } catch (err) {
       if (!this.isTransientOrServerFailure(err)) {
         throw err;
@@ -1757,9 +1765,12 @@ export class DrTechCaresApiClient {
           body: JSON.stringify(input),
         },
       );
-      this.saveRecentEnrolledEntry(res.patient, input);
-      this.saveLocalPatientRecord(res.patient);
-      return res.patient;
+      const normalizedPatient = normalizePatientRecord(res.patient, {
+        requireRealVectorsForVerified: false,
+      });
+      this.saveRecentEnrolledEntry(normalizedPatient, input);
+      this.saveLocalPatientRecord(normalizedPatient);
+      return normalizedPatient;
     } catch (err) {
       if (!this.isTransientOrServerFailure(err)) {
         throw err;
@@ -1848,6 +1859,7 @@ export class DrTechCaresApiClient {
     const deleted = this.readLocallyDeletedIdSet();
     const overrides = this.readCaseDelegationOverrides();
     return res.patients
+      .map((raw) => normalizePatientRecord(raw, { requireRealVectorsForVerified: false }))
       .filter((p) => !deleted.has(p.id.toLowerCase()) && !deleted.has(p.hn.toLowerCase()))
       .map((p) => {
         const ov = overrides[p.id];
@@ -1872,14 +1884,17 @@ export class DrTechCaresApiClient {
           body: JSON.stringify(patch),
         },
       );
-      this.saveLocalPatientRecord(res.patient);
-      return res.patient;
+      const normalizedPatient = normalizePatientRecord(res.patient, {
+        requireRealVectorsForVerified: false,
+      });
+      this.saveLocalPatientRecord(normalizedPatient);
+      return normalizedPatient;
     } catch (err) {
       if (!this.isTransientOrServerFailure(err)) {
         throw err;
       }
       const existing = this.readLocalPatientById(id);
-      const fallbackPatient: PatientRecord = {
+      const merged: PatientRecord = {
         ...(existing ?? {
           id,
           hn: patch.hn ?? id,
@@ -1897,6 +1912,10 @@ export class DrTechCaresApiClient {
         ...patch,
         id,
       };
+      merged.faceBiometricStatus = resolveProtectedBiometricStatus(merged, patch.faceBiometricStatus);
+      const fallbackPatient = normalizePatientRecord(merged, {
+        requireRealVectorsForVerified: false,
+      });
       this.saveLocalPatientRecord(fallbackPatient);
       return fallbackPatient;
     }
@@ -2876,6 +2895,32 @@ export function resolveTodayPatientSchedule(input: {
 }
 
 import { createCloudRouter } from './cloudRouter';
+import {
+  buildPatientDualWriteColumns,
+  inspectPatientRecordHydration,
+  normalizeBiometricEngineTag,
+  normalizePatientRecord,
+  parseAngleEmbeddingsLoose,
+  parseExemplarEmbeddingsLoose,
+  resolveProtectedBiometricStatus,
+  schedulePatientTopLevelRepairInBackground,
+  type NormalizePatientOptions,
+  type PatientHydrationInspection,
+  type RawPatientBiometricsSource,
+} from './patientNormalization';
+export {
+  buildPatientDualWriteColumns,
+  inspectPatientRecordHydration,
+  normalizeBiometricEngineTag,
+  normalizePatientRecord,
+  parseAngleEmbeddingsLoose,
+  parseExemplarEmbeddingsLoose,
+  resolveProtectedBiometricStatus,
+  schedulePatientTopLevelRepairInBackground,
+  type NormalizePatientOptions,
+  type PatientHydrationInspection,
+  type RawPatientBiometricsSource,
+};
 export {
   buildUpstreamTtsUrls,
   clampTtsText,

@@ -39,6 +39,10 @@ import {
   UserAccount,
   UserRole,
 } from './index';
+import {
+  inspectPatientRecordHydration,
+  schedulePatientTopLevelRepairInBackground,
+} from './patientNormalization';
 
 export interface StoredUserAccount extends UserAccount {
   passwordHash: string;
@@ -571,9 +575,9 @@ const STAFF_USERS_BASE_COLS =
   'id,username,password_hash,role,full_name,phone,specialty,license_no,patient_id,active,force_logged_out_at,created_at';
 
 const PATIENTS_BASE_COLS =
-  'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,history,created_at,updated_at';
+  'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,face_biometric_status,face_frames_count,face_image_url,biometric_updated_at,history,created_at,updated_at';
 const PATIENTS_BIOMETRIC_LIVE_COLS =
-  'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,created_at,updated_at,geometricRatios:history->geometricRatios,rehabSchedules:history->rehabSchedules,biometricEngine:history->>biometricEngine,strokeType:history->>strokeType,affectedSide:history->>affectedSide,motorAssessmentScore:history->motorAssessmentScore,adlDressingScore:history->adlDressingScore,maxSafeRomDeg:history->maxSafeRomDeg,universalHealthLinkCode:history->>universalHealthLinkCode';
+  'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,face_biometric_status,face_frames_count,face_image_url,biometric_updated_at,created_at,updated_at,historyFaceStatus:history->>faceBiometricStatus,historyFaceFramesCount:history->faceFramesCount,historyFaceImageUrl:history->>faceImageUrl,historyGender:history->>gender,geometricRatios:history->geometricRatios,rehabSchedules:history->rehabSchedules,biometricEngine:history->>biometricEngine,strokeType:history->>strokeType,affectedSide:history->>affectedSide,motorAssessmentScore:history->motorAssessmentScore,adlDressingScore:history->adlDressingScore,maxSafeRomDeg:history->maxSafeRomDeg,universalHealthLinkCode:history->>universalHealthLinkCode';
 const PATIENTS_MINIMAL_SAFE_COLS =
   'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,history,created_at';
 
@@ -1155,18 +1159,67 @@ export async function hydrateBiometricsLiveFromSupabase(
     state.filtered_out_template_patients_count = filteredOutTemplateIds.size;
 
     const prevPatientsById = new Map(state.patients.map((p) => [p.id, p]));
-    state.patients = patientsRes.value.data
+    const activePatientRows = patientsRes.value.data.filter((r) => {
+      const pidRaw = String(r.id ?? '').trim();
+      const hnRaw = String(r.hn ?? '').trim();
+      const pidLo = pidRaw.toLowerCase();
+      const hnLo = hnRaw.toLowerCase();
+      const rawReg = String(r.registration_status ?? '').trim().toLowerCase();
+      const isActive = !r.deleted_at && (rawReg === '' || rawReg === 'active');
+      return isActive && !deletedPatientLower.has(pidLo) && (!hnLo || !deletedPatientLower.has(hnLo));
+    });
+
+    // If any active patient has verified history metadata but is missing a patient_biometrics row,
+    // fetch its full history/top-level embedding columns in one targeted query so login never misses it.
+    const historyFallbackById = new Map<string, Record<string, unknown>>();
+    const missingVecIds = activePatientRows
       .filter((r) => {
-        const pidRaw = String(r.id ?? '').trim();
-        const hnRaw = String(r.hn ?? '').trim();
-        const pidLo = pidRaw.toLowerCase();
-        const hnLo = hnRaw.toLowerCase();
-        const rawReg = String(r.registration_status ?? '').trim().toLowerCase();
-        const isActive = !r.deleted_at && (rawReg === '' || rawReg === 'active');
-        return isActive && !deletedPatientLower.has(pidLo) && (!hnLo || !deletedPatientLower.has(hnLo));
+        const pid = String(r.id ?? '').trim();
+        if (!pid) return false;
+        const b120 = biometrics120ByPatient.get(pid);
+        const tpl = parsedTemplatesByPatient.get(pid);
+        const alreadyHasVec = Boolean(
+          b120?.masterEmbedding ||
+            parseVec(r.master_embedding) ||
+            parseVec(r.face_embedding) ||
+            parseVec(r.biometric_data) ||
+            (r.history && typeof r.history === 'object' && parseVec((r.history as Record<string, unknown>).masterEmbedding)) ||
+            tpl?.overall ||
+            tpl?.frontal,
+        );
+        if (alreadyHasVec) return false;
+        const histStatus = String(r.historyFaceStatus ?? '').trim().toUpperCase();
+        const histFrames = Number(r.historyFaceFramesCount ?? 0);
+        const topStatus = String(r.face_biometric_status ?? '').trim().toUpperCase();
+        return histStatus === 'VERIFIED' || histFrames > 0 || topStatus === 'VERIFIED';
       })
-      .map((r) => {
-        const pid = String(r.id);
+      .map((r) => String(r.id));
+
+    if (missingVecIds.length > 0) {
+      try {
+        const q = supabase
+          .from('patients')
+          .select('id,history,master_embedding,angle_embeddings,biometric_data,face_embedding') as unknown as {
+          in?: (col: string, vals: string[]) => PromiseLike<{ data?: Record<string, unknown>[] | null; error?: unknown }>;
+        };
+        if (typeof q.in === 'function') {
+          const histRes = await q.in('id', missingVecIds);
+          if (!histRes?.error && Array.isArray(histRes?.data)) {
+            for (const hr of histRes.data) {
+              const hpid = String(hr.id ?? '').trim();
+              if (hpid) historyFallbackById.set(hpid, hr);
+            }
+          }
+        }
+      } catch {
+        // Best-effort fallback only
+      }
+    }
+
+    state.patients = activePatientRows.map((rawRow) => {
+        const pid = String(rawRow.id);
+        const extraHist = historyFallbackById.get(pid);
+        const r: Record<string, unknown> = extraHist ? { ...rawRow, ...extraHist } : rawRow;
         const prevPatient = prevPatientsById.get(pid);
         const history = (r.history && typeof r.history === 'object' ? r.history : {}) as Record<string, unknown>;
         const tpl = parsedTemplatesByPatient.get(pid);
@@ -1210,6 +1263,23 @@ export async function hydrateBiometricsLiveFromSupabase(
             : history.geometricRatios && typeof history.geometricRatios === 'object'
               ? (history.geometricRatios as GeometricAnthropometricRatios)
               : prevPatient?.geometricRatios;
+        const inspected = inspectPatientRecordHydration(r, {
+          biometricsRow: {
+            masterEmbedding: mergedMaster,
+            angleEmbeddings: mergedAngles,
+            exemplarEmbeddings: mergedExemplars,
+            biometricEngine: b120?.biometricEngine,
+            framesCaptured: b120?.framesCaptured,
+            avatarUrl: b120?.avatarUrl,
+            geometricRatios: resolvedGeom,
+          },
+          prevPatient,
+          strictCurrentDimOnly: true,
+          requireRealVectorsForVerified: true,
+        });
+        if (inspected.needsTopLevelRepair && inspected.topLevelRepairPatch) {
+          void schedulePatientTopLevelRepairInBackground(supabase, pid, inspected.topLevelRepairPatch);
+        }
         const hasRealVector = Boolean(mergedMaster && mergedMaster.length >= 128);
         const embeddingDim = mergedMaster?.length ?? 0;
         const resolvedEngine =
@@ -1293,6 +1363,7 @@ export async function hydrateBiometricsLiveFromSupabase(
           id: pid,
           hn: String(r.hn),
           fullName: String(r.full_name),
+          ...(inspected.patient.gender ? { gender: inspected.patient.gender } : {}),
           nextAppointmentDate: String(r.next_appointment_date ?? prevPatient?.nextAppointmentDate ?? ''),
           registrationStatus: 'active' as const,
           ...(projectedStrokeType ? { strokeType: projectedStrokeType } : {}),
@@ -1305,8 +1376,10 @@ export async function hydrateBiometricsLiveFromSupabase(
           biometricStatusDetail,
           biometricEmbeddingDim: embeddingDim,
           biometricPipelineVersion,
+          ...(inspected.patient.biometricUpdatedAt ? { biometricUpdatedAt: inspected.patient.biometricUpdatedAt } : {}),
+          ...(inspected.patient.faceImageUrl ? { faceImageUrl: inspected.patient.faceImageUrl } : {}),
           faceFramesCount: hasRealVector
-            ? Math.max(b120?.framesCaptured ?? 0, Number(r.face_frames_count ?? 0), prevPatient?.faceFramesCount ?? 0, 120)
+            ? Math.max(b120?.framesCaptured ?? 0, Number(r.face_frames_count ?? 0), Number(r.historyFaceFramesCount ?? 0), prevPatient?.faceFramesCount ?? 0, 120)
             : 0,
           masterEmbedding: mergedMaster,
           angleEmbeddings: mergedAngles,
@@ -2046,12 +2119,31 @@ async function runHydrateStateFromSupabaseInternal(
             : 'v2-pre-iris-1024d'
           : 'legacy-512d';
 
+      const inspectedFull = inspectPatientRecordHydration(r, {
+        biometricsRow: {
+          masterEmbedding: mergedMaster,
+          angleEmbeddings: mergedAngles,
+          exemplarEmbeddings: mergedExemplars,
+          biometricEngine: mergedEngine,
+          framesCaptured: resolvedFramesCount,
+          avatarUrl: mergedPrimaryFaceImageUrl,
+          geometricRatios: hydratedGeomRatios,
+        },
+        prevPatient,
+        strictCurrentDimOnly: true,
+        requireRealVectorsForVerified: true,
+        applyClinicalDefaults: true,
+      });
+      if (inspectedFull.needsTopLevelRepair && inspectedFull.topLevelRepairPatch) {
+        void schedulePatientTopLevelRepairInBackground(supabase, pid, inspectedFull.topLevelRepairPatch);
+      }
+
       return {
         id: pid,
         hn: String(r.hn),
         fullName: String(r.full_name),
         age: Number(r.age ?? 0),
-        gender: typeof r.gender === 'string' ? r.gender : typeof history.gender === 'string' ? history.gender : 'ชาย',
+        gender: typeof r.gender === 'string' && r.gender.trim() ? r.gender : typeof history.gender === 'string' && history.gender.trim() ? history.gender : 'ชาย',
         phone: String(r.phone ?? ''),
         diagnosis: String(r.diagnosis ?? ''),
         strokeType: hydratedStrokeType,
@@ -2078,6 +2170,7 @@ async function runHydrateStateFromSupabaseInternal(
         biometricStatusDetail,
         biometricEmbeddingDim: mergedEmbeddingDim,
         biometricPipelineVersion,
+        ...(inspectedFull.patient.biometricUpdatedAt ? { biometricUpdatedAt: inspectedFull.patient.biometricUpdatedAt } : {}),
         faceFramesCount:
           hasRealMergedVector ||
           (mergedAngleImageUrls && Object.keys(mergedAngleImageUrls).length >= 5)

@@ -27,6 +27,7 @@ import {
   computeBoundingBoxFromLandmarks,
   subscribeBiometricIndex,
 } from '../lib/faceMatcher';
+import { normalizePatientRecordList } from '../lib/patientHydration';
 import {
   BIOMETRIC_CENTERED_COSINE_THRESHOLD,
   BIOMETRIC_ENGINE_ID,
@@ -4773,7 +4774,9 @@ export function KioskBiometricLoginView({
       }
 
       // Fallback to authenticated patient list only when staff session already exists in browser
-      const patients: PatientRecord[] = await apiClient.listPatients();
+      const patients: PatientRecord[] = normalizePatientRecordList(await apiClient.listPatients(), {
+        requireRealVectorsForVerified: false,
+      });
       const matched = patients.find((p) => {
         const cleanPhone = (p.phone ?? '').replace(/\D/g, '');
         const cleanHn = (p.hn ?? '').replace(/\D/g, '');
