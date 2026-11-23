@@ -33,6 +33,7 @@ import {
   GlobalQuickSideSelector,
   getSideBadgeMeta,
 } from './ExerciseSideSelector';
+import { upsertPatientStaffUserInSupabase } from '../utils/unifyPatientDirectory';
 import {
   Activity,
   AlertTriangle,
@@ -657,6 +658,10 @@ export function StaffAssistedEnrollmentModal({
             requireRealVectorsForVerified: false,
           },
         );
+        void upsertPatientStaffUserInSupabase(
+          apiClient.getSupabaseClient(),
+          normalizedUpdated,
+        );
         setErrorMsg(null);
         setToastMsg('บันทึกใบหน้าและข้อมูลคนไข้เรียบร้อยแล้ว!');
         setCreatedPatient(normalizedUpdated);
@@ -789,6 +794,7 @@ export function StaffAssistedEnrollmentModal({
         .join('\n');
 
       await apiClient.appendMedicalNote(enrolled.id, structuredSummary).catch(() => {});
+      void upsertPatientStaffUserInSupabase(apiClient.getSupabaseClient(), enrolled);
 
       setErrorMsg(null);
       setToastMsg(

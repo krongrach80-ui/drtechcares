@@ -16,12 +16,18 @@ import { ClinicalStaffPortalShell } from '../components/ClinicalStaffPortalShell
 import { formatKioskSupabaseSyncBadgeLabel } from '../components/KioskBiometricLoginView';
 import {
   applyCascadingPatientDeletionToState,
+  buildPatientStaffUserAccount,
   cascadeDeletePatientInSupabase,
   formatCanonicalHn,
+  formatPatientStaffHandle,
+  formatPatientStaffUsername,
+  mergePatientsIntoStaffUsersList,
   mirrorSynthesizedPatientsToSupabase,
   normalizeHnKey,
   unifyClinicPatients,
   unifyClinicPatientsDetailed,
+  upsertPatientIntoStaffUsersState,
+  upsertPatientStaffUserInSupabase,
 } from '../utils/unifyPatientDirectory';
 
 const EMOJI_RE = /[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/u;
@@ -406,12 +412,243 @@ describe('Cascading Patient Delete (Zero Resurrection) & Unified Kiosk Sync Coun
     expect(EMOJI_RE.test(portalHtml)).toBe(false);
   });
 
+  it('dual-writes and unifies newly registered patients (ครูอั๋น HN-359954, สมหวัง ยาพขำ HN-663488) into both Tab 2 Patients Directory and Tab 1 Staff Management (Patient role filter)', async () => {
+    expect(formatPatientStaffUsername('HN-359954')).toBe('hn359954');
+    expect(formatPatientStaffHandle('HN-359954')).toBe('@hn359954');
+    expect(formatPatientStaffUsername('HN-663488')).toBe('hn663488');
+    expect(formatPatientStaffHandle('HN-663488')).toBe('@hn663488');
+
+    // 1. In-memory unification: active patients in public.patients appear in Tab 1 even if missing from staff_users
+    const kruAun = unifyClinicPatients(
+      [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          hn: 'HN-359954',
+          full_name: 'ครูอั๋น',
+          age: 42,
+          phone: '0631234567',
+          diagnosis: 'Stroke ADL (Shoulder & Arm)',
+          registration_status: 'active',
+          face_biometric_status: 'VERIFIED',
+        },
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          hn: 'HN-663488',
+          full_name: 'สมหวัง ยาพขำ',
+          age: 26,
+          phone: '0896634880',
+          diagnosis: 'Stroke Upper Limb',
+          registration_status: 'active',
+          face_biometric_status: 'VERIFIED',
+        },
+      ],
+      [],
+    );
+    expect(kruAun).toHaveLength(2);
+
+    const unifiedStaff = mergePatientsIntoStaffUsersList([ADMIN_USER], kruAun);
+    expect(unifiedStaff).toHaveLength(3);
+    const patientRoleRows = unifiedStaff.filter((u) => u.role === 'patient');
+    expect(patientRoleRows).toHaveLength(2);
+    expect(patientRoleRows.map((u) => ({ id: u.id, username: u.username, fullName: u.fullName }))).toEqual([
+      { id: '11111111-1111-4111-8111-111111111111', username: 'hn359954', fullName: 'ครูอั๋น' },
+      { id: '22222222-2222-4222-8222-222222222222', username: 'hn663488', fullName: 'สมหวัง ยาพขำ' },
+    ]);
+
+    // Upserting into in-memory staffUsers uses the exact same patient.id UUID and deduplicates cleanly
+    const afterUpsert1 = upsertPatientIntoStaffUsersState([ADMIN_USER], kruAun[0]);
+    const afterUpsert2 = upsertPatientIntoStaffUsersState(afterUpsert1, {
+      ...kruAun[0],
+      phone: '0819998888',
+    });
+    expect(afterUpsert2.filter((u) => u.role === 'patient')).toHaveLength(1);
+    expect(afterUpsert2.find((u) => u.id === kruAun[0].id)?.phone).toBe('0819998888');
+    expect(buildPatientStaffUserAccount(kruAun[1]).id).toBe(kruAun[1].id);
+
+    // Non-blocking Supabase dual-write upserts staff_users gracefully even on schema drift
+    const upsertedPayloads: Record<string, unknown>[] = [];
+    const mockSupabase = {
+      from: (table: string) => ({
+        upsert: async (payload: Record<string, unknown>) => {
+          if (table === 'staff_users') upsertedPayloads.push(payload);
+          return { error: null };
+        },
+      }),
+    } as unknown as SupabaseClient;
+    const syncedOk = await upsertPatientStaffUserInSupabase(mockSupabase, kruAun[0]);
+    expect(syncedOk).toBe(true);
+    expect(upsertedPayloads).toHaveLength(1);
+    expect(upsertedPayloads[0]).toMatchObject({
+      id: kruAun[0].id,
+      username: 'hn359954',
+      full_name: 'ครูอั๋น',
+      phone: '0631234567',
+      role: 'patient',
+      active: true,
+    });
+
+    // 2. Render ClinicalStaffPortalShell Tab 1 ('staff') with ONLY [ADMIN_USER] in staff_users + 2 active patients
+    const apiClient = new DrTechCaresApiClient();
+    const staffTabHtml = renderToStaticMarkup(
+      React.createElement(
+        ClinicalI18nProvider,
+        null,
+        React.createElement(ClinicalStaffPortalShell, {
+          apiClient,
+          currentUser: ADMIN_USER,
+          onLogout: () => {},
+          initialTab: 'staff',
+          initialPatients: kruAun,
+          initialUsers: [ADMIN_USER],
+        }),
+      ),
+    );
+    expect(staffTabHtml).toContain('ครูอั๋น');
+    expect(staffTabHtml).toContain('@hn359954');
+    expect(staffTabHtml).toContain('สมหวัง ยาพขำ');
+    expect(staffTabHtml).toContain('@hn663488');
+    expect(staffTabHtml).not.toContain('@@hn359954');
+    expect(EMOJI_RE.test(staffTabHtml)).toBe(false);
+
+    // 3. End-to-end CloudRouter: POST /api/patients dual-writes staff_users, supports suspend/reset-PIN, and cascading delete from either tab leaves zero resurrection
+    const router = createCloudDelegatedRouter({});
+    const loginRes = await router(
+      new Request('https://drtechcares.workers.dev/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', password: 'Admin@2026' }),
+      }),
+    );
+    expect(loginRes.status).toBe(200);
+    const { token } = (await loginRes.json()) as { token: string };
+
+    // Register ครูอั๋น (HN-359954) & สมหวัง ยาพขำ (HN-663488)
+    const createAunRes = await router(
+      new Request('https://drtechcares.workers.dev/api/patients', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hn: 'HN-359954',
+          fullName: 'ครูอั๋น',
+          age: 42,
+          phone: '0631234567',
+          diagnosis: 'Stroke ADL (Shoulder & Arm)',
+        }),
+      }),
+    );
+    expect(createAunRes.status).toBe(201);
+    const { patient: createdAun } = (await createAunRes.json()) as { patient: PatientRecord };
+
+    const createSomwangRes = await router(
+      new Request('https://drtechcares.workers.dev/api/patients', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hn: 'HN-663488',
+          fullName: 'สมหวัง ยาพขำ',
+          age: 26,
+          phone: '0896634880',
+          diagnosis: 'Stroke Upper Limb',
+        }),
+      }),
+    );
+    expect(createSomwangRes.status).toBe(201);
+    const { patient: createdSomwang } = (await createSomwangRes.json()) as { patient: PatientRecord };
+
+    // Both MUST appear in GET /api/patients AND GET /api/users under role === 'patient'
+    const [ptsRes, usersRes] = await Promise.all([
+      router(
+        new Request('https://drtechcares.workers.dev/api/patients?scope=all', {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      ),
+      router(
+        new Request('https://drtechcares.workers.dev/api/users', {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      ),
+    ]);
+    const ptsJson = (await ptsRes.json()) as { patients: PatientRecord[] };
+    const usersJson = (await usersRes.json()) as { users: UserAccount[] };
+    expect(ptsJson.patients.some((p) => p.hn === 'HN-359954')).toBe(true);
+    expect(ptsJson.patients.some((p) => p.hn === 'HN-663488')).toBe(true);
+    const aunUser = usersJson.users.find((u) => u.role === 'patient' && u.username === 'hn359954');
+    const somwangUser = usersJson.users.find((u) => u.role === 'patient' && u.username === 'hn663488');
+    expect(aunUser).toBeDefined();
+    expect(aunUser?.id).toBe(createdAun.id);
+    expect(aunUser?.fullName).toBe('ครูอั๋น');
+    expect(somwangUser).toBeDefined();
+    expect(somwangUser?.id).toBe(createdSomwang.id);
+    expect(somwangUser?.fullName).toBe('สมหวัง ยาพขำ');
+
+    // Suspend & Reset PIN on ครูอั๋น from Tab 1 works seamlessly
+    const suspendRes = await router(
+      new Request(`https://drtechcares.workers.dev/api/users/${createdAun.id}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: false }),
+      }),
+    );
+    expect(suspendRes.status).toBe(200);
+    const suspendJson = (await suspendRes.json()) as { user: UserAccount };
+    expect(suspendJson.user.active).toBe(false);
+
+    const resetPinRes = await router(
+      new Request(`https://drtechcares.workers.dev/api/users/${createdAun.id}/reset-password`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newPassword: '5678' }),
+      }),
+    );
+    expect(resetPinRes.status).toBe(200);
+
+    // Delete ครูอั๋น from Tab 1 (DELETE /api/users/:id) -> removes from BOTH patients and users permanently
+    const delAunFromTab1 = await router(
+      new Request(`https://drtechcares.workers.dev/api/users/${createdAun.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+    expect(delAunFromTab1.status).toBe(200);
+
+    // Delete สมหวัง ยาพขำ from Tab 2 (DELETE /api/patients/:id) -> removes from BOTH patients and users permanently
+    const delSomwangFromTab2 = await router(
+      new Request(`https://drtechcares.workers.dev/api/patients/${createdSomwang.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    );
+    expect(delSomwangFromTab2.status).toBe(200);
+
+    // Neither ครูอั๋น nor สมหวัง ยาพขำ resurrects in GET /api/patients OR GET /api/users
+    const [ptsAfterRes, usersAfterRes] = await Promise.all([
+      router(
+        new Request('https://drtechcares.workers.dev/api/patients?scope=all', {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      ),
+      router(
+        new Request('https://drtechcares.workers.dev/api/users', {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      ),
+    ]);
+    const ptsAfter = (await ptsAfterRes.json()) as { patients: PatientRecord[] };
+    const usersAfter = (await usersAfterRes.json()) as { users: UserAccount[] };
+    expect(ptsAfter.patients.some((p) => p.hn === 'HN-359954' || p.hn === 'HN-663488')).toBe(false);
+    expect(
+      usersAfter.users.some((u) => u.username === 'hn359954' || u.username === 'hn663488'),
+    ).toBe(false);
+  });
+
   it('audits all modified cascading-delete and Kiosk sync files for zero Unicode emojis', () => {
     const root = process.cwd();
     const files = [
       'src/utils/unifyPatientDirectory.ts',
       'src/components/ClinicalStaffPortalShell.tsx',
+      'src/components/StaffAssistedEnrollmentModal.tsx',
       'src/components/KioskBiometricLoginView.tsx',
+      'src/components/PortalSubModals.tsx',
       'packages/api-client/src/cloudRouter.ts',
       'packages/api-client/src/supabasePersistence.ts',
       'src/__tests__/unifyPatientDirectory.test.ts',

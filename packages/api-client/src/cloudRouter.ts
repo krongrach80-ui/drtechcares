@@ -2139,17 +2139,181 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     // ========================
     // 2. USER & RBAC MANAGEMENT
     // ========================
+    const findPatientLinkedToUserKey = (rawKey: string): PatientRecord | undefined => {
+      const clean = rawKey.trim();
+      if (!clean) return undefined;
+      const cleanLower = clean.toLowerCase();
+      const hnNorm = normalizeHnLookupKey(clean);
+      const deletedSet = new Set((state.deleted_patient_ids ?? []).map((v) => v.toLowerCase()));
+      return state.patients.find((p) => {
+        if ((p.registrationStatus ?? 'active') !== 'active') return false;
+        if (deletedSet.has(p.id.toLowerCase()) || deletedSet.has(p.hn.toLowerCase())) return false;
+        return (
+          p.id === clean ||
+          p.id.toLowerCase() === cleanLower ||
+          p.hn.toLowerCase() === cleanLower ||
+          (Boolean(hnNorm) && normalizeHnLookupKey(p.hn) === hnNorm)
+        );
+      });
+    };
+
+    const persistPatientStaffUserCompat = async (
+      db: SupabaseClient,
+      userRec: StoredUserAccount,
+    ): Promise<void> => {
+      const patientUuid = toSafeUuidOrNull(userRec.patientId ?? userRec.id);
+      const safeUserUuid = toSafeUuidOrNull(userRec.id) ?? patientUuid ?? newRecordId(true, 'user-pat');
+      const fullPayload: Record<string, unknown> = {
+        id: safeUserUuid,
+        username: userRec.username,
+        password_hash: userRec.passwordHash,
+        full_name: userRec.fullName,
+        phone: userRec.phone || '',
+        patient_id: patientUuid,
+        role: 'patient',
+        active: userRec.active,
+        status: userRec.active ? 'ACTIVE' : 'SUSPENDED',
+      };
+      try {
+        const res = await db.from('staff_users').upsert(fullPayload, { onConflict: 'username' });
+        if (!res.error) return;
+        const compatPayload: Record<string, unknown> = {
+          username: userRec.username,
+          password_hash: userRec.passwordHash,
+          full_name: userRec.fullName,
+          phone: userRec.phone || '',
+          patient_id: patientUuid,
+          role: 'patient',
+          active: userRec.active,
+        };
+        const retryRes = await db.from('staff_users').upsert(compatPayload, { onConflict: 'username' });
+        if (retryRes.error) {
+          console.warn(
+            '[CloudRouter staff_users dual-write] Non-blocking warning:',
+            retryRes.error.message,
+          );
+        }
+      } catch (warnErr) {
+        console.warn(
+          '[CloudRouter staff_users dual-write] Non-blocking warning:',
+          warnErr instanceof Error ? warnErr.message : String(warnErr),
+        );
+      }
+    };
+
+    const upsertPatientMirrorInStateUsers = async (
+      patient: PatientRecord,
+      options?: { rawPassword?: string; customUsername?: string; activeOverride?: boolean },
+    ): Promise<StoredUserAccount> => {
+      const patUsername = (
+        options?.customUsername?.replace(/^@+/, '') ||
+        normalizeHnLookupKey(patient.hn) ||
+        patient.hn.replace(/[^a-zA-Z0-9]/g, '')
+      ).toLowerCase();
+      const pidLo = patient.id.trim().toLowerCase();
+      const nameNorm = normalizeNameLookupKey(patient.fullName);
+      const existing = state.users.find(
+        (u) =>
+          u.id.toLowerCase() === pidLo ||
+          (u.patientId && u.patientId.toLowerCase() === pidLo) ||
+          (u.role === 'patient' && normalizeHnLookupKey(u.username) === patUsername) ||
+          (u.role === 'patient' && Boolean(nameNorm) && normalizeNameLookupKey(u.fullName) === nameNorm),
+      );
+      if (existing) {
+        existing.username = patUsername;
+        existing.fullName = patient.fullName;
+        existing.phone = patient.phone ?? existing.phone ?? '';
+        existing.patientId = patient.id;
+        existing.role = 'patient';
+        if (typeof options?.activeOverride === 'boolean') {
+          existing.active = options.activeOverride;
+        }
+        if (options?.rawPassword) {
+          existing.passwordHash = await hashPasswordEdge(options.rawPassword);
+        }
+        return existing;
+      }
+
+      const created: StoredUserAccount = {
+        id: patient.id,
+        username: patUsername,
+        passwordHash: await hashPasswordEdge(options?.rawPassword || 'Patient@2026'),
+        role: 'patient',
+        fullName: patient.fullName,
+        phone: patient.phone ?? '',
+        patientId: patient.id,
+        active:
+          typeof options?.activeOverride === 'boolean'
+            ? options.activeOverride
+            : (patient.registrationStatus ?? 'active') === 'active',
+        forceLoggedOutAt: null,
+        createdAt: patient.enrolledAt || new Date().toISOString(),
+      };
+      state.users.push(created);
+      return created;
+    };
+
     if ((pathname === '/api/users' || pathname === '/api/staff') && method === 'GET') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
       if (supabase && forceSupabaseProbe) {
         await hydrateStaffUsersOnly(supabase, state, 2500);
       }
-      const users =
+      const deletedPatientSet = new Set(
+        (state.deleted_patient_ids ?? []).map((v) => v.trim().toLowerCase()),
+      );
+      const baseUsers =
         authUser!.role === 'super_admin'
           ? state.users
           : state.users.filter((u) => u.role === 'pt' || u.role === 'patient');
-      return jsonResponse({ users: users.map(publicUser) });
+      const unifiedUsers: UserAccount[] = baseUsers.map(publicUser);
+      const existingIds = new Set(unifiedUsers.map((u) => u.id.toLowerCase()));
+      const existingPatientIds = new Set(
+        unifiedUsers.map((u) => (u.patientId ?? '').toLowerCase()).filter(Boolean),
+      );
+      const existingPatientHns = new Set(
+        unifiedUsers
+          .filter((u) => u.role === 'patient')
+          .map((u) => normalizeHnLookupKey(u.username))
+          .filter(Boolean),
+      );
+      const existingPatientNames = new Set(
+        unifiedUsers
+          .filter((u) => u.role === 'patient')
+          .map((u) => normalizeNameLookupKey(u.fullName))
+          .filter(Boolean),
+      );
+      for (const p of state.patients) {
+        if ((p.registrationStatus ?? 'active') !== 'active') continue;
+        const pidLo = p.id.toLowerCase();
+        const pHnNorm = normalizeHnLookupKey(p.hn);
+        const pNameNorm = normalizeNameLookupKey(p.fullName);
+        if (deletedPatientSet.has(pidLo) || deletedPatientSet.has(p.hn.toLowerCase())) continue;
+        if (
+          existingIds.has(pidLo) ||
+          existingPatientIds.has(pidLo) ||
+          (pHnNorm && existingPatientHns.has(pHnNorm)) ||
+          (pNameNorm && existingPatientNames.has(pNameNorm))
+        ) {
+          continue;
+        }
+        unifiedUsers.push({
+          id: p.id,
+          username: pHnNorm || p.hn.replace(/[^a-zA-Z0-9]/g, '').toLowerCase(),
+          role: 'patient',
+          fullName: p.fullName,
+          phone: p.phone || '',
+          patientId: p.id,
+          active: true,
+          forceLoggedOutAt: null,
+          createdAt: p.enrolledAt || new Date().toISOString(),
+        });
+        existingIds.add(pidLo);
+        existingPatientIds.add(pidLo);
+        if (pHnNorm) existingPatientHns.add(pHnNorm);
+        if (pNameNorm) existingPatientNames.add(pNameNorm);
+      }
+      return jsonResponse({ users: unifiedUsers });
     }
 
     if ((pathname === '/api/users' || pathname === '/api/staff') && method === 'POST') {
@@ -2234,10 +2398,24 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (userResetMatch && method === 'POST') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
-      let target = state.users.find((u) => u.id === userResetMatch[1]);
+      let target = state.users.find(
+        (u) => u.id === userResetMatch[1] || u.patientId === userResetMatch[1],
+      );
       if (!target && supabase) {
         await ensureHydrated(true, true);
-        target = state.users.find((u) => u.id === userResetMatch[1]);
+        target = state.users.find(
+          (u) => u.id === userResetMatch[1] || u.patientId === userResetMatch[1],
+        );
+      }
+      const body = await readJsonBody<{ newPassword?: string }>(request);
+      const nextPass = body?.newPassword || 'Patient@2026';
+      let materializedVirtualPatient = false;
+      if (!target) {
+        const linkedPat = findPatientLinkedToUserKey(userResetMatch[1]);
+        if (linkedPat) {
+          target = await upsertPatientMirrorInStateUsers(linkedPat, { rawPassword: nextPass });
+          materializedVirtualPatient = true;
+        }
       }
       if (!target) return jsonResponse({ error: 'USER_NOT_FOUND' }, 404);
       if (authUser!.role === 'pt' && target.role !== 'patient') {
@@ -2246,11 +2424,16 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           403,
         );
       }
-      const body = await readJsonBody<{ newPassword?: string }>(request);
-      target.passwordHash = await hashPasswordEdge(body?.newPassword || 'Patient@2026');
-      await persistToSupabase(supabase, (db) =>
-        db.from('staff_users').update({ password_hash: target!.passwordHash }).eq('id', target!.id),
-      );
+      if (!materializedVirtualPatient) {
+        target.passwordHash = await hashPasswordEdge(nextPass);
+      }
+      await persistToSupabase(supabase, async (db) => {
+        if (materializedVirtualPatient || target!.role === 'patient') {
+          await persistPatientStaffUserCompat(db, target!);
+          return { error: null };
+        }
+        return db.from('staff_users').update({ password_hash: target!.passwordHash }).eq('id', target!.id);
+      });
       recordAudit({
         eventType: 'PASSWORD_RESET',
         actorRole: authUser!.role,
@@ -2268,10 +2451,24 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (userMatch && (method === 'PUT' || method === 'PATCH')) {
       const err = requireAuth(authUser);
       if (err) return err;
-      let target = state.users.find((u) => u.id === userMatch[1]);
+      let target = state.users.find((u) => u.id === userMatch[1] || u.patientId === userMatch[1]);
       if (!target && supabase) {
         await ensureHydrated(true, true);
-        target = state.users.find((u) => u.id === userMatch[1]);
+        target = state.users.find((u) => u.id === userMatch[1] || u.patientId === userMatch[1]);
+      }
+      const body =
+        (await readJsonBody<
+          Partial<UserAccount> & { license_number?: string; license_no?: string }
+        >(request)) ?? {};
+      let materializedVirtualPatient = false;
+      if (!target) {
+        const linkedPat = findPatientLinkedToUserKey(userMatch[1]);
+        if (linkedPat) {
+          target = await upsertPatientMirrorInStateUsers(linkedPat, {
+            activeOverride: typeof body.active === 'boolean' ? body.active : undefined,
+          });
+          materializedVirtualPatient = true;
+        }
       }
       if (!target) return jsonResponse({ error: 'USER_NOT_FOUND' }, 404);
       const actor = authUser!;
@@ -2285,10 +2482,6 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       if (actor.role === 'patient' && target.id !== actor.id) {
         return jsonResponse({ error: 'FORBIDDEN' }, 403);
       }
-      const body =
-        (await readJsonBody<
-          Partial<UserAccount> & { license_number?: string; license_no?: string }
-        >(request)) ?? {};
       if (body.fullName !== undefined) target.fullName = body.fullName;
       if (body.phone !== undefined) target.phone = body.phone;
       if (body.specialty !== undefined && actor.role !== 'patient') target.specialty = body.specialty;
@@ -2304,8 +2497,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       if (body.role !== undefined && actorIsAdmin) target.role = normalizeStaffRole(body.role);
       if (body.active !== undefined && actorIsAdmin) target.active = body.active;
 
-      await persistToSupabase(supabase, (db) =>
-        db
+      await persistToSupabase(supabase, async (db) => {
+        if (materializedVirtualPatient || target!.role === 'patient') {
+          await persistPatientStaffUserCompat(db, target!);
+          return { error: null };
+        }
+        return db
           .from('staff_users')
           .update({
             full_name: target!.fullName,
@@ -2315,8 +2512,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             role: target!.role,
             active: target!.active,
           })
-          .eq('id', target!.id),
-      );
+          .eq('id', target!.id);
+      });
       const extendedProfilePatch = stripUnsupportedColumnsForWrite(
         'staff_users',
         stripOversizedBase64ForDb({
@@ -2420,20 +2617,26 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         ? state.patients.find(
             (p) =>
               (removed.patientId && p.id === removed.patientId) ||
+              p.id === removed.id ||
               p.hn.toLowerCase() === removed.username.toLowerCase() ||
               (removedHnNorm && normalizeHnLookupKey(p.hn) === removedHnNorm) ||
               (removed.role === 'patient' &&
                 removedNameNorm &&
                 normalizeNameLookupKey(p.fullName) === removedNameNorm),
           )
-        : undefined;
+        : state.patients.find(
+            (p) =>
+              p.id === rawTargetKey ||
+              (cleanKeyLower.length > 0 && p.hn.toLowerCase() === cleanKeyLower) ||
+              (removedHnNorm && normalizeHnLookupKey(p.hn) === removedHnNorm),
+          );
       const linkedPatientId = linkedPatient?.id ?? removed?.patientId ?? null;
       const derivedHn = (() => {
         if (linkedPatient?.hn) return linkedPatient.hn;
-        if (removed?.role !== 'patient') return null;
-        const cleanUsr = removed.username.replace(/^@+/, '');
+        if (removed && removed.role !== 'patient') return null;
+        const cleanUsr = (removed?.username ?? rawTargetKey).replace(/^@+/, '');
         const m = cleanUsr.match(/^hn[-_\s]*([a-zA-Z0-9]+)$/i);
-        return m?.[1] ? `HN-${m[1].toUpperCase()}` : cleanUsr || null;
+        return m?.[1] ? `HN-${m[1].toUpperCase()}` : removed ? cleanUsr || null : null;
       })();
       if (linkedPatientId || derivedHn) {
         purgePatientInMemory(linkedPatientId ?? derivedHn ?? rawTargetKey, linkedPatient ?? null);
@@ -2442,10 +2645,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       try {
         await purgeUserInSupabaseBestEffort(supabase, {
           rawId: rawTargetKey,
-          matchedUserId: removed?.id,
-          username: removed?.username,
-          role: removed?.role,
-          fullName: removed?.fullName,
+          matchedUserId: removed?.id ?? linkedPatient?.id,
+          username: removed?.username ?? (derivedHn ? normalizeHnLookupKey(derivedHn) : undefined),
+          role: removed?.role ?? (linkedPatient ? 'patient' : undefined),
+          fullName: removed?.fullName ?? linkedPatient?.fullName,
           linkedPatientId,
           linkedHn: derivedHn,
         });
@@ -2834,23 +3037,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       state.patient_courses = state.patient_courses.filter((c) => c.patientId !== patientId);
       state.patient_courses.push(defaultCourse);
 
-      const patUsername = (body.username || body.hn.replace(/[^a-zA-Z0-9]/g, '')).toLowerCase();
-      let createdPatUser: StoredUserAccount | null = null;
-      if (!state.users.some((u) => u.username.toLowerCase() === patUsername)) {
-        createdPatUser = {
-          id: newRecordId(Boolean(supabase), 'user-pat'),
-          username: patUsername,
-          passwordHash: await hashPasswordEdge(body.password || 'Patient@2026'),
-          role: 'patient',
-          fullName: body.fullName,
-          phone: body.phone ?? '',
-          patientId,
-          active: true,
-          forceLoggedOutAt: null,
-          createdAt: enrolledAtIso,
-        };
-        state.users.push(createdPatUser);
-      }
+      const createdPatUser = await upsertPatientMirrorInStateUsers(patient, {
+        rawPassword: body.password || 'Patient@2026',
+        customUsername: body.username,
+        activeOverride: true,
+      });
 
       // 2. Persist safely to Supabase within bounded timeout; NEVER throw HTTP 500 on DB errors
       const persistRes = await persistWithTimeoutBestEffort(
@@ -2877,6 +3068,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             undefined,
             false,
           );
+
+          // Dual-write PATIENT user record into staff_users immediately after patients insert
+          await persistPatientStaffUserCompat(db, createdPatUser);
 
           if (!isPendingSkip && masterVec && resolvedAngles && frontalVec) {
             await upsertPatientBiometricsCompat(db, {
@@ -2928,22 +3122,6 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             cognitive_modpack_id: defaultCourse.cognitiveModpackId,
             updated_at: defaultCourse.updatedAt,
           });
-
-          if (createdPatUser) {
-            await db.from('staff_users').upsert(
-              {
-                id: toSafeUuidOrNull(createdPatUser.id, state.users) ?? newRecordId(true, 'user-pat'),
-                username: createdPatUser.username,
-                password_hash: createdPatUser.passwordHash,
-                full_name: createdPatUser.fullName,
-                phone: createdPatUser.phone,
-                patient_id: toSafeUuidOrNull(patientId),
-                role: 'patient',
-                active: true,
-              },
-              { onConflict: 'username' },
-            );
-          }
 
           return { error: null };
         },
@@ -5966,6 +6144,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         { patientId: patient.id, patientName: patient.fullName, pose: 'nod', vector: resolvedAngles.down, qualityScore },
       ];
 
+      const mirroredFaceUser = await upsertPatientMirrorInStateUsers(patient);
       const persistRes = await persistWithTimeoutBestEffort(
         supabase,
         async (db) => {
@@ -5997,6 +6176,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             patient.id,
             false,
           );
+          await persistPatientStaffUserCompat(db, mirroredFaceUser);
           await insertFaceEnrollmentWithCompatShotCount(db, {
             patient_id: patient.id,
             shot_count: framesCaptured,
@@ -6219,6 +6399,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         updatedAtIso: patient.biometricUpdatedAt ?? updateNowIso,
         includeProfileFields: true,
       });
+      const updatedPatUser = await upsertPatientMirrorInStateUsers(patient);
       const persistRes = await persistWithTimeoutBestEffort(
         supabase,
         async (db) => {
@@ -6240,6 +6421,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             },
             patient.id,
           );
+          await persistPatientStaffUserCompat(db, updatedPatUser);
           return { error: null };
         },
         2400,
@@ -6509,6 +6691,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       if (hasBio) {
         created.biometricUpdatedAt = created.enrolledAt;
       }
+      const createdPatUser = await upsertPatientMirrorInStateUsers(created, {
+        activeOverride: true,
+      });
       const createdDualCols = buildPatientDualWriteColumns(created, {
         updatedAtIso: created.enrolledAt,
         includeProfileFields: true,
@@ -6531,6 +6716,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             history: buildPatientHistoryPayload(created),
             updated_at: created.enrolledAt,
           });
+          await persistPatientStaffUserCompat(db, createdPatUser);
           if (hasBio && masterVec && resolvedAngles) {
             await upsertPatientBiometricsCompat(db, {
               patient_id: created.id,

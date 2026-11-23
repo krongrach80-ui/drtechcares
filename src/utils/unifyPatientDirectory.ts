@@ -504,3 +504,207 @@ export async function cascadeDeletePatientInSupabase(
     // Best-effort cascading delete never crashes UI
   }
 }
+
+/**
+ * Formats a patient's canonical staff_users username without leading `@`
+ * (e.g. `HN-359954` -> `hn359954`, rendered in Tab 1 UI as `@hn359954`).
+ */
+export function formatPatientStaffUsername(hn: string, fallbackId?: string): string {
+  const cleaned = normalizeHnKey(hn);
+  if (cleaned) return cleaned;
+  const fallback = String(fallbackId ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .slice(0, 10);
+  return `hn${fallback || 'patient'}`;
+}
+
+/**
+ * Formats a patient's `@`-prefixed display handle (e.g. `HN-359954` -> `@hn359954`).
+ */
+export function formatPatientStaffHandle(hn: string, fallbackId?: string): string {
+  return `@${formatPatientStaffUsername(hn, fallbackId)}`;
+}
+
+/**
+ * Builds the canonical `PATIENT` UserAccount mirrored from an active `PatientRecord`,
+ * sharing the exact same `id` UUID as `patient.id`.
+ */
+export function buildPatientStaffUserAccount(patient: PatientRecord): UserAccount {
+  return {
+    id: patient.id,
+    username: formatPatientStaffUsername(patient.hn, patient.id),
+    role: 'patient',
+    fullName: patient.fullName,
+    phone: patient.phone || '',
+    patientId: patient.id,
+    active: (patient.registrationStatus ?? 'active') === 'active',
+    createdAt: patient.enrolledAt || new Date().toISOString(),
+  };
+}
+
+/**
+ * Upserts a newly registered or updated patient into the in-memory `staffUsers` list
+ * using the same UUID (`patient.id`), updating existing matching `PATIENT` rows in place.
+ */
+export function upsertPatientIntoStaffUsersState(
+  staffUsers: ReadonlyArray<UserAccount>,
+  patient: PatientRecord,
+): UserAccount[] {
+  const mirrored = buildPatientStaffUserAccount(patient);
+  const pidLo = patient.id.trim().toLowerCase();
+  const hnKey = normalizeHnKey(patient.hn);
+  const nameKey = normalizeFullNameKey(patient.fullName);
+
+  const matchIdx = staffUsers.findIndex((u) => {
+    const uidLo = u.id.trim().toLowerCase();
+    const uPidLo = (u.patientId ?? '').trim().toLowerCase();
+    const uHnKey = normalizeHnKey(u.username);
+    const uNameKey = normalizeFullNameKey(u.fullName);
+    const isPatientRole = String(u.role ?? '').trim().toLowerCase() === 'patient';
+    return (
+      uidLo === pidLo ||
+      (Boolean(uPidLo) && uPidLo === pidLo) ||
+      (isPatientRole && Boolean(hnKey) && uHnKey === hnKey) ||
+      (isPatientRole && Boolean(nameKey) && uNameKey === nameKey)
+    );
+  });
+
+  if (matchIdx === -1) {
+    return [...staffUsers, mirrored];
+  }
+
+  return staffUsers.map((u, idx) =>
+    idx === matchIdx
+      ? {
+          ...u,
+          username: mirrored.username,
+          fullName: mirrored.fullName,
+          phone: mirrored.phone || u.phone,
+          patientId: patient.id,
+          role: 'patient' as const,
+        }
+      : u,
+  );
+}
+
+/**
+ * Merges active records from `public.patients` (`2. ข้อมูลคนไข้`) into the displayed
+ * `1. จัดการผู้ใช้ staff` list as virtual `patient` rows when not already present in `staffUsers`
+ * (matching by `id`, `patientId`, normalized `@hn` username, or normalized `full_name`).
+ * Pure in-memory read projection: never writes to `public.patients` and never resurrects deleted rows.
+ */
+export function mergePatientsIntoStaffUsersList(
+  staffUsers: ReadonlyArray<UserAccount>,
+  patients: ReadonlyArray<PatientRecord>,
+): UserAccount[] {
+  const merged: UserAccount[] = staffUsers.map((u) => ({
+    ...u,
+    username: u.username.replace(/^@+/, ''),
+  }));
+
+  const idSet = new Set<string>();
+  const patientIdSet = new Set<string>();
+  const hnKeySet = new Set<string>();
+  const patientNameKeySet = new Set<string>();
+
+  for (const u of merged) {
+    const uidLo = u.id.trim().toLowerCase();
+    if (uidLo) idSet.add(uidLo);
+    const uPidLo = (u.patientId ?? '').trim().toLowerCase();
+    if (uPidLo) patientIdSet.add(uPidLo);
+    const isPatientRole = String(u.role ?? '').trim().toLowerCase() === 'patient';
+    if (isPatientRole) {
+      const uHnKey = normalizeHnKey(u.username);
+      if (uHnKey) hnKeySet.add(uHnKey);
+      const uNameKey = normalizeFullNameKey(u.fullName);
+      if (uNameKey) patientNameKeySet.add(uNameKey);
+    }
+  }
+
+  for (const p of patients) {
+    if (!p || (p.registrationStatus ?? 'active') !== 'active') continue;
+    const pidLo = p.id.trim().toLowerCase();
+    const pHnKey = normalizeHnKey(p.hn);
+    const pNameKey = normalizeFullNameKey(p.fullName);
+
+    const alreadyPresent =
+      (Boolean(pidLo) && (idSet.has(pidLo) || patientIdSet.has(pidLo))) ||
+      (Boolean(pHnKey) && hnKeySet.has(pHnKey)) ||
+      (Boolean(pNameKey) && patientNameKeySet.has(pNameKey));
+
+    if (alreadyPresent) continue;
+
+    const virtualRow = buildPatientStaffUserAccount(p);
+    merged.push(virtualRow);
+    if (pidLo) {
+      idSet.add(pidLo);
+      patientIdSet.add(pidLo);
+    }
+    if (pHnKey) hnKeySet.add(pHnKey);
+    if (pNameKey) patientNameKeySet.add(pNameKey);
+  }
+
+  return merged;
+}
+
+/**
+ * Best-effort dual-write of a `PATIENT` user account into `public.staff_users`
+ * whenever a patient is registered or updated. Never throws or blocks registration
+ * if `staff_users` has schema differences or RLS constraints.
+ */
+export async function upsertPatientStaffUserInSupabase(
+  supabase: SupabaseClient | null | undefined,
+  patient: Pick<PatientRecord, 'id' | 'hn' | 'fullName' | 'phone' | 'registrationStatus' | 'enrolledAt'>,
+  options?: { passwordHash?: string; active?: boolean },
+): Promise<boolean> {
+  if (!supabase || isSupabaseCircuitOpen(supabase)) return false;
+  try {
+    const username = formatPatientStaffUsername(patient.hn, patient.id);
+    const isActive =
+      typeof options?.active === 'boolean'
+        ? options.active
+        : (patient.registrationStatus ?? 'active') === 'active';
+    const basePayload: Record<string, unknown> = {
+      username,
+      full_name: patient.fullName,
+      phone: patient.phone || '',
+      role: 'patient',
+      active: isActive,
+      status: isActive ? 'ACTIVE' : 'SUSPENDED',
+      password_hash: options?.passwordHash || 'pbkdf2:patient:kiosk_pin_default',
+    };
+    if (isUuidString(patient.id)) {
+      basePayload.id = patient.id;
+      basePayload.patient_id = patient.id;
+    }
+
+    const res = await supabase.from('staff_users').upsert(basePayload, { onConflict: 'username' });
+    if (!res.error) return true;
+
+    // Graceful retry without optional `status` column or explicit `id` if schema differs
+    const compatPayload: Record<string, unknown> = {
+      username,
+      full_name: patient.fullName,
+      phone: patient.phone || '',
+      role: 'patient',
+      active: isActive,
+      password_hash: options?.passwordHash || 'pbkdf2:patient:kiosk_pin_default',
+      ...(isUuidString(patient.id) ? { patient_id: patient.id } : {}),
+    };
+    const retryRes = await supabase
+      .from('staff_users')
+      .upsert(compatPayload, { onConflict: 'username' });
+    if (retryRes.error) {
+      console.warn('[DualWrite staff_users] Non-blocking patient mirror warning:', retryRes.error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn(
+      '[DualWrite staff_users] Non-blocking patient mirror warning:',
+      err instanceof Error ? err.message : String(err),
+    );
+    return false;
+  }
+}

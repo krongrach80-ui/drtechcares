@@ -89,8 +89,11 @@ import {
   cascadeDeletePatientInSupabase,
   cleanupDeletedPatientLocalStorage,
   formatCanonicalHn,
+  mergePatientsIntoStaffUsersList,
   normalizeHnKey,
   unifyClinicPatientsDetailed,
+  upsertPatientIntoStaffUsersState,
+  upsertPatientStaffUserInSupabase,
 } from '../utils/unifyPatientDirectory';
 import { StaffAssistedEnrollmentModal } from './StaffAssistedEnrollmentModal';
 import {
@@ -2067,20 +2070,29 @@ export function ClinicalStaffPortalShell({
     [apiClient, kiosks, flashBanner, refreshAll],
   );
 
+  const unifiedStaffUsers = useMemo(
+    () => mergePatientsIntoStaffUsersList(users, patients),
+    [users, patients],
+  );
+
   const filteredStaff = useMemo(() => {
     const q = staffSearch.trim().toLowerCase();
-    return users.filter((u) => {
+    const qNormHn = normalizeHnKey(q);
+    return unifiedStaffUsers.filter((u) => {
       if (staffRoleFilter !== 'all' && u.role !== staffRoleFilter) return false;
       if (staffStatusFilter === 'active' && !u.active) return false;
       if (staffStatusFilter === 'inactive' && u.active) return false;
       if (!q) return true;
+      const cleanUsr = u.username.replace(/^@+/, '').toLowerCase();
       return (
         u.fullName.toLowerCase().includes(q) ||
-        u.username.toLowerCase().includes(q) ||
+        cleanUsr.includes(q) ||
+        `@${cleanUsr}`.includes(q) ||
+        (Boolean(qNormHn) && normalizeHnKey(cleanUsr).includes(qNormHn)) ||
         (u.phone || '').toLowerCase().includes(q)
       );
     });
-  }, [users, staffSearch, staffRoleFilter, staffStatusFilter]);
+  }, [unifiedStaffUsers, staffSearch, staffRoleFilter, staffStatusFilter]);
 
   const assignedPatientsCount = useMemo(
     () =>
@@ -2302,8 +2314,8 @@ export function ClinicalStaffPortalShell({
           )
         : undefined;
 
-      await apiClient.deleteUser(target.id, target.username);
       if (isPatientRole) {
+        await apiClient.deleteUser(target.id, target.username).catch(() => {});
         const cascadeTarget = {
           id: linkedPatient?.id ?? target.patientId ?? target.id,
           patientId: linkedPatient?.id ?? target.patientId ?? target.id,
@@ -2320,6 +2332,8 @@ export function ClinicalStaffPortalShell({
           .catch(() => {});
         await cascadeDeletePatientInSupabase(apiClient.getSupabaseClient(), cascadeTarget);
         cleanupDeletedPatientLocalStorage(cascadeTarget);
+      } else {
+        await apiClient.deleteUser(target.id, target.username);
       }
 
       const nextState = applyCascadingPatientDeletionToState(rawPatients, users, {
@@ -3149,7 +3163,9 @@ export function ClinicalStaffPortalShell({
                               </div>
                             </div>
                           </td>
-                          <td className="px-4 py-3.5 font-mono font-bold text-sky-600 truncate">@{u.username}</td>
+                          <td className="px-4 py-3.5 font-mono font-bold text-sky-600 truncate">
+                            @{u.username.replace(/^@+/, '')}
+                          </td>
                           <td className="px-4 py-3.5">
                             {u.role === 'super_admin' && (
                               <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-purple-200 bg-purple-50 px-2.5 py-1 text-[11px] font-bold text-purple-700">
@@ -3208,10 +3224,39 @@ export function ClinicalStaffPortalShell({
                                     onClick={async () => {
                                       setSubmitting(true);
                                       try {
-                                        await apiClient.updateUser(u.id, { active: !u.active });
+                                        const nextActive = !u.active;
+                                        const updated = await apiClient.updateUser(u.id, { active: nextActive });
+                                        setUsers((prev) => {
+                                          const exists = prev.some((item) => item.id === updated.id || item.id === u.id);
+                                          if (exists) {
+                                            return prev.map((item) =>
+                                              item.id === updated.id || item.id === u.id
+                                                ? { ...item, ...updated, active: nextActive }
+                                                : item,
+                                            );
+                                          }
+                                          return [...prev, { ...u, ...updated, active: nextActive }];
+                                        });
+                                        if (u.role === 'patient') {
+                                          const linkedPat = patients.find(
+                                            (p) =>
+                                              p.id === u.id ||
+                                              p.id === u.patientId ||
+                                              normalizeHnKey(p.hn) === normalizeHnKey(u.username),
+                                          );
+                                          if (linkedPat) {
+                                            void upsertPatientStaffUserInSupabase(
+                                              apiClient.getSupabaseClient(),
+                                              linkedPat,
+                                              { active: nextActive },
+                                            );
+                                          }
+                                        }
                                         flashBanner(
                                           'success',
-                                          u.active ? `ระงับสิทธิ์ @${u.username} แล้ว` : `เปิดใช้งาน @${u.username} แล้ว`,
+                                          u.active
+                                            ? `ระงับสิทธิ์ @${u.username.replace(/^@+/, '')} แล้ว`
+                                            : `เปิดใช้งาน @${u.username.replace(/^@+/, '')} แล้ว`,
                                         );
                                         await refreshAll();
                                       } catch (err) {
@@ -6087,28 +6132,8 @@ export function ClinicalStaffPortalShell({
                 normalizeHnKey(item.hn) !== normalizeHnKey(hydratedEnrolled.hn),
             ),
           ]);
-          const mirroredUsername = normalizeHnKey(hydratedEnrolled.hn) || hydratedEnrolled.hn.toLowerCase();
-          setUsers((prev) => {
-            const exists = prev.some(
-              (u) =>
-                u.patientId === hydratedEnrolled.id ||
-                normalizeHnKey(u.username) === mirroredUsername,
-            );
-            if (exists) return prev;
-            return [
-              ...prev,
-              {
-                id: `user-pat-${hydratedEnrolled.id}`,
-                username: mirroredUsername,
-                role: 'patient' as const,
-                fullName: hydratedEnrolled.fullName,
-                phone: hydratedEnrolled.phone ?? '',
-                patientId: hydratedEnrolled.id,
-                active: true,
-                createdAt: hydratedEnrolled.enrolledAt || new Date().toISOString(),
-              },
-            ];
-          });
+          setUsers((prev) => upsertPatientIntoStaffUsersState(prev, hydratedEnrolled));
+          void upsertPatientStaffUserInSupabase(apiClient.getSupabaseClient(), hydratedEnrolled);
           setPatientSyncError(null);
           const rxCount = hydratedEnrolled.rehabSchedules?.length ?? 0;
           flashBanner(
@@ -6144,7 +6169,10 @@ export function ClinicalStaffPortalShell({
         user={resetPassUser}
         apiClient={apiClient}
         onClose={() => setResetPassUser(null)}
-        onSuccess={(msg) => flashBanner('success', msg)}
+        onSuccess={(msg) => {
+          flashBanner('success', msg);
+          void refreshAll();
+        }}
       />
 
       {/* Patient Profile, Medical Notes & Rehab History Modal */}

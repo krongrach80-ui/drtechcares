@@ -1086,17 +1086,20 @@ export function ResetPasswordModal({
 }) {
   const { lang } = useClinicalI18n();
   const sm = SUBMODAL_TEXT[lang];
-  const [newPassword, setNewPassword] = useState('Staff@2026');
+  const isPatientUser = user?.role === 'patient';
+  const minPasswordLength = isPatientUser ? 4 : 6;
+  const [newPassword, setNewPassword] = useState(isPatientUser ? '1234' : 'Staff@2026');
   const [saving, setSaving] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    setNewPassword('Staff@2026');
+    setNewPassword(user?.role === 'patient' ? '1234' : 'Staff@2026');
     setErrMsg(null);
     setSaving(false);
-  }, [user?.id]);
+  }, [user?.id, user?.role]);
 
   if (!user) return null;
+  const displayUsername = user.username.replace(/^@+/, '');
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-4 backdrop-blur-sm animate-backdrop-fade">
@@ -1105,7 +1108,7 @@ export function ResetPasswordModal({
           <div className="flex items-center gap-2 min-w-0">
             <KeyRound className="h-4 w-4 text-sky-600 shrink-0" />
             <h3 className="text-sm font-black text-slate-900 truncate">
-              {sm.resetPwdTitle} @{user.username}
+              {sm.resetPwdTitle} @{displayUsername}
             </h3>
           </div>
           <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700 shrink-0">
@@ -1116,15 +1119,19 @@ export function ResetPasswordModal({
         <form
           onSubmit={async (e) => {
             e.preventDefault();
-            if (newPassword.trim().length < 6) {
-              setErrMsg('กรุณากรอกรหัสผ่านอย่างน้อย 6 ตัวอักษร');
+            if (newPassword.trim().length < minPasswordLength) {
+              setErrMsg(
+                isPatientUser
+                  ? 'กรุณากรอกรหัสผ่านหรือ PIN อย่างน้อย 4 ตัวอักษร'
+                  : 'กรุณากรอกรหัสผ่านอย่างน้อย 6 ตัวอักษร',
+              );
               return;
             }
             setSaving(true);
             setErrMsg(null);
             try {
               await apiClient.resetUserPassword(user.id, newPassword.trim());
-              onSuccess(`รีเซ็ตรหัสผ่านของ @${user.username} เรียบร้อยแล้ว`);
+              onSuccess(`รีเซ็ตรหัสผ่าน/PIN ของ @${displayUsername} เรียบร้อยแล้ว`);
               onClose();
             } catch (err) {
               setErrMsg(err instanceof Error ? err.message : 'รีเซ็ตรหัสผ่านไม่สำเร็จ');
@@ -1138,7 +1145,7 @@ export function ResetPasswordModal({
             <label className="block font-bold text-slate-600 mb-1">{sm.newPwdLabel}</label>
             <input
               required
-              minLength={6}
+              minLength={minPasswordLength}
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               className="w-full rounded-xl border border-slate-200 px-3 py-2.5 font-mono text-sm"

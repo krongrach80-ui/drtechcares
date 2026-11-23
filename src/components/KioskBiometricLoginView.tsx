@@ -28,6 +28,7 @@ import {
   subscribeBiometricIndex,
 } from '../lib/faceMatcher';
 import { normalizePatientRecord, normalizePatientRecordList } from '../lib/patientHydration';
+import { upsertPatientStaffUserInSupabase } from '../utils/unifyPatientDirectory';
 import {
   BIOMETRIC_CENTERED_COSINE_THRESHOLD,
   BIOMETRIC_ENGINE_ID,
@@ -3232,6 +3233,10 @@ export function KioskBiometricLoginView({
     setScanMatchCount(0);
     setScanStage('scanning');
     forceVerifyFreshDbRef.current = true;
+    void upsertPatientStaffUserInSupabase(
+      apiClient?.getSupabaseClient?.(),
+      recentlyEnrolledPatient,
+    );
     void refreshBiometricLibraryStats(true, true);
     onRecentlyEnrolledConsumedRef.current?.();
   }, [recentlyEnrolledPatient, refreshBiometricLibraryStats]);
