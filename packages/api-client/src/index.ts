@@ -1859,10 +1859,15 @@ export class DrTechCaresApiClient {
     if (options?.scope === 'all') params.push('scope=all');
     if (options?.refresh) params.push('refresh=1');
     const query = params.length > 0 ? `?${params.join('&')}` : '';
-    const res = await this.request<{ patients: PatientRecord[] }>(`/api/patients${query}`);
+    const res = await this.request<{ patients: PatientRecord[]; syncError?: string }>(
+      `/api/patients${query}`,
+    );
+    if (res.syncError && (!Array.isArray(res.patients) || res.patients.length === 0)) {
+      throw new ApiError(503, 'SUPABASE_SYNC_ERROR', res.syncError);
+    }
     const deleted = this.readLocallyDeletedIdSet();
     const overrides = this.readCaseDelegationOverrides();
-    return res.patients
+    return (res.patients ?? [])
       .map((raw) => normalizePatientRecord(raw, { requireRealVectorsForVerified: false }))
       .filter((p) => !deleted.has(p.id.toLowerCase()) && !deleted.has(p.hn.toLowerCase()))
       .map((p) => {

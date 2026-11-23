@@ -1832,16 +1832,20 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       pathname === '/api/biometrics/stats' ||
       pathname === '/api/biometric/verify' ||
       pathname === '/api/biometric/check-duplicate';
+    const isLightweightPatientsGet = pathname === '/api/patients' && method === 'GET';
 
     const shouldHydrateRequest =
       !isLightweightBiometricEndpoint &&
+      !isLightweightPatientsGet &&
       (forceSupabaseProbe ||
         pathname === '/api/kiosk/pin-login' ||
         pathname.includes('/assessments') ||
         (method === 'GET' && pathname !== '/api/exercises' && pathname !== '/api/health'));
 
-    if (!isLightweightBiometricEndpoint) {
+    if (!isLightweightBiometricEndpoint && !isLightweightPatientsGet) {
       await ensureHydrated(shouldHydrateRequest, forceSupabaseProbe);
+    } else if (isLightweightPatientsGet && supabase && state.users.length <= 3) {
+      await hydrateStaffUsersOnly(supabase, state, 1500);
     }
 
     const { user: authUser, token: authToken } = await authenticate(request, clientIp, clientDeviceId);
@@ -4770,8 +4774,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const wantRefresh =
         reqUrl.searchParams.get('refresh') === '1' || reqUrl.searchParams.get('refresh') === 'true';
 
-      // Guarantee live Supabase patients are hydrated even if full 17-table ensureHydrated timed out on cold start
-      if (supabase && !isSupabaseCircuitOpen(supabase) && (wantRefresh || state.patients.length === 0)) {
+      // Fast-path direct Supabase read (identical to Kiosk reliability: never blocked by 17-table hydration timeout)
+      let syncErrorMessage: string | null = null;
+      if (supabase && (wantRefresh || state.patients.length === 0 || !hydrated)) {
         try {
           let directTimer: ReturnType<typeof setTimeout> | undefined;
           const runDirectPatientsSelect = () => {
@@ -4787,29 +4792,110 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             }
             return Promise.resolve(q);
           };
+          const runDirectBiometricsSelect = () => {
+            let q = supabase
+              .from('patient_biometrics')
+              .select('patient_id,hn,master_embedding,angle_embeddings,exemplar_embeddings,biometric_engine,frames_captured,avatar_url,updated_at') as unknown as {
+              limit?: (n: number) => PromiseLike<unknown>;
+            } & PromiseLike<unknown>;
+            if (typeof q.limit === 'function') {
+              return Promise.resolve(q.limit(250));
+            }
+            return Promise.resolve(q);
+          };
+          const runDirectPatientUsersSelect = () => {
+            let q = supabase
+              .from('staff_users')
+              .select('id,username,full_name,phone,role,patient_id,active,created_at') as unknown as {
+              limit?: (n: number) => PromiseLike<unknown>;
+            } & PromiseLike<unknown>;
+            if (typeof q.limit === 'function') {
+              return Promise.resolve(q.limit(250));
+            }
+            return Promise.resolve(q);
+          };
+
           const directOutcome = await Promise.race([
-            runDirectPatientsSelect().then(
-              (res) => ({ timedOut: false as const, res }),
-              (queryErr) => ({ timedOut: false as const, queryErr }),
-            ),
+            Promise.allSettled([
+              runDirectPatientsSelect(),
+              runDirectBiometricsSelect(),
+              runDirectPatientUsersSelect(),
+            ]).then((results) => ({ timedOut: false as const, results })),
             new Promise<{ timedOut: true }>((resolve) => {
-              directTimer = setTimeout(() => resolve({ timedOut: true }), 3500);
+              directTimer = setTimeout(() => resolve({ timedOut: true }), 4000);
             }),
           ]).finally(() => {
             if (directTimer !== undefined) clearTimeout(directTimer);
           });
 
-          if (!directOutcome.timedOut && 'res' in directOutcome) {
-            const rawRes = directOutcome.res as {
-              data?: Record<string, unknown>[] | null;
-              error?: { code?: string; message?: string } | null;
-            };
-            if (!rawRes?.error && Array.isArray(rawRes?.data) && rawRes.data.length > 0) {
+          if (directOutcome.timedOut) {
+            syncErrorMessage = 'หมดเวลาการเชื่อมต่อ Supabase ระหว่างดึงรายชื่อผู้ป่วย';
+          } else {
+            const [patSettled, bioSettled, staffSettled] = directOutcome.results;
+            const rawRes =
+              patSettled.status === 'fulfilled'
+                ? (patSettled.value as {
+                    data?: Record<string, unknown>[] | null;
+                    error?: { code?: string; message?: string } | null;
+                  })
+                : null;
+            if (patSettled.status === 'rejected') {
+              syncErrorMessage =
+                patSettled.reason instanceof Error ? patSettled.reason.message : String(patSettled.reason);
+            } else if (rawRes?.error) {
+              syncErrorMessage = rawRes.error.code
+                ? `[${rawRes.error.code}] ${rawRes.error.message ?? 'Supabase query error'}`
+                : rawRes.error.message ?? 'Supabase query error';
+            }
+
+            const bioByPatientId = new Map<
+              string,
+              {
+                masterEmbedding?: number[];
+                angleEmbeddings?: AngleEmbeddings5D;
+                exemplarEmbeddings?: number[][];
+                biometricEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
+                framesCaptured?: number;
+                avatarUrl?: string;
+                updatedAt?: string;
+              }
+            >();
+            if (bioSettled.status === 'fulfilled') {
+              const bioRes = bioSettled.value as {
+                data?: Record<string, unknown>[] | null;
+                error?: unknown;
+              };
+              if (!bioRes?.error && Array.isArray(bioRes?.data)) {
+                for (const br of bioRes.data) {
+                  const bpid = String(br.patient_id ?? '').trim();
+                  if (!bpid) continue;
+                  const mVec = parseEmbeddingVector(br.master_embedding);
+                  const aObj = normalizeAngleEmbeddingsInput(br.angle_embeddings) ?? undefined;
+                  bioByPatientId.set(bpid, {
+                    masterEmbedding: mVec ?? aObj?.center,
+                    angleEmbeddings: aObj,
+                    framesCaptured: typeof br.frames_captured === 'number' ? br.frames_captured : undefined,
+                    avatarUrl: typeof br.avatar_url === 'string' && br.avatar_url ? br.avatar_url : undefined,
+                    updatedAt: typeof br.updated_at === 'string' ? br.updated_at : undefined,
+                  });
+                }
+              }
+            }
+
+            if (rawRes && !rawRes.error && Array.isArray(rawRes.data)) {
               const deletedLower = new Set(
                 (state.deleted_patient_ids ?? []).map((x) => x.trim().toLowerCase()).filter(Boolean),
               );
               const prevById = new Map(state.patients.map((p) => [p.id, p]));
               const hydratedRows: PatientRecord[] = [];
+              const seenIds = new Set<string>();
+              const seenHnKeys = new Set<string>();
+              const seenNameKeys = new Set<string>();
+              const normHn = (v: unknown) =>
+                String(v ?? '').trim().replace(/^@+/, '').replace(/[\s_-]+/g, '').toLowerCase();
+              const normName = (v: unknown) =>
+                String(v ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+
               for (const row of rawRes.data) {
                 const pid = String(row.id ?? '').trim();
                 const hn = String(row.hn ?? '').trim();
@@ -4827,6 +4913,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
                   continue;
                 }
                 const inspected = inspectPatientRecordHydration(row, {
+                  biometricsRow: bioByPatientId.get(pid) ?? null,
                   prevPatient: prevById.get(pid) ?? null,
                   requireRealVectorsForVerified: false,
                   applyClinicalDefaults: true,
@@ -4841,14 +4928,122 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
                   );
                 }
                 hydratedRows.push(inspected.patient);
+                seenIds.add(inspected.patient.id.toLowerCase());
+                const hk = normHn(inspected.patient.hn);
+                if (hk) seenHnKeys.add(hk);
+                const nk = normName(inspected.patient.fullName);
+                if (nk) seenNameKeys.add(nk);
               }
-              if (hydratedRows.length > 0) {
+
+              // Mirror any active role='patient' accounts from staff_users missing in public.patients
+              const staffPatientRows: Record<string, unknown>[] = [];
+              if (staffSettled.status === 'fulfilled') {
+                const staffRes = staffSettled.value as {
+                  data?: Record<string, unknown>[] | null;
+                  error?: unknown;
+                };
+                if (!staffRes?.error && Array.isArray(staffRes?.data)) {
+                  staffPatientRows.push(...staffRes.data);
+                }
+              }
+              for (const u of state.users) {
+                if (u.role === 'patient' && u.active) {
+                  staffPatientRows.push({
+                    id: u.id,
+                    username: u.username,
+                    full_name: u.fullName,
+                    phone: u.phone,
+                    role: u.role,
+                    patient_id: u.patientId ?? null,
+                    active: u.active,
+                    created_at: u.createdAt,
+                  });
+                }
+              }
+
+              for (const su of staffPatientRows) {
+                if (String(su.role ?? '').trim().toLowerCase() !== 'patient' || su.active === false) {
+                  continue;
+                }
+                const linkedPid = String(su.patient_id ?? su.id ?? '').trim();
+                const username = String(su.username ?? '').trim();
+                const fullName = String(su.full_name ?? '').trim();
+                const hk = normHn(username);
+                const nk = normName(fullName);
+                if (
+                  !linkedPid ||
+                  deletedLower.has(linkedPid.toLowerCase()) ||
+                  (hk && deletedLower.has(hk)) ||
+                  seenIds.has(linkedPid.toLowerCase()) ||
+                  (hk && seenHnKeys.has(hk)) ||
+                  (nk && seenNameKeys.has(nk))
+                ) {
+                  continue;
+                }
+                const cleanUsr = username.replace(/^@+/, '');
+                const hnDigits = cleanUsr.match(/^hn[-_\s]*([a-zA-Z0-9]+)$/i);
+                const canonicalHn = hnDigits?.[1]
+                  ? `HN-${hnDigits[1].toUpperCase()}`
+                  : cleanUsr
+                    ? cleanUsr.toUpperCase()
+                    : `HN-${linkedPid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase()}`;
+                const mirroredPatient: PatientRecord = {
+                  id: linkedPid,
+                  hn: canonicalHn,
+                  fullName: fullName || canonicalHn,
+                  age: 0,
+                  gender: 'ชาย',
+                  phone: String(su.phone ?? ''),
+                  diagnosis: 'รอประเมินอาการทางกายภาพบำบัด',
+                  strokeType: 'ELDERLY_GENERAL',
+                  affectedSide: 'NONE',
+                  motorAssessmentScore: 3,
+                  adlDressingScore: 3,
+                  maxSafeRomDeg: 150,
+                  universalHealthLinkCode: generateUniversalLinkCode(linkedPid),
+                  assignedPtId: '',
+                  delegatedToPtId: null,
+                  delegationNote: null,
+                  nextAppointmentDate: '',
+                  registrationStatus: 'active',
+                  enrolledAt: String(su.created_at ?? new Date().toISOString()),
+                  faceBiometricStatus: 'PENDING',
+                  faceFramesCount: 0,
+                  rehabSchedules: [],
+                };
+                hydratedRows.push(mirroredPatient);
+                seenIds.add(mirroredPatient.id.toLowerCase());
+                if (hk) seenHnKeys.add(hk);
+                if (nk) seenNameKeys.add(nk);
+
+                // Background mirror upsert so staff_users and public.patients stay permanently synchronized
+                const dualCols = buildPatientDualWriteColumns(mirroredPatient, {
+                  updatedAtIso: new Date().toISOString(),
+                  includeProfileFields: true,
+                });
+                runWaitUntil(
+                  writePatientRowWithFramesFallback(supabase, 'insert', {
+                    id: mirroredPatient.id,
+                    hn: mirroredPatient.hn,
+                    full_name: mirroredPatient.fullName,
+                    age: 0,
+                    phone: mirroredPatient.phone,
+                    diagnosis: mirroredPatient.diagnosis,
+                    registration_status: 'active',
+                    ...dualCols,
+                    history: buildPatientHistoryPayload(mirroredPatient),
+                    updated_at: new Date().toISOString(),
+                  }),
+                );
+              }
+
+              if (hydratedRows.length > 0 || state.patients.length === 0) {
                 state.patients = hydratedRows;
               }
             }
           }
-        } catch {
-          // Keep existing in-memory patients on transient fallback error
+        } catch (err) {
+          syncErrorMessage = err instanceof Error ? err.message : String(err);
         }
       }
 
@@ -4858,7 +5053,10 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       } else if (actor.role === 'patient') {
         list = list.filter((p) => p.id === actor.patientId);
       }
-      return jsonResponse({ patients: list });
+      return jsonResponse({
+        patients: list,
+        ...(syncErrorMessage ? { syncError: syncErrorMessage } : {}),
+      });
     }
 
     const delegateMatch = pathname.match(/^\/api\/patients\/([^/]+)\/delegate$/);

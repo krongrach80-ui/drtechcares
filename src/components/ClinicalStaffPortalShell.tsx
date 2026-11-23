@@ -84,6 +84,11 @@ import {
   normalizePatientRecord,
   type PatientScopeFilter,
 } from '../lib/patientHydration';
+import {
+  mirrorSynthesizedPatientsToSupabase,
+  normalizeHnKey,
+  unifyClinicPatientsDetailed,
+} from '../utils/unifyPatientDirectory';
 import { StaffAssistedEnrollmentModal } from './StaffAssistedEnrollmentModal';
 import {
   PatientProfileAndHistoryModal,
@@ -103,6 +108,7 @@ export interface ClinicalStaffPortalShellProps {
   autoOpenEnroll?: boolean;
   onAutoOpenEnrollConsumed?: () => void;
   initialPatients?: PatientRecord[];
+  initialUsers?: UserAccount[];
   initialPatientScope?: PatientScopeFilter;
   initialPatientSyncError?: string | null;
 }
@@ -1347,6 +1353,7 @@ export function ClinicalStaffPortalShell({
   autoOpenEnroll,
   onAutoOpenEnrollConsumed,
   initialPatients,
+  initialUsers,
   initialPatientScope,
   initialPatientSyncError,
 }: ClinicalStaffPortalShellProps) {
@@ -1379,14 +1386,23 @@ export function ClinicalStaffPortalShell({
   });
 
   // Core data state
-  const [users, setUsers] = useState<UserAccount[]>([]);
-  const [patients, setPatients] = useState<PatientRecord[]>(() =>
+  const [users, setUsers] = useState<UserAccount[]>(() => (initialUsers ? [...initialUsers] : []));
+  const [rawPatients, setRawPatients] = useState<PatientRecord[]>(() =>
     initialPatients
       ? initialPatients.map((p) => normalizePatientRecord(p, { requireRealVectorsForVerified: false }))
       : [],
   );
+  const { patients, synthesizedPatients } = useMemo(
+    () => unifyClinicPatientsDetailed(rawPatients, users),
+    [rawPatients, users],
+  );
   const [patientsSyncing, setPatientsSyncing] = useState(false);
   const [patientSyncError, setPatientSyncError] = useState<string | null>(initialPatientSyncError ?? null);
+
+  useEffect(() => {
+    if (synthesizedPatients.length === 0) return;
+    void mirrorSynthesizedPatientsToSupabase(apiClient.getSupabaseClient(), synthesizedPatients);
+  }, [apiClient, synthesizedPatients]);
   const [exercises, setExercises] = useState<ManagedExerciseRecord[]>(() =>
     CLINICAL_EXERCISES.map((ex) => ({ ...ex, createdBy: 'system' })),
   );
@@ -1619,20 +1635,24 @@ export function ClinicalStaffPortalShell({
         }
         if (res.patients.length > 0) {
           const merged = applyPatientDelegationOverrides(res.patients);
-          setPatients(merged);
+          setRawPatients(merged);
           setSelectedSchedulePatientId((prev) => prev || merged[0].id);
           setPatientSyncError(res.errorMessage);
         } else if (res.errorMessage) {
           setPatientSyncError(res.errorMessage);
         } else if (res.syncedFromSupabase) {
-          setPatients([]);
+          setRawPatients([]);
           setPatientSyncError(null);
         }
         if (options?.showSuccessToast) {
+          const unifiedCount = unifyClinicPatientsDetailed(
+            res.patients.length > 0 ? res.patients : rawPatients,
+            users,
+          ).patients.length;
           if (res.errorMessage && res.patients.length === 0) {
             flashBanner('error', `ไม่สามารถซิงก์ข้อมูลจาก Supabase ได้: ${res.errorMessage}`);
           } else {
-            flashBanner('success', `ซิงก์ข้อมูลจาก Supabase สำเร็จ: ${res.patients.length} บัญชี`);
+            flashBanner('success', `ซิงก์ข้อมูลจาก Supabase สำเร็จ: ${unifiedCount} บัญชี`);
           }
         }
         return res;
@@ -1640,7 +1660,7 @@ export function ClinicalStaffPortalShell({
         setPatientsSyncing(false);
       }
     },
-    [apiClient, applyPatientDelegationOverrides, flashBanner, handleAuthFailureIfExpired],
+    [apiClient, applyPatientDelegationOverrides, flashBanner, handleAuthFailureIfExpired, rawPatients, users],
   );
 
   const refreshAll = useCallback(async () => {
@@ -1677,24 +1697,29 @@ export function ClinicalStaffPortalShell({
         if (await handleAuthFailureIfExpired(patientSyncRes.authError)) return;
       }
 
-      if (uRes && uRes.length > 0) {
-        setUsers(uRes);
-      } else if (uRes) {
-        setUsers([currentUser]);
+      const nextUsers = uRes && uRes.length > 0 ? uRes : uRes ? [currentUser] : null;
+      if (nextUsers) {
+        setUsers(nextUsers);
       } else {
         setUsers((prev) => (prev.length > 0 ? prev : [currentUser]));
       }
 
       if (patientSyncRes.patients.length > 0) {
         const mergedPatients = applyPatientDelegationOverrides(patientSyncRes.patients);
-        setPatients(mergedPatients);
+        setRawPatients(mergedPatients);
         setPatientSyncError(patientSyncRes.errorMessage);
         setSelectedSchedulePatientId((prev) => prev || mergedPatients[0].id);
       } else if (patientSyncRes.errorMessage) {
         setPatientSyncError(patientSyncRes.errorMessage);
       } else if (patientSyncRes.syncedFromSupabase) {
-        setPatients([]);
+        setRawPatients([]);
         setPatientSyncError(null);
+      }
+      if (nextUsers && patientSyncRes.patients.length === 0) {
+        const mirroredOnly = unifyClinicPatientsDetailed([], nextUsers).patients;
+        if (mirroredOnly.length > 0) {
+          setSelectedSchedulePatientId((prev) => prev || mirroredOnly[0].id);
+        }
       }
 
       const unifiedEx = mergeDuplicateSideExercises(
@@ -1750,7 +1775,7 @@ export function ClinicalStaffPortalShell({
   ]);
 
   useEffect(() => {
-    if (activeTab === 'patients' || activeTab === 'assessments') {
+    if (activeTab === 'patients' || activeTab === 'assessments' || activeTab === 'schedules') {
       void syncPatientsFromSupabase({ silent: true });
     }
   }, [activeTab, syncPatientsFromSupabase]);
@@ -2158,7 +2183,7 @@ export function ClinicalStaffPortalShell({
             acc.username.toLowerCase() !== target.username.toLowerCase(),
         ),
       );
-      setPatients((prev) =>
+      setRawPatients((prev) =>
         prev.map((p) =>
           p.assignedPtId === target.id || p.delegatedToPtId === target.id
             ? {
@@ -2198,7 +2223,7 @@ export function ClinicalStaffPortalShell({
     setSubmitting(true);
     try {
       await apiClient.deletePatientCascading(target.id, target.hn);
-      setPatients((prev) =>
+      setRawPatients((prev) =>
         prev.filter(
           (p) =>
             p.id !== target.id &&
@@ -2209,7 +2234,7 @@ export function ClinicalStaffPortalShell({
         prev.filter(
           (u) =>
             u.patientId !== target.id &&
-            u.username.toLowerCase() !== target.hn.toLowerCase(),
+            normalizeHnKey(u.username) !== normalizeHnKey(target.hn),
         ),
       );
       removeProfileFromLocalBiometricVault(target.id);
@@ -2257,7 +2282,7 @@ export function ClinicalStaffPortalShell({
         },
       };
       saveCaseDelegationOverrides(nextOverrides);
-      setPatients((prev) =>
+      setRawPatients((prev) =>
         prev.map((p) =>
           p.id === delegationPatientId
             ? {
@@ -2291,7 +2316,7 @@ export function ClinicalStaffPortalShell({
       const nextOverrides = { ...loadCaseDelegationOverrides() };
       delete nextOverrides[patient.id];
       saveCaseDelegationOverrides(nextOverrides);
-      setPatients((prev) =>
+      setRawPatients((prev) =>
         prev.map((p) =>
           p.id === patient.id
             ? { ...p, delegatedToPtId: null, delegationDate: null, delegationNote: null }
@@ -2389,7 +2414,7 @@ export function ClinicalStaffPortalShell({
         nextAppointmentDate: '',
         rehabSchedules: [],
       });
-      setPatients((prev) =>
+      setRawPatients((prev) =>
         prev.map((p) =>
           p.id === targetPatientId ? { ...p, nextAppointmentDate: '', rehabSchedules: [] } : p,
         ),
@@ -5897,14 +5922,36 @@ export function ClinicalStaffPortalShell({
           const hydratedEnrolled = normalizePatientRecord(p, {
             requireRealVectorsForVerified: false,
           });
-          setPatients((prev) => [
+          setRawPatients((prev) => [
             hydratedEnrolled,
             ...prev.filter(
               (item) =>
                 item.id !== hydratedEnrolled.id &&
-                item.hn.toLowerCase() !== hydratedEnrolled.hn.toLowerCase(),
+                normalizeHnKey(item.hn) !== normalizeHnKey(hydratedEnrolled.hn),
             ),
           ]);
+          const mirroredUsername = normalizeHnKey(hydratedEnrolled.hn) || hydratedEnrolled.hn.toLowerCase();
+          setUsers((prev) => {
+            const exists = prev.some(
+              (u) =>
+                u.patientId === hydratedEnrolled.id ||
+                normalizeHnKey(u.username) === mirroredUsername,
+            );
+            if (exists) return prev;
+            return [
+              ...prev,
+              {
+                id: `user-pat-${hydratedEnrolled.id}`,
+                username: mirroredUsername,
+                role: 'patient' as const,
+                fullName: hydratedEnrolled.fullName,
+                phone: hydratedEnrolled.phone ?? '',
+                patientId: hydratedEnrolled.id,
+                active: true,
+                createdAt: hydratedEnrolled.enrolledAt || new Date().toISOString(),
+              },
+            ];
+          });
           setPatientSyncError(null);
           const rxCount = hydratedEnrolled.rehabSchedules?.length ?? 0;
           flashBanner(
