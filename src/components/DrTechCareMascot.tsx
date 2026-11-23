@@ -1,7 +1,7 @@
 import React from 'react';
 
 export interface DrTechCareMascotProps {
-  pose?: 'idle' | 'explaining' | 'celebrating';
+  pose?: 'idle' | 'explaining' | 'celebrating' | 'encouraging' | 'speaking';
   isSpeaking?: boolean;
   size?: 'sm' | 'md' | 'lg';
   className?: string;
@@ -27,9 +27,11 @@ export function DrTechCareMascot({
   const rightArmTransform =
     pose === 'celebrating'
       ? 'rotate(-36 86 68)'
-      : pose === 'explaining'
-        ? 'rotate(-16 86 68)'
-        : 'rotate(6 86 68)';
+      : pose === 'encouraging'
+        ? 'rotate(-26 86 68)'
+        : pose === 'explaining' || pose === 'speaking'
+          ? 'rotate(-16 86 68)'
+          : 'rotate(6 86 68)';
 
   return (
     <div

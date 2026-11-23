@@ -1386,6 +1386,7 @@ export function App() {
               }}
               onOpenStaffPortal={() => navigate('/login')}
               onOpenLegacyKiosk={() => setKioskMode('classic')}
+              onSwitchAccount={handleExitToLogin}
             />
           </div>
         );
@@ -1503,6 +1504,7 @@ export function App() {
             }}
             onOpenStaffPortal={() => navigate('/login')}
             onOpenLegacyKiosk={() => setKioskMode('classic')}
+            onSwitchAccount={handleExitToLogin}
           />
         </div>
       );

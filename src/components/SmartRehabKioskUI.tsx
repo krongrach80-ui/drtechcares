@@ -96,8 +96,16 @@ import {
   Zone4CoachStageAndSteps,
 } from './AnimatedRehabCoachModel';
 import { resolveExercisePostureSpec } from './ExercisePostureGuide';
+import { DrTechCareMascot } from './DrTechCareMascot';
 import { FaceScanOverlay } from './FaceScanOverlay';
 import { SkeletonCanvas } from './SkeletonCanvas';
+import {
+  OWNER_GUARD_UNAUTHORIZED_TTS_TH,
+  OWNER_GUARD_VOICE_COOLDOWN_MS,
+  projectRawFaceBoxToMirroredCover,
+  useAccountOwnerFaceGuard,
+  type AccountOwnerIdentityStatus,
+} from '../hooks/useAccountOwnerFaceGuard';
 import {
   VoiceCoachBanner,
   cancelAllKioskVoiceSpeech,
@@ -153,6 +161,7 @@ interface SmartRehabKioskUIProps {
   onEmergencyStop?: (info: { reason: string; patientId?: string; exerciseNameTh?: string }) => void;
   onOpenStaffPortal?: () => void;
   onOpenLegacyKiosk?: () => void;
+  onSwitchAccount?: () => void;
 }
 
 const PRIVACY_MODE_STORAGE_KEY = 'drtechcares_kiosk_privacy_v2';
@@ -2053,6 +2062,7 @@ export function SmartRehabKioskUI({
   onEmergencyStop,
   onOpenStaffPortal,
   onOpenLegacyKiosk,
+  onSwitchAccount,
 }: SmartRehabKioskUIProps) {
   const [testSideOverrides, setTestSideOverrides] = useState<Record<string, ExerciseSideCode>>({});
   const effectivePatient = useMemo(
@@ -2421,6 +2431,95 @@ export function SmartRehabKioskUI({
   const formRulesRef = useRef<FormAssessmentRulesConfig>(formRules);
   const countingLockedRef = useRef(false);
 
+  const ownerGuardEnabled =
+    !isPoseTestMode &&
+    !isDemoMode &&
+    !isEdgeDirectCamera &&
+    livePoseActive &&
+    payload.kiosk_state !== 'EMERGENCY_HALT' &&
+    isFormRuleActive(formRules, 'identity') &&
+    Boolean(payload.patient?.id || patientProp?.id) &&
+    Boolean(ownerBiometricsProp?.masterEmbedding?.length);
+  const ownerFaceGuard = useAccountOwnerFaceGuard({
+    enabled: ownerGuardEnabled,
+    videoRef,
+    ownerBiometrics: ownerBiometricsProp,
+  });
+  const ownerFaceGuardRef = useRef(ownerFaceGuard);
+  ownerFaceGuardRef.current = ownerFaceGuard;
+
+  const effectiveOwnerIdentityStatus: AccountOwnerIdentityStatus =
+    !isPoseTestMode &&
+    isFormRuleActive(formRules, 'identity') &&
+    (payload.kiosk_state === 'PAUSED_IMPOSTOR' || payload.identity_guard?.status === 'IMPOSTOR')
+      ? 'UNAUTHORIZED_PERSON'
+      : ownerFaceGuard.identityStatus;
+  const canExerciseByOwnerGuard =
+    (!ownerFaceGuard.active || ownerFaceGuard.canExercise) &&
+    effectiveOwnerIdentityStatus !== 'UNAUTHORIZED_PERSON';
+
+  const prevIdentityStatusRef = useRef<AccountOwnerIdentityStatus>(effectiveOwnerIdentityStatus);
+  const lastUnauthorizedVoiceAtRef = useRef<number>(0);
+  const unauthorizedUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const [isSpeakingUnauthorizedAlert, setIsSpeakingUnauthorizedAlert] = useState(false);
+
+  useEffect(() => {
+    const prevStatus = prevIdentityStatusRef.current;
+    prevIdentityStatusRef.current = effectiveOwnerIdentityStatus;
+    if (effectiveOwnerIdentityStatus !== 'UNAUTHORIZED_PERSON') {
+      if (prevStatus === 'UNAUTHORIZED_PERSON') {
+        setIsSpeakingUnauthorizedAlert(false);
+      }
+      return;
+    }
+    if (prevStatus === 'UNAUTHORIZED_PERSON') return;
+    if (voiceMutedRef.current || typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      return;
+    }
+    const nowMs = Date.now();
+    if (nowMs - lastUnauthorizedVoiceAtRef.current < OWNER_GUARD_VOICE_COOLDOWN_MS) {
+      return;
+    }
+    lastUnauthorizedVoiceAtRef.current = nowMs;
+    try {
+      const synth = window.speechSynthesis;
+      if (typeof SpeechSynthesisUtterance === 'undefined') return;
+      if (synth.speaking || synth.pending) {
+        synth.cancel();
+      }
+      const utterance = new SpeechSynthesisUtterance(OWNER_GUARD_UNAUTHORIZED_TTS_TH);
+      utterance.lang = 'th-TH';
+      utterance.rate = 1.05;
+      utterance.pitch = 1.0;
+      utterance.volume = 1.0;
+      unauthorizedUtteranceRef.current = utterance;
+      utterance.onstart = () => {
+        setIsSpeakingUnauthorizedAlert(true);
+      };
+      utterance.onend = () => {
+        if (unauthorizedUtteranceRef.current === utterance) {
+          unauthorizedUtteranceRef.current = null;
+        }
+        setIsSpeakingUnauthorizedAlert(false);
+      };
+      utterance.onerror = () => {
+        if (unauthorizedUtteranceRef.current === utterance) {
+          unauthorizedUtteranceRef.current = null;
+        }
+        setIsSpeakingUnauthorizedAlert(false);
+      };
+      synth.speak(utterance);
+    } catch {
+      setIsSpeakingUnauthorizedAlert(false);
+    }
+  }, [effectiveOwnerIdentityStatus]);
+
+  useEffect(() => {
+    return () => {
+      unauthorizedUtteranceRef.current = null;
+    };
+  }, []);
+
   onExerciseCompletedRef.current = onExerciseCompleted;
   onAllExercisesCompletedRef.current = onAllExercisesCompleted;
   selectedExerciseRef.current = selectedExercise;
@@ -2430,7 +2529,8 @@ export function SmartRehabKioskUI({
   countingLockedRef.current =
     !isPoseTestMode &&
     isFormRuleActive(formRules, 'identity') &&
-    (payload.kiosk_state === 'PAUSED_MULTI_PERSON' ||
+    (!canExerciseByOwnerGuard ||
+      payload.kiosk_state === 'PAUSED_MULTI_PERSON' ||
       payload.kiosk_state === 'PAUSED_IMPOSTOR' ||
       payload.identity_guard?.is_counting_allowed === false);
 
@@ -2497,7 +2597,9 @@ export function SmartRehabKioskUI({
   const isMultiPersonState =
     kiosk_state === 'PAUSED_MULTI_PERSON' || payload.identity_guard?.status === 'MULTI_PERSON';
   const isImpostorState =
-    kiosk_state === 'PAUSED_IMPOSTOR' || payload.identity_guard?.status === 'IMPOSTOR';
+    effectiveOwnerIdentityStatus === 'UNAUTHORIZED_PERSON' ||
+    kiosk_state === 'PAUSED_IMPOSTOR' ||
+    payload.identity_guard?.status === 'IMPOSTOR';
   const unifiedCoachingBanner = resolveUnifiedKioskCoachingBanner({
     exercise: selectedExercise,
     expectedPlane: activeExpectedPlane,
@@ -2557,6 +2659,7 @@ export function SmartRehabKioskUI({
   }, [selectedExercise.exercise_id]);
 
   if (
+    canExerciseByOwnerGuard &&
     Number.isFinite(telemetry_analysis.current_rom_deg) &&
     telemetry_analysis.current_rom_deg > sessionPeakRomRef.current
   ) {
@@ -2565,7 +2668,7 @@ export function SmartRehabKioskUI({
 
   const syncCompletedExerciseHistory = (completedRepsCount: number, peakRomDeg: number) => {
     const pid = patient?.id ?? patientProp?.id;
-    if (isPoseTestMode || !pid) return;
+    if (isPoseTestMode || !pid || !canExerciseByOwnerGuard) return;
     const parsed = parseExerciseCodeAndSide(
       selectedExercise.effective_code || selectedExercise.base_code || selectedExercise.exercise_id,
       selectedExercise.prescribed_side,
@@ -2586,6 +2689,7 @@ export function SmartRehabKioskUI({
   };
 
   const markCurrentExerciseCompleted = () => {
+    if (!canExerciseByOwnerGuard) return;
     completeCurrentExercise();
     if (!completedIds.includes(selectedExercise.exercise_id)) {
       const peakRomDeg = Number(
@@ -2625,8 +2729,9 @@ export function SmartRehabKioskUI({
     );
   }, [exerciseOptions, currentExerciseIndex, selectedExercise.exercise_id, completedIds]);
 
-  // Mark exercise completed once target reps are reached
+  // Mark exercise completed once target reps are reached (strictly gated by verified account owner)
   useEffect(() => {
+    if (!canExerciseByOwnerGuard) return;
     if (rep_counter.valid_reps < selectedExercise.target_reps) return;
     if (completedIds.includes(selectedExercise.exercise_id)) return;
     const peakRomDeg = Number(
@@ -2637,7 +2742,7 @@ export function SmartRehabKioskUI({
     );
     onExerciseCompletedRef.current?.(selectedExercise, { peakRomDeg });
     syncCompletedExerciseHistory(rep_counter.valid_reps, peakRomDeg);
-  }, [rep_counter.valid_reps, selectedExercise, completedIds]);
+  }, [canExerciseByOwnerGuard, rep_counter.valid_reps, selectedExercise, completedIds]);
 
   // Auto-advance to the next uncompleted exercise after completing one set (disabled in staff Pose Test sandbox)
   useEffect(() => {
@@ -3699,8 +3804,12 @@ export function SmartRehabKioskUI({
               setDemoTrunkTiltDeg(latestTrunkTiltDeg);
             }
 
+            const ownerGuardLockedNow =
+              checkIdentity &&
+              ownerFaceGuardRef.current.active &&
+              !ownerFaceGuardRef.current.canExercise;
             const effGoalDeg = effectiveTargetRomRef.current;
-            if (targetRomDeg !== null) {
+            if (!ownerGuardLockedNow && targetRomDeg !== null) {
               smoothedRom = stepSmoothRomAngle(smoothedRom, targetRomDeg, wallDtMs);
               const nextEmitRom = Number(smoothedRom.toFixed(1));
               const liveRomPct = effGoalDeg > 0 ? Math.min(100, Math.max(0, (smoothedRom / effGoalDeg) * 100)) : 0;
@@ -3725,7 +3834,7 @@ export function SmartRehabKioskUI({
                 lastRomEmitAt = now;
                 setDemoRomDeg(nextEmitRom);
               }
-            } else {
+            } else if (!ownerGuardLockedNow) {
               smoothedRom = 0;
               if (liveAngleBadgeRef.current) {
                 liveAngleBadgeRef.current.textContent = `0° / ${effGoalDeg}°`;
@@ -3745,6 +3854,7 @@ export function SmartRehabKioskUI({
 
             const blockCounting =
               multiPersonConfirmed ||
+              ownerGuardLockedNow ||
               (demoPresetRef.current === 'MULTI_PERSON' && checkIdentity) ||
               countingLockedRef.current;
 
@@ -3803,40 +3913,62 @@ export function SmartRehabKioskUI({
                     ? isSideWristClippedRaised('left') && isSideWristClippedRaised('right')
                     : false);
 
-            // Step Option A Rep Engine: Hold -> Immediately +1 Rep & Lock 100% -> Lower Arm -> Ready for Next Rep
-            const repStep = stepStrokeHoldAndRepStateMachine({
-              state: {
-                phase: repPhaseRef.current,
-                holdElapsedSec: holdElapsedSecRef.current,
-                completedReps: completedRepsRef.current,
-                cooldownStartedAtMs: cooldownStartedAtRef.current,
-                repCelebrateUntilMs: repCelebrateUntilRef.current,
-                loweredFrameStreak: loweredFrameStreakRef.current,
-                readyBannerUntilMs: readyBannerUntilRef.current,
-                waitLowerStartedAtMs: waitLowerStartedAtRef.current,
-              },
-              activeRomDeg: targetRomDeg !== null ? smoothedRom : null,
-              leftArmRomDeg: latestLeftArmRom,
-              rightArmRomDeg: latestRightArmRom,
-              exerciseCode: curEx.exercise_id,
-              exerciseSide: curExSide,
-              targetRomDeg: effectiveTargetRomRef.current,
-              targetHoldSec: holdTargetSec,
-              targetReps: curEx.target_reps,
-              dtSec,
-              nowMs: now,
-              isKneeExercise: curEx.target_joint.includes('knee'),
-              isSmallRomExercise: isSmallRomEx,
-              armWristLowered,
-              handsOutOfFrameRaised,
-              sideViolation: effSideViolation,
-              wrongSideBannerTh: effWrongSideBannerTh,
-              wrongPlaneRaised: effWrongPlaneRaised,
-              wrongPlaneBannerTh: effWrongPlaneBannerTh,
-              isCompensatedNow: effPostureCompensated,
-              postureBannerTh: effPostureBannerTh,
-              blockCounting,
-            });
+            // Step Option A Rep Engine: freeze hold timer & reps cleanly while ownerGuardLockedNow is true
+            // so returning account owner resumes seamlessly from the exact paused hold/rep position.
+            const frozenHoldRatio = Math.min(1, Math.max(0, holdElapsedSecRef.current / holdTargetSec));
+            const repStep = ownerGuardLockedNow
+              ? {
+                  nextState: {
+                    phase: repPhaseRef.current,
+                    holdElapsedSec: holdElapsedSecRef.current,
+                    completedReps: completedRepsRef.current,
+                    cooldownStartedAtMs: cooldownStartedAtRef.current,
+                    repCelebrateUntilMs: repCelebrateUntilRef.current,
+                    loweredFrameStreak: loweredFrameStreakRef.current,
+                    readyBannerUntilMs: readyBannerUntilRef.current,
+                    waitLowerStartedAtMs: waitLowerStartedAtRef.current,
+                  },
+                  holdProgressPct: Math.round(frozenHoldRatio * 100),
+                  holdRemainingSec: Number(Math.max(0, holdTargetSec - holdElapsedSecRef.current).toFixed(1)),
+                  justCompletedRep: false,
+                  unlockedToReady: false,
+                  holdCompleteWaitLower: false,
+                  bannerTh: null,
+                  statusKind: 'ACTIVE_REP' as const,
+                }
+              : stepStrokeHoldAndRepStateMachine({
+                  state: {
+                    phase: repPhaseRef.current,
+                    holdElapsedSec: holdElapsedSecRef.current,
+                    completedReps: completedRepsRef.current,
+                    cooldownStartedAtMs: cooldownStartedAtRef.current,
+                    repCelebrateUntilMs: repCelebrateUntilRef.current,
+                    loweredFrameStreak: loweredFrameStreakRef.current,
+                    readyBannerUntilMs: readyBannerUntilRef.current,
+                    waitLowerStartedAtMs: waitLowerStartedAtRef.current,
+                  },
+                  activeRomDeg: targetRomDeg !== null ? smoothedRom : null,
+                  leftArmRomDeg: latestLeftArmRom,
+                  rightArmRomDeg: latestRightArmRom,
+                  exerciseCode: curEx.exercise_id,
+                  exerciseSide: curExSide,
+                  targetRomDeg: effectiveTargetRomRef.current,
+                  targetHoldSec: holdTargetSec,
+                  targetReps: curEx.target_reps,
+                  dtSec,
+                  nowMs: now,
+                  isKneeExercise: curEx.target_joint.includes('knee'),
+                  isSmallRomExercise: isSmallRomEx,
+                  armWristLowered,
+                  handsOutOfFrameRaised,
+                  sideViolation: effSideViolation,
+                  wrongSideBannerTh: effWrongSideBannerTh,
+                  wrongPlaneRaised: effWrongPlaneRaised,
+                  wrongPlaneBannerTh: effWrongPlaneBannerTh,
+                  isCompensatedNow: effPostureCompensated,
+                  postureBannerTh: effPostureBannerTh,
+                  blockCounting,
+                });
 
             repPhaseRef.current = repStep.nextState.phase;
             holdElapsedSecRef.current = repStep.nextState.holdElapsedSec;
@@ -3970,15 +4102,18 @@ export function SmartRehabKioskUI({
               smoothingStatusText: formatSmoothingHud(),
               showSkeleton: showSkeletonOverlayRef.current,
               isPrivacyMode: isPrivacyModeRef.current,
-              ownerLock: checkIdentity && (cachedOwnerFaceBox || cachedOwnerExtraBoxes.length > 0)
-                ? {
-                  ownerName: ownerBiometricsRef.current?.fullName ?? payload.patient?.name ?? 'ผู้ป่วย',
-                  faceBox: cachedOwnerFaceBox,
-                  extraFaceBoxes: cachedOwnerExtraBoxes,
-                  ownerFaceVerified: !multiPersonConfirmed,
-                  faceCount: multiPersonConfirmed ? Math.max(2, cachedOwnerFaceCount) : 1,
-                }
-                : undefined,
+              ownerLock:
+                checkIdentity &&
+                !ownerFaceGuardRef.current.active &&
+                (cachedOwnerFaceBox || cachedOwnerExtraBoxes.length > 0)
+                  ? {
+                    ownerName: ownerBiometricsRef.current?.fullName ?? payload.patient?.name ?? 'ผู้ป่วย',
+                    faceBox: cachedOwnerFaceBox,
+                    extraFaceBoxes: cachedOwnerExtraBoxes,
+                    ownerFaceVerified: !multiPersonConfirmed,
+                    faceCount: multiPersonConfirmed ? Math.max(2, cachedOwnerFaceCount) : 1,
+                  }
+                  : undefined,
             });
           } else {
             smoothedRenderKeypointsRef.current = null;
@@ -4006,15 +4141,18 @@ export function SmartRehabKioskUI({
               canvasHeight: canvasH,
               showSkeleton: showSkeletonOverlayRef.current,
               isPrivacyMode: isPrivacyModeRef.current,
-              ownerLock: checkIdentity && (cachedOwnerFaceBox || cachedOwnerExtraBoxes.length > 0)
-                ? {
-                  ownerName: ownerBiometricsRef.current?.fullName ?? payload.patient?.name ?? 'ผู้ป่วย',
-                  faceBox: cachedOwnerFaceBox,
-                  extraFaceBoxes: cachedOwnerExtraBoxes,
-                  ownerFaceVerified: !multiPersonConfirmed,
-                  faceCount: multiPersonConfirmed ? Math.max(2, cachedOwnerFaceCount) : 1,
-                }
-                : undefined,
+              ownerLock:
+                checkIdentity &&
+                !ownerFaceGuardRef.current.active &&
+                (cachedOwnerFaceBox || cachedOwnerExtraBoxes.length > 0)
+                  ? {
+                    ownerName: ownerBiometricsRef.current?.fullName ?? payload.patient?.name ?? 'ผู้ป่วย',
+                    faceBox: cachedOwnerFaceBox,
+                    extraFaceBoxes: cachedOwnerExtraBoxes,
+                    ownerFaceVerified: !multiPersonConfirmed,
+                    faceCount: multiPersonConfirmed ? Math.max(2, cachedOwnerFaceCount) : 1,
+                  }
+                  : undefined,
             });
           }
 
@@ -4201,15 +4339,20 @@ export function SmartRehabKioskUI({
         label: 'ยืนยันตัวตนคนไข้ตัวจริง (1 คนในเฟรม)',
         ok:
           !isFormRuleActive(formRules, 'identity') ||
-          (kiosk_state !== 'PAUSED_MULTI_PERSON' &&
+          (canExerciseByOwnerGuard &&
+            kiosk_state !== 'PAUSED_MULTI_PERSON' &&
             kiosk_state !== 'PAUSED_IMPOSTOR' &&
             payload.identity_guard?.is_counting_allowed !== false &&
             !isEmergency),
         ruleActive: isFormRuleActive(formRules, 'identity'),
         warnText:
-          kiosk_state === 'PAUSED_IMPOSTOR' || payload.identity_guard?.status === 'IMPOSTOR'
-            ? 'ไม่ใช่คนไข้'
-            : 'พบหลายคน',
+          effectiveOwnerIdentityStatus === 'UNAUTHORIZED_PERSON' ||
+          kiosk_state === 'PAUSED_IMPOSTOR' ||
+          payload.identity_guard?.status === 'IMPOSTOR'
+            ? 'บุคคลอื่น'
+            : effectiveOwnerIdentityStatus === 'NO_OWNER_FACE'
+              ? 'ไม่พบใบหน้า'
+              : 'พบหลายคน',
       },
     ];
   const hasDisabledFormRule =
@@ -4276,9 +4419,46 @@ export function SmartRehabKioskUI({
     } => Boolean(entry.baseItem),
   );
   const rawVoiceTextTh =
-    strokeSafetyAlert?.messageTh ?? telemetry_analysis.safety_guard_banner_th ?? tts_voice_th;
+    effectiveOwnerIdentityStatus === 'UNAUTHORIZED_PERSON'
+      ? OWNER_GUARD_UNAUTHORIZED_TTS_TH
+      : strokeSafetyAlert?.messageTh ?? telemetry_analysis.safety_guard_banner_th ?? tts_voice_th;
   const cleanSpeechText = sanitizeSpeechText(rawVoiceTextTh);
   const displayedVoiceSubtitle = sanitizeSpeechText(translateVoiceCoachText(cleanSpeechText, zone5VoiceLang));
+  const ownerDisplayName =
+    ownerBiometricsProp?.fullName || patient?.name || patientProp?.name || 'ผู้ป่วย';
+  const ownerDisplayHn =
+    ownerBiometricsProp?.hn || patient?.hn || patientProp?.hn || '';
+  const mirroredOwnerFaceBox = useMemo(() => {
+    if (!ownerFaceGuard.active || !ownerFaceGuard.trackedRawBox) return null;
+    const vidW = videoRef.current?.videoWidth || 640;
+    const vidH = videoRef.current?.videoHeight || 360;
+    const contW = canvasSizeRef.current.w || 640;
+    const contH = canvasSizeRef.current.h || 360;
+    return projectRawFaceBoxToMirroredCover(
+      ownerFaceGuard.trackedRawBox,
+      vidW,
+      vidH,
+      contW,
+      contH,
+    );
+  }, [ownerFaceGuard.active, ownerFaceGuard.trackedRawBox]);
+  const ownerMascotPose: 'explaining' | 'encouraging' | 'speaking' =
+    effectiveOwnerIdentityStatus === 'UNAUTHORIZED_PERSON'
+      ? 'explaining'
+      : isHoldPhase || isRepCelebration
+        ? 'encouraging'
+        : 'speaking';
+  const handleSwitchAccountAction = () => {
+    if (onSwitchAccount) {
+      onSwitchAccount();
+      return;
+    }
+    if (onBackToAdminPortal) {
+      onBackToAdminPortal();
+      return;
+    }
+    onOpenStaffPortal?.();
+  };
 
   return (
     <div className="h-[100dvh] max-h-[100dvh] w-full overflow-hidden bg-gradient-to-b from-slate-50 via-white to-emerald-50/40 text-slate-800 flex flex-col justify-between p-2.5 md:p-3 gap-2 select-none">
@@ -4576,6 +4756,35 @@ export function SmartRehabKioskUI({
                   aria-label="Live Pose Skeleton & Angle Overlay"
                   className="pointer-events-none absolute inset-0 w-full h-full"
                 />
+                {ownerFaceGuard.active && mirroredOwnerFaceBox && !isPrivacyMode && (
+                  <div
+                    data-testid="owner-face-tracking-box"
+                    data-identity-status={effectiveOwnerIdentityStatus}
+                    style={{
+                      left: `${mirroredOwnerFaceBox.leftPct}%`,
+                      top: `${mirroredOwnerFaceBox.topPct}%`,
+                      width: `${mirroredOwnerFaceBox.widthPct}%`,
+                      height: `${mirroredOwnerFaceBox.heightPct}%`,
+                    }}
+                    className={`pointer-events-none absolute z-20 rounded-2xl border-[3px] transition-all duration-150 ${
+                      effectiveOwnerIdentityStatus === 'UNAUTHORIZED_PERSON'
+                        ? 'border-red-600 bg-red-500/10 shadow-[0_0_0_2px_rgba(220,38,38,0.35)]'
+                        : 'border-emerald-500 bg-emerald-500/5 shadow-[0_0_0_2px_rgba(16,185,129,0.28)]'
+                    }`}
+                  >
+                    <div
+                      className={`absolute -top-7 left-0 max-w-[320px] truncate rounded-full px-2.5 py-0.5 text-[11px] md:text-xs font-extrabold text-white shadow-md whitespace-nowrap ${
+                        effectiveOwnerIdentityStatus === 'UNAUTHORIZED_PERSON'
+                          ? 'bg-red-600'
+                          : 'bg-emerald-600/95'
+                      }`}
+                    >
+                      {effectiveOwnerIdentityStatus === 'UNAUTHORIZED_PERSON'
+                        ? `ตรวจพบบุคคลอื่น (ไม่ใช่ ${ownerDisplayName})`
+                        : `เจ้าของบัญชี: ${ownerDisplayName} • ยืนยันตัวตนแล้ว (${Math.round(ownerFaceGuard.similarity * 100)}%)`}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : undefined
           }
@@ -4588,6 +4797,58 @@ export function SmartRehabKioskUI({
               distanceM={demoDistanceM}
               patientName={patient?.name}
             />
+          )}
+
+          {!isEmergency && effectiveOwnerIdentityStatus === 'NO_OWNER_FACE' && ownerFaceGuard.active && (
+            <div
+              role="status"
+              data-testid="owner-guard-no-face-pill"
+              className="pointer-events-none absolute top-14 left-1/2 -translate-x-1/2 z-30 max-w-[92%] rounded-full border-2 border-sky-200 bg-blue-700/95 px-4 py-1.5 text-center text-xs md:text-sm font-extrabold text-white shadow-lg animate-toast-in"
+            >
+              กรุณาให้ใบหน้าของคุณ {ownerDisplayName} อยู่ในกรอบกล้องเพื่อทำกายภาพต่อ
+            </div>
+          )}
+
+          {!isEmergency && effectiveOwnerIdentityStatus === 'UNAUTHORIZED_PERSON' && (
+            <div
+              role="alert"
+              data-testid="owner-guard-unauthorized-overlay"
+              className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-[2px]"
+            >
+              <div className="w-full max-w-lg rounded-3xl border-[3px] border-red-600 bg-white/98 p-5 text-center shadow-2xl animate-popup-spring">
+                <div className="flex items-center justify-center gap-3">
+                  <DrTechCareMascot
+                    pose="explaining"
+                    isSpeaking={isSpeakingUnauthorizedAlert}
+                    size="sm"
+                  />
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-red-100 text-red-600 border border-red-200">
+                    <AlertTriangle className="h-7 w-7" />
+                  </div>
+                </div>
+                <h2 className="mt-2.5 text-lg md:text-xl font-black text-red-700">
+                  ระงับการฝึกชั่วคราว: ตรวจพบบุคคลอื่นหน้ากล้อง
+                </h2>
+                <p className="mt-1.5 text-sm md:text-base font-bold text-slate-800">
+                  ต้องเป็นคุณ {ownerDisplayName}
+                  {ownerDisplayHn ? ` (${ownerDisplayHn})` : ''} เจ้าของบัญชีเท่านั้นจึงจะกายภาพได้
+                </p>
+                <p className="mt-1 text-xs font-semibold text-slate-500">
+                  ระบบหยุดนับรอบและหยุดบันทึกมุม ROM ชั่วคราว และจะฝึกต่อให้อัตโนมัติทันทีที่เจ้าของบัญชีกลับมาหน้ากล้อง
+                </p>
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
+                  <button
+                    type="button"
+                    data-testid="owner-guard-switch-account-btn"
+                    onClick={handleSwitchAccountAction}
+                    className="btn-tactile inline-flex items-center gap-2 rounded-xl bg-red-600 px-5 py-2.5 text-sm font-extrabold text-white shadow-md hover:bg-red-700 cursor-pointer"
+                  >
+                    <RotateCcw className="h-4 w-4 shrink-0" />
+                    <span>สลับบัญชี / สแกนใบหน้าใหม่</span>
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
 
           {isEmergency && (
@@ -4959,8 +5220,16 @@ export function SmartRehabKioskUI({
 
       {/* ZONE 5: Compact Accessible Voice Coach Footer */}
       <footer className="shrink-0 relative bg-gradient-to-r from-teal-700 via-emerald-700 to-blue-800 text-white rounded-2xl px-4 py-2 flex items-center justify-between gap-3 shadow-sm">
-        {/* Left: Microphone badge + Label + Live Spoken Subtitle */}
+        {/* Left: Compact Mascot + Microphone badge + Label + Live Spoken Subtitle */}
         <div className="flex items-center gap-2.5 min-w-0 flex-1">
+          <div className="hidden sm:flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/95 border border-emerald-200">
+            <DrTechCareMascot
+              pose={ownerMascotPose}
+              isSpeaking={isSpeakingUnauthorizedAlert || !voiceMuted}
+              size="sm"
+              className="scale-[0.42] origin-center"
+            />
+          </div>
           <span
             aria-hidden="true"
             className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/15"
@@ -5037,7 +5306,7 @@ export function SmartRehabKioskUI({
         {/* Preserve live TTS & Speech Queue Engine invisibly without altering layout height or Tab focus order */}
         <div className="sr-only" aria-hidden="true" {...({ inert: true } as Record<string, unknown>)}>
           <VoiceCoachBanner
-            textTh={cleanSpeechText}
+            textTh={effectiveOwnerIdentityStatus === 'UNAUTHORIZED_PERSON' ? '' : cleanSpeechText}
             kioskState={kiosk_state}
             highlightColor={ui_directives.highlight_color}
             muted={voiceMuted}

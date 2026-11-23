@@ -555,6 +555,52 @@ export async function extractCanonicalFaceDescriptor(
   };
 }
 
+export interface DetectedCanonicalFaceEntry {
+  embedding: number[] | null;
+  embeddingDim: number;
+  score: number;
+  box: { x: number; y: number; width: number; height: number } | null;
+}
+
+/**
+ * Extracts L2-normalized neural face embeddings and normalized raw boxes for ALL faces
+ * visible in a lightweight offscreen frame (non-blocking, mutex-queued through `detectRunQueue`).
+ */
+export async function extractAllCanonicalFaceDescriptors(
+  input: HTMLVideoElement | HTMLCanvasElement | OffscreenCanvas | ImageData,
+): Promise<DetectedCanonicalFaceEntry[]> {
+  const human = await getSharedHuman();
+  const task = detectRunQueue.then(() => human.detect(input));
+  detectRunQueue = task.catch(() => {});
+  const result = await task;
+
+  const faces = Array.isArray(result.face) ? result.face : [];
+  return faces.map((face) => {
+    const rawEmb = Array.isArray(face.embedding)
+      ? face.embedding
+      : face.embedding && typeof (face.embedding as ArrayLike<number>).length === 'number'
+        ? Array.from(face.embedding as ArrayLike<number>)
+        : null;
+    const embedding =
+      rawEmb && isValidNeuralEmbedding(rawEmb) ? normalizeVector(rawEmb) : null;
+    const box =
+      Array.isArray(face.boxRaw) && face.boxRaw.length >= 4
+        ? {
+            x: Math.max(0, Math.min(1, face.boxRaw[0])),
+            y: Math.max(0, Math.min(1, face.boxRaw[1])),
+            width: Math.max(0.01, Math.min(1, face.boxRaw[2])),
+            height: Math.max(0.01, Math.min(1, face.boxRaw[3])),
+          }
+        : null;
+    return {
+      embedding,
+      embeddingDim: embedding?.length ?? 0,
+      score: typeof face.score === 'number' ? face.score : face.boxScore ?? 0,
+      box,
+    };
+  });
+}
+
 export const TARGET_CANONICAL_CROP_SIZE = 224;
 export const TARGET_WIDE_FALLBACK_CROP_SIZE = 288;
 export const TARGET_MEAN_LUMINANCE = 128;
