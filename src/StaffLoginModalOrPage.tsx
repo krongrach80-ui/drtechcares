@@ -19,6 +19,7 @@ import {
   KINETIC_AUTH_HOLD_DELAY_MS,
   KineticAuthStatusBadge,
 } from './components/KineticAuthStatusBadge';
+import { playGameSfx } from './lib/gameUiSfx';
 
 export type StaffLoginAnimStatus = 'idle' | 'checking' | 'success' | 'not_found';
 
@@ -275,6 +276,14 @@ export function StaffLoginModalOrPage({
   }, []);
 
   useEffect(() => () => clearPendingSuccessTimer(), [clearPendingSuccessTimer]);
+
+  useEffect(() => {
+    if (loginAnimStatus === 'success') {
+      playGameSfx('unlock');
+    } else if (loginAnimStatus === 'not_found') {
+      playGameSfx('wrong');
+    }
+  }, [loginAnimStatus]);
 
   const handleReturn = useCallback(() => {
     clearPendingSuccessTimer();
@@ -742,7 +751,7 @@ export function StaffLoginModalOrPage({
             data-testid="staff-login-submit-btn"
             type="submit"
             disabled={isCheckingOrSuccess}
-            className="btn-primary-sheen w-full h-13 py-3.5 px-6 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 active:scale-[0.98] text-white font-bold text-base sm:text-lg shadow-lg shadow-emerald-950/20 transition flex items-center justify-center gap-2.5 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+            className="btn-primary-sheen btn-game-3d-emerald w-full h-13 py-3.5 px-6 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-base sm:text-lg transition flex items-center justify-center gap-2.5 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {isCheckingOrSuccess ? (
               <>
@@ -795,7 +804,7 @@ export function StaffLoginModalOrPage({
             data-testid="staff-login-return-kiosk-btn"
             type="button"
             onClick={handleReturn}
-            className="w-full h-12 px-4 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm sm:text-base font-semibold transition flex items-center justify-center gap-2 active:scale-[0.98] cursor-pointer"
+            className="btn-game-3d-white w-full h-12 px-4 rounded-2xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 text-sm sm:text-base font-semibold transition flex items-center justify-center gap-2 cursor-pointer"
           >
             <ArrowLeft className="w-4 h-4 shrink-0" />
             <span>{copy.returnToPatientMain}</span>

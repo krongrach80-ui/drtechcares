@@ -1,3 +1,5 @@
+import { playGameSfx } from './gameUiSfx';
+
 export const RIPPLE_LAYER_ID = 'drtech-motion-ripple-layer';
 export const MAX_ACTIVE_RIPPLES = 8;
 export const TACTILE_INTERACTIVE_SELECTOR =
@@ -203,6 +205,9 @@ export function installGlobalTactileMotion(doc?: Document): () => void {
     const interactive = findTactileTarget(evt.target);
     if (!interactive) return;
     spawnTactileRipple(interactive, pointerEvt.clientX, pointerEvt.clientY, targetDoc);
+    if (interactive.getAttribute?.('data-no-sfx') !== 'true') {
+      playGameSfx('tap');
+    }
   };
 
   const handleKeyDown = (evt: Event) => {
@@ -221,6 +226,9 @@ export function installGlobalTactileMotion(doc?: Document): () => void {
       rect.top + rect.height / 2,
       targetDoc,
     );
+    if (interactive.getAttribute?.('data-no-sfx') !== 'true') {
+      playGameSfx('tap');
+    }
   };
 
   targetDoc.addEventListener('pointerdown', handlePointerDown, { passive: true });

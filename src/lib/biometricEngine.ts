@@ -1727,24 +1727,25 @@ function extractMissingPostgrestColumn(err: { code?: string; message?: string } 
   return m?.[1] ?? null;
 }
 
-const PROTECTED_VECTOR_COLUMNS = new Set([
-  'biometric_data',
+const PROTECTED_PATIENTS_COLUMNS = new Set(['history', 'hn']);
+const PROTECTED_PATIENT_BIOMETRICS_COLUMNS = new Set([
+  'patient_id',
+  'hn',
   'master_embedding',
   'angle_embeddings',
-  'exemplar_embeddings',
-  'embedding_dim',
 ]);
 
 async function executeSupabaseWriteWithSchemaCompat(
   run: (payload: Record<string, unknown>) => PromiseLike<{ data?: unknown; error: { code?: string; message?: string } | null }>,
   initialPayload: Record<string, unknown>,
+  protectedCols: ReadonlySet<string> = PROTECTED_PATIENT_BIOMETRICS_COLUMNS,
 ): Promise<{ data?: unknown; error: { code?: string; message?: string } | null }> {
   const payload = { ...initialPayload };
-  for (let attempt = 0; attempt < 6; attempt += 1) {
+  for (let attempt = 0; attempt < 14; attempt += 1) {
     const res = await run(payload);
     if (!res.error) return res;
     const missingCol = extractMissingPostgrestColumn(res.error);
-    if (!missingCol || PROTECTED_VECTOR_COLUMNS.has(missingCol) || !(missingCol in payload)) {
+    if (!missingCol || protectedCols.has(missingCol) || !(missingCol in payload)) {
       return res;
     }
     delete payload[missingCol];
@@ -1902,6 +1903,7 @@ export async function syncPatientBiometricEverywhere(input: {
         const patRes = await executeSupabaseWriteWithSchemaCompat(
           (payload) => supabase.from('patients').update(payload).eq('id', input.patient.id).select('id'),
           patientBioPatch,
+          PROTECTED_PATIENTS_COLUMNS,
         );
         if (patRes.error) {
           throw new Error(`Supabase บันทึก patients ไม่สำเร็จ: ${patRes.error.message}`);
@@ -1924,6 +1926,7 @@ export async function syncPatientBiometricEverywhere(input: {
             next_appointment_date: input.patient.nextAppointmentDate || null,
             ...patientBioPatch,
           },
+          PROTECTED_PATIENTS_COLUMNS,
         );
         if (patInsertRes.error) {
           throw new Error(`Supabase สร้างระเบียน patients ไม่สำเร็จ: ${patInsertRes.error.message}`);
@@ -1950,6 +1953,7 @@ export async function syncPatientBiometricEverywhere(input: {
       const upRes = await executeSupabaseWriteWithSchemaCompat(
         (payload) => supabase.from('patient_biometrics').upsert(payload, { onConflict: 'patient_id' }),
         bioPayload,
+        PROTECTED_PATIENT_BIOMETRICS_COLUMNS,
       );
       if (upRes.error) {
         throw new Error(`Supabase บันทึก patient_biometrics ไม่สำเร็จ: ${upRes.error.message}`);
@@ -1968,9 +1972,16 @@ export async function syncPatientBiometricEverywhere(input: {
 
       const bioRow = (verifyBio.data ?? null) as Record<string, unknown> | null;
       const patRow = (verifyPat.data ?? null) as Record<string, unknown> | null;
+      const patHistory =
+        patRow?.history && typeof patRow.history === 'object'
+          ? (patRow.history as Record<string, unknown>)
+          : null;
       const verifiedBioVec = parseVectorLoose(bioRow?.master_embedding);
       const verifiedPatVec =
-        parseVectorLoose(patRow?.biometric_data) ?? parseVectorLoose(patRow?.face_embedding);
+        parseVectorLoose(patRow?.biometric_data) ??
+        parseVectorLoose(patRow?.face_embedding) ??
+        parseVectorLoose(patRow?.master_embedding) ??
+        parseVectorLoose(patHistory?.masterEmbedding);
       const reportedDim =
         typeof bioRow?.embedding_dim === 'number'
           ? bioRow.embedding_dim

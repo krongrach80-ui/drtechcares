@@ -95,10 +95,13 @@ import {
 } from './index';
 import {
   HYDRATE_TTL_MS,
+  PATIENTS_DIRECTORY_EGRESS_SAFE_COLS,
+  PATIENTS_MINIMAL_SAFE_COLS,
   STAFF_PROFILE_STORAGE_BUCKET,
   fetchBiometricLibraryStatsFromSupabase,
   getSupabaseCircuitState,
   hydrateBiometricsLiveFromSupabase,
+  hydrateStaffCallsOnly,
   hydrateStaffUsersOnly,
   hydrateStateFromSupabase,
   isSupabaseCircuitOpen,
@@ -115,6 +118,7 @@ import {
   purgePatientInSupabaseBestEffort,
   purgeUserInSupabaseBestEffort,
   recordUnsupportedColumn,
+  selectExplicitWithFallback,
   stripOversizedBase64ForDb,
   stripUnsupportedColumnsForWrite,
   stripUnsupportedColumnsForWriteRows,
@@ -503,12 +507,16 @@ function isPgDuplicateKeyError(err: unknown): boolean {
 async function upsertPatientBiometricsCompat(
   db: SupabaseClient,
   payload: Record<string, unknown>,
-): Promise<void> {
-  if (isSupabaseCircuitOpen(db)) return;
+): Promise<{ ok: boolean; errorMessage?: string }> {
+  if (isSupabaseCircuitOpen(db)) {
+    return { ok: false, errorMessage: 'supabase_circuit_open' };
+  }
   const safePatientUuid = toSafeUuidOrNull(
     typeof payload.patient_id === 'string' ? payload.patient_id : null,
   );
-  if (!safePatientUuid) return;
+  if (!safePatientUuid) {
+    return { ok: false, errorMessage: 'invalid_patient_uuid' };
+  }
   const working: Record<string, unknown> = stripUnsupportedColumnsForWrite(
     'patient_biometrics',
     stripOversizedBase64ForDb({
@@ -516,43 +524,42 @@ async function upsertPatientBiometricsCompat(
       patient_id: safePatientUuid,
     }),
   );
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  const protectedBioCols = new Set(['patient_id', 'hn', 'master_embedding', 'angle_embeddings']);
+  let lastErrorMessage = 'patient_biometrics_upsert_failed';
+  for (let attempt = 0; attempt < 14; attempt += 1) {
     try {
       const res = (await db
         .from('patient_biometrics')
         .upsert(working, { onConflict: 'patient_id' })) as
         | { error?: { code?: string; message?: string } | null }
         | undefined;
-      if (!res?.error) return;
+      if (!res?.error) return { ok: true };
+      lastErrorMessage = res.error.message || String(res.error.code ?? 'upsert_error');
       if (isPgDuplicateKeyError(res.error) && typeof working.hn === 'string' && working.hn) {
         const updateRes = (await db
           .from('patient_biometrics')
           .update(working)
-          .eq('hn', working.hn)) as { error?: unknown } | undefined;
-        if (!updateRes?.error) return;
+          .eq('hn', working.hn)) as { error?: { code?: string; message?: string } | null } | undefined;
+        if (!updateRes?.error) return { ok: true };
+        lastErrorMessage = updateRes.error.message || lastErrorMessage;
       }
       const missingCol =
         recordUnsupportedColumn('patient_biometrics', res.error) ??
         parsePostgrestMissingCol(res.error);
-      if (missingCol && missingCol in working && missingCol !== 'patient_id' && missingCol !== 'hn') {
+      if (missingCol && missingCol in working && !protectedBioCols.has(missingCol)) {
         delete working[missingCol];
         continue;
       }
       if (isPgVectorDimensionOrTypeMismatch(res.error)) {
-        let stripped = false;
-        for (const col of ['master_embedding', 'face_embedding', 'biometric_data'] as const) {
-          if (col in working) {
-            delete working[col];
-            stripped = true;
-          }
-        }
-        if (stripped) continue;
+        // Never silently strip `master_embedding` and pretend `patient_biometrics` succeeded
+        return { ok: false, errorMessage: lastErrorMessage };
       }
-      return;
-    } catch {
-      return;
+      return { ok: false, errorMessage: lastErrorMessage };
+    } catch (err) {
+      return { ok: false, errorMessage: err instanceof Error ? err.message : String(err) };
     }
   }
+  return { ok: false, errorMessage: lastErrorMessage };
 }
 
 type FaceAngleKey = 'center' | 'left' | 'right' | 'up' | 'down';
@@ -625,6 +632,65 @@ function buildPatientHistoryPayload(patient: PatientRecord): Record<string, unkn
   };
 }
 
+/**
+ * Preserves any existing biometric vectors stored inside `patients.history` when a non-biometric
+ * update (`PUT /api/patients/:id` or quick check-in) runs on a cold isolate whose in-memory
+ * `patient` object has not yet hydrated embeddings.
+ */
+async function preserveExistingHistoryBiometricsIfEmpty(
+  db: SupabaseClient,
+  patient: PatientRecord,
+  nextHistory: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const hasInMemoryMaster =
+    Array.isArray(patient.masterEmbedding) && patient.masterEmbedding.length >= 128;
+  if (hasInMemoryMaster || !isUuidString(patient.id) || isSupabaseCircuitOpen(db)) {
+    return nextHistory;
+  }
+  try {
+    const existingRes = (await db
+      .from('patients')
+      .select('history')
+      .eq('id', patient.id)
+      .maybeSingle()) as { data?: { history?: unknown } | null; error?: unknown } | undefined;
+    const prevHist =
+      existingRes?.data?.history && typeof existingRes.data.history === 'object'
+        ? (existingRes.data.history as Record<string, unknown>)
+        : null;
+    if (!prevHist) return nextHistory;
+    const preserved: Record<string, unknown> = { ...nextHistory };
+    const prevMaster = parseEmbeddingVector(prevHist.masterEmbedding);
+    if (prevMaster && prevMaster.length >= 128) {
+      preserved.masterEmbedding = prevHist.masterEmbedding;
+      if (prevHist.angleEmbeddings && !preserved.angleEmbeddings) {
+        preserved.angleEmbeddings = prevHist.angleEmbeddings;
+      }
+      if (prevHist.exemplarEmbeddings && !preserved.exemplarEmbeddings) {
+        preserved.exemplarEmbeddings = prevHist.exemplarEmbeddings;
+      }
+      if (prevHist.biometricEngine && !preserved.biometricEngine) {
+        preserved.biometricEngine = prevHist.biometricEngine;
+      }
+      if (prevHist.geometricRatios && !preserved.geometricRatios) {
+        preserved.geometricRatios = prevHist.geometricRatios;
+      }
+      if (prevHist.biometricUpdatedAt && !preserved.biometricUpdatedAt) {
+        preserved.biometricUpdatedAt = prevHist.biometricUpdatedAt;
+      }
+      preserved.faceBiometricStatus = 'VERIFIED';
+      if (typeof prevHist.faceFramesCount === 'number' && prevHist.faceFramesCount > 0) {
+        preserved.faceFramesCount = Math.max(
+          Number(preserved.faceFramesCount ?? 0),
+          prevHist.faceFramesCount,
+        );
+      }
+    }
+    return preserved;
+  } catch {
+    return nextHistory;
+  }
+}
+
 /** Writes a `patients` row safely: pre-strips cached missing cols + oversized base64 images and switches to HN update on 23505. */
 async function writePatientRowWithFramesFallback(
   db: SupabaseClient,
@@ -632,8 +698,10 @@ async function writePatientRowWithFramesFallback(
   fields: Record<string, unknown>,
   patientId?: string,
   _strict = false,
-): Promise<void> {
-  if (isSupabaseCircuitOpen(db)) return;
+): Promise<{ ok: boolean; errorMessage?: string }> {
+  if (isSupabaseCircuitOpen(db)) {
+    return { ok: false, errorMessage: 'supabase_circuit_open' };
+  }
   const working: Record<string, unknown> = stripUnsupportedColumnsForWrite(
     'patients',
     stripOversizedBase64ForDb({ ...fields }),
@@ -665,11 +733,15 @@ async function writePatientRowWithFramesFallback(
     'assigned_pt_id',
     'delegated_to_pt_id',
     'delegation_note',
+    'updated_at',
   ]);
+  let missingColStrips = 0;
+  let lastErrorMessage = 'patients_write_failed';
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
       const res = await exec(working);
-      if (!res?.error) return;
+      if (!res?.error) return { ok: true };
+      lastErrorMessage = res.error.message || String(res.error.code ?? 'patients_write_error');
       if (
         activeMode === 'insert' &&
         isPgDuplicateKeyError(res.error) &&
@@ -687,8 +759,18 @@ async function writePatientRowWithFramesFallback(
       if (missingCol && missingCol !== 'history' && missingCol !== 'hn') {
         if (missingCol in working) {
           delete working[missingCol];
-          // Strip ONLY the exact unsupported column reported by Postgres/PostgREST so existing
-          // columns like `face_biometric_status`, `face_frames_count`, and `face_image_url` are preserved.
+          missingColStrips += 1;
+          // After 4 individual missing-column discoveries on a cold isolate, batch-strip any
+          // remaining unmigrated legacy optional columns (while preserving `history`,
+          // `face_biometric_status`, `face_frames_count`, and `face_image_url`) so cold writes
+          // complete in <= 5 round-trips instead of 14.
+          if (missingColStrips >= 4) {
+            for (const optCol of legacyOptionalCols) {
+              if (optCol in working && optCol !== 'assigned_pt_id') {
+                delete working[optCol];
+              }
+            }
+          }
           continue;
         }
       }
@@ -722,11 +804,12 @@ async function writePatientRowWithFramesFallback(
         }
       }
       if (strippedAny) continue;
-      return;
-    } catch {
-      return;
+      return { ok: false, errorMessage: lastErrorMessage };
+    } catch (err) {
+      return { ok: false, errorMessage: err instanceof Error ? err.message : String(err) };
     }
   }
+  return { ok: false, errorMessage: lastErrorMessage };
 }
 
 /** Inserts an enrollment audit row safely with UUID-validated `enrolled_by` and `shot_count: 10` compat fallback. */
@@ -1244,7 +1327,15 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     url && key
       ? createClient(url, key, {
           auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-          global: { fetch: createBoundedSupabaseFetch(3500, key, anonFallbackKey, undefined, circuitHook) },
+          global: {
+            fetch: createBoundedSupabaseFetch(
+              6500,
+              key,
+              anonFallbackKey,
+              config.customSupabaseFetch,
+              circuitHook,
+            ),
+          },
         })
       : null;
   if (supabase) {
@@ -1256,8 +1347,16 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
   let hydrated = false;
   let lastHydratedAt = 0;
   let lastLiveBioHydratedAt = 0;
-  const LIVE_BIO_REFRESH_MS = 15_000;
+  let lastStaffCallsHydratedAt = 0;
+  let lastBiometricStatsCache: { at: number; payload: BiometricLibraryStatsResponse } | null = null;
+  const FULL_STATE_REHYDRATE_TTL_MS = Math.max(HYDRATE_TTL_MS, 600_000);
+  const LIVE_BIO_REFRESH_MS = 300_000;
+  const STATS_CACHE_TTL_MS = 45_000;
   const DUPLICATE_CHECK_REFRESH_MS = 2000;
+  const invalidateBiometricCaches = () => {
+    lastLiveBioHydratedAt = 0;
+    lastBiometricStatsCache = null;
+  };
 
   const findDuplicateEnrolledFace = async (params: {
     masterEmbedding: readonly number[];
@@ -1443,7 +1542,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     const shouldHydrate =
       !hydrated ||
       bypassTtl ||
-      (force && now - lastHydratedAt >= HYDRATE_TTL_MS);
+      (force && now - lastHydratedAt >= FULL_STATE_REHYDRATE_TTL_MS);
     if (!shouldHydrate) return;
     // Never cache a pending Promise across separate Worker requests (in workerd, awaiting
     // another request's I/O promise causes script hang errors). Only flip `hydrated = true`
@@ -1456,9 +1555,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         new Promise<void>((resolve) => {
           timeoutId = setTimeout(() => {
             timedOut = true;
-            markSupabaseDown('ensure_hydrated_timeout', supabase);
+            if (state.patients.length === 0) {
+              markSupabaseDown('ensure_hydrated_timeout', supabase);
+            }
             resolve();
-          }, 1500);
+          }, 4800);
         }),
       ]);
       if (!timedOut && !isSupabaseCircuitOpen(supabase)) {
@@ -1930,21 +2031,27 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
     const isLightweightBiometricEndpoint =
       pathname === '/api/biometrics/stats' ||
+      ((pathname === '/api/biometrics/index' || pathname === '/api/biometrics') && method === 'GET') ||
       pathname === '/api/biometric/verify' ||
       pathname === '/api/biometric/check-duplicate';
     const isLightweightPatientsGet = pathname === '/api/patients' && method === 'GET';
+    const isLightweightUsersGet =
+      (pathname === '/api/users' || pathname === '/api/staff') && method === 'GET';
+    const isLightweightStaffCallsGet = pathname === '/api/staff-calls' && method === 'GET';
+    const isLightweightDirectoryGet =
+      isLightweightPatientsGet || isLightweightUsersGet || isLightweightStaffCallsGet;
 
     const shouldHydrateRequest =
       !isLightweightBiometricEndpoint &&
-      !isLightweightPatientsGet &&
+      !isLightweightDirectoryGet &&
       (forceSupabaseProbe ||
         pathname === '/api/kiosk/pin-login' ||
         pathname.includes('/assessments') ||
         (method === 'GET' && pathname !== '/api/exercises' && pathname !== '/api/health'));
 
-    if (!isLightweightBiometricEndpoint && !isLightweightPatientsGet) {
+    if (!isLightweightBiometricEndpoint && !isLightweightDirectoryGet) {
       await ensureHydrated(shouldHydrateRequest, forceSupabaseProbe);
-    } else if (isLightweightPatientsGet && supabase && state.users.length <= 3) {
+    } else if (isLightweightDirectoryGet && supabase && state.users.length <= 3) {
       await hydrateStaffUsersOnly(supabase, state, 1500);
     }
 
@@ -3043,11 +3150,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         activeOverride: true,
       });
 
-      // 2. Persist safely to Supabase within bounded timeout; NEVER throw HTTP 500 on DB errors
+      // 2. Persist durably to Supabase with generous 6000ms budget + Cloudflare waitUntil guarantee
       const persistRes = await persistWithTimeoutBestEffort(
         supabase,
         async (db) => {
-          await writePatientRowWithFramesFallback(
+          const patWrite = await writePatientRowWithFramesFallback(
             db,
             'insert',
             {
@@ -3069,64 +3176,87 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             false,
           );
 
-          // Dual-write PATIENT user record into staff_users immediately after patients insert
-          await persistPatientStaffUserCompat(db, createdPatUser);
+          let bioWrite: { ok: boolean; errorMessage?: string } = { ok: true };
+          const secondaryTasks: Promise<unknown>[] = [
+            persistPatientStaffUserCompat(db, createdPatUser),
+            upsertCourseSafeToSupabase(db, {
+              id: defaultCourse.id,
+              patient_id: defaultCourse.patientId,
+              title: defaultCourse.title,
+              weekly_schedule: defaultCourse.weeklySchedule,
+              cognitive_modpack_id: defaultCourse.cognitiveModpackId,
+              updated_at: defaultCourse.updatedAt,
+            }),
+          ];
 
           if (!isPendingSkip && masterVec && resolvedAngles && frontalVec) {
-            await upsertPatientBiometricsCompat(db, {
-              patient_id: patientId,
-              hn: patient.hn,
-              master_embedding: masterVec,
-              angle_embeddings: resolvedAngles,
-              exemplar_embeddings: compactExemplars,
-              ...(patient.geometricRatios ? { geometric_ratios: patient.geometricRatios } : {}),
-              biometric_engine: resolvedBiometricEngine ?? null,
-              model_version: resolvedBiometricEngine ?? null,
-              embedding_dim: masterVec.length,
-              frame_count: framesCaptured,
-              frames_captured: framesCaptured,
-              quality_score: qualityScore,
-              avatar_url: storedFaceImageUrl ?? null,
-              updated_at: enrolledAtIso,
-            });
-            await insertFaceEnrollmentWithCompatShotCount(db, {
-              patient_id: patientId,
-              shot_count: framesCaptured,
-              liveness_verified: true,
-              enrolled_by: safeActorUuid,
-            });
+            secondaryTasks.push(
+              upsertPatientBiometricsCompat(db, {
+                patient_id: patientId,
+                hn: patient.hn,
+                master_embedding: masterVec,
+                angle_embeddings: resolvedAngles,
+                exemplar_embeddings: compactExemplars,
+                ...(patient.geometricRatios ? { geometric_ratios: patient.geometricRatios } : {}),
+                biometric_engine: resolvedBiometricEngine ?? null,
+                model_version: resolvedBiometricEngine ?? null,
+                embedding_dim: masterVec.length,
+                frame_count: framesCaptured,
+                frames_captured: framesCaptured,
+                quality_score: qualityScore,
+                avatar_url: storedFaceImageUrl ?? null,
+                updated_at: enrolledAtIso,
+              }).then((r) => {
+                bioWrite = r;
+                return r;
+              }),
+            );
+            secondaryTasks.push(
+              insertFaceEnrollmentWithCompatShotCount(db, {
+                patient_id: patientId,
+                shot_count: framesCaptured,
+                liveness_verified: true,
+                enrolled_by: safeActorUuid,
+              }),
+            );
             // Persist at most 6 compact centroids (never 120 raw rows) and only when 512-D pgvector matches
             if (masterVec.length === FACE_EMBEDDING_DIM) {
-              try {
-                await db.from('face_templates').insert([
-                  { patient_id: patientId, pose: 'frontal_centroid', embedding: frontalVec, quality_score: qualityScore },
-                  { patient_id: patientId, pose: 'overall_centroid', embedding: masterVec, quality_score: qualityScore },
-                  ...compactAngleRows.map((f) => ({
-                    patient_id: patientId,
-                    pose: f.pose,
-                    embedding: f.vector,
-                    quality_score: f.qualityScore,
-                  })),
-                ]);
-              } catch {
-                // Non-fatal if face_templates schema differs
-              }
+              secondaryTasks.push(
+                Promise.resolve(
+                  db.from('face_templates').insert([
+                    { patient_id: patientId, pose: 'frontal_centroid', embedding: frontalVec, quality_score: qualityScore },
+                    { patient_id: patientId, pose: 'overall_centroid', embedding: masterVec, quality_score: qualityScore },
+                    ...compactAngleRows.map((f) => ({
+                      patient_id: patientId,
+                      pose: f.pose,
+                      embedding: f.vector,
+                      quality_score: f.qualityScore,
+                    })),
+                  ]),
+                ).catch(() => {}),
+              );
             }
           }
 
-          await upsertCourseSafeToSupabase(db, {
-            id: defaultCourse.id,
-            patient_id: defaultCourse.patientId,
-            title: defaultCourse.title,
-            weekly_schedule: defaultCourse.weeklySchedule,
-            cognitive_modpack_id: defaultCourse.cognitiveModpackId,
-            updated_at: defaultCourse.updatedAt,
-          });
+          await Promise.allSettled(secondaryTasks);
 
-          return { error: null };
+          if (!patWrite.ok) {
+            return {
+              error: { message: patWrite.errorMessage || 'patients_insert_failed' },
+              persisted: false,
+            };
+          }
+          if (!isPendingSkip && masterVec && !bioWrite.ok) {
+            console.warn(
+              '[cloudRouter] biometric_enroll saved patients.history but patient_biometrics failed:',
+              bioWrite.errorMessage,
+            );
+          }
+          return { error: null, persisted: true };
         },
-        2400,
+        6000,
         'biometric_enroll',
+        runWaitUntil,
       );
 
       if (!persistRes.persisted) {
@@ -3148,7 +3278,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           : `Enrolled patient ${body.fullName} (${body.hn}) with ${framesCaptured}-frame 3D Face ID`,
       });
 
-      lastLiveBioHydratedAt = 0;
+      invalidateBiometricCaches();
       return jsonResponse({ ok: true, patient, course: defaultCourse, persisted: persistRes.persisted }, 201);
     }
 
@@ -3171,8 +3301,15 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             .catch(() => {}),
         );
       }
+      if (
+        !forceSupabaseProbe &&
+        lastBiometricStatsCache &&
+        Date.now() - lastBiometricStatsCache.at < STATS_CACHE_TTL_MS
+      ) {
+        return jsonResponse(lastBiometricStatsCache.payload);
+      }
       if (supabase && !isSupabaseCircuitOpen(supabase)) {
-        const meta = await fetchBiometricLibraryStatsFromSupabase(supabase, state, 3500);
+        const meta = await fetchBiometricLibraryStatsFromSupabase(supabase, state, 4500);
         if (meta.ok) {
           const payload: BiometricLibraryStatsResponse = {
             totalActivePatients: meta.totalActivePatients,
@@ -3186,6 +3323,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             dbSynced: true,
             updatedAt: new Date().toISOString(),
           };
+          lastBiometricStatsCache = { at: Date.now(), payload };
           return jsonResponse(payload);
         }
         if (meta.errorCode === 'PERMISSION_DENIED') {
@@ -3267,6 +3405,18 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     }
 
     if ((pathname === '/api/biometrics/index' || pathname === '/api/biometrics') && method === 'GET') {
+      if (
+        supabase &&
+        !isSupabaseCircuitOpen(supabase) &&
+        (forceSupabaseProbe ||
+          lastLiveBioHydratedAt === 0 ||
+          Date.now() - lastLiveBioHydratedAt >= LIVE_BIO_REFRESH_MS)
+      ) {
+        const liveIdxSync = await hydrateBiometricsLiveFromSupabase(supabase, state, 4500);
+        if (liveIdxSync.ok) {
+          lastLiveBioHydratedAt = Date.now();
+        }
+      }
       const todayIdx = new Date().getDay();
       const deletedPatientSet = new Set(state.deleted_patient_ids ?? []);
       const deletedPatientLower = new Set(
@@ -3519,40 +3669,49 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const persistRes = await persistWithTimeoutBestEffort(
         supabase,
         async (db) => {
-          await upsertPatientBiometricsCompat(db, {
-            patient_id: patient!.id,
-            hn: patient!.hn,
-            master_embedding: masterVec,
-            angle_embeddings: resolvedAngles,
-            exemplar_embeddings: normalizeCompactExemplars(exemplarList, masterVec.length, 9),
-            ...(patient!.geometricRatios ? { geometric_ratios: patient!.geometricRatios } : {}),
-            biometric_engine: resolvedEngine,
-            model_version: resolvedEngine,
-            embedding_dim: masterVec.length,
-            frame_count: framesCaptured,
-            frames_captured: framesCaptured,
-            quality_score: qualityScore,
-            avatar_url: patient!.faceImageUrl ?? null,
-            updated_at: bioUpdatedAtIso,
-          });
-          await writePatientRowWithFramesFallback(
-            db,
-            'update',
-            {
-              ...dualColsForUpsert,
-              history: buildPatientHistoryPayload(patient!),
+          const [bioWrite, patWrite] = await Promise.all([
+            upsertPatientBiometricsCompat(db, {
+              patient_id: patient!.id,
+              hn: patient!.hn,
+              master_embedding: masterVec,
+              angle_embeddings: resolvedAngles,
+              exemplar_embeddings: normalizeCompactExemplars(exemplarList, masterVec.length, 9),
+              ...(patient!.geometricRatios ? { geometric_ratios: patient!.geometricRatios } : {}),
+              biometric_engine: resolvedEngine,
+              model_version: resolvedEngine,
+              embedding_dim: masterVec.length,
+              frame_count: framesCaptured,
+              frames_captured: framesCaptured,
+              quality_score: qualityScore,
+              avatar_url: patient!.faceImageUrl ?? null,
               updated_at: bioUpdatedAtIso,
-            },
-            patient!.id,
-            false,
-          );
-          return { error: null };
+            }),
+            writePatientRowWithFramesFallback(
+              db,
+              'update',
+              {
+                ...dualColsForUpsert,
+                history: buildPatientHistoryPayload(patient!),
+                updated_at: bioUpdatedAtIso,
+              },
+              patient!.id,
+              false,
+            ),
+          ]);
+          if (!bioWrite.ok && !patWrite.ok) {
+            return {
+              error: { message: bioWrite.errorMessage || patWrite.errorMessage || 'biometrics_upsert_failed' },
+              persisted: false,
+            };
+          }
+          return { error: null, persisted: true };
         },
-        1500,
+        6000,
         'upsert_biometrics',
+        runWaitUntil,
       );
 
-      lastLiveBioHydratedAt = 0;
+      invalidateBiometricCaches();
       return jsonResponse({ ok: true, patient, persisted: persistRes.persisted }, 201);
     }
 
@@ -5109,30 +5268,30 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       if (supabase && (wantRefresh || state.patients.length === 0 || !hydrated)) {
         try {
           let directTimer: ReturnType<typeof setTimeout> | undefined;
-          const runDirectPatientsSelect = () => {
-            let q = supabase.from('patients').select('*') as unknown as {
-              order?: (col: string, opts?: { ascending?: boolean }) => typeof q;
-              limit?: (n: number) => PromiseLike<unknown>;
-            } & PromiseLike<unknown>;
-            if (typeof q.order === 'function') {
-              q = q.order('created_at', { ascending: false });
-            }
-            if (typeof q.limit === 'function') {
-              return Promise.resolve(q.limit(250));
-            }
-            return Promise.resolve(q);
-          };
-          const runDirectBiometricsSelect = () => {
-            let q = supabase
-              .from('patient_biometrics')
-              .select('patient_id,hn,master_embedding,angle_embeddings,exemplar_embeddings,biometric_engine,frames_captured,avatar_url,updated_at') as unknown as {
-              limit?: (n: number) => PromiseLike<unknown>;
-            } & PromiseLike<unknown>;
-            if (typeof q.limit === 'function') {
-              return Promise.resolve(q.limit(250));
-            }
-            return Promise.resolve(q);
-          };
+          const runDirectPatientsSelect = () =>
+            selectExplicitWithFallback(
+              'patients',
+              (cols) => {
+                const q = supabase.from('patients').select(cols) as unknown as {
+                  order?: (col: string, opts?: { ascending?: boolean }) => PromiseLike<unknown>;
+                } & PromiseLike<unknown>;
+                return typeof q.order === 'function'
+                  ? q.order('created_at', { ascending: false })
+                  : q;
+              },
+              PATIENTS_DIRECTORY_EGRESS_SAFE_COLS,
+              PATIENTS_MINIMAL_SAFE_COLS,
+              250,
+            );
+          // Fetch ONLY lightweight scalar biometric metadata (NEVER 1024-D float arrays!) for Admin directory listing
+          const runDirectBiometricsSelect = () =>
+            selectExplicitWithFallback(
+              'patient_biometrics',
+              (cols) => supabase.from('patient_biometrics').select(cols),
+              'patient_id,hn,embedding_dim,biometric_engine,frames_captured,avatar_url,updated_at',
+              'patient_id,hn,frames_captured,updated_at',
+              250,
+            );
           const directOutcome = await Promise.race([
             Promise.allSettled([
               runDirectPatientsSelect(),
@@ -5188,10 +5347,15 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
                   if (!bpid) continue;
                   const mVec = parseEmbeddingVector(br.master_embedding);
                   const aObj = normalizeAngleEmbeddingsInput(br.angle_embeddings) ?? undefined;
+                  const metaDim = Number(br.embedding_dim ?? 0);
+                  const metaFrames = typeof br.frames_captured === 'number' ? br.frames_captured : 0;
                   bioByPatientId.set(bpid, {
-                    masterEmbedding: mVec ?? aObj?.center,
-                    angleEmbeddings: aObj,
-                    framesCaptured: typeof br.frames_captured === 'number' ? br.frames_captured : undefined,
+                    ...(mVec || aObj?.center ? { masterEmbedding: mVec ?? aObj?.center } : {}),
+                    ...(aObj ? { angleEmbeddings: aObj } : {}),
+                    ...(typeof br.biometric_engine === 'string' && br.biometric_engine
+                      ? { biometricEngine: br.biometric_engine as 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d' }
+                      : {}),
+                    framesCaptured: metaFrames > 0 ? metaFrames : metaDim >= 128 ? 120 : undefined,
                     avatarUrl: typeof br.avatar_url === 'string' && br.avatar_url ? br.avatar_url : undefined,
                     updatedAt: typeof br.updated_at === 'string' ? br.updated_at : undefined,
                   });
@@ -6148,62 +6312,71 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const persistRes = await persistWithTimeoutBestEffort(
         supabase,
         async (db) => {
-          await upsertPatientBiometricsCompat(db, {
-            patient_id: patient.id,
-            hn: patient.hn,
-            master_embedding: masterVec,
-            angle_embeddings: resolvedAngles,
-            exemplar_embeddings: compactExemplars,
-            ...(patient.geometricRatios ? { geometric_ratios: patient.geometricRatios } : {}),
-            biometric_engine: resolvedBiometricEngine ?? null,
-            model_version: resolvedBiometricEngine ?? null,
-            embedding_dim: masterVec.length,
-            frame_count: framesCaptured,
-            frames_captured: framesCaptured,
-            quality_score: qualityScore,
-            avatar_url: patient.faceImageUrl ?? null,
-            updated_at: enrollUpdatedAtIso,
-          });
-          await writePatientRowWithFramesFallback(
-            db,
-            'update',
-            {
-              face_image_url: patient.faceImageUrl ?? null,
-              ...enrollDualCols,
-              history: buildPatientHistoryPayload(patient),
+          const [bioWrite, patWrite] = await Promise.all([
+            upsertPatientBiometricsCompat(db, {
+              patient_id: patient.id,
+              hn: patient.hn,
+              master_embedding: masterVec,
+              angle_embeddings: resolvedAngles,
+              exemplar_embeddings: compactExemplars,
+              ...(patient.geometricRatios ? { geometric_ratios: patient.geometricRatios } : {}),
+              biometric_engine: resolvedBiometricEngine ?? null,
+              model_version: resolvedBiometricEngine ?? null,
+              embedding_dim: masterVec.length,
+              frame_count: framesCaptured,
+              frames_captured: framesCaptured,
+              quality_score: qualityScore,
+              avatar_url: patient.faceImageUrl ?? null,
               updated_at: enrollUpdatedAtIso,
-            },
-            patient.id,
-            false,
-          );
-          await persistPatientStaffUserCompat(db, mirroredFaceUser);
-          await insertFaceEnrollmentWithCompatShotCount(db, {
-            patient_id: patient.id,
-            shot_count: framesCaptured,
-            liveness_verified: true,
-            enrolled_by: safeActorUuid,
-          });
-          if (masterVec.length === FACE_EMBEDDING_DIM) {
-            try {
-              await db.from('face_templates').delete().eq('patient_id', patient.id);
-              await db.from('face_templates').insert([
-                { patient_id: patient.id, pose: 'frontal_centroid', embedding: frontalVec, quality_score: qualityScore },
-                { patient_id: patient.id, pose: 'overall_centroid', embedding: masterVec, quality_score: qualityScore },
-                ...compactAngleRows.map((f) => ({
-                  patient_id: patient.id,
-                  pose: f.pose,
-                  embedding: f.vector,
-                  quality_score: f.qualityScore,
-                })),
-              ]);
-            } catch {
-              // Non-fatal if face_templates schema differs
-            }
+            }),
+            writePatientRowWithFramesFallback(
+              db,
+              'update',
+              {
+                face_image_url: patient.faceImageUrl ?? null,
+                ...enrollDualCols,
+                history: buildPatientHistoryPayload(patient),
+                updated_at: enrollUpdatedAtIso,
+              },
+              patient.id,
+              false,
+            ),
+            persistPatientStaffUserCompat(db, mirroredFaceUser),
+            insertFaceEnrollmentWithCompatShotCount(db, {
+              patient_id: patient.id,
+              shot_count: framesCaptured,
+              liveness_verified: true,
+              enrolled_by: safeActorUuid,
+            }),
+            masterVec.length === FACE_EMBEDDING_DIM
+              ? Promise.resolve()
+                  .then(() => db.from('face_templates').delete().eq('patient_id', patient.id))
+                  .then(() =>
+                    db.from('face_templates').insert([
+                      { patient_id: patient.id, pose: 'frontal_centroid', embedding: frontalVec, quality_score: qualityScore },
+                      { patient_id: patient.id, pose: 'overall_centroid', embedding: masterVec, quality_score: qualityScore },
+                      ...compactAngleRows.map((f) => ({
+                        patient_id: patient.id,
+                        pose: f.pose,
+                        embedding: f.vector,
+                        quality_score: f.qualityScore,
+                      })),
+                    ]),
+                  )
+                  .catch(() => {})
+              : Promise.resolve(),
+          ]);
+          if (!bioWrite.ok && !patWrite.ok) {
+            return {
+              error: { message: bioWrite.errorMessage || patWrite.errorMessage || 'enroll_face_failed' },
+              persisted: false,
+            };
           }
-          return { error: null };
+          return { error: null, persisted: true };
         },
-        2400,
+        6000,
         'enroll_existing_face',
+        runWaitUntil,
       );
 
       recordAudit({
@@ -6216,7 +6389,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         targetId: patient.id,
         detail: `Captured ${framesCaptured}-frame 3D Face ID for ${patient.fullName} (${patient.hn})`,
       });
-      lastLiveBioHydratedAt = 0;
+      invalidateBiometricCaches();
       return jsonResponse({ ok: true, patient, persisted: persistRes.persisted });
     }
 
@@ -6270,14 +6443,25 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       state.rehab_sessions.unshift(session);
 
       await persistToSupabase(supabase, async (db) => {
+        const safeCheckinHistory = await preserveExistingHistoryBiometricsIfEmpty(
+          db,
+          patient,
+          buildPatientHistoryPayload(patient),
+        );
         await writePatientRowWithFramesFallback(
           db,
           'update',
           {
             next_appointment_date: todayIso,
-            face_biometric_status: resolveProtectedBiometricStatus(patient),
-            face_frames_count: patient.faceFramesCount ?? 0,
-            history: buildPatientHistoryPayload(patient),
+            face_biometric_status:
+              safeCheckinHistory.faceBiometricStatus === 'VERIFIED'
+                ? 'VERIFIED'
+                : resolveProtectedBiometricStatus(patient),
+            face_frames_count: Math.max(
+              patient.faceFramesCount ?? 0,
+              Number(safeCheckinHistory.faceFramesCount ?? 0),
+            ),
+            history: safeCheckinHistory,
             updated_at: new Date().toISOString(),
           },
           patient.id,
@@ -6403,7 +6587,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const persistRes = await persistWithTimeoutBestEffort(
         supabase,
         async (db) => {
-          await writePatientRowWithFramesFallback(
+          const safeUpdateHistory = await preserveExistingHistoryBiometricsIfEmpty(
+            db,
+            patient,
+            buildPatientHistoryPayload(patient),
+          );
+          const patWrite = await writePatientRowWithFramesFallback(
             db,
             'update',
             {
@@ -6416,16 +6605,32 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               next_appointment_date: patient.nextAppointmentDate || null,
               face_image_url: patient.faceImageUrl ?? null,
               ...updateDualCols,
-              history: buildPatientHistoryPayload(patient),
+              ...(safeUpdateHistory.faceBiometricStatus === 'VERIFIED'
+                ? {
+                    face_biometric_status: 'VERIFIED',
+                    face_frames_count: Math.max(
+                      Number(updateDualCols.face_frames_count ?? 0),
+                      Number(safeUpdateHistory.faceFramesCount ?? 0),
+                    ),
+                  }
+                : {}),
+              history: safeUpdateHistory,
               updated_at: updateNowIso,
             },
             patient.id,
           );
           await persistPatientStaffUserCompat(db, updatedPatUser);
-          return { error: null };
+          if (!patWrite.ok) {
+            return {
+              error: { message: patWrite.errorMessage || 'update_patient_failed' },
+              persisted: false,
+            };
+          }
+          return { error: null, persisted: true };
         },
-        2400,
+        4500,
         'update_patient',
+        runWaitUntil,
       );
       recordAudit({
         eventType: 'PATIENT_UPDATED',
@@ -6437,7 +6642,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         targetId: patient.id,
         detail: `Updated patient ${patient.fullName}`,
       });
-      lastLiveBioHydratedAt = 0;
+      invalidateBiometricCaches();
       return jsonResponse({ ok: true, patient, persisted: persistRes.persisted });
     }
 
@@ -6488,7 +6693,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           if (bioDelTimer !== undefined) clearTimeout(bioDelTimer);
         }
       }
-      lastLiveBioHydratedAt = 0;
+      invalidateBiometricCaches();
       return jsonResponse({ ok: true, deleted: true, id: targetId });
     }
 
@@ -6545,7 +6750,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           ? `Cascading purge for patient ${purged.patient.fullName} (${purged.patient.hn})`
           : `Cascading purge for patient ${purged.pid || rawPid}`,
       });
-      lastLiveBioHydratedAt = 0;
+      invalidateBiometricCaches();
       return jsonResponse({
         ok: true,
         deleted: true,
@@ -6701,7 +6906,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       const persistRes = await persistWithTimeoutBestEffort(
         supabase,
         async (db) => {
-          await writePatientRowWithFramesFallback(db, 'insert', {
+          const patWrite = await writePatientRowWithFramesFallback(db, 'insert', {
             id: created.id,
             hn: created.hn,
             full_name: created.fullName,
@@ -6716,30 +6921,42 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             history: buildPatientHistoryPayload(created),
             updated_at: created.enrolledAt,
           });
-          await persistPatientStaffUserCompat(db, createdPatUser);
+          const secondaryTasks: Promise<unknown>[] = [
+            persistPatientStaffUserCompat(db, createdPatUser),
+          ];
           if (hasBio && masterVec && resolvedAngles) {
-            await upsertPatientBiometricsCompat(db, {
-              patient_id: created.id,
-              hn: created.hn,
-              master_embedding: masterVec,
-              angle_embeddings: resolvedAngles,
-              exemplar_embeddings: normalizeCompactExemplars(exemplarList, masterVec.length, 9),
-              biometric_engine: resolvedEngine ?? null,
-              model_version: resolvedEngine ?? null,
-              embedding_dim: masterVec.length,
-              frame_count: created.faceFramesCount ?? 120,
-              frames_captured: created.faceFramesCount ?? 120,
-              quality_score: 0.96,
-              avatar_url: created.faceImageUrl ?? null,
-              updated_at: created.enrolledAt,
-            });
+            secondaryTasks.push(
+              upsertPatientBiometricsCompat(db, {
+                patient_id: created.id,
+                hn: created.hn,
+                master_embedding: masterVec,
+                angle_embeddings: resolvedAngles,
+                exemplar_embeddings: normalizeCompactExemplars(exemplarList, masterVec.length, 9),
+                biometric_engine: resolvedEngine ?? null,
+                model_version: resolvedEngine ?? null,
+                embedding_dim: masterVec.length,
+                frame_count: created.faceFramesCount ?? 120,
+                frames_captured: created.faceFramesCount ?? 120,
+                quality_score: 0.96,
+                avatar_url: created.faceImageUrl ?? null,
+                updated_at: created.enrolledAt,
+              }),
+            );
           }
-          return { error: null };
+          await Promise.allSettled(secondaryTasks);
+          if (!patWrite.ok) {
+            return {
+              error: { message: patWrite.errorMessage || 'create_patient_failed' },
+              persisted: false,
+            };
+          }
+          return { error: null, persisted: true };
         },
-        1500,
+        6000,
         'create_patient',
+        runWaitUntil,
       );
-      lastLiveBioHydratedAt = 0;
+      invalidateBiometricCaches();
       return jsonResponse({ ok: true, patient: created, persisted: persistRes.persisted }, 201);
     }
 
@@ -7928,6 +8145,18 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (pathname === '/api/staff-calls' && method === 'GET') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
+      if (
+        supabase &&
+        !isSupabaseCircuitOpen(supabase) &&
+        (forceSupabaseProbe ||
+          lastStaffCallsHydratedAt === 0 ||
+          Date.now() - lastStaffCallsHydratedAt >= 60_000)
+      ) {
+        const synced = await hydrateStaffCallsOnly(supabase, state, 2000);
+        if (synced) {
+          lastStaffCallsHydratedAt = Date.now();
+        }
+      }
       return jsonResponse({ calls: sortNewestFirst(state.staff_calls) });
     }
 

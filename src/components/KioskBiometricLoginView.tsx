@@ -24,9 +24,11 @@ import {
   type TodayPrescribedExerciseItem,
 } from '@drtechcares/api-client';
 import {
+  BIOMETRIC_INDEX_CHANGED_EVENT,
   computeBoundingBoxFromLandmarks,
-  subscribeBiometricIndex,
 } from '../lib/faceMatcher';
+import { GameCelebrationBurst } from './GameJuiceEffects';
+import { playGameSfx } from '../lib/gameUiSfx';
 import { normalizePatientRecord, normalizePatientRecordList } from '../lib/patientHydration';
 import { upsertPatientStaffUserInSupabase } from '../utils/unifyPatientDirectory';
 import {
@@ -2285,6 +2287,12 @@ export function KioskBiometricLoginView({
   const modalSpeakSeqRef = useRef<number>(0);
 
   useEffect(() => {
+    if (verifiedModalPayload?.patient?.id) {
+      playGameSfx('unlock', { muted: voiceMuted });
+    }
+  }, [verifiedModalPayload?.patient?.id, voiceMuted]);
+
+  useEffect(() => {
     const greeting = modalCopy?.voiceGreeting;
     if (!verifiedModalPayload || !greeting || typeof window === 'undefined') {
       isSpeechDoneRef.current = voiceMuted;
@@ -2787,7 +2795,7 @@ export function KioskBiometricLoginView({
    */
   const refreshBiometricLibraryStats = useCallback(async (force = false, warmVerifyCache = false) => {
     const now = Date.now();
-    if (!force && lastCandidatesSyncAtRef.current > 0 && now - lastCandidatesSyncAtRef.current < 15_000) {
+    if (!force && lastCandidatesSyncAtRef.current > 0 && now - lastCandidatesSyncAtRef.current < 120_000) {
       return;
     }
     lastCandidatesSyncAtRef.current = now;
@@ -2867,17 +2875,19 @@ export function KioskBiometricLoginView({
   }, [apiClient]);
 
   useEffect(() => {
+    // Warm server RAM cache ONCE on mount; subsequent background ticks check lightweight count stats only
+    // every 5 minutes (no `warm=1` vector re-downloads while Kiosk sits idle, cutting Supabase egress by >95%).
     void refreshBiometricLibraryStats(true, true);
     if (typeof window === 'undefined') return;
     const onFocus = () => {
-      void refreshBiometricLibraryStats(true, true);
+      void refreshBiometricLibraryStats(false, false);
     };
     window.addEventListener('focus', onFocus);
     const pollTimer = window.setInterval(() => {
       if (!document.hidden) {
-        void refreshBiometricLibraryStats(false, true);
+        void refreshBiometricLibraryStats(false, false);
       }
-    }, 15_000);
+    }, 300_000);
     return () => {
       window.removeEventListener('focus', onFocus);
       window.clearInterval(pollTimer);
@@ -2904,10 +2914,17 @@ export function KioskBiometricLoginView({
   }, []);
 
   useEffect(() => {
-    return subscribeBiometricIndex(apiClient, () => {
-      void refreshBiometricLibraryStats(true, true);
-    });
-  }, [apiClient, refreshBiometricLibraryStats]);
+    if (typeof window === 'undefined') return;
+    // Listen ONLY for explicit enrollment/update/delete events instead of polling GET /api/biometrics/index
+    // every 30s (prevents downloading megabytes of unused 1024-D vectors to the Kiosk browser).
+    const onIndexChanged = () => {
+      void refreshBiometricLibraryStats(true, false);
+    };
+    window.addEventListener(BIOMETRIC_INDEX_CHANGED_EVENT, onIndexChanged);
+    return () => {
+      window.removeEventListener(BIOMETRIC_INDEX_CHANGED_EVENT, onIndexChanged);
+    };
+  }, [refreshBiometricLibraryStats]);
 
   const handleRestartScan = useCallback(() => {
     verifyingLockRef.current = false;
@@ -5267,9 +5284,6 @@ export function KioskBiometricLoginView({
                   profilerRef.current.markFaceSeen(now);
                   noFaceSinceRef.current = null;
                   setShowNoFaceGuidance(false);
-                  if (Date.now() - lastCandidatesSyncAtRef.current >= 10_000) {
-                    void refreshBiometricLibraryStats(false, true);
-                  }
 
                   const rawBoxForBio = computeBoundingBoxFromLandmarks(landmarks);
                   if (!exposureSettled) {
@@ -6328,14 +6342,14 @@ export function KioskBiometricLoginView({
             id="kiosk-scan-face-btn"
             data-testid="kiosk-scan-face-btn"
             onClick={handleRestartScan}
-            className="mt-2.5 w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-[#059669] via-[#0D9488] to-[#2563EB] hover:brightness-105 text-white font-extrabold text-sm sm:text-base shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 cursor-pointer transition active:scale-[0.99] shrink-0"
+            className="btn-primary-sheen btn-game-3d-emerald mt-2.5 w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-[#059669] via-[#0D9488] to-[#2563EB] hover:brightness-105 text-white font-extrabold text-sm sm:text-base flex items-center justify-center gap-2 cursor-pointer transition shrink-0"
           >
             <RefreshCw className={`w-4 h-4 ${scanStage === 'verifying' ? 'animate-spin' : ''}`} />
             <span>{scanStage === 'verifying' ? c.verifying : c.rescanBtn}</span>
           </button>
 
           {/* Secondary Action Buttons */}
-          <div className="mt-2 grid grid-cols-2 gap-2.5 shrink-0">
+          <div className="mt-2.5 grid grid-cols-2 gap-2.5 shrink-0">
             <button
               type="button"
               id="kiosk-pin-login-btn"
@@ -6345,7 +6359,7 @@ export function KioskBiometricLoginView({
                 setPinError(null);
                 setShowPinModal(true);
               }}
-              className="py-2.5 px-3 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-800 text-xs sm:text-sm font-bold flex items-center justify-center gap-2 shadow-xs cursor-pointer transition active:scale-[0.99]"
+              className="btn-game-3d-white py-2.5 px-3 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-800 text-xs sm:text-sm font-bold flex items-center justify-center gap-2 cursor-pointer transition"
             >
               <KeyRound className="w-4 h-4 text-amber-500" />
               <span>{c.pinBtn}</span>
@@ -6355,7 +6369,7 @@ export function KioskBiometricLoginView({
               id="kiosk-enroll-new-btn"
               data-testid="kiosk-enroll-new-btn"
               onClick={onOpenStaffRegister}
-              className="py-2.5 px-3 rounded-xl bg-white border border-blue-200 hover:bg-blue-50/70 text-blue-700 text-xs sm:text-sm font-bold flex items-center justify-center gap-2 shadow-xs cursor-pointer transition active:scale-[0.99]"
+              className="btn-game-3d-white py-2.5 px-3 rounded-xl bg-white border border-blue-200 hover:bg-blue-50/70 text-blue-700 text-xs sm:text-sm font-bold flex items-center justify-center gap-2 cursor-pointer transition"
             >
               <UserPlus className="w-4 h-4 text-blue-600" />
               <span>{c.enrollSelfBtn}</span>
@@ -6428,7 +6442,7 @@ export function KioskBiometricLoginView({
                   key={digit}
                   type="button"
                   onClick={() => pressPinKey(digit)}
-                  className="h-12 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 font-bold text-lg hover:bg-slate-100 active:scale-95 transition cursor-pointer"
+                  className="btn-game-3d-white h-12 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 font-black text-lg hover:bg-emerald-50 hover:border-emerald-300 transition cursor-pointer"
                 >
                   {digit}
                 </button>
@@ -6443,14 +6457,14 @@ export function KioskBiometricLoginView({
                   setPinDigits('');
                   setPinError(null);
                 }}
-                className="h-12 rounded-xl bg-slate-100 border border-slate-200 text-slate-600 font-bold text-xs hover:bg-slate-200 cursor-pointer"
+                className="btn-game-3d-white h-12 rounded-xl bg-slate-100 border border-slate-200 text-slate-600 font-bold text-xs hover:bg-slate-200 cursor-pointer"
               >
                 {c.pinClearBtn}
               </button>
               <button
                 type="button"
                 onClick={() => pressPinKey('0')}
-                className="h-12 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 font-bold text-lg hover:bg-slate-100 active:scale-95 transition cursor-pointer"
+                className="btn-game-3d-white h-12 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 font-black text-lg hover:bg-emerald-50 hover:border-emerald-300 transition cursor-pointer"
               >
                 0
               </button>
@@ -6463,7 +6477,7 @@ export function KioskBiometricLoginView({
                   }
                   setPinDigits((d) => d.slice(0, -1));
                 }}
-                className="h-12 rounded-xl bg-slate-100 border border-slate-200 text-slate-600 font-bold text-sm hover:bg-slate-200 cursor-pointer"
+                className="btn-game-3d-white h-12 rounded-xl bg-slate-100 border border-slate-200 text-slate-600 font-bold text-sm hover:bg-slate-200 cursor-pointer"
               >
                 ⌫
               </button>
@@ -6512,7 +6526,14 @@ export function KioskBiometricLoginView({
 
       {/* Verified Patient Confirmation Modal */}
       {verifiedModalPayload && modalCopy && (
-        <KioskVerifiedConfirmationCard
+        <>
+          <div className="pointer-events-none fixed inset-0 z-[55]">
+            <GameCelebrationBurst
+              triggerKey={`${verifiedModalPayload.patient.id}-${scanGeneration}`}
+              variant="unlock"
+            />
+          </div>
+          <KioskVerifiedConfirmationCard
           lang={lang}
           verifiedModalPayload={verifiedModalPayload}
           modalCopy={modalCopy}
@@ -6541,6 +6562,7 @@ export function KioskBiometricLoginView({
           onOpenTelemetrySimulator={onOpenTelemetrySimulator}
           onRejectWrongMatch={handleRejectWrongMatchAndRescan}
         />
+        </>
       )}
 
       {/* About System Modal */}

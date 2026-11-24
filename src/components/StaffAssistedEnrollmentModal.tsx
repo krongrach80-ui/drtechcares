@@ -623,6 +623,10 @@ export function StaffAssistedEnrollmentModal({
           faceImageUrls: bio.faceImageUrls,
           angleImageUrls: bio.angleSnapshots,
         });
+        const needsDirectSupabaseBackup =
+          typeof apiClient.wasLastBiometricWritePersisted === 'function' &&
+          !apiClient.wasLastBiometricWritePersisted() &&
+          Boolean(apiClient.getSupabaseClient());
         await syncPatientBiometricEverywhere({
           apiClient,
           patient: updated,
@@ -632,7 +636,7 @@ export function StaffAssistedEnrollmentModal({
           geometricRatios: bio.geometricRatios,
           framesCaptured: bio.framesCaptured,
           qualityScore: bio.qualityScore,
-          requireSupabase: false,
+          requireSupabase: needsDirectSupabaseBackup,
         }).catch(() => null);
         const normalizedUpdated = normalizePatientRecord(
           {
@@ -712,6 +716,10 @@ export function StaffAssistedEnrollmentModal({
         qualityScore: bio.qualityScore,
       });
 
+      const needsDirectSupabaseBackup =
+        typeof apiClient.wasLastBiometricWritePersisted === 'function' &&
+        !apiClient.wasLastBiometricWritePersisted() &&
+        Boolean(apiClient.getSupabaseClient());
       await syncPatientBiometricEverywhere({
         apiClient,
         patient: enrolled,
@@ -721,7 +729,7 @@ export function StaffAssistedEnrollmentModal({
         geometricRatios: bio.geometricRatios,
         framesCaptured: bio.framesCaptured,
         qualityScore: bio.qualityScore,
-        requireSupabase: false,
+        requireSupabase: needsDirectSupabaseBackup,
       }).catch(() => null);
 
       if (customSchedules.length > 0 && (enrolled.rehabSchedules ?? []).length === 0) {

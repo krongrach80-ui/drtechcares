@@ -1832,13 +1832,14 @@ export function ClinicalStaffPortalShell({
   ]);
 
   const lastUsersCloudSyncAtRef = useRef(0);
+  const lastTabPatientsSyncAtRef = useRef(0);
   const syncStaffUsersFromCloud = useCallback(
     async (force = false) => {
       const now = Date.now();
-      if (!force && now - lastUsersCloudSyncAtRef.current < 4000) return;
+      if (!force && now - lastUsersCloudSyncAtRef.current < 120_000) return;
       lastUsersCloudSyncAtRef.current = now;
       try {
-        const freshUsers = await apiClient.listUsers({ forceRefresh: true });
+        const freshUsers = await apiClient.listUsers({ forceRefresh: force });
         if (freshUsers && freshUsers.length > 0) {
           setUsers(freshUsers);
           setProfileOverrides((prev) => {
@@ -1857,11 +1858,16 @@ export function ClinicalStaffPortalShell({
   );
 
   useEffect(() => {
-    if (activeTab === 'patients' || activeTab === 'assessments' || activeTab === 'schedules') {
+    const now = Date.now();
+    if (
+      (activeTab === 'patients' || activeTab === 'assessments' || activeTab === 'schedules') &&
+      now - lastTabPatientsSyncAtRef.current >= 60_000
+    ) {
+      lastTabPatientsSyncAtRef.current = now;
       void syncPatientsFromSupabase({ silent: true });
     }
     if (activeTab === 'profile' || activeTab === 'staff' || activeTab === 'pts') {
-      void syncStaffUsersFromCloud(true);
+      void syncStaffUsersFromCloud(false);
     }
   }, [activeTab, syncPatientsFromSupabase, syncStaffUsersFromCloud]);
 
@@ -1886,9 +1892,9 @@ export function ClinicalStaffPortalShell({
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', handleWindowFocusOrVisible);
     }
+    // Lightweight visible-only staff-call polling every 3 minutes (never downloads full 19-table state or health probes while idle/hidden)
     const pollTimer = window.setInterval(() => {
-      void pingCloudHealth();
-      void syncStaffUsersFromCloud(false);
+      if (typeof document !== 'undefined' && document.hidden) return;
       apiClient
         .listStaffCalls()
         .then((calls) => {
@@ -1898,7 +1904,7 @@ export function ClinicalStaffPortalShell({
           setStaffCalls(sortNewestFirst(calls));
         })
         .catch(() => { });
-    }, 30_000);
+    }, 180_000);
 
     return () => {
       window.clearInterval(pollTimer);
@@ -2825,17 +2831,23 @@ export function ClinicalStaffPortalShell({
                   key={item.id}
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`w-full h-11 flex items-center justify-between gap-3 rounded-xl px-3.5 text-left whitespace-nowrap overflow-hidden text-ellipsis transition cursor-pointer ${isActive
-                      ? 'bg-white text-[#0F4C81] font-extrabold shadow-md'
+                  className={`relative w-full h-11 flex items-center justify-between gap-3 rounded-xl px-3.5 text-left whitespace-nowrap overflow-hidden text-ellipsis transition cursor-pointer ${isActive
+                      ? 'btn-game-3d-white bg-white text-[#0F4C81] font-extrabold'
                       : 'text-white/90 hover:bg-white/15 hover:text-white'
                     }`}
                 >
+                  {isActive && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute left-0 top-2 bottom-2 w-1 rounded-r-full bg-gradient-to-b from-emerald-500 to-sky-500"
+                    />
+                  )}
                   <span className="flex items-center gap-3 min-w-0 overflow-hidden">
                     <Icon className={`h-4 w-4 shrink-0 ${isActive ? 'text-[#0284C7]' : ''}`} />
                     {!sidebarCollapsed && <span className="truncate">{item.label}</span>}
                   </span>
                   {!sidebarCollapsed && item.badge ? (
-                    <span className="flex h-5 min-w-[20px] shrink-0 items-center justify-center rounded-full bg-amber-300 px-1.5 text-[10px] font-black text-[#0F4C81]">
+                    <span className="flex h-5 min-w-[20px] shrink-0 items-center justify-center rounded-full bg-amber-300 px-1.5 text-[10px] font-black text-[#0F4C81] shadow-xs">
                       {item.badge}
                     </span>
                   ) : null}
@@ -2905,7 +2917,7 @@ export function ClinicalStaffPortalShell({
             type="button"
             onClick={() => handleLaunchPoseTest()}
             data-testid="sidebar-pose-test-btn"
-            className="btn-primary-sheen w-full h-10 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-400 hover:to-teal-400 px-3 font-extrabold shadow-md border border-white/25 whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer transition"
+            className="btn-primary-sheen btn-game-3d-emerald w-full h-10 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-400 hover:to-teal-400 px-3 font-extrabold border border-white/25 whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer transition"
           >
             <Activity className="h-4 w-4 shrink-0" />
             {!sidebarCollapsed && <span className="truncate">ทดลองท่าทางกายภาพ (15 ท่า)</span>}
@@ -2914,7 +2926,7 @@ export function ClinicalStaffPortalShell({
           <button
             type="button"
             onClick={() => setCardGameModalOpen(true)}
-            className="w-full h-10 flex items-center justify-center gap-2 rounded-xl bg-white text-[#0F4C81] hover:bg-emerald-50 px-3 font-extrabold shadow whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer"
+            className="btn-game-3d-white w-full h-10 flex items-center justify-center gap-2 rounded-xl bg-white text-[#0F4C81] hover:bg-emerald-50 px-3 font-extrabold whitespace-nowrap overflow-hidden text-ellipsis cursor-pointer"
           >
             <Gamepad2 className="h-4 w-4 shrink-0 text-emerald-600" />
             {!sidebarCollapsed && <span className="truncate">{locale.actions.cardGame}</span>}
@@ -3014,7 +3026,7 @@ export function ClinicalStaffPortalShell({
             <button
               type="button"
               onClick={() => setWelcomeFaceModalOpen(true)}
-              className="whitespace-nowrap h-9 min-w-[135px] inline-flex items-center justify-center gap-1.5 rounded-full bg-emerald-600 px-3.5 font-bold text-white shadow-sm hover:bg-emerald-500 cursor-pointer shrink-0"
+              className="btn-primary-sheen btn-game-3d-emerald whitespace-nowrap h-9 min-w-[135px] inline-flex items-center justify-center gap-1.5 rounded-full bg-emerald-600 px-3.5 font-bold text-white hover:bg-emerald-500 cursor-pointer shrink-0"
             >
               <ScanFace className="h-3.5 w-3.5 shrink-0" />
               <span>{locale.actions.welcomeScan}</span>
@@ -3023,7 +3035,7 @@ export function ClinicalStaffPortalShell({
             <button
               type="button"
               onClick={() => setQuickCheckinModalOpen(true)}
-              className="whitespace-nowrap h-9 min-w-[135px] inline-flex items-center justify-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-3.5 font-bold text-amber-800 hover:bg-amber-100 cursor-pointer shrink-0"
+              className="btn-game-3d-white whitespace-nowrap h-9 min-w-[135px] inline-flex items-center justify-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-3.5 font-bold text-amber-800 hover:bg-amber-100 cursor-pointer shrink-0"
             >
               <Zap className="h-3.5 w-3.5 text-amber-500 shrink-0" />
               <span>{locale.actions.quickCheckin}</span>
@@ -3033,7 +3045,7 @@ export function ClinicalStaffPortalShell({
               type="button"
               onClick={() => handleLaunchPoseTest()}
               data-testid="header-pose-test-btn"
-              className="whitespace-nowrap h-9 min-w-[145px] inline-flex items-center justify-center gap-1.5 rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 px-3.5 font-extrabold text-white shadow-sm hover:from-emerald-500 hover:to-teal-500 cursor-pointer shrink-0 transition"
+              className="btn-primary-sheen btn-game-3d-emerald whitespace-nowrap h-9 min-w-[145px] inline-flex items-center justify-center gap-1.5 rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 px-3.5 font-extrabold text-white hover:from-emerald-500 hover:to-teal-500 cursor-pointer shrink-0 transition"
             >
               <Activity className="h-3.5 w-3.5 shrink-0" />
               <span>ทดลองท่ากายภาพ</span>
@@ -3043,7 +3055,7 @@ export function ClinicalStaffPortalShell({
               <button
                 type="button"
                 onClick={onReturnToKiosk}
-                className="whitespace-nowrap h-9 min-w-[135px] inline-flex items-center justify-center gap-1.5 rounded-full border border-emerald-200 bg-white px-3.5 font-bold text-emerald-700 hover:bg-emerald-50 cursor-pointer shrink-0"
+                className="btn-game-3d-white whitespace-nowrap h-9 min-w-[135px] inline-flex items-center justify-center gap-1.5 rounded-full border border-emerald-200 bg-white px-3.5 font-bold text-emerald-700 hover:bg-emerald-50 cursor-pointer shrink-0"
               >
                 <Monitor className="h-3.5 w-3.5 shrink-0" />
                 <span>{locale.actions.kioskBtn}</span>
@@ -3884,7 +3896,7 @@ export function ClinicalStaffPortalShell({
                       type="button"
                       onClick={() => handleLaunchPoseTest()}
                       data-testid="tab4-pose-test-btn"
-                      className="whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-2 shrink-0 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
+                      className="btn-primary-sheen btn-game-3d-emerald whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-2 shrink-0 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 text-xs font-extrabold text-white hover:opacity-95 cursor-pointer"
                     >
                       <Activity className="h-4 w-4 shrink-0" />
                       <span>ทดลองท่าทางกายภาพ (15 ท่า)</span>
@@ -3892,7 +3904,7 @@ export function ClinicalStaffPortalShell({
                     <button
                       type="button"
                       onClick={() => setCardGameModalOpen(true)}
-                      className="btn-primary-sheen whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-2 shrink-0 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 text-xs font-extrabold text-white shadow hover:opacity-95 cursor-pointer"
+                      className="btn-primary-sheen btn-game-3d-blue whitespace-nowrap h-10 px-4 inline-flex items-center justify-center gap-2 shrink-0 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 text-xs font-extrabold text-white hover:opacity-95 cursor-pointer"
                     >
                       <Gamepad2 className="h-4 w-4 shrink-0" />
                       {locale.exercises.playCardBtn}

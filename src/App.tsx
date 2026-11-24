@@ -42,6 +42,12 @@ import {
   type HandChallengeSide,
 } from './components/RandomHandStartPrompt';
 import { SmartRehabKioskUI } from './components/SmartRehabKioskUI';
+import { DrTechCareMascot } from './components/DrTechCareMascot';
+import {
+  GameCelebrationBurst,
+  GameStarRating,
+  GameXpProgressBar,
+} from './components/GameJuiceEffects';
 import {
   POSE_TEST_PATIENT,
   buildAll15ClinicalExercisePrescriptions,
@@ -1040,13 +1046,20 @@ export function App() {
               </div>
             </div>
             <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
-              <div className="w-full max-w-2xl rounded-3xl bg-white border-2 border-emerald-400 shadow-2xl p-6 sm:p-10 text-center animate-popup-spring">
-                <div className="mx-auto w-20 h-20 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center shadow-inner mb-5">
-                  <CheckCircle2 className="h-11 w-11" />
+              <div className="relative w-full max-w-2xl rounded-3xl bg-white border-2 border-emerald-400 shadow-2xl p-6 sm:p-10 text-center animate-popup-spring">
+                <GameCelebrationBurst triggerKey={`done-${todaySchedule.todayIso}`} variant="victory" />
+                <div className="flex flex-col items-center justify-center gap-2 mb-4">
+                  <DrTechCareMascot pose="celebrating" size="md" />
+                  <GameStarRating earned={3} total={3} size="lg" />
                 </div>
-                <span className="inline-block px-3.5 py-1 rounded-full bg-sky-50 border border-sky-200 text-[#0F4C81] text-xs font-extrabold mb-3">
-                  {kc.completedDailyLimitBadge(todaySchedule.todayIso)}
-                </span>
+                <div className="flex flex-wrap items-center justify-center gap-2 mb-3">
+                  <span className="inline-block px-3.5 py-1 rounded-full bg-sky-50 border border-sky-200 text-[#0F4C81] text-xs font-extrabold">
+                    {kc.completedDailyLimitBadge(todaySchedule.todayIso)}
+                  </span>
+                  <span className="game-badge-shimmer relative overflow-hidden inline-flex items-center gap-1 px-3.5 py-1 rounded-full bg-gradient-to-r from-amber-50 to-emerald-50 border border-amber-300 text-amber-800 text-xs font-black">
+                    ภารกิจสำเร็จครบถ้วน +{Math.max(100, todayExercises.length * 50)} XP
+                  </span>
+                </div>
                 <h1 className="text-2xl sm:text-3xl font-black text-[#0F4C81]">
                   {kc.completedHeading(authenticatedPatient.patient.fullName)}
                 </h1>
@@ -1065,10 +1078,10 @@ export function App() {
                     {todayExercises.map((item, idx) => (
                       <div
                         key={item.id}
-                        className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 flex items-center justify-between gap-3 card-hover-lift"
+                        className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 flex items-center justify-between gap-3 game-card-surface"
                       >
                         <div className="flex items-center gap-3 min-w-0">
-                          <span className="shrink-0 w-7 h-7 rounded-full bg-emerald-600 text-white text-xs font-black flex items-center justify-center">
+                          <span className="shrink-0 w-7 h-7 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 text-white text-xs font-black flex items-center justify-center shadow-xs">
                             {idx + 1}
                           </span>
                           <div className="min-w-0">
@@ -1080,8 +1093,9 @@ export function App() {
                             </p>
                           </div>
                         </div>
-                        <span className="shrink-0 rounded-xl bg-white border border-emerald-300 px-3 py-1 text-xs font-extrabold text-emerald-700">
-                          {kc.doneTodayTag}
+                        <span className="shrink-0 inline-flex items-center gap-1 rounded-xl bg-white border border-emerald-300 px-3 py-1 text-xs font-extrabold text-emerald-700">
+                          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                          <span>{kc.doneTodayTag}</span>
                         </span>
                       </div>
                     ))}
@@ -1092,7 +1106,7 @@ export function App() {
                   <button
                     type="button"
                     onClick={handleExitToLogin}
-                    className="btn-primary-sheen w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#10B981] hover:opacity-95 text-white font-black text-sm sm:text-base shadow-lg cursor-pointer transition"
+                    className="btn-primary-sheen btn-game-3d-emerald w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#10B981] hover:opacity-95 text-white font-black text-sm sm:text-base cursor-pointer transition"
                   >
                     {kc.backToLogin}
                   </button>
@@ -1147,11 +1161,12 @@ export function App() {
             </div>
             <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
               <div className="w-full max-w-xl rounded-3xl bg-white border-2 border-amber-300 shadow-2xl p-6 sm:p-8 text-center animate-popup-spring">
-                <div className="mx-auto w-16 h-16 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center mb-4">
-                  <Leaf className="w-8 h-8" />
+                <div className="flex flex-col items-center justify-center mb-3">
+                  <DrTechCareMascot pose="encouraging" size="md" />
                 </div>
-                <span className="inline-block px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-xs font-extrabold mb-3">
-                  {kc.scheduleCheckBadge(todaySchedule.todayIso)}
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-xs font-extrabold mb-3">
+                  <Leaf className="w-3.5 h-3.5 text-amber-600" />
+                  <span>{kc.scheduleCheckBadge(todaySchedule.todayIso)}</span>
                 </span>
                 <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900">
                   {kc.restHeading(authenticatedPatient.patient.fullName)}
@@ -1167,7 +1182,7 @@ export function App() {
                   <button
                     type="button"
                     onClick={handleExitToLogin}
-                    className="btn-primary-sheen w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm shadow-lg cursor-pointer"
+                    className="btn-primary-sheen btn-game-3d-emerald w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm cursor-pointer"
                   >
                     {kc.backToLogin}
                   </button>
@@ -1177,7 +1192,7 @@ export function App() {
                       setAllowRestDayPractice(true);
                       setTrainingStage('rehab_exercises');
                     }}
-                    className="w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 text-xs font-bold cursor-pointer"
+                    className="btn-game-3d-white w-full py-2.5 px-4 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-300 text-slate-700 text-xs font-bold cursor-pointer"
                   >
                     {kc.restPracticeBtn}
                   </button>
@@ -1222,18 +1237,47 @@ export function App() {
             </div>
             <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
               <div className="w-full max-w-3xl rounded-3xl bg-white border-2 border-emerald-400 shadow-2xl p-6 sm:p-8 text-center animate-popup-spring">
-                <div className="mx-auto w-16 h-16 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mb-4">
-                  <Calendar className="w-8 h-8" />
+                <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-3">
+                  <DrTechCareMascot pose="greeting" size="md" />
+                  <div className="text-center sm:text-left">
+                    <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 mb-2">
+                      <span className="game-badge-shimmer relative overflow-hidden inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-gradient-to-r from-emerald-50 to-sky-50 border border-emerald-300 text-emerald-800 text-xs font-black">
+                        <Calendar className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>{kc.scheduledCountBadge(todaySchedule.todayIso, todayExercises.length)}</span>
+                      </span>
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-black">
+                        DAILY REHAB QUEST
+                      </span>
+                    </div>
+                    <h1 className="text-2xl sm:text-3xl font-black text-[#0F4C81]">
+                      {kc.scheduledHeading(authenticatedPatient.patient.fullName)}
+                    </h1>
+                    <p className="text-xs text-slate-500 mt-1 font-mono">
+                      {kc.scheduledSub(authenticatedPatient.patient.hn, todaySchedule.todayIso)}
+                    </p>
+                  </div>
                 </div>
-                <span className="inline-block px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-extrabold mb-3">
-                  {kc.scheduledCountBadge(todaySchedule.todayIso, todayExercises.length)}
-                </span>
-                <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900">
-                  {kc.scheduledHeading(authenticatedPatient.patient.fullName)}
-                </h1>
-                <p className="text-xs text-slate-500 mt-1.5 font-mono">
-                  {kc.scheduledSub(authenticatedPatient.patient.hn, todaySchedule.todayIso)}
-                </p>
+
+                {todayExercises.length > 0 && (() => {
+                  const completedQuestCount = todayExercises.filter(
+                    (item) => item.status === 'COMPLETED' || completedTodayExerciseIds.includes(item.id),
+                  ).length;
+                  const totalQuestXp = todayExercises.reduce(
+                    (sum, item) => sum + Math.max(1, item.sets) * Math.max(1, item.reps) * 10,
+                    0,
+                  );
+                  return (
+                    <div className="mt-4 rounded-2xl border border-sky-200/80 bg-gradient-to-r from-sky-50/70 via-white to-emerald-50/70 px-4 py-3 text-left">
+                      <GameXpProgressBar
+                        value={completedQuestCount}
+                        max={todayExercises.length}
+                        label="ความคืบหน้าภารกิจฟื้นฟูประจำวัน"
+                        badgeText={`${completedQuestCount}/${todayExercises.length} ท่า • รางวัล +${totalQuestXp} XP`}
+                        tone="emerald"
+                      />
+                    </div>
+                  );
+                })()}
 
                 <div
                   className={`mt-4 rounded-2xl border-2 px-4 py-3.5 shadow-sm flex flex-wrap items-center justify-between gap-3 text-left transition-colors ${
@@ -1265,7 +1309,7 @@ export function App() {
                   <button
                     type="button"
                     onClick={() => setRandomHandSide((prev) => (prev === 'left' ? 'right' : 'left'))}
-                    className={`inline-flex items-center gap-1.5 rounded-xl border bg-white px-3 py-1.5 text-xs font-bold shadow-sm cursor-pointer transition-colors ${
+                    className={`btn-game-3d-white inline-flex items-center gap-1.5 rounded-xl border bg-white px-3 py-1.5 text-xs font-bold cursor-pointer transition-colors ${
                       randomHandSide === 'left'
                         ? 'border-orange-300 text-orange-800 hover:bg-orange-100'
                         : 'border-emerald-300 text-emerald-800 hover:bg-emerald-100'
@@ -1277,13 +1321,26 @@ export function App() {
                 </div>
 
                 <div className="mt-5 space-y-2.5 text-left max-h-72 overflow-y-auto pr-1 animate-stagger-children">
-                  {todayExercises.map((item, idx) => (
+                  {todayExercises.map((item, idx) => {
+                    const isDone = item.status === 'COMPLETED' || completedTodayExerciseIds.includes(item.id);
+                    const questXp = Math.max(1, item.sets) * Math.max(1, item.reps) * 10;
+                    return (
                     <div
                       key={item.id}
-                      className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 flex items-center justify-between gap-3 card-hover-lift"
+                      className={`rounded-2xl border px-4 py-3 flex items-center justify-between gap-3 game-card-surface ${
+                        isDone
+                          ? 'border-emerald-300 bg-emerald-50/90'
+                          : 'border-sky-200 bg-gradient-to-r from-white to-emerald-50/40'
+                      }`}
                     >
                       <div className="flex items-start gap-3 min-w-0">
-                        <span className="shrink-0 w-7 h-7 rounded-full bg-emerald-600 text-white text-xs font-black flex items-center justify-center mt-0.5">
+                        <span
+                          className={`shrink-0 w-7 h-7 rounded-full text-white text-xs font-black flex items-center justify-center mt-0.5 shadow-xs ${
+                            isDone
+                              ? 'bg-gradient-to-br from-emerald-500 to-teal-600'
+                              : 'bg-gradient-to-br from-[#0F4C81] to-[#0284C7]'
+                          }`}
+                        >
                           {idx + 1}
                         </span>
                         <div className="min-w-0">
@@ -1300,7 +1357,10 @@ export function App() {
                             <span className="inline-block px-2 py-0.5 rounded-md bg-white text-slate-600 border border-slate-200 text-[11px] font-semibold">
                               {kc.holdSecTag(item.holdSec)}
                             </span>
-                            {item.status === 'COMPLETED' && (
+                            <span className="inline-block px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200 text-[11px] font-extrabold">
+                              +{questXp} XP
+                            </span>
+                            {isDone && (
                               <span className="inline-block px-2 py-0.5 rounded-md bg-sky-50 text-sky-700 border border-sky-200 text-[11px] font-bold">
                                 {kc.doneTag}
                               </span>
@@ -1308,11 +1368,12 @@ export function App() {
                           </div>
                         </div>
                       </div>
-                      <span className="shrink-0 rounded-xl bg-white border border-emerald-300 px-3 py-1.5 text-xs font-extrabold text-emerald-700 shadow-sm">
+                      <span className="shrink-0 rounded-xl bg-white border border-emerald-300 px-3 py-1.5 text-xs font-extrabold text-emerald-700 shadow-xs">
                         {kc.setsRepsTag(item.sets, item.reps)}
                       </span>
                     </div>
-                  ))}
+                  );
+                  })}
                 </div>
 
                 <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50/80 px-3.5 py-2 text-xs font-bold text-sky-900">
@@ -1328,7 +1389,7 @@ export function App() {
                   <button
                     type="button"
                     onClick={handleExitToLogin}
-                    className="w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 text-xs font-bold cursor-pointer"
+                    className="btn-game-3d-white w-full py-2.5 px-4 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-300 text-slate-700 text-xs font-bold cursor-pointer"
                   >
                     {kc.backToLogin}
                   </button>

@@ -18,7 +18,6 @@ import {
 import { selectClinicalCameraDeviceId } from '@drtechcares/face-client';
 import {
   AlertTriangle,
-  Award,
   CheckCircle2,
   Clock,
   Hand,
@@ -30,6 +29,16 @@ import {
 } from 'lucide-react';
 import { sampleTenCognitiveCards, type CognitiveCardQuestion } from './PhysicalCardGameData';
 import { getCardArtworkInnerSvg } from './PhysicalCardGameIllustrations';
+import { DrTechCareMascot } from '../../../src/components/DrTechCareMascot';
+import {
+  FloatingScorePopup,
+  GameCelebrationBurst,
+  GameComboBadge,
+  GameRankBadge,
+  GameStarRating,
+  GameXpProgressBar,
+} from '../../../src/components/GameJuiceEffects';
+import { playGameSfx } from '../../../src/lib/gameUiSfx';
 
 /**
  * Resolves giant senior-accessible Tailwind typography classes for minigame questions
@@ -993,6 +1002,11 @@ export function PhysicalCardGame({
   const [cards, setCards] = useState<CognitiveCardQuestion[]>(() => sampleTenCognitiveCards());
   const [index, setIndex] = useState(0);
   const [score, setScore] = useState(0);
+  const [streak, setStreak] = useState(0);
+  const [bestStreak, setBestStreak] = useState(0);
+  const [burstKey, setBurstKey] = useState(0);
+  const streakRef = useRef(0);
+  const bestStreakRef = useRef(0);
   const [feedback, setFeedback] = useState<{ correct: boolean; message: string } | null>(null);
   const [pendingChoice, setPendingChoice] = useState<'yes' | 'no' | null>(null);
   const [bothHandsWarn, setBothHandsWarn] = useState(false);
@@ -1659,7 +1673,20 @@ export function PhysicalCardGame({
       const isCorrect = choice === card.correctAnswer;
       chimeRef.current.playTone(isCorrect ? 'correct' : 'wrong');
       const nextScore = isCorrect ? scoreRef.current + 1 : scoreRef.current;
-      if (isCorrect) setScore(nextScore);
+      const nextStreak = isCorrect ? streakRef.current + 1 : 0;
+      streakRef.current = nextStreak;
+      setStreak(nextStreak);
+      if (nextStreak > bestStreakRef.current) {
+        bestStreakRef.current = nextStreak;
+        setBestStreak(nextStreak);
+      }
+      if (isCorrect) {
+        setScore(nextScore);
+        setBurstKey((k) => k + 1);
+        if (nextStreak >= 2) {
+          playGameSfx('combo', { comboCount: nextStreak, muted: voiceMutedRef.current });
+        }
+      }
 
       const activeLang = voiceLangRef.current;
       const msg = formatMinigameAnswerSpeech(card, isCorrect, activeLang);
@@ -1691,6 +1718,7 @@ export function PhysicalCardGame({
             durationSec,
             accuracyPct,
           };
+          playGameSfx('victory', { muted: voiceMutedRef.current });
           setCompletedSummary(summary);
           if (onSessionFinished) {
             setSavingResult(true);
@@ -2289,6 +2317,11 @@ export function PhysicalCardGame({
     setCards(sampleTenCognitiveCards());
     setIndex(0);
     setScore(0);
+    streakRef.current = 0;
+    bestStreakRef.current = 0;
+    setStreak(0);
+    setBestStreak(0);
+    setBurstKey(0);
     setFeedback(null);
     setPendingChoice(null);
     setBothHandsWarn(false);
@@ -2298,8 +2331,14 @@ export function PhysicalCardGame({
   };
 
   if (completedSummary) {
+    const earnedStars =
+      completedSummary.accuracyPct >= 80 ? 3 : completedSummary.accuracyPct >= 50 ? 2 : 1;
     return (
-      <div className="w-full flex-1 flex flex-col items-center justify-center rounded-3xl bg-white p-6 sm:p-12 shadow-xl border-2 border-slate-200 text-center space-y-6 animate-popup-spring">
+      <div className="relative w-full flex-1 flex flex-col items-center justify-center rounded-3xl bg-white p-6 sm:p-12 shadow-xl border-2 border-emerald-200 text-center space-y-6 animate-popup-spring">
+        <GameCelebrationBurst
+          triggerKey={`mg-win-${completedSummary.correct}-${completedSummary.durationSec}`}
+          variant="victory"
+        />
         <div className="flex justify-center">
           <MinigameVoiceBar
             voiceLang={voiceLang}
@@ -2311,31 +2350,38 @@ export function PhysicalCardGame({
           />
         </div>
 
-        <div className="mx-auto flex h-32 w-32 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 shadow-inner">
-          <Award className="h-20 w-20" />
+        <div className="flex flex-col items-center justify-center gap-2.5">
+          <DrTechCareMascot pose="celebrating" isSpeaking={isSpeaking} size="lg" />
+          <GameStarRating earned={earnedStars} total={3} size="lg" />
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <GameRankBadge pct={completedSummary.accuracyPct} />
+            {bestStreak >= 2 && (
+              <GameComboBadge count={bestStreak} labelTh="คอมโบสูงสุด" />
+            )}
+          </div>
         </div>
         <div>
-          <span className="mg-badge-top inline-flex items-center gap-2.5 rounded-full bg-indigo-50 px-6 py-2.5 font-black text-indigo-700">
+          <span className="mg-badge-top inline-flex items-center gap-2.5 rounded-full bg-indigo-50 px-6 py-2.5 font-black text-indigo-700 border border-indigo-200">
             <Sparkles className="h-6 w-6 shrink-0" /> {patientName}
           </span>
-          <h3 className="mg-summary-title mt-4 font-black text-slate-900">สรุปผลการเล่นเกมการ์ดกายภาพบำบัด</h3>
+          <h3 className="mg-summary-title mt-4 font-black text-[#0F4C81]">สรุปผลการเล่นเกมการ์ดกายภาพบำบัด</h3>
           <p className="mg-sub-instruction mt-2 font-bold text-slate-600">
             {savingResult ? 'กำลังบันทึกคะแนนลงฐานข้อมูล Supabase...' : 'บันทึกผลการฝึกครบทั้ง 10 ข้อเรียบร้อยแล้ว'}
           </p>
         </div>
 
-        <div className="w-full max-w-5xl grid grid-cols-1 gap-6 sm:grid-cols-3">
-          <div className="rounded-3xl border-2 border-emerald-200 bg-emerald-50 p-6 sm:p-8">
+        <div className="w-full max-w-5xl grid grid-cols-1 gap-6 sm:grid-cols-3 animate-stagger-children">
+          <div className="game-card-surface rounded-3xl border-2 border-emerald-200 bg-emerald-50 p-6 sm:p-8">
             <p className="mg-summary-stat-label font-extrabold text-emerald-700">คะแนนที่ได้</p>
             <p className="mg-summary-stat-val mt-2 font-black text-emerald-900">
               {completedSummary.correct} / {completedSummary.total}
             </p>
           </div>
-          <div className="rounded-3xl border-2 border-indigo-200 bg-indigo-50 p-6 sm:p-8">
+          <div className="game-card-surface rounded-3xl border-2 border-indigo-200 bg-indigo-50 p-6 sm:p-8">
             <p className="mg-summary-stat-label font-extrabold text-indigo-700">ความแม่นยำ</p>
             <p className="mg-summary-stat-val mt-2 font-black text-indigo-900">{completedSummary.accuracyPct}%</p>
           </div>
-          <div className="rounded-3xl border-2 border-slate-200 bg-slate-50 p-6 sm:p-8">
+          <div className="game-card-surface rounded-3xl border-2 border-slate-200 bg-slate-50 p-6 sm:p-8">
             <p className="mg-summary-stat-label font-extrabold text-slate-600 inline-flex items-center gap-2">
               <Clock className="h-7 w-7 shrink-0" /> เวลาที่ใช้
             </p>
@@ -2348,7 +2394,7 @@ export function PhysicalCardGame({
             <button
               type="button"
               onClick={handleReplay}
-              className="mg-summary-btn inline-flex items-center gap-3 rounded-3xl border-2 border-indigo-200 bg-indigo-50 min-h-[84px] px-10 py-5 font-black text-indigo-700 hover:bg-indigo-100 active:scale-95 transition cursor-pointer"
+              className="mg-summary-btn btn-game-3d-white inline-flex items-center gap-3 rounded-3xl border-2 border-indigo-200 bg-indigo-50 min-h-[84px] px-10 py-5 font-black text-indigo-700 hover:bg-indigo-100 transition cursor-pointer"
             >
               <RotateCcw className="h-8 w-8 shrink-0" /> เล่นใหม่อีกครั้ง
             </button>
@@ -2360,7 +2406,7 @@ export function PhysicalCardGame({
               stopCameraTracks();
               onComplete(completedSummary);
             }}
-            className="mg-summary-btn inline-flex items-center gap-3 rounded-3xl bg-emerald-600 min-h-[84px] px-10 py-5 font-black text-white shadow-lg shadow-emerald-600/20 hover:bg-emerald-700 active:scale-95 transition cursor-pointer"
+            className="mg-summary-btn btn-primary-sheen btn-game-3d-emerald inline-flex items-center gap-3 rounded-3xl bg-gradient-to-r from-emerald-600 to-teal-600 min-h-[84px] px-10 py-5 font-black text-white hover:brightness-105 transition cursor-pointer"
           >
             <CheckCircle2 className="h-8 w-8 shrink-0" /> ปิดหน้าต่าง
           </button>
@@ -2392,6 +2438,7 @@ export function PhysicalCardGame({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <GameComboBadge count={streak} />
           <span
             key={score}
             className={`rounded-lg bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#10B981] px-3 py-1 text-xs md:text-sm font-bold text-white shadow-xs whitespace-nowrap ${
@@ -2411,13 +2458,13 @@ export function PhysicalCardGame({
         </div>
       </div>
 
-      {/* Smooth 10-Question Progress Bar */}
-      <div className="w-full h-1.5 shrink-0 rounded-full bg-slate-100 overflow-hidden">
-        <div
-          className="h-full rounded-full bg-gradient-to-r from-[#0284C7] to-[#10B981] transition-[width] duration-300 ease-out"
-          style={{
-            width: `${Math.min(100, Math.round(((index + (feedback ? 1 : 0)) / Math.max(1, cards.length)) * 100))}%`,
-          }}
+      {/* Smooth Glossy 10-Question XP Progress Bar with Milestone Ticks */}
+      <div className="w-full shrink-0 px-1">
+        <GameXpProgressBar
+          value={index + (feedback ? 1 : 0)}
+          max={Math.max(1, cards.length)}
+          tone={streak >= 3 ? 'gold' : 'emerald'}
+          showMilestones
         />
       </div>
 
@@ -2426,8 +2473,17 @@ export function PhysicalCardGame({
         {/* Question Card + Giant Elderly-First Question Spotlight Banner */}
         <div
           key={index}
-          className="w-full shrink-0 p-2.5 sm:p-3.5 flex flex-col items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-b from-white to-emerald-50/30 border border-indigo-200 text-center shadow-xs animate-view-enter"
+          className="relative w-full shrink-0 p-2.5 sm:p-3.5 flex flex-col items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-b from-white to-emerald-50/30 border-2 border-indigo-200 text-center shadow-sm game-card-flip-in"
         >
+          <GameCelebrationBurst
+            triggerKey={burstKey}
+            variant={streak >= 3 ? 'combo' : 'rep'}
+          />
+          <FloatingScorePopup
+            triggerKey={burstKey}
+            label={streak >= 2 ? `+10 XP • คอมโบ x${streak}` : '+10 XP'}
+            tone={streak >= 3 ? 'gold' : 'emerald'}
+          />
           <div
             data-testid="minigame-card-visual-frame"
             className="relative w-full h-[230px] sm:h-[270px] md:h-[310px] rounded-2xl flex items-center justify-center p-2 sm:p-3 overflow-hidden border-2 border-indigo-200 bg-gradient-to-br from-amber-50/60 via-white to-sky-50/60 shadow-inner"
@@ -2609,12 +2665,12 @@ export function PhysicalCardGame({
                 type="button"
                 disabled={questionPhase === 'READING_QUESTION'}
                 onClick={() => submitAnswer('no')}
-                className={`rounded-2xl border-4 py-4 md:py-5 px-5 sm:px-7 text-xl sm:text-2xl md:text-3xl font-extrabold text-rose-700 shadow-sm flex items-center justify-center transition ${
+                className={`rounded-2xl border-4 py-4 md:py-5 px-5 sm:px-7 text-xl sm:text-2xl md:text-3xl font-extrabold text-rose-700 flex items-center justify-center transition ${
                   questionPhase === 'READING_QUESTION'
                     ? 'border-slate-200 bg-slate-100 opacity-60 cursor-not-allowed'
                     : pendingChoice === 'no'
-                      ? 'border-rose-500 bg-rose-100 ring-4 ring-rose-300 shadow-lg active:scale-95 cursor-pointer'
-                      : 'border-rose-300 bg-rose-50 hover:bg-rose-100 active:scale-95 cursor-pointer'
+                      ? 'btn-game-3d-rose border-rose-500 bg-rose-100 ring-4 ring-rose-300 cursor-pointer'
+                      : 'btn-game-3d-rose border-rose-300 bg-rose-50 hover:bg-rose-100 cursor-pointer'
                 }`}
               >
                 <span>{t('minigameLeftNo')}</span>
@@ -2623,12 +2679,12 @@ export function PhysicalCardGame({
                 type="button"
                 disabled={questionPhase === 'READING_QUESTION'}
                 onClick={() => submitAnswer('yes')}
-                className={`rounded-2xl border-4 py-4 md:py-5 px-5 sm:px-7 text-xl sm:text-2xl md:text-3xl font-extrabold text-emerald-700 shadow-sm flex items-center justify-center transition ${
+                className={`rounded-2xl border-4 py-4 md:py-5 px-5 sm:px-7 text-xl sm:text-2xl md:text-3xl font-extrabold text-emerald-700 flex items-center justify-center transition ${
                   questionPhase === 'READING_QUESTION'
                     ? 'border-slate-200 bg-slate-100 opacity-60 cursor-not-allowed'
                     : pendingChoice === 'yes'
-                      ? 'border-emerald-500 bg-emerald-100 ring-4 ring-emerald-300 shadow-lg active:scale-95 cursor-pointer'
-                      : 'border-emerald-300 bg-emerald-50 hover:bg-emerald-100 active:scale-95 cursor-pointer'
+                      ? 'btn-game-3d-emerald border-emerald-500 bg-emerald-100 ring-4 ring-emerald-300 cursor-pointer'
+                      : 'btn-game-3d-emerald border-emerald-300 bg-emerald-50 hover:bg-emerald-100 cursor-pointer'
                 }`}
               >
                 <span>{t('minigameRightYes')}</span>

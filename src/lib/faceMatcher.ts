@@ -1185,8 +1185,14 @@ export function subscribeBiometricIndex(
   onUpdate: (entries: PatientBiometricIndexEntry[]) => void,
 ): () => void {
   let active = true;
+  let lastRefreshedAt = 0;
 
-  const refresh = () => {
+  const refresh = (force = false) => {
+    const now = Date.now();
+    if (!force && lastRefreshedAt > 0 && now - lastRefreshedAt < 60_000) {
+      return;
+    }
+    lastRefreshedAt = now;
     apiClient
       .getBiometricIndex()
       .then((entries) => {
@@ -1195,29 +1201,34 @@ export function subscribeBiometricIndex(
       .catch(() => {});
   };
 
-  refresh();
+  refresh(true);
 
+  const onExplicitChange = () => refresh(true);
+  const onFocusRefresh = () => refresh(false);
   const onVisibilityChange = () => {
     if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-      refresh();
+      refresh(false);
     }
   };
 
   if (typeof window !== 'undefined') {
-    window.addEventListener(BIOMETRIC_INDEX_CHANGED_EVENT, refresh);
-    window.addEventListener('focus', refresh);
+    window.addEventListener(BIOMETRIC_INDEX_CHANGED_EVENT, onExplicitChange);
+    window.addEventListener('focus', onFocusRefresh);
   }
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
-  const intervalId = globalThis.setInterval(refresh, 30_000);
+  const intervalId = globalThis.setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) return;
+    refresh(false);
+  }, 300_000);
 
   return () => {
     active = false;
     globalThis.clearInterval(intervalId);
     if (typeof window !== 'undefined') {
-      window.removeEventListener(BIOMETRIC_INDEX_CHANGED_EVENT, refresh);
-      window.removeEventListener('focus', refresh);
+      window.removeEventListener(BIOMETRIC_INDEX_CHANGED_EVENT, onExplicitChange);
+      window.removeEventListener('focus', onFocusRefresh);
     }
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', onVisibilityChange);

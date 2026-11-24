@@ -487,16 +487,16 @@ export function RandomHandStartPrompt({
       <button
         type="button"
         onClick={handleManualConfirm}
-        className={`btn-primary-sheen relative overflow-hidden w-full py-3.5 px-5 rounded-2xl text-white font-extrabold text-sm shadow-lg cursor-pointer transition-colors ${
+        className={`btn-primary-sheen relative overflow-hidden w-full py-3.5 px-5 rounded-2xl text-white font-extrabold text-sm cursor-pointer transition-colors ${
           isLeft
-            ? 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-400 hover:to-amber-400'
-            : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500'
+            ? 'btn-game-3d-amber bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-400 hover:to-amber-400'
+            : 'btn-game-3d-emerald bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500'
         }`}
       >
         {holdProgress > 0 && (
           <span
-            className={`pointer-events-none absolute inset-y-0 left-0 transition-[width] duration-75 ${
-              isLeft ? 'bg-orange-200/40' : 'bg-emerald-300/35'
+            className={`game-progress-stripes pointer-events-none absolute inset-y-0 left-0 transition-[width] duration-75 ${
+              isLeft ? 'bg-orange-200/45' : 'bg-emerald-300/40'
             }`}
             style={{ width: `${Math.round(holdProgress * 100)}%` }}
           />

@@ -113,17 +113,36 @@ export async function fetchAllPatientsUnified(
   }> => {
     if (!supabase) return { patients: null, errorMsg: null };
     try {
-      const tableQuery = supabase.from('patients').select('*') as unknown as {
-        order?: (
-          col: string,
-          opts?: { ascending?: boolean },
-        ) => PromiseLike<{ data?: Record<string, unknown>[] | null; error?: unknown }>;
-      } & PromiseLike<{ data?: Record<string, unknown>[] | null; error?: unknown }>;
+      const DIRECTORY_LIGHT_COLS =
+        'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,face_biometric_status,face_frames_count,face_image_url,biometric_updated_at,created_at,updated_at,gender,stroke_type,affected_side,motor_assessment_score,adl_dressing_score,max_safe_rom_deg,universal_health_link_code,historyFaceStatus:history->>faceBiometricStatus,historyFaceFramesCount:history->faceFramesCount,historyFaceImageUrl:history->>faceImageUrl,historyGender:history->>gender,rehabSchedules:history->rehabSchedules,strokeType:history->>strokeType,affectedSide:history->>affectedSide,motorAssessmentScore:history->motorAssessmentScore,adlDressingScore:history->adlDressingScore,maxSafeRomDeg:history->maxSafeRomDeg,universalHealthLinkCode:history->>universalHealthLinkCode,rehabSessionHistory:history->rehabSessionHistory,clinicalAssessments:history->clinicalAssessments,angleImageUrls:history->angleImageUrls,faceImageUrls:history->faceImageUrls,delegatedToPtId:history->>delegatedToPtId,delegationDate:history->>delegationDate,delegationNote:history->>delegationNote,biometricEngine:history->>biometricEngine';
 
-      const rawRes =
-        typeof tableQuery.order === 'function'
+      const runPatientsSelect = async (cols: string) => {
+        const tableQuery = supabase.from('patients').select(cols) as unknown as {
+          order?: (
+            col: string,
+            opts?: { ascending?: boolean },
+          ) => PromiseLike<{ data?: Record<string, unknown>[] | null; error?: unknown }>;
+        } & PromiseLike<{ data?: Record<string, unknown>[] | null; error?: unknown }>;
+        return typeof tableQuery.order === 'function'
           ? await tableQuery.order('created_at', { ascending: false })
           : await tableQuery;
+      };
+
+      let rawRes = await runPatientsSelect(DIRECTORY_LIGHT_COLS);
+      if (rawRes?.error) {
+        const errCode = String((rawRes.error as { code?: unknown })?.code ?? '');
+        const errMsg = String((rawRes.error as { message?: unknown })?.message ?? '').toLowerCase();
+        if (
+          errCode === '42703' ||
+          errCode === 'PGRST204' ||
+          errMsg.includes('does not exist') ||
+          errMsg.includes('could not find')
+        ) {
+          rawRes = await runPatientsSelect(
+            'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,next_appointment_date,face_biometric_status,face_frames_count,face_image_url,created_at,updated_at',
+          );
+        }
+      }
 
       if (rawRes?.error) {
         return { patients: null, errorMsg: formatQueryErrorMessage(rawRes.error) };

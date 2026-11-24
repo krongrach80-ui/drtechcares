@@ -65,7 +65,9 @@ import {
   formatThaiShortDate,
   getCalendarMonthKey,
 } from '../utils/clinicalChartAnalytics';
+import { buildRehabStockIndex } from '../utils/rehabStockScoreEngine';
 import { ClinicalRomLiveMeasureModal } from './ClinicalRomLiveMeasureModal';
+import { RehabStockPerformanceCard } from './RehabStockPerformanceCard';
 
 export interface PatientClinicalRecordPanelProps {
   apiClient?: DrTechCaresApiClient;
@@ -1029,6 +1031,17 @@ export function PatientClinicalRecordPanel({
     [filteredRecords],
   );
 
+  // Stock-Market-Style Total Rehab Percentage & Full-Score Index across all doctor-assigned exercises
+  const rehabStockIndex = useMemo(
+    () =>
+      buildRehabStockIndex({
+        assignedExercises: courseAutoBundle?.assignedExercises ?? [],
+        completedSessions: courseAutoBundle?.completedSessions ?? [],
+        assessments: records,
+      }),
+    [courseAutoBundle?.assignedExercises, courseAutoBundle?.completedSessions, records],
+  );
+
   // Reset legend isolation if the focused exercise is no longer present in the filtered set
   useEffect(() => {
     if (
@@ -1949,7 +1962,7 @@ export function PatientClinicalRecordPanel({
             <button
               type="submit"
               disabled={saving || !selectedPatient}
-              className="btn-tactile w-full h-11 rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] text-xs font-black text-white shadow-md hover:brightness-105 disabled:opacity-50 cursor-pointer"
+              className="btn-primary-sheen btn-game-3d-blue btn-tactile w-full h-11 rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] text-xs font-black text-white hover:brightness-105 disabled:opacity-50 cursor-pointer"
             >
               {saving ? 'กำลังบันทึกผลประเมินลงฐานข้อมูล...' : 'บันทึกผลประเมินจริงเข้าแฟ้มผู้ป่วย'}
             </button>
@@ -2034,7 +2047,7 @@ export function PatientClinicalRecordPanel({
           {/* 4 Real Clinical KPI Cards */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {/* 1. ROM Progression */}
-            <div className="rounded-2xl border border-emerald-200 bg-white p-4 shadow-sm space-y-1.5">
+            <div className="game-card-surface rounded-2xl border border-emerald-200 bg-white p-4 space-y-1.5">
               <div className="flex items-center justify-between text-[11px] font-bold text-slate-500">
                 <span>
                   {summary.hasMixedExercises
@@ -2186,7 +2199,7 @@ export function PatientClinicalRecordPanel({
             </div>
 
             {/* 4. Visit Count, Channels & Duration */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-1.5">
+            <div className="game-card-surface rounded-2xl border border-slate-200 bg-white p-4 space-y-1.5">
               <div className="flex items-center justify-between text-[11px] font-bold text-slate-500">
                 <span>จำนวนครั้งจริง &amp; ช่วงเวลาติดตาม</span>
                 <Building2 className="h-4 w-4 text-teal-600" />
@@ -2212,6 +2225,15 @@ export function PatientClinicalRecordPanel({
             </div>
           </div>
 
+          {/* Stock-Market-Style Total Rehab Percentage & Full-Score Index Card */}
+          {selectedPatient && (
+            <RehabStockPerformanceCard
+              patientName={selectedPatient.fullName}
+              patientHn={selectedPatient.hn}
+              stockIndex={rehabStockIndex}
+            />
+          )}
+
           {/* Interactive 3-Milestone Navigator (Previous • Latest • Personal Best) with Thai Dates */}
           <div
             data-testid="clinical-milestone-navigator"
@@ -2225,7 +2247,7 @@ export function PatientClinicalRecordPanel({
               onClick={() => {
                 if (milestones.previous) handleJumpToMilestone(milestones.previous.record.id);
               }}
-              className={`btn-tactile text-left rounded-2xl border p-3.5 shadow-sm transition-all space-y-1.5 ${
+              className={`btn-tactile game-card-surface text-left rounded-2xl border p-3.5 transition-all space-y-1.5 ${
                 milestones.previous
                   ? activeSelectedNode?.id === milestones.previous.record.id
                     ? 'border-[#0F4C81] bg-sky-50/70 ring-2 ring-sky-200 cursor-pointer'
@@ -2287,7 +2309,7 @@ export function PatientClinicalRecordPanel({
               onClick={() => {
                 if (milestones.latest) handleJumpToMilestone(milestones.latest.record.id);
               }}
-              className={`btn-tactile text-left rounded-2xl border p-3.5 shadow-sm transition-all space-y-1.5 ${
+              className={`btn-tactile game-card-surface text-left rounded-2xl border p-3.5 transition-all space-y-1.5 ${
                 milestones.latest
                   ? activeSelectedNode?.id === milestones.latest.record.id
                     ? 'border-[#0284C7] bg-sky-50/80 ring-2 ring-sky-200 cursor-pointer'
@@ -2369,7 +2391,7 @@ export function PatientClinicalRecordPanel({
               onClick={() => {
                 if (milestones.best) handleJumpToMilestone(milestones.best.record.id);
               }}
-              className={`btn-tactile text-left rounded-2xl border p-3.5 shadow-sm transition-all space-y-1.5 ${
+              className={`btn-tactile game-card-surface text-left rounded-2xl border p-3.5 transition-all space-y-1.5 ${
                 milestones.best
                   ? activeSelectedNode?.id === milestones.best.record.id
                     ? 'border-emerald-500 bg-gradient-to-br from-emerald-50 via-white to-sky-50 ring-2 ring-emerald-200 cursor-pointer'

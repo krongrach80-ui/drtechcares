@@ -187,7 +187,14 @@ export function filterSelectColsForTable(table: string, colsCsv: string): string
     .filter(Boolean);
   const unsupported = unsupportedColumnsByTable.get(table);
   if (!unsupported || unsupported.size === 0) return cols.join(',');
-  const filtered = cols.filter((c) => !unsupported.has(c));
+  const filtered = cols.filter((colExpr) => {
+    if (unsupported.has(colExpr)) return false;
+    const colonIdx = colExpr.indexOf(':');
+    const exprBody = colonIdx >= 0 ? colExpr.slice(colonIdx + 1).trim() : colExpr;
+    const baseCol = exprBody.split(/->|->>/)[0]?.trim() || colExpr;
+    const aliasName = colonIdx >= 0 ? colExpr.slice(0, colonIdx).trim() : '';
+    return !unsupported.has(baseCol) && (!aliasName || !unsupported.has(aliasName));
+  });
   return (filtered.length > 0 ? filtered : cols.slice(0, 1)).join(',');
 }
 
@@ -438,47 +445,58 @@ function withQueryLimit(query: unknown, maxRows: number): PromiseLike<unknown> {
 /**
  * Run PostgREST query with explicit columns (never SELECT *).
  * Strips permanently cached missing columns BEFORE executing; if Postgres 42703 / PGRST204 occurs,
- * records the missing column into `unsupportedColumnsByTable` and jumps directly to `safeFallbackCols`
- * in at most 1 retry (never loops 5 times per call).
+ * records the missing column into `unsupportedColumnsByTable` and strips ONLY that column iteratively
+ * (up to 4 retries) so remaining valid columns (such as `exemplar_embeddings` or `biometric_engine`)
+ * are preserved instead of prematurely collapsing to `safeFallbackCols`.
  */
-async function selectExplicitWithFallback(
+export async function selectExplicitWithFallback(
   table: string,
   runQuery: (cols: string) => PromiseLike<unknown>,
   initialCols: string,
   safeFallbackCols = initialCols,
   maxRows = 50,
 ): Promise<unknown> {
-  const firstCols = filterSelectColsForTable(table, initialCols);
-  const res = (await withQueryLimit(runQuery(firstCols), maxRows)) as
+  let currentCols = filterSelectColsForTable(table, initialCols);
+  let lastRes:
     | { data?: unknown; error?: { code?: string; message?: string } | null }
     | undefined;
-  if (!res?.error) return res;
 
-  const missingCol = recordUnsupportedColumn(table, res.error);
-  if (!missingCol) return res;
-
-  const fallbackCols = filterSelectColsForTable(table, safeFallbackCols);
-  if (!fallbackCols || fallbackCols === firstCols) {
-    const strippedInitial = filterSelectColsForTable(table, firstCols);
-    if (!strippedInitial || strippedInitial === firstCols) {
-      return res;
-    }
-    const retryRes = (await withQueryLimit(runQuery(strippedInitial), maxRows)) as
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    lastRes = (await withQueryLimit(runQuery(currentCols), maxRows)) as
       | { data?: unknown; error?: { code?: string; message?: string } | null }
       | undefined;
-    if (retryRes?.error) {
-      recordUnsupportedColumn(table, retryRes.error);
+    if (!lastRes?.error) return lastRes;
+
+    const missingCol = recordUnsupportedColumn(table, lastRes.error);
+    if (!missingCol) return lastRes;
+
+    const nextCols = filterSelectColsForTable(table, currentCols);
+    if (!nextCols || nextCols === currentCols) {
+      break;
     }
-    return retryRes;
+    currentCols = nextCols;
   }
 
-  const fallbackRes = (await withQueryLimit(runQuery(fallbackCols), maxRows)) as
-    | { data?: unknown; error?: { code?: string; message?: string } | null }
-    | undefined;
-  if (fallbackRes?.error) {
-    recordUnsupportedColumn(table, fallbackRes.error);
+  let fallbackCols = filterSelectColsForTable(table, safeFallbackCols);
+  if (!fallbackCols || fallbackCols === currentCols) {
+    return lastRes;
   }
-  return fallbackRes;
+
+  for (let fbAttempt = 0; fbAttempt < 3; fbAttempt += 1) {
+    const fallbackRes = (await withQueryLimit(runQuery(fallbackCols), maxRows)) as
+      | { data?: unknown; error?: { code?: string; message?: string } | null }
+      | undefined;
+    if (!fallbackRes?.error) return fallbackRes;
+    const missingFbCol = recordUnsupportedColumn(table, fallbackRes.error);
+    if (!missingFbCol) return fallbackRes;
+    const nextFbCols = filterSelectColsForTable(table, fallbackCols);
+    if (!nextFbCols || nextFbCols === fallbackCols) {
+      return fallbackRes;
+    }
+    fallbackCols = nextFbCols;
+    lastRes = fallbackRes;
+  }
+  return lastRes;
 }
 
 function rejectedBudget(reason: string): PromiseSettledResult<unknown> {
@@ -793,8 +811,10 @@ const STAFF_USERS_EXTENDED_COLS = `${STAFF_USERS_BASE_COLS},avatar_url,bio`;
 const PATIENTS_BASE_COLS =
   'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,face_biometric_status,face_frames_count,face_image_url,biometric_updated_at,history,created_at,updated_at';
 const PATIENTS_BIOMETRIC_LIVE_COLS =
-  'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,face_biometric_status,face_frames_count,face_image_url,biometric_updated_at,created_at,updated_at,historyFaceStatus:history->>faceBiometricStatus,historyFaceFramesCount:history->faceFramesCount,historyFaceImageUrl:history->>faceImageUrl,historyGender:history->>gender,geometricRatios:history->geometricRatios,rehabSchedules:history->rehabSchedules,biometricEngine:history->>biometricEngine,strokeType:history->>strokeType,affectedSide:history->>affectedSide,motorAssessmentScore:history->motorAssessmentScore,adlDressingScore:history->adlDressingScore,maxSafeRomDeg:history->maxSafeRomDeg,universalHealthLinkCode:history->>universalHealthLinkCode';
-const PATIENTS_MINIMAL_SAFE_COLS =
+  'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,face_biometric_status,face_frames_count,face_image_url,biometric_updated_at,created_at,updated_at,historyFaceStatus:history->>faceBiometricStatus,historyFaceFramesCount:history->faceFramesCount,historyFaceImageUrl:history->>faceImageUrl,historyGender:history->>gender,historyExemplars:history->exemplarEmbeddings,geometricRatios:history->geometricRatios,rehabSchedules:history->rehabSchedules,biometricEngine:history->>biometricEngine,strokeType:history->>strokeType,affectedSide:history->>affectedSide,motorAssessmentScore:history->motorAssessmentScore,adlDressingScore:history->adlDressingScore,maxSafeRomDeg:history->maxSafeRomDeg,universalHealthLinkCode:history->>universalHealthLinkCode';
+export const PATIENTS_DIRECTORY_EGRESS_SAFE_COLS =
+  'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,face_biometric_status,face_frames_count,face_image_url,biometric_updated_at,created_at,updated_at,gender,stroke_type,affected_side,motor_assessment_score,adl_dressing_score,max_safe_rom_deg,universal_health_link_code,historyFaceStatus:history->>faceBiometricStatus,historyFaceFramesCount:history->faceFramesCount,historyFaceImageUrl:history->>faceImageUrl,historyGender:history->>gender,rehabSchedules:history->rehabSchedules,strokeType:history->>strokeType,affectedSide:history->>affectedSide,motorAssessmentScore:history->motorAssessmentScore,adlDressingScore:history->adlDressingScore,maxSafeRomDeg:history->maxSafeRomDeg,universalHealthLinkCode:history->>universalHealthLinkCode,rehabSessionHistory:history->rehabSessionHistory,clinicalAssessments:history->clinicalAssessments,angleImageUrls:history->angleImageUrls,faceImageUrls:history->faceImageUrls,delegatedToPtId:history->>delegatedToPtId,delegationDate:history->>delegationDate,delegationNote:history->>delegationNote,biometricEngine:history->>biometricEngine';
+export const PATIENTS_MINIMAL_SAFE_COLS =
   'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,history,created_at';
 
 const PATIENT_BIOMETRICS_BASE_COLS =
@@ -868,6 +888,53 @@ export async function hydrateStaffUsersOnly(
   }
 }
 
+/** Lightweight single-table fetch of `staff_calls` (top 50 rows, < 2 KB) so Admin polling never triggers 19-table hydration. */
+export async function hydrateStaffCallsOnly(
+  supabase: SupabaseClient,
+  state: CloudRouterState,
+  timeoutMs = 2000,
+): Promise<boolean> {
+  if (isSupabaseCircuitOpen(supabase)) return false;
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const query = withQueryLimit(
+      supabase
+        .from('staff_calls')
+        .select('id,kiosk_id,patient_id,reason,status,created_at')
+        .order('created_at', { ascending: false }),
+      50,
+    );
+    const outcome = await Promise.race([
+      Promise.resolve(query).then((res) => ({
+        timedOut: false as const,
+        res: res as { data?: Record<string, unknown>[] | null; error?: unknown } | undefined,
+      })),
+      new Promise<{ timedOut: true }>((resolve) => {
+        timerId = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+      }),
+    ]);
+    if (outcome.timedOut || outcome.res?.error || !Array.isArray(outcome.res?.data)) {
+      return false;
+    }
+    const deletedCallIds = new Set(state.deleted_staff_call_ids ?? []);
+    state.staff_calls = outcome.res.data
+      .filter((r) => !deletedCallIds.has(String(r.id ?? '')))
+      .map((r) => ({
+        id: String(r.id ?? ''),
+        kioskId: String(r.kiosk_id ?? 'KIOSK-01'),
+        patientId: r.patient_id ? String(r.patient_id) : null,
+        reason: String(r.reason ?? ''),
+        status: (String(r.status ?? 'open') as StaffCallRecord['status']),
+        createdAt: String(r.created_at ?? new Date().toISOString()),
+      }));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (timerId !== undefined) clearTimeout(timerId);
+  }
+}
+
 export interface LiveBiometricHydrationResult {
   ok: boolean;
   errorCode?: 'TIMEOUT' | 'PERMISSION_DENIED' | 'SERVER_ERROR';
@@ -917,15 +984,20 @@ export interface LiveBiometricStatsResult {
   filteredOutCount: number;
 }
 
+const PATIENTS_BIOMETRIC_STATS_COLS =
+  'id,hn,registration_status,face_biometric_status,face_frames_count';
+
 /**
- * Ultra-lightweight metadata-only query for `GET /api/biometrics/stats` (~1.5 KB instead of ~1.65 MB).
- * Reads ONLY `patients(id,hn,registration_status)` and `patient_biometrics(patient_id,hn,embedding_dim,biometric_engine,model_version)`
- * with ZERO vector downloads, ZERO PII, and ~200-350ms latency so cold Worker isolates never time out!
+ * Lightweight metadata-only query for `GET /api/biometrics/stats` (no heavy vector downloads, no PII).
+ * Reads `patients` scalar status columns + `patient_biometrics` metadata (tolerating legacy schemas
+ * that lack `embedding_dim`/`model_version`). Only when `patient_biometrics` returns 0 rows AND
+ * no active patient has top-level `VERIFIED` status does it inspect `history->>faceBiometricStatus`
+ * so legacy `patients.history`-only deployments never falsely report 0 accounts after deploy.
  */
 export async function fetchBiometricLibraryStatsFromSupabase(
   supabase: SupabaseClient,
   state: CloudRouterState,
-  timeoutMs = 3500,
+  timeoutMs = 4500,
 ): Promise<LiveBiometricStatsResult> {
   if (isSupabaseCircuitOpen(supabase)) {
     return {
@@ -944,15 +1016,15 @@ export async function fetchBiometricLibraryStatsFromSupabase(
       selectExplicitWithFallback(
         'patients',
         (cols) => supabase.from('patients').select(cols),
-        'id,hn,registration_status',
+        PATIENTS_BIOMETRIC_STATS_COLS,
         'id,hn,registration_status',
         250,
       ),
       selectExplicitWithFallback(
         'patient_biometrics',
         (cols) => supabase.from('patient_biometrics').select(cols),
-        'patient_id,hn,embedding_dim,biometric_engine,model_version',
-        'patient_id,hn,embedding_dim',
+        'patient_id,hn,embedding_dim,biometric_engine,model_version,frames_captured',
+        'patient_id,hn',
         250,
       ),
     ]);
@@ -1033,14 +1105,55 @@ export async function fetchBiometricLibraryStatsFromSupabase(
       state.users.filter((u) => !u.active && u.patientId).map((u) => u.patientId as string),
     );
 
-    const pbByPatient = new Map<string, { dim: number; engine: string }>();
+    const pbByPatient = new Map<string, { dim: number; hasExplicitDim: boolean; engine: string; framesCaptured: number }>();
     if (pbRes.status === 'fulfilled' && !pbRes.value.error && Array.isArray(pbRes.value.data)) {
       for (const row of pbRes.value.data) {
         const pid = String(row.patient_id ?? '').trim();
         if (!pid) continue;
-        const dim = Number(row.embedding_dim ?? 0);
+        const rawDim = row.embedding_dim;
+        const hasExplicitDim = rawDim !== undefined && rawDim !== null && Number.isFinite(Number(rawDim));
+        const dim = hasExplicitDim ? Number(rawDim) : 0;
         const engine = String(row.model_version ?? row.biometric_engine ?? '').trim();
-        pbByPatient.set(pid, { dim, engine });
+        const framesCaptured = Number(row.frames_captured ?? row.frame_count ?? 0);
+        pbByPatient.set(pid, { dim, hasExplicitDim, engine, framesCaptured });
+      }
+    }
+
+    // Legacy history-only fallback: ONLY runs if `patient_biometrics` is completely empty AND
+    // active patients exist without top-level VERIFIED status (never runs on normal DBs).
+    const historyStatsById = new Map<string, { verified: boolean; engine: string }>();
+    if (pbByPatient.size === 0 && patientsRes.value.data.length > 0) {
+      const anyTopLevelVerified = patientsRes.value.data.some(
+        (r) =>
+          String(r.face_biometric_status ?? '').trim().toUpperCase() === 'VERIFIED' ||
+          Number(r.face_frames_count ?? 0) > 0,
+      );
+      if (!anyTopLevelVerified) {
+        try {
+          const histStatsRes = (await selectExplicitWithFallback(
+            'patients',
+            (cols) => supabase.from('patients').select(cols),
+            'id,historyFaceStatus:history->>faceBiometricStatus,historyFaceFramesCount:history->>faceFramesCount,historyBiometricEngine:history->>biometricEngine',
+            'id,history',
+            250,
+          )) as { data?: Record<string, unknown>[] | null; error?: unknown } | undefined;
+          if (!histStatsRes?.error && Array.isArray(histStatsRes?.data)) {
+            for (const hr of histStatsRes.data) {
+              const hpid = String(hr.id ?? '').trim();
+              if (!hpid) continue;
+              const hObj = (hr.history && typeof hr.history === 'object' ? hr.history : {}) as Record<string, unknown>;
+              const hStatus = String(hr.historyFaceStatus ?? hObj.faceBiometricStatus ?? '').trim().toUpperCase();
+              const hFrames = Number(hr.historyFaceFramesCount ?? hObj.faceFramesCount ?? 0);
+              const hEngine = String(hr.historyBiometricEngine ?? hObj.biometricEngine ?? '').trim();
+              const hasHistMaster = Boolean(parseEmbeddingVector(hObj.masterEmbedding));
+              if (hStatus === 'VERIFIED' || hFrames > 0 || hasHistMaster || Boolean(hEngine)) {
+                historyStatsById.set(hpid, { verified: true, engine: hEngine });
+              }
+            }
+          }
+        } catch {
+          // Best-effort legacy history probe only
+        }
       }
     }
 
@@ -1062,26 +1175,50 @@ export async function fetchBiometricLibraryStatsFromSupabase(
         !inactiveUserPatientIds.has(pid);
 
       const pbMeta = pbByPatient.get(pid);
+      const histMeta = historyStatsById.get(pid);
+      const topStatus = String(r.face_biometric_status ?? '').trim().toUpperCase();
+      const topFrames = Number(r.face_frames_count ?? 0);
+      const hasPatientFallbackTemplate =
+        topStatus === 'VERIFIED' || topFrames > 0 || Boolean(histMeta?.verified);
+
       if (!isActive) {
-        if (pbMeta && pbMeta.dim >= 128) {
+        if ((pbMeta && (!pbMeta.hasExplicitDim || pbMeta.dim >= 128)) || hasPatientFallbackTemplate) {
           filteredOutCount += 1;
         }
         continue;
       }
 
       totalActivePatients += 1;
-      if (!pbMeta || pbMeta.dim < 128) {
-        missingTemplateCount += 1;
+      if (pbMeta) {
+        if (pbMeta.hasExplicitDim && pbMeta.dim > 0 && pbMeta.dim < 128) {
+          missingTemplateCount += 1;
+          continue;
+        }
+        const effectiveEngine = pbMeta.engine || histMeta?.engine || '';
+        const isLegacyEngine = effectiveEngine === 'hybrid-512d' || effectiveEngine === 'arcface-onnx';
+        const isCompatible =
+          pbMeta.hasExplicitDim && pbMeta.dim > 0
+            ? pbMeta.dim >= ACTIVE_BIOMETRIC_DIM && (!effectiveEngine || effectiveEngine === 'human-faceres-1024d')
+            : !isLegacyEngine;
+        if (isCompatible) {
+          compatibleTemplatesCount += 1;
+        } else {
+          versionMismatchCount += 1;
+        }
         continue;
       }
-      const isCompatible =
-        pbMeta.dim >= ACTIVE_BIOMETRIC_DIM &&
-        (!pbMeta.engine || pbMeta.engine === 'human-faceres-1024d');
-      if (isCompatible) {
-        compatibleTemplatesCount += 1;
-      } else {
-        versionMismatchCount += 1;
+
+      if (hasPatientFallbackTemplate) {
+        const eng = histMeta?.engine || '';
+        if (eng === 'hybrid-512d' || eng === 'arcface-onnx') {
+          versionMismatchCount += 1;
+        } else {
+          compatibleTemplatesCount += 1;
+        }
+        continue;
       }
+
+      missingTemplateCount += 1;
     }
 
     state.filtered_out_template_patients_count = filteredOutCount;
@@ -1117,6 +1254,50 @@ export async function fetchBiometricLibraryStatsFromSupabase(
   } finally {
     if (timerId !== undefined) clearTimeout(timerId);
   }
+}
+
+const backfilledBiometricsByClient = new WeakMap<object, Set<string>>();
+
+function schedulePatientBiometricsBackfillInBackground(
+  supabase: SupabaseClient,
+  payload: Record<string, unknown>,
+): void {
+  const pid = String(payload.patient_id ?? '').trim();
+  if (!pid || isSupabaseCircuitOpen(supabase)) return;
+  let seen = backfilledBiometricsByClient.get(supabase);
+  if (!seen) {
+    seen = new Set<string>();
+    backfilledBiometricsByClient.set(supabase, seen);
+  }
+  if (seen.has(pid)) return;
+  seen.add(pid);
+
+  const tableRef = supabase.from('patient_biometrics') as unknown as {
+    upsert?: (
+      row: Record<string, unknown>,
+      opts?: { onConflict?: string },
+    ) => PromiseLike<{ error?: { code?: string; message?: string } | null }>;
+  };
+  if (typeof tableRef?.upsert !== 'function') return;
+
+  void (async () => {
+    const protectedCols = new Set(['patient_id', 'hn', 'master_embedding', 'angle_embeddings']);
+    const working = stripUnsupportedColumnsForWrite('patient_biometrics', { ...payload });
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      try {
+        const res = await tableRef.upsert!(working, { onConflict: 'patient_id' });
+        if (!res?.error) return;
+        const missingCol = recordUnsupportedColumn('patient_biometrics', res.error);
+        if (missingCol && missingCol in working && !protectedCols.has(missingCol)) {
+          delete working[missingCol];
+          continue;
+        }
+        return;
+      } catch {
+        return;
+      }
+    }
+  })();
 }
 
 /**
@@ -1332,6 +1513,7 @@ export async function hydrateBiometricsLiveFromSupabase(
         masterEmbedding?: number[];
         angleEmbeddings?: AngleEmbeddings5D;
         exemplarEmbeddings?: number[][];
+        geometricRatios?: GeometricAnthropometricRatios;
         biometricEngine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
         framesCaptured?: number;
         avatarUrl?: string;
@@ -1357,10 +1539,15 @@ export async function hydrateBiometricsLiveFromSupabase(
           parseVec(row.biometric_data) ??
           parsedAngles?.center;
         const parsedExemplars = parseExemplarList(row.exemplar_embeddings ?? row.biometric_data);
+        const parsedGeom =
+          row.geometric_ratios && typeof row.geometric_ratios === 'object'
+            ? (row.geometric_ratios as GeometricAnthropometricRatios)
+            : undefined;
         biometrics120ByPatient.set(pid, {
           masterEmbedding: parsedMaster,
           angleEmbeddings: parsedAngles,
           exemplarEmbeddings: parsedExemplars.length > 0 ? parsedExemplars : undefined,
+          geometricRatios: parsedGeom,
           biometricEngine: normalizeEngineTag(row.model_version ?? row.biometric_engine, parsedMaster),
           framesCaptured: Number(row.frame_count ?? row.frames_captured ?? 120),
           avatarUrl: typeof row.avatar_url === 'string' ? row.avatar_url : undefined,
@@ -1389,13 +1576,17 @@ export async function hydrateBiometricsLiveFromSupabase(
       return isActive && !deletedPatientLower.has(pidLo) && (!hnLo || !deletedPatientLower.has(hnLo));
     });
 
-    // If any active patient has verified history metadata but is missing a patient_biometrics row,
-    // fetch its full history/top-level embedding columns in one targeted query so login never misses it.
+    // If any active patient is missing a master embedding from `patient_biometrics`, top-level cols,
+    // or `face_templates`, fetch its `history` (and optional top-level embedding columns safely
+    // via `selectExplicitWithFallback` with `'id,history'` fallback) so cold-start deploys never miss
+    // patients whose embeddings were stored in `patients.history` JSONB or legacy columns.
     const historyFallbackById = new Map<string, Record<string, unknown>>();
     const missingVecIds = activePatientRows
       .filter((r) => {
         const pid = String(r.id ?? '').trim();
         if (!pid) return false;
+        const hasHistoryObj = Boolean(r.history && typeof r.history === 'object');
+        if (hasHistoryObj) return false;
         const b120 = biometrics120ByPatient.get(pid);
         const tpl = parsedTemplatesByPatient.get(pid);
         const alreadyHasVec = Boolean(
@@ -1403,32 +1594,35 @@ export async function hydrateBiometricsLiveFromSupabase(
             parseVec(r.master_embedding) ||
             parseVec(r.face_embedding) ||
             parseVec(r.biometric_data) ||
-            (r.history && typeof r.history === 'object' && parseVec((r.history as Record<string, unknown>).masterEmbedding)) ||
             tpl?.overall ||
             tpl?.frontal,
         );
-        if (alreadyHasVec) return false;
-        const histStatus = String(r.historyFaceStatus ?? '').trim().toUpperCase();
-        const histFrames = Number(r.historyFaceFramesCount ?? 0);
-        const topStatus = String(r.face_biometric_status ?? '').trim().toUpperCase();
-        return histStatus === 'VERIFIED' || histFrames > 0 || topStatus === 'VERIFIED';
+        return !alreadyHasVec;
       })
-      .map((r) => String(r.id));
+      .map((r) => String(r.id))
+      .slice(0, 80);
 
     if (missingVecIds.length > 0) {
       try {
-        const q = supabase
-          .from('patients')
-          .select('id,history,master_embedding,angle_embeddings,biometric_data,face_embedding') as unknown as {
-          in?: (col: string, vals: string[]) => PromiseLike<{ data?: Record<string, unknown>[] | null; error?: unknown }>;
-        };
-        if (typeof q.in === 'function') {
-          const histRes = await q.in('id', missingVecIds);
-          if (!histRes?.error && Array.isArray(histRes?.data)) {
-            for (const hr of histRes.data) {
-              const hpid = String(hr.id ?? '').trim();
-              if (hpid) historyFallbackById.set(hpid, hr);
-            }
+        const histRes = (await selectExplicitWithFallback(
+          'patients',
+          (cols) => {
+            const q = supabase.from('patients').select(cols) as unknown as {
+              in?: (
+                col: string,
+                vals: string[],
+              ) => PromiseLike<{ data?: Record<string, unknown>[] | null; error?: unknown }>;
+            };
+            return typeof q.in === 'function' ? q.in('id', missingVecIds) : Promise.resolve({ data: null, error: null });
+          },
+          'id,history,master_embedding,angle_embeddings,biometric_data,face_embedding',
+          'id,history',
+          Math.max(80, missingVecIds.length),
+        )) as { data?: Record<string, unknown>[] | null; error?: unknown } | undefined;
+        if (!histRes?.error && Array.isArray(histRes?.data)) {
+          for (const hr of histRes.data) {
+            const hpid = String(hr.id ?? '').trim();
+            if (hpid) historyFallbackById.set(hpid, hr);
           }
         }
       } catch {
@@ -1469,20 +1663,29 @@ export async function hydrateBiometricsLiveFromSupabase(
         const mergedAngles = fallbackAngles ?? prevPatient?.angleEmbeddings;
         const fallbackExemplars = (() => {
           const fromB120 = b120?.exemplarEmbeddings ?? [];
+          const fromProjected = parseExemplarList(r.historyExemplars);
           const fromRow = parseExemplarList(r.face_embedding ?? r.biometric_data);
           const fromHist = parseExemplarList(history.exemplarEmbeddings);
-          const chosen = fromB120.length > 0 ? fromB120 : fromRow.length > 0 ? fromRow : fromHist;
+          const chosen =
+            fromB120.length > 0
+              ? fromB120
+              : fromProjected.length > 0
+                ? fromProjected
+                : fromRow.length > 0
+                  ? fromRow
+                  : fromHist;
           if (!mergedMaster || chosen.length === 0) return undefined;
           const matchedDim = chosen.filter((v) => v.length === mergedMaster.length);
           return matchedDim.length > 0 ? matchedDim : undefined;
         })();
         const mergedExemplars = fallbackExemplars ?? prevPatient?.exemplarEmbeddings;
         const resolvedGeom =
-          r.geometricRatios && typeof r.geometricRatios === 'object'
+          b120?.geometricRatios ??
+          (r.geometricRatios && typeof r.geometricRatios === 'object'
             ? (r.geometricRatios as GeometricAnthropometricRatios)
             : history.geometricRatios && typeof history.geometricRatios === 'object'
               ? (history.geometricRatios as GeometricAnthropometricRatios)
-              : prevPatient?.geometricRatios;
+              : prevPatient?.geometricRatios);
         const inspected = inspectPatientRecordHydration(r, {
           biometricsRow: {
             masterEmbedding: mergedMaster,
@@ -1499,6 +1702,38 @@ export async function hydrateBiometricsLiveFromSupabase(
         });
         if (inspected.needsTopLevelRepair && inspected.topLevelRepairPatch) {
           void schedulePatientTopLevelRepairInBackground(supabase, pid, inspected.topLevelRepairPatch);
+        }
+        // Self-healing backfill: when a patient has real vectors in `patients.history` or top-level
+        // columns but no `patient_biometrics` row yet, repair `patient_biometrics` in the background.
+        if (
+          !b120?.masterEmbedding &&
+          mergedMaster &&
+          mergedMaster.length >= 128 &&
+          isUuidString(pid) &&
+          !isSupabaseCircuitOpen(supabase)
+        ) {
+          schedulePatientBiometricsBackfillInBackground(supabase, {
+            patient_id: pid,
+            hn: String(r.hn ?? ''),
+            master_embedding: mergedMaster,
+            angle_embeddings: mergedAngles ?? {
+              center: mergedMaster,
+              left: mergedMaster,
+              right: mergedMaster,
+              up: mergedMaster,
+              down: mergedMaster,
+            },
+            exemplar_embeddings: (mergedExemplars ?? []).slice(0, 9),
+            ...(resolvedGeom ? { geometric_ratios: resolvedGeom } : {}),
+            biometric_engine: normalizeEngineTag(r.biometricEngine ?? history.biometricEngine, mergedMaster) ?? 'human-faceres-1024d',
+            model_version: normalizeEngineTag(r.biometricEngine ?? history.biometricEngine, mergedMaster) ?? 'human-faceres-1024d',
+            embedding_dim: mergedMaster.length,
+            frame_count: Math.max(Number(r.face_frames_count ?? 0), Number(r.historyFaceFramesCount ?? 0), 120),
+            frames_captured: Math.max(Number(r.face_frames_count ?? 0), Number(r.historyFaceFramesCount ?? 0), 120),
+            quality_score: 0.96,
+            avatar_url: inspected.patient.faceImageUrl ?? null,
+            updated_at: new Date().toISOString(),
+          });
         }
         const hasRealVector = Boolean(mergedMaster && mergedMaster.length >= 128);
         const embeddingDim = mergedMaster?.length ?? 0;
@@ -1680,7 +1915,7 @@ async function runHydrateStateFromSupabaseInternal(
   if (isSupabaseCircuitOpen(supabase)) {
     return;
   }
-  const totalDeadlineMs = Date.now() + 1500;
+  const totalDeadlineMs = Date.now() + 4500;
 
   // Stage 1 (Priority Clinical Directory): fetch patients, staff_users & cloud profile manifest FIRST
   const stage1Tasks: ReadonlyArray<() => PromiseLike<unknown>> = [
@@ -1847,7 +2082,7 @@ async function runHydrateStateFromSupabaseInternal(
   ];
 
   const [usersRes, staffManifestRes, patientsRes, settingsRes, bansRes, activeSessionsRes] =
-    (await settleStageInBatches(stage1Tasks, 6, Math.min(totalDeadlineMs, Date.now() + 1200))) as [
+    (await settleStageInBatches(stage1Tasks, 6, Math.min(totalDeadlineMs, Date.now() + 2200))) as [
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
       PromiseSettledResult<Record<string, StaffProfileCloudRecord>>,
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
@@ -1857,7 +2092,7 @@ async function runHydrateStateFromSupabaseInternal(
     ];
 
   const [templatesRes, biometrics120Res, coursesRes, exercisesRes, modpacksRes, kiosksRes] =
-    (await settleStageInBatches(stage2Tasks, 2, totalDeadlineMs)) as [
+    (await settleStageInBatches(stage2Tasks, 6, totalDeadlineMs)) as [
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
@@ -1867,7 +2102,7 @@ async function runHydrateStateFromSupabaseInternal(
     ];
 
   const [notesRes, sessionsRes, reportsRes, callsRes, auditRes, sessionHistoryRes, assessmentsRes] =
-    (await settleStageInBatches(stage3Tasks, 3, totalDeadlineMs)) as [
+    (await settleStageInBatches(stage3Tasks, 4, totalDeadlineMs)) as [
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
@@ -1877,28 +2112,22 @@ async function runHydrateStateFromSupabaseInternal(
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
     ];
 
-  const settledAll: PromiseSettledResult<{ error?: unknown } | null>[] = [
+  // Only trip the global 20s circuit breaker when core Stage-1/Stage-2 directory or biometric tables
+  // return real upstream transient failures (never lock out face login because optional Stage-3 logs
+  // hit the hydration deadline during a cold Worker deploy).
+  const coreCriticalResults: PromiseSettledResult<{ error?: unknown } | null>[] = [
     usersRes,
     patientsRes,
-    settingsRes,
-    bansRes,
-    activeSessionsRes,
-    templatesRes,
     biometrics120Res,
-    coursesRes,
-    exercisesRes,
-    modpacksRes,
-    kiosksRes,
-    notesRes,
-    sessionsRes,
-    reportsRes,
-    callsRes,
-    auditRes,
-    sessionHistoryRes,
   ];
-  for (const s of settledAll) {
+  for (const s of coreCriticalResults) {
     if (s.status === 'rejected') {
-      if (isSupabaseTransientFailure(s.reason)) {
+      const reasonMsg = s.reason instanceof Error ? s.reason.message : String(s.reason ?? '');
+      if (
+        reasonMsg !== 'hydration_budget_exceeded' &&
+        reasonMsg !== 'hydration_stage_timeout' &&
+        isSupabaseTransientFailure(s.reason)
+      ) {
         markSupabaseDown('hydrate_rejected_transient', supabase);
         break;
       }
@@ -3004,24 +3233,30 @@ export async function persistToSupabase(
 
 /**
  * Bounded best-effort persistence wrapper for write endpoints (`POST`/`PUT`/`PATCH`):
- * awaits Supabase writes up to `timeoutMs` inside try/catch, trips 20s circuit breaker on 5xx/544/timeout,
- * and NEVER throws HTTP 500 back to the client.
+ * awaits Supabase writes up to `timeoutMs` (capped at 8000ms for critical biometric/patient writes),
+ * registers the underlying promise via `waitUntil` so Cloudflare Workers never aborts an in-flight
+ * Supabase write if the response timeout fires, and NEVER throws HTTP 500 back to the client.
  */
 export async function persistWithTimeoutBestEffort(
   supabase: SupabaseClient | null,
   task: (client: SupabaseClient) => PromiseLike<unknown>,
   timeoutMs = 1500,
   label = 'supabase_write',
+  waitUntil?: (p: Promise<unknown>) => void,
 ): Promise<{ persisted: boolean; errorMessage?: string }> {
   if (!supabase) return { persisted: false };
   if (isSupabaseCircuitOpen(supabase)) {
     return { persisted: false, errorMessage: 'supabase_circuit_open' };
   }
-  const boundedMs = Math.min(timeoutMs, 1500);
+  const boundedMs = Math.max(500, Math.min(timeoutMs, 8000));
   let timerId: ReturnType<typeof setTimeout> | undefined;
   try {
+    const taskPromise = Promise.resolve().then(() => task(supabase));
+    if (waitUntil) {
+      waitUntil(taskPromise.catch(() => {}));
+    }
     const outcome = await Promise.race([
-      Promise.resolve(task(supabase)).then(
+      taskPromise.then(
         (res) => ({ timedOut: false as const, res }),
         (err) => ({ timedOut: false as const, err }),
       ),
@@ -3030,8 +3265,12 @@ export async function persistWithTimeoutBestEffort(
       }),
     ]);
     if (outcome.timedOut) {
-      markSupabaseDown(`${label}_timeout`, supabase);
-      console.warn(`[cloudRouter] ${label} timed out after ${boundedMs}ms (circuit opened 20s; kept in-memory state)`);
+      if (!waitUntil) {
+        markSupabaseDown(`${label}_timeout`, supabase);
+      }
+      console.warn(
+        `[cloudRouter] ${label} timed out after ${boundedMs}ms (${waitUntil ? 'continuing via waitUntil' : 'circuit opened 20s; kept in-memory state'})`,
+      );
       return { persisted: false, errorMessage: 'timeout' };
     }
     if ('err' in outcome && outcome.err) {
@@ -3042,7 +3281,10 @@ export async function persistWithTimeoutBestEffort(
       console.warn(`[cloudRouter] ${label} failed cleanly (non-fatal):`, msg);
       return { persisted: false, errorMessage: msg };
     }
-    const rawRes = 'res' in outcome ? (outcome.res as { error?: { message?: string } | null } | null) : null;
+    const rawRes =
+      'res' in outcome
+        ? (outcome.res as { error?: { message?: string } | null; persisted?: boolean; ok?: boolean } | null)
+        : null;
     if (rawRes && typeof rawRes === 'object' && rawRes.error) {
       const msg = rawRes.error.message || JSON.stringify(rawRes.error);
       if (isSupabaseTransientFailure(rawRes.error)) {
@@ -3050,6 +3292,9 @@ export async function persistWithTimeoutBestEffort(
       }
       console.warn(`[cloudRouter] ${label} PostgREST warning (non-fatal):`, msg);
       return { persisted: false, errorMessage: msg };
+    }
+    if (rawRes && typeof rawRes === 'object' && (rawRes.persisted === false || rawRes.ok === false)) {
+      return { persisted: false, errorMessage: `${label}_not_persisted` };
     }
     return { persisted: true };
   } catch (err) {

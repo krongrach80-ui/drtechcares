@@ -560,6 +560,7 @@ export interface CloudClientConfig {
   viteSupabaseAnonKey?: string;
   supabaseServiceKey?: string;
   apiBaseUrl?: string;
+  customSupabaseFetch?: typeof fetch;
 }
 
 export class ApiError extends Error {
@@ -666,6 +667,7 @@ export class DrTechCaresApiClient {
   private supabase: SupabaseClient | null = null;
   private authToken: string | null = null;
   private storedUser: UserAccount | null = null;
+  private lastBiometricWritePersisted = true;
   private readonly baseUrl: string;
   private readonly deviceId: string;
 
@@ -778,6 +780,11 @@ export class DrTechCaresApiClient {
 
   getSupabaseClient(): SupabaseClient | null {
     return this.supabase;
+  }
+
+  /** Reports whether the most recent enrollment or face-update API call confirmed durable cloud persistence. */
+  wasLastBiometricWritePersisted(): boolean {
+    return this.lastBiometricWritePersisted;
   }
 
   async checkHealth(options?: { refresh?: boolean }): Promise<{
@@ -1714,10 +1721,11 @@ export class DrTechCaresApiClient {
     qualityScore?: number;
   }): Promise<PatientRecord> {
     try {
-      const res = await this.request<{ patient: PatientRecord }>('/api/biometric/enroll', {
+      const res = await this.request<{ patient: PatientRecord; persisted?: boolean }>('/api/biometric/enroll', {
         method: 'POST',
         body: JSON.stringify(input),
       });
+      this.lastBiometricWritePersisted = res.persisted !== false;
       const normalizedPatient = normalizePatientRecord(res.patient, {
         requireRealVectorsForVerified: false,
       });
@@ -1729,6 +1737,7 @@ export class DrTechCaresApiClient {
       if (!this.isTransientOrServerFailure(err)) {
         throw err;
       }
+      this.lastBiometricWritePersisted = false;
       const nowIso = new Date().toISOString();
       const masterVec = input.masterEmbedding ?? input.overallCentroid ?? input.frontalCentroid ?? input.angleEmbeddings?.center;
       const fallbackPatient: PatientRecord = {
@@ -1789,13 +1798,14 @@ export class DrTechCaresApiClient {
     },
   ): Promise<PatientRecord> {
     try {
-      const res = await this.request<{ patient: PatientRecord }>(
+      const res = await this.request<{ patient: PatientRecord; persisted?: boolean }>(
         `/api/patients/${encodeURIComponent(patientId)}/enroll-face`,
         {
           method: 'POST',
           body: JSON.stringify(input),
         },
       );
+      this.lastBiometricWritePersisted = res.persisted !== false;
       const normalizedPatient = normalizePatientRecord(res.patient, {
         requireRealVectorsForVerified: false,
       });
@@ -1806,6 +1816,7 @@ export class DrTechCaresApiClient {
       if (!this.isTransientOrServerFailure(err)) {
         throw err;
       }
+      this.lastBiometricWritePersisted = false;
       const existing = this.readLocalPatientById(patientId);
       const fallbackPatient: PatientRecord = {
         ...(existing ?? {

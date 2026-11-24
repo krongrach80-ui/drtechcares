@@ -52,6 +52,12 @@ import {
   type VisionDelegate,
 } from '../lib/biometricVisionCache';
 import {
+  FloatingScorePopup,
+  GameCelebrationBurst,
+  GameComboBadge,
+} from './GameJuiceEffects';
+import { playGameSfx } from '../lib/gameUiSfx';
+import {
   HAND_OUT_OF_FRAME_BADGE_TH,
   SKELETON_JOINT_MIN_SCORE,
   applyKinematicSkeletonLock,
@@ -4489,12 +4495,31 @@ export function SmartRehabKioskUI({
       contH,
     );
   }, [ownerFaceGuard.active, ownerFaceGuard.trackedRawBox]);
-  const ownerMascotPose: 'explaining' | 'encouraging' | 'speaking' =
+  const [repBurstKey, setRepBurstKey] = useState(0);
+  const prevValidRepsRef = useRef<number>(rep_counter.valid_reps);
+  useEffect(() => {
+    const prev = prevValidRepsRef.current;
+    prevValidRepsRef.current = rep_counter.valid_reps;
+    if (rep_counter.valid_reps > prev) {
+      setRepBurstKey((k) => k + 1);
+      if (rep_counter.valid_reps >= selectedExercise.target_reps) {
+        playGameSfx('victory', { muted: voiceMuted });
+      } else if (rep_counter.valid_reps >= 2) {
+        playGameSfx('combo', { comboCount: rep_counter.valid_reps, muted: voiceMuted });
+      } else {
+        playGameSfx('rep', { muted: voiceMuted });
+      }
+    }
+  }, [rep_counter.valid_reps, selectedExercise.target_reps, voiceMuted]);
+
+  const ownerMascotPose: 'explaining' | 'encouraging' | 'speaking' | 'celebrating' =
     effectiveOwnerIdentityStatus === 'UNAUTHORIZED_PERSON'
       ? 'explaining'
-      : isHoldPhase || isRepCelebration
-        ? 'encouraging'
-        : 'speaking';
+      : isRepCelebration || allExercisesCompleted
+        ? 'celebrating'
+        : isHoldPhase
+          ? 'encouraging'
+          : 'speaking';
   const handleSwitchAccountAction = () => {
     if (onSwitchAccount) {
       onSwitchAccount();
@@ -4741,17 +4766,18 @@ export function SmartRehabKioskUI({
       )}
 
       {allExercisesCompleted && onAllExercisesCompleted && (
-        <div className="shrink-0 flex items-center justify-between gap-2 rounded-xl border-2 border-emerald-400 bg-emerald-50 px-3 py-1.5 shadow-xs animate-toast-in">
+        <div className="relative shrink-0 flex items-center justify-between gap-2 rounded-xl border-2 border-emerald-400 bg-gradient-to-r from-emerald-50 via-teal-50 to-sky-50 px-3 py-1.5 shadow-sm animate-toast-in">
+          <GameCelebrationBurst triggerKey={`all-done-${completedIds.length}`} variant="victory" />
           <div className="flex items-center gap-2 min-w-0">
             <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
             <p className="text-xs md:text-sm font-extrabold text-emerald-950 truncate">
-              ทำท่ากายภาพครบทั้งหมด {exerciseOptions.length} ท่าแล้ว!
+              ทำท่ากายภาพครบทั้งหมด {exerciseOptions.length} ท่าแล้ว! ยอดเยี่ยมมาก
             </p>
           </div>
           <button
             type="button"
             onClick={onAllExercisesCompleted}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1 text-xs font-extrabold text-white shadow-xs hover:bg-emerald-500 shrink-0 cursor-pointer"
+            className="btn-primary-sheen btn-game-3d-emerald inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 px-3.5 py-1.5 text-xs font-extrabold text-white hover:brightness-105 shrink-0 cursor-pointer"
           >
             <Gamepad2 className="h-3.5 w-3.5" />
             <span>เข้าสู่มินิเกม</span>
@@ -5029,12 +5055,22 @@ export function SmartRehabKioskUI({
       >
         {/* Card 1: Completed Reps */}
         <div
-          className={`relative overflow-hidden bg-white border-2 rounded-2xl px-3 py-2 text-center shadow-sm flex flex-col items-center justify-between transition-all duration-300 ${
+          className={`relative overflow-visible bg-white border-2 rounded-2xl px-3 py-2 text-center shadow-sm flex flex-col items-center justify-between transition-all duration-300 ${
             isRepCelebration
               ? 'border-emerald-500 ring-2 ring-emerald-300 shadow-md scale-[1.01]'
               : 'border-blue-200'
           }`}
         >
+          <GameCelebrationBurst
+            triggerKey={repBurstKey}
+            variant={rep_counter.valid_reps >= selectedExercise.target_reps ? 'victory' : 'rep'}
+          />
+          <FloatingScorePopup
+            triggerKey={repBurstKey}
+            label="+1 ครั้ง!"
+            sublabel="+10 XP"
+            tone={rep_counter.valid_reps >= 3 ? 'gold' : 'emerald'}
+          />
           <AnimatePresence>
             {isRepCelebration && (
               <motion.div
@@ -5047,9 +5083,12 @@ export function SmartRehabKioskUI({
               />
             )}
           </AnimatePresence>
-          <p className="text-blue-900 font-extrabold text-sm md:text-base leading-tight">
-            จำนวนครั้งสำเร็จ
-          </p>
+          <div className="flex items-center justify-center gap-1.5 flex-wrap">
+            <p className="text-blue-900 font-extrabold text-sm md:text-base leading-tight">
+              จำนวนครั้งสำเร็จ
+            </p>
+            <GameComboBadge count={rep_counter.valid_reps} labelTh="ต่อเนื่อง" compact />
+          </div>
           <div
             key={`rep-readout-${rep_counter.valid_reps}`}
             className={`text-blue-700 font-black text-2xl md:text-3xl tabular-mono leading-tight my-0.5 ${
@@ -5064,7 +5103,7 @@ export function SmartRehabKioskUI({
                 key={idx}
                 className={`h-2 flex-1 max-w-[16px] rounded-full transition-all duration-300 ${
                   idx < rep_counter.valid_reps
-                    ? `bg-emerald-500 scale-110 shadow-xs ${
+                    ? `bg-gradient-to-r from-emerald-500 to-teal-400 scale-110 shadow-xs ${
                         idx === rep_counter.valid_reps - 1 && isRepCelebration ? 'animate-rep-pop' : ''
                       }`
                     : 'bg-sky-100'
@@ -5101,14 +5140,16 @@ export function SmartRehabKioskUI({
             </span>
           </div>
           <div
-            className={`w-full h-2 bg-emerald-200 rounded-full overflow-hidden transition-shadow duration-200 ${
+            className={`w-full h-2.5 bg-emerald-200 rounded-full overflow-hidden transition-shadow duration-200 ${
               isWaitLowerArmUi || holdPct >= 100 ? 'animate-status-halo' : ''
             }`}
           >
             <div
               ref={holdProgressBarRef}
-              className={`h-full rounded-full transition-[width,background-color] duration-150 ease-linear ${
-                isWaitLowerArmUi || holdPct >= 100 ? 'bg-emerald-500' : 'bg-emerald-600'
+              className={`game-progress-stripes h-full rounded-full transition-[width,background-color] duration-150 ease-linear ${
+                isWaitLowerArmUi || holdPct >= 100
+                  ? 'bg-gradient-to-r from-emerald-500 to-amber-400'
+                  : 'bg-gradient-to-r from-teal-600 to-emerald-500'
               }`}
               style={{
                 width: `${holdPct}%`,
@@ -5124,8 +5165,18 @@ export function SmartRehabKioskUI({
             romPct >= 100 ? 'border-emerald-500 ring-2 ring-emerald-200 shadow-md' : 'border-teal-200'
           }`}
         >
-          <p className="text-teal-950 font-extrabold text-sm md:text-base leading-tight">
-            มุมการเคลื่อนไหว ROM
+          <p className="inline-flex items-center justify-center gap-1 text-teal-950 font-extrabold text-sm md:text-base leading-tight">
+            <span>มุมการเคลื่อนไหว ROM</span>
+            {romPct >= 100 && (
+              <svg
+                viewBox="0 0 16 16"
+                className="game-star-twinkle h-4 w-4 text-amber-500 shrink-0"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M8 1.2 9.9 5.5 14.6 6 11 9.1 12.1 13.8 8 11.3 3.9 13.8 5 9.1 1.4 6 6.1 5.5 Z" />
+              </svg>
+            )}
           </p>
           <div className="flex items-center justify-center gap-2 mt-0.5">
             <svg viewBox="0 0 120 66" className="w-16 h-9 md:w-20 md:h-11 overflow-visible shrink-0" aria-hidden="true">
