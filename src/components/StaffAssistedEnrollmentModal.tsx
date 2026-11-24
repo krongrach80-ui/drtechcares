@@ -37,22 +37,42 @@ import { upsertPatientStaffUserInSupabase } from '../utils/unifyPatientDirectory
 import {
   Activity,
   AlertTriangle,
+  ArrowRight,
+  BadgeCheck,
   CalendarDays,
   Camera,
   Check,
   CheckCircle2,
   Dumbbell,
   HeartPulse,
+  KeyRound,
   Plus,
   RefreshCw,
   ShieldCheck,
   Sparkles,
+  Stethoscope,
   UserPlus,
   X,
 } from 'lucide-react';
 import FaceID120Scanner, { type FaceID120Result } from './FaceID120Scanner';
 import { syncPatientBiometricEverywhere } from '../lib/biometricEngine';
+import { playGameSfx } from '../lib/gameUiSfx';
 import { normalizePatientRecord } from '../lib/patientHydration';
+import { GameDatePickerField } from './GameDatePickerField';
+import { calculateExactAgeFromIso } from '../utils/gameDatePickerHelpers';
+import {
+  composeThaiFullName,
+  computeEnrollmentReadiness,
+  PATIENT_GENDER_OPTIONS,
+  QUICK_CLINICAL_DIAGNOSIS_PRESETS,
+  QUICK_EMERGENCY_RELATION_PRESETS,
+  resolveGenderForPrefix,
+  resolvePrefixForGender,
+  splitThaiFullName,
+  THAI_NAME_PREFIX_OPTIONS,
+  type PatientGenderTh,
+  type ThaiNamePrefix,
+} from '../utils/patientNameHelpers';
 
 interface StaffAssistedEnrollmentModalProps {
   open: boolean;
@@ -183,12 +203,35 @@ export function StaffAssistedEnrollmentModal({
     );
   }, [exercises]);
 
-  // Section 1: General Info
+  // Section 1: General Info (Split Thai Prefix + First Name + Last Name synced with Gender & Live Profile)
   const [hn, setHn] = useState(generatePatientHn);
-  const [fullName, setFullName] = useState('');
+  const [namePrefix, setNamePrefix] = useState<ThaiNamePrefix>('นาย');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
   const [birthDate, setBirthDate] = useState('');
   const [age, setAge] = useState(45);
-  const [gender, setGender] = useState<'ชาย' | 'หญิง' | 'อื่นๆ'>('ชาย');
+  const [ageSyncedPulse, setAgeSyncedPulse] = useState(false);
+  const [genderSyncedPulse, setGenderSyncedPulse] = useState(false);
+  const [prefixSyncedPulse, setPrefixSyncedPulse] = useState(false);
+  const [romSyncedPulse, setRomSyncedPulse] = useState(false);
+  const agePulseTimerRef = useRef<number | null>(null);
+  const genderPulseTimerRef = useRef<number | null>(null);
+  const prefixPulseTimerRef = useRef<number | null>(null);
+  const romPulseTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (typeof window === 'undefined') return;
+      if (agePulseTimerRef.current !== null) window.clearTimeout(agePulseTimerRef.current);
+      if (genderPulseTimerRef.current !== null) window.clearTimeout(genderPulseTimerRef.current);
+      if (prefixPulseTimerRef.current !== null) window.clearTimeout(prefixPulseTimerRef.current);
+      if (romPulseTimerRef.current !== null) window.clearTimeout(romPulseTimerRef.current);
+    };
+  }, []);
+  const [gender, setGender] = useState<PatientGenderTh>('ชาย');
+  const fullName = useMemo(
+    () => composeThaiFullName(namePrefix, firstName, lastName),
+    [namePrefix, firstName, lastName],
+  );
   const [phone, setPhone] = useState('');
   const [assignedPtId, setAssignedPtId] = useState(
     currentUser.role === 'pt' ? currentUser.id : ptList[0]?.id ?? '',
@@ -272,15 +315,28 @@ export function StaffAssistedEnrollmentModal({
     setScheduledDates([todayIso]);
     setCustomDateInput(todayIso);
     if (targetPatient) {
+      const parsedName = splitThaiFullName(targetPatient.fullName);
       setHn(targetPatient.hn);
-      setFullName(targetPatient.fullName);
+      setNamePrefix(parsedName.prefix);
+      setFirstName(parsedName.firstName);
+      setLastName(parsedName.lastName);
       setAge(targetPatient.age);
+      if (
+        targetPatient.gender === 'ชาย' ||
+        targetPatient.gender === 'หญิง' ||
+        targetPatient.gender === 'อื่นๆ'
+      ) {
+        setGender(targetPatient.gender);
+      }
       setPhone(targetPatient.phone);
       setStep(2);
       setCapturing(true);
     } else {
       setHn(`HN-${Math.floor(100000 + Math.random() * 899999)}`);
-      setFullName('');
+      setNamePrefix('นาย');
+      setFirstName('');
+      setLastName('');
+      setBirthDate('');
       setAge(45);
       setGender('ชาย');
       setPhone('');
@@ -325,22 +381,105 @@ export function StaffAssistedEnrollmentModal({
     }
   }, [affectedSide, prescriptionTouched]);
 
+  const enrollmentReadiness = useMemo(
+    () =>
+      computeEnrollmentReadiness({
+        hn,
+        firstName,
+        lastName,
+        birthDate,
+        age,
+        phone,
+        clinicalDiagnosis,
+        emergencyName,
+        pdpaAccepted,
+      }),
+    [hn, firstName, lastName, birthDate, age, phone, clinicalDiagnosis, emergencyName, pdpaAccepted],
+  );
+
   if (!open) return null;
+
+  const triggerSyncPulse = (
+    setter: React.Dispatch<React.SetStateAction<boolean>>,
+    timerRef: React.MutableRefObject<number | null>,
+  ) => {
+    setter(true);
+    if (timerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(timerRef.current);
+    }
+    if (typeof window !== 'undefined') {
+      timerRef.current = window.setTimeout(() => {
+        timerRef.current = null;
+        setter(false);
+      }, 560);
+    }
+  };
+
+  const handleSelectNamePrefix = (nextPrefix: ThaiNamePrefix) => {
+    playGameSfx('tap');
+    setNamePrefix(nextPrefix);
+    const nextGender = resolveGenderForPrefix(nextPrefix, gender);
+    if (nextGender !== gender) {
+      setGender(nextGender);
+      triggerSyncPulse(setGenderSyncedPulse, genderPulseTimerRef);
+    }
+  };
+
+  const handleSelectGender = (nextGender: PatientGenderTh) => {
+    playGameSfx('tap');
+    setGender(nextGender);
+    const nextPrefix = resolvePrefixForGender(nextGender, namePrefix);
+    if (nextPrefix !== namePrefix) {
+      setNamePrefix(nextPrefix);
+      triggerSyncPulse(setPrefixSyncedPulse, prefixPulseTimerRef);
+    }
+  };
+
+  const handleFirstNamePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    if (lastName.trim().length > 0) return;
+    const pasted = e.clipboardData.getData('text').trim();
+    if (!pasted || !/\s/.test(pasted)) return;
+    const parsed = splitThaiFullName(pasted);
+    if (parsed.firstName && parsed.lastName) {
+      e.preventDefault();
+      if (parsed.prefix) {
+        setNamePrefix(parsed.prefix);
+        const syncedGender = resolveGenderForPrefix(parsed.prefix, gender);
+        if (syncedGender !== gender) {
+          setGender(syncedGender);
+          triggerSyncPulse(setGenderSyncedPulse, genderPulseTimerRef);
+        }
+        triggerSyncPulse(setPrefixSyncedPulse, prefixPulseTimerRef);
+      }
+      setFirstName(parsed.firstName);
+      setLastName(parsed.lastName);
+      playGameSfx('correct');
+    }
+  };
+
+  const handleSelectMotorScore = (score: number, recommendedMaxRomDeg: number) => {
+    playGameSfx('correct');
+    setMotorAssessmentScore(score);
+    setMaxSafeRomDeg(recommendedMaxRomDeg);
+    triggerSyncPulse(setRomSyncedPulse, romPulseTimerRef);
+  };
 
   const handleBirthDateChange = (val: string) => {
     setBirthDate(val);
     if (!val) return;
-    const birth = new Date(val);
-    if (!Number.isNaN(birth.getTime())) {
-      const years = Math.max(1, Math.floor((Date.now() - birth.getTime()) / (365.25 * 24 * 60 * 60 * 1000)));
-      setAge(years);
+    const exactYears = calculateExactAgeFromIso(val);
+    if (exactYears !== null) {
+      setAge(exactYears);
+      triggerSyncPulse(setAgeSyncedPulse, agePulseTimerRef);
     }
   };
 
   const resetFormForNext = () => {
     setStep(1);
     setHn(generatePatientHn());
-    setFullName('');
+    setNamePrefix('นาย');
+    setFirstName('');
+    setLastName('');
     setBirthDate('');
     setAge(45);
     setGender('ชาย');
@@ -384,11 +523,18 @@ export function StaffAssistedEnrollmentModal({
   };
 
   const validateStep1 = (): boolean => {
-    if (!fullName.trim()) {
-      setErrorMsg('กรุณากรอกชื่อ-นามสกุล คนไข้');
+    if (!firstName.trim()) {
+      playGameSfx('wrong');
+      setErrorMsg('กรุณากรอกชื่อจริงคนไข้');
+      return false;
+    }
+    if (!lastName.trim()) {
+      playGameSfx('wrong');
+      setErrorMsg('กรุณากรอกนามสกุลคนไข้');
       return false;
     }
     if (!pdpaAccepted) {
+      playGameSfx('wrong');
       setErrorMsg('กรุณายืนยันความยินยอม PDPA Biometric Consent ก่อนดำเนินการต่อ');
       return false;
     }
@@ -402,6 +548,7 @@ export function StaffAssistedEnrollmentModal({
   const handleGoStep2 = (e: React.FormEvent) => {
     e.preventDefault();
     if (!validateStep1()) return;
+    playGameSfx('unlock');
     setErrorMsg(null);
     setStep(2);
     setCapturing(true);
@@ -851,139 +998,250 @@ export function StaffAssistedEnrollmentModal({
     }
   };
 
+  const weakSideDisplayLabel =
+    affectedSide === 'LEFT'
+      ? 'ซ้าย'
+      : affectedSide === 'RIGHT'
+        ? 'ขวา'
+        : affectedSide === 'BOTH'
+          ? '2 ข้าง'
+          : 'ปกติ';
+
+  const phoneDigitCount = phone.replace(/\D/g, '').length;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/35 p-3 sm:p-6 backdrop-blur-sm animate-backdrop-fade">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F4C81]/40 p-2 sm:p-4 backdrop-blur-sm animate-backdrop-fade">
       <div
-        className={`relative flex max-h-[94vh] w-full flex-col overflow-hidden rounded-[24px] bg-white shadow-2xl border border-slate-200 transition-all animate-popup-spring ${
-          step === 3 ? 'max-w-3xl' : 'max-w-2xl'
+        className={`relative flex max-h-[96vh] w-full flex-col overflow-hidden rounded-[28px] bg-white shadow-[0_28px_80px_-14px_rgba(15,76,129,0.5)] border-2 border-sky-200/90 transition-all animate-popup-spring ${
+          step === 1 ? 'max-w-[960px]' : step === 3 ? 'max-w-4xl' : 'max-w-2xl'
         }`}
       >
-        {/* Top Modal Header */}
-        <div className="flex items-start justify-between border-b border-slate-100 px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600 border border-emerald-100">
-              <UserPlus className="h-5 w-5" />
+        {/* Large Readable Arcade-Clinical Header with Inline Live Synced Profile Chip */}
+        <div className="relative overflow-hidden bg-gradient-to-r from-[#0F4C81] via-[#0B6699] to-[#059669] px-5 sm:px-6 py-3.5 text-white">
+          <div className="relative flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-white/30 bg-white/15 text-white shadow-inner">
+                <UserPlus className="h-6 w-6" />
+              </div>
+              <div className="min-w-0 flex flex-wrap items-center gap-2.5">
+                <h2 className="text-lg sm:text-xl font-black tracking-tight text-white shrink-0">
+                  {isExistingPatientMode
+                    ? `สแกนหน้าผู้ป่วย: ${targetPatient?.fullName}`
+                    : 'ลงทะเบียนคนไข้ใหม่'}
+                </h2>
+                {!isExistingPatientMode && step === 1 && (
+                  <div
+                    data-testid="enroll-live-profile-card"
+                    className="hidden sm:inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/15 px-3.5 py-1 text-xs sm:text-sm font-bold text-white backdrop-blur-sm max-w-[460px]"
+                  >
+                    <span className="font-mono text-xs font-black text-emerald-200 shrink-0">
+                      {hn}
+                    </span>
+                    <span className="text-white/50">•</span>
+                    <span
+                      data-testid="enroll-composed-name-preview"
+                      className="truncate font-black text-white"
+                    >
+                      {fullName || 'รอชื่อ-นามสกุล'}
+                    </span>
+                    <span className="text-white/50">•</span>
+                    <span className="shrink-0 text-sky-100">
+                      {gender} {age > 0 ? `${age} ปี` : ''} • {weakSideDisplayLabel} Lv.{motorAssessmentScore}
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
-            <div>
-              <h2 className="text-base font-extrabold text-slate-900">
-                {isExistingPatientMode
-                  ? `ส่งตัวสแกนหน้าผู้ป่วย: ${targetPatient?.fullName}`
-                  : 'ลงทะเบียนคนไข้ใหม่ (Staff-Assisted Enrollment)'}
-              </h2>
-              <p className="text-xs text-slate-500">
-                {isExistingPatientMode
-                  ? `บันทึกแม่แบบใบหน้า 1024 มิติสำหรับรหัส ${targetPatient?.hn}`
-                  : 'ระบบเปิดประวัติผู้ป่วยอัตโนมัติและบันทึกเวชระเบียนคลินิก'}
-              </p>
-            </div>
-          </div>
 
-          <div className="flex items-center gap-2">
-            <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 text-[11px] font-bold">
-              {(['th', 'en', 'cn'] as const).map((code) => (
-                <button
-                  key={code}
-                  type="button"
-                  onClick={() => setLang(code)}
-                  className={`rounded-full px-2.5 py-1 transition ${
-                    lang === code ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+            <div className="flex items-center gap-2 shrink-0">
+              {!isExistingPatientMode && step === 1 && (
+                <span
+                  data-testid="enroll-readiness-bar"
+                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs sm:text-sm font-black border ${
+                    enrollmentReadiness.readyForFaceScan
+                      ? 'border-emerald-300 bg-emerald-400 text-emerald-950'
+                      : 'border-white/30 bg-white/15 text-white'
                   }`}
                 >
-                  {code === 'th' ? 'TH' : code === 'en' ? 'EN' : '中文'}
-                </button>
-              ))}
+                  <Sparkles className="h-3.5 w-3.5" />
+                  <span>
+                    {enrollmentReadiness.readyForFaceScan
+                      ? `พร้อม ${enrollmentReadiness.percent}%`
+                      : `${enrollmentReadiness.percent}%`}
+                  </span>
+                </span>
+              )}
+              <div className="flex items-center rounded-full border border-white/25 bg-white/15 p-0.5 text-xs font-extrabold">
+                {(['th', 'en', 'cn'] as const).map((code) => (
+                  <button
+                    key={code}
+                    type="button"
+                    onClick={() => {
+                      playGameSfx('tap');
+                      setLang(code);
+                    }}
+                    className={`rounded-full px-2.5 py-1 transition cursor-pointer ${
+                      lang === code
+                        ? 'bg-white text-[#0F4C81] shadow-xs'
+                        : 'text-white/85 hover:text-white'
+                    }`}
+                  >
+                    {code === 'th' ? 'TH' : code === 'en' ? 'EN' : '中文'}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  playGameSfx('tap');
+                  setCapturing(false);
+                  onClose();
+                }}
+                className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/25 bg-white/15 text-white hover:bg-white/25 transition cursor-pointer"
+                aria-label="ปิดหน้าต่าง"
+              >
+                <X className="h-5 w-5" />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setCapturing(false);
-                onClose();
-              }}
-              className="rounded-xl p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-              aria-label="ปิดหน้าต่าง"
+          </div>
+        </div>
+
+        {/* Perfectly Level Single-Row Stepper Rail + Hairline Readiness Bar */}
+        <div className="relative border-b border-slate-200/80 bg-slate-50/90 px-5 sm:px-6 py-2.5">
+          <div className="flex items-center justify-between gap-2">
+            {!isExistingPatientMode && (
+              <>
+                <div
+                  className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 text-xs sm:text-sm font-extrabold leading-none transition-all ${
+                    step === 1
+                      ? 'bg-emerald-600 text-white shadow-xs ring-2 ring-emerald-200'
+                      : step > 1
+                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                        : 'bg-white text-slate-500 border border-slate-200'
+                  }`}
+                >
+                  <span
+                    className={`flex h-5 w-5 items-center justify-center rounded-full text-xs font-black ${
+                      step === 1
+                        ? 'bg-white/25 text-white'
+                        : step > 1
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-slate-100 text-slate-600'
+                    }`}
+                  >
+                    {step > 1 ? <Check className="h-3 w-3" /> : '1'}
+                  </span>
+                  <span>ข้อมูลคนไข้</span>
+                </div>
+                <div
+                  className={`h-0.5 flex-1 min-w-2 rounded-full ${
+                    step > 1 ? 'bg-emerald-400' : 'bg-slate-200'
+                  }`}
+                />
+              </>
+            )}
+
+            <div
+              className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 text-xs sm:text-sm font-extrabold leading-none transition-all ${
+                step === 2
+                  ? 'bg-emerald-600 text-white shadow-xs ring-2 ring-emerald-200'
+                  : step > 2
+                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                    : 'bg-white text-slate-500 border border-slate-200'
+              }`}
             >
-              <X className="h-5 w-5" />
-            </button>
-          </div>
-        </div>
-
-        {/* Stepper Bar */}
-        <div className="flex flex-wrap items-center justify-center gap-1.5 sm:gap-2.5 border-b border-slate-100 bg-slate-50/70 px-4 py-3 text-[11px] sm:text-xs font-bold">
-          {!isExistingPatientMode && (
-            <>
-              <div
-                className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 transition ${
-                  step === 1
-                    ? 'bg-emerald-600 text-white shadow-sm'
-                    : step > 1
-                      ? 'bg-emerald-100 text-emerald-800'
-                      : 'bg-white text-slate-500 border border-slate-200'
+              <span
+                className={`flex h-5 w-5 items-center justify-center rounded-full text-xs font-black ${
+                  step === 2
+                    ? 'bg-white/25 text-white'
+                    : step > 2
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-slate-100 text-slate-600'
                 }`}
               >
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white/25 text-[11px] font-black">
-                  {step > 1 ? 'OK' : '1'}
-                </span>
-                <span>1. กรอกข้อมูลคนไข้</span>
-              </div>
-              <span className="text-slate-300">•</span>
-            </>
-          )}
+                {step > 2 ? <Check className="h-3 w-3" /> : isExistingPatientMode ? '1' : '2'}
+              </span>
+              <span>Face ID 120 เฟรม</span>
+            </div>
 
-          <div
-            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 transition ${
-              step === 2
-                ? 'bg-emerald-600 text-white shadow-sm'
-                : step > 2
-                  ? 'bg-emerald-100 text-emerald-800'
+            {!isExistingPatientMode && (
+              <>
+                <div
+                  className={`h-0.5 flex-1 min-w-2 rounded-full ${
+                    step > 2 ? 'bg-emerald-400' : 'bg-slate-200'
+                  }`}
+                />
+                <div
+                  className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 text-xs sm:text-sm font-extrabold leading-none transition-all ${
+                    step === 3
+                      ? 'bg-emerald-600 text-white shadow-xs ring-2 ring-emerald-200'
+                      : step > 3
+                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                        : 'bg-white text-slate-500 border border-slate-200'
+                  }`}
+                >
+                  <span
+                    className={`flex h-5 w-5 items-center justify-center rounded-full text-xs font-black ${
+                      step === 3
+                        ? 'bg-white/25 text-white'
+                        : step > 3
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-slate-100 text-slate-600'
+                    }`}
+                  >
+                    {step > 3 ? <Check className="h-3 w-3" /> : '3'}
+                  </span>
+                  <span>ท่ากายภาพ</span>
+                </div>
+              </>
+            )}
+
+            <div
+              className={`h-0.5 flex-1 min-w-2 rounded-full ${
+                step > 3 ? 'bg-emerald-400' : 'bg-slate-200'
+              }`}
+            />
+            <div
+              className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 text-xs sm:text-sm font-extrabold leading-none transition-all ${
+                step === 4
+                  ? 'bg-emerald-600 text-white shadow-xs ring-2 ring-emerald-200'
                   : 'bg-white text-slate-500 border border-slate-200'
-            }`}
-          >
-            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-200/80 text-[11px] font-black text-slate-700">
-              {step > 2 ? 'OK' : isExistingPatientMode ? '1' : '2'}
-            </span>
-            <span>{isExistingPatientMode ? '1. Face ID 120 เฟรม (3D)' : '2. Face ID 120 เฟรม (3D)'}</span>
-          </div>
-
-          {!isExistingPatientMode && (
-            <>
-              <span className="text-slate-300">•</span>
-              <div
-                className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 transition ${
-                  step === 3
-                    ? 'bg-emerald-600 text-white shadow-sm'
-                    : step > 3
-                      ? 'bg-emerald-100 text-emerald-800'
-                      : 'bg-white text-slate-500 border border-slate-200'
+              }`}
+            >
+              <span
+                className={`flex h-5 w-5 items-center justify-center rounded-full text-xs font-black ${
+                  step === 4 ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-600'
                 }`}
               >
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-200/80 text-[11px] font-black text-slate-700">
-                  {step > 3 ? 'OK' : '3'}
-                </span>
-                <span>3. กำหนดท่ากายภาพบำบัด</span>
-              </div>
-            </>
-          )}
-
-          <span className="text-slate-300">•</span>
-          <div
-            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 transition ${
-              step === 4
-                ? 'bg-emerald-600 text-white shadow-sm'
-                : 'bg-white text-slate-500 border border-slate-200'
-            }`}
-          >
-            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-200/80 text-[11px] font-black text-slate-700">
-              {isExistingPatientMode ? '2' : '4'}
-            </span>
-            <span>{isExistingPatientMode ? '2. พร้อมใช้งานตู้' : '4. พร้อมใช้งานตู้'}</span>
+                {isExistingPatientMode ? '2' : '4'}
+              </span>
+              <span>พร้อมใช้งาน</span>
+            </div>
           </div>
+
+          {!isExistingPatientMode && step === 1 && (
+            <div className="absolute inset-x-0 bottom-0 h-1.5 bg-slate-200/70 overflow-hidden">
+              <div
+                className={`h-full transition-all duration-300 game-progress-stripes ${
+                  enrollmentReadiness.readyForFaceScan
+                    ? 'bg-gradient-to-r from-emerald-500 to-teal-500'
+                    : 'bg-gradient-to-r from-[#0F4C81] to-sky-500'
+                }`}
+                style={{ width: `${Math.max(10, enrollmentReadiness.percent)}%` }}
+              />
+            </div>
+          )}
         </div>
 
-        {/* Scrollable Content */}
-        <div ref={modalBodyRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+        {/* Content Body (Large Portrait Zero-Scroll on Step 1) */}
+        <div
+          ref={modalBodyRef}
+          className="flex-1 overflow-y-auto bg-gradient-to-b from-slate-50/70 via-white to-sky-50/30 px-5 sm:px-6 py-3.5 space-y-3"
+        >
           {errorMsg && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-700 animate-toast-in animate-gentle-shake">
-              {errorMsg}
+            <div className="flex items-center gap-2 rounded-xl border-2 border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-extrabold text-rose-700 animate-toast-in animate-gentle-shake">
+              <AlertTriangle className="h-4.5 w-4.5 text-rose-600 shrink-0" />
+              <span>{errorMsg}</span>
             </div>
           )}
           {duplicateFaceWarning?.duplicate && (
@@ -1045,69 +1303,157 @@ export function StaffAssistedEnrollmentModal({
             </div>
           )}
           {toastMsg && (
-            <div className="rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-xs font-bold text-emerald-800 flex items-center gap-2 shadow-xs animate-toast-in">
-              <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+            <div className="rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-sm font-bold text-emerald-800 flex items-center gap-2 shadow-xs animate-toast-in">
+              <CheckCircle2 className="h-4.5 w-4.5 text-emerald-600 shrink-0" />
               <span>{toastMsg}</span>
             </div>
           )}
 
           {step === 1 && (
-            <form id="staff-enroll-step1" onSubmit={handleGoStep2} className="space-y-5">
-              {/* Section 1 */}
-              <div className="space-y-3">
-                <div className="flex items-center gap-2 text-xs font-extrabold text-teal-700 border-b border-slate-100 pb-2">
-                  <UserPlus className="h-4 w-4" />
-                  <span>ส่วนที่ 1: ข้อมูลทั่วไป (General Info)</span>
+            <form
+              id="staff-enroll-step1"
+              onSubmit={handleGoStep2}
+              className="space-y-3"
+            >
+              {/* Card 1: Patient Identity */}
+              <div className="rounded-2xl border-2 border-sky-100 bg-white p-4 shadow-2xs space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-[#0F4C81] text-sm font-black text-white">
+                      1
+                    </span>
+                    <span className="text-base font-black text-slate-900">ข้อมูลผู้ป่วย</span>
+                  </div>
+                  <span
+                    className={`rounded-full px-3 py-0.5 text-xs font-extrabold border transition-all ${
+                      prefixSyncedPulse || genderSyncedPulse || ageSyncedPulse
+                        ? 'border-emerald-400 bg-emerald-100 text-emerald-800 game-age-sync-glow'
+                        : 'border-sky-200 bg-sky-50 text-[#0F4C81]'
+                    }`}
+                  >
+                    {fullName || 'ซิงก์คำนำหน้า • เพศ • อายุอัตโนมัติ'}
+                  </span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <label className="text-[11px] font-bold text-slate-600">
-                        รหัสคนไข้ (HN / Patient Code)
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => setHn(generatePatientHn())}
-                        className="shrink-0 inline-flex items-center gap-1 text-[11px] font-bold text-teal-600 hover:text-teal-800"
-                      >
-                        <RefreshCw className="h-3 w-3" />
-                        สุ่มเลขใหม่
-                      </button>
-                    </div>
-                    <input
-                      value={hn}
-                      onChange={(e) => setHn(e.target.value)}
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-extrabold text-slate-800 focus:border-teal-500 focus:bg-white focus:outline-none"
-                    />
+                {/* Prefix Bar */}
+                <div>
+                  <label className="block text-sm font-extrabold text-slate-700 mb-1.5">
+                    คำนำหน้า <span className="text-rose-500">*</span>
+                  </label>
+                  <div
+                    data-testid="enroll-prefix-bar"
+                    className={`grid grid-cols-6 gap-2 rounded-xl transition-all ${
+                      prefixSyncedPulse ? 'bg-emerald-50/80 game-age-sync-glow' : ''
+                    }`}
+                  >
+                    {THAI_NAME_PREFIX_OPTIONS.map((option) => {
+                      const active = namePrefix === option.value;
+                      return (
+                        <button
+                          key={option.label}
+                          type="button"
+                          data-testid={`enroll-prefix-${option.value || 'none'}`}
+                          aria-pressed={active}
+                          onClick={() => handleSelectNamePrefix(option.value)}
+                          className={`h-11 rounded-xl border-2 px-2 text-base font-black transition-all duration-150 cursor-pointer ${
+                            active
+                              ? 'border-[#0b3960] bg-[#0F4C81] text-white btn-game-3d-blue'
+                              : 'border-slate-200 bg-white text-slate-700 btn-game-3d-white hover:border-sky-300 hover:bg-sky-50/70'
+                          }`}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
                   </div>
+                </div>
 
+                {/* Split First Name & Last Name */}
+                <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                      ชื่อ-นามสกุล คนไข้ <span className="text-rose-500">*</span>
+                    <label
+                      htmlFor="enroll-first-name-input"
+                      className="block text-sm font-extrabold text-slate-700 mb-1"
+                    >
+                      ชื่อจริง <span className="text-rose-500">*</span>
                     </label>
-                    <input
-                      required
-                      value={fullName}
-                      onChange={(e) => setFullName(e.target.value)}
-                      placeholder="เช่น นายธนกร รุ่งเรือง"
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
-                    />
+                    <div className="relative">
+                      <input
+                        id="enroll-first-name-input"
+                        data-testid="enroll-first-name-input"
+                        required
+                        value={firstName}
+                        onPaste={handleFirstNamePaste}
+                        onChange={(e) => {
+                          setFirstName(e.target.value);
+                          if (errorMsg) setErrorMsg(null);
+                        }}
+                        placeholder="เช่น ธนกร"
+                        className={`h-12 w-full rounded-xl border-2 pl-4 pr-10 text-base font-bold text-slate-900 placeholder:text-slate-400 transition-all focus:outline-none ${
+                          enrollmentReadiness.checks.hasFirstName
+                            ? 'border-emerald-300 bg-white focus:border-emerald-500'
+                            : 'border-slate-200 bg-slate-50/50 focus:bg-white focus:border-[#0F4C81]'
+                        }`}
+                      />
+                      {enrollmentReadiness.checks.hasFirstName && (
+                        <Check className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-emerald-600" />
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="enroll-last-name-input"
+                      className="block text-sm font-extrabold text-slate-700 mb-1"
+                    >
+                      นามสกุล <span className="text-rose-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        id="enroll-last-name-input"
+                        data-testid="enroll-last-name-input"
+                        required
+                        value={lastName}
+                        onChange={(e) => {
+                          setLastName(e.target.value);
+                          if (errorMsg) setErrorMsg(null);
+                        }}
+                        placeholder="เช่น รุ่งเรือง"
+                        className={`h-12 w-full rounded-xl border-2 pl-4 pr-10 text-base font-bold text-slate-900 placeholder:text-slate-400 transition-all focus:outline-none ${
+                          enrollmentReadiness.checks.hasLastName
+                            ? 'border-emerald-300 bg-white focus:border-emerald-500'
+                            : 'border-slate-200 bg-slate-50/50 focus:bg-white focus:border-[#0F4C81]'
+                        }`}
+                      />
+                      {enrollmentReadiness.checks.hasLastName && (
+                        <Check className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-emerald-600" />
+                      )}
+                    </div>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-12 gap-3">
-                  <div className="col-span-12 sm:col-span-6">
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">วันเกิด (Date of Birth)</label>
-                    <input
-                      type="date"
+                {/* DOB + Age + Gender (Full-Width Aligned h-12 Row) */}
+                <div className="grid grid-cols-12 gap-3 items-end">
+                  <div className="col-span-5">
+                    <label className="block text-sm font-extrabold text-slate-700 mb-1">
+                      วันเกิด
+                    </label>
+                    <GameDatePickerField
+                      mode="dob"
                       value={birthDate}
-                      onChange={(e) => handleBirthDateChange(e.target.value)}
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-700 focus:border-teal-500 focus:bg-white focus:outline-none"
+                      onChange={handleBirthDateChange}
+                      ageHint={age}
+                      maxDate={todayIso}
+                      placeholder="แตะเลือกวันเกิด"
+                      popupTitle="เลือกวันเดือนปีเกิดผู้ป่วย"
+                      testId="enroll-dob-picker"
                     />
                   </div>
-                  <div className="col-span-5 sm:col-span-3">
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">อายุ (ปี)</label>
+
+                  <div className="col-span-2">
+                    <label className="block text-sm font-extrabold text-slate-700 mb-1">
+                      อายุ (ปี)
+                    </label>
                     <input
                       type="number"
                       inputMode="numeric"
@@ -1121,26 +1467,90 @@ export function StaffAssistedEnrollmentModal({
                         const digits = e.target.value.replace(/\D/g, '').slice(0, 3);
                         setAge(digits ? Math.min(120, Number(digits)) : 0);
                       }}
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-center text-sm font-bold text-slate-800 focus:border-teal-500 focus:bg-white focus:outline-none"
+                      className={`h-12 w-full rounded-xl border-2 px-2 text-center text-lg font-black transition-all focus:border-teal-500 focus:bg-white focus:outline-none ${
+                        ageSyncedPulse
+                          ? 'border-emerald-400 bg-emerald-50 text-emerald-900 game-age-sync-glow'
+                          : birthDate
+                            ? 'border-emerald-200 bg-emerald-50/40 text-emerald-900'
+                            : 'border-slate-200 bg-slate-50/70 text-slate-800'
+                      }`}
                     />
                   </div>
-                  <div className="col-span-7 sm:col-span-3">
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">เพศกำเนิด</label>
-                    <select
-                      value={gender}
-                      onChange={(e) => setGender(e.target.value as 'ชาย' | 'หญิง' | 'อื่นๆ')}
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm font-semibold text-slate-800 focus:border-teal-500 focus:bg-white focus:outline-none"
+
+                  <div className="col-span-5">
+                    <label className="block text-sm font-extrabold text-slate-700 mb-1">
+                      เพศ
+                    </label>
+                    <div
+                      data-testid="enroll-gender-bar"
+                      className={`grid grid-cols-3 gap-2 rounded-xl transition-all ${
+                        genderSyncedPulse ? 'bg-emerald-50/80 game-age-sync-glow' : ''
+                      }`}
                     >
-                      <option value="ชาย">ชาย (Male)</option>
-                      <option value="หญิง">หญิง (Female)</option>
-                      <option value="อื่นๆ">อื่นๆ (Other)</option>
-                    </select>
+                      {PATIENT_GENDER_OPTIONS.map((gOpt) => {
+                        const active = gender === gOpt.value;
+                        const activeStyle =
+                          gOpt.value === 'หญิง'
+                            ? 'border-rose-500 bg-rose-500 text-white btn-game-3d-rose'
+                            : gOpt.value === 'อื่นๆ'
+                              ? 'border-teal-600 bg-teal-600 text-white btn-game-3d-emerald'
+                              : 'border-[#0b3960] bg-[#0F4C81] text-white btn-game-3d-blue';
+                        return (
+                          <button
+                            key={gOpt.value}
+                            type="button"
+                            data-testid={`enroll-gender-${gOpt.value}`}
+                            aria-pressed={active}
+                            onClick={() => handleSelectGender(gOpt.value)}
+                            className={`h-12 rounded-xl border-2 text-base font-black transition-all duration-150 cursor-pointer ${
+                              active
+                                ? activeStyle
+                                : 'border-slate-200 bg-white text-slate-700 btn-game-3d-white hover:border-sky-300'
+                            }`}
+                          >
+                            {gOpt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">เบอร์โทรศัพท์ (10 หลัก)</label>
+                {/* HN + Phone + PT */}
+                <div className="grid grid-cols-12 gap-3">
+                  <div className="col-span-4">
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-sm font-extrabold text-slate-700">รหัส HN</label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          playGameSfx('tap');
+                          setHn(generatePatientHn());
+                        }}
+                        className="inline-flex items-center gap-1 rounded-full bg-sky-50 border border-sky-200 px-2 py-0.5 text-xs font-extrabold text-[#0F4C81] hover:bg-sky-100 cursor-pointer"
+                      >
+                        <RefreshCw className="h-3 w-3" />
+                        สุ่ม
+                      </button>
+                    </div>
+                    <input
+                      value={hn}
+                      onChange={(e) => setHn(e.target.value)}
+                      className="h-11 w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-3.5 font-mono text-base font-black text-slate-800 focus:border-[#0F4C81] focus:bg-white focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="col-span-4">
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-sm font-extrabold text-slate-700">เบอร์โทร</label>
+                      <span
+                        className={`text-xs font-black ${
+                          phoneDigitCount === 10 ? 'text-emerald-600' : 'text-slate-400'
+                        }`}
+                      >
+                        {phoneDigitCount}/10
+                      </span>
+                    </div>
                     <input
                       type="tel"
                       inputMode="numeric"
@@ -1149,23 +1559,28 @@ export function StaffAssistedEnrollmentModal({
                       value={phone}
                       onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
                       placeholder="08XXXXXXXX"
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
+                      className={`h-11 w-full rounded-xl border-2 px-3.5 text-base font-bold text-slate-800 placeholder:text-slate-400 focus:bg-white focus:outline-none ${
+                        phoneDigitCount === 10
+                          ? 'border-emerald-300 bg-emerald-50/30'
+                          : 'border-slate-200 bg-slate-50/70 focus:border-teal-500'
+                      }`}
                     />
                   </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                      นักกายภาพผู้รับผิดชอบ (Responsible PT) <span className="text-rose-500">*</span>
+
+                  <div className="col-span-4">
+                    <label className="block text-sm font-extrabold text-slate-700 mb-1">
+                      นักกายภาพ <span className="text-rose-500">*</span>
                     </label>
                     <select
                       value={assignedPtId}
                       onChange={(e) => setAssignedPtId(e.target.value)}
                       disabled={currentUser.role === 'pt'}
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm font-semibold text-slate-800 focus:border-teal-500 focus:bg-white focus:outline-none disabled:opacity-75"
+                      className="h-11 w-full rounded-xl border-2 border-slate-200 bg-slate-50/70 px-3 text-sm sm:text-base font-bold text-slate-800 focus:border-teal-500 focus:bg-white focus:outline-none disabled:opacity-75"
                     >
                       {ptList.length === 0 && <option value="">กภ. ประจำคลินิก</option>}
                       {ptList.map((pt) => (
                         <option key={pt.id} value={pt.id}>
-                          {pt.fullName} {pt.specialty ? `(${pt.specialty})` : ''}
+                          {pt.fullName}
                         </option>
                       ))}
                     </select>
@@ -1173,76 +1588,115 @@ export function StaffAssistedEnrollmentModal({
                 </div>
               </div>
 
-              {/* Section 2 */}
-              <div className="space-y-3">
-                <div className="flex items-center gap-2 text-xs font-extrabold text-teal-700 border-b border-slate-100 pb-2">
-                  <Activity className="h-4 w-4" />
-                  <span>ส่วนที่ 2: ข้อมูลการรักษา &amp; กายภาพ (Clinical &amp; Rehab)</span>
+              {/* Card 2: Clinical & Rehab Arena */}
+              <div className="rounded-2xl border-2 border-emerald-100 bg-white p-4 shadow-2xs space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-600 text-sm font-black text-white">
+                      2
+                    </span>
+                    <Stethoscope className="h-5 w-5 text-emerald-700" />
+                    <span className="text-base font-black text-slate-900">
+                      อาการ &amp; กำลังกล้ามเนื้อ
+                    </span>
+                  </div>
+                  <span className="relative overflow-hidden rounded-full bg-emerald-700 px-3.5 py-1 text-xs sm:text-sm font-black text-white game-badge-shimmer">
+                    Grade {motorAssessmentScore}/6 • {maxSafeRomDeg}°
+                  </span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Target Joint & Patient Group */}
+                <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                      ข้อต่อเป้าหมายการฟื้นฟู (Target Joint) <span className="text-rose-500">*</span>
+                    <label className="block text-sm font-extrabold text-slate-700 mb-1">
+                      ข้อต่อเป้าหมาย <span className="text-rose-500">*</span>
                     </label>
                     <select
                       value={targetJoint}
-                      onChange={(e) => setTargetJoint(e.target.value)}
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm font-semibold text-slate-800 focus:border-teal-500 focus:bg-white focus:outline-none"
+                      onChange={(e) => {
+                        playGameSfx('tap');
+                        setTargetJoint(e.target.value);
+                      }}
+                      className="h-11 w-full rounded-xl border-2 border-slate-200 bg-slate-50/70 px-3 text-sm sm:text-base font-bold text-slate-800 focus:border-emerald-500 focus:bg-white focus:outline-none"
                     >
                       <option value="ข้อไหล่และแขน Stroke ADL (Shoulder & Arm)">
-                        ข้อไหล่และแขน Stroke ADL (Shoulder &amp; Arm — แนะนำหลัก)
+                        ข้อไหล่และแขน Stroke ADL
                       </option>
                       <option value="คอ บ่า และแขน สธ. ผู้สูงอายุ (MOPH Upper Body)">
-                        คอ บ่า และแขน สธ. ผู้สูงอายุ (MOPH Upper Body)
+                        คอ บ่า และแขน สธ. ผู้สูงอายุ
                       </option>
                       <option value="ข้อไหล่ (Shoulder)">ข้อไหล่ (Shoulder)</option>
-                      <option value="ข้อศอกและแขน (Elbow & Arm)">ข้อศอกและแขน (Elbow &amp; Arm)</option>
+                      <option value="ข้อศอกและแขน (Elbow & Arm)">ข้อศอกและแขน</option>
                       <option value="ข้อมือและกล้ามเนื้อมัดเล็ก (Wrist & Hand Fingers)">
-                        ข้อมือและกล้ามเนื้อมัดเล็ก (Wrist &amp; Hand Fingers)
+                        ข้อมือและนิ้วมือ
                       </option>
                       <option value="กล้ามเนื้อคอและบ่า สธ. (Cervical & Shoulder Girdle)">
-                        กล้ามเนื้อคอและบ่า สธ. (Cervical &amp; Shoulder Girdle)
+                        กล้ามเนื้อคอและบ่า สธ.
                       </option>
                     </select>
                   </div>
+
                   <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                      อาการบาดเจ็บ / การวินิจฉัย (Clinical Diagnosis)
+                    <label className="block text-sm font-extrabold text-slate-700 mb-1">
+                      กลุ่มผู้ป่วย
                     </label>
-                    <input
-                      value={clinicalDiagnosis}
-                      onChange={(e) => setClinicalDiagnosis(e.target.value)}
-                      placeholder="เช่น Ischemic Stroke แขนขวาอ่อนแรง, ไหล่ติดผู้สูงอายุ"
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
-                    />
+                    <select
+                      value={strokeType}
+                      onChange={(e) => {
+                        playGameSfx('tap');
+                        setStrokeType(e.target.value as StrokeType);
+                      }}
+                      className="h-11 w-full rounded-xl border-2 border-slate-200 bg-slate-50/70 px-3 text-sm sm:text-base font-bold text-slate-800 focus:border-emerald-500 focus:bg-white focus:outline-none"
+                    >
+                      <option value="ISCHEMIC">Stroke เส้นเลือดตีบ/ตัน (Ischemic)</option>
+                      <option value="HEMORRHAGIC">Stroke เส้นเลือดแตก (Hemorrhagic)</option>
+                      <option value="ELDERLY_GENERAL">ผู้สูงอายุทั่วไป (MOPH)</option>
+                      <option value="NEURO">ระบบประสาท (Neuro)</option>
+                      <option value="ORTHOPEDIC">กระดูกและข้อ (Ortho)</option>
+                    </select>
                   </div>
                 </div>
 
-                {/* Stroke Classification, Affected Side, Mahidol 0-6 Motor Assessment Scale & Safe ROM */}
-                <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3.5 space-y-3">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div>
-                      <label className="block text-[11px] font-extrabold text-emerald-950 mb-1">
-                        ประเภทกลุ่มผู้ป่วย (Stroke / Elderly Classification)
+                {/* Diagnosis + 1-Line Quick Presets */}
+                <div className="space-y-2">
+                  <input
+                    value={clinicalDiagnosis}
+                    onChange={(e) => setClinicalDiagnosis(e.target.value)}
+                    placeholder="อาการ / การวินิจฉัย เช่น Ischemic Stroke แขนขวาอ่อนแรง"
+                    className="h-11 w-full rounded-xl border-2 border-slate-200 bg-slate-50/70 px-3.5 text-sm sm:text-base font-semibold text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:bg-white focus:outline-none"
+                  />
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {QUICK_CLINICAL_DIAGNOSIS_PRESETS.map((preset) => {
+                      const active = clinicalDiagnosis === preset;
+                      return (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => {
+                            playGameSfx('tap');
+                            setClinicalDiagnosis(preset);
+                          }}
+                          className={`rounded-full border px-3 py-1 text-xs sm:text-sm font-bold transition cursor-pointer ${
+                            active
+                              ? 'border-emerald-600 bg-emerald-600 text-white'
+                              : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-emerald-300 hover:bg-emerald-50'
+                          }`}
+                        >
+                          {preset}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Emerald Power Arena: Weak Side + ROM + ADL + Mahidol 0-6 */}
+                <div className="rounded-2xl border-2 border-emerald-200/90 bg-gradient-to-br from-emerald-50/75 via-teal-50/35 to-white p-3.5 space-y-3">
+                  <div className="grid grid-cols-12 gap-3 items-end">
+                    <div className="col-span-6">
+                      <label className="block text-xs sm:text-sm font-extrabold text-emerald-950 mb-1">
+                        ข้างที่อ่อนแรง
                       </label>
-                      <select
-                        value={strokeType}
-                        onChange={(e) => setStrokeType(e.target.value as StrokeType)}
-                        className="w-full rounded-xl border border-emerald-200 bg-white px-3 py-2 text-xs font-bold text-slate-800"
-                      >
-                        <option value="ISCHEMIC">Stroke เส้นเลือดตีบ/ตัน (Ischemic)</option>
-                        <option value="HEMORRHAGIC">Stroke เส้นเลือดแตก (Hemorrhagic)</option>
-                        <option value="ELDERLY_GENERAL">ผู้สูงอายุทั่วไป (MOPH / Active Aging)</option>
-                        <option value="NEURO">ระบบประสาท (Neuro Rehab)</option>
-                        <option value="ORTHOPEDIC">กระดูกและข้อ (Orthopedic)</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-extrabold text-emerald-950 mb-1">
-                        จุดอ่อนแรงที่ต้องเน้น (Focus Weak Side)
-                      </label>
-                      <div className="grid grid-cols-4 gap-1">
+                      <div className="grid grid-cols-4 gap-1.5">
                         {(
                           [
                             ['LEFT', 'ซ้าย'],
@@ -1254,11 +1708,14 @@ export function StaffAssistedEnrollmentModal({
                           <button
                             key={val}
                             type="button"
-                            onClick={() => setAffectedSide(val)}
-                            className={`rounded-lg py-2 text-[11px] font-extrabold border transition cursor-pointer ${
+                            onClick={() => {
+                              playGameSfx('tap');
+                              setAffectedSide(val);
+                            }}
+                            className={`h-11 rounded-xl text-sm sm:text-base font-black border-2 transition-all cursor-pointer ${
                               affectedSide === val
-                                ? 'border-emerald-600 bg-emerald-600 text-white shadow-xs'
-                                : 'border-emerald-200 bg-white text-slate-700 hover:bg-emerald-100'
+                                ? 'border-emerald-700 bg-emerald-600 text-white btn-game-3d-emerald'
+                                : 'border-emerald-200 bg-white text-slate-700 btn-game-3d-white hover:bg-emerald-50'
                             }`}
                           >
                             {lbl}
@@ -1266,159 +1723,185 @@ export function StaffAssistedEnrollmentModal({
                         ))}
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="block text-[11px] font-extrabold text-emerald-950 mb-1">
-                          Safe Max ROM (°)
-                        </label>
-                        <input
-                          type="number"
-                          min={30}
-                          max={180}
-                          value={maxSafeRomDeg}
-                          onChange={(e) => setMaxSafeRomDeg(Math.max(30, Math.min(180, Number(e.target.value) || 30)))}
-                          className="w-full rounded-xl border border-emerald-200 bg-white px-2.5 py-1.5 text-center font-mono text-sm font-black text-emerald-800"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] font-extrabold text-emerald-950 mb-1">
-                          ADL ใส่เสื้อ (0–5)
-                        </label>
-                        <select
-                          value={adlDressingScore}
-                          onChange={(e) => setAdlDressingScore(Number(e.target.value))}
-                          className="w-full rounded-xl border border-emerald-200 bg-white px-2 py-2 text-xs font-bold text-slate-800"
-                        >
-                          <option value={0}>0: ช่วยตัวเองไม่ได้</option>
-                          <option value={1}>1: ช่วยมาก (พึ่งพาสูง)</option>
-                          <option value={2}>2: สอดแขนได้บ้าง</option>
-                          <option value={3}>3: ทำได้เมื่อมีผู้ช่วย</option>
-                          <option value={4}>4: ใส่เองได้ช้าๆ</option>
-                          <option value={5}>5: ใส่เสื้อผ้าเองได้คล่อง</option>
-                        </select>
-                      </div>
+
+                    <div className="col-span-2">
+                      <label className="block text-xs sm:text-sm font-extrabold text-emerald-950 mb-1">
+                        ROM (°)
+                      </label>
+                      <input
+                        type="number"
+                        min={30}
+                        max={180}
+                        value={maxSafeRomDeg}
+                        onChange={(e) =>
+                          setMaxSafeRomDeg(
+                            Math.max(30, Math.min(180, Number(e.target.value) || 30)),
+                          )
+                        }
+                        className={`h-11 w-full rounded-xl border-2 bg-white px-2 text-center font-mono text-base font-black text-emerald-800 focus:border-emerald-500 focus:outline-none ${
+                          romSyncedPulse
+                            ? 'border-emerald-400 bg-emerald-50 game-age-sync-glow'
+                            : 'border-emerald-200'
+                        }`}
+                      />
+                    </div>
+
+                    <div className="col-span-4">
+                      <label className="block text-xs sm:text-sm font-extrabold text-emerald-950 mb-1">
+                        ADL ใส่เสื้อ (0–5)
+                      </label>
+                      <select
+                        value={adlDressingScore}
+                        onChange={(e) => {
+                          playGameSfx('tap');
+                          setAdlDressingScore(Number(e.target.value));
+                        }}
+                        className="h-11 w-full rounded-xl border-2 border-emerald-200 bg-white px-2.5 text-sm font-extrabold text-slate-800 focus:border-emerald-500 focus:outline-none"
+                      >
+                        <option value={0}>0: ช่วยตัวเองไม่ได้</option>
+                        <option value={1}>1: ช่วยมาก (พึ่งพาสูง)</option>
+                        <option value={2}>2: สอดแขนได้บ้าง</option>
+                        <option value={3}>3: ทำได้เมื่อมีผู้ช่วย</option>
+                        <option value={4}>4: ใส่เองได้ช้าๆ</option>
+                        <option value={5}>5: ใส่เองได้คล่อง</option>
+                      </select>
                     </div>
                   </div>
 
                   <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="text-[11px] font-extrabold text-emerald-950">
-                        Motor Assessment Scale (กำลังกล้ามเนื้อ แนวทางมหิดล 0–6 คะแนน)
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                      <label className="text-sm font-black text-emerald-950 inline-flex items-center gap-1.5">
+                        <Activity className="h-4 w-4 text-emerald-600" />
+                        กำลังกล้ามเนื้อ มหิดล (0–6)
                       </label>
-                      <span className="rounded-full bg-emerald-700 px-2.5 py-0.5 text-[10px] font-black text-white">
-                        Grade {motorAssessmentScore} / 6
+                      <span className="text-xs sm:text-sm font-extrabold text-emerald-700 truncate max-w-[380px]">
+                        {MAHIDOL_MOTOR_SCALE[motorAssessmentScore]?.titleTh}
                       </span>
                     </div>
-                    <div className="grid grid-cols-7 gap-1.5">
+                    <div className="grid grid-cols-7 gap-2">
                       {MAHIDOL_MOTOR_SCALE.map((lvl) => {
                         const active = motorAssessmentScore === lvl.score;
                         return (
                           <button
                             key={lvl.score}
                             type="button"
-                            onClick={() => {
-                              setMotorAssessmentScore(lvl.score);
-                              setMaxSafeRomDeg(lvl.recommendedMaxRomDeg);
-                            }}
-                            className={`rounded-xl border py-2 text-center transition cursor-pointer ${
+                            onClick={() =>
+                              handleSelectMotorScore(lvl.score, lvl.recommendedMaxRomDeg)
+                            }
+                            className={`rounded-xl border-2 py-2 px-1 text-center transition-all duration-150 cursor-pointer ${
                               active
-                                ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm'
-                                : 'border-emerald-200 bg-white text-slate-700 hover:bg-emerald-100'
+                                ? 'border-emerald-700 bg-emerald-600 text-white btn-game-3d-emerald'
+                                : 'border-emerald-200 bg-white text-slate-700 btn-game-3d-white hover:border-emerald-400 hover:bg-emerald-50'
                             }`}
                           >
-                            <div className="text-sm font-black">{lvl.score}</div>
-                            <div className="text-[9px] font-bold opacity-85">{lvl.recommendedMaxRomDeg}°</div>
+                            <div className="text-lg font-black leading-none">{lvl.score}</div>
+                            <div
+                              className={`mt-1 text-xs font-bold ${
+                                active ? 'text-emerald-100' : 'text-emerald-700'
+                              }`}
+                            >
+                              {lvl.recommendedMaxRomDeg}°
+                            </div>
                           </button>
                         );
                       })}
                     </div>
-                    <p className="mt-1.5 rounded-xl border border-emerald-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-emerald-950">
-                      <span className="font-black">
-                        {MAHIDOL_MOTOR_SCALE[motorAssessmentScore]?.titleTh}:
-                      </span>{' '}
+                    <p className="mt-2 rounded-xl border border-emerald-200/80 bg-white px-3.5 py-1.5 text-xs sm:text-sm font-semibold text-emerald-950 truncate">
                       {MAHIDOL_MOTOR_SCALE[motorAssessmentScore]?.descTh}
                     </p>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                      ข้อห้ามการทำกายภาพ (Contraindications)
-                    </label>
+                {/* Additional Medical Details + Backup PIN */}
+                <div className="space-y-2.5 border-t border-slate-100 pt-2">
+                  <div className="grid grid-cols-2 gap-3">
                     <input
                       value={contraindications}
                       onChange={(e) => setContraindications(e.target.value)}
-                      placeholder="เช่น ห้ามงอเข่าเกิน 90 องศา..."
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
+                      placeholder="ข้อห้ามกายภาพ (ถ้ามี)"
+                      className="h-10 w-full rounded-xl border-2 border-slate-200 bg-slate-50/70 px-3.5 text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
                     />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                      โรคประจำตัว (Underlying Diseases)
-                    </label>
                     <input
                       value={underlyingDiseases}
                       onChange={(e) => setUnderlyingDiseases(e.target.value)}
-                      placeholder="เช่น ความดันโลหิตสูง, เบาหวาน (ถ้าไม่มีระบุ -)"
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
+                      placeholder="โรคประจำตัว (ถ้าไม่มี -)"
+                      className="h-10 w-full rounded-xl border-2 border-slate-200 bg-slate-50/70 px-3.5 text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
                     />
                   </div>
-                </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">ประวัติแพ้ยา / สารเคมี</label>
+                  <div className="grid grid-cols-12 gap-3">
                     <input
                       value={allergies}
                       onChange={(e) => setAllergies(e.target.value)}
-                      placeholder="เช่น ไม่มีประวัติแพ้ยา"
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
+                      placeholder="ประวัติแพ้ยา"
+                      className="col-span-4 h-10 w-full rounded-xl border-2 border-slate-200 bg-slate-50/70 px-3.5 text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
                     />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">บันทึกแพทย์ / PT</label>
                     <input
                       value={doctorNotes}
                       onChange={(e) => setDoctorNotes(e.target.value)}
-                      placeholder="คำแนะนำสำหรับการออกกำลัง..."
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
+                      placeholder="บันทึกแพทย์ / PT"
+                      className="col-span-5 h-10 w-full rounded-xl border-2 border-slate-200 bg-slate-50/70 px-3.5 text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
                     />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-600 mb-1">รหัส PIN สำรอง (4 หลัก)</label>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      value={pinCode}
-                      maxLength={4}
-                      onChange={(e) => setPinCode(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-center font-mono text-sm font-bold text-slate-800 focus:border-teal-500 focus:bg-white focus:outline-none"
-                    />
+                    <div className="col-span-3 relative">
+                      <KeyRound className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-sky-600" />
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        value={pinCode}
+                        maxLength={4}
+                        title="รหัส PIN สำรอง 4 หลัก"
+                        onChange={(e) => setPinCode(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                        className="h-10 w-full rounded-xl border-2 border-sky-200 bg-white pl-9 pr-3 text-center font-mono text-base font-black tracking-widest text-[#0F4C81] focus:border-[#0F4C81] focus:outline-none"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
 
-              {/* Section 3 */}
-              <div className="space-y-3">
-                <div className="flex items-center gap-2 text-xs font-extrabold text-rose-700 border-b border-slate-100 pb-2">
-                  <HeartPulse className="h-4 w-4" />
-                  <span>ส่วนที่ 3: ข้อมูลติดต่อฉุกเฉิน (Emergency Contact)</span>
+              {/* Card 3: Emergency Contact (Large Readable 1-Row) */}
+              <div className="rounded-2xl border-2 border-rose-100 bg-gradient-to-br from-rose-50/35 to-white p-3.5 shadow-2xs space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-rose-600 text-sm font-black text-white">
+                      3
+                    </span>
+                    <HeartPulse className="h-5 w-5 text-rose-600" />
+                    <span className="text-base font-black text-slate-900">ผู้ติดต่อฉุกเฉิน</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {QUICK_EMERGENCY_RELATION_PRESETS.map((rel) => (
+                      <button
+                        key={rel}
+                        type="button"
+                        onClick={() => {
+                          playGameSfx('tap');
+                          setEmergencyRelation(rel);
+                        }}
+                        className={`rounded-full border px-3 py-1 text-xs font-bold transition cursor-pointer ${
+                          emergencyRelation === rel
+                            ? 'border-rose-600 bg-rose-600 text-white'
+                            : 'border-rose-200 bg-white text-rose-700 hover:bg-rose-50'
+                        }`}
+                      >
+                        {rel}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-3 gap-3">
                   <input
                     value={emergencyName}
                     onChange={(e) => setEmergencyName(e.target.value)}
-                    placeholder="ชื่อ-นามสกุล ผู้ติดต่อฉุกเฉิน"
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800"
+                    placeholder="ชื่อผู้ติดต่อ"
+                    className="h-10 w-full rounded-xl border-2 border-slate-200 bg-white px-3.5 text-sm font-semibold text-slate-800 placeholder:text-slate-400 focus:border-rose-400 focus:outline-none"
                   />
                   <input
                     value={emergencyRelation}
                     onChange={(e) => setEmergencyRelation(e.target.value)}
-                    placeholder="ความสัมพันธ์ (เช่น บุตร)"
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800"
+                    placeholder="ความสัมพันธ์"
+                    className="h-10 w-full rounded-xl border-2 border-slate-200 bg-white px-3.5 text-sm font-semibold text-slate-800 placeholder:text-slate-400 focus:border-rose-400 focus:outline-none"
                   />
                   <input
                     type="tel"
@@ -1426,38 +1909,44 @@ export function StaffAssistedEnrollmentModal({
                     pattern="[0-9]*"
                     maxLength={10}
                     value={emergencyPhone}
-                    onChange={(e) => setEmergencyPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
-                    placeholder="08XXXXXXXX"
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2 text-sm text-slate-800"
+                    onChange={(e) =>
+                      setEmergencyPhone(e.target.value.replace(/\D/g, '').slice(0, 10))
+                    }
+                    placeholder="เบอร์ฉุกเฉิน"
+                    className="h-10 w-full rounded-xl border-2 border-slate-200 bg-white px-3.5 text-sm font-semibold text-slate-800 placeholder:text-slate-400 focus:border-rose-400 focus:outline-none"
                   />
                 </div>
               </div>
 
-              {/* Section 4 */}
-              <div className="space-y-3">
-                <div className="flex items-center gap-2 text-xs font-extrabold text-emerald-700 border-b border-slate-100 pb-2">
-                  <ShieldCheck className="h-4 w-4" />
-                  <span>ส่วนที่ 4: ความยินยอม PDPA &amp; ผู้บันทึก (Consent &amp; Audit)</span>
-                </div>
-
-                <label className="flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={pdpaAccepted}
-                    onChange={(e) => setPdpaAccepted(e.target.checked)}
-                    className="mt-0.5 h-4 w-4 rounded border-emerald-400 text-emerald-600 focus:ring-emerald-500"
-                  />
-                  <span className="text-xs font-semibold leading-relaxed text-emerald-950">
-                    คนไข้ยินยอมให้จัดเก็บแม่แบบใบหน้า 120 เฟรม (เวกเตอร์ 3D Multi-Angle 1024 มิติ) และเข้าใจว่าข้อมูลเวชระเบียนที่เปิดประวัติแล้วเป็นเอกสารทางการแพทย์ถาวรตามกฎหมายสถานพยาบาล ไม่สามารถลบบัญชีได้ (PDPA Biometric Consent)
+              {/* Card 4: PDPA Consent & Staff Auditor */}
+              <div
+                className={`rounded-2xl border-2 px-4 py-3 transition-all ${
+                  pdpaAccepted
+                    ? 'border-emerald-200 bg-gradient-to-r from-emerald-50/90 to-teal-50/40'
+                    : 'border-amber-300 bg-amber-50/70'
+                }`}
+              >
+                <label className="flex flex-wrap items-center justify-between gap-2 cursor-pointer">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <input
+                      type="checkbox"
+                      checked={pdpaAccepted}
+                      onChange={(e) => {
+                        playGameSfx(e.target.checked ? 'correct' : 'tap');
+                        setPdpaAccepted(e.target.checked);
+                      }}
+                      className="h-5 w-5 rounded border-emerald-400 text-emerald-600 focus:ring-emerald-500 cursor-pointer shrink-0"
+                    />
+                    <span className="inline-flex items-center gap-1.5 text-sm font-black text-emerald-950">
+                      <ShieldCheck className="h-4.5 w-4.5 text-emerald-600 shrink-0" />
+                      ยินยอม PDPA ใบหน้า 3D 120 เฟรม (เวชระเบียนถาวรตามกฎหมาย)
+                    </span>
+                  </div>
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-white/90 border border-emerald-200 px-3 py-1 text-xs sm:text-sm font-extrabold text-emerald-800 shrink-0">
+                    <BadgeCheck className="h-4 w-4 text-emerald-600" />
+                    {currentUser.fullName}
                   </span>
                 </label>
-
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs">
-                  <span className="text-slate-500 font-semibold">เจ้าหน้าที่ผู้บันทึกข้อมูล (Staff Auditor):</span>
-                  <span className="font-extrabold text-emerald-700">
-                    {currentUser.fullName} ({currentUser.role === 'super_admin' ? 'ADMIN' : 'PT'})
-                  </span>
-                </div>
               </div>
             </form>
           )}
@@ -1875,16 +2364,25 @@ export function StaffAssistedEnrollmentModal({
                   </button>
 
                   <div className="ml-auto flex items-center gap-1.5">
-                    <input
-                      type="date"
+                    <GameDatePickerField
+                      mode="appointment"
+                      compact
                       value={customDateInput}
-                      onChange={(e) => setCustomDateInput(e.target.value)}
-                      className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-bold text-slate-800"
+                      onChange={setCustomDateInput}
+                      onConfirmDate={(iso) => {
+                        setCustomDateInput(iso);
+                        addScheduledDates([iso]);
+                      }}
+                      minDate={todayIso}
+                      highlightedDates={scheduledDates}
+                      placeholder="เลือกวันนัดเพิ่ม"
+                      popupTitle="เลือกวันนัดฝึกกายภาพบำบัด"
+                      testId="enroll-schedule-date-picker"
                     />
                     <button
                       type="button"
                       onClick={() => addScheduledDates([customDateInput])}
-                      className="inline-flex items-center gap-1 rounded-lg bg-[#0F4C81] px-2.5 py-1 text-[11px] font-bold text-white hover:bg-[#0c3f6b] cursor-pointer"
+                      className="btn-game-3d-blue inline-flex items-center gap-1 rounded-xl bg-[#0F4C81] px-3 py-1.5 text-[11px] font-bold text-white hover:bg-[#0c3f6b] cursor-pointer"
                     >
                       <Plus className="h-3 w-3" />
                       เพิ่มวันนัด
@@ -2053,23 +2551,49 @@ export function StaffAssistedEnrollmentModal({
         </div>
 
         {/* Sticky Modal Footer */}
-        <div className="flex flex-wrap items-center justify-end gap-2.5 border-t border-slate-100 bg-slate-50/80 px-6 py-4">
+        <div
+          className={`flex flex-wrap items-center gap-3 border-t border-slate-200/80 bg-white px-5 sm:px-6 py-3.5 ${
+            step === 1 ? 'justify-between' : 'justify-end'
+          }`}
+        >
           {step === 1 && (
             <>
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
-              >
-                ยกเลิก
-              </button>
-              <button
-                type="submit"
-                form="staff-enroll-step1"
-                className="rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 px-5 py-2.5 text-xs font-extrabold text-white shadow-md hover:opacity-95"
-              >
-                → ขั้นตอนต่อไป: สแกน Face ID 120 เฟรม →
-              </button>
+              <div className="hidden sm:flex items-center gap-2 text-sm font-bold">
+                <span
+                  className={`inline-flex h-2.5 w-2.5 rounded-full ${
+                    enrollmentReadiness.readyForFaceScan ? 'bg-emerald-500' : 'bg-sky-400'
+                  }`}
+                />
+                <span
+                  className={
+                    enrollmentReadiness.readyForFaceScan ? 'text-emerald-700' : 'text-slate-600'
+                  }
+                >
+                  {enrollmentReadiness.readyForFaceScan
+                    ? `พร้อมลงทะเบียน: ${fullName}`
+                    : 'กรอกชื่อจริงและนามสกุลเพื่อไปต่อ'}
+                </span>
+              </div>
+              <div className="flex flex-1 sm:flex-initial items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    playGameSfx('tap');
+                    onClose();
+                  }}
+                  className="h-11 rounded-xl border-2 border-slate-200 bg-white px-5 text-sm font-extrabold text-slate-700 btn-game-3d-white hover:bg-slate-50 cursor-pointer"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="submit"
+                  form="staff-enroll-step1"
+                  className="inline-flex h-11 items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-[#0F4C81] px-6 text-base font-black text-white btn-game-3d-emerald btn-primary-sheen hover:opacity-95 cursor-pointer"
+                >
+                  <span>ถัดไป: สแกน Face ID 120 เฟรม</span>
+                  <ArrowRight className="h-5 w-5" />
+                </button>
+              </div>
             </>
           )}
 

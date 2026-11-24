@@ -1299,10 +1299,10 @@ export function PatientClinicalRecordPanel({
   }
 
   return (
-    <div className="space-y-5 animate-view-enter">
+    <div className="space-y-3 animate-view-enter">
       {toast && (
         <div
-          className={`rounded-2xl border px-4 py-3 text-xs font-bold shadow-sm animate-toast-in ${
+          className={`rounded-xl border px-3 py-2 text-xs font-bold shadow-xs animate-toast-in ${
             toast.kind === 'success'
               ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
               : toast.kind === 'error'
@@ -1314,75 +1314,24 @@ export function PatientClinicalRecordPanel({
         </div>
       )}
 
-      {/* SECTION A: Individual Patient Selector & Cross-Facility Link Header */}
-      <div className="rounded-3xl border border-sky-200/80 bg-white p-5 shadow-sm space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-[#0F4C81] to-[#0D9488] text-white shadow-sm">
-              <ClipboardList className="h-5 w-5" />
+      {/* SECTION A: Compact Individual Patient Selector & Identity Bar */}
+      <div className="rounded-2xl border border-sky-200/80 bg-white p-3 shadow-sm space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
+            <div className="flex items-center rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 h-8 w-44 sm:w-52 shrink-0">
+              <Search className="h-3.5 w-3.5 text-slate-400 mr-1.5 shrink-0" />
+              <input
+                value={patientQuery}
+                onChange={(e) => setPatientQuery(e.target.value)}
+                placeholder="ค้นหาชื่อ, HN..."
+                className="w-full bg-transparent text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none"
+              />
             </div>
-            <div>
-              <h2 className="text-base font-black text-slate-900">
-                เวชระเบียนรายบุคคล การวัดผลจริง และเปรียบเทียบพัฒนาการ (0-6 &amp; ROM)
-              </h2>
-              <p className="text-xs text-slate-500">
-                บันทึกจริงลงฐานข้อมูลกลาง ผสานผลฝึกจากตู้ Kiosk และวัดองศาสดผ่านกล้อง AI เพื่อเปรียบเทียบพัฒนาการย้อนหลังได้จริง
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              disabled={!selectedPatient || syncingCrossFacility}
-              onClick={() => {
-                void loadPatientHistory(selectedPatient, true);
-                void loadPatientCourseContext(selectedPatient);
-              }}
-              className="btn-tactile inline-flex items-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2 text-xs font-bold text-[#0F4C81] hover:bg-sky-100 disabled:opacity-50 cursor-pointer"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${syncingCrossFacility ? 'animate-spin' : ''}`} />
-              <span>ซิงก์ข้อมูลล่าสุด / ข้ามสาขา</span>
-            </button>
-            <button
-              type="button"
-              disabled={!selectedPatient || summary.totalVisits === 0}
-              onClick={handleExportCsv}
-              className="btn-tactile inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-45 cursor-pointer"
-            >
-              <Download className="h-3.5 w-3.5" />
-              <span>ส่งออก CSV</span>
-            </button>
-            {selectedPatient && onOpenUniversalEhrModal && (
-              <button
-                type="button"
-                onClick={() => onOpenUniversalEhrModal(selectedPatient)}
-                className="btn-tactile inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3.5 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-100 cursor-pointer"
-              >
-                <Link2 className="h-3.5 w-3.5" />
-                <span>นำเข้า/ส่งออกแพ็กเกจ EHR</span>
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Searchable selector */}
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
-          <div className="lg:col-span-5 flex items-center rounded-xl border border-slate-200 bg-slate-50/70 px-3 h-10">
-            <Search className="h-4 w-4 text-slate-400 mr-2 shrink-0" />
-            <input
-              value={patientQuery}
-              onChange={(e) => setPatientQuery(e.target.value)}
-              placeholder="ค้นหาผู้ป่วยจาก ชื่อ-นามสกุล, HN หรือ รหัสเชื่อมโยงกลาง..."
-              className="w-full bg-transparent text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none"
-            />
-          </div>
-          <div className="lg:col-span-7">
             <select
               aria-label="เลือกผู้ป่วยรายบุคคล"
               value={selectedPatient?.id ?? ''}
               onChange={(e) => onSelectPatientId(e.target.value)}
-              className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-800 focus:border-sky-500 focus:outline-none"
+              className="h-8 flex-1 min-w-[200px] rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-bold text-slate-800 focus:border-sky-500 focus:outline-none"
             >
               {filteredPatients.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -1391,121 +1340,114 @@ export function PatientClinicalRecordPanel({
               ))}
             </select>
           </div>
+
+          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              disabled={!selectedPatient || syncingCrossFacility}
+              onClick={() => {
+                void loadPatientHistory(selectedPatient, true);
+                void loadPatientCourseContext(selectedPatient);
+              }}
+              className="btn-tactile inline-flex items-center gap-1 rounded-xl border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-[11px] font-bold text-[#0F4C81] hover:bg-sky-100 disabled:opacity-50 cursor-pointer"
+            >
+              <RefreshCw className={`h-3 w-3 ${syncingCrossFacility ? 'animate-spin' : ''}`} />
+              <span>ซิงก์</span>
+            </button>
+            <button
+              type="button"
+              disabled={!selectedPatient || summary.totalVisits === 0}
+              onClick={handleExportCsv}
+              className="btn-tactile inline-flex items-center gap-1 rounded-xl border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-45 cursor-pointer"
+            >
+              <Download className="h-3 w-3" />
+              <span>CSV</span>
+            </button>
+            {selectedPatient && onOpenUniversalEhrModal && (
+              <button
+                type="button"
+                onClick={() => onOpenUniversalEhrModal(selectedPatient)}
+                className="btn-tactile inline-flex items-center gap-1 rounded-xl border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-[11px] font-bold text-indigo-700 hover:bg-indigo-100 cursor-pointer"
+              >
+                <Link2 className="h-3 w-3" />
+                <span>EHR</span>
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Selected Patient Clinical Identity Card */}
+        {/* Selected Patient Compact Identity Strip */}
         {selectedPatient && (
-          <div className="rounded-2xl border border-emerald-200/80 bg-gradient-to-r from-[#F0FDF9] via-white to-[#EFF6FF] p-4 flex flex-wrap items-center justify-between gap-4">
-            <div className="space-y-1 min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-base font-black text-slate-900">
-                  {selectedPatient.fullName}
-                </span>
-                <span className="rounded-full bg-sky-100 border border-sky-200 px-2.5 py-0.5 text-[11px] font-bold text-[#0F4C81]">
-                  {selectedPatient.hn}
-                </span>
-                <span className="rounded-full bg-slate-100 border border-slate-200 px-2.5 py-0.5 text-[11px] font-semibold text-slate-700">
-                  อายุ {selectedPatient.age} ปี ({selectedPatient.gender || 'ไม่ระบุ'})
-                </span>
-              </div>
-              <p className="text-xs text-slate-600">
-                การวินิจฉัย: <span className="font-bold text-slate-800">{selectedPatient.diagnosis}</span>
+          <div className="rounded-xl border border-emerald-200/80 bg-gradient-to-r from-[#F0FDF9] via-white to-[#EFF6FF] px-3 py-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5 min-w-0 text-xs">
+              <span className="font-black text-slate-900">{selectedPatient.fullName}</span>
+              <span className="rounded-full bg-sky-100 border border-sky-200 px-2 py-0.5 text-[10.5px] font-bold text-[#0F4C81]">
+                {selectedPatient.hn}
+              </span>
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10.5px] font-semibold text-slate-700">
+                {selectedPatient.age} ปี ({selectedPatient.gender || '-'})
+              </span>
+              <span className="text-[11px] text-slate-600 truncate">
+                • <strong className="text-slate-800">{selectedPatient.diagnosis}</strong>
                 {selectedPatient.affectedSide && selectedPatient.affectedSide !== 'NONE' && (
-                  <span>
-                    {' '}
-                    | ข้างที่ฟื้นฟู:{' '}
-                    <span className="font-bold text-emerald-700">
-                      {selectedPatient.affectedSide === 'LEFT'
-                        ? 'ข้างซ้าย'
-                        : selectedPatient.affectedSide === 'RIGHT'
-                          ? 'ข้างขวา'
-                          : 'ทั้งสองข้าง'}
-                    </span>
+                  <span className="text-emerald-700 font-bold">
+                    {' '}({selectedPatient.affectedSide === 'LEFT' ? 'ซ้าย' : selectedPatient.affectedSide === 'RIGHT' ? 'ขวา' : '2 ข้าง'})
                   </span>
                 )}
-              </p>
+              </span>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="rounded-xl border border-emerald-300 bg-white px-3 py-2 shadow-xs flex items-center gap-2">
-                <Link2 className="h-4 w-4 text-emerald-600 shrink-0" />
-                <div>
-                  <div className="text-[10px] font-bold text-slate-500">
-                    รหัสเชื่อมโยงข้อมูลกลาง
-                  </div>
-                  <div className="text-xs font-black tracking-wide text-emerald-800">
-                    {universalLinkCode}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void handleCopyLinkCode()}
-                  className="ml-1 inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
-                >
-                  {copiedCode ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                  <span>คัดลอกรหัสส่งต่อ</span>
-                </button>
-              </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="font-mono text-[10.5px] font-black text-emerald-800 bg-white border border-emerald-200 rounded-lg px-2 py-1">
+                {universalLinkCode}
+              </span>
+              <button
+                type="button"
+                onClick={() => void handleCopyLinkCode()}
+                className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2 py-1 text-[10.5px] font-bold text-white hover:bg-emerald-500 cursor-pointer"
+              >
+                {copiedCode ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                <span>คัดลอก</span>
+              </button>
             </div>
           </div>
         )}
       </div>
 
-      {/* Main Two-Column Clinical Workspace */}
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
-        {/* SECTION B: Assigned Rehab Courses Auto-Score Card + 0-6 Mahidol-Adapted Assessment Form */}
-        <div className="xl:col-span-5 space-y-4 self-start">
+      {/* Main Two-Column Clinical Workspace (side-by-side at md+) */}
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-12">
+        {/* SECTION B: Assigned Rehab Courses Auto-Score Card + 0-6 Assessment Form */}
+        <div className="md:col-span-5 space-y-2.5 self-start">
           {/* Assigned Course & Automatic 0-6 Mahidol Scoring Card */}
           <div
             data-testid="assigned-course-auto-score-card"
-            className="rounded-3xl border border-emerald-200/90 bg-gradient-to-br from-white via-[#F0FDF9] to-[#EFF6FF] p-4 shadow-sm space-y-3 animate-view-enter"
+            className="rounded-2xl border border-emerald-200/90 bg-gradient-to-br from-white via-[#F0FDF9] to-[#EFF6FF] p-3 shadow-sm space-y-2 animate-view-enter"
           >
-            <div className="flex flex-wrap items-start justify-between gap-2 border-b border-emerald-100 pb-2.5">
-              <div className="flex items-start gap-2.5 min-w-0">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#0F4C81] to-emerald-600 text-white shadow-xs">
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="h-4 w-4"
-                    aria-hidden="true"
-                  >
-                    <path d="M9 11l3 3L22 4" />
-                    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-                  </svg>
-                </div>
-                <div className="min-w-0">
-                  <h3 className="text-xs font-black text-slate-900 leading-snug">
-                    คอร์สกายภาพที่นักกายภาพจัดให้ &amp; คำนวณคะแนนอัตโนมัติ
-                  </h3>
-                  <p className="text-[11px] text-slate-600 truncate">
-                    {courseAutoBundle?.courseTitle
-                      ? `${courseAutoBundle.courseTitle} • ${courseAutoBundle.exerciseSummaries.length} ท่าที่จัดให้`
-                      : `ดึงผลฝึกจากคอร์สของ ${selectedPatient?.fullName ?? '-'} เพื่อคำนวณคะแนน 0-6 และ ROM โดยไม่ต้องวัดมุมเอง`}
-                  </p>
-                </div>
+            <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-emerald-100 pb-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <ClipboardList className="h-4 w-4 text-[#0F4C81] shrink-0" />
+                <h3 className="text-[11.5px] font-black text-slate-900 leading-tight truncate">
+                  คอร์สกายภาพที่นักกายภาพจัดให้ &amp; คำนวณคะแนนอัตโนมัติ
+                </h3>
               </div>
               {courseAutoBundle && courseAutoBundle.unrecordedResults.length > 0 ? (
-                <span className="shrink-0 rounded-full bg-emerald-600 px-2.5 py-0.5 text-[10px] font-black text-white shadow-xs">
-                  รอบันทึก {courseAutoBundle.unrecordedResults.length} รอบ
+                <span className="shrink-0 rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-black text-white">
+                  รอบันทึก {courseAutoBundle.unrecordedResults.length}
                 </span>
               ) : courseAutoBundle && courseAutoBundle.autoResults.length > 0 ? (
-                <span className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[10px] font-extrabold text-emerald-700">
-                  ซิงก์ครบ {courseAutoBundle.autoResults.length} รอบแล้ว
+                <span className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-extrabold text-emerald-700">
+                  ซิงก์ครบ {courseAutoBundle.autoResults.length} รอบ
                 </span>
               ) : null}
             </div>
 
             {loadingCourseContext && (!courseAutoBundle || courseAutoBundle.exerciseSummaries.length === 0) ? (
-              <div className="rounded-xl border border-slate-200/80 bg-white/80 px-3 py-3 text-[11px] font-semibold text-slate-500">
-                กำลังดึงข้อมูลคอร์สที่นักกายภาพจัดให้และประวัติการฝึก...
+              <div className="rounded-xl border border-slate-200/80 bg-white/80 px-2.5 py-2 text-[11px] text-slate-500">
+                กำลังโหลดข้อมูลคอร์ส...
               </div>
             ) : courseAutoBundle && courseAutoBundle.exerciseSummaries.length > 0 ? (
-              <div className="space-y-2">
-                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-0.5">
+              <div className="space-y-1.5">
+                <div className="space-y-1 max-h-32 overflow-y-auto pr-0.5">
                   {courseAutoBundle.exerciseSummaries.map((item) => {
                     const latest = item.latestResult;
                     const isSelectedInForm =
@@ -1515,38 +1457,28 @@ export function PatientClinicalRecordPanel({
                     return (
                       <div
                         key={item.definition.key}
-                        className={`rounded-2xl border p-2.5 transition-colors ${
+                        className={`rounded-xl border p-2 transition-colors ${
                           isSelectedInForm
                             ? 'border-emerald-400 bg-white shadow-xs'
                             : 'border-slate-200/80 bg-white/90 hover:border-sky-300'
                         }`}
                       >
-                        <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center justify-between gap-1.5">
                           <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <span className="text-[11px] font-black text-slate-900">
-                                {item.definition.exerciseNameTh}
-                              </span>
-                              <span className="rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold text-[#0F4C81]">
-                                ข้าง{formatSideTh(item.definition.targetSide)}
-                              </span>
-                            </div>
-                            <div className="mt-0.5 text-[10px] font-semibold text-slate-500">
-                              เป้า {Math.round(item.definition.targetRomDeg)}° •{' '}
-                              {item.definition.targetReps} ครั้ง/เซต • เล่นสำเร็จ{' '}
-                              <span className="font-bold text-slate-700">
-                                {item.completedSessionsCount} รอบ
-                              </span>
-                            </div>
+                            <span className="text-[11px] font-black text-slate-900">
+                              {item.definition.exerciseNameTh}
+                            </span>
+                            <span className="ml-1 rounded bg-sky-100 px-1 py-0.5 text-[9.5px] font-bold text-[#0F4C81]">
+                              {formatSideTh(item.definition.targetSide)}
+                            </span>
                           </div>
-
-                          <div className="flex flex-wrap items-center gap-1.5">
+                          <div className="flex flex-wrap items-center gap-1">
                             {latest ? (
                               <>
-                                <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-black text-white">
+                                <span className="rounded-full bg-emerald-600 px-1.5 py-0.5 text-[10px] font-black text-white">
                                   ระดับ {latest.calculatedScore0To6}/6
                                 </span>
-                                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-extrabold text-emerald-800">
+                                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-extrabold text-emerald-800">
                                   ROM {latest.effectiveRomDeg.toFixed(1)}°
                                 </span>
                                 <button
@@ -1555,14 +1487,14 @@ export function PatientClinicalRecordPanel({
                                     formManuallyEditedRef.current = false;
                                     applyCourseResultToForm(latest, true);
                                   }}
-                                  className="btn-tactile rounded-lg border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-extrabold text-[#0F4C81] hover:bg-sky-100 cursor-pointer"
+                                  className="btn-tactile rounded-md border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[10px] font-extrabold text-[#0F4C81] hover:bg-sky-100 cursor-pointer"
                                 >
-                                  ใช้ผลนี้
+                                  ใช้
                                 </button>
                               </>
                             ) : (
-                              <span className="rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
-                                รอผู้ป่วยเล่นคอร์ส
+                              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9.5px] font-bold text-slate-500">
+                                รอฝึก
                               </span>
                             )}
                           </div>
@@ -1575,33 +1507,18 @@ export function PatientClinicalRecordPanel({
                 {courseAutoBundle.latestResult && (
                   <div
                     data-testid="course-auto-score-breakdown"
-                    className="rounded-2xl border border-sky-200 bg-white/95 px-3 py-2.5 text-[11px] space-y-1 animate-toast-in"
+                    className="rounded-xl border border-sky-200 bg-white/95 px-2.5 py-1.5 text-[10.5px] flex items-center justify-between gap-2 animate-toast-in"
                   >
-                    <div className="flex flex-wrap items-center justify-between gap-1.5">
-                      <span className="font-black text-[#0F4C81]">
-                        สรุปสูตรคำนวณคะแนนมหิดล 0-6 อัตโนมัติ (เติมเข้าแบบฟอร์มแล้ว)
-                      </span>
-                      <span className="rounded-md bg-sky-50 border border-sky-200 px-1.5 py-0.5 text-[10px] font-extrabold text-[#0F4C81]">
-                        คะแนนรวม {courseAutoBundle.latestResult.compositePct}%
-                      </span>
-                    </div>
-                    <p className="text-[11px] font-semibold text-slate-700 leading-relaxed">
+                    <span className="font-semibold text-slate-700 truncate">
                       {courseAutoBundle.latestResult.breakdownSummaryTh}
-                    </p>
-                    <div className="text-[10px] text-slate-500 font-medium">
-                      เกณฑ์ถ่วงน้ำหนัก: ช่วงองศา ROM 50% • จำนวนครั้งครบตามคอร์ส 30% • ความแม่นยำท่า 20%
-                    </div>
+                    </span>
+                    <span className="shrink-0 rounded bg-sky-50 border border-sky-200 px-1.5 py-0.5 text-[10px] font-extrabold text-[#0F4C81]">
+                      {courseAutoBundle.latestResult.compositePct}%
+                    </span>
                   </div>
                 )}
 
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
-                  <span className="text-[10px] font-semibold text-slate-500">
-                    {courseAutoBundle.unrecordedResults.length > 0
-                      ? `พบผลเล่นคอร์สใหม่ ${courseAutoBundle.unrecordedResults.length} รอบที่ยังไม่บันทึกลงแฟ้มประเมิน`
-                      : courseAutoBundle.autoResults.length > 0
-                        ? 'บันทึกผลเล่นคอร์สครบทุกรอบแล้ว (ป้องกันข้อมูลซ้ำอัตโนมัติ)'
-                        : 'เมื่อผู้ป่วยเล่นคอร์สที่จัดไว้ครบ ระบบจะคำนวณ 0-6 และ ROM ให้อัตโนมัติ'}
-                  </span>
+                <div className="flex items-center justify-end">
                   <button
                     type="button"
                     data-testid="batch-sync-course-card-btn"
@@ -1611,59 +1528,45 @@ export function PatientClinicalRecordPanel({
                       courseAutoBundle.autoResults.length === 0
                     }
                     onClick={() => void handleBatchSyncCourseSessions()}
-                    className="btn-tactile inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-[11px] font-extrabold text-white shadow-xs disabled:opacity-45 cursor-pointer"
+                    className="btn-tactile inline-flex items-center gap-1 rounded-xl bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1 text-[10.5px] font-extrabold text-white shadow-xs disabled:opacity-45 cursor-pointer"
                   >
                     <RefreshCw
-                      className={`h-3.5 w-3.5 ${batchSyncingCourse ? 'animate-spin' : ''}`}
+                      className={`h-3 w-3 ${batchSyncingCourse ? 'animate-spin' : ''}`}
                     />
                     <span>
                       {batchSyncingCourse
-                        ? 'กำลังบันทึกผลคอร์ส...'
+                        ? 'กำลังบันทึก...'
                         : 'ดึงผลเล่นคอร์สและบันทึกอัตโนมัติ'}
                     </span>
                   </button>
                 </div>
               </div>
             ) : (
-              <div className="rounded-2xl border border-dashed border-emerald-200 bg-white/80 px-3 py-3 text-[11px] text-slate-600">
-                ยังไม่มีคอร์สกายภาพหรือรอบฝึกที่เสร็จสมบูรณ์สำหรับผู้ป่วยรายนี้ เมื่อนักกายภาพจัดคอร์สและผู้ป่วยเล่นผ่านตู้ Kiosk ระบบจะดึงผลมาคำนวณคะแนน 0-6 และ ROM ให้อัตโนมัติ
+              <div className="rounded-xl border border-dashed border-emerald-200 bg-white/80 px-2.5 py-2 text-[11px] text-slate-500">
+                ยังไม่มีผลฝึกจากคอร์สสำหรับผู้ป่วยรายนี้
               </div>
             )}
           </div>
 
           <form
             onSubmit={(e) => void handleSubmitAssessment(e)}
-            className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-4"
+            className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm space-y-2.5"
           >
-            <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
+            <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
+              <div className="flex items-center gap-1.5">
                 <FileText className="h-4 w-4 text-[#0F4C81]" />
-                <h3 className="text-sm font-black text-slate-900">
-                  บันทึกการประเมินจริง 0-6 คะแนน
+                <h3 className="text-xs font-black text-slate-900">
+                  บันทึกการประเมิน (0-6)
                 </h3>
               </div>
-              <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-[10px] font-bold text-emerald-700">
-                {activeAutoCalcResult ? 'คำนวณอัตโนมัติจากคอร์ส' : 'Mahidol-Adapted Scale'}
+              <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                {activeAutoCalcResult ? 'คำนวณอัตโนมัติ' : 'Mahidol 0-6'}
               </span>
             </div>
 
-            {activeAutoCalcResult && (
-              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/75 px-3 py-2 text-[11px] font-semibold text-emerald-900 animate-toast-in">
-                <div className="font-black text-emerald-800">
-                  เติมค่าอัตโนมัติจากคอร์สกายภาพ (ไม่ต้องวัดองศาด้วยตนเอง)
-                </div>
-                <div className="mt-0.5 leading-relaxed">
-                  {activeAutoCalcResult.breakdownSummaryTh}
-                </div>
-              </div>
-            )}
-
             {/* Interactive 0-6 Score Picker */}
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-slate-700">
-                คะแนนประเมินการเคลื่อนไหว (0 ถึง 6 คะแนน)
-              </label>
-              <div className="grid grid-cols-7 gap-2">
+            <div className="space-y-1.5">
+              <div className="grid grid-cols-7 gap-1.5">
                 {MAHIDOL_ASSESSMENT_SCALE_0_TO_6.map((item) => {
                   const active = selectedScore === item.score;
                   return (
@@ -1674,9 +1577,9 @@ export function PatientClinicalRecordPanel({
                         formManuallyEditedRef.current = true;
                         setSelectedScore(item.score);
                       }}
-                      className={`btn-tactile h-11 rounded-xl border text-sm font-black transition-all cursor-pointer ${
+                      className={`btn-tactile h-9 rounded-xl border text-xs font-black transition-all cursor-pointer ${
                         active
-                          ? 'bg-emerald-600 text-white border-emerald-700 shadow-md scale-[1.03]'
+                          ? 'bg-emerald-600 text-white border-emerald-700 shadow-sm'
                           : 'bg-slate-50 text-slate-700 border-slate-200 hover:border-sky-300 hover:bg-sky-50'
                       }`}
                     >
@@ -1685,35 +1588,32 @@ export function PatientClinicalRecordPanel({
                   );
                 })}
               </div>
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-xs font-semibold text-emerald-900">
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 px-2.5 py-1 text-[11px] font-semibold text-emerald-900 truncate">
                 {selectedRubric.descriptionTh}
               </div>
             </div>
 
             {/* Exercise + Target Side */}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
-              <div className="sm:col-span-7 space-y-1">
-                <label className="block text-[11px] font-bold text-slate-600">
-                  ท่ากายภาพบำบัด / ข้อต่อที่ประเมิน
-                </label>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-12">
+              <div className="sm:col-span-7">
                 <select
+                  aria-label="ท่ากายภาพบำบัด"
                   value={exerciseCode}
                   onChange={(e) => {
                     formManuallyEditedRef.current = true;
                     handleExerciseChange(e.target.value);
                   }}
-                  className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800 focus:border-sky-500 focus:outline-none"
+                  className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-800 focus:border-sky-500 focus:outline-none"
                 >
                   {CLINICAL_EXERCISES.map((ex) => (
                     <option key={ex.code} value={ex.code}>
-                      {ex.name.th} (เป้า {ex.detection.targetMinDeg}°)
+                      {ex.name.th} ({ex.detection.targetMinDeg}°)
                     </option>
                   ))}
                 </select>
               </div>
-              <div className="sm:col-span-5 space-y-1">
-                <label className="block text-[11px] font-bold text-slate-600">ข้างที่ประเมิน</label>
-                <div className="grid grid-cols-3 gap-1 h-10">
+              <div className="sm:col-span-5">
+                <div className="grid grid-cols-3 gap-1 h-8">
                   {SIDE_OPTIONS.map((opt) => (
                     <button
                       key={opt.value}
@@ -1722,7 +1622,7 @@ export function PatientClinicalRecordPanel({
                         formManuallyEditedRef.current = true;
                         setTargetSide(opt.value);
                       }}
-                      className={`rounded-xl border text-[11px] font-bold cursor-pointer transition-colors ${
+                      className={`rounded-lg border text-[10.5px] font-bold cursor-pointer transition-colors ${
                         targetSide === opt.value
                           ? 'border-[#0F4C81] bg-[#0F4C81] text-white'
                           : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
@@ -1735,60 +1635,49 @@ export function PatientClinicalRecordPanel({
               </div>
             </div>
 
-            {/* Measured ROM (Optional / Auto-Filled From Course) + One-Click Course Sync + Live Camera AI */}
-            <div className="rounded-2xl border border-sky-200 bg-sky-50/50 p-3.5 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <label className="text-xs font-bold text-[#0F4C81]">
-                    องศาข้อต่อ (ROM °)
-                  </label>
-                  <span className="ml-1.5 text-[10px] font-semibold text-emerald-700">
-                    (เติมอัตโนมัติจากคอร์สได้ / ไม่บังคับวัดเอง)
-                  </span>
-                </div>
-                <div className="flex flex-wrap items-center gap-1.5">
+            {/* Measured ROM + Quick Actions */}
+            <div className="rounded-xl border border-sky-200 bg-sky-50/50 p-2.5 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-1">
+                <span className="text-[11px] font-bold text-[#0F4C81]">ROM (°) / VAS</span>
+                <div className="flex flex-wrap items-center gap-1">
                   <button
                     type="button"
                     data-testid="batch-sync-course-inline-btn"
                     disabled={batchSyncingCourse || !selectedPatient}
                     onClick={() => void handleBatchSyncCourseSessions()}
-                    className="btn-tactile inline-flex items-center gap-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1.5 text-[11px] font-extrabold text-white shadow-xs disabled:opacity-50 cursor-pointer"
+                    className="btn-tactile inline-flex items-center gap-1 rounded-md bg-emerald-600 hover:bg-emerald-700 px-2 py-1 text-[10px] font-extrabold text-white disabled:opacity-50 cursor-pointer"
                   >
-                    <RefreshCw
-                      className={`h-3 w-3 ${batchSyncingCourse ? 'animate-spin' : ''}`}
-                    />
-                    <span>ดึงผลเล่นคอร์สและบันทึกอัตโนมัติ</span>
+                    <RefreshCw className={`h-2.5 w-2.5 ${batchSyncingCourse ? 'animate-spin' : ''}`} />
+                    <span>ดึงคอร์ส</span>
                   </button>
                   <button
                     type="button"
                     onClick={handlePullLatestKioskRom}
-                    className="btn-tactile inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-white px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50 cursor-pointer"
+                    className="btn-tactile inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-white px-2 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-50 cursor-pointer"
                   >
-                    <Sparkles className="h-3 w-3" />
-                    <span>ดึงจากตู้ Kiosk</span>
+                    <Sparkles className="h-2.5 w-2.5" />
+                    <span>Kiosk</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => setLiveMeasureModalOpen(true)}
-                    className="btn-tactile inline-flex items-center gap-1 rounded-lg border border-sky-300 bg-white px-2.5 py-1.5 text-[11px] font-bold text-[#0F4C81] hover:bg-sky-50 cursor-pointer"
+                    className="btn-tactile inline-flex items-center gap-1 rounded-md border border-sky-300 bg-white px-2 py-1 text-[10px] font-bold text-[#0F4C81] hover:bg-sky-50 cursor-pointer"
                   >
-                    <Camera className="h-3.5 w-3.5" />
-                    <span>วัดองศาจริงด้วยกล้อง AI</span>
+                    <Camera className="h-3 w-3" />
+                    <span>กล้อง AI</span>
                   </button>
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-3 gap-1.5">
                 <div>
-                  <span className="block text-[10px] font-semibold text-slate-500 mb-1">
-                    ROM (องศา / เว้นว่างได้)
-                  </span>
+                  <span className="block text-[10px] font-semibold text-slate-500 mb-0.5">ROM (°)</span>
                   <input
                     type="number"
                     step="0.5"
                     min={0}
                     max={220}
-                    placeholder="คำนวณจากคอร์สอัตโนมัติ"
+                    placeholder="อัตโนมัติ"
                     value={measuredRomInput}
                     onChange={(e) => {
                       formManuallyEditedRef.current = true;
@@ -1796,13 +1685,11 @@ export function PatientClinicalRecordPanel({
                       setMeasurementMethod('MANUAL_INPUT');
                       setActiveAutoCalcResult(null);
                     }}
-                    className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm font-black text-slate-900 focus:border-sky-500 focus:outline-none"
+                    className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2 text-xs font-black text-slate-900 focus:border-sky-500 focus:outline-none"
                   />
                 </div>
                 <div>
-                  <span className="block text-[10px] font-semibold text-slate-500 mb-1">
-                    เป้าหมายคลินิก (°)
-                  </span>
+                  <span className="block text-[10px] font-semibold text-slate-500 mb-0.5">เป้า (°)</span>
                   <input
                     type="number"
                     step="1"
@@ -1813,44 +1700,31 @@ export function PatientClinicalRecordPanel({
                       formManuallyEditedRef.current = true;
                       setTargetRomInput(e.target.value);
                     }}
-                    className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm font-bold text-slate-700 focus:border-sky-500 focus:outline-none"
+                    className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold text-slate-700 focus:border-sky-500 focus:outline-none"
                   />
                 </div>
                 <div>
-                  <span className="block text-[10px] font-semibold text-slate-500 mb-1">
-                    ระดับปวด VAS (0-10)
-                  </span>
+                  <span className="block text-[10px] font-semibold text-slate-500 mb-0.5">ปวด (0-10)</span>
                   <input
                     type="number"
                     min={0}
                     max={10}
-                    placeholder="ไม่ระบุ"
+                    placeholder="-"
                     value={painVasInput}
                     onChange={(e) => {
                       formManuallyEditedRef.current = true;
                       setPainVasInput(e.target.value);
                     }}
-                    className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-sm font-bold text-slate-700 focus:border-sky-500 focus:outline-none"
+                    className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold text-slate-700 focus:border-sky-500 focus:outline-none"
                   />
                 </div>
               </div>
 
               {liveFormPreviewPct !== null && liveFormSuggestedScore !== null && (
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-white px-3 py-2 text-[11px]">
-                  <div className="font-bold text-slate-700">
-                    เทียบเป้าหมายคลินิก:{' '}
-                    <span className="text-emerald-700 font-black">{liveFormPreviewPct.toFixed(1)}%</span>
-                    {measurementMethod === 'COURSE_AUTO_CALCULATED' && (
-                      <span className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-extrabold text-emerald-800">
-                        คำนวณอัตโนมัติจากคอร์ส
-                      </span>
-                    )}
-                    {measurementMethod === 'CAMERA_AI_LIVE' && (
-                      <span className="ml-2 rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-extrabold text-indigo-700">
-                        วัดจากกล้อง AI
-                      </span>
-                    )}
-                  </div>
+                <div className="flex flex-wrap items-center justify-between gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 py-1 text-[10.5px]">
+                  <span className="font-bold text-slate-700">
+                    เป้า: <strong className="text-emerald-700">{liveFormPreviewPct.toFixed(1)}%</strong>
+                  </span>
                   {liveFormSuggestedScore !== selectedScore && (
                     <button
                       type="button"
@@ -1858,9 +1732,9 @@ export function PatientClinicalRecordPanel({
                         formManuallyEditedRef.current = true;
                         setSelectedScore(liveFormSuggestedScore);
                       }}
-                      className="rounded-lg border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-extrabold text-[#0F4C81] hover:bg-sky-100 cursor-pointer"
+                      className="rounded border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[10px] font-extrabold text-[#0F4C81] hover:bg-sky-100 cursor-pointer"
                     >
-                      ใช้คะแนนแนะนำ ({liveFormSuggestedScore}/6)
+                      ใช้ {liveFormSuggestedScore}/6
                     </button>
                   )}
                 </div>
@@ -1868,109 +1742,69 @@ export function PatientClinicalRecordPanel({
             </div>
 
             {/* Visit Date/Time & Facility */}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div className="space-y-1">
-                <label className="flex items-center gap-1 text-[11px] font-bold text-slate-600">
-                  <Calendar className="h-3.5 w-3.5 text-[#0F4C81]" />
-                  <span>วันที่และเวลาที่ประเมิน</span>
-                </label>
-                <input
-                  type="datetime-local"
-                  value={assessedAtInput}
-                  onChange={(e) => setAssessedAtInput(e.target.value)}
-                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-800 focus:border-sky-500 focus:outline-none"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="block text-[11px] font-bold text-slate-600">
-                  สถานที่ / สาขาที่ตรวจ
-                </label>
-                <input
-                  type="text"
-                  value={facilityName}
-                  onChange={(e) => setFacilityName(e.target.value)}
-                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800 focus:border-sky-500 focus:outline-none"
-                />
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {CLINICAL_FACILITY_PRESETS.map((preset) => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => setFacilityName(preset)}
-                  className={`rounded-lg border px-2 py-0.5 text-[10px] font-bold cursor-pointer ${
-                    facilityName === preset
-                      ? 'border-sky-400 bg-sky-50 text-[#0F4C81]'
-                      : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  {preset}
-                </button>
-              ))}
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                aria-label="วันที่และเวลาที่ประเมิน"
+                type="datetime-local"
+                value={assessedAtInput}
+                onChange={(e) => setAssessedAtInput(e.target.value)}
+                className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-800 focus:border-sky-500 focus:outline-none"
+              />
+              <input
+                aria-label="สถานที่ตรวจ"
+                type="text"
+                value={facilityName}
+                onChange={(e) => setFacilityName(e.target.value)}
+                className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-800 focus:border-sky-500 focus:outline-none"
+              />
             </div>
 
-            {/* Clinical Handover Notes */}
-            <div className="space-y-2.5">
-              <div className="space-y-1">
-                <label className="block text-[11px] font-bold text-slate-600">
-                  อาการแรกรับ / อาการรอบนี้ (Chief Complaint)
-                </label>
-                <input
-                  type="text"
-                  value={chiefComplaint}
-                  onChange={(e) => {
-                    formManuallyEditedRef.current = true;
-                    setChiefComplaint(e.target.value);
-                  }}
-                  placeholder="เช่น ยังตึงช่วงยกไหล่เกิน 60 องศา แต่ออกแรงได้มั่นคงขึ้น..."
-                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs text-slate-800 focus:border-sky-500 focus:outline-none"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="block text-[11px] font-bold text-slate-600">
-                  บันทึกส่งต่อการรักษาสำหรับบุคลากรท่านถัดไป (Handover Note)
-                </label>
-                <textarea
-                  rows={3}
-                  value={handoverNote}
-                  onChange={(e) => {
-                    formManuallyEditedRef.current = true;
-                    setHandoverNote(e.target.value);
-                  }}
-                  placeholder="ระบุท่าที่ฝึก ระยะค้างท่า การช่วยเหลือ ข้อควรระวังสำหรับนักกายภาพรอบถัดไปหรือสาขาเครือข่าย..."
-                  className="w-full rounded-xl border border-slate-200 bg-white p-2.5 text-xs text-slate-800 focus:border-sky-500 focus:outline-none"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="block text-[11px] font-bold text-slate-600">เป้าหมายครั้งถัดไป</label>
-                <input
-                  type="text"
-                  value={nextGoal}
-                  onChange={(e) => {
-                    formManuallyEditedRef.current = true;
-                    setNextGoal(e.target.value);
-                  }}
-                  placeholder="เช่น เพิ่มมุมยกแขนเป็น 85 องศา และลดแรงช่วยประคอง"
-                  className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs text-slate-800 focus:border-sky-500 focus:outline-none"
-                />
-              </div>
+            {/* Clinical Handover Notes (Compact) */}
+            <div className="space-y-1.5">
+              <input
+                type="text"
+                value={chiefComplaint}
+                onChange={(e) => {
+                  formManuallyEditedRef.current = true;
+                  setChiefComplaint(e.target.value);
+                }}
+                placeholder="อาการรอบนี้ (Chief Complaint)..."
+                className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-800 focus:border-sky-500 focus:outline-none"
+              />
+              <textarea
+                rows={2}
+                value={handoverNote}
+                onChange={(e) => {
+                  formManuallyEditedRef.current = true;
+                  setHandoverNote(e.target.value);
+                }}
+                placeholder="บันทึกส่งต่อ (Handover Note)..."
+                className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs text-slate-800 focus:border-sky-500 focus:outline-none"
+              />
+              <input
+                type="text"
+                value={nextGoal}
+                onChange={(e) => {
+                  formManuallyEditedRef.current = true;
+                  setNextGoal(e.target.value);
+                }}
+                placeholder="เป้าหมายครั้งถัดไป..."
+                className="h-8 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-800 focus:border-sky-500 focus:outline-none"
+              />
             </div>
 
             <button
               type="submit"
               disabled={saving || !selectedPatient}
-              className="btn-primary-sheen btn-game-3d-blue btn-tactile w-full h-11 rounded-2xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] text-xs font-black text-white hover:brightness-105 disabled:opacity-50 cursor-pointer"
+              className="btn-primary-sheen btn-game-3d-blue btn-tactile w-full h-9 rounded-xl bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] text-xs font-black text-white hover:brightness-105 disabled:opacity-50 cursor-pointer"
             >
-              {saving ? 'กำลังบันทึกผลประเมินลงฐานข้อมูล...' : 'บันทึกผลประเมินจริงเข้าแฟ้มผู้ป่วย'}
+              {saving ? 'กำลังบันทึก...' : 'บันทึกผลประเมิน (0-6)'}
             </button>
           </form>
         </div>
 
-        {/* SECTION C: Genuine Retrospective Tracking & Longitudinal Progress Comparison */}
-        <div className="xl:col-span-7 space-y-5">
+        {/* SECTION C: Retrospective Tracking & Charts */}
+        <div className="md:col-span-7 space-y-2.5">
           {/* Multi-Dimensional Filter Bar */}
           <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm flex flex-wrap items-center justify-between gap-2.5">
             <div className="flex flex-wrap items-center gap-2">
@@ -2451,45 +2285,34 @@ export function PatientClinicalRecordPanel({
           </div>
 
           {/* 60FPS Collision-Free Multi-Exercise & Monthly Score Summary Chart Card */}
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-3.5">
-            <div className="flex flex-wrap items-start justify-between gap-2.5">
-              <div>
-                <h3 className="text-sm font-black text-slate-900">
-                  {chartViewMode === 'MONTHLY'
-                    ? 'กราฟสรุปรายเดือน (ผลคะแนนมหิดล 0-6 เฉลี่ยต่อเดือน)'
-                    : 'กราฟติดตามผลย้อนหลังแยกตามท่ากายภาพและเปรียบเทียบพัฒนาการ'}
-                </h3>
-                <p className="text-[11px] text-slate-500">
-                  {chartViewMode === 'MONTHLY'
-                    ? 'คลิกที่แท่งเดือนเพื่อกรองประวัติการรักษารายเดือนด้านล่าง • แสดงคะแนนเฉลี่ย 0-6 และความคืบหน้าเทียบเดือนก่อน'
-                    : chartData.isMultiExerciseView
-                      ? 'แยกเส้นสีตามแต่ละท่ากายภาพบำบัดอย่างชัดเจน พร้อมวัน/เดือน/ปี พ.ศ. • คลิกชื่อท่าด้านล่างเพื่อโฟกัสทีละท่า'
-                      : chartData.isPctMode
-                        ? 'แสดงสัดส่วนเทียบเป้าหมายคลินิก (% Target ROM) พร้อมวัน/เดือน/ปี พ.ศ.'
-                        : 'แสดงองศาข้อต่อจริง (ROM °) พร้อมเส้นเป้าหมายคลินิกและวัน/เดือน/ปี พ.ศ.'}
-                </p>
-              </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-xs font-black text-slate-900">
+                {chartViewMode === 'MONTHLY'
+                  ? 'กราฟสรุปรายเดือน (0-6)'
+                  : 'กราฟพัฒนาการ (ROM & 0-6)'}
+              </h3>
 
               <div className="flex flex-wrap items-center gap-1.5">
                 {/* Primary View Switcher: Sessions vs Monthly Score Summary */}
-                <div className="inline-flex rounded-xl border border-sky-200 bg-sky-50/70 p-0.5 text-[11px] font-bold">
+                <div className="inline-flex rounded-xl border border-sky-200 bg-sky-50/70 p-0.5 text-[10.5px] font-bold">
                   <button
                     type="button"
                     data-testid="chart-tab-sessions"
                     onClick={() => setChartViewMode('SESSIONS')}
-                    className={`rounded-lg px-2.5 py-1 cursor-pointer transition-colors ${
+                    className={`rounded-lg px-2 py-1 cursor-pointer transition-colors ${
                       chartViewMode === 'SESSIONS'
                         ? 'bg-[#0F4C81] text-white shadow-xs'
                         : 'text-[#0F4C81] hover:bg-white/80'
                     }`}
                   >
-                    กราฟรายครั้ง (Sessions)
+                    รายครั้ง
                   </button>
                   <button
                     type="button"
                     data-testid="chart-tab-monthly"
                     onClick={() => setChartViewMode('MONTHLY')}
-                    className={`rounded-lg px-2.5 py-1 cursor-pointer transition-colors ${
+                    className={`rounded-lg px-2 py-1 cursor-pointer transition-colors ${
                       chartViewMode === 'MONTHLY'
                         ? 'bg-emerald-600 text-white shadow-xs'
                         : 'text-emerald-800 hover:bg-white/80'
@@ -2501,52 +2324,52 @@ export function PatientClinicalRecordPanel({
 
                 {chartViewMode === 'SESSIONS' && (
                   <>
-                    <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-0.5 text-[11px] font-bold">
+                    <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-0.5 text-[10.5px] font-bold">
                       <button
                         type="button"
                         onClick={() => setChartMetricMode('ROM_DEG')}
-                        className={`rounded-lg px-2.5 py-1 cursor-pointer transition-colors ${
+                        className={`rounded-lg px-2 py-1 cursor-pointer transition-colors ${
                           chartMetricMode === 'ROM_DEG'
                             ? 'bg-[#0F4C81] text-white shadow-xs'
                             : 'text-slate-600 hover:text-slate-900'
                         }`}
                       >
-                        องศาจริง (°)
+                        องศา (°)
                       </button>
                       <button
                         type="button"
                         onClick={() => setChartMetricMode('TARGET_PCT')}
-                        className={`rounded-lg px-2.5 py-1 cursor-pointer transition-colors ${
+                        className={`rounded-lg px-2 py-1 cursor-pointer transition-colors ${
                           chartMetricMode === 'TARGET_PCT'
                             ? 'bg-emerald-600 text-white shadow-xs'
                             : 'text-slate-600 hover:text-slate-900'
                         }`}
                       >
-                        % เป้าหมาย
+                        % เป้า
                       </button>
                     </div>
 
                     <button
                       type="button"
                       onClick={() => setShowMahidolLine((v) => !v)}
-                      className={`rounded-lg border px-2.5 py-1 text-[10px] font-extrabold cursor-pointer ${
+                      className={`rounded-lg border px-2 py-1 text-[10px] font-extrabold cursor-pointer ${
                         showMahidolLine
                           ? 'border-sky-300 bg-sky-50 text-[#0F4C81]'
                           : 'border-slate-200 bg-white text-slate-500'
                       }`}
                     >
-                      เส้นมหิดล 0-6
+                      0-6
                     </button>
                     <button
                       type="button"
                       onClick={() => setShowPainLine((v) => !v)}
-                      className={`rounded-lg border px-2.5 py-1 text-[10px] font-extrabold cursor-pointer ${
+                      className={`rounded-lg border px-2 py-1 text-[10px] font-extrabold cursor-pointer ${
                         showPainLine
                           ? 'border-amber-300 bg-amber-50 text-amber-800'
                           : 'border-slate-200 bg-white text-slate-500'
                       }`}
                     >
-                      เส้นปวด VAS
+                      VAS
                     </button>
                   </>
                 )}
@@ -2642,10 +2465,10 @@ export function PatientClinicalRecordPanel({
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <div className="w-full overflow-x-auto">
+                    <div className="w-full overflow-hidden">
                       <svg
                         viewBox={`0 0 ${chartData.width} ${chartData.height}`}
-                        className="w-full min-w-[560px] h-auto"
+                        className="w-full h-auto"
                         role="img"
                         aria-label="กราฟเปรียบเทียบพัฒนาการมุมองศาข้อต่อแยกตามท่ากายภาพและคะแนน 0-6 พร้อมวันเดือนปี"
                       >
@@ -2991,10 +2814,10 @@ export function PatientClinicalRecordPanel({
                     ยังไม่มีข้อมูลคะแนนประเมินรายเดือนสำหรับผู้ป่วยรายนี้
                   </div>
                 ) : (
-                  <div className="w-full overflow-x-auto">
+                  <div className="w-full overflow-hidden">
                     <svg
                       viewBox={`0 0 ${monthlyChartData.width} ${monthlyChartData.height}`}
-                      className="w-full min-w-[540px] h-auto"
+                      className="w-full h-auto"
                       role="img"
                       aria-label="กราฟสรุปรายเดือนแสดงคะแนนมหิดลเฉลี่ย 0-6 ต่อเดือน"
                     >

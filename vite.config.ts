@@ -1,10 +1,32 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
+const normalizedDataDir = `${path.resolve(rootDir, 'data').replace(/\\/g, '/')}/`;
+
+/**
+ * Prevents local API writes to `data/drtechcares-db.json` (login audit logs, sessions,
+ * patient enrollments, etc.) from triggering a Vite full-page reload that drops in-flight
+ * UI flows such as Staff Login modal redirection back to the Kiosk Standby screen.
+ */
+function ignoreRuntimeDataReloadPlugin(): Plugin {
+  return {
+    name: 'drtech-ignore-runtime-data-reload',
+    handleHotUpdate(ctx) {
+      const normalizedFile = ctx.file.replace(/\\/g, '/');
+      if (
+        normalizedFile.startsWith(normalizedDataDir) ||
+        normalizedFile.includes('/data/drtechcares-db.json')
+      ) {
+        return [];
+      }
+      return undefined;
+    },
+  };
+}
 
 export const workspaceAliases = {
   '@drtechcares/smart-biometric-core': path.resolve(rootDir, 'packages/smart-biometric-core/src/index.ts'),
@@ -20,7 +42,7 @@ export const workspaceAliases = {
 };
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), ignoreRuntimeDataReloadPlugin()],
   resolve: {
     alias: workspaceAliases,
   },
@@ -30,6 +52,15 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    watch: {
+      ignored: [
+        '**/data/**',
+        '**/data/drtechcares-db.json*',
+        `${normalizedDataDir}**`,
+        '**/.wrangler/**',
+        '**/dist/**',
+      ],
+    },
     proxy: {
       '/api': {
         target: 'http://localhost:8787',

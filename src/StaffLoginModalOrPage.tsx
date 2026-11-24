@@ -60,6 +60,10 @@ export async function executeStaffAuthSubmission(params: {
 }
 
 export type StaffAuthIntent = 'general' | 'kiosk_patient_registration';
+export type StaffSuccessStage = 'kinetic' | 'welcome';
+
+export const STAFF_SUCCESS_WELCOME_SWITCH_MS = 2150;
+export const STAFF_SUCCESS_TOTAL_REDIRECT_MS = 4650;
 
 interface StaffLoginModalOrPageProps {
   apiClient: DrTechCaresApiClient;
@@ -68,7 +72,93 @@ interface StaffLoginModalOrPageProps {
   authIntent?: StaffAuthIntent;
   asModal?: boolean;
   initialLoginAnimStatus?: StaffLoginAnimStatus;
+  initialSuccessStage?: StaffSuccessStage;
 }
+
+const SUCCESS_FIREWORK_RAYS: ReadonlyArray<{ deg: string; color: string; delay: string }> = [
+  { deg: '0deg', color: '#10b981', delay: '1040ms' },
+  { deg: '30deg', color: '#0ea5e9', delay: '1070ms' },
+  { deg: '60deg', color: '#14b8a6', delay: '1050ms' },
+  { deg: '90deg', color: '#f59e0b', delay: '1080ms' },
+  { deg: '120deg', color: '#10b981', delay: '1060ms' },
+  { deg: '150deg', color: '#0284c7', delay: '1090ms' },
+  { deg: '180deg', color: '#10b981', delay: '1045ms' },
+  { deg: '210deg', color: '#38bdf8', delay: '1075ms' },
+  { deg: '240deg', color: '#14b8a6', delay: '1055ms' },
+  { deg: '270deg', color: '#f59e0b', delay: '1085ms' },
+  { deg: '300deg', color: '#10b981', delay: '1065ms' },
+  { deg: '330deg', color: '#0ea5e9', delay: '1095ms' },
+];
+
+const SUCCESS_CONFETTI_PIECES: ReadonlyArray<{
+  cx: string;
+  cy: string;
+  crot: string;
+  cdelay: string;
+  color: string;
+  shape: 'pill' | 'diamond' | 'ring' | 'dot';
+}> = [
+  // Wave 1: Initial joyful pop on check draw
+  { cx: '-156px', cy: '-128px', crot: '-135deg', cdelay: '180ms', color: '#10b981', shape: 'pill' },
+  { cx: '-96px', cy: '-162px', crot: '95deg', cdelay: '220ms', color: '#0ea5e9', shape: 'diamond' },
+  { cx: '0px', cy: '-174px', crot: '140deg', cdelay: '200ms', color: '#f59e0b', shape: 'pill' },
+  { cx: '104px', cy: '-158px', crot: '-115deg', cdelay: '240ms', color: '#14b8a6', shape: 'diamond' },
+  { cx: '162px', cy: '-122px', crot: '135deg', cdelay: '190ms', color: '#38bdf8', shape: 'pill' },
+  { cx: '184px', cy: '-38px', crot: '-90deg', cdelay: '280ms', color: '#34d399', shape: 'ring' },
+  { cx: '172px', cy: '58px', crot: '125deg', cdelay: '310ms', color: '#0284c7', shape: 'pill' },
+  { cx: '118px', cy: '128px', crot: '-145deg', cdelay: '340ms', color: '#fbbf24', shape: 'diamond' },
+  { cx: '-122px', cy: '124px', crot: '155deg', cdelay: '330ms', color: '#10b981', shape: 'diamond' },
+  { cx: '-174px', cy: '54px', crot: '-110deg', cdelay: '300ms', color: '#0ea5e9', shape: 'pill' },
+  { cx: '-184px', cy: '-42px', crot: '85deg', cdelay: '270ms', color: '#2dd4bf', shape: 'ring' },
+  { cx: '0px', cy: '148px', crot: '180deg', cdelay: '370ms', color: '#14b8a6', shape: 'pill' },
+  // Wave 2: Grand finale celebration burst right when the outer ring locks
+  { cx: '-196px', cy: '-92px', crot: '165deg', cdelay: '1080ms', color: '#0ea5e9', shape: 'pill' },
+  { cx: '-136px', cy: '-178px', crot: '-125deg', cdelay: '1100ms', color: '#f59e0b', shape: 'ring' },
+  { cx: '-46px', cy: '-188px', crot: '85deg', cdelay: '1120ms', color: '#10b981', shape: 'diamond' },
+  { cx: '52px', cy: '-186px', crot: '-95deg', cdelay: '1110ms', color: '#38bdf8', shape: 'diamond' },
+  { cx: '142px', cy: '-174px', crot: '145deg', cdelay: '1090ms', color: '#10b981', shape: 'ring' },
+  { cx: '202px', cy: '-84px', crot: '-150deg', cdelay: '1130ms', color: '#fbbf24', shape: 'pill' },
+  { cx: '206px', cy: '18px', crot: '120deg', cdelay: '1140ms', color: '#14b8a6', shape: 'dot' },
+  { cx: '152px', cy: '116px', crot: '-130deg', cdelay: '1150ms', color: '#0ea5e9', shape: 'pill' },
+  { cx: '-156px', cy: '114px', crot: '130deg', cdelay: '1145ms', color: '#34d399', shape: 'pill' },
+  { cx: '-206px', cy: '16px', crot: '-120deg', cdelay: '1135ms', color: '#f59e0b', shape: 'dot' },
+];
+
+const WELCOME_CONFETTI_PIECES: ReadonlyArray<{
+  cx: string;
+  cy: string;
+  crot: string;
+  cdelay: string;
+  color: string;
+  shape: 'pill' | 'diamond' | 'ring' | 'dot';
+}> = [
+  { cx: '-168px', cy: '-116px', crot: '-120deg', cdelay: '120ms', color: '#0F4C81', shape: 'pill' },
+  { cx: '-104px', cy: '-154px', crot: '105deg', cdelay: '160ms', color: '#10b981', shape: 'diamond' },
+  { cx: '0px', cy: '-166px', crot: '145deg', cdelay: '140ms', color: '#0ea5e9', shape: 'ring' },
+  { cx: '108px', cy: '-150px', crot: '-105deg', cdelay: '170ms', color: '#14b8a6', shape: 'diamond' },
+  { cx: '170px', cy: '-112px', crot: '125deg', cdelay: '130ms', color: '#f59e0b', shape: 'pill' },
+  { cx: '188px', cy: '-16px', crot: '-85deg', cdelay: '210ms', color: '#38bdf8', shape: 'dot' },
+  { cx: '154px', cy: '94px', crot: '135deg', cdelay: '240ms', color: '#10b981', shape: 'pill' },
+  { cx: '-154px', cy: '94px', crot: '-135deg', cdelay: '230ms', color: '#0284c7', shape: 'pill' },
+  { cx: '-188px', cy: '-18px', crot: '85deg', cdelay: '200ms', color: '#34d399', shape: 'dot' },
+  { cx: '-64px', cy: '-138px', crot: '-70deg', cdelay: '270ms', color: '#fbbf24', shape: 'dot' },
+  { cx: '66px', cy: '-136px', crot: '70deg', cdelay: '280ms', color: '#0ea5e9', shape: 'dot' },
+  { cx: '136px', cy: '-66px', crot: '160deg', cdelay: '250ms', color: '#10b981', shape: 'ring' },
+];
+
+const SUCCESS_TWINKLE_STARS: ReadonlyArray<{
+  className: string;
+  sizeClass: string;
+  color: string;
+  delay: string;
+}> = [
+  { className: 'top-8 left-10', sizeClass: 'w-6 h-6', color: '#10b981', delay: '0ms' },
+  { className: 'top-12 right-12', sizeClass: 'w-5 h-5', color: '#0ea5e9', delay: '380ms' },
+  { className: 'bottom-16 left-14', sizeClass: 'w-4 h-4', color: '#f59e0b', delay: '720ms' },
+  { className: 'bottom-14 right-14', sizeClass: 'w-6 h-6', color: '#14b8a6', delay: '520ms' },
+  { className: 'top-1/2 left-7 -translate-y-1/2', sizeClass: 'w-4 h-4', color: '#38bdf8', delay: '900ms' },
+  { className: 'top-1/2 right-7 -translate-y-1/2', sizeClass: 'w-5 h-5', color: '#34d399', delay: '260ms' },
+];
 
 const LANG_OPTIONS: { code: ClinicalLang; prefix: string; label: string }[] = [
   { code: 'cn', prefix: 'CN', label: '中文' },
@@ -249,6 +339,7 @@ export function StaffLoginModalOrPage({
   authIntent = 'general',
   asModal = false,
   initialLoginAnimStatus = 'idle',
+  initialSuccessStage = 'kinetic',
 }: StaffLoginModalOrPageProps) {
   const { lang, setLang } = useClinicalI18n();
   const copy = STAFF_LOGIN_COPY[lang];
@@ -265,6 +356,9 @@ export function StaffLoginModalOrPage({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(initialLoginAnimStatus === 'checking');
   const [loginAnimStatus, setLoginAnimStatus] = useState<StaffLoginAnimStatus>(initialLoginAnimStatus);
+  const [successStage, setSuccessStage] = useState<StaffSuccessStage>(initialSuccessStage);
+  const [isLeavingKinetic, setIsLeavingKinetic] = useState(false);
+  const [authenticatedStaff, setAuthenticatedStaff] = useState<UserAccount | null>(null);
   const successTimerRef = useRef<number | null>(null);
   const usernameInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -279,11 +373,32 @@ export function StaffLoginModalOrPage({
 
   useEffect(() => {
     if (loginAnimStatus === 'success') {
+      setSuccessStage(initialSuccessStage);
+      setIsLeavingKinetic(false);
       playGameSfx('unlock');
+      if (typeof window !== 'undefined' && initialSuccessStage === 'kinetic') {
+        const ringLockSfxId = window.setTimeout(() => {
+          playGameSfx('combo', { comboCount: 4 });
+        }, 1120);
+        const startExitId = window.setTimeout(() => {
+          setIsLeavingKinetic(true);
+        }, STAFF_SUCCESS_WELCOME_SWITCH_MS - 260);
+        const switchToWelcomeId = window.setTimeout(() => {
+          setIsLeavingKinetic(false);
+          setSuccessStage('welcome');
+          playGameSfx('victory');
+        }, STAFF_SUCCESS_WELCOME_SWITCH_MS);
+        return () => {
+          window.clearTimeout(ringLockSfxId);
+          window.clearTimeout(startExitId);
+          window.clearTimeout(switchToWelcomeId);
+        };
+      }
     } else if (loginAnimStatus === 'not_found') {
       playGameSfx('wrong');
     }
-  }, [loginAnimStatus]);
+    return undefined;
+  }, [loginAnimStatus, initialSuccessStage]);
 
   const handleReturn = useCallback(() => {
     clearPendingSuccessTimer();
@@ -300,11 +415,13 @@ export function StaffLoginModalOrPage({
   useEffect(() => {
     if (!asModal) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') handleReturn();
+      if (e.key === 'Escape' && loginAnimStatus !== 'checking' && loginAnimStatus !== 'success') {
+        handleReturn();
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [asModal, handleReturn]);
+  }, [asModal, handleReturn, loginAnimStatus]);
 
   const switchMode = (nextMode: 'login' | 'register') => {
     clearPendingSuccessTimer();
@@ -334,12 +451,14 @@ export function StaffLoginModalOrPage({
             specialty: regSpecialty.trim() || undefined,
             licenseNo: regLicenseNo.trim() || undefined,
           });
+          setAuthenticatedStaff(res.user);
           return res.user;
         },
         setAnimStatus: setLoginAnimStatus,
         setLoading,
         setError,
         onSuccess,
+        redirectDelayMs: STAFF_SUCCESS_TOTAL_REDIRECT_MS,
         scheduleTimer: (fn, ms) => {
           clearPendingSuccessTimer();
           const tid = window.setTimeout(fn, ms);
@@ -360,12 +479,14 @@ export function StaffLoginModalOrPage({
     await executeStaffAuthSubmission({
       runRequest: async () => {
         const res = await apiClient.login(username.trim(), password);
+        setAuthenticatedStaff(res.user);
         return res.user;
       },
       setAnimStatus: setLoginAnimStatus,
       setLoading,
       setError,
       onSuccess,
+      redirectDelayMs: STAFF_SUCCESS_TOTAL_REDIRECT_MS,
       scheduleTimer: (fn, ms) => {
         clearPendingSuccessTimer();
         const tid = window.setTimeout(fn, ms);
@@ -387,9 +508,267 @@ export function StaffLoginModalOrPage({
     <div
       className={wrapperClass}
       onClick={(e) => {
-        if (asModal && e.target === e.currentTarget) handleReturn();
+        if (asModal && !isCheckingOrSuccess && e.target === e.currentTarget) handleReturn();
       }}
     >
+      {loginAnimStatus === 'success' ? (
+        <div
+          data-testid="staff-login-success-stage"
+          style={{
+            boxShadow: '0 28px 72px -18px rgba(15, 23, 42, 0.22)',
+          }}
+          className="relative w-full max-w-lg sm:max-w-xl min-h-[430px] sm:min-h-[480px] rounded-[36px] border border-slate-200/90 bg-white px-8 py-12 shadow-2xl overflow-hidden flex flex-col items-center justify-center animate-popup-spring"
+        >
+          {/* Twinkling 4-Point Crisp Vector Sparkles on Pure Flat White */}
+          {SUCCESS_TWINKLE_STARS.map((star, idx) => (
+            <svg
+              key={idx}
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              fill="none"
+              style={{ ['--sdelay' as string]: star.delay }}
+              className={`auth-success-star pointer-events-none absolute ${star.className} ${star.sizeClass}`}
+            >
+              <path
+                d="M12 1.5 L14.6 9.4 L22.5 12 L14.6 14.6 L12 22.5 L9.4 14.6 L1.5 12 L9.4 9.4 Z"
+                fill={star.color}
+              />
+            </svg>
+          ))}
+
+          {successStage === 'kinetic' ? (
+            /* ACT 1: Vibrant Multi-Wave Kinetic Success Celebration on Clean White */
+            <div
+              className={`relative flex flex-col items-center justify-center w-full ${
+                isLeavingKinetic ? 'auth-success-stage-exit' : ''
+              }`}
+            >
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute top-[96px] sm:top-[112px] left-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center"
+              >
+                {/* 3 Crisp Staggered Expanding Sonar Rings */}
+                <div className="auth-success-shockwave-1 absolute h-44 w-44 sm:h-52 sm:w-52 rounded-full border-2 border-emerald-400/60" />
+                <div className="auth-success-shockwave-2 absolute h-44 w-44 sm:h-52 sm:w-52 rounded-full border-2 border-sky-400/55" />
+                <div className="auth-success-shockwave-3 absolute h-44 w-44 sm:h-52 sm:w-52 rounded-full border-2 border-teal-300/50" />
+
+                {/* 12 Radial Starburst Firework Rays on Ring Closure */}
+                {SUCCESS_FIREWORK_RAYS.map((ray, idx) => (
+                  <span
+                    key={idx}
+                    style={{
+                      ['--rdeg' as string]: ray.deg,
+                      ['--rdelay' as string]: ray.delay,
+                      backgroundColor: ray.color,
+                    }}
+                    className="auth-success-ray absolute h-6 w-1 rounded-full"
+                  />
+                ))}
+
+                {/* Rotating Dual Precision Orbital Rings */}
+                <svg
+                  viewBox="0 0 260 260"
+                  fill="none"
+                  className="auth-success-orbit absolute h-64 w-64 sm:h-72 sm:w-72"
+                >
+                  <circle
+                    cx="130"
+                    cy="130"
+                    r="108"
+                    stroke="rgba(16, 185, 129, 0.24)"
+                    strokeWidth="2"
+                    strokeDasharray="10 14"
+                  />
+                  <circle cx="130" cy="22" r="6" fill="#10b981" />
+                  <circle cx="224" cy="184" r="5" fill="#0ea5e9" />
+                  <circle cx="36" cy="184" r="4.5" fill="#f59e0b" />
+                </svg>
+
+                <svg
+                  viewBox="0 0 260 260"
+                  fill="none"
+                  className="auth-success-orbit-reverse absolute h-56 w-56 sm:h-64 sm:w-64"
+                >
+                  <circle
+                    cx="130"
+                    cy="130"
+                    r="116"
+                    stroke="rgba(14, 165, 233, 0.2)"
+                    strokeWidth="1.5"
+                    strokeDasharray="4 16"
+                  />
+                  <circle cx="246" cy="130" r="4" fill="#14b8a6" />
+                  <circle cx="14" cy="130" r="4" fill="#38bdf8" />
+                </svg>
+
+                {/* 22-Piece Two-Wave Geometric Vector Confetti */}
+                <div
+                  data-testid="staff-login-confetti-burst"
+                  className="absolute inset-0 flex items-center justify-center"
+                >
+                  {SUCCESS_CONFETTI_PIECES.map((piece, idx) => (
+                    <span
+                      key={idx}
+                      style={{
+                        ['--cx' as string]: piece.cx,
+                        ['--cy' as string]: piece.cy,
+                        ['--crot' as string]: piece.crot,
+                        ['--cdelay' as string]: piece.cdelay,
+                        backgroundColor: piece.shape === 'ring' ? 'transparent' : piece.color,
+                        borderColor: piece.shape === 'ring' ? piece.color : undefined,
+                      }}
+                      className={`auth-confetti-burst absolute ${
+                        piece.shape === 'pill'
+                          ? 'h-2.5 w-6 rounded-full'
+                          : piece.shape === 'diamond'
+                            ? 'h-3.5 w-3.5 rotate-45 rounded-[3px]'
+                            : piece.shape === 'ring'
+                              ? 'h-4 w-4 rounded-full border-[2.5px]'
+                              : 'h-3 w-3 rounded-full'
+                      }`}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Giant Hero Kinetic Checkmark + Big Bold "Success" */}
+              <div className="relative z-10">
+                <KineticAuthStatusBadge
+                  status="success"
+                  testId="staff-login-success-panel"
+                  subtitle=""
+                  hero
+                />
+              </div>
+            </div>
+          ) : (
+            /* ACT 2: Staff Brand Welcome Showcase ("ยินดีต้อนรับสู่บุคลากรของเรา" + Official Dr.Tech.Care Logo) */
+            <div
+              data-testid="staff-login-welcome-panel"
+              className="auth-welcome-stage-in relative flex flex-col items-center justify-center text-center w-full"
+            >
+              {/* Logo Halo Rings + Celebratory Second Confetti Burst */}
+              <div className="relative flex items-center justify-center mb-6">
+                <div
+                  aria-hidden="true"
+                  className="auth-success-shockwave-1 pointer-events-none absolute h-32 w-32 sm:h-36 sm:w-36 rounded-full border-2 border-emerald-400/55"
+                />
+                <div
+                  aria-hidden="true"
+                  className="auth-success-shockwave-2 pointer-events-none absolute h-32 w-32 sm:h-36 sm:w-36 rounded-full border-2 border-sky-400/50"
+                />
+
+                <div
+                  aria-hidden="true"
+                  data-testid="staff-welcome-confetti-burst"
+                  className="pointer-events-none absolute inset-0 flex items-center justify-center"
+                >
+                  {WELCOME_CONFETTI_PIECES.map((piece, idx) => (
+                    <span
+                      key={idx}
+                      style={{
+                        ['--cx' as string]: piece.cx,
+                        ['--cy' as string]: piece.cy,
+                        ['--crot' as string]: piece.crot,
+                        ['--cdelay' as string]: piece.cdelay,
+                        backgroundColor: piece.shape === 'ring' ? 'transparent' : piece.color,
+                        borderColor: piece.shape === 'ring' ? piece.color : undefined,
+                      }}
+                      className={`auth-confetti-burst absolute ${
+                        piece.shape === 'pill'
+                          ? 'h-2.5 w-6 rounded-full'
+                          : piece.shape === 'diamond'
+                            ? 'h-3.5 w-3.5 rotate-45 rounded-[3px]'
+                            : piece.shape === 'ring'
+                              ? 'h-4 w-4 rounded-full border-[2.5px]'
+                              : 'h-3 w-3 rounded-full'
+                      }`}
+                    />
+                  ))}
+                </div>
+
+                {/* Official Dr.Tech.Care Heart-ECG Logo Emblem */}
+                <div
+                  data-testid="staff-welcome-project-logo"
+                  className="auth-welcome-logo relative overflow-hidden flex h-28 w-28 sm:h-32 sm:w-32 items-center justify-center rounded-[30px] shadow-[0_22px_50px_-10px_rgba(14,165,233,0.48)] ring-4 ring-emerald-50"
+                  style={{
+                    background: 'linear-gradient(135deg, #0F4C81 0%, #0ea5e9 52%, #10b981 100%)',
+                  }}
+                >
+                  <div
+                    aria-hidden="true"
+                    className="auth-success-sheen pointer-events-none absolute inset-y-0 -left-1/3 w-1/2 bg-gradient-to-r from-transparent via-white/45 to-transparent"
+                  />
+                  <svg
+                    viewBox="0 0 48 48"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                    aria-hidden="true"
+                    className="relative z-10 h-16 w-16 sm:h-18 sm:w-18"
+                  >
+                    <path
+                      d="M24 40 C24 40 7.5 29.8 7.5 17.8 C7.5 12.2 11.9 8 17.2 8 C20.4 8 23.1 9.6 24 12.1 C24.9 9.6 27.6 8 30.8 8 C36.1 8 40.5 12.2 40.5 17.8 C40.5 29.8 24 40 24 40 Z"
+                      stroke="#ffffff"
+                      strokeWidth="2.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      className="standby-intro-ecg-line"
+                      d="M10.5 23 H17.5 L20.5 16 L24.5 30 L28 20.5 L30.5 23 H37.5"
+                      stroke="#ffffff"
+                      strokeWidth="2.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </div>
+              </div>
+
+              {/* Project Wordmark */}
+              <div className="auth-welcome-text">
+                <h2
+                  data-testid="staff-welcome-project-name"
+                  className="text-4xl sm:text-5xl font-black tracking-tight bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#059669] bg-clip-text text-transparent leading-tight"
+                  style={{ fontFamily: "'Prompt', 'Inter', 'IBM Plex Sans Thai', sans-serif" }}
+                >
+                  Dr.Tech.Care
+                </h2>
+              </div>
+
+              {/* Center Expanding Gradient Hairline Divider */}
+              <div
+                aria-hidden="true"
+                className="auth-welcome-divider my-4 h-1 w-28 rounded-full bg-gradient-to-r from-[#0F4C81] via-[#0ea5e9] to-[#10b981]"
+              />
+
+              {/* Warm Staff Welcome Headline */}
+              <p
+                data-testid="staff-welcome-headline"
+                className="auth-welcome-subtext text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight"
+                style={{ fontFamily: "'Prompt', 'IBM Plex Sans Thai', sans-serif" }}
+              >
+                ยินดีต้อนรับสู่บุคลากรของเรา
+              </p>
+
+              {authenticatedStaff?.fullName && (
+                <div className="auth-welcome-subtext mt-3 inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-1 text-xs sm:text-sm font-extrabold text-emerald-800">
+                  <BadgeCheck className="h-4 w-4 text-emerald-600 shrink-0" />
+                  <span>{authenticatedStaff.fullName}</span>
+                </div>
+              )}
+
+              {/* Sleek Portal Entry Progress Bar */}
+              <div
+                aria-hidden="true"
+                className="mt-7 h-1.5 w-44 sm:w-52 overflow-hidden rounded-full bg-slate-100"
+              >
+                <div className="auth-welcome-bar-fill h-full w-full rounded-full bg-gradient-to-r from-[#0F4C81] via-[#0ea5e9] to-[#10b981] game-progress-stripes" />
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
       <div
         style={{ boxShadow: '0 25px 60px -15px rgba(6, 57, 50, 0.35)' }}
         className="w-full max-w-lg sm:max-w-xl bg-white rounded-3xl border-2 border-emerald-500/25 overflow-hidden shadow-2xl relative max-h-[92dvh] overflow-y-auto animate-popup-spring"
@@ -481,19 +860,8 @@ export function StaffLoginModalOrPage({
           </div>
         </div>
 
-        {/* Success Animation Panel */}
-        {loginAnimStatus === 'success' ? (
-          <div className="p-6 sm:p-10 sm:pt-5">
-            <KineticAuthStatusBadge
-              status="success"
-              testId="staff-login-success-panel"
-              subtitle="เข้าสู่ระบบสำเร็จ กำลังเปิดหน้าจัดการคลินิก..."
-            />
-          </div>
-        ) : (
-          <>
-            {/* Not Found Animated Panel */}
-            {loginAnimStatus === 'not_found' && (
+        {/* Not Found Animated Panel */}
+        {loginAnimStatus === 'not_found' && (
               <div className="mx-6 sm:mx-10 mt-3">
                 <KineticAuthStatusBadge
                   status="not_found"
@@ -810,14 +1178,13 @@ export function StaffLoginModalOrPage({
             <span>{copy.returnToPatientMain}</span>
           </button>
         </form>
-          </>
-        )}
 
         {/* Bottom Security Notice */}
         <div className="py-3.5 px-8 bg-slate-50 border-t border-slate-100 text-center text-xs text-slate-500 font-medium">
           {copy.securityNotice}
         </div>
       </div>
+      )}
     </div>
   );
 }

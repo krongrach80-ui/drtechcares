@@ -100,6 +100,7 @@ import {
   ExpandedCoachModal,
   Zone2PipCoachOverlay,
   Zone4CoachStageAndSteps,
+  resolveElderlyLimbCueTh,
 } from './AnimatedRehabCoachModel';
 import { resolveExercisePostureSpec } from './ExercisePostureGuide';
 import { DrTechCareMascot } from './DrTechCareMascot';
@@ -4532,9 +4533,11 @@ export function SmartRehabKioskUI({
     onOpenStaffPortal?.();
   };
 
+  const elderlyLimbCue = resolveElderlyLimbCueTh(selectedExercise, currentUiSide);
+
   return (
     <div className="h-[100dvh] max-h-[100dvh] w-full overflow-hidden bg-gradient-to-b from-slate-50 via-white to-emerald-50/40 text-slate-800 flex flex-col justify-between p-2.5 md:p-3 gap-2 select-none">
-      {/* ZONE 1: Compact 2-Row Clinical White-Blue-Green Header & Controls */}
+      {/* ZONE 1: Clean Compact Header & Controls */}
       <header
         data-testid={isPoseTestMode ? 'pose-test-switcher-bar' : undefined}
         className="shrink-0 bg-white border-2 border-sky-100 rounded-2xl px-3 py-2 shadow-sm flex flex-col gap-1.5"
@@ -4546,37 +4549,38 @@ export function SmartRehabKioskUI({
               <Shield className="h-4 w-4" />
             </div>
             <div className="flex items-baseline gap-2 min-w-0 truncate">
-              <h1 className="font-extrabold text-blue-950 text-base md:text-lg truncate">
+              <h1 className="font-extrabold text-blue-950 text-sm sm:text-base md:text-lg truncate">
                 Dr.Tech.Care • {isPoseTestMode ? 'โหมดทดสอบท่าทาง' : 'Smart Rehab Kiosk'}
               </h1>
               {patientRevealed && patient && (
-                <span className="hidden sm:inline text-xs md:text-sm font-bold text-sky-700 truncate">
+                <span className={isPoseTestMode ? 'sr-only' : 'hidden sm:inline text-xs md:text-sm font-bold text-sky-700 truncate'}>
                   {patient.name} ({patient.hn || patient.id})
                 </span>
               )}
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
             <div
-              className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 font-bold text-xs md:text-sm whitespace-nowrap ${
+              aria-label={
+                isOnlineReady
+                  ? 'ออนไลน์ (ระบบกล้องพร้อม)'
+                  : isDemoMode
+                    ? 'โหมดจำลอง'
+                    : 'พักกล้องชั่วคราว'
+              }
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-bold text-xs md:text-sm whitespace-nowrap ${
                 isOnlineReady
                   ? 'bg-emerald-50 border-emerald-400 text-emerald-800'
                   : 'bg-amber-50 border-amber-400 text-amber-800'
               }`}
             >
               <span
-                className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${
+                className={`inline-block w-2 h-2 rounded-full shrink-0 ${
                   isOnlineReady ? 'bg-emerald-500 animate-status-halo' : 'bg-amber-500'
                 }`}
               />
-              <span>
-                {isOnlineReady
-                  ? 'ออนไลน์ (ระบบกล้องพร้อม)'
-                  : isDemoMode
-                    ? 'โหมดจำลอง'
-                    : 'พักกล้องชั่วคราว'}
-              </span>
+              <span>{isOnlineReady ? 'ออนไลน์' : isDemoMode ? 'จำลอง' : 'พักกล้อง'}</span>
             </div>
 
             <button
@@ -4585,7 +4589,7 @@ export function SmartRehabKioskUI({
                 resetPoseTestProgress(selectedExercise.hold_sec);
                 resetDemoSession();
               }}
-              className="inline-flex items-center gap-1.5 bg-sky-50 hover:bg-sky-100 border border-sky-300 text-blue-800 font-bold text-xs md:text-sm px-3 py-1 rounded-xl cursor-pointer active:scale-95 transition whitespace-nowrap"
+              className="inline-flex items-center gap-1 bg-sky-50 hover:bg-sky-100 border border-sky-300 text-blue-800 font-bold text-xs md:text-sm px-2.5 py-1 rounded-xl cursor-pointer active:scale-95 transition whitespace-nowrap"
             >
               <RotateCcw className="w-3.5 h-3.5 shrink-0" />
               <span>รีเซ็ต (0/{selectedExercise.target_reps})</span>
@@ -4595,7 +4599,7 @@ export function SmartRehabKioskUI({
               <button
                 type="button"
                 onClick={onBackToAdminPortal ?? onOpenStaffPortal}
-                className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs md:text-sm px-3.5 py-1.5 rounded-xl shadow-sm cursor-pointer active:scale-95 transition whitespace-nowrap"
+                className="inline-flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs md:text-sm px-3 py-1.5 rounded-xl shadow-sm cursor-pointer active:scale-95 transition whitespace-nowrap"
               >
                 <ArrowLeft className="w-4 h-4 shrink-0" />
                 <span>กลับหน้า Admin Portal</span>
@@ -4957,15 +4961,54 @@ export function SmartRehabKioskUI({
             </motion.div>
           )}
 
-          {/* Top-Left Standing Distance Badge */}
-          <div className="pointer-events-none absolute top-2.5 left-3 z-20">
-            <div className="inline-flex items-center gap-1.5 bg-white/95 border-2 border-emerald-500 text-emerald-900 font-extrabold text-sm md:text-base px-3.5 py-1 rounded-full shadow">
-              <Ruler className="w-4 h-4 text-emerald-600 shrink-0" />
-              <span>ระยะยืน: {distanceLabel}</span>
+          {/* Top-Left Compact Standing Distance Badge */}
+          <div className="pointer-events-none absolute top-3 left-3 z-20">
+            <div className="inline-flex items-center gap-1.5 bg-white/95 border-2 border-emerald-500 text-emerald-900 font-extrabold text-xs sm:text-sm px-3 py-1 rounded-full shadow">
+              <Ruler className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span>{distanceLabel}</span>
             </div>
           </div>
 
-          {/* Picture-in-Picture Live Animated Rehab Coach in Corner of Camera */}
+          {/* Top-Center GIANT Elderly Arm Callout Banner */}
+          <div
+            data-testid="kiosk-giant-arm-banner"
+            className="pointer-events-none absolute top-2.5 left-1/2 -translate-x-1/2 z-20"
+          >
+            <div
+              className={`inline-flex items-center gap-2.5 rounded-2xl border-[3px] border-white px-5 sm:px-7 py-1.5 sm:py-2 text-white shadow-2xl whitespace-nowrap ${
+                elderlyLimbCue.direction === 'left'
+                  ? 'bg-gradient-to-r from-indigo-700 via-blue-600 to-sky-500'
+                  : elderlyLimbCue.direction === 'both'
+                    ? 'bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600'
+                    : 'bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#059669]'
+              }`}
+            >
+              {elderlyLimbCue.direction === 'left' && (
+                <svg viewBox="0 0 36 36" className="w-7 h-7 sm:w-9 sm:h-9 shrink-0 text-amber-300" fill="none" stroke="currentColor" strokeWidth="4.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M30 18H6" />
+                  <path d="M16 8L6 18l10 10" />
+                </svg>
+              )}
+              {elderlyLimbCue.direction === 'both' && (
+                <svg viewBox="0 0 36 36" className="w-7 h-7 sm:w-9 sm:h-9 shrink-0 text-amber-300" fill="none" stroke="currentColor" strokeWidth="3.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M13 8L5 18l8 10" />
+                  <path d="M23 8l8 10-8 10" />
+                  <path d="M7 18h22" />
+                </svg>
+              )}
+              <span className="text-2xl sm:text-4xl md:text-5xl font-black tracking-tight leading-none drop-shadow-xs">
+                {elderlyLimbCue.headlineTh}
+              </span>
+              {elderlyLimbCue.direction === 'right' && (
+                <svg viewBox="0 0 36 36" className="w-7 h-7 sm:w-9 sm:h-9 shrink-0 text-amber-300" fill="none" stroke="currentColor" strokeWidth="4.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M6 18h24" />
+                  <path d="M20 8l10 10-10 10" />
+                </svg>
+              )}
+            </div>
+          </div>
+
+          {/* Enlarged Picture-in-Picture Live Animated Rehab Coach in Corner of Camera */}
           <Zone2PipCoachOverlay
             exercise={selectedExercise}
             targetSide={currentUiSide}
@@ -4973,49 +5016,46 @@ export function SmartRehabKioskUI({
             onToggleVisible={() => setShowPipCoach((prev) => !prev)}
           />
 
-          {/* Top-Right Side Target Badge & Live Angle Box */}
-          <div className="pointer-events-none absolute top-2.5 right-3 z-20 flex flex-col items-end gap-1.5">
-            <div className="inline-flex items-center gap-1.5 bg-blue-900/90 border border-sky-300 text-white font-extrabold text-sm md:text-base px-3.5 py-1 rounded-full shadow">
-              <Crosshair className="w-4 h-4 text-sky-300 shrink-0" />
-              <span>เป้าหมาย: {targetSideLabel}</span>
-            </div>
+          {/* Top-Right Oversized Live Angle Readout */}
+          <div className="pointer-events-none absolute top-3 right-3 z-20 flex flex-col items-end gap-1">
+            <span className="sr-only">เป้าหมาย: {targetSideLabel}</span>
             <div
               ref={liveAngleBadgeRef}
-              className="bg-white/95 border-2 border-blue-600 text-blue-950 font-black text-xl md:text-2xl px-3.5 py-1 rounded-xl shadow-md tabular-mono"
+              className="bg-white/96 border-[3px] border-blue-600 text-blue-950 font-black text-2xl sm:text-3xl md:text-4xl px-4 py-1.5 rounded-2xl shadow-lg tabular-mono leading-none"
             >
               {Math.round(activeRom)}° / {effectiveTargetRomDeg}°
             </div>
           </div>
 
-          {/* Bottom Coaching Banner Inside Camera */}
-          <div className="absolute bottom-2 left-3 right-3 z-20">
+          {/* Bottom Coaching Banner Inside Camera (Concise Giant Elderly Font) */}
+          <div className="absolute bottom-2.5 left-3 right-3 z-20">
             <div
               role="status"
               data-testid="kiosk-unified-coaching-banner"
-              className={`rounded-xl border-2 px-4 py-1.5 shadow-lg text-center transition-all duration-200 ${
+              className={`rounded-2xl border-2 px-4 py-2 shadow-lg text-center transition-all duration-200 ${
                 unifiedCoachingBanner.tone === 'rose'
-                  ? 'bg-rose-50/95 border-rose-500 text-rose-900'
+                  ? 'bg-rose-50/96 border-rose-500 text-rose-900'
                   : unifiedCoachingBanner.tone === 'amber'
-                    ? 'bg-amber-50/95 border-amber-500 text-amber-950'
-                    : 'bg-white/95 border-emerald-500 text-blue-950'
+                    ? 'bg-amber-50/96 border-amber-500 text-amber-950'
+                    : 'bg-white/96 border-emerald-500 text-blue-950'
               }`}
             >
               <div className="flex flex-wrap items-center justify-center gap-2">
                 {(unifiedCoachingBanner.tone === 'rose' || unifiedCoachingBanner.tone === 'amber') ? (
-                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <AlertTriangle className="w-5 h-5 shrink-0" />
                 ) : isWaitLowerArmUi || holdPct >= 100 ? (
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
                 ) : (
-                  <Timer className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <Timer className="w-5 h-5 text-emerald-600 shrink-0" />
                 )}
-                <p className="text-sm md:text-base font-extrabold leading-tight">
+                <p className="text-base sm:text-xl md:text-2xl font-black leading-tight">
                   {unifiedCoachingBanner.tone === 'rose' || unifiedCoachingBanner.tone === 'amber'
-                    ? `${unifiedCoachingBanner.titleTh}${unifiedCoachingBanner.subtitleTh ? ` — ${unifiedCoachingBanner.subtitleTh}` : ''}`
+                    ? unifiedCoachingBanner.titleTh
                     : isWaitLowerArmUi || holdPct >= 100
-                      ? 'ค้างครบเวลา! +1 ครั้ง ค่อยๆ ผ่อนท่ากลับสู่ท่าเริ่มต้นช้าๆ'
+                      ? 'ครบเวลา! +1 ครั้ง ค่อยๆ เอาลง'
                       : isHoldPhase
-                        ? `ค้างท่าไว้ ${holdTargetSec.toFixed(1)} วินาที! (ทำดีมาก!)`
-                        : unifiedCoachingBanner.titleTh || `ค่อยๆ ทำท่าช้าๆ ให้ถึงเป้าหมาย ${effectiveTargetRomDeg} องศา`}
+                        ? `ค้างท่าไว้ ${holdTargetSec.toFixed(0)} วินาที!`
+                        : unifiedCoachingBanner.titleTh || `${elderlyLimbCue.headlineTh} ให้ถึง ${effectiveTargetRomDeg}°`}
                 </p>
                 {unifiedCoachingBanner.suggestedRomDeg ? (
                   <button
@@ -5025,9 +5065,9 @@ export function SmartRehabKioskUI({
                       setReducedRomOverrideDeg(nextDeg);
                       setStrokeSafetyAlert(null);
                     }}
-                    className="rounded-lg bg-blue-600 px-2.5 py-0.5 text-xs font-extrabold text-white shadow-xs hover:bg-blue-700 cursor-pointer"
+                    className="rounded-lg bg-blue-600 px-3 py-1 text-sm font-extrabold text-white shadow-xs hover:bg-blue-700 cursor-pointer"
                   >
-                    ลดเป้าหมายเป็น {unifiedCoachingBanner.suggestedRomDeg}°
+                    ลดเป้า {unifiedCoachingBanner.suggestedRomDeg}°
                   </button>
                 ) : null}
                 {unifiedCoachingBanner.showSafetyAcknowledge && (
@@ -5037,7 +5077,7 @@ export function SmartRehabKioskUI({
                       setStrokeSafetyAlert(null);
                       setFatigueRestSec(0);
                     }}
-                    className="rounded-lg border border-blue-400 bg-white px-2.5 py-0.5 text-xs font-extrabold text-blue-900 hover:bg-blue-50 cursor-pointer"
+                    className="rounded-lg border border-blue-400 bg-white px-3 py-1 text-sm font-extrabold text-blue-900 hover:bg-blue-50 cursor-pointer"
                   >
                     {(unifiedCoachingBanner.fatigueRestSec ?? 0) > 0 ? 'พร้อมฝึกต่อ' : 'รับทราบ'}
                   </button>
@@ -5220,21 +5260,13 @@ export function SmartRehabKioskUI({
         </div>
       </section>
 
-      {/* ZONE 4: Compact Step-by-Step Guide & 3-Item Checklist */}
+      {/* ZONE 4: GIANT Demo Model Stage + Massive Elderly Arm Callout + Ultra-Clean Checklist Strip */}
       <section
         aria-label="ขั้นตอนการฝึกและตารางตรวจสอบเช็คลิสต์"
-        className="shrink-0 bg-white border-2 border-sky-100 rounded-2xl px-3.5 py-2 shadow-sm"
+        className="shrink-0 bg-white border-2 border-sky-100 rounded-2xl p-2.5 shadow-sm space-y-2"
       >
-        <h2
-          key={`${selectedExercise.exercise_id}-${currentUiSide}`}
-          className="flex items-center gap-1.5 text-sm md:text-base font-extrabold text-blue-950 mb-1.5 truncate animate-view-enter"
-        >
-          <Activity className="w-4 h-4 text-blue-700 shrink-0" />
-          <span className="truncate">{selectedExercise.name_th} — {targetSideLabel}</span>
-        </h2>
-
         <div className="grid grid-cols-12 gap-2.5 items-stretch">
-          {/* Left 3 cols + Middle 6 cols: Synchronized Live Coach Model & 3 Step Cards (Zero Truncation) */}
+          {/* Giant Live Coach Model (5 cols) + Massive Elderly Arm Banner & 3 Crisp Step Chips (7 cols) */}
           <Zone4CoachStageAndSteps
             exercise={selectedExercise}
             targetSide={currentUiSide}
@@ -5243,64 +5275,56 @@ export function SmartRehabKioskUI({
             targetRomDeg={effectiveTargetRomDeg}
             onExpandPreview={() => setCoachModalOpen(true)}
           />
+        </div>
 
-          {/* Right 3 cols: Compact 3-Item Live Checklist */}
-          <div className="col-span-3 bg-emerald-50/60 border border-emerald-200 rounded-2xl px-2.5 py-1.5 flex flex-col justify-between space-y-1">
-            <div className="flex items-center justify-between gap-1.5 pb-0.5 border-b border-emerald-200/70">
-              <span className="text-[11px] md:text-xs font-black text-emerald-950 truncate">
-                ตารางตรวจสอบเช็คลิสต์
-              </span>
-              <div className="flex items-center gap-1 shrink-0">
-                <button
-                  type="button"
-                  onClick={toggleMasterFormAssessment}
-                  aria-pressed={formRules.enabled}
-                  className={`rounded-md px-1.5 py-0.5 text-[10px] font-extrabold cursor-pointer transition ${
-                    formRules.enabled
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-slate-300 text-slate-700'
-                  }`}
-                >
-                  {formRules.enabled ? 'เปิด' : 'ปิด'}
-                </button>
-                {hasDisabledFormRule && (
-                  <button
-                    type="button"
-                    onClick={resetAllFormRules}
-                    className="rounded-md bg-blue-600 px-1.5 py-0.5 text-[10px] font-extrabold text-white cursor-pointer"
-                  >
-                    เปิดหมด
-                  </button>
-                )}
-              </div>
-            </div>
+        {/* Ultra-Slim Single-Row Checklist Toggle Bar (Zero Clutter) */}
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-emerald-50/60 border border-emerald-200/80 px-2.5 py-1">
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="text-[11px] font-black text-emerald-950">ตารางตรวจสอบเช็คลิสต์</span>
+            <button
+              type="button"
+              onClick={toggleMasterFormAssessment}
+              aria-pressed={formRules.enabled}
+              className={`rounded-md px-1.5 py-0.5 text-[10px] font-extrabold cursor-pointer transition ${
+                formRules.enabled
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-slate-300 text-slate-700'
+              }`}
+            >
+              {formRules.enabled ? 'เปิด' : 'ปิด'}
+            </button>
+            {hasDisabledFormRule && (
+              <button
+                type="button"
+                onClick={resetAllFormRules}
+                className="rounded-md bg-blue-600 px-1.5 py-0.5 text-[10px] font-extrabold text-white cursor-pointer"
+              >
+                เปิดหมด
+              </button>
+            )}
+          </div>
 
+          <div className="flex flex-wrap items-center gap-1.5">
             {coreChecklistItems.map(({ ruleKey, displayLabel, baseItem }) => (
               <button
                 key={ruleKey}
                 type="button"
                 onClick={() => toggleSingleFormRule(ruleKey)}
                 aria-pressed={baseItem.ruleActive}
-                className="w-full flex items-center justify-between gap-1.5 text-left cursor-pointer hover:bg-emerald-100/50 rounded-md px-1 py-0.5 transition"
+                className="inline-flex items-center gap-1 rounded-full bg-white border border-emerald-200/80 hover:bg-emerald-100/50 px-2 py-0.5 text-[11px] font-bold cursor-pointer transition"
               >
-                <span className="inline-flex items-center gap-1.5 min-w-0">
-                  {!baseItem.ruleActive ? (
-                    <Pause className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                  ) : baseItem.ok ? (
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  ) : (
-                    <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                  )}
-                  <span
-                    className={`text-[11px] md:text-xs font-bold leading-tight truncate ${
-                      !baseItem.ruleActive ? 'text-slate-400 line-through' : 'text-slate-800'
-                    }`}
-                  >
-                    {displayLabel}
-                  </span>
+                {!baseItem.ruleActive ? (
+                  <Pause className="w-3 h-3 text-slate-400 shrink-0" />
+                ) : baseItem.ok ? (
+                  <CheckCircle2 className="w-3 h-3 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                )}
+                <span className={!baseItem.ruleActive ? 'text-slate-400 line-through' : 'text-slate-800'}>
+                  {displayLabel}
                 </span>
                 <span
-                  className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-extrabold ${
+                  className={`rounded-full px-1.5 text-[9.5px] font-extrabold ${
                     !baseItem.ruleActive
                       ? 'bg-slate-200 text-slate-600'
                       : baseItem.ok
@@ -5308,7 +5332,7 @@ export function SmartRehabKioskUI({
                         : 'bg-amber-500 text-white'
                   }`}
                 >
-                  {!baseItem.ruleActive ? 'ปิดอยู่' : baseItem.ok ? 'ผ่าน' : baseItem.warnText}
+                  {!baseItem.ruleActive ? 'ปิด' : baseItem.ok ? 'ผ่าน' : baseItem.warnText}
                 </span>
               </button>
             ))}
@@ -5316,9 +5340,9 @@ export function SmartRehabKioskUI({
         </div>
       </section>
 
-      {/* ZONE 5: Compact Accessible Voice Coach Footer */}
+      {/* ZONE 5: Clean Accessible Voice Coach Footer */}
       <footer className="shrink-0 relative bg-gradient-to-r from-teal-700 via-emerald-700 to-blue-800 text-white rounded-2xl px-4 py-2 flex items-center justify-between gap-3 shadow-sm">
-        {/* Left: Compact Mascot + Microphone badge + Label + Live Spoken Subtitle */}
+        {/* Left: Compact Mascot + Microphone badge + Large Live Spoken Subtitle */}
         <div className="flex items-center gap-2.5 min-w-0 flex-1">
           <div className="hidden sm:flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/95 border border-emerald-200">
             <DrTechCareMascot
@@ -5334,15 +5358,15 @@ export function SmartRehabKioskUI({
           >
             <Mic className="w-4 h-4 text-white" />
           </span>
-          <span className="text-emerald-200 font-extrabold text-xs md:text-sm shrink-0">
+          <span className="sr-only">
             {zone5VoiceLang === 'en'
               ? 'EN AI VOICE COACH:'
               : zone5VoiceLang === 'zh'
                 ? 'ZH AI VOICE COACH:'
                 : 'THAI AI VOICE COACH:'}
           </span>
-          <p className="text-white font-bold text-sm md:text-base truncate">
-            &ldquo;{displayedVoiceSubtitle}&rdquo;
+          <p className="text-white font-extrabold text-base sm:text-lg md:text-xl truncate">
+            {displayedVoiceSubtitle}
           </p>
         </div>
 

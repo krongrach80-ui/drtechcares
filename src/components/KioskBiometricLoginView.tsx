@@ -5675,48 +5675,48 @@ export function KioskBiometricLoginView({
 
   return (
     <div className="animate-view-enter min-h-screen flex flex-col bg-gradient-to-br from-[#EAF8F5] via-[#EFF6FF] to-white text-[#0F4C81] font-sans select-none overflow-x-hidden">
-      {/* Top Clinical Blue-Teal Header Bar — Balanced, Uncluttered 2-Tier Header */}
-      <header className="w-full px-5 py-3 bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] border-b border-sky-200/30 shadow-md text-white z-40">
-        <div className="max-w-6xl mx-auto w-full flex flex-col gap-2.5">
+      {/* Top Clinical Blue-Teal Header Bar — Balanced, Overlap-Proof 2-Tier Header */}
+      <header className="w-full px-3 sm:px-4 py-2.5 bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#0D9488] border-b border-sky-200/30 shadow-md text-white z-40">
+        <div className="w-full flex flex-col gap-2">
           {/* Row 1: Brand Identity (Left) + Cloud/Clock & Language Switcher (Right) */}
-          <div className="flex items-center justify-between gap-3 w-full">
-            {/* Left Brand Identity */}
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#0EA5E9] to-[#10B981] flex items-center justify-center text-white ring-1 ring-white/40 shadow-sm shrink-0">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 w-full">
+            {/* Left Brand Identity — Never crushed or overlapped */}
+            <div className="flex items-center gap-2.5 shrink-0 min-w-0 max-w-full">
+              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-tr from-[#0EA5E9] to-[#10B981] flex items-center justify-center text-white ring-1 ring-white/40 shadow-sm shrink-0">
                 <HeartPulse className="w-5 h-5" />
               </div>
               <div className="leading-snug min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-lg sm:text-xl font-extrabold tracking-tight text-white whitespace-nowrap">
+                  <span className="text-base sm:text-lg font-extrabold tracking-tight text-white whitespace-nowrap">
                     Dr.Tech.Care
                   </span>
-                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-white/20 border border-white/30 text-white whitespace-nowrap">
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/20 border border-white/30 text-white whitespace-nowrap shrink-0">
                     AI Kiosk
                   </span>
                 </div>
-                <p className="text-xs sm:text-[13px] text-sky-100 truncate">
-                  {c.subtitle} • Terminal ID: {kioskId}
+                <p className="text-[11px] sm:text-xs text-sky-100 whitespace-nowrap truncate max-w-[260px] sm:max-w-[340px]">
+                  {c.subtitle} • {kioskId}
                 </p>
               </div>
             </div>
 
-            {/* Right Controls: AI Voice Mute Toggle + Cloud Online + Clock & Compact Language Switcher */}
-            <div className="flex flex-wrap items-center justify-end gap-2.5 shrink-0">
+            {/* Right Controls: AI Voice Mute Toggle + Standby + Cloud Online/Clock & Compact Language Switcher */}
+            <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2 min-w-0">
               <button
                 type="button"
                 onClick={handleToggleVoiceMute}
                 aria-pressed={voiceMuted}
                 data-testid="kiosk-login-voice-mute-toggle"
-                className={`inline-flex items-center gap-2 rounded-xl border-2 px-3 py-1.5 text-xs sm:text-sm font-extrabold shadow-sm transition-all cursor-pointer active:scale-95 ${
+                className={`h-9 inline-flex items-center gap-1.5 rounded-xl border-2 px-2.5 text-xs font-extrabold shadow-sm transition-all cursor-pointer active:scale-95 whitespace-nowrap ${
                   voiceMuted
                     ? 'border-amber-300 bg-amber-100 text-amber-950 hover:bg-amber-200'
                     : 'border-emerald-300 bg-emerald-100 text-emerald-950 hover:bg-emerald-200'
                 }`}
               >
                 {voiceMuted ? (
-                  <VolumeX className="h-4 w-4 shrink-0 text-amber-700" />
+                  <VolumeX className="h-3.5 w-3.5 shrink-0 text-amber-700" />
                 ) : (
-                  <Volume2 className="h-4 w-4 shrink-0 text-emerald-700" />
+                  <Volume2 className="h-3.5 w-3.5 shrink-0 text-emerald-700" />
                 )}
                 <span>{getSeniorVoiceToggleLabel(lang, voiceMuted)}</span>
               </button>
@@ -5729,15 +5729,15 @@ export function KioskBiometricLoginView({
                     cancelAllKioskVoiceSpeech(modalAudioRef.current);
                     onReturnToStandby();
                   }}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-white/30 bg-white/15 hover:bg-white/25 px-3 py-1.5 text-xs sm:text-sm font-bold text-white shadow-xs transition-all cursor-pointer active:scale-95 whitespace-nowrap"
+                  className="h-9 inline-flex items-center gap-1.5 rounded-xl border border-white/30 bg-white/15 hover:bg-white/25 px-2.5 text-xs font-bold text-white shadow-xs transition-all cursor-pointer active:scale-95 whitespace-nowrap"
                 >
-                  <Moon className="h-4 w-4 shrink-0 text-cyan-200" />
+                  <Moon className="h-3.5 w-3.5 shrink-0 text-cyan-200" />
                   <span>{lang === 'en' ? 'Standby' : lang === 'cn' ? '待机' : 'พักหน้าจอ'}</span>
                 </button>
               )}
 
               {/* Cloud Online + Clock Pill */}
-              <div className="hidden sm:inline-flex h-9 px-3 items-center gap-2 rounded-xl bg-white/15 border border-white/25 text-xs font-semibold text-white whitespace-nowrap">
+              <div className="hidden sm:inline-flex h-9 px-2.5 items-center gap-1.5 rounded-xl bg-white/15 border border-white/25 text-xs font-semibold text-white whitespace-nowrap">
                 <span className="w-2 h-2 rounded-full bg-emerald-300 animate-status-halo shrink-0 shadow-[0_0_8px_#34d399]" />
                 <span>{edgeConnected ? 'Cloud + Edge 3D' : 'Cloud Online'}</span>
                 <span className="text-white/60">•</span>
@@ -5746,7 +5746,7 @@ export function KioskBiometricLoginView({
 
               {/* Compact Language Switcher */}
               <div
-                className="flex items-center gap-1 rounded-xl bg-white/15 border border-white/25 p-1 shrink-0"
+                className="flex items-center gap-0.5 rounded-xl bg-white/15 border border-white/25 p-1 shrink-0"
                 data-testid="language-switcher"
               >
                 {LANG_OPTIONS.map((opt) => {
@@ -5756,7 +5756,7 @@ export function KioskBiometricLoginView({
                       key={opt.code}
                       type="button"
                       onClick={() => handleSelectLang(opt.code)}
-                      className={`h-7 w-[72px] inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      className={`h-7 px-2 inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
                         active
                           ? 'bg-white text-[#0F4C81] shadow-sm'
                           : 'text-white/85 hover:bg-white/20 hover:text-white'
@@ -5812,16 +5812,16 @@ export function KioskBiometricLoginView({
         </div>
       </header>
 
-      {/* Main Content Stage */}
-      <main className="flex-1 w-full max-w-4xl mx-auto my-3 px-2 sm:px-3 flex flex-col relative min-h-0">
+      {/* Main Content Stage — Full-Width Edge-to-Edge Camera Frame */}
+      <main className="flex-1 w-full mx-auto my-1.5 px-1.5 sm:px-2 flex flex-col relative min-h-0">
         {/* Subtle outer cyan corner brackets */}
-        <div className="pointer-events-none absolute top-2 left-2 w-5 h-5 border-t-2 border-l-2 border-cyan-400/45 rounded-tl-md" />
-        <div className="pointer-events-none absolute top-2 right-2 w-5 h-5 border-t-2 border-r-2 border-cyan-400/45 rounded-tr-md" />
-        <div className="pointer-events-none absolute bottom-2 left-2 w-5 h-5 border-b-2 border-l-2 border-cyan-400/45 rounded-bl-md" />
-        <div className="pointer-events-none absolute bottom-2 right-2 w-5 h-5 border-b-2 border-r-2 border-cyan-400/45 rounded-br-md" />
+        <div className="pointer-events-none absolute top-1 left-1 w-5 h-5 border-t-2 border-l-2 border-cyan-400/45 rounded-tl-md" />
+        <div className="pointer-events-none absolute top-1 right-1 w-5 h-5 border-t-2 border-r-2 border-cyan-400/45 rounded-tr-md" />
+        <div className="pointer-events-none absolute bottom-1 left-1 w-5 h-5 border-b-2 border-l-2 border-cyan-400/45 rounded-bl-md" />
+        <div className="pointer-events-none absolute bottom-1 right-1 w-5 h-5 border-b-2 border-r-2 border-cyan-400/45 rounded-br-md" />
 
         {toastMsg && (
-          <div className="mb-3 w-full rounded-2xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs sm:text-sm font-bold text-amber-900 shadow-md flex items-center justify-between animate-toast-in">
+          <div className="mb-2 w-full rounded-2xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs sm:text-sm font-bold text-amber-900 shadow-md flex items-center justify-between animate-toast-in">
             <span>{toastMsg}</span>
             <button type="button" onClick={() => setToastMsg(null)} className="text-amber-700 hover:text-amber-950">
               <X className="w-4 h-4" />
@@ -5829,10 +5829,10 @@ export function KioskBiometricLoginView({
           </div>
         )}
 
-        {/* White Center Kiosk Card */}
-        <div className="w-full flex-1 flex flex-col justify-between bg-white rounded-[28px] border border-slate-200/90 shadow-2xl shadow-emerald-950/10 p-2 sm:p-3 relative z-10 min-h-0">
+        {/* White Center Kiosk Card (Full Available Space) */}
+        <div className="w-full flex-1 flex flex-col justify-between bg-white rounded-2xl border border-slate-200/90 shadow-xl shadow-emerald-950/10 p-1.5 sm:p-2 relative z-10 min-h-0">
           {/* Light Green-Blue Camera Viewport */}
-          <div className="relative flex-1 w-full h-full min-h-[420px] sm:min-h-[540px] rounded-2xl bg-gradient-to-br from-sky-100 via-emerald-50 to-white overflow-hidden border border-sky-200">
+          <div className="relative flex-1 w-full h-full min-h-[460px] sm:min-h-[600px] rounded-xl bg-gradient-to-br from-sky-100 via-emerald-50 to-white overflow-hidden border border-sky-200">
             {!cameraPaused && !staffModalOpen ? (
               <>
                 <video

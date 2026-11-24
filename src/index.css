@@ -771,6 +771,388 @@ a[href]:not([data-no-lift="true"]):active {
   transform: translate3d(0, 0, 0);
 }
 
+/* Cinematic Brand Intro Animations (GPU-composited 60FPS, active across OS motion modes) */
+@keyframes standbyIntroOverlayIn {
+  0% {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes standbyIntroLogoReveal {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 26px, 0) scale(0.68);
+  }
+  58% {
+    opacity: 1;
+    transform: translate3d(0, -4px, 0) scale(1.06);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes standbyIntroWordmarkReveal {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 20px, 0) scale(0.95);
+    letter-spacing: 0.16em;
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    letter-spacing: -0.02em;
+  }
+}
+
+@keyframes standbyIntroCaptionReveal {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 18px, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes standbyIntroRingPulse {
+  0% {
+    opacity: 0.65;
+    transform: scale(0.84);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.88);
+  }
+}
+
+@keyframes standbyIntroEcgDraw {
+  0% {
+    stroke-dashoffset: 120;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes standbyIntroVoiceBar {
+  0%,
+  100% {
+    transform: scaleY(0.32);
+    opacity: 0.65;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+.standby-intro-overlay {
+  animation: standbyIntroOverlayIn 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+
+.standby-intro-logo {
+  animation: standbyIntroLogoReveal 760ms cubic-bezier(0.22, 1.22, 0.36, 1) 120ms both;
+  will-change: transform, opacity;
+}
+
+.standby-intro-wordmark {
+  animation: standbyIntroWordmarkReveal 820ms cubic-bezier(0.22, 1, 0.36, 1) 340ms both;
+  will-change: transform, opacity;
+}
+
+.standby-intro-caption {
+  animation: standbyIntroCaptionReveal 700ms cubic-bezier(0.22, 1, 0.36, 1) 640ms both;
+  will-change: transform, opacity;
+}
+
+.standby-intro-ring-1 {
+  animation: standbyIntroRingPulse 2.4s cubic-bezier(0.16, 1, 0.3, 1) 180ms infinite;
+  will-change: transform, opacity;
+}
+
+.standby-intro-ring-2 {
+  animation: standbyIntroRingPulse 2.4s cubic-bezier(0.16, 1, 0.3, 1) 1.15s infinite;
+  will-change: transform, opacity;
+}
+
+.standby-intro-ecg-line {
+  stroke-dasharray: 120;
+  stroke-dashoffset: 120;
+  animation: standbyIntroEcgDraw 950ms cubic-bezier(0.22, 1, 0.36, 1) 420ms forwards;
+}
+
+.standby-intro-voice-bar {
+  transform-origin: center bottom;
+  animation: standbyIntroVoiceBar 920ms ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+/* Vibrant Login Success Celebration Stage (60FPS GPU-composited, Zero Emojis) */
+@keyframes authSuccessShockwave {
+  0% {
+    opacity: 0.72;
+    transform: scale(0.58);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.92);
+  }
+}
+
+@keyframes authSuccessOrbitSpin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes authSuccessConfettiPop {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) scale(0.25) rotate(0deg);
+  }
+  18% {
+    opacity: 1;
+    transform: translate3d(calc(var(--cx, 60px) * 0.48), calc(var(--cy, -60px) * 0.48), 0)
+      scale(1.18) rotate(calc(var(--crot, 90deg) * 0.45));
+  }
+  72% {
+    opacity: 0.92;
+    transform: translate3d(calc(var(--cx, 60px) * 0.95), calc(var(--cy, -60px) * 0.95), 0)
+      scale(1) rotate(calc(var(--crot, 90deg) * 0.88));
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--cx, 60px), calc(var(--cy, -60px) + 18px), 0)
+      scale(0.55) rotate(var(--crot, 90deg));
+  }
+}
+
+@keyframes authSuccessStarTwinkle {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.72) rotate(0deg);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.22) rotate(22deg);
+  }
+}
+
+@keyframes authSuccessBarSweep {
+  0% {
+    transform: scaleX(0.04);
+  }
+  100% {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes authSuccessCardSheen {
+  0% {
+    transform: translate3d(-140%, 0, 0) skewX(-20deg);
+    opacity: 0;
+  }
+  25% {
+    opacity: 0.55;
+  }
+  60% {
+    transform: translate3d(260%, 0, 0) skewX(-20deg);
+    opacity: 0;
+  }
+  100% {
+    transform: translate3d(260%, 0, 0) skewX(-20deg);
+    opacity: 0;
+  }
+}
+
+.auth-success-shockwave-1 {
+  animation: authSuccessShockwave 2.1s cubic-bezier(0.16, 1, 0.3, 1) 120ms infinite;
+  will-change: transform, opacity;
+}
+
+.auth-success-shockwave-2 {
+  animation: authSuccessShockwave 2.1s cubic-bezier(0.16, 1, 0.3, 1) 780ms infinite;
+  will-change: transform, opacity;
+}
+
+.auth-success-shockwave-3 {
+  animation: authSuccessShockwave 2.1s cubic-bezier(0.16, 1, 0.3, 1) 1440ms infinite;
+  will-change: transform, opacity;
+}
+
+.auth-success-orbit {
+  animation: authSuccessOrbitSpin 10s linear infinite;
+  will-change: transform;
+}
+
+.auth-success-orbit-reverse {
+  animation: authSuccessOrbitSpin 14s linear reverse infinite;
+  will-change: transform;
+}
+
+.auth-confetti-burst {
+  opacity: 0;
+  animation: authSuccessConfettiPop 1.65s cubic-bezier(0.16, 1, 0.3, 1) var(--cdelay, 260ms) forwards;
+  will-change: transform, opacity;
+}
+
+.auth-success-star {
+  animation: authSuccessStarTwinkle 1.9s ease-in-out var(--sdelay, 0ms) infinite;
+  will-change: transform, opacity;
+}
+
+.auth-success-bar-fill {
+  transform-origin: left center;
+  animation: authSuccessBarSweep 2.65s cubic-bezier(0.22, 1, 0.36, 1) 100ms forwards;
+  will-change: transform;
+}
+
+.auth-success-sheen {
+  animation: authSuccessCardSheen 2.8s ease-in-out 250ms infinite;
+  will-change: transform, opacity;
+}
+
+/* 2-Act Flat-White Success Fireworks & Brand Staff Welcome Morph (60FPS GPU) */
+@keyframes authSuccessRayBurst {
+  0% {
+    opacity: 0;
+    transform: rotate(var(--rdeg, 0deg)) translate3d(0, -48px, 0) scaleY(0.15);
+  }
+  26% {
+    opacity: 1;
+    transform: rotate(var(--rdeg, 0deg)) translate3d(0, -86px, 0) scaleY(1.15);
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(var(--rdeg, 0deg)) translate3d(0, -138px, 0) scaleY(0.3);
+  }
+}
+
+@keyframes authSuccessStageExit {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(0, -16px, 0) scale(0.92);
+  }
+}
+
+@keyframes authWelcomeStageIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 22px, 0) scale(0.94);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes authWelcomeLogoSpring {
+  0% {
+    opacity: 0;
+    transform: scale(0.52) rotate(-10deg);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.08) rotate(2deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+@keyframes authWelcomeDividerGrow {
+  0% {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+  100% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+@keyframes authWelcomeTextRise {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes authWelcomeBarSweep {
+  0% {
+    transform: scaleX(0.04);
+  }
+  100% {
+    transform: scaleX(1);
+  }
+}
+
+.auth-success-ray {
+  opacity: 0;
+  transform-origin: center center;
+  animation: authSuccessRayBurst 980ms cubic-bezier(0.16, 1, 0.3, 1) var(--rdelay, 1080ms) forwards;
+  will-change: transform, opacity;
+}
+
+.auth-success-stage-exit {
+  animation: authSuccessStageExit 320ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.auth-welcome-stage-in {
+  animation: authWelcomeStageIn 460ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+
+.auth-welcome-logo {
+  animation: authWelcomeLogoSpring 680ms cubic-bezier(0.22, 1.24, 0.36, 1) 80ms both;
+  will-change: transform, opacity;
+}
+
+.auth-welcome-divider {
+  transform-origin: center center;
+  animation: authWelcomeDividerGrow 540ms cubic-bezier(0.22, 1, 0.36, 1) 300ms both;
+  will-change: transform, opacity;
+}
+
+.auth-welcome-text {
+  animation: authWelcomeTextRise 520ms cubic-bezier(0.22, 1, 0.36, 1) 380ms both;
+  will-change: transform, opacity;
+}
+
+.auth-welcome-subtext {
+  animation: authWelcomeTextRise 520ms cubic-bezier(0.22, 1, 0.36, 1) 520ms both;
+  will-change: transform, opacity;
+}
+
+.auth-welcome-bar-fill {
+  transform-origin: left center;
+  animation: authWelcomeBarSweep 2.25s cubic-bezier(0.22, 1, 0.36, 1) 120ms forwards;
+  will-change: transform;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-float-gentle,
   .animate-status-halo,
@@ -1171,6 +1553,72 @@ a[href]:not([data-no-lift="true"]):active {
   }
 }
 
+/* Game-Style Popup Date Picker Animations (GPU-composited transform & opacity only) */
+@keyframes gameDateBackdropIn {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes gameDatePopupIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 18px, 0) scale(0.92);
+  }
+  65% {
+    opacity: 1;
+    transform: translate3d(0, -3px, 0) scale(1.015);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes gameDateGridSlide {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes gameAgeSyncGlow {
+  0% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.55);
+  }
+  55% {
+    box-shadow: 0 0 0 6px rgba(16, 185, 129, 0.18);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+
+.game-datepicker-backdrop {
+  animation: gameDateBackdropIn 180ms ease-out both;
+}
+
+.game-datepicker-modal {
+  animation: gameDatePopupIn 280ms cubic-bezier(0.22, 1.25, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+
+.game-datepicker-grid-enter {
+  animation: gameDateGridSlide 210ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+
+.game-age-sync-glow {
+  animation: gameAgeSyncGlow 520ms ease-out both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .game-mascot-float,
   .game-eye-blink,
@@ -1178,7 +1626,11 @@ a[href]:not([data-no-lift="true"]):active {
   .game-wave-pulse,
   .game-progress-stripes,
   .game-badge-shimmer::after,
-  .game-particle-burst {
+  .game-particle-burst,
+  .game-datepicker-backdrop,
+  .game-datepicker-modal,
+  .game-datepicker-grid-enter,
+  .game-age-sync-glow {
     animation: none !important;
   }
 }

@@ -1,5 +1,36 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { PoseLandmarker } from '@mediapipe/tasks-vision';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
+import { selectClinicalCameraDeviceId } from '@drtechcares/face-client';
+import { Check } from 'lucide-react';
+import {
+  getCachedPoseLandmarker,
+  getNextMonotonicPoseDetectTs,
+} from '../lib/biometricVisionCache';
+import { playGameSfx } from '../lib/gameUiSfx';
+import {
+  INITIAL_STANDBY_HAND_HOLD_STATE,
+  STANDBY_HAND_WAKE_HOLD_MS,
+  STANDBY_INTRO_EXIT_MS,
+  STANDBY_INTRO_MAX_MS,
+  STANDBY_INTRO_MIN_MS,
+  STANDBY_WELCOME_COPY,
+  advanceStandbyHandHold,
+  evaluateTwoHandsRaised,
+  playStandbyWelcomeVoice,
+  smoothVisualProgress,
+  type StandbyHandHoldState,
+  type TwoHandsRaiseSample,
+} from '../utils/standbyHandWakeHelpers';
+
+export {
+  INITIAL_STANDBY_HAND_HOLD_STATE,
+  STANDBY_HAND_WAKE_HOLD_MS,
+  STANDBY_WELCOME_COPY,
+  advanceStandbyHandHold,
+  evaluateTwoHandsRaised,
+  smoothVisualProgress,
+};
 
 export function formatStandbyClockHHMM(date: Date): string {
   const hours = String(date.getHours()).padStart(2, '0');
@@ -176,24 +207,60 @@ const STANDBY_COPY: Record<
   ClinicalLang,
   {
     ctaLabel: string;
+    ctaHoldingPrefix: string;
+    ctaHoldingSuffix: string;
     tagline: string;
     ariaWake: string;
+    leftHandLabel: string;
+    rightHandLabel: string;
+    sensorConnecting: string;
+    sensorReady: string;
+    sensorOneHand: string;
+    sensorHolding: string;
+    sensorFallback: string;
   }
 > = {
   th: {
-    ctaLabel: 'แตะหน้าจอเพื่อเริ่มต้นใช้งาน',
+    ctaLabel: 'ยกมือ 2 ข้าง ค้างไว้ 3 วินาทีเพื่อเริ่มต้น',
+    ctaHoldingPrefix: 'ค้างไว้ทั้ง 2 มือ อีก',
+    ctaHoldingSuffix: 'วินาที',
     tagline: 'ระบบฟื้นฟูกายภาพบำบัดอัจฉริยะ',
-    ariaWake: 'แตะหน้าจอเพื่อเริ่มต้นใช้งานระบบสแกนใบหน้า Dr.Tech.Care',
+    ariaWake: 'ยกมือทั้ง 2 ข้างค้างไว้ 3 วินาทีเพื่อเริ่มต้นใช้งานระบบ Dr.Tech.Care',
+    leftHandLabel: 'มือซ้าย',
+    rightHandLabel: 'มือขวา',
+    sensorConnecting: 'กำลังเปิดกล้อง AI ตรวจจับการยกมือ...',
+    sensorReady: 'ยืนหน้าตู้แล้วยกมือทั้ง 2 ข้างขึ้นพร้อมกัน',
+    sensorOneHand: 'พบมือ 1 ข้าง — กรุณายกอีกข้างขึ้นพร้อมกัน',
+    sensorHolding: 'ตรวจพบทั้ง 2 มือแล้ว กำลังเริ่มต้นอย่างนุ่มนวล',
+    sensorFallback: 'ไม่พบกล้อง — สามารถแตะหน้าจอเพื่อเริ่มต้นได้',
   },
   en: {
-    ctaLabel: 'Tap Screen to Get Started',
+    ctaLabel: 'Raise Both Hands for 3 Seconds to Start',
+    ctaHoldingPrefix: 'Hold both hands up for',
+    ctaHoldingSuffix: 'sec',
     tagline: 'Intelligent Physical Rehabilitation System',
-    ariaWake: 'Tap anywhere to start Dr.Tech.Care face scan',
+    ariaWake: 'Raise both hands for 3 seconds to start Dr.Tech.Care',
+    leftHandLabel: 'Left Hand',
+    rightHandLabel: 'Right Hand',
+    sensorConnecting: 'Starting AI gesture camera...',
+    sensorReady: 'Stand in view and raise both hands together',
+    sensorOneHand: 'One hand detected — raise your other hand too',
+    sensorHolding: 'Both hands detected — waking smoothly',
+    sensorFallback: 'Camera unavailable — tap screen to begin',
   },
   cn: {
-    ctaLabel: '点击屏幕开始使用',
+    ctaLabel: '举起双手保持3秒开始使用',
+    ctaHoldingPrefix: '请保持双手举起',
+    ctaHoldingSuffix: '秒',
     tagline: '智能物理康复治疗系统',
-    ariaWake: '点击屏幕开始 Dr.Tech.Care 人脸识别',
+    ariaWake: '举起双手保持3秒开始使用 Dr.Tech.Care',
+    leftHandLabel: '左手',
+    rightHandLabel: '右手',
+    sensorConnecting: '正在启动 AI 手势识别摄像头...',
+    sensorReady: '请站在屏幕前同时举起双手',
+    sensorOneHand: '已检测到一只手 — 请同时举起另一只手',
+    sensorHolding: '已检测到双手，正在平滑启动',
+    sensorFallback: '未检测到摄像头 — 可点击屏幕开始',
   },
 };
 
@@ -261,6 +328,20 @@ const BOKEH_SEEDS: readonly BokehSeed[] = Array.from({ length: 26 }, (_, i) => (
   alpha: 0.22 + (i % 5) * 0.09,
 }));
 
+const RING_RADIUS = 24;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+
+export type StandbySensorStatus = 'connecting' | 'ready' | 'unavailable';
+
+export interface StandbyGestureUiState {
+  sensorStatus: StandbySensorStatus;
+  leftRaised: boolean;
+  rightRaised: boolean;
+  bothRaised: boolean;
+  remainingSec: number;
+  isHolding: boolean;
+}
+
 export interface KioskStandbyMotionRefs {
   waveCanvasRef: React.RefObject<HTMLCanvasElement | null>;
   orbTopRef: React.RefObject<HTMLDivElement | null>;
@@ -283,6 +364,8 @@ export interface KioskStandbyMotionRefs {
   ctaWrapperRef: React.RefObject<HTMLDivElement | null>;
   ctaGlowRef: React.RefObject<HTMLDivElement | null>;
   ctaSheenRef: React.RefObject<HTMLDivElement | null>;
+  ctaProgressFillRef: React.RefObject<HTMLDivElement | null>;
+  progressRingRef: React.RefObject<SVGCircleElement | null>;
   handSvgRef: React.RefObject<SVGSVGElement | null>;
   handRippleInnerRef: React.RefObject<SVGPathElement | null>;
   handRippleOuterRef: React.RefObject<SVGPathElement | null>;
@@ -332,49 +415,281 @@ function GlowingMedicalPlusSvg({
   );
 }
 
-function TappingHandOutlineSvg({
-  className,
+/**
+ * Clean vector icon showing two raised hands with glowing upward wave arcs
+ * and an integrated 60FPS SVG circular hold-progress ring.
+ */
+function RaisedTwoHandsProgressEmblem({
+  leftRaised = false,
+  rightRaised = false,
+  isHolding = false,
+  remainingSec = 3,
   svgRef,
+  progressRingRef,
   rippleInnerRef,
   rippleOuterRef,
 }: {
-  className?: string;
+  leftRaised?: boolean;
+  rightRaised?: boolean;
+  isHolding?: boolean;
+  remainingSec?: number;
   svgRef?: React.RefObject<SVGSVGElement | null>;
+  progressRingRef?: React.RefObject<SVGCircleElement | null>;
   rippleInnerRef?: React.RefObject<SVGPathElement | null>;
   rippleOuterRef?: React.RefObject<SVGPathElement | null>;
 }) {
   return (
-    <svg
-      ref={svgRef}
-      viewBox="0 0 64 64"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden="true"
-      className={`standby-gpu-layer ${className ?? ''}`}
+    <div className="relative flex h-12 w-12 sm:h-14 sm:w-14 shrink-0 items-center justify-center">
+      {/* 60FPS SVG Circular Progress Ring */}
+      <svg
+        viewBox="0 0 56 56"
+        className="absolute inset-0 h-full w-full -rotate-90"
+        aria-hidden="true"
+      >
+        <circle
+          cx="28"
+          cy="28"
+          r={RING_RADIUS}
+          fill="rgba(255, 255, 255, 0.08)"
+          stroke="rgba(224, 242, 254, 0.28)"
+          strokeWidth="3"
+        />
+        <circle
+          ref={progressRingRef}
+          cx="28"
+          cy="28"
+          r={RING_RADIUS}
+          fill="none"
+          stroke={isHolding ? '#6ee7b7' : '#a5f3fc'}
+          strokeWidth="3.5"
+          strokeLinecap="round"
+          strokeDasharray={RING_CIRCUMFERENCE.toFixed(2)}
+          strokeDashoffset={RING_CIRCUMFERENCE.toFixed(2)}
+          style={{
+            filter: isHolding ? 'drop-shadow(0 0 8px rgba(110, 231, 183, 0.95))' : undefined,
+          }}
+        />
+      </svg>
+
+      {isHolding ? (
+        <span
+          data-testid="standby-hold-countdown"
+          className="relative z-10 font-mono text-xl sm:text-2xl font-black text-white drop-shadow-[0_0_10px_rgba(110,231,183,0.9)] game-combo-pop"
+          key={remainingSec}
+        >
+          {remainingSec}
+        </span>
+      ) : (
+        <svg
+          ref={svgRef}
+          viewBox="0 0 64 64"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+          className="standby-gpu-layer relative z-10 h-8 w-8 sm:h-9 sm:w-9"
+        >
+          {/* Upward motion arcs */}
+          <g stroke="#a5f3fc" strokeWidth="2.1" strokeLinecap="round">
+            <path ref={rippleInnerRef} d="M22 14 C27 9.5 37 9.5 42 14" opacity="0.9" />
+            <path ref={rippleOuterRef} d="M17 10 C24.5 4.2 39.5 4.2 47 10" opacity="0.58" />
+          </g>
+          {/* Left raised open hand */}
+          <g
+            stroke={leftRaised ? '#6ee7b7' : '#ffffff'}
+            strokeWidth="2.3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M14 43 V27 C14 25.4 15.2 24.2 16.7 24.2 C18.2 24.2 19.3 25.4 19.3 27 V22.8 C19.3 21.3 20.5 20.2 22 20.2 C23.5 20.2 24.6 21.3 24.6 22.8 V25.5 C24.6 24.2 25.7 23.2 27 23.2 C28.3 23.2 29.3 24.2 29.3 25.5 V39.5 C29.3 44.5 26 48 21.5 48 C17.1 48 14 45.7 14 43 Z" />
+          </g>
+          {/* Right raised open hand */}
+          <g
+            stroke={rightRaised ? '#6ee7b7' : '#ffffff'}
+            strokeWidth="2.3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M50 43 V27 C50 25.4 48.8 24.2 47.3 24.2 C45.8 24.2 44.7 25.4 44.7 27 V22.8 C44.7 21.3 43.5 20.2 42 20.2 C40.5 20.2 39.4 21.3 39.4 22.8 V25.5 C39.4 24.2 38.3 23.2 37 23.2 C35.7 23.2 34.7 24.2 34.7 25.5 V39.5 C34.7 44.5 38 48 42.5 48 C46.9 48 50 45.7 50 43 Z" />
+          </g>
+        </svg>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Full-Screen Cinematic Dr.Tech.Care Brand Intro Overlay shown right after the 3-second
+ * two-hand raise completes, featuring the animated emblem, wordmark typography,
+ * and warm Thai welcome voice subtitle.
+ */
+export function KioskBrandIntroOverlay({
+  lang = 'th',
+  isExiting = false,
+  canSkip = false,
+  onSkip,
+}: {
+  lang?: ClinicalLang;
+  isExiting?: boolean;
+  canSkip?: boolean;
+  onSkip?: () => void;
+}) {
+  const welcome = STANDBY_WELCOME_COPY[lang] ?? STANDBY_WELCOME_COPY.th;
+
+  return (
+    <div
+      data-testid="kiosk-brand-intro-overlay"
+      data-no-ripple="true"
+      data-no-lift="true"
+      onClick={() => {
+        if (canSkip) onSkip?.();
+      }}
+      className={`standby-intro-overlay fixed inset-0 z-50 flex flex-col items-center justify-center overflow-hidden px-6 text-center text-white select-none transition-all duration-400 ease-out ${
+        isExiting ? 'opacity-0 scale-[1.03]' : 'opacity-100 scale-100'
+      }`}
+      style={{
+        background:
+          'radial-gradient(circle at 50% 42%, #0c6f9c 0%, #07447d 46%, #042556 100%)',
+      }}
     >
-      <g stroke="#ffffff" strokeWidth="2.2" strokeLinecap="round">
-        <path
-          ref={rippleInnerRef}
-          d="M20.5 14.5 A8.5 8.5 0 0 1 36.5 14.5"
-          opacity="0.92"
-        />
-        <path
-          ref={rippleOuterRef}
-          d="M16 10.5 A13.8 13.8 0 0 1 41 10.5"
-          opacity="0.62"
-        />
-      </g>
-      <path
-        d="M28.5 14 C26.3 14 24.5 15.8 24.5 18 V35.2 L20.6 31.6 C18.9 30.1 16.3 30.3 15 32.1 C13.8 33.8 14.2 36.2 15.9 37.6 L26 47.4 C28 49.4 30.8 50.5 33.8 50.5 H41 C46.2 50.5 49.5 46.7 49.5 41.2 V28.5 C49.5 26.4 47.9 24.8 45.8 24.8 C44.5 24.8 43.3 25.4 42.6 26.4 V25.2 C42.6 23.1 40.9 21.5 38.8 21.5 C37.5 21.5 36.3 22.1 35.6 23.1 V22.4 C35.6 20.3 34 18.8 32.5 18.8 V18 C32.5 15.8 30.7 14 28.5 14 Z"
-        stroke="#ffffff"
-        strokeWidth="2.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+      {/* Ambient Glowing Aurora Orbs */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -top-28 left-1/2 -translate-x-1/2 h-[440px] w-[440px] rounded-full opacity-45 blur-3xl"
+        style={{
+          background: 'radial-gradient(circle, rgba(45, 212, 191, 0.55) 0%, transparent 70%)',
+        }}
       />
-      <line x1="32.5" y1="22.4" x2="32.5" y2="32" stroke="#ffffff" strokeWidth="2.1" strokeLinecap="round" />
-      <line x1="38.8" y1="25.2" x2="38.8" y2="33.2" stroke="#ffffff" strokeWidth="2.1" strokeLinecap="round" />
-      <line x1="44.8" y1="26.8" x2="44.8" y2="34.5" stroke="#ffffff" strokeWidth="2.1" strokeLinecap="round" />
-    </svg>
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -bottom-32 left-1/2 -translate-x-1/2 h-[460px] w-[460px] rounded-full opacity-40 blur-3xl"
+        style={{
+          background: 'radial-gradient(circle, rgba(56, 189, 248, 0.5) 0%, transparent 72%)',
+        }}
+      />
+
+      {/* Center Hero Brand Showcase */}
+      <div className="relative z-10 flex flex-col items-center max-w-2xl">
+        {/* Emblem with Expanding Holographic Halo Rings */}
+        <div className="relative flex items-center justify-center mb-7">
+          <div
+            aria-hidden="true"
+            className="standby-intro-ring-1 pointer-events-none absolute h-36 w-36 sm:h-44 sm:w-44 rounded-full border-2 border-cyan-200/55"
+          />
+          <div
+            aria-hidden="true"
+            className="standby-intro-ring-2 pointer-events-none absolute h-36 w-36 sm:h-44 sm:w-44 rounded-full border-2 border-emerald-300/45"
+          />
+
+          <div
+            data-testid="kiosk-intro-logo"
+            className="standby-intro-logo relative overflow-hidden flex h-28 w-28 sm:h-36 sm:w-36 items-center justify-center rounded-[32px] border border-white/45 shadow-[0_24px_65px_rgba(2,132,199,0.55)]"
+            style={{
+              background: 'linear-gradient(135deg, #2596e8 0%, #1bc4b8 65%, #10b981 100%)',
+            }}
+          >
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 bg-gradient-to-tr from-transparent via-white/20 to-white/35"
+            />
+            <svg
+              viewBox="0 0 48 48"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+              className="relative z-10 h-16 w-16 sm:h-20 sm:w-20"
+            >
+              <path
+                d="M24 40 C24 40 7.5 29.8 7.5 17.8 C7.5 12.2 11.9 8 17.2 8 C20.4 8 23.1 9.6 24 12.1 C24.9 9.6 27.6 8 30.8 8 C36.1 8 40.5 12.2 40.5 17.8 C40.5 29.8 24 40 24 40 Z"
+                stroke="#ffffff"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                className="standby-intro-ecg-line"
+                d="M10.5 23 H17.5 L20.5 16 L24.5 30 L28 20.5 L30.5 23 H37.5"
+                stroke="#ffffff"
+                strokeWidth="2.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </div>
+        </div>
+
+        {/* Project Signature Font / Wordmark */}
+        <div className="standby-intro-wordmark flex flex-col items-center">
+          <h1
+            data-testid="kiosk-intro-wordmark"
+            className="text-4xl sm:text-6xl md:text-7xl font-black tracking-tight text-white drop-shadow-[0_6px_26px_rgba(3,28,66,0.48)] leading-none"
+            style={{ fontFamily: "'Prompt', 'Inter', 'IBM Plex Sans Thai', sans-serif" }}
+          >
+            Dr.Tech.Care
+          </h1>
+
+          <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-cyan-200/35 bg-white/14 px-5 py-1.5 backdrop-blur-md">
+            <span className="h-2 w-2 rounded-full bg-emerald-300 shadow-[0_0_10px_#6ee7b7]" />
+            <span className="text-xs sm:text-sm font-extrabold tracking-[0.22em] text-cyan-50 uppercase">
+              {welcome.badgeLabel}
+            </span>
+          </div>
+
+          <div
+            aria-hidden="true"
+            className="mt-6 h-0.5 w-44 sm:w-56 rounded-full bg-gradient-to-r from-transparent via-cyan-200/80 to-transparent"
+          />
+        </div>
+
+        {/* Welcome Message + Live Voice Equalizer Bars */}
+        <div className="standby-intro-caption mt-6 space-y-2.5 px-4">
+          <p
+            data-testid="kiosk-intro-welcome-headline"
+            className="text-xl sm:text-3xl font-extrabold text-white drop-shadow-[0_2px_12px_rgba(4,34,74,0.45)]"
+            style={{ fontFamily: "'Prompt', 'IBM Plex Sans Thai', sans-serif" }}
+          >
+            {welcome.headline}
+          </p>
+          <p
+            data-testid="kiosk-intro-welcome-subline"
+            className="text-base sm:text-xl font-semibold text-cyan-100/95"
+            style={{ fontFamily: "'Prompt', 'IBM Plex Sans Thai', sans-serif" }}
+          >
+            {welcome.subline}
+          </p>
+
+          {/* 5-bar smooth voice wave indicator */}
+          <div
+            aria-hidden="true"
+            className="pt-3 flex items-end justify-center gap-1.5 h-8"
+          >
+            {[0, 140, 280, 180, 80].map((delayMs, idx) => (
+              <span
+                key={idx}
+                className="standby-intro-voice-bar w-1.5 rounded-full bg-gradient-to-t from-cyan-300 to-emerald-200"
+                style={{
+                  height: idx === 2 ? '26px' : idx === 1 || idx === 3 ? '20px' : '14px',
+                  animationDelay: `${delayMs}ms`,
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Subtle Optional Skip Pill */}
+      {canSkip && onSkip && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onSkip();
+          }}
+          className="absolute bottom-8 z-20 rounded-full border border-white/25 bg-white/10 px-5 py-2 text-xs sm:text-sm font-bold text-cyan-50/90 backdrop-blur-md transition hover:bg-white/20 cursor-pointer"
+        >
+          {welcome.skipLabel}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -384,6 +699,7 @@ export function KioskStandbyView({
   onWake,
   wakeRipple = null,
   isWaking = false,
+  gestureUi,
   motionRefs,
 }: {
   timeText: string;
@@ -391,9 +707,32 @@ export function KioskStandbyView({
   onWake: (e?: { clientX?: number; clientY?: number }) => void;
   wakeRipple?: { xPct: number; yPct: number } | null;
   isWaking?: boolean;
+  gestureUi?: StandbyGestureUiState;
   motionRefs?: KioskStandbyMotionRefs;
 }) {
   const copy = STANDBY_COPY[lang] ?? STANDBY_COPY.th;
+  const activeGesture: StandbyGestureUiState = gestureUi ?? {
+    sensorStatus: 'ready',
+    leftRaised: false,
+    rightRaised: false,
+    bothRaised: false,
+    remainingSec: 3,
+    isHolding: false,
+  };
+
+  const statusText = activeGesture.isHolding
+    ? copy.sensorHolding
+    : activeGesture.leftRaised !== activeGesture.rightRaised
+      ? copy.sensorOneHand
+      : activeGesture.sensorStatus === 'connecting'
+        ? copy.sensorConnecting
+        : activeGesture.sensorStatus === 'unavailable'
+          ? copy.sensorFallback
+          : copy.sensorReady;
+
+  const pillHeadline = activeGesture.isHolding
+    ? `${copy.ctaHoldingPrefix} ${activeGesture.remainingSec} ${copy.ctaHoldingSuffix}`
+    : copy.ctaLabel;
 
   return (
     <div
@@ -402,7 +741,7 @@ export function KioskStandbyView({
       data-no-lift="true"
       onClick={(e) => onWake(e)}
       aria-label={copy.ariaWake}
-      className={`animate-view-enter standby-gpu-layer min-h-screen w-full relative overflow-hidden flex flex-col items-center justify-between px-6 py-10 sm:py-12 select-none cursor-pointer text-white transition-all duration-250 ease-out ${
+      className={`animate-view-enter standby-gpu-layer min-h-screen w-full relative overflow-hidden flex flex-col items-center justify-between px-6 py-10 sm:py-12 select-none cursor-pointer text-white transition-all duration-300 ease-out ${
         isWaking ? 'opacity-0 scale-[1.035]' : 'opacity-100 scale-100'
       }`}
       style={{
@@ -577,7 +916,7 @@ export function KioskStandbyView({
         <GlowingMedicalPlusSvg idSuffix="bottom-left" className="w-20 h-20 sm:w-24 sm:h-24 md:w-28 md:h-28" />
       </div>
 
-      {/* Tap-to-Wake Expanding Ripple Overlay */}
+      {/* Wake Expanding Ripple Overlay */}
       {wakeRipple && (
         <div
           aria-hidden="true"
@@ -596,7 +935,7 @@ export function KioskStandbyView({
       {/* 1. Top Brand Lockup */}
       <header
         ref={motionRefs?.brandLockupRef}
-        className="standby-gpu-layer relative z-10 mt-[8vh] sm:mt-[7vh] flex flex-wrap items-center justify-center gap-2.5 sm:gap-4 max-w-full"
+        className="standby-gpu-layer relative z-10 mt-[7vh] sm:mt-[6vh] flex flex-wrap items-center justify-center gap-2.5 sm:gap-4 max-w-full"
       >
         <div
           ref={motionRefs?.emblemRef}
@@ -647,16 +986,17 @@ export function KioskStandbyView({
         </span>
       </header>
 
-      {/* 2. Middle Stack: Frosted Glass Tap CTA Pill + Live 7-Segment Digital Clock */}
-      <main className="relative z-10 flex flex-col items-center justify-center w-full max-w-2xl my-auto py-8">
+      {/* 2. Middle Stack: Silky 2-Hand 3s Raise Centerpiece + Hand Indicators + 7-Segment Clock */}
+      <main className="relative z-10 flex flex-col items-center justify-center w-full max-w-2xl my-auto py-6">
         <div ref={motionRefs?.ctaWrapperRef} className="standby-gpu-layer relative max-w-full">
           <div
             ref={motionRefs?.ctaGlowRef}
             aria-hidden="true"
-            className="standby-gpu-layer pointer-events-none -inset-2 absolute rounded-full blur-xl opacity-55"
+            className="standby-gpu-layer pointer-events-none -inset-2.5 absolute rounded-full blur-xl opacity-55 transition-colors duration-300"
             style={{
-              background:
-                'linear-gradient(90deg, rgba(56, 189, 248, 0.42), rgba(165, 243, 252, 0.58), rgba(45, 212, 191, 0.42))',
+              background: activeGesture.isHolding
+                ? 'linear-gradient(90deg, rgba(16, 185, 129, 0.55), rgba(110, 231, 183, 0.75), rgba(45, 212, 191, 0.55))'
+                : 'linear-gradient(90deg, rgba(56, 189, 248, 0.42), rgba(165, 243, 252, 0.58), rgba(45, 212, 191, 0.42))',
             }}
           />
           <button
@@ -666,12 +1006,27 @@ export function KioskStandbyView({
               e.stopPropagation();
               onWake(e);
             }}
-            className="group relative overflow-hidden inline-flex items-center justify-center gap-2.5 sm:gap-4 max-w-full rounded-full border-[1.5px] border-cyan-100/75 px-5 py-3.5 sm:px-10 sm:py-5 backdrop-blur-md transition-transform duration-150 hover:scale-[1.02] active:scale-[0.97] cursor-pointer shadow-[0_14px_38px_rgba(2,132,199,0.35)]"
+            className={`group relative overflow-hidden inline-flex items-center justify-center gap-3 sm:gap-4 max-w-full rounded-full border-[1.5px] px-5 py-3 sm:px-8 sm:py-4 backdrop-blur-md transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] cursor-pointer shadow-[0_16px_42px_rgba(2,132,199,0.38)] ${
+              activeGesture.isHolding ? 'border-emerald-200/95' : 'border-cyan-100/75'
+            }`}
             style={{
               background:
-                'linear-gradient(180deg, rgba(145, 224, 240, 0.30) 0%, rgba(71, 168, 206, 0.24) 100%)',
+                'linear-gradient(180deg, rgba(145, 224, 240, 0.28) 0%, rgba(71, 168, 206, 0.22) 100%)',
             }}
           >
+            {/* 60FPS Liquid Emerald Progress Fill across Pill */}
+            <div
+              ref={motionRefs?.ctaProgressFillRef}
+              aria-hidden="true"
+              className="standby-gpu-layer pointer-events-none absolute inset-0 origin-left"
+              style={{
+                transform: 'scaleX(0)',
+                background:
+                  'linear-gradient(90deg, rgba(16, 185, 129, 0.42) 0%, rgba(45, 212, 191, 0.55) 65%, rgba(110, 231, 183, 0.62) 100%)',
+              }}
+            />
+
+            {/* Diagonal Glass Sheen */}
             <div
               ref={motionRefs?.ctaSheenRef}
               aria-hidden="true"
@@ -681,22 +1036,76 @@ export function KioskStandbyView({
                   'linear-gradient(105deg, transparent 10%, rgba(255,255,255,0.28) 50%, transparent 90%)',
               }}
             />
-            <TappingHandOutlineSvg
-              className="relative z-10 w-8 h-8 sm:w-12 sm:h-12 shrink-0"
+
+            <RaisedTwoHandsProgressEmblem
+              leftRaised={activeGesture.leftRaised}
+              rightRaised={activeGesture.rightRaised}
+              isHolding={activeGesture.isHolding}
+              remainingSec={activeGesture.remainingSec}
               svgRef={motionRefs?.handSvgRef}
+              progressRingRef={motionRefs?.progressRingRef}
               rippleInnerRef={motionRefs?.handRippleInnerRef}
               rippleOuterRef={motionRefs?.handRippleOuterRef}
             />
+
             <span
-              className="relative z-10 text-base min-[390px]:text-lg sm:text-2xl md:text-[27px] font-bold tracking-wide text-white drop-shadow-[0_1px_6px_rgba(4,34,74,0.35)] whitespace-nowrap"
+              className="relative z-10 text-base min-[390px]:text-lg sm:text-2xl md:text-[26px] font-bold tracking-wide text-white drop-shadow-[0_1px_6px_rgba(4,34,74,0.38)] whitespace-nowrap"
               style={{ fontFamily: "'Prompt', 'IBM Plex Sans Thai', sans-serif" }}
             >
-              {copy.ctaLabel}
+              {pillHeadline}
             </span>
           </button>
         </div>
 
-        <div className="mt-9 sm:mt-10">
+        {/* Live Left/Right Hand Raised Status Pills + Guidance Subtext */}
+        <div
+          data-testid="standby-hand-status-strip"
+          className="mt-4 flex flex-col items-center gap-2"
+        >
+          <div className="flex items-center gap-2.5">
+            <span
+              data-testid="standby-left-hand-badge"
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1 text-xs sm:text-sm font-bold backdrop-blur-md transition-all duration-200 ${
+                activeGesture.leftRaised
+                  ? 'border-emerald-200/90 bg-emerald-400/28 text-white shadow-[0_0_16px_rgba(110,231,183,0.45)] scale-105'
+                  : 'border-white/25 bg-white/10 text-cyan-100/85'
+              }`}
+            >
+              <span
+                className={`flex h-4 w-4 items-center justify-center rounded-full ${
+                  activeGesture.leftRaised ? 'bg-emerald-300 text-emerald-950' : 'bg-white/25'
+                }`}
+              >
+                {activeGesture.leftRaised && <Check className="h-3 w-3 stroke-[3]" />}
+              </span>
+              <span>{copy.leftHandLabel}</span>
+            </span>
+
+            <span
+              data-testid="standby-right-hand-badge"
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1 text-xs sm:text-sm font-bold backdrop-blur-md transition-all duration-200 ${
+                activeGesture.rightRaised
+                  ? 'border-emerald-200/90 bg-emerald-400/28 text-white shadow-[0_0_16px_rgba(110,231,183,0.45)] scale-105'
+                  : 'border-white/25 bg-white/10 text-cyan-100/85'
+              }`}
+            >
+              <span
+                className={`flex h-4 w-4 items-center justify-center rounded-full ${
+                  activeGesture.rightRaised ? 'bg-emerald-300 text-emerald-950' : 'bg-white/25'
+                }`}
+              >
+                {activeGesture.rightRaised && <Check className="h-3 w-3 stroke-[3]" />}
+              </span>
+              <span>{copy.rightHandLabel}</span>
+            </span>
+          </div>
+
+          <p className="text-xs sm:text-sm font-semibold text-cyan-100/90 tracking-wide">
+            {statusText}
+          </p>
+        </div>
+
+        <div className="mt-7 sm:mt-8">
           <SevenSegmentClock timeText={timeText} colonRef={motionRefs?.colonRef} />
         </div>
       </main>
@@ -726,17 +1135,100 @@ export function KioskStandbyScreen({ onStart, initialDate }: KioskStandbyScreenP
     formatStandbyClockHHMM(initialDate ?? new Date()),
   );
   const [wakeRipple, setWakeRipple] = useState<{ xPct: number; yPct: number } | null>(null);
-  const [isWaking, setIsWaking] = useState(false);
+  const [phase, setPhase] = useState<'standby' | 'intro'>('standby');
+  const [isIntroExiting, setIsIntroExiting] = useState(false);
+  const [canSkipIntro, setCanSkipIntro] = useState(false);
+  const [gestureUi, setGestureUi] = useState<StandbyGestureUiState>({
+    sensorStatus: 'connecting',
+    leftRaised: false,
+    rightRaised: false,
+    bothRaised: false,
+    remainingSec: 3,
+    isHolding: false,
+  });
 
   const onStartRef = useRef(onStart);
   onStartRef.current = onStart;
-  const wakeTimerRef = useRef<number | null>(null);
+  const langRef = useRef<ClinicalLang>(lang);
+  langRef.current = lang;
+
+  const hiddenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const handSampleRef = useRef<TwoHandsRaiseSample>({
+    personDetected: false,
+    leftRaised: false,
+    rightRaised: false,
+    bothRaised: false,
+    raisedCount: 0,
+  });
+  const holdStateRef = useRef<StandbyHandHoldState>({ ...INITIAL_STANDBY_HAND_HOLD_STATE });
+  const visualProgressRef = useRef(0);
+  const lastAnnouncedSecRef = useRef<number | null>(null);
+  const introStartedRef = useRef(false);
+  const stopVoiceRef = useRef<(() => void) | null>(null);
+  const introMinTimerRef = useRef<number | null>(null);
+  const introMaxTimerRef = useRef<number | null>(null);
+  const introSkipUnlockTimerRef = useRef<number | null>(null);
+  const introExitTimerRef = useRef<number | null>(null);
+  const introMinDoneRef = useRef(false);
+  const introVoiceDoneRef = useRef(false);
 
   const singleWake = useMemo(() => createSingleFireStandbyWake(() => onStartRef.current()), []);
 
-  const handleWake = useCallback(
+  const stopStandbyCamera = useCallback(() => {
+    const stream = cameraStreamRef.current;
+    cameraStreamRef.current = null;
+    if (stream) {
+      stream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {
+          // Ignore track stop errors
+        }
+      });
+    }
+    if (hiddenVideoRef.current) {
+      try {
+        hiddenVideoRef.current.srcObject = null;
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  }, []);
+
+  const finishIntroAndEnterKiosk = useCallback(() => {
+    if (introExitTimerRef.current !== null) return;
+    if (introMinTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(introMinTimerRef.current);
+      introMinTimerRef.current = null;
+    }
+    if (introMaxTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(introMaxTimerRef.current);
+      introMaxTimerRef.current = null;
+    }
+    if (introSkipUnlockTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(introSkipUnlockTimerRef.current);
+      introSkipUnlockTimerRef.current = null;
+    }
+    setIsIntroExiting(true);
+    if (typeof window === 'undefined') {
+      singleWake();
+      return;
+    }
+    introExitTimerRef.current = window.setTimeout(() => {
+      introExitTimerRef.current = null;
+      stopVoiceRef.current?.();
+      stopVoiceRef.current = null;
+      singleWake();
+    }, STANDBY_INTRO_EXIT_MS);
+  }, [singleWake]);
+
+  const startBrandIntroSequence = useCallback(
     (e?: { clientX?: number; clientY?: number }) => {
-      if (isWaking) return;
+      if (introStartedRef.current) return;
+      introStartedRef.current = true;
+      stopStandbyCamera();
+
       if (
         typeof window !== 'undefined' &&
         e &&
@@ -751,28 +1243,209 @@ export function KioskStandbyScreen({ onStart, initialDate }: KioskStandbyScreenP
           yPct: Math.min(95, Math.max(5, (e.clientY / vh) * 100)),
         });
       } else {
-        setWakeRipple({ xPct: 50, yPct: 52 });
+        setWakeRipple({ xPct: 50, yPct: 50 });
       }
-      setIsWaking(true);
+
+      playGameSfx('unlock');
+      setPhase('intro');
+
       if (typeof window === 'undefined') {
         singleWake();
         return;
       }
-      wakeTimerRef.current = window.setTimeout(() => {
-        wakeTimerRef.current = null;
-        singleWake();
-      }, 240);
+
+      introMinDoneRef.current = false;
+      introVoiceDoneRef.current = false;
+
+      const tryComplete = () => {
+        if (introMinDoneRef.current && introVoiceDoneRef.current) {
+          finishIntroAndEnterKiosk();
+        }
+      };
+
+      stopVoiceRef.current = playStandbyWelcomeVoice(langRef.current, {
+        onEnd: () => {
+          introVoiceDoneRef.current = true;
+          tryComplete();
+        },
+      });
+
+      introSkipUnlockTimerRef.current = window.setTimeout(() => {
+        introSkipUnlockTimerRef.current = null;
+        setCanSkipIntro(true);
+      }, 1400);
+
+      introMinTimerRef.current = window.setTimeout(() => {
+        introMinTimerRef.current = null;
+        introMinDoneRef.current = true;
+        tryComplete();
+      }, STANDBY_INTRO_MIN_MS);
+
+      introMaxTimerRef.current = window.setTimeout(() => {
+        introMaxTimerRef.current = null;
+        introMinDoneRef.current = true;
+        introVoiceDoneRef.current = true;
+        finishIntroAndEnterKiosk();
+      }, STANDBY_INTRO_MAX_MS);
     },
-    [isWaking, singleWake],
+    [finishIntroAndEnterKiosk, singleWake, stopStandbyCamera],
   );
 
+  const startBrandIntroRef = useRef(startBrandIntroSequence);
+  startBrandIntroRef.current = startBrandIntroSequence;
+
   useEffect(() => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.getVoices();
+      } catch {
+        // Ignore unavailable voice synthesis warm-up
+      }
+    }
     return () => {
-      if (wakeTimerRef.current !== null) {
-        window.clearTimeout(wakeTimerRef.current);
+      stopStandbyCamera();
+      stopVoiceRef.current?.();
+      stopVoiceRef.current = null;
+      if (typeof window !== 'undefined') {
+        if (introMinTimerRef.current !== null) window.clearTimeout(introMinTimerRef.current);
+        if (introMaxTimerRef.current !== null) window.clearTimeout(introMaxTimerRef.current);
+        if (introSkipUnlockTimerRef.current !== null) {
+          window.clearTimeout(introSkipUnlockTimerRef.current);
+        }
+        if (introExitTimerRef.current !== null) window.clearTimeout(introExitTimerRef.current);
       }
     };
-  }, []);
+  }, [stopStandbyCamera]);
+
+  // Background Touchless 2-Hand-Raise Detector (MediaPipe PoseLandmarker on hidden video)
+  useEffect(() => {
+    if (
+      phase !== 'standby' ||
+      typeof window === 'undefined' ||
+      typeof navigator === 'undefined' ||
+      !navigator.mediaDevices?.getUserMedia
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    let poseLandmarker: PoseLandmarker | null = null;
+    let pollTimerId: number | null = null;
+    let lastVideoTime = -1;
+
+    async function initGestureCamera() {
+      try {
+        const deviceId = await selectClinicalCameraDeviceId().catch(() => undefined);
+        const constraintChain: MediaTrackConstraints[] = deviceId
+          ? [
+              { deviceId: { ideal: deviceId }, width: { ideal: 640 }, height: { ideal: 480 } },
+              { deviceId: { ideal: deviceId } },
+              { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+            ]
+          : [
+              { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+              { facingMode: 'user' },
+            ];
+
+        let stream: MediaStream | null = null;
+        for (const vc of constraintChain) {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ video: vc, audio: false });
+            break;
+          } catch {
+            // Try next fallback constraint
+          }
+        }
+        if (!stream) {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        }
+
+        if (cancelled || introStartedRef.current) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+
+        cameraStreamRef.current = stream;
+        const video = hiddenVideoRef.current;
+        if (!video) {
+          stopStandbyCamera();
+          return;
+        }
+        video.srcObject = stream;
+        await video.play().catch(() => {});
+        if (cancelled || introStartedRef.current) {
+          stopStandbyCamera();
+          return;
+        }
+
+        const handle = await getCachedPoseLandmarker({ numPoses: 1 });
+        if (cancelled || introStartedRef.current) {
+          stopStandbyCamera();
+          return;
+        }
+        poseLandmarker = handle.instance;
+
+        setGestureUi((prev) =>
+          prev.sensorStatus === 'ready' ? prev : { ...prev, sensorStatus: 'ready' },
+        );
+
+        const detectStep = () => {
+          if (cancelled || introStartedRef.current) return;
+          const v = hiddenVideoRef.current;
+          if (
+            v &&
+            poseLandmarker &&
+            v.readyState >= 2 &&
+            v.videoWidth > 0 &&
+            v.currentTime !== lastVideoTime &&
+            !(typeof document !== 'undefined' && document.hidden)
+          ) {
+            lastVideoTime = v.currentTime;
+            try {
+              const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+              const res = poseLandmarker.detectForVideo(v, getNextMonotonicPoseDetectTs(nowMs));
+              const landmarks = res.landmarks?.[0];
+              const prevSample = handSampleRef.current;
+              const nextSample = evaluateTwoHandsRaised(landmarks, prevSample);
+              handSampleRef.current = nextSample;
+
+              if (
+                nextSample.leftRaised !== prevSample.leftRaised ||
+                nextSample.rightRaised !== prevSample.rightRaised ||
+                nextSample.bothRaised !== prevSample.bothRaised
+              ) {
+                setGestureUi((prev) => ({
+                  ...prev,
+                  leftRaised: nextSample.leftRaised,
+                  rightRaised: nextSample.rightRaised,
+                  bothRaised: nextSample.bothRaised,
+                }));
+              }
+            } catch {
+              // Ignore single-frame detection errors cleanly
+            }
+          }
+          pollTimerId = window.setTimeout(detectStep, 38);
+        };
+
+        detectStep();
+      } catch {
+        if (!cancelled) {
+          setGestureUi((prev) => ({ ...prev, sensorStatus: 'unavailable' }));
+        }
+      }
+    }
+
+    void initGestureCamera();
+
+    return () => {
+      cancelled = true;
+      if (pollTimerId !== null) {
+        window.clearTimeout(pollTimerId);
+      }
+      stopStandbyCamera();
+    };
+  }, [phase, stopStandbyCamera]);
 
   const waveCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const orbTopRef = useRef<HTMLDivElement | null>(null);
@@ -793,6 +1466,8 @@ export function KioskStandbyScreen({ onStart, initialDate }: KioskStandbyScreenP
   const ctaWrapperRef = useRef<HTMLDivElement | null>(null);
   const ctaGlowRef = useRef<HTMLDivElement | null>(null);
   const ctaSheenRef = useRef<HTMLDivElement | null>(null);
+  const ctaProgressFillRef = useRef<HTMLDivElement | null>(null);
+  const progressRingRef = useRef<SVGCircleElement | null>(null);
   const handSvgRef = useRef<SVGSVGElement | null>(null);
   const handRippleInnerRef = useRef<SVGPathElement | null>(null);
   const handRippleOuterRef = useRef<SVGPathElement | null>(null);
@@ -816,6 +1491,8 @@ export function KioskStandbyScreen({ onStart, initialDate }: KioskStandbyScreenP
       ctaWrapperRef,
       ctaGlowRef,
       ctaSheenRef,
+      ctaProgressFillRef,
+      progressRingRef,
       handSvgRef,
       handRippleInnerRef,
       handRippleOuterRef,
@@ -824,9 +1501,13 @@ export function KioskStandbyScreen({ onStart, initialDate }: KioskStandbyScreenP
     [],
   );
 
-  // Unified 60FPS RequestAnimationFrame Fluid Motion Engine
+  // Unified 60FPS RequestAnimationFrame Fluid Motion & Silky 3-Second Hold Progress Engine
   useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+    if (
+      phase !== 'standby' ||
+      typeof window === 'undefined' ||
+      typeof window.requestAnimationFrame !== 'function'
+    ) {
       return;
     }
 
@@ -868,14 +1549,75 @@ export function KioskStandbyScreen({ onStart, initialDate }: KioskStandbyScreenP
     }
 
     const startMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    let prevFrameMs = startMs;
 
     const drawFluidFrame = (nowMs: number) => {
       if (typeof document !== 'undefined' && document.hidden) {
+        prevFrameMs = nowMs;
         rafId = window.requestAnimationFrame(drawFluidFrame);
         return;
       }
 
+      const dtMs = Math.max(0, Math.min(100, nowMs - prevFrameMs));
+      prevFrameMs = nowMs;
       const t = (nowMs - startMs) / 1000;
+
+      // 0. Advance 3-Second Two-Hand Hold Timer & 60FPS Silky Progress Visuals
+      if (!introStartedRef.current) {
+        const prevHold = holdStateRef.current;
+        const nextHold = advanceStandbyHandHold(prevHold, {
+          bothRaised: handSampleRef.current.bothRaised,
+          dtMs,
+          targetHoldMs: STANDBY_HAND_WAKE_HOLD_MS,
+        });
+        holdStateRef.current = nextHold;
+
+        const visualProg = smoothVisualProgress(
+          visualProgressRef.current,
+          nextHold.progress,
+          dtMs,
+        );
+        visualProgressRef.current = visualProg;
+
+        if (progressRingRef.current) {
+          const offset = RING_CIRCUMFERENCE * (1 - visualProg);
+          progressRingRef.current.style.strokeDashoffset = offset.toFixed(2);
+        }
+        if (ctaProgressFillRef.current) {
+          ctaProgressFillRef.current.style.transform = `scaleX(${visualProg.toFixed(4)})`;
+        }
+
+        const isHoldingNow = nextHold.holdMs > 30;
+        const wasHolding = prevHold.holdMs > 30;
+
+        if (isHoldingNow && lastAnnouncedSecRef.current !== nextHold.remainingSec) {
+          lastAnnouncedSecRef.current = nextHold.remainingSec;
+          if (nextHold.remainingSec === 3) {
+            playGameSfx('tap');
+          } else if (nextHold.remainingSec === 2) {
+            playGameSfx('rep');
+          } else if (nextHold.remainingSec === 1) {
+            playGameSfx('combo', { comboCount: 3 });
+          }
+        } else if (!isHoldingNow) {
+          lastAnnouncedSecRef.current = null;
+        }
+
+        if (isHoldingNow !== wasHolding || prevHold.remainingSec !== nextHold.remainingSec) {
+          setGestureUi((prev) => ({
+            ...prev,
+            isHolding: isHoldingNow,
+            remainingSec: nextHold.remainingSec,
+          }));
+        }
+
+        if (nextHold.completed) {
+          startBrandIntroRef.current();
+          return;
+        }
+      }
+
+      const activeProg = visualProgressRef.current;
 
       // 1. Canvas Liquid-Silk Multi-Strand Ribbons + Bokeh Micro-Particles
       const canvas = waveCanvasRef.current;
@@ -884,20 +1626,20 @@ export function KioskStandbyScreen({ onStart, initialDate }: KioskStandbyScreenP
         ctx.clearRect(0, 0, width, height);
 
         const bandCenterY = height * 0.51;
-        const bandHeight = Math.max(170, height * 0.3);
+        const bandHeight = Math.max(170, height * 0.3) * (1 + activeProg * 0.14);
         const stepPx = Math.max(10, Math.round(width / 72));
 
         const primaryGrad = ctx.createLinearGradient(0, bandCenterY - bandHeight, width, bandCenterY + bandHeight);
         primaryGrad.addColorStop(0, 'rgba(147, 197, 253, 0.25)');
-        primaryGrad.addColorStop(0.5, 'rgba(224, 242, 254, 0.65)');
-        primaryGrad.addColorStop(1, 'rgba(153, 246, 228, 0.32)');
+        primaryGrad.addColorStop(0.5, activeProg > 0.1 ? 'rgba(167, 243, 208, 0.72)' : 'rgba(224, 242, 254, 0.65)');
+        primaryGrad.addColorStop(1, 'rgba(153, 246, 228, 0.36)');
 
         ctx.strokeStyle = primaryGrad;
-        ctx.lineWidth = 1.25;
+        ctx.lineWidth = 1.25 + activeProg * 0.45;
         const primaryCount = 16;
         for (let s = 0; s < primaryCount; s++) {
           const bell = 1 - Math.abs(s / (primaryCount - 1) - 0.5) * 2;
-          ctx.globalAlpha = 0.08 + bell * 0.28;
+          ctx.globalAlpha = 0.08 + bell * (0.28 + activeProg * 0.12);
           ctx.beginPath();
           for (let x = -stepPx; x <= width + stepPx; x += stepPx) {
             const xNorm = x / width;
@@ -985,13 +1727,13 @@ export function KioskStandbyScreen({ onStart, initialDate }: KioskStandbyScreenP
       if (orbTopRef.current) {
         const ox = Math.sin(t * 0.25) * 28;
         const oy = Math.cos(t * 0.32) * 22;
-        const os = 1 + Math.sin(t * 0.4) * 0.08;
+        const os = 1 + Math.sin(t * 0.4) * 0.08 + activeProg * 0.1;
         orbTopRef.current.style.transform = `translate3d(${ox.toFixed(1)}px, ${oy.toFixed(1)}px, 0) scale(${os.toFixed(3)})`;
       }
       if (orbBottomRef.current) {
         const ox = Math.cos(t * 0.22) * 32;
         const oy = Math.sin(t * 0.29) * 24;
-        const os = 1 + Math.cos(t * 0.35) * 0.08;
+        const os = 1 + Math.cos(t * 0.35) * 0.08 + activeProg * 0.1;
         orbBottomRef.current.style.transform = `translate3d(${ox.toFixed(1)}px, ${oy.toFixed(1)}px, 0) scale(${os.toFixed(3)})`;
       }
 
@@ -1010,15 +1752,16 @@ export function KioskStandbyScreen({ onStart, initialDate }: KioskStandbyScreenP
         emblemSheenRef.current.style.transform = `translate3d(${sheenX.toFixed(1)}%, 0, 0) skewX(-18deg)`;
       }
 
-      // 6. Silky Floating CTA Pill + Outer Breathing Halo + Shimmer + Finger Ripple
+      // 6. Silky Floating CTA Pill + Outer Breathing Halo + Shimmer + Raised Hands Float
       if (ctaWrapperRef.current) {
-        const ctaFloat = Math.sin(t * 0.95 + 0.6) * 3.5;
-        ctaWrapperRef.current.style.transform = `translate3d(0, ${ctaFloat.toFixed(2)}px, 0)`;
+        const ctaFloat = Math.sin(t * 0.95 + 0.6) * (3.5 * (1 - activeProg * 0.5));
+        const ctaBoostScale = 1 + activeProg * 0.045;
+        ctaWrapperRef.current.style.transform = `translate3d(0, ${ctaFloat.toFixed(2)}px, 0) scale(${ctaBoostScale.toFixed(4)})`;
       }
       if (ctaGlowRef.current) {
-        const glowAlpha = 0.38 + 0.34 * (0.5 + 0.5 * Math.sin(t * 1.9));
-        const glowScale = 0.98 + 0.05 * (0.5 + 0.5 * Math.sin(t * 1.9));
-        ctaGlowRef.current.style.opacity = glowAlpha.toFixed(3);
+        const glowAlpha = 0.4 + 0.32 * (0.5 + 0.5 * Math.sin(t * 1.9)) + activeProg * 0.28;
+        const glowScale = 0.98 + 0.05 * (0.5 + 0.5 * Math.sin(t * 1.9)) + activeProg * 0.08;
+        ctaGlowRef.current.style.opacity = Math.min(1, glowAlpha).toFixed(3);
         ctaGlowRef.current.style.transform = `scale(${glowScale.toFixed(3)})`;
       }
       if (ctaSheenRef.current) {
@@ -1027,9 +1770,9 @@ export function KioskStandbyScreen({ onStart, initialDate }: KioskStandbyScreenP
         ctaSheenRef.current.style.transform = `translate3d(${ctaX.toFixed(1)}%, 0, 0) skewX(-22deg)`;
       }
       if (handSvgRef.current) {
-        const handDip = Math.max(0, Math.sin(t * 2.8)) * 2.4;
-        const handScale = 1 - Math.max(0, Math.sin(t * 2.8)) * 0.06;
-        handSvgRef.current.style.transform = `translate3d(0, ${handDip.toFixed(2)}px, 0) scale(${handScale.toFixed(4)})`;
+        const handLift = -Math.abs(Math.sin(t * 2.2)) * 2.8;
+        const handScale = 1 + Math.abs(Math.sin(t * 2.2)) * 0.05;
+        handSvgRef.current.style.transform = `translate3d(0, ${handLift.toFixed(2)}px, 0) scale(${handScale.toFixed(4)})`;
       }
       if (handRippleInnerRef.current) {
         const pInner = computeEcgSweepProgress(t, 1.8, 0.0);
@@ -1057,7 +1800,7 @@ export function KioskStandbyScreen({ onStart, initialDate }: KioskStandbyScreenP
       window.removeEventListener('resize', resizeCanvas);
       if (rafId) window.cancelAnimationFrame(rafId);
     };
-  }, [motionRefs]);
+  }, [motionRefs, phase]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1073,21 +1816,49 @@ export function KioskStandbyScreen({ onStart, initialDate }: KioskStandbyScreenP
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
-        handleWake();
+        if (phase === 'standby') {
+          startBrandIntroSequence();
+        } else if (canSkipIntro) {
+          finishIntroAndEnterKiosk();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleWake]);
+  }, [phase, canSkipIntro, startBrandIntroSequence, finishIntroAndEnterKiosk]);
 
   return (
-    <KioskStandbyView
-      timeText={timeText}
-      lang={lang}
-      onWake={handleWake}
-      wakeRipple={wakeRipple}
-      isWaking={isWaking}
-      motionRefs={motionRefs}
-    />
+    <>
+      {/* Hidden Low-Bandwidth Camera Feed for Touchless 2-Hand-Raise Standby Wake */}
+      {phase === 'standby' && (
+        <video
+          ref={hiddenVideoRef}
+          muted
+          playsInline
+          autoPlay
+          aria-hidden="true"
+          className="sr-only pointer-events-none"
+        />
+      )}
+
+      {phase === 'standby' ? (
+        <KioskStandbyView
+          timeText={timeText}
+          lang={lang}
+          onWake={startBrandIntroSequence}
+          wakeRipple={wakeRipple}
+          isWaking={false}
+          gestureUi={gestureUi}
+          motionRefs={motionRefs}
+        />
+      ) : (
+        <KioskBrandIntroOverlay
+          lang={lang}
+          isExiting={isIntroExiting}
+          canSkip={canSkipIntro}
+          onSkip={finishIntroAndEnterKiosk}
+        />
+      )}
+    </>
   );
 }

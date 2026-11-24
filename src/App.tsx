@@ -1623,6 +1623,7 @@ export function App() {
               const intent = staffModalIntent;
               setStaffModalIntent(null);
               setCurrentUser(user);
+              setAuthChecked(true);
               if (intent === 'kiosk_patient_registration' && (user.role === 'pt' || user.role === 'super_admin')) {
                 setKioskEnrollModalOpen(true);
               } else if (user.role === 'super_admin') {

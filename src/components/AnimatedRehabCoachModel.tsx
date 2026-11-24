@@ -568,6 +568,54 @@ function FrontStandingBase({
   );
 }
 
+export function resolveElderlyLimbCueTh(
+  exercise: ExercisePrescriptionOption,
+  targetSide: ExerciseSideCode,
+): {
+  headlineTh: string;
+  shortSideTh: string;
+  direction: 'left' | 'right' | 'both';
+} {
+  const kind = resolveCoachMotionKind(exercise);
+  const isLeg =
+    kind === 'knee_lift' ||
+    kind === 'hip_abduction' ||
+    kind === 'knee_extension' ||
+    kind === 'heel_toe_raise' ||
+    kind === 'sit_to_stand';
+  const isNeck = kind === 'neck_tilt' || kind === 'neck_turn';
+
+  if (targetSide === 'BOTH') {
+    return {
+      headlineTh: isNeck ? 'ทำซ้าย - ขวา' : isLeg ? 'ทำทั้ง 2 ข้าง' : 'ทำทั้ง 2 แขน',
+      shortSideTh: 'ทั้ง 2 ข้าง',
+      direction: 'both',
+    };
+  }
+  if (targetSide === 'LEFT') {
+    return {
+      headlineTh: isNeck ? 'ทำข้างซ้าย' : isLeg ? 'ทำขาซ้าย' : 'ทำแขนซ้าย',
+      shortSideTh: 'แขนซ้าย',
+      direction: 'left',
+    };
+  }
+  return {
+    headlineTh: isNeck ? 'ทำข้างขวา' : isLeg ? 'ทำขาขวา' : 'ทำแขนขวา',
+    shortSideTh: 'แขนขวา',
+    direction: 'right',
+  };
+}
+
+export function formatConciseExerciseNameTh(rawNameTh: string): string {
+  const cleaned = rawNameTh
+    .replace(/^\[[^\]]+\]\s*/g, '')
+    .replace(/\s*—\s*ข้าง.*$/g, '')
+    .replace(/\s*\([^)]*\)\s*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || rawNameTh;
+}
+
 export interface AnimatedRehabCoachModelProps {
   exercise: ExercisePrescriptionOption;
   targetSide?: ExerciseSideCode;
@@ -1153,7 +1201,7 @@ function AnimatedRehabCoachModelInner({
             kind !== 'heel_toe_raise' &&
             isLeftArm
           }
-          width={10}
+          width={12}
         />
         <ActiveOrMutedLimb
           p1={rs}
@@ -1167,7 +1215,7 @@ function AnimatedRehabCoachModelInner({
             kind !== 'heel_toe_raise' &&
             isRightArm
           }
-          width={10}
+          width={12}
         />
 
         {kind === 'bobath_arm_raise' && (
@@ -1221,18 +1269,18 @@ function AnimatedRehabCoachModelInner({
         <rect x={0} y={0} width={260} height={220} rx={16} fill="url(#coachBgGrad)" />
 
         {/* Live Angle Pill Top-Right */}
-        <g transform="translate(192, 16)">
-          <rect x={-52} y={-11} width={104} height={20} rx={10} fill="#ffffff" stroke="#0284c7" strokeWidth={1.6} />
-          <text x={0} y={3} textAnchor="middle" fill="#0f172a" fontSize={10} fontWeight={900}>
+        <g transform="translate(194, 18)">
+          <rect x={-56} y={-13} width={112} height={24} rx={12} fill="#ffffff" stroke="#0284c7" strokeWidth={2} />
+          <text x={0} y={4} textAnchor="middle" fill="#0f172a" fontSize={12} fontWeight={900}>
             {currentDeg}° → {targetRom}°
           </text>
         </g>
 
         {/* Active Side Pill Top-Left */}
-        <g transform="translate(64, 16)">
-          <rect x={-54} y={-11} width={108} height={20} rx={10} fill="#10b981" />
-          <circle cx={-40} cy={-1} r={3.5} fill="#ffffff" />
-          <text x={6} y={3} textAnchor="middle" fill="#ffffff" fontSize={10} fontWeight={900}>
+        <g transform="translate(64, 18)">
+          <rect x={-58} y={-13} width={116} height={24} rx={12} fill="#10b981" />
+          <circle cx={-44} cy={-1} r={4} fill="#ffffff" />
+          <text x={6} y={4} textAnchor="middle" fill="#ffffff" fontSize={12} fontWeight={900}>
             {sideLabel}
           </text>
         </g>
@@ -1260,19 +1308,20 @@ export function Zone2PipCoachOverlay({
 }: Zone2PipCoachOverlayProps) {
   const elapsedSec = useSyncedCoachClock(visible);
   const frame = computeCoachTimelineFrame(elapsedSec, Math.max(1, Math.round(exercise.hold_sec || 3)));
+  const limbCue = resolveElderlyLimbCueTh(exercise, targetSide);
 
   if (!visible) {
     return (
-      <div className="absolute top-14 left-3 z-20 animate-toast-in transition-all duration-250 ease-out">
+      <div className="absolute top-20 left-3 z-20 animate-toast-in transition-all duration-250 ease-out">
         <button
           type="button"
           onClick={onToggleVisible}
           data-testid="kiosk-pip-coach-toggle"
           aria-label="ซ่อน/แสดงหุ่นโค้ชบนจอ"
-          className="inline-flex items-center gap-1.5 bg-white/95 border-2 border-emerald-500 text-emerald-900 font-extrabold text-xs px-3 py-1 rounded-full shadow-lg hover:bg-emerald-50 cursor-pointer active:scale-95 transition-all duration-250 ease-out"
+          className="inline-flex items-center gap-1.5 bg-white/95 border-2 border-emerald-500 text-emerald-900 font-extrabold text-sm px-3.5 py-1.5 rounded-full shadow-lg hover:bg-emerald-50 cursor-pointer active:scale-95 transition-all duration-250 ease-out"
         >
-          <Eye className="w-3.5 h-3.5 shrink-0" />
-          <span>ซ่อน/แสดงหุ่นโค้ชบนจอ</span>
+          <Eye className="w-4 h-4 shrink-0" />
+          <span>แสดงหุ่นตัวอย่าง</span>
         </button>
       </div>
     );
@@ -1281,12 +1330,19 @@ export function Zone2PipCoachOverlay({
   return (
     <div
       data-testid="kiosk-pip-coach-box"
-      className="absolute top-14 left-3 z-20 w-28 h-32 md:w-36 md:h-40 bg-white/95 border-2 border-emerald-500 rounded-2xl shadow-xl p-1.5 flex flex-col items-center justify-between animate-popup-spring transition-all duration-250 ease-out"
+      className="absolute top-20 left-3 z-20 w-48 h-56 sm:w-60 sm:h-72 md:w-64 md:h-76 bg-white/96 border-[3px] border-emerald-500 rounded-3xl shadow-2xl p-2 flex flex-col items-center justify-between gap-1.5 animate-popup-spring transition-all duration-250 ease-out"
     >
-      <div className="w-full flex items-center justify-between gap-1 shrink-0">
-        <span className="inline-flex items-center gap-1 text-[10px] font-black text-emerald-900 truncate">
-          <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-status-halo shrink-0" />
-          <span className="truncate">{frame.phaseLabelTh}</span>
+      <div className="w-full flex items-center justify-between gap-1.5 shrink-0">
+        <span
+          className={`flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl px-2 py-1 text-sm sm:text-base font-black text-white shadow-xs truncate ${
+            limbCue.direction === 'left'
+              ? 'bg-gradient-to-r from-indigo-700 to-blue-600'
+              : limbCue.direction === 'both'
+                ? 'bg-gradient-to-r from-emerald-600 to-teal-600'
+                : 'bg-gradient-to-r from-[#0F4C81] to-emerald-600'
+          }`}
+        >
+          <span className="truncate">{limbCue.headlineTh}</span>
         </span>
         <button
           type="button"
@@ -1294,10 +1350,9 @@ export function Zone2PipCoachOverlay({
           data-testid="kiosk-pip-coach-toggle"
           title="ซ่อน/แสดงหุ่นโค้ชบนจอ"
           aria-label="ซ่อน/แสดงหุ่นโค้ชบนจอ"
-          className="inline-flex items-center gap-0.5 rounded-md bg-emerald-100 hover:bg-emerald-200 px-1.5 py-0.5 text-[10px] font-extrabold text-emerald-950 shrink-0 cursor-pointer"
+          className="inline-flex items-center justify-center rounded-xl bg-slate-100 hover:bg-slate-200 p-1.5 text-slate-700 shrink-0 cursor-pointer"
         >
-          <EyeOff className="w-3 h-3 shrink-0" />
-          <span>ซ่อน</span>
+          <EyeOff className="w-4 h-4 shrink-0" />
         </button>
       </div>
 
@@ -1305,9 +1360,12 @@ export function Zone2PipCoachOverlay({
         exercise={exercise}
         targetSide={targetSide}
         cycleElapsedSec={elapsedSec}
-        compact
         className="w-full flex-1 min-h-0"
       />
+
+      <div className="w-full text-center rounded-xl bg-emerald-50 border border-emerald-200 py-0.5 px-2 text-xs sm:text-sm font-black text-emerald-900 shrink-0 truncate">
+        {frame.phaseLabelTh}
+      </div>
     </div>
   );
 }
@@ -1324,40 +1382,41 @@ export interface Zone4CoachStageAndStepsProps {
 export function Zone4CoachStageAndSteps({
   exercise,
   targetSide,
-  steps,
   holdTargetSec,
   targetRomDeg,
   onExpandPreview,
 }: Zone4CoachStageAndStepsProps) {
   const elapsedSec = useSyncedCoachClock(true);
   const frame = computeCoachTimelineFrame(elapsedSec, holdTargetSec);
+  const limbCue = resolveElderlyLimbCueTh(exercise, targetSide);
+  const conciseName = formatConciseExerciseNameTh(exercise.name_th);
 
   useEffect(() => {
     resetSharedCoachClockEpoch();
   }, [exercise.exercise_id, targetSide]);
 
   const stepItems = [
-    { stepNum: 1 as const, title: '1. เตรียม', text: steps[0] || 'เตรียมท่าตั้งต้นให้มั่นคง' },
-    { stepNum: 2 as const, title: '2. ขยับ', text: steps[1] || `เคลื่อนไหวช้าๆ ถึง ${targetRomDeg}°` },
-    { stepNum: 3 as const, title: '3. ค้างท่า', text: steps[2] || `ค้างท่าไว้ ${holdTargetSec.toFixed(1)} วินาที` },
+    { stepNum: 1 as const, title: '1. เตรียม', shortCue: 'ท่าเริ่มต้น' },
+    { stepNum: 2 as const, title: '2. ขยับ', shortCue: `ถึง ${targetRomDeg}°` },
+    { stepNum: 3 as const, title: '3. ค้างท่า', shortCue: `ค้าง ${Math.round(holdTargetSec)} วิ` },
   ];
 
   return (
     <>
-      {/* Left 3 Columns: Live Animated Coach Stage */}
-      <div className="col-span-3 bg-gradient-to-b from-sky-50 to-emerald-50/70 border-2 border-emerald-400 rounded-2xl p-2 flex flex-col items-center justify-between relative overflow-hidden card-hover-lift">
-        <div className="w-full flex items-center justify-between gap-1 shrink-0 z-10">
-          <span className="inline-flex items-center gap-1 bg-emerald-600 text-white text-[10px] md:text-xs font-black px-2 py-0.5 rounded-full truncate">
+      {/* Left 5 Columns: GIANT Live Animated Coach Model Stage */}
+      <div className="col-span-5 bg-gradient-to-b from-sky-50 via-white to-emerald-50/70 border-2 border-emerald-400 rounded-2xl p-2 flex flex-col items-center justify-between relative overflow-hidden card-hover-lift">
+        <div className="w-full flex items-center justify-between gap-1.5 shrink-0 z-10">
+          <span className="inline-flex items-center gap-1.5 bg-emerald-600 text-white text-xs sm:text-sm font-black px-2.5 py-0.5 rounded-full truncate">
             <span className="inline-block w-2 h-2 rounded-full bg-white animate-pulse shrink-0" />
-            <span className="truncate">หุ่นสาธิต ({frame.phaseLabelTh})</span>
+            <span className="truncate">หุ่นสาธิต • {frame.phaseLabelTh}</span>
           </span>
           <button
             type="button"
             onClick={onExpandPreview}
             data-testid="kiosk-coach-expand-btn"
-            className="inline-flex items-center gap-1 bg-white hover:bg-sky-50 border border-blue-300 text-blue-800 text-[10px] md:text-xs font-extrabold px-2 py-0.5 rounded-lg shrink-0 cursor-pointer shadow-xs active:scale-95 transition"
+            className="inline-flex items-center gap-1 bg-white hover:bg-sky-50 border border-blue-300 text-blue-800 text-xs font-extrabold px-2.5 py-0.5 rounded-lg shrink-0 cursor-pointer shadow-xs active:scale-95 transition"
           >
-            <Maximize2 className="w-3 h-3 shrink-0" />
+            <Maximize2 className="w-3.5 h-3.5 shrink-0" />
             <span>ขยายใหญ่</span>
           </button>
         </div>
@@ -1366,47 +1425,95 @@ export function Zone4CoachStageAndSteps({
           exercise={exercise}
           targetSide={targetSide}
           cycleElapsedSec={elapsedSec}
-          className="w-full h-24 md:h-28"
+          className="w-full h-44 sm:h-52 md:h-56"
         />
       </div>
 
-      {/* Middle 6 Columns: 3 Synchronized Step Cards (Full Text, Zero Truncation ...) */}
-      <div className="col-span-6 grid grid-cols-3 gap-2">
-        {stepItems.map((item) => {
-          const isActiveStep = frame.activeStepNumber === item.stepNum;
-          return (
-            <div
-              key={item.stepNum}
-              data-testid={`kiosk-step-card-${item.stepNum}`}
-              data-active-step={isActiveStep ? 'true' : 'false'}
-              className={`rounded-2xl p-2 flex flex-col justify-between transition-all duration-300 ${
-                isActiveStep
-                  ? '-translate-y-0.5 shadow-md border-2 border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-300/60'
-                  : 'bg-slate-50 border border-sky-200 opacity-90'
-              }`}
-            >
-              <div className="flex flex-wrap items-center justify-between gap-1">
-                <span
-                  className={`text-xs font-black px-2 py-0.5 rounded-full ${
-                    isActiveStep ? 'bg-blue-700 text-white' : 'bg-sky-100 text-blue-900'
-                  }`}
-                >
-                  {item.title}
-                </span>
+      {/* Right 7 Columns: GIANT Elderly-Readable Arm Instruction + 3 Clean Step Chips */}
+      <div className="col-span-7 flex flex-col justify-between gap-2">
+        {/* MASSIVE Side / Arm Callout Card */}
+        <div
+          data-testid="zone4-elderly-arm-callout"
+          className={`flex-1 rounded-2xl border-[3px] px-4 py-3 flex flex-col justify-center gap-1.5 shadow-sm ${
+            limbCue.direction === 'left'
+              ? 'border-blue-500 bg-gradient-to-r from-indigo-700 via-blue-600 to-sky-600 text-white'
+              : limbCue.direction === 'both'
+                ? 'border-emerald-500 bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 text-white'
+                : 'border-emerald-400 bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#059669] text-white'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-sm sm:text-base md:text-lg font-extrabold text-white/95 truncate">
+              {conciseName}
+            </span>
+            <span className="shrink-0 rounded-full bg-white/20 border border-white/40 px-3 py-0.5 text-xs sm:text-sm font-black text-white whitespace-nowrap">
+              เป้า {targetRomDeg}°
+            </span>
+          </div>
+
+          <div className="flex items-center justify-center gap-3 py-1">
+            {limbCue.direction === 'left' && (
+              <svg viewBox="0 0 36 36" className="w-10 h-10 sm:w-12 sm:h-12 shrink-0 text-amber-300" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M30 18H6" />
+                <path d="M16 8L6 18l10 10" />
+              </svg>
+            )}
+            {limbCue.direction === 'both' && (
+              <svg viewBox="0 0 36 36" className="w-10 h-10 sm:w-12 sm:h-12 shrink-0 text-amber-300" fill="none" stroke="currentColor" strokeWidth="3.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M13 8L5 18l8 10" />
+                <path d="M23 8l8 10-8 10" />
+                <path d="M7 18h22" />
+              </svg>
+            )}
+            <span className="text-4xl sm:text-5xl md:text-6xl font-black tracking-tight leading-none drop-shadow-sm">
+              {limbCue.headlineTh}
+            </span>
+            {limbCue.direction === 'right' && (
+              <svg viewBox="0 0 36 36" className="w-10 h-10 sm:w-12 sm:h-12 shrink-0 text-amber-300" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M6 18h24" />
+                <path d="M20 8l10 10-10 10" />
+              </svg>
+            )}
+          </div>
+        </div>
+
+        {/* 3 Oversized Crisp Step Chips */}
+        <div className="grid grid-cols-3 gap-2">
+          {stepItems.map((item) => {
+            const isActiveStep = frame.activeStepNumber === item.stepNum;
+            return (
+              <div
+                key={item.stepNum}
+                data-testid={`kiosk-step-card-${item.stepNum}`}
+                data-active-step={isActiveStep ? 'true' : 'false'}
+                className={`rounded-2xl px-2.5 py-2 flex flex-col items-center justify-center text-center transition-all duration-300 ${
+                  isActiveStep
+                    ? '-translate-y-0.5 shadow-md border-2 border-emerald-500 bg-emerald-50 ring-2 ring-emerald-300/60'
+                    : 'bg-slate-50 border border-sky-200 opacity-90'
+                }`}
+              >
+                <div className="flex items-center justify-center gap-1">
+                  <span
+                    className={`text-sm sm:text-base font-black px-2 py-0.5 rounded-full ${
+                      isActiveStep ? 'bg-blue-700 text-white' : 'bg-sky-100 text-blue-900'
+                    }`}
+                  >
+                    {item.title}
+                  </span>
+                </div>
+                <p className="mt-1 text-sm sm:text-base font-black text-slate-900 leading-tight">
+                  {item.shortCue}
+                </p>
                 {isActiveStep && (
-                  <span className="inline-flex items-center gap-1 bg-emerald-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full animate-toast-in animate-status-halo whitespace-nowrap">
+                  <span className="mt-1 inline-flex items-center gap-1 bg-emerald-600 text-white text-[10px] font-black px-2 py-0.5 rounded-full animate-toast-in animate-status-halo whitespace-nowrap">
                     <Play className="w-2.5 h-2.5 fill-current shrink-0" />
                     <span>กำลังทำขั้นนี้</span>
                   </span>
                 )}
               </div>
-
-              <p className="mt-1 leading-snug text-[11px] md:text-xs font-bold text-slate-800 break-words">
-                {item.text}
-              </p>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
     </>
   );

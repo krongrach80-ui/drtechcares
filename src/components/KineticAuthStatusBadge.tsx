@@ -60,6 +60,7 @@ export interface KineticAuthStatusBadgeProps {
   onNoAccountClick?: () => void;
   onSecondaryClick?: () => void;
   compact?: boolean;
+  hero?: boolean;
   id?: string;
   testId?: string;
   initialElapsedMs?: number;
@@ -566,6 +567,7 @@ export const KineticAuthStatusBadge: React.FC<KineticAuthStatusBadgeProps> = ({
   onNoAccountClick,
   onSecondaryClick,
   compact = false,
+  hero = false,
   id,
   testId,
   initialElapsedMs,
@@ -580,9 +582,11 @@ export const KineticAuthStatusBadge: React.FC<KineticAuthStatusBadgeProps> = ({
       ? 'เข้าสู่ระบบสำเร็จ กำลังเปิดหน้าจัดการคลินิก...'
       : 'ไม่พบชื่อผู้ใช้หรือรหัสผ่านนี้ในระบบคลินิก');
 
-  const svgSizeClass = compact
-    ? 'w-24 h-24 mx-auto overflow-visible'
-    : 'w-28 h-28 md:w-32 md:h-32 mx-auto overflow-visible';
+  const svgSizeClass = hero
+    ? 'w-44 h-44 sm:w-52 sm:h-52 mx-auto overflow-visible'
+    : compact
+      ? 'w-24 h-24 mx-auto overflow-visible'
+      : 'w-28 h-28 md:w-32 md:h-32 mx-auto overflow-visible';
 
   return (
     <div
@@ -594,7 +598,7 @@ export const KineticAuthStatusBadge: React.FC<KineticAuthStatusBadgeProps> = ({
       className={
         isSuccess
           ? `flex flex-col items-center justify-center text-center ${
-              compact ? 'py-3 px-4' : 'py-6 px-4 sm:py-8'
+              hero ? 'py-2 px-4' : compact ? 'py-3 px-4' : 'py-6 px-4 sm:py-8'
             }`
           : `flex flex-col items-center justify-center text-center rounded-2xl border-2 border-red-200 bg-gradient-to-b from-red-50/90 to-white shadow-sm ${
               compact ? 'p-4' : 'p-5 sm:p-6'
@@ -611,22 +615,35 @@ export const KineticAuthStatusBadge: React.FC<KineticAuthStatusBadgeProps> = ({
       </div>
 
       {isSuccess ? (
-        <div className="mt-2 flex flex-col items-center">
-          <div className="mt-3 min-h-[2.75rem] flex items-center justify-center">
+        <div className={hero ? 'mt-3 flex flex-col items-center' : 'mt-2 flex flex-col items-center'}>
+          <div
+            className={`${
+              hero ? 'mt-2 min-h-[4rem]' : 'mt-3 min-h-[2.75rem]'
+            } flex items-center justify-center`}
+          >
             <span
               data-testid="kinetic-success-word"
               aria-label={KINETIC_SUCCESS_WORD}
-              style={{ color: '#047857' }}
+              style={{
+                color: '#047857',
+                textShadow: hero ? '0 8px 24px rgba(16, 185, 129, 0.24)' : undefined,
+              }}
               className={`${
-                compact ? 'text-2xl sm:text-3xl' : 'text-3xl md:text-4xl'
-              } font-black tracking-wide text-emerald-700`}
+                hero
+                  ? 'text-5xl sm:text-6xl tracking-tight'
+                  : compact
+                    ? 'text-2xl sm:text-3xl tracking-wide'
+                    : 'text-3xl md:text-4xl tracking-wide'
+              } font-black text-emerald-700`}
             >
               {frame.typedText}
             </span>
             {frame.isTypingActive && (
               <span
                 aria-hidden="true"
-                className="inline-block w-0.5 h-7 bg-emerald-600 ml-1 animate-pulse"
+                className={`inline-block w-1 ${
+                  hero ? 'h-11 sm:h-12 ml-1.5' : 'w-0.5 h-7 ml-1'
+                } rounded-full bg-emerald-500 animate-pulse`}
               />
             )}
           </div>

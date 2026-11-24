@@ -257,11 +257,36 @@ describe('Frame-Accurate 60FPS Kinetic SVG Auth Badge & Staff/Kiosk Login Choreo
         }),
       ),
     );
+    expect(successModalHtml).toContain('data-testid="staff-login-success-stage"');
+    expect(successModalHtml).toContain('data-testid="staff-login-confetti-burst"');
     expect(successModalHtml).toContain('staff-login-success-panel');
     expect(successModalHtml).toContain('data-testid="kinetic-svg-success"');
     expect(successModalHtml).toContain('data-testid="kinetic-success-word"');
     expect(successModalHtml).toContain('color:#047857');
+    expect(successModalHtml).toContain('bg-white');
+    expect(successModalHtml).not.toContain('เข้าสู่ระบบบุคลากร Dr.Tech.Care');
+    expect(successModalHtml).not.toContain('เข้าสู่ระบบสำเร็จ กำลังเปิดหน้าจัดการคลินิก...');
+    expect(successModalHtml).not.toContain('Hospital Clinical Grade Security');
     expect(EMOJI_RE.test(successModalHtml)).toBe(false);
+
+    const welcomeStageHtml = renderToStaticMarkup(
+      React.createElement(
+        ClinicalI18nProvider,
+        null,
+        React.createElement(StaffLoginModalOrPage, {
+          apiClient,
+          onSuccess: () => {},
+          initialLoginAnimStatus: 'success',
+          initialSuccessStage: 'welcome',
+        }),
+      ),
+    );
+    expect(welcomeStageHtml).toContain('data-testid="staff-login-welcome-panel"');
+    expect(welcomeStageHtml).toContain('data-testid="staff-welcome-project-logo"');
+    expect(welcomeStageHtml).toContain('data-testid="staff-welcome-project-name"');
+    expect(welcomeStageHtml).toContain('Dr.Tech.Care');
+    expect(welcomeStageHtml).toContain('ยินดีต้อนรับสู่บุคลากรของเรา');
+    expect(EMOJI_RE.test(welcomeStageHtml)).toBe(false);
 
     const notFoundModalHtml = renderToStaticMarkup(
       React.createElement(
@@ -307,5 +332,23 @@ describe('Frame-Accurate 60FPS Kinetic SVG Auth Badge & Staff/Kiosk Login Choreo
       const content = fs.readFileSync(path.resolve(process.cwd(), relPath), 'utf8');
       expect(EMOJI_RE.test(content)).toBe(false);
     }
+  });
+
+  it('prevents Vite dev full-page reload on data/drtechcares-db.json writes and blocks accidental dismissal during login redirect', () => {
+    const viteCfg = fs.readFileSync(path.resolve(process.cwd(), 'vite.config.ts'), 'utf8');
+    expect(viteCfg).toContain('ignoreRuntimeDataReloadPlugin');
+    expect(viteCfg).toContain("**/data/**");
+    expect(viteCfg).toContain('/data/drtechcares-db.json');
+
+    const staffLoginSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/StaffLoginModalOrPage.tsx'),
+      'utf8',
+    );
+    expect(staffLoginSrc).toContain(
+      "if (e.key === 'Escape' && loginAnimStatus !== 'checking' && loginAnimStatus !== 'success')",
+    );
+    expect(staffLoginSrc).toContain(
+      'if (asModal && !isCheckingOrSuccess && e.target === e.currentTarget) handleReturn();',
+    );
   });
 });

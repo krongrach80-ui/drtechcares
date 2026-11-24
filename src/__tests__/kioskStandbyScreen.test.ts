@@ -4,15 +4,22 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  INITIAL_STANDBY_HAND_HOLD_STATE,
+  KioskBrandIntroOverlay,
   KioskStandbyScreen,
   KioskStandbyView,
+  STANDBY_HAND_WAKE_HOLD_MS,
+  STANDBY_WELCOME_COPY,
   SevenSegmentClock,
+  advanceStandbyHandHold,
   computeEcgSweepProgress,
   computeHeartbeatScale,
   computeStandbyFloatTransform,
   createSingleFireStandbyWake,
+  evaluateTwoHandsRaised,
   formatStandbyClockHHMM,
   sampleStandbySilkWaveY,
+  smoothVisualProgress,
 } from '../components/KioskStandbyScreen';
 import {
   KIOSK_IDLE_STANDBY_TIMEOUT_MS,
@@ -39,8 +46,11 @@ describe('Dr.Tech.Care AI Kiosk Standby Screen & Auto-Idle Return', () => {
 
     expect(html).toContain('Dr.Tech.Care');
     expect(html).toContain('AI Kiosk');
-    expect(html).toContain('แตะหน้าจอเพื่อเริ่มต้นใช้งาน');
+    expect(html).toContain('ยกมือ 2 ข้าง ค้างไว้ 3 วินาทีเพื่อเริ่มต้น');
     expect(html).toContain('ระบบฟื้นฟูกายภาพบำบัดอัจฉริยะ');
+    expect(html).toContain('data-testid="standby-hand-status-strip"');
+    expect(html).toContain('data-testid="standby-left-hand-badge"');
+    expect(html).toContain('data-testid="standby-right-hand-badge"');
     expect(html).toContain('data-testid="kiosk-standby-clock"');
     expect(html).toContain('data-time="20:54"');
     expect(html).toContain('data-testid="kiosk-standby-start-btn"');
@@ -59,7 +69,7 @@ describe('Dr.Tech.Care AI Kiosk Standby Screen & Auto-Idle Return', () => {
     expect(EMOJI_RE.test(html)).toBe(false);
   });
 
-  it('renders localized EN/CN copy and clean 7-segment clock independently', () => {
+  it('renders localized EN/CN copy, cinematic brand intro overlay, and clean 7-segment clock independently', () => {
     const enHtml = renderToStaticMarkup(
       React.createElement(KioskStandbyView, {
         timeText: '09:12',
@@ -67,8 +77,26 @@ describe('Dr.Tech.Care AI Kiosk Standby Screen & Auto-Idle Return', () => {
         onWake: vi.fn(),
       }),
     );
-    expect(enHtml).toContain('Tap Screen to Get Started');
+    expect(enHtml).toContain('Raise Both Hands for 3 Seconds to Start');
     expect(enHtml).toContain('Intelligent Physical Rehabilitation System');
+
+    const introHtml = renderToStaticMarkup(
+      React.createElement(KioskBrandIntroOverlay, {
+        lang: 'th',
+        isExiting: false,
+        canSkip: true,
+        onSkip: vi.fn(),
+      }),
+    );
+    expect(introHtml).toContain('data-testid="kiosk-brand-intro-overlay"');
+    expect(introHtml).toContain('data-testid="kiosk-intro-logo"');
+    expect(introHtml).toContain('data-testid="kiosk-intro-wordmark"');
+    expect(introHtml).toContain('Dr.Tech.Care');
+    expect(introHtml).toContain(STANDBY_WELCOME_COPY.th.headline);
+    expect(introHtml).toContain(STANDBY_WELCOME_COPY.th.subline);
+    expect(introHtml).toContain('ยินดีต้อนรับสู่ Dr.Tech.Care นะคะ');
+    expect(introHtml).toContain('ขอให้ทุกท่านได้ใช้เราอย่างมีความสุขค่ะ');
+    expect(EMOJI_RE.test(introHtml)).toBe(false);
 
     const clockHtml = renderToStaticMarkup(
       React.createElement(SevenSegmentClock, { timeText: '20:54' }),
@@ -77,6 +105,73 @@ describe('Dr.Tech.Care AI Kiosk Standby Screen & Auto-Idle Return', () => {
     expect(clockHtml).toContain('data-digit="0"');
     expect(clockHtml).toContain('data-digit="5"');
     expect(clockHtml).toContain('data-digit="4"');
+  });
+
+  it('detects smooth 2-hand raise states and drives a glitch-free 3-second hold timer', () => {
+    const makePose = (lwY: number, leY: number, rwY: number, reY: number) => {
+      const lms = Array.from({ length: 17 }, () => ({ x: 0.5, y: 0.5, visibility: 0.95 }));
+      lms[11] = { x: 0.62, y: 0.48, visibility: 0.96 }; // left shoulder
+      lms[12] = { x: 0.38, y: 0.48, visibility: 0.96 }; // right shoulder
+      lms[13] = { x: 0.68, y: leY, visibility: 0.95 }; // left elbow
+      lms[14] = { x: 0.32, y: reY, visibility: 0.95 }; // right elbow
+      lms[15] = { x: 0.7, y: lwY, visibility: 0.95 }; // left wrist
+      lms[16] = { x: 0.3, y: rwY, visibility: 0.95 }; // right wrist
+      return lms;
+    };
+
+    // Resting arms at sides -> neither raised
+    const resting = evaluateTwoHandsRaised(makePose(0.78, 0.64, 0.78, 0.64));
+    expect(resting.personDetected).toBe(true);
+    expect(resting.bothRaised).toBe(false);
+    expect(resting.raisedCount).toBe(0);
+
+    // Only left hand raised -> raisedCount === 1, not bothRaised
+    const oneHand = evaluateTwoHandsRaised(makePose(0.28, 0.42, 0.78, 0.64));
+    expect(oneHand.leftRaised).toBe(true);
+    expect(oneHand.rightRaised).toBe(false);
+    expect(oneHand.bothRaised).toBe(false);
+    expect(oneHand.raisedCount).toBe(1);
+
+    // Both hands raised comfortably above shoulders -> bothRaised === true
+    const bothUp = evaluateTwoHandsRaised(makePose(0.25, 0.42, 0.26, 0.43));
+    expect(bothUp.leftRaised).toBe(true);
+    expect(bothUp.rightRaised).toBe(true);
+    expect(bothUp.bothRaised).toBe(true);
+    expect(bothUp.raisedCount).toBe(2);
+
+    // Hold for 3 seconds cleanly in 200ms steps -> counts 3 -> 2 -> 1 -> completed
+    let hold = { ...INITIAL_STANDBY_HAND_HOLD_STATE };
+    expect(STANDBY_HAND_WAKE_HOLD_MS).toBe(3000);
+    hold = advanceStandbyHandHold(hold, { bothRaised: true, dtMs: 200 });
+    expect(hold.remainingSec).toBe(3);
+    expect(hold.completed).toBe(false);
+
+    // Brief 180ms flicker drop stays protected by grace buffer (zero rollback!)
+    const afterFlicker = advanceStandbyHandHold(hold, { bothRaised: false, dtMs: 180 });
+    expect(afterFlicker.holdMs).toBe(hold.holdMs);
+
+    // Continue holding until full 3.0s completion
+    let cur = afterFlicker;
+    for (let i = 0; i < 14; i++) {
+      cur = advanceStandbyHandHold(cur, { bothRaised: true, dtMs: 200 });
+    }
+    expect(cur.completed).toBe(true);
+    expect(cur.progress).toBe(1);
+    expect(cur.remainingSec).toBe(0);
+
+    // Lowering hands past grace period smoothly decays progress instead of snapping to 0
+    const mid = advanceStandbyHandHold(
+      { holdMs: 1800, missingMs: 0, progress: 0.6, remainingSec: 2, completed: false },
+      { bothRaised: false, dtMs: 200 },
+    );
+    const decaying = advanceStandbyHandHold(mid, { bothRaised: false, dtMs: 240 });
+    expect(decaying.holdMs).toBeLessThan(1800);
+    expect(decaying.holdMs).toBeGreaterThan(1200);
+
+    // Smooth visual lerp approaches target monotonically
+    const lerped = smoothVisualProgress(0, 1, 16.6);
+    expect(lerped).toBeGreaterThan(0.1);
+    expect(lerped).toBeLessThan(0.4);
   });
 
   it('triggers onStart once cleanly when CTA button or screen container is tapped', () => {
@@ -276,6 +371,7 @@ describe('Dr.Tech.Care AI Kiosk Standby Screen & Auto-Idle Return', () => {
     const root = process.cwd();
     const files = [
       'src/components/KioskStandbyScreen.tsx',
+      'src/utils/standbyHandWakeHelpers.ts',
       'src/components/KioskBiometricLoginView.tsx',
       'src/App.tsx',
       'src/index.css',
