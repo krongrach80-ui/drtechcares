@@ -2943,6 +2943,7 @@ export function KioskBiometricLoginView({
     totalEvaluatedFramesRef.current = 0;
     serverRejectCountRef.current = 0;
     rescanCooldownUntilRef.current = Date.now() + KIOSK_RESCAN_COOLDOWN_MS;
+    forceVerifyFreshDbRef.current = true;
     setSystemErrorReason(null);
     setShowNoFaceGuidance(false);
     setIsNotFoundVoiceSpeaking(false);
@@ -3890,7 +3891,48 @@ export function KioskBiometricLoginView({
               let usedGeometricRatios = activeGeometricRatios;
               try {
                 const verifyStartMs = performance.now();
-                verifyRes = await apiClient.verifyFaceLogin(activeEmbedding, livenessEvidence);
+                const MAX_TRANSIENT_VERIFY_RETRIES = 2;
+                let attempt = 0;
+                while (true) {
+                  try {
+                    const attemptEvidence =
+                      attempt > 0
+                        ? { ...livenessEvidence, forceRefresh: true }
+                        : livenessEvidence;
+                    const candidateRes = await apiClient.verifyFaceLogin(activeEmbedding, attemptEvidence);
+                    const isTransientBodyError =
+                      !candidateRes.matched &&
+                      candidateRes.error !== 'FACE_SCAN_DISABLED' &&
+                      (candidateRes.reasonCode === 'SERVER_ERROR' || candidateRes.reasonCode === 'TIMEOUT');
+                    if (isTransientBodyError && attempt < MAX_TRANSIENT_VERIFY_RETRIES) {
+                      attempt += 1;
+                      await new Promise((resolve) => setTimeout(resolve, 450 * attempt));
+                      if (!active || !shouldContinueLoop || verifiedModalPayloadRef.current) {
+                        return;
+                      }
+                      continue;
+                    }
+                    verifyRes = candidateRes;
+                    break;
+                  } catch (attemptErr) {
+                    const isNonRetryableApiErr =
+                      attemptErr instanceof ApiError &&
+                      (attemptErr.status === 403 ||
+                        attemptErr.status === 429 ||
+                        attemptErr.code === 'PERMISSION_DENIED' ||
+                        attemptErr.code === 'RATE_LIMITED' ||
+                        attemptErr.code === 'FACE_SCAN_DISABLED');
+                    if (!isNonRetryableApiErr && attempt < MAX_TRANSIENT_VERIFY_RETRIES) {
+                      attempt += 1;
+                      await new Promise((resolve) => setTimeout(resolve, 450 * attempt));
+                      if (!active || !shouldContinueLoop || verifiedModalPayloadRef.current) {
+                        return;
+                      }
+                      continue;
+                    }
+                    throw attemptErr;
+                  }
+                }
                 if (shouldForceFreshDb) {
                   forceVerifyFreshDbRef.current = false;
                 }
@@ -3947,56 +3989,60 @@ export function KioskBiometricLoginView({
                   diagTop1 >= 72
                 ) {
                   mirrorProbedForCurrentFace = true;
-                  const altCanvas = useMirroredFirst
-                    ? params.snapCanvas
-                    : createMirroredCanvasSnapshot(params.snapCanvas, mirrorSnapCanvasRef.current);
-                  if (!useMirroredFirst && altCanvas) {
-                    mirrorSnapCanvasRef.current = altCanvas;
-                  }
-                  if (altCanvas) {
-                    const mirroredExt = await extractCanonicalFaceDescriptor(altCanvas);
-                    if (!active || !shouldContinueLoop || verifiedModalPayloadRef.current) {
-                      return;
+                  try {
+                    const altCanvas = useMirroredFirst
+                      ? params.snapCanvas
+                      : createMirroredCanvasSnapshot(params.snapCanvas, mirrorSnapCanvasRef.current);
+                    if (!useMirroredFirst && altCanvas) {
+                      mirrorSnapCanvasRef.current = altCanvas;
                     }
-                    if (mirroredExt.embedding) {
-                      const flippedPatch = activeGeometricRatios?.appearancePatch384
-                        ? flipPatch384Horizontally(activeGeometricRatios.appearancePatch384)
-                        : undefined;
-                      const flippedOcular = activeGeometricRatios?.ocularIrisPatch256
-                        ? flipOcularIrisPatch256Horizontally(activeGeometricRatios.ocularIrisPatch256)
-                        : undefined;
-                      const flippedIris8 = activeGeometricRatios?.irisOcularRatios8
-                        ? flipIrisOcularRatios8Horizontally(activeGeometricRatios.irisOcularRatios8)
-                        : undefined;
-                      const mirroredRatios: GeometricAnthropometricRatios | undefined =
-                        activeGeometricRatios
-                          ? {
-                              ...activeGeometricRatios,
-                              ...(flippedPatch ? { appearancePatch384: flippedPatch } : {}),
-                              ...(flippedOcular ? { ocularIrisPatch256: flippedOcular } : {}),
-                              ...(flippedIris8 ? { irisOcularRatios8: flippedIris8 } : {}),
-                            }
-                          : undefined;
-                      const mirrorVerifyStart = performance.now();
-                      const { frameVectors: _fv, frameTimestamps: _ft, ...singleMirrorEvidence } = livenessEvidence;
-                      const mirrorRes = await apiClient.verifyFaceLogin(mirroredExt.embedding, {
-                        ...singleMirrorEvidence,
-                        yawDeg: -effectiveYawDeg,
-                        ...(mirroredRatios ? { geometricRatios: mirroredRatios } : {}),
-                        mirroredProbeVector: activeEmbedding,
-                      });
-                      profilerRef.current.recordServerVerify(performance.now() - mirrorVerifyStart, 0);
+                    if (altCanvas) {
+                      const mirroredExt = await extractCanonicalFaceDescriptor(altCanvas);
                       if (!active || !shouldContinueLoop || verifiedModalPayloadRef.current) {
                         return;
                       }
-                      if (mirrorRes.matched) {
-                        preferredMirrorModeRef.current = useMirroredFirst ? 'normal' : 'mirrored';
-                        probeWindowRef.current = [];
-                        verifyRes = mirrorRes;
-                        usedEmbedding = mirroredExt.embedding;
-                        usedGeometricRatios = mirroredRatios;
+                      if (mirroredExt.embedding) {
+                        const flippedPatch = activeGeometricRatios?.appearancePatch384
+                          ? flipPatch384Horizontally(activeGeometricRatios.appearancePatch384)
+                          : undefined;
+                        const flippedOcular = activeGeometricRatios?.ocularIrisPatch256
+                          ? flipOcularIrisPatch256Horizontally(activeGeometricRatios.ocularIrisPatch256)
+                          : undefined;
+                        const flippedIris8 = activeGeometricRatios?.irisOcularRatios8
+                          ? flipIrisOcularRatios8Horizontally(activeGeometricRatios.irisOcularRatios8)
+                          : undefined;
+                        const mirroredRatios: GeometricAnthropometricRatios | undefined =
+                          activeGeometricRatios
+                            ? {
+                                ...activeGeometricRatios,
+                                ...(flippedPatch ? { appearancePatch384: flippedPatch } : {}),
+                                ...(flippedOcular ? { ocularIrisPatch256: flippedOcular } : {}),
+                                ...(flippedIris8 ? { irisOcularRatios8: flippedIris8 } : {}),
+                              }
+                            : undefined;
+                        const mirrorVerifyStart = performance.now();
+                        const { frameVectors: _fv, frameTimestamps: _ft, ...singleMirrorEvidence } = livenessEvidence;
+                        const mirrorRes = await apiClient.verifyFaceLogin(mirroredExt.embedding, {
+                          ...singleMirrorEvidence,
+                          yawDeg: -effectiveYawDeg,
+                          ...(mirroredRatios ? { geometricRatios: mirroredRatios } : {}),
+                          mirroredProbeVector: activeEmbedding,
+                        });
+                        profilerRef.current.recordServerVerify(performance.now() - mirrorVerifyStart, 0);
+                        if (!active || !shouldContinueLoop || verifiedModalPayloadRef.current) {
+                          return;
+                        }
+                        if (mirrorRes.matched) {
+                          preferredMirrorModeRef.current = useMirroredFirst ? 'normal' : 'mirrored';
+                          probeWindowRef.current = [];
+                          verifyRes = mirrorRes;
+                          usedEmbedding = mirroredExt.embedding;
+                          usedGeometricRatios = mirroredRatios;
+                        }
                       }
                     }
+                  } catch {
+                    // Optional mirror probe failed transiently — retain primary verifyRes cleanly
                   }
                 }
               } catch (err) {

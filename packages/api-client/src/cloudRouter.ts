@@ -98,6 +98,7 @@ import {
   PATIENTS_DIRECTORY_EGRESS_SAFE_COLS,
   PATIENTS_MINIMAL_SAFE_COLS,
   STAFF_PROFILE_STORAGE_BUCKET,
+  clearSupabaseCircuit,
   fetchBiometricLibraryStatsFromSupabase,
   getSupabaseCircuitState,
   hydrateBiometricsLiveFromSupabase,
@@ -1259,12 +1260,14 @@ function createBoundedSupabaseFetch(
 
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     if (circuitHook?.isOpen()) {
+      // Return HTTP 502 (not 503/520) so @supabase/postgrest-js fetchWithRetry fails fast in 0ms
+      // instead of sleeping 1s+2s+4s=7s retrying against an intentionally open circuit breaker.
       return new Response(
         JSON.stringify({
           code: 'SUPABASE_CIRCUIT_OPEN',
-          message: 'Supabase circuit breaker active (20s memory-only mode)',
+          message: 'Supabase circuit breaker active (memory-only mode)',
         }),
-        { status: 503, headers: { 'Content-Type': 'application/json' } },
+        { status: 502, headers: { 'Content-Type': 'application/json' } },
       );
     }
     try {
@@ -1276,10 +1279,19 @@ function createBoundedSupabaseFetch(
             : typeof (input as { url?: unknown })?.url === 'string'
               ? String((input as { url: string }).url)
               : '';
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      const isIdempotentRead = method === 'GET' || method === 'HEAD';
       const isAuthEndpoint = urlStr.includes('/auth/v1/');
       let res = await runOnce(input, init);
       if (!isAuthEndpoint && res.status === 401 && anonFallbackKey && anonFallbackKey !== primaryKey) {
         res = await runOnce(input, init, anonFallbackKey);
+      }
+      // Fast single retry (150ms) on transient 503/520 for idempotent reads so cold Supabase wakeups
+      // recover immediately instead of tripping the circuit breaker and triggering a 7s postgrest-js backoff loop.
+      if (isIdempotentRead && (res.status === 503 || res.status === 520)) {
+        await res.text().catch(() => {});
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        res = await runOnce(input, init);
       }
       if (
         (!isAuthEndpoint && res.status === 401) ||
@@ -1293,6 +1305,18 @@ function createBoundedSupabaseFetch(
         res.status === 544
       ) {
         circuitHook?.trip(`supabase_http_${res.status}`);
+        // Translate terminal 503/520 on idempotent reads to 502 so postgrest-js fetchWithRetry does not
+        // hang for 7+ seconds retrying against the newly tripped circuit breaker.
+        if (isIdempotentRead && (res.status === 503 || res.status === 520)) {
+          const bodyText = await res.text().catch(() => '');
+          return new Response(
+            bodyText || JSON.stringify({ code: `SUPABASE_HTTP_${res.status}`, message: `Supabase HTTP ${res.status}` }),
+            {
+              status: 502,
+              headers: { 'Content-Type': res.headers.get('content-type') || 'application/json' },
+            },
+          );
+        }
       }
       return res;
     } catch (err) {
@@ -1329,7 +1353,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
           global: {
             fetch: createBoundedSupabaseFetch(
-              6500,
+              8500,
               key,
               anonFallbackKey,
               config.customSupabaseFetch,
@@ -1919,7 +1943,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     }
 
     if (forceSupabaseProbe && supabase) {
-      await probeSupabaseHealth(supabase, 1500);
+      if (pathname === '/api/biometric/verify' || pathname === '/api/biometrics/stats') {
+        clearSupabaseCircuit(supabase);
+      } else {
+        await probeSupabaseHealth(supabase, 2500);
+      }
     }
 
     // Fast-path exercise library: immediately serve seeded exercises when offline or already hydrated
@@ -3291,11 +3319,15 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           lastLiveBioHydratedAt === 0 ||
           Date.now() - lastLiveBioHydratedAt >= LIVE_BIO_REFRESH_MS);
       if (shouldWarmVerifyCache && supabase) {
+        const warmStartedAt = Date.now();
         runWaitUntil(
-          hydrateBiometricsLiveFromSupabase(supabase, state, 4500)
+          hydrateBiometricsLiveFromSupabase(supabase, state, 7000, {
+            tripCircuitOnTimeout: false,
+            allowCircuitProbe: forceSupabaseProbe,
+          })
             .then((syncRes) => {
               if (syncRes.ok) {
-                lastLiveBioHydratedAt = Date.now();
+                lastLiveBioHydratedAt = warmStartedAt;
               }
             })
             .catch(() => {}),
@@ -3855,16 +3887,36 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
       // Live DB refresh on verify so newly enrolled patients work immediately (without Kiosk reload)
       // and newly deleted patients are excluded immediately without waiting for the 60s full hydration TTL.
-      // Generous 4500ms budget avoids false timeouts when transferring 1024-D multi-angle rows on cold Worker isolates.
+      // Cold Worker isolates receive an 8s budget + half-open circuit recovery + 1 transient retry so
+      // overnight Supabase wakeups never trigger false "ระบบตรวจสอบขัดข้องชั่วคราว" 503 lockouts.
       let dbFresh = !supabase;
       let usedWarmRamCache = false;
       if (supabase) {
+        const hasAnyCachedTemplateBeforeSync =
+          state.face_templates.length > 0 ||
+          state.patients.some((p) => Boolean(parseEmbeddingVector(p.masterEmbedding)));
         const needsLiveRefresh =
           forceSupabaseProbe ||
           lastLiveBioHydratedAt === 0 ||
+          !hasAnyCachedTemplateBeforeSync ||
           Date.now() - lastLiveBioHydratedAt >= LIVE_BIO_REFRESH_MS;
         if (needsLiveRefresh) {
-          const liveSync = await hydrateBiometricsLiveFromSupabase(supabase, state, 4500);
+          const syncTimeoutMs = hasAnyCachedTemplateBeforeSync ? 4500 : 8000;
+          let liveSync = await hydrateBiometricsLiveFromSupabase(supabase, state, syncTimeoutMs, {
+            tripCircuitOnTimeout: false,
+            allowCircuitProbe: forceSupabaseProbe || !hasAnyCachedTemplateBeforeSync,
+          });
+          if (
+            !liveSync.ok &&
+            liveSync.errorCode !== 'PERMISSION_DENIED' &&
+            !hasAnyCachedTemplateBeforeSync
+          ) {
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            liveSync = await hydrateBiometricsLiveFromSupabase(supabase, state, 4500, {
+              tripCircuitOnTimeout: false,
+              allowCircuitProbe: true,
+            });
+          }
           if (liveSync.ok) {
             lastLiveBioHydratedAt = Date.now();
             dbFresh = true;
@@ -3975,7 +4027,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           ) {
             break;
           }
-          const retrySync = await hydrateBiometricsLiveFromSupabase(supabase, state, 4500);
+          const retrySync = await hydrateBiometricsLiveFromSupabase(supabase, state, 4500, {
+            tripCircuitOnTimeout: false,
+          });
           if (!retrySync.ok) {
             break;
           }

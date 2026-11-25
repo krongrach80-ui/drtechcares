@@ -1136,5 +1136,157 @@ describe('Post-Deploy Biometric Persistence & Cold-Start Verification', () => {
     expect(kioskSrc).not.toContain('subscribeBiometricIndex(');
     expect(kioskSrc).toContain('BIOMETRIC_INDEX_CHANGED_EVENT');
   });
+
+  it('recovers cold-start /api/biometric/verify from a transient Supabase 503 blip without 20s system_error lockout', async () => {
+    const faceVec = makeRelu6Face1024(77);
+    const faceVecFrame2 = makeRelu6Face1024(77, 0.008);
+    const geom = makeGeometricRatios(77);
+    const dbCfg: SimulatedDbConfig = {
+      schema: {
+        patients: new Set([
+          'id',
+          'hn',
+          'full_name',
+          'age',
+          'phone',
+          'diagnosis',
+          'registration_status',
+          'assigned_pt_id',
+          'next_appointment_date',
+          'face_biometric_status',
+          'face_frames_count',
+          'face_image_url',
+          'biometric_updated_at',
+          'history',
+          'created_at',
+          'updated_at',
+        ]),
+        patient_biometrics: new Set([
+          'patient_id',
+          'hn',
+          'master_embedding',
+          'angle_embeddings',
+          'exemplar_embeddings',
+          'geometric_ratios',
+          'biometric_engine',
+          'model_version',
+          'frames_captured',
+          'quality_score',
+          'avatar_url',
+          'updated_at',
+        ]),
+        face_templates: new Set(['patient_id', 'pose', 'embedding', 'quality_score']),
+      },
+      tables: {
+        patients: [
+          {
+            id: '44444444-5555-4666-8777-888888888888',
+            hn: 'HN-RECOVER-01',
+            full_name: 'คุณสมชาย ทดสอบกู้คืน',
+            age: 66,
+            phone: '0819991111',
+            diagnosis: 'Post-Stroke Recovery',
+            registration_status: 'active',
+            assigned_pt_id: '00000000-0000-4000-8000-000000000002',
+            next_appointment_date: '2026-12-01',
+            face_biometric_status: 'VERIFIED',
+            face_frames_count: 120,
+            face_image_url: null,
+            biometric_updated_at: new Date().toISOString(),
+            history: {
+              faceBiometricStatus: 'VERIFIED',
+              faceFramesCount: 120,
+              biometricEngine: 'human-faceres-1024d',
+              geometricRatios: geom,
+            },
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+        ],
+        patient_biometrics: [
+          {
+            patient_id: '44444444-5555-4666-8777-888888888888',
+            hn: 'HN-RECOVER-01',
+            master_embedding: faceVec,
+            angle_embeddings: {
+              center: faceVec,
+              left: faceVec,
+              right: faceVec,
+              up: faceVec,
+              down: faceVec,
+            },
+            exemplar_embeddings: [faceVec],
+            geometric_ratios: geom,
+            biometric_engine: 'human-faceres-1024d',
+            model_version: 'human-faceres-1024d',
+            frames_captured: 120,
+            quality_score: 0.98,
+            avatar_url: null,
+            updated_at: new Date().toISOString(),
+          },
+        ],
+        face_templates: [],
+      },
+    };
+
+    const baseFetch = createSimulatedPostgrestFetch(dbCfg);
+    let patientsReadCount = 0;
+    const flakyColdStartFetch: typeof fetch = async (input, init) => {
+      const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (urlStr.includes('/rest/v1/patients')) {
+        patientsReadCount += 1;
+        // Simulate first cold-start Supabase 503 wake error; subsequent retry succeeds cleanly
+        if (patientsReadCount === 1) {
+          return new Response(JSON.stringify({ message: 'cold wake 503' }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+      }
+      return baseFetch(input, init);
+    };
+
+    const coldRouter = createCloudRouter({
+      supabaseUrl: 'https://test-cold-recovery.supabase.co',
+      supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiJ9.signature1234567890',
+      customSupabaseFetch: flakyColdStartFetch,
+    });
+
+    const now = Date.now();
+    const verifyRes = await coldRouter(
+      new Request('https://kiosk.local/api/biometric/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-device-id': 'kiosk-recovery-test' },
+        body: JSON.stringify({
+          probeVector: faceVec,
+          frameVectors: [faceVec, faceVecFrame2],
+          frameTimestamps: [now, now + 220],
+          engine: 'human-faceres-1024d',
+          geometricRatios: geom,
+          livenessEvidence: {
+            biologicalVerified: true,
+            blinkCount: 1,
+            spoofRisk: 0.05,
+            nonRigidScore: 0.25,
+            engine: 'human-faceres-1024d',
+          },
+        }),
+      }),
+    );
+
+    expect(verifyRes.status).toBe(200);
+    const json = (await verifyRes.json()) as { matched: boolean; patient?: { hn: string } };
+    expect(json.matched).toBe(true);
+    expect(json.patient?.hn).toBe('HN-RECOVER-01');
+    expect(patientsReadCount).toBeGreaterThanOrEqual(2);
+
+    // Confirm Kiosk client also guards transient errors with auto-retry and mirror-probe isolation
+    const kioskSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/KioskBiometricLoginView.tsx'),
+      'utf8',
+    );
+    expect(kioskSrc).toContain('MAX_TRANSIENT_VERIFY_RETRIES');
+    expect(kioskSrc).toContain('Optional mirror probe failed transiently');
+  });
 });
 

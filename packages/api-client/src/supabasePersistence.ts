@@ -347,7 +347,7 @@ export async function probeSupabaseHealth(
   }
   clearSupabaseCircuit(supabase);
   const startedAt = Date.now();
-  const boundedMs = Math.max(100, Math.min(timeoutMs, 1500));
+  const boundedMs = Math.max(100, Math.min(timeoutMs, 4000));
   let timerId: ReturnType<typeof setTimeout> | undefined;
   try {
     const outcome = await Promise.race([
@@ -1300,6 +1300,13 @@ function schedulePatientBiometricsBackfillInBackground(
   })();
 }
 
+export interface LiveBiometricHydrationOptions {
+  /** Whether a timeout/transient error should open the shared Supabase circuit breaker (default true; set false for background warmups). */
+  tripCircuitOnTimeout?: boolean;
+  /** When true, clears an open circuit breaker once to allow a half-open recovery probe (e.g. cold foreground verify). */
+  allowCircuitProbe?: boolean;
+}
+
 /**
  * Lightweight 3-table live refresh (`patients`, `patient_biometrics`, `face_templates`)
  * so server-side `/api/biometric/verify` ALWAYS compares against live Supabase state
@@ -1310,49 +1317,74 @@ export async function hydrateBiometricsLiveFromSupabase(
   supabase: SupabaseClient,
   state: CloudRouterState,
   timeoutMs = 4500,
+  options?: LiveBiometricHydrationOptions,
 ): Promise<LiveBiometricHydrationResult> {
+  const tripCircuitOnTimeout = options?.tripCircuitOnTimeout ?? true;
   if (isSupabaseCircuitOpen(supabase)) {
-    return { ok: false, errorCode: 'SERVER_ERROR', filteredOutCount: state.filtered_out_template_patients_count ?? 0 };
-  }
-  let timerId: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const fetchAll = Promise.allSettled([
-      selectExplicitWithFallback(
-        'patients',
-        (cols) => withCreatedAtDescOrder(supabase.from('patients').select(cols)) as PromiseLike<unknown>,
-        PATIENTS_BIOMETRIC_LIVE_COLS,
-        PATIENTS_MINIMAL_SAFE_COLS,
-        250,
-      ),
-      selectExplicitWithFallback(
-        'patient_biometrics',
-        (cols) => supabase.from('patient_biometrics').select(cols),
-        PATIENT_BIOMETRICS_BASE_COLS,
-        PATIENT_BIOMETRICS_MINIMAL_SAFE_COLS,
-        250,
-      ),
-      selectExplicitWithFallback(
-        'face_templates',
-        (cols) => supabase.from('face_templates').select(cols),
-        'patient_id,pose,embedding,quality_score',
-        'patient_id,pose,embedding',
-        250,
-      ),
-    ]);
-
-    const outcome = await Promise.race([
-      fetchAll.then((results) => ({ timedOut: false as const, results })),
-      new Promise<{ timedOut: true }>((resolve) => {
-        timerId = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
-      }),
-    ]);
-
-    if (outcome.timedOut) {
-      markSupabaseDown('hydrate_biometrics_live_timeout', supabase);
-      return { ok: false, errorCode: 'TIMEOUT', filteredOutCount: state.filtered_out_template_patients_count ?? 0 };
+    if (options?.allowCircuitProbe) {
+      clearSupabaseCircuit(supabase);
+    } else {
+      return { ok: false, errorCode: 'SERVER_ERROR', filteredOutCount: state.filtered_out_template_patients_count ?? 0 };
     }
-
-    const [patientsRes, biometrics120Res, templatesRes] = outcome.results as [
+  }
+  const raceBoundedQuery = <T>(
+    run: () => PromiseLike<T>,
+    budgetMs: number,
+  ): Promise<PromiseSettledResult<T>> => {
+    let qTimer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+      Promise.resolve(run()).then(
+        (value): PromiseSettledResult<T> => ({ status: 'fulfilled', value }),
+        (reason): PromiseSettledResult<T> => ({ status: 'rejected', reason }),
+      ),
+      new Promise<PromiseSettledResult<T>>((resolve) => {
+        qTimer = setTimeout(
+          () => resolve({ status: 'rejected', reason: new Error('statement timeout') }),
+          budgetMs,
+        );
+      }),
+    ]).finally(() => {
+      if (qTimer !== undefined) clearTimeout(qTimer);
+    });
+  };
+  try {
+    // Bound each table independently so a slow optional `face_templates` table never discards
+    // completed `patients` + `patient_biometrics` rows on cold Worker isolates.
+    const [patientsRes, biometrics120Res, templatesRes] = (await Promise.all([
+      raceBoundedQuery(
+        () =>
+          selectExplicitWithFallback(
+            'patients',
+            (cols) => withCreatedAtDescOrder(supabase.from('patients').select(cols)) as PromiseLike<unknown>,
+            PATIENTS_BIOMETRIC_LIVE_COLS,
+            PATIENTS_MINIMAL_SAFE_COLS,
+            250,
+          ),
+        timeoutMs,
+      ),
+      raceBoundedQuery(
+        () =>
+          selectExplicitWithFallback(
+            'patient_biometrics',
+            (cols) => supabase.from('patient_biometrics').select(cols),
+            PATIENT_BIOMETRICS_BASE_COLS,
+            PATIENT_BIOMETRICS_MINIMAL_SAFE_COLS,
+            250,
+          ),
+        timeoutMs,
+      ),
+      raceBoundedQuery(
+        () =>
+          selectExplicitWithFallback(
+            'face_templates',
+            (cols) => supabase.from('face_templates').select(cols),
+            'patient_id,pose,embedding,quality_score',
+            'patient_id,pose,embedding',
+            250,
+          ),
+        Math.min(timeoutMs, 3500),
+      ),
+    ])) as [
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
       PromiseSettledResult<{ data: Record<string, unknown>[] | null; error: unknown }>,
@@ -1363,11 +1395,13 @@ export async function hydrateBiometricsLiveFromSupabase(
         return { ok: false, errorCode: 'PERMISSION_DENIED', filteredOutCount: 0 };
       }
       if (isSupabaseTimeoutError(patientsRes.reason)) {
-        markSupabaseDown('hydrate_biometrics_live_timeout', supabase);
-        return { ok: false, errorCode: 'TIMEOUT', filteredOutCount: 0 };
+        if (tripCircuitOnTimeout) {
+          markSupabaseDown('hydrate_biometrics_live_timeout', supabase, 6000);
+        }
+        return { ok: false, errorCode: 'TIMEOUT', filteredOutCount: state.filtered_out_template_patients_count ?? 0 };
       }
-      if (isSupabaseTransientFailure(patientsRes.reason)) {
-        markSupabaseDown('hydrate_biometrics_live_rejected', supabase);
+      if (tripCircuitOnTimeout && isSupabaseTransientFailure(patientsRes.reason)) {
+        markSupabaseDown('hydrate_biometrics_live_rejected', supabase, 6000);
       }
       return { ok: false, errorCode: 'SERVER_ERROR', filteredOutCount: 0 };
     }
@@ -1376,11 +1410,13 @@ export async function hydrateBiometricsLiveFromSupabase(
         return { ok: false, errorCode: 'PERMISSION_DENIED', filteredOutCount: 0 };
       }
       if (isSupabaseTimeoutError(patientsRes.value.error)) {
-        markSupabaseDown('hydrate_biometrics_live_timeout', supabase);
-        return { ok: false, errorCode: 'TIMEOUT', filteredOutCount: 0 };
+        if (tripCircuitOnTimeout) {
+          markSupabaseDown('hydrate_biometrics_live_timeout', supabase, 6000);
+        }
+        return { ok: false, errorCode: 'TIMEOUT', filteredOutCount: state.filtered_out_template_patients_count ?? 0 };
       }
-      if (isSupabaseTransientFailure(patientsRes.value.error)) {
-        markSupabaseDown('hydrate_biometrics_live_error', supabase);
+      if (tripCircuitOnTimeout && isSupabaseTransientFailure(patientsRes.value.error)) {
+        markSupabaseDown('hydrate_biometrics_live_error', supabase, 6000);
       }
       return { ok: false, errorCode: 'SERVER_ERROR', filteredOutCount: 0 };
     }
@@ -1867,12 +1903,14 @@ export async function hydrateBiometricsLiveFromSupabase(
     if (isSupabasePermissionDeniedError(err)) {
       return { ok: false, errorCode: 'PERMISSION_DENIED', filteredOutCount: 0 };
     }
-    if (isSupabaseTransientFailure(err)) {
-      markSupabaseDown('hydrate_biometrics_live_exception', supabase);
+    if (tripCircuitOnTimeout && isSupabaseTransientFailure(err)) {
+      markSupabaseDown('hydrate_biometrics_live_exception', supabase, 6000);
     }
-    return { ok: false, errorCode: 'SERVER_ERROR', filteredOutCount: 0 };
-  } finally {
-    if (timerId !== undefined) clearTimeout(timerId);
+    return {
+      ok: false,
+      errorCode: isSupabaseTimeoutError(err) ? 'TIMEOUT' : 'SERVER_ERROR',
+      filteredOutCount: 0,
+    };
   }
 }
 

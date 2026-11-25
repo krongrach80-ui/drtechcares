@@ -1366,7 +1366,7 @@ export class DrTechCaresApiClient {
       };
     }
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timeoutId = controller ? setTimeout(() => controller.abort(), 8000) : undefined;
+    const timeoutId = controller ? setTimeout(() => controller.abort(), 13000) : undefined;
     try {
       const qs = livenessEvidence?.forceRefresh ? '?refresh=1' : '';
       const res = await fetch(`${this.baseUrl}/api/biometric/verify${qs}`, {
