@@ -375,7 +375,7 @@ const MorTechSeaOtterSvg = memo(function MorTechSeaOtterSvg({
 
       {/* Wagging Sea Otter Tail */}
       <motion.g
-        style={{ originX: '44px', originY: '98px' }}
+        style={{ transformOrigin: '44px 96px', transformBox: 'view-box' }}
         animate={
           isWalking
             ? { rotate: [-10, 12, -10] }
@@ -407,7 +407,7 @@ const MorTechSeaOtterSvg = memo(function MorTechSeaOtterSvg({
 
       {/* Stepping Hind Paws */}
       <motion.g
-        style={{ originX: '54px', originY: '108px' }}
+        style={{ transformOrigin: '54px 108px', transformBox: 'view-box' }}
         animate={
           isWalking
             ? { rotate: [-18, 16, -18], y: [0, -4, 0] }
@@ -434,7 +434,7 @@ const MorTechSeaOtterSvg = memo(function MorTechSeaOtterSvg({
       </motion.g>
 
       <motion.g
-        style={{ originX: '78px', originY: '108px' }}
+        style={{ transformOrigin: '78px 108px', transformBox: 'view-box' }}
         animate={
           isWalking
             ? { rotate: [16, -18, 16], y: [-4, 0, -4] }
@@ -462,7 +462,7 @@ const MorTechSeaOtterSvg = memo(function MorTechSeaOtterSvg({
 
       {/* Bobbing / Swaying Torso + Head Group */}
       <motion.g
-        style={{ originX: '66px', originY: '98px' }}
+        style={{ transformOrigin: '66px 98px', transformBox: 'view-box' }}
         animate={
           isWalking
             ? { y: [0, -4, 0, -3.5, 0], rotate: [-3, 3, -3] }
@@ -480,7 +480,7 @@ const MorTechSeaOtterSvg = memo(function MorTechSeaOtterSvg({
       >
         {/* Left Paw Holding Mint/Sky Resistance Exercise Band */}
         <motion.g
-          style={{ originX: '44px', originY: '80px' }}
+          style={{ transformOrigin: '44px 80px', transformBox: 'view-box' }}
           animate={
             isWalking
               ? { rotate: [-8, 10, -8] }
@@ -571,13 +571,13 @@ const MorTechSeaOtterSvg = memo(function MorTechSeaOtterSvg({
 
         {/* Right Waving Arm */}
         <motion.g
-          style={{ originX: '88px', originY: '78px' }}
+          style={{ transformOrigin: '88px 78px', transformBox: 'view-box' }}
           animate={
             isWaving
-              ? { rotate: [-42, -16, -46, -18, -42] }
+              ? { rotate: [-18, 6, -20, 4, -18] }
               : isWalking
-                ? { rotate: [-14, 14, -14] }
-                : { rotate: -26 }
+                ? { rotate: [-8, 12, -8] }
+                : { rotate: -12 }
           }
           transition={
             isWaving
@@ -636,7 +636,7 @@ const MorTechSeaOtterSvg = memo(function MorTechSeaOtterSvg({
 
         {/* Expressive Blinking Eyes */}
         <motion.g
-          style={{ originX: '66px', originY: '48px' }}
+          style={{ transformOrigin: '66px 48.5px', transformBox: 'view-box' }}
           animate={reducedMotion ? { scaleY: 1 } : { scaleY: [1, 1, 0.12, 1, 1] }}
           transition={
             reducedMotion

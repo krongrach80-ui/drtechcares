@@ -12,6 +12,7 @@ import {
   getMorTechMascotMessages,
   type MorTechMascotMode,
 } from '../components/MorTechMascot';
+import { DrTechCareMascot } from '../components/DrTechCareMascot';
 
 const EMOJI_RE = /[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/u;
 
@@ -118,6 +119,19 @@ describe('MorTechMascot (Nong MorTech Sea Otter Companion)', () => {
     expect(faceLoginSrc).toContain('mode="face-login"');
     expect(rehabSrc).toContain('mode="rehab"');
     expect(portalSrc).toContain('<MorTechMascot mode="patient-portal"');
+  });
+
+  it('unifies DrTechCareMascot into the same Nong MorTech sea otter character across all poses with zero emojis', () => {
+    for (const pose of ['idle', 'explaining', 'celebrating', 'encouraging', 'speaking', 'greeting'] as const) {
+      const html = renderToStaticMarkup(
+        React.createElement(DrTechCareMascot, { pose, isSpeaking: pose === 'speaking', size: 'md' }),
+      );
+      expect(html).toContain('data-testid="drtechcare-mascot"');
+      expect(html).toContain('data-character="mortech-sea-otter"');
+      expect(html).toContain(`data-pose="${pose}"`);
+      expect(html).toContain('น้องหมอเทค');
+      expect(EMOJI_RE.test(html)).toBe(false);
+    }
   });
 });
 
