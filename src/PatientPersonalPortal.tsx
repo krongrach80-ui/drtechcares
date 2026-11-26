@@ -11,6 +11,7 @@ import {
   type UserAccount,
 } from '@drtechcares/api-client';
 import { Activity, Calendar, KeyRound, LogOut, Sparkles, User } from 'lucide-react';
+import { MorTechMascot } from './components/MorTechMascot';
 
 interface PatientPersonalPortalProps {
   apiClient: DrTechCaresApiClient;
@@ -318,6 +319,8 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
           </div>
         )}
       </div>
+
+      <MorTechMascot mode="patient-portal" hidden={cameraActive} />
     </div>
   );
 }

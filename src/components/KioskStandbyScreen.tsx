@@ -8,6 +8,7 @@ import {
   getNextMonotonicPoseDetectTs,
 } from '../lib/biometricVisionCache';
 import { playGameSfx } from '../lib/gameUiSfx';
+import { MorTechMascot } from './MorTechMascot';
 import {
   INITIAL_STANDBY_HAND_HOLD_STATE,
   STANDBY_HAND_WAKE_HOLD_MS,
@@ -1842,15 +1843,18 @@ export function KioskStandbyScreen({ onStart, initialDate }: KioskStandbyScreenP
       )}
 
       {phase === 'standby' ? (
-        <KioskStandbyView
-          timeText={timeText}
-          lang={lang}
-          onWake={startBrandIntroSequence}
-          wakeRipple={wakeRipple}
-          isWaking={false}
-          gestureUi={gestureUi}
-          motionRefs={motionRefs}
-        />
+        <>
+          <KioskStandbyView
+            timeText={timeText}
+            lang={lang}
+            onWake={startBrandIntroSequence}
+            wakeRipple={wakeRipple}
+            isWaking={false}
+            gestureUi={gestureUi}
+            motionRefs={motionRefs}
+          />
+          <MorTechMascot mode="standby" lang={lang} />
+        </>
       ) : (
         <KioskBrandIntroOverlay
           lang={lang}

@@ -28,6 +28,7 @@ import {
   computeBoundingBoxFromLandmarks,
 } from '../lib/faceMatcher';
 import { GameCelebrationBurst } from './GameJuiceEffects';
+import { MorTechMascot } from './MorTechMascot';
 import { playGameSfx } from '../lib/gameUiSfx';
 import { normalizePatientRecord, normalizePatientRecordList } from '../lib/patientHydration';
 import { upsertPatientStaffUserInSupabase } from '../utils/unifyPatientDirectory';
@@ -6664,6 +6665,18 @@ export function KioskBiometricLoginView({
           </div>
         </div>
       )}
+      <MorTechMascot
+        mode="face-login"
+        lang={lang}
+        hidden={
+          staffModalOpen ||
+          showPinModal ||
+          showAboutModal ||
+          Boolean(verifiedModalPayload) ||
+          scanStage === 'system_error' ||
+          scanStage === 'not_found'
+        }
+      />
     </div>
   );
 }

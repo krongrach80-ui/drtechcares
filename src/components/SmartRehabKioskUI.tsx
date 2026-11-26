@@ -51,6 +51,7 @@ import {
   getNextMonotonicRehabFaceDetectTs,
   type VisionDelegate,
 } from '../lib/biometricVisionCache';
+import { MorTechMascot } from './MorTechMascot';
 import {
   FloatingScorePopup,
   GameCelebrationBurst,
@@ -5678,6 +5679,12 @@ export function SmartRehabKioskUI({
         targetSideLabel={targetSideLabel}
         steps={postureSpec.steps}
         onClose={() => setCoachModalOpen(false)}
+      />
+
+      <MorTechMascot
+        mode="rehab"
+        lang={zone5VoiceLang === 'en' ? 'en' : zone5VoiceLang === 'zh' ? 'cn' : 'th'}
+        hidden={coachModalOpen || toolsPopoverOpen}
       />
     </div>
   );
