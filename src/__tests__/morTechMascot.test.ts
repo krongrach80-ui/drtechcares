@@ -109,6 +109,9 @@ describe('MorTechMascot (Nong MorTech Sea Otter Companion)', () => {
     expect(mascotSrc).toContain('scaleX');
     expect(mascotSrc).toContain('fixed bottom-3');
     expect(mascotSrc).toContain('pointer-events-auto');
+    // Must stay animated even on Windows kiosks with OS prefers-reduced-motion enabled
+    expect(mascotSrc).toContain('reducedMotion="never"');
+    expect(mascotSrc).not.toContain('useReducedMotion');
 
     const standbySrc = fs.readFileSync(path.join(root, 'src/components/KioskStandbyScreen.tsx'), 'utf8');
     const faceLoginSrc = fs.readFileSync(path.join(root, 'src/components/KioskBiometricLoginView.tsx'), 'utf8');
@@ -121,7 +124,7 @@ describe('MorTechMascot (Nong MorTech Sea Otter Companion)', () => {
     expect(portalSrc).toContain('<MorTechMascot mode="patient-portal"');
   });
 
-  it('unifies DrTechCareMascot into the same Nong MorTech sea otter character across all poses with zero emojis', () => {
+  it('unifies DrTechCareMascot into the same Nong MorTech sea otter character across all poses and burrow pop-up with zero emojis', () => {
     for (const pose of ['idle', 'explaining', 'celebrating', 'encouraging', 'speaking', 'greeting'] as const) {
       const html = renderToStaticMarkup(
         React.createElement(DrTechCareMascot, { pose, isSpeaking: pose === 'speaking', size: 'md' }),
@@ -132,6 +135,30 @@ describe('MorTechMascot (Nong MorTech Sea Otter Companion)', () => {
       expect(html).toContain('น้องหมอเทค');
       expect(EMOJI_RE.test(html)).toBe(false);
     }
+
+    const burrowHtml = renderToStaticMarkup(
+      React.createElement(DrTechCareMascot, {
+        pose: 'greeting',
+        popFromBurrow: true,
+        isSpeaking: true,
+        size: 'md',
+      }),
+    );
+    expect(burrowHtml).toContain('data-testid="drtechcare-mascot"');
+    expect(burrowHtml).toContain('data-burrow="true"');
+    expect(burrowHtml).toContain('data-testid="mascot-burrow-popup"');
+    expect(burrowHtml).toContain('data-testid="mascot-burrow-hole"');
+    expect(burrowHtml).toContain('data-testid="mascot-burrow-otter-pop"');
+    expect(burrowHtml).toContain('data-testid="mascot-burrow-waving-arm"');
+    expect(burrowHtml).toContain('<clipPath');
+    expect(EMOJI_RE.test(burrowHtml)).toBe(false);
+
+    const loginSrc = fs.readFileSync(
+      path.join(process.cwd(), 'src/components/KioskBiometricLoginView.tsx'),
+      'utf8',
+    );
+    expect(loginSrc).toContain('data-testid="verified-centered-mascot-stage"');
+    expect(loginSrc).toContain('popFromBurrow');
   });
 });
 

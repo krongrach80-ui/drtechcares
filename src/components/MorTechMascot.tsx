@@ -1,5 +1,5 @@
 import React, { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { AnimatePresence, MotionConfig, motion } from 'framer-motion';
 import { Calendar, Hand, HeartPulse, MessageCircle, Sparkles, X } from 'lucide-react';
 
 export type MorTechMascotMode = 'standby' | 'face-login' | 'rehab' | 'patient-portal';
@@ -299,7 +299,6 @@ function MascotBubbleIcon({ kind }: { kind: MorTechMascotIconKind }) {
 
 interface MorTechSeaOtterSvgProps {
   phase: MorTechMascotPhase;
-  reducedMotion: boolean;
 }
 
 /**
@@ -311,11 +310,10 @@ interface MorTechSeaOtterSvgProps {
  */
 const MorTechSeaOtterSvg = memo(function MorTechSeaOtterSvg({
   phase,
-  reducedMotion,
 }: MorTechSeaOtterSvgProps) {
   const uid = useId().replace(/:/g, '');
-  const isWalking = phase === 'walking' && !reducedMotion;
-  const isWaving = phase === 'waving' && !reducedMotion;
+  const isWalking = phase === 'walking';
+  const isWaving = phase === 'waving';
 
   return (
     <svg
@@ -378,14 +376,14 @@ const MorTechSeaOtterSvg = memo(function MorTechSeaOtterSvg({
         style={{ transformOrigin: '44px 96px', transformBox: 'view-box' }}
         animate={
           isWalking
-            ? { rotate: [-10, 12, -10] }
+            ? { rotate: [-16, 18, -16] }
             : isWaving
-              ? { rotate: [-6, 14, -6] }
+              ? { rotate: [-8, 16, -8] }
               : { rotate: 0 }
         }
         transition={
           isWalking || isWaving
-            ? { duration: isWalking ? 0.56 : 0.9, repeat: Infinity, ease: 'easeInOut' }
+            ? { duration: isWalking ? 0.46 : 0.85, repeat: Infinity, ease: 'easeInOut' }
             : { duration: 0.2 }
         }
       >
@@ -410,12 +408,12 @@ const MorTechSeaOtterSvg = memo(function MorTechSeaOtterSvg({
         style={{ transformOrigin: '54px 108px', transformBox: 'view-box' }}
         animate={
           isWalking
-            ? { rotate: [-18, 16, -18], y: [0, -4, 0] }
+            ? { rotate: [-26, 24, -26], y: [0, -6, 0] }
             : { rotate: 0, y: 0 }
         }
         transition={
           isWalking
-            ? { duration: 0.56, repeat: Infinity, ease: 'easeInOut' }
+            ? { duration: 0.46, repeat: Infinity, ease: 'easeInOut' }
             : { duration: 0.25 }
         }
       >
@@ -437,12 +435,12 @@ const MorTechSeaOtterSvg = memo(function MorTechSeaOtterSvg({
         style={{ transformOrigin: '78px 108px', transformBox: 'view-box' }}
         animate={
           isWalking
-            ? { rotate: [16, -18, 16], y: [-4, 0, -4] }
+            ? { rotate: [24, -26, 24], y: [-6, 0, -6] }
             : { rotate: 0, y: 0 }
         }
         transition={
           isWalking
-            ? { duration: 0.56, repeat: Infinity, ease: 'easeInOut' }
+            ? { duration: 0.46, repeat: Infinity, ease: 'easeInOut' }
             : { duration: 0.25 }
         }
       >
@@ -465,16 +463,16 @@ const MorTechSeaOtterSvg = memo(function MorTechSeaOtterSvg({
         style={{ transformOrigin: '66px 98px', transformBox: 'view-box' }}
         animate={
           isWalking
-            ? { y: [0, -4, 0, -3.5, 0], rotate: [-3, 3, -3] }
+            ? { y: [0, -6, 0, -5, 0], rotate: [-5, 5, -5] }
             : isWaving
-              ? { y: [0, -2.5, 0], rotate: [0, 2.5, -1.5, 0] }
+              ? { y: [0, -3, 0], rotate: [0, 3, -2, 0] }
               : { y: 0, rotate: 0 }
         }
         transition={
           isWalking
-            ? { duration: 0.56, repeat: Infinity, ease: 'easeInOut' }
+            ? { duration: 0.46, repeat: Infinity, ease: 'easeInOut' }
             : isWaving
-              ? { duration: 1.4, repeat: Infinity, ease: 'easeInOut' }
+              ? { duration: 1.3, repeat: Infinity, ease: 'easeInOut' }
               : { duration: 0.25 }
         }
       >
@@ -637,17 +635,13 @@ const MorTechSeaOtterSvg = memo(function MorTechSeaOtterSvg({
         {/* Expressive Blinking Eyes */}
         <motion.g
           style={{ transformOrigin: '66px 48.5px', transformBox: 'view-box' }}
-          animate={reducedMotion ? { scaleY: 1 } : { scaleY: [1, 1, 0.12, 1, 1] }}
-          transition={
-            reducedMotion
-              ? { duration: 0 }
-              : {
-                  duration: 4.2,
-                  times: [0, 0.9, 0.94, 0.98, 1],
-                  repeat: Infinity,
-                  ease: 'easeInOut',
-                }
-          }
+          animate={{ scaleY: [1, 1, 0.12, 1, 1] }}
+          transition={{
+            duration: 4.2,
+            times: [0, 0.9, 0.94, 0.98, 1],
+            repeat: Infinity,
+            ease: 'easeInOut',
+          }}
         >
           <circle cx="55.5" cy="48.5" r="4.3" fill="#2A1A10" />
           <circle cx="76.5" cy="48.5" r="4.3" fill="#2A1A10" />
@@ -700,7 +694,6 @@ export const MorTechMascot = memo(function MorTechMascot({
   defaultSpeechVisible = true,
   className = '',
 }: MorTechMascotProps) {
-  const prefersReducedMotion = Boolean(useReducedMotion());
   const messages = useMemo(() => getMorTechMascotMessages(mode, lang), [mode, lang]);
 
   const [viewportWidth, setViewportWidth] = useState<number>(() =>
@@ -763,7 +756,7 @@ export const MorTechMascot = memo(function MorTechMascot({
       }
     };
 
-    if (prefersReducedMotion || !bounds.canPatrol) {
+    if (!bounds.canPatrol) {
       clearPatrolTimer();
       currentXRef.current = bounds.minX;
       setTargetX(bounds.minX);
@@ -790,7 +783,7 @@ export const MorTechMascot = memo(function MorTechMascot({
 
         const nextFacing: 1 | -1 = nextX >= currentXRef.current ? 1 : -1;
         const dist = Math.abs(nextX - currentXRef.current);
-        const legSec = Number(Math.max(2.4, Math.min(7.5, dist / 62)).toFixed(2));
+        const legSec = Number(Math.max(2.2, Math.min(6.8, dist / 76)).toFixed(2));
 
         currentXRef.current = nextX;
         setFacing(nextFacing);
@@ -800,7 +793,7 @@ export const MorTechMascot = memo(function MorTechMascot({
 
         patrolTimerRef.current = window.setTimeout(() => {
           if (cancelled) return;
-          scheduleWaveThenWalk(3200);
+          scheduleWaveThenWalk(2200);
         }, Math.round(legSec * 1000) + 120);
       }, pauseMs);
     };
@@ -809,13 +802,14 @@ export const MorTechMascot = memo(function MorTechMascot({
     currentXRef.current = bounds.minX;
     setTargetX(bounds.minX);
     setMoveDurationSec(0);
-    scheduleWaveThenWalk(2600);
+    // Short 1s welcome wave before strolling across the bottom edge so walking starts immediately
+    scheduleWaveThenWalk(1000);
 
     return () => {
       cancelled = true;
       clearPatrolTimer();
     };
-  }, [bounds.canPatrol, bounds.maxX, bounds.midX, bounds.minX, bounds.travelDistance, hidden, prefersReducedMotion]);
+  }, [bounds.canPatrol, bounds.maxX, bounds.midX, bounds.minX, bounds.travelDistance, hidden]);
 
   // Gently rotate helpful tips every 12 seconds when speech bubble is visible
   useEffect(() => {
@@ -855,126 +849,120 @@ export const MorTechMascot = memo(function MorTechMascot({
   const activeMessage = messages[messageIdx % messages.length] ?? messages[0];
   const displayText = customMessage && customMessage.trim().length > 0 ? customMessage.trim() : activeMessage.text;
   const bubbleLayout = computeSpeechBubbleLayout(targetX, viewportWidth, MOR_TECH_MASCOT_WIDTH_PX);
-  const legDuration = prefersReducedMotion ? 0 : moveDurationSec;
+  const legDuration = moveDurationSec;
 
   return (
-    <motion.div
-      data-testid="mortech-mascot-companion"
-      data-mode={mode}
-      data-phase={phase}
-      data-facing={facing === 1 ? 'right' : 'left'}
-      initial={false}
-      animate={{ x: targetX }}
-      transition={{
-        x: {
-          duration: legDuration,
-          ease: 'linear',
-        },
-      }}
-      style={{ width: MOR_TECH_MASCOT_WIDTH_PX, willChange: 'transform' }}
-      onClick={(e) => e.stopPropagation()}
-      className={`fixed bottom-3 left-0 z-40 pointer-events-auto select-none ${className}`}
-    >
-      {/* Context-Aware High-Contrast Speech Bubble (Always Upright, Convex-Clamped Inside Viewport) */}
-      <AnimatePresence initial={false}>
-        {speechVisible && (
-          <motion.div
-            key={`${mode}-${activeMessage.id}`}
-            data-testid="mortech-mascot-speech-bubble"
-            initial={
-              prefersReducedMotion
-                ? { opacity: 1, x: bubbleLayout.relativeLeftPx }
-                : { opacity: 0, y: 8, scale: 0.94, x: bubbleLayout.relativeLeftPx }
-            }
-            animate={{ opacity: 1, y: 0, scale: 1, x: bubbleLayout.relativeLeftPx }}
-            exit={
-              prefersReducedMotion
-                ? { opacity: 0, x: bubbleLayout.relativeLeftPx }
-                : { opacity: 0, y: 6, scale: 0.94, x: bubbleLayout.relativeLeftPx }
-            }
-            transition={{
-              opacity: { duration: 0.2, ease: 'easeOut' },
-              y: { duration: 0.22, ease: 'easeOut' },
-              scale: { duration: 0.22, ease: 'easeOut' },
-              x: { duration: legDuration, ease: 'linear' },
-            }}
-            style={{ width: bubbleLayout.bubbleWidthPx, willChange: 'transform' }}
-            className="absolute bottom-full left-0 mb-2 rounded-2xl border-2 border-emerald-400 bg-white/98 px-4 py-3 text-slate-900 shadow-[0_12px_28px_rgba(15,76,129,0.2)] backdrop-blur-md origin-bottom"
-          >
-            <div className="flex items-start gap-2.5">
-              <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50">
-                <MascotBubbleIcon kind={activeMessage.icon} />
-              </div>
-
-              <div className="min-w-0 flex-1 pr-1">
-                <p className="text-xs font-extrabold tracking-wide text-emerald-700">
-                  น้องหมอเทค
-                </p>
-                <p
-                  data-testid="mortech-mascot-speech-text"
-                  className="mt-0.5 text-lg sm:text-xl font-extrabold leading-snug text-slate-900"
-                >
-                  {displayText}
-                </p>
-              </div>
-
-              <button
-                type="button"
-                data-testid="mortech-mascot-close-bubble"
-                onClick={handleCloseSpeech}
-                aria-label="ซ่อนข้อความน้องหมอเทค"
-                title="ซ่อนข้อความ"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50/70 text-emerald-800 hover:bg-emerald-100 hover:text-emerald-950 transition-colors cursor-pointer"
-              >
-                <X className="h-5 w-5" aria-hidden="true" />
-              </button>
-            </div>
-
-            {/* Speech Bubble Pointer Tail tracking Nong MorTech's head */}
-            <motion.div
-              aria-hidden="true"
-              initial={false}
-              animate={{ x: bubbleLayout.tailLeftPx - 7 }}
-              transition={{ x: { duration: legDuration, ease: 'linear' } }}
-              className="absolute -bottom-2 left-0 h-3.5 w-3.5 rotate-45 border-b-2 border-r-2 border-emerald-400 bg-white"
-            />
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Interactive Sea Otter Button (Flips smoothly via scaleX on facing change) */}
-      <button
-        type="button"
-        data-testid="mortech-mascot-avatar-btn"
-        onClick={handleTapMascot}
-        aria-label={
-          speechVisible
-            ? 'น้องหมอเทค กดเพื่อเปลี่ยนคำแนะนำ'
-            : 'น้องหมอเทค กดเพื่อเปิดกล่องข้อความคำแนะนำ'
-        }
-        title={speechVisible ? 'แตะเพื่อดูคำแนะนำถัดไป' : 'แตะเพื่อเปิดข้อความจากน้องหมอเทค'}
-        className="group relative flex items-center justify-center rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 cursor-pointer"
+    <MotionConfig reducedMotion="never">
+      <motion.div
+        data-testid="mortech-mascot-companion"
+        data-mode={mode}
+        data-phase={phase}
+        data-facing={facing === 1 ? 'right' : 'left'}
+        initial={false}
+        animate={{ x: targetX }}
+        transition={{
+          x: {
+            duration: legDuration,
+            ease: 'linear',
+          },
+        }}
+        style={{ width: MOR_TECH_MASCOT_WIDTH_PX, willChange: 'transform' }}
+        onClick={(e) => e.stopPropagation()}
+        className={`fixed bottom-3 left-0 z-40 pointer-events-auto select-none ${className}`}
       >
-        {/* Subtle restore indicator pill when speech bubble is minimized */}
-        {!speechVisible && (
-          <span
-            data-testid="mortech-mascot-minimized-pill"
-            className="absolute -top-1 -right-1 z-10 flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-emerald-500 text-white shadow-md transition-transform group-hover:scale-110"
-          >
-            <MessageCircle className="h-4 w-4" aria-hidden="true" />
-          </span>
-        )}
+        {/* Context-Aware High-Contrast Speech Bubble (Always Upright, Convex-Clamped Inside Viewport) */}
+        <AnimatePresence initial={false}>
+          {speechVisible && (
+            <motion.div
+              key={`${mode}-${activeMessage.id}`}
+              data-testid="mortech-mascot-speech-bubble"
+              initial={{ opacity: 0, y: 8, scale: 0.94, x: bubbleLayout.relativeLeftPx }}
+              animate={{ opacity: 1, y: 0, scale: 1, x: bubbleLayout.relativeLeftPx }}
+              exit={{ opacity: 0, y: 6, scale: 0.94, x: bubbleLayout.relativeLeftPx }}
+              transition={{
+                opacity: { duration: 0.2, ease: 'easeOut' },
+                y: { duration: 0.22, ease: 'easeOut' },
+                scale: { duration: 0.22, ease: 'easeOut' },
+                x: { duration: legDuration, ease: 'linear' },
+              }}
+              style={{ width: bubbleLayout.bubbleWidthPx, willChange: 'transform' }}
+              className="absolute bottom-full left-0 mb-2 rounded-2xl border-2 border-emerald-400 bg-white/98 px-4 py-3 text-slate-900 shadow-[0_12px_28px_rgba(15,76,129,0.2)] backdrop-blur-md origin-bottom"
+            >
+              <div className="flex items-start gap-2.5">
+                <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50">
+                  <MascotBubbleIcon kind={activeMessage.icon} />
+                </div>
 
-        <motion.div
-          animate={{ scaleX: facing }}
-          transition={{ duration: prefersReducedMotion ? 0 : 0.22, ease: 'easeOut' }}
-          style={{ willChange: 'transform' }}
-          className="transition-transform group-hover:scale-105 group-active:scale-95"
+                <div className="min-w-0 flex-1 pr-1">
+                  <p className="text-xs font-extrabold tracking-wide text-emerald-700">
+                    น้องหมอเทค
+                  </p>
+                  <p
+                    data-testid="mortech-mascot-speech-text"
+                    className="mt-0.5 text-lg sm:text-xl font-extrabold leading-snug text-slate-900"
+                  >
+                    {displayText}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  data-testid="mortech-mascot-close-bubble"
+                  onClick={handleCloseSpeech}
+                  aria-label="ซ่อนข้อความน้องหมอเทค"
+                  title="ซ่อนข้อความ"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50/70 text-emerald-800 hover:bg-emerald-100 hover:text-emerald-950 transition-colors cursor-pointer"
+                >
+                  <X className="h-5 w-5" aria-hidden="true" />
+                </button>
+              </div>
+
+              {/* Speech Bubble Pointer Tail tracking Nong MorTech's head */}
+              <motion.div
+                aria-hidden="true"
+                initial={false}
+                animate={{ x: bubbleLayout.tailLeftPx - 7 }}
+                transition={{ x: { duration: legDuration, ease: 'linear' } }}
+                className="absolute -bottom-2 left-0 h-3.5 w-3.5 rotate-45 border-b-2 border-r-2 border-emerald-400 bg-white"
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Interactive Sea Otter Button (Flips smoothly via scaleX on facing change) */}
+        <button
+          type="button"
+          data-testid="mortech-mascot-avatar-btn"
+          onClick={handleTapMascot}
+          aria-label={
+            speechVisible
+              ? 'น้องหมอเทค กดเพื่อเปลี่ยนคำแนะนำ'
+              : 'น้องหมอเทค กดเพื่อเปิดกล่องข้อความคำแนะนำ'
+          }
+          title={speechVisible ? 'แตะเพื่อดูคำแนะนำถัดไป' : 'แตะเพื่อเปิดข้อความจากน้องหมอเทค'}
+          className="group relative flex items-center justify-center rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 cursor-pointer"
         >
-          <MorTechSeaOtterSvg phase={phase} reducedMotion={prefersReducedMotion} />
-        </motion.div>
-      </button>
-    </motion.div>
+          {/* Subtle restore indicator pill when speech bubble is minimized */}
+          {!speechVisible && (
+            <span
+              data-testid="mortech-mascot-minimized-pill"
+              className="absolute -top-1 -right-1 z-10 flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-emerald-500 text-white shadow-md transition-transform group-hover:scale-110"
+            >
+              <MessageCircle className="h-4 w-4" aria-hidden="true" />
+            </span>
+          )}
+
+          <motion.div
+            animate={{ scaleX: facing }}
+            transition={{ duration: 0.22, ease: 'easeOut' }}
+            style={{ willChange: 'transform' }}
+            className="transition-transform group-hover:scale-105 group-active:scale-95"
+          >
+            <MorTechSeaOtterSvg phase={phase} />
+          </motion.div>
+        </button>
+      </motion.div>
+    </MotionConfig>
   );
 });
 

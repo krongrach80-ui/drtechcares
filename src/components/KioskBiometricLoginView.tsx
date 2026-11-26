@@ -1764,9 +1764,9 @@ export function KioskVerifiedConfirmationCard({
 
   return (
     <div className="fixed inset-0 z-50 bg-[#0F4C81]/40 backdrop-blur-md flex items-center justify-center p-4 animate-backdrop-fade">
-      <div className="w-full max-w-md rounded-3xl bg-white border-2 border-emerald-500/50 shadow-2xl p-6 text-center animate-popup-spring">
+      <div className="w-full max-w-md rounded-3xl bg-white border-2 border-emerald-500/50 shadow-2xl px-5 py-4 sm:px-6 sm:py-5 text-center animate-popup-spring">
         {/* 3-Language Selector Bar & Senior Voice Toggle inside Verified Patient Modal */}
-        <div className="mb-4 flex flex-col items-center gap-2.5">
+        <div className="mb-2.5 flex flex-col items-center gap-2">
           <div
             className="inline-flex items-center gap-1 rounded-2xl border border-sky-200 bg-sky-50/90 p-1"
             data-testid="verified-modal-language-switcher"
@@ -1810,11 +1810,17 @@ export function KioskVerifiedConfirmationCard({
           </button>
         </div>
 
-        <div className="mb-3 flex items-center justify-center gap-3" data-anim-complete={verifiedAnimDone ? 'true' : 'false'}>
+        <div
+          className="mb-2 flex flex-col items-center justify-center gap-1"
+          data-testid="verified-centered-mascot-stage"
+          data-anim-complete={verifiedAnimDone ? 'true' : 'false'}
+        >
           <DrTechCareMascot
+            key={`kiosk-burrow-otter-${verifiedModalPayload.patient.id}-${scanGeneration}`}
             pose="greeting"
+            popFromBurrow
             isSpeaking={!isWelcomeSpeechDone && !voiceMuted}
-            size="sm"
+            size="md"
           />
           <KineticAuthStatusBadge
             key={`kiosk-success-${verifiedModalPayload.patient.id}-${scanGeneration}`}
