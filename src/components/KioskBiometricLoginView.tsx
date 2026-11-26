@@ -641,51 +641,51 @@ export function KioskSystemErrorPopup({
   const isRateLimited = reasonCode === 'RATE_LIMITED';
   return (
     <div
-      className="fixed inset-0 z-50 bg-[#0F4C81]/45 backdrop-blur-md flex items-center justify-center p-4 animate-backdrop-fade"
+      className="fixed inset-0 z-50 bg-[#0F4C81]/45 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 animate-backdrop-fade"
       data-testid="kiosk-system-error-modal"
     >
-      <div className="w-full max-w-xl rounded-3xl bg-white border-2 border-amber-400/70 shadow-2xl p-6 sm:p-8 text-center animate-popup-spring">
-        <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl border-2 border-amber-300 bg-amber-50 text-amber-600 shadow-sm">
-          <AlertTriangle className="h-9 w-9" />
+      <div className="w-[94vw] max-w-3xl rounded-[32px] bg-white border-[3px] border-amber-400/75 shadow-2xl p-7 sm:p-10 md:p-12 text-center animate-popup-spring">
+        <div className="mx-auto mb-5 flex h-20 w-20 sm:h-24 sm:w-24 items-center justify-center rounded-3xl border-2 border-amber-300 bg-amber-50 text-amber-600 shadow-sm">
+          <AlertTriangle className="h-11 w-11 sm:h-12 sm:w-12" />
         </div>
-        <h2 className="text-2xl md:text-3xl font-black text-amber-800 leading-tight">
+        <h2 className="text-3xl sm:text-4xl font-black text-amber-800 leading-tight">
           {isRateLimited ? 'กรุณารอสักครู่ก่อนสแกนใหม่' : 'ระบบตรวจสอบขัดข้องชั่วคราว'}
         </h2>
-        <p className="text-base md:text-lg font-bold text-slate-700 mt-2 leading-snug">
+        <p className="text-xl sm:text-2xl font-bold text-slate-700 mt-3 leading-snug">
           {isRateLimited
             ? 'มีการลองสแกนไม่ผ่านหลายครั้งเกินกำหนด กรุณารอสักครู่แล้วลองใหม่ หรือเรียกเจ้าหน้าที่ช่วยเหลือ'
             : 'ระบบตรวจสอบขัดข้องชั่วคราว กรุณาลองใหม่หรือเรียกเจ้าหน้าที่'}
         </p>
 
-        <div className="flex flex-col sm:flex-row gap-3 mt-6">
+        <div className="flex flex-col sm:flex-row gap-4 mt-8">
           <button
             type="button"
             data-testid="system-error-rescan-btn"
             onClick={onRescan}
-            className="btn-tactile btn-primary-sheen bg-[#0284C7] hover:bg-[#0369A1] text-white font-black text-lg px-6 py-4 rounded-2xl shadow-lg flex-1 inline-flex items-center justify-center gap-2 cursor-pointer"
+            className="btn-tactile btn-primary-sheen bg-[#0284C7] hover:bg-[#0369A1] text-white font-black text-xl sm:text-2xl px-8 py-5 sm:py-6 rounded-2xl shadow-lg flex-1 inline-flex items-center justify-center gap-3 cursor-pointer"
           >
-            <RefreshCw className="w-5 h-5 shrink-0" />
+            <RefreshCw className="w-6 h-6 sm:w-7 sm:h-7 shrink-0" />
             <span>ลองสแกนใหม่อีกครั้ง</span>
           </button>
           <button
             type="button"
             data-testid="system-error-pin-btn"
             onClick={onUsePin}
-            className="btn-tactile bg-slate-100 hover:bg-slate-200 border-2 border-slate-300 text-slate-800 font-extrabold text-base px-5 py-4 rounded-2xl inline-flex items-center justify-center gap-2 cursor-pointer"
+            className="btn-tactile bg-slate-100 hover:bg-slate-200 border-2 border-slate-300 text-slate-800 font-extrabold text-xl sm:text-2xl px-7 py-5 sm:py-6 rounded-2xl inline-flex items-center justify-center gap-2.5 cursor-pointer"
           >
-            <KeyRound className="w-5 h-5 text-amber-600 shrink-0" />
+            <KeyRound className="w-6 h-6 text-amber-600 shrink-0" />
             <span>ใช้รหัส PIN 4 หลัก</span>
           </button>
         </div>
 
-        <div className="mt-3 flex justify-center">
+        <div className="mt-5 flex justify-center">
           <button
             type="button"
             data-testid="system-error-call-staff-btn"
             onClick={onCallStaff}
-            className="btn-tactile inline-flex items-center justify-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 hover:bg-amber-100 px-4 py-2.5 text-sm font-bold text-amber-900 cursor-pointer"
+            className="btn-tactile inline-flex items-center justify-center gap-2 rounded-2xl border-2 border-amber-200 bg-amber-50 hover:bg-amber-100 px-6 py-3.5 text-lg sm:text-xl font-extrabold text-amber-900 cursor-pointer"
           >
-            <Bell className="w-4 h-4 text-amber-600 shrink-0" />
+            <Bell className="w-5 h-5 text-amber-600 shrink-0" />
             <span>เรียกเจ้าหน้าที่ช่วยเหลือ</span>
           </button>
         </div>
@@ -711,60 +711,59 @@ export function UnregisteredFaceSignupPopup({
 }: UnregisteredFaceSignupPopupProps) {
   return (
     <div
-      className="fixed inset-0 z-50 bg-[#0F4C81]/45 backdrop-blur-md flex items-center justify-center p-4 animate-backdrop-fade"
+      className="fixed inset-0 z-50 bg-[#0F4C81]/45 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 animate-backdrop-fade"
       data-testid="unregistered-face-signup-modal"
     >
-      <div className="w-full max-w-xl rounded-3xl bg-white border-2 border-red-500/45 shadow-2xl p-6 sm:p-8 text-center animate-popup-spring">
+      <div className="w-[94vw] max-w-3xl rounded-[32px] bg-white border-[3px] border-red-500/45 shadow-2xl p-7 sm:p-10 md:p-12 text-center animate-popup-spring">
         <KineticAuthStatusBadge
           key={`not-found-${scanKey}`}
           status="not_found"
-          compact
           testId="kiosk-not-found-feedback-panel"
           heading="ไม่พบบัญชี"
           subtitle="ผลการสแกนใบหน้าไม่ตรงกับบัญชีใดในฐานข้อมูล"
         />
 
-        <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50/75 p-4 flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
-          <DrTechCareMascot pose="explaining" isSpeaking={isSpeaking} size="sm" />
+        <div className="mt-6 rounded-3xl border-2 border-rose-200 bg-rose-50/80 p-6 sm:p-7 flex flex-col sm:flex-row items-center gap-5 sm:gap-6 text-center sm:text-left">
+          <DrTechCareMascot pose="explaining" isSpeaking={isSpeaking} size="lg" />
           <div className="min-w-0 flex-1">
-            <h2 className="text-2xl md:text-3xl font-black text-red-700 leading-tight">
+            <h2 className="text-3xl sm:text-4xl font-black text-red-700 leading-tight">
               ไม่พบบัญชีผู้ป่วยในระบบ
             </h2>
-            <p className="text-base md:text-lg font-bold text-slate-700 mt-1 leading-snug">
+            <p className="text-xl sm:text-2xl font-bold text-slate-700 mt-2 leading-snug">
               ใบหน้านี้ยังไม่ได้ลงทะเบียนใช้งานตู้กายภาพบำบัด Dr.Tech.Care กรุณาสมัครบัญชีใหม่ก่อนเริ่มฝึก
             </p>
           </div>
         </div>
 
-        <div className="flex flex-col sm:flex-row gap-3 mt-5">
+        <div className="flex flex-col sm:flex-row gap-4 mt-7">
           <button
             type="button"
             data-testid="unregistered-signup-btn"
             onClick={onRegisterNewPatient}
-            className="btn-tactile btn-primary-sheen bg-emerald-600 hover:bg-emerald-700 text-white font-black text-lg md:text-xl px-6 py-4 rounded-2xl shadow-lg flex-1 inline-flex items-center justify-center gap-2.5 cursor-pointer"
+            className="btn-tactile btn-primary-sheen bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xl sm:text-2xl px-8 py-5 sm:py-6 rounded-2xl shadow-lg flex-1 inline-flex items-center justify-center gap-3 cursor-pointer"
           >
-            <UserPlus className="w-6 h-6 shrink-0" />
+            <UserPlus className="w-7 h-7 shrink-0" />
             <span>สมัครบัญชี / ลงทะเบียนคนไข้ใหม่</span>
           </button>
           <button
             type="button"
             data-testid="unregistered-rescan-btn"
             onClick={onRescan}
-            className="btn-tactile bg-slate-100 hover:bg-slate-200 border-2 border-slate-300 text-slate-800 font-extrabold text-base md:text-lg px-5 py-4 rounded-2xl inline-flex items-center justify-center gap-2 cursor-pointer"
+            className="btn-tactile bg-slate-100 hover:bg-slate-200 border-2 border-slate-300 text-slate-800 font-extrabold text-xl sm:text-2xl px-7 py-5 sm:py-6 rounded-2xl inline-flex items-center justify-center gap-2.5 cursor-pointer"
           >
-            <RefreshCw className="w-5 h-5 shrink-0" />
+            <RefreshCw className="w-6 h-6 shrink-0" />
             <span>สแกนใหม่อีกครั้ง</span>
           </button>
         </div>
 
-        <div className="mt-3 flex justify-center">
+        <div className="mt-5 flex justify-center">
           <button
             type="button"
             data-testid="unregistered-call-staff-btn"
             onClick={onCallStaff}
-            className="btn-tactile inline-flex items-center justify-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 hover:bg-amber-100 px-4 py-2.5 text-sm font-bold text-amber-900 cursor-pointer"
+            className="btn-tactile inline-flex items-center justify-center gap-2 rounded-2xl border-2 border-amber-200 bg-amber-50 hover:bg-amber-100 px-6 py-3.5 text-lg sm:text-xl font-extrabold text-amber-900 cursor-pointer"
           >
-            <Bell className="w-4 h-4 text-amber-600 shrink-0" />
+            <Bell className="w-5 h-5 text-amber-600 shrink-0" />
             <span>เรียกเจ้าหน้าที่ช่วยเหลือ</span>
           </button>
         </div>
