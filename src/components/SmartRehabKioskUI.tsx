@@ -2516,12 +2516,14 @@ export function SmartRehabKioskUI({
         if (unauthorizedUtteranceRef.current === utterance) {
           unauthorizedUtteranceRef.current = null;
         }
+        lastUnauthorizedVoiceAtRef.current = Date.now();
         setIsSpeakingUnauthorizedAlert(false);
       };
       utterance.onerror = () => {
         if (unauthorizedUtteranceRef.current === utterance) {
           unauthorizedUtteranceRef.current = null;
         }
+        lastUnauthorizedVoiceAtRef.current = Date.now();
         setIsSpeakingUnauthorizedAlert(false);
       };
       synth.speak(utterance);

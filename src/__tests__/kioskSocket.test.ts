@@ -64,6 +64,7 @@ import {
 import {
   KIOSK_VOICE_MUTED_STORAGE_KEY,
   VOICE_COACH_LANGUAGES,
+  VOICE_COACH_SAME_PHRASE_COOLDOWN_MS,
   buildTtsProxyUrl,
   decideVoiceCoachSpeechTurn,
   getSeniorVoiceToggleLabel,
@@ -1021,6 +1022,82 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
       elapsedSinceLastSpokenMs: 400,
     });
     expect(manualReplayDecision.action).toBe('SPEAK_IMMEDIATELY');
+  });
+
+  it('enforces a strict 5-second quiet gap before repeating the exact same rehab phrase a 2nd time', () => {
+    expect(VOICE_COACH_SAME_PHRASE_COOLDOWN_MS).toBe(5000);
+
+    // 1. Direct repeat (A -> A) at 4999ms after finishing is skipped with remaining retryAfterMs
+    const directTooSoon = decideVoiceCoachSpeechTurn({
+      isCurrentlySpeaking: false,
+      incomingText: 'ค่อยๆ เคลื่อนไหวไปยังเป้าหมาย 125 องศาครับ',
+      incomingLang: 'th',
+      incomingState: 'ACTIVE_REP',
+      lastSpokenKey: 'th:ค่อยๆ เคลื่อนไหวไปยังเป้าหมาย 125 องศาครับ',
+      lastSpokenState: 'ACTIVE_REP',
+      lastSpokenLang: 'th',
+      elapsedSinceLastSpokenMs: 4999,
+      elapsedSinceSamePhraseEndedMs: 4999,
+    });
+    expect(directTooSoon.action).toBe('SKIP');
+    expect(directTooSoon.retryAfterMs).toBe(1);
+
+    // 2. Interleaved repeat (A -> B -> A) within 5 seconds of A finishing is STILL skipped
+    const interleavedTooSoon = decideVoiceCoachSpeechTurn({
+      isCurrentlySpeaking: false,
+      incomingText: 'กรุณาถอยห่างให้เห็นช่วงไหล่และลำตัว',
+      incomingLang: 'th',
+      incomingState: 'ACTIVE_REP',
+      lastSpokenKey: 'th:ค่อยๆ เคลื่อนไหวไปยังเป้าหมาย 125 องศาครับ',
+      lastSpokenState: 'ACTIVE_REP',
+      lastSpokenLang: 'th',
+      elapsedSinceLastSpokenMs: 1200,
+      elapsedSinceSamePhraseEndedMs: 3200,
+    });
+    expect(interleavedTooSoon.action).toBe('SKIP');
+    expect(interleavedTooSoon.retryAfterMs).toBe(1800);
+
+    // 3. Once a full 5000ms has elapsed since the same phrase finished, round 2 speaks cleanly
+    const afterFiveSeconds = decideVoiceCoachSpeechTurn({
+      isCurrentlySpeaking: false,
+      incomingText: 'กรุณาถอยห่างให้เห็นช่วงไหล่และลำตัว',
+      incomingLang: 'th',
+      incomingState: 'ACTIVE_REP',
+      lastSpokenKey: 'th:ค่อยๆ เคลื่อนไหวไปยังเป้าหมาย 125 องศาครับ',
+      lastSpokenState: 'ACTIVE_REP',
+      lastSpokenLang: 'th',
+      elapsedSinceLastSpokenMs: 1200,
+      elapsedSinceSamePhraseEndedMs: 5000,
+    });
+    expect(afterFiveSeconds.action).toBe('SPEAK_IMMEDIATELY');
+
+    // 4. A different new phrase (never spoken before) plays immediately without waiting 5 seconds
+    const differentPhrase = decideVoiceCoachSpeechTurn({
+      isCurrentlySpeaking: false,
+      incomingText: 'ยืดตัวตรงครับ อย่าเอียงลำตัวช่วยยกนะครับ',
+      incomingLang: 'th',
+      incomingState: 'ACTIVE_REP',
+      lastSpokenKey: 'th:ค่อยๆ เคลื่อนไหวไปยังเป้าหมาย 125 องศาครับ',
+      lastSpokenState: 'ACTIVE_REP',
+      lastSpokenLang: 'th',
+      elapsedSinceLastSpokenMs: 900,
+      elapsedSinceSamePhraseEndedMs: undefined,
+    });
+    expect(differentPhrase.action).toBe('SPEAK_IMMEDIATELY');
+
+    // 5. Emergency halt & manual replay bypass the 5-second repeat cooldown immediately
+    const emergencyBypass = decideVoiceCoachSpeechTurn({
+      isCurrentlySpeaking: false,
+      incomingText: 'หยุดพักทันทีนะครับ ระบบกำลังเรียกเจ้าหน้าที่ดูแล',
+      incomingLang: 'th',
+      incomingState: 'EMERGENCY_HALT',
+      lastSpokenKey: 'th:หยุดพักทันทีนะครับ ระบบกำลังเรียกเจ้าหน้าที่ดูแล',
+      lastSpokenState: 'EMERGENCY_HALT',
+      lastSpokenLang: 'th',
+      elapsedSinceLastSpokenMs: 500,
+      elapsedSinceSamePhraseEndedMs: 500,
+    });
+    expect(emergencyBypass.action).toBe('SPEAK_IMMEDIATELY');
   });
 
   it('supports toggling real-time form assessment master switch and individual rules ON/OFF', () => {
