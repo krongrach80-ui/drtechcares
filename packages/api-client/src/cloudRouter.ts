@@ -5131,21 +5131,29 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
               ];
             }
             if (sRes.status === 'fulfilled' && !sRes.value.error && Array.isArray(sRes.value.data)) {
-              patientSessions = (sRes.value.data as Record<string, unknown>[]).map((s) => ({
-                id: String(s.id),
-                patientId: String(s.patient_id),
-                activityType: 'physio_exercise' as const,
-                exerciseId: String(s.exercise_id ?? ''),
-                exerciseName: String(s.exercise_id ?? ''),
-                completedSets: Number(s.completed_sets ?? 0),
-                completedReps: Number(s.completed_reps ?? 0),
-                accuracyPercent: Number(s.accuracy_percent ?? 0),
-                maxRomDeg: Number(s.max_rom_deg ?? 0),
-                painStopTriggered: Boolean(s.pain_stop_triggered),
-                aiFeedback: '',
-                kinematicsReplay: [],
-                createdAt: String(s.created_at ?? new Date().toISOString()),
-              }));
+              patientSessions = (sRes.value.data as Record<string, unknown>[]).map((s) => {
+                const exId = String(s.exercise_id ?? '');
+                const hasMinigameScore = s.minigame_score !== null && s.minigame_score !== undefined;
+                const isMinigame = hasMinigameScore || /minigame|cognitive-card-game|\bcard\b/i.test(exId);
+                return {
+                  id: String(s.id),
+                  patientId: String(s.patient_id),
+                  activityType: (isMinigame ? 'minigame' : 'physio_exercise') as 'minigame' | 'physio_exercise',
+                  exerciseId: exId,
+                  exerciseName: isMinigame ? 'มินิเกมฝึกสมอง (การ์ดกายภาพ)' : exId,
+                  completedSets: Number(s.completed_sets ?? 0),
+                  completedReps: Number(s.completed_reps ?? 0),
+                  accuracyPercent: Number(s.accuracy_percent ?? 0),
+                  maxRomDeg: Number(s.max_rom_deg ?? 0),
+                  painStopTriggered: Boolean(s.pain_stop_triggered),
+                  aiFeedback: '',
+                  kinematicsReplay: [],
+                  minigameScore: hasMinigameScore
+                    ? (s.minigame_score as RehabSessionRecord['minigameScore'])
+                    : undefined,
+                  createdAt: String(s.created_at ?? new Date().toISOString()),
+                };
+              });
             }
           }
         } catch {
@@ -5200,6 +5208,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         },
         todayRoutine,
         rehabSchedules: patient.rehabSchedules ?? [],
+        recentSessions: patientSessions.slice(0, 30),
         todayExercises: todaySchedule.todayExercises,
         hasAppointmentToday: todaySchedule.hasAppointmentToday,
         completedToday: todaySchedule.completedToday,
@@ -5246,11 +5255,12 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       }
 
       const course = state.patient_courses.find((c) => c.patientId === matchedPatient.id) ?? null;
+      const pinPatientSessions = state.rehab_sessions.filter((s) => s.patientId === matchedPatient.id);
       const todayIdx = new Date().getDay();
       const todayRoutine = course?.weeklySchedule.find((d) => d.dayIndex === todayIdx) ?? null;
       const todaySchedule = resolveTodayPatientSchedule({
         rehabSchedules: matchedPatient.rehabSchedules,
-        rehabSessions: state.rehab_sessions.filter((s) => s.patientId === matchedPatient.id),
+        rehabSessions: pinPatientSessions,
         todayRoutine,
         weeklySchedule: course?.weeklySchedule,
         nextAppointmentDate: matchedPatient.nextAppointmentDate,
@@ -5300,6 +5310,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             : null,
         todayRoutine,
         rehabSchedules: matchedPatient.rehabSchedules ?? [],
+        recentSessions: pinPatientSessions.slice(0, 30),
         todayExercises: todaySchedule.todayExercises,
         hasAppointmentToday: todaySchedule.hasAppointmentToday,
         completedToday: todaySchedule.completedToday,
@@ -7179,6 +7190,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
     if (pathname === '/api/sessions' && method === 'GET') {
       const err = requireAuth(authUser);
       if (err) return err;
+      await ensureHydrated();
       const pid = reqUrl.searchParams.get('patientId') ?? undefined;
       let list = state.rehab_sessions;
       if (authUser!.role === 'patient') {

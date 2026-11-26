@@ -164,6 +164,8 @@ const sessionSchema = z.object({
       correct: z.number().int().min(0),
       total: z.number().int().min(1),
       category: z.string(),
+      durationSec: z.number().min(0).optional(),
+      accuracyPct: z.number().min(0).max(100).optional(),
     })
     .optional(),
 });

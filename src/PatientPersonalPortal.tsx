@@ -10,8 +10,15 @@ import {
   type TreatmentReportRecord,
   type UserAccount,
 } from '@drtechcares/api-client';
-import { Activity, Calendar, KeyRound, LogOut, Sparkles, User } from 'lucide-react';
+import { Activity, Brain, Calendar, KeyRound, LogOut, Sparkles, User } from 'lucide-react';
 import { MorTechMascot } from './components/MorTechMascot';
+import { convertRehabSessionToAssessment } from './lib/clinicalAssessmentStore';
+import { computeLongitudinalProgressSummary, type PatientClinicalAssessmentRecord } from './types/clinicalAssessment';
+import {
+  buildPatientProgressSummaryReport,
+  buildUnifiedRehabMinigameSummary,
+} from './utils/unifiedRehabMinigameSummary';
+import { PatientProgressSummaryModal } from './components/PatientProgressSummaryModal';
 
 interface PatientPersonalPortalProps {
   apiClient: DrTechCaresApiClient;
@@ -32,6 +39,7 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
   const [savingPhone, setSavingPhone] = useState(false);
   const [savingPw, setSavingPw] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
+  const [showSummaryModal, setShowSummaryModal] = useState(false);
   const mountedRef = useRef(true);
 
   const loadOwnData = useCallback(async () => {
@@ -121,6 +129,31 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
     }
     return CLINICAL_EXERCISES[0];
   }, [patient, course]);
+
+  const { personalUnifiedSummary, personalSummaryReport } = useMemo(() => {
+    if (!patient) {
+      return { personalUnifiedSummary: null, personalSummaryReport: null };
+    }
+    const derivedAssessments: PatientClinicalAssessmentRecord[] = [];
+    for (const s of sessions) {
+      if (s.patientId !== patient.id) continue;
+      const converted = convertRehabSessionToAssessment(s, patient);
+      if (converted) derivedAssessments.push(converted);
+    }
+    const longitudinalSummary = computeLongitudinalProgressSummary(derivedAssessments, 'ALL');
+    const unified = buildUnifiedRehabMinigameSummary({
+      patientId: patient.id,
+      longitudinalSummary,
+      sessions,
+    });
+    const report = buildPatientProgressSummaryReport({
+      patientName: patient.fullName,
+      patientHn: patient.hn,
+      unifiedSummary: unified,
+      assessments: derivedAssessments,
+    });
+    return { personalUnifiedSummary: unified, personalSummaryReport: report };
+  }, [patient, sessions]);
 
   if (cameraActive && patient) {
     return (
@@ -286,12 +319,105 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
         </div>
       </div>
 
-      {/* ผลการรักษา & ผลวิเคราะห์จาก AI */}
-      <div className="rounded-3xl bg-white p-6 shadow-md border border-slate-200 space-y-3">
-        <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
-          <Sparkles className="h-5 w-5 text-indigo-600" />
-          ผลการรักษา & ผลวิเคราะห์ท่าทางจาก AI
-        </h2>
+      {/* ผลการรักษา & ผลวิเคราะห์จาก AI (ซิงก์กายภาพ + มินิเกม) */}
+      <div className="rounded-3xl bg-white p-6 shadow-md border border-slate-200 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+            <Sparkles className="h-5 w-5 text-indigo-600" />
+            สรุปผลการกายภาพบำบัดและการเล่นมินิเกม (ซิงก์อัตโนมัติ)
+          </h2>
+          <div className="flex flex-wrap items-center gap-2">
+            {personalUnifiedSummary && personalUnifiedSummary.overall.combinedScorePct !== null && (
+              <span className="rounded-full bg-emerald-50 border border-emerald-200 px-3 py-1 text-xs font-black text-emerald-800">
+                คะแนนรวมซิงก์ {personalUnifiedSummary.overall.combinedScorePct.toFixed(1)}%
+              </span>
+            )}
+            {personalSummaryReport && (
+              <button
+                type="button"
+                data-testid="personal-portal-open-summary-btn"
+                onClick={() => setShowSummaryModal(true)}
+                className="btn-tactile inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 px-3.5 py-1.5 text-xs font-black text-white shadow-xs cursor-pointer"
+              >
+                <Calendar className="h-3.5 w-3.5" />
+                <span>ดูสรุปผลรายสัปดาห์ &amp; กราฟเทียบครั้งก่อน</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {personalUnifiedSummary && (
+          <div
+            className={`rounded-2xl border p-4 space-y-2 ${
+              personalUnifiedSummary.overall.verdict.tone === 'emerald'
+                ? 'border-emerald-300 bg-emerald-50/70'
+                : personalUnifiedSummary.overall.verdict.tone === 'amber'
+                  ? 'border-amber-300 bg-amber-50/80'
+                  : 'border-sky-200 bg-sky-50/60'
+            }`}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={`rounded-full px-3 py-0.5 text-xs font-black text-white ${
+                  personalUnifiedSummary.overall.verdict.tone === 'emerald'
+                    ? 'bg-emerald-600'
+                    : personalUnifiedSummary.overall.verdict.tone === 'amber'
+                      ? 'bg-amber-600'
+                      : 'bg-[#0F4C81]'
+                }`}
+              >
+                {personalUnifiedSummary.overall.verdict.badgeTh}
+              </span>
+              <span className="text-xs font-bold text-slate-600">
+                กายภาพ {personalUnifiedSummary.rehab.totalVisits} ครั้ง • มินิเกม {personalUnifiedSummary.minigame.totalRounds} รอบ
+              </span>
+            </div>
+            <p className="text-sm font-black text-slate-900">
+              {personalUnifiedSummary.overall.verdict.headlineTh}
+            </p>
+            <p className="text-xs font-semibold text-slate-700">
+              {personalUnifiedSummary.overall.verdict.detailTh}
+            </p>
+            <p className="text-xs font-bold text-[#0F4C81]">
+              คำแนะนำ: {personalUnifiedSummary.overall.verdict.adviceTh}
+            </p>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 pt-1">
+              <div className="rounded-xl border border-white bg-white/95 p-3 text-xs">
+                <div className="flex items-center justify-between gap-2 font-black text-[#0F4C81]">
+                  <span className="inline-flex items-center gap-1">
+                    <Activity className="h-3.5 w-3.5 text-emerald-600" />
+                    กายภาพบำบัด
+                  </span>
+                  <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[10px] text-emerald-800">
+                    {personalUnifiedSummary.rehab.verdict.badgeTh}
+                  </span>
+                </div>
+                <p className="mt-1 font-semibold text-slate-700">
+                  {personalUnifiedSummary.rehab.totalVisits > 0
+                    ? `ระดับ ${personalUnifiedSummary.rehab.latestScore0To6}/6 • ROM ${personalUnifiedSummary.rehab.latestRomDeg?.toFixed(1)}° (${personalUnifiedSummary.rehab.latestTargetPct?.toFixed(0)}%)`
+                    : 'ยังไม่มีประวัติกายภาพ ROM'}
+                </p>
+              </div>
+              <div className="rounded-xl border border-white bg-white/95 p-3 text-xs">
+                <div className="flex items-center justify-between gap-2 font-black text-indigo-800">
+                  <span className="inline-flex items-center gap-1">
+                    <Brain className="h-3.5 w-3.5 text-indigo-600" />
+                    มินิเกมฝึกสมอง
+                  </span>
+                  <span className="rounded-full bg-indigo-50 border border-indigo-200 px-2 py-0.5 text-[10px] text-indigo-800">
+                    {personalUnifiedSummary.minigame.verdict.badgeTh}
+                  </span>
+                </div>
+                <p className="mt-1 font-semibold text-slate-700">
+                  {personalUnifiedSummary.minigame.latestSession
+                    ? `ล่าสุด ${personalUnifiedSummary.minigame.latestSession.correct}/${personalUnifiedSummary.minigame.latestSession.total} (${personalUnifiedSummary.minigame.latestSession.accuracyPct}%) • เฉลี่ย ${personalUnifiedSummary.minigame.averageAccuracyPct?.toFixed(0)}%`
+                    : 'ยังไม่มีประวัติการเล่นมินิเกม'}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {sessions.length === 0 && <p className="text-xs text-slate-500">ยังไม่มีผลคะแนนการฝึก</p>}
         <div className="space-y-2">
           {sessions.map((s) => (
@@ -319,6 +445,14 @@ export function PatientPersonalPortal({ apiClient, currentUser, onLogout }: Pati
           </div>
         )}
       </div>
+
+      {personalSummaryReport && (
+        <PatientProgressSummaryModal
+          open={showSummaryModal}
+          report={personalSummaryReport}
+          onClose={() => setShowSummaryModal(false)}
+        />
+      )}
 
       <MorTechMascot mode="patient-portal" hidden={cameraActive} />
     </div>

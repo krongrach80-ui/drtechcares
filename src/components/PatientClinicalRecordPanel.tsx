@@ -11,18 +11,21 @@ import type {
 import { CLINICAL_EXERCISES, parseExerciseCodeAndSide } from '@drtechcares/pose-engine';
 import {
   Activity,
-  ArrowRight,
-  Building2,
-  Calendar,
+  ArrowDownRight,
+  ArrowUpRight,
+  Award,
+  Brain,
   Camera,
   Check,
   ClipboardList,
   Copy,
   Download,
   FileText,
+  Gamepad2,
   GitCompare,
   History,
   Link2,
+  Minus,
   RefreshCw,
   Search,
   Sparkles,
@@ -66,7 +69,15 @@ import {
   getCalendarMonthKey,
 } from '../utils/clinicalChartAnalytics';
 import { buildRehabStockIndex } from '../utils/rehabStockScoreEngine';
+import {
+  buildPatientProgressSummaryReport,
+  buildUnifiedRehabMinigameSummary,
+  isMinigameRehabSession,
+  resolveExerciseRowVerdict,
+  type ProgressVerdictTone,
+} from '../utils/unifiedRehabMinigameSummary';
 import { ClinicalRomLiveMeasureModal } from './ClinicalRomLiveMeasureModal';
+import { PatientProgressSummaryModal } from './PatientProgressSummaryModal';
 import { RehabStockPerformanceCard } from './RehabStockPerformanceCard';
 
 export interface PatientClinicalRecordPanelProps {
@@ -91,7 +102,38 @@ type SourceFilter =
   | 'KIOSK_SESSION_AUTO_SYNC'
   | 'COURSE_AUTO_CALCULATED';
 type ChartMetricMode = 'ROM_DEG' | 'TARGET_PCT';
-type ChartViewMode = 'SESSIONS' | 'MONTHLY';
+type ChartViewMode = 'SESSIONS' | 'COMPARE' | 'MONTHLY' | 'MINIGAME';
+type TimelineKindFilter = 'ALL' | 'PHYSIO' | 'MINIGAME';
+
+function verdictBadgeClasses(tone: ProgressVerdictTone): string {
+  switch (tone) {
+    case 'emerald':
+      return 'border-emerald-300 bg-emerald-50 text-emerald-800';
+    case 'sky':
+      return 'border-sky-300 bg-sky-50 text-[#0F4C81]';
+    case 'amber':
+      return 'border-amber-300 bg-amber-50 text-amber-900';
+    case 'indigo':
+      return 'border-indigo-300 bg-indigo-50 text-indigo-800';
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-600';
+  }
+}
+
+function verdictBannerClasses(tone: ProgressVerdictTone): string {
+  switch (tone) {
+    case 'emerald':
+      return 'border-emerald-300 bg-gradient-to-r from-emerald-50 via-teal-50/70 to-white';
+    case 'sky':
+      return 'border-sky-300 bg-gradient-to-r from-sky-50 via-white to-emerald-50/40';
+    case 'amber':
+      return 'border-amber-300 bg-gradient-to-r from-amber-50 via-orange-50/50 to-white';
+    case 'indigo':
+      return 'border-indigo-300 bg-gradient-to-r from-indigo-50 via-sky-50/60 to-white';
+    default:
+      return 'border-slate-200 bg-slate-50/70';
+  }
+}
 
 function getDirectSupabaseRestConfig(): { url: string; key: string } | null {
   try {
@@ -120,10 +162,6 @@ function formatSideTh(side: AssessmentTargetSide): string {
   if (side === 'LEFT') return 'ซ้าย';
   if (side === 'BOTH') return 'ทั้งสองข้าง';
   return 'ขวา';
-}
-
-function formatThaiDateTime(iso: string): string {
-  return formatThaiClinicalDate(iso);
 }
 
 function formatShortThaiDate(iso: string): string {
@@ -182,6 +220,7 @@ export function PatientClinicalRecordPanel({
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('ALL');
   const [chartMetricMode, setChartMetricMode] = useState<ChartMetricMode>('ROM_DEG');
   const [chartViewMode, setChartViewMode] = useState<ChartViewMode>('SESSIONS');
+  const [timelineKindFilter, setTimelineKindFilter] = useState<TimelineKindFilter>('ALL');
   const [legendFocusExerciseCode, setLegendFocusExerciseCode] = useState<string | null>(null);
   const [selectedMonthKey, setSelectedMonthKey] = useState<string | null>(null);
   const [showMahidolLine, setShowMahidolLine] = useState<boolean>(true);
@@ -207,6 +246,7 @@ export function PatientClinicalRecordPanel({
   const [measurementMethod, setMeasurementMethod] =
     useState<AssessmentMeasurementMethod>('MANUAL_INPUT');
   const [liveMeasureModalOpen, setLiveMeasureModalOpen] = useState<boolean>(false);
+  const [patientSummaryModalOpen, setPatientSummaryModalOpen] = useState<boolean>(false);
   const [facilityName, setFacilityName] = useState<string>(CLINICAL_FACILITY_PRESETS[0]);
   const [chiefComplaint, setChiefComplaint] = useState<string>('');
   const [handoverNote, setHandoverNote] = useState<string>('');
@@ -306,11 +346,14 @@ export function PatientClinicalRecordPanel({
         setRecords(list);
         if (showSyncBanner) {
           const facilitiesCount = new Set(list.map((r) => r.facility_name)).size;
+          const minigameCount = sessions.filter(
+            (s) => s.patientId === targetPatientId && isMinigameRehabSession(s),
+          ).length;
           showToast(
             'success',
-            list.length > 0
-              ? `ซิงก์ข้อมูลจริงสำเร็จ: พบประวัติ ${list.length} ครั้ง จาก ${facilitiesCount} สถานที่/ตู้ Kiosk`
-              : 'ซิงก์ข้อมูลล่าสุดแล้ว: ผู้ป่วยรายนี้ยังไม่มีบันทึกการประเมินหรือประวัติฝึก ROM',
+            list.length > 0 || minigameCount > 0
+              ? `ซิงก์ข้อมูลจริงสำเร็จ: กายภาพ ${list.length} ครั้ง • มินิเกม ${minigameCount} รอบ (${Math.max(1, facilitiesCount)} สถานที่/ตู้ Kiosk)`
+              : 'ซิงก์ข้อมูลล่าสุดแล้ว: ผู้ป่วยรายนี้ยังไม่มีบันทึกกายภาพหรือประวัติเล่นมินิเกม',
           );
         }
       } catch (err) {
@@ -426,21 +469,31 @@ export function PatientClinicalRecordPanel({
             if (seRes.status === 'fulfilled' && seRes.value.ok) {
               const rows = (await seRes.value.json()) as Record<string, unknown>[];
               if (Array.isArray(rows)) {
-                nextSessions = rows.map((r) => ({
-                  id: String(r.id ?? ''),
-                  patientId: String(r.patient_id ?? targetPatientId),
-                  activityType: 'physio_exercise',
-                  exerciseId: String(r.exercise_id ?? ''),
-                  exerciseName: String(r.exercise_id ?? ''),
-                  completedSets: Number(r.completed_sets ?? 0),
-                  completedReps: Number(r.completed_reps ?? 0),
-                  accuracyPercent: Number(r.accuracy_percent ?? 85),
-                  maxRomDeg: Number(r.max_rom_deg ?? 0),
-                  painStopTriggered: Boolean(r.pain_stop_triggered),
-                  aiFeedback: '',
-                  kinematicsReplay: [],
-                  createdAt: String(r.created_at ?? new Date().toISOString()),
-                }));
+                nextSessions = rows.map((r) => {
+                  const exId = String(r.exercise_id ?? '');
+                  const hasMinigameScore =
+                    r.minigame_score !== null && r.minigame_score !== undefined;
+                  const isMinigame =
+                    hasMinigameScore || /minigame|cognitive-card-game|\bcard\b/i.test(exId);
+                  return {
+                    id: String(r.id ?? ''),
+                    patientId: String(r.patient_id ?? targetPatientId),
+                    activityType: isMinigame ? 'minigame' : 'physio_exercise',
+                    exerciseId: exId,
+                    exerciseName: isMinigame ? 'มินิเกมฝึกสมอง (การ์ดกายภาพ)' : exId,
+                    completedSets: Number(r.completed_sets ?? 0),
+                    completedReps: Number(r.completed_reps ?? 0),
+                    accuracyPercent: Number(r.accuracy_percent ?? 85),
+                    maxRomDeg: Number(r.max_rom_deg ?? 0),
+                    painStopTriggered: Boolean(r.pain_stop_triggered),
+                    aiFeedback: '',
+                    kinematicsReplay: [],
+                    minigameScore: hasMinigameScore
+                      ? (r.minigame_score as RehabSessionRecord['minigameScore'])
+                      : undefined,
+                    createdAt: String(r.created_at ?? new Date().toISOString()),
+                  };
+                });
               }
             }
           }
@@ -493,6 +546,7 @@ export function PatientClinicalRecordPanel({
     setLegendFocusExerciseCode(null);
     setSelectedMonthKey(null);
     setChartViewMode('SESSIONS');
+    setTimelineKindFilter('ALL');
     setSelectedNodeId(null);
     setCompareBaselineId('');
     setCompareFollowUpId('');
@@ -1042,6 +1096,87 @@ export function PatientClinicalRecordPanel({
     [courseAutoBundle?.assignedExercises, courseAutoBundle?.completedSessions, records],
   );
 
+  // Unified Synchronized Rehab + Minigame Clinical Progress & Encouragement Summary
+  const unifiedSummary = useMemo(
+    () =>
+      buildUnifiedRehabMinigameSummary({
+        patientId: selectedPatient?.id ?? '',
+        longitudinalSummary: summary,
+        stockIndex: rehabStockIndex,
+        sessions: mergedPatientSessions,
+      }),
+    [selectedPatient?.id, summary, rehabStockIndex, mergedPatientSessions],
+  );
+
+  const patientSummaryReport = useMemo(
+    () =>
+      selectedPatient
+        ? buildPatientProgressSummaryReport({
+            patientName: selectedPatient.fullName,
+            patientHn: selectedPatient.hn,
+            unifiedSummary,
+            assessments: records,
+          })
+        : null,
+    [selectedPatient, unifiedSummary, records],
+  );
+
+  // 60FPS Pure SVG Minigame Cognitive Accuracy & Score Trend Chart Geometry
+  const minigameChartData = useMemo(() => {
+    const items = unifiedSummary.minigame.sessions.slice(-12);
+    const width = Math.max(660, items.length > 7 ? items.length * 88 + 96 : 660);
+    const height = 256;
+    const padL = 52;
+    const padR = 32;
+    const padT = 36;
+    const padB = 64;
+    const plotW = width - padL - padR;
+    const plotH = height - padT - padB;
+    const slotW = items.length > 0 ? plotW / items.length : plotW;
+    const barW = Math.min(44, Math.max(20, slotW * 0.44));
+
+    const bars = items.map((s, idx) => {
+      const cx = padL + slotW * idx + slotW / 2;
+      const barH = Math.max(4, (Math.max(0, Math.min(100, s.accuracyPct)) / 100) * plotH);
+      const y = padT + plotH - barH;
+      return {
+        ...s,
+        cx,
+        x: cx - barW / 2,
+        y,
+        barW,
+        barH,
+      };
+    });
+
+    const trendPoints = bars.map((b) => `${b.cx.toFixed(1)},${b.y.toFixed(1)}`).join(' ');
+    const target80Y = padT + plotH * 0.2;
+    return {
+      width,
+      height,
+      padL,
+      padR,
+      padT,
+      padB,
+      plotW,
+      plotH,
+      bars,
+      trendPoints,
+      target80Y,
+    };
+  }, [unifiedSummary.minigame.sessions]);
+
+  const filteredUnifiedTimeline = useMemo(() => {
+    return unifiedSummary.timeline.filter((item) => {
+      if (timelineKindFilter === 'PHYSIO' && item.kind !== 'physio') return false;
+      if (timelineKindFilter === 'MINIGAME' && item.kind !== 'minigame') return false;
+      if (selectedMonthKey && getCalendarMonthKey(item.timestampIso) !== selectedMonthKey) {
+        return false;
+      }
+      return true;
+    });
+  }, [unifiedSummary.timeline, timelineKindFilter, selectedMonthKey]);
+
   // Reset legend isolation if the focused exercise is no longer present in the filtered set
   useEffect(() => {
     if (
@@ -1268,12 +1403,6 @@ export function PatientClinicalRecordPanel({
     return chartData.nodes[chartData.nodes.length - 1];
   }, [chartData.nodes, selectedNodeId]);
 
-  const timelineVisits = useMemo(() => {
-    const base = summary.visitsWithDelta;
-    if (!selectedMonthKey) return base;
-    return base.filter((v) => getCalendarMonthKey(v.record.assessed_at) === selectedMonthKey);
-  }, [summary.visitsWithDelta, selectedMonthKey]);
-
   const handleExportCsv = () => {
     if (!selectedPatient || summary.totalVisits === 0) {
       showToast('info', 'ยังไม่มีข้อมูลการประเมินสำหรับส่งออกรายงาน CSV');
@@ -1342,6 +1471,16 @@ export function PatientClinicalRecordPanel({
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              data-testid="ehr-open-patient-summary-btn"
+              disabled={!selectedPatient}
+              onClick={() => setPatientSummaryModalOpen(true)}
+              className="btn-tactile inline-flex items-center gap-1 rounded-xl border border-emerald-600 bg-emerald-700 px-2.5 py-1.5 text-[11px] font-black text-white hover:bg-emerald-800 disabled:opacity-45 cursor-pointer"
+            >
+              <Award className="h-3 w-3" />
+              <span>สรุปผลคนไข้</span>
+            </button>
             <button
               type="button"
               disabled={!selectedPatient || syncingCrossFacility}
@@ -1414,10 +1553,10 @@ export function PatientClinicalRecordPanel({
         )}
       </div>
 
-      {/* Main Two-Column Clinical Workspace (side-by-side at md+) */}
+      {/* Main Three-Column Clinical Workspace (xl: Left Course/Form | Center KPIs/Verdict/Charts | Right Unified Timeline) */}
       <div className="grid grid-cols-1 gap-3 md:grid-cols-12">
-        {/* SECTION B: Assigned Rehab Courses Auto-Score Card + 0-6 Assessment Form */}
-        <div className="md:col-span-5 space-y-2.5 self-start">
+        {/* SECTION B: Left Column — Assigned Rehab Courses Auto-Score Card + 0-6 Assessment Form */}
+        <div className="md:col-span-5 xl:col-span-3 space-y-2.5 self-start">
           {/* Assigned Course & Automatic 0-6 Mahidol Scoring Card */}
           <div
             data-testid="assigned-course-auto-score-card"
@@ -1803,16 +1942,204 @@ export function PatientClinicalRecordPanel({
           </form>
         </div>
 
-        {/* SECTION C: Retrospective Tracking & Charts */}
-        <div className="md:col-span-7 space-y-2.5">
+        {/* SECTION C: Center Column — Unified Rehab + Minigame Verdict, 4 KPIs, Charts & Summary Table */}
+        <div className="md:col-span-7 xl:col-span-6 space-y-2.5 min-w-0">
+          {/* Unified Synchronized Rehab + Minigame Clinical Progress Verdict Banner */}
+          <div
+            data-testid="unified-progress-verdict-card"
+            className={`rounded-2xl border p-3.5 shadow-sm space-y-2.5 ${verdictBannerClasses(unifiedSummary.overall.verdict.tone)}`}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="space-y-1 min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span
+                    data-testid="unified-verdict-badge"
+                    className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-black ${verdictBadgeClasses(unifiedSummary.overall.verdict.tone)}`}
+                  >
+                    {unifiedSummary.overall.verdict.code === 'IMPROVED' ? (
+                      <ArrowUpRight className="h-3.5 w-3.5 shrink-0" />
+                    ) : unifiedSummary.overall.verdict.code === 'TRY_HARDER' ? (
+                      <ArrowDownRight className="h-3.5 w-3.5 shrink-0" />
+                    ) : unifiedSummary.overall.verdict.code === 'STABLE' ? (
+                      <Minus className="h-3.5 w-3.5 shrink-0" />
+                    ) : (
+                      <Award className="h-3.5 w-3.5 shrink-0" />
+                    )}
+                    <span>{unifiedSummary.overall.verdict.badgeTh}</span>
+                  </span>
+                  <span className="rounded-full bg-white/90 border border-slate-200 px-2 py-0.5 text-[10px] font-extrabold text-slate-700">
+                    ซิงก์กายภาพ + มินิเกม ({unifiedSummary.overall.totalActivities} กิจกรรมจริง)
+                  </span>
+                </div>
+                <h3
+                  data-testid="unified-verdict-headline"
+                  className="text-sm font-black text-slate-900 leading-snug"
+                >
+                  {unifiedSummary.overall.verdict.headlineTh}
+                </h3>
+                <p className="text-[11px] font-semibold text-slate-700 leading-relaxed">
+                  {unifiedSummary.overall.verdict.detailTh}
+                </p>
+                <p className="text-[11px] font-bold text-[#0F4C81]">
+                  คำแนะนำ: {unifiedSummary.overall.verdict.adviceTh}
+                </p>
+              </div>
+
+              {unifiedSummary.overall.combinedScorePct !== null && (
+                <div className="shrink-0 rounded-2xl border border-emerald-200 bg-white/95 px-3 py-2 text-center shadow-xs min-w-[104px]">
+                  <div className="text-[9.5px] font-extrabold text-slate-500 uppercase">
+                    ดัชนีซิงก์รวม
+                  </div>
+                  <div
+                    data-testid="unified-combined-score-pct"
+                    className="text-xl font-black text-emerald-700 tabular-nums leading-tight"
+                  >
+                    {unifiedSummary.overall.combinedScorePct.toFixed(1)}%
+                  </div>
+                  <div className="text-[9.5px] font-bold text-slate-500">
+                    กายภาพ + มินิเกม
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Dual-Domain Sync Pills: Physical Therapy vs Cognitive Minigame */}
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div
+                data-testid="verdict-domain-rehab"
+                className="rounded-xl border border-white/80 bg-white/90 px-3 py-2 flex items-center justify-between gap-2"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-[10.5px] font-black text-[#0F4C81]">
+                    <Activity className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                    <span>กายภาพบำบัด ({unifiedSummary.rehab.totalVisits} ครั้ง)</span>
+                  </div>
+                  <div className="text-[11px] font-bold text-slate-800 truncate mt-0.5">
+                    {unifiedSummary.rehab.totalVisits > 0
+                      ? `ระดับ ${unifiedSummary.rehab.latestScore0To6}/6 • ROM ${unifiedSummary.rehab.latestRomDeg?.toFixed(1)}° (${unifiedSummary.rehab.latestTargetPct?.toFixed(0)}%)`
+                      : 'รอข้อมูลฝึกกายภาพ'}
+                  </div>
+                </div>
+                <span
+                  className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-black ${verdictBadgeClasses(unifiedSummary.rehab.verdict.tone)}`}
+                >
+                  {unifiedSummary.rehab.verdict.badgeTh}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                data-testid="verdict-domain-minigame"
+                onClick={() => setChartViewMode('MINIGAME')}
+                className="text-left rounded-xl border border-white/80 bg-white/90 hover:border-indigo-300 px-3 py-2 flex items-center justify-between gap-2 transition-colors cursor-pointer"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-[10.5px] font-black text-indigo-800">
+                    <Brain className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+                    <span>มินิเกมฝึกสมอง ({unifiedSummary.minigame.totalRounds} รอบ)</span>
+                  </div>
+                  <div className="text-[11px] font-bold text-slate-800 truncate mt-0.5">
+                    {unifiedSummary.minigame.latestSession
+                      ? `ล่าสุด ${unifiedSummary.minigame.latestSession.correct}/${unifiedSummary.minigame.latestSession.total} (${unifiedSummary.minigame.latestSession.accuracyPct}%) • เฉลี่ย ${unifiedSummary.minigame.averageAccuracyPct?.toFixed(0)}%`
+                      : 'รอข้อมูลเล่นมินิเกมที่ตู้ Kiosk'}
+                  </div>
+                </div>
+                <span
+                  className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-black ${verdictBadgeClasses(unifiedSummary.minigame.verdict.tone)}`}
+                >
+                  {unifiedSummary.minigame.verdict.badgeTh}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          {/* 4 Compact Real Clinical + Minigame KPI Cards (Mockup Row Layout) */}
+          <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+            {/* 1. REHAB INDEX */}
+            <div className="game-card-surface rounded-2xl border border-sky-200 bg-white p-3 space-y-1">
+              <div className="flex items-center justify-between text-[10px] font-extrabold text-[#0F4C81]">
+                <span className="truncate">REHAB INDEX</span>
+                <TrendingUp className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+              </div>
+              <div className="text-xl font-black text-emerald-700 tabular-nums leading-tight">
+                {rehabStockIndex.latestPoint
+                  ? `${rehabStockIndex.latestPoint.smartTotalPct.toFixed(1)}%`
+                  : summary.latestTargetAchievementPct !== null
+                    ? `${Math.min(100, summary.latestTargetAchievementPct).toFixed(1)}%`
+                    : '0.0%'}
+              </div>
+              <div className="text-[10px] font-bold text-slate-500 truncate">
+                {rehabStockIndex.latestPoint
+                  ? `${rehabStockIndex.latestPoint.smartEarnedScore} / ${rehabStockIndex.maxTotalScore} คะแนน`
+                  : `ทั้งหมด ${rehabStockIndex.totalPrescribedExercises} ท่าตามคอร์ส`}
+              </div>
+            </div>
+
+            {/* 2. Target ROM Achievement */}
+            <div className="game-card-surface rounded-2xl border border-emerald-200 bg-white p-3 space-y-1">
+              <div className="flex items-center justify-between text-[10px] font-extrabold text-slate-600">
+                <span className="truncate">ความสำเร็จเทียบเป้า</span>
+                <Target className="h-3.5 w-3.5 text-teal-600 shrink-0" />
+              </div>
+              <div className="text-xl font-black text-teal-700 tabular-nums leading-tight">
+                {summary.latestTargetAchievementPct !== null
+                  ? `${summary.latestTargetAchievementPct.toFixed(1)}%`
+                  : '-'}
+              </div>
+              <div className="text-[10px] font-bold text-slate-500 truncate">
+                {summary.latestRom !== null
+                  ? `ROM ล่าสุด ${summary.latestRom.toFixed(1)}°`
+                  : 'ยังไม่มีข้อมูลวัด ROM'}
+              </div>
+            </div>
+
+            {/* 3. Mahidol 0-6 Score */}
+            <div className="game-card-surface rounded-2xl border border-teal-200 bg-white p-3 space-y-1">
+              <div className="flex items-center justify-between text-[10px] font-extrabold text-slate-600">
+                <span className="truncate">คะแนนมหิดล (0-6)</span>
+                <Activity className="h-3.5 w-3.5 text-[#0F4C81] shrink-0" />
+              </div>
+              <div className="text-xl font-black text-slate-900 tabular-nums leading-tight">
+                {summary.latestScore !== null ? `${summary.latestScore}/6` : '-'}
+              </div>
+              <div className="text-[10px] font-bold text-slate-500 truncate">
+                {summary.firstScore !== null && summary.latestScore !== null
+                  ? `แรกรับ ${summary.firstScore}/6 -> ล่าสุด ${summary.latestScore}/6`
+                  : 'รอการประเมิน 0-6'}
+              </div>
+            </div>
+
+            {/* 4. Minigame & Total Real Sessions */}
+            <button
+              type="button"
+              onClick={() => setChartViewMode('MINIGAME')}
+              className="game-card-surface text-left rounded-2xl border border-indigo-200 bg-white p-3 space-y-1 hover:border-indigo-400 transition-colors cursor-pointer"
+            >
+              <div className="flex items-center justify-between text-[10px] font-extrabold text-indigo-700">
+                <span className="truncate">มินิเกม &amp; ครั้งจริง</span>
+                <Gamepad2 className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+              </div>
+              <div className="text-xl font-black text-indigo-800 tabular-nums leading-tight">
+                {unifiedSummary.minigame.latestSession
+                  ? `${unifiedSummary.minigame.latestSession.accuracyPct}%`
+                  : `${summary.totalVisits} ครั้ง`}
+              </div>
+              <div className="text-[10px] font-bold text-slate-500 truncate">
+                {unifiedSummary.minigame.latestSession
+                  ? `เกม ${unifiedSummary.minigame.latestSession.correct}/${unifiedSummary.minigame.latestSession.total} • รวม ${unifiedSummary.overall.totalActivities} ครั้ง`
+                  : `กายภาพ ${summary.totalVisits} • มินิเกม ${unifiedSummary.minigame.totalRounds}`}
+              </div>
+            </button>
+          </div>
+
           {/* Multi-Dimensional Filter Bar */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm flex flex-wrap items-center justify-between gap-2.5">
-            <div className="flex flex-wrap items-center gap-2">
+          <div className="rounded-2xl border border-slate-200 bg-white p-2.5 shadow-sm flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
               <select
                 aria-label="กรองตามท่ากายภาพ"
                 value={exerciseFilter}
                 onChange={(e) => setExerciseFilter(e.target.value)}
-                className="h-9 rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-bold text-slate-700"
+                className="h-8 rounded-xl border border-slate-200 bg-slate-50 px-2 text-[11px] font-bold text-slate-700"
               >
                 <option value="ALL">ทุกท่ากายภาพบำบัด ({records.length})</option>
                 {exerciseOptionsInHistory.map(([code, nameTh]) => (
@@ -1826,7 +2153,7 @@ export function PatientClinicalRecordPanel({
                 aria-label="กรองตามข้าง"
                 value={sideFilter}
                 onChange={(e) => setSideFilter(e.target.value as 'ALL' | AssessmentTargetSide)}
-                className="h-9 rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-bold text-slate-700"
+                className="h-8 rounded-xl border border-slate-200 bg-slate-50 px-2 text-[11px] font-bold text-slate-700"
               >
                 <option value="ALL">ทุกข้าง</option>
                 <option value="LEFT">ข้างซ้าย</option>
@@ -1838,7 +2165,7 @@ export function PatientClinicalRecordPanel({
                 aria-label="กรองตามช่วงเวลา"
                 value={dateRangeFilter}
                 onChange={(e) => setDateRangeFilter(e.target.value as DateRangeFilter)}
-                className="h-9 rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-bold text-slate-700"
+                className="h-8 rounded-xl border border-slate-200 bg-slate-50 px-2 text-[11px] font-bold text-slate-700"
               >
                 <option value="ALL">ช่วงเวลาทั้งหมด</option>
                 <option value="7D">7 วันล่าสุด</option>
@@ -1850,7 +2177,7 @@ export function PatientClinicalRecordPanel({
                 aria-label="กรองตามแหล่งข้อมูล"
                 value={sourceFilter}
                 onChange={(e) => setSourceFilter(e.target.value as SourceFilter)}
-                className="h-9 rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-bold text-slate-700"
+                className="h-8 rounded-xl border border-slate-200 bg-slate-50 px-2 text-[11px] font-bold text-slate-700"
               >
                 <option value="ALL">ทุกแหล่งข้อมูล</option>
                 <option value="COURSE_AUTO_CALCULATED">คำนวณอัตโนมัติจากคอร์ส</option>
@@ -1871,192 +2198,11 @@ export function PatientClinicalRecordPanel({
                   setDateRangeFilter('ALL');
                   setSourceFilter('ALL');
                 }}
-                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10.5px] font-bold text-slate-600 hover:bg-slate-50 cursor-pointer"
               >
                 ล้างตัวกรอง
               </button>
             )}
-          </div>
-
-          {/* 4 Real Clinical KPI Cards */}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {/* 1. ROM Progression */}
-            <div className="game-card-surface rounded-2xl border border-emerald-200 bg-white p-4 space-y-1.5">
-              <div className="flex items-center justify-between text-[11px] font-bold text-slate-500">
-                <span>
-                  {summary.hasMixedExercises
-                    ? 'พัฒนาการเทียบเป้าหมายรวมทุกท่า (%)'
-                    : 'พัฒนาการมุมองศาข้อต่อจริง (ROM)'}
-                </span>
-                <TrendingUp className="h-4 w-4 text-emerald-600" />
-              </div>
-              {summary.firstRom !== null && summary.latestRom !== null ? (
-                summary.hasMixedExercises ? (
-                  <>
-                    <div className="flex items-center gap-1.5 text-sm font-black text-slate-900">
-                      <span>ครั้งแรก: {(summary.firstTargetAchievementPct ?? 0).toFixed(1)}%</span>
-                      <ArrowRight className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-                      <span className="text-emerald-700">
-                        ล่าสุด: {(summary.latestTargetAchievementPct ?? 0).toFixed(1)}%
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span
-                        className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] font-extrabold ${
-                          (summary.deltaTargetAchievementPct ?? 0) >= 0
-                            ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                            : 'bg-rose-50 border-rose-200 text-rose-700'
-                        }`}
-                      >
-                        {(summary.deltaTargetAchievementPct ?? 0) >= 0
-                          ? `+${(summary.deltaTargetAchievementPct ?? 0).toFixed(1)}% เทียบเป้าหมาย`
-                          : `${(summary.deltaTargetAchievementPct ?? 0).toFixed(1)}% เทียบเป้าหมาย`}
-                      </span>
-                      <span className="text-[10px] font-semibold text-slate-500">
-                        เลือก 1 ท่าเพื่อดูผลต่างองศาตรง
-                      </span>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex items-center gap-1.5 text-sm font-black text-slate-900">
-                      <span>ครั้งแรก: {summary.firstRom.toFixed(1)}°</span>
-                      <ArrowRight className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-                      <span className="text-emerald-700">ล่าสุด: {summary.latestRom.toFixed(1)}°</span>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span
-                        className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] font-extrabold ${
-                          (summary.deltaRom ?? 0) >= 0
-                            ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                            : 'bg-rose-50 border-rose-200 text-rose-700'
-                        }`}
-                      >
-                        {(summary.deltaRom ?? 0) >= 0
-                          ? `+${(summary.deltaRom ?? 0).toFixed(1)}°`
-                          : `${(summary.deltaRom ?? 0).toFixed(1)}°`}
-                        {summary.percentGain !== null &&
-                          ` (${summary.percentGain >= 0 ? 'เพิ่มขึ้น' : 'ลดลง'} ${Math.abs(summary.percentGain).toFixed(1)}%)`}
-                      </span>
-                      {summary.romGainPerWeek !== null && (
-                        <span className="text-[10px] font-bold text-slate-500">
-                          เฉลี่ย {summary.romGainPerWeek >= 0 ? '+' : ''}
-                          {summary.romGainPerWeek.toFixed(1)}°/สัปดาห์
-                        </span>
-                      )}
-                    </div>
-                  </>
-                )
-              ) : (
-                <div className="text-xs text-slate-400">ยังไม่มีข้อมูลการวัด ROM จริง</div>
-              )}
-            </div>
-
-            {/* 2. Clinical Target ROM Achievement */}
-            <div className="rounded-2xl border border-teal-200 bg-white p-4 shadow-sm space-y-1.5">
-              <div className="flex items-center justify-between text-[11px] font-bold text-slate-500">
-                <span>ความสำเร็จเทียบเป้าหมายคลินิก</span>
-                <Target className="h-4 w-4 text-teal-600" />
-              </div>
-              {summary.latestTargetAchievementPct !== null ? (
-                <>
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="text-xl font-black text-teal-700">
-                      {summary.latestTargetAchievementPct.toFixed(1)}%
-                    </span>
-                    {summary.targetRomDeg !== null && summary.latestRom !== null && (
-                      <span className="text-[11px] font-bold text-slate-600">
-                        {summary.latestRom.toFixed(1)}° / เป้า {summary.targetRomDeg.toFixed(1)}°
-                      </span>
-                    )}
-                  </div>
-                  <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
-                    <div
-                      className="h-full rounded-full bg-gradient-to-r from-[#0284C7] to-[#10B981]"
-                      style={{ width: `${Math.min(100, summary.latestTargetAchievementPct)}%` }}
-                    />
-                  </div>
-                  <div className="text-[10px] font-semibold text-slate-500">
-                    {summary.remainingToTargetDeg !== null
-                      ? summary.remainingToTargetDeg <= 0
-                        ? 'บรรลุเป้าหมายองศาคลินิกแล้ว'
-                        : `เหลืออีก ${summary.remainingToTargetDeg.toFixed(1)}° จะถึงเป้าหมายคลินิก`
-                      : `รวม ${summary.exerciseBreakdown.length} ท่ากายภาพที่วัดผลจริง`}
-                  </div>
-                </>
-              ) : (
-                <div className="text-xs text-slate-400">บันทึกการประเมินครั้งแรกเพื่อเริ่มเทียบเป้าหมาย</div>
-              )}
-            </div>
-
-            {/* 3. Mahidol 0-6 & Pain VAS */}
-            <div className="rounded-2xl border border-sky-200 bg-white p-4 shadow-sm space-y-1.5">
-              <div className="flex items-center justify-between text-[11px] font-bold text-slate-500">
-                <span>คะแนนมหิดล (0-6) &amp; ระดับปวด VAS</span>
-                <Activity className="h-4 w-4 text-[#0F4C81]" />
-              </div>
-              {summary.firstScore !== null && summary.latestScore !== null ? (
-                <>
-                  <div className="flex items-center gap-1.5 text-sm font-black text-slate-900">
-                    <span>แรกรับ: {summary.firstScore}/6</span>
-                    <ArrowRight className="h-3.5 w-3.5 text-sky-600 shrink-0" />
-                    <span className="text-[#0F4C81]">ล่าสุด: {summary.latestScore}/6</span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span
-                      className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] font-extrabold ${
-                        (summary.deltaScore ?? 0) >= 0
-                          ? 'bg-sky-50 border-sky-200 text-[#0F4C81]'
-                          : 'bg-rose-50 border-rose-200 text-rose-700'
-                      }`}
-                    >
-                      {(summary.deltaScore ?? 0) >= 0
-                        ? `+${summary.deltaScore ?? 0} ระดับ`
-                        : `${summary.deltaScore ?? 0} ระดับ`}
-                    </span>
-                    {summary.firstPainVas !== null && summary.latestPainVas !== null && (
-                      <span
-                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-extrabold ${
-                          (summary.deltaPainVas ?? 0) <= 0
-                            ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                            : 'bg-rose-50 border-rose-200 text-rose-700'
-                        }`}
-                      >
-                        ปวด VAS: {summary.firstPainVas} → {summary.latestPainVas}/10
-                      </span>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="text-xs text-slate-400">ยังไม่มีคะแนนประเมิน 0-6</div>
-              )}
-            </div>
-
-            {/* 4. Visit Count, Channels & Duration */}
-            <div className="game-card-surface rounded-2xl border border-slate-200 bg-white p-4 space-y-1.5">
-              <div className="flex items-center justify-between text-[11px] font-bold text-slate-500">
-                <span>จำนวนครั้งจริง &amp; ช่วงเวลาติดตาม</span>
-                <Building2 className="h-4 w-4 text-teal-600" />
-              </div>
-              <div className="flex items-baseline justify-between gap-2">
-                <div className="text-xl font-black text-slate-900">
-                  {summary.totalVisits}{' '}
-                  <span className="text-xs font-bold text-slate-500">ครั้งจริง</span>
-                </div>
-                <span className="text-[11px] font-bold text-slate-600">
-                  ช่วงติดตาม {summary.elapsedDays} วัน
-                </span>
-              </div>
-              <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold">
-                <span className="text-emerald-700">คอร์สอัตโนมัติ {summary.courseAutoVisitCount}</span>
-                <span className="text-slate-300">|</span>
-                <span className="text-[#0F4C81]">บุคลากร {summary.staffVisitCount}</span>
-                <span className="text-slate-300">|</span>
-                <span className="text-teal-700">ตู้ Kiosk {summary.kioskVisitCount}</span>
-                <span className="text-slate-300">|</span>
-                <span className="text-slate-600">{summary.linkedFacilities.length} สาขา</span>
-              </div>
-            </div>
           </div>
 
           {/* Stock-Market-Style Total Rehab Percentage & Full-Score Index Card */}
@@ -2290,12 +2436,16 @@ export function PatientClinicalRecordPanel({
               <h3 className="text-xs font-black text-slate-900">
                 {chartViewMode === 'MONTHLY'
                   ? 'กราฟสรุปรายเดือน (0-6)'
-                  : 'กราฟพัฒนาการ (ROM & 0-6)'}
+                  : chartViewMode === 'MINIGAME'
+                    ? 'กราฟพัฒนาการมินิเกมฝึกสมอง (ความแม่นยำ %)'
+                    : chartViewMode === 'COMPARE'
+                      ? 'เปรียบเทียบ 2 รอบ (Visit-to-Visit)'
+                      : 'กราฟพัฒนาการ (ROM & 0-6)'}
               </h3>
 
               <div className="flex flex-wrap items-center gap-1.5">
-                {/* Primary View Switcher: Sessions vs Monthly Score Summary */}
-                <div className="inline-flex rounded-xl border border-sky-200 bg-sky-50/70 p-0.5 text-[10.5px] font-bold">
+                {/* Primary View Switcher matching Mockup: ROM & 0-6 | Minigame | Compare 2 Visits | Monthly */}
+                <div className="inline-flex flex-wrap rounded-xl border border-sky-200 bg-sky-50/70 p-0.5 text-[10.5px] font-bold gap-0.5">
                   <button
                     type="button"
                     data-testid="chart-tab-sessions"
@@ -2306,8 +2456,34 @@ export function PatientClinicalRecordPanel({
                         : 'text-[#0F4C81] hover:bg-white/80'
                     }`}
                   >
-                    รายครั้ง
+                    พัฒนาการ (ROM &amp; 0-6)
                   </button>
+                  <button
+                    type="button"
+                    data-testid="chart-tab-minigame"
+                    onClick={() => setChartViewMode('MINIGAME')}
+                    className={`rounded-lg px-2 py-1 cursor-pointer transition-colors ${
+                      chartViewMode === 'MINIGAME'
+                        ? 'bg-indigo-600 text-white shadow-xs'
+                        : 'text-indigo-800 hover:bg-white/80'
+                    }`}
+                  >
+                    มินิเกม ({unifiedSummary.minigame.totalRounds})
+                  </button>
+                  {pairComparison && (
+                    <button
+                      type="button"
+                      data-testid="chart-tab-compare"
+                      onClick={() => setChartViewMode('COMPARE')}
+                      className={`rounded-lg px-2 py-1 cursor-pointer transition-colors ${
+                        chartViewMode === 'COMPARE'
+                          ? 'bg-teal-600 text-white shadow-xs'
+                          : 'text-teal-800 hover:bg-white/80'
+                      }`}
+                    >
+                      เปรียบเทียบ 2 รอบ
+                    </button>
+                  )}
                   <button
                     type="button"
                     data-testid="chart-tab-monthly"
@@ -2965,6 +3141,269 @@ export function PatientClinicalRecordPanel({
                 )}
               </div>
             )}
+
+            {/* Dedicated Minigame Cognitive Progress Chart Tab */}
+            {chartViewMode === 'MINIGAME' && (
+              <div data-testid="minigame-progress-chart" className="space-y-3">
+                {minigameChartData.bars.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-indigo-200 bg-indigo-50/40 py-10 px-4 text-center space-y-1.5">
+                    <div className="text-xs font-black text-indigo-900">
+                      ยังไม่มีประวัติการเล่นมินิเกมฝึกสมองสำหรับผู้ป่วยรายนี้
+                    </div>
+                    <p className="text-[11px] text-slate-500 max-w-md mx-auto">
+                      เมื่อผู้ป่วยเล่นมินิเกมการ์ดกายภาพที่ตู้ Kiosk ระบบจะบันทึกคะแนนและวิเคราะห์ว่าดีขึ้น เท่าเดิม หรือควรพยายามเพิ่มให้อัตโนมัติ
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div
+                      className={`rounded-xl border px-3 py-2 text-xs flex flex-wrap items-center justify-between gap-2 ${verdictBannerClasses(unifiedSummary.minigame.verdict.tone)}`}
+                    >
+                      <div>
+                        <div className="font-black text-slate-900">
+                          {unifiedSummary.minigame.verdict.headlineTh}
+                        </div>
+                        <div className="text-[11px] font-semibold text-slate-600">
+                          {unifiedSummary.minigame.verdict.detailTh}
+                        </div>
+                      </div>
+                      <span
+                        className={`rounded-full border px-2.5 py-0.5 text-[10.5px] font-black ${verdictBadgeClasses(unifiedSummary.minigame.verdict.tone)}`}
+                      >
+                        {unifiedSummary.minigame.verdict.badgeTh}
+                      </span>
+                    </div>
+
+                    <div className="w-full overflow-hidden">
+                      <svg
+                        viewBox={`0 0 ${minigameChartData.width} ${minigameChartData.height}`}
+                        className="w-full h-auto"
+                        role="img"
+                        aria-label="กราฟความแม่นยำการเล่นมินิเกมฝึกสมองรายรอบ"
+                      >
+                        <defs>
+                          <linearGradient id="minigameBarGrad" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#4f46e5" stopOpacity="0.92" />
+                            <stop offset="100%" stopColor="#0284c7" stopOpacity="0.86" />
+                          </linearGradient>
+                        </defs>
+
+                        {[0, 25, 50, 75, 100].map((tick) => {
+                          const yVal =
+                            minigameChartData.padT + minigameChartData.plotH * (1 - tick / 100);
+                          return (
+                            <g key={tick}>
+                              <line
+                                x1={minigameChartData.padL}
+                                y1={yVal}
+                                x2={minigameChartData.width - minigameChartData.padR}
+                                y2={yVal}
+                                stroke={tick === 0 ? '#94a3b8' : '#e2e8f0'}
+                                strokeDasharray={tick === 0 ? undefined : '3 3'}
+                                strokeWidth="1"
+                              />
+                              <text
+                                x={minigameChartData.padL - 8}
+                                y={yVal + 3.5}
+                                textAnchor="end"
+                                fill="#475569"
+                                fontSize="9.5"
+                                fontWeight="700"
+                              >
+                                {tick}%
+                              </text>
+                            </g>
+                          );
+                        })}
+
+                        {/* 80% Target Line */}
+                        <line
+                          x1={minigameChartData.padL}
+                          y1={minigameChartData.target80Y}
+                          x2={minigameChartData.width - minigameChartData.padR}
+                          y2={minigameChartData.target80Y}
+                          stroke="#10b981"
+                          strokeDasharray="6 4"
+                          strokeWidth="1.4"
+                        />
+                        <text
+                          x={minigameChartData.width - minigameChartData.padR - 4}
+                          y={minigameChartData.target80Y - 5}
+                          textAnchor="end"
+                          fill="#047857"
+                          fontSize="9"
+                          fontWeight="800"
+                        >
+                          เป้าหมายดีเยี่ยม 80%
+                        </text>
+
+                        {minigameChartData.bars.map((bar) => (
+                          <g key={bar.id}>
+                            <rect
+                              x={bar.x}
+                              y={bar.y}
+                              width={bar.barW}
+                              height={bar.barH}
+                              rx="8"
+                              fill="url(#minigameBarGrad)"
+                            />
+                            <text
+                              x={bar.cx}
+                              y={Math.max(14, bar.y - 7)}
+                              textAnchor="middle"
+                              fill="#3730a3"
+                              fontSize="10"
+                              fontWeight="900"
+                            >
+                              {bar.accuracyPct}% ({bar.correct}/{bar.total})
+                            </text>
+                            <text
+                              x={bar.cx}
+                              y={minigameChartData.padT + minigameChartData.plotH + 17}
+                              textAnchor="middle"
+                              fill="#1e293b"
+                              fontSize="9.5"
+                              fontWeight="800"
+                            >
+                              รอบที่ {bar.roundNumber}
+                            </text>
+                            <text
+                              x={bar.cx}
+                              y={minigameChartData.padT + minigameChartData.plotH + 31}
+                              textAnchor="middle"
+                              fill="#64748b"
+                              fontSize="8.8"
+                              fontWeight="700"
+                            >
+                              {bar.dateShortTh}
+                            </text>
+                            {bar.deltaAccuracyFromPrev !== null && (
+                              <text
+                                x={bar.cx}
+                                y={minigameChartData.padT + minigameChartData.plotH + 45}
+                                textAnchor="middle"
+                                fill={bar.deltaAccuracyFromPrev >= 0 ? '#059669' : '#d97706'}
+                                fontSize="9"
+                                fontWeight="800"
+                              >
+                                {bar.deltaAccuracyFromPrev >= 0 ? '+' : ''}
+                                {bar.deltaAccuracyFromPrev}%
+                              </text>
+                            )}
+                          </g>
+                        ))}
+
+                        {minigameChartData.bars.length >= 2 && (
+                          <polyline
+                            fill="none"
+                            stroke="#4f46e5"
+                            strokeWidth="2.4"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            points={minigameChartData.trendPoints}
+                          />
+                        )}
+                      </svg>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Embedded Visit-to-Visit Comparator Tab */}
+            {chartViewMode === 'COMPARE' && pairComparison && (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-black text-slate-900">
+                    <GitCompare className="h-4 w-4 text-indigo-600" />
+                    <span>เปรียบเทียบพัฒนาการแบบเจาะลึก 2 รอบ</span>
+                  </div>
+                  <span className="rounded-full bg-indigo-50 border border-indigo-200 px-2.5 py-0.5 text-[10px] font-extrabold text-indigo-700">
+                    ห่างกัน {pairComparison.elapsedDays} วัน
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <select
+                    aria-label="เลือกรอบอ้างอิง Baseline A"
+                    value={pairComparison.baseline.id}
+                    onChange={(e) => setCompareBaselineId(e.target.value)}
+                    className="h-8 w-full rounded-xl border border-slate-200 bg-slate-50 px-2 text-[11px] font-bold text-slate-800"
+                  >
+                    {summary.visitsWithDelta.map(({ record }) => (
+                      <option key={record.id} value={record.id}>
+                        ครั้งที่ {record.visit_number} ({formatShortThaiDate(record.assessed_at)}) —{' '}
+                        {record.measured_rom_deg.toFixed(1)}° | {record.initial_score_0_to_6}/6
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    aria-label="เลือกรอบติดตามผล Follow-up B"
+                    value={pairComparison.followUp.id}
+                    onChange={(e) => setCompareFollowUpId(e.target.value)}
+                    className="h-8 w-full rounded-xl border border-indigo-200 bg-indigo-50/40 px-2 text-[11px] font-bold text-slate-800"
+                  >
+                    {summary.visitsWithDelta.map(({ record }) => (
+                      <option key={record.id} value={record.id}>
+                        ครั้งที่ {record.visit_number} ({formatShortThaiDate(record.assessed_at)}) —{' '}
+                        {record.measured_rom_deg.toFixed(1)}° | {record.initial_score_0_to_6}/6
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div
+                  className={`rounded-xl border px-3 py-2 text-xs font-extrabold ${
+                    pairComparison.verdictTone === 'emerald'
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                      : pairComparison.verdictTone === 'sky'
+                        ? 'border-sky-200 bg-sky-50 text-[#0F4C81]'
+                        : pairComparison.verdictTone === 'rose'
+                          ? 'border-amber-300 bg-amber-50 text-amber-900'
+                          : 'border-amber-200 bg-amber-50 text-amber-800'
+                  }`}
+                >
+                  {pairComparison.verdictTone === 'rose'
+                    ? `ท่านทำได้ไม่เลว พยายามมากขึ้นกว่านี้นะครับ • ${pairComparison.clinicalVerdictTh}`
+                    : `สรุปผลเปรียบเทียบ: ${pairComparison.clinicalVerdictTh}`}
+                </div>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-2.5">
+                    <div className="text-[10px] font-bold text-slate-500">องศา ROM</div>
+                    <div className="text-xs font-black text-slate-900">
+                      {pairComparison.baseline.measured_rom_deg.toFixed(1)}° → {pairComparison.followUp.measured_rom_deg.toFixed(1)}°
+                    </div>
+                    <div className={`text-[10.5px] font-black ${pairComparison.romDeltaDeg >= 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                      {pairComparison.romDeltaDeg >= 0 ? '+' : ''}{pairComparison.romDeltaDeg.toFixed(1)}°
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-2.5">
+                    <div className="text-[10px] font-bold text-slate-500">% เทียบเป้าหมาย</div>
+                    <div className="text-xs font-black text-slate-900">
+                      {pairComparison.baselineTargetPct.toFixed(1)}% → {pairComparison.followUpTargetPct.toFixed(1)}%
+                    </div>
+                    <div className={`text-[10.5px] font-black ${pairComparison.targetPctDelta >= 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                      {pairComparison.targetPctDelta >= 0 ? '+' : ''}{pairComparison.targetPctDelta.toFixed(1)}%
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-2.5">
+                    <div className="text-[10px] font-bold text-slate-500">ระดับมหิดล (0-6)</div>
+                    <div className="text-xs font-black text-slate-900">
+                      {pairComparison.baseline.initial_score_0_to_6}/6 → {pairComparison.followUp.initial_score_0_to_6}/6
+                    </div>
+                    <div className={`text-[10.5px] font-black ${pairComparison.scoreDelta >= 0 ? 'text-[#0F4C81]' : 'text-amber-700'}`}>
+                      {pairComparison.scoreDelta >= 0 ? '+' : ''}{pairComparison.scoreDelta} ระดับ
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-2.5">
+                    <div className="text-[10px] font-bold text-slate-500">ระดับปวด (VAS)</div>
+                    <div className="text-xs font-black text-slate-900">
+                      {pairComparison.painDelta !== null
+                        ? `${pairComparison.baseline.pain_vas_0_to_10}/10 → ${pairComparison.followUp.pain_vas_0_to_10}/10`
+                        : 'ไม่ได้ระบุ'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Always-Accessible Monthly Score Summary Breakdown Card */}
@@ -3068,440 +3507,350 @@ export function PatientClinicalRecordPanel({
             </div>
           )}
 
-          {/* Interactive 2-Visit Side-by-Side Deep Comparator */}
-          {pairComparison && (
-            <div className="rounded-3xl border border-indigo-200/80 bg-white p-5 shadow-sm space-y-3.5">
+          {/* Unified Per-Exercise & Minigame Breakdown Comparison Table (Mockup Bottom-Center Table) */}
+          {(overallBreakdown.length > 0 || unifiedSummary.minigame.totalRounds > 0) && (
+            <div
+              data-testid="unified-exercise-minigame-table"
+              className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-2.5"
+            >
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <GitCompare className="h-4 w-4 text-indigo-600" />
-                  <h3 className="text-sm font-black text-slate-900">
-                    เปรียบเทียบพัฒนาการแบบเจาะลึก 2 รอบ (Visit-to-Visit Comparator)
-                  </h3>
-                </div>
-                <span className="rounded-full bg-indigo-50 border border-indigo-200 px-2.5 py-0.5 text-[10px] font-extrabold text-indigo-700">
-                  ห่างกัน {pairComparison.elapsedDays} วัน
-                  {pairComparison.romGainPerWeek !== null && pairComparison.isSameExercise
-                    ? ` • เฉลี่ย ${pairComparison.romGainPerWeek >= 0 ? '+' : ''}${pairComparison.romGainPerWeek.toFixed(1)}°/สัปดาห์`
-                    : ''}
+                <h3 className="text-xs font-black text-slate-900">
+                  สรุปแยกรายท่ากายภาพและมินิเกม ({overallBreakdown.length + (unifiedSummary.minigame.totalRounds > 0 ? 1 : 0)} กลุ่ม)
+                </h3>
+                <span className="text-[10.5px] font-semibold text-slate-500">
+                  เทียบแรกรับ vs ล่าสุด แยกข้อต่อและมินิเกมแม่นยำ
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                <div className="space-y-1">
-                  <label className="block text-[10px] font-extrabold text-slate-500 uppercase">
-                    รอบอ้างอิง (Baseline A)
-                  </label>
-                  <select
-                    aria-label="เลือกรอบอ้างอิง Baseline A"
-                    value={pairComparison.baseline.id}
-                    onChange={(e) => setCompareBaselineId(e.target.value)}
-                    className="h-9 w-full rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-bold text-slate-800"
-                  >
-                    {summary.visitsWithDelta.map(({ record }) => (
-                      <option key={record.id} value={record.id}>
-                        ครั้งที่ {record.visit_number} ({formatShortThaiDate(record.assessed_at)}) —{' '}
-                        {record.measured_rom_deg.toFixed(1)}° | {record.initial_score_0_to_6}/6
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-[11px]">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-[10px] font-extrabold text-slate-500">
+                      <th className="py-1.5 pr-2">ท่า / กิจกรรม</th>
+                      <th className="py-1.5 px-2 text-right">แรกรับ</th>
+                      <th className="py-1.5 px-2 text-right">ล่าสุด</th>
+                      <th className="py-1.5 px-2 text-right">% เป้าหมาย</th>
+                      <th className="py-1.5 pl-2 text-right">สรุปแนวโน้ม</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {overallBreakdown.map((item) => {
+                      const rowVerdict = resolveExerciseRowVerdict(item);
+                      const isFocused =
+                        exerciseFilter === item.exerciseCode &&
+                        (sideFilter === 'ALL' || sideFilter === item.targetSide);
+                      return (
+                        <tr
+                          key={item.key}
+                          className={`transition-colors ${
+                            isFocused ? 'bg-emerald-50/50' : 'hover:bg-slate-50/80'
+                          }`}
+                        >
+                          <td className="py-2 pr-2 font-bold text-slate-900">
+                            <div className="flex items-center gap-1.5">
+                              <span className="truncate max-w-[190px]">{item.exerciseNameTh}</span>
+                              <span className="shrink-0 rounded bg-sky-100 px-1 py-0.5 text-[9.5px] font-extrabold text-[#0F4C81]">
+                                {formatSideTh(item.targetSide)}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="py-2 px-2 text-right font-semibold text-slate-600 tabular-nums whitespace-nowrap">
+                            {item.firstRomDeg.toFixed(1)}°
+                          </td>
+                          <td className="py-2 px-2 text-right font-black text-slate-900 tabular-nums whitespace-nowrap">
+                            {item.latestRomDeg.toFixed(1)}°
+                          </td>
+                          <td className="py-2 px-2 text-right font-extrabold text-emerald-700 tabular-nums whitespace-nowrap">
+                            ({item.latestTargetAchievementPct.toFixed(1)}%)
+                          </td>
+                          <td className="py-2 pl-2 text-right whitespace-nowrap">
+                            <div className="inline-flex items-center gap-1">
+                              <span
+                                className={`rounded-full border px-2 py-0.5 text-[9.5px] font-black ${verdictBadgeClasses(rowVerdict.tone)}`}
+                              >
+                                {rowVerdict.labelTh}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setExerciseFilter(item.exerciseCode);
+                                  setSideFilter(item.targetSide);
+                                  setChartMetricMode('ROM_DEG');
+                                  setChartViewMode('SESSIONS');
+                                }}
+                                title="ดูกราฟท่านี้"
+                                className="rounded-md border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[9.5px] font-extrabold text-[#0F4C81] hover:bg-sky-100 cursor-pointer"
+                              >
+                                กราฟ
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
 
-                <div className="space-y-1">
-                  <label className="block text-[10px] font-extrabold text-slate-500 uppercase">
-                    รอบติดตามผล (Follow-up B)
-                  </label>
-                  <select
-                    aria-label="เลือกรอบติดตามผล Follow-up B"
-                    value={pairComparison.followUp.id}
-                    onChange={(e) => setCompareFollowUpId(e.target.value)}
-                    className="h-9 w-full rounded-xl border border-indigo-200 bg-indigo-50/40 px-2.5 text-xs font-bold text-slate-800"
-                  >
-                    {summary.visitsWithDelta.map(({ record }) => (
-                      <option key={record.id} value={record.id}>
-                        ครั้งที่ {record.visit_number} ({formatShortThaiDate(record.assessed_at)}) —{' '}
-                        {record.measured_rom_deg.toFixed(1)}° | {record.initial_score_0_to_6}/6
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Objective Clinical Outcome Verdict */}
-              <div
-                className={`rounded-2xl border px-3.5 py-2.5 text-xs font-extrabold ${
-                  pairComparison.verdictTone === 'emerald'
-                    ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                    : pairComparison.verdictTone === 'sky'
-                      ? 'border-sky-200 bg-sky-50 text-[#0F4C81]'
-                      : pairComparison.verdictTone === 'rose'
-                        ? 'border-rose-200 bg-rose-50 text-rose-700'
-                        : 'border-amber-200 bg-amber-50 text-amber-800'
-                }`}
-              >
-                สรุปผลเปรียบเทียบทางคลินิก: {pairComparison.clinicalVerdictTh}
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-                <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                  <div className="text-[10px] font-bold text-slate-500">องศา ROM</div>
-                  <div className="mt-0.5 text-xs font-black text-slate-900">
-                    {pairComparison.baseline.measured_rom_deg.toFixed(1)}° →{' '}
-                    {pairComparison.followUp.measured_rom_deg.toFixed(1)}°
-                  </div>
-                  <div
-                    className={`mt-1 text-[11px] font-black ${
-                      pairComparison.romDeltaDeg >= 0 ? 'text-emerald-700' : 'text-rose-700'
-                    }`}
-                  >
-                    {pairComparison.romDeltaDeg >= 0 ? '+' : ''}
-                    {pairComparison.romDeltaDeg.toFixed(1)}°
-                    {pairComparison.romPercentChange !== null
-                      ? ` (${pairComparison.romPercentChange >= 0 ? '+' : ''}${pairComparison.romPercentChange.toFixed(1)}%)`
-                      : ''}
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                  <div className="text-[10px] font-bold text-slate-500">% เทียบเป้าหมาย</div>
-                  <div className="mt-0.5 text-xs font-black text-slate-900">
-                    {pairComparison.baselineTargetPct.toFixed(1)}% →{' '}
-                    {pairComparison.followUpTargetPct.toFixed(1)}%
-                  </div>
-                  <div
-                    className={`mt-1 text-[11px] font-black ${
-                      pairComparison.targetPctDelta >= 0 ? 'text-emerald-700' : 'text-rose-700'
-                    }`}
-                  >
-                    {pairComparison.targetPctDelta >= 0 ? '+' : ''}
-                    {pairComparison.targetPctDelta.toFixed(1)}%
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                  <div className="text-[10px] font-bold text-slate-500">ระดับมหิดล (0-6)</div>
-                  <div className="mt-0.5 text-xs font-black text-slate-900">
-                    {pairComparison.baseline.initial_score_0_to_6}/6 →{' '}
-                    {pairComparison.followUp.initial_score_0_to_6}/6
-                  </div>
-                  <div
-                    className={`mt-1 text-[11px] font-black ${
-                      pairComparison.scoreDelta >= 0 ? 'text-[#0F4C81]' : 'text-rose-700'
-                    }`}
-                  >
-                    {pairComparison.scoreDelta >= 0 ? '+' : ''}
-                    {pairComparison.scoreDelta} ระดับ
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                  <div className="text-[10px] font-bold text-slate-500">ระดับปวด (VAS)</div>
-                  {pairComparison.painDelta !== null ? (
-                    <>
-                      <div className="mt-0.5 text-xs font-black text-slate-900">
-                        {pairComparison.baseline.pain_vas_0_to_10}/10 →{' '}
-                        {pairComparison.followUp.pain_vas_0_to_10}/10
-                      </div>
-                      <div
-                        className={`mt-1 text-[11px] font-black ${
-                          pairComparison.painDelta <= 0 ? 'text-emerald-700' : 'text-rose-700'
-                        }`}
-                      >
-                        {pairComparison.painDelta === 0
-                          ? 'คงที่ (0)'
-                          : pairComparison.painDelta < 0
-                            ? `ลดลง ${Math.abs(pairComparison.painDelta)} (ดีขึ้น)`
-                            : `เพิ่มขึ้น +${pairComparison.painDelta}`}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="mt-1 text-[11px] font-semibold text-slate-400">ไม่ได้ระบุ VAS</div>
-                  )}
-                </div>
+                    {unifiedSummary.minigame.totalRounds > 0 &&
+                      unifiedSummary.minigame.firstSession &&
+                      unifiedSummary.minigame.latestSession && (
+                        <tr
+                          data-testid="unified-table-minigame-row"
+                          className="bg-indigo-50/35 hover:bg-indigo-50/70 transition-colors"
+                        >
+                          <td className="py-2 pr-2 font-bold text-indigo-950">
+                            <div className="flex items-center gap-1.5">
+                              <Gamepad2 className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+                              <span className="truncate max-w-[190px]">
+                                มินิเกมฝึกสมอง ({unifiedSummary.minigame.totalRounds} รอบ)
+                              </span>
+                            </div>
+                          </td>
+                          <td className="py-2 px-2 text-right font-semibold text-slate-600 tabular-nums whitespace-nowrap">
+                            {unifiedSummary.minigame.firstSession.correct}/
+                            {unifiedSummary.minigame.firstSession.total} (
+                            {unifiedSummary.minigame.firstSession.accuracyPct}%)
+                          </td>
+                          <td className="py-2 px-2 text-right font-black text-indigo-900 tabular-nums whitespace-nowrap">
+                            {unifiedSummary.minigame.latestSession.correct}/
+                            {unifiedSummary.minigame.latestSession.total} (
+                            {unifiedSummary.minigame.latestSession.accuracyPct}%)
+                          </td>
+                          <td className="py-2 px-2 text-right font-extrabold text-indigo-700 tabular-nums whitespace-nowrap">
+                            (เฉลี่ย {unifiedSummary.minigame.averageAccuracyPct?.toFixed(0)}%)
+                          </td>
+                          <td className="py-2 pl-2 text-right whitespace-nowrap">
+                            <div className="inline-flex items-center gap-1">
+                              <span
+                                className={`rounded-full border px-2 py-0.5 text-[9.5px] font-black ${verdictBadgeClasses(unifiedSummary.minigame.verdict.tone)}`}
+                              >
+                                {unifiedSummary.minigame.verdict.badgeTh}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setChartViewMode('MINIGAME')}
+                                title="ดูกราฟมินิเกม"
+                                className="rounded-md border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 text-[9.5px] font-extrabold text-indigo-800 hover:bg-indigo-100 cursor-pointer"
+                              >
+                                กราฟ
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
+        </div>
 
-          {/* Per-Exercise & Side Breakdown Comparison Table */}
-          {overallBreakdown.length > 0 && (
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className="text-sm font-black text-slate-900">
-                  ตารางเปรียบเทียบพัฒนาการแยกตามรายท่ากายภาพและข้าง ({overallBreakdown.length} กลุ่ม)
+        {/* SECTION D: Right Column — Unified Chronological Rehab & Minigame Timeline (Mockup Right Column) */}
+        <div className="md:col-span-12 xl:col-span-3 space-y-2.5 self-start">
+          <div
+            data-testid="unified-activity-timeline"
+            className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm space-y-2.5"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-slate-100 pb-2">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <History className="h-4 w-4 text-[#0F4C81] shrink-0" />
+                <h3 className="text-xs font-black text-slate-900 truncate">
+                  ประวัติการรักษา &amp; มินิเกม ({filteredUnifiedTimeline.length} ครั้ง)
                 </h3>
-                <span className="text-[11px] font-semibold text-slate-500">
-                  แยกคำนวณตามข้อต่อจริง ไม่นำองศาต่างท่ามาลบกัน
-                </span>
               </div>
+              {selectedMonthKey && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedMonthKey(null)}
+                  className="rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[9.5px] font-extrabold text-emerald-800 hover:bg-emerald-100 cursor-pointer"
+                >
+                  {formatThaiMonthYear(selectedMonthKey, 'short')} • ล้าง
+                </button>
+              )}
+            </div>
 
-              <div className="space-y-2.5">
-                {overallBreakdown.map((item) => {
-                  const isFocused =
-                    exerciseFilter === item.exerciseCode &&
-                    (sideFilter === 'ALL' || sideFilter === item.targetSide);
+            {/* Quick Kind Filter Tabs: All / Physio / Minigame */}
+            <div className="grid grid-cols-3 gap-1 rounded-xl border border-slate-200 bg-slate-50 p-0.5 text-[10px] font-extrabold">
+              <button
+                type="button"
+                onClick={() => setTimelineKindFilter('ALL')}
+                className={`rounded-lg py-1 cursor-pointer transition-colors ${
+                  timelineKindFilter === 'ALL'
+                    ? 'bg-[#0F4C81] text-white shadow-xs'
+                    : 'text-slate-600 hover:bg-white'
+                }`}
+              >
+                ทั้งหมด ({unifiedSummary.timeline.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setTimelineKindFilter('PHYSIO')}
+                className={`rounded-lg py-1 cursor-pointer transition-colors ${
+                  timelineKindFilter === 'PHYSIO'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:bg-white'
+                }`}
+              >
+                กายภาพ ({summary.totalVisits})
+              </button>
+              <button
+                type="button"
+                onClick={() => setTimelineKindFilter('MINIGAME')}
+                className={`rounded-lg py-1 cursor-pointer transition-colors ${
+                  timelineKindFilter === 'MINIGAME'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:bg-white'
+                }`}
+              >
+                มินิเกม ({unifiedSummary.minigame.totalRounds})
+              </button>
+            </div>
+
+            {filteredUnifiedTimeline.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 py-8 px-3 text-center text-[11px] text-slate-500">
+                ยังไม่มีประวัติกายภาพหรือการเล่นมินิเกมในเงื่อนไขที่เลือก
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-[640px] overflow-y-auto pr-0.5">
+                {filteredUnifiedTimeline.map((item, idx) => {
+                  const isMinigameItem = item.kind === 'minigame';
+                  const rec = item.physioRecord;
+                  const canDelete =
+                    Boolean(rec) &&
+                    !rec!.id.startsWith('kiosk-sess-') &&
+                    !rec!.id.startsWith('hist-sess-');
+                  const isSelectedCard = Boolean(rec && activeSelectedNode?.id === rec.id);
                   return (
                     <div
-                      key={item.key}
-                      className={`rounded-2xl border p-3.5 transition-colors ${
-                        isFocused
-                          ? 'border-emerald-400 bg-emerald-50/40'
-                          : 'border-slate-200 bg-slate-50/50 hover:border-sky-300'
+                      key={item.id}
+                      className={`rounded-2xl border p-3 space-y-1.5 transition-colors card-hover-lift animate-card-enter ${
+                        isMinigameItem
+                          ? 'border-indigo-200 bg-gradient-to-br from-indigo-50/60 via-white to-sky-50/40'
+                          : isSelectedCard
+                            ? 'border-emerald-400 bg-emerald-50/45 ring-1 ring-emerald-200'
+                            : idx === 0
+                              ? 'border-emerald-300 bg-emerald-50/35'
+                              : 'border-slate-200 bg-slate-50/50 hover:border-sky-300'
                       }`}
                     >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-start justify-between gap-1.5">
                         <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-xs font-black text-slate-900">
-                              {item.exerciseNameTh}
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span
+                              className={`rounded-md px-1.5 py-0.5 text-[9.5px] font-black text-white ${
+                                isMinigameItem ? 'bg-indigo-600' : 'bg-[#0F4C81]'
+                              }`}
+                            >
+                              {item.sequenceLabel}
+                              {idx === 0 ? ' (ล่าสุด)' : ''}
                             </span>
-                            <span className="rounded-md bg-sky-100 px-1.5 py-0.5 text-[10px] font-extrabold text-[#0F4C81]">
-                              ข้าง{formatSideTh(item.targetSide)}
-                            </span>
-                            <span className="rounded-md bg-slate-200/70 px-1.5 py-0.5 text-[10px] font-bold text-slate-700">
-                              {item.visitCount} ครั้ง
+                            <span
+                              className={`rounded-full border px-1.5 py-0.5 text-[9.5px] font-black ${verdictBadgeClasses(item.verdict.tone)}`}
+                            >
+                              {item.verdict.badgeTh}
                             </span>
                           </div>
-                          <div className="mt-1 text-[11px] text-slate-600">
-                            ครั้งแรก ({formatShortThaiDate(item.firstVisit.assessed_at)}):{' '}
-                            <span className="font-bold text-slate-800">{item.firstRomDeg.toFixed(1)}°</span>
-                            {' → '}
-                            ล่าสุด ({formatShortThaiDate(item.latestVisit.assessed_at)}):{' '}
-                            <span className="font-black text-emerald-700">{item.latestRomDeg.toFixed(1)}°</span>
-                            {' • '}
-                            เป้าหมาย {item.targetRomDeg.toFixed(0)}° ({item.latestTargetAchievementPct.toFixed(1)}%)
+                          <div className="mt-1 text-[10.5px] font-bold text-slate-600">
+                            {item.dateFullTh}
                           </div>
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-1.5">
+                        <div className="flex items-center gap-1 shrink-0">
                           <span
-                            className={`rounded-full border px-2.5 py-0.5 text-[11px] font-black ${
-                              item.trendStatus === 'IMPROVED'
-                                ? 'border-emerald-300 bg-emerald-100 text-emerald-800'
-                                : item.trendStatus === 'REGRESSED'
-                                  ? 'border-rose-300 bg-rose-100 text-rose-800'
-                                  : item.trendStatus === 'STABLE'
-                                    ? 'border-amber-300 bg-amber-100 text-amber-800'
-                                    : 'border-slate-200 bg-white text-slate-600'
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-black text-white ${
+                              isMinigameItem ? 'bg-indigo-600' : 'bg-emerald-600'
                             }`}
                           >
-                            {item.visitCount < 2
-                              ? 'ค่าตั้งต้น (รอบแรก)'
-                              : `${item.deltaRomDeg >= 0 ? '+' : ''}${item.deltaRomDeg.toFixed(1)}°`}
+                            {item.secondaryMetricLabel}
                           </span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setExerciseFilter(item.exerciseCode);
-                              setSideFilter(item.targetSide);
-                              setChartMetricMode('ROM_DEG');
-                            }}
-                            className="rounded-lg border border-sky-200 bg-white px-2.5 py-1 text-[10px] font-extrabold text-[#0F4C81] hover:bg-sky-50 cursor-pointer"
-                          >
-                            ดูกราฟท่านี้
-                          </button>
+                          {canDelete &&
+                            rec &&
+                            (confirmDeleteId === rec.id ? (
+                              <div className="inline-flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  disabled={deletingId === rec.id}
+                                  onClick={() => void handleDeleteAssessment(rec.id)}
+                                  className="rounded bg-rose-600 px-1.5 py-0.5 text-[9.5px] font-extrabold text-white cursor-pointer"
+                                >
+                                  ลบ
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteId(null)}
+                                  className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[9.5px] font-bold text-slate-600 cursor-pointer"
+                                >
+                                  ยกเลิก
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteId(rec.id)}
+                                className="rounded p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer"
+                                title="ลบรายการประเมินนี้"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            ))}
                         </div>
                       </div>
 
-                      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
-                        <div
-                          className="h-full rounded-full bg-gradient-to-r from-[#0284C7] to-[#10B981]"
-                          style={{ width: `${Math.min(100, item.latestTargetAchievementPct)}%` }}
-                        />
+                      <div className="text-[11.5px] font-black text-slate-900 leading-snug">
+                        {item.titleTh}
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-1 text-[10.5px]">
+                        <span className="font-extrabold text-[#0F4C81]">
+                          {item.primaryMetricLabel}
+                        </span>
+                        {item.deltaLabel && (
+                          <span
+                            className={`rounded-full px-1.5 py-0.5 text-[9.5px] font-black ${
+                              item.deltaPositive
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-amber-100 text-amber-900'
+                            }`}
+                          >
+                            {item.deltaLabel}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="text-[10px] font-semibold text-slate-500 truncate">
+                        {item.subtitleTh}
                       </div>
                     </div>
                   );
                 })}
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Chronological Individual History Timeline */}
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <History className="h-4 w-4 text-[#0F4C81]" />
-                <h3 className="text-sm font-black text-slate-900">
-                  ประวัติการรักษารายบุคคลเรียงตามลำดับเวลา ({timelineVisits.length} ครั้ง)
-                </h3>
-                {selectedMonthKey && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedMonthKey(null)}
-                    className="inline-flex items-center gap-1 rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-[10px] font-extrabold text-emerald-800 hover:bg-emerald-100 cursor-pointer"
-                  >
-                    <span>เดือน {formatThaiMonthYear(selectedMonthKey, 'full')}</span>
-                    <span className="text-emerald-600">• แสดงทุกเดือน</span>
-                  </button>
-                )}
-              </div>
-              <span className="text-[11px] font-semibold text-slate-500">
-                แสดงเฉพาะแฟ้มของ {selectedPatient?.fullName ?? '-'}
+            {/* Color Legend Footer matching Mockup */}
+            <div className="flex flex-wrap items-center justify-between gap-1.5 border-t border-slate-100 pt-2 text-[10px] font-bold text-slate-600">
+              <span className="inline-flex items-center gap-1">
+                <span className="h-2.5 w-2.5 rounded-sm bg-[#0284C7]" />
+                = องศา ROM (°)
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="h-2.5 w-2.5 rounded-sm bg-emerald-600" />
+                = ระดับ (0-6)
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="h-2.5 w-2.5 rounded-sm bg-indigo-600" />
+                = มินิเกม (%)
               </span>
             </div>
-
-            {timelineVisits.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 py-8 px-4 text-center text-xs text-slate-500">
-                ยังไม่มีประวัติการประเมินในเงื่อนไขที่เลือก
-              </div>
-            ) : (
-              <div className="space-y-3 max-h-[540px] overflow-y-auto pr-1">
-                {timelineVisits
-                  .slice()
-                  .reverse()
-                  .map(({ record, deltaFromPrevRom, targetAchievementPct }) => {
-                    const isCourseAuto = record.source_channel === 'COURSE_AUTO_CALCULATED';
-                    const isKiosk = record.source_channel === 'KIOSK_SESSION_AUTO_SYNC';
-                    const isCameraAi = record.measurement_method === 'CAMERA_AI_LIVE';
-                    const isSelectedCard = activeSelectedNode?.id === record.id;
-                    const exerciseDotColor =
-                      multiExerciseGrouping.colorByExerciseCode[
-                        (record.exercise_code || '').toUpperCase()
-                      ] ?? '#059669';
-                    const canDelete =
-                      !record.id.startsWith('kiosk-sess-') && !record.id.startsWith('hist-sess-');
-                    return (
-                      <div
-                        key={record.id}
-                        className={`rounded-2xl border p-4 space-y-2 transition-colors card-hover-lift animate-card-enter ${
-                          isSelectedCard
-                            ? 'border-emerald-400 bg-emerald-50/35 ring-1 ring-emerald-200'
-                            : 'border-slate-200 bg-slate-50/60 hover:border-sky-300'
-                        }`}
-                      >
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span
-                              className="h-2.5 w-2.5 rounded-full shrink-0"
-                              style={{ backgroundColor: exerciseDotColor }}
-                            />
-                            <span className="rounded-full bg-[#0F4C81] px-2.5 py-0.5 text-[11px] font-extrabold text-white">
-                              ครั้งที่ {record.visit_number}
-                            </span>
-                            <span className="text-xs font-bold text-slate-700">
-                              {formatThaiDateTime(record.assessed_at)}
-                            </span>
-                            <span
-                              className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${
-                                isCourseAuto
-                                  ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
-                                  : isCameraAi
-                                    ? 'border-indigo-200 bg-indigo-50 text-indigo-800'
-                                    : isKiosk
-                                      ? 'border-teal-200 bg-teal-50 text-teal-800'
-                                      : 'border-sky-200 bg-sky-50 text-[#0F4C81]'
-                              }`}
-                            >
-                              {isCourseAuto
-                                ? 'คำนวณอัตโนมัติจากคอร์ส'
-                                : isCameraAi
-                                  ? 'วัดด้วยกล้อง AI'
-                                  : isKiosk
-                                    ? 'ซิงก์จากตู้ Kiosk'
-                                    : 'ประเมินโดยบุคลากร'}
-                            </span>
-                          </div>
-
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="rounded-full bg-emerald-600 px-2.5 py-0.5 text-[11px] font-extrabold text-white">
-                              ระดับ {record.initial_score_0_to_6} / 6
-                            </span>
-                            <span className="rounded-full border border-emerald-300 bg-white px-2.5 py-0.5 text-[11px] font-black text-emerald-800">
-                              ROM {record.measured_rom_deg.toFixed(1)}° ({targetAchievementPct.toFixed(0)}%)
-                              {deltaFromPrevRom !== null && (
-                                <span
-                                  className={`ml-1 ${
-                                    deltaFromPrevRom >= 0 ? 'text-emerald-600' : 'text-rose-600'
-                                  }`}
-                                >
-                                  ({deltaFromPrevRom >= 0 ? `+${deltaFromPrevRom.toFixed(1)}°` : `${deltaFromPrevRom.toFixed(1)}°`})
-                                </span>
-                              )}
-                            </span>
-                            {canDelete &&
-                              (confirmDeleteId === record.id ? (
-                                <div className="inline-flex items-center gap-1">
-                                  <button
-                                    type="button"
-                                    disabled={deletingId === record.id}
-                                    onClick={() => void handleDeleteAssessment(record.id)}
-                                    className="rounded-lg bg-rose-600 px-2 py-0.5 text-[10px] font-extrabold text-white cursor-pointer disabled:opacity-50"
-                                  >
-                                    {deletingId === record.id ? 'กำลังลบ...' : 'ยืนยันลบ'}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setConfirmDeleteId(null)}
-                                    className="rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-bold text-slate-600 cursor-pointer"
-                                  >
-                                    ยกเลิก
-                                  </button>
-                                </div>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => setConfirmDeleteId(record.id)}
-                                  className="rounded-lg p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer"
-                                  title="ลบรายการประเมินนี้"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                              ))}
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 gap-1 text-[11px] text-slate-600 sm:grid-cols-2">
-                          <div>
-                            <span className="font-bold text-slate-700">สถานที่รับบริการ:</span>{' '}
-                            {record.facility_name}
-                          </div>
-                          <div>
-                            <span className="font-bold text-slate-700">ผู้บันทึกและตรวจประเมิน:</span>{' '}
-                            {record.assessor_staff_name || 'บุคลากรคลินิก'}
-                          </div>
-                          <div className="sm:col-span-2">
-                            <span className="font-bold text-slate-700">ท่ากายภาพ / ข้าง:</span>{' '}
-                            {record.exercise_name_th || record.exercise_code} (ข้าง
-                            {formatSideTh(record.target_side)}) • เป้าหมาย {record.target_rom_deg.toFixed(0)}°
-                            {record.completed_reps ? (
-                              <span className="ml-2 text-teal-700 font-semibold">
-                                • ทำครบ {record.completed_reps} ครั้ง
-                              </span>
-                            ) : null}
-                            {record.pain_vas_0_to_10 !== null &&
-                              record.pain_vas_0_to_10 !== undefined && (
-                                <span className="ml-2 text-amber-700 font-semibold">
-                                  • Pain VAS: {record.pain_vas_0_to_10}/10
-                                </span>
-                              )}
-                          </div>
-                        </div>
-
-                        {record.chief_complaint && (
-                          <div className="rounded-xl bg-white border border-slate-200/80 px-3 py-2 text-xs text-slate-700">
-                            <span className="font-bold text-slate-900">อาการแรกรับ/ครั้งนี้:</span>{' '}
-                            {record.chief_complaint}
-                          </div>
-                        )}
-
-                        {record.clinical_handover_note && (
-                          <div className="rounded-xl bg-sky-50/70 border border-sky-200/80 px-3 py-2 text-xs text-slate-800">
-                            <span className="font-bold text-[#0F4C81]">บันทึกส่งต่อการรักษา:</span>{' '}
-                            {record.clinical_handover_note}
-                          </div>
-                        )}
-
-                        {record.next_session_goal && (
-                          <div className="text-[11px] font-semibold text-emerald-700">
-                            เป้าหมายถัดไป: {record.next_session_goal}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-              </div>
-            )}
           </div>
         </div>
       </div>
+
+      {/* Patient-Friendly Weekly / Progress Summary Modal (with Comparison Bar Chart & Print) */}
+      {patientSummaryReport && (
+        <PatientProgressSummaryModal
+          open={patientSummaryModalOpen}
+          report={patientSummaryReport}
+          onClose={() => setPatientSummaryModalOpen(false)}
+        />
+      )}
 
       {/* Live Camera AI Clinical ROM Measurement Modal */}
       <ClinicalRomLiveMeasureModal

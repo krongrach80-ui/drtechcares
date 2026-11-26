@@ -113,6 +113,7 @@ export interface PatientBiometricIndexEntry {
   extraEmbeddings?: number[][];
   todayRoutine?: DailyScheduleDay | null;
   rehabSchedules?: RehabScheduleItem[];
+  recentSessions?: RehabSessionRecord[];
   todayExercises?: TodayPrescribedExerciseItem[];
   hasAppointmentToday?: boolean;
   completedToday?: boolean;
@@ -394,7 +395,13 @@ export interface RehabSessionRecord {
   painStopTriggered: boolean;
   aiFeedback: string;
   kinematicsReplay: { tMs: number; angleDeg: number }[];
-  minigameScore?: { correct: number; total: number; category: string };
+  minigameScore?: {
+    correct: number;
+    total: number;
+    category: string;
+    durationSec?: number;
+    accuracyPct?: number;
+  };
   createdAt: string;
 }
 
@@ -549,6 +556,7 @@ export interface KioskFaceVerifyResponse extends BiometricVerificationResult {
   } | null;
   todayRoutine?: DailyScheduleDay | null;
   rehabSchedules?: RehabScheduleItem[];
+  recentSessions?: RehabSessionRecord[];
   todayExercises?: TodayPrescribedExerciseItem[];
   hasAppointmentToday?: boolean;
   completedToday?: boolean;

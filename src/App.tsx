@@ -13,8 +13,16 @@ import {
   type ManagedExerciseRecord,
   type ModpackRecord,
   type PatientRecord,
+  type RehabSessionRecord,
   type UserAccount,
 } from '@drtechcares/api-client';
+import { convertRehabSessionToAssessment } from './lib/clinicalAssessmentStore';
+import { computeLongitudinalProgressSummary, type PatientClinicalAssessmentRecord } from './types/clinicalAssessment';
+import {
+  buildPatientProgressSummaryReport,
+  buildUnifiedRehabMinigameSummary,
+} from './utils/unifiedRehabMinigameSummary';
+import { PatientProgressSummaryModal } from './components/PatientProgressSummaryModal';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import {
   buildTtsProxyUrl,
@@ -521,6 +529,8 @@ export function App() {
   const [randomHandSide, setRandomHandSide] = useState<HandChallengeSide>(() => pickRandomHandSide());
   const [completedTodaySession, setCompletedTodaySession] = useState(false);
   const [completedTodayExerciseIds, setCompletedTodayExerciseIds] = useState<string[]>([]);
+  const [liveKioskSessions, setLiveKioskSessions] = useState<RehabSessionRecord[]>([]);
+  const [showPatientSummaryModal, setShowPatientSummaryModal] = useState(false);
 
   const rehabPatientProp = useMemo(() => {
     if (!authenticatedPatient) return undefined;
@@ -544,7 +554,35 @@ export function App() {
     setRandomHandSide(pickRandomHandSide());
     setCompletedTodaySession(false);
     setCompletedTodayExerciseIds([]);
+    setLiveKioskSessions(authenticatedPatient?.recentSessions ?? []);
+    setShowPatientSummaryModal(false);
   }, [authenticatedPatient?.patient.id]);
+
+  const { kioskUnifiedProgress, kioskPatientSummaryReport } = useMemo(() => {
+    if (!authenticatedPatient) {
+      return { kioskUnifiedProgress: null, kioskPatientSummaryReport: null };
+    }
+    const pat = authenticatedPatient.patient;
+    const derivedAssessments: PatientClinicalAssessmentRecord[] = [];
+    for (const s of liveKioskSessions) {
+      if (s.patientId !== pat.id) continue;
+      const converted = convertRehabSessionToAssessment(s, pat);
+      if (converted) derivedAssessments.push(converted);
+    }
+    const longitudinalSummary = computeLongitudinalProgressSummary(derivedAssessments, 'ALL');
+    const unified = buildUnifiedRehabMinigameSummary({
+      patientId: pat.id,
+      longitudinalSummary,
+      sessions: liveKioskSessions,
+    });
+    const report = buildPatientProgressSummaryReport({
+      patientName: pat.fullName,
+      patientHn: pat.hn,
+      unifiedSummary: unified,
+      assessments: derivedAssessments,
+    });
+    return { kioskUnifiedProgress: unified, kioskPatientSummaryReport: report };
+  }, [authenticatedPatient, liveKioskSessions]);
 
   const overviewScheduleState = useMemo(() => {
     if (route !== '/' || !authenticatedPatient) {
@@ -894,7 +932,7 @@ export function App() {
           ? metrics.completedReps
           : ex.target_reps;
       try {
-        await apiClient.recordRehabSession({
+        const savedSession = await apiClient.recordRehabSession({
           patientId: authenticatedPatient.patient.id,
           activityType: 'physio_exercise',
           exerciseId: ex.catalog_exercise_id ?? ex.exercise_id,
@@ -918,8 +956,36 @@ export function App() {
           scheduledDate: overviewScheduleState.todaySchedule.todayIso,
           markDailyCompleted: allDoneNow,
         });
+        if (savedSession?.id) {
+          setLiveKioskSessions((prev) => [
+            savedSession,
+            ...prev.filter((item) => item.id !== savedSession.id),
+          ]);
+        }
       } catch {
         // Keep Kiosk flow responsive even if offline
+        const localFallback: RehabSessionRecord = {
+          id: `local-physio-${Date.now()}`,
+          patientId: authenticatedPatient.patient.id,
+          activityType: 'physio_exercise',
+          exerciseId: ex.catalog_exercise_id ?? ex.exercise_id,
+          exerciseName: ex.name_th,
+          bodySide:
+            ex.prescribed_side === 'LEFT'
+              ? 'LEFT'
+              : ex.prescribed_side === 'RIGHT'
+                ? 'RIGHT'
+                : 'BOTH',
+          completedSets: ex.target_sets ?? 1,
+          completedReps,
+          accuracyPercent: 100,
+          maxRomDeg: peakRom,
+          painStopTriggered: false,
+          aiFeedback: `Completed prescribed ${ex.name_th} (${completedReps} reps)`,
+          kinematicsReplay: [],
+          createdAt: new Date().toISOString(),
+        };
+        setLiveKioskSessions((prev) => [localFallback, ...prev]);
       }
     };
 
@@ -987,7 +1053,7 @@ export function App() {
         markDailyRehabDone();
         const accuracy = Math.round((summary.correct / Math.max(1, summary.total)) * 100);
         try {
-          await apiClient.recordRehabSession({
+          const savedSession = await apiClient.recordRehabSession({
             patientId: authenticatedPatient.patient.id,
             activityType: 'minigame',
             exerciseId: 'cognitive-card-game',
@@ -1003,8 +1069,31 @@ export function App() {
             scheduledDate: todaySchedule.todayIso,
             markDailyCompleted: true,
           });
+          if (savedSession?.id) {
+            setLiveKioskSessions((prev) => [
+              savedSession,
+              ...prev.filter((item) => item.id !== savedSession.id),
+            ]);
+          }
         } catch {
           // Allow patient summary screen to remain responsive even if offline
+          const localMg: RehabSessionRecord = {
+            id: `local-mg-${Date.now()}`,
+            patientId: authenticatedPatient.patient.id,
+            activityType: 'minigame',
+            exerciseId: 'cognitive-card-game',
+            exerciseName: 'มินิเกมฝึกสมอง (การ์ดกายภาพ)',
+            completedSets: 1,
+            completedReps: summary.total,
+            accuracyPercent: accuracy,
+            maxRomDeg: 0,
+            painStopTriggered: false,
+            aiFeedback: `Cognitive Accuracy ${accuracy}% (${summary.correct}/${summary.total})`,
+            kinematicsReplay: [],
+            minigameScore: summary,
+            createdAt: new Date().toISOString(),
+          };
+          setLiveKioskSessions((prev) => [localMg, ...prev]);
         }
       };
 
@@ -1073,6 +1162,69 @@ export function App() {
                   </span>
                 </p>
 
+                {kioskUnifiedProgress && kioskUnifiedProgress.overall.totalActivities > 0 && (
+                  <div
+                    data-testid="kiosk-completed-unified-summary"
+                    className={`mt-5 rounded-2xl border-2 p-4 text-left space-y-2.5 ${
+                      kioskUnifiedProgress.overall.verdict.tone === 'emerald'
+                        ? 'border-emerald-300 bg-emerald-50/80'
+                        : kioskUnifiedProgress.overall.verdict.tone === 'amber'
+                          ? 'border-amber-300 bg-amber-50/85'
+                          : 'border-sky-300 bg-sky-50/80'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span
+                        className={`inline-flex items-center rounded-full px-3 py-0.5 text-xs font-black text-white ${
+                          kioskUnifiedProgress.overall.verdict.tone === 'emerald'
+                            ? 'bg-emerald-600'
+                            : kioskUnifiedProgress.overall.verdict.tone === 'amber'
+                              ? 'bg-amber-600'
+                              : 'bg-[#0F4C81]'
+                        }`}
+                      >
+                        {kioskUnifiedProgress.overall.verdict.badgeTh}
+                      </span>
+                      {kioskUnifiedProgress.overall.combinedScorePct !== null && (
+                        <span className="text-xs font-black text-slate-800">
+                          คะแนนรวมซิงก์ {kioskUnifiedProgress.overall.combinedScorePct.toFixed(1)}%
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-base font-black text-slate-900">
+                      {kioskUnifiedProgress.overall.verdict.headlineTh}
+                    </p>
+                    <p className="text-xs font-semibold text-slate-700">
+                      {kioskUnifiedProgress.overall.verdict.detailTh}
+                    </p>
+                    <p className="text-xs font-bold text-[#0F4C81]">
+                      {kioskUnifiedProgress.overall.verdict.adviceTh}
+                    </p>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 pt-1">
+                      <div className="rounded-xl bg-white/95 border border-emerald-200 px-3 py-2 text-xs">
+                        <div className="font-extrabold text-[#0F4C81]">
+                          กายภาพบำบัด ({kioskUnifiedProgress.rehab.verdict.badgeTh})
+                        </div>
+                        <div className="font-bold text-slate-700 mt-0.5">
+                          {kioskUnifiedProgress.rehab.totalVisits > 0
+                            ? `ระดับ ${kioskUnifiedProgress.rehab.latestScore0To6}/6 • ROM ${kioskUnifiedProgress.rehab.latestRomDeg?.toFixed(1)}° (${kioskUnifiedProgress.rehab.latestTargetPct?.toFixed(0)}%)`
+                            : 'รอข้อมูลฝึกกายภาพ'}
+                        </div>
+                      </div>
+                      <div className="rounded-xl bg-white/95 border border-indigo-200 px-3 py-2 text-xs">
+                        <div className="font-extrabold text-indigo-800">
+                          มินิเกมฝึกสมอง ({kioskUnifiedProgress.minigame.verdict.badgeTh})
+                        </div>
+                        <div className="font-bold text-slate-700 mt-0.5">
+                          {kioskUnifiedProgress.minigame.latestSession
+                            ? `คะแนน ${kioskUnifiedProgress.minigame.latestSession.correct}/${kioskUnifiedProgress.minigame.latestSession.total} (${kioskUnifiedProgress.minigame.latestSession.accuracyPct}%)`
+                            : 'ยังไม่ได้เล่นมินิเกม'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {todayExercises.length > 0 && (
                   <div className="mt-6 space-y-2.5 text-left max-h-60 overflow-y-auto pr-1 animate-stagger-children">
                     {todayExercises.map((item, idx) => (
@@ -1102,7 +1254,18 @@ export function App() {
                   </div>
                 )}
 
-                <div className="mt-7">
+                <div className="mt-7 space-y-2.5">
+                  {kioskPatientSummaryReport && (
+                    <button
+                      type="button"
+                      data-testid="kiosk-open-progress-summary-btn"
+                      onClick={() => setShowPatientSummaryModal(true)}
+                      className="btn-tactile w-full py-3.5 px-6 rounded-2xl border-2 border-emerald-500 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 font-black text-sm sm:text-base cursor-pointer transition inline-flex items-center justify-center gap-2"
+                    >
+                      <Calendar className="h-5 w-5 text-emerald-700" />
+                      <span>ดูสรุปผลการฝึกและกราฟเทียบครั้งก่อน</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={handleExitToLogin}
@@ -1113,6 +1276,14 @@ export function App() {
                 </div>
               </div>
             </div>
+
+            {kioskPatientSummaryReport && (
+              <PatientProgressSummaryModal
+                open={showPatientSummaryModal}
+                report={kioskPatientSummaryReport}
+                onClose={() => setShowPatientSummaryModal(false)}
+              />
+            )}
 
             <button
               type="button"
@@ -1258,6 +1429,81 @@ export function App() {
                   </div>
                 </div>
 
+                {kioskUnifiedProgress && kioskUnifiedProgress.overall.totalActivities > 0 && (
+                  <div
+                    data-testid="kiosk-overview-unified-summary"
+                    className={`mt-5 rounded-2xl border-2 p-4 text-left space-y-2.5 ${
+                      kioskUnifiedProgress.overall.verdict.tone === 'emerald'
+                        ? 'border-emerald-300 bg-emerald-50/80'
+                        : kioskUnifiedProgress.overall.verdict.tone === 'amber'
+                          ? 'border-amber-300 bg-amber-50/85'
+                          : 'border-sky-300 bg-sky-50/80'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span
+                        className={`inline-flex items-center rounded-full px-3 py-0.5 text-xs font-black text-white ${
+                          kioskUnifiedProgress.overall.verdict.tone === 'emerald'
+                            ? 'bg-emerald-600'
+                            : kioskUnifiedProgress.overall.verdict.tone === 'amber'
+                              ? 'bg-amber-600'
+                              : 'bg-[#0F4C81]'
+                        }`}
+                      >
+                        {kioskUnifiedProgress.overall.verdict.badgeTh}
+                      </span>
+                      {kioskUnifiedProgress.overall.combinedScorePct !== null && (
+                        <span className="text-xs font-black text-slate-800">
+                          คะแนนรวมซิงก์ {kioskUnifiedProgress.overall.combinedScorePct.toFixed(1)}%
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-base font-black text-slate-900">
+                      {kioskUnifiedProgress.overall.verdict.headlineTh}
+                    </p>
+                    <p className="text-xs font-semibold text-slate-700">
+                      {kioskUnifiedProgress.overall.verdict.detailTh}
+                    </p>
+                    <p className="text-xs font-bold text-[#0F4C81]">
+                      {kioskUnifiedProgress.overall.verdict.adviceTh}
+                    </p>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 pt-1">
+                      <div className="rounded-xl bg-white/95 border border-emerald-200 px-3 py-2 text-xs">
+                        <div className="font-extrabold text-[#0F4C81]">
+                          กายภาพบำบัด ({kioskUnifiedProgress.rehab.verdict.badgeTh})
+                        </div>
+                        <div className="font-bold text-slate-700 mt-0.5">
+                          {kioskUnifiedProgress.rehab.totalVisits > 0
+                            ? `ระดับ ${kioskUnifiedProgress.rehab.latestScore0To6}/6 • ROM ${kioskUnifiedProgress.rehab.latestRomDeg?.toFixed(1)}° (${kioskUnifiedProgress.rehab.latestTargetPct?.toFixed(0)}%)`
+                            : 'รอข้อมูลฝึกกายภาพ'}
+                        </div>
+                      </div>
+                      <div className="rounded-xl bg-white/95 border border-indigo-200 px-3 py-2 text-xs">
+                        <div className="font-extrabold text-indigo-800">
+                          มินิเกมฝึกสมอง ({kioskUnifiedProgress.minigame.verdict.badgeTh})
+                        </div>
+                        <div className="font-bold text-slate-700 mt-0.5">
+                          {kioskUnifiedProgress.minigame.latestSession
+                            ? `คะแนน ${kioskUnifiedProgress.minigame.latestSession.correct}/${kioskUnifiedProgress.minigame.latestSession.total} (${kioskUnifiedProgress.minigame.latestSession.accuracyPct}%)`
+                            : 'ยังไม่ได้เล่นมินิเกม'}
+                        </div>
+                      </div>
+                    </div>
+                    {kioskPatientSummaryReport && (
+                      <div className="pt-1 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setShowPatientSummaryModal(true)}
+                          className="btn-tactile inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 px-3.5 py-1.5 text-xs font-black text-white shadow-xs cursor-pointer"
+                        >
+                          <Calendar className="h-3.5 w-3.5" />
+                          <span>เปิดกราฟสรุปเทียบครั้งก่อน</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {todayExercises.length > 0 && (() => {
                   const completedQuestCount = todayExercises.filter(
                     (item) => item.status === 'COMPLETED' || completedTodayExerciseIds.includes(item.id),
@@ -1396,6 +1642,14 @@ export function App() {
                 </div>
               </div>
             </div>
+
+            {kioskPatientSummaryReport && (
+              <PatientProgressSummaryModal
+                open={showPatientSummaryModal}
+                report={kioskPatientSummaryReport}
+                onClose={() => setShowPatientSummaryModal(false)}
+              />
+            )}
           </div>
         );
       }
@@ -1520,10 +1774,13 @@ export function App() {
             </div>
             <PhysicalCardGame
               patientName={`${authenticatedPatient.patient.fullName} (${authenticatedPatient.patient.hn})`}
+              patientId={authenticatedPatient.patient.id}
+              previousMinigameSessions={liveKioskSessions}
               allowReplay={false}
               onSessionFinished={saveTrainingSession}
               onComplete={() => {
                 markDailyRehabDone();
+                setShowPatientSummaryModal(true);
                 setTrainingStage('overview');
               }}
             />

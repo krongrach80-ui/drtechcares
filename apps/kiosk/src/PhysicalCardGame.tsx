@@ -39,6 +39,11 @@ import {
   GameXpProgressBar,
 } from '../../../src/components/GameJuiceEffects';
 import { playGameSfx } from '../../../src/lib/gameUiSfx';
+import type { RehabSessionRecord } from '@drtechcares/api-client';
+import {
+  buildPatientMinigameSummary,
+  evaluateMinigameRoundVerdict,
+} from '../../../src/utils/unifiedRehabMinigameSummary';
 
 /**
  * Resolves giant senior-accessible Tailwind typography classes for minigame questions
@@ -664,6 +669,8 @@ export interface PhysicalCardGameSummary {
 
 interface PhysicalCardGameProps {
   patientName: string;
+  patientId?: string;
+  previousMinigameSessions?: readonly RehabSessionRecord[];
   onComplete: (summary: PhysicalCardGameSummary) => void;
   onSessionFinished?: (summary: PhysicalCardGameSummary) => Promise<void> | void;
   allowReplay?: boolean;
@@ -994,6 +1001,8 @@ function MinigameVoiceBar({
 
 export function PhysicalCardGame({
   patientName,
+  patientId,
+  previousMinigameSessions,
   onComplete,
   onSessionFinished,
   allowReplay = true,
@@ -2333,6 +2342,33 @@ export function PhysicalCardGame({
   if (completedSummary) {
     const earnedStars =
       completedSummary.accuracyPct >= 80 ? 3 : completedSummary.accuracyPct >= 50 ? 2 : 1;
+    const priorSummary =
+      patientId && previousMinigameSessions && previousMinigameSessions.length > 0
+        ? buildPatientMinigameSummary(patientId, previousMinigameSessions)
+        : null;
+    const prevRound = priorSummary?.latestSession ?? null;
+    const roundVerdict = evaluateMinigameRoundVerdict({
+      currentAccuracyPct: completedSummary.accuracyPct,
+      currentCorrect: completedSummary.correct,
+      currentTotal: completedSummary.total,
+      currentDurationSec: completedSummary.durationSec,
+      previousAccuracyPct: prevRound ? prevRound.accuracyPct : null,
+      previousCorrect: prevRound ? prevRound.correct : null,
+      previousDurationSec: prevRound ? prevRound.durationSec : null,
+    });
+    const verdictToneBox =
+      roundVerdict.tone === 'emerald'
+        ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
+        : roundVerdict.tone === 'amber'
+          ? 'border-amber-300 bg-amber-50 text-amber-950'
+          : 'border-sky-300 bg-sky-50 text-[#0F4C81]';
+    const verdictBadgeBox =
+      roundVerdict.tone === 'emerald'
+        ? 'bg-emerald-600 text-white'
+        : roundVerdict.tone === 'amber'
+          ? 'bg-amber-600 text-white'
+          : 'bg-[#0F4C81] text-white';
+
     return (
       <div className="relative w-full flex-1 flex flex-col items-center justify-center rounded-3xl bg-white p-6 sm:p-12 shadow-xl border-2 border-emerald-200 text-center space-y-6 animate-popup-spring">
         <GameCelebrationBurst
@@ -2351,7 +2387,11 @@ export function PhysicalCardGame({
         </div>
 
         <div className="flex flex-col items-center justify-center gap-2.5">
-          <DrTechCareMascot pose="celebrating" isSpeaking={isSpeaking} size="lg" />
+          <DrTechCareMascot
+            pose={roundVerdict.code === 'TRY_HARDER' ? 'encouraging' : 'celebrating'}
+            isSpeaking={isSpeaking}
+            size="lg"
+          />
           <GameStarRating earned={earnedStars} total={3} size="lg" />
           <div className="flex flex-wrap items-center justify-center gap-2">
             <GameRankBadge pct={completedSummary.accuracyPct} />
@@ -2368,6 +2408,28 @@ export function PhysicalCardGame({
           <p className="mg-sub-instruction mt-2 font-bold text-slate-600">
             {savingResult ? 'กำลังบันทึกคะแนนลงฐานข้อมูล Supabase...' : 'บันทึกผลการฝึกครบทั้ง 10 ข้อเรียบร้อยแล้ว'}
           </p>
+        </div>
+
+        {/* Synchronized Progress Comparison Verdict Banner */}
+        <div
+          data-testid="minigame-round-verdict-banner"
+          className={`w-full max-w-4xl rounded-3xl border-2 p-5 sm:p-6 text-left space-y-2 shadow-sm ${verdictToneBox}`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className={`inline-flex items-center rounded-full px-4 py-1 text-sm font-black ${verdictBadgeBox}`}>
+              {roundVerdict.badgeTh}
+            </span>
+            {prevRound && (
+              <span className="text-sm font-extrabold opacity-85">
+                รอบก่อนหน้า: {prevRound.correct}/{prevRound.total} ({prevRound.accuracyPct}%)
+              </span>
+            )}
+          </div>
+          <p className="text-xl sm:text-2xl font-black leading-snug">
+            {roundVerdict.headlineTh}
+          </p>
+          <p className="text-base font-bold opacity-90">{roundVerdict.detailTh}</p>
+          <p className="text-sm font-semibold opacity-80">{roundVerdict.adviceTh}</p>
         </div>
 
         <div className="w-full max-w-5xl grid grid-cols-1 gap-6 sm:grid-cols-3 animate-stagger-children">

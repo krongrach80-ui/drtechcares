@@ -19,6 +19,7 @@ import {
   type PatientBiometricIndexEntry,
   type PatientRecord,
   type RehabScheduleItem,
+  type RehabSessionRecord,
   type StrokeType,
   type AffectedSide,
   type TodayPrescribedExerciseItem,
@@ -788,6 +789,7 @@ export interface KioskLoginSuccessPayload {
   todayRoutine: DailyScheduleDay | null;
   confidencePercent: number;
   rehabSchedules?: RehabScheduleItem[];
+  recentSessions?: RehabSessionRecord[];
   todayExercises?: TodayPrescribedExerciseItem[];
   hasAppointmentToday?: boolean;
   completedToday?: boolean;
@@ -810,6 +812,7 @@ export function buildKioskLoginSuccessPayload(params: {
   confidencePercent: number;
   todayRoutine?: DailyScheduleDay | null;
   rehabSchedules?: RehabScheduleItem[];
+  recentSessions?: RehabSessionRecord[];
   serverTodayExercises?: TodayPrescribedExerciseItem[];
   serverCompletedToday?: boolean;
   indexEntry?: PatientBiometricIndexEntry | null;
@@ -862,6 +865,7 @@ export function buildKioskLoginSuccessPayload(params: {
     todayRoutine: resolvedRoutine,
     confidencePercent: params.confidencePercent,
     rehabSchedules: resolvedSchedules ?? [],
+    recentSessions: params.recentSessions ?? [],
     todayExercises: todaySchedule.todayExercises,
     hasAppointmentToday: todaySchedule.hasAppointmentToday,
     completedToday: todaySchedule.completedToday,
@@ -4359,6 +4363,7 @@ export function KioskBiometricLoginView({
                     todayRoutine: verifyRes.todayRoutine ?? null,
                     confidencePercent: verifyRes.confidencePercent,
                     rehabSchedules: verifyRes.rehabSchedules,
+                    recentSessions: verifyRes.recentSessions,
                     serverTodayExercises: verifyRes.todayExercises,
                     serverCompletedToday: verifyRes.completedToday,
                     directBiometricTemplate: ownSessionTemplate,
@@ -5616,6 +5621,7 @@ export function KioskBiometricLoginView({
           todayRoutine: pinRes.todayRoutine ?? null,
           confidencePercent: 100,
           rehabSchedules: pinRes.rehabSchedules,
+          recentSessions: pinRes.recentSessions,
           serverTodayExercises: pinRes.todayExercises,
           serverCompletedToday: pinRes.completedToday,
         });
