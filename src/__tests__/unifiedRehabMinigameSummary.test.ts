@@ -40,8 +40,8 @@ function makeAssessment(
     facility_name: overrides.facility_name ?? 'ตู้ Kiosk กายภาพอัจฉริยะ Dr.Tech.Care',
     assessor_staff_id: overrides.assessor_staff_id ?? 'SYSTEM_KIOSK_AUTO_SYNC',
     assessor_staff_name: overrides.assessor_staff_name ?? 'ระบบวัดผลอัตโนมัติ (Kiosk AI)',
-    exercise_code: overrides.exercise_code ?? 'STROKE_SHOULDER_FLEXION',
-    exercise_name_th: overrides.exercise_name_th ?? '[Stroke ADL] ยกแขนไปด้านหน้า',
+    exercise_code: overrides.exercise_code ?? 'ELDERLY_SHOULDER_FLEXION',
+    exercise_name_th: overrides.exercise_name_th ?? '[ผู้สูงอายุ] ยกแขนไปด้านหน้า',
     target_side: overrides.target_side ?? 'RIGHT',
     initial_score_0_to_6: overrides.initial_score_0_to_6 ?? 4,
     measured_rom_deg: overrides.measured_rom_deg ?? 95,
@@ -149,8 +149,8 @@ describe('Unified Physical Therapy + Minigame Summary & Clinical Verdict Engine'
         id: 'a1',
         visit_number: 1,
         assessed_at: '2026-11-26T10:57:00.000Z',
-        exercise_code: 'STROKE_SHOULDER_FLEXION',
-        exercise_name_th: '[Stroke ADL] ยกแขนไปด้านหน้า',
+        exercise_code: 'ELDERLY_SHOULDER_FLEXION',
+        exercise_name_th: '[ผู้สูงอายุ] ยกแขนไปด้านหน้า',
         initial_score_0_to_6: 6,
         measured_rom_deg: 175.0,
         target_rom_deg: 125.0,
@@ -159,8 +159,8 @@ describe('Unified Physical Therapy + Minigame Summary & Clinical Verdict Engine'
         id: 'a2',
         visit_number: 2,
         assessed_at: '2026-11-26T10:58:00.000Z',
-        exercise_code: 'STROKE_SHOULDER_ABDUCTION',
-        exercise_name_th: '[Stroke ADL] กางแขนด้านข้าง',
+        exercise_code: 'ELDERLY_SHOULDER_ABDUCTION',
+        exercise_name_th: '[ผู้สูงอายุ] กางแขนด้านข้าง',
         initial_score_0_to_6: 6,
         measured_rom_deg: 168.7,
         target_rom_deg: 115.0,
@@ -169,8 +169,8 @@ describe('Unified Physical Therapy + Minigame Summary & Clinical Verdict Engine'
         id: 'a3',
         visit_number: 3,
         assessed_at: '2026-11-26T10:59:00.000Z',
-        exercise_code: 'STROKE_OVERHEAD_REACH',
-        exercise_name_th: '[Stroke & สร.] ประสานมือชูขึ้นเหนือศีรษะ',
+        exercise_code: 'ELDERLY_OVERHEAD_REACH',
+        exercise_name_th: '[สธ. ผู้สูงอายุ] ประสานมือชูขึ้นเหนือศีรษะ',
         initial_score_0_to_6: 6,
         measured_rom_deg: 159.2,
         target_rom_deg: 135.0,
@@ -295,7 +295,7 @@ describe('Unified Physical Therapy + Minigame Summary & Clinical Verdict Engine'
           age: 64,
           gender: 'ชาย',
           phone: '0817788990',
-          diagnosis: 'Stroke ADL (Shoulder & Arm)',
+          diagnosis: 'Elderly Rehab (Shoulder & Arm)',
           affectedSide: 'RIGHT',
         }),
       }),
@@ -310,7 +310,7 @@ describe('Unified Physical Therapy + Minigame Summary & Clinical Verdict Engine'
         body: JSON.stringify({
           patientId: patient.id,
           activityType: 'physio_exercise',
-          exerciseId: 'STROKE_SHOULDER_FLEXION',
+          exerciseId: 'ELDERLY_SHOULDER_FLEXION',
           exerciseName: 'ยกแขนไปด้านหน้า',
           completedSets: 1,
           completedReps: 10,
@@ -337,6 +337,7 @@ describe('Unified Physical Therapy + Minigame Summary & Clinical Verdict Engine'
         }),
       }),
     );
+    await new Promise((resolve) => setTimeout(resolve, 12));
     await router(
       new Request('https://drtechcares.workers.dev/api/sessions', {
         method: 'POST',
@@ -391,7 +392,7 @@ describe('Unified Physical Therapy + Minigame Summary & Clinical Verdict Engine'
       age: 45,
       gender: 'ชาย',
       phone: '0891112233',
-      diagnosis: 'Stroke ADL (Shoulder & Arm)',
+      diagnosis: 'Elderly Rehab (Shoulder & Arm)',
       affectedSide: 'RIGHT',
       assignedPtId: 'pt-1',
       delegatedToPtId: null,
@@ -458,6 +459,18 @@ describe('Unified Physical Therapy + Minigame Summary & Clinical Verdict Engine'
     );
 
     expect(html).toContain('data-testid="unified-progress-verdict-card"');
+    expect(html).toContain('data-testid="clinical-chart-tab-switcher"');
+    expect(html).toContain('data-testid="workspace-tab-STOCK"');
+    expect(html).toContain('data-testid="workspace-tab-ROM"');
+    expect(html).toContain('data-testid="workspace-tab-MINIGAME"');
+    expect(html).toContain('data-testid="workspace-tab-MONTHLY"');
+    expect(html).toContain('data-testid="workspace-tab-TABLE"');
+    expect(html).toContain('data-testid="workspace-tab-TIMELINE"');
+    expect(html).toContain('data-testid="doctor-clinical-brief-card"');
+    expect(html).toContain('data-testid="doctor-rom-brief-card"');
+    expect(html).toContain('data-testid="doctor-minigame-brief-card"');
+    expect(html).toContain('สรุปสำหรับแพทย์');
+    expect(html).toContain('ข้อเสนอแนะเชิงคลินิก');
     expect(html).toContain('data-testid="verdict-domain-rehab"');
     expect(html).toContain('data-testid="verdict-domain-minigame"');
     expect(html).toContain('data-testid="unified-exercise-minigame-table"');
@@ -470,8 +483,10 @@ describe('Unified Physical Therapy + Minigame Summary & Clinical Verdict Engine'
     const root = process.cwd();
     const auditFiles = [
       'src/utils/unifiedRehabMinigameSummary.ts',
+      'src/utils/doctorClinicalBrief.ts',
       'src/components/PatientProgressSummaryModal.tsx',
       'src/components/PatientClinicalRecordPanel.tsx',
+      'src/components/RehabStockPerformanceCard.tsx',
       'src/PatientPersonalPortal.tsx',
       'src/App.tsx',
       'apps/kiosk/src/PhysicalCardGame.tsx',
@@ -484,17 +499,17 @@ describe('Unified Physical Therapy + Minigame Summary & Clinical Verdict Engine'
   });
 
   it('builds and renders PatientProgressSummaryModal with before-vs-now ROM & minigame comparison bars and zero emojis', () => {
-    expect(shortenThaiExerciseLabel('[Stroke ADL] ยกแขนไปด้านหน้า')).toBe('ยกแขน');
-    expect(shortenThaiExerciseLabel('[Stroke ADL] กางแขนด้านข้าง')).toBe('กางแขน');
-    expect(shortenThaiExerciseLabel('[Stroke & สร.] ประสานมือชูขึ้นเหนือศีรษะ')).toBe('ประสานมือ');
+    expect(shortenThaiExerciseLabel('[ผู้สูงอายุ] ยกแขนไปด้านหน้า')).toBe('ยกแขน');
+    expect(shortenThaiExerciseLabel('[ผู้สูงอายุ] กางแขนด้านข้าง')).toBe('กางแขน');
+    expect(shortenThaiExerciseLabel('[สธ. ผู้สูงอายุ] ประสานมือชูขึ้นเหนือศีรษะ')).toBe('ประสานมือ');
 
     const records: PatientClinicalAssessmentRecord[] = [
       makeAssessment({
         id: 'w1-flex',
         visit_number: 1,
         assessed_at: '2026-11-18T09:00:00.000Z',
-        exercise_code: 'STROKE_SHOULDER_FLEXION',
-        exercise_name_th: '[Stroke ADL] ยกแขนไปด้านหน้า',
+        exercise_code: 'ELDERLY_SHOULDER_FLEXION',
+        exercise_name_th: '[ผู้สูงอายุ] ยกแขนไปด้านหน้า',
         initial_score_0_to_6: 4,
         measured_rom_deg: 105.0,
         target_rom_deg: 125.0,
@@ -503,8 +518,8 @@ describe('Unified Physical Therapy + Minigame Summary & Clinical Verdict Engine'
         id: 'w1-abd',
         visit_number: 2,
         assessed_at: '2026-11-18T09:10:00.000Z',
-        exercise_code: 'STROKE_SHOULDER_ABDUCTION',
-        exercise_name_th: '[Stroke ADL] กางแขนด้านข้าง',
+        exercise_code: 'ELDERLY_SHOULDER_ABDUCTION',
+        exercise_name_th: '[ผู้สูงอายุ] กางแขนด้านข้าง',
         initial_score_0_to_6: 4,
         measured_rom_deg: 98.0,
         target_rom_deg: 115.0,
@@ -513,8 +528,8 @@ describe('Unified Physical Therapy + Minigame Summary & Clinical Verdict Engine'
         id: 'w2-flex',
         visit_number: 3,
         assessed_at: '2026-11-26T09:00:00.000Z',
-        exercise_code: 'STROKE_SHOULDER_FLEXION',
-        exercise_name_th: '[Stroke ADL] ยกแขนไปด้านหน้า',
+        exercise_code: 'ELDERLY_SHOULDER_FLEXION',
+        exercise_name_th: '[ผู้สูงอายุ] ยกแขนไปด้านหน้า',
         initial_score_0_to_6: 6,
         measured_rom_deg: 122.0,
         target_rom_deg: 125.0,
@@ -523,8 +538,8 @@ describe('Unified Physical Therapy + Minigame Summary & Clinical Verdict Engine'
         id: 'w2-abd',
         visit_number: 4,
         assessed_at: '2026-11-26T09:10:00.000Z',
-        exercise_code: 'STROKE_SHOULDER_ABDUCTION',
-        exercise_name_th: '[Stroke ADL] กางแขนด้านข้าง',
+        exercise_code: 'ELDERLY_SHOULDER_ABDUCTION',
+        exercise_name_th: '[ผู้สูงอายุ] กางแขนด้านข้าง',
         initial_score_0_to_6: 6,
         measured_rom_deg: 112.0,
         target_rom_deg: 115.0,
@@ -585,7 +600,7 @@ describe('Unified Physical Therapy + Minigame Summary & Clinical Verdict Engine'
 
     expect(html).toContain('data-testid="patient-progress-summary-modal"');
     expect(html).toContain('data-testid="summary-comparison-bar-chart"');
-    expect(html).toContain('data-testid="summary-bar-STROKE_SHOULDER_FLEXION"');
+    expect(html).toContain('data-testid="summary-bar-ELDERLY_SHOULDER_FLEXION"');
     expect(html).toContain('data-testid="summary-bar-MINIGAME_COGNITIVE"');
     expect(html).toContain('ความคืบหน้าภาพรวม');
     expect(html).toContain('จำนวนครั้งที่ฝึก:');

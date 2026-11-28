@@ -54,7 +54,7 @@ function makePoomRawSupabaseRow() {
     full_name: 'Poom',
     age: 26,
     phone: '0812345678',
-    diagnosis: 'Stroke Upper Limb Rehabilitation',
+    diagnosis: 'Elderly Upper Limb Rehabilitation',
     registration_status: 'active',
     assigned_pt_id: POOM_ASSIGNED_PT_ID,
     delegated_to_pt_id: null,
@@ -68,7 +68,7 @@ function makePoomRawSupabaseRow() {
     master_embedding: null,
     angle_embeddings: null,
     gender: null,
-    stroke_type: null,
+    care_group: null,
     affected_side: null,
     motor_assessment_score: null,
     adl_dressing_score: null,
@@ -86,7 +86,7 @@ function makePoomRawSupabaseRow() {
       },
       biometricEngine: 'human-faceres-1024d',
       gender: 'ชาย',
-      strokeType: 'ISCHEMIC',
+      careGroup: 'MOBILITY_RECOVERY',
       affectedSide: 'RIGHT',
       motorAssessmentScore: 3,
       adlDressingScore: 3,
@@ -102,8 +102,8 @@ function makeAdminAssignedPendingPatient(): PatientRecord {
     age: 64,
     gender: 'หญิง',
     phone: '0891112222',
-    diagnosis: 'Post-Stroke Shoulder Rehab',
-    strokeType: 'ISCHEMIC',
+    diagnosis: 'Elderly Shoulder Rehab',
+    careGroup: 'MOBILITY_RECOVERY',
     affectedSide: 'LEFT',
     motorAssessmentScore: 2,
     adlDressingScore: 2,
@@ -157,7 +157,7 @@ describe('Admin Portal Supabase Patient List Sync & Clinic Scope Filtering', () 
     expect(res.patients[0]?.faceBiometricStatus).toBe('VERIFIED');
     expect(res.patients[0]?.faceFramesCount).toBe(120);
     expect(res.patients[0]?.gender).toBe('ชาย');
-    expect(res.patients[0]?.strokeType).toBe('ISCHEMIC');
+    expect(res.patients[0]?.careGroup).toBe('MOBILITY_RECOVERY');
     expect(res.patients[0]?.affectedSide).toBe('RIGHT');
     expect(res.patients[0]?.motorAssessmentScore).toBe(3);
   });

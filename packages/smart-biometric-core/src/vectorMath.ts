@@ -13,17 +13,17 @@ export const STRICT_CENTERED_COSINE_THRESHOLD = 0.80;
 export const STRICT_MAX_EUCLIDEAN_DISTANCE = 0.56;
 export const STRICT_MIN_CENTROID_COSINE = 0.82;
 export const STRICT_MIN_CENTROID_COUNT = 2;
-export const STRICT_PATCH_ZNCC_THRESHOLD = 0.76;
-export const STRICT_PATCH_GRAD_ZNCC_THRESHOLD = 0.58;
-export const STRICT_CRANIOFACIAL_MAX_DEVIATION = 0.065;
-export const STRICT_CRANIOFACIAL_MAX_SINGLE_DEVIATION = 0.145;
+export const STRICT_PATCH_ZNCC_THRESHOLD = 0.62;
+export const STRICT_PATCH_GRAD_ZNCC_THRESHOLD = 0.42;
+export const STRICT_CRANIOFACIAL_MAX_DEVIATION = 0.105;
+export const STRICT_CRANIOFACIAL_MAX_SINGLE_DEVIATION = 0.18;
 export const STRICT_OCULAR_IRIS_ZNCC_THRESHOLD = 0.66;
 export const STRICT_IRIS_RATIO_MAX_DEVIATION = 0.085;
-export const STRICT_RELU6_RAW_COSINE_THRESHOLD = 0.89;
-export const STRICT_RELU6_CENTERED_COSINE_THRESHOLD = 0.85;
-export const STRICT_RELU6_MAX_EUCLIDEAN_DISTANCE = 0.47;
-export const STRICT_RELU6_MIN_CENTROID_COSINE = 0.85;
-export const STRICT_RELU6_MIN_EXEMPLAR_TOP3_AVG = 0.86;
+export const STRICT_RELU6_RAW_COSINE_THRESHOLD = 0.87;
+export const STRICT_RELU6_CENTERED_COSINE_THRESHOLD = 0.83;
+export const STRICT_RELU6_MAX_EUCLIDEAN_DISTANCE = 0.51;
+export const STRICT_RELU6_MIN_CENTROID_COSINE = 0.83;
+export const STRICT_RELU6_MIN_EXEMPLAR_TOP3_AVG = 0.81;
 export const STRICT_MIN_VECTOR_STD = 0.02;
 export const STRICT_DISTINCTIVENESS_MARGIN = 0.08;
 export const STRICT_COHORT_MARGIN = 0.08;
@@ -2442,7 +2442,32 @@ export function evaluateTripleGateNeuralCandidate(
     );
   }
   if (!gate2.passed && gate2.failureReason) {
-    failureReasons.push(gate2.failureReason);
+    // When deep neural identity is strongly corroborated on BOTH master and active angle centroids
+    // AND appearance patch + ocular iris checks pass, tolerate mild distance/expression perspective
+    // shift on 12-D craniofacial ratios (e.g. enrolling at 0.5m vs standing at 1.5-2.0m at Kiosk).
+    const strongNeuralCorroboration =
+      masterMetrics.rawCosine >= 0.90 &&
+      masterMetrics.centeredCosine >= 0.85 &&
+      zoneMetrics.rawCosine >= 0.90;
+    const appearanceAndIrisOk =
+      (!gate2.patchAvailable ||
+        ((gate2.patchZncc ?? 0) >= STRICT_PATCH_ZNCC_THRESHOLD &&
+          (gate2.patchGradZncc === null ||
+            gate2.patchGradZncc >= STRICT_PATCH_GRAD_ZNCC_THRESHOLD))) &&
+      (!gate2.ocularIrisAvailable ||
+        ((gate2.ocularIrisZncc === null ||
+          gate2.ocularIrisZncc >= STRICT_OCULAR_IRIS_ZNCC_THRESHOLD) &&
+          (gate2.irisRatioDeviation === null ||
+            gate2.irisRatioDeviation <= STRICT_IRIS_RATIO_MAX_DEVIATION)));
+    const mildPerspectiveCraniofacialShift =
+      gate2.failureReason.startsWith('CRANIOFACIAL_RATIO_MISMATCH') &&
+      strongNeuralCorroboration &&
+      appearanceAndIrisOk &&
+      (gate2.ratioMeanDeviation ?? 0) <= 0.145 &&
+      (gate2.ratioMaxDeviation ?? 0) <= 0.30;
+    if (!mildPerspectiveCraniofacialShift) {
+      failureReasons.push(gate2.failureReason);
+    }
   }
 
   const pairedRaw = Math.min(masterMetrics.rawCosine, zoneMetrics.rawCosine);

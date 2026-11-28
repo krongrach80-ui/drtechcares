@@ -20,7 +20,7 @@ import {
   type PatientRecord,
   type RehabScheduleItem,
   type RehabSessionRecord,
-  type StrokeType,
+  type ElderlyCareGroup,
   type AffectedSide,
   type TodayPrescribedExerciseItem,
 } from '@drtechcares/api-client';
@@ -175,6 +175,26 @@ export const KIOSK_NO_FACE_GUIDANCE_DELAY_MS = 1500;
 export const KIOSK_RESCAN_COOLDOWN_MS = 1500;
 export const KIOSK_MAX_EXPOSURE_SETTLE_MS = 800;
 export const KIOSK_DETECT_MAX_LONG_SIDE_PX = KIOSK_INFERENCE_CANVAS_MAX_WIDTH;
+
+/**
+ * Computes an exact aspect-ratio-preserving downscaled canvas size for landmark detection
+ * across both landscape (e.g. 1280x720 -> 320x180) and portrait kiosks (e.g. 720x1280 -> 180x320).
+ * Never clamps width and height independently, preventing horizontal facial stretching on portrait monitors.
+ */
+export function computeAspectPreservingDetectSize(
+  rawWidth: number,
+  rawHeight: number,
+  maxLongSide: number = KIOSK_DETECT_MAX_LONG_SIDE_PX,
+): { width: number; height: number } {
+  const safeW = Math.max(1, Math.round(Number.isFinite(rawWidth) ? rawWidth : 1280));
+  const safeH = Math.max(1, Math.round(Number.isFinite(rawHeight) ? rawHeight : 720));
+  const longSide = Math.max(safeW, safeH);
+  const scale = Math.min(1, Math.max(64, maxLongSide) / longSide);
+  return {
+    width: Math.max(1, Math.round(safeW * scale)),
+    height: Math.max(1, Math.round(safeH * scale)),
+  };
+}
 
 /**
  * Non-overlapping async inference mutex with ~190ms (180-220ms) throttle interval so
@@ -779,7 +799,7 @@ export interface KioskLoginSuccessPayload {
     hn: string;
     fullName: string;
     nextAppointmentDate: string;
-    strokeType?: StrokeType;
+    careGroup?: ElderlyCareGroup;
     affectedSide?: AffectedSide;
     motorAssessmentScore?: number;
     adlDressingScore?: number;
@@ -802,7 +822,7 @@ export function buildKioskLoginSuccessPayload(params: {
     hn: string;
     fullName: string;
     nextAppointmentDate: string;
-    strokeType?: StrokeType;
+    careGroup?: ElderlyCareGroup;
     affectedSide?: AffectedSide;
     motorAssessmentScore?: number;
     adlDressingScore?: number;
@@ -1547,7 +1567,7 @@ const COPY: Record<
   }
 > = {
   th: {
-    subtitle: 'ระบบฟื้นฟูกายภาพบำบัดอัจฉริยะ',
+    subtitle: 'ระบบฟื้นฟูกายภาพบำบัดผู้สูงอายุอัจฉริยะ',
     registerNewPatient: 'ลงทะเบียนคนไข้ใหม่',
     callStaff: 'เรียกเจ้าหน้าที่ช่วยเหลือ',
     staffLogin: 'เข้าสู่ระบบเจ้าหน้าที่',
@@ -1598,7 +1618,7 @@ const COPY: Record<
     aboutCloseBtn: 'ปิดหน้าต่าง',
   },
   en: {
-    subtitle: 'AI Smart Rehabilitation Platform',
+    subtitle: 'AI Smart Elderly Rehabilitation Platform',
     registerNewPatient: 'Register Patient',
     callStaff: 'Call Staff',
     staffLogin: 'Staff Login',
@@ -1649,7 +1669,7 @@ const COPY: Record<
     aboutCloseBtn: 'Close',
   },
   cn: {
-    subtitle: '智能物理康复训练系统',
+    subtitle: '智能老年物理康复训练系统',
     registerNewPatient: '注册新患者',
     callStaff: '呼叫医护人员',
     staffLogin: '医护系统登录',
@@ -2866,7 +2886,7 @@ export function KioskBiometricLoginView({
         compatibleTemplatesCount: prev?.compatibleTemplatesCount ?? accountCountsRef.current.valid,
         versionMismatchCount: prev?.versionMismatchCount ?? accountCountsRef.current.legacy,
         filteredOutCount: prev?.filteredOutCount ?? accountCountsRef.current.filtered,
-        thresholdPercent: prev?.thresholdPercent ?? 89,
+        thresholdPercent: prev?.thresholdPercent ?? 87,
         livenessPassed: prev?.livenessPassed ?? false,
         top1Code: prev?.top1Code ?? null,
         top1ScorePercent: prev?.top1ScorePercent ?? 0,
@@ -3978,7 +3998,7 @@ export function KioskBiometricLoginView({
                         hn: localNewMatch.patient.hn,
                         fullName: localNewMatch.patient.fullName,
                         nextAppointmentDate: localNewMatch.patient.nextAppointmentDate,
-                        strokeType: localNewMatch.patient.strokeType,
+                        careGroup: localNewMatch.patient.careGroup,
                         affectedSide: localNewMatch.patient.affectedSide,
                         motorAssessmentScore: localNewMatch.patient.motorAssessmentScore,
                         adlDressingScore: localNewMatch.patient.adlDressingScore,
@@ -4077,7 +4097,7 @@ export function KioskBiometricLoginView({
                   compatibleTemplatesCount: accountCountsRef.current.valid,
                   versionMismatchCount: accountCountsRef.current.legacy,
                   filteredOutCount: accountCountsRef.current.filtered,
-                  thresholdPercent: prev?.thresholdPercent ?? 89,
+                  thresholdPercent: prev?.thresholdPercent ?? 87,
                   livenessPassed: params.snapBioVerified,
                   top1Code: prev?.top1Code ?? null,
                   top1ScorePercent: prev?.top1ScorePercent ?? 0,
@@ -4136,7 +4156,7 @@ export function KioskBiometricLoginView({
                   compatibleTemplatesCount: accountCountsRef.current.valid,
                   versionMismatchCount: accountCountsRef.current.legacy,
                   filteredOutCount: accountCountsRef.current.filtered,
-                  thresholdPercent: prev?.thresholdPercent ?? 89,
+                  thresholdPercent: prev?.thresholdPercent ?? 87,
                   livenessPassed: params.snapBioVerified,
                   top1Code: prev?.top1Code ?? null,
                   top1ScorePercent: verifyRes.confidencePercent ?? 0,
@@ -5213,15 +5233,13 @@ export function KioskBiometricLoginView({
               const rawVw = snapVideoEl.videoWidth || 1280;
               const rawVh = snapVideoEl.videoHeight || 720;
 
-              // Downscale to compact 320x240 (maxWidth: 320) offscreen canvas so WebGL inference drops
-              // from ~700ms down to < 60ms while the visible <video> stays crisp at full resolution!
-              const downScale = Math.min(
-                1,
-                KIOSK_INFERENCE_CANVAS_MAX_WIDTH / Math.max(1, rawVw),
-                240 / Math.max(1, rawVh),
+              // Downscale uniformly along the long side (max 320px) preserving exact aspect ratio
+              // across both landscape (320x180) and portrait kiosks (180x320) with zero distortion.
+              const { width: detectInputW, height: detectInputH } = computeAspectPreservingDetectSize(
+                rawVw,
+                rawVh,
+                KIOSK_DETECT_MAX_LONG_SIDE_PX,
               );
-              const detectInputW = Math.max(160, Math.round(rawVw * downScale));
-              const detectInputH = Math.max(120, Math.round(rawVh * downScale));
               if (!detectCanvasRef.current) {
                 detectCanvasRef.current = document.createElement('canvas');
               }

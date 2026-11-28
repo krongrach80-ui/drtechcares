@@ -682,7 +682,7 @@ class Biomechanics3DSolver:
             compensations.append("TOO_FAST")
 
         spasticity_warning = bool(
-            (ang_vel > self.settings.STROKE_SPASTICITY_VELOCITY_DEG_S)
+            (ang_vel > self.settings.ELDERLY_SPASTICITY_VELOCITY_DEG_S)
             or (
                 max_safe_rom_deg is not None
                 and not rule.is_descending_target
@@ -692,7 +692,7 @@ class Biomechanics3DSolver:
         if spasticity_warning:
             compensations.append("SPASTICITY_GUARD")
 
-        # 5. Stroke Fatigue & Compensation Guard (3+ consecutive shoulder hike / trunk / tilt compensations)
+        # 5. Elderly Fatigue & Compensation Guard (3+ consecutive shoulder hike / trunk / tilt compensations)
         fatigue_faults = {"SHOULDER_HIKE", "TRUNK_LEAN", "SHOULDER_TILT"}
         if any(c in fatigue_faults for c in compensations):
             self._consecutive_compensation_events += 1
@@ -700,10 +700,10 @@ class Biomechanics3DSolver:
             self._consecutive_compensation_events = 0
 
         fatigue_rest_recommended = (
-            self._consecutive_compensation_events >= int(self.settings.STROKE_FATIGUE_COMPENSATION_LIMIT)
+            self._consecutive_compensation_events >= int(self.settings.ELDERLY_FATIGUE_COMPENSATION_LIMIT)
         )
         fatigue_rest_remaining_sec = (
-            float(self.settings.STROKE_FATIGUE_REST_SEC) if fatigue_rest_recommended else 0.0
+            float(self.settings.ELDERLY_FATIGUE_REST_SEC) if fatigue_rest_recommended else 0.0
         )
         suggested_reduced_rom_deg = (
             round(max(30.0, target_rom - 15.0), 1)
@@ -724,14 +724,14 @@ class Biomechanics3DSolver:
         )
 
         # 6. POSTURAL_SWAY_AND_FALL_GUARD: trunk_tilt > 18° sustained, sudden head/shoulder/hip drop, or floor collapse
-        if trunk_tilt_deg > float(self.settings.STROKE_TRUNK_EMERGENCY_TILT_DEG):
+        if trunk_tilt_deg > float(self.settings.ELDERLY_TRUNK_EMERGENCY_TILT_DEG):
             self._sustained_sway_frames += 1
         else:
             self._sustained_sway_frames = 0
 
         sudden_upper_drop = (
-            head_drop_vel > float(self.settings.STROKE_SUDDEN_DROP_VELOCITY_THRESHOLD)
-            or sh_drop_vel > float(self.settings.STROKE_SUDDEN_DROP_VELOCITY_THRESHOLD)
+            head_drop_vel > float(self.settings.ELDERLY_SUDDEN_DROP_VELOCITY_THRESHOLD)
+            or sh_drop_vel > float(self.settings.ELDERLY_SUDDEN_DROP_VELOCITY_THRESHOLD)
         )
         hips_collapse = hips_visible and (
             (hip_y > 0.80 and trunk_tilt_deg > 28.0)

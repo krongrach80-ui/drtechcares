@@ -17,9 +17,9 @@ import {
 const STORAGE_KEY = 'drtech_patient_clinical_assessments_v1';
 
 export const CLINICAL_FACILITY_PRESETS: readonly string[] = [
-  'ศูนย์กายภาพบำบัด Dr.Tech.Care สาขาหลัก',
+  'ศูนย์กายภาพบำบัดผู้สูงอายุ Dr.Tech.Care สาขาหลัก',
   'คลินิกเครือข่ายกายภาพชุมชน',
-  'ศูนย์ฟื้นฟูผู้ป่วยโรคหลอดเลือดสมอง OPD',
+  'ศูนย์ฟื้นฟูสมรรถภาพผู้สูงอายุ OPD',
 ];
 
 let inMemoryFallbackRecords: PatientClinicalAssessmentRecord[] = [];
@@ -143,14 +143,14 @@ export function ensureDemoAssessmentsForPatient(
       facility_name: 'ศูนย์กายภาพบำบัด Dr.Tech.Care สาขาหลัก',
       assessor_staff_id: 'pt-demo-01',
       assessor_staff_name: 'กภ. วิชญ์พล ชำนาญกาย (PT อาวุโส)',
-      exercise_code: 'STROKE_SHOULDER_FLEXION',
+      exercise_code: 'ELDERLY_SHOULDER_FLEXION',
       exercise_name_th: 'ยกแขนตรงไปด้านหน้า (Shoulder Flexion)',
       target_side: side,
       initial_score_0_to_6: 2,
       measured_rom_deg: 30.0,
       target_rom_deg: 125.0,
       pain_vas_0_to_10: 5,
-      chief_complaint: `แรกรับ: อ่อนแรงแขนข้าง${sideTh} ยกแขนต้านแรงโน้มถ่วงยังไม่ได้เต็มช่วง เกร็งไหล่เล็กน้อย (${patient.diagnosis || 'ฟื้นฟูหลังโรคหลอดเลือดสมอง'})`,
+      chief_complaint: `แรกรับ: อ่อนแรงแขนข้าง${sideTh} ยกแขนต้านแรงโน้มถ่วงยังไม่ได้เต็มช่วง ตึงข้อไหล่เล็กน้อย (${patient.diagnosis || 'ฟื้นฟูสมรรถภาพผู้สูงอายุ'})`,
       clinical_handover_note:
         'ประคองข้อไหล่ข้างที่อ่อนแรงระหว่างเริ่มยก แนะนำฝึกยกแนวราบต้านแรงโน้มถ่วงบางส่วน 2 เซต ระวังไม่ให้ยักไหล่หรือเอียงลำตัวช่วย',
       next_session_goal: 'เพิ่มมุมยกแขนด้านหน้าถึง 45 องศา และลดอาการตึงบ่า',
@@ -168,7 +168,7 @@ export function ensureDemoAssessmentsForPatient(
       facility_name: 'คลินิกเครือข่ายกายภาพชุมชน',
       assessor_staff_id: 'pt-demo-02',
       assessor_staff_name: 'กภ. ณัฐิดา รักษาดี (PT เครือข่ายชุมชน)',
-      exercise_code: 'STROKE_SHOULDER_FLEXION',
+      exercise_code: 'ELDERLY_SHOULDER_FLEXION',
       exercise_name_th: 'ยกแขนตรงไปด้านหน้า (Shoulder Flexion)',
       target_side: side,
       initial_score_0_to_6: 3,
@@ -193,7 +193,7 @@ export function ensureDemoAssessmentsForPatient(
       facility_name: 'ศูนย์กายภาพบำบัด Dr.Tech.Care สาขาหลัก',
       assessor_staff_id: 'pt-demo-01',
       assessor_staff_name: 'กภ. วิชญ์พล ชำนาญกาย (PT อาวุโส)',
-      exercise_code: 'STROKE_SHOULDER_FLEXION',
+      exercise_code: 'ELDERLY_SHOULDER_FLEXION',
       exercise_name_th: 'ยกแขนตรงไปด้านหน้า (Shoulder Flexion)',
       target_side: side,
       initial_score_0_to_6: 4,
@@ -252,7 +252,7 @@ function normalizeSupabaseRow(row: Record<string, unknown>): PatientClinicalAsse
     facility_name: String(row.facility_name ?? 'ศูนย์กายภาพบำบัด Dr.Tech.Care สาขาหลัก'),
     assessor_staff_id: String(row.assessor_staff_id ?? ''),
     assessor_staff_name: String(row.assessor_staff_name ?? ''),
-    exercise_code: String(row.exercise_code ?? 'STROKE_SHOULDER_FLEXION'),
+    exercise_code: String(row.exercise_code ?? 'ELDERLY_SHOULDER_FLEXION'),
     exercise_name_th: String(row.exercise_name_th ?? ''),
     target_side: targetSide,
     initial_score_0_to_6: clampMahidolScore(rawScore),

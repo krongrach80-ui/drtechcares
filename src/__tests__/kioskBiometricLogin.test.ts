@@ -9,6 +9,7 @@ import {
   BIOMETRIC_MAX_EUCLIDEAN_DISTANCE,
   BIOMETRIC_REQUIRED_STREAK,
   LiveIdentityStreakTracker,
+  buildBiometricProfileFromSamples,
   computeImageDataSharpness,
   normalizeImageDataLuminance,
   type EnrolledBiometricCandidate,
@@ -39,6 +40,7 @@ import {
   KIOSK_RESCAN_COOLDOWN_MS,
   KioskSystemErrorPopup,
   UnregisteredFaceSignupPopup,
+  computeAspectPreservingDetectSize,
   shouldAutoReturnToStandby,
   shouldTriggerFastNotFoundVerdict,
 } from '../components/KioskBiometricLoginView';
@@ -70,7 +72,7 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
       patientId: 'pat-fast-1',
       hn: 'HN-FAST-1',
       fullName: 'คุณสมศรี แข็งแรง',
-      diagnosis: 'Stroke',
+      diagnosis: 'Elderly Rehab',
       assignedPtId: 'pt-1',
       nextAppointmentDate: '2026-12-01',
       framesCaptured: 120,
@@ -89,7 +91,7 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
         patientId: 'pat-fast-1',
         hn: 'HN-FAST-1',
         fullName: 'คุณสมศรี แข็งแรง',
-        diagnosis: 'Stroke',
+        diagnosis: 'Elderly Rehab',
         assignedPtId: 'pt-1',
         nextAppointmentDate: '2026-12-01',
         framesCaptured: 120,
@@ -789,6 +791,162 @@ describe('Fast ~1s Face Scan Decision & Automatic Unregistered Signup Popup', ()
     const scannerSrc = fs.readFileSync(path.join(root, 'src/components/FaceID120Scanner.tsx'), 'utf8');
     expect(scannerSrc).toContain("window.localStorage.getItem('drtech_preferred_camera_id')");
     expect(scannerSrc).toContain('selectClinicalCameraDeviceId(storedPreferredCameraId)');
+    // Regression guards for Step 2 direct save button & honest cloud persistence verification
+    expect(enrollSrc).toContain('บันทึกบัญชีและเปิดสแกน Kiosk ทันที');
+    expect(enrollSrc).toContain('wasLastBiometricWritePersisted');
+    expect(scannerSrc).toContain('กรุณากดปุ่มบันทึกบัญชีด้านล่าง');
+  });
+
+  it('preserves exact aspect ratio across portrait and landscape Kiosk cameras without horizontal distortion', () => {
+    const cases: { rawW: number; rawH: number; expectedW: number; expectedH: number }[] = [
+      { rawW: 720, rawH: 1280, expectedW: 180, expectedH: 320 },
+      { rawW: 1080, rawH: 1920, expectedW: 180, expectedH: 320 },
+      { rawW: 480, rawH: 640, expectedW: 240, expectedH: 320 },
+      { rawW: 1280, rawH: 720, expectedW: 320, expectedH: 180 },
+      { rawW: 640, rawH: 480, expectedW: 320, expectedH: 240 },
+      { rawW: 200, rawH: 150, expectedW: 200, expectedH: 150 },
+    ];
+    for (const c of cases) {
+      const out = computeAspectPreservingDetectSize(c.rawW, c.rawH, 320);
+      expect(out.width).toBe(c.expectedW);
+      expect(out.height).toBe(c.expectedH);
+      expect(Math.abs(out.width / out.height - c.rawW / c.rawH)).toBeLessThan(0.01);
+    }
+  });
+
+  it('keeps 5 coherent frontal exemplars + all 4 turned angles inside the first 9 slots and passes realistic newly enrolled Kiosk probes', () => {
+    const makeRelu6Vec = (seed: number, dim = 1024): number[] => {
+      const raw = new Array<number>(dim);
+      for (let i = 0; i < dim; i += 1) {
+        const v = Math.sin((i + 1) * seed * 0.17) + 0.55 * Math.cos((i + 5) * seed * 0.31) + 0.32;
+        raw[i] = v > 0 ? v : 0;
+      }
+      return l2Normalize(raw);
+    };
+    const mix = (a: number[], b: number[], alpha: number): number[] =>
+      l2Normalize(a.map((v, i) => v * (1 - alpha) + b[i] * alpha));
+
+    const baseCenter = makeRelu6Vec(2.3);
+    const leftBase = mix(baseCenter, makeRelu6Vec(11.1), 0.52);
+    const rightBase = mix(baseCenter, makeRelu6Vec(13.7), 0.52);
+    const upBase = mix(baseCenter, makeRelu6Vec(17.9), 0.48);
+    const downBase = mix(baseCenter, makeRelu6Vec(21.3), 0.48);
+
+    // Simulate 120-frame enrollment samples across all 5 buckets (40 center + 20 each side)
+    const samples: {
+      embedding: number[];
+      bucket: 'center' | 'left' | 'right' | 'up' | 'down';
+      sharpness: number;
+      yawDeg: number;
+      pitchDeg: number;
+    }[] = [];
+    for (let i = 0; i < 40; i += 1) {
+      samples.push({
+        embedding: mix(baseCenter, makeRelu6Vec(100 + i * 0.7), 0.08 + (i % 5) * 0.015),
+        bucket: 'center',
+        sharpness: 90 + (i % 25),
+        yawDeg: 0,
+        pitchDeg: 0,
+      });
+    }
+    const turnedSpecs: {
+      bucket: 'left' | 'right' | 'up' | 'down';
+      base: number[];
+      offset: number;
+      yawDeg: number;
+      pitchDeg: number;
+    }[] = [
+      { bucket: 'left', base: leftBase, offset: 200, yawDeg: -16, pitchDeg: 0 },
+      { bucket: 'right', base: rightBase, offset: 300, yawDeg: 16, pitchDeg: 0 },
+      { bucket: 'up', base: upBase, offset: 400, yawDeg: 0, pitchDeg: -12 },
+      { bucket: 'down', base: downBase, offset: 500, yawDeg: 0, pitchDeg: 12 },
+    ];
+    for (const spec of turnedSpecs) {
+      for (let i = 0; i < 20; i += 1) {
+        samples.push({
+          embedding: mix(spec.base, makeRelu6Vec(spec.offset + i * 0.9), 0.09),
+          bucket: spec.bucket,
+          sharpness: 110 + (i % 20),
+          yawDeg: spec.yawDeg,
+          pitchDeg: spec.pitchDeg,
+        });
+      }
+    }
+
+    const profile = buildBiometricProfileFromSamples(samples, {
+      patientId: 'pat-120-reg',
+      hn: 'HN-120-REG',
+      fullName: 'คุณทดสอบ สแกนผ่าน',
+      qualityScore: 0.95,
+    });
+    expect(profile).not.toBeNull();
+    // Simulate server compaction to 9 exemplars (normalizeCompactExemplars(..., 9))
+    const serverCompact9 = profile!.exemplar_embeddings.slice(0, 9);
+    expect(serverCompact9.length).toBe(9);
+
+    // First 5 slots must be frontal-coherent (> 0.95 to center); slots 5..8 cover left/right/up/down
+    const dot = (a: number[], b: number[]) => a.reduce((acc, v, i) => acc + v * b[i], 0);
+    for (let i = 0; i < 5; i += 1) {
+      expect(dot(serverCompact9[i], profile!.angle_embeddings.center)).toBeGreaterThan(0.95);
+    }
+
+    // Build realistic enrolled vs live appearance patch (lighting/distance shift giving ZNCC ~0.70, gradZNCC ~0.55)
+    // plus mild 0.5m -> 1.8m distance craniofacial ratio shift (mean ~0.118, max ~0.281 — exact production log values)
+    const buildPatch = (noiseAmp: number): number[] => {
+      const out = new Array<number>(384).fill(0);
+      for (let y = 0; y < 16; y += 1) {
+        for (let x = 0; x < 16; x += 1) {
+          const base = 0.25 + 0.45 * (y / 15) + 0.14 * Math.sin(x * 1.4) * Math.cos(y * 1.3);
+          const noise = noiseAmp * Math.sin((x * 19 + y * 37) * 0.9);
+          out[y * 16 + x] = Math.max(0, Math.min(1, base + noise));
+        }
+      }
+      for (let i = 256; i < 384; i += 1) {
+        out[i] = 0.48 + 0.08 * Math.sin(i * 0.18) + noiseAmp * 0.3 * Math.cos(i * 0.7);
+      }
+      return out;
+    };
+    const enrolledRatios12 = Array.from({ length: 12 }, (_, i) => Number((1.0 + i * 0.05).toFixed(4)));
+    const distanceShiftedRatios12 = enrolledRatios12.map((v, i) =>
+      Number((v * (i === 5 ? 1.24 : 1.07)).toFixed(4)),
+    );
+
+    const candidate = {
+      masterEmbedding: profile!.master_embedding,
+      angleEmbeddings: profile!.angle_embeddings,
+      exemplarEmbeddings: serverCompact9,
+      geometricRatios: {
+        eyeToNoseRatio: 1.5,
+        faceWidthToUpperHeight: 1.85,
+        mouthToEyeRatio: 0.8,
+        noseToChinRatio: 1.12,
+        appearancePatch384: buildPatch(0),
+        craniofacialRatios12: enrolledRatios12,
+      },
+    };
+
+    // Realistic genuine probe immediately after enrollment (raw ~0.92, slight webcam/distance drift)
+    const liveGenuineProbe = mix(baseCenter, makeRelu6Vec(77.7), 0.20);
+    const evalGenuine = evaluateTripleGateNeuralCandidate(
+      liveGenuineProbe,
+      candidate,
+      {
+        eyeToNoseRatio: 1.52,
+        faceWidthToUpperHeight: 1.88,
+        mouthToEyeRatio: 0.82,
+        noseToChinRatio: 1.15,
+        appearancePatch384: buildPatch(0.11),
+        craniofacialRatios12: distanceShiftedRatios12,
+      },
+      'center',
+    );
+    expect(evalGenuine.passed).toBe(true);
+    expect(evalGenuine.failureReasons).toEqual([]);
+
+    // Unrelated stranger MUST still fail completely
+    const strangerProbe = makeRelu6Vec(999.1);
+    const evalStranger = evaluateTripleGateNeuralCandidate(strangerProbe, candidate, null, 'center');
+    expect(evalStranger.passed).toBe(false);
   });
 
   it('audits all mascot, kiosk login, and biometric matcher files for zero Unicode emojis', () => {

@@ -1,4 +1,4 @@
-import { HAND21_CONNECTIONS, POSE_INDEX, type PoseLandmark } from '@drtechcares/pose-engine';
+import { HAND21_CONNECTIONS, POSE_INDEX, computeJointAngle3D, type PoseLandmark } from '@drtechcares/pose-engine';
 
 export const SKELETON_JOINT_MIN_SCORE = 0.52;
 export const SKELETON_EDGE_MARGIN_NORM = 0.03;
@@ -10,8 +10,10 @@ export const UPPER_ARM_MIN_RATIO = 0.20;
 export const UPPER_ARM_MAX_RATIO = 1.30;
 export const FOREARM_MIN_RATIO = 0.18;
 export const FOREARM_MAX_RATIO = 1.30;
-export const HAND21_WRIST_TETHER_MAX_RATIO = 0.40;
-export const HAND21_BONE_MAX_RATIO = 0.30;
+export const HAND21_WRIST_TETHER_MAX_RATIO = 0.42;
+export const HAND21_WRIST_TETHER_FORESHORTENED_MAX_RATIO = 0.54;
+export const HAND21_BONE_MAX_RATIO = 0.42;
+export const HAND21_PALM_BONE_MAX_RATIO = 0.62;
 export const HAND_OUT_OF_FRAME_BADGE_TH = 'มืออยู่นอกกรอบกล้อง';
 
 export type ScoredLandmark = PoseLandmark & { score?: number };
@@ -466,6 +468,12 @@ export function validateTetheredHandLandmarks21(params: {
   }
 
   const bodyWristPt = safety.points[wristIdx];
+  const shIdx = wristSide === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER;
+  const poseSh = poseLandmarks[shIdx];
+  const poseWr = poseLandmarks[wristIdx];
+  const isForwardForeshortened = Boolean(
+    poseSh && poseWr && (poseWr.z ?? 0) < (poseSh.z ?? 0) - 0.14,
+  );
   const shoulderWidthPx = safety.shoulderWidthPx;
   const canvasPoints: CanvasPoint2D[] = [];
 
@@ -479,8 +487,8 @@ export function validateTetheredHandLandmarks21(params: {
       canvasW: cw,
       canvasH: ch,
       minScore: SKELETON_JOINT_MIN_SCORE,
-      marginPx: HAND21_CANVAS_MARGIN_PX,
-      edgeMarginNorm: SKELETON_EDGE_MARGIN_NORM,
+      marginPx: 2,
+      edgeMarginNorm: 0.005,
       requireConfidence: false,
     });
     if (!ptValid) {
@@ -489,18 +497,412 @@ export function validateTetheredHandLandmarks21(params: {
     canvasPoints.push(pt);
   }
 
+  const maxTetherRatio = isForwardForeshortened
+    ? HAND21_WRIST_TETHER_FORESHORTENED_MAX_RATIO
+    : HAND21_WRIST_TETHER_MAX_RATIO;
   const rootDist = Math.hypot(canvasPoints[0].x - bodyWristPt.x, canvasPoints[0].y - bodyWristPt.y);
-  if (rootDist > HAND21_WRIST_TETHER_MAX_RATIO * shoulderWidthPx) {
+  if (rootDist > maxTetherRatio * shoulderWidthPx) {
     return { valid: false, canvasPoints: [], outOfFrame: true };
   }
 
   for (const [a, b] of HAND21_CONNECTIONS) {
     const pa = canvasPoints[a];
     const pb = canvasPoints[b];
-    if (!pa || !pb || Math.hypot(pb.x - pa.x, pb.y - pa.y) > HAND21_BONE_MAX_RATIO * shoulderWidthPx) {
+    const maxBonePx =
+      (a === 0 || b === 0 ? HAND21_PALM_BONE_MAX_RATIO : HAND21_BONE_MAX_RATIO) * shoulderWidthPx;
+    if (!pa || !pb || Math.hypot(pb.x - pa.x, pb.y - pa.y) > maxBonePx) {
       return { valid: false, canvasPoints: [], outOfFrame: true };
     }
   }
 
   return { valid: true, canvasPoints, outOfFrame: false };
+}
+
+/**
+ * Corrects monocular 2D elbow V-kink hallucinations when a patient extends an arm straight
+ * (especially straight forward toward the camera lens where the forearm occludes the elbow).
+ *
+ * Uses two strictly bounded geometric invariants:
+ * 1) Projective 3D Collinearity (all exercises): a straight 3D arm (`worldElbowAngle >= 158 deg`)
+ *    MUST project onto a straight 2D line between shoulder and wrist.
+ * 2) Forward-Extension Occlusion Repair (straight-arm modes only): when the wrist points toward
+ *    the lens (`wrist.z < shoulder.z - 0.12`) at roughly shoulder height and MediaPipe drops the
+ *    occluded 2D elbow below the shoulder->wrist segment (or pushes it past 68% of the segment),
+ *    smoothly aligns the occluded 2D elbow onto the proportional shoulder->wrist ray without
+ *    affecting genuine bent-elbow exercises or true elbow flexion.
+ */
+export function stabilizeStraightArmElbows<T extends ScoredLandmark>(params: {
+  landmarks: readonly T[];
+  worldLandmarks?: readonly PoseLandmark[] | null;
+  allowForwardOcclusionRepair?: boolean;
+  videoAspect?: number;
+}): T[] {
+  const { landmarks, worldLandmarks, allowForwardOcclusionRepair = true } = params;
+  const aspect =
+    params.videoAspect && Number.isFinite(params.videoAspect) && params.videoAspect > 0.4
+      ? params.videoAspect
+      : 1.333;
+  const out = landmarks.map((lm) => ({ ...lm }));
+  const lSh = out[POSE_INDEX.LEFT_SHOULDER];
+  const rSh = out[POSE_INDEX.RIGHT_SHOULDER];
+  if (!lSh || !rSh) return out;
+  const shSpan = Math.max(0.08, Math.hypot((rSh.x - lSh.x) * aspect, rSh.y - lSh.y));
+
+  const fixSide = (shIdx: number, elIdx: number, wrIdx: number) => {
+    const sh = out[shIdx];
+    const el = out[elIdx];
+    const wr = out[wrIdx];
+    if (!sh || !el || !wr) return;
+    if ((sh.visibility ?? 1) < 0.25 || (el.visibility ?? 1) < 0.2 || (wr.visibility ?? 1) < 0.3) {
+      return;
+    }
+
+    const dxSW = (wr.x - sh.x) * aspect;
+    const dySW = wr.y - sh.y;
+    const lenSW = Math.hypot(dxSW, dySW);
+    if (!Number.isFinite(lenSW) || lenSW < 0.012) return;
+
+    const dxSE = (el.x - sh.x) * aspect;
+    const dySE = el.y - sh.y;
+    const projT = (dxSE * dxSW + dySE * dySW) / (lenSW * lenSW);
+    const perpDist = Math.abs(dxSE * dySW - dySE * dxSW) / lenSW;
+
+    let worldElbowDeg: number | null = null;
+    let t3d = 0.52;
+    const wSh = worldLandmarks?.[shIdx];
+    const wEl = worldLandmarks?.[elIdx];
+    const wWr = worldLandmarks?.[wrIdx];
+    if (wSh && wEl && wWr) {
+      const uLen = Math.hypot(wEl.x - wSh.x, wEl.y - wSh.y, (wEl.z ?? 0) - (wSh.z ?? 0));
+      const fLen = Math.hypot(wWr.x - wEl.x, wWr.y - wEl.y, (wWr.z ?? 0) - (wEl.z ?? 0));
+      if (uLen >= 0.08 && fLen >= 0.08) {
+        worldElbowDeg = computeJointAngle3D(wSh, wEl, wWr);
+        t3d = Math.max(0.42, Math.min(0.58, uLen / (uLen + fLen)));
+      }
+    }
+
+    // Rule 1: Exact projective 3D-to-2D straightness invariant (applies to every exercise)
+    let blend = 0;
+    if (worldElbowDeg !== null && worldElbowDeg >= 156) {
+      blend = Math.max(0, Math.min(0.92, (worldElbowDeg - 154) / 18));
+    }
+
+    // Rule 2: Monocular forward-occlusion sag repair (arm extended straight toward camera)
+    const wristForwardDz = (sh.z ?? 0) - (wr.z ?? 0);
+    const isForwardTowardCamera =
+      allowForwardOcclusionRepair &&
+      wristForwardDz >= 0.11 &&
+      lenSW <= shSpan * 1.18 &&
+      Math.abs(wr.y - sh.y) <= shSpan * 0.58 &&
+      el.y <= sh.y + shSpan * 0.55;
+
+    if (isForwardTowardCamera && (worldElbowDeg === null || worldElbowDeg >= 120)) {
+      const elbowSagBelowRay = el.y > Math.max(sh.y, wr.y) + 0.012;
+      const elbowPushedPastMid = projT > 0.66 || projT < 0.28;
+      const kinkRatio = perpDist / Math.max(0.03, lenSW);
+      if (elbowSagBelowRay || elbowPushedPastMid || kinkRatio >= 0.14) {
+        const occlBlend =
+          worldElbowDeg !== null && worldElbowDeg < 138
+            ? 0.55
+            : 0.86;
+        blend = Math.max(blend, occlBlend);
+      }
+    }
+
+    if (blend <= 0.01) return;
+
+    const targetT = worldElbowDeg !== null && worldElbowDeg >= 156 ? t3d : 0.52;
+    const idealX = sh.x + (wr.x - sh.x) * targetT;
+    const idealY = sh.y + (wr.y - sh.y) * targetT;
+    const idealZ = (sh.z ?? 0) + ((wr.z ?? 0) - (sh.z ?? 0)) * targetT;
+
+    out[elIdx] = {
+      ...el,
+      x: el.x + (idealX - el.x) * blend,
+      y: el.y + (idealY - el.y) * blend,
+      z: (el.z ?? 0) + (idealZ - (el.z ?? 0)) * (blend * 0.5),
+    };
+  };
+
+  fixSide(POSE_INDEX.LEFT_SHOULDER, POSE_INDEX.LEFT_ELBOW, POSE_INDEX.LEFT_WRIST);
+  fixSide(POSE_INDEX.RIGHT_SHOULDER, POSE_INDEX.RIGHT_ELBOW, POSE_INDEX.RIGHT_WRIST);
+  return out;
+}
+
+export interface DetectedHandCandidate<T extends ScoredLandmark> {
+  landmarks: readonly T[];
+  worldLandmarks?: readonly T[];
+  handednessCategory?: string;
+  handednessScore?: number;
+}
+
+/**
+ * Strictly filters MediaPipe HandLandmarker detections against anatomical scale, confidence,
+ * anti-chest-phantom guards, and 1-to-1 body wrist tethering so textured shirts or background
+ * clutter never spawn floating phantom hands on the chest when extending arms forward.
+ */
+export function filterAndAssignDetectedHands<T extends ScoredLandmark>(params: {
+  candidates: readonly DetectedHandCandidate<T>[];
+  poseLandmarks: readonly ScoredLandmark[];
+  videoAspect?: number;
+  minConfidence?: number;
+}): {
+  handsBySide: { left?: T[]; right?: T[] };
+  worldHandsBySide: { left?: T[]; right?: T[] };
+} {
+  const { candidates, poseLandmarks, minConfidence = 0.34 } = params;
+  const aspect =
+    params.videoAspect && Number.isFinite(params.videoAspect) && params.videoAspect > 0.4
+      ? params.videoAspect
+      : 1.333;
+
+  const lSh = poseLandmarks[POSE_INDEX.LEFT_SHOULDER];
+  const rSh = poseLandmarks[POSE_INDEX.RIGHT_SHOULDER];
+  const lWr = poseLandmarks[POSE_INDEX.LEFT_WRIST];
+  const rWr = poseLandmarks[POSE_INDEX.RIGHT_WRIST];
+
+  const lWrVis = Boolean(lWr && (lWr.visibility ?? 0) >= 0.25 && Number.isFinite(lWr.x) && Number.isFinite(lWr.y));
+  const rWrVis = Boolean(rWr && (rWr.visibility ?? 0) >= 0.25 && Number.isFinite(rWr.x) && Number.isFinite(rWr.y));
+  const shSpan =
+    lSh && rSh
+      ? Math.max(0.09, Math.hypot((rSh.x - lSh.x) * aspect, rSh.y - lSh.y))
+      : 0.22;
+
+  const minShX = lSh && rSh ? Math.min(lSh.x, rSh.x) : 0.35;
+  const maxShX = lSh && rSh ? Math.max(lSh.x, rSh.x) : 0.65;
+  const shSpanRawX = Math.max(0.08, maxShX - minShX);
+  const midShY = lSh && rSh ? (lSh.y + rSh.y) / 2 : 0.38;
+
+  const distIso = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    Math.hypot((a.x - b.x) * aspect, a.y - b.y);
+
+  const lForward = Boolean(lSh && lWr && (lWr.z ?? 0) < (lSh.z ?? 0) - 0.12);
+  const rForward = Boolean(rSh && rWr && (rWr.z ?? 0) < (rSh.z ?? 0) - 0.12);
+  const maxTetherL = shSpan * (lForward ? 0.56 : 0.44);
+  const maxTetherR = shSpan * (rForward ? 0.56 : 0.44);
+
+  const normalizeHandLandmarks = (raw: readonly T[]): T[] =>
+    raw.slice(0, 21).map((lm) => ({
+      ...lm,
+      z: lm.z ?? 0,
+      // MediaPipe tasks-vision HandLandmarker sets visibility=0/undefined because it validates at hand level;
+      // normalize 0/undefined -> 1 so strict downstream joint validators do not falsely drop valid hands.
+      visibility: lm.visibility === undefined || lm.visibility === 0 ? 1 : lm.visibility,
+    }));
+
+  interface ScoredMatch {
+    side: 'left' | 'right';
+    candIdx: number;
+    dist: number;
+    score: number;
+    hand: T[];
+    worldHand?: T[];
+  }
+
+  const validMatches: ScoredMatch[] = [];
+
+  candidates.forEach((cand, candIdx) => {
+    if (!cand.landmarks || cand.landmarks.length < 21) return;
+    if (typeof cand.handednessScore === 'number' && cand.handednessScore < minConfidence) {
+      return;
+    }
+
+    const hWrist = cand.landmarks[0];
+    const hMidMcp = cand.landmarks[9];
+    const hIdxTip = cand.landmarks[8];
+    if (
+      !hWrist ||
+      !hMidMcp ||
+      !hIdxTip ||
+      !Number.isFinite(hWrist.x) ||
+      !Number.isFinite(hWrist.y)
+    ) {
+      return;
+    }
+
+    // Anatomical palm scale sanity check (rejects tiny noise blobs & oversized shirt patterns)
+    const palmLen = distIso(hWrist, hMidMcp);
+    if (palmLen < 0.018 || palmLen > shSpan * 1.15) return;
+
+    // Anti-chest-phantom check: detections sitting strictly inside the torso/shirt area require
+    // an actual body wrist right next to them (<= 0.26 * shoulderWidth)
+    const palmCenter = { x: (hWrist.x + hMidMcp.x) / 2, y: (hWrist.y + hMidMcp.y) / 2 };
+    const insideChestBox =
+      Boolean(lSh && rSh) &&
+      palmCenter.x >= minShX + shSpanRawX * 0.14 &&
+      palmCenter.x <= maxShX - shSpanRawX * 0.14 &&
+      palmCenter.y >= midShY + 0.035 &&
+      palmCenter.y <= midShY + shSpan * 1.18;
+
+    const dLeft = lWrVis && lWr ? distIso(hWrist, lWr) : Number.POSITIVE_INFINITY;
+    const dRight = rWrVis && rWr ? distIso(hWrist, rWr) : Number.POSITIVE_INFINITY;
+    const effMaxL = insideChestBox ? Math.min(maxTetherL, shSpan * 0.26) : maxTetherL;
+    const effMaxR = insideChestBox ? Math.min(maxTetherR, shSpan * 0.26) : maxTetherR;
+
+    const fitsL = dLeft <= effMaxL;
+    const fitsR = dRight <= effMaxR;
+    if (!fitsL && !fitsR) {
+      // Strictly reject untethered hands floating on chest/background far from BOTH wrists
+      return;
+    }
+
+    const normalized = normalizeHandLandmarks(cand.landmarks);
+    const normalizedWorld =
+      cand.worldLandmarks && cand.worldLandmarks.length >= 21
+        ? normalizeHandLandmarks(cand.worldLandmarks)
+        : undefined;
+    const score = typeof cand.handednessScore === 'number' ? cand.handednessScore : 0.85;
+
+    if (fitsL) {
+      validMatches.push({
+        side: 'left',
+        candIdx,
+        dist: dLeft,
+        score,
+        hand: normalized,
+        worldHand: normalizedWorld,
+      });
+    }
+    if (fitsR) {
+      validMatches.push({
+        side: 'right',
+        candIdx,
+        dist: dRight,
+        score,
+        hand: normalized,
+        worldHand: normalizedWorld,
+      });
+    }
+  });
+
+  // Greedy globally closest 1-to-1 assignment (each detected hand & each body wrist used at most once)
+  validMatches.sort((a, b) => a.dist - b.dist || b.score - a.score);
+  const usedCandidates = new Set<number>();
+  const handsBySide: { left?: T[]; right?: T[] } = {};
+  const worldHandsBySide: { left?: T[]; right?: T[] } = {};
+
+  for (const m of validMatches) {
+    if (usedCandidates.has(m.candIdx)) continue;
+    if (handsBySide[m.side]) continue;
+    usedCandidates.add(m.candIdx);
+    handsBySide[m.side] = m.hand;
+    if (m.worldHand) {
+      worldHandsBySide[m.side] = m.worldHand;
+    }
+  }
+
+  return { handsBySide, worldHandsBySide };
+}
+
+export interface HandRoiCropBox {
+  x: number;
+  y: number;
+  size: number;
+  videoW: number;
+  videoH: number;
+  wristZ: number;
+}
+
+/**
+ * Computes an isotropic square ROI crop box in raw video pixels centered around a patient's
+ * left or right hand so a dedicated 256x256 HandLandmarker pass sees ~6x-8x finer finger detail
+ * (crucial for distant hands, closed fists, and fingers gripping objects like a mouse).
+ */
+export function computeHandRoiCropBox(params: {
+  poseLandmarks: readonly ScoredLandmark[];
+  side: 'left' | 'right';
+  videoW: number;
+  videoH: number;
+}): HandRoiCropBox | null {
+  const { poseLandmarks, side, videoW, videoH } = params;
+  if (videoW < 64 || videoH < 64) return null;
+
+  const shIdx = side === 'left' ? POSE_INDEX.LEFT_SHOULDER : POSE_INDEX.RIGHT_SHOULDER;
+  const elIdx = side === 'left' ? POSE_INDEX.LEFT_ELBOW : POSE_INDEX.RIGHT_ELBOW;
+  const wrIdx = side === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST;
+  const pinkyIdx = side === 'left' ? POSE_INDEX.LEFT_PINKY : POSE_INDEX.RIGHT_PINKY;
+  const indexIdx = side === 'left' ? POSE_INDEX.LEFT_INDEX : POSE_INDEX.RIGHT_INDEX;
+  const thumbIdx = side === 'left' ? POSE_INDEX.LEFT_THUMB : POSE_INDEX.RIGHT_THUMB;
+
+  const lSh = poseLandmarks[POSE_INDEX.LEFT_SHOULDER];
+  const rSh = poseLandmarks[POSE_INDEX.RIGHT_SHOULDER];
+  const sh = poseLandmarks[shIdx];
+  const el = poseLandmarks[elIdx];
+  const wr = poseLandmarks[wrIdx];
+  if (!wr || (wr.visibility ?? 0) < 0.28 || !Number.isFinite(wr.x) || !Number.isFinite(wr.y)) {
+    return null;
+  }
+  if (wr.x < 0.01 || wr.x > 0.99 || wr.y < 0.01 || wr.y > 0.99) return null;
+
+  const shSpanPx =
+    lSh && rSh && Number.isFinite(lSh.x) && Number.isFinite(rSh.x)
+      ? Math.max(
+          videoW * 0.10,
+          Math.hypot((rSh.x - lSh.x) * videoW, (rSh.y - lSh.y) * videoH),
+        )
+      : videoW * 0.22;
+
+  const wrPx = { x: wr.x * videoW, y: wr.y * videoH };
+  let cx = wrPx.x;
+  let cy = wrPx.y;
+
+  // Bias crop center toward Pose palm hints (index/pinky/thumb) so all 5 fingers sit centered
+  const palmPts: Array<{ x: number; y: number }> = [];
+  for (const pIdx of [indexIdx, pinkyIdx, thumbIdx]) {
+    const p = poseLandmarks[pIdx];
+    if (p && (p.visibility ?? 0) >= 0.22 && Number.isFinite(p.x) && Number.isFinite(p.y)) {
+      const px = p.x * videoW;
+      const py = p.y * videoH;
+      if (Math.hypot(px - wrPx.x, py - wrPx.y) <= shSpanPx * 0.55) {
+        palmPts.push({ x: px, y: py });
+      }
+    }
+  }
+
+  if (palmPts.length > 0) {
+    const avgX = palmPts.reduce((acc, p) => acc + p.x, 0) / palmPts.length;
+    const avgY = palmPts.reduce((acc, p) => acc + p.y, 0) / palmPts.length;
+    cx = wrPx.x * 0.35 + avgX * 0.65;
+    cy = wrPx.y * 0.35 + avgY * 0.65;
+  } else if (el && (el.visibility ?? 0) >= 0.25 && Number.isFinite(el.x) && Number.isFinite(el.y)) {
+    const dx = wrPx.x - el.x * videoW;
+    const dy = wrPx.y - el.y * videoH;
+    const d = Math.hypot(dx, dy);
+    if (d >= 8) {
+      const shift = Math.min(shSpanPx * 0.26, d * 0.28);
+      cx = wrPx.x + (dx / d) * shift;
+      cy = wrPx.y + (dy / d) * shift;
+    }
+  }
+
+  const isForwardTowardCamera = Boolean(sh && (wr.z ?? 0) < (sh.z ?? 0) - 0.12);
+  const minSide = Math.min(videoW, videoH);
+  const rawSize = shSpanPx * (isForwardTowardCamera ? 1.48 : 1.24);
+  const size = Math.round(Math.max(Math.min(180, minSide), Math.min(minSide * 0.60, rawSize)));
+  const x = Math.round(Math.max(0, Math.min(videoW - size, cx - size / 2)));
+  const y = Math.round(Math.max(0, Math.min(videoH - size, cy - size / 2)));
+
+  return {
+    x,
+    y,
+    size,
+    videoW,
+    videoH,
+    wristZ: wr.z ?? 0,
+  };
+}
+
+/** Projects 21 normalized landmarks from a square ROI hand crop back into exact full-video [0..1] space. */
+export function projectRoiHandToFullVideo<T extends ScoredLandmark>(
+  roiLandmarks: readonly T[],
+  crop: HandRoiCropBox,
+): T[] {
+  const zScale = crop.size / Math.max(1, crop.videoW);
+  return roiLandmarks.slice(0, 21).map((lm) => ({
+    ...lm,
+    x: (crop.x + lm.x * crop.size) / crop.videoW,
+    y: (crop.y + lm.y * crop.size) / crop.videoH,
+    z: crop.wristZ + (lm.z ?? 0) * zScale,
+    visibility: 1,
+  }));
 }

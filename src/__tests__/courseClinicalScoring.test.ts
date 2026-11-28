@@ -32,7 +32,7 @@ function makePatient(overrides: Partial<PatientRecord> & { id: string; hn: strin
     age: 42,
     gender: 'ชาย',
     phone: '0810000000',
-    diagnosis: 'ฟื้นฟูหลังโรคหลอดเลือดสมอง',
+    diagnosis: 'ฟื้นฟูสมรรถภาพผู้สูงอายุ',
     affectedSide: 'RIGHT',
     assignedPtId: 'pt-01',
     delegatedToPtId: null,
@@ -57,7 +57,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
       completedReps: 0,
       targetReps: 10,
       sourceSessionId: 'sess-lvl-0',
-      exerciseCode: 'STROKE_SHOULDER_FLEXION',
+      exerciseCode: 'ELDERLY_SHOULDER_FLEXION',
     });
     expect(level0.calculatedScore0To6).toBe(0);
     expect(level0.compositePct).toBe(0);
@@ -71,7 +71,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
       targetReps: 10,
       accuracyScore: 40,
       sourceSessionId: 'sess-lvl-1',
-      exerciseCode: 'STROKE_SHOULDER_FLEXION',
+      exerciseCode: 'ELDERLY_SHOULDER_FLEXION',
     });
     expect(level1.compositePct).toBe(16);
     expect(level1.calculatedScore0To6).toBe(1);
@@ -84,7 +84,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
       targetReps: 10,
       accuracyScore: 50,
       sourceSessionId: 'sess-lvl-2',
-      exerciseCode: 'STROKE_SHOULDER_FLEXION',
+      exerciseCode: 'ELDERLY_SHOULDER_FLEXION',
     });
     expect(level2.compositePct).toBe(34);
     expect(level2.calculatedScore0To6).toBe(2);
@@ -97,7 +97,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
       targetReps: 10,
       accuracyScore: 60,
       sourceSessionId: 'sess-lvl-3',
-      exerciseCode: 'STROKE_SHOULDER_FLEXION',
+      exerciseCode: 'ELDERLY_SHOULDER_FLEXION',
     });
     expect(level3.compositePct).toBe(52);
     expect(level3.calculatedScore0To6).toBe(3);
@@ -110,7 +110,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
       targetReps: 10,
       accuracyScore: 70,
       sourceSessionId: 'sess-lvl-4',
-      exerciseCode: 'STROKE_SHOULDER_FLEXION',
+      exerciseCode: 'ELDERLY_SHOULDER_FLEXION',
     });
     expect(level4.compositePct).toBe(70);
     expect(level4.calculatedScore0To6).toBe(4);
@@ -123,7 +123,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
       targetReps: 10,
       accuracyScore: 90,
       sourceSessionId: 'sess-lvl-5',
-      exerciseCode: 'STROKE_SHOULDER_FLEXION',
+      exerciseCode: 'ELDERLY_SHOULDER_FLEXION',
     });
     expect(level5.effectiveRomDeg).toBe(76.0);
     expect(level5.targetRomDeg).toBe(90);
@@ -143,7 +143,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
       targetReps: 10,
       accuracyScore: 95,
       sourceSessionId: 'sess-lvl-6',
-      exerciseCode: 'STROKE_SHOULDER_FLEXION',
+      exerciseCode: 'ELDERLY_SHOULDER_FLEXION',
     });
     expect(level6.compositePct).toBe(99);
     expect(level6.calculatedScore0To6).toBe(6);
@@ -158,7 +158,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
       targetReps: 10,
       accuracyScore: 90,
       sourceSessionId: 'sess-prop-1',
-      exerciseCode: 'STROKE_SHOULDER_FLEXION',
+      exerciseCode: 'ELDERLY_SHOULDER_FLEXION',
     });
     expect(proportional.romDerivedProportionally).toBe(true);
     expect(proportional.effectiveRomDeg).toBe(63.0);
@@ -176,7 +176,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
       completedReps: 10,
       targetReps: 10,
       sourceSessionId: 'sess-prop-2',
-      exerciseCode: 'STROKE_SHOULDER_FLEXION',
+      exerciseCode: 'ELDERLY_SHOULDER_FLEXION',
     });
     expect(fullProportional.romDerivedProportionally).toBe(true);
     expect(fullProportional.effectiveRomDeg).toBe(90.0);
@@ -195,7 +195,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
     const course: PatientCourseRecord = {
       id: 'course-aun-1',
       patientId: patient.id,
-      title: 'คอร์สฟื้นฟูหัวไหล่และแขน Stroke ADL',
+      title: 'คอร์สฟื้นฟูหัวไหล่และแขนผู้สูงอายุ',
       cognitiveModpackId: '',
       updatedAt: '2026-11-20T08:00:00.000Z',
       weeklySchedule: [
@@ -207,7 +207,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
           label: 'วันจันทร์',
           exercises: [
             {
-              exerciseId: 'STROKE_SHOULDER_FLEXION',
+              exerciseId: 'ELDERLY_SHOULDER_FLEXION',
               side: 'right',
               sets: 2,
               reps: 10,
@@ -226,7 +226,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
         id: 'sess-aun-day1',
         patientId: patient.id,
         activityType: 'physio_exercise',
-        exerciseId: 'STROKE_SHOULDER_FLEXION',
+        exerciseId: 'ELDERLY_SHOULDER_FLEXION',
         exerciseName: 'งอข้อไหล่ด้านหน้า (Shoulder Flexion)',
         bodySide: 'RIGHT',
         completedSets: 2,
@@ -242,7 +242,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
         id: 'sess-aun-day2',
         patientId: patient.id,
         activityType: 'physio_exercise',
-        exerciseId: 'STROKE_SHOULDER_FLEXION',
+        exerciseId: 'ELDERLY_SHOULDER_FLEXION',
         exerciseName: 'งอข้อไหล่ด้านหน้า (Shoulder Flexion)',
         bodySide: 'RIGHT',
         completedSets: 2,
@@ -323,7 +323,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
         {
           id: 'sched-aun-1',
           patientId: 'pat-359954',
-          exerciseId: 'STROKE_SHOULDER_FLEXION',
+          exerciseId: 'ELDERLY_SHOULDER_FLEXION',
           side: 'RIGHT',
           scheduledDate: '2026-11-22',
           sets: 2,
@@ -333,7 +333,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
         {
           id: 'sched-leak-other',
           patientId: 'pat-other-999',
-          exerciseId: 'STROKE_ELBOW_FLEXION',
+          exerciseId: 'ELDERLY_ELBOW_FLEXION',
           side: 'LEFT',
           scheduledDate: '2026-11-22',
           sets: 3,
@@ -358,7 +358,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
           label: 'วันจันทร์',
           exercises: [
             {
-              exerciseId: 'STROKE_SHOULDER_ABDUCTION',
+              exerciseId: 'ELDERLY_SHOULDER_ABDUCTION',
               side: 'left',
               sets: 3,
               reps: 15,
@@ -376,7 +376,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
       {
         id: 'sched-other-table',
         patientId: 'pat-other-999',
-        exerciseId: 'STROKE_WRIST_FLEXION',
+        exerciseId: 'ELDERLY_WRIST_FLEXION',
         side: 'LEFT',
         scheduledDate: '2026-11-23',
         sets: 2,
@@ -390,7 +390,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
         id: 'sess-aun-real',
         patientId: 'pat-359954',
         activityType: 'physio_exercise',
-        exerciseId: 'STROKE_SHOULDER_FLEXION',
+        exerciseId: 'ELDERLY_SHOULDER_FLEXION',
         exerciseName: 'งอข้อไหล่ด้านหน้า',
         bodySide: 'RIGHT',
         completedSets: 2,
@@ -406,7 +406,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
         id: 'sess-other-patient',
         patientId: 'pat-other-999',
         activityType: 'physio_exercise',
-        exerciseId: 'STROKE_SHOULDER_ABDUCTION',
+        exerciseId: 'ELDERLY_SHOULDER_ABDUCTION',
         exerciseName: 'กางแขนของผู้ป่วยคนอื่น',
         bodySide: 'LEFT',
         completedSets: 3,
@@ -426,7 +426,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
         patientId: 'pat-other-999',
         hn: 'HN-999111',
         sessionDate: '2026-11-21T10:00:00.000Z',
-        exerciseCode: 'STROKE_ELBOW_FLEXION',
+        exerciseCode: 'ELDERLY_ELBOW_FLEXION',
         exerciseName: 'งอศอกของผู้ป่วยอื่น',
         jointName: 'elbow',
         bodySide: 'LEFT',
@@ -451,7 +451,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
     expect(bundle.patientId).toBe('pat-359954');
     expect(bundle.patientHn).toBe('HN-359954');
     expect(bundle.courseTitle).toBeNull();
-    expect(bundle.assignedExercises.every((ex) => ex.exerciseCode === 'STROKE_SHOULDER_FLEXION')).toBe(
+    expect(bundle.assignedExercises.every((ex) => ex.exerciseCode === 'ELDERLY_SHOULDER_FLEXION')).toBe(
       true,
     );
     expect(bundle.completedSessions.every((s) => s.patientId === 'pat-359954')).toBe(true);
@@ -487,7 +487,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
           age: 42,
           gender: 'ชาย',
           phone: '0893599540',
-          diagnosis: 'Stroke ADL Shoulder & Arm',
+          diagnosis: 'Elderly Rehab Shoulder & Arm',
           affectedSide: 'RIGHT',
         }),
       }),
@@ -507,7 +507,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
         body: JSON.stringify({
           patientId: targetPatient.id,
           title: 'คอร์สฟื้นฟูหัวไหล่มาตรฐาน',
-          cognitiveModpackId: 'pack-stroke-adl',
+          cognitiveModpackId: 'pack-elderly-adl',
           weeklySchedule: [
             {
               dayIndex: 1,
@@ -517,7 +517,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
               label: 'วันจันทร์',
               exercises: [
                 {
-                  exerciseId: 'STROKE_SHOULDER_FLEXION',
+                  exerciseId: 'ELDERLY_SHOULDER_FLEXION',
                   side: 'right',
                   sets: 2,
                   reps: 10,
@@ -538,7 +538,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
     const sessionBody = {
       patientId: targetPatient.id,
       activityType: 'physio_exercise',
-      exerciseId: 'STROKE_SHOULDER_FLEXION',
+      exerciseId: 'ELDERLY_SHOULDER_FLEXION',
       exerciseName: 'งอข้อไหล่ด้านหน้า (Shoulder Flexion)',
       bodySide: 'RIGHT',
       completedSets: 2,
@@ -618,7 +618,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
             id: 'sess-render-1',
             patientId: kruAun.id,
             activityType: 'physio_exercise',
-            exerciseId: 'STROKE_SHOULDER_FLEXION',
+            exerciseId: 'ELDERLY_SHOULDER_FLEXION',
             exerciseName: 'งอข้อไหล่ด้านหน้า',
             bodySide: 'RIGHT',
             completedSets: 2,
@@ -649,7 +649,7 @@ describe('Automatic 0-6 Mahidol Score & ROM Calculation From PT-Assigned Rehab C
               label: 'วันจันทร์',
               exercises: [
                 {
-                  exerciseId: 'STROKE_SHOULDER_FLEXION',
+                  exerciseId: 'ELDERLY_SHOULDER_FLEXION',
                   side: 'right',
                   sets: 2,
                   reps: 10,

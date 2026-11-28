@@ -2,7 +2,7 @@
 -- Migration 009: Backfill Patient Biometrics & Profile Fields From history JSON
 -- Syncs top-level public.patients columns (face_biometric_status,
 -- face_frames_count, face_image_url, master_embedding, angle_embeddings,
--- face_embedding, biometric_data, biometric_updated_at, gender, stroke_type,
+-- face_embedding, biometric_data, biometric_updated_at, gender, care_group,
 -- affected_side, motor_assessment_score, adl_dressing_score) whenever data was
 -- written inside patients.history JSONB while top-level columns stayed empty
 -- or stuck at PENDING / 0.
@@ -20,7 +20,7 @@ ALTER TABLE IF EXISTS public.patients
   ADD COLUMN IF NOT EXISTS biometric_data JSONB,
   ADD COLUMN IF NOT EXISTS biometric_updated_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS gender TEXT,
-  ADD COLUMN IF NOT EXISTS stroke_type TEXT,
+  ADD COLUMN IF NOT EXISTS care_group TEXT,
   ADD COLUMN IF NOT EXISTS affected_side TEXT,
   ADD COLUMN IF NOT EXISTS motor_assessment_score NUMERIC,
   ADD COLUMN IF NOT EXISTS adl_dressing_score NUMERIC;
@@ -48,11 +48,11 @@ WITH parsed AS (
     NULLIF(BTRIM(COALESCE(p.history ->> 'faceImageUrl', '')), '') AS hist_face_image_url,
     NULLIF(BTRIM(COALESCE(p.history ->> 'gender', '')), '') AS hist_gender,
     CASE
-      WHEN UPPER(BTRIM(COALESCE(p.history ->> 'strokeType', '')))
-        IN ('ISCHEMIC', 'HEMORRHAGIC', 'ELDERLY_GENERAL', 'ORTHOPEDIC', 'NEURO')
-      THEN UPPER(BTRIM(p.history ->> 'strokeType'))
+      WHEN UPPER(BTRIM(COALESCE(p.history ->> 'careGroup', '')))
+        IN ('MOBILITY_RECOVERY', 'CLOSE_CARE', 'ELDERLY_GENERAL', 'ORTHOPEDIC', 'NEURO')
+      THEN UPPER(BTRIM(p.history ->> 'careGroup'))
       ELSE NULL
-    END AS hist_stroke_type,
+    END AS hist_care_group,
     CASE
       WHEN UPPER(BTRIM(COALESCE(p.history ->> 'affectedSide', '')))
         IN ('LEFT', 'RIGHT', 'BOTH', 'NONE')
@@ -197,7 +197,7 @@ SET
     ELSE p.biometric_updated_at
   END,
   gender = COALESCE(NULLIF(BTRIM(COALESCE(p.gender, '')), ''), parsed.hist_gender),
-  stroke_type = COALESCE(NULLIF(BTRIM(COALESCE(p.stroke_type, '')), ''), parsed.hist_stroke_type),
+  care_group = COALESCE(NULLIF(BTRIM(COALESCE(p.care_group, '')), ''), parsed.hist_care_group),
   affected_side = COALESCE(NULLIF(BTRIM(COALESCE(p.affected_side, '')), ''), parsed.hist_affected_side),
   motor_assessment_score = COALESCE(p.motor_assessment_score, parsed.hist_motor_score),
   adl_dressing_score = COALESCE(p.adl_dressing_score, parsed.hist_adl_score),
@@ -221,7 +221,7 @@ WHERE p.id = parsed.id
     OR ((p.face_embedding IS NULL OR p.face_embedding IN ('{}'::jsonb, 'null'::jsonb)) AND (parsed.has_hist_master OR parsed.has_hist_angles))
     OR (p.biometric_updated_at IS NULL AND (parsed.has_hist_master OR parsed.has_hist_angles OR parsed.hist_status = 'VERIFIED'))
     OR (NULLIF(BTRIM(COALESCE(p.gender, '')), '') IS NULL AND parsed.hist_gender IS NOT NULL)
-    OR (NULLIF(BTRIM(COALESCE(p.stroke_type, '')), '') IS NULL AND parsed.hist_stroke_type IS NOT NULL)
+    OR (NULLIF(BTRIM(COALESCE(p.care_group, '')), '') IS NULL AND parsed.hist_care_group IS NOT NULL)
     OR (NULLIF(BTRIM(COALESCE(p.affected_side, '')), '') IS NULL AND parsed.hist_affected_side IS NOT NULL)
     OR (p.motor_assessment_score IS NULL AND parsed.hist_motor_score IS NOT NULL)
     OR (p.adl_dressing_score IS NULL AND parsed.hist_adl_score IS NOT NULL)

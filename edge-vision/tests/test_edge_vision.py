@@ -124,7 +124,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertGreater(st.bone_lengths.torso_height, 0.15)  # type: ignore[union-attr]
 
     def test_04_all_15_unified_master_exercises_and_aliases(self) -> None:
-        """All 15 Unified Stroke ADL & MOPH Master Exercises plus L/R/BOTH and legacy aliases resolve cleanly."""
+        """All 15 Unified Elderly Care & MOPH Master Exercises plus L/R/BOTH and legacy aliases resolve cleanly."""
         self.assertEqual(len(ALL_15_EXERCISES), 15)
         self.assertEqual(len(ALL_26_EXERCISES), 15)
         ids = {r.id for r in ALL_15_EXERCISES}
@@ -132,21 +132,21 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertTrue(all(r.category in ("upper_limb", "neck_trunk") for r in ALL_15_EXERCISES))
 
         r_abd = resolve_exercise_rule("right_shoulder_abduction")
-        self.assertEqual(r_abd.id, "STROKE_SH_ABD")
+        self.assertEqual(r_abd.id, "ELDERLY_SH_ABD")
         self.assertEqual(r_abd.side, "right")
         self.assertEqual(r_abd.target_joint, "right_shoulder")
 
         l_abd = resolve_exercise_rule("left_shoulder_abduction")
-        self.assertEqual(l_abd.id, "STROKE_SH_ABD")
+        self.assertEqual(l_abd.id, "ELDERLY_SH_ABD")
         self.assertEqual(l_abd.side, "left")
         self.assertEqual(l_abd.target_joint, "left_shoulder")
 
-        b_flex = resolve_exercise_rule("STROKE_SH_FLEX_BOTH")
-        self.assertEqual(b_flex.id, "STROKE_SH_FLEX")
+        b_flex = resolve_exercise_rule("ELDERLY_SH_FLEX_BOTH")
+        self.assertEqual(b_flex.id, "ELDERLY_SH_FLEX")
         self.assertEqual(b_flex.side, "both")
 
-        cross_r = resolve_exercise_rule("STROKE_CROSS_BODY_R")
-        self.assertEqual(cross_r.id, "STROKE_CROSS_BODY")
+        cross_r = resolve_exercise_rule("ELDERLY_CROSS_BODY_R")
+        self.assertEqual(cross_r.id, "ELDERLY_CROSS_BODY")
         self.assertEqual(cross_r.side, "right")
 
         neck_bi = resolve_exercise_rule("MOPH_NECK_TURN_BILATERAL")
@@ -154,7 +154,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertEqual(neck_bi.side, "both")
 
         legacy_flex = resolve_exercise_rule("ex-01")
-        self.assertEqual(legacy_flex.id, "STROKE_SH_FLEX")
+        self.assertEqual(legacy_flex.id, "ELDERLY_SH_FLEX")
         self.assertEqual(legacy_flex.side, "right")
 
     def test_05_3d_solver_angles_and_all_five_anti_cheat_checks(self) -> None:
@@ -173,8 +173,8 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertAlmostEqual(ang90, 90.0, places=3)
 
         # 1. Clean right shoulder abduction (~150 deg)
-        rule_sh = resolve_exercise_rule("STROKE_SH_ABD_R")
-        good_sh, _ = generate_synthetic_133_pose(0.0, "STROKE_SH_ABD_R", mock_pose_override="raise_right")
+        rule_sh = resolve_exercise_rule("ELDERLY_SH_ABD_R")
+        good_sh, _ = generate_synthetic_133_pose(0.0, "ELDERLY_SH_ABD_R", mock_pose_override="raise_right")
         res_good, emerg = solver.analyze(good_sh, rule_sh, cal, timestamp_sec=1.0, target_rom_override=140.0)
         self.assertIsNone(emerg)
         self.assertTrue(res_good.is_form_valid)
@@ -192,16 +192,16 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertIn("SHOULDER_HIKE", res_cheat.compensation_detected)
         self.assertIn("TOO_FAST", res_cheat.compensation_detected)
 
-        # 3. Straight-arm guard (ELBOW_FLEXION) on STROKE_SH_FLEX_R when elbow bends excessively
+        # 3. Straight-arm guard (ELBOW_FLEXION) on ELDERLY_SH_FLEX_R when elbow bends excessively
         solver.reset()
-        rule_flex = resolve_exercise_rule("STROKE_SH_FLEX_R")
+        rule_flex = resolve_exercise_rule("ELDERLY_SH_FLEX_R")
         bent_arm = good_sh.copy()
         bent_arm[10] = bent_arm[8] + np.array([0.0, -0.13, 0.0])  # wrist folded sharp at elbow (~30-70 deg interior)
         res_bent, _ = solver.analyze(bent_arm, rule_flex, cal, timestamp_sec=2.0)
         self.assertIn("ELBOW_FLEXION", res_bent.compensation_detected)
 
         # 4. Emergency Fall Detection
-        fall_pts, _ = generate_synthetic_133_pose(0.0, "STROKE_SH_ABD_R", mock_pose_override="fall")
+        fall_pts, _ = generate_synthetic_133_pose(0.0, "ELDERLY_SH_ABD_R", mock_pose_override="fall")
         res_fall, fall_reason = solver.analyze(fall_pts, rule_sh, cal, timestamp_sec=2.1)
         self.assertIsNotNone(fall_reason)
         self.assertTrue(res_fall.pain_alert)
@@ -212,7 +212,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertEqual(fsm.fsm_state, "FACE_AUTH")
 
         rx = ExercisePrescriptionSchema(
-            exercise_id="STROKE_SH_ABD_R",
+            exercise_id="ELDERLY_SH_ABD_R",
             target_rom_deg=130.0,
             hold_sec=0.5,
             target_reps=1,
@@ -221,7 +221,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertEqual(fsm.fsm_state, "CALIBRATE_2S")
 
         stand_pts, scores = generate_synthetic_133_pose(0.0, is_calibrating=True)
-        raised_pts, _ = generate_synthetic_133_pose(0.0, "STROKE_SH_ABD_R", mock_pose_override="raise_right")
+        raised_pts, _ = generate_synthetic_133_pose(0.0, "ELDERLY_SH_ABD_R", mock_pose_override="raise_right")
         hand_empty = HandRaiseTelemetry()
 
         # Run 2.1s upright calibration
@@ -336,7 +336,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
                 self.assertEqual(len(first["keypoints_3d"]), 133)
                 self.assertIn("hand_status", first)
 
-                ws.send_json({"type": "prescription", "data": {"exercise_id": "STROKE_SH_ABD_R", "target_rom_deg": 140}})
+                ws.send_json({"type": "prescription", "data": {"exercise_id": "ELDERLY_SH_ABD_R", "target_rom_deg": 140}})
                 ack = ws.receive_json()
                 while ack.get("type") != "ack":
                     ack = ws.receive_json()
@@ -366,12 +366,12 @@ class TestClinicalEdgeVision(unittest.TestCase):
             PatientMatchSchema(id="p-mp-01", hn="HN-701", full_name="Multi Person Patient", similarity=1.0),
             auto_start_calibration=False,
         )
-        rx = ExercisePrescriptionSchema(exercise_id="STROKE_SH_ABD_R", target_rom_deg=110.0, hold_sec=0.5, target_reps=3)
+        rx = ExercisePrescriptionSchema(exercise_id="ELDERLY_SH_ABD_R", target_rom_deg=110.0, hold_sec=0.5, target_reps=3)
         fsm.set_prescription(rx, start_calibration=True)
 
         scores = np.full((TOTAL_WHOLEBODY_KEYPOINTS,), 0.95, dtype=np.float64)
         stand_pts, _ = generate_synthetic_133_pose(0.0, is_calibrating=True)
-        raised_pts, _ = generate_synthetic_133_pose(1.5, exercise_id="STROKE_SH_ABD_R", is_calibrating=False)
+        raised_pts, _ = generate_synthetic_133_pose(1.5, exercise_id="ELDERLY_SH_ABD_R", is_calibrating=False)
         hand_empty = HandRaiseTelemetry()
 
         t = 0.0
@@ -384,7 +384,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
         xyz_mp, scores_mp, skel_cnt, skel_bboxes = pose_est.estimate_with_crowd(
             frame_bgr=None,
             timestamp_sec=t,
-            exercise_id="STROKE_SH_ABD_R",
+            exercise_id="ELDERLY_SH_ABD_R",
             mock_pose_override="multi_person",
             is_mock_mode=True,
         )
@@ -476,12 +476,12 @@ class TestClinicalEdgeVision(unittest.TestCase):
             full_name="Authorized Patient",
             master_embedding=auth_vec.tolist(),
         )
-        rx = ExercisePrescriptionSchema(exercise_id="STROKE_SH_ABD_R", target_rom_deg=110.0, hold_sec=0.5, target_reps=3)
+        rx = ExercisePrescriptionSchema(exercise_id="ELDERLY_SH_ABD_R", target_rom_deg=110.0, hold_sec=0.5, target_reps=3)
         fsm.set_prescription(rx, start_calibration=True)
 
         scores = np.full((TOTAL_WHOLEBODY_KEYPOINTS,), 0.95, dtype=np.float64)
         stand_pts, _ = generate_synthetic_133_pose(0.0, is_calibrating=True)
-        raised_pts, _ = generate_synthetic_133_pose(1.5, exercise_id="STROKE_SH_ABD_R", is_calibrating=False)
+        raised_pts, _ = generate_synthetic_133_pose(1.5, exercise_id="ELDERLY_SH_ABD_R", is_calibrating=False)
         hand_empty = HandRaiseTelemetry()
 
         t = 0.0
@@ -626,9 +626,9 @@ class TestClinicalEdgeVision(unittest.TestCase):
         stand_world = wholebody133_to_world_meters(stand_pts)
         cal.force_calibrate_from_pose(stand_pts, world_pts=stand_world)
 
-        raised_pts, _ = generate_synthetic_133_pose(0.0, "STROKE_SH_ABD_R", mock_pose_override="raise_right")
+        raised_pts, _ = generate_synthetic_133_pose(0.0, "ELDERLY_SH_ABD_R", mock_pose_override="raise_right")
         raised_world = wholebody133_to_world_meters(raised_pts)
-        rule = resolve_exercise_rule("STROKE_SH_ABD_R")
+        rule = resolve_exercise_rule("ELDERLY_SH_ABD_R")
 
         res_front, _ = solver.analyze(
             raised_pts, rule, cal, timestamp_sec=1.0, target_rom_override=140.0, world_pts=raised_world, scores=scores
@@ -733,7 +733,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertEqual(fsm.movement_phase, "IDLE")
 
         rx = ExercisePrescriptionSchema(
-            exercise_id="STROKE_SH_ABD_R",
+            exercise_id="ELDERLY_SH_ABD_R",
             target_rom_deg=110.0,
             hold_sec=2.0,
             target_reps=2,
@@ -838,8 +838,8 @@ class TestClinicalEdgeVision(unittest.TestCase):
             self.assertEqual(len(body["telemetry"]["pose_world_landmarks"]), TOTAL_MEDIAPIPE_KEYPOINTS)
 
     def test_16_seated_shoulder_flexion_vertical_reference_and_pna_headers(self) -> None:
-        """Seated Right Shoulder Flexion (STROKE_SH_FLEX_R) with occluded/out-of-frame hips uses [0, 1, 0] vertical vector."""
-        rule_flex = resolve_exercise_rule("STROKE_SH_FLEX_R")
+        """Seated Right Shoulder Flexion (ELDERLY_SH_FLEX_R) with occluded/out-of-frame hips uses [0, 1, 0] vertical vector."""
+        rule_flex = resolve_exercise_rule("ELDERLY_SH_FLEX_R")
         req_indices = rule_flex.required_landmark_indices()
         self.assertNotIn(11, req_indices)
         self.assertNotIn(12, req_indices)
@@ -915,8 +915,8 @@ class TestClinicalEdgeVision(unittest.TestCase):
                         "type": "prescription",
                         "start_calibration": False,
                         "data": {
-                            "exercise_id": "STROKE_SH_FLEX_R",
-                            "exercise_name": "[Stroke ADL] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)",
+                            "exercise_id": "ELDERLY_SH_FLEX_R",
+                            "exercise_name": "[ผู้สูงอายุ] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)",
                             "target_joint": "right_shoulder",
                             "target_rom_deg": 110,
                             "hold_sec": 3.0,
@@ -977,8 +977,8 @@ class TestClinicalEdgeVision(unittest.TestCase):
         fsm = ClinicalRehabFSM(live_settings)
         fsm.set_prescription(
             ExercisePrescriptionSchema(
-                exercise_id="STROKE_SH_FLEX_R",
-                exercise_name="[Stroke ADL] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)",
+                exercise_id="ELDERLY_SH_FLEX_R",
+                exercise_name="[ผู้สูงอายุ] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)",
                 target_joint="right_shoulder",
                 target_rom_deg=145.0,
                 hold_sec=3.0,
@@ -1022,28 +1022,28 @@ class TestClinicalEdgeVision(unittest.TestCase):
         finally:
             coordinator.pose_estimator.close()
 
-    def test_18_stroke_moph_exercises_and_safety_guards(self) -> None:
-        """Stroke ADL & MOPH Elderly 15 Master Exercises, BOTH-mode ROM, and Safety Guards work accurately."""
+    def test_18_elderly_moph_exercises_and_safety_guards(self) -> None:
+        """Elderly Care & MOPH 15 Master Exercises, BOTH-mode ROM, and Safety Guards work accurately."""
         from app.biomechanics.exercises import list_all_exercises
 
-        all_meta = list_all_exercises(include_stroke_moph=True)
+        all_meta = list_all_exercises(include_elderly_moph=True)
         self.assertEqual(len(ALL_15_EXERCISES), 15)
         self.assertEqual(len(all_meta), 15)
         self.assertTrue(all(item["category"] in ("upper_limb", "neck_trunk") for item in all_meta))
 
         for code in (
-            "STROKE_SH_FLEX",
-            "STROKE_SH_ABD",
-            "STROKE_CROSS_BODY",
-            "STROKE_SCAP_PROTRACT",
-            "STROKE_SH_ROT",
-            "STROKE_BOBATH_ARM_RAISE",
-            "STROKE_BOBATH_FORWARD_PUSH",
-            "STROKE_ELB_FLEX_EXT",
-            "STROKE_HAND_TO_HEAD",
-            "STROKE_FOREARM_TURN",
-            "STROKE_WRIST_FINGER",
-            "STROKE_THUMB_PINCH",
+            "ELDERLY_SH_FLEX",
+            "ELDERLY_SH_ABD",
+            "ELDERLY_CROSS_BODY",
+            "ELDERLY_SCAP_PROTRACT",
+            "ELDERLY_SH_ROT",
+            "ELDERLY_CLASPED_ARM_RAISE",
+            "ELDERLY_CLASPED_FORWARD_PUSH",
+            "ELDERLY_ELB_FLEX_EXT",
+            "ELDERLY_HAND_TO_HEAD",
+            "ELDERLY_FOREARM_TURN",
+            "ELDERLY_WRIST_FINGER",
+            "ELDERLY_THUMB_PINCH",
             "MOPH_NECK_TILT",
             "MOPH_NECK_TURN",
             "MOPH_SHOULDER_SHRUG_ROLL",
@@ -1052,13 +1052,13 @@ class TestClinicalEdgeVision(unittest.TestCase):
             self.assertEqual(resolved.id, code)
 
         # Verify BOTH side override on a single-arm master exercise averages both sides accurately
-        both_flex_rule = resolve_exercise_rule("STROKE_SH_FLEX", side_override="both")
+        both_flex_rule = resolve_exercise_rule("ELDERLY_SH_FLEX", side_override="both")
         self.assertEqual(both_flex_rule.side, "both")
         solver_both = Biomechanics3DSolver(self.settings)
         cal_both = StandingCalibrator(duration_sec=0.2)
         stand_both, scores_both = generate_synthetic_133_pose(0.0, is_calibrating=True)
         cal_both.force_calibrate_from_pose(stand_both)
-        both_pts, _ = generate_synthetic_133_pose(2.0, "STROKE_SH_ABD_BOTH")
+        both_pts, _ = generate_synthetic_133_pose(2.0, "ELDERLY_SH_ABD_BOTH")
         res_both, _ = solver_both.analyze(both_pts, both_flex_rule, cal_both, timestamp_sec=1.0, scores=scores_both)
         self.assertGreater(res_both.current_rom_deg, 90.0)
 
@@ -1067,8 +1067,8 @@ class TestClinicalEdgeVision(unittest.TestCase):
         stand_pts, scores = generate_synthetic_133_pose(0.0, is_calibrating=True)
         cal.force_calibrate_from_pose(stand_pts)
 
-        # 1. Verify RTMW3D 133-pt hand landmarks drive STROKE_WRIST_FINGER_R and new Stroke/MOPH metrics
-        wrist_rule = resolve_exercise_rule("STROKE_WRIST_FINGER")
+        # 1. Verify RTMW3D 133-pt hand landmarks drive ELDERLY_WRIST_FINGER_R and new Elderly/MOPH metrics
+        wrist_rule = resolve_exercise_rule("ELDERLY_WRIST_FINGER")
         hand_pts = stand_pts.copy()
         hand_pts[10] = np.array([0.36, 0.48, -0.25], dtype=np.float64)
         hand_pts[112] = np.array([0.36, 0.48, -0.25], dtype=np.float64)
@@ -1079,7 +1079,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
 
         cross_pts = stand_pts.copy()
         cross_pts[10] = cross_pts[5] + np.array([0.02, 0.04, -0.05])
-        cross_res, _ = solver.analyze(cross_pts, resolve_exercise_rule("STROKE_CROSS_BODY_R"), cal, timestamp_sec=1.2)
+        cross_res, _ = solver.analyze(cross_pts, resolve_exercise_rule("ELDERLY_CROSS_BODY_R"), cal, timestamp_sec=1.2)
         self.assertGreater(cross_res.current_rom_deg, 65.0)
 
         neck_turn_pts = stand_pts.copy()
@@ -1089,8 +1089,8 @@ class TestClinicalEdgeVision(unittest.TestCase):
 
         # 2. Verify CONTRAINDICATION_ROM_LIMIT + soft spasticity prompt
         solver.reset()
-        flex_rule = resolve_exercise_rule("STROKE_SH_FLEX_R")
-        over_pts, _ = generate_synthetic_133_pose(0.0, "STROKE_SH_ABD_R", mock_pose_override="raise_right")
+        flex_rule = resolve_exercise_rule("ELDERLY_SH_FLEX_R")
+        over_pts, _ = generate_synthetic_133_pose(0.0, "ELDERLY_SH_ABD_R", mock_pose_override="raise_right")
         safe_res, safe_emerg = solver.analyze(
             over_pts,
             flex_rule,
@@ -1110,7 +1110,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
         fsm = ClinicalRehabFSM(self.settings)
         fsm.set_prescription(
             ExercisePrescriptionSchema(
-                exercise_id="STROKE_SH_FLEX_R",
+                exercise_id="ELDERLY_SH_FLEX_R",
                 target_rom_deg=95.0,
                 max_safe_rom_deg=95.0,
                 hold_sec=2.0,
@@ -1166,9 +1166,9 @@ class TestClinicalEdgeVision(unittest.TestCase):
         clean_match = mgr.match_1_to_n(base_a, yaw_deg=0.0, pitch_deg=0.0, excluded_patient_ids=["p-edge-b"])
         self.assertEqual(clean_match.id, "p-edge-a")
 
-    def test_20_stroke_biomechanics_upgrade_baseline_hand_and_hysteresis(self) -> None:
+    def test_20_elderly_biomechanics_upgrade_baseline_hand_and_hysteresis(self) -> None:
         """Verify 1.15/0.06 One-Euro config, auto bone baseline, ascending elbow, NECK_DROP, SHOULDER_HIKE >14%, and <45% hysteresis."""
-        # 1. Config defaults match Stroke biomechanical specification
+        # 1. Config defaults match Elderly biomechanical specification
         self.assertAlmostEqual(self.settings.ONE_EURO_MIN_CUTOFF, 1.15, places=2)
         self.assertAlmostEqual(self.settings.ONE_EURO_BETA, 0.06, places=2)
         self.assertAlmostEqual(self.settings.ONE_EURO_2D_MIN_CUTOFF, 1.15, places=2)
@@ -1182,8 +1182,8 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertGreaterEqual(bones.upper_arm_len, bones.shoulder_width * 0.82 - 1e-5)
         self.assertAlmostEqual(bones.resting_shoulder_delta_y, float(stand_pts[5, 1] - stand_pts[6, 1]), places=4)
 
-        # 3. Ascending STROKE_ELB_FLEX_EXT_R (0 -> 135 deg) & strict <45% targetRom rest hysteresis
-        elb_rule = resolve_exercise_rule("STROKE_ELB_FLEX_EXT_R")
+        # 3. Ascending ELDERLY_ELB_FLEX_EXT_R (0 -> 135 deg) & strict <45% targetRom rest hysteresis
+        elb_rule = resolve_exercise_rule("ELDERLY_ELB_FLEX_EXT_R")
         self.assertFalse(elb_rule.is_descending_target)
         self.assertFalse(elb_rule.is_in_rest_zone(50.0, target_override=100.0))
         self.assertTrue(elb_rule.is_in_rest_zone(42.0, target_override=100.0))
@@ -1200,7 +1200,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
 
         # 4. Hand-to-head detects NECK_DROP > 15 deg with exact Thai correction prompt
         solver.reset()
-        hth_rule = resolve_exercise_rule("STROKE_HAND_TO_HEAD_R")
+        hth_rule = resolve_exercise_rule("ELDERLY_HAND_TO_HEAD_R")
         drop_pts = stand_pts.copy()
         drop_pts[0] = drop_pts[3] * 0.5 + drop_pts[4] * 0.5 + np.array([0.0, 0.09, -0.05])
         drop_pts[10] = drop_pts[0] + np.array([-0.03, -0.02, -0.04])
@@ -1217,7 +1217,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
         self.assertNotIn("SHOULDER_HIKE", shrug_res.compensation_detected)
 
     def test_21_second_pass_face_and_pose_stability_hardening(self) -> None:
-        """Verify second-pass edge-vision fixes: PatientMatchSchema alias, placeholder template guard, session eviction, Bobath rest zone, config defaults & dt burst guard."""
+        """Verify second-pass edge-vision fixes: PatientMatchSchema alias, placeholder template guard, session eviction, rest zone, config defaults & dt burst guard."""
         # 1. PatientMatchSchema accepts both full_name and name without dropping patient name
         pm = PatientMatchSchema(id="p-alias", hn="HN-A1", full_name="Somying Alias", similarity=1.0)
         self.assertEqual(pm.name, "Somying Alias")
@@ -1268,12 +1268,12 @@ class TestClinicalEdgeVision(unittest.TestCase):
         mgr.finalize_enrollment(sess.session_id, patient_id="p-evict", hn="HN-EV", persist_to_supabase=False)
         self.assertNotIn(sess.session_id, mgr._enroll_sessions)
 
-        # 4. STROKE_BOBATH_FORWARD_PUSH rest zone accepts folded-elbow resting angle (~95-100 deg)
-        bobath_push = resolve_exercise_rule("STROKE_BOBATH_FORWARD_PUSH")
-        self.assertTrue(bobath_push.is_in_rest_zone(98.0))
-        self.assertFalse(bobath_push.is_in_rest_zone(135.0))
+        # 4. ELDERLY_CLASPED_FORWARD_PUSH rest zone accepts folded-elbow resting angle (~95-100 deg)
+        clasped_push = resolve_exercise_rule("ELDERLY_CLASPED_FORWARD_PUSH")
+        self.assertTrue(clasped_push.is_in_rest_zone(98.0))
+        self.assertFalse(clasped_push.is_in_rest_zone(135.0))
 
-        # 5. EdgeVisionSettings.from_env() matches upgraded Stroke clinical defaults
+        # 5. EdgeVisionSettings.from_env() matches upgraded Elderly clinical defaults
         env_cfg = EdgeVisionSettings.from_env()
         self.assertAlmostEqual(env_cfg.ONE_EURO_MIN_CUTOFF, 1.15, places=2)
         self.assertAlmostEqual(env_cfg.ONE_EURO_BETA, 0.06, places=2)
@@ -1283,7 +1283,7 @@ class TestClinicalEdgeVision(unittest.TestCase):
         solver = Biomechanics3DSolver(self.settings)
         cal = StandingCalibrator(duration_sec=0.2)
         cal.force_calibrate_from_pose(stand_pts)
-        rule_sh = resolve_exercise_rule("STROKE_SH_ABD_R")
+        rule_sh = resolve_exercise_rule("ELDERLY_SH_ABD_R")
         _, emerg1 = solver.analyze(stand_pts, rule_sh, cal, timestamp_sec=1.0, scores=scores)
         self.assertIsNone(emerg1)
         jittered = stand_pts.copy()

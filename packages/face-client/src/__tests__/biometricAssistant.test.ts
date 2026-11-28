@@ -386,7 +386,7 @@ describe('3D Biometric Verification Assistant & Face ID Prompts', () => {
     expect(distantReopen.biologicalVerified).toBe(true);
     expect(distantReopen.spoofDetected).toBe(false);
 
-    // Genuine live person performing one natural blendshape blink passes (including unilateral stroke-safe blink)
+    // Genuine live person performing one natural blendshape blink passes (including elderly unilateral blink)
     const liveTracker = new BiologicalLivenessTracker();
     liveTracker.update({
       landmarks3D: makeFace(0, 0, 0.03),

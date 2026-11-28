@@ -937,7 +937,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
           {
             id: 'sched-init-2',
             patientId: 'pending',
-            exerciseId: 'STROKE_SH_ABD_R',
+            exerciseId: 'ELDERLY_SH_ABD_R',
             scheduledDate: plus2Iso,
             sets: 3,
             reps: 10,
@@ -947,7 +947,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
           {
             id: 'sched-init-1',
             patientId: 'pending',
-            exerciseId: 'STROKE_SH_FLEX_R',
+            exerciseId: 'ELDERLY_SH_FLEX_R',
             scheduledDate: todayIso,
             sets: 3,
             reps: 12,
@@ -972,7 +972,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(patient.nextAppointmentDate).toBe(todayIso);
     expect(patient.rehabSchedules).toHaveLength(2);
     expect(patient.rehabSchedules.every((s) => s.patientId === patient.id)).toBe(true);
-    expect(patient.rehabSchedules[0]?.exerciseId).toBe('STROKE_SH_FLEX_R');
+    expect(patient.rehabSchedules[0]?.exerciseId).toBe('ELDERLY_SH_FLEX_R');
 
     const verifyRes = await callRouter(router, '/api/biometric/verify', {
       method: 'POST',
@@ -988,7 +988,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(verifyJson.matched).toBe(true);
     expect(verifyJson.hasAppointmentToday).toBe(true);
     expect(verifyJson.patient.nextAppointmentDate).toBe(todayIso);
-    expect(verifyJson.todayExercises.map((e) => e.exerciseId)).toEqual(['STROKE_SH_FLEX_R']);
+    expect(verifyJson.todayExercises.map((e) => e.exerciseId)).toEqual(['ELDERLY_SH_FLEX_R']);
     expect(verifyJson.todayExercises[0]?.sets).toBe(3);
     expect(verifyJson.todayExercises[0]?.reps).toBe(12);
   });
@@ -1308,7 +1308,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(verifyJson.patient?.hn).toBe('HN-54720');
   });
 
-  it('persists Stroke Mahidol 0-6 score, computes ROM baseline deltas, and links Universal EHR records', async () => {
+  it('persists Elderly Mahidol 0-6 score, computes ROM baseline deltas, and links Universal EHR records', async () => {
     const router = createCloudDelegatedRouter({});
     const loginRes = await callRouter(router, '/api/auth/login', {
       method: 'POST',
@@ -1316,16 +1316,16 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     });
     const ptToken = ((await loginRes.json()) as { token: string }).token;
 
-    // 1. Enroll Stroke patient with Mahidol Grade 3 & safe max ROM 115 deg
+    // 1. Enroll Elderly patient with Mahidol Grade 3 & safe max ROM 115 deg
     const enrollRes = await callRouter(router, '/api/biometric/enroll', {
       method: 'POST',
       token: ptToken,
       body: {
-        hn: 'HN-STROKE-01',
-        fullName: 'คุณวิชัย ฟื้นฟูสโตรก',
+        hn: 'HN-ELDERLY-01',
+        fullName: 'คุณวิชัย ฟื้นฟูผู้สูงอายุ',
         age: 67,
-        diagnosis: 'Ischemic Stroke แขนขวาอ่อนแรง',
-        strokeType: 'ISCHEMIC',
+        diagnosis: 'ผู้สูงอายุแขนขวาอ่อนแรง',
+        careGroup: 'MOBILITY_RECOVERY',
         affectedSide: 'RIGHT',
         motorAssessmentScore: 3,
         adlDressingScore: 2,
@@ -1348,8 +1348,8 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       body: {
         patientId: enrolledPatient.id,
         activityType: 'physio_exercise',
-        exerciseId: 'STROKE_SH_FLEX_R',
-        exerciseName: '[Stroke ADL] ยกแขนขวาไปด้านหน้า',
+        exerciseId: 'ELDERLY_SH_FLEX_R',
+        exerciseName: '[ผู้สูงอายุ] ยกแขนขวาไปด้านหน้า',
         completedSets: 2,
         completedReps: 6,
         accuracyPercent: 88,
@@ -1364,8 +1364,8 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       body: {
         patientId: enrolledPatient.id,
         activityType: 'physio_exercise',
-        exerciseId: 'STROKE_SH_FLEX_R',
-        exerciseName: '[Stroke ADL] ยกแขนขวาไปด้านหน้า',
+        exerciseId: 'ELDERLY_SH_FLEX_R',
+        exerciseName: '[ผู้สูงอายุ] ยกแขนขวาไปด้านหน้า',
         completedSets: 2,
         completedReps: 8,
         accuracyPercent: 94,
@@ -1393,7 +1393,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       token: ptToken,
       body: {
         hn: 'HN-EXT-99',
-        fullName: 'คุณวิชัย ฟื้นฟูสโตรก',
+        fullName: 'คุณวิชัย ฟื้นฟูผู้สูงอายุ',
         age: 67,
         diagnosis: 'Refer from Hub Clinic',
         skipFaceScan: true,
@@ -1416,9 +1416,9 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       body: { linkCode: enrolledPatient.universalHealthLinkCode },
     });
     expect(linkRes.status).toBe(200);
-    const linkJson = (await linkRes.json()) as { importedCount: number; patient: { strokeType: string } };
+    const linkJson = (await linkRes.json()) as { importedCount: number; patient: { careGroup: string } };
     expect(linkJson.importedCount).toBeGreaterThanOrEqual(2);
-    expect(linkJson.patient.strokeType).toBe('ISCHEMIC');
+    expect(linkJson.patient.careGroup).toBe('MOBILITY_RECOVERY');
   });
 
   it('rejects /api/biometric/verify with 403 BIOMETRIC_SPOOF_DETECTED when biological liveness fails', async () => {
@@ -1443,7 +1443,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         hn: 'HN-BIOSPOOF-01',
         fullName: 'คุณสมชาย ทดสอบชีววิทยา',
         age: 61,
-        diagnosis: 'Stroke recovery',
+        diagnosis: 'Elderly recovery',
         frontalCentroid: ownerVec,
         overallCentroid: ownerVec,
         rawFrames,
@@ -1899,7 +1899,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(strangerRes.status).toBe(401);
   });
 
-  it('returns exact 15 unified master Stroke & MOPH exercises and purges legacy rows via POST /api/exercises/sync-stroke-library', async () => {
+  it('returns exact 15 unified master Elderly & MOPH exercises and purges legacy rows via POST /api/exercises/sync-elderly-library', async () => {
     const router = createCloudDelegatedRouter({});
     const ptLogin = await callRouter(router, '/api/auth/login', {
       method: 'POST',
@@ -1939,7 +1939,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(listBeforeJson.exercises.some((e) => e.category === 'lower_limb' || e.category === 'balance')).toBe(false);
     expect(listBeforeJson.exercises.some((e) => e.id === 'ex-26' || e.code === 'SIT_TO_STAND')).toBe(false);
 
-    const syncRes = await callRouter(router, '/api/exercises/sync-stroke-library', {
+    const syncRes = await callRouter(router, '/api/exercises/sync-elderly-library', {
       method: 'POST',
       token: ptToken,
     });
@@ -2126,7 +2126,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       token: ptToken,
       body: {
         phone: '0899998888',
-        specialty: 'Neurological Stroke Rehabilitation',
+        specialty: 'Neurological Elderly Rehabilitation',
         licenseNo: 'PT-SPOOF-999',
       },
     });
@@ -2135,7 +2135,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       user: { phone: string; specialty?: string; licenseNo?: string };
     };
     expect(ptUpdatedJson.user.phone).toBe('0899998888');
-    expect(ptUpdatedJson.user.specialty).toBe('Neurological Stroke Rehabilitation');
+    expect(ptUpdatedJson.user.specialty).toBe('Neurological Elderly Rehabilitation');
     expect(ptUpdatedJson.user.licenseNo).toBe('PT-44012');
 
     // PATCH by PT also refuses to mutate licenseNo or license_number / license_no
@@ -2248,7 +2248,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
                           full_name: 'นายพงศกร จิตตเกตุ',
                           age: 62,
                           phone: '0811112233',
-                          diagnosis: 'Right Hemiparesis',
+                          diagnosis: 'Right Upper Limb Weakness',
                           registration_status: 'active',
                           face_biometric_status: 'VERIFIED',
                           history: {},
@@ -2292,7 +2292,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         hn: 'HN-75127',
         fullName: 'นายพงศกร จิตตเกตุ',
         age: 61,
-        diagnosis: 'Right Hemiparesis',
+        diagnosis: 'Right Upper Limb Weakness',
         skipFaceScan: true,
       },
     });
@@ -2437,7 +2437,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
                     full_name: 'คุณวิไล ปัจจุบัน',
                     age: 58,
                     phone: '0810000001',
-                    diagnosis: 'Stroke',
+                    diagnosis: 'Elderly Rehab',
                     registration_status: 'active',
                     face_biometric_status: 'VERIFIED',
                     history: {},
@@ -2449,7 +2449,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
                     full_name: 'สมชาย ที่ถูกลบแล้ว',
                     age: 64,
                     phone: '0810000002',
-                    diagnosis: 'Stroke',
+                    diagnosis: 'Elderly Rehab',
                     registration_status: 'deleted',
                     deleted_at: new Date().toISOString(),
                     face_biometric_status: 'NONE',
@@ -2547,7 +2547,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         fullName: 'นางสาวมัลลิกา เกตแน่น',
         age: 57,
         phone: '0897771024',
-        diagnosis: 'Stroke',
+        diagnosis: 'Elderly Rehab',
         biometricEngine: 'human-faceres-1024d',
         masterEmbedding: liveMaster,
         angleEmbeddings: {
@@ -2695,14 +2695,14 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
           fullName: 'Sdas Test',
           age: 64,
           phone: '0812345678',
-          diagnosis: 'Stroke Shoulder',
+          diagnosis: 'Elderly Shoulder Rehab',
           assignedPtId: 'arbitrary-non-uuid-pt',
           nextAppointmentDate: '2026-11-20',
           rehabSchedules: [
             {
               id: 'sched-1',
               patientId: 'pending',
-              exerciseId: 'STROKE_SH_FLEX_BOTH',
+              exerciseId: 'ELDERLY_SH_FLEX_BOTH',
               scheduledDate: '2026-11-20',
               sets: 3,
               reps: 10,
@@ -2758,7 +2758,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         method: 'PUT',
         token,
         body: {
-          title: 'Stroke Shoulder Plan',
+          title: 'Elderly Shoulder Plan',
           cognitiveModpackId: 'missing-modpack-id',
           weeklySchedule: [],
         },
@@ -2807,7 +2807,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         hn: 'HN-OFFLINE-500',
         fullName: 'Offline Fallback Patient',
         age: 61,
-        diagnosis: 'Stroke',
+        diagnosis: 'Elderly Rehab',
         assignedPtId: 'user-pt-1',
         masterEmbedding: mk1024(9.1),
       });
@@ -2817,7 +2817,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       const courseFallback = await api.upsertPatientCourse({
         patientId: enrolledFallback.id,
         title: 'Offline Course',
-        cognitiveModpackId: 'stroke_adl_basic',
+        cognitiveModpackId: 'elderly_adl_basic',
         weeklySchedule: [],
       });
       expect(courseFallback.patientId).toBe(enrolledFallback.id);
@@ -2892,7 +2892,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
           fullName: 'dddd',
           age: 60,
           phone: '0813775100',
-          diagnosis: 'Stroke Rehab',
+          diagnosis: 'Elderly Rehab',
           biometricEngine: 'human-faceres-1024d',
           faceImageUrl: oversizedBase64,
           angleImageUrls: {
@@ -3182,7 +3182,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       // Base schema column lists MUST NEVER request the 9 missing columns
       for (const unmigrated of [
         'gender',
-        'stroke_type',
+        'care_group',
         'affected_side',
         'motor_assessment_score',
         'adl_dressing_score',
@@ -3237,7 +3237,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         hn: 'HN-RL-TEST',
         fullName: 'คุณทดสอบ อัตราจำกัด',
         age: 62,
-        diagnosis: 'Stroke Rehab',
+        diagnosis: 'Elderly Rehab',
         frontalCentroid: genuineVec,
         overallCentroid: genuineVec,
         rawFrames,
@@ -3373,7 +3373,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         hn: 'HN-LIVE-1024',
         fullName: 'คุณสมหมาย สแกนผ่าน',
         age: 64,
-        diagnosis: 'Stroke Shoulder',
+        diagnosis: 'Elderly Shoulder Rehab',
         masterEmbedding: p1Master,
         frontalCentroid: p1Center,
         overallCentroid: p1Master,
@@ -3480,7 +3480,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         hn: 'HN-TWIN-1024',
         fullName: 'คุณฝาแฝด ใกล้เคียง',
         age: 64,
-        diagnosis: 'Stroke Shoulder',
+        diagnosis: 'Elderly Shoulder Rehab',
         masterEmbedding: twinCenter,
         frontalCentroid: twinCenter,
         overallCentroid: twinCenter,
@@ -3505,7 +3505,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         hn: 'HN-TWIN-1024',
         fullName: 'คุณฝาแฝด ใกล้เคียง',
         age: 64,
-        diagnosis: 'Stroke Shoulder',
+        diagnosis: 'Elderly Shoulder Rehab',
         skipFaceScan: true,
       },
     });
@@ -3831,7 +3831,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
           hn: 'HN-COL-PRESERVE',
           fullName: 'คุณทดสอบ คงคอลัมน์ชีวมาตร',
           age: 55,
-          diagnosis: 'Stroke Shoulder',
+          diagnosis: 'Elderly Shoulder Rehab',
           masterEmbedding: vec,
           frontalCentroid: vec,
           overallCentroid: vec,
@@ -3885,7 +3885,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         hn: 'HN-DUP-EN',
         fullName: 'Phatdanai Phongarom',
         age: 30,
-        diagnosis: 'Stroke Shoulder',
+        diagnosis: 'Elderly Shoulder Rehab',
         masterEmbedding: personA,
         frontalCentroid: personACenter,
         overallCentroid: personA,
@@ -3953,7 +3953,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         hn: 'HN-DUP-TH',
         fullName: 'ภัทรดนย์ ผ่องอารมย์',
         age: 30,
-        diagnosis: 'Stroke Shoulder',
+        diagnosis: 'Elderly Shoulder Rehab',
         masterEmbedding: dupProbe,
         frontalCentroid: dupProbe,
         overallCentroid: dupProbe,
@@ -3978,7 +3978,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
         hn: 'HN-PERSON-B',
         fullName: 'คุณสมศรี คนละคน',
         age: 58,
-        diagnosis: 'Stroke Shoulder',
+        diagnosis: 'Elderly Shoulder Rehab',
         masterEmbedding: personB,
         frontalCentroid: personB,
         overallCentroid: personB,
@@ -4165,8 +4165,8 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
                   age: 60,
                   registration_status: 'active',
                   geometricRatios: { eyeToNoseRatio: 1.2, faceWidthToUpperHeight: 1.1, mouthToEyeRatio: 0.8, noseToChinRatio: 0.9 },
-                  rehabSchedules: [{ id: 's1', patientId: 'pat-proj-1', ptId: 'pt-1', exerciseId: 'STROKE_SH_FLEX', scheduledDate: '2026-11-23', sets: 3, reps: 10, status: 'ACTIVE' }],
-                  strokeType: 'ISCHEMIC',
+                  rehabSchedules: [{ id: 's1', patientId: 'pat-proj-1', ptId: 'pt-1', exerciseId: 'ELDERLY_SH_FLEX', scheduledDate: '2026-11-23', sets: 3, reps: 10, status: 'ACTIVE' }],
+                  careGroup: 'MOBILITY_RECOVERY',
                   affectedSide: 'RIGHT',
                   motorAssessmentScore: 4,
                   maxSafeRomDeg: 135,
@@ -4223,7 +4223,7 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
     expect(patientSelectCsv.split(',').includes('history')).toBe(false);
     expect(projState.patients[0]?.geometricRatios?.eyeToNoseRatio).toBe(1.2);
     expect(projState.patients[0]?.rehabSchedules).toHaveLength(1);
-    expect(projState.patients[0]?.strokeType).toBe('ISCHEMIC');
+    expect(projState.patients[0]?.careGroup).toBe('MOBILITY_RECOVERY');
     expect(projState.patients[0]?.universalHealthLinkCode).toBe('DTC-EHR-PROJ01');
 
     // 12. Multi-isolate stale RAM cache recovery: if a patient was just enrolled on another Worker isolate,
@@ -4339,6 +4339,33 @@ describe('Cloudflare Worker Delegated API Router (Full Parity)', () => {
       expect(verifyFreshJson.patient?.id).toBe('pat-iso-c');
       expect(verifyFreshJson.patient?.hn).toBe('HN-ISO-C');
       expect(dbBioReads).toBeGreaterThan(readsAfterWarm);
+
+      // Step D: Even within 100ms (well inside 15s RAM cache TTL and 1.5s retry cooldown),
+      // livenessEvidence.forceRefresh=true MUST immediately probe live Supabase instead of using warm RAM cache.
+      const readsBeforeForce = dbBioReads;
+      fakeNow += 100;
+      const forceRefreshRes = await callRouter(staleRouter, '/api/biometric/verify', {
+        method: 'POST',
+        deviceId: 'KIOSK-ISOLATE-FORCE-REFRESH',
+        body: {
+          probeVector: cProbe,
+          engine: 'human-faceres-1024d',
+          livenessEvidence: {
+            biologicalVerified: true,
+            blinkCount: 1,
+            spoofRisk: 0.01,
+            forceRefresh: true,
+          },
+        },
+      });
+      expect(forceRefreshRes.status).toBe(200);
+      const forceRefreshJson = (await forceRefreshRes.json()) as {
+        matched: boolean;
+        patient?: { id: string };
+      };
+      expect(forceRefreshJson.matched).toBe(true);
+      expect(forceRefreshJson.patient?.id).toBe('pat-iso-c');
+      expect(dbBioReads).toBeGreaterThan(readsBeforeForce);
     } finally {
       globalThis.fetch = origFetchIso;
       vi.restoreAllMocks();

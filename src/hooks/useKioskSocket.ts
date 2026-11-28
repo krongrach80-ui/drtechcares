@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CLINICAL_EXERCISES,
   mergeDuplicateSideExercises,
-  normalizeStrokeExerciseId,
+  normalizeElderlyExerciseId,
   parseExerciseCodeAndSide,
   resolveActiveExerciseSide,
   resolveSideAdjustedExerciseCopy,
-  sortExercisesStrokeUpperFirst,
+  sortExercisesElderlyUpperFirst,
   type ExerciseConfig,
   type ExerciseSideCode,
 } from '@drtechcares/pose-engine';
@@ -59,7 +59,7 @@ export interface PatientSummary {
   latency_ms?: number;
   max_safe_rom_deg?: number;
   affected_side?: 'LEFT' | 'RIGHT' | 'BOTH' | 'NONE';
-  stroke_type?: string;
+  care_group?: string;
   motor_assessment_score?: number;
 }
 
@@ -197,7 +197,7 @@ export function resolveExpectedPlaneForExercise(item: {
     return item.expected_plane;
   }
   const rawId = (item.catalog_exercise_id || item.exercise_id || '').trim();
-  const normalizedId = rawId ? normalizeStrokeExerciseId(rawId) : '';
+  const normalizedId = rawId ? normalizeElderlyExerciseId(rawId) : '';
   const found = rawId
     ? CLINICAL_EXERCISES.find(
       (c) =>
@@ -402,44 +402,44 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'offline';
 
 export const EXERCISE_OPTIONS: ExercisePrescriptionOption[] = [
   {
-    exercise_id: 'STROKE_SH_FLEX_RIGHT',
-    catalog_exercise_id: 'STROKE_SH_FLEX',
-    base_code: 'STROKE_SH_FLEX',
-    effective_code: 'STROKE_SH_FLEX_RIGHT',
+    exercise_id: 'ELDERLY_SH_FLEX_RIGHT',
+    catalog_exercise_id: 'ELDERLY_SH_FLEX',
+    base_code: 'ELDERLY_SH_FLEX',
+    effective_code: 'ELDERLY_SH_FLEX_RIGHT',
     prescribed_side: 'RIGHT',
-    name_th: '[Stroke ADL] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)',
-    name_en: 'Stroke ADL: Forward Shoulder Flexion (Right)',
+    name_th: '[ผู้สูงอายุ] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อมหยิบของ/สวมเสื้อ)',
+    name_en: 'Elderly Care: Forward Shoulder Flexion (Right)',
     target_joint: 'right_shoulder',
     expected_plane: 'flexion',
-    target_rom_deg: 125,
+    target_rom_deg: 180,
     hold_sec: 3,
     target_reps: 10,
   },
   {
-    exercise_id: 'STROKE_SH_ABD_RIGHT',
-    catalog_exercise_id: 'STROKE_SH_ABD',
-    base_code: 'STROKE_SH_ABD',
-    effective_code: 'STROKE_SH_ABD_RIGHT',
+    exercise_id: 'ELDERLY_SH_ABD_RIGHT',
+    catalog_exercise_id: 'ELDERLY_SH_ABD',
+    base_code: 'ELDERLY_SH_ABD',
+    effective_code: 'ELDERLY_SH_ABD_RIGHT',
     prescribed_side: 'RIGHT',
-    name_th: '[Stroke ADL] กางแขนขวาด้านข้าง (ฝึกกางแขนสวมเสื้อ)',
-    name_en: 'Stroke ADL: Shoulder Abduction (Right)',
+    name_th: '[ผู้สูงอายุ] กางแขนขวาด้านข้าง (ฝึกกางแขนสวมเสื้อ/ลดไหล่ติด)',
+    name_en: 'Elderly Care: Shoulder Abduction (Right)',
     target_joint: 'right_shoulder',
     expected_plane: 'abduction',
-    target_rom_deg: 115,
+    target_rom_deg: 180,
     hold_sec: 3,
     target_reps: 10,
   },
   {
-    exercise_id: 'STROKE_BOBATH_ARM_RAISE',
-    catalog_exercise_id: 'STROKE_BOBATH_ARM_RAISE',
-    base_code: 'STROKE_BOBATH_ARM_RAISE',
-    effective_code: 'STROKE_BOBATH_ARM_RAISE_BOTH',
+    exercise_id: 'ELDERLY_CLASPED_ARM_RAISE',
+    catalog_exercise_id: 'ELDERLY_CLASPED_ARM_RAISE',
+    base_code: 'ELDERLY_CLASPED_ARM_RAISE',
+    effective_code: 'ELDERLY_CLASPED_ARM_RAISE_BOTH',
     prescribed_side: 'BOTH',
-    name_th: '[Stroke & สธ.] ประสานมือสองข้างชูขึ้นเหนือศีรษะ (ท่า Bobath พยุงแขนอ่อนแรง)',
-    name_en: 'Stroke & MOPH: Bobath Bilateral Clasped Arm Raise',
+    name_th: '[สธ. ผู้สูงอายุ] ประสานมือสองข้างชูขึ้นเหนือศีรษะ (ยืดเหยียดแขนและไหล่)',
+    name_en: 'MOPH Elderly: Bilateral Clasped Overhead Arm Raise',
     target_joint: 'right_shoulder',
     expected_plane: 'bilateral',
-    target_rom_deg: 135,
+    target_rom_deg: 180,
     hold_sec: 3,
     target_reps: 10,
   },
@@ -456,7 +456,7 @@ export const POSE_TEST_PATIENT: PatientSummary = {
   name: 'ผู้ทดลองระบบ (โหมดทดสอบท่ากายภาพ 15 ท่า)',
   max_safe_rom_deg: 180,
   affected_side: 'BOTH',
-  stroke_type: 'SANDBOX_POSE_TEST',
+  care_group: 'SANDBOX_POSE_TEST',
   motor_assessment_score: 6,
 };
 
@@ -464,7 +464,7 @@ function findCatalogExerciseConfig(rawCodeOrId?: string | null): ExerciseConfig 
   const raw = (rawCodeOrId ?? '').trim();
   if (!raw) return undefined;
   const parsed = parseExerciseCodeAndSide(raw);
-  const canonicalId = normalizeStrokeExerciseId(parsed.baseCode || raw);
+  const canonicalId = normalizeElderlyExerciseId(parsed.baseCode || raw);
   return CLINICAL_EXERCISES.find(
     (c) =>
       c.id === canonicalId ||
@@ -490,7 +490,7 @@ export function buildAll15ClinicalExercisePrescriptions(
   const sourcePool: ExerciseConfig[] =
     catalogOverrides && catalogOverrides.length > 0
       ? mergeDuplicateSideExercises(
-          sortExercisesStrokeUpperFirst(
+          sortExercisesElderlyUpperFirst(
             catalogOverrides.map((ex) => {
               const master = findCatalogExerciseConfig(ex.code || ex.id);
               return (
@@ -498,7 +498,7 @@ export function buildAll15ClinicalExercisePrescriptions(
                   id: ex.id,
                   code: ex.code,
                   category: (ex.category as ExerciseConfig['category']) ?? 'upper_limb',
-                  clinicalFocus: 'stroke_adl',
+                  clinicalFocus: 'elderly_adl',
                   name: {
                     th: ex.name.th,
                     en: ex.name.en,
@@ -649,7 +649,7 @@ export function mapTodayExercisesToPrescriptions(
       item.exerciseCode || item.effectiveCode || item.exerciseId,
       item.side,
     );
-    const canonicalId = normalizeStrokeExerciseId(parsed.baseCode || item.exerciseId);
+    const canonicalId = normalizeElderlyExerciseId(parsed.baseCode || item.exerciseId);
     const found = CLINICAL_EXERCISES.find(
       (c) =>
         c.id === canonicalId ||
@@ -671,19 +671,18 @@ export function mapTodayExercisesToPrescriptions(
       (found.detection.jointGroup === 'neck' ||
         found.detection.jointGroup === 'wrist' ||
         found.detection.expectedPlane === 'rotation' ||
-        found.detection.expectedPlane === 'scap_protract' ||
         found.detection.expectedPlane === 'forearm_turn' ||
         found.detection.expectedPlane === 'thumb_pinch' ||
         found.detection.expectedPlane === 'neck_turn' ||
         found.detection.expectedPlane === 'shrug_roll');
     const defaultMidDeg = found
       ? found.detection.targetRomDeg ?? Math.round((found.detection.targetMinDeg + found.detection.targetMaxDeg) / 2)
-      : 125;
+      : 180;
     const target_rom_deg = found
       ? isLowRangeUpper
         ? Math.max(25, defaultMidDeg)
-        : Math.min(165, Math.max(85, defaultMidDeg))
-      : 125;
+        : Math.min(180, Math.max(85, defaultMidDeg))
+      : 180;
 
     const sideCopy = found ? resolveSideAdjustedExerciseCopy(found, resolvedSide) : null;
 
@@ -1249,7 +1248,7 @@ export function useKioskSocket(
             target_reps: rx.target_reps,
             max_safe_rom_deg: pOverride?.max_safe_rom_deg ?? undefined,
             affected_side: pOverride?.affected_side ?? undefined,
-            stroke_type: pOverride?.stroke_type ?? undefined,
+            care_group: pOverride?.care_group ?? undefined,
             motor_assessment_score: pOverride?.motor_assessment_score ?? undefined,
           },
         }),

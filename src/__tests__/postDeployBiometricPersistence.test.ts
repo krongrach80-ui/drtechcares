@@ -333,7 +333,7 @@ function createSimulatedPostgrestFetch(cfg: SimulatedDbConfig): typeof fetch {
 
 function makeLegacyPartialSchema(): Record<string, Set<string>> {
   return {
-    // Exact base 001 + 002 patients schema (MISSING master_embedding, angle_embeddings, face_embedding, biometric_data, biometric_updated_at, gender, stroke_type, etc.)
+    // Exact base 001 + 002 patients schema (MISSING master_embedding, angle_embeddings, face_embedding, biometric_data, biometric_updated_at, gender, care_group, etc.)
     patients: new Set([
       'id',
       'hn',
@@ -474,7 +474,7 @@ describe('Post-Deploy Biometric Persistence & Cold-Start Verification', () => {
           fullName: 'Somchai PostDeploy',
           age: 58,
           phone: '081-234-5678',
-          diagnosis: 'Stroke Shoulder Rehab',
+          diagnosis: 'Elderly Shoulder Rehab',
           masterEmbedding: masterVec,
           angleEmbeddings: {
             center: centerVec,
@@ -720,7 +720,7 @@ describe('Post-Deploy Biometric Persistence & Cold-Start Verification', () => {
           'biometric_data',
           'biometric_updated_at',
           'gender',
-          'stroke_type',
+          'care_group',
           'affected_side',
           'motor_assessment_score',
           'adl_dressing_score',
@@ -1185,7 +1185,7 @@ describe('Post-Deploy Biometric Persistence & Cold-Start Verification', () => {
             full_name: 'คุณสมชาย ทดสอบกู้คืน',
             age: 66,
             phone: '0819991111',
-            diagnosis: 'Post-Stroke Recovery',
+            diagnosis: 'Elderly Mobility Recovery',
             registration_status: 'active',
             assigned_pt_id: '00000000-0000-4000-8000-000000000002',
             next_appointment_date: '2026-12-01',

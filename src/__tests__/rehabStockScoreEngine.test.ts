@@ -30,7 +30,7 @@ function makeAssignedExercise(
     targetRomDeg,
     targetReps,
     targetSets: 1,
-    courseTitle: 'คอร์สฟื้นฟูหลังโรคหลอดเลือดสมอง',
+    courseTitle: 'คอร์สฟื้นฟูสมรรถภาพผู้สูงอายุ',
     sources: ['patient_courses'],
     totalScheduledCount: 1,
     completedScheduledCount: 1,
@@ -67,12 +67,12 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
   it('calculates exact full score for 1 exercise (10 reps = 10 pts) and 5 doctor-assigned exercises (5 x 10 reps = 50 pts)', () => {
     // Case A: 1 exercise x 10 reps -> full score = 10 points -> completing 10/10 = 10/10 (100.0%)
     const oneExercise = [
-      makeAssignedExercise('STROKE_SHOULDER_FLEXION', 'ยกแขนไปด้านหน้า', 10, 90),
+      makeAssignedExercise('ELDERLY_SHOULDER_FLEXION', 'ยกแขนไปด้านหน้า', 10, 90),
     ];
     const oneSession = [
       makeCompletedSession(
         's-1ex-d1',
-        'STROKE_SHOULDER_FLEXION',
+        'ELDERLY_SHOULDER_FLEXION',
         'ยกแขนไปด้านหน้า',
         '2026-11-20T09:00:00.000Z',
         10,
@@ -94,18 +94,18 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
 
     // Case B: 5 doctor-assigned exercises x 10 reps -> full score = 50 points!
     const fiveExercises: AssignedCourseExerciseDefinition[] = [
-      makeAssignedExercise('STROKE_SHOULDER_FLEXION', 'ยกแขนไปด้านหน้า', 10, 90),
-      makeAssignedExercise('STROKE_SHOULDER_ABDUCTION', 'กางแขนออกด้านข้าง', 10, 85),
-      makeAssignedExercise('STROKE_ELBOW_FLEXION', 'งอข้อศอก', 10, 110),
-      makeAssignedExercise('STROKE_WRIST_FLEXION', 'กระดกข้อมือ', 10, 60),
-      makeAssignedExercise('STROKE_SHOULDER_EXTERNAL_ROTATION', 'หมุนข้อไหล่ออกด้านนอก', 10, 75),
+      makeAssignedExercise('ELDERLY_SHOULDER_FLEXION', 'ยกแขนไปด้านหน้า', 10, 90),
+      makeAssignedExercise('ELDERLY_SHOULDER_ABDUCTION', 'กางแขนออกด้านข้าง', 10, 85),
+      makeAssignedExercise('ELDERLY_ELBOW_FLEXION', 'งอข้อศอก', 10, 110),
+      makeAssignedExercise('ELDERLY_WRIST_FLEXION', 'กระดกข้อมือ', 10, 60),
+      makeAssignedExercise('ELDERLY_SHOULDER_EXTERNAL_ROTATION', 'หมุนข้อไหล่ออกด้านนอก', 10, 75),
     ];
 
     const multiDaySessions: NormalizedCompletedCourseSession[] = [
       // Day 1 (Nov 20): plays ONLY 1 of 5 exercises (10/10 reps) -> 10 / 50 = 20.0%
       makeCompletedSession(
         's-d1-1',
-        'STROKE_SHOULDER_FLEXION',
+        'ELDERLY_SHOULDER_FLEXION',
         'ยกแขนไปด้านหน้า',
         '2026-11-20T09:00:00.000Z',
         10,
@@ -115,7 +115,7 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
       // Day 2 (Nov 22): plays 3 of 5 exercises (10/10 reps each) -> 30 / 50 = 60.0% (+40.0%)
       makeCompletedSession(
         's-d2-1',
-        'STROKE_SHOULDER_FLEXION',
+        'ELDERLY_SHOULDER_FLEXION',
         'ยกแขนไปด้านหน้า',
         '2026-11-22T09:00:00.000Z',
         10,
@@ -124,7 +124,7 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
       ),
       makeCompletedSession(
         's-d2-2',
-        'STROKE_SHOULDER_ABDUCTION',
+        'ELDERLY_SHOULDER_ABDUCTION',
         'กางแขนออกด้านข้าง',
         '2026-11-22T09:10:00.000Z',
         10,
@@ -133,7 +133,7 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
       ),
       makeCompletedSession(
         's-d2-3',
-        'STROKE_ELBOW_FLEXION',
+        'ELDERLY_ELBOW_FLEXION',
         'งอข้อศอก',
         '2026-11-22T09:20:00.000Z',
         10,
@@ -143,7 +143,7 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
       // Day 3 (Nov 24): plays ALL 5 exercises (10/10 reps each) -> 50 / 50 = 100.0% (+40.0%)
       makeCompletedSession(
         's-d3-1',
-        'STROKE_SHOULDER_FLEXION',
+        'ELDERLY_SHOULDER_FLEXION',
         'ยกแขนไปด้านหน้า',
         '2026-11-24T09:00:00.000Z',
         10,
@@ -152,7 +152,7 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
       ),
       makeCompletedSession(
         's-d3-2',
-        'STROKE_SHOULDER_ABDUCTION',
+        'ELDERLY_SHOULDER_ABDUCTION',
         'กางแขนออกด้านข้าง',
         '2026-11-24T09:05:00.000Z',
         10,
@@ -161,7 +161,7 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
       ),
       makeCompletedSession(
         's-d3-3',
-        'STROKE_ELBOW_FLEXION',
+        'ELDERLY_ELBOW_FLEXION',
         'งอข้อศอก',
         '2026-11-24T09:10:00.000Z',
         10,
@@ -170,7 +170,7 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
       ),
       makeCompletedSession(
         's-d3-4',
-        'STROKE_WRIST_FLEXION',
+        'ELDERLY_WRIST_FLEXION',
         'กระดกข้อมือ',
         '2026-11-24T09:15:00.000Z',
         10,
@@ -179,7 +179,7 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
       ),
       makeCompletedSession(
         's-d3-5',
-        'STROKE_SHOULDER_EXTERNAL_ROTATION',
+        'ELDERLY_SHOULDER_EXTERNAL_ROTATION',
         'หมุนข้อไหล่ออกด้านนอก',
         '2026-11-24T09:20:00.000Z',
         10,
@@ -240,12 +240,12 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
 
     const stock = buildRehabStockIndex({
       assignedExercises: [
-        makeAssignedExercise('STROKE_SHOULDER_FLEXION', 'ยกแขนไปด้านหน้า', 10, 90),
+        makeAssignedExercise('ELDERLY_SHOULDER_FLEXION', 'ยกแขนไปด้านหน้า', 10, 90),
       ],
       completedSessions: [
         makeCompletedSession(
           's-shallow',
-          'STROKE_SHOULDER_FLEXION',
+          'ELDERLY_SHOULDER_FLEXION',
           'ยกแขนไปด้านหน้า',
           '2026-11-24T08:00:00.000Z',
           10,
@@ -270,7 +270,7 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
       age: 45,
       gender: 'ชาย',
       phone: '0812345678',
-      diagnosis: 'Stroke ADL (Shoulder & Arm)',
+      diagnosis: 'Elderly Rehab (Shoulder & Arm)',
       affectedSide: 'RIGHT',
       assignedPtId: 'pt-1',
       delegatedToPtId: null,
@@ -302,11 +302,11 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
           difficulty: 'medium',
           label: 'วันจันทร์',
           exercises: [
-            { exerciseId: 'STROKE_SHOULDER_FLEXION', side: 'right', sets: 1, reps: 10, holdSec: 3, targetMinDeg: 90, targetMaxDeg: 110, allowedStarterSide: 'right' },
-            { exerciseId: 'STROKE_SHOULDER_ABDUCTION', side: 'right', sets: 1, reps: 10, holdSec: 3, targetMinDeg: 85, targetMaxDeg: 105, allowedStarterSide: 'right' },
-            { exerciseId: 'STROKE_ELBOW_FLEXION', side: 'right', sets: 1, reps: 10, holdSec: 3, targetMinDeg: 110, targetMaxDeg: 130, allowedStarterSide: 'right' },
-            { exerciseId: 'STROKE_WRIST_FLEXION', side: 'right', sets: 1, reps: 10, holdSec: 3, targetMinDeg: 60, targetMaxDeg: 75, allowedStarterSide: 'right' },
-            { exerciseId: 'STROKE_SHOULDER_EXTERNAL_ROTATION', side: 'right', sets: 1, reps: 10, holdSec: 3, targetMinDeg: 75, targetMaxDeg: 90, allowedStarterSide: 'right' },
+            { exerciseId: 'ELDERLY_SHOULDER_FLEXION', side: 'right', sets: 1, reps: 10, holdSec: 3, targetMinDeg: 90, targetMaxDeg: 110, allowedStarterSide: 'right' },
+            { exerciseId: 'ELDERLY_SHOULDER_ABDUCTION', side: 'right', sets: 1, reps: 10, holdSec: 3, targetMinDeg: 85, targetMaxDeg: 105, allowedStarterSide: 'right' },
+            { exerciseId: 'ELDERLY_ELBOW_FLEXION', side: 'right', sets: 1, reps: 10, holdSec: 3, targetMinDeg: 110, targetMaxDeg: 130, allowedStarterSide: 'right' },
+            { exerciseId: 'ELDERLY_WRIST_FLEXION', side: 'right', sets: 1, reps: 10, holdSec: 3, targetMinDeg: 60, targetMaxDeg: 75, allowedStarterSide: 'right' },
+            { exerciseId: 'ELDERLY_SHOULDER_EXTERNAL_ROTATION', side: 'right', sets: 1, reps: 10, holdSec: 3, targetMinDeg: 75, targetMaxDeg: 90, allowedStarterSide: 'right' },
           ],
         },
       ],
@@ -316,7 +316,7 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
         id: 'sess-b1',
         patientId: patient.id,
         activityType: 'physio_exercise',
-        exerciseId: 'STROKE_SHOULDER_FLEXION',
+        exerciseId: 'ELDERLY_SHOULDER_FLEXION',
         exerciseName: 'ยกแขนไปด้านหน้า',
         bodySide: 'RIGHT',
         completedSets: 1,
@@ -332,7 +332,7 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
         id: 'sess-b2',
         patientId: patient.id,
         activityType: 'physio_exercise',
-        exerciseId: 'STROKE_SHOULDER_FLEXION',
+        exerciseId: 'ELDERLY_SHOULDER_FLEXION',
         exerciseName: 'ยกแขนไปด้านหน้า',
         bodySide: 'RIGHT',
         completedSets: 1,
@@ -348,7 +348,7 @@ describe('Intelligent Stock-Market-Style Total Rehab Percentage & Full-Score Eng
         id: 'sess-b3',
         patientId: patient.id,
         activityType: 'physio_exercise',
-        exerciseId: 'STROKE_SHOULDER_ABDUCTION',
+        exerciseId: 'ELDERLY_SHOULDER_ABDUCTION',
         exerciseName: 'กางแขนออกด้านข้าง',
         bodySide: 'RIGHT',
         completedSets: 1,

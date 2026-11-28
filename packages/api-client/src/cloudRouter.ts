@@ -86,7 +86,7 @@ import {
   type RehabSessionHistoryEntry,
   type RehabSessionRecord,
   type StaffCallRecord,
-  type StrokeType,
+  type ElderlyCareGroup,
   type SystemSettingsRecord,
   type TreatmentReportRecord,
   type UniversalEhrPackage,
@@ -607,7 +607,7 @@ function buildPatientHistoryPayload(patient: PatientRecord): Record<string, unkn
   return {
     gender: patient.gender ?? 'ชาย',
     assignedPtId: patient.assignedPtId ?? null,
-    strokeType: patient.strokeType ?? 'ELDERLY_GENERAL',
+    careGroup: patient.careGroup ?? 'ELDERLY_GENERAL',
     affectedSide: patient.affectedSide ?? 'NONE',
     motorAssessmentScore: patient.motorAssessmentScore ?? 3,
     adlDressingScore: patient.adlDressingScore ?? 3,
@@ -725,7 +725,7 @@ async function writePatientRowWithFramesFallback(
     'face_embedding',
     'biometric_data',
     'gender',
-    'stroke_type',
+    'care_group',
     'affected_side',
     'motor_assessment_score',
     'adl_dressing_score',
@@ -2878,7 +2878,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         gender?: string;
         phone?: string;
         diagnosis?: string;
-        strokeType?: StrokeType;
+        careGroup?: ElderlyCareGroup;
         affectedSide?: AffectedSide;
         motorAssessmentScore?: number;
         adlDressingScore?: number;
@@ -3048,7 +3048,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         gender,
         phone: body.phone ?? '',
         diagnosis: body.diagnosis ?? 'General Rehabilitation',
-        strokeType: (body.strokeType ?? 'ELDERLY_GENERAL') as StrokeType,
+        careGroup: (body.careGroup ?? 'ELDERLY_GENERAL') as ElderlyCareGroup,
         affectedSide: (body.affectedSide ?? 'NONE') as AffectedSide,
         motorAssessmentScore: clampScore(body.motorAssessmentScore, 0, 6, 3),
         adlDressingScore: clampScore(body.adlDressingScore, 0, 5, 3),
@@ -3092,16 +3092,19 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       if (!isPendingSkip && masterVec) {
         patient.biometricUpdatedAt = enrolledAtIso;
       }
+      const compactExemplars =
+        masterVec && exemplarList.length > 0
+          ? normalizeCompactExemplars(exemplarList, masterVec.length, 9)
+          : [];
+      if (compactExemplars.length > 0) {
+        patient.exemplarEmbeddings = compactExemplars;
+      }
       const patientDualWriteCols = buildPatientDualWriteColumns(patient, {
         updatedAtIso: enrolledAtIso,
         includeProfileFields: true,
       });
       const safeAssignedPtUuid = toSafeUuidOrNull(patient.assignedPtId, state.users);
       const safeActorUuid = toSafeUuidOrNull(authUser!.id, state.users);
-      const compactExemplars =
-        masterVec && exemplarList.length > 0
-          ? normalizeCompactExemplars(exemplarList, masterVec.length, 9)
-          : [];
 
       // 1. Always update authoritative in-memory state FIRST so transient DB errors never drop the enrollment
       state.patients = state.patients.filter(
@@ -3282,7 +3285,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           }
           return { error: null, persisted: true };
         },
-        6000,
+        7500,
         'biometric_enroll',
         runWaitUntil,
       );
@@ -3834,6 +3837,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         engine?: 'human-faceres-1024d' | 'arcface-onnx' | 'hybrid-512d';
         geometricRatios?: GeometricAnthropometricRatios;
         excludedPatientIds?: string[];
+        forceRefresh?: boolean;
         livenessEvidence?: {
           biologicalVerified?: boolean;
           blinkCount?: number;
@@ -3852,6 +3856,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           mirroredLegacyV1ProbeVector?: unknown;
           geometricRatios?: GeometricAnthropometricRatios;
           excludedPatientIds?: string[];
+          forceRefresh?: boolean;
         };
       }>(request);
       if (!body || !isValidBiometricVector(body.probeVector)) {
@@ -3891,12 +3896,14 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       // overnight Supabase wakeups never trigger false "ระบบตรวจสอบขัดข้องชั่วคราว" 503 lockouts.
       let dbFresh = !supabase;
       let usedWarmRamCache = false;
+      const bodyForceRefresh = Boolean(body.forceRefresh || body.livenessEvidence?.forceRefresh);
+      const effectiveForceRefresh = forceSupabaseProbe || bodyForceRefresh;
       if (supabase) {
         const hasAnyCachedTemplateBeforeSync =
           state.face_templates.length > 0 ||
           state.patients.some((p) => Boolean(parseEmbeddingVector(p.masterEmbedding)));
         const needsLiveRefresh =
-          forceSupabaseProbe ||
+          effectiveForceRefresh ||
           lastLiveBioHydratedAt === 0 ||
           !hasAnyCachedTemplateBeforeSync ||
           Date.now() - lastLiveBioHydratedAt >= LIVE_BIO_REFRESH_MS;
@@ -3904,7 +3911,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           const syncTimeoutMs = hasAnyCachedTemplateBeforeSync ? 4500 : 8000;
           let liveSync = await hydrateBiometricsLiveFromSupabase(supabase, state, syncTimeoutMs, {
             tripCircuitOnTimeout: false,
-            allowCircuitProbe: forceSupabaseProbe || !hasAnyCachedTemplateBeforeSync,
+            allowCircuitProbe: effectiveForceRefresh || !hasAnyCachedTemplateBeforeSync,
           });
           if (
             !liveSync.ok &&
@@ -4969,8 +4976,8 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           .map((t) => computeZeroMeanCenteredVectorStrict(t))
           .filter((v): v is number[] => Boolean(v));
         const isRelu6Probe = isNonNegativeRelu6Vector(probeNorm);
-        const perFrameMinRaw = isRelu6Probe ? 0.88 : STRICT_RAW_COSINE_THRESHOLD;
-        const perFrameMinCentered = isRelu6Probe ? 0.84 : STRICT_CENTERED_COSINE_THRESHOLD;
+        const perFrameMinRaw = isRelu6Probe ? 0.865 : STRICT_RAW_COSINE_THRESHOLD;
+        const perFrameMinCentered = isRelu6Probe ? 0.82 : STRICT_CENTERED_COSINE_THRESHOLD;
         const perFrameMaxL2 = isRelu6Probe
           ? STRICT_RELU6_MAX_EUCLIDEAN_DISTANCE + 0.02
           : STRICT_MAX_EUCLIDEAN_DISTANCE;
@@ -5199,7 +5206,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           hn: patient.hn,
           fullName: patient.fullName,
           nextAppointmentDate: todaySchedule.nextAppointmentDate,
-          strokeType: patient.strokeType,
+          careGroup: patient.careGroup,
           affectedSide: patient.affectedSide,
           motorAssessmentScore: patient.motorAssessmentScore,
           adlDressingScore: patient.adlDressingScore,
@@ -5288,7 +5295,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           hn: matchedPatient.hn,
           fullName: matchedPatient.fullName,
           nextAppointmentDate: todaySchedule.nextAppointmentDate,
-          strokeType: matchedPatient.strokeType,
+          careGroup: matchedPatient.careGroup,
           affectedSide: matchedPatient.affectedSide,
           motorAssessmentScore: matchedPatient.motorAssessmentScore,
           adlDressingScore: matchedPatient.adlDressingScore,
@@ -5996,11 +6003,11 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         );
       }
 
-      const parsedEx = parseExerciseCodeAndSide(body.exercise_code || 'STROKE_SHOULDER_FLEXION', body.target_side);
+      const parsedEx = parseExerciseCodeAndSide(body.exercise_code || 'ELDERLY_SHOULDER_FLEXION', body.target_side);
       const catalogEx =
         state.exercises.find((e) => e.code === parsedEx.baseCode || e.id === body.exercise_code) ??
         CLINICAL_EXERCISES.find((e) => e.code === parsedEx.baseCode || e.id === body.exercise_code);
-      const exCode = (catalogEx?.code || parsedEx.baseCode || 'STROKE_SHOULDER_FLEXION').toUpperCase();
+      const exCode = (catalogEx?.code || parsedEx.baseCode || 'ELDERLY_SHOULDER_FLEXION').toUpperCase();
       const targetRomRaw = Number(body.target_rom_deg);
       const safeTargetRom =
         Number.isFinite(targetRomRaw) && targetRomRaw >= 10 && targetRomRaw <= 220
@@ -6354,11 +6361,14 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
       const enrollUpdatedAtIso = new Date().toISOString();
       patient.biometricUpdatedAt = enrollUpdatedAtIso;
+      const compactExemplars = normalizeCompactExemplars(exemplarList, masterVec.length, 9);
+      if (compactExemplars.length > 0) {
+        patient.exemplarEmbeddings = compactExemplars;
+      }
       const enrollDualCols = buildPatientDualWriteColumns(patient, {
         updatedAtIso: enrollUpdatedAtIso,
         includeProfileFields: true,
       });
-      const compactExemplars = normalizeCompactExemplars(exemplarList, masterVec.length, 9);
       const safeActorUuid = toSafeUuidOrNull(authUser!.id, state.users);
       const compactAngleRows: {
         patientId: string;
@@ -6439,7 +6449,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           }
           return { error: null, persisted: true };
         },
-        6000,
+        7500,
         'enroll_existing_face',
         runWaitUntil,
       );
@@ -6581,7 +6591,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         if (body.gender !== undefined) patient.gender = body.gender;
         if (body.phone !== undefined) patient.phone = body.phone;
         if (body.diagnosis !== undefined) patient.diagnosis = body.diagnosis;
-        if (body.strokeType !== undefined) patient.strokeType = body.strokeType;
+        if (body.careGroup !== undefined) patient.careGroup = body.careGroup;
         if (body.affectedSide !== undefined) patient.affectedSide = body.affectedSide;
         if (body.motorAssessmentScore !== undefined) {
           patient.motorAssessmentScore = clampScore(body.motorAssessmentScore, 0, 6, patient.motorAssessmentScore ?? 3);
@@ -6916,7 +6926,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
         gender: body.gender || 'ชาย',
         phone: body.phone ?? '',
         diagnosis: body.diagnosis ?? 'General Rehabilitation',
-        strokeType: (body.strokeType ?? 'ELDERLY_GENERAL') as StrokeType,
+        careGroup: (body.careGroup ?? 'ELDERLY_GENERAL') as ElderlyCareGroup,
         affectedSide: (body.affectedSide ?? 'NONE') as AffectedSide,
         motorAssessmentScore: clampScore(body.motorAssessmentScore, 0, 6, 3),
         adlDressingScore: clampScore(body.adlDressingScore, 0, 5, 3),
@@ -7715,7 +7725,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           age: matched.age,
           gender: matched.gender,
           diagnosis: matched.diagnosis,
-          strokeType: matched.strokeType,
+          careGroup: matched.careGroup,
           affectedSide: matched.affectedSide,
           motorAssessmentScore: matched.motorAssessmentScore,
           adlDressingScore: matched.adlDressingScore,
@@ -7763,7 +7773,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
             age: sourcePatient.age,
             gender: sourcePatient.gender,
             diagnosis: sourcePatient.diagnosis,
-            strokeType: sourcePatient.strokeType,
+            careGroup: sourcePatient.careGroup,
             affectedSide: sourcePatient.affectedSide,
             motorAssessmentScore: sourcePatient.motorAssessmentScore,
             adlDressingScore: sourcePatient.adlDressingScore,
@@ -7775,9 +7785,9 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
 
       if (!pkg) return jsonResponse({ error: 'VALIDATION_ERROR' }, 400);
 
-      // Update Stroke clinical profile defaults if missing or provided externally
-      if (pkg.patientProfile.strokeType && (!patient.strokeType || patient.strokeType === 'ELDERLY_GENERAL')) {
-        patient.strokeType = pkg.patientProfile.strokeType;
+      // Update Elderly clinical profile defaults if missing or provided externally
+      if (pkg.patientProfile.careGroup && (!patient.careGroup || patient.careGroup === 'ELDERLY_GENERAL')) {
+        patient.careGroup = pkg.patientProfile.careGroup;
       }
       if (pkg.patientProfile.affectedSide && (!patient.affectedSide || patient.affectedSide === 'NONE')) {
         patient.affectedSide = pkg.patientProfile.affectedSide;
@@ -7855,7 +7865,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
           db,
           'update',
           {
-            stroke_type: patient.strokeType ?? 'ELDERLY_GENERAL',
+            care_group: patient.careGroup ?? 'ELDERLY_GENERAL',
             affected_side: patient.affectedSide ?? 'NONE',
             motor_assessment_score: patient.motorAssessmentScore ?? 3,
             max_safe_rom_deg: patient.maxSafeRomDeg ?? 150,
@@ -8009,7 +8019,7 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       });
     }
 
-    if (pathname === '/api/exercises/sync-stroke-library' && method === 'POST') {
+    if (pathname === '/api/exercises/sync-elderly-library' && method === 'POST') {
       const err = requireAuth(authUser, ['super_admin', 'pt']);
       if (err) return err;
 
@@ -8047,13 +8057,13 @@ export function createCloudRouter(config: CloudClientConfig = {}) {
       });
 
       recordAudit({
-        eventType: 'STROKE_LIBRARY_SYNCED',
+        eventType: 'ELDERLY_LIBRARY_SYNCED',
         actorRole: authUser!.role,
         actorId: authUser!.id,
         actorName: authUser!.fullName,
         ipAddress: clientIp,
         deviceId: clientDeviceId,
-        detail: `Synchronized 26 standardized Stroke ADL & MOPH upper-body exercises (purged=${purgedCount})`,
+        detail: `Synchronized ${canonical.length} standardized Elderly & MOPH upper-body exercises (purged=${purgedCount})`,
       });
       return jsonResponse({
         ok: true,

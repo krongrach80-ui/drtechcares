@@ -15,7 +15,7 @@ export { ACTIVE_BIOMETRIC_DIM, ACTIVE_BIOMETRIC_PIPELINE_VERSION, type Biometric
 import {
   CLINICAL_EXERCISES,
   isDeprecatedExerciseRecord,
-  normalizeStrokeExerciseId,
+  normalizeElderlyExerciseId,
   parseExerciseCodeAndSide,
   resolveSideAdjustedExerciseCopy,
   type BodySide,
@@ -119,7 +119,7 @@ export interface PatientBiometricIndexEntry {
   completedToday?: boolean;
 }
 
-export type StrokeType = 'ISCHEMIC' | 'HEMORRHAGIC' | 'ELDERLY_GENERAL' | 'ORTHOPEDIC' | 'NEURO';
+export type ElderlyCareGroup = 'MOBILITY_RECOVERY' | 'CLOSE_CARE' | 'ELDERLY_GENERAL' | 'ORTHOPEDIC' | 'NEURO';
 export type AffectedSide = 'LEFT' | 'RIGHT' | 'BOTH' | 'NONE';
 
 export interface MahidolMotorScaleLevel {
@@ -214,7 +214,7 @@ export interface UniversalEhrPackage {
     age: number;
     gender?: string;
     diagnosis: string;
-    strokeType?: StrokeType;
+    careGroup?: ElderlyCareGroup;
     affectedSide?: AffectedSide;
     motorAssessmentScore?: number;
     adlDressingScore?: number;
@@ -298,7 +298,7 @@ export interface PatientRecord {
   gender?: string;
   phone: string;
   diagnosis: string;
-  strokeType?: StrokeType;
+  careGroup?: ElderlyCareGroup;
   affectedSide?: AffectedSide;
   motorAssessmentScore?: number;
   adlDressingScore?: number;
@@ -547,7 +547,7 @@ export interface KioskFaceVerifyResponse extends BiometricVerificationResult {
     hn: string;
     fullName: string;
     nextAppointmentDate: string;
-    strokeType?: StrokeType;
+    careGroup?: ElderlyCareGroup;
     affectedSide?: AffectedSide;
     motorAssessmentScore?: number;
     adlDressingScore?: number;
@@ -1701,7 +1701,7 @@ export class DrTechCaresApiClient {
     gender?: string;
     phone?: string;
     diagnosis: string;
-    strokeType?: StrokeType;
+    careGroup?: ElderlyCareGroup;
     affectedSide?: AffectedSide;
     motorAssessmentScore?: number;
     adlDressingScore?: number;
@@ -1756,7 +1756,7 @@ export class DrTechCaresApiClient {
         ...(input.gender ? { gender: input.gender } : {}),
         phone: input.phone ?? '',
         diagnosis: input.diagnosis || 'กำลังประเมินอาการ',
-        ...(input.strokeType ? { strokeType: input.strokeType } : {}),
+        ...(input.careGroup ? { careGroup: input.careGroup } : {}),
         ...(input.affectedSide ? { affectedSide: input.affectedSide } : {}),
         ...(input.motorAssessmentScore !== undefined ? { motorAssessmentScore: input.motorAssessmentScore } : {}),
         ...(input.adlDressingScore !== undefined ? { adlDressingScore: input.adlDressingScore } : {}),
@@ -2184,7 +2184,7 @@ export class DrTechCaresApiClient {
     return (res.exercises ?? []).filter((ex) => !isDeprecatedExerciseRecord(ex));
   }
 
-  async syncStrokeExerciseLibrary(): Promise<{
+  async syncElderlyExerciseLibrary(): Promise<{
     ok: boolean;
     purgedCount: number;
     syncedCount: number;
@@ -2199,7 +2199,7 @@ export class DrTechCaresApiClient {
         // Ignore storage access errors
       }
     }
-    return this.request('/api/exercises/sync-stroke-library', { method: 'POST' });
+    return this.request('/api/exercises/sync-elderly-library', { method: 'POST' });
   }
 
   async createExercise(ex: ExerciseConfig): Promise<ManagedExerciseRecord> {
@@ -2432,7 +2432,7 @@ function buildExerciseSummary(
   holdSec: number;
   activityType: ActivityType;
 } {
-  const normalizedId = normalizeStrokeExerciseId(exerciseId);
+  const normalizedId = normalizeElderlyExerciseId(exerciseId);
   const parsed = parseExerciseCodeAndSide(exerciseId, explicitSide);
   const found = catalog.find(
     (c) =>

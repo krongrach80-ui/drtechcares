@@ -24,8 +24,8 @@ router = APIRouter(prefix="/api", tags=["edge-vision"])
 
 @router.get("/exercises")
 async def get_exercises(scope: str = "core") -> Dict[str, Any]:
-    """List clinical rehabilitation exercises (pass ?scope=all to include Stroke ADL & MOPH Elderly modules)."""
-    items = list_all_exercises(include_stroke_moph=(scope.strip().lower() == "all"))
+    """List clinical rehabilitation exercises (pass ?scope=all to include Elderly Care & MOPH modules)."""
+    items = list_all_exercises(include_elderly_moph=(scope.strip().lower() == "all"))
     return {"count": len(items), "exercises": items}
 
 

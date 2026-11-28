@@ -3,7 +3,7 @@ import {
   CLINICAL_EXERCISES,
   isDeprecatedExerciseRecord,
   mergeDuplicateSideExercises,
-  sortExercisesStrokeUpperFirst,
+  sortExercisesElderlyUpperFirst,
 } from '@drtechcares/pose-engine';
 import {
   ACTIVE_BIOMETRIC_DIM,
@@ -33,7 +33,7 @@ import {
   RehabSessionHistoryEntry,
   RehabSessionRecord,
   StaffCallRecord,
-  type StrokeType,
+  type ElderlyCareGroup,
   SystemSettingsRecord,
   TreatmentReportRecord,
   UserAccount,
@@ -811,14 +811,14 @@ const STAFF_USERS_EXTENDED_COLS = `${STAFF_USERS_BASE_COLS},avatar_url,bio`;
 const PATIENTS_BASE_COLS =
   'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,face_biometric_status,face_frames_count,face_image_url,biometric_updated_at,history,created_at,updated_at';
 const PATIENTS_BIOMETRIC_LIVE_COLS =
-  'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,face_biometric_status,face_frames_count,face_image_url,biometric_updated_at,created_at,updated_at,historyFaceStatus:history->>faceBiometricStatus,historyFaceFramesCount:history->faceFramesCount,historyFaceImageUrl:history->>faceImageUrl,historyGender:history->>gender,historyExemplars:history->exemplarEmbeddings,geometricRatios:history->geometricRatios,rehabSchedules:history->rehabSchedules,biometricEngine:history->>biometricEngine,strokeType:history->>strokeType,affectedSide:history->>affectedSide,motorAssessmentScore:history->motorAssessmentScore,adlDressingScore:history->adlDressingScore,maxSafeRomDeg:history->maxSafeRomDeg,universalHealthLinkCode:history->>universalHealthLinkCode';
+  'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,face_biometric_status,face_frames_count,face_image_url,biometric_updated_at,created_at,updated_at,historyFaceStatus:history->>faceBiometricStatus,historyFaceFramesCount:history->faceFramesCount,historyFaceImageUrl:history->>faceImageUrl,historyGender:history->>gender,historyExemplars:history->exemplarEmbeddings,geometricRatios:history->geometricRatios,rehabSchedules:history->rehabSchedules,biometricEngine:history->>biometricEngine,careGroup:history->>careGroup,affectedSide:history->>affectedSide,motorAssessmentScore:history->motorAssessmentScore,adlDressingScore:history->adlDressingScore,maxSafeRomDeg:history->maxSafeRomDeg,universalHealthLinkCode:history->>universalHealthLinkCode';
 export const PATIENTS_DIRECTORY_EGRESS_SAFE_COLS =
-  'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,face_biometric_status,face_frames_count,face_image_url,biometric_updated_at,created_at,updated_at,gender,stroke_type,affected_side,motor_assessment_score,adl_dressing_score,max_safe_rom_deg,universal_health_link_code,historyFaceStatus:history->>faceBiometricStatus,historyFaceFramesCount:history->faceFramesCount,historyFaceImageUrl:history->>faceImageUrl,historyGender:history->>gender,rehabSchedules:history->rehabSchedules,strokeType:history->>strokeType,affectedSide:history->>affectedSide,motorAssessmentScore:history->motorAssessmentScore,adlDressingScore:history->adlDressingScore,maxSafeRomDeg:history->maxSafeRomDeg,universalHealthLinkCode:history->>universalHealthLinkCode,rehabSessionHistory:history->rehabSessionHistory,clinicalAssessments:history->clinicalAssessments,angleImageUrls:history->angleImageUrls,faceImageUrls:history->faceImageUrls,delegatedToPtId:history->>delegatedToPtId,delegationDate:history->>delegationDate,delegationNote:history->>delegationNote,biometricEngine:history->>biometricEngine';
+  'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,delegated_to_pt_id,delegation_note,next_appointment_date,face_biometric_status,face_frames_count,face_image_url,biometric_updated_at,created_at,updated_at,gender,affected_side,motor_assessment_score,adl_dressing_score,max_safe_rom_deg,universal_health_link_code,historyFaceStatus:history->>faceBiometricStatus,historyFaceFramesCount:history->faceFramesCount,historyFaceImageUrl:history->>faceImageUrl,historyGender:history->>gender,rehabSchedules:history->rehabSchedules,careGroup:history->>careGroup,affectedSide:history->>affectedSide,motorAssessmentScore:history->motorAssessmentScore,adlDressingScore:history->adlDressingScore,maxSafeRomDeg:history->maxSafeRomDeg,universalHealthLinkCode:history->>universalHealthLinkCode,rehabSessionHistory:history->rehabSessionHistory,clinicalAssessments:history->clinicalAssessments,angleImageUrls:history->angleImageUrls,faceImageUrls:history->faceImageUrls,delegatedToPtId:history->>delegatedToPtId,delegationDate:history->>delegationDate,delegationNote:history->>delegationNote,biometricEngine:history->>biometricEngine';
 export const PATIENTS_MINIMAL_SAFE_COLS =
   'id,hn,full_name,age,phone,diagnosis,registration_status,assigned_pt_id,history,created_at';
 
 const PATIENT_BIOMETRICS_BASE_COLS =
-  'patient_id,hn,master_embedding,angle_embeddings,exemplar_embeddings,biometric_engine,model_version,frames_captured,quality_score,updated_at';
+  'patient_id,hn,master_embedding,angle_embeddings,exemplar_embeddings,geometric_ratios,biometric_engine,model_version,frames_captured,quality_score,updated_at';
 const PATIENT_BIOMETRICS_MINIMAL_SAFE_COLS =
   'patient_id,hn,master_embedding,angle_embeddings,updated_at';
 
@@ -1799,12 +1799,12 @@ export async function hydrateBiometricsLiveFromSupabase(
           : Array.isArray(history.rehabSchedules)
             ? (history.rehabSchedules as RehabScheduleItem[])
             : null;
-        const projectedStrokeType =
-          (typeof r.strokeType === 'string' && r.strokeType
-            ? (r.strokeType as StrokeType)
-            : typeof history.strokeType === 'string' && history.strokeType
-              ? (history.strokeType as StrokeType)
-              : prevPatient?.strokeType) ?? undefined;
+        const projectedCareGroup =
+          (typeof r.careGroup === 'string' && r.careGroup
+            ? (r.careGroup as ElderlyCareGroup)
+            : typeof history.careGroup === 'string' && history.careGroup
+              ? (history.careGroup as ElderlyCareGroup)
+              : prevPatient?.careGroup) ?? undefined;
         const projectedAffectedSide =
           (typeof r.affectedSide === 'string' && r.affectedSide
             ? (r.affectedSide as AffectedSide)
@@ -1857,7 +1857,7 @@ export async function hydrateBiometricsLiveFromSupabase(
           ...(inspected.patient.gender ? { gender: inspected.patient.gender } : {}),
           nextAppointmentDate: String(r.next_appointment_date ?? prevPatient?.nextAppointmentDate ?? ''),
           registrationStatus: 'active' as const,
-          ...(projectedStrokeType ? { strokeType: projectedStrokeType } : {}),
+          ...(projectedCareGroup ? { careGroup: projectedCareGroup } : {}),
           ...(projectedAffectedSide ? { affectedSide: projectedAffectedSide } : {}),
           ...(projectedMotorScore !== undefined ? { motorAssessmentScore: projectedMotorScore } : {}),
           ...(projectedAdlScore !== undefined ? { adlDressingScore: projectedAdlScore } : {}),
@@ -2540,12 +2540,12 @@ async function runHydrateStateFromSupabaseInternal(
           : parsedColNote ?? historyDelegationNote ?? prevPatient?.delegationNote ?? null
         : null;
 
-      const hydratedStrokeType = (
-        (typeof r.stroke_type === 'string' && r.stroke_type) ||
-        (typeof history.strokeType === 'string' && history.strokeType) ||
-        prevPatient?.strokeType ||
+      const hydratedCareGroup = (
+        (typeof r.care_group === 'string' && r.care_group) ||
+        (typeof history.careGroup === 'string' && history.careGroup) ||
+        prevPatient?.careGroup ||
         'ELDERLY_GENERAL'
-      ) as StrokeType;
+      ) as ElderlyCareGroup;
       const hydratedAffectedSide = (
         (typeof r.affected_side === 'string' && r.affected_side) ||
         (typeof history.affectedSide === 'string' && history.affectedSide) ||
@@ -2639,7 +2639,7 @@ async function runHydrateStateFromSupabaseInternal(
         gender: typeof r.gender === 'string' && r.gender.trim() ? r.gender : typeof history.gender === 'string' && history.gender.trim() ? history.gender : 'ชาย',
         phone: String(r.phone ?? ''),
         diagnosis: String(r.diagnosis ?? ''),
-        strokeType: hydratedStrokeType,
+        careGroup: hydratedCareGroup,
         affectedSide: hydratedAffectedSide,
         motorAssessmentScore: hydratedMotorScore,
         adlDressingScore: hydratedAdlScore,
@@ -2960,7 +2960,7 @@ async function runHydrateStateFromSupabaseInternal(
         ),
         assessor_staff_id: String(r.assessor_staff_id ?? existingRec?.assessor_staff_id ?? ''),
         assessor_staff_name: String(r.assessor_staff_name ?? existingRec?.assessor_staff_name ?? ''),
-        exercise_code: String(r.exercise_code ?? existingRec?.exercise_code ?? 'STROKE_SHOULDER_FLEXION'),
+        exercise_code: String(r.exercise_code ?? existingRec?.exercise_code ?? 'ELDERLY_SHOULDER_FLEXION'),
         exercise_name_th: String(r.exercise_name_th ?? existingRec?.exercise_name_th ?? ''),
         target_side: targetSide,
         initial_score_0_to_6: clampedScore,
@@ -3066,10 +3066,10 @@ async function runHydrateStateFromSupabaseInternal(
       createdBy: 'system',
     }));
     state.exercises = mergeDuplicateSideExercises(
-      sortExercisesStrokeUpperFirst([...canonicalRecords, ...validCustomOrDb]),
+      sortExercisesElderlyUpperFirst([...canonicalRecords, ...validCustomOrDb]),
     );
   } else {
-    state.exercises = sortExercisesStrokeUpperFirst(
+    state.exercises = sortExercisesElderlyUpperFirst(
       CLINICAL_EXERCISES.map((ex) => ({ ...ex, createdBy: 'system' })),
     );
   }

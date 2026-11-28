@@ -25,7 +25,7 @@ import {
   evaluateArmKinematics,
   evaluateActiveWristsLowered,
   evaluateCompensations,
-  solveStrokeClinicalJointBiomechanics,
+  solveElderlyClinicalJointBiomechanics,
   type PoseLandmark,
 } from '@drtechcares/pose-engine';
 import {
@@ -121,8 +121,8 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
           id: 's1',
           patientId: 'p1',
           ptId: 'pt1',
-          exerciseId: 'STROKE_SH_FLEX_R',
-          exerciseCode: 'STROKE_SH_FLEX',
+          exerciseId: 'ELDERLY_SH_FLEX_R',
+          exerciseCode: 'ELDERLY_SH_FLEX',
           side: 'RIGHT',
           scheduledDate: todayIso,
           sets: 1,
@@ -133,8 +133,8 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
           id: 's2',
           patientId: 'p1',
           ptId: 'pt1',
-          exerciseId: 'STROKE_SH_ABD_R',
-          exerciseCode: 'STROKE_SH_ABD',
+          exerciseId: 'ELDERLY_SH_ABD_R',
+          exerciseCode: 'ELDERLY_SH_ABD',
           side: 'RIGHT',
           scheduledDate: todayIso,
           sets: 1,
@@ -147,7 +147,7 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
           id: 'sess1',
           patientId: 'p1',
           activityType: 'physio_exercise',
-          exerciseId: 'STROKE_SH_FLEX_R',
+          exerciseId: 'ELDERLY_SH_FLEX_R',
           exerciseName: 'Flexion',
           completedSets: 1,
           completedReps: 5,
@@ -241,7 +241,7 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
       auth_status: { verified: true, confidence: 0.95, liveness: true },
       spatial_framing: { distance_m: 2.0, full_body_visible: true, feet_visible: true },
       exercise_prescription: {
-        exercise_id: 'STROKE_SH_ROT_R',
+        exercise_id: 'ELDERLY_SH_ROT_R',
         target_joint: 'right_shoulder',
         target_rom_deg: 65,
         hold_sec: 3,
@@ -257,7 +257,7 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
     expect(res.kiosk_state).not.toBe('EMERGENCY_HALT');
 
     const neutral = makeBasePose();
-    const distalBoth = solveStrokeClinicalJointBiomechanics({
+    const distalBoth = solveElderlyClinicalJointBiomechanics({
       landmarks: neutral,
       targetJoint: 'right_shoulder',
       exerciseSide: 'BOTH',
@@ -300,14 +300,14 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
     expect(EMOJI_RE.test(testContent)).toBe(false);
   });
 
-  it('classifies STROKE_BOBATH_FORWARD_PUSH as bobath_push, prevents hanging rest false reps, and keeps BOTH boost symmetric', () => {
+  it('classifies ELDERLY_CLASPED_FORWARD_PUSH as clasped_push, prevents hanging rest false reps, and keeps BOTH boost symmetric', () => {
     expect(
       classifyExerciseJointMode({
-        exercise_id: 'STROKE_BOBATH_FORWARD_PUSH',
-        name_en: 'Stroke ADL: Bobath Bilateral Forward Elbow Push',
-        name_th: '[Stroke ADL] ประสานมือสองข้างดันเหยียดแขนไปด้านหน้า',
+        exercise_id: 'ELDERLY_CLASPED_FORWARD_PUSH',
+        name_en: 'Elderly Care: Bilateral Clasped Forward Elbow Push',
+        name_th: '[ผู้สูงอายุ] ประสานมือสองข้างดันเหยียดแขนไปด้านหน้า',
       }),
-    ).toBe('bobath_push');
+    ).toBe('clasped_push');
 
     // Relaxed hanging arm with slight horizontal slant must NOT trigger shoulder_rotation or thumb_pinch hold
     const hanging = makeBasePose({
@@ -316,7 +316,7 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
       [POSE_INDEX.RIGHT_THUMB]: { x: 0.36, y: 0.70, z: 0.01, visibility: 0.95 },
       [POSE_INDEX.RIGHT_INDEX]: { x: 0.37, y: 0.71, z: 0.01, visibility: 0.95 },
     });
-    const rotRest = solveStrokeClinicalJointBiomechanics({
+    const rotRest = solveElderlyClinicalJointBiomechanics({
       landmarks: hanging,
       targetJoint: 'right_shoulder',
       exerciseSide: 'RIGHT',
@@ -326,7 +326,7 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
     });
     expect(rotRest.romDeg ?? 0).toBeLessThan(20);
 
-    const pinchRest = solveStrokeClinicalJointBiomechanics({
+    const pinchRest = solveElderlyClinicalJointBiomechanics({
       landmarks: hanging,
       targetJoint: 'right_shoulder',
       exerciseSide: 'RIGHT',
@@ -341,7 +341,7 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
       [POSE_INDEX.RIGHT_ELBOW]: { x: 0.42, y: 0.52, z: -0.02, visibility: 0.99 },
       [POSE_INDEX.RIGHT_WRIST]: { x: 0.42, y: 0.38, z: -0.06, visibility: 0.99 },
     });
-    const elbowRes = solveStrokeClinicalJointBiomechanics({
+    const elbowRes = solveElderlyClinicalJointBiomechanics({
       landmarks: curledRight,
       targetJoint: 'right_shoulder',
       exerciseSide: 'RIGHT',
@@ -359,7 +359,7 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
       [POSE_INDEX.RIGHT_ELBOW]: { x: 0.40, y: 0.35, z: -0.14, visibility: 0.99 },
       [POSE_INDEX.RIGHT_WRIST]: { x: 0.40, y: 0.32, z: -0.26, visibility: 0.99 },
     });
-    const bothRes = solveStrokeClinicalJointBiomechanics({
+    const bothRes = solveElderlyClinicalJointBiomechanics({
       landmarks: bothRaised,
       targetJoint: 'right_shoulder',
       exerciseSide: 'BOTH',
@@ -410,7 +410,7 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
       patientId: id,
       hn: `HN-${id}`,
       fullName: name,
-      diagnosis: 'Stroke',
+      diagnosis: 'Elderly Rehab',
       assignedPtId: 'pt-1',
       nextAppointmentDate: '',
       framesCaptured: 120,
@@ -430,7 +430,7 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
         patientId: id,
         hn: `HN-${id}`,
         fullName: name,
-        diagnosis: 'Stroke',
+        diagnosis: 'Elderly Rehab',
         assignedPtId: 'pt-1',
         nextAppointmentDate: '',
         framesCaptured: 120,
@@ -630,7 +630,7 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
       [POSE_INDEX.LEFT_ELBOW]: { x: 0.60, y: 0.36, z: -0.1, visibility: 0.99 },
       [POSE_INDEX.LEFT_WRIST]: { x: 0.58, y: 0.34, z: -0.15, visibility: 0.99 },
     });
-    const nonCrossRes = solveStrokeClinicalJointBiomechanics({
+    const nonCrossRes = solveElderlyClinicalJointBiomechanics({
       landmarks: sameSideHold,
       targetJoint: 'left_shoulder',
       exerciseSide: 'LEFT',
@@ -744,7 +744,7 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
       patientId,
       hn: `HN-${patientId}`,
       fullName,
-      diagnosis: 'Stroke',
+      diagnosis: 'Elderly Rehab',
       assignedPtId: 'user-pt-1',
       nextAppointmentDate: '2026-12-01',
       dimension: 1024,
@@ -764,7 +764,7 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
         patientId,
         hn: `HN-${patientId}`,
         fullName,
-        diagnosis: 'Stroke',
+        diagnosis: 'Elderly Rehab',
         assignedPtId: 'user-pt-1',
         nextAppointmentDate: '2026-12-01',
         framesCaptured: 120,
@@ -814,7 +814,7 @@ describe('Project Stability, Face Scan & Pose Detection Hardening', () => {
           hn: 'HN-OWNER-1024',
           fullName: 'Owner Only Patient',
           age: 62,
-          diagnosis: 'Stroke',
+          diagnosis: 'Elderly Rehab',
           biometricEngine: 'human-faceres-1024d',
           masterEmbedding: ownerVec,
           angleEmbeddings: {

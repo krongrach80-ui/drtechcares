@@ -212,7 +212,7 @@ export function SmartLoginView({ apiClient, onAuthenticated, onNavigateEnroll }:
                             nextAppointmentDate: matchedPat?.nextAppointmentDate ?? '',
                             registrationStatus: 'active',
                             enrolledAt: new Date().toISOString(),
-                            strokeType: matchedPat?.strokeType,
+                            careGroup: matchedPat?.careGroup,
                             affectedSide: matchedPat?.affectedSide,
                             motorAssessmentScore: matchedPat?.motorAssessmentScore,
                             adlDressingScore: matchedPat?.adlDressingScore,

@@ -17,6 +17,12 @@ import {
   getNextMonotonicVideoDetectTs,
   resetBiometricVisionCacheForTests,
 } from '../lib/biometricVisionCache';
+import {
+  computeHandRoiCropBox,
+  filterAndAssignDetectedHands,
+  projectRoiHandToFullVideo,
+  stabilizeStraightArmElbows,
+} from '../lib/poseSkeletonSafety';
 import { drawLivePoseOverlayOnCanvas } from '../components/SmartRehabKioskUI';
 
 function makeStandingPose(
@@ -303,14 +309,25 @@ describe('Cached MediaPipe monotonic timestamps & GPU canvas zero-shadowBlur ren
 
     drawLivePoseOverlayOnCanvas(mockCanvas, [landmarks], {
       targetJoint: 'right_shoulder',
-      expectedPlane: 'any',
-      romDeg: 95,
-      targetRomDeg: 120,
+      expectedPlane: 'forearm_turn',
+      exerciseMeta: { exercise_id: 'ELDERLY_FOREARM_TURN', name_th: 'หมุนข้อมือ' },
+      romDeg: 68,
+      targetRomDeg: 75,
       holdRatio: 0.6,
       trunkTiltDeg: 3,
       isMultiPerson: false,
       isImpostorOrEmergency: false,
       handLandmarks21: hand21,
+      handLandmarksBySide: { right: hand21 },
+      rotationEval: {
+        effectiveRotationRomDeg: 68,
+        signedAngleDeg: 52,
+        sweptArcDeg: 68,
+        rotationVerified: true,
+        returnedToStart: false,
+        guidanceBannerTh: null,
+        phaseLabelTh: 'หมุนครบ 68°',
+      },
       videoWidth: 640,
       videoHeight: 360,
       canvasWidth: 640,
@@ -347,6 +364,121 @@ describe('Cached MediaPipe monotonic timestamps & GPU canvas zero-shadowBlur ren
     expect(shadowBlurValues.every((v) => v <= 0)).toBe(true);
   });
 
+  it('stabilizes occluded straight forward-arm elbow V-kinks while preserving real bent elbows, and rejects chest phantom hands', () => {
+    // 1. Exact forward-extended straight arm toward camera where MediaPipe dropped 2D elbow downward & outward
+    const kinkedForward = makeStandingPose({
+      11: { x: 0.65, y: 0.38, z: 0.0, visibility: 0.99 },
+      12: { x: 0.33, y: 0.38, z: 0.0, visibility: 0.99 },
+      14: { x: 0.22, y: 0.415, z: -0.14, visibility: 0.88 }, // sagged V-kink elbow pushed near wrist X
+      16: { x: 0.205, y: 0.36, z: -0.28, visibility: 0.95 }, // wrist extended straight toward camera
+    });
+    const fixedForward = stabilizeStraightArmElbows({
+      landmarks: kinkedForward,
+      allowForwardOcclusionRepair: true,
+      videoAspect: 4 / 3,
+    });
+    // Elbow should now sit cleanly near midpoint of shoulder (0.33, 0.38) -> wrist (0.205, 0.36)
+    expect(fixedForward[14].x).toBeGreaterThan(0.245);
+    expect(fixedForward[14].x).toBeLessThan(0.295);
+    expect(fixedForward[14].y).toBeGreaterThan(0.36);
+    expect(fixedForward[14].y).toBeLessThan(0.385);
+
+    // 2. Genuinely bent 90-deg bicep curl in elbow mode MUST remain bent (never falsely straightened)
+    const bentWorld: NormalizedLandmark[] = Array.from({ length: 33 }, () => ({
+      x: 0,
+      y: 0,
+      z: 0,
+      visibility: 1,
+    }));
+    bentWorld[12] = { x: -0.18, y: -0.20, z: 0, visibility: 1 };
+    bentWorld[14] = { x: -0.20, y: 0.08, z: -0.02, visibility: 1 };
+    bentWorld[16] = { x: -0.20, y: 0.06, z: -0.28, visibility: 1 }; // true 90 deg curl
+    const bent2D = makeStandingPose({
+      12: { x: 0.38, y: 0.35, z: 0, visibility: 0.99 },
+      14: { x: 0.36, y: 0.52, z: -0.03, visibility: 0.99 },
+      16: { x: 0.36, y: 0.38, z: -0.24, visibility: 0.99 },
+    });
+    const keptBent = stabilizeStraightArmElbows({
+      landmarks: bent2D,
+      worldLandmarks: bentWorld,
+      allowForwardOcclusionRepair: false,
+      videoAspect: 4 / 3,
+    });
+    expect(keptBent[14].y).toBeCloseTo(0.52, 3);
+
+    // 3. Chest shirt-pattern false positive hand is REJECTED while real forward-extended hand (even with visibility=0) is KEPT
+    const makeHandAt = (cx: number, cy: number, vis = 0): NormalizedLandmark[] =>
+      Array.from({ length: 21 }, (_, idx) => ({
+        x: cx + ((idx % 5) - 2) * 0.008,
+        y: cy - Math.floor(idx / 5) * 0.012,
+        z: -0.28,
+        visibility: vis,
+      }));
+    const realRightHand = makeHandAt(0.205, 0.36, 0); // MediaPipe HandLandmarker visibility=0 on real wrist
+    const chestPhantomHand = makeHandAt(0.50, 0.48, 0); // Phantom hand on tiger-print shirt chest
+    const assigned = filterAndAssignDetectedHands({
+      candidates: [
+        { landmarks: realRightHand, handednessCategory: 'Left', handednessScore: 0.88 },
+        { landmarks: chestPhantomHand, handednessCategory: 'Right', handednessScore: 0.72 },
+      ],
+      poseLandmarks: fixedForward,
+      videoAspect: 4 / 3,
+    });
+    expect(assigned.handsBySide.right).toBeDefined();
+    expect(assigned.handsBySide.right?.[0]?.visibility).toBe(1);
+    expect(assigned.handsBySide.left).toBeUndefined();
+
+    // 4. Low-confidence (< 0.34) detection even near wrist is REJECTED
+    const lowConfAssigned = filterAndAssignDetectedHands({
+      candidates: [
+        { landmarks: realRightHand, handednessCategory: 'Left', handednessScore: 0.25 },
+      ],
+      poseLandmarks: fixedForward,
+      videoAspect: 4 / 3,
+    });
+    expect(lowConfAssigned.handsBySide.right).toBeUndefined();
+
+    // 5. Dual-hand isotropic 256x256 ROI crop + exact full-video projection round-trip for BOTH hands
+    const dualForwardPose = makeStandingPose({
+      11: { x: 0.64, y: 0.36, z: 0, visibility: 0.99 },
+      12: { x: 0.36, y: 0.36, z: 0, visibility: 0.99 },
+      15: { x: 0.74, y: 0.36, z: -0.25, visibility: 0.95 },
+      16: { x: 0.22, y: 0.36, z: -0.28, visibility: 0.95 },
+      19: { x: 0.76, y: 0.35, z: -0.28, visibility: 0.90 },
+      20: { x: 0.20, y: 0.35, z: -0.30, visibility: 0.90 },
+    });
+    const leftCrop = computeHandRoiCropBox({
+      poseLandmarks: dualForwardPose,
+      side: 'left',
+      videoW: 1280,
+      videoH: 720,
+    });
+    const rightCrop = computeHandRoiCropBox({
+      poseLandmarks: dualForwardPose,
+      side: 'right',
+      videoW: 1280,
+      videoH: 720,
+    });
+    expect(leftCrop).not.toBeNull();
+    expect(rightCrop).not.toBeNull();
+    expect(leftCrop!.x).toBeGreaterThanOrEqual(0);
+    expect(leftCrop!.x + leftCrop!.size).toBeLessThanOrEqual(1280);
+    expect(rightCrop!.x).toBeGreaterThanOrEqual(0);
+    expect(rightCrop!.y + rightCrop!.size).toBeLessThanOrEqual(720);
+
+    // Projecting ROI center (0.5, 0.5) maps precisely back to the crop center in full-video [0..1]
+    const roiUnitHand: NormalizedLandmark[] = Array.from({ length: 21 }, (_, idx) => ({
+      x: idx === 0 ? 0.5 : 0.5 + ((idx % 5) - 2) * 0.04,
+      y: idx === 0 ? 0.5 : 0.5 - Math.floor(idx / 5) * 0.06,
+      z: -0.02,
+      visibility: 0,
+    }));
+    const projLeft = projectRoiHandToFullVideo(roiUnitHand, leftCrop!);
+    expect(projLeft[0].x).toBeCloseTo((leftCrop!.x + 0.5 * leftCrop!.size) / 1280, 4);
+    expect(projLeft[0].y).toBeCloseTo((leftCrop!.y + 0.5 * leftCrop!.size) / 720, 4);
+    expect(projLeft[0].visibility).toBe(1);
+  });
+
   it('contains zero Unicode emojis and zero active ctx.shadowBlur > 0 calls across all updated pose/camera modules', () => {
     const emojiRe = /[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/u;
     const shadowBlurPosRe = /\.shadowBlur\s*=\s*[1-9]/;
@@ -355,12 +487,15 @@ describe('Cached MediaPipe monotonic timestamps & GPU canvas zero-shadowBlur ren
       'src/lib/biometricVisionCache.ts',
       'packages/pose-engine/src/oneEuroFilter.ts',
       'packages/pose-engine/src/armIdentityStabilizer.ts',
+      'packages/pose-engine/src/handFingerTracker.ts',
+      'packages/pose-engine/src/elderlySolver.ts',
       'src/components/SmartRehabKioskUI.tsx',
       'src/components/AnimatedRehabCoachModel.tsx',
       'src/App.tsx',
       'src/components/RandomHandStartPrompt.tsx',
       'apps/kiosk/src/DynamicExerciseSessionView.tsx',
       'apps/kiosk/src/PhysicalCardGame.tsx',
+      'scripts/clinical_rom_assessment.py',
       'src/__tests__/poseSmoothnessAndMediaPipe.test.ts',
     ];
 

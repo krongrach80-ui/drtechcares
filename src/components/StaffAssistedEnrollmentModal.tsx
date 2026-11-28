@@ -2,16 +2,14 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ApiError,
   formatLocalIsoDate,
-  MAHIDOL_MOTOR_SCALE,
   resolveNextAppointmentDate,
-  type AffectedSide,
   type DrTechCaresApiClient,
   type DuplicateFaceCheckResponse,
   type ManagedExerciseRecord,
   type ModpackRecord,
   type PatientRecord,
   type RehabScheduleItem,
-  type StrokeType,
+  type ElderlyCareGroup,
   type UserAccount,
 } from '@drtechcares/api-client';
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
@@ -20,11 +18,10 @@ import {
   formatEffectiveExerciseCode,
   isDeprecatedExerciseRecord,
   mergeDuplicateSideExercises,
-  normalizeSideValue,
   parseExerciseCodeAndSide,
   resolveDefaultSideForExercise,
   resolveSideAdjustedExerciseCopy,
-  sortExercisesStrokeUpperFirst,
+  sortExercisesElderlyUpperFirst,
   type ExerciseSideCode,
 } from '@drtechcares/pose-engine';
 import {
@@ -43,11 +40,15 @@ import {
   Camera,
   Check,
   CheckCircle2,
+  ClipboardList,
   Dumbbell,
+  FileText,
   HeartPulse,
   KeyRound,
   Plus,
   RefreshCw,
+  Ruler,
+  Scissors,
   ShieldCheck,
   Sparkles,
   Stethoscope,
@@ -55,6 +56,7 @@ import {
   X,
 } from 'lucide-react';
 import FaceID120Scanner, { type FaceID120Result } from './FaceID120Scanner';
+import { ClinicalRomLiveMeasureModal } from './ClinicalRomLiveMeasureModal';
 import { syncPatientBiometricEverywhere } from '../lib/biometricEngine';
 import { playGameSfx } from '../lib/gameUiSfx';
 import { normalizePatientRecord } from '../lib/patientHydration';
@@ -63,13 +65,21 @@ import { calculateExactAgeFromIso } from '../utils/gameDatePickerHelpers';
 import {
   composeThaiFullName,
   computeEnrollmentReadiness,
+  deriveElderlyMusclePowerLevelFromRom,
+  ELDERLY_MIN_AGE,
+  ELDERLY_MUSCLE_POWER_5_LEVELS,
+  ELDERLY_THAI_NAME_PREFIX_OPTIONS,
+  getElderlyMusclePowerSpec,
   PATIENT_GENDER_OPTIONS,
+  QUICK_CC_DURATION_PRESETS,
+  QUICK_CHIEF_COMPLAINT_PRESETS,
   QUICK_CLINICAL_DIAGNOSIS_PRESETS,
   QUICK_EMERGENCY_RELATION_PRESETS,
+  QUICK_SURGICAL_HISTORY_PRESETS,
   resolveGenderForPrefix,
   resolvePrefixForGender,
   splitThaiFullName,
-  THAI_NAME_PREFIX_OPTIONS,
+  type ElderlyMusclePowerLevel,
   type PatientGenderTh,
   type ThaiNamePrefix,
 } from '../utils/patientNameHelpers';
@@ -93,7 +103,7 @@ const ENROLLMENT_EXERCISE_FILTER_TABS: ReadonlyArray<{
   label: Record<ClinicalLang, string>;
 }> = [
   { id: 'all', label: { th: 'ทั้งหมด', en: 'All Postures', cn: '全部动作' } },
-  { id: 'upper_limb', label: { th: 'แขน ไหล่ ศอก และมือ', en: 'Upper Limb (Stroke)', cn: '上肢与肩肘手' } },
+  { id: 'upper_limb', label: { th: 'แขน ไหล่ ศอก และมือ', en: 'Upper Limb (Elderly)', cn: '上肢与肩肘手' } },
   { id: 'neck_trunk', label: { th: 'คอและบ่า (สธ.)', en: 'Neck & Shoulders (MOPH)', cn: '颈部与肩胛' } },
 ];
 
@@ -126,51 +136,69 @@ function buildTriWeeklyDates(startIso: string, count = 6): string[] {
   return result.length > 0 ? result : [startIso];
 }
 
+const DEFAULT_ELDERLY_TARGET_JOINT = 'ข้อไหล่และแขนผู้สูงอายุ';
+const DEFAULT_ELDERLY_SIDE = 'BOTH' as const;
+const DEFAULT_ELDERLY_MOTOR_SCORE: ElderlyMusclePowerLevel = 3;
+const DEFAULT_ELDERLY_ADL_SCORE = 5;
+const DEFAULT_ELDERLY_MAX_SAFE_ROM_DEG = 180;
+
 function getRecommendedExerciseIdsForJoint(
   jointLabel: string,
   catalog: readonly ManagedExerciseRecord[],
 ): string[] {
   const preferredByJoint: Record<string, string[]> = {
-    'ข้อไหล่และแขน Stroke ADL (Shoulder & Arm)': [
-      'STROKE_SH_FLEX',
-      'STROKE_SH_ABD',
-      'STROKE_CROSS_BODY',
-      'STROKE_SCAP_PROTRACT',
-      'STROKE_BOBATH_ARM_RAISE',
+    'ข้อไหล่และแขนผู้สูงอายุ': [
+      'ELDERLY_SH_FLEX',
+      'ELDERLY_SH_ABD',
+      'ELDERLY_CROSS_BODY',
+      'ELDERLY_SCAP_PROTRACT',
+      'ELDERLY_CLASPED_ARM_RAISE',
+    ],
+    'ข้อไหล่และแขนผู้สูงอายุ (Shoulder & Arm)': [
+      'ELDERLY_SH_FLEX',
+      'ELDERLY_SH_ABD',
+      'ELDERLY_CROSS_BODY',
+      'ELDERLY_SCAP_PROTRACT',
+      'ELDERLY_CLASPED_ARM_RAISE',
+    ],
+    'คอ บ่า และแขน สธ. ผู้สูงอายุ': [
+      'MOPH_NECK_TILT',
+      'MOPH_NECK_TURN',
+      'MOPH_SHOULDER_SHRUG_ROLL',
     ],
     'คอ บ่า และแขน สธ. ผู้สูงอายุ (MOPH Upper Body)': [
       'MOPH_NECK_TILT',
       'MOPH_NECK_TURN',
       'MOPH_SHOULDER_SHRUG_ROLL',
     ],
-    'ข้อไหล่ (Shoulder)': [
-      'STROKE_SH_FLEX',
-      'STROKE_SH_ABD',
-      'STROKE_SH_ROT',
-      'STROKE_CROSS_BODY',
-      'STROKE_SCAP_PROTRACT',
+    'ข้อไหล่': [
+      'ELDERLY_SH_FLEX',
+      'ELDERLY_SH_ABD',
+      'ELDERLY_SH_ROT',
+      'ELDERLY_CROSS_BODY',
+      'ELDERLY_SCAP_PROTRACT',
     ],
-    'ข้อศอกและแขน (Elbow & Arm)': [
-      'STROKE_ELB_FLEX_EXT',
-      'STROKE_BOBATH_FORWARD_PUSH',
-      'STROKE_HAND_TO_HEAD',
-      'STROKE_FOREARM_TURN',
+    'ข้อศอกและแขน': [
+      'ELDERLY_ELB_FLEX_EXT',
+      'ELDERLY_CLASPED_FORWARD_PUSH',
+      'ELDERLY_HAND_TO_HEAD',
+      'ELDERLY_FOREARM_TURN',
     ],
-    'ข้อมือและกล้ามเนื้อมัดเล็ก (Wrist & Hand Fingers)': [
-      'STROKE_WRIST_FINGER',
-      'STROKE_THUMB_PINCH',
-      'STROKE_FOREARM_TURN',
+    'ข้อมือและนิ้วมือ': [
+      'ELDERLY_WRIST_FINGER',
+      'ELDERLY_THUMB_PINCH',
+      'ELDERLY_FOREARM_TURN',
     ],
-    'กล้ามเนื้อคอและบ่า สธ. (Cervical & Shoulder Girdle)': [
+    'กล้ามเนื้อคอและบ่า สธ.': [
       'MOPH_NECK_TILT',
       'MOPH_NECK_TURN',
       'MOPH_SHOULDER_SHRUG_ROLL',
     ],
   };
   const preferred = preferredByJoint[jointLabel] ?? [
-    'STROKE_SH_FLEX',
-    'STROKE_SH_ABD',
-    'STROKE_ELB_FLEX_EXT',
+    'ELDERLY_SH_FLEX',
+    'ELDERLY_SH_ABD',
+    'ELDERLY_ELB_FLEX_EXT',
     'MOPH_SHOULDER_SHRUG_ROLL',
   ];
   const validSet = new Set(catalog.map((e) => parseExerciseCodeAndSide(e.code || e.id).baseCode));
@@ -197,7 +225,7 @@ export function StaffAssistedEnrollmentModal({
   const catalogExercises = useMemo(() => {
     const cleanPassed = exercises.filter((ex) => !isDeprecatedExerciseRecord(ex));
     return mergeDuplicateSideExercises(
-      sortExercisesStrokeUpperFirst(
+      sortExercisesElderlyUpperFirst(
         cleanPassed.length > 0 ? cleanPassed : FALLBACK_MANAGED_EXERCISES,
       ),
     );
@@ -209,22 +237,19 @@ export function StaffAssistedEnrollmentModal({
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [birthDate, setBirthDate] = useState('');
-  const [age, setAge] = useState(45);
+  const [age, setAge] = useState(65);
   const [ageSyncedPulse, setAgeSyncedPulse] = useState(false);
   const [genderSyncedPulse, setGenderSyncedPulse] = useState(false);
   const [prefixSyncedPulse, setPrefixSyncedPulse] = useState(false);
-  const [romSyncedPulse, setRomSyncedPulse] = useState(false);
   const agePulseTimerRef = useRef<number | null>(null);
   const genderPulseTimerRef = useRef<number | null>(null);
   const prefixPulseTimerRef = useRef<number | null>(null);
-  const romPulseTimerRef = useRef<number | null>(null);
   useEffect(() => {
     return () => {
       if (typeof window === 'undefined') return;
       if (agePulseTimerRef.current !== null) window.clearTimeout(agePulseTimerRef.current);
       if (genderPulseTimerRef.current !== null) window.clearTimeout(genderPulseTimerRef.current);
       if (prefixPulseTimerRef.current !== null) window.clearTimeout(prefixPulseTimerRef.current);
-      if (romPulseTimerRef.current !== null) window.clearTimeout(romPulseTimerRef.current);
     };
   }, []);
   const [gender, setGender] = useState<PatientGenderTh>('ชาย');
@@ -237,26 +262,39 @@ export function StaffAssistedEnrollmentModal({
     currentUser.role === 'pt' ? currentUser.id : ptList[0]?.id ?? '',
   );
 
-  // Section 2: Clinical & Rehab (Stroke & Elderly Upper-Body Focus + Mahidol 0-6 Scale)
-  const [targetJoint, setTargetJoint] = useState('ข้อไหล่และแขน Stroke ADL (Shoulder & Arm)');
-  const [strokeType, setStrokeType] = useState<StrokeType>('ISCHEMIC');
-  const [affectedSide, setAffectedSide] = useState<AffectedSide>('RIGHT');
-  const [motorAssessmentScore, setMotorAssessmentScore] = useState<number>(3);
-  const [adlDressingScore, setAdlDressingScore] = useState<number>(3);
-  const [maxSafeRomDeg, setMaxSafeRomDeg] = useState<number>(120);
+  // Section 2: Chief Complaint (CC), Diagnosis (Dx), Surgical History
+  const [chiefComplaint, setChiefComplaint] = useState('');
+  const [chiefComplaintDuration, setChiefComplaintDuration] = useState('');
+  const [chiefComplaintPainVas, setChiefComplaintPainVas] = useState<number>(0);
   const [clinicalDiagnosis, setClinicalDiagnosis] = useState('');
+  const [hasSurgicalHistory, setHasSurgicalHistory] = useState<boolean>(false);
+  const [surgicalHistory, setSurgicalHistory] = useState('');
+  const [pinCode, setPinCode] = useState('1234');
+
+  // Section 3: Elderly 5-Level Muscle Power (Lv.1-5, Max 180 deg) & Arm ROM Measurement
+  const [targetJoint, setTargetJoint] = useState(DEFAULT_ELDERLY_TARGET_JOINT);
+  const [careGroup, setCareGroup] = useState<ElderlyCareGroup>('ELDERLY_GENERAL');
+  const [musclePowerLevel, setMusclePowerLevel] = useState<ElderlyMusclePowerLevel>(DEFAULT_ELDERLY_MOTOR_SCORE);
+  const [armMeasureSide, setArmMeasureSide] = useState<'LEFT' | 'RIGHT' | 'BOTH'>(DEFAULT_ELDERLY_SIDE);
+  const [measuredArmRomDeg, setMeasuredArmRomDeg] = useState<number>(
+    getElderlyMusclePowerSpec(DEFAULT_ELDERLY_MOTOR_SCORE).maxRomDeg,
+  );
+  const [armRomMeasuredByAi, setArmRomMeasuredByAi] = useState<boolean>(false);
+  const [armRomMeasureModalOpen, setArmRomMeasureModalOpen] = useState<boolean>(false);
+
+  // Section 4: History-Taking (ซักประวัติผู้สูงอายุ)
+  const [historyTaking, setHistoryTaking] = useState('');
   const [contraindications, setContraindications] = useState('');
   const [underlyingDiseases, setUnderlyingDiseases] = useState('');
   const [allergies, setAllergies] = useState('');
   const [doctorNotes, setDoctorNotes] = useState('');
-  const [pinCode, setPinCode] = useState('1234');
 
-  // Section 3: Emergency Contact
+  // Section 4: Emergency Contact
   const [emergencyName, setEmergencyName] = useState('');
   const [emergencyRelation, setEmergencyRelation] = useState('');
   const [emergencyPhone, setEmergencyPhone] = useState('');
 
-  // Section 4: PDPA Consent
+  // Section 5: PDPA Consent
   const [pdpaAccepted, setPdpaAccepted] = useState(true);
 
   // Step 2 Camera 120-frame 3D Face ID state
@@ -273,8 +311,8 @@ export function StaffAssistedEnrollmentModal({
   // Step 3 Initial Rehab Prescription state
   const [exerciseCategoryFilter, setExerciseCategoryFilter] = useState<ExerciseFilterCategory>('all');
   const [selectedSideByBaseCode, setSelectedSideByBaseCode] = useState<Record<string, ExerciseSideCode>>({});
-  const [globalQuickSide, setGlobalQuickSide] = useState<ExerciseSideCode>('RIGHT');
-  const [prescriptionTouched, setPrescriptionTouched] = useState(false);
+  const [globalQuickSide, setGlobalQuickSide] = useState<ExerciseSideCode>('BOTH');
+  const [, setPrescriptionTouched] = useState(false);
   const [prescriptionSets, setPrescriptionSets] = useState(3);
   const [prescriptionReps, setPrescriptionReps] = useState(10);
   const [selectedModpackId, setSelectedModpackId] = useState('');
@@ -307,7 +345,7 @@ export function StaffAssistedEnrollmentModal({
     setExerciseCategoryFilter('all');
     setPrescriptionTouched(false);
     setSelectedSideByBaseCode({});
-    setGlobalQuickSide('RIGHT');
+    setGlobalQuickSide('BOTH');
     setPrescriptionSets(3);
     setPrescriptionReps(10);
     setSelectedModpackId('');
@@ -337,15 +375,23 @@ export function StaffAssistedEnrollmentModal({
       setFirstName('');
       setLastName('');
       setBirthDate('');
-      setAge(45);
+      setAge(65);
       setGender('ชาย');
       setPhone('');
-      setStrokeType('ISCHEMIC');
-      setAffectedSide('RIGHT');
-      setMotorAssessmentScore(3);
-      setAdlDressingScore(3);
-      setMaxSafeRomDeg(120);
+      setTargetJoint(DEFAULT_ELDERLY_TARGET_JOINT);
+      setCareGroup('ELDERLY_GENERAL');
+      setChiefComplaint('');
+      setChiefComplaintDuration('');
+      setChiefComplaintPainVas(0);
       setClinicalDiagnosis('');
+      setHasSurgicalHistory(false);
+      setSurgicalHistory('');
+      setMusclePowerLevel(DEFAULT_ELDERLY_MOTOR_SCORE);
+      setArmMeasureSide(DEFAULT_ELDERLY_SIDE);
+      setMeasuredArmRomDeg(getElderlyMusclePowerSpec(DEFAULT_ELDERLY_MOTOR_SCORE).maxRomDeg);
+      setArmRomMeasuredByAi(false);
+      setArmRomMeasureModalOpen(false);
+      setHistoryTaking('');
       setContraindications('');
       setUnderlyingDiseases('');
       setAllergies('');
@@ -375,11 +421,10 @@ export function StaffAssistedEnrollmentModal({
     [selectedSideByBaseCode],
   );
 
-  useEffect(() => {
-    if (!prescriptionTouched) {
-      setGlobalQuickSide(normalizeSideValue(affectedSide) ?? 'RIGHT');
-    }
-  }, [affectedSide, prescriptionTouched]);
+  const activeMusclePowerSpec = useMemo(
+    () => getElderlyMusclePowerSpec(musclePowerLevel),
+    [musclePowerLevel],
+  );
 
   const enrollmentReadiness = useMemo(
     () =>
@@ -390,11 +435,24 @@ export function StaffAssistedEnrollmentModal({
         birthDate,
         age,
         phone,
-        clinicalDiagnosis,
+        clinicalDiagnosis:
+          clinicalDiagnosis.trim() || chiefComplaint.trim() || historyTaking,
         emergencyName,
         pdpaAccepted,
       }),
-    [hn, firstName, lastName, birthDate, age, phone, clinicalDiagnosis, emergencyName, pdpaAccepted],
+    [
+      hn,
+      firstName,
+      lastName,
+      birthDate,
+      age,
+      phone,
+      clinicalDiagnosis,
+      chiefComplaint,
+      historyTaking,
+      emergencyName,
+      pdpaAccepted,
+    ],
   );
 
   if (!open) return null;
@@ -457,13 +515,6 @@ export function StaffAssistedEnrollmentModal({
     }
   };
 
-  const handleSelectMotorScore = (score: number, recommendedMaxRomDeg: number) => {
-    playGameSfx('correct');
-    setMotorAssessmentScore(score);
-    setMaxSafeRomDeg(recommendedMaxRomDeg);
-    triggerSyncPulse(setRomSyncedPulse, romPulseTimerRef);
-  };
-
   const handleBirthDateChange = (val: string) => {
     setBirthDate(val);
     if (!val) return;
@@ -481,16 +532,23 @@ export function StaffAssistedEnrollmentModal({
     setFirstName('');
     setLastName('');
     setBirthDate('');
-    setAge(45);
+    setAge(65);
     setGender('ชาย');
     setPhone('');
-    setTargetJoint('ข้อไหล่และแขน Stroke ADL (Shoulder & Arm)');
-    setStrokeType('ISCHEMIC');
-    setAffectedSide('RIGHT');
-    setMotorAssessmentScore(3);
-    setAdlDressingScore(3);
-    setMaxSafeRomDeg(120);
+    setTargetJoint(DEFAULT_ELDERLY_TARGET_JOINT);
+    setCareGroup('ELDERLY_GENERAL');
+    setChiefComplaint('');
+    setChiefComplaintDuration('');
+    setChiefComplaintPainVas(0);
     setClinicalDiagnosis('');
+    setHasSurgicalHistory(false);
+    setSurgicalHistory('');
+    setMusclePowerLevel(DEFAULT_ELDERLY_MOTOR_SCORE);
+    setArmMeasureSide(DEFAULT_ELDERLY_SIDE);
+    setMeasuredArmRomDeg(getElderlyMusclePowerSpec(DEFAULT_ELDERLY_MOTOR_SCORE).maxRomDeg);
+    setArmRomMeasuredByAi(false);
+    setArmRomMeasureModalOpen(false);
+    setHistoryTaking('');
     setContraindications('');
     setUnderlyingDiseases('');
     setAllergies('');
@@ -508,7 +566,7 @@ export function StaffAssistedEnrollmentModal({
     setExerciseCategoryFilter('all');
     setPrescriptionTouched(false);
     setSelectedSideByBaseCode({});
-    setGlobalQuickSide('RIGHT');
+    setGlobalQuickSide('BOTH');
     setPrescriptionSets(3);
     setPrescriptionReps(10);
     setSelectedModpackId('');
@@ -525,12 +583,17 @@ export function StaffAssistedEnrollmentModal({
   const validateStep1 = (): boolean => {
     if (!firstName.trim()) {
       playGameSfx('wrong');
-      setErrorMsg('กรุณากรอกชื่อจริงคนไข้');
+      setErrorMsg('กรุณากรอกชื่อจริงผู้สูงอายุ');
       return false;
     }
     if (!lastName.trim()) {
       playGameSfx('wrong');
-      setErrorMsg('กรุณากรอกนามสกุลคนไข้');
+      setErrorMsg('กรุณากรอกนามสกุลผู้สูงอายุ');
+      return false;
+    }
+    if (!Number.isFinite(age) || age < ELDERLY_MIN_AGE) {
+      playGameSfx('wrong');
+      setErrorMsg(`ระบบนี้ออกแบบสำหรับผู้สูงอายุเท่านั้น (อายุตั้งแต่ ${ELDERLY_MIN_AGE} ปีขึ้นไป) กรุณาตรวจสอบอายุหรือวันเกิด`);
       return false;
     }
     if (!pdpaAccepted) {
@@ -634,7 +697,7 @@ export function StaffAssistedEnrollmentModal({
       }
       const defaultSide = BILATERAL_INHERENT_EXERCISE_CODES.has(baseCode)
         ? 'BOTH'
-        : globalQuickSide || resolveDefaultSideForExercise(ex, affectedSide);
+        : globalQuickSide || resolveDefaultSideForExercise(ex, DEFAULT_ELDERLY_SIDE);
       return { ...prev, [baseCode]: defaultSide };
     });
   };
@@ -770,21 +833,29 @@ export function StaffAssistedEnrollmentModal({
           faceImageUrls: bio.faceImageUrls,
           angleImageUrls: bio.angleSnapshots,
         });
-        const needsDirectSupabaseBackup =
-          typeof apiClient.wasLastBiometricWritePersisted === 'function' &&
-          !apiClient.wasLastBiometricWritePersisted() &&
-          Boolean(apiClient.getSupabaseClient());
-        await syncPatientBiometricEverywhere({
-          apiClient,
-          patient: updated,
-          masterEmbedding: bio.masterEmbedding,
-          angleEmbeddings: bio.angleEmbeddings,
-          exemplarEmbeddings: bio.exemplarEmbeddings,
-          geometricRatios: bio.geometricRatios,
-          framesCaptured: bio.framesCaptured,
-          qualityScore: bio.qualityScore,
-          requireSupabase: needsDirectSupabaseBackup,
-        }).catch(() => null);
+        const workerPersisted =
+          typeof apiClient.wasLastBiometricWritePersisted !== 'function' ||
+          apiClient.wasLastBiometricWritePersisted();
+        const needsDirectSupabaseBackup = !workerPersisted && Boolean(apiClient.getSupabaseClient());
+        try {
+          await syncPatientBiometricEverywhere({
+            apiClient,
+            patient: updated,
+            masterEmbedding: bio.masterEmbedding,
+            angleEmbeddings: bio.angleEmbeddings,
+            exemplarEmbeddings: bio.exemplarEmbeddings,
+            geometricRatios: bio.geometricRatios,
+            framesCaptured: bio.framesCaptured,
+            qualityScore: bio.qualityScore,
+            requireSupabase: needsDirectSupabaseBackup,
+          });
+        } catch (syncErr) {
+          if (!workerPersisted) {
+            throw syncErr instanceof Error
+              ? syncErr
+              : new Error('ไม่สามารถยืนยันการบันทึกข้อมูลใบหน้าลงฐานข้อมูล Supabase Cloud ได้ กรุณากดบันทึกอีกครั้ง');
+          }
+        }
         const normalizedUpdated = normalizePatientRecord(
           {
             ...updated,
@@ -824,7 +895,16 @@ export function StaffAssistedEnrollmentModal({
 
       const cleanedDiagnosis =
         clinicalDiagnosis.trim() ||
+        chiefComplaint.trim() ||
         `${targetJoint}${underlyingDiseases.trim() ? ` | โรคประจำตัว: ${underlyingDiseases.trim()}` : ''}`;
+
+      const safeArmRom = Math.max(
+        30,
+        Math.min(
+          DEFAULT_ELDERLY_MAX_SAFE_ROM_DEG,
+          Math.round(measuredArmRomDeg || activeMusclePowerSpec.maxRomDeg),
+        ),
+      );
 
       const effectiveNextAppointmentDate =
         customSchedules.length > 0
@@ -834,15 +914,15 @@ export function StaffAssistedEnrollmentModal({
       let enrolled = await apiClient.enrollPatient10Shot({
         hn: hn.trim() || generatePatientHn(),
         fullName: fullName.trim(),
-        age: Number(age) || 45,
+        age: Math.max(ELDERLY_MIN_AGE, Number(age) || 65),
         gender,
         phone: phone.trim(),
         diagnosis: cleanedDiagnosis,
-        strokeType,
-        affectedSide,
-        motorAssessmentScore,
-        adlDressingScore,
-        maxSafeRomDeg,
+        careGroup,
+        affectedSide: armMeasureSide,
+        motorAssessmentScore: musclePowerLevel,
+        adlDressingScore: DEFAULT_ELDERLY_ADL_SCORE,
+        maxSafeRomDeg: safeArmRom,
         assignedPtId: assignedPtId || undefined,
         nextAppointmentDate: effectiveNextAppointmentDate,
         rehabSchedules: customSchedules,
@@ -863,21 +943,29 @@ export function StaffAssistedEnrollmentModal({
         qualityScore: bio.qualityScore,
       });
 
-      const needsDirectSupabaseBackup =
-        typeof apiClient.wasLastBiometricWritePersisted === 'function' &&
-        !apiClient.wasLastBiometricWritePersisted() &&
-        Boolean(apiClient.getSupabaseClient());
-      await syncPatientBiometricEverywhere({
-        apiClient,
-        patient: enrolled,
-        masterEmbedding: bio.masterEmbedding,
-        angleEmbeddings: bio.angleEmbeddings,
-        exemplarEmbeddings: bio.exemplarEmbeddings,
-        geometricRatios: bio.geometricRatios,
-        framesCaptured: bio.framesCaptured,
-        qualityScore: bio.qualityScore,
-        requireSupabase: needsDirectSupabaseBackup,
-      }).catch(() => null);
+      const workerPersisted =
+        typeof apiClient.wasLastBiometricWritePersisted !== 'function' ||
+        apiClient.wasLastBiometricWritePersisted();
+      const needsDirectSupabaseBackup = !workerPersisted && Boolean(apiClient.getSupabaseClient());
+      try {
+        await syncPatientBiometricEverywhere({
+          apiClient,
+          patient: enrolled,
+          masterEmbedding: bio.masterEmbedding,
+          angleEmbeddings: bio.angleEmbeddings,
+          exemplarEmbeddings: bio.exemplarEmbeddings,
+          geometricRatios: bio.geometricRatios,
+          framesCaptured: bio.framesCaptured,
+          qualityScore: bio.qualityScore,
+          requireSupabase: needsDirectSupabaseBackup,
+        });
+      } catch (syncErr) {
+        if (!workerPersisted) {
+          throw syncErr instanceof Error
+            ? syncErr
+            : new Error('ไม่สามารถยืนยันการบันทึกบัญชีและใบหน้าลงฐานข้อมูล Supabase Cloud ได้ กรุณากดบันทึกอีกครั้ง');
+        }
+      }
 
       if (customSchedules.length > 0 && (enrolled.rehabSchedules ?? []).length === 0) {
         const finalizedSchedules = customSchedules.map((s) => ({ ...s, patientId: enrolled.id }));
@@ -925,15 +1013,31 @@ export function StaffAssistedEnrollmentModal({
         (enrolled.rehabSchedules ?? customSchedules).map((s) => s.exerciseId).filter(Boolean),
       ).size;
 
+      const sideLabelTh =
+        armMeasureSide === 'LEFT'
+          ? 'แขนซ้าย'
+          : armMeasureSide === 'RIGHT'
+            ? 'แขนขวา'
+            : 'ทั้ง 2 ข้าง';
+
       const structuredSummary = [
-        `[เปิดเวชระเบียน Staff-Assisted Stroke & Elderly Rehab] ข้อต่อเป้าหมาย: ${targetJoint}`,
-        `กลุ่มโรค: ${strokeType} | ข้างที่อ่อนแรง/เน้น: ${affectedSide} | Mahidol Motor Score: ${motorAssessmentScore}/6 | ADL ใส่เสื้อผ้า: ${adlDressingScore}/5 | Max Safe ROM: ${maxSafeRomDeg}°`,
-        `เพศกำเนิด: ${gender}${birthDate ? ` | วันเกิด: ${birthDate}` : ''} | อายุ ${age} ปี`,
-        clinicalDiagnosis.trim() ? `การวินิจฉัย: ${clinicalDiagnosis.trim()}` : '',
-        contraindications.trim() ? `ข้อห้ามกายภาพ: ${contraindications.trim()}` : '',
+        `[เปิดเวชระเบียนผู้สูงอายุ Staff-Assisted Elderly Care] ข้อต่อเป้าหมาย: ${targetJoint}`,
+        `กลุ่มผู้สูงอายุ: ${careGroup}`,
+        `เพศกำเนิด: ${gender}${birthDate ? ` | วันเกิด: ${birthDate}` : ''} | อายุ ${Math.max(ELDERLY_MIN_AGE, Number(age) || 65)} ปี`,
+        chiefComplaint.trim()
+          ? `Chief Complaint (อาการสำคัญ): ${chiefComplaint.trim()}${chiefComplaintDuration.trim() ? ` | ระยะเวลา: ${chiefComplaintDuration.trim()}` : ''} | ระดับความปวด (VAS): ${chiefComplaintPainVas}/10`
+          : `ระดับความปวดแรกรับ (VAS): ${chiefComplaintPainVas}/10`,
+        clinicalDiagnosis.trim() ? `การวินิจฉัยโรค (Diagnosis): ${clinicalDiagnosis.trim()}` : '',
+        hasSurgicalHistory || surgicalHistory.trim()
+          ? `ประวัติการผ่าตัด (Surgical History): มีประวัติผ่าตัด — ${surgicalHistory.trim() || 'ระบุเพิ่มเติมภายหลัง'}`
+          : 'ประวัติการผ่าตัด (Surgical History): ไม่มีประวัติผ่าตัด',
+        `กำลังกล้ามเนื้อผู้สูงอายุ (5 ระดับ): ระดับ ${musclePowerLevel}/5 (${activeMusclePowerSpec.shortTitleTh} • เกณฑ์สูงสุด ${activeMusclePowerSpec.maxRomDeg}° / เต็ม 180°)` ,
+        `องศาแขนแรกรับ (Arm ROM): ${safeArmRom}° / 180° (${sideLabelTh} • ${armRomMeasuredByAi ? 'วัดจริงด้วยกล้อง AI' : 'ตั้งค่าแรกรับ'})`,
+        historyTaking.trim() ? `ซักประวัติผู้สูงอายุ: ${historyTaking.trim()}` : '',
         underlyingDiseases.trim() ? `โรคประจำตัว: ${underlyingDiseases.trim()}` : '',
-        allergies.trim() ? `ประวัติแพ้ยา: ${allergies.trim()}` : '',
-        doctorNotes.trim() ? `บันทึกแพทย์/PT: ${doctorNotes.trim()}` : '',
+        allergies.trim() ? `ประวัติแพ้ยา / แพ้อาหาร: ${allergies.trim()}` : '',
+        contraindications.trim() ? `ข้อห้าม / ข้อควรระวัง: ${contraindications.trim()}` : '',
+        doctorNotes.trim() ? `บันทึกเพิ่มเติม (แพทย์/พยาบาล/PT): ${doctorNotes.trim()}` : '',
         emergencyName.trim()
           ? `ผู้ติดต่อฉุกเฉิน: ${emergencyName.trim()} (${emergencyRelation.trim() || '-'}) โทร ${emergencyPhone.trim() || '-'}`
           : '',
@@ -998,15 +1102,6 @@ export function StaffAssistedEnrollmentModal({
     }
   };
 
-  const weakSideDisplayLabel =
-    affectedSide === 'LEFT'
-      ? 'ซ้าย'
-      : affectedSide === 'RIGHT'
-        ? 'ขวา'
-        : affectedSide === 'BOTH'
-          ? '2 ข้าง'
-          : 'ปกติ';
-
   const phoneDigitCount = phone.replace(/\D/g, '').length;
 
   return (
@@ -1026,13 +1121,13 @@ export function StaffAssistedEnrollmentModal({
               <div className="min-w-0 flex flex-wrap items-center gap-2.5">
                 <h2 className="text-lg sm:text-xl font-black tracking-tight text-white shrink-0">
                   {isExistingPatientMode
-                    ? `สแกนหน้าผู้ป่วย: ${targetPatient?.fullName}`
-                    : 'ลงทะเบียนคนไข้ใหม่'}
+                    ? `สแกนหน้าผู้สูงอายุ: ${targetPatient?.fullName}`
+                    : 'ลงทะเบียนผู้สูงอายุใหม่'}
                 </h2>
                 {!isExistingPatientMode && step === 1 && (
                   <div
                     data-testid="enroll-live-profile-card"
-                    className="hidden sm:inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/15 px-3.5 py-1 text-xs sm:text-sm font-bold text-white backdrop-blur-sm max-w-[460px]"
+                    className="hidden sm:inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/15 px-3.5 py-1 text-xs sm:text-sm font-bold text-white backdrop-blur-sm max-w-[540px]"
                   >
                     <span className="font-mono text-xs font-black text-emerald-200 shrink-0">
                       {hn}
@@ -1046,7 +1141,7 @@ export function StaffAssistedEnrollmentModal({
                     </span>
                     <span className="text-white/50">•</span>
                     <span className="shrink-0 text-sky-100">
-                      {gender} {age > 0 ? `${age} ปี` : ''} • {weakSideDisplayLabel} Lv.{motorAssessmentScore}
+                      {gender} {age > 0 ? `${age} ปี` : ''} • ระดับ {musclePowerLevel}/5 ({measuredArmRomDeg}°)
                     </span>
                   </div>
                 )}
@@ -1315,14 +1410,20 @@ export function StaffAssistedEnrollmentModal({
               onSubmit={handleGoStep2}
               className="space-y-3"
             >
-              {/* Card 1: Patient Identity */}
+              {/* Card 1: Elderly Patient Identity (Elderly Scope Only: 60+ yrs) */}
               <div className="rounded-2xl border-2 border-sky-100 bg-white p-4 shadow-2xs space-y-3">
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-[#0F4C81] text-sm font-black text-white">
                       1
                     </span>
-                    <span className="text-base font-black text-slate-900">ข้อมูลผู้ป่วย</span>
+                    <span className="text-base font-black text-slate-900">ข้อมูลผู้สูงอายุ</span>
+                    <span
+                      data-testid="enroll-elderly-scope-badge"
+                      className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-black text-emerald-800"
+                    >
+                      เฉพาะผู้สูงอายุ (60 ปีขึ้นไป)
+                    </span>
                   </div>
                   <span
                     className={`rounded-full px-3 py-0.5 text-xs font-extrabold border transition-all ${
@@ -1335,18 +1436,18 @@ export function StaffAssistedEnrollmentModal({
                   </span>
                 </div>
 
-                {/* Prefix Bar */}
+                {/* Elderly-Only Prefix Bar (Excludes child titles ด.ช. / ด.ญ.) */}
                 <div>
                   <label className="block text-sm font-extrabold text-slate-700 mb-1.5">
                     คำนำหน้า <span className="text-rose-500">*</span>
                   </label>
                   <div
                     data-testid="enroll-prefix-bar"
-                    className={`grid grid-cols-6 gap-2 rounded-xl transition-all ${
+                    className={`grid grid-cols-4 gap-2 rounded-xl transition-all ${
                       prefixSyncedPulse ? 'bg-emerald-50/80 game-age-sync-glow' : ''
                     }`}
                   >
-                    {THAI_NAME_PREFIX_OPTIONS.map((option) => {
+                    {ELDERLY_THAI_NAME_PREFIX_OPTIONS.map((option) => {
                       const active = namePrefix === option.value;
                       return (
                         <button
@@ -1388,7 +1489,7 @@ export function StaffAssistedEnrollmentModal({
                           setFirstName(e.target.value);
                           if (errorMsg) setErrorMsg(null);
                         }}
-                        placeholder="เช่น ธนกร"
+                        placeholder="เช่น สมศักดิ์"
                         className={`h-12 w-full rounded-xl border-2 pl-4 pr-10 text-base font-bold text-slate-900 placeholder:text-slate-400 transition-all focus:outline-none ${
                           enrollmentReadiness.checks.hasFirstName
                             ? 'border-emerald-300 bg-white focus:border-emerald-500'
@@ -1418,7 +1519,7 @@ export function StaffAssistedEnrollmentModal({
                           setLastName(e.target.value);
                           if (errorMsg) setErrorMsg(null);
                         }}
-                        placeholder="เช่น รุ่งเรือง"
+                        placeholder="เช่น สุขใจ"
                         className={`h-12 w-full rounded-xl border-2 pl-4 pr-10 text-base font-bold text-slate-900 placeholder:text-slate-400 transition-all focus:outline-none ${
                           enrollmentReadiness.checks.hasLastName
                             ? 'border-emerald-300 bg-white focus:border-emerald-500'
@@ -1432,7 +1533,7 @@ export function StaffAssistedEnrollmentModal({
                   </div>
                 </div>
 
-                {/* DOB + Age + Gender (Full-Width Aligned h-12 Row) */}
+                {/* DOB + Elderly Age (60-120) + Gender */}
                 <div className="grid grid-cols-12 gap-3 items-end">
                   <div className="col-span-5">
                     <label className="block text-sm font-extrabold text-slate-700 mb-1">
@@ -1445,19 +1546,21 @@ export function StaffAssistedEnrollmentModal({
                       ageHint={age}
                       maxDate={todayIso}
                       placeholder="แตะเลือกวันเกิด"
-                      popupTitle="เลือกวันเดือนปีเกิดผู้ป่วย"
+                      popupTitle="เลือกวันเดือนปีเกิดผู้สูงอายุ"
                       testId="enroll-dob-picker"
                     />
                   </div>
 
                   <div className="col-span-2">
-                    <label className="block text-sm font-extrabold text-slate-700 mb-1">
-                      อายุ (ปี)
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-sm font-extrabold text-slate-700">อายุ (ปี)</label>
+                      <span className="text-[10px] font-black text-emerald-700">60+</span>
+                    </div>
                     <input
                       type="number"
                       inputMode="numeric"
-                      min={1}
+                      data-testid="enroll-age-input"
+                      min={ELDERLY_MIN_AGE}
                       max={120}
                       value={age}
                       onKeyDown={(e) => {
@@ -1466,13 +1569,16 @@ export function StaffAssistedEnrollmentModal({
                       onChange={(e) => {
                         const digits = e.target.value.replace(/\D/g, '').slice(0, 3);
                         setAge(digits ? Math.min(120, Number(digits)) : 0);
+                        if (errorMsg) setErrorMsg(null);
                       }}
                       className={`h-12 w-full rounded-xl border-2 px-2 text-center text-lg font-black transition-all focus:border-teal-500 focus:bg-white focus:outline-none ${
-                        ageSyncedPulse
-                          ? 'border-emerald-400 bg-emerald-50 text-emerald-900 game-age-sync-glow'
-                          : birthDate
-                            ? 'border-emerald-200 bg-emerald-50/40 text-emerald-900'
-                            : 'border-slate-200 bg-slate-50/70 text-slate-800'
+                        age > 0 && age < ELDERLY_MIN_AGE
+                          ? 'border-rose-400 bg-rose-50 text-rose-800'
+                          : ageSyncedPulse
+                            ? 'border-emerald-400 bg-emerald-50 text-emerald-900 game-age-sync-glow'
+                            : birthDate
+                              ? 'border-emerald-200 bg-emerald-50/40 text-emerald-900'
+                              : 'border-slate-200 bg-slate-50/70 text-slate-800'
                       }`}
                     />
                   </div>
@@ -1516,9 +1622,15 @@ export function StaffAssistedEnrollmentModal({
                   </div>
                 </div>
 
-                {/* HN + Phone + PT */}
+                {age > 0 && age < ELDERLY_MIN_AGE && (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700">
+                    สโคปการดูแลระบบนี้สำหรับผู้สูงอายุเท่านั้น (อายุตั้งแต่ {ELDERLY_MIN_AGE} ปีขึ้นไป)
+                  </div>
+                )}
+
+                {/* HN + Phone + PT + Backup PIN */}
                 <div className="grid grid-cols-12 gap-3">
-                  <div className="col-span-4">
+                  <div className="col-span-6 sm:col-span-3">
                     <div className="flex items-center justify-between mb-1">
                       <label className="text-sm font-extrabold text-slate-700">รหัส HN</label>
                       <button
@@ -1536,11 +1648,11 @@ export function StaffAssistedEnrollmentModal({
                     <input
                       value={hn}
                       onChange={(e) => setHn(e.target.value)}
-                      className="h-11 w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-3.5 font-mono text-base font-black text-slate-800 focus:border-[#0F4C81] focus:bg-white focus:outline-none"
+                      className="h-11 w-full rounded-xl border-2 border-slate-200 bg-slate-50 px-3 font-mono text-sm sm:text-base font-black text-slate-800 focus:border-[#0F4C81] focus:bg-white focus:outline-none"
                     />
                   </div>
 
-                  <div className="col-span-4">
+                  <div className="col-span-6 sm:col-span-3">
                     <div className="flex items-center justify-between mb-1">
                       <label className="text-sm font-extrabold text-slate-700">เบอร์โทร</label>
                       <span
@@ -1559,7 +1671,7 @@ export function StaffAssistedEnrollmentModal({
                       value={phone}
                       onChange={(e) => setPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
                       placeholder="08XXXXXXXX"
-                      className={`h-11 w-full rounded-xl border-2 px-3.5 text-base font-bold text-slate-800 placeholder:text-slate-400 focus:bg-white focus:outline-none ${
+                      className={`h-11 w-full rounded-xl border-2 px-3 text-sm sm:text-base font-bold text-slate-800 placeholder:text-slate-400 focus:bg-white focus:outline-none ${
                         phoneDigitCount === 10
                           ? 'border-emerald-300 bg-emerald-50/30'
                           : 'border-slate-200 bg-slate-50/70 focus:border-teal-500'
@@ -1567,7 +1679,7 @@ export function StaffAssistedEnrollmentModal({
                     />
                   </div>
 
-                  <div className="col-span-4">
+                  <div className="col-span-8 sm:col-span-4">
                     <label className="block text-sm font-extrabold text-slate-700 mb-1">
                       นักกายภาพ <span className="text-rose-500">*</span>
                     </label>
@@ -1585,28 +1697,362 @@ export function StaffAssistedEnrollmentModal({
                       ))}
                     </select>
                   </div>
+
+                  <div className="col-span-4 sm:col-span-2">
+                    <label className="block text-sm font-extrabold text-slate-700 mb-1">
+                      PIN สำรอง
+                    </label>
+                    <div className="relative">
+                      <KeyRound className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-sky-600" />
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        value={pinCode}
+                        maxLength={4}
+                        title="รหัส PIN สำรอง 4 หลักสำหรับเข้าใช้งานตู้ Kiosk"
+                        onChange={(e) => setPinCode(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                        className="h-11 w-full rounded-xl border-2 border-sky-200 bg-white pl-8 pr-2 text-center font-mono text-base font-black tracking-widest text-[#0F4C81] focus:border-[#0F4C81] focus:outline-none"
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              {/* Card 2: Clinical & Rehab Arena */}
-              <div className="rounded-2xl border-2 border-emerald-100 bg-white p-4 shadow-2xs space-y-3">
-                <div className="flex items-center justify-between gap-2">
+              {/* Card 2: Chief Complaint (CC), Diagnosis (Dx), Surgical History */}
+              <div
+                data-testid="enroll-chief-complaint-card"
+                className="rounded-2xl border-2 border-sky-200/90 bg-gradient-to-br from-sky-50/40 via-white to-emerald-50/25 p-4 shadow-2xs space-y-3.5"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-600 text-sm font-black text-white">
+                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-[#0F4C81] text-sm font-black text-white">
                       2
                     </span>
-                    <Stethoscope className="h-5 w-5 text-emerald-700" />
+                    <FileText className="h-5 w-5 text-[#0F4C81]" />
                     <span className="text-base font-black text-slate-900">
-                      อาการ &amp; กำลังกล้ามเนื้อ
+                      Chief Complaint (CC) • การวินิจฉัย • ประวัติการผ่าตัด
                     </span>
                   </div>
-                  <span className="relative overflow-hidden rounded-full bg-emerald-700 px-3.5 py-1 text-xs sm:text-sm font-black text-white game-badge-shimmer">
-                    Grade {motorAssessmentScore}/6 • {maxSafeRomDeg}°
+                  <span className="rounded-full border border-sky-200 bg-white px-3 py-0.5 text-xs font-extrabold text-[#0F4C81]">
+                    แบบคัดกรองแรกรับผู้สูงอายุ
                   </span>
                 </div>
 
-                {/* Target Joint & Patient Group */}
-                <div className="grid grid-cols-2 gap-3">
+                {/* 2A. Chief Complaint (CC) — Full Elderly Block */}
+                <div className="rounded-xl border border-sky-200/80 bg-white p-3.5 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label
+                      htmlFor="enroll-chief-complaint-input"
+                      className="text-sm font-black text-[#0F4C81]"
+                    >
+                      Chief Complaint (CC) — อาการสำคัญที่มาพบแพทย์ / นักกายภาพ
+                    </label>
+                    <span className="rounded-md bg-sky-50 border border-sky-200 px-2 py-0.5 text-[11px] font-extrabold text-sky-800">
+                      CC • ระยะเวลา • ระดับความปวด
+                    </span>
+                  </div>
+
+                  <input
+                    id="enroll-chief-complaint-input"
+                    data-testid="enroll-chief-complaint-input"
+                    value={chiefComplaint}
+                    onChange={(e) => setChiefComplaint(e.target.value)}
+                    placeholder="เช่น ยกแขนขวาไม่สุด ปวดหัวไหล่เวลาใส่เสื้อหรือหวีผม เป็นมาประมาณ 2 เดือน"
+                    className="h-11 w-full rounded-xl border-2 border-slate-200 bg-slate-50/60 px-3.5 text-sm sm:text-base font-semibold text-slate-900 placeholder:text-slate-400 focus:border-[#0F4C81] focus:bg-white focus:outline-none"
+                  />
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {QUICK_CHIEF_COMPLAINT_PRESETS.map((preset) => {
+                      const active = chiefComplaint === preset;
+                      return (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => {
+                            playGameSfx('tap');
+                            setChiefComplaint(preset);
+                          }}
+                          className={`rounded-full border px-2.5 py-1 text-xs font-bold transition cursor-pointer ${
+                            active
+                              ? 'border-[#0F4C81] bg-[#0F4C81] text-white'
+                              : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-sky-300 hover:bg-sky-50'
+                          }`}
+                        >
+                          {preset}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Duration + VAS Pain Scale (0-10) */}
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 pt-1 border-t border-slate-100">
+                    <div className="lg:col-span-5 space-y-1.5">
+                      <label
+                        htmlFor="enroll-cc-duration-input"
+                        className="block text-xs font-extrabold text-slate-700"
+                      >
+                        ระยะเวลาที่มีอาการ (Duration / Onset)
+                      </label>
+                      <input
+                        id="enroll-cc-duration-input"
+                        data-testid="enroll-cc-duration-input"
+                        value={chiefComplaintDuration}
+                        onChange={(e) => setChiefComplaintDuration(e.target.value)}
+                        placeholder="เช่น 2 สัปดาห์, 3 เดือน"
+                        className="h-9 w-full rounded-xl border border-slate-200 bg-slate-50/60 px-3 text-xs sm:text-sm font-semibold text-slate-800 placeholder:text-slate-400 focus:border-[#0F4C81] focus:bg-white focus:outline-none"
+                      />
+                      <div className="flex flex-wrap gap-1">
+                        {QUICK_CC_DURATION_PRESETS.map((dur) => (
+                          <button
+                            key={dur}
+                            type="button"
+                            onClick={() => {
+                              playGameSfx('tap');
+                              setChiefComplaintDuration(dur);
+                            }}
+                            className={`rounded-lg border px-2 py-0.5 text-[11px] font-bold transition cursor-pointer ${
+                              chiefComplaintDuration === dur
+                                ? 'border-sky-600 bg-sky-600 text-white'
+                                : 'border-slate-200 bg-white text-slate-600 hover:bg-sky-50'
+                            }`}
+                          >
+                            {dur}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="lg:col-span-7 space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-xs font-extrabold text-slate-700">
+                          ระดับความปวดแรกรับ (Pain Score VAS 0–10)
+                        </label>
+                        <span
+                          className={`rounded-full px-2.5 py-0.5 text-[11px] font-black ${
+                            chiefComplaintPainVas === 0
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : chiefComplaintPainVas <= 3
+                                ? 'bg-sky-100 text-[#0F4C81]'
+                                : chiefComplaintPainVas <= 6
+                                  ? 'bg-amber-100 text-amber-900'
+                                  : 'bg-rose-100 text-rose-800'
+                          }`}
+                        >
+                          {chiefComplaintPainVas}/10 •{' '}
+                          {chiefComplaintPainVas === 0
+                            ? 'ไม่ปวด'
+                            : chiefComplaintPainVas <= 3
+                              ? 'ปวดเล็กน้อย'
+                              : chiefComplaintPainVas <= 6
+                                ? 'ปวดปานกลาง'
+                                : 'ปวดมาก (ระวังขณะฝึก)'}
+                        </span>
+                      </div>
+                      <div
+                        data-testid="enroll-cc-pain-scale"
+                        className="grid grid-cols-11 gap-1"
+                      >
+                        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((vas) => {
+                          const active = chiefComplaintPainVas === vas;
+                          const activeCls =
+                            vas === 0
+                              ? 'border-emerald-600 bg-emerald-600 text-white'
+                              : vas <= 3
+                                ? 'border-sky-600 bg-sky-600 text-white'
+                                : vas <= 6
+                                  ? 'border-amber-500 bg-amber-500 text-white'
+                                  : 'border-rose-600 bg-rose-600 text-white';
+                          return (
+                            <button
+                              key={vas}
+                              type="button"
+                              aria-pressed={active}
+                              onClick={() => {
+                                playGameSfx('tap');
+                                setChiefComplaintPainVas(vas);
+                              }}
+                              className={`h-9 rounded-lg border text-xs font-black tabular-nums transition cursor-pointer ${
+                                active
+                                  ? `${activeCls} shadow-xs`
+                                  : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-sky-300 hover:bg-white'
+                              }`}
+                            >
+                              {vas}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2B. Diagnosis (การวินิจฉัยโรค) & 2C. Surgical History (ประวัติการผ่าตัด) */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  {/* Diagnosis */}
+                  <div className="rounded-xl border border-emerald-200/80 bg-white p-3.5 space-y-2">
+                    <label
+                      htmlFor="enroll-diagnosis-input"
+                      className="flex items-center gap-1.5 text-sm font-black text-emerald-900"
+                    >
+                      <Stethoscope className="h-4 w-4 text-emerald-600 shrink-0" />
+                      <span>การวินิจฉัยโรค (Diagnosis)</span>
+                    </label>
+                    <input
+                      id="enroll-diagnosis-input"
+                      data-testid="enroll-diagnosis-input"
+                      value={clinicalDiagnosis}
+                      onChange={(e) => setClinicalDiagnosis(e.target.value)}
+                      placeholder="เช่น ข้อไหล่ติดผู้สูงอายุ (Frozen Shoulder), เอ็นไหล่อักเสบ"
+                      className="h-11 w-full rounded-xl border-2 border-slate-200 bg-slate-50/60 px-3.5 text-sm font-semibold text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:bg-white focus:outline-none"
+                    />
+                    <div className="flex flex-wrap gap-1.5">
+                      {QUICK_CLINICAL_DIAGNOSIS_PRESETS.map((preset) => {
+                        const active = clinicalDiagnosis === preset;
+                        return (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => {
+                              playGameSfx('tap');
+                              setClinicalDiagnosis(preset);
+                            }}
+                            className={`rounded-full border px-2.5 py-0.5 text-[11px] font-bold transition cursor-pointer ${
+                              active
+                                ? 'border-emerald-600 bg-emerald-600 text-white'
+                                : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-emerald-300 hover:bg-emerald-50'
+                            }`}
+                          >
+                            {preset}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Surgical History */}
+                  <div
+                    data-testid="enroll-surgical-history-section"
+                    className="rounded-xl border border-amber-200/90 bg-white p-3.5 space-y-2"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <label
+                        htmlFor="enroll-surgical-history-input"
+                        className="flex items-center gap-1.5 text-sm font-black text-amber-950"
+                      >
+                        <Scissors className="h-4 w-4 text-amber-600 shrink-0" />
+                        <span>ประวัติการผ่าตัด (Surgical History)</span>
+                      </label>
+                      <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-[11px] font-black">
+                        <button
+                          type="button"
+                          data-testid="enroll-surgery-none-btn"
+                          onClick={() => {
+                            playGameSfx('tap');
+                            setHasSurgicalHistory(false);
+                            setSurgicalHistory('');
+                          }}
+                          className={`rounded-md px-2.5 py-1 transition cursor-pointer ${
+                            !hasSurgicalHistory
+                              ? 'bg-emerald-600 text-white shadow-2xs'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          ไม่มีประวัติผ่าตัด
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="enroll-surgery-yes-btn"
+                          onClick={() => {
+                            playGameSfx('tap');
+                            setHasSurgicalHistory(true);
+                          }}
+                          className={`rounded-md px-2.5 py-1 transition cursor-pointer ${
+                            hasSurgicalHistory
+                              ? 'bg-amber-600 text-white shadow-2xs'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          มีประวัติผ่าตัด
+                        </button>
+                      </div>
+                    </div>
+
+                    <input
+                      id="enroll-surgical-history-input"
+                      data-testid="enroll-surgical-history-input"
+                      value={surgicalHistory}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setSurgicalHistory(val);
+                        setHasSurgicalHistory(val.trim().length > 0);
+                      }}
+                      placeholder={
+                        hasSurgicalHistory
+                          ? 'ระบุอวัยวะ ข้างที่ผ่าตัด และปี พ.ศ. เช่น ผ่าตัดซ่อมเอ็นไหล่ขวา ปี 2567'
+                          : 'ไม่มีประวัติการผ่าตัด (พิมพ์หรือแตะรายการด้านล่างหากเคยผ่าตัด)'
+                      }
+                      className={`h-11 w-full rounded-xl border-2 px-3.5 text-sm font-semibold text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none ${
+                        hasSurgicalHistory
+                          ? 'border-amber-300 bg-amber-50/40 focus:border-amber-500'
+                          : 'border-slate-200 bg-slate-50/60 focus:border-amber-500'
+                      }`}
+                    />
+
+                    <div className="flex flex-wrap gap-1.5">
+                      {QUICK_SURGICAL_HISTORY_PRESETS.map((item) => {
+                        const active = surgicalHistory.includes(item);
+                        return (
+                          <button
+                            key={item}
+                            type="button"
+                            onClick={() => {
+                              playGameSfx('tap');
+                              setHasSurgicalHistory(true);
+                              setSurgicalHistory((prev) => {
+                                const trimmed = prev.trim();
+                                if (!trimmed) return item;
+                                if (trimmed.includes(item)) return trimmed;
+                                return `${trimmed}, ${item}`;
+                              });
+                            }}
+                            className={`rounded-full border px-2.5 py-0.5 text-[11px] font-bold transition cursor-pointer ${
+                              active
+                                ? 'border-amber-600 bg-amber-600 text-white'
+                                : 'border-amber-200 bg-amber-50/50 text-amber-900 hover:bg-amber-100'
+                            }`}
+                          >
+                            + {item}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 3: Elderly 5-Level Muscle Power (Lv.1-5, Top Level = 180 deg) & Arm ROM Measurement */}
+              <div className="rounded-2xl border-2 border-emerald-200/90 bg-white p-4 shadow-2xs space-y-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-600 text-sm font-black text-white">
+                      3
+                    </span>
+                    <Activity className="h-5 w-5 text-emerald-700" />
+                    <span className="text-base font-black text-slate-900">
+                      กำลังกล้ามเนื้อผู้สูงอายุ (5 ระดับ • สูงสุด 180°) &amp; วัดองศาแขน
+                    </span>
+                  </div>
+                  <span
+                    data-testid="enroll-muscle-summary-pill"
+                    className="rounded-full border border-emerald-300 bg-emerald-50 px-3 py-0.5 text-xs font-black text-emerald-900 tabular-nums"
+                  >
+                    ระดับ {musclePowerLevel}/5 • {measuredArmRomDeg}° / 180°
+                  </span>
+                </div>
+
+                {/* Target Joint & Elderly Care Group */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-sm font-extrabold text-slate-700 mb-1">
                       ข้อต่อเป้าหมาย <span className="text-rose-500">*</span>
@@ -1619,252 +2065,290 @@ export function StaffAssistedEnrollmentModal({
                       }}
                       className="h-11 w-full rounded-xl border-2 border-slate-200 bg-slate-50/70 px-3 text-sm sm:text-base font-bold text-slate-800 focus:border-emerald-500 focus:bg-white focus:outline-none"
                     >
-                      <option value="ข้อไหล่และแขน Stroke ADL (Shoulder & Arm)">
-                        ข้อไหล่และแขน Stroke ADL
-                      </option>
-                      <option value="คอ บ่า และแขน สธ. ผู้สูงอายุ (MOPH Upper Body)">
+                      <option value="ข้อไหล่และแขนผู้สูงอายุ">ข้อไหล่และแขนผู้สูงอายุ</option>
+                      <option value="คอ บ่า และแขน สธ. ผู้สูงอายุ">
                         คอ บ่า และแขน สธ. ผู้สูงอายุ
                       </option>
-                      <option value="ข้อไหล่ (Shoulder)">ข้อไหล่ (Shoulder)</option>
-                      <option value="ข้อศอกและแขน (Elbow & Arm)">ข้อศอกและแขน</option>
-                      <option value="ข้อมือและกล้ามเนื้อมัดเล็ก (Wrist & Hand Fingers)">
-                        ข้อมือและนิ้วมือ
-                      </option>
-                      <option value="กล้ามเนื้อคอและบ่า สธ. (Cervical & Shoulder Girdle)">
-                        กล้ามเนื้อคอและบ่า สธ.
-                      </option>
+                      <option value="ข้อไหล่">ข้อไหล่</option>
+                      <option value="ข้อศอกและแขน">ข้อศอกและแขน</option>
+                      <option value="ข้อมือและนิ้วมือ">ข้อมือและนิ้วมือ</option>
+                      <option value="กล้ามเนื้อคอและบ่า สธ.">กล้ามเนื้อคอและบ่า สธ.</option>
                     </select>
                   </div>
 
                   <div>
                     <label className="block text-sm font-extrabold text-slate-700 mb-1">
-                      กลุ่มผู้ป่วย
+                      กลุ่มการดูแลผู้สูงอายุ
                     </label>
                     <select
-                      value={strokeType}
+                      value={careGroup}
                       onChange={(e) => {
                         playGameSfx('tap');
-                        setStrokeType(e.target.value as StrokeType);
+                        setCareGroup(e.target.value as ElderlyCareGroup);
                       }}
                       className="h-11 w-full rounded-xl border-2 border-slate-200 bg-slate-50/70 px-3 text-sm sm:text-base font-bold text-slate-800 focus:border-emerald-500 focus:bg-white focus:outline-none"
                     >
-                      <option value="ISCHEMIC">Stroke เส้นเลือดตีบ/ตัน (Ischemic)</option>
-                      <option value="HEMORRHAGIC">Stroke เส้นเลือดแตก (Hemorrhagic)</option>
-                      <option value="ELDERLY_GENERAL">ผู้สูงอายุทั่วไป (MOPH)</option>
-                      <option value="NEURO">ระบบประสาท (Neuro)</option>
-                      <option value="ORTHOPEDIC">กระดูกและข้อ (Ortho)</option>
+                      <option value="ELDERLY_GENERAL">ผู้สูงอายุทั่วไป (ส่งเสริมสุขภาพ สธ.)</option>
+                      <option value="ORTHOPEDIC">ผู้สูงอายุข้อเสื่อม / ไหล่ติด</option>
+                      <option value="NEURO">ผู้สูงอายุฝึกการทรงตัวและเคลื่อนไหว</option>
                     </select>
                   </div>
                 </div>
 
-                {/* Diagnosis + 1-Line Quick Presets */}
+                {/* 5-Level Elderly Muscle Power Scale (Levels 1-5, Level 5 = 180 deg) */}
                 <div className="space-y-2">
-                  <input
-                    value={clinicalDiagnosis}
-                    onChange={(e) => setClinicalDiagnosis(e.target.value)}
-                    placeholder="อาการ / การวินิจฉัย เช่น Ischemic Stroke แขนขวาอ่อนแรง"
-                    className="h-11 w-full rounded-xl border-2 border-slate-200 bg-slate-50/70 px-3.5 text-sm sm:text-base font-semibold text-slate-800 placeholder:text-slate-400 focus:border-emerald-500 focus:bg-white focus:outline-none"
-                  />
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {QUICK_CLINICAL_DIAGNOSIS_PRESETS.map((preset) => {
-                      const active = clinicalDiagnosis === preset;
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="text-sm font-extrabold text-slate-800">
+                      ระดับกำลังกล้ามเนื้อผู้สูงอายุ (5 ระดับ — ระดับ 5 สูงสุด 180 องศา)
+                    </label>
+                    <span className="text-xs font-bold text-slate-500">
+                      แตะเลือกระดับ หรือกดปุ่มวัดองศาแขนด้านล่าง
+                    </span>
+                  </div>
+                  <div
+                    data-testid="enroll-muscle-power-scale"
+                    className="grid grid-cols-5 gap-2"
+                  >
+                    {ELDERLY_MUSCLE_POWER_5_LEVELS.map((spec) => {
+                      const active = musclePowerLevel === spec.level;
                       return (
                         <button
-                          key={preset}
+                          key={spec.level}
                           type="button"
+                          data-testid={`enroll-muscle-level-${spec.level}`}
+                          aria-pressed={active}
                           onClick={() => {
                             playGameSfx('tap');
-                            setClinicalDiagnosis(preset);
+                            setMusclePowerLevel(spec.level);
+                            setMeasuredArmRomDeg(spec.maxRomDeg);
+                            setArmRomMeasuredByAi(false);
                           }}
-                          className={`rounded-full border px-3 py-1 text-xs sm:text-sm font-bold transition cursor-pointer ${
+                          className={`rounded-xl border-2 px-2 py-2.5 text-center transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
                             active
-                              ? 'border-emerald-600 bg-emerald-600 text-white'
-                              : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-emerald-300 hover:bg-emerald-50'
+                              ? 'border-emerald-600 bg-gradient-to-b from-emerald-600 to-teal-600 text-white shadow-sm ring-2 ring-emerald-200'
+                              : 'border-slate-200 bg-slate-50/80 text-slate-800 hover:border-emerald-300 hover:bg-emerald-50/60'
                           }`}
                         >
-                          {preset}
+                          <span className="text-xs sm:text-sm font-black leading-none">
+                            ระดับ {spec.level}
+                          </span>
+                          <span
+                            className={`text-sm sm:text-base font-black tabular-nums ${
+                              active ? 'text-emerald-100' : 'text-[#0F4C81]'
+                            }`}
+                          >
+                            {spec.maxRomDeg}°
+                          </span>
+                          <span
+                            className={`hidden sm:block text-[10px] font-bold leading-tight line-clamp-1 ${
+                              active ? 'text-white/90' : 'text-slate-500'
+                            }`}
+                          >
+                            {spec.romRangeLabelTh}
+                          </span>
                         </button>
                       );
                     })}
                   </div>
+
+                  <div className="rounded-xl border border-emerald-200/80 bg-emerald-50/50 px-3 py-2 text-xs font-bold text-emerald-950 flex flex-wrap items-center justify-between gap-2">
+                    <span>
+                      <span className="font-black text-emerald-800">
+                        ระดับ {activeMusclePowerSpec.level}/5 ({activeMusclePowerSpec.shortTitleTh}):
+                      </span>{' '}
+                      {activeMusclePowerSpec.descTh}
+                    </span>
+                    <span className="shrink-0 rounded-md bg-white border border-emerald-200 px-2 py-0.5 text-[11px] font-black text-emerald-800 tabular-nums">
+                      เกณฑ์ {activeMusclePowerSpec.maxRomDeg}° / 180°
+                    </span>
+                  </div>
                 </div>
 
-                {/* Emerald Power Arena: Weak Side + ROM + ADL + Mahidol 0-6 */}
-                <div className="rounded-2xl border-2 border-emerald-200/90 bg-gradient-to-br from-emerald-50/75 via-teal-50/35 to-white p-3.5 space-y-3">
-                  <div className="grid grid-cols-12 gap-3 items-end">
-                    <div className="col-span-6">
-                      <label className="block text-xs sm:text-sm font-extrabold text-emerald-950 mb-1">
-                        ข้างที่อ่อนแรง
-                      </label>
-                      <div className="grid grid-cols-4 gap-1.5">
+                {/* Live AI Arm ROM Measurement Panel */}
+                <div
+                  data-testid="enroll-arm-rom-panel"
+                  className="rounded-2xl border-2 border-sky-200 bg-gradient-to-r from-sky-50/80 via-white to-emerald-50/70 p-3.5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3"
+                >
+                  <div className="flex-1 min-w-0 space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center gap-1.5 text-sm font-black text-[#0F4C81]">
+                        <Ruler className="h-4 w-4 text-[#0F4C81]" />
+                        <span>วัดองศาแขนแรกรับ (Arm ROM สูงสุด 180°)</span>
+                      </span>
+                      <span
+                        className={`rounded-full border px-2 py-0.5 text-[11px] font-black ${
+                          armRomMeasuredByAi
+                            ? 'border-emerald-300 bg-emerald-100 text-emerald-800'
+                            : 'border-sky-200 bg-white text-slate-600'
+                        }`}
+                      >
+                        {armRomMeasuredByAi ? 'วัดจริงด้วยกล้อง AI แล้ว' : 'ปรับเองหรือใช้กล้องวัด'}
+                      </span>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      {/* Side selector */}
+                      <div className="inline-flex rounded-xl border border-slate-200 bg-white p-0.5 text-xs font-black">
                         {(
                           [
-                            ['LEFT', 'ซ้าย'],
-                            ['RIGHT', 'ขวา'],
-                            ['BOTH', '2 ข้าง'],
-                            ['NONE', 'ปกติ'],
+                            { id: 'LEFT', label: 'แขนซ้าย' },
+                            { id: 'RIGHT', label: 'แขนขวา' },
+                            { id: 'BOTH', label: 'ทั้ง 2 ข้าง' },
                           ] as const
-                        ).map(([val, lbl]) => (
+                        ).map((s) => (
                           <button
-                            key={val}
+                            key={s.id}
                             type="button"
                             onClick={() => {
                               playGameSfx('tap');
-                              setAffectedSide(val);
+                              setArmMeasureSide(s.id);
                             }}
-                            className={`h-11 rounded-xl text-sm sm:text-base font-black border-2 transition-all cursor-pointer ${
-                              affectedSide === val
-                                ? 'border-emerald-700 bg-emerald-600 text-white btn-game-3d-emerald'
-                                : 'border-emerald-200 bg-white text-slate-700 btn-game-3d-white hover:bg-emerald-50'
+                            className={`rounded-lg px-2.5 py-1 transition cursor-pointer ${
+                              armMeasureSide === s.id
+                                ? 'bg-[#0F4C81] text-white shadow-2xs'
+                                : 'text-slate-600 hover:text-slate-900'
                             }`}
                           >
-                            {lbl}
+                            {s.label}
                           </button>
                         ))}
                       </div>
-                    </div>
 
-                    <div className="col-span-2">
-                      <label className="block text-xs sm:text-sm font-extrabold text-emerald-950 mb-1">
-                        ROM (°)
-                      </label>
-                      <input
-                        type="number"
-                        min={30}
-                        max={180}
-                        value={maxSafeRomDeg}
-                        onChange={(e) =>
-                          setMaxSafeRomDeg(
-                            Math.max(30, Math.min(180, Number(e.target.value) || 30)),
-                          )
-                        }
-                        className={`h-11 w-full rounded-xl border-2 bg-white px-2 text-center font-mono text-base font-black text-emerald-800 focus:border-emerald-500 focus:outline-none ${
-                          romSyncedPulse
-                            ? 'border-emerald-400 bg-emerald-50 game-age-sync-glow'
-                            : 'border-emerald-200'
-                        }`}
-                      />
-                    </div>
+                      {/* Numeric Arm Angle Input (0-180 deg) */}
+                      <div className="inline-flex items-center gap-1.5 rounded-xl border-2 border-sky-200 bg-white px-2.5 h-10">
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          data-testid="enroll-arm-rom-input"
+                          min={0}
+                          max={180}
+                          value={measuredArmRomDeg}
+                          onChange={(e) => {
+                            const val = Math.max(0, Math.min(180, Number(e.target.value) || 0));
+                            setMeasuredArmRomDeg(val);
+                            setMusclePowerLevel(deriveElderlyMusclePowerLevelFromRom(val));
+                            setArmRomMeasuredByAi(false);
+                          }}
+                          className="w-14 bg-transparent text-center font-mono text-base font-black text-[#0F4C81] focus:outline-none"
+                        />
+                        <span className="text-xs font-extrabold text-slate-500">° / 180°</span>
+                      </div>
 
-                    <div className="col-span-4">
-                      <label className="block text-xs sm:text-sm font-extrabold text-emerald-950 mb-1">
-                        ADL ใส่เสื้อ (0–5)
-                      </label>
-                      <select
-                        value={adlDressingScore}
-                        onChange={(e) => {
-                          playGameSfx('tap');
-                          setAdlDressingScore(Number(e.target.value));
-                        }}
-                        className="h-11 w-full rounded-xl border-2 border-emerald-200 bg-white px-2.5 text-sm font-extrabold text-slate-800 focus:border-emerald-500 focus:outline-none"
-                      >
-                        <option value={0}>0: ช่วยตัวเองไม่ได้</option>
-                        <option value={1}>1: ช่วยมาก (พึ่งพาสูง)</option>
-                        <option value={2}>2: สอดแขนได้บ้าง</option>
-                        <option value={3}>3: ทำได้เมื่อมีผู้ช่วย</option>
-                        <option value={4}>4: ใส่เองได้ช้าๆ</option>
-                        <option value={5}>5: ใส่เองได้คล่อง</option>
-                      </select>
+                      {/* Mini Progress Bar to 180 deg */}
+                      <div className="flex-1 min-w-[110px] space-y-1">
+                        <div className="flex justify-between text-[10px] font-extrabold text-slate-500 tabular-nums">
+                          <span>0°</span>
+                          <span className="text-emerald-700">
+                            {Math.round((measuredArmRomDeg / 180) * 100)}% ของช่วงเต็ม
+                          </span>
+                          <span>180°</span>
+                        </div>
+                        <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200/80">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-[#0F4C81] via-teal-500 to-emerald-500 transition-all duration-300"
+                            style={{ width: `${Math.max(4, Math.min(100, (measuredArmRomDeg / 180) * 100))}%` }}
+                          />
+                        </div>
+                      </div>
                     </div>
                   </div>
 
-                  <div>
-                    <div className="flex items-center justify-between gap-2 mb-1.5">
-                      <label className="text-sm font-black text-emerald-950 inline-flex items-center gap-1.5">
-                        <Activity className="h-4 w-4 text-emerald-600" />
-                        กำลังกล้ามเนื้อ มหิดล (0–6)
-                      </label>
-                      <span className="text-xs sm:text-sm font-extrabold text-emerald-700 truncate max-w-[380px]">
-                        {MAHIDOL_MOTOR_SCALE[motorAssessmentScore]?.titleTh}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-7 gap-2">
-                      {MAHIDOL_MOTOR_SCALE.map((lvl) => {
-                        const active = motorAssessmentScore === lvl.score;
-                        return (
-                          <button
-                            key={lvl.score}
-                            type="button"
-                            onClick={() =>
-                              handleSelectMotorScore(lvl.score, lvl.recommendedMaxRomDeg)
-                            }
-                            className={`rounded-xl border-2 py-2 px-1 text-center transition-all duration-150 cursor-pointer ${
-                              active
-                                ? 'border-emerald-700 bg-emerald-600 text-white btn-game-3d-emerald'
-                                : 'border-emerald-200 bg-white text-slate-700 btn-game-3d-white hover:border-emerald-400 hover:bg-emerald-50'
-                            }`}
-                          >
-                            <div className="text-lg font-black leading-none">{lvl.score}</div>
-                            <div
-                              className={`mt-1 text-xs font-bold ${
-                                active ? 'text-emerald-100' : 'text-emerald-700'
-                              }`}
-                            >
-                              {lvl.recommendedMaxRomDeg}°
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <p className="mt-2 rounded-xl border border-emerald-200/80 bg-white px-3.5 py-1.5 text-xs sm:text-sm font-semibold text-emerald-950 truncate">
-                      {MAHIDOL_MOTOR_SCALE[motorAssessmentScore]?.descTh}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Additional Medical Details + Backup PIN */}
-                <div className="space-y-2.5 border-t border-slate-100 pt-2">
-                  <div className="grid grid-cols-2 gap-3">
-                    <input
-                      value={contraindications}
-                      onChange={(e) => setContraindications(e.target.value)}
-                      placeholder="ข้อห้ามกายภาพ (ถ้ามี)"
-                      className="h-10 w-full rounded-xl border-2 border-slate-200 bg-slate-50/70 px-3.5 text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
-                    />
-                    <input
-                      value={underlyingDiseases}
-                      onChange={(e) => setUnderlyingDiseases(e.target.value)}
-                      placeholder="โรคประจำตัว (ถ้าไม่มี -)"
-                      className="h-10 w-full rounded-xl border-2 border-slate-200 bg-slate-50/70 px-3.5 text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-12 gap-3">
-                    <input
-                      value={allergies}
-                      onChange={(e) => setAllergies(e.target.value)}
-                      placeholder="ประวัติแพ้ยา"
-                      className="col-span-4 h-10 w-full rounded-xl border-2 border-slate-200 bg-slate-50/70 px-3.5 text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
-                    />
-                    <input
-                      value={doctorNotes}
-                      onChange={(e) => setDoctorNotes(e.target.value)}
-                      placeholder="บันทึกแพทย์ / PT"
-                      className="col-span-5 h-10 w-full rounded-xl border-2 border-slate-200 bg-slate-50/70 px-3.5 text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:bg-white focus:outline-none"
-                    />
-                    <div className="col-span-3 relative">
-                      <KeyRound className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-sky-600" />
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        pattern="[0-9]*"
-                        value={pinCode}
-                        maxLength={4}
-                        title="รหัส PIN สำรอง 4 หลัก"
-                        onChange={(e) => setPinCode(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                        className="h-10 w-full rounded-xl border-2 border-sky-200 bg-white pl-9 pr-3 text-center font-mono text-base font-black tracking-widest text-[#0F4C81] focus:border-[#0F4C81] focus:outline-none"
-                      />
-                    </div>
-                  </div>
+                  {/* Primary Live AI Arm ROM Measure Button */}
+                  <button
+                    type="button"
+                    data-testid="enroll-measure-arm-rom-btn"
+                    onClick={() => {
+                      playGameSfx('tap');
+                      setArmRomMeasureModalOpen(true);
+                    }}
+                    className="btn-tactile shrink-0 inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#0F4C81] via-[#0B6699] to-emerald-600 px-4 h-12 text-sm font-black text-white shadow-md hover:brightness-105 cursor-pointer"
+                  >
+                    <Camera className="h-4.5 w-4.5 shrink-0" />
+                    <span>วัดองศาแขน (กล้อง AI)</span>
+                  </button>
                 </div>
               </div>
 
-              {/* Card 3: Emergency Contact (Large Readable 1-Row) */}
+              {/* Card 4: History-Taking (ซักประวัติผู้สูงอายุ) */}
+              <div
+                data-testid="enroll-history-taking-card"
+                className="rounded-2xl border-2 border-teal-200 bg-gradient-to-br from-teal-50/45 via-sky-50/25 to-white p-4 shadow-2xs space-y-3"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-teal-600 text-sm font-black text-white">
+                      4
+                    </span>
+                    <ClipboardList className="h-5 w-5 text-teal-700" />
+                    <span className="text-base font-black text-slate-900">
+                      ซักประวัติผู้สูงอายุเพิ่มเติม
+                    </span>
+                  </div>
+                  <span
+                    className={`rounded-full border px-3 py-0.5 text-xs font-extrabold ${
+                      historyTaking.trim()
+                        ? 'border-emerald-300 bg-emerald-100 text-emerald-800'
+                        : 'border-teal-200 bg-teal-50 text-teal-800'
+                    }`}
+                  >
+                    {historyTaking.trim() ? 'บันทึกซักประวัติแล้ว' : 'ประวัติสุขภาพแรกรับ'}
+                  </span>
+                </div>
+
+                {/* Main History-Taking Textarea */}
+                <div>
+                  <label
+                    htmlFor="enroll-history-taking-input"
+                    className="block text-sm font-extrabold text-slate-700 mb-1"
+                  >
+                    รายละเอียดการซักประวัติ (ประวัติการเจ็บป่วย • ประวัติการหกล้ม • ยาประจำ • กิจวัตรผู้สูงอายุ)
+                  </label>
+                  <textarea
+                    id="enroll-history-taking-input"
+                    data-testid="enroll-history-taking-input"
+                    rows={2}
+                    value={historyTaking}
+                    onChange={(e) => setHistoryTaking(e.target.value)}
+                    placeholder="กรอกผลการซักประวัติผู้สูงอายุเพิ่มเติม เช่น ประวัติการหกล้ม ยาที่รับประทานเป็นประจำ และข้อควรระวังในการออกกำลังกาย..."
+                    className="w-full rounded-xl border-2 border-teal-200/90 bg-white px-3.5 py-2 text-sm sm:text-base font-medium text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:outline-none resize-y"
+                  />
+                </div>
+
+                {/* Structured Medical History Details */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-0.5">
+                  <input
+                    value={underlyingDiseases}
+                    onChange={(e) => setUnderlyingDiseases(e.target.value)}
+                    placeholder="โรคประจำตัว (ถ้าไม่มีระบุ -)"
+                    className="h-10 w-full rounded-xl border-2 border-slate-200 bg-white px-3.5 text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:outline-none"
+                  />
+                  <input
+                    value={allergies}
+                    onChange={(e) => setAllergies(e.target.value)}
+                    placeholder="ประวัติแพ้ยา / แพ้อาหาร"
+                    className="h-10 w-full rounded-xl border-2 border-slate-200 bg-white px-3.5 text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:outline-none"
+                  />
+                  <input
+                    value={contraindications}
+                    onChange={(e) => setContraindications(e.target.value)}
+                    placeholder="ข้อห้าม / ข้อควรระวังในการออกกำลังกาย (ถ้ามี)"
+                    className="h-10 w-full rounded-xl border-2 border-slate-200 bg-white px-3.5 text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:outline-none"
+                  />
+                  <input
+                    value={doctorNotes}
+                    onChange={(e) => setDoctorNotes(e.target.value)}
+                    placeholder="บันทึกเพิ่มเติม (แพทย์ / พยาบาล / นักกายภาพ)"
+                    className="h-10 w-full rounded-xl border-2 border-slate-200 bg-white px-3.5 text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:border-teal-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Card 5: Emergency Contact */}
               <div className="rounded-2xl border-2 border-rose-100 bg-gradient-to-br from-rose-50/35 to-white p-3.5 shadow-2xs space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-rose-600 text-sm font-black text-white">
-                      3
+                      5
                     </span>
                     <HeartPulse className="h-5 w-5 text-rose-600" />
                     <span className="text-base font-black text-slate-900">ผู้ติดต่อฉุกเฉิน</span>
@@ -2016,6 +2500,43 @@ export function StaffAssistedEnrollmentModal({
                   </button>
                 </div>
               )}
+
+              {biometric120Result && !duplicateFaceWarning?.duplicate && (
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-2xl border-2 border-emerald-400 bg-emerald-50 px-4 py-3.5 shadow-sm">
+                  <div className="space-y-0.5 text-xs">
+                    <p className="font-black text-emerald-900">
+                      เก็บภาพใบหน้าครบ {biometric120Result.framesCaptured} เฟรมแล้ว — ยังไม่ได้สร้างบัญชีลงฐานข้อมูล
+                    </p>
+                    <p className="font-semibold text-emerald-800">
+                      กรุณากดปุ่มบันทึกบัญชีด้านขวาเพื่อให้ผู้ป่วยสแกนใบหน้าเข้าใช้งานตู้ Kiosk ได้ทันที
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      disabled={saving || duplicateCheckPending}
+                      onClick={() =>
+                        void handleFinalizeEnrollment('verified', undefined, biometric120Result, [])
+                      }
+                      className="rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white shadow-md shadow-emerald-600/30 hover:bg-emerald-500 disabled:opacity-60 cursor-pointer"
+                    >
+                      {saving
+                        ? 'กำลังบันทึกเข้าสู่ระบบ...'
+                        : 'บันทึกบัญชีและเปิดสแกน Kiosk ทันที'}
+                    </button>
+                    {!isExistingPatientMode && (
+                      <button
+                        type="button"
+                        disabled={saving || duplicateCheckPending}
+                        onClick={() => void handleProceedFromStep2ToStep3()}
+                        className="rounded-xl border border-emerald-300 bg-white px-4 py-2.5 text-xs font-extrabold text-emerald-800 hover:bg-emerald-100/70 disabled:opacity-60 cursor-pointer"
+                      >
+                        กำหนดท่ากายภาพบำบัดต่อ →
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -2064,7 +2585,7 @@ export function StaffAssistedEnrollmentModal({
                         for (const baseCode of recIds) {
                           nextMap[baseCode] = BILATERAL_INHERENT_EXERCISE_CODES.has(baseCode)
                             ? 'BOTH'
-                            : globalQuickSide || normalizeSideValue(affectedSide) || 'RIGHT';
+                            : globalQuickSide || DEFAULT_ELDERLY_SIDE;
                         }
                         setSelectedSideByBaseCode(nextMap);
                       }}
@@ -2083,7 +2604,7 @@ export function StaffAssistedEnrollmentModal({
                             if (!next[baseCode]) {
                               next[baseCode] = BILATERAL_INHERENT_EXERCISE_CODES.has(baseCode)
                                 ? 'BOTH'
-                                : globalQuickSide || resolveDefaultSideForExercise(ex, affectedSide);
+                                : globalQuickSide || resolveDefaultSideForExercise(ex, DEFAULT_ELDERLY_SIDE);
                             }
                           }
                           return next;
@@ -2634,27 +3155,50 @@ export function StaffAssistedEnrollmentModal({
                       : 'บันทึกและเปิดใช้งานตู้ Kiosk →'}
                 </button>
               ) : (
-                <button
-                  type="button"
-                  disabled={
-                    saving ||
-                    duplicateCheckPending ||
-                    Boolean(duplicateFaceWarning?.duplicate) ||
-                    (!biometric120Result && !allFiveAnglesReady)
-                  }
-                  onClick={() => void handleProceedFromStep2ToStep3()}
-                  className={`rounded-xl px-5 py-2.5 text-xs font-extrabold transition ${
-                    (biometric120Result || allFiveAnglesReady) && !duplicateFaceWarning?.duplicate
-                      ? 'bg-gradient-to-r from-emerald-600 to-blue-600 hover:opacity-95 text-white shadow-lg shadow-emerald-500/25 cursor-pointer'
-                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                  } disabled:opacity-60`}
-                >
-                  {saving
-                    ? 'กำลังเตรียมข้อมูลใบหน้า...'
-                    : duplicateCheckPending
-                      ? 'กำลังตรวจสอบใบหน้าซ้ำ...'
-                      : '→ ขั้นตอนต่อไป: กำหนดท่ากายภาพบำบัด →'}
-                </button>
+                <>
+                  {(biometric120Result || allFiveAnglesReady) && !duplicateFaceWarning?.duplicate && (
+                    <button
+                      type="button"
+                      disabled={saving || duplicateCheckPending}
+                      onClick={() =>
+                        void handleFinalizeEnrollment(
+                          'verified',
+                          undefined,
+                          biometric120Result ?? undefined,
+                          [],
+                        )
+                      }
+                      className="rounded-xl bg-emerald-600 hover:bg-emerald-500 px-5 py-2.5 text-xs font-extrabold text-white shadow-lg shadow-emerald-600/30 disabled:opacity-60 cursor-pointer"
+                    >
+                      {saving
+                        ? 'กำลังบันทึกเวชระเบียน...'
+                        : duplicateCheckPending
+                          ? 'กำลังตรวจสอบใบหน้าซ้ำ...'
+                          : 'บันทึกบัญชีทันที (เปิดสแกน Kiosk)'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={
+                      saving ||
+                      duplicateCheckPending ||
+                      Boolean(duplicateFaceWarning?.duplicate) ||
+                      (!biometric120Result && !allFiveAnglesReady)
+                    }
+                    onClick={() => void handleProceedFromStep2ToStep3()}
+                    className={`rounded-xl px-5 py-2.5 text-xs font-extrabold transition ${
+                      (biometric120Result || allFiveAnglesReady) && !duplicateFaceWarning?.duplicate
+                        ? 'bg-gradient-to-r from-sky-600 to-blue-600 hover:opacity-95 text-white shadow-lg shadow-blue-500/25 cursor-pointer'
+                        : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                    } disabled:opacity-60`}
+                  >
+                    {saving
+                      ? 'กำลังเตรียมข้อมูลใบหน้า...'
+                      : duplicateCheckPending
+                        ? 'กำลังตรวจสอบใบหน้าซ้ำ...'
+                        : '→ ขั้นตอนต่อไป: กำหนดท่ากายภาพบำบัด →'}
+                  </button>
+                </>
               )}
             </>
           )}
@@ -2732,6 +3276,31 @@ export function StaffAssistedEnrollmentModal({
           )}
         </div>
       </div>
+
+      {/* Live AI Camera Arm ROM Measurement Modal (0-180 deg, 5-level Elderly Scale) */}
+      <ClinicalRomLiveMeasureModal
+        open={armRomMeasureModalOpen}
+        exerciseCode="ELDERLY_SH_FLEX"
+        exerciseNameTh="วัดองศาการยกแขนผู้สูงอายุ (Arm Elevation ROM 0°–180°)"
+        targetSide={armMeasureSide}
+        targetRomDeg={180}
+        scaleMode="ELDERLY_1_5"
+        onClose={() => setArmRomMeasureModalOpen(false)}
+        onConfirmMeasuredRom={(res) => {
+          const clampedDeg = Math.max(0, Math.min(180, Math.round(res.measuredRomDeg)));
+          setMeasuredArmRomDeg(clampedDeg);
+          setArmRomMeasuredByAi(true);
+          if (res.applySuggestedScore) {
+            setMusclePowerLevel(res.suggestedLevel1To5);
+          }
+          playGameSfx('correct');
+          setToastMsg(
+            `วัดองศาแขนสำเร็จ: ${clampedDeg}° / 180° (ระดับกำลังกล้ามเนื้อผู้สูงอายุ ${
+              res.applySuggestedScore ? res.suggestedLevel1To5 : musclePowerLevel
+            }/5)`,
+          );
+        }}
+      />
     </div>
   );
 }

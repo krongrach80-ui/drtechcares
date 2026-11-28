@@ -3,8 +3,8 @@ import type { BodySide, ExerciseConfig } from './types';
 export type ExerciseSideCode = 'LEFT' | 'RIGHT' | 'BOTH';
 
 /**
- * Legacy / non-stroke / split-side exercise codes permanently retired from Dr.Tech.Care.
- * Canonical library is the 15 Unified Master Exercises (`STROKE_*` & `MOPH_*`) with dynamic L/R/BOTH side selection.
+ * Legacy / split-side exercise codes permanently retired from Dr.Tech.Care.
+ * Canonical library is the 15 Unified Master Exercises (`ELDERLY_*` & `MOPH_*`) with dynamic L/R/BOTH side selection.
  */
 export const DEPRECATED_EXERCISE_CODES: readonly string[] = [
   // Lower-limb / standing fall-risk exercises
@@ -17,7 +17,7 @@ export const DEPRECATED_EXERCISE_CODES: readonly string[] = [
   'HEEL_RAISE_R',
   'HEEL_RAISE_L',
   'SIT_TO_STAND',
-  // Orthopedic postures unsuitable for front-facing kiosk stroke therapy
+  // Orthopedic postures unsuitable for front-facing kiosk elderly therapy
   'SH_PEND_R',
   'SH_PEND_L',
   'SH_WALL_SLIDE_R',
@@ -39,26 +39,26 @@ export const DEPRECATED_EXERCISE_CODES: readonly string[] = [
   'TRUNK_SIT_STRETCH',
   'MOPH_BILATERAL_ARM_RAISE',
   // Split _R / _L catalog cards merged into the 15 Unified Master Exercises
-  'STROKE_SH_FLEX_R',
-  'STROKE_SH_FLEX_L',
-  'STROKE_SH_ABD_R',
-  'STROKE_SH_ABD_L',
-  'STROKE_CROSS_BODY_R',
-  'STROKE_CROSS_BODY_L',
-  'STROKE_SH_ROT_R',
-  'STROKE_SH_ROT_L',
-  'STROKE_SCAP_PROTRACT_R',
-  'STROKE_SCAP_PROTRACT_L',
-  'STROKE_ELB_FLEX_EXT_R',
-  'STROKE_ELB_FLEX_EXT_L',
-  'STROKE_HAND_TO_HEAD_R',
-  'STROKE_HAND_TO_HEAD_L',
-  'STROKE_FOREARM_TURN_R',
-  'STROKE_FOREARM_TURN_L',
-  'STROKE_WRIST_FINGER_R',
-  'STROKE_WRIST_FINGER_L',
-  'STROKE_THUMB_PINCH_R',
-  'STROKE_THUMB_PINCH_L',
+  'ELDERLY_SH_FLEX_R',
+  'ELDERLY_SH_FLEX_L',
+  'ELDERLY_SH_ABD_R',
+  'ELDERLY_SH_ABD_L',
+  'ELDERLY_CROSS_BODY_R',
+  'ELDERLY_CROSS_BODY_L',
+  'ELDERLY_SH_ROT_R',
+  'ELDERLY_SH_ROT_L',
+  'ELDERLY_SCAP_PROTRACT_R',
+  'ELDERLY_SCAP_PROTRACT_L',
+  'ELDERLY_ELB_FLEX_EXT_R',
+  'ELDERLY_ELB_FLEX_EXT_L',
+  'ELDERLY_HAND_TO_HEAD_R',
+  'ELDERLY_HAND_TO_HEAD_L',
+  'ELDERLY_FOREARM_TURN_R',
+  'ELDERLY_FOREARM_TURN_L',
+  'ELDERLY_WRIST_FINGER_R',
+  'ELDERLY_WRIST_FINGER_L',
+  'ELDERLY_THUMB_PINCH_R',
+  'ELDERLY_THUMB_PINCH_L',
   'MOPH_NECK_TILT_R',
   'MOPH_NECK_TILT_L',
   'MOPH_NECK_TURN_BILATERAL',
@@ -70,66 +70,66 @@ export const DEPRECATED_EXERCISE_CODE_SET: ReadonlySet<string> = new Set(
 
 /** Legacy `ex-01`..`ex-40` and old `_R`/`_L` codes mapped cleanly to unified master + side info. */
 export const LEGACY_EXERCISE_ID_MAP: Readonly<Record<string, string>> = {
-  'ex-01': 'STROKE_SH_FLEX_RIGHT',
-  'ex-02': 'STROKE_SH_FLEX_LEFT',
-  'ex-03': 'STROKE_SH_ABD_RIGHT',
-  'ex-04': 'STROKE_SH_ABD_LEFT',
-  'ex-05': 'STROKE_ELB_FLEX_EXT_RIGHT',
-  'ex-06': 'STROKE_ELB_FLEX_EXT_LEFT',
-  'ex-07': 'STROKE_SH_ROT_RIGHT',
-  'ex-08': 'STROKE_SH_ROT_LEFT',
-  'ex-09': 'STROKE_SCAP_PROTRACT_RIGHT',
-  'ex-10': 'STROKE_SCAP_PROTRACT_LEFT',
-  'ex-11': 'STROKE_BOBATH_ARM_RAISE',
-  'ex-12': 'STROKE_BOBATH_ARM_RAISE',
+  'ex-01': 'ELDERLY_SH_FLEX_RIGHT',
+  'ex-02': 'ELDERLY_SH_FLEX_LEFT',
+  'ex-03': 'ELDERLY_SH_ABD_RIGHT',
+  'ex-04': 'ELDERLY_SH_ABD_LEFT',
+  'ex-05': 'ELDERLY_ELB_FLEX_EXT_RIGHT',
+  'ex-06': 'ELDERLY_ELB_FLEX_EXT_LEFT',
+  'ex-07': 'ELDERLY_SH_ROT_RIGHT',
+  'ex-08': 'ELDERLY_SH_ROT_LEFT',
+  'ex-09': 'ELDERLY_SCAP_PROTRACT_RIGHT',
+  'ex-10': 'ELDERLY_SCAP_PROTRACT_LEFT',
+  'ex-11': 'ELDERLY_CLASPED_ARM_RAISE',
+  'ex-12': 'ELDERLY_CLASPED_ARM_RAISE',
   'ex-19': 'MOPH_NECK_TILT_RIGHT',
   'ex-20': 'MOPH_NECK_TILT_LEFT',
   'ex-23': 'MOPH_NECK_TURN',
-  'ex-24': 'STROKE_HAND_TO_HEAD_RIGHT',
-  'ex-25': 'STROKE_HAND_TO_HEAD_LEFT',
-  'ex-27': 'STROKE_SH_FLEX_RIGHT',
-  'ex-28': 'STROKE_SH_FLEX_LEFT',
-  'ex-29': 'STROKE_SH_ABD_RIGHT',
-  'ex-30': 'STROKE_SH_ABD_LEFT',
-  'ex-31': 'STROKE_ELB_FLEX_EXT_RIGHT',
-  'ex-32': 'STROKE_ELB_FLEX_EXT_LEFT',
-  'ex-33': 'STROKE_SH_ROT_RIGHT',
-  'ex-34': 'STROKE_SH_ROT_LEFT',
-  'ex-35': 'STROKE_WRIST_FINGER_RIGHT',
-  'ex-36': 'STROKE_WRIST_FINGER_LEFT',
+  'ex-24': 'ELDERLY_HAND_TO_HEAD_RIGHT',
+  'ex-25': 'ELDERLY_HAND_TO_HEAD_LEFT',
+  'ex-27': 'ELDERLY_SH_FLEX_RIGHT',
+  'ex-28': 'ELDERLY_SH_FLEX_LEFT',
+  'ex-29': 'ELDERLY_SH_ABD_RIGHT',
+  'ex-30': 'ELDERLY_SH_ABD_LEFT',
+  'ex-31': 'ELDERLY_ELB_FLEX_EXT_RIGHT',
+  'ex-32': 'ELDERLY_ELB_FLEX_EXT_LEFT',
+  'ex-33': 'ELDERLY_SH_ROT_RIGHT',
+  'ex-34': 'ELDERLY_SH_ROT_LEFT',
+  'ex-35': 'ELDERLY_WRIST_FINGER_RIGHT',
+  'ex-36': 'ELDERLY_WRIST_FINGER_LEFT',
   'ex-37': 'MOPH_NECK_TILT_RIGHT',
   'ex-38': 'MOPH_NECK_TILT_LEFT',
   'ex-39': 'MOPH_SHOULDER_SHRUG_ROLL',
-  'ex-40': 'STROKE_BOBATH_ARM_RAISE',
+  'ex-40': 'ELDERLY_CLASPED_ARM_RAISE',
   moph_neck_turn_bilateral: 'MOPH_NECK_TURN',
-  moph_bilateral_arm_raise: 'STROKE_BOBATH_ARM_RAISE',
-  right_shoulder_flexion: 'STROKE_SH_FLEX_RIGHT',
-  left_shoulder_flexion: 'STROKE_SH_FLEX_LEFT',
-  right_shoulder_abduction: 'STROKE_SH_ABD_RIGHT',
-  left_shoulder_abduction: 'STROKE_SH_ABD_LEFT',
-  elbow_flexion_right: 'STROKE_ELB_FLEX_EXT_RIGHT',
-  elbow_flexion_left: 'STROKE_ELB_FLEX_EXT_LEFT',
+  moph_bilateral_arm_raise: 'ELDERLY_CLASPED_ARM_RAISE',
+  right_shoulder_flexion: 'ELDERLY_SH_FLEX_RIGHT',
+  left_shoulder_flexion: 'ELDERLY_SH_FLEX_LEFT',
+  right_shoulder_abduction: 'ELDERLY_SH_ABD_RIGHT',
+  left_shoulder_abduction: 'ELDERLY_SH_ABD_LEFT',
+  elbow_flexion_right: 'ELDERLY_ELB_FLEX_EXT_RIGHT',
+  elbow_flexion_left: 'ELDERLY_ELB_FLEX_EXT_LEFT',
 };
 
 /**
- * Unified 15 Clinical Master Rehabilitation Exercises (Stroke ADL & MOPH Elderly):
- * - Category 1 (12): แขน ไหล่ ศอก และมือ (Stroke ADL — 12 ท่าหลัก)
- * - Category 2 (3): คอและบ่า (สธ. ผู้สูงอายุ & Stroke Upper Trunk — 3 ท่าหลัก)
+ * Unified 15 Clinical Master Rehabilitation Exercises (Elderly Care & MOPH):
+ * - Category 1 (12): แขน ไหล่ ศอก และมือ (กายภาพบำบัดผู้สูงอายุ — 12 ท่าหลัก)
+ * - Category 2 (3): คอและบ่า (สธ. ผู้สูงอายุ — 3 ท่าหลัก)
  * Every posture supports side selection (`LEFT` / `RIGHT` / `BOTH`) within a single card.
  */
 export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
   // =========================================================================
-  // หมวด 1: แขน ไหล่ ศอก และมือ (Stroke ADL — 12 ท่าหลัก)
+  // หมวด 1: แขน ไหล่ ศอก และมือ (กายภาพบำบัดผู้สูงอายุ — 12 ท่าหลัก)
   // =========================================================================
   {
-    id: 'STROKE_SH_FLEX',
-    code: 'STROKE_SH_FLEX',
+    id: 'ELDERLY_SH_FLEX',
+    code: 'ELDERLY_SH_FLEX',
     category: 'upper_limb',
-    clinicalFocus: 'stroke_adl',
+    clinicalFocus: 'elderly_adl',
     name: {
-      th: '[Stroke ADL] ยกแขนไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)',
-      en: 'Stroke ADL: Shoulder Forward Flexion',
-      cn: '卒中康复 ADL：肩前屈上举（伸手/穿衣袖）',
+      th: '[ผู้สูงอายุ] ยกแขนไปด้านหน้า (ฝึกเอื้อมหยิบของ/สวมเสื้อ)',
+      en: 'Elderly Care: Shoulder Forward Flexion',
+      cn: '老年康复训练：肩前屈上举（伸手取物/穿衣）',
     },
     instruction: {
       th: 'ยกแขนตรงไปด้านหน้าเท่าที่ไหว (ไม่ฝืน) เพื่อฝึกเอื้อมหยิบของหรือสอดแขนเสื้อ ค้างไว้ 3 วินาที',
@@ -141,8 +141,8 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
       jointGroup: 'shoulder',
       side: 'right',
       targetMinDeg: 90,
-      targetMaxDeg: 165,
-      targetRomDeg: 125,
+      targetMaxDeg: 180,
+      targetRomDeg: 180,
       startRestMaxDeg: 30,
       holdSec: 3,
       defaultSets: 2,
@@ -152,14 +152,14 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
     },
   },
   {
-    id: 'STROKE_SH_ABD',
-    code: 'STROKE_SH_ABD',
+    id: 'ELDERLY_SH_ABD',
+    code: 'ELDERLY_SH_ABD',
     category: 'upper_limb',
-    clinicalFocus: 'stroke_adl',
+    clinicalFocus: 'elderly_adl',
     name: {
-      th: '[Stroke ADL] กางแขนด้านข้าง (ฝึกกางแขนสวมเสื้อ)',
-      en: 'Stroke ADL: Shoulder Abduction',
-      cn: '卒中康复 ADL：肩外展上举（穿衣训练）',
+      th: '[ผู้สูงอายุ] กางแขนด้านข้าง (ฝึกกางแขนสวมเสื้อ/ลดไหล่ติด)',
+      en: 'Elderly Care: Shoulder Abduction',
+      cn: '老年康复训练：肩外展上举（预防肩周僵硬）',
     },
     instruction: {
       th: 'กางแขนออกด้านข้างช้าๆ โดยไม่ยักไหล่ช่วย ค้างไว้ 3 วินาที แล้วลดลง',
@@ -171,8 +171,8 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
       jointGroup: 'shoulder',
       side: 'right',
       targetMinDeg: 85,
-      targetMaxDeg: 160,
-      targetRomDeg: 115,
+      targetMaxDeg: 180,
+      targetRomDeg: 180,
       startRestMaxDeg: 30,
       holdSec: 3,
       defaultSets: 2,
@@ -182,14 +182,14 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
     },
   },
   {
-    id: 'STROKE_CROSS_BODY',
-    code: 'STROKE_CROSS_BODY',
+    id: 'ELDERLY_CROSS_BODY',
+    code: 'ELDERLY_CROSS_BODY',
     category: 'upper_limb',
-    clinicalFocus: 'stroke_adl',
+    clinicalFocus: 'elderly_adl',
     name: {
-      th: '[Stroke ADL] เอื้อมมือแตะไหล่ฝั่งตรงข้าม (ฝึกดึงแขนเสื้อ/ใส่เสื้อคลุม)',
-      en: 'Stroke ADL: Cross-Body Shoulder Reach',
-      cn: '卒中康复 ADL：横越胸前触碰对侧肩',
+      th: '[ผู้สูงอายุ] เอื้อมมือแตะไหล่ฝั่งตรงข้าม (ฝึกยืดสะบัก/สวมเสื้อคลุม)',
+      en: 'Elderly Care: Cross-Body Shoulder Reach',
+      cn: '老年康复训练：横越胸前触碰对侧肩',
     },
     instruction: {
       th: 'ยกมืออ้อมหน้าอกไปแตะหัวไหล่ฝั่งตรงข้ามช้าๆ ค้างไว้ 3 วินาทีแล้วคลายออก',
@@ -201,8 +201,8 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
       jointGroup: 'shoulder',
       side: 'right',
       targetMinDeg: 75,
-      targetMaxDeg: 145,
-      targetRomDeg: 110,
+      targetMaxDeg: 180,
+      targetRomDeg: 180,
       startRestMaxDeg: 25,
       holdSec: 3,
       defaultSets: 2,
@@ -212,14 +212,14 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
     },
   },
   {
-    id: 'STROKE_SH_ROT',
-    code: 'STROKE_SH_ROT',
+    id: 'ELDERLY_SH_ROT',
+    code: 'ELDERLY_SH_ROT',
     category: 'upper_limb',
-    clinicalFocus: 'stroke_adl',
+    clinicalFocus: 'elderly_adl',
     name: {
-      th: '[Stroke ADL] หมุนข้อไหล่เข้า-ออก (อ้อมใส่เสื้อ/ติดกระดุม)',
-      en: 'Stroke ADL: Shoulder External/Internal Rotation',
-      cn: '卒中康复 ADL：肩关节内外旋（穿衣与扣纽扣）',
+      th: '[ผู้สูงอายุ] หมุนข้อไหล่เข้า-ออก (ฝึกอ้อมสวมเสื้อ/ติดกระดุม)',
+      en: 'Elderly Care: Shoulder External/Internal Rotation',
+      cn: '老年康复训练：肩关节内外旋（日常穿衣与扣纽扣）',
     },
     instruction: {
       th: 'แนบข้อศอกชิดลำตัว หมุนปลายแขนออกด้านข้างช้าๆ ค้างไว้ 3 วินาที',
@@ -241,14 +241,14 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
     },
   },
   {
-    id: 'STROKE_SCAP_PROTRACT',
-    code: 'STROKE_SCAP_PROTRACT',
+    id: 'ELDERLY_SCAP_PROTRACT',
+    code: 'ELDERLY_SCAP_PROTRACT',
     category: 'upper_limb',
-    clinicalFocus: 'stroke_adl',
+    clinicalFocus: 'elderly_adl',
     name: {
-      th: '[Stroke ADL] เหยียดแขนดันไปด้านหน้าระดับอก (ป้องกันข้อไหล่หลุด)',
-      en: 'Stroke ADL: Scapular Protraction Forward Punch',
-      cn: '卒中康复 ADL：胸前伸直前推（预防肩关节半脱位）',
+      th: '[ผู้สูงอายุ] เหยียดแขนดันไปด้านหน้าระดับอก (เสริมความมั่นคงข้อไหล่)',
+      en: 'Elderly Care: Scapular Protraction Forward Reach',
+      cn: '老年康复训练：胸前伸直前推（增强肩关节稳定）',
     },
     instruction: {
       th: 'เหยียดแขนระดับอกแล้วดันสะบักไปด้านหน้าเบาๆ ค้างไว้ 3 วินาที',
@@ -260,8 +260,8 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
       jointGroup: 'shoulder',
       side: 'right',
       targetMinDeg: 75,
-      targetMaxDeg: 120,
-      targetRomDeg: 95,
+      targetMaxDeg: 180,
+      targetRomDeg: 180,
       startRestMaxDeg: 25,
       holdSec: 3,
       defaultSets: 2,
@@ -272,27 +272,27 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
     },
   },
   {
-    id: 'STROKE_ELB_FLEX_EXT',
-    code: 'STROKE_ELB_FLEX_EXT',
+    id: 'ELDERLY_ELB_FLEX_EXT',
+    code: 'ELDERLY_ELB_FLEX_EXT',
     category: 'upper_limb',
-    clinicalFocus: 'stroke_adl',
+    clinicalFocus: 'elderly_adl',
     name: {
-      th: '[Stroke ADL] งอ-เหยียดข้อศอก (ดึงแขนเสื้อ/ป้อนอาหาร)',
-      en: 'Stroke ADL: Elbow Flexion & Extension',
-      cn: '卒中康复 ADL：肘关节屈伸（拉袖/进食训练）',
+      th: '[ผู้สูงอายุ] งอ-เหยียดข้อศอก (ฝึกตักอาหาร/ดึงแขนเสื้อ)',
+      en: 'Elderly Care: Elbow Flexion & Extension',
+      cn: '老年康复训练：肘关节屈伸（进食与穿衣训练）',
     },
     instruction: {
       th: 'งอข้อศอกพับมือเข้าหาไหล่/ปากช้าๆ ค้างไว้ 2 วินาที แล้วเหยียดตรง',
       en: 'Flex elbow smoothly toward shoulder/mouth, hold 2s, then fully extend arm straight',
-      cn: '缓慢屈曲手肘靠近肩部保持2秒，再充分伸直缓解痉挛',
+      cn: '缓慢屈曲手肘靠近肩部保持2秒，再充分伸直放松肌肉',
     },
     detection: {
       mode: 'angle_rep_hold',
       jointGroup: 'elbow',
       side: 'right',
       targetMinDeg: 95,
-      targetMaxDeg: 145,
-      targetRomDeg: 125,
+      targetMaxDeg: 180,
+      targetRomDeg: 180,
       startRestMaxDeg: 40,
       holdSec: 2,
       defaultSets: 2,
@@ -300,14 +300,14 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
     },
   },
   {
-    id: 'STROKE_HAND_TO_HEAD',
-    code: 'STROKE_HAND_TO_HEAD',
+    id: 'ELDERLY_HAND_TO_HEAD',
+    code: 'ELDERLY_HAND_TO_HEAD',
     category: 'upper_limb',
-    clinicalFocus: 'stroke_adl',
+    clinicalFocus: 'elderly_adl',
     name: {
-      th: '[Stroke ADL] ยกมือแตะศีรษะ (ฝึกสวมเสื้อทางศีรษะ/หวีผม)',
-      en: 'Stroke ADL: Hand-to-Head Grooming Reach',
-      cn: '卒中康复 ADL：上举触头顶（梳头/穿套头衣）',
+      th: '[ผู้สูงอายุ] ยกมือแตะศีรษะ (ฝึกหวีผม/สวมเสื้อทางศีรษะ)',
+      en: 'Elderly Care: Hand-to-Head Grooming Reach',
+      cn: '老年康复训练：上举触头顶（梳头与日常洗护）',
     },
     instruction: {
       th: 'ยกมือขึ้นแตะศีรษะช้าๆ โดยไม่ก้มคอหาแขน ค้างไว้ 3 วินาที',
@@ -319,8 +319,8 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
       jointGroup: 'shoulder',
       side: 'right',
       targetMinDeg: 100,
-      targetMaxDeg: 150,
-      targetRomDeg: 130,
+      targetMaxDeg: 180,
+      targetRomDeg: 180,
       startRestMaxDeg: 35,
       holdSec: 3,
       defaultSets: 2,
@@ -330,14 +330,14 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
     },
   },
   {
-    id: 'STROKE_FOREARM_TURN',
-    code: 'STROKE_FOREARM_TURN',
+    id: 'ELDERLY_FOREARM_TURN',
+    code: 'ELDERLY_FOREARM_TURN',
     category: 'upper_limb',
-    clinicalFocus: 'stroke_adl',
+    clinicalFocus: 'elderly_adl',
     name: {
-      th: '[Stroke ADL] พลิกหงาย-คว่ำฝ่ามือ (ฝึกถือช้อน/บิดลูกบิดประตู)',
-      en: 'Stroke ADL: Forearm Supination & Pronation',
-      cn: '卒中康复 ADL：前臂旋前旋后（握勺/转门把手）',
+      th: '[ผู้สูงอายุ] พลิกหงาย-คว่ำฝ่ามือ (ฝึกถือช้อน/บิดลูกบิดประตู)',
+      en: 'Elderly Care: Forearm Supination & Pronation',
+      cn: '老年康复训练：前臂旋前旋后（握勺与开门训练）',
     },
     instruction: {
       th: 'ตั้งศอกข้างลำตัว พลิกหงายฝ่ามือขึ้นค้างไว้ 2.5 วินาที แล้วพลิกคว่ำลง',
@@ -359,14 +359,14 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
     },
   },
   {
-    id: 'STROKE_WRIST_FINGER',
-    code: 'STROKE_WRIST_FINGER',
+    id: 'ELDERLY_WRIST_FINGER',
+    code: 'ELDERLY_WRIST_FINGER',
     category: 'upper_limb',
-    clinicalFocus: 'stroke_adl',
+    clinicalFocus: 'elderly_adl',
     name: {
-      th: '[Stroke ADL] กระดกข้อมือ & กาง-กำนิ้วมือ (ลดเกร็งนิ้วมือ)',
-      en: 'Stroke ADL: Wrist Extension & Finger Open/Close',
-      cn: '卒中康复 ADL：腕背伸与五指张合减痉',
+      th: '[ผู้สูงอายุ] กระดกข้อมือ & กาง-กำนิ้วมือ (บริหารข้อมือและนิ้วมือ)',
+      en: 'Elderly Care: Wrist Extension & Finger Open/Close',
+      cn: '老年康复训练：腕背伸与五指张合灵活训练',
     },
     instruction: {
       th: 'กระดกข้อมือขึ้นพร้อมกางนิ้วมือทั้ง 5 นิ้วให้สุด ค้างไว้ 2.5 วินาที แล้วกำมือเบาๆ',
@@ -388,14 +388,14 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
     },
   },
   {
-    id: 'STROKE_THUMB_PINCH',
-    code: 'STROKE_THUMB_PINCH',
+    id: 'ELDERLY_THUMB_PINCH',
+    code: 'ELDERLY_THUMB_PINCH',
     category: 'upper_limb',
-    clinicalFocus: 'stroke_adl',
+    clinicalFocus: 'elderly_adl',
     name: {
-      th: '[Stroke ADL] จีบนิ้วโป้งแตะปลายนิ้วมือ (ฝึกติดกระดุมเสื้อ/รูดซิป)',
-      en: 'Stroke ADL: Thumb-to-Finger Fine Pinch',
-      cn: '卒中康复 ADL：拇指对指精细抓捏（系纽扣/拉链）',
+      th: '[ผู้สูงอายุ] จีบนิ้วโป้งแตะปลายนิ้วมือ (ฝึกติดกระดุม/หยิบจับสิ่งของ)',
+      en: 'Elderly Care: Thumb-to-Finger Fine Pinch',
+      cn: '老年康复训练：拇指对指精细抓捏（系纽扣与抓握）',
     },
     instruction: {
       th: 'แตะปลายนิ้วโป้งเข้ากับปลายนิ้วชี้-กลาง-นาง-ก้อยเรียงตามลำดับแล้วกางออก',
@@ -417,27 +417,27 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
     },
   },
   {
-    id: 'STROKE_BOBATH_ARM_RAISE',
-    code: 'STROKE_BOBATH_ARM_RAISE',
+    id: 'ELDERLY_CLASPED_ARM_RAISE',
+    code: 'ELDERLY_CLASPED_ARM_RAISE',
     category: 'upper_limb',
-    clinicalFocus: 'stroke_adl',
+    clinicalFocus: 'elderly_adl',
     name: {
-      th: '[Stroke & สธ.] ประสานมือชูขึ้นเหนือศีรษะ (ท่า Bobath พยุงแขนอ่อนแรง)',
-      en: 'Stroke & MOPH: Bobath Bilateral Clasped Arm Raise',
-      cn: '卒中与老年康复：Bobath 双手交叉上举过头',
+      th: '[สธ. ผู้สูงอายุ] ประสานมือชูขึ้นเหนือศีรษะ (ยืดเหยียดแขนและไหล่สองข้าง)',
+      en: 'MOPH Elderly: Bilateral Clasped Overhead Arm Raise',
+      cn: '老年康复训练：双手交叉上举过头（双侧肩臂伸展）',
     },
     instruction: {
-      th: 'ประสานมือใช้แขนข้างปกติช่วยพยุงแขนข้างที่อ่อนแรงชูขึ้นช้าๆ ค้างไว้ 3 วินาที',
-      en: 'Clasp fingers together and gently assist the weaker arm upward overhead, hold 3s',
-      cn: '双手十指交叉，健侧辅助患侧缓慢高举过头顶保持3秒',
+      th: 'ประสานนิ้วมือทั้งสองข้างแล้วค่อยๆ ชูแขนขึ้นเหนือศีรษะพร้อมกันช้าๆ ค้างไว้ 3 วินาที',
+      en: 'Clasp both hands together and raise arms gently overhead in unison, hold 3s',
+      cn: '双手十指交叉，缓慢平稳向上高举过头顶保持3秒',
     },
     detection: {
       mode: 'bilateral_raise',
       jointGroup: 'shoulder',
       side: 'both',
       targetMinDeg: 100,
-      targetMaxDeg: 160,
-      targetRomDeg: 135,
+      targetMaxDeg: 180,
+      targetRomDeg: 180,
       startRestMaxDeg: 35,
       holdSec: 3,
       defaultSets: 2,
@@ -447,14 +447,14 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
     },
   },
   {
-    id: 'STROKE_BOBATH_FORWARD_PUSH',
-    code: 'STROKE_BOBATH_FORWARD_PUSH',
+    id: 'ELDERLY_CLASPED_FORWARD_PUSH',
+    code: 'ELDERLY_CLASPED_FORWARD_PUSH',
     category: 'upper_limb',
-    clinicalFocus: 'stroke_adl',
+    clinicalFocus: 'elderly_adl',
     name: {
-      th: '[Stroke ADL] ประสานมือดันเหยียดแขนไปด้านหน้า (ลดเกร็งพับศอก)',
-      en: 'Stroke ADL: Bobath Bilateral Forward Elbow Push',
-      cn: '卒中康复 ADL：双手交叉向前伸肘推展（缓解屈肘痉挛）',
+      th: '[ผู้สูงอายุ] ประสานมือดันเหยียดแขนไปด้านหน้า (คลายตึงแขนและข้อศอก)',
+      en: 'Elderly Care: Bilateral Clasped Forward Elbow Push',
+      cn: '老年康复训练：双手交叉向前伸肘推展（缓解上肢僵硬）',
     },
     instruction: {
       th: 'ประสานมือระดับอกแล้วดันเหยียดข้อศอกออกไปด้านหน้าตรงๆ ค้างไว้ 3 วินาที',
@@ -466,8 +466,8 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
       jointGroup: 'elbow',
       side: 'both',
       targetMinDeg: 110,
-      targetMaxDeg: 165,
-      targetRomDeg: 145,
+      targetMaxDeg: 180,
+      targetRomDeg: 180,
       startRestMaxDeg: 95,
       holdSec: 3,
       defaultSets: 2,
@@ -478,7 +478,7 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
   },
 
   // =========================================================================
-  // หมวด 2: คอและบ่า (สธ. ผู้สูงอายุ & Stroke Upper Trunk — 3 ท่าหลัก)
+  // หมวด 2: คอและบ่า (สธ. ผู้สูงอายุ — 3 ท่าหลัก)
   // =========================================================================
   {
     id: 'MOPH_NECK_TILT',
@@ -514,14 +514,14 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
     category: 'neck_trunk',
     clinicalFocus: 'moph_elderly',
     name: {
-      th: '[Stroke & สธ.] หันศีรษะมองซ้าย-ขวาช้าๆ (กระตุ้นการรับรู้ภาพด้านที่อ่อนแรง)',
-      en: 'Stroke & MOPH: Neck Rotation Visual Scanning',
-      cn: '卒中与老年康复：缓慢转头视野扫描训练',
+      th: '[สธ. ผู้สูงอายุ] หันศีรษะมองซ้าย-ขวาช้าๆ (บริหารคอและเพิ่มมุมมองรอบตัว)',
+      en: 'MOPH Elderly: Gentle Neck Rotation Mobility',
+      cn: '卫生部老年保健：缓慢左右转头颈部灵活训练',
     },
     instruction: {
-      th: 'หันศีรษะมองด้านข้างช้าๆ ค้าง 2 วินาที เพื่อบริหารคอและลดภาวะละเลยครึ่งซีก',
-      en: 'Turn head smoothly sideways holding 2s to improve cervical ROM and visual scanning',
-      cn: '头部缓慢向侧方转动保持2秒，改善偏侧视野注意与颈椎活动',
+      th: 'หันศีรษะมองด้านข้างช้าๆ ค้าง 2 วินาที เพื่อบริหารข้อต่อคอและลดอาการตึงคอ',
+      en: 'Turn head smoothly sideways holding 2s to improve cervical ROM and reduce stiffness',
+      cn: '头部缓慢向侧方转动保持2秒，舒缓颈部僵硬并提升转头灵活度',
     },
     detection: {
       mode: 'neck_tilt',
@@ -568,9 +568,9 @@ export const CLINICAL_EXERCISES: readonly ExerciseConfig[] = [
   },
 ];
 
-export const STROKE_CANONICAL_EXERCISE_CODES: readonly string[] = CLINICAL_EXERCISES.map((ex) => ex.code);
-export const STROKE_CANONICAL_EXERCISE_SET: ReadonlySet<string> = new Set(
-  STROKE_CANONICAL_EXERCISE_CODES.map((c) => c.toUpperCase()),
+export const ELDERLY_CANONICAL_EXERCISE_CODES: readonly string[] = CLINICAL_EXERCISES.map((ex) => ex.code);
+export const ELDERLY_CANONICAL_EXERCISE_SET: ReadonlySet<string> = new Set(
+  ELDERLY_CANONICAL_EXERCISE_CODES.map((c) => c.toUpperCase()),
 );
 export const CLINICAL_MASTER_EXERCISE_MAP: ReadonlyMap<string, ExerciseConfig> = new Map(
   CLINICAL_EXERCISES.map((ex) => [ex.code.toUpperCase(), ex]),
@@ -594,8 +594,8 @@ export function exerciseSideToBodySide(side: ExerciseSideCode): BodySide | 'both
 }
 
 /**
- * Resolves any legacy (`STROKE_SH_FLEX_R`, `ex-01`, `MOPH_NECK_TURN_BILATERAL`),
- * effective (`STROKE_SH_FLEX_LEFT`), or unified master code (`STROKE_SH_FLEX`) into
+ * Resolves any legacy (`ELDERLY_SH_FLEX_R`, `ex-01`, `MOPH_NECK_TURN_BILATERAL`),
+ * effective (`ELDERLY_SH_FLEX_LEFT`), or unified master code (`ELDERLY_SH_FLEX`) into
  * `{ baseCode, side, effectiveCode, hasExplicitSide }`.
  */
 export function parseExerciseCodeAndSide(
@@ -610,7 +610,7 @@ export function parseExerciseCodeAndSide(
   const clean = (rawId ?? '').trim();
   const explicit = normalizeSideValue(explicitSide);
   const mappedLegacy = LEGACY_EXERCISE_ID_MAP[clean.toLowerCase()];
-  const candidate = (mappedLegacy ?? (clean || 'STROKE_SH_FLEX')).toUpperCase();
+  const candidate = (mappedLegacy ?? (clean || 'ELDERLY_SH_FLEX')).toUpperCase();
 
   let rawBase = candidate;
   let inferredFromSuffix: ExerciseSideCode | null = null;
@@ -621,7 +621,19 @@ export function parseExerciseCodeAndSide(
   }
 
   if (rawBase === 'MOPH_NECK_TURN_BILATERAL') rawBase = 'MOPH_NECK_TURN';
-  if (rawBase === 'MOPH_BILATERAL_ARM_RAISE') rawBase = 'STROKE_BOBATH_ARM_RAISE';
+  if (rawBase === 'MOPH_BILATERAL_ARM_RAISE') rawBase = 'ELDERLY_CLASPED_ARM_RAISE';
+  if (!CLINICAL_MASTER_EXERCISE_MAP.has(rawBase)) {
+    const legacySuffixMatch = rawBase.match(
+      /^[A-Z]+_(SH_FLEX|SH_ABD|CROSS_BODY|SH_ROT|SCAP_PROTRACT|ELB_FLEX_EXT|HAND_TO_HEAD|FOREARM_TURN|WRIST_FINGER|THUMB_PINCH)$/,
+    );
+    if (legacySuffixMatch) {
+      rawBase = `ELDERLY_${legacySuffixMatch[1]}`;
+    } else if (rawBase.endsWith('_ARM_RAISE')) {
+      rawBase = 'ELDERLY_CLASPED_ARM_RAISE';
+    } else if (rawBase.endsWith('_FORWARD_PUSH')) {
+      rawBase = 'ELDERLY_CLASPED_FORWARD_PUSH';
+    }
+  }
 
   const master = CLINICAL_MASTER_EXERCISE_MAP.get(rawBase);
   const baseCode = master ? master.code : rawBase;
@@ -711,7 +723,7 @@ export function resolveActiveExerciseSide(
     const master = CLINICAL_MASTER_EXERCISE_MAP.get(candidate);
     if (master?.detection.side === 'both') return 'BOTH';
     if (
-      candidate.includes('BOBATH_ARM_RAISE') ||
+      candidate.includes('CLASPED_ARM_RAISE') ||
       candidate.includes('BILATERAL') ||
       candidate.includes('FORWARD_PUSH') ||
       candidate.includes('SHRUG') ||
@@ -785,8 +797,8 @@ export function resolveDefaultSideForExercise(
   const master = CLINICAL_MASTER_EXERCISE_MAP.get(base.toUpperCase()) ?? ex;
   const defaultMasterSide = master.detection?.side;
   const isInherentlyBilateral =
-    base === 'STROKE_BOBATH_ARM_RAISE' ||
-    base === 'STROKE_BOBATH_FORWARD_PUSH' ||
+    base === 'ELDERLY_CLASPED_ARM_RAISE' ||
+    base === 'ELDERLY_CLASPED_FORWARD_PUSH' ||
     base === 'MOPH_NECK_TURN' ||
     base === 'MOPH_SHOULDER_SHRUG_ROLL' ||
     master.detection?.mode === 'bilateral_raise' ||
@@ -903,18 +915,18 @@ export function mergeDuplicateSideExercises<T extends ExerciseConfig>(rawExercis
   return [...Array.from(byCode.values()), ...Array.from(customMap.values())];
 }
 
-export function normalizeStrokeExerciseId(rawId: string | undefined | null): string {
+export function normalizeElderlyExerciseId(rawId: string | undefined | null): string {
   const clean = (rawId ?? '').trim();
-  if (!clean) return 'STROKE_SH_FLEX';
+  if (!clean) return 'ELDERLY_SH_FLEX';
   const up = clean.toUpperCase();
-  if (STROKE_CANONICAL_EXERCISE_SET.has(up)) {
+  if (ELDERLY_CANONICAL_EXERCISE_SET.has(up)) {
     return up;
   }
   if (LEGACY_EXERCISE_ID_MAP[clean.toLowerCase()]) {
     return LEGACY_EXERCISE_ID_MAP[clean.toLowerCase()];
   }
   const match = up.match(SIDE_SUFFIX_REGEX);
-  if (match && STROKE_CANONICAL_EXERCISE_SET.has(match[1])) {
+  if (match && ELDERLY_CANONICAL_EXERCISE_SET.has(match[1])) {
     const suffix = match[2].toUpperCase();
     if (suffix === 'R' || suffix === 'L' || suffix === 'LEFT' || suffix === 'RIGHT' || suffix === 'BOTH') {
       return `${match[1]}_${suffix}`;
@@ -929,19 +941,20 @@ export function isDeprecatedExerciseRecord(ex: { id?: string; code?: string; cat
   const idLo = (ex.id ?? '').trim().toLowerCase();
   if (DEPRECATED_EXERCISE_CODE_SET.has(codeUp)) return true;
   if (/^ex-(0?[1-9]|[1-3][0-9]|40)$/.test(idLo)) return true;
+  if (/_(R|L)$/i.test(codeUp) && !ELDERLY_CANONICAL_EXERCISE_SET.has(codeUp)) return true;
   if (ex.category === 'lower_limb' || ex.category === 'balance') return true;
   return false;
 }
 
-export function sortExercisesStrokeUpperFirst<T extends ExerciseConfig>(exercises: ReadonlyArray<T>): T[] {
+export function sortExercisesElderlyUpperFirst<T extends ExerciseConfig>(exercises: ReadonlyArray<T>): T[] {
   const canonicalOrder = new Map<string, number>(
-    STROKE_CANONICAL_EXERCISE_CODES.map((code, idx) => [code, idx]),
+    ELDERLY_CANONICAL_EXERCISE_CODES.map((code, idx) => [code, idx]),
   );
   const rank = (ex: T): number => {
     const { baseCode } = parseExerciseCodeAndSide(ex.code || ex.id);
     const idx = canonicalOrder.get(baseCode) ?? canonicalOrder.get(ex.code) ?? canonicalOrder.get(ex.id);
     if (typeof idx === 'number') return idx;
-    if (ex.clinicalFocus === 'stroke_adl') return 100;
+    if (ex.clinicalFocus === 'elderly_adl') return 100;
     if (ex.clinicalFocus === 'moph_elderly') return 200;
     if (ex.category === 'upper_limb' || ex.category === 'neck_trunk') return 300;
     return 900;

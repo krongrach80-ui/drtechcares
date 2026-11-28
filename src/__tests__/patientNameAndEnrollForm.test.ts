@@ -8,6 +8,11 @@ import { ClinicalI18nProvider } from '@drtechcares/clinical-i18n';
 import {
   composeThaiFullName,
   computeEnrollmentReadiness,
+  deriveElderlyMusclePowerLevelFromRom,
+  ELDERLY_MIN_AGE,
+  ELDERLY_MUSCLE_POWER_5_LEVELS,
+  ELDERLY_THAI_NAME_PREFIX_OPTIONS,
+  getElderlyMusclePowerSpec,
   resolveGenderForPrefix,
   resolvePrefixForGender,
   splitThaiFullName,
@@ -126,7 +131,7 @@ describe('Thai Patient Name Prefix, Split/Compose & Gender Sync Helpers', () => 
       birthDate: '1981-05-12',
       age: 45,
       phone: '0812345678',
-      clinicalDiagnosis: 'Ischemic Stroke แขนอ่อนแรง',
+      clinicalDiagnosis: 'ผู้สูงอายุแขนอ่อนแรง',
       emergencyName: 'สมศรี รุ่งเรือง',
       pdpaAccepted: true,
     });
@@ -134,7 +139,26 @@ describe('Thai Patient Name Prefix, Split/Compose & Gender Sync Helpers', () => 
     expect(fullComplete.percent).toBe(100);
   });
 
-  it('renders game-style Step 1 enrollment modal with split title, firstName, lastName, and synced gender controls', () => {
+  it('defines elderly-only prefixes and a 5-level muscle power scale ending at 180 degrees', () => {
+    expect(ELDERLY_MIN_AGE).toBe(60);
+    expect(ELDERLY_THAI_NAME_PREFIX_OPTIONS.map((o) => o.label)).toEqual([
+      'นาย',
+      'นางสาว',
+      'นาง',
+      'ไม่ระบุ',
+    ]);
+    expect(ELDERLY_MUSCLE_POWER_5_LEVELS).toHaveLength(5);
+    expect(ELDERLY_MUSCLE_POWER_5_LEVELS.map((l) => l.level)).toEqual([1, 2, 3, 4, 5]);
+    expect(ELDERLY_MUSCLE_POWER_5_LEVELS[4].maxRomDeg).toBe(180);
+    expect(getElderlyMusclePowerSpec(5).maxRomDeg).toBe(180);
+    expect(deriveElderlyMusclePowerLevelFromRom(45)).toBe(1);
+    expect(deriveElderlyMusclePowerLevelFromRom(85)).toBe(2);
+    expect(deriveElderlyMusclePowerLevelFromRom(115)).toBe(3);
+    expect(deriveElderlyMusclePowerLevelFromRom(145)).toBe(4);
+    expect(deriveElderlyMusclePowerLevelFromRom(180)).toBe(5);
+  });
+
+  it('renders elderly-only Step 1 enrollment modal with 5-level 180° muscle scale, Chief Complaint, Diagnosis, Surgery History, and AI Arm ROM button', () => {
     const mockUser: UserAccount = {
       id: 'staff-1',
       username: 'admin',
@@ -165,17 +189,52 @@ describe('Thai Patient Name Prefix, Split/Compose & Gender Sync Helpers', () => 
     );
 
     expect(html).toContain('data-testid="enroll-live-profile-card"');
+    expect(html).toContain('data-testid="enroll-elderly-scope-badge"');
+    expect(html).toContain('เฉพาะผู้สูงอายุ (60 ปีขึ้นไป)');
     expect(html).toContain('data-testid="enroll-prefix-bar"');
     expect(html).toContain('data-testid="enroll-prefix-นาย"');
     expect(html).toContain('data-testid="enroll-prefix-นางสาว"');
     expect(html).toContain('data-testid="enroll-prefix-นาง"');
+    // Strictly elderly scope — child prefixes must not appear in enrollment modal
+    expect(html).not.toContain('data-testid="enroll-prefix-ด.ช."');
+    expect(html).not.toContain('data-testid="enroll-prefix-ด.ญ."');
     expect(html).toContain('data-testid="enroll-first-name-input"');
     expect(html).toContain('data-testid="enroll-last-name-input"');
     expect(html).toContain('data-testid="enroll-gender-bar"');
     expect(html).toContain('data-testid="enroll-dob-picker"');
     expect(html).toContain('data-testid="enroll-composed-name-preview"');
-    expect(html).toContain('ชื่อจริง');
-    expect(html).toContain('นามสกุล');
+    // Chief Complaint (CC) full form
+    expect(html).toContain('data-testid="enroll-chief-complaint-card"');
+    expect(html).toContain('data-testid="enroll-chief-complaint-input"');
+    expect(html).toContain('data-testid="enroll-cc-duration-input"');
+    expect(html).toContain('data-testid="enroll-cc-pain-scale"');
+    expect(html).toContain('Chief Complaint (CC)');
+    // Dedicated Diagnosis & Surgical History fields
+    expect(html).toContain('data-testid="enroll-diagnosis-input"');
+    expect(html).toContain('การวินิจฉัยโรค (Diagnosis)');
+    expect(html).toContain('data-testid="enroll-surgical-history-section"');
+    expect(html).toContain('data-testid="enroll-surgical-history-input"');
+    expect(html).toContain('ประวัติการผ่าตัด (Surgical History)');
+    // 5-Level Muscle Power scale with level 5 = 180 deg
+    expect(html).toContain('data-testid="enroll-muscle-power-scale"');
+    expect(html).toContain('data-testid="enroll-muscle-level-1"');
+    expect(html).toContain('data-testid="enroll-muscle-level-5"');
+    expect(html).not.toContain('data-testid="enroll-muscle-level-6"');
+    expect(html).toContain('180°');
+    // Live AI Arm ROM measurement button
+    expect(html).toContain('data-testid="enroll-arm-rom-panel"');
+    expect(html).toContain('data-testid="enroll-arm-rom-input"');
+    expect(html).toContain('data-testid="enroll-measure-arm-rom-btn"');
+    expect(html).toContain('วัดองศาแขน (กล้อง AI)');
+    // Elderly care & history taking
+    expect(html).toContain('ข้อไหล่และแขนผู้สูงอายุ');
+    expect(html).toContain('ผู้สูงอายุทั่วไป');
+    expect(html).toContain('ผู้สูงอายุข้อเสื่อม');
+    expect(html).toContain('data-testid="enroll-history-taking-card"');
+    expect(html).toContain('data-testid="enroll-history-taking-input"');
+    expect(html).toContain('ซักประวัติผู้สูงอายุ');
+    expect(html).not.toContain('กำลังกล้ามเนื้อ มหิดล');
+    expect(html).not.toContain('Grade 3/6');
     expect(html).not.toContain('NEW PLAYER PROFILE');
     expect(html).not.toContain('(Player Identity)');
     expect(EMOJI_PATTERN.test(html)).toBe(false);

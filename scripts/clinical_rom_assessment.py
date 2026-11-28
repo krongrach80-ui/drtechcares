@@ -20,6 +20,45 @@ MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
     "pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task"
 )
+HAND_MODEL_PATH = os.path.join("models", "hand_landmarker.task")
+HAND_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+    "hand_landmarker/float16/latest/hand_landmarker.task"
+)
+
+HAND21_FINGER_CHAINS: dict[str, tuple[int, int, int, int]] = {
+    "thumb": (1, 2, 3, 4),
+    "index": (5, 6, 7, 8),
+    "middle": (9, 10, 11, 12),
+    "ring": (13, 14, 15, 16),
+    "pinky": (17, 18, 19, 20),
+}
+HAND21_FINGER_COLORS_BGR: dict[str, tuple[int, int, int]] = {
+    "thumb": (11, 158, 245),
+    "index": (248, 189, 56),
+    "middle": (129, 185, 16),
+    "ring": (250, 139, 167),
+    "pinky": (182, 114, 244),
+}
+HAND21_PALM_RING: tuple[int, ...] = (0, 5, 9, 13, 17)
+PINCH_LABELS_TH: dict[str, str] = {
+    "index": "นิ้วชี้",
+    "middle": "นิ้วกลาง",
+    "ring": "นิ้วนาง",
+    "pinky": "นิ้วก้อย",
+}
+
+
+def ensure_task_model(model_path: str, model_url: str, label: str) -> str:
+    """ตรวจสอบไฟล์โมเดล MediaPipe Tasks และดาวน์โหลดอัตโนมัติหากยังไม่มี"""
+    model_dir = os.path.dirname(model_path)
+    if model_dir:
+        os.makedirs(model_dir, exist_ok=True)
+    if not os.path.exists(model_path):
+        print(f"[INFO] Downloading {label} model to {model_path} ...")
+        urllib.request.urlretrieve(model_url, model_path)
+        print(f"[INFO] {label} download complete.")
+    return model_path
 
 
 def ensure_pose_landmarker_model(
@@ -27,14 +66,7 @@ def ensure_pose_landmarker_model(
     model_url: str = MODEL_URL,
 ) -> str:
     """ตรวจสอบไฟล์โมเดล MediaPipe Pose Landmarker Heavy และดาวน์โหลดอัตโนมัติหากยังไม่มี"""
-    model_dir = os.path.dirname(model_path)
-    if model_dir:
-        os.makedirs(model_dir, exist_ok=True)
-    if not os.path.exists(model_path):
-        print(f"[INFO] Downloading PoseLandmarker Heavy model to {model_path} ...")
-        urllib.request.urlretrieve(model_url, model_path)
-        print("[INFO] Model download complete.")
-    return model_path
+    return ensure_task_model(model_path, model_url, "PoseLandmarker Heavy")
 
 
 def create_pose_landmarker(
@@ -53,6 +85,28 @@ def create_pose_landmarker(
         min_tracking_confidence=0.7,
     )
     return vision.PoseLandmarker.create_from_options(options)
+
+
+def create_hand_landmarker(
+    model_path: str = HAND_MODEL_PATH,
+    model_url: str = HAND_MODEL_URL,
+) -> vision.HandLandmarker | None:
+    """สร้างอินสแตนซ์ MediaPipe HandLandmarker 21 จุด (รองรับ 2 มือ + พิกัด 3 มิติ world_landmarks)"""
+    try:
+        resolved_path = ensure_task_model(model_path, model_url, "HandLandmarker 21-pt")
+        base_options = python.BaseOptions(model_asset_path=resolved_path)
+        options = vision.HandLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.VIDEO,
+            num_hands=2,
+            min_hand_detection_confidence=0.45,
+            min_hand_presence_confidence=0.45,
+            min_tracking_confidence=0.45,
+        )
+        return vision.HandLandmarker.create_from_options(options)
+    except Exception as exc:
+        print(f"[WARN] HandLandmarker 21-pt unavailable ({exc}); continuing with PoseLandmarker only.")
+        return None
 
 
 class OneEuroFilter:
@@ -228,18 +282,141 @@ def draw_joint_angle_arc(
     )
 
 
+def analyze_hand_21_metrics(
+    pts_3d: np.ndarray,
+    side_label: str = "Right",
+) -> dict[str, object]:
+    """วิเคราะห์ชีวกลศาสตร์มือ 21 จุดจาก MediaPipe HandLandmarker (นิ้ว 5 นิ้ว, การจีบนิ้ว, มุมหมุนฝ่ามือ 3 มิติ)"""
+    wrist = pts_3d[0]
+    index_mcp = pts_3d[5]
+    middle_mcp = pts_3d[9]
+    pinky_mcp = pts_3d[17]
+    palm_width = max(1e-4, float(np.linalg.norm(index_mcp - pinky_mcp)))
+
+    extended_count = 0
+    finger_ext_pcts: dict[str, float] = {}
+    for fname, (c0, c1, c2, c3) in HAND21_FINGER_CHAINS.items():
+        if fname == "thumb":
+            pip_ang = calculate_3d_angle(pts_3d[c0], pts_3d[c1], pts_3d[c2])
+            dip_ang = calculate_3d_angle(pts_3d[c1], pts_3d[c2], pts_3d[c3])
+            ext_pct = float(np.clip(((0.5 * (pip_ang + dip_ang)) - 115.0) / 55.0 * 100.0, 0.0, 100.0))
+            is_ext = ext_pct >= 55.0
+        else:
+            mcp_ang = calculate_3d_angle(wrist, pts_3d[c0], pts_3d[c1])
+            pip_ang = calculate_3d_angle(pts_3d[c0], pts_3d[c1], pts_3d[c2])
+            dip_ang = calculate_3d_angle(pts_3d[c1], pts_3d[c2], pts_3d[c3])
+            mean_ang = 0.25 * mcp_ang + 0.50 * pip_ang + 0.25 * dip_ang
+            ext_pct = float(np.clip((mean_ang - 90.0) / 80.0 * 100.0, 0.0, 100.0))
+            is_ext = pip_ang >= 145.0 and ext_pct >= 62.0
+        finger_ext_pcts[fname] = round(ext_pct, 1)
+        if is_ext:
+            extended_count += 1
+
+    # True 3D palm normal for signed pronation/supination roll [-90..+90 deg]
+    v_palm = middle_mcp - wrist
+    u_palm = pinky_mcp - index_mcp
+    normal = np.cross(v_palm, u_palm)
+    n_mag = float(np.linalg.norm(normal))
+    side_sign = 1.0 if side_label.lower() == "right" else -1.0
+    if n_mag > 1e-6:
+        up_comp = (-float(normal[1]) * side_sign) / n_mag
+        cam_comp = (-float(normal[2]) * side_sign) / n_mag
+        side_comp = abs(float(normal[0])) / n_mag
+        roll_deg = float(np.clip(math.degrees(math.atan2(up_comp * 0.72 + cam_comp * 0.68, max(0.08, side_comp))), -90.0, 90.0))
+    else:
+        roll_deg = 0.0
+
+    palm_label = "หงายฝ่ามือ" if roll_deg >= 28.0 else "คว่ำฝ่ามือ" if roll_deg <= -28.0 else "สันมือตรง"
+
+    thumb_tip = pts_3d[4]
+    pinch_map = {
+        "index": float(np.linalg.norm(thumb_tip - pts_3d[8])) / palm_width,
+        "middle": float(np.linalg.norm(thumb_tip - pts_3d[12])) / palm_width,
+        "ring": float(np.linalg.norm(thumb_tip - pts_3d[16])) / palm_width,
+        "pinky": float(np.linalg.norm(thumb_tip - pts_3d[20])) / palm_width,
+    }
+    best_pinch = min(pinch_map, key=pinch_map.get)
+    active_pinch = best_pinch if pinch_map[best_pinch] <= 0.42 else None
+
+    return {
+        "extended_count": extended_count,
+        "finger_ext_pcts": finger_ext_pcts,
+        "roll_deg": round(roll_deg, 1),
+        "palm_label_th": palm_label,
+        "active_pinch": active_pinch,
+        "active_pinch_th": PINCH_LABELS_TH[active_pinch] if active_pinch else None,
+    }
+
+
+def draw_hand_21_overlay(
+    frame: np.ndarray,
+    pts_2d: np.ndarray,
+    metrics: dict[str, object],
+) -> None:
+    """วาดโครงกระดูกมือและนิ้วทั้ง 5 นิ้วละเอียด 21 จุด แยกสีตามนิ้วพร้อมเส้นเชื่อมการจีบนิ้ว"""
+    palm_poly = np.array([pts_2d[idx] for idx in HAND21_PALM_RING], dtype=np.int32)
+    overlay = frame.copy()
+    cv2.fillPoly(overlay, [palm_poly], (180, 140, 40))
+    cv2.addWeighted(overlay, 0.18, frame, 0.82, 0.0, frame)
+    cv2.polylines(frame, [palm_poly], True, (220, 200, 90), 2)
+
+    wrist_pt = tuple(pts_2d[0].astype(int))
+    for fname, chain in HAND21_FINGER_CHAINS.items():
+        color = HAND21_FINGER_COLORS_BGR[fname]
+        first_pt = tuple(pts_2d[chain[0]].astype(int))
+        cv2.line(frame, wrist_pt, first_pt, color, 2)
+        for i in range(len(chain) - 1):
+            p_a = tuple(pts_2d[chain[i]].astype(int))
+            p_b = tuple(pts_2d[chain[i + 1]].astype(int))
+            cv2.line(frame, p_a, p_b, color, 3)
+
+    active_pinch = metrics.get("active_pinch")
+    if active_pinch in ("index", "middle", "ring", "pinky"):
+        tip_idx = {"index": 8, "middle": 12, "ring": 16, "pinky": 20}[str(active_pinch)]
+        cv2.line(
+            frame,
+            tuple(pts_2d[4].astype(int)),
+            tuple(pts_2d[tip_idx].astype(int)),
+            (130, 240, 80),
+            4,
+        )
+
+    for i in range(21):
+        pt = tuple(pts_2d[i].astype(int))
+        is_tip = i in (4, 8, 12, 16, 20)
+        is_wrist = i == 0
+        if is_wrist:
+            color = (240, 210, 60)
+        elif i <= 4:
+            color = HAND21_FINGER_COLORS_BGR["thumb"]
+        elif i <= 8:
+            color = HAND21_FINGER_COLORS_BGR["index"]
+        elif i <= 12:
+            color = HAND21_FINGER_COLORS_BGR["middle"]
+        elif i <= 16:
+            color = HAND21_FINGER_COLORS_BGR["ring"]
+        else:
+            color = HAND21_FINGER_COLORS_BGR["pinky"]
+        radius = 6 if (is_tip or is_wrist) else 4
+        cv2.circle(frame, pt, radius + 1, (255, 255, 255), -1)
+        cv2.circle(frame, pt, radius - 1, color, -1)
+
+
 def main() -> None:
-    # ตั้งค่า MediaPipe Tasks Vision API (PoseLandmarker Heavy) สำหรับงานคลินิก
+    # ตั้งค่า MediaPipe Tasks Vision API (PoseLandmarker Heavy + HandLandmarker 21-pt) สำหรับงานคลินิก
     landmarker = create_pose_landmarker()
+    hand_landmarker = create_hand_landmarker()
 
     # สร้าง 1€ Filter แยกสำหรับพิกัด 2D (วาดจอ), 3D (คำนวณมุมจริง) และตัวเลขมุม
     filter_2d = OneEuroFilter(min_cutoff=0.8, beta=0.04)
     filter_3d = OneEuroFilter(min_cutoff=0.6, beta=0.03)
     angle_filter = OneEuroFilter(min_cutoff=0.5, beta=0.02)
+    hand_filters_2d = [OneEuroFilter(min_cutoff=1.2, beta=0.06), OneEuroFilter(min_cutoff=1.2, beta=0.06)]
+    hand_filters_3d = [OneEuroFilter(min_cutoff=1.0, beta=0.05), OneEuroFilter(min_cutoff=1.0, beta=0.05)]
 
     # พารามิเตอร์สำหรับท่ากายภาพ: กางแขนซ้าย (Left Shoulder Abduction: 23 -> 11 -> 13)
     TARGET_MIN_ANGLE = 85.0
-    TARGET_MAX_ANGLE = 110.0
+    TARGET_MAX_ANGLE = 180.0
     REQUIRED_HOLD_TIME = 3.0
     VISIBILITY_THRESHOLD = 0.75  # คัดกรองความชัดเจนขั้นต่ำ 0.75
     MAX_SHOULDER_TILT_DEG = 12.0
@@ -278,11 +455,18 @@ def main() -> None:
             rgb_frame = np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
             results = landmarker.detect_for_video(mp_image, timestamp_ms)
+            hand_results = (
+                hand_landmarker.detect_for_video(mp_image, timestamp_ms)
+                if hand_landmarker is not None
+                else None
+            )
 
-            feedback_th = "เตรียมพร้อม: กางแขนซ้ายขึ้นระดับ 85-110 องศา"
-            feedback_ascii = "Ready: Abduct left arm to 85-110 deg"
+            feedback_th = f"เตรียมพร้อม: กางแขนซ้ายขึ้นระดับ {TARGET_MIN_ANGLE:.0f}-{TARGET_MAX_ANGLE:.0f} องศา"
+            feedback_ascii = f"Ready: Abduct left arm to {TARGET_MIN_ANGLE:.0f}-{TARGET_MAX_ANGLE:.0f} deg"
             status_color = (220, 220, 220)
             shoulder_angle = 0.0
+            hand_summary_th = "Hand21: รอตรวจจับนิ้วมือ"
+            hand_summary_ascii = "Hand21: Waiting for hand"
 
             if results.pose_landmarks and results.pose_world_landmarks:
                 raw_2d = results.pose_landmarks[0]
@@ -403,8 +587,42 @@ def main() -> None:
                 filter_3d.reset()
                 angle_filter.reset()
 
+            # ตรวจจับและวาดนิ้วมือละเอียด 21 จุดจาก MediaPipe HandLandmarker (2D + 3D world landmarks)
+            if hand_results and hand_results.hand_landmarks:
+                hand_labels_th: list[str] = []
+                hand_labels_ascii: list[str] = []
+                for hi, raw_hand_2d in enumerate(hand_results.hand_landmarks[:2]):
+                    pts_h2d = np.array([[lm.x * w, lm.y * h] for lm in raw_hand_2d], dtype=np.float64)
+                    smooth_h2d = hand_filters_2d[hi].apply(pts_h2d, now)
+                    if hand_results.hand_world_landmarks and hi < len(hand_results.hand_world_landmarks):
+                        raw_h3d = hand_results.hand_world_landmarks[hi]
+                        pts_h3d = np.array([[lm.x, lm.y, lm.z] for lm in raw_h3d], dtype=np.float64)
+                    else:
+                        pts_h3d = np.array([[lm.x, lm.y, lm.z] for lm in raw_hand_2d], dtype=np.float64)
+                    smooth_h3d = hand_filters_3d[hi].apply(pts_h3d, now)
+                    side_cat = "Right"
+                    if hand_results.handedness and hi < len(hand_results.handedness) and hand_results.handedness[hi]:
+                        side_cat = hand_results.handedness[hi][0].category_name
+                    h_metrics = analyze_hand_21_metrics(smooth_h3d, side_label=side_cat)
+                    draw_hand_21_overlay(frame, smooth_h2d, h_metrics)
+                    pinch_txt = f" | จีบ{h_metrics['active_pinch_th']}" if h_metrics["active_pinch_th"] else ""
+                    hand_labels_th.append(
+                        f"มือ{hi + 1}: เหยียด {h_metrics['extended_count']}/5 นิ้ว | {h_metrics['palm_label_th']} ({h_metrics['roll_deg']:+.0f} deg){pinch_txt}"
+                    )
+                    hand_labels_ascii.append(
+                        f"H{hi + 1}: {h_metrics['extended_count']}/5 ext | Roll {h_metrics['roll_deg']:+.0f} deg"
+                    )
+                if hand_labels_th:
+                    hand_summary_th = "  /  ".join(hand_labels_th)
+                    hand_summary_ascii = "  /  ".join(hand_labels_ascii)
+            else:
+                for hf in hand_filters_2d:
+                    hf.reset()
+                for hf in hand_filters_3d:
+                    hf.reset()
+
             # แผงควบคุม Clinical HUD ด้านบนจอ
-            cv2.rectangle(frame, (0, 0), (w, 125), (24, 24, 32), -1)
+            cv2.rectangle(frame, (0, 0), (w, 152), (24, 24, 32), -1)
             cv2.putText(frame, f"REPS: {reps}", (24, 48), cv2.FONT_HERSHEY_SIMPLEX, 1.35, (255, 255, 255), 3)
             cv2.putText(
                 frame,
@@ -448,12 +666,22 @@ def main() -> None:
                 font_size=22,
                 fallback_ascii=f"Status: {feedback_ascii}",
             )
+            frame = draw_hud_text(
+                frame,
+                f"นิ้วมือ 21 จุด: {hand_summary_th}",
+                (24, 118),
+                color_bgr=(250, 220, 120),
+                font_size=18,
+                fallback_ascii=hand_summary_ascii,
+            )
 
-            cv2.imshow("Clinical ROM Assessment (High-Precision 3D)", frame)
+            cv2.imshow("Clinical ROM Assessment (High-Precision 3D + Hand21)", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
     finally:
         landmarker.close()
+        if hand_landmarker is not None:
+            hand_landmarker.close()
         cap.release()
         cv2.destroyAllWindows()
 

@@ -2,11 +2,17 @@ import { describe, expect, it } from 'vitest';
 import {
   CLINICAL_EXERCISES,
   ClinicalBiomechanicsAgent,
+  ClinicalRotationCycleTracker,
+  HAND21_INDEX,
   JointAngleSmoother,
   POSE_INDEX,
   RehabExercisePipeline,
+  analyzeHand21Biomechanics,
   evaluateArmKinematics,
+  solveElderlyClinicalJointBiomechanics,
+  stepElderlyHoldAndRepStateMachine,
   type ClinicalTelemetryPacket,
+  type ElderlyHoldRepState,
   type PoseLandmark,
 } from '../index';
 
@@ -96,7 +102,7 @@ describe('Clinical Pose Estimation Engine', () => {
 
   it('enforces straight-elbow guard (<135 deg) and completes full rep state machine cycle', () => {
     const ex =
-      CLINICAL_EXERCISES.find((item) => item.code === 'STROKE_SCAP_PROTRACT') ?? CLINICAL_EXERCISES[0];
+      CLINICAL_EXERCISES.find((item) => item.code === 'ELDERLY_SCAP_PROTRACT') ?? CLINICAL_EXERCISES[0];
     const pipeline = new RehabExercisePipeline(ex, 'right', 1, 1, 1);
 
     const restPose = makeStandingPose();
@@ -144,7 +150,7 @@ describe('Clinical Pose Estimation Engine', () => {
       auth_status: { verified: true, confidence: 0.94, liveness: true, ...overrideAuth },
       spatial_framing: { distance_m: 2.0, full_body_visible: true, feet_visible: true, lighting_score: 0.9, ...overrideFraming },
       exercise_prescription: {
-        exercise_id: 'STROKE_SH_FLEX_R',
+        exercise_id: 'ELDERLY_SH_FLEX_R',
         target_joint: 'right_shoulder',
         target_rom_deg: 100,
         hold_sec: 1.0,
@@ -227,30 +233,380 @@ describe('Clinical Pose Estimation Engine', () => {
     expect(res.ui_directives.highlight_color).toBe('AMBER');
   });
 
-  it('provides exactly 15 unified master Stroke & MOPH upper-body exercises with zero duplicate L/R or deprecated codes', () => {
+  it('provides exactly 15 unified master Elderly & MOPH upper-body exercises with zero duplicate L/R or deprecated codes', () => {
     expect(CLINICAL_EXERCISES).toHaveLength(15);
     expect(
       CLINICAL_EXERCISES.every((ex) => ex.category === 'upper_limb' || ex.category === 'neck_trunk'),
     ).toBe(true);
     const codes = CLINICAL_EXERCISES.map((ex) => ex.code);
-    expect(codes).toContain('STROKE_SH_FLEX');
-    expect(codes).toContain('STROKE_SH_ABD');
-    expect(codes).toContain('STROKE_CROSS_BODY');
-    expect(codes).toContain('STROKE_SCAP_PROTRACT');
-    expect(codes).toContain('STROKE_BOBATH_FORWARD_PUSH');
-    expect(codes).toContain('STROKE_HAND_TO_HEAD');
-    expect(codes).toContain('STROKE_FOREARM_TURN');
-    expect(codes).toContain('STROKE_THUMB_PINCH');
+    expect(codes).toContain('ELDERLY_SH_FLEX');
+    expect(codes).toContain('ELDERLY_SH_ABD');
+    expect(codes).toContain('ELDERLY_CROSS_BODY');
+    expect(codes).toContain('ELDERLY_SCAP_PROTRACT');
+    expect(codes).toContain('ELDERLY_CLASPED_FORWARD_PUSH');
+    expect(codes).toContain('ELDERLY_HAND_TO_HEAD');
+    expect(codes).toContain('ELDERLY_FOREARM_TURN');
+    expect(codes).toContain('ELDERLY_THUMB_PINCH');
     expect(codes).toContain('MOPH_NECK_TILT');
     expect(codes).toContain('MOPH_NECK_TURN');
-    expect(codes).not.toContain('STROKE_SH_FLEX_R');
-    expect(codes).not.toContain('STROKE_SH_FLEX_L');
+    expect(codes).not.toContain('ELDERLY_SH_FLEX_R');
+    expect(codes).not.toContain('ELDERLY_SH_FLEX_L');
     expect(codes).not.toContain('MOPH_NECK_TURN_BILATERAL');
     expect(codes).not.toContain('BAL_STAND_R');
     expect(codes).not.toContain('KNEE_EXT_R');
     expect(codes).not.toContain('SIT_TO_STAND');
     expect(codes).not.toContain('SH_WALL_SLIDE_R');
     expect(codes).not.toContain('SH_PEND_R');
+
+    // Every trilingual master exercise name must reflect Elderly Care branding
+    for (const ex of CLINICAL_EXERCISES) {
+      expect(ex.name.th.startsWith('[ผู้สูงอายุ]') || ex.name.th.startsWith('[สธ. ผู้สูงอายุ]')).toBe(true);
+      expect(ex.name.en.startsWith('Elderly Care:') || ex.name.en.startsWith('MOPH Elderly:')).toBe(true);
+      expect(ex.name.cn.startsWith('老年康复训练：') || ex.name.cn.startsWith('卫生部老年保健：')).toBe(true);
+    }
+  });
+
+  it('computes high-detail 21-point MediaPipe hand biomechanics (5 fingers, 4-finger pinch, true 3D supination/pronation roll)', () => {
+    const buildDetailedWorldHand = (opts: {
+      curled?: boolean;
+      pronated?: boolean;
+      pinchFinger?: 'index' | 'middle' | 'ring' | 'pinky';
+    } = {}): PoseLandmark[] => {
+      const pts: PoseLandmark[] = Array.from({ length: 21 }, () => ({ x: 0, y: 0, z: 0, visibility: 1 }));
+      const flipX = opts.pronated ? -1 : 1;
+      pts[HAND21_INDEX.WRIST] = { x: 0, y: 0, z: 0, visibility: 1 };
+      // Palm MCPs (in meters; right hand supinated faces camera/up with index at +x, pinky at -x)
+      pts[HAND21_INDEX.INDEX_MCP] = { x: 0.035 * flipX, y: -0.09, z: 0, visibility: 1 };
+      pts[HAND21_INDEX.MIDDLE_MCP] = { x: 0.01 * flipX, y: -0.095, z: 0, visibility: 1 };
+      pts[HAND21_INDEX.RING_MCP] = { x: -0.015 * flipX, y: -0.09, z: 0, visibility: 1 };
+      pts[HAND21_INDEX.PINKY_MCP] = { x: -0.04 * flipX, y: -0.082, z: 0, visibility: 1 };
+
+      // Thumb chain (CMC=1, MCP=2, IP=3, TIP=4)
+      pts[HAND21_INDEX.THUMB_CMC] = { x: 0.032 * flipX, y: -0.025, z: -0.01, visibility: 1 };
+      pts[HAND21_INDEX.THUMB_MCP] = { x: 0.056 * flipX, y: -0.055, z: -0.015, visibility: 1 };
+      pts[HAND21_INDEX.THUMB_IP] = opts.curled
+        ? { x: 0.038 * flipX, y: -0.068, z: -0.045, visibility: 1 }
+        : { x: 0.078 * flipX, y: -0.082, z: -0.018, visibility: 1 };
+      pts[HAND21_INDEX.THUMB_TIP] = opts.curled
+        ? { x: 0.015 * flipX, y: -0.058, z: -0.052, visibility: 1 }
+        : { x: 0.098 * flipX, y: -0.105, z: -0.02, visibility: 1 };
+
+      const fingers: Array<{
+        name: 'index' | 'middle' | 'ring' | 'pinky';
+        mcp: number;
+        pip: number;
+        dip: number;
+        tip: number;
+        xBase: number;
+        len: number;
+      }> = [
+        { name: 'index', mcp: 5, pip: 6, dip: 7, tip: 8, xBase: 0.035 * flipX, len: 0.085 },
+        { name: 'middle', mcp: 9, pip: 10, dip: 11, tip: 12, xBase: 0.01 * flipX, len: 0.095 },
+        { name: 'ring', mcp: 13, pip: 14, dip: 15, tip: 16, xBase: -0.015 * flipX, len: 0.088 },
+        { name: 'pinky', mcp: 17, pip: 18, dip: 19, tip: 20, xBase: -0.04 * flipX, len: 0.072 },
+      ];
+
+      for (const f of fingers) {
+        const mcpPt = pts[f.mcp];
+        if (opts.curled) {
+          pts[f.pip] = { x: f.xBase, y: mcpPt.y - f.len * 0.35, z: -0.025, visibility: 1 };
+          pts[f.dip] = { x: f.xBase, y: mcpPt.y - f.len * 0.15, z: -0.048, visibility: 1 };
+          pts[f.tip] = { x: f.xBase, y: mcpPt.y + f.len * 0.12, z: -0.036, visibility: 1 };
+        } else {
+          pts[f.pip] = { x: f.xBase, y: mcpPt.y - f.len * 0.42, z: 0, visibility: 1 };
+          pts[f.dip] = { x: f.xBase, y: mcpPt.y - f.len * 0.72, z: 0, visibility: 1 };
+          pts[f.tip] = { x: f.xBase, y: mcpPt.y - f.len, z: 0, visibility: 1 };
+        }
+      }
+
+      if (opts.pinchFinger) {
+        const tipIdx =
+          opts.pinchFinger === 'index'
+            ? HAND21_INDEX.INDEX_TIP
+            : opts.pinchFinger === 'middle'
+              ? HAND21_INDEX.MIDDLE_TIP
+              : opts.pinchFinger === 'ring'
+                ? HAND21_INDEX.RING_TIP
+                : HAND21_INDEX.PINKY_TIP;
+        pts[HAND21_INDEX.THUMB_TIP] = {
+          x: pts[tipIdx].x + 0.004,
+          y: pts[tipIdx].y + 0.004,
+          z: pts[tipIdx].z,
+          visibility: 1,
+        };
+      }
+      return pts;
+    };
+
+    const worldOpenSupinated = buildDetailedWorldHand();
+    const hand2dProxy = worldOpenSupinated.map((p) => ({
+      x: 0.5 + p.x * 1.4,
+      y: 0.65 + p.y * 1.4,
+      z: p.z,
+      visibility: 1,
+    }));
+    const openBio = analyzeHand21Biomechanics({
+      landmarks2D: hand2dProxy,
+      worldLandmarks3D: worldOpenSupinated,
+      side: 'right',
+    });
+    expect(openBio).not.toBeNull();
+    expect(openBio!.usedWorld3D).toBe(true);
+    expect(openBio!.extendedFingerCount).toBe(5);
+    expect(openBio!.meanFingerExtensionPct).toBeGreaterThanOrEqual(85);
+    expect(openBio!.forearmRollSignedDeg).toBeGreaterThanOrEqual(45);
+    expect(openBio!.palmOrientation).toBe('SUPINATED_UP');
+
+    const worldPronated = buildDetailedWorldHand({ pronated: true });
+    const pronatedBio = analyzeHand21Biomechanics({
+      landmarks2D: hand2dProxy,
+      worldLandmarks3D: worldPronated,
+      side: 'right',
+    });
+    expect(pronatedBio!.forearmRollSignedDeg).toBeLessThanOrEqual(-45);
+    expect(pronatedBio!.palmOrientation).toBe('PRONATED_DOWN');
+
+    const worldFist = buildDetailedWorldHand({ curled: true });
+    const fistBio = analyzeHand21Biomechanics({
+      landmarks2D: hand2dProxy,
+      worldLandmarks3D: worldFist,
+      side: 'right',
+    });
+    expect(fistBio!.extendedFingerCount).toBe(0);
+    expect(fistBio!.meanFingerExtensionPct).toBeLessThanOrEqual(35);
+
+    for (const targetFinger of ['index', 'middle', 'ring', 'pinky'] as const) {
+      const pinchWorld = buildDetailedWorldHand({ pinchFinger: targetFinger });
+      const pinchBio = analyzeHand21Biomechanics({
+        landmarks2D: hand2dProxy,
+        worldLandmarks3D: pinchWorld,
+        side: 'right',
+      });
+      expect(pinchBio!.activePinchFinger).toBe(targetFinger);
+      expect(pinchBio!.pinchAngleScoreDeg).toBeGreaterThanOrEqual(58);
+    }
+  });
+
+  it('enforces genuine physical rotation cycles for wrist-turn, shoulder-rotation, and shoulder-roll (static poses never score)', () => {
+    const initialRepState = (): ElderlyHoldRepState => ({
+      phase: 'PHASE_1_HOLDING',
+      holdElapsedSec: 0,
+      completedReps: 0,
+      cooldownStartedAtMs: 0,
+      repCelebrateUntilMs: 0,
+      loweredFrameStreak: 0,
+    });
+
+    // 1. FOREARM_TURN: Static flat palm held at +75 deg for 5s -> 0 deg effective ROM, 0 reps!
+    const wristTracker = new ClinicalRotationCycleTracker();
+    let wristState = initialRepState();
+    for (let i = 0; i < 50; i += 1) {
+      const ev = wristTracker.update({
+        mode: 'forearm_turn',
+        signedAngleDeg: 75,
+        postureReady: true,
+        targetRomDeg: 75,
+        nowMs: i * 100,
+      });
+      expect(ev.effectiveRotationRomDeg).toBe(0);
+      expect(ev.rotationVerified).toBe(false);
+      const step = stepElderlyHoldAndRepStateMachine({
+        state: wristState,
+        activeRomDeg: ev.effectiveRotationRomDeg,
+        exerciseCode: 'ELDERLY_FOREARM_TURN',
+        exerciseSide: 'RIGHT',
+        targetRomDeg: 75,
+        targetHoldSec: 1.0,
+        targetReps: 5,
+        dtSec: 0.1,
+        nowMs: i * 100,
+        sideViolation: 'NONE',
+        wrongSideBannerTh: null,
+        wrongPlaneRaised: false,
+        wrongPlaneBannerTh: null,
+        isCompensatedNow: false,
+        postureBannerTh: null,
+        blockCounting: false,
+        rotationGate: {
+          required: true,
+          rotationVerified: ev.rotationVerified,
+          returnedToStart: ev.returnedToStart,
+          guidanceBannerTh: ev.guidanceBannerTh,
+        },
+      });
+      wristState = step.nextState;
+    }
+    expect(wristState.completedReps).toBe(0);
+
+    // Now genuinely rotate from +75 deg -> -50 deg (125 deg flip!) and hold for 1.0s -> +1 rep!
+    let tMs = 6000;
+    for (const angle of [55, 30, 5, -20, -45, -50]) {
+      const ev = wristTracker.update({
+        mode: 'forearm_turn',
+        signedAngleDeg: angle,
+        postureReady: true,
+        targetRomDeg: 75,
+        nowMs: (tMs += 100),
+      });
+      const step = stepElderlyHoldAndRepStateMachine({
+        state: wristState,
+        activeRomDeg: ev.effectiveRotationRomDeg,
+        exerciseCode: 'ELDERLY_FOREARM_TURN',
+        exerciseSide: 'RIGHT',
+        targetRomDeg: 75,
+        targetHoldSec: 1.0,
+        targetReps: 5,
+        dtSec: 0.1,
+        nowMs: tMs,
+        sideViolation: 'NONE',
+        wrongSideBannerTh: null,
+        wrongPlaneRaised: false,
+        wrongPlaneBannerTh: null,
+        isCompensatedNow: false,
+        postureBannerTh: null,
+        blockCounting: false,
+        rotationGate: {
+          required: true,
+          rotationVerified: ev.rotationVerified,
+          returnedToStart: ev.returnedToStart,
+          guidanceBannerTh: ev.guidanceBannerTh,
+        },
+      });
+      wristState = step.nextState;
+    }
+    for (let i = 0; i < 12; i += 1) {
+      const ev = wristTracker.update({
+        mode: 'forearm_turn',
+        signedAngleDeg: -50,
+        postureReady: true,
+        targetRomDeg: 75,
+        nowMs: (tMs += 100),
+      });
+      const step = stepElderlyHoldAndRepStateMachine({
+        state: wristState,
+        activeRomDeg: ev.effectiveRotationRomDeg,
+        exerciseCode: 'ELDERLY_FOREARM_TURN',
+        exerciseSide: 'RIGHT',
+        targetRomDeg: 75,
+        targetHoldSec: 1.0,
+        targetReps: 5,
+        dtSec: 0.1,
+        nowMs: tMs,
+        sideViolation: 'NONE',
+        wrongSideBannerTh: null,
+        wrongPlaneRaised: false,
+        wrongPlaneBannerTh: null,
+        isCompensatedNow: false,
+        postureBannerTh: null,
+        blockCounting: false,
+        rotationGate: {
+          required: true,
+          rotationVerified: ev.rotationVerified,
+          returnedToStart: ev.returnedToStart,
+          guidanceBannerTh: ev.guidanceBannerTh,
+        },
+      });
+      wristState = step.nextState;
+      if (step.justCompletedRep) {
+        wristTracker.notifyRepCompleted();
+        break;
+      }
+    }
+    expect(wristState.completedReps).toBe(1);
+    expect(wristState.phase).toBe('PHASE_2_WAIT_LOWER_TO_SCORE');
+
+    // Staying frozen at -50 deg MUST NOT unlock or count rep #2
+    for (let i = 0; i < 20; i += 1) {
+      const ev = wristTracker.update({
+        mode: 'forearm_turn',
+        signedAngleDeg: -50,
+        postureReady: true,
+        targetRomDeg: 75,
+        nowMs: (tMs += 100),
+      });
+      const step = stepElderlyHoldAndRepStateMachine({
+        state: wristState,
+        activeRomDeg: ev.effectiveRotationRomDeg,
+        exerciseCode: 'ELDERLY_FOREARM_TURN',
+        exerciseSide: 'RIGHT',
+        targetRomDeg: 75,
+        targetHoldSec: 1.0,
+        targetReps: 5,
+        dtSec: 0.1,
+        nowMs: tMs,
+        sideViolation: 'NONE',
+        wrongSideBannerTh: null,
+        wrongPlaneRaised: false,
+        wrongPlaneBannerTh: null,
+        isCompensatedNow: false,
+        postureBannerTh: null,
+        blockCounting: false,
+        rotationGate: {
+          required: true,
+          rotationVerified: ev.rotationVerified,
+          returnedToStart: ev.returnedToStart,
+          guidanceBannerTh: ev.guidanceBannerTh,
+        },
+      });
+      wristState = step.nextState;
+    }
+    expect(wristState.completedReps).toBe(1);
+    expect(wristState.phase).toBe('PHASE_2_WAIT_LOWER_TO_SCORE');
+
+    // Rotating back >= 36 deg unlocks back to PHASE_1_HOLDING!
+    const returnEv = wristTracker.update({
+      mode: 'forearm_turn',
+      signedAngleDeg: 0,
+      postureReady: true,
+      targetRomDeg: 75,
+      nowMs: (tMs += 100),
+    });
+    expect(returnEv.returnedToStart).toBe(true);
+
+    // 2. SHOULDER_ROTATION: Parking arm already out at +60 deg without visiting neutral -> 0 reps!
+    const shRotTracker = new ClinicalRotationCycleTracker();
+    const parkedEv = shRotTracker.update({
+      mode: 'shoulder_rotation',
+      signedAngleDeg: 60,
+      postureReady: true,
+      targetRomDeg: 55,
+      nowMs: 100,
+    });
+    expect(parkedEv.rotationVerified).toBe(false);
+    expect(parkedEv.effectiveRotationRomDeg).toBe(0);
+
+    // Start from neutral (5 deg) with 90-deg elbow tucked, then sweep outward to 55 deg -> verified!
+    shRotTracker.update({ mode: 'shoulder_rotation', signedAngleDeg: 5, postureReady: true, targetRomDeg: 55, nowMs: 200 });
+    shRotTracker.update({ mode: 'shoulder_rotation', signedAngleDeg: 25, postureReady: true, targetRomDeg: 55, nowMs: 300 });
+    shRotTracker.update({ mode: 'shoulder_rotation', signedAngleDeg: 45, postureReady: true, targetRomDeg: 55, nowMs: 400 });
+    const shVerified = shRotTracker.update({ mode: 'shoulder_rotation', signedAngleDeg: 56, postureReady: true, targetRomDeg: 55, nowMs: 500 });
+    expect(shVerified.rotationVerified).toBe(true);
+    expect(shVerified.effectiveRotationRomDeg).toBeCloseTo(56, 1);
+
+    // 3. SHOULDER_SHRUG_ROLL: Static vertical lift with zero roll stays unverified; circular lift+roll verifies!
+    const shrugTracker = new ClinicalRotationCycleTracker();
+    shrugTracker.update({ mode: 'shoulder_shrug', signedAngleDeg: 5, secondaryRollSignal: 0, postureReady: true, targetRomDeg: 35, nowMs: 100 });
+    const staticShrug = shrugTracker.update({ mode: 'shoulder_shrug', signedAngleDeg: 32, secondaryRollSignal: 0, postureReady: true, targetRomDeg: 35, nowMs: 200 });
+    expect(staticShrug.rotationVerified).toBe(false);
+    shrugTracker.update({ mode: 'shoulder_shrug', signedAngleDeg: 24, secondaryRollSignal: -0.04, postureReady: true, targetRomDeg: 35, nowMs: 300 });
+    const rolledShrug = shrugTracker.update({ mode: 'shoulder_shrug', signedAngleDeg: 32, secondaryRollSignal: 0.04, postureReady: true, targetRomDeg: 35, nowMs: 400 });
+    expect(rolledShrug.rotationVerified).toBe(true);
+
+    // 4. Exact anatomical joint angle verification (zero artificial gain on neck tilt & elbow curl)
+    const exactElbowPose = makeStandingPose({
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.42, y: 0.35, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.42, y: 0.55, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.22, y: 0.55, z: 0, visibility: 0.99 }, // exact 90-deg elbow flexion!
+    });
+    const exactElbowRes = solveElderlyClinicalJointBiomechanics({
+      landmarks: exactElbowPose,
+      targetJoint: 'right_shoulder',
+      exerciseSide: 'RIGHT',
+      jointMode: 'elbow',
+      targetRomDeg: 110,
+    });
+    expect(exactElbowRes.romDeg!).toBeGreaterThanOrEqual(85);
+    expect(exactElbowRes.romDeg!).toBeLessThanOrEqual(95);
   });
 });
 

@@ -168,8 +168,8 @@ class ExercisePrescriptionSchema(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    exercise_id: str = "STROKE_SH_ABD"
-    exercise_name: str = "[Stroke ADL] กางแขนด้านข้าง (ฝึกกางแขนสวมเสื้อ)"
+    exercise_id: str = "ELDERLY_SH_ABD"
+    exercise_name: str = "[ผู้สูงอายุ] กางแขนด้านข้าง (ฝึกกางแขนสวมเสื้อ)"
     target_joint: str = "right_shoulder"
     prescribed_side: Optional[str] = None
     target_rom_deg: float = 150.0
@@ -177,7 +177,7 @@ class ExercisePrescriptionSchema(BaseModel):
     target_reps: int = 10
     max_safe_rom_deg: Optional[float] = None
     affected_side: Optional[str] = None
-    stroke_type: Optional[str] = None
+    care_group: Optional[str] = None
     motor_assessment_score: Optional[int] = None
 
 

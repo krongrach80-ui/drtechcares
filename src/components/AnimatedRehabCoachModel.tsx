@@ -156,8 +156,8 @@ export type CoachMotionKind =
   | 'forearm_turn'
   | 'wrist_finger'
   | 'thumb_pinch'
-  | 'bobath_arm_raise'
-  | 'bobath_forward_push'
+  | 'clasped_arm_raise'
+  | 'clasped_forward_push'
   | 'neck_tilt'
   | 'neck_turn'
   | 'shoulder_shrug_roll'
@@ -209,10 +209,10 @@ export function resolveCoachMotionKind(exercise: ExercisePrescriptionOption): Co
     return 'wrist_finger';
   }
   if (combined.includes('forward_push') || combined.includes('bilateral_push') || combined.includes('ดันแขนตรงไปด้านหน้า')) {
-    return 'bobath_forward_push';
+    return 'clasped_forward_push';
   }
   if (combined.includes('arm_raise') || combined.includes('ประสานมือยกแขน') || exercise.expected_plane === 'bilateral') {
-    return 'bobath_arm_raise';
+    return 'clasped_arm_raise';
   }
   if (combined.includes('hand_to_head') || combined.includes('แตะศีรษะ') || combined.includes('หวีผม')) {
     return 'hand_to_head';
@@ -292,18 +292,143 @@ function makeCurvedArrow(from: Pt, to: Pt, bulge = 20): { d: string; tipAngleDeg
 const EMERALD = '#10b981';
 const EMERALD_DARK = '#047857';
 const EMERALD_LIGHT = '#34d399';
-const INACTIVE = '#94a3b8';
-const INACTIVE_DARK = '#64748b';
-const TORSO_FILL = '#1e3a8a';
-const TORSO_STROKE = '#0f172a';
-const SKIN_FILL = '#fed7aa';
+const OTTER_FUR = '#9C6644';
+const OTTER_FUR_LIGHT = '#B8825C';
+const OTTER_FUR_DARK = '#7A4B2E';
+const OTTER_OUTLINE = '#5C3620';
+const OTTER_CREAM = '#F7E7CE';
+const OTTER_PAW_PAD = '#F2DFC2';
+const MINT_SCARF = '#10B981';
+const MINT_DARK = '#065F46';
+
+function MascotEmblem({ cx, cy, scale = 1 }: { cx: number; cy: number; scale?: number }) {
+  return (
+    <g transform={`translate(${cx.toFixed(1)}, ${cy.toFixed(1)}) scale(${scale})`}>
+      <circle cx={0} cy={0} r={7.2} fill="#FFFFFF" stroke="#0D9488" strokeWidth={1.6} />
+      <path
+        d="M 0 4.5 C 0 4.5 -5 1.7 -5 -1.4 C -5 -3 -3.8 -4.1 -2.3 -4.1 C -1.3 -4.1 -0.5 -3.6 0 -2.8 C 0.5 -3.6 1.3 -4.1 2.3 -4.1 C 3.8 -4.1 5 -3 5 -1.4 C 5 1.7 0 4.5 0 4.5 Z"
+        fill="#10B981"
+      />
+      <rect x={-0.8} y={-2.2} width={1.6} height={4.2} rx={0.6} fill="#FFFFFF" />
+      <rect x={-2.1} y={-0.9} width={4.2} height={1.6} rx={0.6} fill="#FFFFFF" />
+    </g>
+  );
+}
+
+function MascotOtterHeadFront({
+  cx,
+  cy,
+  headTiltDeg = 0,
+  neckTurnShiftX = 0,
+  scale = 1,
+}: {
+  cx: number;
+  cy: number;
+  headTiltDeg?: number;
+  neckTurnShiftX?: number;
+  scale?: number;
+}) {
+  return (
+    <g transform={`translate(${cx.toFixed(1)}, ${cy.toFixed(1)}) rotate(${headTiltDeg}) scale(${scale})`}>
+      {/* Rounded Sea Otter Ears */}
+      <circle cx={-23} cy={-12} r={7.8} fill={OTTER_FUR_DARK} stroke={OTTER_OUTLINE} strokeWidth={2.1} />
+      <circle cx={-23} cy={-11.5} r={3.8} fill={OTTER_PAW_PAD} />
+      <circle cx={23} cy={-12} r={7.8} fill={OTTER_FUR_DARK} stroke={OTTER_OUTLINE} strokeWidth={2.1} />
+      <circle cx={23} cy={-11.5} r={3.8} fill={OTTER_PAW_PAD} />
+
+      {/* Plump Otter Head */}
+      <ellipse cx={0} cy={0} rx={25} ry={21.5} fill={OTTER_FUR} stroke={OTTER_OUTLINE} strokeWidth={2.3} />
+      {/* Cream Facial Mask */}
+      <ellipse cx={neckTurnShiftX * 0.45} cy={4.5} rx={19.5} ry={15} fill={OTTER_CREAM} />
+
+      {/* Signature Mint Sport Headband + Heart Cross */}
+      <path
+        d="M -23.5 -6 C -15 -14 15 -14 23.5 -6 C 24 -12 19 -19.5 0 -20 C -19 -19.5 -24 -12 -23.5 -6 Z"
+        fill={MINT_SCARF}
+        stroke={MINT_DARK}
+        strokeWidth={1.8}
+        strokeLinejoin="round"
+      />
+      <MascotEmblem cx={neckTurnShiftX * 0.35} cy={-13} scale={0.85} />
+
+      {/* Expressive Dark Eyes with White Sparkles */}
+      <circle cx={-9 + neckTurnShiftX} cy={1.5} r={3.8} fill="#2A1A10" />
+      <circle cx={9 + neckTurnShiftX} cy={1.5} r={3.8} fill="#2A1A10" />
+      <circle cx={-7.7 + neckTurnShiftX} cy={0.2} r={1.3} fill="#FFFFFF" />
+      <circle cx={10.3 + neckTurnShiftX} cy={0.2} r={1.3} fill="#FFFFFF" />
+
+      {/* Rosy Cheeks */}
+      <ellipse cx={-15.5 + neckTurnShiftX * 0.7} cy={6.8} rx={3.8} ry={2.1} fill="#FB7185" opacity={0.38} />
+      <ellipse cx={15.5 + neckTurnShiftX * 0.7} cy={6.8} rx={3.8} ry={2.1} fill="#FB7185" opacity={0.38} />
+
+      {/* Cute Otter Nose & Happy Smile */}
+      <path
+        d={`M ${(-4 + neckTurnShiftX).toFixed(1)} 4.6 C ${(-4 + neckTurnShiftX).toFixed(1)} 3.1 ${(4 + neckTurnShiftX).toFixed(1)} 3.1 ${(4 + neckTurnShiftX).toFixed(1)} 4.6 C ${(4 + neckTurnShiftX).toFixed(1)} 6.8 ${(1.8 + neckTurnShiftX).toFixed(1)} 8.6 ${neckTurnShiftX.toFixed(1)} 8.6 C ${(-1.8 + neckTurnShiftX).toFixed(1)} 8.6 ${(-4 + neckTurnShiftX).toFixed(1)} 6.8 ${(-4 + neckTurnShiftX).toFixed(1)} 4.6 Z`}
+        fill="#3E2414"
+      />
+      <path
+        d={`M ${(-6 + neckTurnShiftX).toFixed(1)} 10.6 Q ${(-2.5 + neckTurnShiftX).toFixed(1)} 13.6 ${neckTurnShiftX.toFixed(1)} 11.4 Q ${(2.5 + neckTurnShiftX).toFixed(1)} 13.6 ${(6 + neckTurnShiftX).toFixed(1)} 10.6`}
+        fill="none"
+        stroke={OTTER_OUTLINE}
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+
+      {/* Crisp Otter Whiskers */}
+      <g stroke={OTTER_FUR_DARK} strokeWidth={1.3} strokeLinecap="round" opacity={0.7}>
+        <line x1={-17} y1={6} x2={-24.5} y2={4.5} />
+        <line x1={-17} y1={9} x2={-24} y2={10.2} />
+        <line x1={17} y1={6} x2={24.5} y2={4.5} />
+        <line x1={17} y1={9} x2={24} y2={10.2} />
+      </g>
+    </g>
+  );
+}
+
+function MascotOtterHeadSide({ cx, cy, scale = 1 }: { cx: number; cy: number; scale?: number }) {
+  return (
+    <g transform={`translate(${cx.toFixed(1)}, ${cy.toFixed(1)}) scale(${scale})`}>
+      {/* Back Ear */}
+      <circle cx={-12} cy={-14} r={7.2} fill={OTTER_FUR_DARK} stroke={OTTER_OUTLINE} strokeWidth={2} />
+      <circle cx={-12} cy={-13.5} r={3.4} fill={OTTER_PAW_PAD} />
+      {/* Plump Side Otter Head */}
+      <ellipse cx={0} cy={0} rx={22.5} ry={20.5} fill={OTTER_FUR} stroke={OTTER_OUTLINE} strokeWidth={2.3} />
+      {/* Side Cream Snout & Cheek */}
+      <ellipse cx={12.5} cy={5.5} rx={12.5} ry={11} fill={OTTER_CREAM} />
+      {/* Signature Mint Headband */}
+      <path
+        d="M -21 -5 C -8 -13 12 -13 21 -6 C 20 -13 12 -20 -1 -20 C -15 -20 -22 -12 -21 -5 Z"
+        fill={MINT_SCARF}
+        stroke={MINT_DARK}
+        strokeWidth={1.8}
+        strokeLinejoin="round"
+      />
+      <MascotEmblem cx={7} cy={-12.5} scale={0.78} />
+      {/* Front Eye */}
+      <circle cx={10.5} cy={1} r={3.6} fill="#2A1A10" />
+      <circle cx={11.8} cy={-0.3} r={1.3} fill="#FFFFFF" />
+      {/* Rosy Cheek */}
+      <ellipse cx={8} cy={7.5} rx={3.6} ry={2} fill="#FB7185" opacity={0.38} />
+      {/* Side Cute Nose */}
+      <ellipse cx={23.2} cy={4} rx={4} ry={3} fill="#3E2414" />
+      {/* Happy Side Smile */}
+      <path d="M 14 10.5 Q 19 13 22 9.5" fill="none" stroke={OTTER_OUTLINE} strokeWidth={2} strokeLinecap="round" />
+      {/* Side Whiskers */}
+      <g stroke={OTTER_FUR_DARK} strokeWidth={1.3} strokeLinecap="round" opacity={0.72}>
+        <line x1={18} y1={6.5} x2={26} y2={5.5} />
+        <line x1={18} y1={9} x2={25.5} y2={10.5} />
+      </g>
+    </g>
+  );
+}
 
 function ActiveOrMutedLimb({
   p1,
   p2,
   p3,
   active,
-  width = 11,
+  width = 14,
   showEndpointDot = true,
 }: {
   p1: Pt;
@@ -325,45 +450,67 @@ function ActiveOrMutedLimb({
           d={pathD}
           fill="none"
           stroke={EMERALD_LIGHT}
-          strokeOpacity={0.35}
-          strokeWidth={width + 10}
+          strokeOpacity={0.42}
+          strokeWidth={width + 11}
           strokeLinecap="round"
           strokeLinejoin="round"
         />
       )}
+      {/* Dark otter fur outline */}
       <path
         d={pathD}
         fill="none"
-        stroke={active ? EMERALD : INACTIVE}
-        strokeWidth={active ? width + 1 : width - 1}
+        stroke={active ? EMERALD_DARK : OTTER_OUTLINE}
+        strokeWidth={width + 4}
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      <circle
-        cx={p1.x}
-        cy={p1.y}
-        r={active ? 6.5 : 4.5}
-        fill={active ? '#ffffff' : '#cbd5e1'}
-        stroke={active ? EMERALD_DARK : INACTIVE_DARK}
-        strokeWidth={2.5}
+      {/* Plump otter fur limb core */}
+      <path
+        d={pathD}
+        fill="none"
+        stroke={active ? OTTER_FUR_LIGHT : OTTER_FUR}
+        strokeWidth={width}
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
+      {/* Active Emerald Rehab Wristband / Sport Sleeve Accent */}
+      {active && (
+        <path
+          d={pathD}
+          fill="none"
+          stroke={EMERALD}
+          strokeOpacity={0.35}
+          strokeWidth={width - 3}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      )}
+      {/* Joint cue dot */}
       <circle
         cx={p2.x}
         cy={p2.y}
-        r={active ? 6 : 4}
-        fill={active ? '#ffffff' : '#cbd5e1'}
-        stroke={active ? EMERALD_DARK : INACTIVE_DARK}
-        strokeWidth={2.2}
+        r={active ? 5.2 : 3.2}
+        fill={active ? '#ffffff' : OTTER_FUR_LIGHT}
+        stroke={active ? EMERALD_DARK : OTTER_OUTLINE}
+        strokeWidth={active ? 2.2 : 1.4}
       />
+      {/* Cute Otter Paw at Endpoint */}
       {showEndpointDot && p3 && (
-        <circle
-          cx={endPt.x}
-          cy={endPt.y}
-          r={active ? 7.5 : 4.5}
-          fill={active ? EMERALD : '#cbd5e1'}
-          stroke={active ? '#ffffff' : INACTIVE_DARK}
-          strokeWidth={2.5}
-        />
+        <g>
+          <circle
+            cx={endPt.x}
+            cy={endPt.y}
+            r={active ? 9.5 : 7.5}
+            fill={active ? OTTER_FUR_LIGHT : OTTER_FUR_DARK}
+            stroke={active ? EMERALD_DARK : OTTER_OUTLINE}
+            strokeWidth={active ? 2.8 : 2}
+          />
+          <circle cx={endPt.x} cy={endPt.y + 0.5} r={active ? 4.2 : 3.2} fill={OTTER_PAW_PAD} />
+          {active && (
+            <circle cx={endPt.x} cy={endPt.y} r={11.5} fill="none" stroke={EMERALD} strokeWidth={2} strokeOpacity={0.75} />
+          )}
+        </g>
       )}
     </g>
   );
@@ -405,6 +552,7 @@ function HoldPulseTarget({
   targetHoldSec,
   phaseProgress,
   compact,
+  bounds = { minX: 58, maxX: 200, minY: 18 },
 }: {
   pt: Pt;
   phase: CoachPhaseId;
@@ -412,9 +560,12 @@ function HoldPulseTarget({
   targetHoldSec: number;
   phaseProgress: number;
   compact?: boolean;
+  bounds?: { minX: number; maxX: number; minY: number };
 }) {
   if (phase === 'hold') {
     const ringRadius = 11 + Math.sin(phaseProgress * Math.PI * 4) * 3.5;
+    // Place badge below the raised hand when hand sits near the top pills so they never overlap
+    const safeY = pt.y < bounds.minY + 18 ? Math.min(bounds.minY + 26, pt.y + 22) : Math.max(bounds.minY, pt.y - 18);
     return (
       <g>
         <circle
@@ -427,14 +578,16 @@ function HoldPulseTarget({
           strokeOpacity={0.65}
         />
         <circle cx={pt.x} cy={pt.y} r={8} fill={EMERALD} fillOpacity={0.22} />
-        <g transform={`translate(${Math.min(200, Math.max(58, pt.x))}, ${Math.max(18, pt.y - 20)})`}>
-          <rect x={-46} y={-12} width={92} height={22} rx={11} fill={EMERALD_DARK} />
+        <g
+          transform={`translate(${Math.min(bounds.maxX, Math.max(bounds.minX, pt.x))}, ${safeY})`}
+        >
+          <rect x={-42} y={-9.5} width={84} height={19} rx={9.5} fill={EMERALD_DARK} />
           <text
             x={0}
             y={3}
             textAnchor="middle"
             fill="#ffffff"
-            fontSize={compact ? 10 : 10.5}
+            fontSize={compact ? 9.2 : 9.8}
             fontWeight={800}
           >
             ค้าง {targetHoldSec}วิ ({countdownSec}s)
@@ -445,9 +598,11 @@ function HoldPulseTarget({
   }
   if (phase === 'lower') {
     return (
-      <g transform={`translate(${Math.min(205, Math.max(55, pt.x))}, ${Math.max(18, pt.y - 16)})`}>
-        <rect x={-34} y={-11} width={68} height={22} rx={11} fill="#0284c7" />
-        <text x={0} y={4} textAnchor="middle" fill="#ffffff" fontSize={11.5} fontWeight={900}>
+      <g
+        transform={`translate(${Math.min(bounds.maxX, Math.max(bounds.minX, pt.x))}, ${Math.max(bounds.minY, pt.y - 14)})`}
+      >
+        <rect x={-32} y={-10} width={64} height={20} rx={10} fill="#0284c7" />
+        <text x={0} y={3.5} textAnchor="middle" fill="#ffffff" fontSize={10.5} fontWeight={900}>
           +1 ครั้ง!
         </text>
       </g>
@@ -531,39 +686,66 @@ function FrontStandingBase({
   rightAnkle.y -= rightKneeLift * 0.45 + tiptoeLift;
 
   return (
-    <g>
+    <g data-testid="mascot-coach-character">
       {/* Subtle floor shadow */}
-      <ellipse cx={cx} cy={210} rx={52} ry={6} fill="#cbd5e1" opacity={0.6} />
+      <ellipse cx={cx} cy={210} rx={58} ry={7} fill="#0F4C81" opacity={0.14} />
 
-      {/* Legs */}
-      <ActiveOrMutedLimb p1={leftHip} p2={leftKnee} p3={leftAnkle} active={leftHipHighlight} width={10} />
-      <ActiveOrMutedLimb p1={rightHip} p2={rightKnee} p3={rightAnkle} active={rightHipHighlight} width={10} />
-
-      {/* Torso */}
+      {/* Cute Otter Tail peeking behind */}
       <path
-        d={`M ${leftShoulder.x} ${leftShoulder.y} L ${rightShoulder.x} ${rightShoulder.y} L ${rightHip.x} ${rightHip.y} L ${leftHip.x} ${leftHip.y} Z`}
-        fill={TORSO_FILL}
-        stroke={TORSO_STROKE}
+        d={`M ${cx - 18} 138 C ${cx - 46} 142, ${cx - 56} 126, ${cx - 48} 118 C ${cx - 42} 112, ${cx - 34} 124, ${cx - 16} 126 Z`}
+        fill={OTTER_FUR_DARK}
+        stroke={OTTER_OUTLINE}
+        strokeWidth={2.2}
+        strokeLinejoin="round"
+      />
+
+      {/* Otter Hind Legs & Paws */}
+      <ActiveOrMutedLimb p1={leftHip} p2={leftKnee} p3={leftAnkle} active={leftHipHighlight} width={14} />
+      <ActiveOrMutedLimb p1={rightHip} p2={rightKnee} p3={rightAnkle} active={rightHipHighlight} width={14} />
+
+      {/* Plump Otter Torso + Soft Cream Belly */}
+      <ellipse
+        cx={cx}
+        cy={102 - (shoulderLiftLeft + shoulderLiftRight) * 0.25}
+        rx={33}
+        ry={40}
+        fill={OTTER_FUR}
+        stroke={OTTER_OUTLINE}
+        strokeWidth={2.4}
+      />
+      <ellipse
+        cx={cx}
+        cy={106 - (shoulderLiftLeft + shoulderLiftRight) * 0.25}
+        rx={21.5}
+        ry={27}
+        fill={OTTER_CREAM}
+      />
+
+      {/* Signature Mint Clinical Scarf + Flowing Tail + Medical Emblem */}
+      <path
+        d={`M ${cx - 28} ${68 - shoulderLiftLeft * 0.6} C ${cx - 16} ${79 - shoulderLiftLeft * 0.4}, ${cx + 16} ${79 - shoulderLiftRight * 0.4}, ${cx + 28} ${68 - shoulderLiftRight * 0.6} C ${cx + 30} ${76 - shoulderLiftRight * 0.4}, ${cx + 22} ${84 - shoulderLiftRight * 0.4}, ${cx} ${85 - (shoulderLiftLeft + shoulderLiftRight) * 0.3} C ${cx - 22} ${84 - shoulderLiftLeft * 0.4}, ${cx - 30} ${76 - shoulderLiftLeft * 0.4}, ${cx - 28} ${68 - shoulderLiftLeft * 0.6} Z`}
+        fill={MINT_SCARF}
+        stroke={MINT_DARK}
         strokeWidth={2}
         strokeLinejoin="round"
       />
-      {/* Neck */}
-      <line x1={cx} y1={52} x2={cx} y2={64} stroke={SKIN_FILL} strokeWidth={9} strokeLinecap="round" />
+      <path
+        d={`M ${cx + 10} 79 L ${cx + 22} 80 L ${cx + 26} 102 C ${cx + 20} 104, ${cx + 14} 104, ${cx + 10} 100 Z`}
+        fill={MINT_SCARF}
+        stroke={MINT_DARK}
+        strokeWidth={1.8}
+        strokeLinejoin="round"
+      />
+      <MascotEmblem cx={cx} cy={79 - (shoulderLiftLeft + shoulderLiftRight) * 0.3} scale={0.95} />
 
-      {/* Head with tilt & friendly face orientation */}
-      <g transform={`translate(${headCenter.x}, ${headCenter.y}) rotate(${headTiltDeg})`}>
-        <circle cx={0} cy={0} r={17} fill={SKIN_FILL} stroke={TORSO_STROKE} strokeWidth={2.2} />
-        <path d="M -16 -5 C -14 -17, 14 -17, 16 -5 C 10 -10, -10 -10, -16 -5 Z" fill="#334155" />
-        <circle cx={-5 + neckTurnShiftX} cy={-1} r={2} fill="#0f172a" />
-        <circle cx={5 + neckTurnShiftX} cy={-1} r={2} fill="#0f172a" />
-        <path
-          d={`M ${(-4 + neckTurnShiftX).toFixed(1)} 6 Q ${neckTurnShiftX.toFixed(1)} 10 ${(4 + neckTurnShiftX).toFixed(1)} 6`}
-          fill="none"
-          stroke="#0f172a"
-          strokeWidth={1.8}
-          strokeLinecap="round"
-        />
-      </g>
+      {/* Nong MorTech Otter Head */}
+      <MascotOtterHeadFront
+        cx={headCenter.x}
+        cy={headCenter.y + 8}
+        headTiltDeg={headTiltDeg}
+        neckTurnShiftX={neckTurnShiftX}
+        scale={1.06}
+      />
     </g>
   );
 }
@@ -648,12 +830,74 @@ function AnimatedRehabCoachModelInner({
   const sideLabel =
     resolvedSide === 'BOTH' ? 'ทั้ง 2 ข้าง' : resolvedSide === 'LEFT' ? 'ซ้าย (L)' : 'ขวา (R)';
 
-  const renderScene = () => {
-    // 1. SIDE / 3/4 VIEW: SHOULDER FLEXION / SCAP PROTRACT / BOBATH FORWARD PUSH / SIT-TO-STAND
+  // Dynamic tight framing per exercise category so Nong MorTech fills the stage ~2x larger
+  // without empty side margins or unused lower-body whitespace on upper-body exercises.
+  const stageFrame = (() => {
     if (
       kind === 'shoulder_flexion' ||
       kind === 'scap_protract' ||
-      kind === 'bobath_forward_push'
+      kind === 'clasped_forward_push'
+    ) {
+      return {
+        x: 36,
+        y: -6,
+        w: 184,
+        h: 152,
+        leftPillX: 73,
+        rightPillX: 180,
+        pillY: 5,
+        holdBounds: { minX: 78, maxX: 174, minY: 22 },
+      };
+    }
+    if (kind === 'wrist_finger' || kind === 'thumb_pinch' || kind === 'forearm_turn') {
+      return {
+        x: 20,
+        y: 22,
+        w: 210,
+        h: 176,
+        leftPillX: 59,
+        rightPillX: 190,
+        pillY: 33,
+        holdBounds: { minX: 68, maxX: 184, minY: 48 },
+      };
+    }
+    if (
+      kind === 'sit_to_stand' ||
+      kind === 'knee_lift' ||
+      kind === 'hip_abduction' ||
+      kind === 'heel_toe_raise' ||
+      kind === 'knee_extension' ||
+      kind === 'trunk_reach'
+    ) {
+      return {
+        x: 24,
+        y: 2,
+        w: 212,
+        h: 212,
+        leftPillX: 64,
+        rightPillX: 196,
+        pillY: 13,
+        holdBounds: { minX: 66, maxX: 192, minY: 28 },
+      };
+    }
+    return {
+      x: 22,
+      y: -8,
+      w: 216,
+      h: 154,
+      leftPillX: 61,
+      rightPillX: 198,
+      pillY: 3,
+      holdBounds: { minX: 66, maxX: 192, minY: 20 },
+    };
+  })();
+
+  const renderScene = () => {
+    // 1. SIDE / 3/4 VIEW: SHOULDER FLEXION / SCAP PROTRACT / CLASPED FORWARD PUSH / SIT-TO-STAND
+    if (
+      kind === 'shoulder_flexion' ||
+      kind === 'scap_protract' ||
+      kind === 'clasped_forward_push'
     ) {
       // Face right (+x is forward)
       const cx = 104;
@@ -663,11 +907,11 @@ function AnimatedRehabCoachModelInner({
       const knee = { x: cx + 2, y: 164 };
       const ankle = { x: cx - 2, y: 204 };
 
-      const reachMaxDeg = kind === 'shoulder_flexion' ? Math.min(165, Math.max(60, targetRom)) : 90;
+      const reachMaxDeg = kind === 'shoulder_flexion' ? Math.min(176, Math.max(60, targetRom)) : 90;
       const currentArmAngle =
         kind === 'shoulder_flexion' ? reachMaxDeg * frame.motionProgress : 90;
       const forwardPushPx =
-        kind === 'scap_protract' || kind === 'bobath_forward_push'
+        kind === 'scap_protract' || kind === 'clasped_forward_push'
           ? 24 * frame.motionProgress
           : 0;
 
@@ -686,49 +930,55 @@ function AnimatedRehabCoachModelInner({
       const restWrist = polarPt(shoulder, 68, kind === 'shoulder_flexion' ? 6 : 90);
 
       return (
-        <g>
-          <ellipse cx={cx} cy={208} rx={48} ry={6} fill="#cbd5e1" opacity={0.65} />
-          {/* Standing Legs */}
-          <ActiveOrMutedLimb p1={hip} p2={knee} p3={ankle} active={false} width={10} />
+        <g data-testid="mascot-coach-character">
+          <ellipse cx={cx} cy={208} rx={56} ry={7} fill="#0F4C81" opacity={0.14} />
+          {/* Cute Otter Tail on Back */}
+          <path
+            d={`M ${cx - 16} 130 C ${cx - 46} 136, ${cx - 56} 118, ${cx - 46} 109 C ${cx - 40} 103, ${cx - 28} 116, ${cx - 14} 118 Z`}
+            fill={OTTER_FUR_DARK}
+            stroke={OTTER_OUTLINE}
+            strokeWidth={2.2}
+            strokeLinejoin="round"
+          />
+          {/* Standing Otter Legs */}
+          <ActiveOrMutedLimb p1={hip} p2={knee} p3={ankle} active={false} width={14} />
           {/* Background Arm (muted if single side, or parallel active if BOTH) */}
-          {kind !== 'bobath_forward_push' &&
+          {kind !== 'clasped_forward_push' &&
             (resolvedSide === 'BOTH' ? (
               <ActiveOrMutedLimb
                 p1={{ x: shoulder.x - 10, y: shoulder.y - 3 }}
                 p2={{ x: curElbow.x - 10, y: curElbow.y - 4 }}
                 p3={{ x: curWrist.x - 10, y: curWrist.y - 5 }}
                 active
-                width={9}
+                width={12}
               />
             ) : (
               <ActiveOrMutedLimb
                 p1={shoulder}
-                p2={{ x: cx - 6, y: 95 }}
+                p2={{ x: cx - 6, y: 98 }}
                 p3={backArmEnd}
                 active={false}
-                width={9}
+                width={12}
               />
             ))}
-          {/* Torso */}
-          <rect
-            x={cx - 12}
-            y={60}
-            width={24}
-            height={65}
-            rx={11}
-            fill={TORSO_FILL}
-            stroke={TORSO_STROKE}
-            strokeWidth={2}
+          {/* Plump Side Otter Torso + Cream Belly */}
+          <ellipse cx={cx} cy={104} rx={24} ry={38} fill={OTTER_FUR} stroke={OTTER_OUTLINE} strokeWidth={2.4} />
+          <ellipse cx={cx + 10} cy={106} rx={12.5} ry={25} fill={OTTER_CREAM} />
+          {/* Side Mint Clinical Scarf + Badge */}
+          <path
+            d={`M ${cx - 20} 70 C ${cx - 6} 79, ${cx + 14} 79, ${cx + 22} 70 C ${cx + 24} 78, ${cx + 16} 85, ${cx + 2} 86 C ${cx - 12} 85, ${cx - 22} 78, ${cx - 20} 70 Z`}
+            fill={MINT_SCARF}
+            stroke={MINT_DARK}
+            strokeWidth={1.9}
+            strokeLinejoin="round"
           />
-          {/* Head looking forward (+x) */}
-          <circle cx={cx + 2} cy={38} r={16} fill={SKIN_FILL} stroke={TORSO_STROKE} strokeWidth={2.2} />
-          <path d={`M ${(cx - 14)} 34 C ${(cx - 12)} 19, ${(cx + 16)} 19, ${(cx + 15)} 30 Z`} fill="#334155" />
-          <circle cx={cx + 11} cy={36} r={2} fill="#0f172a" />
-          <path d={`M ${cx + 17} 38 L ${cx + 21} 40 L ${cx + 17} 42`} fill={SKIN_FILL} stroke={TORSO_STROKE} strokeWidth={1.6} />
+          <MascotEmblem cx={cx + 11} cy={79} scale={0.85} />
+          {/* Nong MorTech Side Otter Head */}
+          <MascotOtterHeadSide cx={cx + 2} cy={46} scale={1.06} />
 
           {/* Dashed Target Ghost + Star */}
           <TargetGhostLimb p1={shoulder} p2={targetElbow} p3={targetWrist} />
-          {(kind === 'scap_protract' || kind === 'bobath_forward_push') && (
+          {(kind === 'scap_protract' || kind === 'clasped_forward_push') && (
             <TargetStarBadge x={targetWrist.x + 18} y={targetWrist.y} />
           )}
           {/* Active Forearm/Upper Arm */}
@@ -737,10 +987,10 @@ function AnimatedRehabCoachModelInner({
             p2={curElbow}
             p3={curWrist}
             active
-            width={11}
+            width={14}
           />
-          {kind === 'bobath_forward_push' && (
-            <circle cx={curWrist.x} cy={curWrist.y} r={9} fill="#10b981" fillOpacity={0.28} stroke="#047857" strokeWidth={2} />
+          {kind === 'clasped_forward_push' && (
+            <circle cx={curWrist.x} cy={curWrist.y} r={11} fill="#10b981" fillOpacity={0.28} stroke="#047857" strokeWidth={2} />
           )}
           {isMoving && <DirectionalArrow from={restWrist} to={targetWrist} bulge={-22} />}
           {isHoldOrLower && (
@@ -751,6 +1001,7 @@ function AnimatedRehabCoachModelInner({
               targetHoldSec={targetHoldSec}
               phaseProgress={frame.phaseProgress}
               compact={compact}
+              bounds={stageFrame.holdBounds}
             />
           )}
         </g>
@@ -767,13 +1018,15 @@ function AnimatedRehabCoachModelInner({
         const flipScaleY = lerp(1, -1, frame.motionProgress);
         const palmLabel = frame.motionProgress > 0.5 ? 'หงายมือ (Up)' : 'คว่ำมือ (Down)';
         return (
-          <g>
-            {/* Elbow & Forearm */}
-            <ActiveOrMutedLimb p1={forearmStart} p2={wrist} active width={14} showEndpointDot={false} />
-            {/* Rotating Palm Oval + Thumb */}
-            <g transform={`translate(${wrist.x + 36}, ${wrist.y - 8}) scale(1, ${flipScaleY.toFixed(2)})`}>
-              <ellipse cx={0} cy={0} rx={34} ry={17} fill={SKIN_FILL} stroke={EMERALD_DARK} strokeWidth={3} />
-              <line x1={-6} y1={-12} x2={-14} y2={-26} stroke={EMERALD} strokeWidth={7} strokeLinecap="round" />
+          <g data-testid="mascot-coach-character">
+            <MascotOtterHeadFront cx={62} cy={72} scale={0.78} />
+            {/* Otter Forearm */}
+            <ActiveOrMutedLimb p1={forearmStart} p2={wrist} active width={16} showEndpointDot={false} />
+            {/* Rotating Otter Paw + Thumb */}
+            <g transform={`translate(${wrist.x + 38}, ${wrist.y - 8}) scale(1, ${flipScaleY.toFixed(2)})`}>
+              <ellipse cx={0} cy={0} rx={36} ry={18} fill={OTTER_FUR_LIGHT} stroke={EMERALD_DARK} strokeWidth={3} />
+              <ellipse cx={2} cy={0} rx={22} ry={10} fill={OTTER_PAW_PAD} />
+              <line x1={-6} y1={-12} x2={-14} y2={-28} stroke={EMERALD} strokeWidth={8} strokeLinecap="round" />
               <circle cx={0} cy={0} r={5} fill={EMERALD} />
             </g>
             {/* Curved rotation indicator */}
@@ -795,6 +1048,7 @@ function AnimatedRehabCoachModelInner({
                 targetHoldSec={targetHoldSec}
                 phaseProgress={frame.phaseProgress}
                 compact={compact}
+                bounds={stageFrame.holdBounds}
               />
             )}
           </g>
@@ -807,9 +1061,11 @@ function AnimatedRehabCoachModelInner({
         const indexTip = { x: wrist.x + 68, y: wrist.y - 8 - openGap * 0.55 };
         const thumbTip = { x: wrist.x + 66, y: wrist.y - 4 + openGap * 0.55 };
         return (
-          <g>
-            <ActiveOrMutedLimb p1={forearmStart} p2={wrist} active width={13} showEndpointDot={false} />
-            <circle cx={fingerBase.x - 4} cy={fingerBase.y + 4} r={18} fill={SKIN_FILL} stroke={EMERALD_DARK} strokeWidth={2.5} />
+          <g data-testid="mascot-coach-character">
+            <MascotOtterHeadFront cx={60} cy={72} scale={0.76} />
+            <ActiveOrMutedLimb p1={forearmStart} p2={wrist} active width={15} showEndpointDot={false} />
+            <circle cx={fingerBase.x - 4} cy={fingerBase.y + 4} r={19} fill={OTTER_FUR_LIGHT} stroke={EMERALD_DARK} strokeWidth={2.5} />
+            <circle cx={fingerBase.x - 4} cy={fingerBase.y + 4} r={10} fill={OTTER_PAW_PAD} />
             {/* Index finger */}
             <ActiveOrMutedLimb p1={fingerBase} p2={{ x: wrist.x + 50, y: wrist.y - 18 }} p3={indexTip} active width={9} />
             {/* Thumb */}
@@ -829,6 +1085,7 @@ function AnimatedRehabCoachModelInner({
                 targetHoldSec={targetHoldSec}
                 phaseProgress={frame.phaseProgress}
                 compact={compact}
+                bounds={stageFrame.holdBounds}
               />
             )}
           </g>
@@ -844,16 +1101,18 @@ function AnimatedRehabCoachModelInner({
       const palmOrigin = { x: wristJoint.x, y: wristJoint.y };
 
       return (
-        <g>
-          {/* Zoomed Forearm */}
-          <ActiveOrMutedLimb p1={{ x: 38, y: 158 }} p2={wristJoint} active width={15} showEndpointDot={false} />
+        <g data-testid="mascot-coach-character">
+          <MascotOtterHeadFront cx={58} cy={72} scale={0.76} />
+          {/* Zoomed Otter Forearm */}
+          <ActiveOrMutedLimb p1={{ x: 38, y: 158 }} p2={wristJoint} active width={16} showEndpointDot={false} />
           {/* Ghost Wrist */}
           <g transform={`translate(${palmOrigin.x}, ${palmOrigin.y}) rotate(${-targetWristTilt})`} opacity={0.35}>
             <rect x={4} y={-14} width={44} height={28} rx={12} fill="none" stroke={EMERALD_DARK} strokeWidth={2.5} strokeDasharray="5 3" />
           </g>
-          {/* Active Articulated Wrist + 5 Fingers */}
+          {/* Active Articulated Otter Paw + 5 Fingers */}
           <g transform={`translate(${palmOrigin.x}, ${palmOrigin.y}) rotate(${-wristTiltDeg})`}>
-            <rect x={2} y={-15} width={44} height={30} rx={12} fill={SKIN_FILL} stroke={EMERALD_DARK} strokeWidth={3} />
+            <rect x={2} y={-15} width={44} height={30} rx={13} fill={OTTER_FUR_LIGHT} stroke={EMERALD_DARK} strokeWidth={3} />
+            <ellipse cx={22} cy={0} rx={13} ry={9} fill={OTTER_PAW_PAD} />
             {fingers.map((baseAngle, idx) => {
               const splayedAngle = baseAngle * lerp(0.18, 1.0, spreadRatio);
               const fingerLen = idx === 0 ? lerp(20, 32, spreadRatio) : lerp(22, 46, spreadRatio);
@@ -895,6 +1154,7 @@ function AnimatedRehabCoachModelInner({
               targetHoldSec={targetHoldSec}
               phaseProgress={frame.phaseProgress}
               compact={compact}
+              bounds={stageFrame.holdBounds}
             />
           )}
         </g>
@@ -914,14 +1174,16 @@ function AnimatedRehabCoachModelInner({
         const hand = { x: shoulder.x + lerp(28, 10, standT), y: shoulder.y + lerp(26, 48, standT) };
 
         return (
-          <g>
+          <g data-testid="mascot-coach-character">
             {/* Chair */}
             <path d="M 62 78 L 68 142 L 116 142 L 116 202 M 68 142 L 68 202" fill="none" stroke="#64748b" strokeWidth={6} strokeLinecap="round" strokeLinejoin="round" />
-            <ActiveOrMutedLimb p1={hip} p2={knee} p3={ankle} active width={11} />
-            {/* Torso */}
-            <line x1={hip.x} y1={hip.y} x2={shoulder.x} y2={shoulder.y} stroke={TORSO_FILL} strokeWidth={20} strokeLinecap="round" />
-            <circle cx={shoulder.x + 2} cy={shoulder.y - 22} r={15} fill={SKIN_FILL} stroke={TORSO_STROKE} strokeWidth={2} />
-            <ActiveOrMutedLimb p1={shoulder} p2={lerpPt(shoulder, hand, 0.55)} p3={hand} active={false} width={8} />
+            <ActiveOrMutedLimb p1={hip} p2={knee} p3={ankle} active width={14} />
+            {/* Otter Torso + Scarf */}
+            <line x1={hip.x} y1={hip.y} x2={shoulder.x} y2={shoulder.y} stroke={OTTER_OUTLINE} strokeWidth={28} strokeLinecap="round" />
+            <line x1={hip.x} y1={hip.y} x2={shoulder.x} y2={shoulder.y} stroke={OTTER_FUR} strokeWidth={23} strokeLinecap="round" />
+            <line x1={hip.x + 4} y1={hip.y - 4} x2={shoulder.x + 5} y2={shoulder.y + 8} stroke={OTTER_CREAM} strokeWidth={11} strokeLinecap="round" />
+            <MascotOtterHeadSide cx={shoulder.x + 2} cy={shoulder.y - 22} scale={0.95} />
+            <ActiveOrMutedLimb p1={shoulder} p2={lerpPt(shoulder, hand, 0.55)} p3={hand} active={false} width={11} />
             {isMoving && <DirectionalArrow from={{ x: 112, y: 120 }} to={{ x: 148, y: 58 }} bulge={-16} />}
             {isHoldOrLower && (
               <HoldPulseTarget
@@ -931,6 +1193,7 @@ function AnimatedRehabCoachModelInner({
                 targetHoldSec={targetHoldSec}
                 phaseProgress={frame.phaseProgress}
                 compact={compact}
+                bounds={stageFrame.holdBounds}
               />
             )}
           </g>
@@ -953,7 +1216,7 @@ function AnimatedRehabCoachModelInner({
           : { x: hip.x + 18, y: hip.y - 6 };
 
       return (
-        <g>
+        <g data-testid="mascot-coach-character">
           {/* Chair */}
           <path d={`M ${chairX - 24} 78 L ${chairX - 18} 142 L 136 142 L 136 202 M ${chairX - 18} 142 L ${chairX - 18} 202`} fill="none" stroke="#64748b" strokeWidth={6} strokeLinecap="round" strokeLinejoin="round" />
           <ActiveOrMutedLimb
@@ -961,16 +1224,18 @@ function AnimatedRehabCoachModelInner({
             p2={knee}
             p3={ankle}
             active={kind === 'knee_extension'}
-            width={11}
+            width={14}
           />
-          <line x1={hip.x} y1={hip.y} x2={shoulder.x} y2={shoulder.y} stroke={TORSO_FILL} strokeWidth={20} strokeLinecap="round" />
-          <circle cx={shoulder.x + 2} cy={shoulder.y - 20} r={15} fill={SKIN_FILL} stroke={TORSO_STROKE} strokeWidth={2} />
+          <line x1={hip.x} y1={hip.y} x2={shoulder.x} y2={shoulder.y} stroke={OTTER_OUTLINE} strokeWidth={28} strokeLinecap="round" />
+          <line x1={hip.x} y1={hip.y} x2={shoulder.x} y2={shoulder.y} stroke={OTTER_FUR} strokeWidth={23} strokeLinecap="round" />
+          <line x1={hip.x + 4} y1={hip.y - 4} x2={shoulder.x + 5} y2={shoulder.y + 8} stroke={OTTER_CREAM} strokeWidth={11} strokeLinecap="round" />
+          <MascotOtterHeadSide cx={shoulder.x + 2} cy={shoulder.y - 20} scale={0.95} />
           <ActiveOrMutedLimb
             p1={shoulder}
             p2={lerpPt(shoulder, reachHand, 0.5)}
             p3={reachHand}
             active={kind === 'trunk_reach'}
-            width={9}
+            width={12}
           />
           {kind === 'trunk_reach' && <TargetStarBadge x={218} y={88} />}
           {kind === 'knee_extension' && isMoving && (
@@ -984,13 +1249,14 @@ function AnimatedRehabCoachModelInner({
               targetHoldSec={targetHoldSec}
               phaseProgress={frame.phaseProgress}
               compact={compact}
+              bounds={stageFrame.holdBounds}
             />
           )}
         </g>
       );
     }
 
-    // 4. FRONT MIRROR FULL-BODY VIEW (All remaining shoulder, elbow, bobath, neck, shrug, leg exercises)
+    // 4. FRONT MIRROR FULL-BODY VIEW (All remaining shoulder, elbow, clasped, neck, shrug, leg exercises)
     const cx = 130;
     const isLeftArm = activeLeft;
     const isRightArm = activeRight;
@@ -1023,7 +1289,7 @@ function AnimatedRehabCoachModelInner({
     let arrowTo: Pt | null = null;
 
     if (kind === 'shoulder_abduction') {
-      const maxAbd = Math.min(165, Math.max(45, targetRom));
+      const maxAbd = Math.min(172, Math.max(45, targetRom));
       const ang = maxAbd * frame.motionProgress;
       if (isLeftArm) {
         leftElbow = polarPt(ls, 34, -ang - 8);
@@ -1133,7 +1399,7 @@ function AnimatedRehabCoachModelInner({
         arrowTo = tgtW;
         activeEndpoint = rightWrist;
       }
-    } else if (kind === 'bobath_arm_raise') {
+    } else if (kind === 'clasped_arm_raise') {
       const t = frame.motionProgress;
       const claspPeak = { x: cx, y: 16 };
       const claspRest = { x: cx, y: 118 };
@@ -1218,7 +1484,7 @@ function AnimatedRehabCoachModelInner({
           width={12}
         />
 
-        {kind === 'bobath_arm_raise' && (
+        {kind === 'clasped_arm_raise' && (
           <circle
             cx={(leftWrist.x + rightWrist.x) / 2}
             cy={leftWrist.y}
@@ -1242,6 +1508,7 @@ function AnimatedRehabCoachModelInner({
             targetHoldSec={targetHoldSec}
             phaseProgress={frame.phaseProgress}
             compact={compact}
+            bounds={stageFrame.holdBounds}
           />
         )}
       </g>
@@ -1255,10 +1522,11 @@ function AnimatedRehabCoachModelInner({
       className={`relative flex flex-col items-center justify-center overflow-hidden ${className}`}
     >
       <svg
-        viewBox="0 0 260 220"
+        viewBox={`${stageFrame.x} ${stageFrame.y} ${stageFrame.w} ${stageFrame.h}`}
+        preserveAspectRatio="xMidYMid meet"
         className="w-full h-full max-h-full select-none"
         role="img"
-        aria-label={`หุ่นโค้ชสาธิต ${exercise.name_th} (${sideLabel})`}
+        aria-label={`น้องหมอเทคมาสคอตสาธิต ${exercise.name_th} (${sideLabel})`}
       >
         <defs>
           <linearGradient id="coachBgGrad" x1="0" y1="0" x2="0" y2="1">
@@ -1266,26 +1534,43 @@ function AnimatedRehabCoachModelInner({
             <stop offset="100%" stopColor="#ecfdf5" />
           </linearGradient>
         </defs>
-        <rect x={0} y={0} width={260} height={220} rx={16} fill="url(#coachBgGrad)" />
+        <rect
+          x={stageFrame.x}
+          y={stageFrame.y}
+          width={stageFrame.w}
+          height={stageFrame.h}
+          rx={12}
+          fill="url(#coachBgGrad)"
+        />
 
-        {/* Live Angle Pill Top-Right */}
-        <g transform="translate(194, 18)">
-          <rect x={-56} y={-13} width={112} height={24} rx={12} fill="#ffffff" stroke="#0284c7" strokeWidth={2} />
-          <text x={0} y={4} textAnchor="middle" fill="#0f172a" fontSize={12} fontWeight={900}>
-            {currentDeg}° → {targetRom}°
-          </text>
-        </g>
+        {renderScene()}
 
-        {/* Active Side Pill Top-Left */}
-        <g transform="translate(64, 18)">
-          <rect x={-58} y={-13} width={116} height={24} rx={12} fill="#10b981" />
-          <circle cx={-44} cy={-1} r={4} fill="#ffffff" />
-          <text x={6} y={4} textAnchor="middle" fill="#ffffff" fontSize={12} fontWeight={900}>
+        {/* Compact Active Side Pill Top-Left (clear of otter head) */}
+        <g transform={`translate(${stageFrame.leftPillX}, ${stageFrame.pillY})`}>
+          <rect x={-35} y={-9} width={70} height={18} rx={9} fill="#10b981" />
+          <circle cx={-26} cy={0} r={2.6} fill="#ffffff" />
+          <text x={4} y={3.2} textAnchor="middle" fill="#ffffff" fontSize={9.5} fontWeight={900}>
             {sideLabel}
           </text>
         </g>
 
-        {renderScene()}
+        {/* Compact Live Angle Pill Top-Right (clear of otter head) */}
+        <g transform={`translate(${stageFrame.rightPillX}, ${stageFrame.pillY})`}>
+          <rect
+            x={-37}
+            y={-9}
+            width={74}
+            height={18}
+            rx={9}
+            fill="#ffffff"
+            fillOpacity={0.94}
+            stroke="#0284c7"
+            strokeWidth={1.6}
+          />
+          <text x={0} y={3.2} textAnchor="middle" fill="#0f172a" fontSize={9.5} fontWeight={900}>
+            {currentDeg}° → {targetRom}°
+          </text>
+        </g>
       </svg>
     </div>
   );
@@ -1403,20 +1688,20 @@ export function Zone4CoachStageAndSteps({
 
   return (
     <>
-      {/* Left 5 Columns: GIANT Live Animated Coach Model Stage */}
-      <div className="col-span-5 bg-gradient-to-b from-sky-50 via-white to-emerald-50/70 border-2 border-emerald-400 rounded-2xl p-2 flex flex-col items-center justify-between relative overflow-hidden card-hover-lift">
-        <div className="w-full flex items-center justify-between gap-1.5 shrink-0 z-10">
-          <span className="inline-flex items-center gap-1.5 bg-emerald-600 text-white text-xs sm:text-sm font-black px-2.5 py-0.5 rounded-full truncate">
-            <span className="inline-block w-2 h-2 rounded-full bg-white animate-pulse shrink-0" />
-            <span className="truncate">หุ่นสาธิต • {frame.phaseLabelTh}</span>
+      {/* Left 7 Columns: EXTRA-LARGE Zoomed Nong MorTech Mascot Coach Stage */}
+      <div className="col-span-7 bg-gradient-to-b from-sky-50 via-white to-emerald-50/70 border-2 border-emerald-400 rounded-2xl p-1.5 flex flex-col items-center justify-between relative overflow-hidden card-hover-lift">
+        <div className="w-full flex items-center justify-between gap-1 shrink-0 z-10 mb-1">
+          <span className="inline-flex items-center gap-1 bg-emerald-600 text-white text-[11px] sm:text-xs font-black px-2 py-0.5 rounded-full truncate">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-white animate-pulse shrink-0" />
+            <span className="truncate">น้องหมอเทคสาธิต • {frame.phaseLabelTh}</span>
           </span>
           <button
             type="button"
             onClick={onExpandPreview}
             data-testid="kiosk-coach-expand-btn"
-            className="inline-flex items-center gap-1 bg-white hover:bg-sky-50 border border-blue-300 text-blue-800 text-xs font-extrabold px-2.5 py-0.5 rounded-lg shrink-0 cursor-pointer shadow-xs active:scale-95 transition"
+            className="inline-flex items-center gap-1 bg-white hover:bg-sky-50 border border-blue-300 text-blue-800 text-[11px] font-extrabold px-2 py-0.5 rounded-lg shrink-0 cursor-pointer shadow-xs active:scale-95 transition"
           >
-            <Maximize2 className="w-3.5 h-3.5 shrink-0" />
+            <Maximize2 className="w-3 h-3 shrink-0" />
             <span>ขยายใหญ่</span>
           </button>
         </div>
@@ -1425,16 +1710,16 @@ export function Zone4CoachStageAndSteps({
           exercise={exercise}
           targetSide={targetSide}
           cycleElapsedSec={elapsedSec}
-          className="w-full h-44 sm:h-52 md:h-56"
+          className="w-full h-64 sm:h-72 flex-1"
         />
       </div>
 
-      {/* Right 7 Columns: GIANT Elderly-Readable Arm Instruction + 3 Clean Step Chips */}
-      <div className="col-span-7 flex flex-col justify-between gap-2">
-        {/* MASSIVE Side / Arm Callout Card */}
+      {/* Right 5 Columns: Compact Arm Banner + 3 Sleek Horizontal Step Rows */}
+      <div className="col-span-5 flex flex-col justify-between gap-1.5">
+        {/* Compact Side / Arm Callout Card */}
         <div
           data-testid="zone4-elderly-arm-callout"
-          className={`flex-1 rounded-2xl border-[3px] px-4 py-3 flex flex-col justify-center gap-1.5 shadow-sm ${
+          className={`shrink-0 rounded-xl border-2 px-2.5 py-2 flex flex-col justify-center gap-1 shadow-xs ${
             limbCue.direction === 'left'
               ? 'border-blue-500 bg-gradient-to-r from-indigo-700 via-blue-600 to-sky-600 text-white'
               : limbCue.direction === 'both'
@@ -1442,34 +1727,34 @@ export function Zone4CoachStageAndSteps({
                 : 'border-emerald-400 bg-gradient-to-r from-[#0F4C81] via-[#0284C7] to-[#059669] text-white'
           }`}
         >
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-sm sm:text-base md:text-lg font-extrabold text-white/95 truncate">
+          <div className="flex items-center justify-between gap-1.5">
+            <span className="text-xs sm:text-sm font-extrabold text-white/95 truncate">
               {conciseName}
             </span>
-            <span className="shrink-0 rounded-full bg-white/20 border border-white/40 px-3 py-0.5 text-xs sm:text-sm font-black text-white whitespace-nowrap">
+            <span className="shrink-0 rounded-full bg-white/20 border border-white/40 px-2 py-0.5 text-[11px] font-black text-white whitespace-nowrap">
               เป้า {targetRomDeg}°
             </span>
           </div>
 
-          <div className="flex items-center justify-center gap-3 py-1">
+          <div className="flex items-center justify-center gap-2">
             {limbCue.direction === 'left' && (
-              <svg viewBox="0 0 36 36" className="w-10 h-10 sm:w-12 sm:h-12 shrink-0 text-amber-300" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <svg viewBox="0 0 36 36" className="w-6 h-6 sm:w-7 sm:h-7 shrink-0 text-amber-300" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M30 18H6" />
                 <path d="M16 8L6 18l10 10" />
               </svg>
             )}
             {limbCue.direction === 'both' && (
-              <svg viewBox="0 0 36 36" className="w-10 h-10 sm:w-12 sm:h-12 shrink-0 text-amber-300" fill="none" stroke="currentColor" strokeWidth="3.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <svg viewBox="0 0 36 36" className="w-6 h-6 sm:w-7 sm:h-7 shrink-0 text-amber-300" fill="none" stroke="currentColor" strokeWidth="3.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M13 8L5 18l8 10" />
                 <path d="M23 8l8 10-8 10" />
                 <path d="M7 18h22" />
               </svg>
             )}
-            <span className="text-4xl sm:text-5xl md:text-6xl font-black tracking-tight leading-none drop-shadow-sm">
+            <span className="text-xl sm:text-2xl md:text-3xl font-black tracking-tight leading-none drop-shadow-sm truncate">
               {limbCue.headlineTh}
             </span>
             {limbCue.direction === 'right' && (
-              <svg viewBox="0 0 36 36" className="w-10 h-10 sm:w-12 sm:h-12 shrink-0 text-amber-300" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <svg viewBox="0 0 36 36" className="w-6 h-6 sm:w-7 sm:h-7 shrink-0 text-amber-300" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M6 18h24" />
                 <path d="M20 8l10 10-10 10" />
               </svg>
@@ -1477,8 +1762,8 @@ export function Zone4CoachStageAndSteps({
           </div>
         </div>
 
-        {/* 3 Oversized Crisp Step Chips */}
-        <div className="grid grid-cols-3 gap-2">
+        {/* 3 Clear, Tactile Elderly-Readable Step Rows */}
+        <div className="flex-1 flex flex-col justify-between gap-1.5">
           {stepItems.map((item) => {
             const isActiveStep = frame.activeStepNumber === item.stepNum;
             return (
@@ -1486,26 +1771,26 @@ export function Zone4CoachStageAndSteps({
                 key={item.stepNum}
                 data-testid={`kiosk-step-card-${item.stepNum}`}
                 data-active-step={isActiveStep ? 'true' : 'false'}
-                className={`rounded-2xl px-2.5 py-2 flex flex-col items-center justify-center text-center transition-all duration-300 ${
+                className={`flex-1 rounded-xl px-3 py-2 flex items-center justify-between gap-2 transition-all duration-300 ${
                   isActiveStep
-                    ? '-translate-y-0.5 shadow-md border-2 border-emerald-500 bg-emerald-50 ring-2 ring-emerald-300/60'
-                    : 'bg-slate-50 border border-sky-200 opacity-90'
+                    ? 'shadow-sm border-2 border-emerald-500 bg-emerald-50 ring-2 ring-emerald-300/60'
+                    : 'bg-slate-50 border border-sky-200 opacity-95'
                 }`}
               >
-                <div className="flex items-center justify-center gap-1">
+                <div className="flex items-center gap-2 min-w-0">
                   <span
-                    className={`text-sm sm:text-base font-black px-2 py-0.5 rounded-full ${
+                    className={`text-xs sm:text-sm font-black px-2.5 py-0.5 rounded-full shrink-0 ${
                       isActiveStep ? 'bg-blue-700 text-white' : 'bg-sky-100 text-blue-900'
                     }`}
                   >
                     {item.title}
                   </span>
+                  <p className="text-sm sm:text-base font-black text-slate-900 leading-tight truncate">
+                    {item.shortCue}
+                  </p>
                 </div>
-                <p className="mt-1 text-sm sm:text-base font-black text-slate-900 leading-tight">
-                  {item.shortCue}
-                </p>
                 {isActiveStep && (
-                  <span className="mt-1 inline-flex items-center gap-1 bg-emerald-600 text-white text-[10px] font-black px-2 py-0.5 rounded-full animate-toast-in animate-status-halo whitespace-nowrap">
+                  <span className="inline-flex items-center gap-1 bg-emerald-600 text-white text-[11px] font-black px-2.5 py-1 rounded-full animate-toast-in animate-status-halo whitespace-nowrap shrink-0">
                     <Play className="w-2.5 h-2.5 fill-current shrink-0" />
                     <span>กำลังทำขั้นนี้</span>
                   </span>

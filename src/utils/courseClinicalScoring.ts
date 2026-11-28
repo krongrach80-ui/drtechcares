@@ -146,9 +146,9 @@ function resolveExerciseCodeAndMeta(
   targetSide: AssessmentTargetSide;
   defaultTargetRomDeg: number;
 } {
-  const parsed = parseExerciseCodeAndSide(rawCode || 'STROKE_SHOULDER_FLEXION', rawSide ?? undefined);
+  const parsed = parseExerciseCodeAndSide(rawCode || 'ELDERLY_SHOULDER_FLEXION', rawSide ?? undefined);
   const catalog = findCatalogExercise(rawCode);
-  const exerciseCode = (catalog?.code || parsed.baseCode || 'STROKE_SHOULDER_FLEXION').toUpperCase();
+  const exerciseCode = (catalog?.code || parsed.baseCode || 'ELDERLY_SHOULDER_FLEXION').toUpperCase();
   const exerciseNameTh = catalog?.name.th || rawCode || exerciseCode;
   const defaultTargetRomDeg = Number((catalog?.detection.targetMinDeg ?? 90).toFixed(1));
   const catalogSide = catalog?.detection.side === 'both' ? 'BOTH' : undefined;

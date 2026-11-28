@@ -61,7 +61,7 @@ describe('Real Retrospective Clinical Tracking, Live ROM Measurement & Progress 
         age: 17,
         gender: 'ชาย',
         phone: '0890005039',
-        diagnosis: 'Stroke ADL Shoulder & Arm',
+        diagnosis: 'Elderly Rehab Shoulder & Arm',
         affectedSide: 'RIGHT',
       },
     });
@@ -90,7 +90,7 @@ describe('Real Retrospective Clinical Tracking, Live ROM Measurement & Progress 
         body: {
           assessed_at: '2026-11-01T09:00:00.000Z',
           facility_name: 'ศูนย์กายภาพบำบัด Dr.Tech.Care สาขาหลัก',
-          exercise_code: 'STROKE_SHOULDER_FLEXION',
+          exercise_code: 'ELDERLY_SHOULDER_FLEXION',
           exercise_name_th: 'ยกแขนตรงไปด้านหน้า',
           target_side: 'RIGHT',
           initial_score_0_to_6: 2,
@@ -116,7 +116,7 @@ describe('Real Retrospective Clinical Tracking, Live ROM Measurement & Progress 
       body: {
         patientId: patient.id,
         activityType: 'physio_exercise',
-        exerciseId: 'STROKE_SHOULDER_FLEXION',
+        exerciseId: 'ELDERLY_SHOULDER_FLEXION',
         exerciseName: 'ยกแขนตรงไปด้านหน้า',
         bodySide: 'RIGHT',
         completedSets: 2,
@@ -180,7 +180,7 @@ describe('Real Retrospective Clinical Tracking, Live ROM Measurement & Progress 
         facility_name: 'สาขาหลัก',
         assessor_staff_id: 'pt-1',
         assessor_staff_name: 'กภ. สมชาย',
-        exercise_code: 'STROKE_SHOULDER_FLEXION',
+        exercise_code: 'ELDERLY_SHOULDER_FLEXION',
         exercise_name_th: 'ยกแขนตรงไปด้านหน้า',
         target_side: 'RIGHT',
         initial_score_0_to_6: 2,
@@ -226,7 +226,7 @@ describe('Real Retrospective Clinical Tracking, Live ROM Measurement & Progress 
         facility_name: 'คลินิกเครือข่ายกายภาพชุมชน',
         assessor_staff_id: 'pt-2',
         assessor_staff_name: 'กภ. อรทัย',
-        exercise_code: 'STROKE_SHOULDER_FLEXION',
+        exercise_code: 'ELDERLY_SHOULDER_FLEXION',
         exercise_name_th: 'ยกแขนตรงไปด้านหน้า',
         target_side: 'RIGHT',
         initial_score_0_to_6: 4,
@@ -249,7 +249,7 @@ describe('Real Retrospective Clinical Tracking, Live ROM Measurement & Progress 
     // Breakdown separates Shoulder Flexion (2 visits) from Neck Rotation (1 visit)
     const breakdown = computeExerciseBreakdown(records);
     expect(breakdown).toHaveLength(2);
-    const shoulder = breakdown.find((b) => b.exerciseCode === 'STROKE_SHOULDER_FLEXION')!;
+    const shoulder = breakdown.find((b) => b.exerciseCode === 'ELDERLY_SHOULDER_FLEXION')!;
     expect(shoulder.visitCount).toBe(2);
     expect(shoulder.firstRomDeg).toBe(40.0);
     expect(shoulder.latestRomDeg).toBe(82.0);

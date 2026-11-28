@@ -7,6 +7,7 @@ export * from './compensation';
 export * from './repStateMachine';
 export * from './exercises.config';
 export * from './clinicalBiomechanicsAgent';
-export * from './strokeSolver';
+export * from './handFingerTracker';
+export * from './elderlySolver';
 
 

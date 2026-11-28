@@ -1634,3 +1634,39 @@ a[href]:not([data-no-lift="true"]):active {
     animation: none !important;
   }
 }
+
+/* ============================================================================
+ * Hospital Clinical PDF Report Clean A4 Print Isolation
+ * ============================================================================ */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 10mm;
+  }
+
+  body {
+    background: #ffffff !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  [data-printable-clinical-report="true"],
+  [data-printable-clinical-report="true"] * {
+    visibility: visible !important;
+  }
+
+  [data-printable-clinical-report="true"] {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+}

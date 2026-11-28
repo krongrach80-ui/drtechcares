@@ -1325,8 +1325,9 @@ export function buildBiometricProfileFromSamples(
     down: bucketCentroid('down'),
   };
 
-  // 15 sharpest distinct frames distributed evenly across all 5 pose angles (3 per bucket + sharpest fill)
-  const bucketOrder: (keyof AngleEmbeddings5D)[] = ['center', 'left', 'right', 'up', 'down'];
+  // Select up to 15 distinct exemplars ordered so server-side compaction to 9 ALWAYS preserves
+  // 5 high-coherence frontal center exemplars (slots 0..4) + 1 best exemplar for each turned
+  // angle left/right/up/down (slots 5..8), followed by remaining sharpest frames (slots 9..14).
   const selectedExemplars: number[][] = [];
   const usedVectors = new Set<string>();
   const pushDistinctExemplar = (vec: number[]): boolean => {
@@ -1336,19 +1337,51 @@ export function buildBiometricProfileFromSamples(
     selectedExemplars.push(vec);
     return true;
   };
+  const dotSim = (a: readonly number[], b: readonly number[]): number => {
+    const len = Math.min(a.length, b.length);
+    let sum = 0;
+    for (let i = 0; i < len; i += 1) sum += a[i] * b[i];
+    return sum;
+  };
+  const rankBucketSamples = (bucket: keyof AngleEmbeddings5D) => {
+    const refCentroid = angle_embeddings[bucket];
+    const items = normalizedSamples.filter((s) => s.bucket === bucket);
+    const maxSharp = Math.max(1, ...items.map((s) => s.sharpness));
+    return [...items].sort((a, b) => {
+      const scoreA = 0.7 * dotSim(a.embedding, refCentroid) + 0.3 * (a.sharpness / maxSharp);
+      const scoreB = 0.7 * dotSim(b.embedding, refCentroid) + 0.3 * (b.sharpness / maxSharp);
+      return scoreB - scoreA;
+    });
+  };
 
-  for (const bucket of bucketOrder) {
-    const rankedBucket = normalizedSamples
-      .filter((s) => s.bucket === bucket)
-      .sort((a, b) => b.sharpness - a.sharpness);
-    let pickedForBucket = 0;
+  // Slots 0..4: 5 most coherent frontal exemplars (ensures frontal top-3 average never starves)
+  let pickedCenter = 0;
+  for (const s of rankBucketSamples('center')) {
+    if (pickedCenter >= 5 || selectedExemplars.length >= BIOMETRIC_EXEMPLAR_TARGET_COUNT) break;
+    if (pushDistinctExemplar(s.embedding)) pickedCenter += 1;
+  }
+  if (pickedCenter < 5 && selectedExemplars.length < BIOMETRIC_EXEMPLAR_TARGET_COUNT) {
+    if (pushDistinctExemplar(angle_embeddings.center)) pickedCenter += 1;
+  }
+
+  // Slots 5..8: 1 most coherent exemplar from each secondary angle (left, right, up, down)
+  const secondaryBuckets: (keyof AngleEmbeddings5D)[] = ['left', 'right', 'up', 'down'];
+  for (const bucket of secondaryBuckets) {
+    if (selectedExemplars.length >= BIOMETRIC_EXEMPLAR_TARGET_COUNT) break;
+    const rankedBucket = rankBucketSamples(bucket);
+    let picked = false;
     for (const s of rankedBucket) {
-      if (pickedForBucket >= 3 || selectedExemplars.length >= BIOMETRIC_EXEMPLAR_TARGET_COUNT) break;
-      if (pushDistinctExemplar(s.embedding)) pickedForBucket += 1;
+      if (pushDistinctExemplar(s.embedding)) {
+        picked = true;
+        break;
+      }
+    }
+    if (!picked && selectedExemplars.length < BIOMETRIC_EXEMPLAR_TARGET_COUNT) {
+      pushDistinctExemplar(angle_embeddings[bucket]);
     }
   }
 
-  // Fill remaining slots up to 15 from sharpest frames overall (prioritizing frontal/mild angles)
+  // Slots 9..14: fill remaining slots up to 15 from sharpest frames overall (prioritizing frontal)
   const allRanked = [...normalizedSamples].sort((a, b) => {
     const aFrontal = a.bucket === 'center' ? 1 : 0;
     const bFrontal = b.bucket === 'center' ? 1 : 0;
@@ -1861,7 +1894,7 @@ export async function syncPatientBiometricEverywhere(input: {
       const enrichedHistory = {
         ...baseHistory,
         ...(syncedPatientForDualWrite.gender ? { gender: syncedPatientForDualWrite.gender } : {}),
-        ...(syncedPatientForDualWrite.strokeType ? { strokeType: syncedPatientForDualWrite.strokeType } : {}),
+        ...(syncedPatientForDualWrite.careGroup ? { careGroup: syncedPatientForDualWrite.careGroup } : {}),
         ...(syncedPatientForDualWrite.affectedSide ? { affectedSide: syncedPatientForDualWrite.affectedSide } : {}),
         ...(syncedPatientForDualWrite.motorAssessmentScore !== undefined
           ? { motorAssessmentScore: syncedPatientForDualWrite.motorAssessmentScore }

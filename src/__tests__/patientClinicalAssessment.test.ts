@@ -63,7 +63,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
         facility_name: 'ศูนย์กายภาพบำบัด Dr.Tech.Care สาขาหลัก',
         assessor_staff_id: 'pt-1',
         assessor_staff_name: 'กภ. ทดสอบ',
-        exercise_code: 'STROKE_SHOULDER_FLEXION',
+        exercise_code: 'ELDERLY_SHOULDER_FLEXION',
         exercise_name_th: 'ยกแขนตรงไปด้านหน้า',
         target_side: 'RIGHT',
         initial_score_0_to_6: -1,
@@ -83,7 +83,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
         facility_name: 'ศูนย์กายภาพบำบัด Dr.Tech.Care สาขาหลัก',
         assessor_staff_id: 'pt-1',
         assessor_staff_name: 'กภ. ทดสอบ',
-        exercise_code: 'STROKE_SHOULDER_FLEXION',
+        exercise_code: 'ELDERLY_SHOULDER_FLEXION',
         exercise_name_th: 'ยกแขนตรงไปด้านหน้า',
         target_side: 'RIGHT',
         initial_score_0_to_6: 7,
@@ -115,7 +115,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
       facility_name: 'สาขาหลัก',
       assessor_staff_id: 'pt-1',
       assessor_staff_name: 'กภ. สมชาย',
-      exercise_code: 'STROKE_SHOULDER_FLEXION',
+      exercise_code: 'ELDERLY_SHOULDER_FLEXION',
       exercise_name_th: 'ยกแขนตรงไปด้านหน้า',
       target_side: 'RIGHT',
       initial_score_0_to_6: 2,
@@ -133,7 +133,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
       facility_name: 'สาขาชุมชน',
       assessor_staff_id: 'pt-2',
       assessor_staff_name: 'กภ. สุภา',
-      exercise_code: 'STROKE_SHOULDER_ABDUCTION',
+      exercise_code: 'ELDERLY_SHOULDER_ABDUCTION',
       exercise_name_th: 'กางแขนออกด้านข้าง',
       target_side: 'LEFT',
       initial_score_0_to_6: 4,
@@ -172,7 +172,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
       facility_name: 'ศูนย์กายภาพบำบัด Dr.Tech.Care สาขาหลัก',
       assessor_staff_id: 'pt-main',
       assessor_staff_name: 'กภ. สาขาหลัก',
-      exercise_code: 'STROKE_SHOULDER_FLEXION',
+      exercise_code: 'ELDERLY_SHOULDER_FLEXION',
       exercise_name_th: 'ยกแขนตรงไปด้านหน้า',
       target_side: 'RIGHT',
       initial_score_0_to_6: 2,
@@ -192,7 +192,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
       facility_name: 'คลินิกเครือข่ายกายภาพชุมชน',
       assessor_staff_id: 'pt-comm',
       assessor_staff_name: 'กภ. สาขาชุมชน',
-      exercise_code: 'STROKE_SHOULDER_FLEXION',
+      exercise_code: 'ELDERLY_SHOULDER_FLEXION',
       exercise_name_th: 'ยกแขนตรงไปด้านหน้า',
       target_side: 'RIGHT',
       initial_score_0_to_6: 4,
@@ -226,7 +226,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
       patientId: branch1Patient.id,
       patientHn: branch1Patient.hn,
       universalHealthLinkCode: universalCode,
-      exerciseCode: 'STROKE_SHOULDER_FLEXION',
+      exerciseCode: 'ELDERLY_SHOULDER_FLEXION',
       exerciseNameTh: 'ยกแขนตรงไปด้านหน้า',
       targetSide: 'RIGHT',
       measuredRomDeg: 72.5,
@@ -246,7 +246,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
       hn: 'HN-2026-0014',
       fullName: 'คุณสมชาย ใจดี',
       affectedSide: 'RIGHT',
-      diagnosis: 'Stroke Hemiparesis',
+      diagnosis: 'Elderly Upper Limb Weakness',
     };
     const seeded = ensureDemoAssessmentsForPatient(demoPatient);
     expect(seeded).toHaveLength(3);
@@ -310,7 +310,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
         id: 'rec-1',
         visit_number: 1,
         assessed_at: '2026-09-10T09:00:00.000Z',
-        exercise_code: 'STROKE_SHOULDER_FLEXION',
+        exercise_code: 'ELDERLY_SHOULDER_FLEXION',
         exercise_name_th: 'ยกแขนไปด้านหน้า',
         initial_score_0_to_6: 3,
         measured_rom_deg: 55.0,
@@ -321,7 +321,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
         id: 'rec-2',
         visit_number: 2,
         assessed_at: '2026-09-20T09:00:00.000Z',
-        exercise_code: 'STROKE_SHOULDER_ABDUCTION',
+        exercise_code: 'ELDERLY_SHOULDER_ABDUCTION',
         exercise_name_th: 'กางแขนออกด้านข้าง',
         initial_score_0_to_6: 3,
         measured_rom_deg: 51.0,
@@ -333,7 +333,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
         id: 'rec-3',
         visit_number: 3,
         assessed_at: '2026-10-05T10:00:00.000Z',
-        exercise_code: 'STROKE_SHOULDER_FLEXION',
+        exercise_code: 'ELDERLY_SHOULDER_FLEXION',
         exercise_name_th: 'ยกแขนไปด้านหน้า',
         initial_score_0_to_6: 4,
         measured_rom_deg: 72.0,
@@ -344,7 +344,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
         id: 'rec-4',
         visit_number: 4,
         assessed_at: '2026-10-18T10:00:00.000Z',
-        exercise_code: 'STROKE_ELBOW_FLEXION',
+        exercise_code: 'ELDERLY_ELBOW_FLEXION',
         exercise_name_th: 'งอข้อศอก',
         initial_score_0_to_6: 5,
         measured_rom_deg: 96.0,
@@ -357,7 +357,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
         id: 'rec-5',
         visit_number: 5,
         assessed_at: '2026-11-08T09:15:00.000Z',
-        exercise_code: 'STROKE_SHOULDER_FLEXION',
+        exercise_code: 'ELDERLY_SHOULDER_FLEXION',
         exercise_name_th: 'ยกแขนไปด้านหน้า',
         initial_score_0_to_6: 6,
         measured_rom_deg: 120.0,
@@ -368,7 +368,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
         id: 'rec-6',
         visit_number: 6,
         assessed_at: '2026-11-18T09:30:00.000Z',
-        exercise_code: 'STROKE_SHOULDER_ABDUCTION',
+        exercise_code: 'ELDERLY_SHOULDER_ABDUCTION',
         exercise_name_th: 'กางแขนออกด้านข้าง',
         initial_score_0_to_6: 5,
         measured_rom_deg: 78.0,
@@ -379,7 +379,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
         id: 'rec-7',
         visit_number: 7,
         assessed_at: '2026-11-23T09:40:00.000Z',
-        exercise_code: 'STROKE_ELBOW_FLEXION',
+        exercise_code: 'ELDERLY_ELBOW_FLEXION',
         exercise_name_th: 'งอข้อศอก',
         initial_score_0_to_6: 5,
         measured_rom_deg: 102.0,
@@ -393,9 +393,9 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
     const grouping = buildMultiExerciseChartSeries(summary.visitsWithDelta);
     expect(grouping.series).toHaveLength(3);
     expect(grouping.series.map((s) => s.exerciseCode)).toEqual([
-      'STROKE_SHOULDER_FLEXION',
-      'STROKE_SHOULDER_ABDUCTION',
-      'STROKE_ELBOW_FLEXION',
+      'ELDERLY_SHOULDER_FLEXION',
+      'ELDERLY_SHOULDER_ABDUCTION',
+      'ELDERLY_ELBOW_FLEXION',
     ]);
     expect(grouping.series[0].color).toBe(CLINICAL_EXERCISE_CHART_PALETTE[0]);
     expect(grouping.series[1].color).toBe(CLINICAL_EXERCISE_CHART_PALETTE[1]);
@@ -452,7 +452,7 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
       age: 45,
       gender: 'ชาย',
       phone: '0890001234',
-      diagnosis: 'Stroke ADL (Shoulder & Arm)',
+      diagnosis: 'Elderly Rehab (Shoulder & Arm)',
       affectedSide: 'RIGHT',
       assignedPtId: 'pt-01',
       delegatedToPtId: null,
@@ -493,9 +493,9 @@ describe('Individual Patient Clinical Assessment (0-6 Scale), ROM Comparison & C
     // Separate color-coded polylines for each of the 3 exercises + interactive legend
     expect(html).toContain('data-testid="multi-exercise-chart-legend"');
     expect(html).toContain('แสดงทุกท่าพร้อมกัน (3 ท่า)');
-    expect(html).toContain('data-testid="exercise-polyline-STROKE_SHOULDER_FLEXION"');
-    expect(html).toContain('data-testid="exercise-polyline-STROKE_SHOULDER_ABDUCTION"');
-    expect(html).toContain('data-testid="exercise-polyline-STROKE_ELBOW_FLEXION"');
+    expect(html).toContain('data-testid="exercise-polyline-ELDERLY_SHOULDER_FLEXION"');
+    expect(html).toContain('data-testid="exercise-polyline-ELDERLY_SHOULDER_ABDUCTION"');
+    expect(html).toContain('data-testid="exercise-polyline-ELDERLY_ELBOW_FLEXION"');
 
     // Monthly Score Summary tab & breakdown card
     expect(html).toContain('กราฟสรุปรายเดือน (ผลคะแนน)');

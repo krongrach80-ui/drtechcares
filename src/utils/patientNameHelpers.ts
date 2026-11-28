@@ -9,6 +9,8 @@ export interface ThaiNamePrefixOption {
   syncedGender: PatientGenderTh | null;
 }
 
+export const ELDERLY_MIN_AGE = 60;
+
 export const THAI_NAME_PREFIX_OPTIONS: readonly ThaiNamePrefixOption[] = [
   { value: 'นาย', label: 'นาย', subLabel: 'ชาย', syncedGender: 'ชาย' },
   { value: 'นางสาว', label: 'นางสาว', subLabel: 'หญิง', syncedGender: 'หญิง' },
@@ -17,6 +19,81 @@ export const THAI_NAME_PREFIX_OPTIONS: readonly ThaiNamePrefixOption[] = [
   { value: 'ด.ญ.', label: 'ด.ญ.', subLabel: 'เด็กหญิง', syncedGender: 'หญิง' },
   { value: '', label: 'ไม่ระบุ', subLabel: 'กำหนดเอง', syncedGender: null },
 ] as const;
+
+/** Elderly-only registration prefixes (excludes child prefixes ด.ช. / ด.ญ.). */
+export const ELDERLY_THAI_NAME_PREFIX_OPTIONS: readonly ThaiNamePrefixOption[] =
+  THAI_NAME_PREFIX_OPTIONS.filter((opt) => opt.value !== 'ด.ช.' && opt.value !== 'ด.ญ.');
+
+export type ElderlyMusclePowerLevel = 1 | 2 | 3 | 4 | 5;
+
+export interface ElderlyMusclePowerLevelSpec {
+  level: ElderlyMusclePowerLevel;
+  maxRomDeg: number;
+  romRangeLabelTh: string;
+  shortTitleTh: string;
+  descTh: string;
+}
+
+/**
+ * 5-Level Elderly Upper-Limb Muscle Power & Arm Elevation Scale.
+ * Level 5 (top level) = 180 deg full arm elevation range.
+ */
+export const ELDERLY_MUSCLE_POWER_5_LEVELS: readonly ElderlyMusclePowerLevelSpec[] = [
+  {
+    level: 1,
+    maxRomDeg: 60,
+    romRangeLabelTh: '0°–60°',
+    shortTitleTh: 'เริ่มต้น (ประคองช่วยขยับ)',
+    descTh: 'ยกแขนเองได้น้อยหรือเกร็งกล้ามเนื้อได้เล็กน้อย ควรฝึกแบบช่วยประคองในระยะปลอดภัยไม่เกิน 60°',
+  },
+  {
+    level: 2,
+    maxRomDeg: 90,
+    romRangeLabelTh: '61°–90°',
+    shortTitleTh: 'พอใช้ (ระดับหัวไหล่)',
+    descTh: 'ยกแขนในแนวราบหรือขึ้นได้ประมาณระดับหัวไหล่ (90°) เริ่มฝึกขยับข้อไหล่และข้อศอกได้เอง',
+  },
+  {
+    level: 3,
+    maxRomDeg: 120,
+    romRangeLabelTh: '91°–120°',
+    shortTitleTh: 'ปานกลาง (ต้านแรงโน้มถ่วง)',
+    descTh: 'ยกแขนต้านแรงโน้มถ่วงได้เหนือระดับหัวไหล่ (120°) ทำกิจวัตรพื้นฐาน เช่น ทานอาหาร ล้างหน้าได้',
+  },
+  {
+    level: 4,
+    maxRomDeg: 150,
+    romRangeLabelTh: '121°–150°',
+    shortTitleTh: 'ดี (ยกสูงและคุมจังหวะได้)',
+    descTh: 'ยกแขนสูงต้านแรงเบาได้ดี (150°) เอื้อมหยิบของบนชั้น หวีผม และใส่เสื้อผ้าได้ด้วยตนเอง',
+  },
+  {
+    level: 5,
+    maxRomDeg: 180,
+    romRangeLabelTh: '151°–180°',
+    shortTitleTh: 'ดีเยี่ยม (เต็มช่วง 180°)',
+    descTh: 'กำลังกล้ามเนื้อผู้สูงอายุแข็งแรงสมบูรณ์ ยกแขนเหยียดตรงเหนือศีรษะได้เต็มช่วงสูงสุด 180 องศา',
+  },
+] as const;
+
+export function clampElderlyMusclePowerLevel(level: number): ElderlyMusclePowerLevel {
+  if (!Number.isFinite(level)) return 3;
+  const rounded = Math.round(level);
+  return Math.max(1, Math.min(5, rounded)) as ElderlyMusclePowerLevel;
+}
+
+export function getElderlyMusclePowerSpec(level: number): ElderlyMusclePowerLevelSpec {
+  const safe = clampElderlyMusclePowerLevel(level);
+  return ELDERLY_MUSCLE_POWER_5_LEVELS[safe - 1];
+}
+
+export function deriveElderlyMusclePowerLevelFromRom(romDeg: number): ElderlyMusclePowerLevel {
+  if (!Number.isFinite(romDeg) || romDeg <= 60) return 1;
+  if (romDeg <= 90) return 2;
+  if (romDeg <= 120) return 3;
+  if (romDeg <= 150) return 4;
+  return 5;
+}
 
 export const PATIENT_GENDER_OPTIONS: ReadonlyArray<{
   value: PatientGenderTh;
@@ -28,11 +105,45 @@ export const PATIENT_GENDER_OPTIONS: ReadonlyArray<{
   { value: 'อื่นๆ', label: 'อื่นๆ', enLabel: 'Other' },
 ];
 
+export const QUICK_CHIEF_COMPLAINT_PRESETS: readonly string[] = [
+  'ยกแขนไม่สุด / ข้อไหล่ติดขัด',
+  'ปวดหัวไหล่เวลาใส่เสื้อหรือหวีผม',
+  'แขนอ่อนแรง / หยิบจับของไม่ถนัด',
+  'ปวดตึงคอ-บ่าเรื้อรัง',
+  'ฝึกเสริมกำลังแขนและข้อต่อผู้สูงอายุ',
+] as const;
+
+export const QUICK_CC_DURATION_PRESETS: readonly string[] = [
+  'น้อยกว่า 1 สัปดาห์',
+  '1–4 สัปดาห์',
+  '1–3 เดือน',
+  '3–6 เดือน',
+  'มากกว่า 6 เดือน (เรื้อรัง)',
+] as const;
+
 export const QUICK_CLINICAL_DIAGNOSIS_PRESETS: readonly string[] = [
-  'Stroke แขนอ่อนแรง',
-  'ไหล่ติดผู้สูงอายุ',
-  'ฟื้นฟูแขน-มือ ADL',
-  'ปวดคอ-บ่า สธ.',
+  'ข้อไหล่ติดผู้สูงอายุ (Frozen Shoulder)',
+  'เอ็นข้อไหล่อักเสบ (Rotator Cuff Tendinitis)',
+  'กล้ามเนื้อแขนอ่อนแรงผู้สูงอายุ',
+  'ปวดคอ-บ่า และข้อเสื่อมผู้สูงอายุ',
+  'ส่งเสริมสมรรถภาพข้อต่อผู้สูงอายุ',
+] as const;
+
+export const QUICK_SURGICAL_HISTORY_PRESETS: readonly string[] = [
+  'ผ่าตัดซ่อมเอ็นข้อไหล่',
+  'ผ่าตัดกระดูกแขน / ไหปลาร้า',
+  'ผ่าตัดเปลี่ยนข้อเข่า / ข้อสะโพก',
+  'ผ่าตัดกระดูกสันหลัง / คอ',
+  'ผ่าตัดหัวใจ / ใส่เครื่องกระตุ้นหัวใจ',
+] as const;
+
+export const QUICK_HISTORY_TAKING_PRESETS: readonly string[] = [
+  'แข็งแรงดี ไม่มีโรคประจำตัว',
+  'ความดันโลหิตสูง',
+  'เบาหวาน',
+  'ปวดข้อ / ข้อเข่าเสื่อม',
+  'เคยหกล้มในรอบ 6 เดือน',
+  'ใช้ยาประจำต่อเนื่อง',
 ] as const;
 
 export const QUICK_EMERGENCY_RELATION_PRESETS: readonly string[] = [

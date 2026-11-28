@@ -11,9 +11,9 @@ export interface TrilingualEntry {
 export const CLINICAL_TRANSLATIONS = {
   appName: { th: 'DRTECHCARES', en: 'DRTECHCARES', cn: 'DRTECHCARES' },
   appSubtitle: {
-    th: 'แพลตฟอร์มฟื้นฟูสมรรถภาพกายภาพบำบัดและสมองอัจฉริยะ',
-    en: 'Next-Gen AI Smart Hospital Rehabilitation Platform',
-    cn: '新一代AI智慧医院康复与认知训练平台',
+    th: 'แพลตฟอร์มฟื้นฟูกายภาพบำบัดและฝึกสมองสำหรับผู้สูงอายุอัจฉริยะ',
+    en: 'Next-Gen AI Smart Elderly Rehabilitation & Cognitive Care Platform',
+    cn: '新一代AI智慧老年康复与认知训练平台',
   },
   portalKiosk: { th: 'ตู้บริการผู้ป่วย (Kiosk)', en: 'AI Smart Kiosk', cn: '智能自助终端' },
   portalPt: { th: 'พอร์ทัลนักกายภาพบำบัด', en: 'PT Portal', cn: '物理治疗师门户' },

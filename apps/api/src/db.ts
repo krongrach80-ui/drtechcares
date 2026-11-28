@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   CLINICAL_EXERCISES,
-  STROKE_CANONICAL_EXERCISE_SET,
+  ELDERLY_CANONICAL_EXERCISE_SET,
   isDeprecatedExerciseRecord,
   type BodySide,
   type ExerciseConfig,
@@ -363,7 +363,7 @@ export class ClinicalDatabase {
         if (!Array.isArray(this.state.clinical_assessments)) {
           this.state.clinical_assessments = [];
         }
-        this.syncStrokeExerciseLibrary();
+        this.syncElderlyExerciseLibrary();
       } catch {
         this.state = createInitialState();
         this.save();
@@ -376,15 +376,15 @@ export class ClinicalDatabase {
 
   /**
    * Purges deprecated leg/orthogonal/legacy ex-01..ex-40 exercises from local DB state
-   * and upserts all 26 canonical Stroke ADL & MOPH upper-body exercises.
+   * and upserts all 26 canonical Elderly Care & MOPH upper-body exercises.
    */
-  syncStrokeExerciseLibrary(): { exercises: ManagedExerciseRecord[]; purgedCount: number } {
+  syncElderlyExerciseLibrary(): { exercises: ManagedExerciseRecord[]; purgedCount: number } {
     const existing = Array.isArray(this.state.exercises) ? this.state.exercises : [];
     const nonDeprecatedCustom = existing.filter(
       (ex) =>
         !isDeprecatedExerciseRecord(ex) &&
-        !STROKE_CANONICAL_EXERCISE_SET.has(ex.code) &&
-        !STROKE_CANONICAL_EXERCISE_SET.has(ex.id),
+        !ELDERLY_CANONICAL_EXERCISE_SET.has(ex.code) &&
+        !ELDERLY_CANONICAL_EXERCISE_SET.has(ex.id),
     );
     const purgedCount = existing.filter((ex) => isDeprecatedExerciseRecord(ex)).length;
     const canonical: ManagedExerciseRecord[] = CLINICAL_EXERCISES.map((ex) => ({

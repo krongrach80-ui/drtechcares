@@ -507,7 +507,7 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
         {
           id: 'sched-future',
           patientId: 'pat-a',
-          exerciseId: 'STROKE_SH_FLEX_R',
+          exerciseId: 'ELDERLY_SH_FLEX_R',
           scheduledDate: '2026-11-16',
           sets: 3,
           reps: 10,
@@ -526,7 +526,7 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
         {
           id: 'sched-today-1',
           patientId: 'pat-a',
-          exerciseId: 'STROKE_SH_FLEX_R',
+          exerciseId: 'ELDERLY_SH_FLEX_R',
           scheduledDate: '2026-11-14',
           sets: 3,
           reps: 10,
@@ -535,7 +535,7 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
         {
           id: 'sched-rest-ignored',
           patientId: 'pat-a',
-          exerciseId: 'STROKE_SH_FLEX_L',
+          exerciseId: 'ELDERLY_SH_FLEX_L',
           scheduledDate: '2026-11-14',
           sets: 2,
           reps: 8,
@@ -547,8 +547,8 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
     });
     expect(scheduledToday.hasAppointmentToday).toBe(true);
     expect(scheduledToday.todayExercises).toHaveLength(1);
-    expect(scheduledToday.todayExercises[0].exerciseId).toBe('STROKE_SH_FLEX_R');
-    expect(scheduledToday.todayExercises[0].exerciseCode).toBe('STROKE_SH_FLEX');
+    expect(scheduledToday.todayExercises[0].exerciseId).toBe('ELDERLY_SH_FLEX_R');
+    expect(scheduledToday.todayExercises[0].exerciseCode).toBe('ELDERLY_SH_FLEX');
     expect(scheduledToday.todayExercises[0].side).toBe('RIGHT');
     expect(scheduledToday.todayExercises[0].nameTh).toContain('ยกแขนไปด้านหน้า');
     expect(scheduledToday.todayExercises[0].nameTh).toContain('ข้างขวา');
@@ -1565,7 +1565,7 @@ describe('120-Frame 3D Multi-Angle Face Matcher', () => {
         patientId: id,
         hn,
         fullName: name,
-        diagnosis: 'Stroke',
+        diagnosis: 'Elderly Rehab',
         assignedPtId: 'pt-1',
         nextAppointmentDate: '2026-11-20',
         framesCaptured: 120,

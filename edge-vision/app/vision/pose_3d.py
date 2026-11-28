@@ -302,7 +302,7 @@ class OneEuroFilter3D(OneEuroFilter):
 
 def generate_synthetic_133_pose(
     t_sec: float,
-    exercise_id: str = "STROKE_SH_ABD_R",
+    exercise_id: str = "ELDERLY_SH_ABD_R",
     is_calibrating: bool = False,
     mock_pose_override: Optional[str] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -360,7 +360,7 @@ def generate_synthetic_133_pose(
             l_angle_rad = math.radians(12.0 + cycle * 145.0)
             if "flex" in exercise_id.lower() or "scap" in exercise_id.lower():
                 l_forward_z = -0.22 * cycle
-        elif "bilateral" in exercise_id.lower() or "bobath" in exercise_id.lower() or "both" in exercise_id.lower():
+        elif "bilateral" in exercise_id.lower() or "clasped" in exercise_id.lower() or "both" in exercise_id.lower():
             l_angle_rad = math.radians(12.0 + cycle * 135.0)
             r_angle_rad = math.radians(12.0 + cycle * 135.0)
         else:
@@ -863,7 +863,7 @@ class RTMW3DPoseEstimator:
         self,
         frame_bgr: Optional[np.ndarray],
         timestamp_sec: float,
-        exercise_id: str = "STROKE_SH_ABD_R",
+        exercise_id: str = "ELDERLY_SH_ABD_R",
         is_calibrating: bool = False,
         mock_pose_override: Optional[str] = None,
         is_mock_mode: bool = False,
@@ -1038,7 +1038,7 @@ class RTMW3DPoseEstimator:
         self,
         frame_bgr: Optional[np.ndarray],
         timestamp_sec: float,
-        exercise_id: str = "STROKE_SH_ABD_R",
+        exercise_id: str = "ELDERLY_SH_ABD_R",
         is_calibrating: bool = False,
         mock_pose_override: Optional[str] = None,
         is_mock_mode: bool = False,
@@ -1062,7 +1062,7 @@ class RTMW3DPoseEstimator:
         self,
         frame_bgr: Optional[np.ndarray],
         timestamp_sec: float,
-        exercise_id: str = "STROKE_SH_ABD_R",
+        exercise_id: str = "ELDERLY_SH_ABD_R",
         is_calibrating: bool = False,
         mock_pose_override: Optional[str] = None,
         is_mock_mode: bool = False,

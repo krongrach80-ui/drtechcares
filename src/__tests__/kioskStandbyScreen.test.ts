@@ -47,7 +47,7 @@ describe('Dr.Tech.Care AI Kiosk Standby Screen & Auto-Idle Return', () => {
     expect(html).toContain('Dr.Tech.Care');
     expect(html).toContain('AI Kiosk');
     expect(html).toContain('ยกมือ 2 ข้าง ค้างไว้ 3 วินาทีเพื่อเริ่มต้น');
-    expect(html).toContain('ระบบฟื้นฟูกายภาพบำบัดอัจฉริยะ');
+    expect(html).toContain('ระบบฟื้นฟูกายภาพบำบัดผู้สูงอายุอัจฉริยะ');
     expect(html).toContain('data-testid="standby-hand-status-strip"');
     expect(html).toContain('data-testid="standby-left-hand-badge"');
     expect(html).toContain('data-testid="standby-right-hand-badge"');
@@ -78,7 +78,7 @@ describe('Dr.Tech.Care AI Kiosk Standby Screen & Auto-Idle Return', () => {
       }),
     );
     expect(enHtml).toContain('Raise Both Hands for 3 Seconds to Start');
-    expect(enHtml).toContain('Intelligent Physical Rehabilitation System');
+    expect(enHtml).toContain('Intelligent Elderly Physical Rehabilitation System');
 
     const introHtml = renderToStaticMarkup(
       React.createElement(KioskBrandIntroOverlay, {

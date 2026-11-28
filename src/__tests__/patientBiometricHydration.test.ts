@@ -47,7 +47,7 @@ function buildPoomStaleTopLevelRow() {
     full_name: 'Poom',
     age: 26,
     phone: '0812345678',
-    diagnosis: 'Stroke Upper Limb Rehabilitation',
+    diagnosis: 'Elderly Upper Limb Rehabilitation',
     registration_status: 'active',
     assigned_pt_id: '00000000-0000-4000-8000-000000000002',
     delegated_to_pt_id: null,
@@ -65,7 +65,7 @@ function buildPoomStaleTopLevelRow() {
     biometric_data: null,
     biometric_updated_at: null,
     gender: null,
-    stroke_type: null,
+    care_group: null,
     affected_side: null,
     motor_assessment_score: null,
     adl_dressing_score: null,
@@ -92,7 +92,7 @@ function buildPoomStaleTopLevelRow() {
         noseToChinRatio: 1.1254,
       },
       gender: 'ชาย',
-      strokeType: 'ISCHEMIC',
+      careGroup: 'MOBILITY_RECOVERY',
       affectedSide: 'RIGHT',
       motorAssessmentScore: 3,
       adlDressingScore: 3,
@@ -153,7 +153,7 @@ describe('Patient Biometric Persistence & Hydration (Poom HN-410382)', () => {
     expect(hydrated.geometricRatios?.eyeToNoseRatio).toBeCloseTo(3.9573, 4);
     expect(hydrated.biometricUpdatedAt).toBe('2026-11-23T02:04:11.925523+00:00');
     expect(hydrated.gender).toBe('ชาย');
-    expect(hydrated.strokeType).toBe('ISCHEMIC');
+    expect(hydrated.careGroup).toBe('MOBILITY_RECOVERY');
     expect(hydrated.affectedSide).toBe('RIGHT');
     expect(hydrated.motorAssessmentScore).toBe(3);
     expect(hydrated.adlDressingScore).toBe(3);
@@ -170,7 +170,7 @@ describe('Patient Biometric Persistence & Hydration (Poom HN-410382)', () => {
     expect(inspected.topLevelRepairPatch?.biometric_data).toBeTruthy();
     expect(inspected.topLevelRepairPatch?.biometric_updated_at).toBe('2026-11-23T02:04:11.925523+00:00');
     expect(inspected.topLevelRepairPatch?.gender).toBe('ชาย');
-    expect(inspected.topLevelRepairPatch?.stroke_type).toBe('ISCHEMIC');
+    expect(inspected.topLevelRepairPatch?.care_group).toBe('MOBILITY_RECOVERY');
     expect(inspected.topLevelRepairPatch?.affected_side).toBe('RIGHT');
     expect(inspected.topLevelRepairPatch?.motor_assessment_score).toBe(3);
     expect(inspected.topLevelRepairPatch?.adl_dressing_score).toBe(3);
@@ -238,7 +238,7 @@ describe('Patient Biometric Persistence & Hydration (Poom HN-410382)', () => {
                       geometricRatios: poomRow.history.geometricRatios,
                       rehabSchedules: [],
                       biometricEngine: 'human-faceres-1024d',
-                      strokeType: 'ISCHEMIC',
+                      careGroup: 'MOBILITY_RECOVERY',
                       affectedSide: 'RIGHT',
                       motorAssessmentScore: 3,
                       adlDressingScore: 3,
@@ -378,8 +378,8 @@ describe('Patient Biometric Persistence & Hydration (Poom HN-410382)', () => {
             fullName: 'Poom',
             age: 26,
             gender: 'ชาย',
-            diagnosis: 'Stroke Rehab',
-            strokeType: 'ISCHEMIC',
+            diagnosis: 'Elderly Rehab',
+            careGroup: 'MOBILITY_RECOVERY',
             affectedSide: 'RIGHT',
             motorAssessmentScore: 3,
             adlDressingScore: 3,
@@ -409,7 +409,7 @@ describe('Patient Biometric Persistence & Hydration (Poom HN-410382)', () => {
       expect(insertPayload?.biometric_data).toBeTruthy();
       expect(insertPayload?.biometric_updated_at).toBeTruthy();
       expect(insertPayload?.gender).toBe('ชาย');
-      expect(insertPayload?.stroke_type).toBe('ISCHEMIC');
+      expect(insertPayload?.care_group).toBe('MOBILITY_RECOVERY');
       expect(insertPayload?.affected_side).toBe('RIGHT');
       expect(insertPayload?.motor_assessment_score).toBe(3);
       expect(insertPayload?.adl_dressing_score).toBe(3);
@@ -453,8 +453,8 @@ describe('Patient Biometric Persistence & Hydration (Poom HN-410382)', () => {
         age: 26,
         gender: 'ชาย',
         phone: '0899998888',
-        diagnosis: 'Stroke Rehab',
-        strokeType: 'ISCHEMIC',
+        diagnosis: 'Elderly Rehab',
+        careGroup: 'MOBILITY_RECOVERY',
         affectedSide: 'RIGHT',
         motorAssessmentScore: 3,
         adlDressingScore: 3,
@@ -496,7 +496,7 @@ describe('Patient Biometric Persistence & Hydration (Poom HN-410382)', () => {
       'biometric_data',
       'biometric_updated_at',
       'gender',
-      'stroke_type',
+      'care_group',
       'affected_side',
       'motor_assessment_score',
       'adl_dressing_score',

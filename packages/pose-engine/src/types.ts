@@ -57,7 +57,7 @@ export interface ExerciseConfig {
   id: string;
   code: string;
   category: 'upper_limb' | 'lower_limb' | 'neck_trunk' | 'balance';
-  clinicalFocus?: 'stroke_adl' | 'moph_elderly' | 'upper_body' | 'general';
+  clinicalFocus?: 'elderly_adl' | 'moph_elderly' | 'upper_body' | 'general';
   name: TrilingualText;
   instruction: TrilingualText;
   detection: ExerciseDetectionConfig;

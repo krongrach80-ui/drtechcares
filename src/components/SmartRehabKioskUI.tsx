@@ -23,8 +23,11 @@ import {
   AutoBoneBaselineCalibrator,
   ClinicalHandOneEuroFilter,
   ClinicalOneEuroLandmarkFilter,
+  ClinicalRotationCycleTracker,
   HOLD_COMPLETED_WAIT_LOWER_BANNER_TH,
   HAND21_CONNECTIONS,
+  HAND21_FINGER_CHAINS,
+  HAND21_INDEX,
   PHASE_2_LOWER_ARM_PROMPT_BANNER_TH,
   POSE_INDEX,
   computeDtNormalizedLerpAlpha,
@@ -33,19 +36,22 @@ import {
   formatRepScoredBannerTh,
   parseExerciseCodeAndSide,
   resolveActiveExerciseSide,
-  solveStrokeClinicalJointBiomechanics,
+  solveElderlyClinicalJointBiomechanics,
   stabilizeArmIdentity,
-  stepStrokeHoldAndRepStateMachine,
+  stepElderlyHoldAndRepStateMachine,
   type ExerciseSideCode,
-  type StrokeAnatomyBaseline,
-  type StrokeHoldRepState,
-  type StrokeSideViolationCode,
-  type StrokeTargetOverlayHint,
+  type ElderlyAnatomyBaseline,
+  type ElderlyHoldRepState,
+  type ElderlySideViolationCode,
+  type ElderlyTargetOverlayHint,
+  type Hand21Biomechanics,
+  type RotationCycleEvaluation,
 } from '@drtechcares/pose-engine';
 import {
   getCachedHandLandmarker,
   getCachedPoseLandmarker,
   getCachedRehabFaceLandmarker,
+  getCachedRoiHandLandmarker,
   getNextMonotonicHandDetectTs,
   getNextMonotonicPoseDetectTs,
   getNextMonotonicRehabFaceDetectTs,
@@ -63,9 +69,13 @@ import {
   SKELETON_JOINT_MIN_SCORE,
   applyKinematicSkeletonLock,
   computeCanvasShoulderWidth,
+  computeHandRoiCropBox,
   evaluatePoseCanvasSkeletonSafety,
+  filterAndAssignDetectedHands,
   isJointValidInFrame,
   mapVideoPointToCoverCanvas,
+  projectRoiHandToFullVideo,
+  stabilizeStraightArmElbows,
   validateTetheredHandLandmarks21,
 } from '../lib/poseSkeletonSafety';
 import {
@@ -74,10 +84,12 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  BellRing,
   Camera,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Cpu,
   Crosshair,
   Eye,
   EyeOff,
@@ -107,6 +119,12 @@ import { resolveExercisePostureSpec } from './ExercisePostureGuide';
 import { DrTechCareMascot } from './DrTechCareMascot';
 import { FaceScanOverlay } from './FaceScanOverlay';
 import { SkeletonCanvas } from './SkeletonCanvas';
+import { ClinicalAiTelemetryHud } from './ClinicalAiTelemetryHud';
+import { SessionVictoryCelebrationCard } from './SessionVictoryCelebrationCard';
+import {
+  CaregiverLineAlertPreview,
+  type CaregiverAlertPayload,
+} from './CaregiverLineAlertPreview';
 import {
   OWNER_GUARD_UNAUTHORIZED_TTS_TH,
   OWNER_GUARD_VOICE_COOLDOWN_MS,
@@ -239,7 +257,7 @@ export interface LiveJointMeasurement {
   leftArmRom?: number | null;
   rightArmRom?: number | null;
   trunkTiltDeg: number;
-  sideViolation?: StrokeSideViolationCode;
+  sideViolation?: ElderlySideViolationCode;
   sideViolationBannerTh?: string | null;
   wrongSideRaised: boolean;
   oppositeRomDeg: number | null;
@@ -255,9 +273,20 @@ export interface LiveJointMeasurement {
   shoulderHikeRatio?: number;
   neckDropDeg?: number;
   compensations?: string[];
-  overlayHint?: StrokeTargetOverlayHint | null;
+  overlayHint?: ElderlyTargetOverlayHint | null;
   headY?: number | null;
   shoulderMidY?: number | null;
+  handBiomechanics?: {
+    left: Hand21Biomechanics | null;
+    right: Hand21Biomechanics | null;
+    active: Hand21Biomechanics | null;
+  } | null;
+  rotationTelemetry?: {
+    mode: 'forearm_turn' | 'shoulder_rotation' | 'shoulder_shrug';
+    signedAngleDeg: number | null;
+    secondaryRollSignal?: number;
+    postureReady: boolean;
+  } | null;
 }
 
 export interface TorsoAnchorState {
@@ -404,7 +433,7 @@ export type ExerciseJointMode =
   | 'elbow'
   | 'cross_body'
   | 'scap_protract'
-  | 'bobath_push'
+  | 'clasped_push'
   | 'hand_to_head'
   | 'forearm_turn'
   | 'wrist_finger'
@@ -445,7 +474,7 @@ export function resolveExerciseSideFromMeta(
   const jointMode = classifyExerciseJointMode(exerciseMeta);
   if (
     jointMode === 'bilateral_raise' ||
-    jointMode === 'bobath_push' ||
+    jointMode === 'clasped_push' ||
     jointMode === 'shoulder_shrug' ||
     jointMode === 'neck_turn'
   ) {
@@ -475,7 +504,7 @@ export function classifyExerciseJointMode(
     name.includes('forward push') ||
     name.includes('forward elbow push')
   ) {
-    return 'bobath_push';
+    return 'clasped_push';
   }
   if (
     id.includes('elb') ||
@@ -566,12 +595,16 @@ export function measureLiveJointAngleAndTilt(
   expectedPlane: ExpectedMovementPlane = 'any',
   worldLandmarks?: readonly NormalizedLandmark[],
   exerciseMeta?: ExerciseMetaHint,
-  strokeOptions?: {
+  rehabOptions?: {
     handLandmarksBySide?: {
       left?: readonly NormalizedLandmark[];
       right?: readonly NormalizedLandmark[];
     };
-    baseline?: StrokeAnatomyBaseline;
+    handWorldLandmarksBySide?: {
+      left?: readonly NormalizedLandmark[];
+      right?: readonly NormalizedLandmark[];
+    };
+    baseline?: ElderlyAnatomyBaseline;
     targetRomDeg?: number;
     videoAspect?: number;
   },
@@ -580,17 +613,18 @@ export function measureLiveJointAngleAndTilt(
   const jointMode = classifyExerciseJointMode(exerciseMeta);
   if (targetJoint !== 'left_knee' && targetJoint !== 'right_knee') {
     const inferredSide = resolveExerciseSideFromMeta(exerciseMeta, targetJoint, expectedPlane);
-    const solved = solveStrokeClinicalJointBiomechanics({
+    const solved = solveElderlyClinicalJointBiomechanics({
       landmarks,
       worldLandmarks,
-      handLandmarksBySide: strokeOptions?.handLandmarksBySide,
+      handLandmarksBySide: rehabOptions?.handLandmarksBySide,
+      handWorldLandmarksBySide: rehabOptions?.handWorldLandmarksBySide,
       targetJoint,
       exerciseSide: inferredSide,
       expectedPlane,
-      targetRomDeg: strokeOptions?.targetRomDeg,
+      targetRomDeg: rehabOptions?.targetRomDeg,
       jointMode,
-      baseline: strokeOptions?.baseline,
-      videoAspect: strokeOptions?.videoAspect,
+      baseline: rehabOptions?.baseline,
+      videoAspect: rehabOptions?.videoAspect,
     });
     if (solved.wrongSideRaised) {
       solved.wrongSideBannerTh =
@@ -719,7 +753,7 @@ export function resolveUnifiedKioskCoachingBanner(params: {
   isMultiPerson: boolean;
   isImpostor: boolean;
   ownerRehabGuardAlert?: { text: string; status: string } | null;
-  strokeSafetyAlert?: { type: string; messageTh: string; suggestedRom?: number } | null;
+  rehabSafetyAlert?: { type: string; messageTh: string; suggestedRom?: number } | null;
   fatigueRestSec?: number;
   safetyGuardBannerTh?: string | null;
   framingHintTh?: string | null;
@@ -734,7 +768,7 @@ export function resolveUnifiedKioskCoachingBanner(params: {
 }): UnifiedCoachingBannerSpec {
   const activeSide =
     resolveExerciseSideFromMeta(params.exercise, params.exercise.target_joint, params.expectedPlane) ??
-    (/both|ทั้งสองข้าง|ทั้ง\s*2\s*ข้าง|ประสานมือ|bobath/i.test(
+    (/both|ทั้งสองข้าง|ทั้ง\s*2\s*ข้าง|ประสานมือ|clasped/i.test(
       `${params.exercise.name_th} ${params.exercise.name_en}`,
     )
       ? 'BOTH'
@@ -864,12 +898,12 @@ export function resolveUnifiedKioskCoachingBanner(params: {
     params.trunkLeanAlert ||
     params.shoulderHikeAlert ||
     params.tooFastAlert ||
-    (params.strokeSafetyAlert && params.strokeSafetyAlert.type !== 'emergency') ||
+    (params.rehabSafetyAlert && params.rehabSafetyAlert.type !== 'emergency') ||
     params.safetyGuardBannerTh ||
     (params.fatigueRestSec ?? 0) > 0
   ) {
     const titleTh =
-      params.strokeSafetyAlert?.messageTh ??
+      params.rehabSafetyAlert?.messageTh ??
       params.safetyGuardBannerTh ??
       (params.trunkLeanAlert
         ? 'ลำตัวเอียงมากกว่า 18° — กรุณาค่อยๆ ปรับลำตัวให้ตรงครับ'
@@ -881,9 +915,9 @@ export function resolveUnifiedKioskCoachingBanner(params: {
       tone: 'amber',
       titleTh,
       subtitleTh,
-      suggestedRomDeg: params.strokeSafetyAlert?.suggestedRom ?? null,
+      suggestedRomDeg: params.rehabSafetyAlert?.suggestedRom ?? null,
       fatigueRestSec: params.fatigueRestSec ?? 0,
-      showSafetyAcknowledge: Boolean(params.strokeSafetyAlert || (params.fatigueRestSec ?? 0) > 0),
+      showSafetyAcknowledge: Boolean(params.rehabSafetyAlert || (params.fatigueRestSec ?? 0) > 0),
     };
   }
 
@@ -1179,7 +1213,7 @@ export function drawLivePoseOverlayOnCanvas(
     trunkTiltDeg: number;
     isMultiPerson: boolean;
     isImpostorOrEmergency: boolean;
-    sideViolation?: StrokeSideViolationCode;
+    sideViolation?: ElderlySideViolationCode;
     wrongSideRaised?: boolean;
     wrongSideBannerTh?: string | null;
     wrongPlaneRaised?: boolean;
@@ -1187,8 +1221,18 @@ export function drawLivePoseOverlayOnCanvas(
     lowVisibilityAlertTh?: string | null;
     postureBannerTh?: string | null;
     repSuccessBannerTh?: string | null;
-    overlayHint?: StrokeTargetOverlayHint | null;
+    overlayHint?: ElderlyTargetOverlayHint | null;
     handLandmarks21?: readonly NormalizedLandmark[];
+    handLandmarksBySide?: {
+      left?: readonly NormalizedLandmark[];
+      right?: readonly NormalizedLandmark[];
+    };
+    handBiomechanics?: {
+      left: Hand21Biomechanics | null;
+      right: Hand21Biomechanics | null;
+      active: Hand21Biomechanics | null;
+    } | null;
+    rotationEval?: RotationCycleEvaluation | null;
     videoWidth?: number;
     videoHeight?: number;
     canvasWidth?: number;
@@ -1510,11 +1554,39 @@ export function drawLivePoseOverlayOnCanvas(
   const getSafePoint = (idx: number, lm: NormalizedLandmark) =>
     skeletonSafety.points[idx] ?? toCanvasPt(idx, lm);
 
+  // Suppress crude 3-line PoseLandmarker palm stub on sides that already have detailed 21-point HandLandmarker overlay
+  const hasDetailedLeftHand = Boolean(
+    opts.handLandmarksBySide?.left && opts.handLandmarksBySide.left.length >= 21,
+  );
+  const hasDetailedRightHand = Boolean(
+    opts.handLandmarksBySide?.right && opts.handLandmarksBySide.right.length >= 21,
+  );
+  const isPosePalmStubEdge = (aIdx: number, bIdx: number): boolean => {
+    const leftPalmSet = new Set<number>([
+      POSE_INDEX.LEFT_PINKY,
+      POSE_INDEX.LEFT_INDEX,
+      POSE_INDEX.LEFT_THUMB,
+    ]);
+    const rightPalmSet = new Set<number>([
+      POSE_INDEX.RIGHT_PINKY,
+      POSE_INDEX.RIGHT_INDEX,
+      POSE_INDEX.RIGHT_THUMB,
+    ]);
+    if (hasDetailedLeftHand && (leftPalmSet.has(aIdx) || leftPalmSet.has(bIdx))) return true;
+    if (hasDetailedRightHand && (rightPalmSet.has(aIdx) || rightPalmSet.has(bIdx))) return true;
+    return false;
+  };
+
   ctx.save();
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   for (const [aIdx, bIdx] of LIVE_BODY_BONELINE_PAIRS) {
-    if (!isPointDrawable(aIdx) || !isPointDrawable(bIdx) || !skeletonSafety.shouldDrawBone(aIdx, bIdx)) {
+    if (
+      isPosePalmStubEdge(aIdx, bIdx) ||
+      !isPointDrawable(aIdx) ||
+      !isPointDrawable(bIdx) ||
+      !skeletonSafety.shouldDrawBone(aIdx, bIdx)
+    ) {
       continue;
     }
     const a = primary[aIdx]!;
@@ -1653,7 +1725,7 @@ export function drawLivePoseOverlayOnCanvas(
     }
   };
   drawExtremityPairs(
-    LIVE_HAND_BONELINE_PAIRS,
+    LIVE_HAND_BONELINE_PAIRS.filter(([aIdx, bIdx]) => !isPosePalmStubEdge(aIdx, bIdx)),
     '#818CF8',
     '#34D399',
     (idx) =>
@@ -1686,9 +1758,10 @@ export function drawLivePoseOverlayOnCanvas(
     ctx.stroke();
   }
 
-  // Hand (wrist-twist rotation) & Foot keypoint nodes
+  // Hand (wrist-twist rotation) & Foot keypoint nodes (hide crude 3-pt palm dots when 21-pt HandLandmarker is active)
   for (const idx of LIVE_EXTREMITY_KEYPOINT_INDICES) {
     if (!isPointDrawable(idx)) continue;
+    if (isPosePalmStubEdge(idx, idx)) continue;
     const lm = primary[idx]!;
     if (lm.x < -0.02 || lm.x > 1.02 || lm.y < -0.02 || lm.y > 1.02) {
       continue;
@@ -1712,9 +1785,31 @@ export function drawLivePoseOverlayOnCanvas(
     ctx.stroke();
   }
 
-  // High-precision 21-point HandLandmarker skeleton overlay strictly tethered to validated body wrist
+  // High-detail MediaPipe 21-point HandLandmarker finger skeleton overlay (both hands + color-coded 5 fingers + pinch & roll telemetry)
   let hand21OutOfFrame = false;
-  if (opts.handLandmarks21 && opts.handLandmarks21.length >= 21) {
+  const FINGER_COLORS: Record<'thumb' | 'index' | 'middle' | 'ring' | 'pinky', string> = {
+    thumb: '#F59E0B',
+    index: '#38BDF8',
+    middle: '#10B981',
+    ring: '#A78BFA',
+    pinky: '#F472B6',
+  };
+  const handsToDraw: Array<{ side: 'left' | 'right'; lms: readonly NormalizedLandmark[]; bio: Hand21Biomechanics | null }> = [];
+  if (opts.handLandmarksBySide?.left && opts.handLandmarksBySide.left.length >= 21) {
+    handsToDraw.push({
+      side: 'left',
+      lms: opts.handLandmarksBySide.left,
+      bio: opts.handBiomechanics?.left ?? null,
+    });
+  }
+  if (opts.handLandmarksBySide?.right && opts.handLandmarksBySide.right.length >= 21) {
+    handsToDraw.push({
+      side: 'right',
+      lms: opts.handLandmarksBySide.right,
+      bio: opts.handBiomechanics?.right ?? null,
+    });
+  }
+  if (handsToDraw.length === 0 && opts.handLandmarks21 && opts.handLandmarks21.length >= 21) {
     const chosenWristSide: 'left' | 'right' = (() => {
       if (resolvedDrawSide === 'LEFT') return 'left';
       if (resolvedDrawSide === 'RIGHT') return 'right';
@@ -1741,11 +1836,20 @@ export function drawLivePoseOverlayOnCanvas(
         : Number.POSITIVE_INFINITY;
       return dL <= dR ? 'left' : 'right';
     })();
+    handsToDraw.push({
+      side: chosenWristSide,
+      lms: opts.handLandmarks21,
+      bio: opts.handBiomechanics?.active ?? null,
+    });
+  }
 
-    const handTether = validateTetheredHandLandmarks21({
-      handLandmarks21: opts.handLandmarks21,
+  const drawJointMode = classifyExerciseJointMode(opts.exerciseMeta);
+  const claimedWristSides = new Set<'left' | 'right'>();
+  for (const handEntry of handsToDraw) {
+    let handTether = validateTetheredHandLandmarks21({
+      handLandmarks21: handEntry.lms,
       poseLandmarks: primary,
-      wristSide: chosenWristSide,
+      wristSide: handEntry.side,
       videoW: vw,
       videoH: vh,
       canvasW: w,
@@ -1753,40 +1857,254 @@ export function drawLivePoseOverlayOnCanvas(
       isMirrored: true,
       armSafety: skeletonSafety,
     });
-    if (handTether.valid) {
+    let resolvedHandSide: 'left' | 'right' = handEntry.side;
+    // Only check opposite wrist if PoseLandmarker briefly swapped L/R AND that opposite wrist is unclaimed
+    if (!handTether.valid) {
+      const oppSide: 'left' | 'right' = handEntry.side === 'left' ? 'right' : 'left';
+      const oppAlreadyInList = handsToDraw.some((h) => h !== handEntry && h.side === oppSide);
+      if (!oppAlreadyInList && !claimedWristSides.has(oppSide)) {
+        const oppTether = validateTetheredHandLandmarks21({
+          handLandmarks21: handEntry.lms,
+          poseLandmarks: primary,
+          wristSide: oppSide,
+          videoW: vw,
+          videoH: vh,
+          canvasW: w,
+          canvasH: h,
+          isMirrored: true,
+          armSafety: skeletonSafety,
+        });
+        if (oppTether.valid) {
+          handTether = oppTether;
+          resolvedHandSide = oppSide;
+        }
+      }
+    }
+    if (handTether.valid && !claimedWristSides.has(resolvedHandSide)) {
+      claimedWristSides.add(resolvedHandSide);
+      const pts21 = handTether.canvasPoints;
+      const wristPt = pts21[HAND21_INDEX.WRIST];
       ctx.save();
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      ctx.strokeStyle = activeColor;
+
+      // Bridge body Pose wrist to Hand21 carpal root seamlessly when both are visible and close
+      const bodyWristIdx =
+        resolvedHandSide === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST;
+      const bodyWristCanvasPt = skeletonSafety.validMask[bodyWristIdx]
+        ? skeletonSafety.points[bodyWristIdx]
+        : null;
+      if (
+        bodyWristCanvasPt &&
+        wristPt &&
+        Math.hypot(wristPt.x - bodyWristCanvasPt.x, wristPt.y - bodyWristCanvasPt.y) <=
+          skeletonSafety.shoulderWidthPx * 0.55
+      ) {
+        ctx.beginPath();
+        ctx.moveTo(bodyWristCanvasPt.x, bodyWristCanvasPt.y);
+        ctx.lineTo(wristPt.x, wristPt.y);
+        ctx.strokeStyle = activeColor;
+        ctx.lineWidth = 3.5;
+        ctx.globalAlpha = 0.85;
+        ctx.stroke();
+      }
+
+      // Translucent palm arch polygon + transverse knuckle metacarpal bridge (0 -> 5 -> 9 -> 13 -> 17)
+      const palmRing = [
+        pts21[HAND21_INDEX.WRIST],
+        pts21[HAND21_INDEX.INDEX_MCP],
+        pts21[HAND21_INDEX.MIDDLE_MCP],
+        pts21[HAND21_INDEX.RING_MCP],
+        pts21[HAND21_INDEX.PINKY_MCP],
+      ];
+      if (palmRing.every(Boolean)) {
+        ctx.beginPath();
+        ctx.moveTo(palmRing[0]!.x, palmRing[0]!.y);
+        for (let pi = 1; pi < palmRing.length; pi += 1) {
+          ctx.lineTo(palmRing[pi]!.x, palmRing[pi]!.y);
+        }
+        ctx.closePath();
+        ctx.fillStyle = activeColor;
+        ctx.globalAlpha = 0.12;
+        ctx.fill();
+        ctx.globalAlpha = 0.78;
+        ctx.strokeStyle = 'rgba(15, 23, 42, 0.52)';
+        ctx.lineWidth = 3.2;
+        ctx.stroke();
+        ctx.strokeStyle = '#E2E8F0';
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+      }
+
+      // Crisp dark contrast outline under all 21-point phalanx bones (zero shadowBlur!)
+      // Keeps closely-spaced curled fingers razor sharp against bright objects (e.g., white mouse)
       ctx.beginPath();
       for (const [a, b] of HAND21_CONNECTIONS) {
-        const ptA = handTether.canvasPoints[a];
-        const ptB = handTether.canvasPoints[b];
+        const ptA = pts21[a];
+        const ptB = pts21[b];
         if (!ptA || !ptB) continue;
         ctx.moveTo(ptA.x, ptA.y);
         ctx.lineTo(ptB.x, ptB.y);
       }
-      ctx.globalAlpha = 0.22;
-      ctx.lineWidth = 7;
+      ctx.globalAlpha = 0.65;
+      ctx.strokeStyle = '#0F172A';
+      ctx.lineWidth = 4.4;
       ctx.stroke();
+
+      // Color-coded high-precision anatomical phalanx chains per finger (MCP -> PIP -> DIP -> TIP)
       ctx.globalAlpha = 1;
-      ctx.lineWidth = 3;
-      ctx.stroke();
-      for (let i = 0; i < 21; i += 1) {
-        const pt = handTether.canvasPoints[i];
-        if (!pt) continue;
-        const isFingertip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20;
+      for (const fingerName of ['thumb', 'index', 'middle', 'ring', 'pinky'] as const) {
+        const chain = HAND21_FINGER_CHAINS[fingerName];
+        const fColor = FINGER_COLORS[fingerName];
+        const fExt = handEntry.bio?.fingers[fingerName]?.isExtended ?? true;
         ctx.beginPath();
-        ctx.arc(pt.x, pt.y, isFingertip ? 4.5 : 3, 0, Math.PI * 2);
-        ctx.fillStyle = isFingertip ? activeColor : '#FFFFFF';
-        ctx.fill();
-        ctx.lineWidth = 1.5;
-        ctx.strokeStyle = isFingertip ? '#FFFFFF' : activeColor;
+        if (wristPt && pts21[chain[0]]) {
+          ctx.moveTo(wristPt.x, wristPt.y);
+          ctx.lineTo(pts21[chain[0]]!.x, pts21[chain[0]]!.y);
+        }
+        for (let ci = 0; ci < chain.length - 1; ci += 1) {
+          const pA = pts21[chain[ci]];
+          const pB = pts21[chain[ci + 1]];
+          if (!pA || !pB) continue;
+          ctx.moveTo(pA.x, pA.y);
+          ctx.lineTo(pB.x, pB.y);
+        }
+        ctx.strokeStyle = fColor;
+        ctx.lineWidth = fExt ? 2.5 : 2.1;
         ctx.stroke();
       }
+
+      // Active thumb-to-finger pinch beam when pinching
+      if (handEntry.bio?.activePinchFinger) {
+        const targetTipIdx =
+          handEntry.bio.activePinchFinger === 'index'
+            ? HAND21_INDEX.INDEX_TIP
+            : handEntry.bio.activePinchFinger === 'middle'
+              ? HAND21_INDEX.MIDDLE_TIP
+              : handEntry.bio.activePinchFinger === 'ring'
+                ? HAND21_INDEX.RING_TIP
+                : HAND21_INDEX.PINKY_TIP;
+        const thumbTipPt = pts21[HAND21_INDEX.THUMB_TIP];
+        const targetTipPt = pts21[targetTipIdx];
+        if (thumbTipPt && targetTipPt) {
+          ctx.beginPath();
+          ctx.moveTo(thumbTipPt.x, thumbTipPt.y);
+          ctx.lineTo(targetTipPt.x, targetTipPt.y);
+          ctx.strokeStyle = '#34D399';
+          ctx.lineWidth = 3.2;
+          ctx.stroke();
+        }
+      }
+
+      // All 21 anatomical landmark joints: wrist ring, MCP knuckles, PIP/DIP interphalangeal joints, fingertips
+      for (let i = 0; i < 21; i += 1) {
+        const pt = pts21[i];
+        if (!pt) continue;
+        const isWrist = i === HAND21_INDEX.WRIST;
+        const isMcp = i === 1 || i === 5 || i === 9 || i === 13 || i === 17;
+        const isTip = i === 4 || i === 8 || i === 12 || i === 16 || i === 20;
+        const nodeColor =
+          i === 0
+            ? activeColor
+            : i <= 4
+              ? FINGER_COLORS.thumb
+              : i <= 8
+                ? FINGER_COLORS.index
+                : i <= 12
+                  ? FINGER_COLORS.middle
+                  : i <= 16
+                    ? FINGER_COLORS.ring
+                    : FINGER_COLORS.pinky;
+        const radius = isWrist ? 4.8 : isTip ? 4.0 : isMcp ? 3.1 : 2.4;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, radius + 0.9, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
+        ctx.fillStyle = isTip || isWrist ? nodeColor : '#FFFFFF';
+        ctx.fill();
+        ctx.lineWidth = isTip || isWrist ? 1.5 : 1.4;
+        ctx.strokeStyle = isTip || isWrist ? '#FFFFFF' : nodeColor;
+        ctx.stroke();
+      }
+
+      // Live Hand21 finger/pinch/forearm-roll telemetry micro-pill tethered near wrist (fine-hand exercises)
+      const showHandBioPill =
+        drawJointMode === 'wrist_finger' ||
+        drawJointMode === 'forearm_turn' ||
+        drawJointMode === 'thumb_pinch';
+      if (showHandBioPill && handEntry.bio && wristPt) {
+        const bio = handEntry.bio;
+        const hudLabel =
+          drawJointMode === 'thumb_pinch'
+            ? bio.activePinchFingerTh
+              ? `จีบนิ้วโป้ง-${bio.activePinchFingerTh} • ${bio.extendedFingerCount}/5 นิ้ว`
+              : `แตะปลายนิ้วโป้ง • กาง ${bio.extendedFingerCount}/5 นิ้ว`
+            : drawJointMode === 'forearm_turn'
+              ? `${bio.palmOrientationTh} ${bio.forearmRollSignedDeg >= 0 ? '+' : ''}${Math.round(bio.forearmRollSignedDeg)}° • หมุน ${Math.round(opts.rotationEval?.sweptArcDeg ?? 0)}°`
+              : `นิ้วเหยียด ${bio.extendedFingerCount}/5 • ข้อมือ ${Math.round(bio.wristExtensionDeg)}°`;
+        ctx.font = '800 11px "Sarabun", sans-serif';
+        const pillW = Math.min(w - 20, ctx.measureText(hudLabel).width + 18);
+        const pillH = 22;
+        const px = Math.max(pillW / 2 + 8, Math.min(w - pillW / 2 - 8, wristPt.x));
+        const py = Math.max(24, Math.min(h - 18, wristPt.y + 24));
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.86)';
+        ctx.strokeStyle = drawJointMode === 'forearm_turn' && opts.rotationEval?.rotationVerified ? '#10B981' : '#38BDF8';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(px - pillW / 2, py - pillH / 2, pillW, pillH, 11);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#F8FAFC';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(hudLabel, px, py + 0.5);
+      }
+
       ctx.restore();
     } else if (handTether.outOfFrame) {
       hand21OutOfFrame = true;
+    }
+  }
+
+  // Real-rotation cycle status HUD pill for shoulder_rotation / shoulder_shrug / forearm_turn
+  if (
+    opts.rotationEval &&
+    (drawJointMode === 'forearm_turn' ||
+      drawJointMode === 'shoulder_rotation' ||
+      drawJointMode === 'shoulder_shrug')
+  ) {
+    const anchorIdx =
+      drawJointMode === 'shoulder_shrug'
+        ? POSE_INDEX.LEFT_SHOULDER
+        : resolvedDrawSide === 'LEFT' || opts.targetJoint === 'left_shoulder'
+          ? POSE_INDEX.LEFT_ELBOW
+          : POSE_INDEX.RIGHT_ELBOW;
+    const anchorPt = skeletonSafety.validMask[anchorIdx] ? skeletonSafety.points[anchorIdx] : null;
+    const rotLabel = opts.rotationEval.guidanceBannerTh ?? opts.rotationEval.phaseLabelTh;
+    if (rotLabel) {
+      ctx.save();
+      ctx.font = '800 12px "Sarabun", sans-serif';
+      const rw = Math.min(w - 24, ctx.measureText(rotLabel).width + 22);
+      const rh = 26;
+      const rx = anchorPt ? Math.max(rw / 2 + 10, Math.min(w - rw / 2 - 10, anchorPt.x)) : w / 2;
+      const ry = anchorPt ? Math.max(28, Math.min(h - 24, anchorPt.y - 34)) : 54;
+      ctx.fillStyle = opts.rotationEval.rotationVerified
+        ? 'rgba(5, 150, 105, 0.92)'
+        : 'rgba(15, 23, 42, 0.88)';
+      ctx.strokeStyle = opts.rotationEval.rotationVerified ? '#6EE7B7' : '#38BDF8';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.roundRect(rx - rw / 2, ry - rh / 2, rw, rh, 13);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(rotLabel, rx, ry + 0.5);
+      ctx.restore();
     }
   }
 
@@ -2218,7 +2536,7 @@ export function SmartRehabKioskUI({
     return true;
   });
   const [liveFramingHintTh, setLiveFramingHintTh] = useState<string | null>(null);
-  const [strokeSafetyAlert, setStrokeSafetyAlert] = useState<{
+  const [rehabSafetyAlert, setRehabSafetyAlert] = useState<{
     type: 'emergency' | 'spasticity' | 'fatigue';
     messageTh: string;
     suggestedRom?: number;
@@ -2263,7 +2581,7 @@ export function SmartRehabKioskUI({
 
   useEffect(() => {
     setReducedRomOverrideDeg(null);
-    setStrokeSafetyAlert(null);
+    setRehabSafetyAlert(null);
     setFatigueRestSec(0);
   }, [selectedExercise.exercise_id]);
 
@@ -2272,7 +2590,7 @@ export function SmartRehabKioskUI({
     const timer = window.setInterval(() => {
       setFatigueRestSec((prev) => {
         if (prev <= 1) {
-          setStrokeSafetyAlert((cur) => (cur?.type === 'fatigue' ? null : cur));
+          setRehabSafetyAlert((cur) => (cur?.type === 'fatigue' ? null : cur));
           return 0;
         }
         return prev - 1;
@@ -2349,7 +2667,7 @@ export function SmartRehabKioskUI({
   const latestKinematicsRef = useRef<LiveJointMeasurement | null>(null);
   const holdElapsedSecRef = useRef<number>(0);
   const completedRepsRef = useRef<number>(0);
-  const repPhaseRef = useRef<StrokeHoldRepState['phase']>('PHASE_1_HOLDING');
+  const repPhaseRef = useRef<ElderlyHoldRepState['phase']>('PHASE_1_HOLDING');
   const loweredFrameStreakRef = useRef<number>(0);
   const readyBannerUntilRef = useRef<number>(0);
   const waitLowerStartedAtRef = useRef<number>(0);
@@ -2360,9 +2678,58 @@ export function SmartRehabKioskUI({
   const [holdElapsedUiSec, setHoldElapsedUiSec] = useState<number>(0);
   const [isWaitLowerArmUi, setIsWaitLowerArmUi] = useState<boolean>(false);
 
+  // Judge-Ready Clinical AI Pro Telemetry HUD, Session Victory Card & LINE Care Alert states
+  const [aiProHudOpen, setAiProHudOpen] = useState<boolean>(false);
+  const aiProHudOpenRef = useRef<boolean>(false);
+  aiProHudOpenRef.current = aiProHudOpen;
+  const [liveAiHudSnap, setLiveAiHudSnap] = useState<{
+    kinematics: LiveJointMeasurement | null;
+    rotationEval: RotationCycleEvaluation | null;
+  }>({ kinematics: null, rotationEval: null });
+  const lastAiHudEmitAtRef = useRef<number>(0);
+  const [victoryModalOpen, setVictoryModalOpen] = useState<boolean>(false);
+  const [caregiverAlert, setCaregiverAlert] = useState<CaregiverAlertPayload | null>(null);
+  const caregiverAlertTimerRef = useRef<number | null>(null);
+  const peakRomInSetRef = useRef<number>(0);
+
+  const triggerCaregiverAlert = (
+    input: Omit<CaregiverAlertPayload, 'id' | 'timestampLabel'>,
+  ) => {
+    if (caregiverAlertTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(caregiverAlertTimerRef.current);
+      caregiverAlertTimerRef.current = null;
+    }
+    const nowTime = new Date().toLocaleTimeString('th-TH', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const nextAlert: CaregiverAlertPayload = {
+      ...input,
+      id: `line-care-${Date.now()}`,
+      timestampLabel: `${nowTime} น.`,
+    };
+    setCaregiverAlert(nextAlert);
+    if (typeof window !== 'undefined') {
+      caregiverAlertTimerRef.current = window.setTimeout(() => {
+        caregiverAlertTimerRef.current = null;
+        setCaregiverAlert((cur) => (cur?.id === nextAlert.id ? null : cur));
+      }, 8500);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (caregiverAlertTimerRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(caregiverAlertTimerRef.current);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     completedRepsRef.current = 0;
     holdElapsedSecRef.current = 0;
+    peakRomInSetRef.current = 0;
+    setVictoryModalOpen(false);
     repPhaseRef.current = 'PHASE_1_HOLDING';
     loweredFrameStreakRef.current = 0;
     readyBannerUntilRef.current = 0;
@@ -2489,6 +2856,13 @@ export function SmartRehabKioskUI({
       return;
     }
     if (prevStatus === 'UNAUTHORIZED_PERSON') return;
+    triggerCaregiverAlert({
+      kind: 'OWNER_GUARD',
+      titleTh: 'แจ้งเตือนความปลอดภัย: ตรวจพบบุคคลอื่นหน้ากล้อง',
+      bodyTh: `ระบบ Owner Face Guard ระงับการนับรอบชั่วคราว เนื่องจากบุคคลหน้ากล้องไม่ตรงกับคุณ ${ownerBiometricsProp?.fullName || patient?.name || patientProp?.name || 'ผู้ป่วย'}`,
+      patientName: ownerBiometricsProp?.fullName || patient?.name || patientProp?.name || 'ผู้ป่วย',
+      metricBadgeTh: 'LOCKED',
+    });
     if (voiceMutedRef.current || typeof window === 'undefined' || !('speechSynthesis' in window)) {
       return;
     }
@@ -2630,7 +3004,7 @@ export function SmartRehabKioskUI({
     isMultiPerson: isMultiPersonState,
     isImpostor: isImpostorState,
     ownerRehabGuardAlert,
-    strokeSafetyAlert,
+    rehabSafetyAlert,
     fatigueRestSec,
     safetyGuardBannerTh: telemetry_analysis.safety_guard_banner_th,
     framingHintTh: liveFramingHintTh,
@@ -2655,7 +3029,7 @@ export function SmartRehabKioskUI({
         ? customReason.trim()
         : `กดปุ่มหยุดฉุกเฉินระหว่างฝึกท่า ${selectedExercise.name_th}`;
     if (reasonMsg.includes('เสียสมดุล')) {
-      setStrokeSafetyAlert({
+      setRehabSafetyAlert({
         type: 'emergency',
         messageTh: 'ตรวจพบการเสียสมดุล กรุณานั่งพักและจับราวจับ',
       });
@@ -2843,6 +3217,13 @@ export function SmartRehabKioskUI({
     let handDelegate: VisionDelegate = 'CPU';
     let handInitRequested = false;
     let handFrameToggle = 0;
+    let roiHandLandmarker: HandLandmarker | null = null;
+    let roiHandDelegate: VisionDelegate = 'GPU';
+    let roiHandInitRequested = false;
+    let roiHandCpuFallbackRequested = false;
+    let roiHandConsecutiveErrors = 0;
+    let roiHandCanvas: HTMLCanvasElement | null = null;
+    let roiHandCtx: CanvasRenderingContext2D | null = null;
     let aiCaptureCanvas: HTMLCanvasElement | null = null;
     let aiCaptureCtx: CanvasRenderingContext2D | null = null;
     let lastFaceCheckAt = 0;
@@ -2895,10 +3276,22 @@ export function SmartRehabKioskUI({
       CLINICAL_HAND_ONE_EURO_PRESET.beta,
       CLINICAL_HAND_ONE_EURO_PRESET.dCutoff,
     );
+    const handWorldOneEuroFilter = new ClinicalHandOneEuroFilter(
+      CLINICAL_HAND_ONE_EURO_PRESET.minCutoff,
+      CLINICAL_HAND_ONE_EURO_PRESET.beta,
+      CLINICAL_HAND_ONE_EURO_PRESET.dCutoff,
+    );
     const boneBaselineCalibrator = new AutoBoneBaselineCalibrator();
+    const rotationCycleTracker = new ClinicalRotationCycleTracker();
     let latestMeasureLandmarks: NormalizedLandmark[] | null = null;
     let latestHandLandmarksBySide: { left?: NormalizedLandmark[]; right?: NormalizedLandmark[] } = {};
-    let latestOverlayHint: StrokeTargetOverlayHint | null = null;
+    let latestHandWorldLandmarksBySide: { left?: NormalizedLandmark[]; right?: NormalizedLandmark[] } = {};
+    let lastHandSeenAtBySide: { left: number; right: number } = { left: 0, right: 0 };
+    let handConsecutiveErrors = 0;
+    let handCpuFallbackRequested = false;
+    let latestHandBiomechanics: LiveJointMeasurement['handBiomechanics'] = null;
+    let latestRotationEval: RotationCycleEvaluation | null = null;
+    let latestOverlayHint: ElderlyTargetOverlayHint | null = null;
     let smoothingMode: 'one_euro' | 'adaptive_ema' | 'fixed_ema' = 'one_euro';
     let enableCustomSmooth = true;
     const formatSmoothingHud = () => {
@@ -2933,6 +3326,7 @@ export function SmartRehabKioskUI({
           measurePose2dOneEuroFilter.reset();
           worldOneEuroFilter.reset();
           handOneEuroFilter.reset();
+          handWorldOneEuroFilter.reset();
         }
       } else if (event.key === '2') {
         smoothingMode =
@@ -2979,7 +3373,7 @@ export function SmartRehabKioskUI({
     let latestPoseCount = 0;
     let latestRawTiltDeg = 0;
     let latestTrunkTiltDeg = 0;
-    let latestSideViolation: StrokeSideViolationCode = 'NONE';
+    let latestSideViolation: ElderlySideViolationCode = 'NONE';
     let latestWrongSideRaised = false;
     let latestWrongSideBannerTh: string | null = null;
     let latestWrongPlaneRaised = false;
@@ -3040,6 +3434,7 @@ export function SmartRehabKioskUI({
       poseLandmarker = null;
       faceLandmarker = null;
       handLandmarker = null;
+      roiHandLandmarker = null;
       setOwnerRehabGuardAlert(null);
     };
 
@@ -3056,8 +3451,8 @@ export function SmartRehabKioskUI({
           const deviceId = await selectClinicalCameraDeviceId();
           if (!active) return null;
           const baseVideoConstraints: MediaTrackConstraints = {
-            width: { ideal: 640 },
-            height: { ideal: 360 },
+            width: { ideal: 1280, min: 640 },
+            height: { ideal: 720, min: 360 },
             aspectRatio: { ideal: 16 / 9 },
             frameRate: { ideal: 60, max: 120 },
             facingMode: 'user',
@@ -3124,7 +3519,56 @@ export function SmartRehabKioskUI({
           }
         });
 
-        const ensureHandLandmarkerLoaded = () => {
+        const ensureRoiHandLandmarkerLoaded = (forceCpu = false) => {
+          if (forceCpu) {
+            if (roiHandCpuFallbackRequested) return;
+            roiHandCpuFallbackRequested = true;
+            void getCachedRoiHandLandmarker({ forceCpu: true })
+              .then((roiHandle) => {
+                if (active) {
+                  roiHandLandmarker = roiHandle.instance;
+                  roiHandDelegate = roiHandle.delegate;
+                  roiHandConsecutiveErrors = 0;
+                }
+              })
+              .catch(() => {
+                roiHandCpuFallbackRequested = false;
+              });
+            return;
+          }
+          if (roiHandInitRequested || roiHandLandmarker) return;
+          roiHandInitRequested = true;
+          void getCachedRoiHandLandmarker()
+            .then((roiHandle) => {
+              if (active) {
+                roiHandLandmarker = roiHandle.instance;
+                roiHandDelegate = roiHandle.delegate;
+                roiHandConsecutiveErrors = 0;
+              }
+            })
+            .catch(() => {
+              roiHandInitRequested = false;
+            });
+        };
+
+        const ensureHandLandmarkerLoaded = (forceCpu = false) => {
+          ensureRoiHandLandmarkerLoaded(forceCpu);
+          if (forceCpu) {
+            if (handCpuFallbackRequested) return;
+            handCpuFallbackRequested = true;
+            void getCachedHandLandmarker({ forceCpu: true })
+              .then((handHandle) => {
+                if (active) {
+                  handLandmarker = handHandle.instance;
+                  handDelegate = handHandle.delegate;
+                  handConsecutiveErrors = 0;
+                }
+              })
+              .catch(() => {
+                handCpuFallbackRequested = false;
+              });
+            return;
+          }
           if (handInitRequested || handLandmarker) return;
           handInitRequested = true;
           void getCachedHandLandmarker()
@@ -3132,12 +3576,15 @@ export function SmartRehabKioskUI({
               if (active) {
                 handLandmarker = handHandle.instance;
                 handDelegate = handHandle.delegate;
+                handConsecutiveErrors = 0;
               }
             })
             .catch(() => {
               handInitRequested = false;
             });
         };
+        // Pre-warm MediaPipe 21-point HandLandmarker immediately on camera start so fingers appear on frame 1
+        ensureHandLandmarkerLoaded();
 
         const emitPresetState = (nextPreset: DemoPresetId) => {
           if (demoPresetRef.current !== nextPreset) {
@@ -3158,9 +3605,15 @@ export function SmartRehabKioskUI({
           measurePose2dOneEuroFilter.reset();
           worldOneEuroFilter.reset();
           handOneEuroFilter.reset();
+          handWorldOneEuroFilter.reset();
           boneBaselineCalibrator.reset();
+          rotationCycleTracker.reset();
           latestMeasureLandmarks = null;
           latestHandLandmarksBySide = {};
+          latestHandWorldLandmarksBySide = {};
+          lastHandSeenAtBySide = { left: 0, right: 0 };
+          latestHandBiomechanics = null;
+          latestRotationEval = null;
           latestOverlayHint = null;
           rawKeypointsRef.current = null;
           smoothedRenderKeypointsRef.current = null;
@@ -3281,7 +3734,7 @@ export function SmartRehabKioskUI({
                 aiCaptureCanvas = document.createElement('canvas');
                 aiCaptureCtx = aiCaptureCanvas.getContext('2d', { alpha: false });
               }
-              const capW = 384;
+              const capW = 512;
               const capH = Math.max(
                 144,
                 Math.round(capW * ((v.videoHeight || 360) / (v.videoWidth || 640))),
@@ -3384,16 +3837,6 @@ export function SmartRehabKioskUI({
                 } else {
                   occludedFrames = 0;
                 }
-                const { landmarks: kinematicSafeLandmarks } = applyKinematicSkeletonLock({
-                  prevSmoothed: prevKinematicPose ?? rawKeypointsRef.current,
-                  rawLandmarks: stabilizedResult.landmarks,
-                  videoW: v.videoWidth || 640,
-                  videoH: v.videoHeight || 480,
-                  canvasW: canvasSizeRef.current.w,
-                  canvasH: canvasSizeRef.current.h,
-                  isMirrored: true,
-                });
-                prevKinematicPose = kinematicSafeLandmarks;
                 const applyOneEuro = (
                   flt: ClinicalOneEuroLandmarkFilter,
                   src: readonly NormalizedLandmark[],
@@ -3412,6 +3855,41 @@ export function SmartRehabKioskUI({
                           : (lm.visibility ?? srcVis ?? 1),
                     };
                   });
+
+                const frameVideoAspect =
+                  v.videoWidth > 0 && v.videoHeight > 0 ? v.videoWidth / v.videoHeight : 1.333;
+                const rawWorldLandmarks = poseRes?.worldLandmarks?.[0];
+                const worldLandmarks =
+                  rawWorldLandmarks && enableCustomSmooth
+                    ? applyOneEuro(worldOneEuroFilter, rawWorldLandmarks)
+                    : rawWorldLandmarks;
+
+                const loopJointMode = classifyExerciseJointMode(curEx);
+                const allowForwardElbowRepair =
+                  loopJointMode === 'default' ||
+                  loopJointMode === 'bilateral_raise' ||
+                  loopJointMode === 'scap_protract' ||
+                  loopJointMode === 'clasped_push';
+
+                // Correct occluded 2D elbow V-kinks on straight arms using 3D collinearity & forward foreshortening
+                const elbowStabilizedRaw = stabilizeStraightArmElbows({
+                  landmarks: stabilizedResult.landmarks,
+                  worldLandmarks,
+                  allowForwardOcclusionRepair: allowForwardElbowRepair,
+                  videoAspect: frameVideoAspect,
+                });
+
+                const { landmarks: kinematicSafeLandmarks } = applyKinematicSkeletonLock({
+                  prevSmoothed: prevKinematicPose ?? rawKeypointsRef.current,
+                  rawLandmarks: elbowStabilizedRaw,
+                  videoW: v.videoWidth || 640,
+                  videoH: v.videoHeight || 480,
+                  canvasW: canvasSizeRef.current.w,
+                  canvasH: canvasSizeRef.current.h,
+                  isMirrored: true,
+                });
+                prevKinematicPose = kinematicSafeLandmarks;
+
                 // Decouple ghost-free canvas render landmarks (`landmarks`) from full-frame biomechanical
                 // measurement landmarks (`measureLandmarks`), so portrait object-cover cropping and
                 // overhead foldback repair never blind ROM calculation.
@@ -3424,13 +3902,13 @@ export function SmartRehabKioskUI({
                         visibility: (kinematicSafeLandmarks[idx]?.visibility ?? 0) < 0.05 ? 0 : lm.visibility,
                       }));
                 const measureLandmarks = !enableCustomSmooth
-                  ? stabilizedResult.landmarks
+                  ? elbowStabilizedRaw
                   : smoothingMode === 'one_euro'
-                    ? applyOneEuro(measurePose2dOneEuroFilter, stabilizedResult.landmarks)
-                    : measureLandmarkSmoother.apply(stabilizedResult.landmarks).map((lm, idx) => ({
+                    ? applyOneEuro(measurePose2dOneEuroFilter, elbowStabilizedRaw)
+                    : measureLandmarkSmoother.apply(elbowStabilizedRaw).map((lm, idx) => ({
                         ...lm,
                         visibility:
-                          (stabilizedResult.landmarks[idx]?.visibility ?? 0) < 0.05 ? 0 : lm.visibility,
+                          (elbowStabilizedRaw[idx]?.visibility ?? 0) < 0.05 ? 0 : lm.visibility,
                       }));
                 latestMeasureLandmarks = measureLandmarks;
                 rawKeypointsRef.current = landmarks;
@@ -3462,96 +3940,237 @@ export function SmartRehabKioskUI({
                   }
                 }
                 boneBaselineCalibrator.update(measureLandmarks);
-                const rawWorldLandmarks = poseRes?.worldLandmarks?.[0];
-                const worldLandmarks =
-                  rawWorldLandmarks && enableCustomSmooth
-                    ? applyOneEuro(worldOneEuroFilter, rawWorldLandmarks)
-                    : rawWorldLandmarks;
 
-                const loopJointMode = classifyExerciseJointMode(curEx);
-                const needsHandLandmarker =
+                const isFineHandMode =
                   loopJointMode === 'wrist_finger' ||
                   loopJointMode === 'forearm_turn' ||
                   loopJointMode === 'thumb_pinch';
+                // Always run MediaPipe 21-point HandLandmarker on full-resolution video so all 5 fingers render live
+                const needsHandLandmarker = !curEx.target_joint.includes('knee');
                 if (needsHandLandmarker) {
                   ensureHandLandmarkerLoaded();
                   handFrameToggle += 1;
-                  const shouldRunHandThisFrame = handDelegate === 'GPU' || handFrameToggle % 2 === 1;
+                  const shouldRunHandThisFrame =
+                    isFineHandMode || handDelegate === 'GPU' || handFrameToggle % 2 === 1;
                   if (handLandmarker && shouldRunHandThisFrame) {
                     try {
                       const hTs = getNextMonotonicHandDetectTs(now);
-                      const handSource = handDelegate === 'GPU' ? v : poseSourceForFrame;
-                      const handRes = handLandmarker.detectForVideo(handSource, hTs);
+                      const handRes = handLandmarker.detectForVideo(v, hTs);
+                      handConsecutiveErrors = 0;
                       const detectedHands = handRes.landmarks ?? [];
+                      const detectedWorldHands = handRes.worldLandmarks ?? [];
                       const detectedHandedness = handRes.handedness ?? [];
-                      const nextHands: { left?: NormalizedLandmark[]; right?: NormalizedLandmark[] } = {};
-                      const poseLWrist = measureLandmarks[POSE_INDEX.LEFT_WRIST];
-                      const poseRWrist = measureLandmarks[POSE_INDEX.RIGHT_WRIST];
-                      const poseLVis = (poseLWrist?.visibility ?? 0) >= 0.15;
-                      const poseRVis = (poseRWrist?.visibility ?? 0) >= 0.15;
-                      const shSpanHand =
-                        lShPt && rShPt ? Math.max(0.1, Math.hypot(rShPt.x - lShPt.x, rShPt.y - lShPt.y)) : 0.22;
-                      const assignedSides: Array<'left' | 'right'> = [];
+                      const filteredAssigned = filterAndAssignDetectedHands({
+                        candidates: detectedHands.map((lms, hi) => ({
+                          landmarks: lms,
+                          worldLandmarks: detectedWorldHands[hi],
+                          handednessCategory: detectedHandedness[hi]?.[0]?.categoryName,
+                          handednessScore: detectedHandedness[hi]?.[0]?.score,
+                        })),
+                        poseLandmarks: measureLandmarks,
+                        videoAspect: frameVideoAspect,
+                        minConfidence: 0.36,
+                      });
 
-                      if (detectedHands.length >= 2 && poseLVis && poseRVis && detectedHands[0]?.[0] && detectedHands[1]?.[0]) {
-                        const h0 = detectedHands[0][0];
-                        const h1 = detectedHands[1][0];
-                        const costLR =
-                          Math.hypot(h0.x - poseLWrist.x, h0.y - poseLWrist.y) +
-                          Math.hypot(h1.x - poseRWrist.x, h1.y - poseRWrist.y);
-                        const costRL =
-                          Math.hypot(h0.x - poseRWrist.x, h0.y - poseRWrist.y) +
-                          Math.hypot(h1.x - poseLWrist.x, h1.y - poseLWrist.y);
-                        if (costLR <= costRL) {
-                          assignedSides[0] = 'left';
-                          assignedSides[1] = 'right';
-                        } else {
-                          assignedSides[0] = 'right';
-                          assignedSides[1] = 'left';
+                      // Stage 2: High-Resolution 256x256 Per-Hand ROI Zoom Refinement
+                      // Dramatically sharpens finger alignment on distant hands (1.5-2.5m), closed fists,
+                      // and hands gripping objects (e.g., mouse) on BOTH left and right sides simultaneously.
+                      if (roiHandLandmarker) {
+                        if (!roiHandCanvas) {
+                          roiHandCanvas = document.createElement('canvas');
+                          roiHandCanvas.width = 256;
+                          roiHandCanvas.height = 256;
+                          roiHandCtx = roiHandCanvas.getContext('2d', { alpha: false });
                         }
-                      }
+                        const vidW = v.videoWidth || 1280;
+                        const vidH = v.videoHeight || 720;
+                        const sidesToRefine: Array<'left' | 'right'> =
+                          roiHandDelegate === 'GPU' || isFineHandMode
+                            ? ['left', 'right']
+                            : [handFrameToggle % 2 === 1 ? 'left' : 'right'];
 
-                      detectedHands.forEach((rawHand, hi) => {
-                        if (!rawHand || rawHand.length < 21) return;
-                        const hWrist = rawHand[0];
-                        let side: 'left' | 'right' =
-                          assignedSides[hi] ?? (hi === 0 ? 'right' : 'left');
-                        if (!assignedSides[hi]) {
-                          if (poseLWrist && poseRWrist && poseLVis && poseRVis && hWrist) {
-                            const dLeft = Math.hypot(hWrist.x - poseLWrist.x, hWrist.y - poseLWrist.y);
-                            const dRight = Math.hypot(hWrist.x - poseRWrist.x, hWrist.y - poseRWrist.y);
-                            side = dLeft <= dRight ? 'left' : 'right';
-                          } else if (poseLWrist && poseLVis && hWrist && Math.hypot(hWrist.x - poseLWrist.x, hWrist.y - poseLWrist.y) <= shSpanHand * 0.65) {
-                            side = 'left';
-                          } else if (poseRWrist && poseRVis && hWrist && Math.hypot(hWrist.x - poseRWrist.x, hWrist.y - poseRWrist.y) <= shSpanHand * 0.65) {
-                            side = 'right';
-                          } else {
-                            // MediaPipe HandLandmarker assumes mirrored selfie input; invert handedness on raw unmirrored video frames
-                            const cat = detectedHandedness[hi]?.[0]?.categoryName?.toLowerCase();
-                            if (cat === 'left') {
-                              side = 'right';
-                            } else if (cat === 'right') {
-                              side = 'left';
+                        for (const sideKey of sidesToRefine) {
+                          const existing = filteredAssigned.handsBySide[sideKey];
+                          const existingPalmLen =
+                            existing && existing[0] && existing[9]
+                              ? Math.hypot(
+                                  (existing[9].x - existing[0].x) * frameVideoAspect,
+                                  existing[9].y - existing[0].y,
+                                )
+                              : 0;
+                          // Run zoomed 256x256 ROI when side was missed OR hand appears small/medium in full frame
+                          if (existing && existingPalmLen >= 0.16) continue;
+
+                          const crop = computeHandRoiCropBox({
+                            poseLandmarks: measureLandmarks,
+                            side: sideKey,
+                            videoW: vidW,
+                            videoH: vidH,
+                          });
+                          if (!crop || !roiHandCtx || !roiHandCanvas) continue;
+
+                          try {
+                            roiHandCtx.imageSmoothingEnabled = true;
+                            roiHandCtx.imageSmoothingQuality = 'high';
+                            roiHandCtx.drawImage(
+                              v,
+                              crop.x,
+                              crop.y,
+                              crop.size,
+                              crop.size,
+                              0,
+                              0,
+                              256,
+                              256,
+                            );
+                            const roiRes = roiHandLandmarker.detect(roiHandCanvas);
+                            roiHandConsecutiveErrors = 0;
+                            const roiLms = roiRes.landmarks?.[0];
+                            if (roiLms && roiLms.length >= 21) {
+                              const projected = projectRoiHandToFullVideo(roiLms, crop);
+                              const roiScore = roiRes.handedness?.[0]?.[0]?.score;
+                              const roiChecked = filterAndAssignDetectedHands({
+                                candidates: [
+                                  {
+                                    landmarks: projected,
+                                    worldLandmarks: roiRes.worldLandmarks?.[0],
+                                    handednessCategory: roiRes.handedness?.[0]?.[0]?.categoryName,
+                                    handednessScore: roiScore,
+                                  },
+                                ],
+                                poseLandmarks: measureLandmarks,
+                                videoAspect: frameVideoAspect,
+                                minConfidence: 0.28,
+                              });
+                              if (roiChecked.handsBySide[sideKey]) {
+                                filteredAssigned.handsBySide[sideKey] = roiChecked.handsBySide[sideKey];
+                                if (roiChecked.worldHandsBySide[sideKey]) {
+                                  filteredAssigned.worldHandsBySide[sideKey] =
+                                    roiChecked.worldHandsBySide[sideKey];
+                                }
+                              }
+                            }
+                          } catch {
+                            roiHandConsecutiveErrors += 1;
+                            if (roiHandConsecutiveErrors >= 2 && roiHandDelegate === 'GPU') {
+                              ensureRoiHandLandmarkerLoaded(true);
                             }
                           }
                         }
-                        const smoothedHand = enableCustomSmooth
-                          ? handOneEuroFilter.filterHand(side, rawHand, now).map((lm, li) => ({
-                            x: lm.x,
-                            y: lm.y,
-                            z: lm.z ?? rawHand[li]?.z ?? 0,
-                            visibility: rawHand[li]?.visibility ?? 1,
-                          }))
-                          : rawHand;
-                        nextHands[side] = smoothedHand;
-                      });
+                      }
+
+                      const nextHands: { left?: NormalizedLandmark[]; right?: NormalizedLandmark[] } = {};
+                      const nextWorldHands: { left?: NormalizedLandmark[]; right?: NormalizedLandmark[] } = {};
+                      const shSpanHand =
+                        lShPt && rShPt
+                          ? Math.max(
+                              0.09,
+                              Math.hypot((rShPt.x - lShPt.x) * frameVideoAspect, rShPt.y - lShPt.y),
+                            )
+                          : 0.22;
+
+                      for (const sideKey of ['left', 'right'] as const) {
+                        const assignedHand = filteredAssigned.handsBySide[sideKey];
+                        const assignedWorldHand = filteredAssigned.worldHandsBySide[sideKey];
+                        if (assignedHand && assignedHand.length >= 21) {
+                          nextHands[sideKey] = enableCustomSmooth
+                            ? handOneEuroFilter.filterHand(sideKey, assignedHand, now).map((lm, li) => ({
+                                x: lm.x,
+                                y: lm.y,
+                                z: lm.z ?? assignedHand[li]?.z ?? 0,
+                                visibility: 1,
+                              }))
+                            : assignedHand;
+                          lastHandSeenAtBySide[sideKey] = now;
+                          if (assignedWorldHand && assignedWorldHand.length >= 21) {
+                            nextWorldHands[sideKey] = enableCustomSmooth
+                              ? handWorldOneEuroFilter
+                                  .filterHand(sideKey, assignedWorldHand, now)
+                                  .map((lm, li) => ({
+                                    x: lm.x,
+                                    y: lm.y,
+                                    z: lm.z ?? assignedWorldHand[li]?.z ?? 0,
+                                    visibility: 1,
+                                  }))
+                              : assignedWorldHand;
+                          }
+                        } else if (
+                          latestHandLandmarksBySide[sideKey] &&
+                          now - lastHandSeenAtBySide[sideKey] <= 125
+                        ) {
+                          // Only carry over briefly if the cached hand is STILL anchored right on the current body wrist
+                          const curWr =
+                            measureLandmarks[
+                              sideKey === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST
+                            ];
+                          const prevRoot = latestHandLandmarksBySide[sideKey]?.[0];
+                          const stillTethered = Boolean(
+                            curWr &&
+                              prevRoot &&
+                              (curWr.visibility ?? 0) >= 0.25 &&
+                              Math.hypot((prevRoot.x - curWr.x) * frameVideoAspect, prevRoot.y - curWr.y) <=
+                                shSpanHand * 0.30,
+                          );
+                          if (stillTethered) {
+                            nextHands[sideKey] = latestHandLandmarksBySide[sideKey];
+                            if (latestHandWorldLandmarksBySide[sideKey]) {
+                              nextWorldHands[sideKey] = latestHandWorldLandmarksBySide[sideKey];
+                            }
+                          } else {
+                            handOneEuroFilter.reset(sideKey);
+                            handWorldOneEuroFilter.reset(sideKey);
+                          }
+                        } else {
+                          handOneEuroFilter.reset(sideKey);
+                          handWorldOneEuroFilter.reset(sideKey);
+                        }
+                      }
+
+                      // Co-align visual skeleton wrists seamlessly onto verified tethered 21-pt hand carpal roots
+                      // so arm lines extend cleanly all the way into BOTH real hands
+                      let visualAnchored: NormalizedLandmark[] | null = null;
+                      for (const sideKey of ['left', 'right'] as const) {
+                        const hRoot = nextHands[sideKey]?.[0];
+                        const wrIdx = sideKey === 'left' ? POSE_INDEX.LEFT_WRIST : POSE_INDEX.RIGHT_WRIST;
+                        const poseWr = landmarks[wrIdx];
+                        if (
+                          hRoot &&
+                          poseWr &&
+                          (poseWr.visibility ?? 0) >= SKELETON_JOINT_MIN_SCORE &&
+                          Math.hypot((hRoot.x - poseWr.x) * frameVideoAspect, hRoot.y - poseWr.y) <=
+                            shSpanHand * 0.45
+                        ) {
+                          if (!visualAnchored) visualAnchored = landmarks.map((p) => ({ ...p }));
+                          visualAnchored[wrIdx] = {
+                            ...poseWr,
+                            x: poseWr.x * 0.25 + hRoot.x * 0.75,
+                            y: poseWr.y * 0.25 + hRoot.y * 0.75,
+                          };
+                        }
+                      }
+                      if (visualAnchored) {
+                        const reAlignedVisual = stabilizeStraightArmElbows({
+                          landmarks: visualAnchored,
+                          worldLandmarks,
+                          allowForwardOcclusionRepair: allowForwardElbowRepair,
+                          videoAspect: frameVideoAspect,
+                        });
+                        rawKeypointsRef.current = reAlignedVisual;
+                        allRawKeypointsRef.current = [reAlignedVisual, ...allLandmarks.slice(1)];
+                      }
+
                       latestHandLandmarksBySide = nextHands;
+                      latestHandWorldLandmarksBySide = nextWorldHands;
                     } catch {
-                      // keep loop resilient if a hand detection frame fails
+                      handConsecutiveErrors += 1;
+                      if (handConsecutiveErrors >= 2 && handDelegate === 'GPU') {
+                        ensureHandLandmarkerLoaded(true);
+                      }
                     }
                   }
                 } else {
                   latestHandLandmarksBySide = {};
+                  latestHandWorldLandmarksBySide = {};
                 }
 
                 if (now - lastEdgeBridgeSentAt >= 65) {
@@ -3566,12 +4185,33 @@ export function SmartRehabKioskUI({
                   curEx,
                   {
                     handLandmarksBySide: latestHandLandmarksBySide,
+                    handWorldLandmarksBySide: latestHandWorldLandmarksBySide,
                     baseline: boneBaselineCalibrator.getBaseline() ?? undefined,
                     targetRomDeg: effectiveTargetRomRef.current,
                     videoAspect: v.videoWidth > 0 && v.videoHeight > 0 ? v.videoWidth / v.videoHeight : 1.22,
                   },
                 );
                 latestKinematicsRef.current = measured;
+                latestHandBiomechanics = measured.handBiomechanics ?? null;
+                if (measured.rotationTelemetry) {
+                  latestRotationEval = rotationCycleTracker.update({
+                    mode: measured.rotationTelemetry.mode,
+                    signedAngleDeg: measured.rotationTelemetry.signedAngleDeg,
+                    secondaryRollSignal: measured.rotationTelemetry.secondaryRollSignal,
+                    postureReady: measured.rotationTelemetry.postureReady,
+                    targetRomDeg: effectiveTargetRomRef.current,
+                    nowMs: now,
+                  });
+                } else {
+                  latestRotationEval = null;
+                }
+                if (aiProHudOpenRef.current && now - lastAiHudEmitAtRef.current >= 160) {
+                  lastAiHudEmitAtRef.current = now;
+                  setLiveAiHudSnap({
+                    kinematics: measured,
+                    rotationEval: latestRotationEval,
+                  });
+                }
                 latestOverlayHint = measured.overlayHint ?? null;
                 latestRawTiltDeg = measured.trunkTiltDeg;
                 wrongSideStreak = measured.wrongSideRaised ? wrongSideStreak + 1 : 0;
@@ -3600,11 +4240,13 @@ export function SmartRehabKioskUI({
                 latestLowVisibilityAlertTh = measured.lowVisibilityAlertTh ?? null;
                 latestPostureCompensated = Boolean(measured.postureCompensated);
                 latestPostureBannerTh = measured.postureBannerTh ?? null;
-                latestRawPrimaryRomDeg = measured.rawPrimaryRomDeg ?? measured.romDeg;
+                latestRawPrimaryRomDeg = latestRotationEval
+                  ? latestRotationEval.effectiveRotationRomDeg
+                  : (measured.rawPrimaryRomDeg ?? measured.romDeg);
                 latestLeftArmRom = measured.leftArmRom ?? null;
                 latestRightArmRom = measured.rightArmRom ?? null;
 
-                // Stroke Safety Guards in Browser AI Mode (time-debounced to prevent false triggers when sitting down)
+                // Elderly Safety Guards in Browser AI Mode (time-debounced to prevent false triggers when sitting down)
                 const safetyDtSec = prevSafetySampleAt > 0 ? Math.max(0.03, (now - prevSafetySampleAt) / 1000) : 0.1;
                 const headDropVel =
                   prevHeadY !== null && measured.headY !== null && measured.headY !== undefined
@@ -3670,14 +4312,14 @@ export function SmartRehabKioskUI({
                   if (now - lastSpasticityAt > 2500) {
                     lastSpasticityAt = now;
                     spasticityActive = true;
-                    setStrokeSafetyAlert({
+                    setRehabSafetyAlert({
                       type: 'spasticity',
                       messageTh: 'ช้าลงนิดนึงครับ ไม่ต้องฝืนยกสูงเกินไปนะครับ',
                     });
                   }
                 } else if (spasticityActive && now - lastSpasticityAt > 3500) {
                   spasticityActive = false;
-                  setStrokeSafetyAlert((cur) => (cur?.type === 'spasticity' ? null : cur));
+                  setRehabSafetyAlert((cur) => (cur?.type === 'spasticity' ? null : cur));
                 }
                 // Passive trunk lean indicator only (> 18 deg): never reset hold timer or trigger fatigue rest interruption!
                 consecutiveCompEvents = 0;
@@ -3717,6 +4359,14 @@ export function SmartRehabKioskUI({
                 pose2dOneEuroFilter.reset();
                 measurePose2dOneEuroFilter.reset();
                 worldOneEuroFilter.reset();
+                handOneEuroFilter.reset();
+                handWorldOneEuroFilter.reset();
+                rotationCycleTracker.reset();
+                latestHandLandmarksBySide = {};
+                latestHandWorldLandmarksBySide = {};
+                lastHandSeenAtBySide = { left: 0, right: 0 };
+                latestHandBiomechanics = null;
+                latestRotationEval = null;
                 if (lastEmittedRom !== 0) {
                   lastEmittedRom = 0;
                   lastRomEmitAt = now;
@@ -3829,7 +4479,7 @@ export function SmartRehabKioskUI({
             ];
 
             const effRawTiltDeg = checkTrunk ? latestRawTiltDeg : 0;
-            const effSideViolation: StrokeSideViolationCode = checkLimb ? latestSideViolation : 'NONE';
+            const effSideViolation: ElderlySideViolationCode = checkLimb ? latestSideViolation : 'NONE';
             const effWrongSideRaised = checkLimb ? latestWrongSideRaised : false;
             const effWrongSideBannerTh = checkLimb ? latestWrongSideBannerTh : null;
             const effWrongPlaneRaised = checkPlane ? latestWrongPlaneRaised : false;
@@ -3993,7 +4643,7 @@ export function SmartRehabKioskUI({
                   bannerTh: null,
                   statusKind: 'ACTIVE_REP' as const,
                 }
-              : stepStrokeHoldAndRepStateMachine({
+              : stepElderlyHoldAndRepStateMachine({
                   state: {
                     phase: repPhaseRef.current,
                     holdElapsedSec: holdElapsedSecRef.current,
@@ -4025,7 +4675,24 @@ export function SmartRehabKioskUI({
                   isCompensatedNow: effPostureCompensated,
                   postureBannerTh: effPostureBannerTh,
                   blockCounting,
+                  rotationGate: latestRotationEval
+                    ? {
+                        required: true,
+                        rotationVerified: latestRotationEval.rotationVerified,
+                        returnedToStart: latestRotationEval.returnedToStart,
+                        guidanceBannerTh: latestRotationEval.guidanceBannerTh,
+                      }
+                    : undefined,
                 });
+
+            if (repStep.justCompletedRep && latestRotationEval) {
+              rotationCycleTracker.notifyRepCompleted();
+              latestRotationEval = {
+                ...latestRotationEval,
+                rotationVerified: false,
+                returnedToStart: false,
+              };
+            }
 
             repPhaseRef.current = repStep.nextState.phase;
             holdElapsedSecRef.current = repStep.nextState.holdElapsedSec;
@@ -4152,6 +4819,9 @@ export function SmartRehabKioskUI({
                 if (activeSide === 'RIGHT') return latestHandLandmarksBySide.right;
                 return latestHandLandmarksBySide.right ?? latestHandLandmarksBySide.left;
               })(),
+              handLandmarksBySide: latestHandLandmarksBySide,
+              handBiomechanics: latestHandBiomechanics,
+              rotationEval: latestRotationEval,
               videoWidth: v.videoWidth,
               videoHeight: v.videoHeight,
               canvasWidth: canvasW,
@@ -4478,7 +5148,7 @@ export function SmartRehabKioskUI({
   const rawVoiceTextTh =
     effectiveOwnerIdentityStatus === 'UNAUTHORIZED_PERSON'
       ? OWNER_GUARD_UNAUTHORIZED_TTS_TH
-      : strokeSafetyAlert?.messageTh ?? telemetry_analysis.safety_guard_banner_th ?? tts_voice_th;
+      : rehabSafetyAlert?.messageTh ?? telemetry_analysis.safety_guard_banner_th ?? tts_voice_th;
   const cleanSpeechText = sanitizeSpeechText(rawVoiceTextTh);
   const displayedVoiceSubtitle = sanitizeSpeechText(translateVoiceCoachText(cleanSpeechText, zone5VoiceLang));
   const ownerDisplayName =
@@ -4501,6 +5171,10 @@ export function SmartRehabKioskUI({
   }, [ownerFaceGuard.active, ownerFaceGuard.trackedRawBox]);
   const [repBurstKey, setRepBurstKey] = useState(0);
   const prevValidRepsRef = useRef<number>(rep_counter.valid_reps);
+  const prevEmergencyRef = useRef<boolean>(isEmergency);
+  if (activeRom > peakRomInSetRef.current) {
+    peakRomInSetRef.current = activeRom;
+  }
   useEffect(() => {
     const prev = prevValidRepsRef.current;
     prevValidRepsRef.current = rep_counter.valid_reps;
@@ -4508,13 +5182,44 @@ export function SmartRehabKioskUI({
       setRepBurstKey((k) => k + 1);
       if (rep_counter.valid_reps >= selectedExercise.target_reps) {
         playGameSfx('victory', { muted: voiceMuted });
+        setVictoryModalOpen(true);
+        const achievedRom = Math.max(peakRomInSetRef.current, activeRom, effectiveTargetRomDeg);
+        triggerCaregiverAlert({
+          kind: 'SESSION_COMPLETE',
+          titleTh: 'ฝึกกายภาพสำเร็จครบเซต!',
+          bodyTh: `คุณ${ownerDisplayName} ทำท่า ${selectedExercise.name_th} ครบ ${rep_counter.valid_reps}/${selectedExercise.target_reps} ครั้ง มุมสูงสุด ${Math.round(achievedRom)}° (เป้า ${Math.round(effectiveTargetRomDeg)}°)`,
+          patientName: ownerDisplayName,
+          metricBadgeTh: `${Math.round(achievedRom)}° • ครบเซต`,
+        });
       } else if (rep_counter.valid_reps >= 2) {
         playGameSfx('combo', { comboCount: rep_counter.valid_reps, muted: voiceMuted });
       } else {
         playGameSfx('rep', { muted: voiceMuted });
       }
     }
-  }, [rep_counter.valid_reps, selectedExercise.target_reps, voiceMuted]);
+  }, [
+    rep_counter.valid_reps,
+    selectedExercise.target_reps,
+    selectedExercise.name_th,
+    voiceMuted,
+    activeRom,
+    effectiveTargetRomDeg,
+    ownerDisplayName,
+  ]);
+
+  useEffect(() => {
+    const prevEmerg = prevEmergencyRef.current;
+    prevEmergencyRef.current = isEmergency;
+    if (isEmergency && !prevEmerg) {
+      triggerCaregiverAlert({
+        kind: 'SAFETY_ALERT',
+        titleTh: 'แจ้งเตือนหยุดพักฉุกเฉิน (Safety Guard)',
+        bodyTh: `ระบบตรวจพบความเสี่ยงเสียสมดุลหรือผู้สูงอายุกดหยุดฉุกเฉินระหว่างท่า ${selectedExercise.name_th} กรุณาเข้าตรวจสอบทันที`,
+        patientName: ownerDisplayName,
+        metricBadgeTh: 'EMERGENCY',
+      });
+    }
+  }, [isEmergency, selectedExercise.name_th, ownerDisplayName]);
 
   const ownerMascotPose: 'explaining' | 'encouraging' | 'speaking' | 'celebrating' =
     effectiveOwnerIdentityStatus === 'UNAUTHORIZED_PERSON'
@@ -4589,6 +5294,8 @@ export function SmartRehabKioskUI({
             <button
               type="button"
               onClick={() => {
+                peakRomInSetRef.current = 0;
+                setVictoryModalOpen(false);
                 resetPoseTestProgress(selectedExercise.hold_sec);
                 resetDemoSession();
               }}
@@ -4596,6 +5303,60 @@ export function SmartRehabKioskUI({
             >
               <RotateCcw className="w-3.5 h-3.5 shrink-0" />
               <span>รีเซ็ต (0/{selectedExercise.target_reps})</span>
+            </button>
+
+            <button
+              type="button"
+              data-testid="kiosk-ai-pro-hud-toggle"
+              aria-pressed={aiProHudOpen}
+              onClick={() => {
+                setAiProHudOpen((prev) => {
+                  const next = !prev;
+                  if (next) {
+                    setLiveAiHudSnap((cur) => ({
+                      kinematics: latestKinematicsRef.current ?? cur.kinematics,
+                      rotationEval: cur.rotationEval,
+                    }));
+                  }
+                  return next;
+                });
+              }}
+              className={`inline-flex items-center gap-1 border font-extrabold text-xs md:text-sm px-2.5 py-1 rounded-xl cursor-pointer active:scale-95 transition whitespace-nowrap ${
+                aiProHudOpen
+                  ? 'bg-slate-900 border-cyan-400 text-cyan-300 shadow-sm'
+                  : 'bg-slate-50 hover:bg-slate-100 border-slate-300 text-slate-700'
+              }`}
+              title="เปิด/ปิดแผงวิเคราะห์ชีวกลศาสตร์ AI 3D และนิ้วมือ 21 จุด"
+            >
+              <Cpu className="w-3.5 h-3.5 shrink-0" />
+              <span>AI HUD</span>
+            </button>
+
+            <button
+              type="button"
+              data-testid="kiosk-victory-line-btn"
+              onClick={() => {
+                const previewRom = Math.max(
+                  peakRomInSetRef.current,
+                  activeRom,
+                  Math.round(effectiveTargetRomDeg * 1.04),
+                );
+                const previewReps =
+                  rep_counter.valid_reps > 0 ? rep_counter.valid_reps : selectedExercise.target_reps;
+                setVictoryModalOpen(true);
+                triggerCaregiverAlert({
+                  kind: 'SESSION_COMPLETE',
+                  titleTh: 'รายงานผลกายภาพถึงญาติ (LINE Care)',
+                  bodyTh: `คุณ${ownerDisplayName} ฝึกท่า ${selectedExercise.name_th} สำเร็จ ${previewReps}/${selectedExercise.target_reps} ครั้ง มุมสูงสุด ${Math.round(previewRom)}° (เป้า ${Math.round(effectiveTargetRomDeg)}°)`,
+                  patientName: ownerDisplayName,
+                  metricBadgeTh: `${Math.round(previewRom)}° • ส่งแล้ว`,
+                });
+              }}
+              className="inline-flex items-center gap-1 bg-emerald-50 hover:bg-emerald-100 border border-emerald-400 text-emerald-800 font-extrabold text-xs md:text-sm px-2.5 py-1 rounded-xl cursor-pointer active:scale-95 transition whitespace-nowrap"
+              title="ดูการ์ดสรุปความสำเร็จและตัวอย่างแจ้งเตือน LINE Care ถึงญาติ"
+            >
+              <BellRing className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
+              <span>สรุป/LINE</span>
             </button>
 
             {onBackToAdminPortal || onOpenStaffPortal ? (
@@ -4940,15 +5701,15 @@ export function SmartRehabKioskUI({
               <AlertOctagon className="h-14 w-14 text-rose-400" />
               <h2 className="mt-2 text-2xl font-extrabold">หยุดพักฉุกเฉิน (EMERGENCY HALT)</h2>
               <p className="mt-1 max-w-md text-sm font-extrabold text-rose-100">
-                {strokeSafetyAlert?.type === 'emergency'
-                  ? strokeSafetyAlert.messageTh
+                {rehabSafetyAlert?.type === 'emergency'
+                  ? rehabSafetyAlert.messageTh
                   : telemetry_analysis.safety_guard_banner_th ||
                   'ตรวจพบการเสียสมดุล กรุณานั่งพักและจับราวจับ • ระบบแจ้งเตือนเจ้าหน้าที่แล้ว'}
               </p>
               <button
                 type="button"
                 onClick={() => {
-                  setStrokeSafetyAlert(null);
+                  setRehabSafetyAlert(null);
                   setFatigueRestSec(0);
                   resetPoseTestProgress(selectedExercise.hold_sec);
                   resetDemoSession();
@@ -4971,6 +5732,20 @@ export function SmartRehabKioskUI({
               <span>{distanceLabel}</span>
             </div>
           </div>
+
+          <ClinicalAiTelemetryHud
+            visible={aiProHudOpen}
+            onClose={() => setAiProHudOpen(false)}
+            exerciseNameTh={selectedExercise.name_th}
+            targetRomDeg={effectiveTargetRomDeg}
+            currentRomDeg={activeRom}
+            kinematics={liveAiHudSnap.kinematics}
+            rotationEval={liveAiHudSnap.rotationEval}
+            distanceM={displayedDistanceM}
+            wrongSideRaised={wrongLimbAlert}
+            wrongPlaneRaised={wrongPlaneAlert}
+            trunkTiltDeg={telemetry_analysis.trunk_tilt_deg ?? 0}
+          />
 
           {/* Top-Center GIANT Elderly Arm Callout Banner */}
           <div
@@ -5010,14 +5785,6 @@ export function SmartRehabKioskUI({
               )}
             </div>
           </div>
-
-          {/* Enlarged Picture-in-Picture Live Animated Rehab Coach in Corner of Camera */}
-          <Zone2PipCoachOverlay
-            exercise={selectedExercise}
-            targetSide={currentUiSide}
-            visible={showPipCoach}
-            onToggleVisible={() => setShowPipCoach((prev) => !prev)}
-          />
 
           {/* Top-Right Oversized Live Angle Readout */}
           <div className="pointer-events-none absolute top-3 right-3 z-20 flex flex-col items-end gap-1">
@@ -5066,7 +5833,7 @@ export function SmartRehabKioskUI({
                     onClick={() => {
                       const nextDeg = unifiedCoachingBanner.suggestedRomDeg ?? 90;
                       setReducedRomOverrideDeg(nextDeg);
-                      setStrokeSafetyAlert(null);
+                      setRehabSafetyAlert(null);
                     }}
                     className="rounded-lg bg-blue-600 px-3 py-1 text-sm font-extrabold text-white shadow-xs hover:bg-blue-700 cursor-pointer"
                   >
@@ -5077,7 +5844,7 @@ export function SmartRehabKioskUI({
                   <button
                     type="button"
                     onClick={() => {
-                      setStrokeSafetyAlert(null);
+                      setRehabSafetyAlert(null);
                       setFatigueRestSec(0);
                     }}
                     className="rounded-lg border border-blue-400 bg-white px-3 py-1 text-sm font-extrabold text-blue-900 hover:bg-blue-50 cursor-pointer"
@@ -5091,14 +5858,14 @@ export function SmartRehabKioskUI({
         </SkeletonCanvas>
       </section>
 
-      {/* ZONE 3: 3 Oversized Scoreboard Cards */}
+      {/* ZONE 3: Compact 2-Card Scoreboard Strip (Reps + Hold Timer) */}
       <section
         aria-label="สรุปผลคะแนนการทำกายภาพ"
-        className="shrink-0 grid grid-cols-3 gap-2.5"
+        className="shrink-0 grid grid-cols-2 gap-2"
       >
         {/* Card 1: Completed Reps */}
         <div
-          className={`relative overflow-visible bg-white border-2 rounded-2xl px-3 py-2 text-center shadow-sm flex flex-col items-center justify-between transition-all duration-300 ${
+          className={`relative overflow-visible bg-white border-2 rounded-xl px-3 py-1.5 shadow-xs flex flex-col justify-center gap-1.5 transition-all duration-300 ${
             isRepCelebration
               ? 'border-emerald-500 ring-2 ring-emerald-300 shadow-md scale-[1.01]'
               : 'border-blue-200'
@@ -5122,31 +5889,33 @@ export function SmartRehabKioskUI({
                 animate={{ scale: 1.35, opacity: 0 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.75, ease: 'easeOut' }}
-                className="pointer-events-none absolute inset-0 rounded-2xl border-4 border-emerald-500"
+                className="pointer-events-none absolute inset-0 rounded-xl border-4 border-emerald-500"
               />
             )}
           </AnimatePresence>
-          <div className="flex items-center justify-center gap-1.5 flex-wrap">
-            <p className="text-blue-900 font-extrabold text-sm md:text-base leading-tight">
-              จำนวนครั้งสำเร็จ
-            </p>
-            <GameComboBadge count={rep_counter.valid_reps} labelTh="ต่อเนื่อง" compact />
+          <div className="w-full flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <p className="text-blue-900 font-extrabold text-xs sm:text-sm leading-tight truncate">
+                จำนวนครั้งสำเร็จ
+              </p>
+              <GameComboBadge count={rep_counter.valid_reps} labelTh="ต่อเนื่อง" compact />
+            </div>
+            <div
+              key={`rep-readout-${rep_counter.valid_reps}`}
+              className={`text-blue-700 font-black text-lg sm:text-xl md:text-2xl tabular-mono leading-none shrink-0 ${
+                rep_counter.valid_reps > 0 ? 'animate-rep-pop' : ''
+              }`}
+            >
+              {rep_counter.valid_reps} / {selectedExercise.target_reps} ครั้ง
+            </div>
           </div>
-          <div
-            key={`rep-readout-${rep_counter.valid_reps}`}
-            className={`text-blue-700 font-black text-2xl md:text-3xl tabular-mono leading-tight my-0.5 ${
-              rep_counter.valid_reps > 0 ? 'animate-rep-pop' : ''
-            }`}
-          >
-            {rep_counter.valid_reps} / {selectedExercise.target_reps} ครั้ง
-          </div>
-          <div className="w-full flex items-center justify-center gap-1">
+          <div className="w-full flex items-center gap-1">
             {Array.from({ length: Math.min(10, Math.max(1, selectedExercise.target_reps)) }).map((_, idx) => (
               <span
                 key={idx}
-                className={`h-2 flex-1 max-w-[16px] rounded-full transition-all duration-300 ${
+                className={`h-1.5 flex-1 rounded-full transition-all duration-300 ${
                   idx < rep_counter.valid_reps
-                    ? `bg-gradient-to-r from-emerald-500 to-teal-400 scale-110 shadow-xs ${
+                    ? `bg-gradient-to-r from-emerald-500 to-teal-400 shadow-xs ${
                         idx === rep_counter.valid_reps - 1 && isRepCelebration ? 'animate-rep-pop' : ''
                       }`
                     : 'bg-sky-100'
@@ -5158,32 +5927,34 @@ export function SmartRehabKioskUI({
 
         {/* Card 2: Target Hold Timer */}
         <div
-          className={`bg-emerald-50/90 border-2 rounded-2xl px-3 py-2 text-center shadow-sm flex flex-col items-center justify-between transition-all duration-300 ${
+          className={`bg-emerald-50/90 border-2 rounded-xl px-3 py-1.5 shadow-xs flex flex-col justify-center gap-1.5 transition-all duration-300 ${
             isWaitLowerArmUi || holdPct >= 100
               ? 'border-emerald-500 ring-2 ring-emerald-300 shadow-md'
               : 'border-emerald-400'
           }`}
         >
-          <p className="inline-flex items-center justify-center gap-1.5 text-emerald-950 font-extrabold text-sm md:text-base leading-tight">
-            <Timer className="w-4 h-4 text-emerald-700 shrink-0" />
-            <span>ค้างท่าเป้าหมาย</span>
-          </p>
-          <div className="text-emerald-700 font-black text-2xl md:text-3xl tabular-mono leading-tight my-0.5 flex items-baseline justify-center gap-1">
-            <span
-              ref={holdTimerTextRef}
-              data-testid="kiosk-hold-timer-display"
-              className={isWaitLowerArmUi || holdPct >= 100 ? 'animate-rep-pop' : ''}
-            >
-              {isWaitLowerArmUi || holdPct >= 100
-                ? `${holdTargetSec.toFixed(1)}s (ครบ!)`
-                : `${liveHoldElapsed.toFixed(1)}s`}
-            </span>
-            <span className="text-sm md:text-lg font-extrabold text-emerald-700/80">
-              / {holdTargetSec.toFixed(1)}s
-            </span>
+          <div className="w-full flex items-center justify-between gap-2">
+            <p className="inline-flex items-center gap-1 text-emerald-950 font-extrabold text-xs sm:text-sm leading-tight truncate">
+              <Timer className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+              <span className="truncate">ค้างท่าเป้าหมาย</span>
+            </p>
+            <div className="text-emerald-700 font-black text-lg sm:text-xl md:text-2xl tabular-mono leading-none flex items-baseline gap-1 shrink-0">
+              <span
+                ref={holdTimerTextRef}
+                data-testid="kiosk-hold-timer-display"
+                className={isWaitLowerArmUi || holdPct >= 100 ? 'animate-rep-pop' : ''}
+              >
+                {isWaitLowerArmUi || holdPct >= 100
+                  ? `${holdTargetSec.toFixed(1)}s (ครบ!)`
+                  : `${liveHoldElapsed.toFixed(1)}s`}
+              </span>
+              <span className="text-xs sm:text-sm font-extrabold text-emerald-700/80">
+                / {holdTargetSec.toFixed(1)}s
+              </span>
+            </div>
           </div>
           <div
-            className={`w-full h-2.5 bg-emerald-200 rounded-full overflow-hidden transition-shadow duration-200 ${
+            className={`w-full h-2 bg-emerald-200 rounded-full overflow-hidden transition-shadow duration-200 ${
               isWaitLowerArmUi || holdPct >= 100 ? 'animate-status-halo' : ''
             }`}
           >
@@ -5201,75 +5972,14 @@ export function SmartRehabKioskUI({
             />
           </div>
         </div>
-
-        {/* Card 3: ROM Semi-Circular Gauge */}
-        <div
-          className={`bg-white border-2 rounded-2xl px-3 py-2 text-center shadow-sm flex flex-col items-center justify-center transition-all duration-300 ${
-            romPct >= 100 ? 'border-emerald-500 ring-2 ring-emerald-200 shadow-md' : 'border-teal-200'
-          }`}
-        >
-          <p className="inline-flex items-center justify-center gap-1 text-teal-950 font-extrabold text-sm md:text-base leading-tight">
-            <span>มุมการเคลื่อนไหว ROM</span>
-            {romPct >= 100 && (
-              <svg
-                viewBox="0 0 16 16"
-                className="game-star-twinkle h-4 w-4 text-amber-500 shrink-0"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <path d="M8 1.2 9.9 5.5 14.6 6 11 9.1 12.1 13.8 8 11.3 3.9 13.8 5 9.1 1.4 6 6.1 5.5 Z" />
-              </svg>
-            )}
-          </p>
-          <div className="flex items-center justify-center gap-2 mt-0.5">
-            <svg viewBox="0 0 120 66" className="w-16 h-9 md:w-20 md:h-11 overflow-visible shrink-0" aria-hidden="true">
-              <defs>
-                <linearGradient id="kioskRomClinicalGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-                  <stop offset="0%" stopColor="#0284C7" />
-                  <stop offset="100%" stopColor="#10B981" />
-                </linearGradient>
-              </defs>
-              <path
-                d="M 12 58 A 48 48 0 0 1 108 58"
-                fill="none"
-                stroke="#e2e8f0"
-                strokeWidth="12"
-                strokeLinecap="round"
-              />
-              <path
-                ref={romGaugeArcRef}
-                d="M 12 58 A 48 48 0 0 1 108 58"
-                fill="none"
-                stroke="url(#kioskRomClinicalGrad)"
-                strokeWidth="12"
-                strokeLinecap="round"
-                strokeDasharray="150.8"
-                strokeDashoffset={150.8 * (1 - romPct / 100)}
-                className="transition-[stroke-dashoffset,stroke] duration-200 ease-out"
-              />
-            </svg>
-            <div className="text-left leading-tight">
-              <div
-                ref={romGaugeTextRef}
-                className="text-teal-700 font-black text-2xl md:text-3xl tabular-mono leading-none"
-              >
-                {telemetry_analysis.current_rom_deg.toFixed(1)}°
-              </div>
-              <p className="text-slate-600 text-xs font-bold mt-0.5">
-                (เป้าหมาย {effectiveTargetRomDeg}°)
-              </p>
-            </div>
-          </div>
-        </div>
       </section>
 
-      {/* ZONE 4: GIANT Demo Model Stage + Massive Elderly Arm Callout + Ultra-Clean Checklist Strip */}
+      {/* ZONE 4: GIANT Zoomed Nong MorTech Stage + Compact Arm Banner & Steps + Slim Checklist */}
       <section
         aria-label="ขั้นตอนการฝึกและตารางตรวจสอบเช็คลิสต์"
-        className="shrink-0 bg-white border-2 border-sky-100 rounded-2xl p-2.5 shadow-sm space-y-2"
+        className="shrink-0 bg-white border-2 border-sky-100 rounded-2xl p-2 shadow-xs space-y-1.5"
       >
-        <div className="grid grid-cols-12 gap-2.5 items-stretch">
-          {/* Giant Live Coach Model (5 cols) + Massive Elderly Arm Banner & 3 Crisp Step Chips (7 cols) */}
+        <div className="grid grid-cols-12 gap-2 items-stretch">
           <Zone4CoachStageAndSteps
             exercise={selectedExercise}
             targetSide={currentUiSide}
@@ -5281,9 +5991,9 @@ export function SmartRehabKioskUI({
         </div>
 
         {/* Ultra-Slim Single-Row Checklist Toggle Bar (Zero Clutter) */}
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-emerald-50/60 border border-emerald-200/80 px-2.5 py-1">
+        <div className="flex flex-wrap items-center justify-between gap-1.5 rounded-xl bg-emerald-50/60 border border-emerald-200/80 px-2 py-0.5">
           <div className="flex items-center gap-1.5 shrink-0">
-            <span className="text-[11px] font-black text-emerald-950">ตารางตรวจสอบเช็คลิสต์</span>
+            <span className="text-[10.5px] font-black text-emerald-950">ตารางตรวจสอบเช็คลิสต์</span>
             <button
               type="button"
               onClick={toggleMasterFormAssessment}
@@ -5307,14 +6017,14 @@ export function SmartRehabKioskUI({
             )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1">
             {coreChecklistItems.map(({ ruleKey, displayLabel, baseItem }) => (
               <button
                 key={ruleKey}
                 type="button"
                 onClick={() => toggleSingleFormRule(ruleKey)}
                 aria-pressed={baseItem.ruleActive}
-                className="inline-flex items-center gap-1 rounded-full bg-white border border-emerald-200/80 hover:bg-emerald-100/50 px-2 py-0.5 text-[11px] font-bold cursor-pointer transition"
+                className="inline-flex items-center gap-1 rounded-full bg-white border border-emerald-200/80 hover:bg-emerald-100/50 px-2 py-0.5 text-[10.5px] font-bold cursor-pointer transition"
               >
                 {!baseItem.ruleActive ? (
                   <Pause className="w-3 h-3 text-slate-400 shrink-0" />
@@ -5343,23 +6053,23 @@ export function SmartRehabKioskUI({
         </div>
       </section>
 
-      {/* ZONE 5: Clean Accessible Voice Coach Footer */}
-      <footer className="shrink-0 relative bg-gradient-to-r from-teal-700 via-emerald-700 to-blue-800 text-white rounded-2xl px-4 py-2 flex items-center justify-between gap-3 shadow-sm">
-        {/* Left: Compact Mascot + Microphone badge + Large Live Spoken Subtitle */}
-        <div className="flex items-center gap-2.5 min-w-0 flex-1">
-          <div className="hidden sm:flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/95 border border-emerald-200">
+      {/* ZONE 5: Clean Compact Accessible Voice Coach Footer */}
+      <footer className="shrink-0 relative bg-gradient-to-r from-teal-700 via-emerald-700 to-blue-800 text-white rounded-xl px-3 py-1.5 flex items-center justify-between gap-2.5 shadow-sm">
+        {/* Left: Compact Mascot + Microphone badge + Live Spoken Subtitle */}
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <div className="hidden sm:flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/95 border border-emerald-200">
             <DrTechCareMascot
               pose={ownerMascotPose}
               isSpeaking={isSpeakingUnauthorizedAlert || !voiceMuted}
               size="sm"
-              className="scale-[0.42] origin-center"
+              className="scale-[0.38] origin-center"
             />
           </div>
           <span
             aria-hidden="true"
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/15"
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white/15"
           >
-            <Mic className="w-4 h-4 text-white" />
+            <Mic className="w-3.5 h-3.5 text-white" />
           </span>
           <span className="sr-only">
             {zone5VoiceLang === 'en'
@@ -5368,7 +6078,7 @@ export function SmartRehabKioskUI({
                 ? 'ZH AI VOICE COACH:'
                 : 'THAI AI VOICE COACH:'}
           </span>
-          <p className="text-white font-extrabold text-base sm:text-lg md:text-xl truncate">
+          <p className="text-white font-extrabold text-sm sm:text-base md:text-lg truncate">
             {displayedVoiceSubtitle}
           </p>
         </div>
@@ -5683,10 +6393,72 @@ export function SmartRehabKioskUI({
         onClose={() => setCoachModalOpen(false)}
       />
 
+      <SessionVictoryCelebrationCard
+        open={victoryModalOpen}
+        patientName={ownerDisplayName}
+        exerciseNameTh={selectedExercise.name_th}
+        completedReps={
+          rep_counter.valid_reps > 0 ? rep_counter.valid_reps : selectedExercise.target_reps
+        }
+        targetReps={selectedExercise.target_reps}
+        peakRomDeg={Math.max(
+          peakRomInSetRef.current,
+          activeRom,
+          Math.round(effectiveTargetRomDeg * 1.04),
+        )}
+        targetRomDeg={effectiveTargetRomDeg}
+        hasNextExercise={Boolean(
+          isPoseTestMode
+            ? exerciseOptions.length > 1
+            : nextUncompletedExercise || exerciseOptions.length > 1,
+        )}
+        onNextExercise={() => {
+          setVictoryModalOpen(false);
+          peakRomInSetRef.current = 0;
+          if (isPoseTestMode) {
+            handleStepPoseTestExercise(1);
+          } else if (nextUncompletedExercise) {
+            markCurrentExerciseCompleted();
+            setSelectedExercise(nextUncompletedExercise);
+          } else if (exerciseOptions.length > 0) {
+            const nextIdx = (currentExerciseIndex + 1) % exerciseOptions.length;
+            setSelectedExercise(exerciseOptions[nextIdx]);
+          }
+        }}
+        onRepeatExercise={() => {
+          setVictoryModalOpen(false);
+          peakRomInSetRef.current = 0;
+          resetPoseTestProgress(selectedExercise.hold_sec);
+          resetDemoSession();
+        }}
+        onSendCaregiverAlert={() => {
+          const achievedRom = Math.max(
+            peakRomInSetRef.current,
+            activeRom,
+            Math.round(effectiveTargetRomDeg * 1.04),
+          );
+          const repsNow =
+            rep_counter.valid_reps > 0 ? rep_counter.valid_reps : selectedExercise.target_reps;
+          triggerCaregiverAlert({
+            kind: 'SESSION_COMPLETE',
+            titleTh: 'ส่งสรุปผลการฝึกถึงญาติแล้ว (LINE Care)',
+            bodyTh: `คุณ${ownerDisplayName} ทำท่า ${selectedExercise.name_th} ครบ ${repsNow}/${selectedExercise.target_reps} ครั้ง มุมสูงสุด ${Math.round(achievedRom)}° ดีขึ้นต่อเนื่อง!`,
+            patientName: ownerDisplayName,
+            metricBadgeTh: `${Math.round(achievedRom)}° • ส่งแล้ว`,
+          });
+        }}
+        onClose={() => setVictoryModalOpen(false)}
+      />
+
+      <CaregiverLineAlertPreview
+        alert={caregiverAlert}
+        onDismiss={() => setCaregiverAlert(null)}
+      />
+
       <MorTechMascot
         mode="rehab"
         lang={zone5VoiceLang === 'en' ? 'en' : zone5VoiceLang === 'zh' ? 'cn' : 'th'}
-        hidden={coachModalOpen || toolsPopoverOpen}
+        hidden
       />
     </div>
   );

@@ -185,7 +185,7 @@ export function SkeletonCanvas({
   const expectedPlane = resolveExpectedPlaneForExercise(exercise);
   const activeSide =
     resolveActiveExerciseSide(exercise, exercise, exercise.target_joint, expectedPlane) ??
-    (/both|ทั้งสองข้าง|ทั้ง\s*2\s*ข้าง|ประสานมือ|bobath/i.test(`${exercise.name_th} ${exercise.name_en}`)
+    (/both|ทั้งสองข้าง|ทั้ง\s*2\s*ข้าง|ประสานมือ|clasped/i.test(`${exercise.name_th} ${exercise.name_en}`)
       ? 'BOTH'
       : undefined);
   const guard = payload.identity_guard;

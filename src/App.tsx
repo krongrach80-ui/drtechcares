@@ -541,7 +541,7 @@ export function App() {
       name: p.fullName,
       max_safe_rom_deg: p.maxSafeRomDeg,
       affected_side: p.affectedSide,
-      stroke_type: p.strokeType,
+      care_group: p.careGroup,
       motor_assessment_score: p.motorAssessmentScore,
       universalHealthLinkCode: p.universalHealthLinkCode,
     };

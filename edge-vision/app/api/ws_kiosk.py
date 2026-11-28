@@ -358,7 +358,7 @@ class KioskRuntimeCoordinator:
                 reps_raw = rx_raw.get("reps")
 
             rx = ExercisePrescriptionSchema(
-                exercise_id=str(rx_raw.get("exercise_id") or rx_raw.get("base_code") or rx_raw.get("id") or "STROKE_SH_ABD"),
+                exercise_id=str(rx_raw.get("exercise_id") or rx_raw.get("base_code") or rx_raw.get("id") or "ELDERLY_SH_ABD"),
                 exercise_name=str(rx_raw.get("exercise_name") or rx_raw.get("name") or "Clinical Exercise"),
                 target_joint=str(rx_raw.get("target_joint") or "right_shoulder"),
                 prescribed_side=(
@@ -371,7 +371,7 @@ class KioskRuntimeCoordinator:
                 target_reps=max(1, _safe_int(reps_raw, 5)),
                 max_safe_rom_deg=_safe_opt_float(rx_raw.get("max_safe_rom_deg")),
                 affected_side=(str(rx_raw.get("affected_side")).strip() if rx_raw.get("affected_side") else None),
-                stroke_type=(str(rx_raw.get("stroke_type")).strip() if rx_raw.get("stroke_type") else None),
+                care_group=(str(rx_raw.get("care_group")).strip() if rx_raw.get("care_group") else None),
                 motor_assessment_score=_safe_opt_int(rx_raw.get("motor_assessment_score")),
             )
             start_calib = bool(msg.get("start_calibration", True))

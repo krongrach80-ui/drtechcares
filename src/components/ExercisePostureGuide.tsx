@@ -18,7 +18,7 @@ export type PostureIllustrationKind =
   | 'scapular_protract'
   | 'shoulder_shrug_roll'
   | 'bilateral_arm_raise'
-  | 'bobath_forward_push'
+  | 'clasped_forward_push'
   | 'elbow_flexion'
   | 'hand_to_head'
   | 'forearm_turn'
@@ -308,9 +308,9 @@ const REGION_COPY: Record<
       cn: '侧面视角（90° 水平前推肩胛骨）',
     },
     muscle: {
-      th: 'ปลุกการทำงานของกล้ามเนื้อ Serratus Anterior ลดปัญหาข้อไหล่หลวม/ไหล่ตก',
-      en: 'Activates serratus anterior stabilizing post-stroke shoulder subluxation',
-      cn: '激活前锯肌，改善卒中后肩关节半脱位与肩胛无力',
+      th: 'ปลุกการทำงานของกล้ามเนื้อ Serratus Anterior เสริมความมั่นคงข้อไหล่ในผู้สูงอายุ',
+      en: 'Activates serratus anterior supporting elderly shoulder joint stability',
+      cn: '激活前锯肌，增强老年人肩关节稳定性与上肢力量',
     },
     caution: {
       th: 'เหยียดข้อศอกให้ตรงแล้วใช้ข้อสะบักดันมือยื่นไปข้างหน้า ไม่โน้มตัวตาม',
@@ -345,11 +345,11 @@ const REGION_COPY: Record<
       };
     },
   },
-  bobath_forward_push: {
+  clasped_forward_push: {
     region: {
-      th: 'แขน 2 ข้างประสานมือเหยียดศอกตรง (Bobath Forward Push)',
-      en: 'Bilateral Clasped Forward Elbow Extension (Bobath)',
-      cn: '双手交叉前推伸肘（Bobath 模式）',
+      th: 'แขน 2 ข้างประสานมือเหยียดศอกตรง (Bilateral Forward Push)',
+      en: 'Bilateral Clasped Forward Elbow Extension',
+      cn: '双手交叉前推伸肘（双侧上肢伸展）',
     },
     view: {
       th: 'มุมมองด้านข้าง (ประสานมือดันเหยียดศอกตรงจากอกไปด้านหน้า)',
@@ -357,19 +357,19 @@ const REGION_COPY: Record<
       cn: '侧面视角（双手交叉从胸前用力前推伸直双肘）',
     },
     muscle: {
-      th: 'ลดอาการเกร็งงอแขนแบบ Flexor Synergy และฝึกเหยียดศอกคู่ตามหลัก Bobath',
-      en: 'Inhibits flexor spasticity via bilateral clasped elbow push',
-      cn: '依据 Bobath 理念抑制屈肌痉挛并促进双侧对称伸肘',
+      th: 'ช่วยคลายความตึงตัวของข้อศอกและหัวไหล่ พร้อมฝึกเหยียดแขนสองข้างอย่างสมดุลในผู้สูงอายุ',
+      en: 'Relieves elbow stiffness and promotes balanced bilateral forward arm extension',
+      cn: '舒缓老年人肘肩僵硬，促进双侧手臂对称伸展力量',
     },
     caution: {
-      th: 'สอดนิ้วโป้งข้างอ่อนแรงให้อยู่ด้านบนมือที่ประสานเสมอ เหยียดศอกให้สุดเท่าที่ทำได้',
-      en: 'Keep affected thumb placed on top of clasp and extend elbows symmetrically',
-      cn: '患侧拇指始终置于交叉上方，对称推直双肘',
+      th: 'ประสานมือให้กระชับพอดี ยืดศอกออกไปด้านหน้าช้าๆ อย่างนุ่มนวลโดยไม่ฝืนปวด',
+      en: 'Clasp hands comfortably and extend both elbows smoothly forward without pain',
+      cn: '双手舒适交叉握紧，柔和对称向前推直双肘，切勿勉强用力',
     },
     adl: {
-      th: 'กิจวัตร Bobath: ผลักบานประตู / ยื่นถือถาดอาหาร 2 มือ',
-      en: 'Bobath ADL: Symmetric reaching & holding items with both hands',
-      cn: 'Bobath 训练：双手推门与协同递物',
+      th: 'กิจวัตรผู้สูงอายุ: ผลักบานประตู / ยื่นถือถาดอาหาร 2 มืออย่างมั่นคง',
+      en: 'Elderly Daily ADL: Symmetric reaching & holding items safely with both hands',
+      cn: '老年日常活动：双手推门与稳妥递物',
     },
     steps: (_side, rom, holdSec) => ({
       th: [
@@ -550,7 +550,7 @@ const REGION_COPY: Record<
     muscle: {
       th: 'เพิ่มความคล่องตัวข้อต่อคอ ป้องกันคอตึง-เวียนศีรษะขณะมองรอบตัวในผู้สูงอายุ',
       en: 'Maintains safe cervical rotation for scanning surroundings without dizziness',
-      cn: '维持老年人及卒中患者颈部灵活旋转，预防僵硬与转头头晕',
+      cn: '维持老年人颈部灵活旋转，预防僵硬与转头头晕',
     },
     caution: {
       th: 'หันช้าและนุ่มนวล ห้ามกระชากคอ หากเวียนศีรษะให้หยุดพักตรงกลางทันที',
@@ -827,7 +827,7 @@ const REGION_COPY: Record<
       cn: '正面视角（头颈轻柔侧倾，双肩保持水平）',
     },
     muscle: {
-      th: 'ยืดกล้ามเนื้อคอ-บ่า ลดอาการคอแข็ง คอเอียงในผู้สูงอายุ/Stroke',
+      th: 'ยืดกล้ามเนื้อคอ-บ่า ลดอาการคอแข็ง คอเอียงในผู้สูงอายุ',
       en: 'Gentle lateral stretch relieving stiff neck & postural drop',
       cn: '轻柔牵拉颈肩肌群，改善颈部僵硬与偏斜',
     },
@@ -876,9 +876,9 @@ const REGION_COPY: Record<
       cn: '正面视角（躯干与脊柱保持垂直 0°）',
     },
     muscle: {
-      th: 'ฝึกการทรงตัวแกนกลางขณะนั่ง ป้องกันลำตัวเอียงล้มข้างอ่อนแรง',
-      en: 'Seated trunk balance preventing post-stroke lateral lean',
-      cn: '增强坐姿核心稳定，预防卒中后向患侧倾倒',
+      th: 'ฝึกการทรงตัวแกนกลางขณะนั่ง ป้องกันลำตัวเอียงล้มในผู้สูงอายุ',
+      en: 'Seated trunk balance preventing lateral lean in older adults',
+      cn: '增强老年人坐姿核心稳定，预防身体侧倾与跌倒',
     },
     caution: {
       th: 'ลงน้ำหนักที่สะโพกทั้ง 2 ข้างเท่าๆ กัน ศีรษะอยู่กึ่งกลางตัว',
@@ -1002,7 +1002,7 @@ export function resolveExercisePostureSpec(
   } else if (group === 'wrist' || plane === 'wrist_finger' || combined.includes('ข้อมือ') || combined.includes('นิ้วมือ') || combined.includes('wrist')) {
     kind = 'wrist_finger';
   } else if (plane === 'bilateral_push' || combined.includes('forward_push') || combined.includes('ดันแขนตรงไปด้านหน้า')) {
-    kind = 'bobath_forward_push';
+    kind = 'clasped_forward_push';
   } else if (plane === 'hand_to_head' || combined.includes('แตะศีรษะ') || combined.includes('หวีผม') || combined.includes('hand_to_head')) {
     kind = 'hand_to_head';
   } else if (group === 'elbow' || combined.includes('ข้อศอก') || combined.includes('elb_flex') || combined.includes('elbow')) {
@@ -1362,10 +1362,10 @@ export function ExercisePostureSvg({
 
   const p = cycle.progress;
 
-  const renderSideSagittalView = (mode: 'flexion' | 'scapular_protract' | 'bobath_forward_push') => {
+  const renderSideSagittalView = (mode: 'flexion' | 'scapular_protract' | 'clasped_forward_push') => {
     const faceDir: 1 | -1 = activeIsLeft ? -1 : 1;
     const isProtract = mode === 'scapular_protract';
-    const isPush = mode === 'bobath_forward_push';
+    const isPush = mode === 'clasped_forward_push';
     const protractShiftX = isProtract ? p * 18 : 0;
     const shoulderX = 88 + protractShiftX;
     const shoulderY = 82;
@@ -1480,7 +1480,7 @@ export function ExercisePostureSvg({
               </>
             )}
 
-            {/* Protraction & Bobath Forward Push Linear Guides */}
+            {/* Protraction & Forward Push Linear Guides */}
             {!compact && (isProtract || isPush) && (
               <>
                 <CapsuleArmLimb joints={ghostJoints} color={accent} isActive isGhost />
@@ -1504,7 +1504,7 @@ export function ExercisePostureSvg({
               compact={compact}
             />
 
-            {/* Clasped Hands Ring for Bobath Forward Push */}
+            {/* Clasped Hands Ring for Forward Push */}
             {isPush && (
               <circle
                 cx={activeJoints.hand.x}
@@ -2124,8 +2124,8 @@ export function ExercisePostureSvg({
                   ? renderSideSagittalView('flexion')
                   : spec.kind === 'scapular_protract'
                     ? renderSideSagittalView('scapular_protract')
-                    : spec.kind === 'bobath_forward_push'
-                      ? renderSideSagittalView('bobath_forward_push')
+                    : spec.kind === 'clasped_forward_push'
+                      ? renderSideSagittalView('clasped_forward_push')
                       : renderCoronalFrontUpperBody()}
     </svg>
   );

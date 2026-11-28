@@ -16,13 +16,13 @@ import {
   RehabExercisePipeline,
   buildTelemetryPacketFromLandmarks,
   selectSubjectPoseWithIdentity,
-  solveStrokeClinicalJointBiomechanics,
+  solveElderlyClinicalJointBiomechanics,
   stabilizeArmIdentity,
   type ClinicalBiomechanicsDecision,
   type ExerciseConfig,
   type PoseLandmark,
   type SessionProgressSnapshot,
-  type StrokeJointMode,
+  type ElderlyJointMode,
 } from '@drtechcares/pose-engine';
 import {
   getCachedPoseLandmarker,
@@ -53,8 +53,8 @@ export function DynamicExerciseSessionView({
   const [multiPersonPaused, setMultiPersonPaused] = useState(false);
   const [pinOverrideOpen, setPinOverrideOpen] = useState(false);
   const [staffPin, setStaffPin] = useState('');
-  const [strokeWarningTh, setStrokeWarningTh] = useState<string | null>(null);
-  const [strokeClinicalAngleDeg, setStrokeClinicalAngleDeg] = useState<number | null>(null);
+  const [rehabWarningTh, setRehabWarningTh] = useState<string | null>(null);
+  const [rehabClinicalAngleDeg, setRehabClinicalAngleDeg] = useState<number | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -105,8 +105,8 @@ export function DynamicExerciseSessionView({
     replayLogRef.current = [];
     setSnapshot(null);
     setAiDecision(null);
-    setStrokeWarningTh(null);
-    setStrokeClinicalAngleDeg(null);
+    setRehabWarningTh(null);
+    setRehabClinicalAngleDeg(null);
   }, [selectedExercise]);
 
   useEffect(() => {
@@ -254,15 +254,15 @@ export function DynamicExerciseSessionView({
                 baselineRef.current.update(smoothedLandmarks);
 
                 const det = activeExercise.detection;
-                const strokeTargetJoint =
+                const rehabTargetJoint =
                   det.jointGroup === 'neck' || det.expectedPlane === 'shrug_roll'
                     ? 'spine'
                     : det.side === 'left'
                       ? 'left_shoulder'
                       : 'right_shoulder';
-                const strokeJointMode: StrokeJointMode =
+                const rehabJointMode: ElderlyJointMode =
                   det.expectedPlane === 'bilateral_push'
-                    ? 'bobath_push'
+                    ? 'clasped_push'
                     : det.jointGroup === 'elbow'
                       ? 'elbow'
                       : det.expectedPlane === 'cross_body'
@@ -288,10 +288,10 @@ export function DynamicExerciseSessionView({
                                           : det.jointGroup === 'neck'
                                             ? 'neck'
                                             : 'default';
-                const strokeSolved = solveStrokeClinicalJointBiomechanics({
+                const rehabSolved = solveElderlyClinicalJointBiomechanics({
                   landmarks: smoothedLandmarks,
                   worldLandmarks: smoothedWorld,
-                  targetJoint: strokeTargetJoint,
+                  targetJoint: rehabTargetJoint,
                   exerciseSide:
                     det.side === 'left'
                       ? 'LEFT'
@@ -302,20 +302,20 @@ export function DynamicExerciseSessionView({
                           : undefined,
                   expectedPlane: det.expectedPlane ?? 'any',
                   targetRomDeg: det.targetRomDeg ?? det.targetMinDeg,
-                  jointMode: strokeJointMode,
+                  jointMode: rehabJointMode,
                   baseline: baselineRef.current.getBaseline() ?? undefined,
                   videoAspect: vid.videoWidth / vid.videoHeight,
                 });
                 const nextWarningBanner =
-                  strokeSolved.sideViolationBannerTh ??
-                  strokeSolved.wrongPlaneBannerTh ??
-                  strokeSolved.postureBannerTh ??
+                  rehabSolved.sideViolationBannerTh ??
+                  rehabSolved.wrongPlaneBannerTh ??
+                  rehabSolved.postureBannerTh ??
                   null;
 
                 const snap = pipelineRef.current.step(smoothedLandmarks, now);
 
                 const dtSec = Math.max(0.016, (now - lastTickAt) / 1000);
-                const rawAngle = strokeSolved.romDeg ?? snap.currentAngleDeg ?? snap.lastReliableAngleDeg ?? 0;
+                const rawAngle = rehabSolved.romDeg ?? snap.currentAngleDeg ?? snap.lastReliableAngleDeg ?? 0;
                 const packet = buildTelemetryPacketFromLandmarks({
                   landmarks: smoothedLandmarks,
                   prevLandmarks: prevPoseRef.current,
@@ -339,8 +339,8 @@ export function DynamicExerciseSessionView({
                 ) {
                   lastUiSyncAt = now;
                   lastWarningBanner = nextWarningBanner;
-                  setStrokeWarningTh(nextWarningBanner);
-                  setStrokeClinicalAngleDeg(strokeSolved.romDeg);
+                  setRehabWarningTh(nextWarningBanner);
+                  setRehabClinicalAngleDeg(rehabSolved.romDeg);
                   setSnapshot(snap);
                   setAiDecision(decision);
                 }
@@ -515,9 +515,9 @@ export function DynamicExerciseSessionView({
             </div>
           )}
 
-          {(strokeWarningTh || snapshot?.warningMessage) && (
+          {(rehabWarningTh || snapshot?.warningMessage) && (
             <div className="absolute top-4 inset-x-4 rounded-2xl bg-amber-500/95 px-4 py-3 text-sm font-bold text-slate-950 shadow-lg">
-              {strokeWarningTh ?? (snapshot?.warningMessage ? pick(snapshot.warningMessage) : '')}
+              {rehabWarningTh ?? (snapshot?.warningMessage ? pick(snapshot.warningMessage) : '')}
             </div>
           )}
 
@@ -559,8 +559,8 @@ export function DynamicExerciseSessionView({
               <div className="rounded-2xl bg-slate-50 p-4 border border-slate-100">
                 <p className="text-xs font-semibold text-slate-500">Joint Angle</p>
                 <p className="mt-1 text-3xl font-extrabold text-teal-600">
-                  {strokeClinicalAngleDeg !== null && Number.isFinite(strokeClinicalAngleDeg)
-                    ? `${strokeClinicalAngleDeg.toFixed(0)}°`
+                  {rehabClinicalAngleDeg !== null && Number.isFinite(rehabClinicalAngleDeg)
+                    ? `${rehabClinicalAngleDeg.toFixed(0)}°`
                     : snapshot?.currentAngleDeg !== null && snapshot?.currentAngleDeg !== undefined
                       ? `${snapshot.currentAngleDeg.toFixed(0)}°`
                       : snapshot?.lastReliableAngleDeg !== null && snapshot?.lastReliableAngleDeg !== undefined

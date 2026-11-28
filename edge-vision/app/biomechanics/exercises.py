@@ -1,4 +1,4 @@
-"""Complete 26-exercise clinical Stroke ADL & MOPH Elderly biomechanics ruleset synced with Dr.Tech.Care."""
+"""Complete 26-exercise clinical Elderly Care & MOPH biomechanics ruleset synced with Dr.Tech.Care."""
 
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ class ClinicalExerciseRule:
         if self.is_descending_target:
             return rom_deg >= rest - margin
         target = float(target_override) if target_override is not None else float(self.min_angle_deg)
-        # Ascending exercises with elevated rest posture (e.g. STROKE_BOBATH_FORWARD_PUSH rest=95 vs target=135)
+        # Ascending exercises with elevated rest posture (e.g. ELDERLY_CLASPED_FORWARD_PUSH rest=95 vs target=135)
         # must allow returning to rest_angle_deg + margin; standard 0-start exercises enforce strict < 45% target.
         if rest >= 50.0 and target > rest:
             return rom_deg <= max(target * 0.45, rest + margin)
@@ -227,19 +227,19 @@ def compute_shoulder_elevation_with_vertical_fallback(
 
 
 ALL_15_EXERCISES: List[ClinicalExerciseRule] = [
-    # --- Category A: Stroke ADL Shoulder & Arm (7 Unified Master Exercises) ---
+    # --- Category A: Elderly Rehab Shoulder & Arm (7 Unified Master Exercises) ---
     ClinicalExerciseRule(
-        id="STROKE_SH_FLEX",
-        code="STROKE_SH_FLEX",
-        name_th="[Stroke ADL] ยกแขนไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)",
-        name_en="Stroke ADL: Forward Shoulder Flexion",
+        id="ELDERLY_SH_FLEX",
+        code="ELDERLY_SH_FLEX",
+        name_th="[ผู้สูงอายุ] ยกแขนไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)",
+        name_en="Elderly Care: Forward Shoulder Flexion",
         category="upper_limb",
         side="right",
         pattern="shoulder",
         metric_kind="shoulder_elevation",
         target_joint="right_shoulder",
         min_angle_deg=90.0,
-        max_angle_deg=165.0,
+        max_angle_deg=180.0,
         rest_angle_deg=30.0,
         default_hold_sec=3.0,
         default_sets=2,
@@ -247,17 +247,17 @@ ALL_15_EXERCISES: List[ClinicalExerciseRule] = [
         anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "ELBOW_FLEXION", "TOO_FAST"),
     ),
     ClinicalExerciseRule(
-        id="STROKE_SH_ABD",
-        code="STROKE_SH_ABD",
-        name_th="[Stroke ADL] กางแขนด้านข้าง (ฝึกกางแขนสวมเสื้อ)",
-        name_en="Stroke ADL: Shoulder Abduction",
+        id="ELDERLY_SH_ABD",
+        code="ELDERLY_SH_ABD",
+        name_th="[ผู้สูงอายุ] กางแขนด้านข้าง (ฝึกกางแขนสวมเสื้อ)",
+        name_en="Elderly Care: Shoulder Abduction",
         category="upper_limb",
         side="right",
         pattern="shoulder",
         metric_kind="shoulder_elevation",
         target_joint="right_shoulder",
         min_angle_deg=85.0,
-        max_angle_deg=160.0,
+        max_angle_deg=180.0,
         rest_angle_deg=30.0,
         default_hold_sec=3.0,
         default_sets=2,
@@ -265,17 +265,17 @@ ALL_15_EXERCISES: List[ClinicalExerciseRule] = [
         anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
     ),
     ClinicalExerciseRule(
-        id="STROKE_CROSS_BODY",
-        code="STROKE_CROSS_BODY",
-        name_th="[Stroke ADL] เอื้อมมือข้ามลำตัวแตะไหล่ตรงข้าม (ฝึกดึงแขนเสื้อ/ใส่เสื้อคลุม)",
-        name_en="Stroke ADL: Cross-Body Shoulder Reach",
+        id="ELDERLY_CROSS_BODY",
+        code="ELDERLY_CROSS_BODY",
+        name_th="[ผู้สูงอายุ] เอื้อมมือข้ามลำตัวแตะไหล่ตรงข้าม (ฝึกดึงแขนเสื้อ/ใส่เสื้อคลุม)",
+        name_en="Elderly Care: Cross-Body Shoulder Reach",
         category="upper_limb",
         side="right",
         pattern="shoulder",
         metric_kind="cross_body_reach",
         target_joint="right_shoulder",
         min_angle_deg=75.0,
-        max_angle_deg=145.0,
+        max_angle_deg=180.0,
         rest_angle_deg=25.0,
         default_hold_sec=3.0,
         default_sets=2,
@@ -283,10 +283,10 @@ ALL_15_EXERCISES: List[ClinicalExerciseRule] = [
         anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
     ),
     ClinicalExerciseRule(
-        id="STROKE_SH_ROT",
-        code="STROKE_SH_ROT",
-        name_th="[Stroke ADL] หมุนข้อไหล่เข้า-ออก (อ้อมใส่เสื้อ/ติดกระดุม)",
-        name_en="Stroke ADL: Shoulder External/Internal Rotation",
+        id="ELDERLY_SH_ROT",
+        code="ELDERLY_SH_ROT",
+        name_th="[ผู้สูงอายุ] หมุนข้อไหล่เข้า-ออก (อ้อมใส่เสื้อ/ติดกระดุม)",
+        name_en="Elderly Care: Shoulder External/Internal Rotation",
         category="upper_limb",
         side="right",
         pattern="rotation",
@@ -304,17 +304,17 @@ ALL_15_EXERCISES: List[ClinicalExerciseRule] = [
         rest_hysteresis_margin_deg=12.0,
     ),
     ClinicalExerciseRule(
-        id="STROKE_SCAP_PROTRACT",
-        code="STROKE_SCAP_PROTRACT",
-        name_th="[Stroke ADL] เหยียดแขนดันไปด้านหน้าระดับอก (ป้องกันข้อไหล่หลุด)",
-        name_en="Stroke ADL: Scapular Protraction Punch",
+        id="ELDERLY_SCAP_PROTRACT",
+        code="ELDERLY_SCAP_PROTRACT",
+        name_th="[ผู้สูงอายุ] เหยียดแขนดันไปด้านหน้าระดับอก (ป้องกันข้อไหล่หลุด)",
+        name_en="Elderly Care: Scapular Protraction Punch",
         category="upper_limb",
         side="right",
         pattern="shoulder",
         metric_kind="scapular_protraction",
         target_joint="right_shoulder",
         min_angle_deg=70.0,
-        max_angle_deg=120.0,
+        max_angle_deg=180.0,
         rest_angle_deg=25.0,
         default_hold_sec=3.0,
         default_sets=2,
@@ -325,17 +325,17 @@ ALL_15_EXERCISES: List[ClinicalExerciseRule] = [
         rest_hysteresis_margin_deg=15.0,
     ),
     ClinicalExerciseRule(
-        id="STROKE_BOBATH_ARM_RAISE",
-        code="STROKE_BOBATH_ARM_RAISE",
-        name_th="[Stroke & สธ.] ประสานมือสองข้างชูขึ้นเหนือศีรษะ (ท่า Bobath พยุงแขนอ่อนแรง)",
-        name_en="Stroke & MOPH: Bobath Bilateral Clasped Arm Raise",
+        id="ELDERLY_CLASPED_ARM_RAISE",
+        code="ELDERLY_CLASPED_ARM_RAISE",
+        name_th="[สธ. ผู้สูงอายุ] ประสานมือสองข้างชูขึ้นเหนือศีรษะ (ยืดเหยียดแขนและไหล่สองข้าง)",
+        name_en="MOPH Elderly: Bilateral Clasped Overhead Arm Raise",
         category="upper_limb",
         side="both",
         pattern="bilateral",
         metric_kind="bilateral_arm_raise",
         target_joint="right_shoulder",
         min_angle_deg=105.0,
-        max_angle_deg=175.0,
+        max_angle_deg=180.0,
         rest_angle_deg=35.0,
         default_hold_sec=3.0,
         default_sets=2,
@@ -343,10 +343,10 @@ ALL_15_EXERCISES: List[ClinicalExerciseRule] = [
         anti_cheat_checks=("TRUNK_LEAN", "TOO_FAST"),
     ),
     ClinicalExerciseRule(
-        id="STROKE_BOBATH_FORWARD_PUSH",
-        code="STROKE_BOBATH_FORWARD_PUSH",
-        name_th="[Stroke ADL] ประสานมือสองข้างดันเหยียดแขนไปด้านหน้า (ลดเกร็งพับศอก)",
-        name_en="Stroke ADL: Bobath Bilateral Forward Elbow Push",
+        id="ELDERLY_CLASPED_FORWARD_PUSH",
+        code="ELDERLY_CLASPED_FORWARD_PUSH",
+        name_th="[ผู้สูงอายุ] ประสานมือสองข้างดันเหยียดแขนไปด้านหน้า (ลดเกร็งพับศอก)",
+        name_en="Elderly Care: Bilateral Clasped Forward Elbow Push",
         category="upper_limb",
         side="both",
         pattern="elbow",
@@ -360,19 +360,19 @@ ALL_15_EXERCISES: List[ClinicalExerciseRule] = [
         default_reps=6,
         anti_cheat_checks=("TRUNK_LEAN", "TOO_FAST"),
     ),
-    # --- Category B: Stroke ADL Elbow, Forearm, Wrist & Fingers (5 Unified Master Exercises) ---
+    # --- Category B: Elderly Care Elbow, Forearm, Wrist & Fingers (5 Unified Master Exercises) ---
     ClinicalExerciseRule(
-        id="STROKE_ELB_FLEX_EXT",
-        code="STROKE_ELB_FLEX_EXT",
-        name_th="[Stroke ADL] งอ-เหยียดข้อศอก (ดึงแขนเสื้อ/ป้อนอาหาร)",
-        name_en="Stroke ADL: Elbow Flexion & Extension",
+        id="ELDERLY_ELB_FLEX_EXT",
+        code="ELDERLY_ELB_FLEX_EXT",
+        name_th="[ผู้สูงอายุ] งอ-เหยียดข้อศอก (ดึงแขนเสื้อ/ป้อนอาหาร)",
+        name_en="Elderly Care: Elbow Flexion & Extension",
         category="upper_limb",
         side="right",
         pattern="elbow",
         metric_kind="elbow_flexion",
         target_joint="right_shoulder",
         min_angle_deg=95.0,
-        max_angle_deg=145.0,
+        max_angle_deg=180.0,
         rest_angle_deg=25.0,
         default_hold_sec=2.0,
         default_sets=2,
@@ -383,17 +383,17 @@ ALL_15_EXERCISES: List[ClinicalExerciseRule] = [
         rest_hysteresis_margin_deg=14.0,
     ),
     ClinicalExerciseRule(
-        id="STROKE_HAND_TO_HEAD",
-        code="STROKE_HAND_TO_HEAD",
-        name_th="[Stroke ADL] ยกมือแตะศีรษะ (ฝึกสวมเสื้อทางศีรษะ/หวีผม)",
-        name_en="Stroke ADL: Hand-to-Head Grooming Reach",
+        id="ELDERLY_HAND_TO_HEAD",
+        code="ELDERLY_HAND_TO_HEAD",
+        name_th="[ผู้สูงอายุ] ยกมือแตะศีรษะ (ฝึกสวมเสื้อทางศีรษะ/หวีผม)",
+        name_en="Elderly Care: Hand-to-Head Grooming Reach",
         category="upper_limb",
         side="right",
         pattern="elbow",
         metric_kind="hand_to_head",
         target_joint="right_shoulder",
         min_angle_deg=95.0,
-        max_angle_deg=160.0,
+        max_angle_deg=180.0,
         rest_angle_deg=35.0,
         default_hold_sec=3.0,
         default_sets=2,
@@ -401,10 +401,10 @@ ALL_15_EXERCISES: List[ClinicalExerciseRule] = [
         anti_cheat_checks=("TRUNK_LEAN", "SHOULDER_HIKE", "TOO_FAST"),
     ),
     ClinicalExerciseRule(
-        id="STROKE_FOREARM_TURN",
-        code="STROKE_FOREARM_TURN",
-        name_th="[Stroke ADL] พลิกหงาย-คว่ำฝ่ามือ (ฝึกถือช้อน/บิดลูกบิดประตู)",
-        name_en="Stroke ADL: Forearm Supination & Pronation",
+        id="ELDERLY_FOREARM_TURN",
+        code="ELDERLY_FOREARM_TURN",
+        name_th="[ผู้สูงอายุ] พลิกหงาย-คว่ำฝ่ามือ (ฝึกถือช้อน/บิดลูกบิดประตู)",
+        name_en="Elderly Care: Forearm Supination & Pronation",
         category="upper_limb",
         side="right",
         pattern="wrist",
@@ -422,10 +422,10 @@ ALL_15_EXERCISES: List[ClinicalExerciseRule] = [
         rest_hysteresis_margin_deg=15.0,
     ),
     ClinicalExerciseRule(
-        id="STROKE_WRIST_FINGER",
-        code="STROKE_WRIST_FINGER",
-        name_th="[Stroke ADL] กระดกข้อมือ & กาง-กำนิ้วมือ (ลดเกร็งนิ้วมือ)",
-        name_en="Stroke ADL: Wrist Extension & Finger Open/Close",
+        id="ELDERLY_WRIST_FINGER",
+        code="ELDERLY_WRIST_FINGER",
+        name_th="[ผู้สูงอายุ] กระดกข้อมือ & กาง-กำนิ้วมือ (ลดเกร็งนิ้วมือ)",
+        name_en="Elderly Care: Wrist Extension & Finger Open/Close",
         category="upper_limb",
         side="right",
         pattern="wrist",
@@ -443,10 +443,10 @@ ALL_15_EXERCISES: List[ClinicalExerciseRule] = [
         rest_hysteresis_margin_deg=12.0,
     ),
     ClinicalExerciseRule(
-        id="STROKE_THUMB_PINCH",
-        code="STROKE_THUMB_PINCH",
-        name_th="[Stroke ADL] จีบนิ้วโป้งแตะปลายนิ้วมือ (ฝึกติดกระดุมเสื้อ/รูดซิป)",
-        name_en="Stroke ADL: Thumb-to-Finger Fine Pinch",
+        id="ELDERLY_THUMB_PINCH",
+        code="ELDERLY_THUMB_PINCH",
+        name_th="[ผู้สูงอายุ] จีบนิ้วโป้งแตะปลายนิ้วมือ (ฝึกติดกระดุมเสื้อ/รูดซิป)",
+        name_en="Elderly Care: Thumb-to-Finger Fine Pinch",
         category="upper_limb",
         side="right",
         pattern="wrist",
@@ -463,7 +463,7 @@ ALL_15_EXERCISES: List[ClinicalExerciseRule] = [
         hysteresis_exit_margin_deg=10.0,
         rest_hysteresis_margin_deg=12.0,
     ),
-    # --- Category C: MOPH Elderly & Stroke Neck & Shoulder Girdle (3 Unified Master Exercises) ---
+    # --- Category C: MOPH Elderly Neck & Shoulder Girdle (3 Unified Master Exercises) ---
     ClinicalExerciseRule(
         id="MOPH_NECK_TILT",
         code="MOPH_NECK_TILT",
@@ -488,8 +488,8 @@ ALL_15_EXERCISES: List[ClinicalExerciseRule] = [
     ClinicalExerciseRule(
         id="MOPH_NECK_TURN",
         code="MOPH_NECK_TURN",
-        name_th="[Stroke & สธ.] หันศีรษะมองซ้าย-ขวาช้าๆ (กระตุ้นการรับรู้ภาพด้านที่อ่อนแรง)",
-        name_en="Stroke & MOPH: Neck Rotation Visual Scanning",
+        name_th="[สธ. ผู้สูงอายุ] หันศีรษะมองซ้าย-ขวาช้าๆ (กระตุ้นการรับรู้ภาพด้านที่อ่อนแรง)",
+        name_en="MOPH Elderly: Neck Rotation Visual Scanning",
         category="neck_trunk",
         side="both",
         pattern="neck",
@@ -539,56 +539,56 @@ EXERCISE_BY_CODE: Dict[str, ClinicalExerciseRule] = {rule.code: rule for rule in
 
 # Canonical + legacy compatibility alias lookup map (returns effective code with optional side suffix)
 EXERCISE_ALIASES: Dict[str, str] = {
-    "right_shoulder_abduction": "STROKE_SH_ABD_RIGHT",
-    "left_shoulder_abduction": "STROKE_SH_ABD_LEFT",
-    "right_shoulder_flexion": "STROKE_SH_FLEX_RIGHT",
-    "left_shoulder_flexion": "STROKE_SH_FLEX_LEFT",
-    "elbow_flexion_right": "STROKE_ELB_FLEX_EXT_RIGHT",
-    "elbow_flexion_left": "STROKE_ELB_FLEX_EXT_LEFT",
-    "stroke_sh_flex": "STROKE_SH_FLEX",
-    "stroke_sh_abd": "STROKE_SH_ABD",
-    "stroke_cross_body": "STROKE_CROSS_BODY",
-    "stroke_scap_protract": "STROKE_SCAP_PROTRACT",
-    "stroke_elb_flex_ext": "STROKE_ELB_FLEX_EXT",
-    "stroke_hand_to_head": "STROKE_HAND_TO_HEAD",
-    "stroke_forearm_turn": "STROKE_FOREARM_TURN",
-    "stroke_sh_rot": "STROKE_SH_ROT",
-    "stroke_wrist_finger": "STROKE_WRIST_FINGER",
-    "stroke_thumb_pinch": "STROKE_THUMB_PINCH",
+    "right_shoulder_abduction": "ELDERLY_SH_ABD_RIGHT",
+    "left_shoulder_abduction": "ELDERLY_SH_ABD_LEFT",
+    "right_shoulder_flexion": "ELDERLY_SH_FLEX_RIGHT",
+    "left_shoulder_flexion": "ELDERLY_SH_FLEX_LEFT",
+    "elbow_flexion_right": "ELDERLY_ELB_FLEX_EXT_RIGHT",
+    "elbow_flexion_left": "ELDERLY_ELB_FLEX_EXT_LEFT",
+    "elderly_sh_flex": "ELDERLY_SH_FLEX",
+    "elderly_sh_abd": "ELDERLY_SH_ABD",
+    "elderly_cross_body": "ELDERLY_CROSS_BODY",
+    "elderly_scap_protract": "ELDERLY_SCAP_PROTRACT",
+    "elderly_elb_flex_ext": "ELDERLY_ELB_FLEX_EXT",
+    "elderly_hand_to_head": "ELDERLY_HAND_TO_HEAD",
+    "elderly_forearm_turn": "ELDERLY_FOREARM_TURN",
+    "elderly_sh_rot": "ELDERLY_SH_ROT",
+    "elderly_wrist_finger": "ELDERLY_WRIST_FINGER",
+    "elderly_thumb_pinch": "ELDERLY_THUMB_PINCH",
     "moph_neck_tilt": "MOPH_NECK_TILT",
     "moph_neck_turn": "MOPH_NECK_TURN",
     "moph_neck_turn_bilateral": "MOPH_NECK_TURN_BOTH",
     "moph_shoulder_shrug_roll": "MOPH_SHOULDER_SHRUG_ROLL_BOTH",
-    "moph_bilateral_arm_raise": "STROKE_BOBATH_ARM_RAISE_BOTH",
+    "moph_bilateral_arm_raise": "ELDERLY_CLASPED_ARM_RAISE_BOTH",
     # Legacy numeric IDs remapped safely to upper-body canonical exercises
-    "ex-01": "STROKE_SH_FLEX_RIGHT",
-    "ex-02": "STROKE_SH_FLEX_LEFT",
-    "ex-03": "STROKE_SH_ABD_RIGHT",
-    "ex-04": "STROKE_SH_ABD_LEFT",
-    "ex-05": "STROKE_ELB_FLEX_EXT_RIGHT",
-    "ex-06": "STROKE_ELB_FLEX_EXT_LEFT",
-    "ex-07": "STROKE_SCAP_PROTRACT_RIGHT",
-    "ex-08": "STROKE_SCAP_PROTRACT_LEFT",
-    "ex-09": "STROKE_SH_FLEX_RIGHT",
-    "ex-10": "STROKE_SH_FLEX_LEFT",
-    "ex-11": "STROKE_SH_ROT_RIGHT",
-    "ex-12": "STROKE_SH_ROT_LEFT",
+    "ex-01": "ELDERLY_SH_FLEX_RIGHT",
+    "ex-02": "ELDERLY_SH_FLEX_LEFT",
+    "ex-03": "ELDERLY_SH_ABD_RIGHT",
+    "ex-04": "ELDERLY_SH_ABD_LEFT",
+    "ex-05": "ELDERLY_ELB_FLEX_EXT_RIGHT",
+    "ex-06": "ELDERLY_ELB_FLEX_EXT_LEFT",
+    "ex-07": "ELDERLY_SCAP_PROTRACT_RIGHT",
+    "ex-08": "ELDERLY_SCAP_PROTRACT_LEFT",
+    "ex-09": "ELDERLY_SH_FLEX_RIGHT",
+    "ex-10": "ELDERLY_SH_FLEX_LEFT",
+    "ex-11": "ELDERLY_SH_ROT_RIGHT",
+    "ex-12": "ELDERLY_SH_ROT_LEFT",
     "ex-19": "MOPH_NECK_TILT_RIGHT",
     "ex-20": "MOPH_NECK_TILT_LEFT",
-    "ex-27": "STROKE_SH_FLEX_RIGHT",
-    "ex-28": "STROKE_SH_FLEX_LEFT",
-    "ex-29": "STROKE_SH_ABD_RIGHT",
-    "ex-30": "STROKE_SH_ABD_LEFT",
-    "ex-31": "STROKE_ELB_FLEX_EXT_RIGHT",
-    "ex-32": "STROKE_ELB_FLEX_EXT_LEFT",
-    "ex-33": "STROKE_SH_ROT_RIGHT",
-    "ex-34": "STROKE_SH_ROT_LEFT",
-    "ex-35": "STROKE_WRIST_FINGER_RIGHT",
-    "ex-36": "STROKE_WRIST_FINGER_LEFT",
+    "ex-27": "ELDERLY_SH_FLEX_RIGHT",
+    "ex-28": "ELDERLY_SH_FLEX_LEFT",
+    "ex-29": "ELDERLY_SH_ABD_RIGHT",
+    "ex-30": "ELDERLY_SH_ABD_LEFT",
+    "ex-31": "ELDERLY_ELB_FLEX_EXT_RIGHT",
+    "ex-32": "ELDERLY_ELB_FLEX_EXT_LEFT",
+    "ex-33": "ELDERLY_SH_ROT_RIGHT",
+    "ex-34": "ELDERLY_SH_ROT_LEFT",
+    "ex-35": "ELDERLY_WRIST_FINGER_RIGHT",
+    "ex-36": "ELDERLY_WRIST_FINGER_LEFT",
     "ex-37": "MOPH_NECK_TILT_RIGHT",
     "ex-38": "MOPH_NECK_TILT_LEFT",
     "ex-39": "MOPH_SHOULDER_SHRUG_ROLL_BOTH",
-    "ex-40": "STROKE_BOBATH_ARM_RAISE_BOTH",
+    "ex-40": "ELDERLY_CLASPED_ARM_RAISE_BOTH",
 }
 
 
@@ -639,12 +639,12 @@ def resolve_exercise_rule(
     identifier: str,
     side_override: Optional[str] = None,
 ) -> ClinicalExerciseRule:
-    """Resolve unified master exercise by ID/code, effective code ('STROKE_SH_FLEX_LEFT'), or legacy alias."""
+    """Resolve unified master exercise by ID/code, effective code ('ELDERLY_SH_FLEX_LEFT'), or legacy alias."""
     base_code, parsed_side = parse_exercise_identifier(identifier, side_override=side_override)
     base_rule = (
         EXERCISE_BY_ID.get(base_code)
         or EXERCISE_BY_CODE.get(base_code)
-        or EXERCISE_BY_ID["STROKE_SH_ABD"]
+        or EXERCISE_BY_ID["ELDERLY_SH_ABD"]
     )
     resolved_side = parsed_side or base_rule.side
     if resolved_side == base_rule.side:
@@ -658,8 +658,8 @@ def resolve_exercise_rule(
     return replace(base_rule, side=resolved_side, target_joint=resolved_joint)
 
 
-def list_all_exercises(include_stroke_moph: bool = True) -> List[Dict[str, object]]:
-    """Return serializable metadata for all 15 unified Stroke ADL & MOPH upper-body master exercises."""
+def list_all_exercises(include_elderly_moph: bool = True) -> List[Dict[str, object]]:
+    """Return serializable metadata for all 15 unified Elderly Care & MOPH upper-body master exercises."""
     source = ALL_15_EXERCISES
     return [
         {

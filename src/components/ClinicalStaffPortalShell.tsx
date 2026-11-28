@@ -21,11 +21,11 @@ import type {
 import { useClinicalI18n, type ClinicalLang } from '@drtechcares/clinical-i18n';
 import {
   CLINICAL_EXERCISES,
-  STROKE_CANONICAL_EXERCISE_SET,
+  ELDERLY_CANONICAL_EXERCISE_SET,
   isDeprecatedExerciseRecord,
   mergeDuplicateSideExercises,
   parseExerciseCodeAndSide,
-  sortExercisesStrokeUpperFirst,
+  sortExercisesElderlyUpperFirst,
   type BodySide,
   type ExerciseConfig,
 } from '@drtechcares/pose-engine';
@@ -1353,9 +1353,9 @@ const LEGACY_EXERCISE_STORAGE_KEYS = [
 
 /**
  * Purges deprecated legacy/lower-limb/ortho exercises from localStorage & Supabase
- * and ensures all 26 standardized Stroke ADL & MOPH upper-body postures are synced cleanly.
+ * and ensures all 26 standardized Elderly Care & MOPH upper-body postures are synced cleanly.
  */
-export async function syncStrokeExerciseLibrary(
+export async function syncElderlyExerciseLibrary(
   apiClient: DrTechCaresApiClient,
 ): Promise<{ exercises: ManagedExerciseRecord[]; purgedCount: number }> {
   if (typeof globalThis.localStorage !== 'undefined') {
@@ -1370,9 +1370,9 @@ export async function syncStrokeExerciseLibrary(
 
   let purgedCount = 0;
   let serverExercises: ManagedExerciseRecord[] = [];
-  if (typeof (apiClient as Partial<DrTechCaresApiClient>).syncStrokeExerciseLibrary === 'function') {
+  if (typeof (apiClient as Partial<DrTechCaresApiClient>).syncElderlyExerciseLibrary === 'function') {
     try {
-      const synced = await apiClient.syncStrokeExerciseLibrary();
+      const synced = await apiClient.syncElderlyExerciseLibrary();
       purgedCount += synced.purgedCount ?? 0;
       serverExercises = Array.isArray(synced.exercises) ? synced.exercises : [];
     } catch {
@@ -1387,12 +1387,12 @@ export async function syncStrokeExerciseLibrary(
   const cleanCustom = serverExercises.filter(
     (ex) =>
       !isDeprecatedExerciseRecord(ex) &&
-      !STROKE_CANONICAL_EXERCISE_SET.has(ex.code) &&
-      !STROKE_CANONICAL_EXERCISE_SET.has(ex.id),
+      !ELDERLY_CANONICAL_EXERCISE_SET.has(ex.code) &&
+      !ELDERLY_CANONICAL_EXERCISE_SET.has(ex.id),
   );
   return {
     exercises: mergeDuplicateSideExercises(
-      sortExercisesStrokeUpperFirst([...canonicalFallback, ...cleanCustom]),
+      sortExercisesElderlyUpperFirst([...canonicalFallback, ...cleanCustom]),
     ),
     purgedCount,
   };
@@ -1781,14 +1781,14 @@ export function ClinicalStaffPortalShell({
       }
 
       const unifiedEx = mergeDuplicateSideExercises(
-        sortExercisesStrokeUpperFirst(exRes.filter((ex) => !isDeprecatedExerciseRecord(ex))),
+        sortExercisesElderlyUpperFirst(exRes.filter((ex) => !isDeprecatedExerciseRecord(ex))),
       );
       setExercises(unifiedEx);
-      const needsStrokeSync =
+      const needsLibrarySync =
         exRes.some((ex) => isDeprecatedExerciseRecord(ex)) ||
-        unifiedEx.filter((ex) => STROKE_CANONICAL_EXERCISE_SET.has(ex.code)).length < CLINICAL_EXERCISES.length;
-      if (needsStrokeSync) {
-        void syncStrokeExerciseLibrary(apiClient).then((synced) => {
+        unifiedEx.filter((ex) => ELDERLY_CANONICAL_EXERCISE_SET.has(ex.code)).length < CLINICAL_EXERCISES.length;
+      if (needsLibrarySync) {
+        void syncElderlyExerciseLibrary(apiClient).then((synced) => {
           setExercises(synced.exercises);
         });
       }
@@ -1926,12 +1926,12 @@ export function ClinicalStaffPortalShell({
     if (exerciseLibrarySyncAttemptedRef.current) return;
     const needsSync =
       exercises.some((ex) => isDeprecatedExerciseRecord(ex)) ||
-      mergeDuplicateSideExercises(exercises).filter((ex) => STROKE_CANONICAL_EXERCISE_SET.has(ex.code)).length <
+      mergeDuplicateSideExercises(exercises).filter((ex) => ELDERLY_CANONICAL_EXERCISE_SET.has(ex.code)).length <
       CLINICAL_EXERCISES.length;
     if (!needsSync) return;
     exerciseLibrarySyncAttemptedRef.current = true;
     let cancelled = false;
-    void syncStrokeExerciseLibrary(apiClient).then((synced) => {
+    void syncElderlyExerciseLibrary(apiClient).then((synced) => {
       if (!cancelled) {
         setExercises(synced.exercises);
       }
@@ -1988,7 +1988,7 @@ export function ClinicalStaffPortalShell({
     [users],
   );
   const sortedMergedExercises = useMemo(
-    () => mergeDuplicateSideExercises(sortExercisesStrokeUpperFirst(exercises)),
+    () => mergeDuplicateSideExercises(sortExercisesElderlyUpperFirst(exercises)),
     [exercises],
   );
   const activeModalPatient = useMemo(
@@ -3057,7 +3057,11 @@ export function ClinicalStaffPortalShell({
         </header>
 
         {/* Single-Screen Workspace Body */}
-        <main className="flex-1 min-w-0 min-h-0 p-3 sm:p-4 overflow-y-auto overflow-x-hidden flex flex-col gap-3">
+        <main
+          className={`flex-1 min-w-0 min-h-0 p-2.5 sm:p-3 overflow-x-hidden flex flex-col gap-2.5 ${
+            activeTab === 'assessments' ? 'overflow-hidden' : 'overflow-y-auto'
+          }`}
+        >
           {bannerMessage && (
             <div
               key={bannerMessage.text}
@@ -3940,11 +3944,11 @@ export function ClinicalStaffPortalShell({
                         onClick={async () => {
                           setSubmitting(true);
                           try {
-                            const synced = await syncStrokeExerciseLibrary(apiClient);
+                            const synced = await syncElderlyExerciseLibrary(apiClient);
                             setExercises(synced.exercises);
                             flashBanner(
                               'success',
-                              `ซิงก์คลังท่ากายภาพมาตรฐาน Stroke / สธ. ${synced.exercises.length} ท่าเรียบร้อย`,
+                              `ซิงก์คลังท่ากายภาพผู้สูงอายุมาตรฐาน สธ. ${synced.exercises.length} ท่าเรียบร้อย`,
                             );
                           } catch (err) {
                             flashBanner(
@@ -3972,8 +3976,8 @@ export function ClinicalStaffPortalShell({
                               <span className="truncate">{ex.name[lang] || ex.name.th}</span>
                               <span className="shrink-0 rounded bg-emerald-100 px-1 py-0.5 text-[9px] font-bold text-emerald-800">
                                 {ex.detection.side === 'both' ||
-                                  ex.code === 'STROKE_BOBATH_ARM_RAISE' ||
-                                  ex.code === 'STROKE_BOBATH_FORWARD_PUSH' ||
+                                  ex.code === 'ELDERLY_CLASPED_ARM_RAISE' ||
+                                  ex.code === 'ELDERLY_CLASPED_FORWARD_PUSH' ||
                                   ex.code === 'MOPH_NECK_TURN' ||
                                   ex.code === 'MOPH_SHOULDER_SHRUG_ROLL'
                                   ? 'L+R'

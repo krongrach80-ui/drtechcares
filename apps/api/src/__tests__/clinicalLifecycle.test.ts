@@ -145,7 +145,7 @@ describe('DRTECHCARES Production API, Auth, RBAC & Biometric Lifecycle', () => {
         fullName: 'คุณสมหมาย แข็งแรง',
         age: 68,
         phone: '081-999-0001',
-        diagnosis: 'Post-Stroke Cognitive & Upper Limb Rehab',
+        diagnosis: 'Elderly Cognitive & Upper Limb Rehab',
         frontalCentroid: ownerCentroid,
         overallCentroid: ownerCentroid,
         rawFrames,
@@ -470,13 +470,13 @@ describe('DRTECHCARES Production API, Auth, RBAC & Biometric Lifecycle', () => {
         Authorization: `Bearer ${ptAuth.token}`,
       },
       body: JSON.stringify({
-        specialty: 'Stroke ADL Specialist',
+        specialty: 'Elderly Rehab Specialist',
         licenseNo: 'PT-SELF-EDIT-HACK',
       }),
     });
     expect(ptEditRes.status).toBe(200);
     const ptAfter = (await ptEditRes.json()) as { user: { specialty?: string; licenseNo?: string } };
-    expect(ptAfter.user.specialty).toBe('Stroke ADL Specialist');
+    expect(ptAfter.user.specialty).toBe('Elderly Rehab Specialist');
     expect(ptAfter.user.licenseNo).toBe('PT-44012');
 
     const adminEditRes = await fetch(`${baseUrl}/api/users/${ptAuth.user.id}`, {

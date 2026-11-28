@@ -1607,7 +1607,7 @@ export function createDrTechCaresApiApp(
       facility_name: String(req.body?.facility_name || 'ศูนย์กายภาพบำบัด Dr.Tech.Care สาขาหลัก'),
       assessor_staff_id: String(req.body?.assessor_staff_id || req.authUser!.id),
       assessor_staff_name: String(req.body?.assessor_staff_name || req.authUser!.fullName),
-      exercise_code: String(req.body?.exercise_code || 'STROKE_SHOULDER_FLEXION').toUpperCase(),
+      exercise_code: String(req.body?.exercise_code || 'ELDERLY_SHOULDER_FLEXION').toUpperCase(),
       exercise_name_th: String(req.body?.exercise_name_th || ''),
       target_side: (req.body?.target_side === 'LEFT' ? 'LEFT' : req.body?.target_side === 'BOTH' ? 'BOTH' : 'RIGHT') as 'LEFT' | 'RIGHT' | 'BOTH',
       initial_score_0_to_6: rawScore as 0 | 1 | 2 | 3 | 4 | 5 | 6,
@@ -1813,17 +1813,17 @@ export function createDrTechCaresApiApp(
     res.json({ exercises });
   });
 
-  app.post('/api/exercises/sync-stroke-library', requireAuth(['super_admin', 'pt']), (req: AuthenticatedRequest, res: Response) => {
-    const result = db.syncStrokeExerciseLibrary();
+  app.post('/api/exercises/sync-elderly-library', requireAuth(['super_admin', 'pt']), (req: AuthenticatedRequest, res: Response) => {
+    const result = db.syncElderlyExerciseLibrary();
     db.recordAudit({
       actorId: req.authUser!.id,
       actorRole: req.authUser!.role,
       actorName: req.authUser!.fullName,
       ipAddress: req.ip || '127.0.0.1',
       deviceId: String(req.headers['x-device-id'] || 'portal'),
-      eventType: 'SYNC_STROKE_EXERCISE_LIBRARY',
+      eventType: 'SYNC_ELDERLY_EXERCISE_LIBRARY',
       targetId: 'exercises',
-      detail: `Synced 15 unified master Stroke/MOPH exercises (purged ${result.purgedCount} deprecated rows)`,
+      detail: `Synced ${result.exercises.length} unified master Elderly & MOPH exercises (purged ${result.purgedCount} deprecated rows)`,
     });
     res.json({
       ok: true,

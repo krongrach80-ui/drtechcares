@@ -1,22 +1,22 @@
 -- ============================================================
--- Migration 004: Stroke Clinical Rehab, Mahidol 0-6 Scale & Cross-Clinic EHR
--- File: supabase/migrations/004_stroke_clinical_ehr.sql
+-- Migration 004: Elderly Clinical Rehab, Mahidol 0-6 Scale & Cross-Clinic EHR
+-- File: supabase/migrations/004_elderly_clinical_ehr.sql
 -- ============================================================
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- 1. Extend public.patients with Stroke & ADL Rehabilitation clinical fields
+-- 1. Extend public.patients with Elderly & ADL Rehabilitation clinical fields
 ALTER TABLE IF EXISTS public.patients
-  ADD COLUMN IF NOT EXISTS stroke_type text NOT NULL DEFAULT 'ELDERLY_GENERAL',
+  ADD COLUMN IF NOT EXISTS care_group text NOT NULL DEFAULT 'ELDERLY_GENERAL',
   ADD COLUMN IF NOT EXISTS affected_side text NOT NULL DEFAULT 'NONE',
   ADD COLUMN IF NOT EXISTS motor_assessment_score smallint NOT NULL DEFAULT 3,
   ADD COLUMN IF NOT EXISTS adl_dressing_score smallint NOT NULL DEFAULT 3,
   ADD COLUMN IF NOT EXISTS max_safe_rom_deg numeric NOT NULL DEFAULT 150,
   ADD COLUMN IF NOT EXISTS universal_health_link_code text;
 
-ALTER TABLE IF EXISTS public.patients DROP CONSTRAINT IF EXISTS patients_stroke_type_check;
-ALTER TABLE IF EXISTS public.patients ADD CONSTRAINT patients_stroke_type_check
-  CHECK (stroke_type IN ('ISCHEMIC', 'HEMORRHAGIC', 'ELDERLY_GENERAL', 'ORTHOPEDIC', 'NEURO'));
+ALTER TABLE IF EXISTS public.patients DROP CONSTRAINT IF EXISTS patients_care_group_check;
+ALTER TABLE IF EXISTS public.patients ADD CONSTRAINT patients_care_group_check
+  CHECK (care_group IN ('MOBILITY_RECOVERY', 'CLOSE_CARE', 'ELDERLY_GENERAL', 'ORTHOPEDIC', 'NEURO'));
 
 ALTER TABLE IF EXISTS public.patients DROP CONSTRAINT IF EXISTS patients_affected_side_check;
 ALTER TABLE IF EXISTS public.patients ADD CONSTRAINT patients_affected_side_check
@@ -68,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_rehab_session_history_patient_date
 CREATE INDEX IF NOT EXISTS idx_rehab_session_history_exercise_code
   ON public.rehab_session_history (exercise_code);
 
--- 3. Emergency Fall / Balance Halt Alerts table (used by Stroke Safety Guard & Edge Vision)
+-- 3. Emergency Fall / Balance Halt Alerts table (used by Elderly Safety Guard & Edge Vision)
 CREATE TABLE IF NOT EXISTS public.emergency_alerts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   kiosk_id text NOT NULL DEFAULT 'KIOSK-OPD-01',

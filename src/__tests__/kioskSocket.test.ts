@@ -23,9 +23,9 @@ import {
   formatRepScoredBannerTh,
   mergeDuplicateSideExercises,
   resolveActiveExerciseSide,
-  solveStrokeClinicalJointBiomechanics,
-  stepStrokeHoldAndRepStateMachine,
-  type StrokeHoldRepState,
+  solveElderlyClinicalJointBiomechanics,
+  stepElderlyHoldAndRepStateMachine,
+  type ElderlyHoldRepState,
 } from '@drtechcares/pose-engine';
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision';
 import {
@@ -240,9 +240,9 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     const mapped = mapTodayExercisesToPrescriptions([
       {
         id: 'sch-1',
-        exerciseId: 'STROKE_SH_FLEX_R',
-        nameTh: '[Stroke ADL] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)',
-        nameEn: 'Stroke ADL: Right Shoulder Forward Flexion',
+        exerciseId: 'ELDERLY_SH_FLEX_R',
+        nameTh: '[ผู้สูงอายุ] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)',
+        nameEn: 'Elderly Care: Right Shoulder Forward Flexion',
         targetJoint: 'ข้อไหล่ (Shoulder)',
         activityType: 'physio_exercise',
         sets: 3,
@@ -252,9 +252,9 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
       },
       {
         id: 'sch-2',
-        exerciseId: 'STROKE_SH_ABD_R',
-        nameTh: '[Stroke ADL] กางแขนขวาด้านข้าง (ฝึกกางแขนสวมเสื้อ)',
-        nameEn: 'Stroke ADL: Right Shoulder Abduction',
+        exerciseId: 'ELDERLY_SH_ABD_R',
+        nameTh: '[ผู้สูงอายุ] กางแขนขวาด้านข้าง (ฝึกกางแขนสวมเสื้อ)',
+        nameEn: 'Elderly Care: Right Shoulder Abduction',
         targetJoint: 'ข้อไหล่ (Shoulder)',
         activityType: 'physio_exercise',
         sets: 3,
@@ -278,10 +278,10 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
 
     expect(mapped).toHaveLength(2);
     expect(mapped[0].exercise_id).toBe('sch-1');
-    expect(mapped[0].catalog_exercise_id).toBe('STROKE_SH_FLEX');
-    expect(mapped[0].base_code).toBe('STROKE_SH_FLEX');
+    expect(mapped[0].catalog_exercise_id).toBe('ELDERLY_SH_FLEX');
+    expect(mapped[0].base_code).toBe('ELDERLY_SH_FLEX');
     expect(mapped[0].prescribed_side).toBe('RIGHT');
-    expect(mapped[0].effective_code).toBe('STROKE_SH_FLEX_RIGHT');
+    expect(mapped[0].effective_code).toBe('ELDERLY_SH_FLEX_RIGHT');
     expect(mapped[0].target_joint).toBe('right_shoulder');
     expect(mapped[0].target_reps).toBe(10);
     expect(mapped[0].target_sets).toBe(3);
@@ -817,9 +817,9 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     // synthesizeDemoPayload WRONG_PLANE + 3-language Voice Coach translation
     const flexionExercise = {
       ...rightShoulder,
-      exercise_id: 'STROKE_SH_FLEX_R',
-      name_th: '[Stroke ADL] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)',
-      name_en: 'Stroke ADL: Right Shoulder Forward Flexion',
+      exercise_id: 'ELDERLY_SH_FLEX_R',
+      name_th: '[ผู้สูงอายุ] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)',
+      name_en: 'Elderly Care: Right Shoulder Forward Flexion',
       expected_plane: 'flexion' as const,
     };
     const wrongPlanePayload = synthesizeDemoPayload({
@@ -1171,17 +1171,17 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
       { ...baseItem, id: 's1', exerciseId: 'ex-13' },
       { ...baseItem, id: 's2', exerciseId: 'ex-14' },
       { ...baseItem, id: 's3', exerciseId: 'ex-26' },
-      { ...baseItem, id: 's4', exerciseId: 'STROKE_SH_FLEX_R' },
-      { ...baseItem, id: 's5', exerciseId: 'STROKE_SH_ABD_R' },
-      { ...baseItem, id: 's6', exerciseId: 'STROKE_SH_FLEX_L' },
-      { ...baseItem, id: 's7', exerciseId: 'STROKE_SH_ABD_L' },
+      { ...baseItem, id: 's4', exerciseId: 'ELDERLY_SH_FLEX_R' },
+      { ...baseItem, id: 's5', exerciseId: 'ELDERLY_SH_ABD_R' },
+      { ...baseItem, id: 's6', exerciseId: 'ELDERLY_SH_FLEX_L' },
+      { ...baseItem, id: 's7', exerciseId: 'ELDERLY_SH_ABD_L' },
     ];
     const cleaned = sanitizeAccidentalDefaultKneePrefix(contaminated);
     expect(cleaned.map((x) => x.exerciseId)).toEqual([
-      'STROKE_SH_FLEX_R',
-      'STROKE_SH_ABD_R',
-      'STROKE_SH_FLEX_L',
-      'STROKE_SH_ABD_L',
+      'ELDERLY_SH_FLEX_R',
+      'ELDERLY_SH_ABD_R',
+      'ELDERLY_SH_FLEX_L',
+      'ELDERLY_SH_ABD_L',
     ]);
 
     const pureKnee = contaminated.slice(0, 3);
@@ -1196,17 +1196,17 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
       now: new Date('2026-11-15T10:00:00'),
     });
     expect(todayResolved.todayExercises.map((e) => e.exerciseId)).toEqual([
-      'STROKE_SH_FLEX_R',
-      'STROKE_SH_ABD_R',
-      'STROKE_SH_FLEX_L',
-      'STROKE_SH_ABD_L',
+      'ELDERLY_SH_FLEX_R',
+      'ELDERLY_SH_ABD_R',
+      'ELDERLY_SH_FLEX_L',
+      'ELDERLY_SH_ABD_L',
     ]);
 
     const restDayFallback = resolvePrescribedExercisesFromSchedules([
       { ...contaminated[3], scheduledDate: '2026-11-20' },
       { ...contaminated[5], scheduledDate: '2026-11-20' },
     ]);
-    expect(restDayFallback.map((e) => e.exerciseId)).toEqual(['STROKE_SH_FLEX_R', 'STROKE_SH_FLEX_L']);
+    expect(restDayFallback.map((e) => e.exerciseId)).toEqual(['ELDERLY_SH_FLEX_R', 'ELDERLY_SH_FLEX_L']);
   });
 
   it('tracks full 0..180 deg shoulder range without overhead ceiling and returns null for out-of-frame knees', () => {
@@ -1380,11 +1380,11 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
       overheadFoldback.landmarks[POSE_INDEX.RIGHT_ELBOW].y,
     );
 
-    // Elbow flexion exercise (STROKE_ELB_FLEX_EXT_R): hanging arm < 20 deg vs flexed curl >= 85 deg
+    // Elbow flexion exercise (ELDERLY_ELB_FLEX_EXT_R): hanging arm < 20 deg vs flexed curl >= 85 deg
     const elbowMeta = {
-      exercise_id: 'STROKE_ELB_FLEX_EXT_R',
-      name_th: '[Stroke ADL] งอ-เหยียดข้อศอกขวา (ดึงแขนเสื้อ/ป้อนอาหาร)',
-      name_en: 'Stroke ADL: Right Elbow Flexion & Extension',
+      exercise_id: 'ELDERLY_ELB_FLEX_EXT_R',
+      name_th: '[ผู้สูงอายุ] งอ-เหยียดข้อศอกขวา (ดึงแขนเสื้อ/ป้อนอาหาร)',
+      name_en: 'Elderly Care: Right Elbow Flexion & Extension',
     };
     const hangingElbow = createNeutralLandmarks({
       [POSE_INDEX.LEFT_SHOULDER]: { x: 0.62, y: 0.4, z: 0, visibility: 0.95 },
@@ -1419,7 +1419,7 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(flexedCheck.romDeg).not.toBeNull();
     expect(flexedCheck.romDeg!).toBeGreaterThanOrEqual(85);
 
-    // MOPH neck lateral tilt (MOPH_NECK_TILT_R) & MOPH/Stroke neck turn (MOPH_NECK_TURN_BILATERAL)
+    // MOPH neck lateral tilt (MOPH_NECK_TILT_R) & MOPH Elderly neck turn (MOPH_NECK_TURN_BILATERAL)
     const neckTilted = createNeutralLandmarks({
       [POSE_INDEX.NOSE]: { x: 0.43, y: 0.28, z: 0, visibility: 0.95 },
       [POSE_INDEX.LEFT_SHOULDER]: { x: 0.62, y: 0.45, z: 0, visibility: 0.95 },
@@ -1444,14 +1444,14 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
     expect(neckTurnCheck.romDeg).not.toBeNull();
     expect(neckTurnCheck.romDeg!).toBeGreaterThanOrEqual(40);
 
-    // Cross-body reach (STROKE_CROSS_BODY_R), Scapular protraction (STROKE_SCAP_PROTRACT_R), Hand-to-head, Thumb pinch
+    // Cross-body reach (ELDERLY_CROSS_BODY_R), Scapular protraction (ELDERLY_SCAP_PROTRACT_R), Hand-to-head, Thumb pinch
     const crossBody = createNeutralLandmarks({
       [POSE_INDEX.LEFT_SHOULDER]: { x: 0.62, y: 0.4, z: 0, visibility: 0.95 },
       [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.38, y: 0.4, z: 0, visibility: 0.95 },
       [POSE_INDEX.RIGHT_WRIST]: { x: 0.61, y: 0.43, z: -0.08, visibility: 0.95 },
     });
     const crossCheck = measureLiveJointAngleAndTilt(crossBody, 'right_shoulder', 'cross_body', undefined, {
-      exercise_id: 'STROKE_CROSS_BODY_R',
+      exercise_id: 'ELDERLY_CROSS_BODY_R',
       name_th: 'เอื้อมมือขวาแตะไหล่ซ้าย',
     });
     expect(crossCheck.romDeg!).toBeGreaterThanOrEqual(75);
@@ -1463,7 +1463,7 @@ describe('synthesizeDemoPayload (Smart Rehabilitation Kiosk Simulator)', () => {
       [POSE_INDEX.RIGHT_THUMB]: { x: 0.37, y: 0.33, z: -0.1, visibility: 0.95 },
     });
     const pinchCheck = measureLiveJointAngleAndTilt(pinchPose, 'right_shoulder', 'thumb_pinch', undefined, {
-      exercise_id: 'STROKE_THUMB_PINCH_R',
+      exercise_id: 'ELDERLY_THUMB_PINCH_R',
       name_th: 'จีบนิ้วโป้งแตะปลายนิ้วมือขวา',
     });
     expect(pinchCheck.romDeg!).toBeGreaterThanOrEqual(45);
@@ -1893,7 +1893,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(isUpperBodyVisibleInFrame(framedMp33)).toBe(true);
   });
 
-  it('resolves distinct anatomical posture guides and trilingual 3-step cues for every Stroke & MOPH exercise', () => {
+  it('resolves distinct anatomical posture guides and trilingual 3-step cues for every Elderly & MOPH exercise', () => {
     const cases: Array<{
       id: string;
       name_th: string;
@@ -1918,107 +1918,107 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       expectedSide: 'right' | 'left' | 'both';
     }> = [
       {
-        id: 'STROKE_SH_FLEX_R',
-        name_th: '[Stroke ADL] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)',
-        name_en: 'Stroke ADL: Right Shoulder Forward Flexion',
+        id: 'ELDERLY_SH_FLEX_R',
+        name_th: '[ผู้สูงอายุ] ยกแขนขวาไปด้านหน้า (ฝึกเอื้อม/สอดแขนเสื้อ)',
+        name_en: 'Elderly Care: Right Shoulder Forward Flexion',
         target_joint: 'right_shoulder',
         expected_plane: 'flexion',
         expectedKind: 'shoulder_flexion',
         expectedSide: 'right',
       },
       {
-        id: 'STROKE_SH_ABD_L',
-        name_th: '[Stroke ADL] กางแขนซ้ายด้านข้าง (ฝึกกางแขนสวมเสื้อ)',
-        name_en: 'Stroke ADL: Left Shoulder Abduction',
+        id: 'ELDERLY_SH_ABD_L',
+        name_th: '[ผู้สูงอายุ] กางแขนซ้ายด้านข้าง (ฝึกกางแขนสวมเสื้อ)',
+        name_en: 'Elderly Care: Left Shoulder Abduction',
         target_joint: 'left_shoulder',
         expected_plane: 'abduction',
         expectedKind: 'shoulder_abduction',
         expectedSide: 'left',
       },
       {
-        id: 'STROKE_CROSS_BODY_R',
-        name_th: '[Stroke ADL] เอื้อมมือขวาแตะไหล่ซ้าย (ฝึกดึงแขนเสื้อ/ใส่เสื้อคลุม)',
-        name_en: 'Stroke ADL: Right Cross-Body Shoulder Reach',
+        id: 'ELDERLY_CROSS_BODY_R',
+        name_th: '[ผู้สูงอายุ] เอื้อมมือขวาแตะไหล่ซ้าย (ฝึกดึงแขนเสื้อ/ใส่เสื้อคลุม)',
+        name_en: 'Elderly Care: Right Cross-Body Shoulder Reach',
         target_joint: 'right_shoulder',
         expected_plane: 'cross_body',
         expectedKind: 'cross_body_reach',
         expectedSide: 'right',
       },
       {
-        id: 'STROKE_SCAP_PROTRACT_L',
-        name_th: '[Stroke ADL] เหยียดแขนซ้ายดันไปด้านหน้าระดับอก (ป้องกันข้อไหล่หลุด)',
-        name_en: 'Stroke ADL: Left Scapular Protraction Punch',
+        id: 'ELDERLY_SCAP_PROTRACT_L',
+        name_th: '[ผู้สูงอายุ] เหยียดแขนซ้ายดันไปด้านหน้าระดับอก (ป้องกันข้อไหล่หลุด)',
+        name_en: 'Elderly Care: Left Scapular Protraction Punch',
         target_joint: 'left_shoulder',
         expected_plane: 'scap_protract',
         expectedKind: 'scapular_protract',
         expectedSide: 'left',
       },
       {
-        id: 'STROKE_SH_ROT_R',
-        name_th: '[Stroke ADL] หมุนข้อไหล่ขวาเข้า-ออก (อ้อมใส่เสื้อ/ติดกระดุม)',
-        name_en: 'Stroke ADL: Right Shoulder External/Internal Rotation',
+        id: 'ELDERLY_SH_ROT_R',
+        name_th: '[ผู้สูงอายุ] หมุนข้อไหล่ขวาเข้า-ออก (อ้อมใส่เสื้อ/ติดกระดุม)',
+        name_en: 'Elderly Care: Right Shoulder External/Internal Rotation',
         target_joint: 'right_shoulder',
         expected_plane: 'rotation',
         expectedKind: 'shoulder_rotation',
         expectedSide: 'right',
       },
       {
-        id: 'STROKE_BOBATH_ARM_RAISE',
-        name_th: '[Stroke & สธ.] ประสานมือสองข้างชูขึ้นเหนือศีรษะ (ท่า Bobath พยุงแขนอ่อนแรง)',
-        name_en: 'Stroke & MOPH: Bobath Bilateral Clasped Arm Raise',
+        id: 'ELDERLY_CLASPED_ARM_RAISE',
+        name_th: '[สธ. ผู้สูงอายุ] ประสานมือสองข้างชูขึ้นเหนือศีรษะ (ยืดเหยียดแขนและไหล่สองข้าง)',
+        name_en: 'MOPH Elderly: Bilateral Clasped Overhead Arm Raise',
         target_joint: 'right_shoulder',
         expected_plane: 'bilateral',
         expectedKind: 'bilateral_arm_raise',
         expectedSide: 'both',
       },
       {
-        id: 'STROKE_BOBATH_FORWARD_PUSH',
-        name_th: '[Stroke ADL] ประสานมือสองข้างดันเหยียดแขนไปด้านหน้า (ลดเกร็งพับศอก)',
-        name_en: 'Stroke ADL: Bobath Bilateral Forward Elbow Push',
+        id: 'ELDERLY_CLASPED_FORWARD_PUSH',
+        name_th: '[ผู้สูงอายุ] ประสานมือสองข้างดันเหยียดแขนไปด้านหน้า (ลดเกร็งพับศอก)',
+        name_en: 'Elderly Care: Bilateral Clasped Forward Elbow Push',
         target_joint: 'right_shoulder',
         expected_plane: 'bilateral_push',
-        expectedKind: 'bobath_forward_push',
+        expectedKind: 'clasped_forward_push',
         expectedSide: 'both',
       },
       {
-        id: 'STROKE_ELB_FLEX_EXT_L',
-        name_th: '[Stroke ADL] งอ-เหยียดข้อศอกซ้าย (ดึงแขนเสื้อ/ป้อนอาหาร)',
-        name_en: 'Stroke ADL: Left Elbow Flexion & Extension',
+        id: 'ELDERLY_ELB_FLEX_EXT_L',
+        name_th: '[ผู้สูงอายุ] งอ-เหยียดข้อศอกซ้าย (ดึงแขนเสื้อ/ป้อนอาหาร)',
+        name_en: 'Elderly Care: Left Elbow Flexion & Extension',
         target_joint: 'left_shoulder',
         expectedKind: 'elbow_flexion',
         expectedSide: 'left',
       },
       {
-        id: 'STROKE_HAND_TO_HEAD_R',
-        name_th: '[Stroke ADL] ยกมือขวาแตะศีรษะ (ฝึกสวมเสื้อทางศีรษะ/หวีผม)',
-        name_en: 'Stroke ADL: Right Hand-to-Head Grooming Reach',
+        id: 'ELDERLY_HAND_TO_HEAD_R',
+        name_th: '[ผู้สูงอายุ] ยกมือขวาแตะศีรษะ (ฝึกสวมเสื้อทางศีรษะ/หวีผม)',
+        name_en: 'Elderly Care: Right Hand-to-Head Grooming Reach',
         target_joint: 'right_shoulder',
         expected_plane: 'hand_to_head',
         expectedKind: 'hand_to_head',
         expectedSide: 'right',
       },
       {
-        id: 'STROKE_FOREARM_TURN_R',
-        name_th: '[Stroke ADL] พลิกหงาย-คว่ำฝ่ามือขวา (ฝึกถือช้อน/บิดลูกบิดประตู)',
-        name_en: 'Stroke ADL: Right Forearm Supination & Pronation',
+        id: 'ELDERLY_FOREARM_TURN_R',
+        name_th: '[ผู้สูงอายุ] พลิกหงาย-คว่ำฝ่ามือขวา (ฝึกถือช้อน/บิดลูกบิดประตู)',
+        name_en: 'Elderly Care: Right Forearm Supination & Pronation',
         target_joint: 'right_shoulder',
         expected_plane: 'forearm_turn',
         expectedKind: 'forearm_turn',
         expectedSide: 'right',
       },
       {
-        id: 'STROKE_WRIST_FINGER_R',
-        name_th: '[Stroke ADL] กระดกข้อมือ & กาง-กำนิ้วมือขวา (ลดเกร็งนิ้วมือ)',
-        name_en: 'Stroke ADL: Right Wrist Extension & Finger Open/Close',
+        id: 'ELDERLY_WRIST_FINGER_R',
+        name_th: '[ผู้สูงอายุ] กระดกข้อมือ & กาง-กำนิ้วมือขวา (ลดเกร็งนิ้วมือ)',
+        name_en: 'Elderly Care: Right Wrist Extension & Finger Open/Close',
         target_joint: 'right_shoulder',
         expected_plane: 'wrist_finger',
         expectedKind: 'wrist_finger',
         expectedSide: 'right',
       },
       {
-        id: 'STROKE_THUMB_PINCH_R',
-        name_th: '[Stroke ADL] จีบนิ้วโป้งแตะปลายนิ้วมือขวา (ฝึกติดกระดุมเสื้อ/รูดซิป)',
-        name_en: 'Stroke ADL: Right Thumb-to-Finger Fine Pinch',
+        id: 'ELDERLY_THUMB_PINCH_R',
+        name_th: '[ผู้สูงอายุ] จีบนิ้วโป้งแตะปลายนิ้วมือขวา (ฝึกติดกระดุมเสื้อ/รูดซิป)',
+        name_en: 'Elderly Care: Right Thumb-to-Finger Fine Pinch',
         target_joint: 'right_shoulder',
         expected_plane: 'thumb_pinch',
         expectedKind: 'thumb_pinch',
@@ -2034,8 +2034,8 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       },
       {
         id: 'MOPH_NECK_TURN_BILATERAL',
-        name_th: '[Stroke & สธ.] หันศีรษะมองซ้าย-ขวาช้าๆ (กระตุ้นการรับรู้ภาพด้านที่อ่อนแรง)',
-        name_en: 'Stroke & MOPH: Bilateral Neck Rotation Scanning',
+        name_th: '[สธ. ผู้สูงอายุ] หันศีรษะมองซ้าย-ขวาช้าๆ (กระตุ้นการรับรู้ภาพด้านที่อ่อนแรง)',
+        name_en: 'MOPH Elderly: Bilateral Neck Rotation Scanning',
         target_joint: 'spine',
         expected_plane: 'neck_turn',
         expectedKind: 'neck_turn',
@@ -2193,8 +2193,8 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     const baseSnap = calibrator.update(neutral);
     expect(baseSnap.upperArmLen).toBeGreaterThanOrEqual(baseSnap.shoulderWidth * 0.82 - 1e-6);
 
-    // 3. STROKE_ELB_FLEX_EXT_R ascends from ~5 deg (rest) to > 105 deg (curled)
-    const elbowMeta = { exercise_id: 'STROKE_ELB_FLEX_EXT_R', name_th: 'งอ-เหยียดข้อศอกขวา' };
+    // 3. ELDERLY_ELB_FLEX_EXT_R ascends from ~5 deg (rest) to > 105 deg (curled)
+    const elbowMeta = { exercise_id: 'ELDERLY_ELB_FLEX_EXT_R', name_th: 'งอ-เหยียดข้อศอกขวา' };
     const elbowRest = measureLiveJointAngleAndTilt(neutral, 'right_shoulder', 'any', undefined, elbowMeta, {
       baseline: baseSnap,
       targetRomDeg: 110,
@@ -2210,8 +2210,8 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     });
     expect(elbowPeak.romDeg!).toBeGreaterThan(100);
 
-    // 4. STROKE_SH_ROT_R measures horizontal forearm external rotation (0..70 deg)
-    const rotMeta = { exercise_id: 'STROKE_SH_ROT_R', name_th: 'หมุนหัวไหล่ขวาออกด้านนอก' };
+    // 4. ELDERLY_SH_ROT_R measures horizontal forearm external rotation (0..70 deg)
+    const rotMeta = { exercise_id: 'ELDERLY_SH_ROT_R', name_th: 'หมุนหัวไหล่ขวาออกด้านนอก' };
     const rotPose = createNeutralLandmarks({
       [POSE_INDEX.RIGHT_ELBOW]: { x: 0.38, y: 0.60, z: 0, visibility: 0.98 },
       [POSE_INDEX.RIGHT_WRIST]: { x: 0.21, y: 0.60, z: -0.02, visibility: 0.98 },
@@ -2236,7 +2236,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     openHand21[HAND21_INDEX.RING_TIP] = { x: 0.35, y: 0.34, z: 0, visibility: 0.99 };
     openHand21[HAND21_INDEX.PINKY_TIP] = { x: 0.31, y: 0.37, z: 0, visibility: 0.99 };
 
-    const wristOpenRes = solveStrokeClinicalJointBiomechanics({
+    const wristOpenRes = solveElderlyClinicalJointBiomechanics({
       landmarks: neutral,
       handLandmarksBySide: { right: openHand21 },
       targetJoint: 'right_shoulder',
@@ -2247,7 +2247,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     });
     expect(wristOpenRes.romDeg!).toBeGreaterThanOrEqual(55);
 
-    const turnRes = solveStrokeClinicalJointBiomechanics({
+    const turnRes = solveElderlyClinicalJointBiomechanics({
       landmarks: neutral,
       handLandmarksBySide: { right: openHand21 },
       targetJoint: 'right_shoulder',
@@ -2260,7 +2260,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
 
     const pinchHand21 = openHand21.map((p) => ({ ...p }));
     pinchHand21[HAND21_INDEX.THUMB_TIP] = { x: 0.405, y: 0.345, z: 0, visibility: 0.99 };
-    const pinchRes = solveStrokeClinicalJointBiomechanics({
+    const pinchRes = solveElderlyClinicalJointBiomechanics({
       landmarks: neutral,
       handLandmarksBySide: { right: pinchHand21 },
       targetJoint: 'right_shoulder',
@@ -2276,7 +2276,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       [POSE_INDEX.LEFT_EYE]: { x: 0.53, y: 0.27, z: 0, visibility: 0.98 },
       [POSE_INDEX.RIGHT_EYE]: { x: 0.47, y: 0.24, z: 0, visibility: 0.98 },
     });
-    const eyeNeckRes = solveStrokeClinicalJointBiomechanics({
+    const eyeNeckRes = solveElderlyClinicalJointBiomechanics({
       landmarks: eyeTiltPose,
       targetJoint: 'spine',
       jointMode: 'neck',
@@ -2290,7 +2290,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       [POSE_INDEX.LEFT_SHOULDER]: { x: 0.72, y: 0.40, z: 0, visibility: 0.98 },
       [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.48, y: 0.40, z: 0, visibility: 0.98 },
     });
-    const trunkRes = solveStrokeClinicalJointBiomechanics({
+    const trunkRes = solveElderlyClinicalJointBiomechanics({
       landmarks: trunkLeanPose,
       targetJoint: 'right_shoulder',
       jointMode: 'default',
@@ -2308,7 +2308,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       [POSE_INDEX.RIGHT_ELBOW]: { x: 0.32, y: 0.36, z: -0.10, visibility: 0.98 },
       [POSE_INDEX.RIGHT_WRIST]: { x: 0.46, y: 0.22, z: -0.05, visibility: 0.98 },
     });
-    const neckDropRes = solveStrokeClinicalJointBiomechanics({
+    const neckDropRes = solveElderlyClinicalJointBiomechanics({
       landmarks: headDropPose,
       targetJoint: 'right_shoulder',
       expectedPlane: 'hand_to_head',
@@ -2319,7 +2319,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(neckDropRes.postureBannerTh).toBe('มองตรงข้างหน้าครับ ให้ยกมือขึ้นหาศีรษะแทนการก้มคอ');
   });
 
-  it('draws Stroke Target Zone Circle, 21-pt Hand skeleton, and Amber (#F59E0B) vs Emerald (#10B981) highlight on canvas', () => {
+  it('draws Elderly Target Zone Circle, 21-pt Hand skeleton, and Amber (#F59E0B) vs Emerald (#10B981) highlight on canvas', () => {
     const strokeColors: string[] = [];
     const arcRadii: number[] = [];
     const mockCtx = {
@@ -2438,28 +2438,28 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       [POSE_INDEX.LEFT_WRIST]: { x: 0.59, y: 0.38, z: -0.06, visibility: 0.98 },
     });
     const elbWrong = measureLiveJointAngleAndTilt(wrongElbowPose, 'right_shoulder', 'any', undefined, {
-      exercise_id: 'STROKE_ELB_FLEX_EXT_R',
+      exercise_id: 'ELDERLY_ELB_FLEX_EXT_R',
       name_th: 'งอ-เหยียดข้อศอกขวา',
     });
     expect(elbWrong.sideViolation).toBe('LEFT_ARM_RAISED_IN_RIGHT_MODE');
     expect(elbWrong.wrongSideRaised).toBe(true);
     expect(elbWrong.romDeg).toBe(0);
 
-    // 4. BOTH mode (`STROKE_BOBATH_ARM_RAISE`): single arm -> blocked (`SINGLE_ARM_IN_BOTH_MODE`); symmetric both -> average ROM
+    // 4. BOTH mode (`ELDERLY_CLASPED_ARM_RAISE`): single arm -> blocked (`SINGLE_ARM_IN_BOTH_MODE`); symmetric both -> average ROM
     const singleArmInBoth = createNeutralLandmarks({
       [POSE_INDEX.RIGHT_ELBOW]: { x: 0.38, y: 0.20, z: -0.05, visibility: 0.99 },
       [POSE_INDEX.RIGHT_WRIST]: { x: 0.38, y: 0.06, z: -0.05, visibility: 0.99 },
     });
-    const bobathMeta = {
-      exercise_id: 'STROKE_BOBATH_ARM_RAISE',
-      name_th: '[Stroke Bobath] ประสานมือยกแขนขึ้นด้านหน้า',
+    const claspedMeta = {
+      exercise_id: 'ELDERLY_CLASPED_ARM_RAISE',
+      name_th: '[สธ. ผู้สูงอายุ] ประสานมือยกแขนขึ้นด้านหน้า',
     };
     const bothSingleBlocked = measureLiveJointAngleAndTilt(
       singleArmInBoth,
       'right_shoulder',
       'bilateral',
       undefined,
-      bobathMeta,
+      claspedMeta,
     );
     expect(bothSingleBlocked.sideViolation).toBe('SINGLE_ARM_IN_BOTH_MODE');
     expect(bothSingleBlocked.wrongSideRaised).toBe(true);
@@ -2473,7 +2473,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       'right_shoulder',
       'bilateral',
       undefined,
-      bobathMeta,
+      claspedMeta,
     );
     expect(bothValid.sideViolation).toBe('NONE');
     expect(bothValid.wrongSideRaised).toBe(false);
@@ -2559,7 +2559,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
   });
 
   it('enforces Option A immediate rep bank + mandatory arm-lower gate without compensation/owner resets', () => {
-    let state: StrokeHoldRepState = {
+    let state: ElderlyHoldRepState = {
       phase: 'PHASE_1_HOLDING',
       holdElapsedSec: 0,
       completedReps: 0,
@@ -2588,7 +2588,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       },
     ) => {
       const sideViolation = opts?.sideViolation ?? 'NONE';
-      const res = stepStrokeHoldAndRepStateMachine({
+      const res = stepElderlyHoldAndRepStateMachine({
         state,
         activeRomDeg: romDeg,
         leftArmRomDeg: opts?.leftArmRomDeg,
@@ -2614,17 +2614,21 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       return res;
     };
 
-    // 1. Entry >= 0.65 * 115 = 74.75 deg accumulates smoothly even with 6-deg trunk tilt & no face match at 2.1m
+    // 1. Exact angle gate: 78 deg (< 0.82 * 115 = 94.3 deg) does NOT falsely enter hold; >= 95 deg accumulates smoothly!
     let nowCursor = 0;
-    let lastRes = stepTick(78, 0.1, (nowCursor += 100), { blockCounting: false });
+    const belowExactGate = stepTick(78, 0.1, (nowCursor += 50), { blockCounting: false });
+    expect(state.holdElapsedSec).toBe(0);
+    expect(belowExactGate.statusKind).toBe('ACTIVE_REP');
+
+    let lastRes = stepTick(98, 0.1, (nowCursor += 100), { blockCounting: false });
     expect(state.phase).toBe('PHASE_1_HOLDING');
     expect(state.holdElapsedSec).toBeCloseTo(0.1, 2);
     expect(state.completedReps).toBe(0);
     expect(lastRes.bannerTh).toContain('ค้างท่าไว้ในองศาที่ถูกต้อง');
 
-    // 2. Continue holding with posture compensation flag -> NEVER resets or stalls timer!
+    // 2. Continue holding at exact target ROM with posture compensation flag -> NEVER resets or stalls timer!
     for (let i = 0; i < 10; i += 1) {
-      lastRes = stepTick(92, 0.1, (nowCursor += 100), {
+      lastRes = stepTick(98, 0.1, (nowCursor += 100), {
         isCompensatedNow: true,
         postureBannerTh: 'อย่ายักไหล่ช่วยครับ',
       });
@@ -2632,7 +2636,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(state.holdElapsedSec).toBeCloseTo(1.1, 2);
     expect(lastRes.bannerTh).toContain('ค้างท่าไว้ในองศาที่ถูกต้อง');
 
-    // 3. Brief dip < 0.65 * 115 decays gently at dt * 0.15 (NEVER warps to 0.0s!)
+    // 3. Brief dip < 0.82 * 115 decays gently at dt * 0.15 (NEVER warps to 0.0s!)
     lastRes = stepTick(50, 0.2, (nowCursor += 200));
     expect(state.holdElapsedSec).toBeCloseTo(1.1 - 0.2 * 0.15, 2);
 
@@ -2685,7 +2689,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(state.holdElapsedSec).toBeCloseTo(0.4 - 0.2 * 0.15, 2);
     expect(state.completedReps).toBe(1);
 
-    // 8. Fine-motor STROKE_WRIST_FINGER at 2.5s hold + "hands out of frame while arm raised":
+    // 8. Fine-motor ELDERLY_WRIST_FINGER at 2.5s hold + "hands out of frame while arm raised":
     // accumulates smoothly -> scores +1 at 2.5s -> unlocks after 1.2s wait!
     state = {
       phase: 'PHASE_1_HOLDING',
@@ -2698,7 +2702,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     let wristScored = false;
     for (let i = 0; i < 30; i += 1) {
       const r = stepTick(null, 0.1, (nowCursor += 100), {
-        exerciseCode: 'STROKE_WRIST_FINGER',
+        exerciseCode: 'ELDERLY_WRIST_FINGER',
         targetRomDeg: 70,
         targetHoldSec: 2.5,
         handsOutOfFrameRaised: true,
@@ -2714,7 +2718,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
 
     // After 1.2s in Wait-Lower for fine-motor wrist exercise, unlocks ready for rep #2
     const unlockFine = stepTick(84, 0.1, (nowCursor += 1300), {
-      exerciseCode: 'STROKE_WRIST_FINGER',
+      exerciseCode: 'ELDERLY_WRIST_FINGER',
       targetRomDeg: 70,
       targetHoldSec: 2.5,
       handsOutOfFrameRaised: false,
@@ -2725,7 +2729,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(state.phase).toBe('PHASE_1_HOLDING');
 
     // 9. BOTH mode bilateral Option A rep bank: holds BOTH to 3.0s -> scores +1 immediately -> keeps locked until BOTH lowered!
-    let bothState: StrokeHoldRepState = {
+    let bothState: ElderlyHoldRepState = {
       phase: 'PHASE_1_HOLDING',
       holdElapsedSec: 0,
       completedReps: 0,
@@ -2734,7 +2738,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       loweredFrameStreak: 0,
     };
     const stepBoth = (rom: number, lRom: number, rRom: number, dt: number, armWristLowered = false) => {
-      const r = stepStrokeHoldAndRepStateMachine({
+      const r = stepElderlyHoldAndRepStateMachine({
         state: bothState,
         activeRomDeg: rom,
         leftArmRomDeg: lRom,
@@ -2802,15 +2806,15 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     // 1. Even when prescribed_side is omitted and target_joint defaults to right_shoulder, name/schedule side resolves BOTH
     const bothByNameOnly = {
       exercise_id: 'ex-custom-abd',
-      name_th: '[Stroke ADL] กางแขนด้านข้าง (ฝึกกางแขนสวมเสื้อ) — ทั้งสองข้างพร้อมกัน (Both)',
-      name_en: 'Stroke ADL: Shoulder Abduction (Both Sides Together)',
+      name_th: '[ผู้สูงอายุ] กางแขนด้านข้าง (ฝึกกางแขนสวมเสื้อ) — ทั้งสองข้างพร้อมกัน (Both)',
+      name_en: 'Elderly Care: Shoulder Abduction (Both Sides Together)',
       target_joint: 'right_shoulder' as const,
       expected_plane: 'abduction' as const,
     };
     expect(resolveActiveExerciseSide(bothByNameOnly, undefined, 'right_shoulder', 'abduction')).toBe('BOTH');
     expect(
       resolveActiveExerciseSide(
-        { exercise_id: 'STROKE_SH_ABD', target_joint: 'right_shoulder' },
+        { exercise_id: 'ELDERLY_SH_ABD', target_joint: 'right_shoulder' },
         { side: 'BOTH' },
       ),
     ).toBe('BOTH');
@@ -2823,7 +2827,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(bothPrompt.bannerAlertTh).not.toContain('เฉพาะข้างขวา');
     expect(bothPrompt.bannerAlertTh).not.toContain('เฉพาะข้างซ้าย');
 
-    // 3. Raising both arms bilaterally (~118 deg & ~65 deg mild stroke asymmetry) NEVER triggers WRONG_LIMB!
+    // 3. Raising both arms bilaterally (~118 deg & ~65 deg mild elderly asymmetry) NEVER triggers WRONG_LIMB!
     const asymmetricBothAbduction = createNeutralLandmarks({
       [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.40, y: 0.28, z: 0, visibility: 0.99 },
       [POSE_INDEX.RIGHT_ELBOW]: { x: 0.25, y: 0.22, z: -0.02, visibility: 0.99 },
@@ -2850,8 +2854,8 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(CLINICAL_EXERCISES).toHaveLength(15);
     const mergedLegacy = mergeDuplicateSideExercises([
       ...CLINICAL_EXERCISES,
-      { ...CLINICAL_EXERCISES[0], id: 'STROKE_SH_FLEX_R', code: 'STROKE_SH_FLEX_R' },
-      { ...CLINICAL_EXERCISES[0], id: 'STROKE_SH_FLEX_L', code: 'STROKE_SH_FLEX_L' },
+      { ...CLINICAL_EXERCISES[0], id: 'ELDERLY_SH_FLEX_R', code: 'ELDERLY_SH_FLEX_R' },
+      { ...CLINICAL_EXERCISES[0], id: 'ELDERLY_SH_FLEX_L', code: 'ELDERLY_SH_FLEX_L' },
     ]);
     expect(mergedLegacy).toHaveLength(15);
 
@@ -2860,10 +2864,10 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
         {
           id: 'u-left',
           patientId: 'pat-1',
-          exerciseId: 'STROKE_SH_FLEX_LEFT',
-          exerciseCode: 'STROKE_SH_FLEX',
+          exerciseId: 'ELDERLY_SH_FLEX_LEFT',
+          exerciseCode: 'ELDERLY_SH_FLEX',
           side: 'LEFT',
-          effectiveCode: 'STROKE_SH_FLEX_LEFT',
+          effectiveCode: 'ELDERLY_SH_FLEX_LEFT',
           scheduledDate: '2026-11-17',
           sets: 3,
           reps: 10,
@@ -2872,10 +2876,10 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
         {
           id: 'u-right',
           patientId: 'pat-1',
-          exerciseId: 'STROKE_SH_FLEX_RIGHT',
-          exerciseCode: 'STROKE_SH_FLEX',
+          exerciseId: 'ELDERLY_SH_FLEX_RIGHT',
+          exerciseCode: 'ELDERLY_SH_FLEX',
           side: 'RIGHT',
-          effectiveCode: 'STROKE_SH_FLEX_RIGHT',
+          effectiveCode: 'ELDERLY_SH_FLEX_RIGHT',
           scheduledDate: '2026-11-17',
           sets: 3,
           reps: 10,
@@ -2884,10 +2888,10 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
         {
           id: 'u-both',
           patientId: 'pat-1',
-          exerciseId: 'STROKE_SH_FLEX_BOTH',
-          exerciseCode: 'STROKE_SH_FLEX',
+          exerciseId: 'ELDERLY_SH_FLEX_BOTH',
+          exerciseCode: 'ELDERLY_SH_FLEX',
           side: 'BOTH',
-          effectiveCode: 'STROKE_SH_FLEX_BOTH',
+          effectiveCode: 'ELDERLY_SH_FLEX_BOTH',
           scheduledDate: '2026-11-17',
           sets: 3,
           reps: 10,
@@ -2916,7 +2920,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(resolveExercisePostureSpec(mapped[1], 'th').side).toBe('right');
     expect(resolveExercisePostureSpec(mapped[2], 'th').side).toBe('both');
 
-    // Pose AI enforces LEFT-only, RIGHT-only, and BOTH-simultaneous on STROKE_SH_FLEX
+    // Pose AI enforces LEFT-only, RIGHT-only, and BOTH-simultaneous on ELDERLY_SH_FLEX
     const leftForwardPts = createNeutralLandmarks({
       [POSE_INDEX.LEFT_ELBOW]: { x: 0.58, y: 0.34, z: -0.22, visibility: 0.99 },
       [POSE_INDEX.LEFT_WRIST]: { x: 0.58, y: 0.34, z: -0.44, visibility: 0.99 },
@@ -2941,7 +2945,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     const leftWrongBoth = measureLiveJointAngleAndTilt(bothForwardPts, mapped[0].target_joint, 'flexion', undefined, mapped[0]);
     expect(leftWrongBoth.wrongSideRaised).toBe(true);
 
-    // BOTH prescription on unified STROKE_SH_FLEX: blocks single-arm lift, accepts synchronized both arms
+    // BOTH prescription on unified ELDERLY_SH_FLEX: blocks single-arm lift, accepts synchronized both arms
     const bothRejectSingle = measureLiveJointAngleAndTilt(rightForwardPts, mapped[2].target_joint, 'flexion', undefined, mapped[2]);
     expect(bothRejectSingle.wrongSideRaised).toBe(true);
     expect(bothRejectSingle.sideViolation).toBe('SINGLE_ARM_IN_BOTH_MODE');
@@ -2950,8 +2954,8 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(bothAcceptTwo.romDeg).toBeGreaterThan(75);
   });
 
-  it('maps adaptive clinical effort-to-ROM across raises, proximity reaches, distal fallbacks, neck/shrug 1.6x gain, and 60 deg resting tolerance', () => {
-    // 1. Raises with prescribed targetRomDeg=125: chest-to-shoulder height reaches >= 90% goal without overhead lift
+  it('measures exact anatomical ROM across raises, proximity reaches, distal fallbacks, and neck tilt without artificial inflation', () => {
+    // 1. Exact shoulder flexion goniometry: chest-level ~60 deg raise MUST NOT inflate to 112.5 deg; true ~120 deg raise reaches >= 110 deg
     const chestHighPose = createNeutralLandmarks({
       [POSE_INDEX.LEFT_SHOULDER]: { x: 0.60, y: 0.25, z: 0, visibility: 0.99 },
       [POSE_INDEX.LEFT_HIP]: { x: 0.57, y: 0.65, z: 0, visibility: 0.99 },
@@ -2960,8 +2964,29 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       [POSE_INDEX.RIGHT_ELBOW]: { x: 0.40, y: 0.36, z: -0.18, visibility: 0.99 },
       [POSE_INDEX.RIGHT_WRIST]: { x: 0.40, y: 0.30, z: -0.32, visibility: 0.99 },
     });
-    const raiseRes = solveStrokeClinicalJointBiomechanics({
+    const chestOnlyRes = solveElderlyClinicalJointBiomechanics({
       landmarks: chestHighPose,
+      targetJoint: 'right_shoulder',
+      exerciseSide: 'RIGHT',
+      expectedPlane: 'flexion',
+      targetRomDeg: 125,
+      jointMode: 'default',
+    });
+    expect(chestOnlyRes.wrongSideRaised).toBe(false);
+    expect(chestOnlyRes.romDeg).not.toBeNull();
+    expect(chestOnlyRes.romDeg!).toBeGreaterThanOrEqual(50);
+    expect(chestOnlyRes.romDeg!).toBeLessThan(95);
+
+    const trueOverheadPose = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.60, y: 0.38, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_HIP]: { x: 0.57, y: 0.72, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.40, y: 0.38, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_HIP]: { x: 0.43, y: 0.72, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.40, y: 0.27, z: -0.18, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.40, y: 0.16, z: -0.35, visibility: 0.99 },
+    });
+    const raiseRes = solveElderlyClinicalJointBiomechanics({
+      landmarks: trueOverheadPose,
       targetJoint: 'right_shoulder',
       exerciseSide: 'RIGHT',
       expectedPlane: 'flexion',
@@ -2970,7 +2995,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     });
     expect(raiseRes.wrongSideRaised).toBe(false);
     expect(raiseRes.romDeg).not.toBeNull();
-    expect(raiseRes.romDeg!).toBeGreaterThanOrEqual(112.5); // >= 90% of 125 deg target
+    expect(raiseRes.romDeg!).toBeGreaterThanOrEqual(112.5);
 
     // Resting opposite arm tilted out ~42 deg stays tolerated (<= 60 deg threshold)
     const mildRestSway = createNeutralLandmarks({
@@ -2983,7 +3008,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       [POSE_INDEX.RIGHT_ELBOW]: { x: 0.34, y: 0.43, z: -0.04, visibility: 0.99 },
       [POSE_INDEX.RIGHT_WRIST]: { x: 0.29, y: 0.53, z: -0.04, visibility: 0.99 },
     });
-    const mildToleranceRes = solveStrokeClinicalJointBiomechanics({
+    const mildToleranceRes = solveElderlyClinicalJointBiomechanics({
       landmarks: mildRestSway,
       targetJoint: 'left_shoulder',
       exerciseSide: 'LEFT',
@@ -3000,7 +3025,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
       [POSE_INDEX.LEFT_ELBOW]: { x: 0.55, y: 0.42, z: -0.1, visibility: 0.99 },
       [POSE_INDEX.LEFT_WRIST]: { x: 0.46, y: 0.39, z: -0.18, visibility: 0.99 }, // dist to oppSh ~ 0.152 <= 1.15 * 0.20
     });
-    const crossRes = solveStrokeClinicalJointBiomechanics({
+    const crossRes = solveElderlyClinicalJointBiomechanics({
       landmarks: crossBodyNearPose,
       targetJoint: 'left_shoulder',
       exerciseSide: 'LEFT',
@@ -3010,14 +3035,14 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(crossRes.romDeg).not.toBeNull();
     expect(crossRes.romDeg!).toBeGreaterThanOrEqual(105);
 
-    // 3. Distal fallback without HandLandmarker (handLandmarksBySide omitted): registers visible wrist ROM cleanly
+    // 3. Distal fallback without HandLandmarker (handLandmarksBySide omitted): measures true wrist dorsiflexion angle
     const distalPose = createNeutralLandmarks({
-      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.39, y: 0.45, z: -0.05, visibility: 0.99 },
-      [POSE_INDEX.RIGHT_WRIST]: { x: 0.39, y: 0.32, z: -0.15, visibility: 0.99 },
-      [POSE_INDEX.RIGHT_INDEX]: { x: 0.39, y: 0.26, z: -0.18, visibility: 0.95 },
-      [POSE_INDEX.RIGHT_THUMB]: { x: 0.40, y: 0.27, z: -0.18, visibility: 0.95 },
+      [POSE_INDEX.RIGHT_ELBOW]: { x: 0.45, y: 0.42, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_WRIST]: { x: 0.33, y: 0.42, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_INDEX]: { x: 0.30, y: 0.34, z: 0, visibility: 0.95 }, // ~69 deg true wrist extension upward
+      [POSE_INDEX.RIGHT_THUMB]: { x: 0.32, y: 0.36, z: 0, visibility: 0.95 },
     });
-    const distalRes = solveStrokeClinicalJointBiomechanics({
+    const distalRes = solveElderlyClinicalJointBiomechanics({
       landmarks: distalPose,
       targetJoint: 'right_shoulder',
       exerciseSide: 'RIGHT',
@@ -3026,23 +3051,38 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     });
     expect(distalRes.lowVisibilityAlertTh).toBeNull();
     expect(distalRes.romDeg).not.toBeNull();
-    expect(distalRes.romDeg!).toBeGreaterThanOrEqual(48);
+    expect(distalRes.romDeg!).toBeGreaterThanOrEqual(55);
 
-    // 4. Neck lateral tilt 1.6x sensitivity gain (~14 deg physical tilt maps >= 22 deg)
-    const neckTiltedPose = createNeutralLandmarks({
+    // 4. Neck lateral tilt reports EXACT geometric angle (zero fake 1.6x gain: ~14 deg tilt -> ~14 deg, ~28 deg tilt -> ~28 deg)
+    const neckSmallTiltPose = createNeutralLandmarks({
       [POSE_INDEX.LEFT_SHOULDER]: { x: 0.60, y: 0.25, z: 0, visibility: 0.99 },
       [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.40, y: 0.25, z: 0, visibility: 0.99 },
       [POSE_INDEX.LEFT_EYE]: { x: 0.54, y: 0.145, z: 0, visibility: 0.99 },
       [POSE_INDEX.RIGHT_EYE]: { x: 0.46, y: 0.125, z: 0, visibility: 0.99 },
     });
-    const neckRes = solveStrokeClinicalJointBiomechanics({
-      landmarks: neckTiltedPose,
+    const neckSmallRes = solveElderlyClinicalJointBiomechanics({
+      landmarks: neckSmallTiltPose,
       targetJoint: 'spine',
       targetRomDeg: 35,
       jointMode: 'neck',
     });
-    expect(neckRes.romDeg).not.toBeNull();
-    expect(neckRes.romDeg!).toBeGreaterThanOrEqual(21);
+    expect(neckSmallRes.romDeg!).toBeGreaterThanOrEqual(11);
+    expect(neckSmallRes.romDeg!).toBeLessThanOrEqual(17);
+
+    const neckFullTiltPose = createNeutralLandmarks({
+      [POSE_INDEX.LEFT_SHOULDER]: { x: 0.60, y: 0.25, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_SHOULDER]: { x: 0.40, y: 0.25, z: 0, visibility: 0.99 },
+      [POSE_INDEX.LEFT_EYE]: { x: 0.54, y: 0.165, z: 0, visibility: 0.99 },
+      [POSE_INDEX.RIGHT_EYE]: { x: 0.46, y: 0.122, z: 0, visibility: 0.99 }, // atan2(0.043, 0.08) = 28.3 deg
+    });
+    const neckFullRes = solveElderlyClinicalJointBiomechanics({
+      landmarks: neckFullTiltPose,
+      targetJoint: 'spine',
+      targetRomDeg: 35,
+      jointMode: 'neck',
+    });
+    expect(neckFullRes.romDeg!).toBeGreaterThanOrEqual(25);
+    expect(neckFullRes.romDeg!).toBeLessThanOrEqual(32);
   });
 
   it('never leaks candidate name on Kiosk bounding box below 0.84 or before 6/6 streak completes', () => {
@@ -3280,11 +3320,11 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
   it('resolves unified external coaching banner with dynamic BOTH/LEFT/RIGHT messages and hold-lower prompt', () => {
     const bothEx = {
       exercise_id: 'sched-both-flex',
-      catalog_exercise_id: 'STROKE_SH_FLEX',
-      effective_code: 'STROKE_SH_FLEX_BOTH',
+      catalog_exercise_id: 'ELDERLY_SH_FLEX',
+      effective_code: 'ELDERLY_SH_FLEX_BOTH',
       prescribed_side: 'BOTH' as const,
-      name_th: '[Stroke ADL] ยกแขนไปด้านหน้า (ฝึกเอื้อม/สวมเสื้อ) — ทั้งสองข้างพร้อมกัน (Both)',
-      name_en: 'Stroke ADL: Forward Shoulder Flexion (Both Arms)',
+      name_th: '[ผู้สูงอายุ] ยกแขนไปด้านหน้า (ฝึกเอื้อม/สวมเสื้อ) — ทั้งสองข้างพร้อมกัน (Both)',
+      name_en: 'Elderly Care: Forward Shoulder Flexion (Both Arms)',
       target_joint: 'right_shoulder' as const,
       expected_plane: 'flexion' as const,
       target_rom_deg: 125,
@@ -3367,19 +3407,19 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     const leftSwitched = applyExerciseSideOverride(firstEx, 'LEFT');
     expect(leftSwitched.prescribed_side).toBe('LEFT');
     expect(leftSwitched.target_joint).toBe('left_shoulder');
-    expect(leftSwitched.exercise_id).toBe('STROKE_SH_FLEX_LEFT');
+    expect(leftSwitched.exercise_id).toBe('ELDERLY_SH_FLEX_LEFT');
     expect(leftSwitched.name_th).toContain('ข้างซ้าย (L)');
     expect(resolveActiveExerciseSide(leftSwitched)).toBe('LEFT');
 
     const rightSwitched = applyExerciseSideOverride(leftSwitched, 'RIGHT');
     expect(rightSwitched.prescribed_side).toBe('RIGHT');
     expect(rightSwitched.target_joint).toBe('right_shoulder');
-    expect(rightSwitched.exercise_id).toBe('STROKE_SH_FLEX_RIGHT');
+    expect(rightSwitched.exercise_id).toBe('ELDERLY_SH_FLEX_RIGHT');
     expect(resolveActiveExerciseSide(rightSwitched)).toBe('RIGHT');
 
     const bothSwitched = applyExerciseSideOverride(rightSwitched, 'BOTH');
     expect(bothSwitched.prescribed_side).toBe('BOTH');
-    expect(bothSwitched.exercise_id).toBe('STROKE_SH_FLEX_BOTH');
+    expect(bothSwitched.exercise_id).toBe('ELDERLY_SH_FLEX_BOTH');
     expect(bothSwitched.name_th).toContain('ทั้งสองข้าง');
     expect(resolveActiveExerciseSide(bothSwitched)).toBe('BOTH');
 
@@ -3410,7 +3450,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
         patient: POSE_TEST_PATIENT,
         ownerBiometrics: null,
         prescribedExercises: all15,
-        initialExerciseCode: 'STROKE_WRIST_FINGER',
+        initialExerciseCode: 'ELDERLY_WRIST_FINGER',
         isStaffAuthorized: true,
         onBackToAdminPortal: () => {},
       }),
@@ -3436,12 +3476,12 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(testUiHtml).toContain('จำนวนครั้งสำเร็จ');
     expect(testUiHtml).toContain('ค้างท่าเป้าหมาย');
     expect(testUiHtml).toContain('kiosk-hold-timer-display');
-    expect(testUiHtml).toContain('มุมการเคลื่อนไหว ROM');
-    expect(testUiHtml).toContain('kiosk-pip-coach-box');
-    expect(testUiHtml).toContain('kiosk-pip-coach-toggle');
+    expect(testUiHtml).not.toContain('มุมการเคลื่อนไหว ROM');
+    expect(testUiHtml).not.toContain('kiosk-pip-coach-box');
     expect(testUiHtml).toContain('kiosk-coach-expand-btn');
     expect(testUiHtml).toContain('ขยายใหญ่');
-    expect(testUiHtml).toContain('หุ่นสาธิต');
+    expect(testUiHtml).toContain('น้องหมอเทคสาธิต');
+    expect(testUiHtml).toContain('mascot-coach-character');
     expect(testUiHtml).toContain('kiosk-step-card-1');
     expect(testUiHtml).toContain('kiosk-step-card-2');
     expect(testUiHtml).toContain('kiosk-step-card-3');
@@ -3452,8 +3492,6 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(testUiHtml).toContain('เสียงพากย์');
     expect(testUiHtml).toContain('kiosk-voice-mute-toggle');
     expect(testUiHtml).toContain('animate-status-halo');
-    expect(testUiHtml).toContain('animate-popup-spring');
-    expect(testUiHtml).toContain('transition-[stroke-dashoffset,stroke]');
     expect(testUiHtml).toContain('transition-[width,background-color]');
     const emojiPattern = /[\p{Extended_Pictographic}\u{FE0F}\u{2600}-\u{27BF}\u{23E9}-\u{23FA}]/u;
     expect(emojiPattern.test(testUiHtml)).toBe(false);
@@ -3487,7 +3525,7 @@ describe('computeContainRect & drawMediaPipe33OnCanvas (1:1 Video Overlay)', () 
     expect(portalHtml).toContain('header-pose-test-btn');
     expect(portalHtml).toContain('ทดลองท่ากายภาพ');
     expect(portalHtml).toContain('tab4-pose-test-btn');
-    expect(portalHtml).toContain('exercise-card-pose-test-STROKE_SH_FLEX');
+    expect(portalHtml).toContain('exercise-card-pose-test-ELDERLY_SH_FLEX');
     expect(portalHtml).toContain('ทดลองทำท่านี้ด้วยกล้องทันที');
     expect(portalHtml).toContain('animate-view-enter');
     expect(portalHtml).toContain('animate-status-halo');

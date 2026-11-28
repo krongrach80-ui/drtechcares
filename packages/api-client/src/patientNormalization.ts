@@ -12,7 +12,7 @@ import type {
   PatientRecord,
   RehabScheduleItem,
   RehabSessionHistoryEntry,
-  StrokeType,
+  ElderlyCareGroup,
 } from './index';
 import {
   isSupabaseCircuitOpen,
@@ -21,9 +21,9 @@ import {
   stripUnsupportedColumnsForWrite,
 } from './supabasePersistence';
 
-const VALID_STROKE_TYPES = new Set<StrokeType>([
-  'ISCHEMIC',
-  'HEMORRHAGIC',
+const VALID_CARE_GROUPS = new Set<ElderlyCareGroup>([
+  'MOBILITY_RECOVERY',
+  'CLOSE_CARE',
   'ELDERLY_GENERAL',
   'ORTHOPEDIC',
   'NEURO',
@@ -202,9 +202,9 @@ function normalizeAngleImageUrlsLoose(raw: unknown): PatientRecord['angleImageUr
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function normalizeStrokeType(raw: unknown): StrokeType | undefined {
-  const clean = nonEmptyString(raw)?.toUpperCase() as StrokeType | undefined;
-  return clean && VALID_STROKE_TYPES.has(clean) ? clean : undefined;
+function normalizeCareGroup(raw: unknown): ElderlyCareGroup | undefined {
+  const clean = nonEmptyString(raw)?.toUpperCase() as ElderlyCareGroup | undefined;
+  return clean && VALID_CARE_GROUPS.has(clean) ? clean : undefined;
 }
 
 function normalizeAffectedSide(raw: unknown): AffectedSide | undefined {
@@ -306,7 +306,7 @@ export function buildPatientDualWriteColumns(
 
   if (options?.includeProfileFields !== false) {
     if (nonEmptyString(patient.gender)) cols.gender = patient.gender!.trim();
-    if (normalizeStrokeType(patient.strokeType)) cols.stroke_type = normalizeStrokeType(patient.strokeType);
+    if (normalizeCareGroup(patient.careGroup)) cols.care_group = normalizeCareGroup(patient.careGroup);
     if (normalizeAffectedSide(patient.affectedSide)) cols.affected_side = normalizeAffectedSide(patient.affectedSide);
     if (finiteNumberInRange(patient.motorAssessmentScore, 0, 6) !== undefined) {
       cols.motor_assessment_score = finiteNumberInRange(patient.motorAssessmentScore, 0, 6);
@@ -520,11 +520,11 @@ export function inspectPatientRecordHydration(
     prev?.gender ??
     (applyClinicalDefaults ? 'ชาย' : undefined);
 
-  const hydratedStrokeType =
-    normalizeStrokeType(r.stroke_type) ??
-    normalizeStrokeType(r.strokeType) ??
-    normalizeStrokeType(history.strokeType) ??
-    prev?.strokeType ??
+  const hydratedCareGroup =
+    normalizeCareGroup(r.care_group) ??
+    normalizeCareGroup(r.careGroup) ??
+    normalizeCareGroup(history.careGroup) ??
+    prev?.careGroup ??
     (applyClinicalDefaults ? 'ELDERLY_GENERAL' : undefined);
 
   const hydratedAffectedSide =
@@ -591,7 +591,7 @@ export function inspectPatientRecordHydration(
     ...(hydratedGender ? { gender: hydratedGender } : {}),
     phone: String(r.phone ?? prev?.phone ?? ''),
     diagnosis: String(r.diagnosis ?? prev?.diagnosis ?? ''),
-    ...(hydratedStrokeType ? { strokeType: hydratedStrokeType } : {}),
+    ...(hydratedCareGroup ? { careGroup: hydratedCareGroup } : {}),
     ...(hydratedAffectedSide ? { affectedSide: hydratedAffectedSide } : {}),
     ...(hydratedMotorScore !== undefined ? { motorAssessmentScore: hydratedMotorScore } : {}),
     ...(hydratedAdlScore !== undefined ? { adlDressingScore: hydratedAdlScore } : {}),
@@ -721,10 +721,10 @@ export function inspectPatientRecordHydration(
       repairPatch.gender = nonEmptyString(history.gender);
     }
     if (
-      (!nonEmptyString(r.stroke_type) && normalizeStrokeType(history.strokeType)) &&
-      (Object.prototype.hasOwnProperty.call(r, 'stroke_type') || Object.keys(repairPatch).length > 0)
+      (!nonEmptyString(r.care_group) && normalizeCareGroup(history.careGroup)) &&
+      (Object.prototype.hasOwnProperty.call(r, 'care_group') || Object.keys(repairPatch).length > 0)
     ) {
-      repairPatch.stroke_type = normalizeStrokeType(history.strokeType);
+      repairPatch.care_group = normalizeCareGroup(history.careGroup);
     }
     if (
       (!nonEmptyString(r.affected_side) && normalizeAffectedSide(history.affectedSide)) &&

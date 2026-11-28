@@ -17,6 +17,11 @@ import {
   type MahidolScore0To6,
 } from '../types/clinicalAssessment';
 import {
+  deriveElderlyMusclePowerLevelFromRom,
+  getElderlyMusclePowerSpec,
+  type ElderlyMusclePowerLevel,
+} from '../utils/patientNameHelpers';
+import {
   classifyExerciseJointMode,
   measureLiveJointAngleAndTilt,
 } from './SmartRehabKioskUI';
@@ -25,6 +30,7 @@ export interface LiveMeasuredRomResult {
   measuredRomDeg: number;
   peakRomDeg: number;
   suggestedScore0To6: MahidolScore0To6;
+  suggestedLevel1To5: ElderlyMusclePowerLevel;
   applySuggestedScore: boolean;
   sampleFrames: number;
 }
@@ -35,6 +41,7 @@ export interface ClinicalRomLiveMeasureModalProps {
   exerciseNameTh: string;
   targetSide: AssessmentTargetSide;
   targetRomDeg: number;
+  scaleMode?: 'MAHIDOL_0_6' | 'ELDERLY_1_5';
   onClose: () => void;
   onConfirmMeasuredRom: (result: LiveMeasuredRomResult) => void;
 }
@@ -80,6 +87,7 @@ export function ClinicalRomLiveMeasureModal({
   exerciseNameTh,
   targetSide,
   targetRomDeg,
+  scaleMode = 'MAHIDOL_0_6',
   onClose,
   onConfirmMeasuredRom,
 }: ClinicalRomLiveMeasureModalProps) {
@@ -459,6 +467,9 @@ export function ClinicalRomLiveMeasureModal({
   const targetPct = computeTargetAchievementPct(effectiveMeasuredDeg, targetRomDeg);
   const suggestedScore = deriveScore0To6FromRomRatio(effectiveMeasuredDeg, targetRomDeg);
   const suggestedRubric = getMahidolRubricItem(suggestedScore);
+  const suggestedLevel1To5 = deriveElderlyMusclePowerLevelFromRom(effectiveMeasuredDeg);
+  const suggestedElderlySpec = getElderlyMusclePowerSpec(suggestedLevel1To5);
+  const isElderly5Mode = scaleMode === 'ELDERLY_1_5';
 
   const handleToggleLock = () => {
     if (lockedAngleDeg !== null) {
@@ -589,12 +600,16 @@ export function ClinicalRomLiveMeasureModal({
           </div>
 
           <div className="rounded-2xl border border-indigo-200 bg-indigo-50/60 p-3.5">
-            <div className="text-[11px] font-bold text-indigo-800">ระดับมหิดลแนะนำตามมุมจริง</div>
+            <div className="text-[11px] font-bold text-indigo-800">
+              {isElderly5Mode ? 'ระดับกำลังกล้ามเนื้อผู้สูงอายุ (5 ระดับ)' : 'ระดับมหิดลแนะนำตามมุมจริง'}
+            </div>
             <div className="mt-1 text-2xl font-black text-indigo-700 tabular-nums">
-              ระดับ {suggestedScore} / 6
+              {isElderly5Mode ? `ระดับ ${suggestedLevel1To5} / 5` : `ระดับ ${suggestedScore} / 6`}
             </div>
             <div className="mt-0.5 text-[10px] font-semibold text-indigo-900 line-clamp-2">
-              {suggestedRubric.shortLabelTh}
+              {isElderly5Mode
+                ? `${suggestedElderlySpec.shortTitleTh} (${suggestedElderlySpec.maxRomDeg}°)`
+                : suggestedRubric.shortLabelTh}
             </div>
           </div>
         </div>
@@ -606,7 +621,11 @@ export function ClinicalRomLiveMeasureModal({
             onChange={(e) => setApplySuggestedScore(e.target.checked)}
             className="h-4 w-4 accent-emerald-600"
           />
-          <span>อัปเดตคะแนนประเมินมหิดล (ระดับ {suggestedScore}/6) ตามมุมที่วัดได้ให้อัตโนมัติ (แก้ไขภายหลังได้)</span>
+          <span>
+            {isElderly5Mode
+              ? `อัปเดตระดับกำลังกล้ามเนื้อผู้สูงอายุ (ระดับ ${suggestedLevel1To5}/5 • สูงสุด ${suggestedElderlySpec.maxRomDeg}°) ตามองศาแขนที่วัดได้อัตโนมัติ`
+              : `อัปเดตคะแนนประเมินมหิดล (ระดับ ${suggestedScore}/6) ตามมุมที่วัดได้ให้อัตโนมัติ (แก้ไขภายหลังได้)`}
+          </span>
         </label>
 
         {/* Action Controls */}
@@ -651,6 +670,7 @@ export function ClinicalRomLiveMeasureModal({
                   measuredRomDeg: Number(effectiveMeasuredDeg.toFixed(1)),
                   peakRomDeg: Number(Math.max(effectiveMeasuredDeg, rawPeakDeg).toFixed(1)),
                   suggestedScore0To6: suggestedScore,
+                  suggestedLevel1To5,
                   applySuggestedScore,
                   sampleFrames,
                 });

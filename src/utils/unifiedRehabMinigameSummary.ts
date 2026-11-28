@@ -1017,7 +1017,7 @@ export interface PatientProgressSummaryReport {
 
 /**
  * Produces a concise, elderly-friendly Thai label for X-axis bar chart slots
- * (e.g. "[Stroke ADL] ยกแขนไปด้านหน้า" -> "ยกแขน", "กางแขนด้านข้าง" -> "กางแขน").
+ * (e.g. "[ผู้สูงอายุ] ยกแขนไปด้านหน้า" -> "ยกแขน", "กางแขนด้านข้าง" -> "กางแขน").
  */
 export function shortenThaiExerciseLabel(rawNameTh: string, fallbackCode?: string): string {
   const clean = String(rawNameTh ?? '')

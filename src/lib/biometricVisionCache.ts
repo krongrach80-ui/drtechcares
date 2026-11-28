@@ -28,7 +28,8 @@ let cachedVisionPromise: Promise<Awaited<ReturnType<typeof FilesetResolver.forVi
 let cachedPrimaryLandmarkerPromise: Promise<FaceLandmarker> | null = null;
 let cachedRoiLandmarkerPromise: Promise<FaceLandmarker | null> | null = null;
 let cachedPoseLandmarkerPromises: Partial<Record<1 | 2, Promise<CachedVisionTaskHandle<PoseLandmarker>>>> = {};
-let cachedHandLandmarkerPromises: Partial<Record<2 | 4, Promise<CachedVisionTaskHandle<HandLandmarker>>>> = {};
+let cachedHandLandmarkerPromises: Partial<Record<string, Promise<CachedVisionTaskHandle<HandLandmarker>>>> = {};
+let cachedRoiHandLandmarkerPromises: Partial<Record<string, Promise<CachedVisionTaskHandle<HandLandmarker>>>> = {};
 let cachedRehabFaceLandmarkerPromise: Promise<CachedVisionTaskHandle<FaceLandmarker> | null> | null = null;
 let cachedVaultResult: {
   apiClient: DrTechCaresApiClient;
@@ -253,40 +254,113 @@ export async function getCachedPoseLandmarker(options?: {
 export async function getCachedHandLandmarker(options?: {
   numHands?: 2 | 4;
   minConfidence?: number;
+  forceCpu?: boolean;
 }): Promise<CachedVisionTaskHandle<HandLandmarker>> {
   const numHands: 2 | 4 = options?.numHands === 4 ? 4 : 2;
-  const minConfidence = options?.minConfidence ?? (numHands === 4 ? 0.35 : 0.45);
-  if (!cachedHandLandmarkerPromises[numHands]) {
-    cachedHandLandmarkerPromises[numHands] = (async () => {
+  const forceCpu = Boolean(options?.forceCpu);
+  const cacheKey = `${numHands}_${forceCpu ? 'cpu' : 'auto'}`;
+  const minConfidence = options?.minConfidence ?? 0.36;
+  const minTrackingConfidence = Math.min(minConfidence, 0.32);
+  if (!cachedHandLandmarkerPromises[cacheKey]) {
+    cachedHandLandmarkerPromises[cacheKey] = (async () => {
       const vision = await getCachedVisionResolver();
       const modelPaths = [
         '/models/hand_landmarker.task',
         'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
       ] as const;
+      const delegates: readonly VisionDelegate[] = forceCpu ? ['CPU'] : ['GPU', 'CPU'];
       for (const modelAssetPath of modelPaths) {
-        for (const delegate of ['GPU', 'CPU'] as const) {
+        for (const delegate of delegates) {
+          let instance: HandLandmarker | null = null;
           try {
-            const instance = await HandLandmarker.createFromOptions(vision, {
+            instance = await HandLandmarker.createFromOptions(vision, {
               baseOptions: { modelAssetPath, delegate },
               runningMode: 'VIDEO',
               numHands,
               minHandDetectionConfidence: minConfidence,
               minHandPresenceConfidence: minConfidence,
-              minTrackingConfidence: minConfidence,
+              minTrackingConfidence,
             });
+            // Verify live VIDEO inference succeeds on this delegate (catches Windows WebGL context contention on GPU)
+            const blank = createBlankWarmupCanvas(64, 64);
+            if (blank) {
+              const warmTs = getNextMonotonicHandDetectTs(
+                typeof performance !== 'undefined' ? performance.now() : Date.now(),
+              );
+              instance.detectForVideo(blank, warmTs);
+            }
             return { instance, delegate };
           } catch {
+            try {
+              instance?.close();
+            } catch {
+              // ignore close error
+            }
             // Try next delegate or model path
           }
         }
       }
       throw new Error('Unable to create shared HandLandmarker');
     })().catch((err) => {
-      delete cachedHandLandmarkerPromises[numHands];
+      delete cachedHandLandmarkerPromises[cacheKey];
       throw err;
     });
   }
-  return cachedHandLandmarkerPromises[numHands]!;
+  return cachedHandLandmarkerPromises[cacheKey]!;
+}
+
+/**
+ * High-precision IMAGE-mode HandLandmarker dedicated to zoomed 256x256 per-hand ROI crops
+ * anchored on PoseLandmarker wrists. Gives ~6x-8x higher effective pixel resolution on distant
+ * hands (1.5m-2.5m), closed fists, and fingers gripping objects (e.g., mouse/cane) on BOTH sides.
+ */
+export async function getCachedRoiHandLandmarker(options?: {
+  minConfidence?: number;
+  forceCpu?: boolean;
+}): Promise<CachedVisionTaskHandle<HandLandmarker>> {
+  const forceCpu = Boolean(options?.forceCpu);
+  const cacheKey = forceCpu ? 'roi_cpu' : 'roi_auto';
+  const minConfidence = options?.minConfidence ?? 0.28;
+  if (!cachedRoiHandLandmarkerPromises[cacheKey]) {
+    cachedRoiHandLandmarkerPromises[cacheKey] = (async () => {
+      const vision = await getCachedVisionResolver();
+      const modelPaths = [
+        '/models/hand_landmarker.task',
+        'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+      ] as const;
+      const delegates: readonly VisionDelegate[] = forceCpu ? ['CPU'] : ['GPU', 'CPU'];
+      for (const modelAssetPath of modelPaths) {
+        for (const delegate of delegates) {
+          let instance: HandLandmarker | null = null;
+          try {
+            instance = await HandLandmarker.createFromOptions(vision, {
+              baseOptions: { modelAssetPath, delegate },
+              runningMode: 'IMAGE',
+              numHands: 1,
+              minHandDetectionConfidence: minConfidence,
+              minHandPresenceConfidence: minConfidence,
+            });
+            const blank = createBlankWarmupCanvas(96, 96);
+            if (blank) {
+              instance.detect(blank);
+            }
+            return { instance, delegate };
+          } catch {
+            try {
+              instance?.close();
+            } catch {
+              // ignore close error
+            }
+          }
+        }
+      }
+      throw new Error('Unable to create ROI HandLandmarker');
+    })().catch((err) => {
+      delete cachedRoiHandLandmarkerPromises[cacheKey];
+      throw err;
+    });
+  }
+  return cachedRoiHandLandmarkerPromises[cacheKey]!;
 }
 
 export async function getCachedRehabFaceLandmarker(): Promise<
@@ -401,6 +475,7 @@ export function resetBiometricVisionCacheForTests(): void {
   cachedRoiLandmarkerPromise = null;
   cachedPoseLandmarkerPromises = {};
   cachedHandLandmarkerPromises = {};
+  cachedRoiHandLandmarkerPromises = {};
   cachedRehabFaceLandmarkerPromise = null;
   cachedVaultResult = null;
   inflightPreloadPromise = null;

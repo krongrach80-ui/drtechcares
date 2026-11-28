@@ -19,7 +19,7 @@ import {
   type RehabScheduleItem,
   type RehabSessionHistoryEntry,
   type RehabSessionRecord,
-  type StrokeType,
+  type ElderlyCareGroup,
   type UniversalEhrPackage,
   type UserAccount,
 } from '@drtechcares/api-client';
@@ -31,7 +31,7 @@ import {
   parseExerciseCodeAndSide,
   resolveDefaultSideForExercise,
   resolveSideAdjustedExerciseCopy,
-  sortExercisesStrokeUpperFirst,
+  sortExercisesElderlyUpperFirst,
   type ExerciseSideCode,
 } from '@drtechcares/pose-engine';
 import {
@@ -1211,7 +1211,7 @@ export function PatientProfileAndHistoryModal({
   const [gender, setGender] = useState('ชาย');
   const [phone, setPhone] = useState('');
   const [diagnosis, setDiagnosis] = useState('');
-  const [strokeType, setStrokeType] = useState<StrokeType>('ELDERLY_GENERAL');
+  const [careGroup, setCareGroup] = useState<ElderlyCareGroup>('ELDERLY_GENERAL');
   const [affectedSide, setAffectedSide] = useState<AffectedSide>('NONE');
   const [motorAssessmentScore, setMotorAssessmentScore] = useState<number>(3);
   const [adlDressingScore, setAdlDressingScore] = useState<number>(3);
@@ -1243,7 +1243,7 @@ export function PatientProfileAndHistoryModal({
     setGender(patient.gender || 'ชาย');
     setPhone(patient.phone || '');
     setDiagnosis(patient.diagnosis || '');
-    setStrokeType(patient.strokeType ?? 'ELDERLY_GENERAL');
+    setCareGroup(patient.careGroup ?? 'ELDERLY_GENERAL');
     setAffectedSide(patient.affectedSide ?? 'NONE');
     setMotorAssessmentScore(patient.motorAssessmentScore ?? 3);
     setAdlDressingScore(patient.adlDressingScore ?? 3);
@@ -1468,7 +1468,7 @@ export function PatientProfileAndHistoryModal({
                     gender,
                     phone: phone.trim(),
                     diagnosis: diagnosis.trim(),
-                    strokeType,
+                    careGroup,
                     affectedSide,
                     motorAssessmentScore,
                     adlDressingScore,
@@ -1538,11 +1538,11 @@ export function PatientProfileAndHistoryModal({
                 />
               </div>
 
-              {/* Stroke Clinical Profile & Mahidol 0-6 Scale */}
+              {/* Elderly Rehabilitation Profile & 0-6 Motor Scale */}
               <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-3 space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="font-extrabold text-emerald-950">
-                    ข้อมูลกายภาพ Stroke &amp; ประเมินกำลังกล้ามเนื้อ (Mahidol 0–6 Scale)
+                    ข้อมูลกายภาพผู้สูงอายุ &amp; ประเมินกำลังกล้ามเนื้อ (ระดับ 0–6)
                   </span>
                   <span className="rounded-lg bg-white border border-emerald-200 px-2 py-0.5 font-mono text-[10px] font-bold text-indigo-700">
                     Universal EHR: {patient.universalHealthLinkCode || `DTC-EHR-${patient.hn}`}
@@ -1550,15 +1550,15 @@ export function PatientProfileAndHistoryModal({
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   <select
-                    value={strokeType}
-                    onChange={(e) => setStrokeType(e.target.value as StrokeType)}
+                    value={careGroup}
+                    onChange={(e) => setCareGroup(e.target.value as ElderlyCareGroup)}
                     className="rounded-xl border border-emerald-200 bg-white px-2.5 py-2 font-bold"
                   >
-                    <option value="ISCHEMIC">Stroke ตีบ/ตัน (Ischemic)</option>
-                    <option value="HEMORRHAGIC">Stroke แตก (Hemorrhagic)</option>
-                    <option value="ELDERLY_GENERAL">ผู้สูงอายุ (MOPH)</option>
-                    <option value="NEURO">ระบบประสาท (Neuro)</option>
-                    <option value="ORTHOPEDIC">กระดูก/ข้อ (Ortho)</option>
+                    <option value="ELDERLY_GENERAL">ผู้สูงอายุทั่วไป (สธ.)</option>
+                    <option value="ORTHOPEDIC">ผู้สูงอายุข้อเสื่อม/ไหล่ติด (Ortho)</option>
+                    <option value="NEURO">ฟื้นฟูระบบประสาทและทรงตัว</option>
+                    <option value="MOBILITY_RECOVERY">ผู้สูงอายุพักฟื้นกล้ามเนื้ออ่อนแรง</option>
+                    <option value="CLOSE_CARE">ผู้สูงอายุพักฟื้นดูแลใกล้ชิด</option>
                   </select>
                   <select
                     value={affectedSide}
@@ -1982,11 +1982,11 @@ export function PatientProfileAndHistoryModal({
                   activityType: 'physio_exercise',
                   exerciseId:
                     patient.affectedSide === 'LEFT'
-                      ? 'STROKE_SH_FLEX_LEFT'
+                      ? 'ELDERLY_SH_FLEX_LEFT'
                       : patient.affectedSide === 'BOTH'
-                        ? 'STROKE_SH_FLEX_BOTH'
-                        : 'STROKE_SH_FLEX_RIGHT',
-                  exerciseName: `[Stroke ADL] ยกแขน${
+                        ? 'ELDERLY_SH_FLEX_BOTH'
+                        : 'ELDERLY_SH_FLEX_RIGHT',
+                  exerciseName: `[ผู้สูงอายุ] ยกแขน${
                     patient.affectedSide === 'LEFT'
                       ? 'ซ้าย'
                       : patient.affectedSide === 'BOTH'
@@ -2126,7 +2126,7 @@ export function UniversalEhrLinkModal({
         age: patient.age,
         gender: patient.gender,
         diagnosis: patient.diagnosis,
-        strokeType: patient.strokeType,
+        careGroup: patient.careGroup,
         affectedSide: patient.affectedSide,
         motorAssessmentScore: patient.motorAssessmentScore,
         adlDressingScore: patient.adlDressingScore,
@@ -2409,7 +2409,7 @@ const EXERCISE_FILTER_TABS: ReadonlyArray<{
   label: Record<ClinicalLang, string>;
 }> = [
   { id: 'all', label: { th: 'ทั้งหมด', en: 'All Postures', cn: '全部动作' } },
-  { id: 'upper_limb', label: { th: 'แขน ไหล่ ศอก และมือ', en: 'Upper Limb (Stroke)', cn: '上肢与肩肘手' } },
+  { id: 'upper_limb', label: { th: 'แขน ไหล่ ศอก และมือ', en: 'Upper Limb (Elderly)', cn: '上肢与肩肘手' } },
   { id: 'neck_trunk', label: { th: 'คอและบ่า (สธ.)', en: 'Neck & Shoulders (MOPH)', cn: '颈部与肩胛' } },
 ];
 
@@ -2579,7 +2579,7 @@ export function ScheduleCreatorAndDayModal({
       exercises.length > 0
         ? exercises
         : CLINICAL_EXERCISES.map((ex) => ({ ...ex, createdBy: 'system' }));
-    return mergeDuplicateSideExercises(sortExercisesStrokeUpperFirst(source));
+    return mergeDuplicateSideExercises(sortExercisesElderlyUpperFirst(source));
   }, [exercises]);
 
   const filteredExercises = useMemo(() => {
